@@ -24,7 +24,7 @@ pub(crate) use policy::{clear, guard};
 pub(crate) struct Caller<'a> {
     pub state: &'a Path,
     pub machine: &'a str,
-    pub actor: &'a TaskActor,
+    pub actor: TaskActor,
 }
 fn now() -> i64 {
     SystemTime::now()

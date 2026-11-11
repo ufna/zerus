@@ -10,7 +10,7 @@ fn caller<'a>(h: &'a Harness, actor: &'a TaskActor) -> Caller<'a> {
     Caller {
         state: h.temp.path(),
         machine: "00000000-0000-4000-8000-0000000000aa",
-        actor,
+        actor: actor.clone(),
     }
 }
 
@@ -270,7 +270,7 @@ fn unmarked_tasks_never_open_the_team_store_and_bad_keys_are_guarded() {
     assert!(guard(&calling, &doc, "send").is_ok());
     doc.set_raw_team_for_test("not JSON");
     assert!(guard(&calling, &doc, "send").is_err());
-    calling.actor = &TaskActor::Person;
+    calling.actor = TaskActor::Person;
     assert!(guard(&calling, &doc, "send").is_ok());
 }
 

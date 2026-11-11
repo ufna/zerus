@@ -3,7 +3,6 @@ use crate::teams::ops::{
     self,
     tests::{self as fixtures, Harness, TEAM},
 };
-use std::io::Write;
 use std::process::{Command, Stdio};
 
 /// Run the real command entry with private configuration, stdin and caller
@@ -14,6 +13,45 @@ fn cli_entry() {
         return;
     };
     let config = Config::load().unwrap();
+    if std::env::var_os("HGS_TEAM_BIND_SELF").is_some() {
+        if let Ok(name) = std::env::var("HGS_SESSION") {
+            use sha2::{Digest, Sha256};
+            let path = config
+                .state
+                .join(format!("{:x}.json", Sha256::digest(name.as_bytes())));
+            let mut record: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+            record["pid"] = json!(std::process::id());
+            record["process_start"] =
+                json!(crate::platform::process_start_time(std::process::id()).unwrap());
+            std::fs::write(path, record.to_string()).unwrap();
+        }
+    }
+    if std::env::var_os("HGS_TEAM_UNMARKED_CHILD").is_some() {
+        use sha2::{Digest, Sha256};
+        let name = std::env::var("HGS_SESSION").unwrap();
+        let path = config
+            .state
+            .join(format!("{:x}.json", Sha256::digest(name.as_bytes())));
+        let mut record: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        record["pid"] = json!(std::process::id());
+        record["process_start"] =
+            json!(crate::platform::process_start_time(std::process::id()).unwrap());
+        std::fs::write(path, record.to_string()).unwrap();
+        let status = Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "tasks::teams::tests::cli_entry", "--nocapture"])
+            .env_remove("HGS_TEAM_UNMARKED_CHILD")
+            .env_remove("HGS_TEAM_BIND_SELF")
+            .env_remove("HGS_SESSION")
+            .env_remove("HGS_RUN_ID")
+            .env_remove("HGS_SESSION_ID")
+            .stdin(Stdio::inherit())
+            .stdout(Stdio::inherit())
+            .stderr(Stdio::inherit())
+            .status()
+            .unwrap();
+        assert!(status.success());
+        return;
+    }
     let args: Vec<String> =
         serde_json::from_str(&std::env::var("HGS_TEAMS_TEST_ARGS").unwrap()).unwrap();
     let result = if args[0] == "observe-team-fixture" {
@@ -39,6 +77,45 @@ fn cli_entry() {
     };
     std::fs::write(reply, out.to_string()).unwrap();
 }
+
+/// A private command runs outside the working agent's ancestry, in the initial
+/// user namespace. Its helper owns and drains the original child and pipes.
+struct FixtureChild {
+    path: std::path::PathBuf,
+}
+impl FixtureChild {
+    fn wait_with_output(self) -> std::io::Result<std::process::Output> {
+        use std::os::unix::process::ExitStatusExt;
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        while !self.path.join("status").exists() && std::time::Instant::now() < until {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        let code: i32 = std::fs::read_to_string(self.path.join("status"))?
+            .trim()
+            .parse()
+            .map_err(std::io::Error::other)?;
+        Ok(std::process::Output {
+            status: std::process::ExitStatus::from_raw(if code < 0 { -code } else { code << 8 }),
+            stdout: std::fs::read(self.path.join("stdout"))?,
+            stderr: std::fs::read(self.path.join("stderr"))?,
+        })
+    }
+}
+const FIXTURE_HELPER: &str = r#"
+import os,sys,subprocess
+from pathlib import Path
+path=Path(sys.argv[1])
+try:
+    result=subprocess.run([sys.argv[2],'--exact','tasks::teams::tests::cli_entry','--nocapture'],input=(path/'input').read_bytes(),capture_output=True,timeout=15)
+    (path/'stdout').write_bytes(result.stdout)
+    (path/'stderr').write_bytes(result.stderr)
+    (path/'status.tmp').write_text(str(result.returncode))
+except Exception as error:
+    (path/'stdout').write_bytes(b'')
+    (path/'stderr').write_text(str(error))
+    (path/'status.tmp').write_text('1')
+os.replace(path/'status.tmp',path/'status')
+"#;
 
 struct Fixture {
     h: Harness,
@@ -112,15 +189,29 @@ impl Fixture {
         name
     }
 
-    fn run(&self, args: &[&str], input: &str, session: Option<&str>) -> Value {
-        let reply = self
+    fn spawn(
+        &self,
+        args: &[&str],
+        input: &str,
+        session: Option<&str>,
+        extra: &[(&str, std::ffi::OsString)],
+    ) -> (FixtureChild, std::path::PathBuf) {
+        let path = self
             .h
             .temp
             .path()
-            .join(format!("reply-{}.json", uuid::Uuid::new_v4()));
-        let mut command = Command::new(std::env::current_exe().unwrap());
+            .join(format!("command-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&path).unwrap();
+        std::fs::write(path.join("input"), input).unwrap();
+        let reply = path.join("reply.json");
+        let mut command = Command::new("sh");
         command
-            .args(["--exact", "tasks::teams::tests::cli_entry", "--nocapture"])
+            .args(["-c", "\"$@\" </dev/null >/dev/null 2>&1 &", "fixture"])
+            .arg("python3")
+            .arg("-c")
+            .arg(FIXTURE_HELPER)
+            .arg(&path)
+            .arg(std::env::current_exe().unwrap())
             .env_clear()
             .env("PATH", std::env::var_os("PATH").unwrap_or_default())
             .env("HOME", self.h.temp.path())
@@ -130,22 +221,24 @@ impl Fixture {
             .env("HGS_TAB", "0")
             .env("HGS_TEAMS_TEST_REPLY", &reply)
             .env("HGS_TEAMS_TEST_ARGS", serde_json::to_string(args).unwrap())
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
+            .env("HGS_TEAM_BIND_SELF", "1")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
         if let Some(session) = session {
             command.env("HGS_SESSION", session).env(
                 "HGS_RUN_ID",
                 format!("run-{}", session.rsplit('/').next().unwrap()),
             );
         }
-        let mut child = command.spawn().unwrap();
-        child
-            .stdin
-            .take()
-            .unwrap()
-            .write_all(input.as_bytes())
-            .unwrap();
+        for (name, value) in extra {
+            command.env(name, value);
+        }
+        assert!(command.status().unwrap().success());
+        (FixtureChild { path }, reply)
+    }
+    fn run(&self, args: &[&str], input: &str, session: Option<&str>) -> Value {
+        let (child, reply) = self.spawn(args, input, session, &[]);
         let output = child.wait_with_output().unwrap();
         assert!(
             output.status.success(),
@@ -178,37 +271,15 @@ impl Fixture {
         reference: &str,
         session: &str,
         pause: &std::path::Path,
-    ) -> (std::process::Child, std::path::PathBuf) {
-        let reply = self
-            .h
-            .temp
-            .path()
-            .join(format!("reply-{}.json", uuid::Uuid::new_v4()));
-        let args = ["send", reference, "--session", session, "--json"];
-        let mut command = Command::new(std::env::current_exe().unwrap());
-        command
-            .args(["--exact", "tasks::teams::tests::cli_entry", "--nocapture"])
-            .env_clear()
-            .env("PATH", std::env::var_os("PATH").unwrap_or_default())
-            .env("HOME", self.h.temp.path())
-            .env("HGS_CONFIG_DIR", self.h.temp.path().join("config"))
-            .env("HGS_STATE_DIR", self.h.temp.path())
-            .env("HGS_SELF", "test")
-            .env("HGS_TAB", "0")
-            .env("HGS_SESSION", session)
-            .env(
-                "HGS_RUN_ID",
-                format!("run-{}", session.rsplit('/').next().unwrap()),
-            )
-            .env("HGS_TEST_ATTEMPT_PAUSE", pause)
-            .env("HGS_TEAMS_TEST_REPLY", &reply)
-            .env("HGS_TEAMS_TEST_ARGS", serde_json::to_string(&args).unwrap())
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        (command.spawn().unwrap(), reply)
+    ) -> (FixtureChild, std::path::PathBuf) {
+        self.paused_command(
+            &["send", reference, "--session", session, "--json"],
+            "",
+            session,
+            pause,
+            "admission",
+        )
     }
-
     fn paused_command(
         &self,
         args: &[&str],
@@ -216,75 +287,53 @@ impl Fixture {
         session: &str,
         pause: &std::path::Path,
         phase: &str,
-    ) -> (std::process::Child, std::path::PathBuf) {
-        let reply = self
-            .h
-            .temp
-            .path()
-            .join(format!("reply-{}.json", uuid::Uuid::new_v4()));
-        let mut command = Command::new(std::env::current_exe().unwrap());
-        command
-            .args(["--exact", "tasks::teams::tests::cli_entry", "--nocapture"])
-            .env_clear()
-            .env("PATH", std::env::var_os("PATH").unwrap_or_default())
-            .env("HOME", self.h.temp.path())
-            .env("HGS_CONFIG_DIR", self.h.temp.path().join("config"))
-            .env("HGS_STATE_DIR", self.h.temp.path())
-            .env("HGS_SELF", "test")
-            .env("HGS_TAB", "0")
-            .env("HGS_SESSION", session)
-            .env(
-                "HGS_RUN_ID",
-                format!("run-{}", session.rsplit('/').next().unwrap()),
-            )
-            .env("HGS_TEST_ATTEMPT_PAUSE", pause)
-            .env("HGS_TEST_ATTEMPT_PAUSE_AT", phase)
-            .env("HGS_TEAMS_TEST_REPLY", &reply)
-            .env("HGS_TEAMS_TEST_ARGS", serde_json::to_string(args).unwrap())
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        let mut child = command.spawn().unwrap();
-        child
-            .stdin
-            .take()
-            .unwrap()
-            .write_all(input.as_bytes())
-            .unwrap();
-        (child, reply)
+    ) -> (FixtureChild, std::path::PathBuf) {
+        self.spawn(
+            args,
+            input,
+            Some(session),
+            &[
+                ("HGS_TEST_ATTEMPT_PAUSE", pause.as_os_str().to_owned()),
+                ("HGS_TEST_ATTEMPT_PAUSE_AT", phase.into()),
+            ],
+        )
     }
-
     fn observer(
         &self,
         task: &Value,
         ready: &std::path::Path,
-    ) -> (std::process::Child, std::path::PathBuf) {
-        let reply = self
-            .h
-            .temp
-            .path()
-            .join(format!("reply-{}.json", uuid::Uuid::new_v4()));
-        let args = [
-            "observe-team-fixture",
-            "example-project",
-            task["uuid"].as_str().unwrap(),
-        ];
-        let mut cmd = Command::new(std::env::current_exe().unwrap());
-        cmd.args(["--exact", "tasks::teams::tests::cli_entry", "--nocapture"])
-            .env_clear()
-            .env("PATH", std::env::var_os("PATH").unwrap_or_default())
-            .env("HOME", self.h.temp.path())
-            .env("HGS_CONFIG_DIR", self.h.temp.path().join("config"))
-            .env("HGS_STATE_DIR", self.h.temp.path())
-            .env("HGS_SELF", "test")
-            .env("HGS_TEAM_OBSERVE_READY", ready)
-            .env("HGS_TEST_TEAM_OBSERVE_PAUSE", ready.with_extension("pause"))
-            .env("HGS_TEAMS_TEST_REPLY", &reply)
-            .env("HGS_TEAMS_TEST_ARGS", serde_json::to_string(&args).unwrap())
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        (cmd.spawn().unwrap(), reply)
+    ) -> (FixtureChild, std::path::PathBuf) {
+        self.spawn(
+            &[
+                "observe-team-fixture",
+                "example-project",
+                task["uuid"].as_str().unwrap(),
+            ],
+            "",
+            None,
+            &[
+                ("HGS_TEAM_OBSERVE_READY", ready.as_os_str().to_owned()),
+                (
+                    "HGS_TEST_TEAM_OBSERVE_PAUSE",
+                    ready.with_extension("pause").into_os_string(),
+                ),
+            ],
+        )
+    }
+    fn unmarked_child(&self, args: &[&str], input: &str, session: &str) -> Value {
+        let (child, reply) = self.spawn(
+            args,
+            input,
+            Some(session),
+            &[("HGS_TEAM_UNMARKED_CHILD", "1".into())],
+        );
+        let output = child.wait_with_output().unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        serde_json::from_slice(&std::fs::read(reply).unwrap()).unwrap()
     }
 }
 
@@ -796,7 +845,7 @@ fn restore_marker_while_paused(f: &Fixture, task: &Value, pause: &std::path::Pat
     ready
 }
 
-fn guarded_reload_case(reopen: bool, legacy: bool) {
+fn guarded_reload_case(reopen: bool, legacy: bool, forwarded: bool) {
     let mut f = Fixture::new();
     let member = f.bind("m1");
     let task = f.add();
@@ -835,7 +884,7 @@ fn guarded_reload_case(reopen: bool, legacy: bool) {
         }
     }
     let id = uuid::Uuid::new_v4().to_string();
-    let args = if reopen {
+    let mut args = if reopen {
         vec![
             "message",
             &reference,
@@ -843,20 +892,57 @@ fn guarded_reload_case(reopen: bool, legacy: bool) {
             "reopen",
             "--request-id",
             &id,
+            "--expect-dispatch",
+            "fixture-send",
             "--json",
         ]
     } else {
         vec!["send", &reference, "--session", &member, "--json"]
     };
+    let declared = format!("{}/{}", f.machine, member);
+    let bound =
+        f.h.store
+            .member(TEAM, "m1")
+            .unwrap()
+            .unwrap()
+            .session
+            .unwrap();
+    if forwarded {
+        args.extend([
+            "--agent",
+            &declared,
+            "--agent-session-id",
+            &bound.session_id,
+        ]);
+    }
     let pause = f.h.temp.path().join("reload-pause");
     std::fs::create_dir(&pause).unwrap();
-    let (child, reply) = f.paused_command(
-        &args,
-        if reopen { "Please revise" } else { "" },
-        &member,
-        &pause,
-        if legacy { "legacy_reload" } else { "admission" },
-    );
+    let (child, reply) = if forwarded {
+        f.spawn(
+            &args,
+            if reopen { "Please revise" } else { "" },
+            None,
+            &[
+                ("HGS_TEST_ATTEMPT_PAUSE", pause.as_os_str().to_owned()),
+                (
+                    "HGS_TEST_ATTEMPT_PAUSE_AT",
+                    if legacy {
+                        "legacy_reload".into()
+                    } else {
+                        "admission".into()
+                    },
+                ),
+            ],
+        )
+    } else {
+        f.paused_command(
+            &args,
+            if reopen { "Please revise" } else { "" },
+            &member,
+            &pause,
+            if legacy { "legacy_reload" } else { "admission" },
+        )
+    };
     let ready = restore_marker_while_paused(&f, &task, &pause);
     let before = f.document(&task).revision();
     let output = child.wait_with_output().unwrap();
@@ -893,15 +979,15 @@ fn guarded_reload_case(reopen: bool, legacy: bool) {
 
 #[test]
 fn send_legacy_reload_rechecks_a_new_team_marker() {
-    guarded_reload_case(false, true);
+    guarded_reload_case(false, true, false);
 }
 #[test]
 fn reopen_admission_rechecks_a_new_team_marker() {
-    guarded_reload_case(true, false);
+    guarded_reload_case(true, false, false);
 }
 #[test]
 fn reopen_legacy_reload_rechecks_a_new_team_marker() {
-    guarded_reload_case(true, true);
+    guarded_reload_case(true, true, false);
 }
 
 #[test]
@@ -1123,4 +1209,209 @@ fn a_task_reenters_as_a_new_node_after_a_persons_retarget() {
     )
     .unwrap();
     assert_eq!(f.h.store.queue(TEAM, 200, None).unwrap().rows[0].id, new);
+}
+
+#[test]
+fn unmarked_child_of_a_live_agent_is_never_the_person_for_team_control() {
+    let mut f = Fixture::new();
+    let member = f.bind("m1");
+    let task = f.add();
+    {
+        let store =
+            ProjectStore::open(&f.h.temp.path().join("replica"), "example-project").unwrap();
+        let mut doc = store.load(task["uuid"].as_str().unwrap()).unwrap();
+        let bound =
+            f.h.store
+                .member(TEAM, "m1")
+                .unwrap()
+                .unwrap()
+                .session
+                .unwrap();
+        let session = SessionKey {
+            machine: bound.machine,
+            session_id: bound.session_id,
+            session: member.clone(),
+        };
+        doc.record_send(&session, "fixture-send", &Actor::Person, now())
+            .unwrap();
+        doc.report("Ready", ReportKind::Ready, None, &Actor::Person, now())
+            .unwrap();
+        store.save(&mut doc).unwrap();
+    }
+    let before = f.document(&task).revision();
+    let reference = format!("example/{}", task["id"].as_str().unwrap());
+    let result = f.unmarked_child(&["stage", &reference, "done", "--json"], "", &member);
+    assert_eq!(result["ok"], false, "{result}");
+    assert_eq!(f.document(&task).revision(), before);
+    assert_eq!(f.document(&task).stage().unwrap(), Stage::Review);
+    for (args, input) in [
+        (vec!["target", &reference, "any", "--json"], ""),
+        (
+            vec![
+                "message",
+                &reference,
+                "--mode",
+                "reopen",
+                "--request-id",
+                "69cfefc0-7bfb-4eba-b86c-4357abb09e58",
+                "--json",
+            ],
+            "Please revise this task.",
+        ),
+        (vec!["start-plan", &reference, "--json"], "{}"),
+        (vec!["start-deliver", &reference, "--json"], "{}"),
+        (
+            vec![
+                "add",
+                "--project",
+                "example",
+                "--team",
+                TEAM,
+                "--title",
+                "Must not be created",
+                "--json",
+            ],
+            "",
+        ),
+    ] {
+        let result = f.unmarked_child(&args, input, &member);
+        assert_eq!(result["ok"], false, "{args:?}: {result}");
+        assert!(
+            result["error"].as_str().unwrap().contains("not_allowed"),
+            "{args:?}: {result}"
+        );
+        assert_eq!(f.document(&task).revision(), before);
+    }
+    assert_eq!(
+        ProjectStore::open(&f.h.temp.path().join("replica"), "example-project")
+            .unwrap()
+            .uuids()
+            .unwrap()
+            .len(),
+        1
+    );
+    std::fs::remove_file(f.h.temp.path().join("teams/preview")).unwrap();
+    for invalid in [false, true] {
+        let store =
+            ProjectStore::open(&f.h.temp.path().join("replica"), "example-project").unwrap();
+        let mut doc = store.load(task["uuid"].as_str().unwrap()).unwrap();
+        if invalid {
+            doc.set_raw_team_for_test("not JSON");
+        } else {
+            doc.set_team(
+                Some(&zerus_replica::TaskTeam {
+                    team: TEAM.into(),
+                    home: uuid::Uuid::new_v4().to_string(),
+                }),
+                &Actor::Person,
+                now(),
+            )
+            .unwrap();
+        }
+        store.save(&mut doc).unwrap();
+        let before = doc.revision();
+        drop(store);
+        let result = f.unmarked_child(&["stage", &reference, "done", "--json"], "", &member);
+        assert_eq!(result["ok"], false, "{result}");
+        assert_eq!(f.document(&task).revision(), before);
+    }
+    // The explicit dormant-local rule retains ordinary behaviour with preview off.
+    let store = ProjectStore::open(&f.h.temp.path().join("replica"), "example-project").unwrap();
+    let mut doc = store.load(task["uuid"].as_str().unwrap()).unwrap();
+    doc.set_team(
+        Some(&zerus_replica::TaskTeam {
+            team: TEAM.into(),
+            home: f.machine.clone(),
+        }),
+        &Actor::Person,
+        now(),
+    )
+    .unwrap();
+    store.save(&mut doc).unwrap();
+    drop(store);
+    let result = f.unmarked_child(&["stage", &reference, "done", "--json"], "", &member);
+    assert_eq!(result["ok"], true, "{result}");
+    assert_eq!(f.document(&task).stage().unwrap(), Stage::Done);
+}
+
+#[test]
+fn ordinary_add_with_preview_off_keeps_its_existing_unmarked_caller_rule() {
+    let mut f = Fixture::new();
+    let member = f.bind("m1");
+    std::fs::remove_file(f.h.temp.path().join("teams/preview")).unwrap();
+    let result = f.unmarked_child(
+        &[
+            "add",
+            "--project",
+            "example",
+            "--title",
+            "Ordinary task",
+            "--json",
+        ],
+        "",
+        &member,
+    );
+    assert_eq!(result["ok"], true, "{result}");
+    assert!(f
+        .document(&result["value"]["task"])
+        .team()
+        .unwrap()
+        .is_none());
+}
+
+#[test]
+fn forwarded_reopen_admission_keeps_its_agent_when_a_team_key_arrives() {
+    guarded_reload_case(true, false, true);
+}
+
+#[test]
+fn an_unmarked_child_cannot_report_as_the_person_on_a_foreign_task_with_preview_off() {
+    let mut f = Fixture::new();
+    let member = f.bind("m1");
+    let lead = f.bind("lead");
+    let task = f.add();
+    {
+        let store =
+            ProjectStore::open(&f.h.temp.path().join("replica"), "example-project").unwrap();
+        let mut doc = store.load(task["uuid"].as_str().unwrap()).unwrap();
+        let holder =
+            f.h.store
+                .member(TEAM, "lead")
+                .unwrap()
+                .unwrap()
+                .session
+                .unwrap();
+        doc.record_send(
+            &SessionKey {
+                machine: holder.machine,
+                session_id: holder.session_id,
+                session: lead,
+            },
+            "other-holder",
+            &Actor::Person,
+            now(),
+        )
+        .unwrap();
+        doc.set_team(
+            Some(&zerus_replica::TaskTeam {
+                team: TEAM.into(),
+                home: uuid::Uuid::new_v4().to_string(),
+            }),
+            &Actor::Person,
+            now(),
+        )
+        .unwrap();
+        store.save(&mut doc).unwrap();
+    }
+    std::fs::remove_file(f.h.temp.path().join("teams/preview")).unwrap();
+    let before = f.document(&task).revision();
+    let reference = format!("example/{}", task["id"].as_str().unwrap());
+    let out = f.unmarked_child(
+        &["report", &reference, "--json"],
+        "Not the holder's report",
+        &member,
+    );
+    assert_eq!(out["ok"], false, "{out}");
+    assert_eq!(f.document(&task).revision(), before);
+    assert_eq!(f.document(&task).stage().unwrap(), Stage::Active);
 }

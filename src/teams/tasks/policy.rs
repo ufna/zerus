@@ -55,7 +55,7 @@ pub(crate) fn guard(caller: &Caller<'_>, task: &TaskDoc, action: &str) -> Result
     if link.is_none() && !invalid {
         return Ok(());
     }
-    if matches!(action, "start" | "worker") && acknowledgement(task, caller.actor)? {
+    if matches!(action, "start" | "worker") && acknowledgement(task, &caller.actor)? {
         return Ok(());
     }
     let denied = || {

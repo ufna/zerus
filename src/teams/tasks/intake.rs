@@ -61,7 +61,7 @@ fn check(
             "Choose an active queue team of this project on this computer.",
         ));
     }
-    let who = admission_actor(store, &header, caller.actor)?;
+    let who = admission_actor(store, &header, &caller.actor)?;
     let admitted = matches!(who, Actor::Person { .. })
         || matches!(&who,Actor::Session{member,..} if member==&header.lead);
     let current = if let Some(uuid) = existing {
@@ -218,11 +218,11 @@ pub(crate) fn send(
         }
         Err(error) => {
             document
-                .set_team_named(None, &header.name, caller.actor, now())
+                .set_team_named(None, &header.name, &caller.actor, now())
                 .map_err(storage)?;
             if document.view().map_err(storage)?.target != view.target {
                 document
-                    .set_target(&view.target, caller.actor, now())
+                    .set_target(&view.target, &caller.actor, now())
                     .map_err(storage)?;
             }
             tasks.save(&mut document).map_err(storage)?;
@@ -266,7 +266,7 @@ fn prepare(
     }
     if !matches!(view.target, Target::Any) && matches!(view.stage, Stage::Backlog | Stage::Todo) {
         document
-            .set_target(&Target::Any, caller.actor, now())
+            .set_target(&Target::Any, &caller.actor, now())
             .map_err(storage)?;
     }
     document
@@ -276,7 +276,7 @@ fn prepare(
                 home: header.home.clone(),
             }),
             &header.name,
-            caller.actor,
+            &caller.actor,
             now(),
         )
         .map_err(storage)?;

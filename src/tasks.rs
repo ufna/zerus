@@ -982,11 +982,11 @@ fn add(config: &Config, args: &[String]) -> Result<Value> {
     let content = stdin_content(args)?;
     let text = content.text;
     let machines = machines(config)?;
-    let author = actor(&machines.here, args, false)?;
+    let author = teams::actor(config, &machines, args, false)?;
     let title = option(args, "--title")?;
     if title.is_none() { agent_text(&text, "add", &author)?; }
     let (id, name) = project_arg(config, args, &author)?;
-    if let Some(team) = &team { teams::destination(config, &machines, &author, &id, team, args)?; }
+    if let Some(team) = &team { teams::destination(config, &machines, &id, team, args)?; }
     let stage = if flag(args, "--backlog") {
         Stage::Backlog
     } else {
@@ -1024,7 +1024,7 @@ fn add(config: &Config, args: &[String]) -> Result<Value> {
     let (store, task, team_reply) = if let Some(team) = &team {
         let task_ref = zerus_team_plan::model::TaskRef { project:id.clone(), uuid:task.uuid().into() };
         drop(store);
-        let team_reply = teams::send(config, &machines, &author, &task_ref, team, args)?;
+        let team_reply = teams::send(config, &machines, &task_ref, team, args)?;
         let store = self::store(config, &id)?;
         let task = store.load(&task_ref.uuid).map_err(fail)?;
         (store, task, team_reply)
@@ -1068,27 +1068,12 @@ fn change_guarded(config: &Config, action: &str, args: &[String], wait: Option<s
         (machines(config)?, None)
     };
     let here = machines.here.as_str();
-    let who = actor(here, args, matches!(action, "send" | "handoff" | "cancel"))?;
+    let mut who = teams::actor(config, &machines, args, matches!(action, "send" | "handoff" | "cancel"))?;
     if let Some(text) = &text {
         if action != "edit" || !text.is_empty() { agent_text(text, action, &who)?; }
     }
     let r = reference_by(config, args, &who, projects.as_deref().map(|p| (p, deadline)))?;
     let (project_id, project_name) = (&r.project.0, &r.project.1);
-    // An agent reads a refused send as "SESSION cannot take it now: …"; a paste
-    // that happened is never reworded. A command another computer forwards
-    // (`--agent`) leaves the wording to that computer, where the agent reads it.
-    let forwarded_here = option(args, "--agent")?.is_some();
-    let refuse = |error: Error, to: &str| -> Error {
-        if matches!(who, Actor::Agent(_))
-            && !forwarded_here
-            && action == "send"
-            && !paste_uncertain(&error.message)
-        {
-            fail(answers::refused(to, &error.message))
-        } else {
-            error
-        }
-    };
     let store = match wait {
         None if attempted => store_until(config, project_id, deadline)?,
         None => store(config, project_id)?,
@@ -1104,12 +1089,29 @@ fn change_guarded(config: &Config, action: &str, args: &[String], wait: Option<s
         }
     };
     let mut task = find(&store, &r.task)?;
+    if let Some(actor) = teams::actor_for_marked_task(config, &machines, args, matches!(action, "send" | "handoff" | "cancel"), &task)? { who = actor; }
+    // An agent reads a refused send as "SESSION cannot take it now: …"; a paste
+    // that happened is never reworded. A command another computer forwards
+    // (`--agent`) leaves the wording to that computer, where the agent reads it.
+    let forwarded_here = option(args, "--agent")?.is_some();
+    let refuse = |error: Error, to: &str| -> Error {
+        if matches!(who, Actor::Agent(_))
+            && !forwarded_here
+            && action == "send"
+            && !paste_uncertain(&error.message)
+        {
+            fail(answers::refused(to, &error.message))
+        } else {
+            error
+        }
+    };
+
     if let Some(guard) = guard { guard.check(&task)?; }
-    teams::guard(config, here, &who, &task, action, args)?;
+    teams::guard(config, &machines, &task, action, args)?;
     if let Some(team) = &team {
         let task_ref = zerus_team_plan::model::TaskRef { project:project_id.clone(), uuid:task.uuid().into() };
         drop(store);
-        let mut reply = teams::send(config, &machines, &who, &task_ref, team, args)?;
+        let mut reply = teams::send(config, &machines, &task_ref, team, args)?;
         let store = self::store(config, project_id)?;
         let task = store.load(&task_ref.uuid).map_err(fail)?;
         reply["task"] = view(&task, project_name, true, &machines)?;
@@ -1209,7 +1211,7 @@ fn change_guarded(config: &Config, action: &str, args: &[String], wait: Option<s
                     attempts::pause_at(&frozen.id, "legacy_reload");
                     let store = self::store(config, project_id)?;
                     let mut task = store.load(&uuid).map_err(fail)?;
-                    teams::guard(config, here, &who, &task, action, args)?;
+                    teams::guard(config, &machines, &task, action, args)?;
                     enrich(&mut task, &machines)?;
                     (store, task)
                 }

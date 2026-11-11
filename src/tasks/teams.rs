@@ -15,6 +15,103 @@ fn active(config: &Config) -> Result<()> {
         ))
     }
 }
+/// The one constructor of a task command's team caller. It consumes the
+/// shared proof directly; neither a claim nor a refusal becomes the person.
+pub(super) fn caller<'a>(
+    config: &'a Config,
+    machines: &'a Machines,
+    args: &[String],
+    forwardable: bool,
+) -> std::result::Result<Caller<'a>, Problem> {
+    use crate::teams::caller::Caller as Proof;
+    let usage =
+        |error: Error| Problem::new(zerus_team_plan::problem::code::INVALID_STATE, error.message);
+    let denied = |message| Problem::new(zerus_team_plan::problem::code::NOT_ALLOWED, message);
+    let actor = match crate::teams::caller::caller(config) {
+        Proof::Refused(problem) => return Err(problem),
+        Proof::Person => match option(args, "--agent").map_err(usage)? {
+            None => Actor::Person,
+            Some(agent) => {
+                if !forwardable {
+                    return Err(denied("only send and cancel take --agent"));
+                }
+                let (machine, session) = agent
+                    .split_once('/')
+                    .filter(|(machine, session)| {
+                        uuid::Uuid::parse_str(machine).is_ok() && !session.is_empty()
+                    })
+                    .ok_or_else(|| {
+                        denied("--agent is NODE/SESSION, NODE being a computer's identity")
+                    })?;
+                Actor::Agent(SessionKey {
+                    machine: machine.into(),
+                    session: session.into(),
+                    session_id: option(args, "--agent-session-id")
+                        .map_err(usage)?
+                        .unwrap_or_default()
+                        .into(),
+                })
+            }
+        },
+        Proof::Session(key) => {
+            if option(args, "--agent").map_err(usage)?.is_some() {
+                return Err(denied("--agent is for commands another computer forwards; an agent acts as its own session"));
+            }
+            Actor::Agent(
+                machines
+                    .resolve(&SessionKey {
+                        machine: key.machine,
+                        session_id: key.session_id,
+                        session: String::new(),
+                    })
+                    .ok_or_else(|| denied("The calling session's exact binding is unavailable."))?,
+            )
+        }
+    };
+    Ok(Caller {
+        state: &config.state,
+        machine: &machines.here,
+        actor,
+    })
+}
+
+/// Preview-off ordinary tasks retain their existing protocol. Every Teams
+/// path, including a foreign/invalid marker while off, uses caller() instead.
+pub(super) fn actor(
+    config: &Config,
+    machines: &Machines,
+    args: &[String],
+    forwardable: bool,
+) -> Result<Actor> {
+    if !crate::teams::enabled(&config.state) {
+        return super::actor(&machines.here, args, forwardable);
+    }
+    caller(config, machines, args, forwardable)
+        .map(|caller| caller.actor)
+        .map_err(problem)
+}
+
+/// A replicated foreign or invalid marker still needs the proved actor while
+/// the local preview is off, including for holder-only protocol steps.
+pub(super) fn actor_for_marked_task(
+    config: &Config,
+    machines: &Machines,
+    args: &[String],
+    forwardable: bool,
+    task: &TaskDoc,
+) -> Result<Option<Actor>> {
+    if crate::teams::enabled(&config.state) {
+        return Ok(None);
+    }
+    let key = task.team().map_err(fail)?;
+    if (key.is_none() && !task.team_invalid()) || key.is_some_and(|key| key.home == machines.here) {
+        return Ok(None);
+    }
+    caller(config, machines, args, forwardable)
+        .map(|caller| Some(caller.actor))
+        .map_err(problem)
+}
+
 fn routing(args: &[String], team: bool) -> Result<()> {
     if !team && (option(args, "--role")?.is_some() || option(args, "--pipeline")?.is_some()) {
         return Err(fail(
@@ -65,17 +162,12 @@ pub(super) fn target(config: &Config, action: &str, args: &[String]) -> Result<O
 pub(super) fn destination(
     config: &Config,
     machines: &Machines,
-    who: &Actor,
     project: &str,
     team: &str,
     args: &[String],
 ) -> Result<()> {
     bridge::preflight(
-        &Caller {
-            state: &config.state,
-            machine: &machines.here,
-            actor: who,
-        },
+        &caller(config, machines, args, false).map_err(problem)?,
         project,
         team,
         option(args, "--role")?,
@@ -87,22 +179,14 @@ pub(super) fn destination(
 pub(super) fn send(
     config: &Config,
     machines: &Machines,
-    who: &Actor,
     task: &TaskRef,
     team: &str,
     args: &[String],
 ) -> Result<Value> {
-    let result = bridge::send(
-        &Caller {
-            state: &config.state,
-            machine: &machines.here,
-            actor: who,
-        },
-        task,
-        team,
-        option(args, "--role")?,
-        option(args, "--pipeline")?,
-    );
+    let role = option(args, "--role")?;
+    let pipeline = option(args, "--pipeline")?;
+    let result = caller(config, machines, args, false)
+        .and_then(|caller| bridge::send(&caller, task, team, role, pipeline));
     let mut out = json!({"task_exists":true,"team":{"id":team,"queued":false}});
     match result {
         Ok(intake) => {
@@ -150,8 +234,7 @@ pub(super) fn annotate(mut out: Value) -> Value {
 }
 pub(super) fn guard(
     config: &Config,
-    here: &str,
-    who: &Actor,
+    machines: &Machines,
     task: &TaskDoc,
     action: &str,
     args: &[String],
@@ -162,12 +245,15 @@ pub(super) fn guard(
         "message" if option(args, "--mode")? == Some("reopen") => "reopen",
         _ => return Ok(()),
     };
+    let key = task.team().map_err(fail)?;
+    if key.is_none() && !task.team_invalid() {
+        return Ok(());
+    }
+    if key.is_some_and(|key| key.home == machines.here) && !crate::teams::enabled(&config.state) {
+        return Ok(());
+    }
     bridge::guard(
-        &Caller {
-            state: &config.state,
-            machine: here,
-            actor: who,
-        },
+        &caller(config, machines, args, true).map_err(problem)?,
         task,
         action,
     )
@@ -176,5 +262,6 @@ pub(super) fn guard(
 pub(super) fn clear(config: &Config, here: &str, task: &mut TaskDoc, who: &Actor) -> Result<()> {
     bridge::retarget(&config.state, here, task, who).map_err(problem)
 }
-#[cfg(test)]
+// CLI integration coverage needs the Linux caller admission.
+#[cfg(all(test, target_os = "linux"))]
 mod tests;
