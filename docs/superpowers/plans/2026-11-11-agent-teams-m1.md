@@ -815,6 +815,41 @@ generation is the node's current one. The service reads the authorized
 accepts that have no fact as a bounded page and names the decision it acted
 on.
 
+**One caller proof (packages 5 and 6).** `crate::teams::caller`
+(`src/teams/caller.rs`, owned by package 5) answers who runs a command:
+`Caller::Person`, `Caller::Session(SessionKey)` or `Caller::Refused(Problem)`.
+The person is a call with no session markers and no live session agent among
+its process ancestors, found by a bounded lookup keyed by those ancestors and
+checked against a real process in a test; a lookup that cannot be read is a
+refusal. The CLI and the task intake both use it, and package 5 merges before
+package 6.
+
+**How the service reaches a session (packages 8, 10 and 17).** The desktop's
+deferred-send, deferred-answer and creation actors admit only the proof of a
+person's gesture. The teams actor does not enter them. Each of its effects is
+this computer's own `hgs` run as the actor's one original child:
+
+| Effect | Command |
+|---|---|
+| Hand-out and reopen | `hgs task team-deliver` (below) |
+| Doorbell, a return's reason, a brief on resume | `hgs send SESSION --json`, bound to the run and conversation it read |
+| An answer to a member's prompt | `hgs answer SESSION --json`, after the approval journal reserved it |
+| Integration | the functions of `src/teams/integrate.rs` in a child of its own |
+
+**Team delivery (package 6, second part).** The attempt writer is reachable
+only through the task CLI, and `start-deliver` is the person's. A new
+`hgs task team-deliver REF --json` reads `{schema, id, team, node, member}`
+and delivers only what the team store already holds: an open hand-out or
+reopen effect of that team with that request ID for that node and member, on
+the team's home computer. The effect is the authority; the caller is not
+asked who it is. It writes the attempt as the team's lead, with the prompt
+`freeze` builds followed by the team context from the store (role and goal,
+criteria, dependency reports within 2,000 characters each and 6,000 in total,
+binding decisions, base commit, branch, write set). It answers
+`{state: submitted|refused|uncertain|cutting_over}` in the form of
+`start-deliver`, and the same ID never sends twice. `--recover-only` reads
+the receipt and sends nothing.
+
 **Task key (package 6).** Everything under `crates/replica` is one commit of
 its own with its compatibility tests, merged after the repository owner
 confirms the replica change. Sending a task to a team and the three refusals
