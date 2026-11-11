@@ -109,6 +109,10 @@ fn probe() {
         "READS {}",
         crate::state::session_graph::caller_binding_reads()
     );
+    println!(
+        "HOST_READS {}",
+        crate::state::session_graph::caller_host_reads()
+    );
     if let Ok(action) = std::env::var("HGS_TEAMS_PREVIEW_PROBE") {
         let exit = crate::teams::dispatch(&config, &["preview".into(), action], false).unwrap();
         println!("PREVIEW {exit}");
@@ -158,6 +162,9 @@ fn later_birth(birth: &str) -> String {
 
 // The macOS parser and the claim it feeds, on every platform.
 mod environment;
+
+// The match against recorded resident agent hosts, on every platform.
+mod hosts;
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 fn catalog(config: &std::path::Path) {

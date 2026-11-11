@@ -29,13 +29,34 @@
 //! refuses parent zero. A caller that replaces or instruments `hgs` itself or
 //! writes the team store directly is outside this interim proof. Other
 //! process boundaries still need the future verified Person authority.
-//! Discovery uses ancestor environments, never a saved-session inventory.
+//! Discovery uses ancestor environments, never a saved-session inventory;
+//! only the few recorded resident hosts are listed, within their bound.
 //! The top is established from process-table owners and parentage, never a
 //! program name. A same-user parent of zero refuses. Only a verified foreign
 //! parent ends the walk. Its top may have an unreadable environment; every node below
 //! it must be inspected. An unreadable or credential-changing helper in the
 //! middle still refuses; the message explains that process boundary without
 //! assuming the person has left a terminal.
+//!
+//! Resident agent hosts serve several sessions from one long-lived process:
+//! DeepSeek's host and OpenCode's shared service. No hosted session's own
+//! agent is an ancestor of its shell, and a DeepSeek host passes the markers
+//! of whichever session started it to every shell below it. So the person
+//! path also refuses when an ancestor up to the top is a recorded live
+//! resident host. A DeepSeek host is this computer's own record, matched by
+//! process ID and birth like a recorded agent and never by a program name;
+//! at most 64 host folders are read, and on macOS, where launchd adopts the
+//! host as the top, no environment needs to be read. OpenCode registers its
+//! service only in its own file, read as untrusted data: the process it
+//! names counts when that ancestor is not younger than the file, so the file
+//! can only add a refusal, and an OpenCode service that runs without being
+//! registered there is not detected. A host record whose birth differs is not
+//! that host. A recorded ID without a birth, an unreadable or corrupt host
+//! record and more folders than the bound refuse. A marked caller whose
+//! binding says a resident host serves its session is refused plainly: such a
+//! session cannot be a team lead or member in this milestone, and
+//! `host_served_agent` lets team creation and member launch refuse it too.
+//!
 //! With a session-ID hint, ids/<ID>.json selects one verified record.
 //! Without an index entry, fixed ID-layout and legacy-label paths are both
 //! probed; disagreement refuses. Without a hint only the exact legacy name
@@ -99,6 +120,10 @@ pub(crate) fn caller(config: &Config) -> Caller {
             },
             None => None,
         };
+        let hosted = crate::state::session_graph::caller_hosted_backend(name, run, id);
+        if hosted.as_deref().is_some_and(host_served_agent) {
+            return Caller::Refused(host_served());
+        }
         return match prove(config, name, run, id) {
             Ok(Some(key)) => Caller::Session(key),
             Ok(None) => Caller::Refused(not_allowed()),
@@ -106,11 +131,38 @@ pub(crate) fn caller(config: &Config) -> Caller {
         };
     }
     match agent_above() {
-        Ok(true) => Caller::Refused(Problem::new(code::NOT_ALLOWED,
-            "A live agent session runs this command; person-only operations require a caller outside its process tree.")),
-        Ok(false) => Caller::Person,
-        Err(problem) => Caller::Refused(problem),
+        Ok(None) => Caller::Person,
+        Ok(Some(refusal)) | Err(refusal) => Caller::Refused(refusal),
     }
+}
+
+/// Whether sessions of this agent kind are served by a resident agent host
+/// (DeepSeek's host, OpenCode's shared service) rather than by an agent
+/// process of their own. Such a session cannot be a team lead or a member in
+/// this milestone: its commands cannot be bound to its own session by process
+/// ancestry. Creating a team with such a member and launching one call this.
+pub(crate) fn host_served_agent(agent: &str) -> bool {
+    matches!(agent, "dsh" | "opencode")
+}
+
+fn host_served() -> Problem {
+    Problem::new(code::NOT_ALLOWED,
+        "This session is served by a resident agent host (DeepSeek or OpenCode); in this milestone such a session cannot be a team lead or member, because its commands cannot be bound to its own session by process ancestry.")
+}
+
+fn inside_agent() -> Problem {
+    Problem::new(code::NOT_ALLOWED,
+        "A live agent session runs this command; person-only operations require a caller outside its process tree.")
+}
+
+fn inside_host() -> Problem {
+    Problem::new(code::NOT_ALLOWED,
+        "This command runs inside an agent host's process tree; person-only operations need a caller outside it.")
+}
+
+fn host_unreadable() -> Problem {
+    Problem::new(code::INVALID_STATE,
+        "Cannot verify a recorded agent host of this computer; this interim check cannot establish a person as caller.")
 }
 
 /// A marked command carries the lead's or the member's shell environment, so
@@ -201,7 +253,9 @@ fn prove_read(
         .transpose()
 }
 
-fn agent_above() -> Result<bool, Problem> {
+/// The refusal when a verified live agent or a recorded resident agent host
+/// is above this command, `None` when neither is.
+fn agent_above() -> Result<Option<Problem>, Problem> {
     let chain = ancestors()?;
     for ancestor in &chain {
         if let Some(claim) = &ancestor.claim {
@@ -215,14 +269,62 @@ fn agent_above() -> Result<bool, Problem> {
             .map_err(|_| binding_unreadable())?
             .is_some()
             {
-                return Ok(true);
+                return Ok(Some(inside_agent()));
             }
         }
+    }
+    let hosts = crate::state::session_graph::caller_hosts().map_err(|_| host_unreadable())?;
+    if hosted(&chain, &hosts, |pid| {
+        crate::platform::process_identity(pid).map(|native| (native.birth, native.started))
+    })? {
+        return Ok(Some(inside_host()));
     }
     // T2: no deterministic test pins this post-proof race window; changing a
     // real process exactly after the binding read needs a timing/injection seam.
     // Recheck original edges and births before accepting a negative proof.
     ancestry::unchanged(&chain)?;
+    Ok(None)
+}
+
+/// Whether a recorded resident agent host is one of these ancestors.
+///
+/// A DeepSeek host matches by process ID and birth. A birth that differs is
+/// not that host: the record's birth is the walk's own `process_identity`
+/// value, so the recorded host itself always matches, and a different birth
+/// means it has exited and its ID was reused. A recorded ID without a birth
+/// on either side cannot be told apart and refuses. OpenCode's service file
+/// is untrusted and names no birth: its ID counts when that ancestor is not
+/// younger than the file, which the service writes after it starts, allowing
+/// one second for clock granularity and steps. A reused ID can only cause a
+/// false refusal. An ancestor whose start cannot be read refuses.
+fn hosted(
+    chain: &[ancestry::Ancestor],
+    hosts: &crate::state::session_graph::Hosts,
+    native: impl Fn(u32) -> Option<(String, f64)>,
+) -> Result<bool, Problem> {
+    for ancestor in chain {
+        for named in hosts
+            .deepseek
+            .iter()
+            .filter(|named| named.pid == ancestor.pid)
+        {
+            match (&named.birth, &ancestor.identity.birth) {
+                (Some(recorded), Some(birth)) if recorded == birth => return Ok(true),
+                (Some(_), Some(_)) => (),
+                _ => return Err(host_unreadable()),
+            }
+        }
+        if let Some(service) = hosts.opencode.as_ref().filter(|s| s.pid == ancestor.pid) {
+            match native(ancestor.pid) {
+                Some((birth, started)) if Some(&birth) == ancestor.identity.birth.as_ref() => {
+                    if started <= service.written + 1.0 {
+                        return Ok(true);
+                    }
+                }
+                _ => return Err(host_unreadable()),
+            }
+        }
+    }
     Ok(false)
 }
 
