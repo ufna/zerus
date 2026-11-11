@@ -50,46 +50,50 @@ pub(crate) fn guard(caller: &Caller<'_>, task: &TaskDoc, action: &str) -> Result
     if matches!(caller.actor, TaskActor::Person) {
         return Ok(());
     }
-    let link = task.team().map_err(storage)?;
-    let invalid = task.team_invalid();
-    if link.is_none() && !invalid {
+    if !guarded(caller.state, caller.machine, task)? {
         return Ok(());
     }
     if matches!(action, "start" | "worker") && acknowledgement(task, &caller.actor)? {
         return Ok(());
     }
-    let denied = || {
-        Problem::new(code::NOT_ALLOWED,format!("An agent cannot {action} a live team's task; the team service performs this action."))
-    };
-    if invalid {
-        return Err(denied());
+    Err(Problem::new(
+        code::NOT_ALLOWED,
+        format!(
+            "An agent cannot {action} a live team's task; the team service performs this action."
+        ),
+    ))
+}
+
+/// The marker and indexed store binding decide whether a command touches a
+/// team. This read grants no caller authority and never resolves a caller.
+pub(crate) fn guarded(state: &Path, machine: &str, task: &TaskDoc) -> Result<bool> {
+    let link = task.team().map_err(storage)?;
+    if task.team_invalid() {
+        return Ok(true);
     }
-    let link = link.expect("checked marker");
-    if link.home != caller.machine {
-        return Err(denied());
+    let Some(link) = link else { return Ok(false) };
+    if link.home != machine {
+        return Ok(true);
     }
-    if !super::super::enabled(caller.state) {
-        return Ok(());
+    if !super::super::enabled(state) {
+        return Ok(false);
     }
-    let store = Store::open(caller.state)?;
+    let store = Store::open(state)?;
     let Some(header) = header::read(&store, &link.team)? else {
-        return Ok(());
+        return Ok(false);
     };
     if !header.live() {
-        return Ok(());
+        return Ok(false);
     }
     let reference = TaskRef {
         project: task.view().map_err(storage)?.project,
         uuid: task.uuid().into(),
     };
-    if binding(&store, &reference)?.is_some_and(|(team, _)| team == link.team)
-        || (reference.project == header.project
-            && super::creation::pending(&store, &reference, &link.team)?)
-    {
-        Err(denied())
-    } else {
-        Ok(())
-    }
+    Ok(
+        binding(&store, &reference)?.is_some_and(|(team, _)| team == link.team)
+            || (reference.project == header.project
+                && super::creation::pending(&store, &reference, &link.team)?),
+    )
 }
 
 pub(crate) fn clear(state: &Path, task: &mut TaskDoc, actor: &TaskActor) -> Result<()> {

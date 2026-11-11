@@ -57,7 +57,14 @@ fn cli_entry() {
     }
     let args: Vec<String> =
         serde_json::from_str(&std::env::var("HGS_TEAMS_TEST_ARGS").unwrap()).unwrap();
-    let result = if args[0] == "observe-team-fixture" {
+    let result = if args[0] == "prove-team-fixture" {
+        match crate::teams::caller::caller(&config) {
+            crate::teams::caller::Caller::Refused(problem) => {
+                Err(fail(format!("{}: {}", problem.code, problem.message)))
+            }
+            _ => Ok(json!({"proved":true})),
+        }
+    } else if args[0] == "observe-team-fixture" {
         let ready = std::env::var_os("HGS_TEAM_OBSERVE_READY").unwrap();
         std::fs::write(ready, "ready").unwrap();
         crate::teams::tasks::observe(
@@ -1544,3 +1551,5 @@ fn start_managed_rechecks_a_caller_that_became_refused_after_entry() {
 fn start_legacy_rechecks_a_caller_that_became_refused_after_entry() {
     start_recheck_case("start_legacy");
 }
+
+mod gating;

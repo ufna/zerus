@@ -23,7 +23,7 @@ pub(super) fn execute(config: &Config, args: &[String]) -> Result<Value> {
     } else {
         (machines(config)?, None)
     };
-    let mut who = super::teams::actor(config, &machines, args, true)?;
+    let mut who = super::teams::actor(config, &machines, args, true, false)?;
     let r = super::reference_by(
         config,
         args,

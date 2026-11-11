@@ -19,7 +19,7 @@ mod header;
 mod intake;
 mod policy;
 pub(crate) use intake::{preflight, send};
-pub(crate) use policy::{clear, clear_named, guard};
+pub(crate) use policy::{clear, clear_named, guard, guarded};
 
 pub(crate) mod context;
 mod report;

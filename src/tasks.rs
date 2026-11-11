@@ -992,7 +992,7 @@ fn add(config: &Config, args: &[String]) -> Result<Value> {
     let content = stdin_content(args)?;
     let text = content.text;
     let machines = machines(config)?;
-    let author = teams::actor(config, &machines, args, false)?;
+    let author = teams::actor(config, &machines, args, false, team.is_some())?;
     let title = option(args, "--title")?;
     if title.is_none() { agent_text(&text, "add", &author)?; }
     let (id, name) = project_arg(config, args, &author)?;
@@ -1078,7 +1078,7 @@ fn change_guarded(config: &Config, action: &str, args: &[String], wait: Option<s
         (machines(config)?, None)
     };
     let here = machines.here.as_str();
-    let mut who = teams::actor(config, &machines, args, matches!(action, "send" | "handoff" | "cancel"))?;
+    let mut who = teams::actor(config, &machines, args, matches!(action, "send" | "handoff" | "cancel"), team.is_some())?;
     if let Some(text) = &text {
         if action != "edit" || !text.is_empty() { agent_text(text, action, &who)?; }
     }

@@ -239,7 +239,7 @@ pub(super) fn execute(config: &Config, action: &str, args: &[String]) -> Result<
     // The catalog and the project's lock within that budget too (#1519
     // review, zerus-9gzdp): a held lock refuses as busy, never waits on.
     let (machines, projects) = super::entry_until(config, deadline)?;
-    if super::teams::actor(config, &machines, args, false)? != Actor::Person {
+    if super::teams::actor(config, &machines, args, false, false)? != Actor::Person {
         return Err(fail(
             "task start plans are for the person's explicit desktop Start",
         ));

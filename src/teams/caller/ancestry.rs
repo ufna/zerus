@@ -26,6 +26,10 @@ pub(super) enum Inspection {
 }
 
 pub(super) fn ancestors() -> Result<Vec<Ancestor>, Problem> {
+    #[cfg(test)]
+    if super::test_sources::selected("opaque") {
+        return super::test_sources::opaque_ancestors();
+    }
     walk(std::process::id(), inspect, environment)
 }
 

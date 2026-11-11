@@ -60,6 +60,10 @@ const RESOLVE_NO_XDEV: u64 = 0x01;
 /// mount rule refused. Production never exposes a reason beyond refusal.
 #[cfg(target_os = "linux")]
 pub(super) fn admitted() -> std::io::Result<()> {
+    #[cfg(test)]
+    if super::test_sources::selected("namespace") {
+        return require_namespace_text("user:[42]");
+    }
     let proc = open_proc_root()?;
     admit_from(&proc)
 }
@@ -135,8 +139,13 @@ fn open_user_namespace(proc: &std::os::fd::OwnedFd) -> std::io::Result<std::os::
 #[cfg(target_os = "linux")]
 fn require_initial_namespace(namespace: &std::os::fd::OwnedFd) -> std::io::Result<()> {
     use std::os::fd::AsRawFd;
+    require_namespace_text(&link_text(namespace.as_raw_fd())?)
+}
+
+#[cfg(target_os = "linux")]
+fn require_namespace_text(text: &str) -> std::io::Result<()> {
     let expected = format!("user:[{USER_NS_INIT_INO}]");
-    if link_text(namespace.as_raw_fd())? != expected {
+    if text != expected {
         return Err(std::io::Error::other("not the initial user namespace"));
     }
     Ok(())
