@@ -1,29 +1,36 @@
 //! The Teams views' reads and actions (M1): one Teams poller of this computer
-//! feeding the pump, and the guarded `hgs team <op>` calls of the Team tab.
+//! feeding the pump, the intent table of the actions, and the guarded
+//! `hgs team <op>` calls of the Team tab.
 //!
 //! The webview never runs or parses an `hgs team` read: it follows the views it
 //! shows (`teams_follow`), tells the core when the tab is hidden
 //! (`teams_hidden`) and when the followed project's tasks topic changed
-//! (`teams_tasks_changed`), and takes them from the per-frame batches
-//! (`batch.teams`, keyed `list`, `waiting` and `team:<id>`). One team is
-//! followed at a time; following another ends the first.
+//! (`teams_tasks_changed`), asks for a later page (`teams_page`), and takes the
+//! views from the per-frame batches (`batch.teams`, keyed `list`, `waiting` and
+//! `team:<id>`). One team is followed at a time; following another ends the
+//! first. One reader serves the life of the application, so two readers never
+//! run beside each other.
 //!
-//! An action runs once, off the main thread. Its outcome says whether it was
-//! done, failed, may have been applied (`uncertain`) or waits for the person's
-//! confirmation; the desktop never sends an uncertain call again by itself.
+//! An action carries the request id the person's action made once
+//! ([`TeamCall`]). The intent table remembers each id: a second call while it
+//! is pending sends nothing, a settled intent returns its recorded outcome,
+//! and an uncertain one is only sent again by the person's explicit
+//! `team_action_again`.
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use tauri::State;
-use zerus_client_core::teams::action::{run_action, TeamCall, TeamOutcome};
+use zerus_client_core::teams::action::{run_action, Admission, Intents, TeamCall, TeamOutcome};
 use zerus_client_core::teams::read::valid_team;
 use zerus_client_core::teams::{TeamsFollow, TeamsPoller};
 
 use crate::commands::AppState;
 
-/// The one Teams poller of this computer, or none while nothing is followed.
+/// The one Teams reader of this computer and the intents whose actions it
+/// sent.
 #[derive(Default)]
 pub struct Teams {
     poller: Mutex<Option<TeamsPoller>>,
+    intents: Mutex<Intents>,
 }
 
 impl Teams {
@@ -31,14 +38,25 @@ impl Teams {
         Self::default()
     }
 
-    fn lock(&self) -> MutexGuard<'_, Option<TeamsPoller>> {
+    fn poller(&self) -> MutexGuard<'_, Option<TeamsPoller>> {
         self.poller.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    fn intents(&self) -> MutexGuard<'_, Intents> {
+        self.intents.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Reads every followed view again after an action of our own.
+    fn refresh(&self) {
+        if let Some(poller) = self.poller().as_ref() {
+            poller.refresh();
+        }
     }
 }
 
 /// Follows the Teams views this window shows: the team list, what waits for
-/// the person and at most one team. Every flag false and no team stops the
-/// reader and ends the views.
+/// the person and at most one team. Every flag false and no team ends the
+/// views but keeps the one reader.
 #[tauri::command(async)]
 pub fn teams_follow(
     state: State<'_, AppState>,
@@ -56,35 +74,26 @@ pub fn teams_follow(
         waiting,
         team,
     };
-    {
-        let mut poller = teams.lock();
-        if follow == TeamsFollow::default() {
-            if let Some(poller) = poller.take() {
-                // Its ends go out through the batch; then the thread stops.
-                poller.follow(follow);
-            }
-            return Ok(());
-        }
-        if poller.is_none() {
-            let pump = state.pump();
-            let reader = TeamsPoller::spawn(zerus_client_core::default_hgs(), move |change| {
-                pump.push(change)
-            })
-            .map_err(|error| format!("The Teams reader did not start: {error}"))?;
-            *poller = Some(reader);
-        }
-        if let Some(poller) = poller.as_ref() {
-            poller.follow(follow);
-        }
-        Ok(())
+    let mut poller = teams.poller();
+    if poller.is_none() {
+        let pump = state.pump();
+        let reader = TeamsPoller::spawn(zerus_client_core::default_hgs(), move |change| {
+            pump.push(change)
+        })
+        .map_err(|error| format!("The Teams reader did not start: {error}"))?;
+        *poller = Some(reader);
     }
+    if let Some(poller) = poller.as_ref() {
+        poller.follow(follow);
+    }
+    Ok(())
 }
 
 /// The Team tab was hidden (`true`) or shown again. A hidden tab reads nothing;
 /// shown again, every followed view is read at once.
 #[tauri::command]
 pub fn teams_hidden(teams: State<'_, Teams>, hidden: bool) -> Result<(), String> {
-    if let Some(poller) = teams.lock().as_ref() {
+    if let Some(poller) = teams.poller().as_ref() {
         poller.hidden(hidden);
     }
     Ok(())
@@ -94,24 +103,66 @@ pub fn teams_hidden(teams: State<'_, Teams>, hidden: bool) -> Result<(), String>
 /// queue are read again (a report moves a node's state).
 #[tauri::command]
 pub fn teams_tasks_changed(teams: State<'_, Teams>) -> Result<(), String> {
-    if let Some(poller) = teams.lock().as_ref() {
+    if let Some(poller) = teams.poller().as_ref() {
         poller.tasks_changed();
     }
     Ok(())
 }
 
+/// Reads one page of a followed view by its `next` cursor; the page replaces
+/// the shown one. The key is `list`, `waiting` or `team:<id>`.
+#[tauri::command]
+pub fn teams_page(teams: State<'_, Teams>, key: String, cursor: String) -> Result<(), String> {
+    let poller = teams.poller();
+    let Some(poller) = poller.as_ref() else {
+        return Err("No Teams view is followed.".into());
+    };
+    if poller.page(&key, &cursor) {
+        Ok(())
+    } else {
+        Err("No such page for this view.".into())
+    }
+}
+
 /// Runs one team action through `hgs team <op> --json`: exactly once, off the
-/// main thread. The followed view is read again after it.
+/// main thread, with the request id the person's action made. The followed
+/// view is read again after it.
 #[tauri::command]
 pub async fn team_action(teams: State<'_, Teams>, call: TeamCall) -> Result<TeamOutcome, String> {
-    let hgs = zerus_client_core::default_hgs();
-    let outcome = tauri::async_runtime::spawn_blocking(move || run_action(&hgs, &call))
-        .await
-        .map_err(|error| error.to_string())?;
-    // The desktop's own action: read the views again instead of waiting for
-    // the next poll.
-    if let Some(poller) = teams.lock().as_ref() {
-        poller.refresh();
+    let admission = teams.intents().admit(&call);
+    run(teams, admission, call).await
+}
+
+/// Sends an uncertain intent again because the person asked to check it: the
+/// same request id and content, which the store answers from its record.
+#[tauri::command]
+pub async fn team_action_again(
+    teams: State<'_, Teams>,
+    call: TeamCall,
+) -> Result<TeamOutcome, String> {
+    let admission = teams.intents().admit_again(&call);
+    run(teams, admission, call).await
+}
+
+async fn run(
+    teams: State<'_, Teams>,
+    admission: Admission,
+    call: TeamCall,
+) -> Result<TeamOutcome, String> {
+    match admission {
+        Admission::InFlight => Ok(TeamOutcome::Pending {
+            request_id: call.request_id.clone(),
+        }),
+        Admission::Recorded(outcome) | Admission::Refused(outcome) => Ok(outcome),
+        Admission::Send => {
+            let hgs = zerus_client_core::default_hgs();
+            let sent = call.clone();
+            let outcome = tauri::async_runtime::spawn_blocking(move || run_action(&hgs, &sent))
+                .await
+                .map_err(|error| error.to_string())?;
+            let recorded = teams.intents().settle(&call, outcome);
+            teams.refresh();
+            Ok(recorded)
+        }
     }
-    Ok(outcome)
 }
