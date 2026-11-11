@@ -33,11 +33,12 @@ fn markers_are_read_from_nul_separated_entries_and_need_both() {
 
 #[test]
 fn the_ancestor_walk_starts_at_this_command_and_is_bounded() {
-    let Walk::Chain(chain) = ancestors() else {
-        panic!("this computer reports a process's parent");
-    };
-    assert_eq!(chain.first(), Some(&std::process::id()));
-    assert!(chain.len() <= 65);
+    // The test runner itself can have a protected same-user ancestor; that is
+    // a refusal, never a truncated successful walk. Topology is tested below.
+    if let Ok(chain) = ancestors() {
+        assert_eq!(chain.first().map(|row| row.pid), Some(std::process::id()));
+        assert!(chain.len() <= 64);
+    }
 }
 
 /// The child that reports what the proof decides. It does nothing unless the
@@ -48,15 +49,81 @@ fn probe() {
         return;
     }
     let config = crate::config::Config::load().expect("the probe's configuration");
+    if let Ok(words) = std::env::var("HGS_TEAMS_DISPATCH_PROBE") {
+        let args = words
+            .split_whitespace()
+            .map(str::to_owned)
+            .collect::<Vec<_>>();
+        let exit = crate::teams::dispatch(&config, &args, false).unwrap();
+        println!("DISPATCH {exit}");
+        println!(
+            "READS {}",
+            crate::state::session_graph::caller_binding_reads()
+        );
+        return;
+    }
+    if std::env::var_os("HGS_TEAMS_PANIC_PROBE").is_some() {
+        let before: std::collections::BTreeMap<_, _> = std::env::vars_os().collect();
+        let result = std::panic::catch_unwind(|| {
+            prove_read(
+                &config,
+                "borrowed",
+                "borrowed-run",
+                None,
+                |name, run, _session| {
+                    assert_eq!((name, run), ("borrowed", "borrowed-run"));
+                    panic!("injected explicit binding read panic");
+                },
+            )
+        });
+        assert!(result.is_err());
+        assert_eq!(before, std::env::vars_os().collect());
+        println!("PANIC_ENV_UNCHANGED");
+    }
+    if let Ok(chain) = ancestors() {
+        for row in chain {
+            println!(
+                "ANCESTOR pid={} parent={} top={} environment_readable={}",
+                row.pid,
+                row.identity.parent,
+                row.top,
+                environment(row.pid).is_ok()
+            );
+        }
+    }
     let answer = match caller(&config) {
         Caller::Person => "person".to_owned(),
         Caller::Session(key) => format!("session:{}", key.session_id),
-        Caller::Refused(problem) => format!("refused:{}", problem.code),
+        Caller::Refused(problem) => {
+            println!("DETAIL {}", problem.message);
+            format!("refused:{}", problem.code)
+        }
     };
     println!("PROBE {answer}");
+    println!(
+        "READS {}",
+        crate::state::session_graph::caller_binding_reads()
+    );
+    if let Ok(action) = std::env::var("HGS_TEAMS_PREVIEW_PROBE") {
+        let exit = crate::teams::dispatch(&config, &["preview".into(), action], false).unwrap();
+        println!("PREVIEW {exit}");
+    }
 }
 
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
+fn catalog(config: &std::path::Path) {
+    std::fs::create_dir_all(config.join("swarm")).unwrap();
+    let value = json!({"node_id":"00000000-0000-4000-8000-0000000000a1",
+        "catalog":{"schema":1,"swarm_id":"00000000-0000-4000-8000-0000000000a2","operations":{}}});
+    std::fs::write(config.join("swarm/catalog.json"), value.to_string()).unwrap();
+}
+
+// The unqualified macOS context is checked below. Keep the shared process
+// fixture sources for a Mac qualification candidate before lifting its gate.
+#[cfg(target_os = "linux")]
+mod regressions;
+
+#[cfg(target_os = "linux")]
 mod process {
     use super::*;
     use sha2::{Digest, Sha256};
@@ -88,6 +155,9 @@ mod process {
             let config = temp.path().join("config");
             std::fs::create_dir_all(&state).unwrap();
             std::fs::create_dir_all(&config).unwrap();
+            let state = std::fs::canonicalize(state).unwrap();
+            let config = std::fs::canonicalize(config).unwrap();
+            catalog(&config);
             let pid_file = temp.path().join("pid");
             let flag = temp.path().join("go");
             let output = temp.path().join("output");
@@ -230,8 +300,9 @@ mod process {
     }
 
     #[test]
-    fn an_unmarked_command_with_no_live_agent_above_it_is_the_person() {
+    fn an_unmarked_command_with_an_established_stale_agent_is_the_person() {
         let probe = Probe::start(false);
+        probe.record("stale-birth");
         let mut sibling = sibling_record(probe.state());
         // The sibling is recorded and live, so a lookup by "any live record"
         // would refuse; only an ancestor may.
@@ -260,6 +331,49 @@ mod process {
     #[test]
     fn a_marked_command_with_no_live_record_is_refused() {
         let probe = Probe::start(true);
-        assert_eq!(probe.answer(), "refused:not_allowed");
+        assert_eq!(probe.answer(), "refused:invalid_state");
+    }
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn macos_refuses_both_callers_and_preview_mutations_until_qualified() {
+    for marked in [false, true] {
+        for action in ["on", "off"] {
+            let temp = tempfile::tempdir().unwrap();
+            let state = temp.path().join("state");
+            let config = temp.path().join("config");
+            std::fs::create_dir(&state).unwrap();
+            std::fs::create_dir(&config).unwrap();
+            let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+            command
+                .args(["--exact", "teams::caller::tests::probe", "--nocapture"])
+                .env_clear()
+                .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+                .env("HOME", temp.path())
+                .env("HGS_STATE_DIR", &state)
+                .env("HGS_CONFIG_DIR", &config)
+                .env("HGS_TEAMS_CALLER_PROBE", "1")
+                .env("HGS_TEAMS_PREVIEW_PROBE", action);
+            if marked {
+                command
+                    .env("HGS_SESSION", "claude/example/unavailable")
+                    .env("HGS_RUN_ID", "run-unavailable");
+            }
+            let output = command.output().unwrap();
+            let text = String::from_utf8_lossy(&output.stdout);
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert!(
+                text.contains("PROBE refused:not_allowed")
+                    && text.contains("not available on this platform")
+                    && text.contains("PREVIEW 1"),
+                "{text}"
+            );
+            assert!(!crate::teams::enabled(&state));
+        }
     }
 }

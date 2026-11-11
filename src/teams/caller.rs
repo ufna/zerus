@@ -1,61 +1,134 @@
-//! Who runs a Teams command.
+//! Interim caller proof shared by Teams and task intake. Both callers pass one
+//! namespace admission first; then a marked caller must descend from its live
+//! saved agent, and an unmarked caller is the person only after a complete,
+//! bounded inspection finds no verified marked agent.
 //!
-//! A command whose environment names a session is proved exactly as `hgs task`
-//! proves it: the run is live on this computer and runs this command. Without
-//! those markers the caller is the person only while no live session agent runs
-//! above it. That is the interim person rule of the design, and every reply it
-//! produces says so.
+//! The admission opens `/proc` and resolves `self/ns/user` from that
+//! descriptor with `openat2` under `RESOLVE_NO_XDEV`: the lookup crosses no
+//! mount and does not follow the last link, so a bind mount over the
+//! process's own `ns` directory cannot answer for the real namespace. Any
+//! failure refuses, including a kernel or sandbox without `openat2`; there is
+//! no path fallback. A command in a sandbox with its own user namespace is
+//! therefore refused for both marked and unmarked callers, so a lead or a
+//! member whose shell runs in such a sandbox cannot use `hgs team`; those
+//! team commands must run outside it.
 //!
-//! The proof is shared: `hgs team` and task intake read the same caller. It
-//! never turns a claim into authority: a marker-carrying ancestor is looked up
-//! as one saved record through the same live-binding proof `hgs send` uses, and
-//! a caller that cannot be proved is refused rather than treated as the person.
+//! This is not verified Person authority. A command whose ancestry does not
+//! pass through readable same-user processes to its agent is outside this
+//! rule: reparenting and credential-changing helpers can sever that chain.
+//! Agents started without session markers are also undetectable, and the walk
+//! refuses parent zero. A caller that replaces or instruments `hgs` itself or
+//! writes the team store directly is outside this interim proof. Other
+//! process boundaries still need the future verified Person authority.
+//! Discovery uses ancestor environments, never a saved-session inventory.
+//! The top is established from process-table owners and parentage, never a
+//! program name. A same-user parent of zero refuses. Only a verified foreign
+//! parent ends the walk. Its top may have an unreadable environment; every node below
+//! it must be inspected. An unreadable or credential-changing helper in the
+//! middle still refuses; the message explains that process boundary without
+//! assuming the person has left a terminal.
+//! With a session-ID hint, ids/<ID>.json selects one verified record.
+//! Without an index entry, fixed ID-layout and legacy-label paths are both
+//! probed; disagreement refuses. Without a hint only the exact legacy name
+//! route is used. One rename shadow is allowed; launch_label proves the old
+//! name of a renamed ID record. No missing route is an absence proof: when no
+//! record can be reached, or any identity contradicts the claim, admission
+//! refuses. Only an established stale/archived/nonmatching process continues
+//! the walk. No inventory scan, repair or compatibility fallback is used.
+//! The walk is capped at 64 processes; environments and bindings at 1 MiB,
+//! index entries at 4 KiB. No process environment is changed.
+mod ancestry;
+mod context;
+use ancestry::ancestors;
+
 use crate::config::Config;
 use serde_json::Value;
 use zerus_team_plan::model::SessionKey;
 use zerus_team_plan::problem::code;
 use zerus_team_plan::Problem;
 
-/// How a command proved its caller before any operation was chosen.
+pub(crate) const INTERIM_NOTE: &str = "This interim rule does not detect commands whose ancestry does not pass through readable processes of the same user to their agent, for example after reparenting or credential-changing helpers, nor a caller that replaces or instruments hgs itself or writes the team store directly. Agents started without session markers are also not detected. A command in a sandbox with its own user namespace is refused, so team commands must run outside such a sandbox.";
+
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum Caller {
-    /// No session markers and no live agent above the command.
     Person,
-    /// A live run that runs this command.
     Session(SessionKey),
-    /// A session was claimed but could not be proved, or the proof could not
-    /// be read.
     Refused(Problem),
 }
 
-/// The caller of the running command.
 pub(crate) fn caller(config: &Config) -> Caller {
-    let marked = nonempty("HGS_SESSION").zip(nonempty("HGS_RUN_ID"));
-    if let Some((name, run)) = marked {
-        return prove(config, &name, &run).map_or_else(
-            || {
-                Caller::Refused(Problem::new(
-                    code::NOT_ALLOWED,
-                    "this command names an agent session, but that run is not live on this computer or does not run it; run the command from the agent's own shell, or unset HGS_SESSION and HGS_RUN_ID to act as yourself",
-                ))
-            },
-            Caller::Session,
-        );
+    if let Err(problem) = context::available() {
+        return Caller::Refused(problem);
     }
-    match agent_above(config) {
-        Ok(Some(name)) => Caller::Refused(Problem::new(
-            code::NOT_ALLOWED,
-            format!(
-                "the agent session {name} runs this command, so it is not a person's terminal; run hgs team from that session's own shell"
-            ),
-        )),
-        Ok(None) => Caller::Person,
+    // The admission runs before any marker is read into a proof and before
+    // anything reads the process table. Its refusal never falls through.
+    let admission = context::admission();
+    let session = std::env::var_os("HGS_SESSION");
+    let run = std::env::var_os("HGS_RUN_ID");
+    let hint = std::env::var_os("HGS_SESSION_ID");
+    let marked = session.is_some() || run.is_some() || hint.is_some();
+    if let Err(problem) = admission {
+        return Caller::Refused(if marked { sandboxed() } else { problem });
+    }
+    if marked {
+        let pair = session
+            .as_ref()
+            .and_then(|s| s.to_str())
+            .filter(|s| !s.is_empty())
+            .zip(
+                run.as_ref()
+                    .and_then(|s| s.to_str())
+                    .filter(|s| !s.is_empty()),
+            );
+        let Some((name, run)) = pair else {
+            return Caller::Refused(not_allowed());
+        };
+        let id = match hint.as_ref() {
+            Some(value) => match value.to_str().filter(|s| !s.is_empty()) {
+                Some(id) => Some(id),
+                None => return Caller::Refused(not_allowed()),
+            },
+            None => None,
+        };
+        return match prove(config, name, run, id) {
+            Ok(Some(key)) => Caller::Session(key),
+            Ok(None) => Caller::Refused(not_allowed()),
+            Err(problem) => Caller::Refused(problem),
+        };
+    }
+    match agent_above() {
+        Ok(true) => Caller::Refused(Problem::new(code::NOT_ALLOWED,
+            "A live agent session runs this command; person-only operations require a caller outside its process tree.")),
+        Ok(false) => Caller::Person,
         Err(problem) => Caller::Refused(problem),
     }
 }
 
-fn nonempty(name: &str) -> Option<String> {
-    std::env::var(name).ok().filter(|value| !value.is_empty())
+/// A marked command carries the lead's or the member's shell environment, so
+/// its refusal must name the sandbox rather than the person proof.
+fn sandboxed() -> Problem {
+    Problem::new(code::NOT_ALLOWED,
+        "The command runs in a sandbox with its own user namespace. Team commands of a lead or a member must run outside it.")
+}
+
+fn not_allowed() -> Problem {
+    Problem::new(code::NOT_ALLOWED,
+        "The session markers cannot verify the claimed agent's live process, birth and ancestry. Run session commands from the agent's own shell with its original launch markers.")
+}
+
+fn unreadable() -> Problem {
+    Problem::new(code::INVALID_STATE,
+        "Cannot complete the process ancestry check. A process between this command and the session start changed its credentials or cannot be read, or the walk exceeded its bound.")
+}
+
+fn marked_unreadable() -> Problem {
+    Problem::new(code::INVALID_STATE,
+        "Cannot read or verify the claimed agent's process ownership, birth or ancestry, saved binding or computer identity. Run session commands from the agent's own shell after its saved session state is available.")
+}
+
+fn binding_unreadable() -> Problem {
+    Problem::new(code::INVALID_STATE,
+        "Cannot verify an ancestor's saved session binding; this interim check cannot establish a person as caller.")
 }
 
 /// A saved binding's immutable identity: its launch ID, else its run ID.
@@ -70,130 +143,72 @@ pub(crate) fn identity(record: &Value) -> String {
 
 fn session_key(config: &Config, record: &Value) -> Result<SessionKey, Problem> {
     let session_id = identity(record);
-    if !(session_id.starts_with("launch_id:") || session_id.starts_with("run_id:")) {
-        return Err(Problem::new(
-            code::NOT_ALLOWED,
-            "the calling session has no launch_id or run_id to bind",
-        ));
+    if session_id.is_empty() {
+        return Err(marked_unreadable());
     }
-    let machine = crate::swarm::local_node_id(config).map_err(|error| {
-        Problem::new(
-            code::INVALID_STATE,
-            format!("Cannot read this computer's identity: {error}"),
-        )
-    })?;
+    let machine =
+        crate::state::session_graph::caller_machine(config).map_err(|_| marked_unreadable())?;
     Ok(SessionKey {
         machine,
         session_id,
     })
 }
 
-/// The session `name`/`run` while it is live and runs this command.
-///
-/// `caller_record` owns the proof: the saved record must be live, not archived
-/// and name a process this command descends from. Only the marker pair goes
-/// into the environment for the length of that read, and the previous values
-/// are restored.
-fn prove(config: &Config, name: &str, run: &str) -> Option<SessionKey> {
-    let previous = (
-        std::env::var_os("HGS_SESSION"),
-        std::env::var_os("HGS_RUN_ID"),
-    );
-    std::env::set_var("HGS_SESSION", name);
-    std::env::set_var("HGS_RUN_ID", run);
-    let record = crate::state::session_graph::caller_record();
-    restore("HGS_SESSION", previous.0);
-    restore("HGS_RUN_ID", previous.1);
-    session_key(config, &record?).ok()
+fn prove(
+    config: &Config,
+    name: &str,
+    run: &str,
+    session: Option<&str>,
+) -> Result<Option<SessionKey>, Problem> {
+    prove_read(
+        config,
+        name,
+        run,
+        session,
+        crate::state::session_graph::caller_record_for,
+    )
 }
 
-fn restore(name: &str, value: Option<std::ffi::OsString>) {
-    match value {
-        Some(value) => std::env::set_var(name, value),
-        None => std::env::remove_var(name),
-    }
+fn prove_read(
+    config: &Config,
+    name: &str,
+    run: &str,
+    session: Option<&str>,
+    read: impl FnOnce(&str, &str, Option<&str>) -> std::result::Result<Option<Value>, &'static str>,
+) -> Result<Option<SessionKey>, Problem> {
+    read(name, run, session)
+        .map_err(|_| marked_unreadable())?
+        .map(|record| session_key(config, &record))
+        .transpose()
 }
 
-/// The session agent that runs this command, if one does.
-///
-/// Only this command's own ancestors, at most 64, are read: each one's
-/// environment names the session it runs, as its launcher set it. That claim
-/// is verified once, through [`prove`], so no saved record is read for a
-/// process that carries no claim, and never more than one record per claiming
-/// ancestor. An ancestor whose environment cannot be read is skipped: a
-/// process of another user never runs this user's agent.
-fn agent_above(config: &Config) -> Result<Option<String>, Problem> {
-    let chain =
-        match ancestors() {
-            Walk::Chain(chain) => chain,
-            // A computer that cannot relate a process to its parent cannot apply
-            // the interim rule; only its marked commands are proved, exactly as
-            // `hgs task` proves them.
-            Walk::Unsupported => return Ok(None),
-            Walk::Unreadable => return Err(Problem::new(
-                code::INVALID_STATE,
-                "Cannot inspect this command's process ancestry, so it cannot act as the person.",
-            )),
-        };
-    for pid in chain {
-        let Some((name, run)) = environment(pid).ok().as_deref().and_then(markers) else {
-            continue;
-        };
-        // A claim needs the state ledger; an unreadable ledger is a refusal,
-        // never a silent person.
-        if let Err(reason) = crate::state::session_operations() {
-            return Err(Problem::new(
-                code::INVALID_STATE,
-                format!("Cannot read this computer's session ledger: {reason}"),
-            ));
-        }
-        if prove(config, &name, &run).is_some() {
-            return Ok(Some(name));
+fn agent_above() -> Result<bool, Problem> {
+    let chain = ancestors()?;
+    for ancestor in &chain {
+        if let Some(claim) = &ancestor.claim {
+            if crate::state::session_graph::caller_agent_for(
+                &claim.name,
+                &claim.run,
+                claim.session.as_deref(),
+                ancestor.pid,
+                ancestor.identity.birth.as_deref().ok_or_else(unreadable)?,
+            )
+            .map_err(|_| binding_unreadable())?
+            .is_some()
+            {
+                return Ok(true);
+            }
         }
     }
-    Ok(None)
+    // T2: no deterministic test pins this post-proof race window; changing a
+    // real process exactly after the binding read needs a timing/injection seam.
+    // Recheck original edges and births before accepting a negative proof.
+    ancestry::unchanged(&chain)?;
+    Ok(false)
 }
 
-/// What the ancestor walk could read.
-enum Walk {
-    Chain(Vec<u32>),
-    /// This computer does not report a process's parent.
-    Unsupported,
-    /// The command's own process could not be read.
-    Unreadable,
-}
-
-/// This command's process ancestors, the command itself first, bounded. A
-/// replaced parent or a loop ends the walk; an ancestor of another user ends
-/// it without failing it.
-fn ancestors() -> Walk {
-    if !cfg!(any(target_os = "linux", target_os = "macos")) {
-        return Walk::Unsupported;
-    }
-    let own = std::process::id();
-    let mut chain = vec![own];
-    let mut current = own;
-    for step in 0..64 {
-        let Some(process) = crate::platform::process_identity(current) else {
-            // This command's own process is the one read that must work; an
-            // ancestor of another user or a replaced parent ends the walk.
-            return if step == 0 {
-                Walk::Unreadable
-            } else {
-                Walk::Chain(chain)
-            };
-        };
-        if process.parent == 0 || process.parent == current || chain.contains(&process.parent) {
-            break;
-        }
-        chain.push(process.parent);
-        current = process.parent;
-    }
-    Walk::Chain(chain)
-}
-
-/// The session markers in a process environment, which is NUL-separated
-/// `KEY=VALUE` entries.
+/// Claims are only discovery hints. The explicit saved-record proof establishes
+/// ancestry and liveness; neither environment labels nor a missing file do.
 fn markers(bytes: &[u8]) -> Option<(String, String)> {
     let mut session = None;
     let mut run = None;
@@ -205,6 +220,37 @@ fn markers(bytes: &[u8]) -> Option<(String, String)> {
         }
     }
     session.zip(run)
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+struct Claim {
+    name: String,
+    run: String,
+    session: Option<String>,
+}
+
+fn claim(bytes: &[u8]) -> Result<Option<Claim>, Problem> {
+    let has_marker = bytes.split(|byte| *byte == 0).any(|entry| {
+        [
+            b"HGS_SESSION=".as_slice(),
+            b"HGS_RUN_ID=",
+            b"HGS_SESSION_ID=",
+        ]
+        .iter()
+        .any(|prefix| entry.starts_with(prefix))
+    });
+    match markers(bytes) {
+        Some((name, run)) => {
+            let session = bytes
+                .split(|byte| *byte == 0)
+                .find_map(|entry| entry.strip_prefix(b"HGS_SESSION_ID="))
+                .map(|value| text(value).ok_or_else(unreadable))
+                .transpose()?;
+            Ok(Some(Claim { name, run, session }))
+        }
+        None if has_marker => Err(unreadable()),
+        None => Ok(None),
+    }
 }
 
 fn text(bytes: &[u8]) -> Option<String> {
@@ -274,9 +320,8 @@ fn environment(pid: u32) -> std::io::Result<Vec<u8>> {
     Ok(rest.to_vec())
 }
 
-/// A computer without a way to read another process's environment cannot see
-/// an unmarked session agent above the command; the interim rule then only
-/// applies where the computer's own session state proves it.
+/// Unsupported platforms refuse before this read is reachable. This fallback
+/// stays an error; it can never establish an unmarked person's authority.
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
 fn environment(_pid: u32) -> std::io::Result<Vec<u8>> {
     Err(std::io::Error::new(
