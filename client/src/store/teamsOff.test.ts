@@ -124,3 +124,18 @@ describe("the preview switch", () => {
     expect(calls.follow).toHaveLength(0);
   });
 });
+
+describe("a storage failure (zerus-63rru.19)", () => {
+  it("of the preview switch is an unknown result, never a refusal", async () => {
+    const { transport, calls } = fake();
+    transport.preview = async () => { throw "storage_failed: The result is not known; repeat the same request with the same request ID."; };
+    const store = createTeams(transport);
+    await store.probe();
+    calls.follow.length = 0;
+    const outcome = await store.preview(false);
+    expect(outcome).toEqual({ outcome: "uncertain", detail: "storage_failed: The result is not known; repeat the same request with the same request ID." });
+    expect(calls.follow).toHaveLength(0);
+    transport.preview = async () => { throw "invalid_state: The preview cannot change now."; };
+    expect((await store.preview(false)).outcome, "a rule's refusal stays a refusal").toBe("failed");
+  });
+});

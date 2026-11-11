@@ -28,7 +28,18 @@ import type { Task } from "./tasks-ui";
 // fresh-stage and read-only checks decide a repeat. A notice is retired when
 // its form leaves its project.
 
-export interface NotQueued { project: string; task: string; team: string; name: string; reason: string }
+export interface NotQueued {
+  project: string; task: string; team: string; name: string; reason: string;
+  /** The queue's error code: a refusal's, `storage_failed`, or "" when the queue did not answer. */
+  code?: string;
+}
+
+/** The store's code for a write whose result is not known (zerus-63rru.19). */
+export const STORAGE_FAILED = "storage_failed";
+
+/** Whether the queue's answer is a refusal, not a result that is not known:
+ * a storage failure or no answer at all may have queued the task. */
+export const queueRefused = (notice: Pick<NotQueued, "code">) => !!notice.code && notice.code !== STORAGE_FAILED;
 
 /** A task's title in a notification: at most this many characters. */
 export const TITLE_CHARS = 60;

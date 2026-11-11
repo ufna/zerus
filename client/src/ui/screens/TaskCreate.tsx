@@ -1,7 +1,7 @@
 import { TextInput } from "../lib/TextField";
 import { For, Show, createEffect, createMemo, createSignal, on, onCleanup, type JSX } from "solid-js";
 import { createCard, newCard } from "../../store/taskForms";
-import { createRecovery } from "./task-recovery";
+import { createRecovery, queueRefused } from "./task-recovery";
 import { selected } from "../../store/ui";
 import { requestTaskDescription } from "../../store/taskNavigation";
 import { Icon } from "../lib/icons";
@@ -58,7 +58,7 @@ export default function TaskCreate(props: { project?: string; scope: string; bac
       setCreating(false); if (team() === chosen) setTeam("");
       const done = newCard.view();
       const id = done?.project === project ? done.created : undefined, refused = done?.not_queued;
-      if (id && refused && refused.task === id && (!chosen || refused.team === chosen)) recovery.show({ project, task: id, team: refused.team, name: refused.team === chosen ? name : teamChoices().find((candidate) => candidate.id === refused.team)?.name ?? refused.team, reason: refused.reason });
+      if (id && refused && refused.task === id && (!chosen || refused.team === chosen)) recovery.show({ project, task: id, team: refused.team, name: refused.team === chosen ? name : teamChoices().find((candidate) => candidate.id === refused.team)?.name ?? refused.team, reason: refused.reason, code: refused.code ?? "" });
       if (id) requestTaskDescription(project, id);
     }
   };
@@ -75,7 +75,9 @@ export default function TaskCreate(props: { project?: string; scope: string; bac
     </Show><button class="tk-sq add" aria-label={tr("New task")} title={tr("New task")} disabled={!props.project || !props.accessible} onClick={() => { setCreating(true); queueMicrotask(() => field?.focus()); }}><Icon name="plus" size={16} /></button>{props.children}</div>
     <Show when={(refusal() || newCard.error()) && creating()}><div class="tk-create-error" role="alert">{refusal() || newCard.error()}</div></Show>
     <Show when={recovery.notice()?.project === props.project ? recovery.notice() : undefined}>{(created) => <div class="tk-create-error" role="alert" data-not-queued>
-      <span>{tr("The task was created, but %1 did not queue it: %2", created().name, created().reason)}</span>{" "}
+      <span>{queueRefused(created())
+        ? tr("The task was created, but %1 did not queue it: %2", created().name, created().reason)
+        : tr("The task was created; whether %1 queued it is not known: %2", created().name, created().reason)}</span>{" "}
       <Show when={!recovery.row() && recovery.reading().state === "reading"}><span class="dim" role="status" data-recovery-reading>{tr("Reading the task…")}</span>{" "}</Show>
       <Show when={!recovery.row() ? recovery.reading() : undefined}>{(answer) => <Show when={answer().state === "failed"}>
         <span data-recovery-unread>{tr("The task could not be read: %1", (answer() as { reason: string }).reason)}</span>{" "}

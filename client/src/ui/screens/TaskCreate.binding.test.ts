@@ -194,3 +194,28 @@ it("a team chosen while the submit was in flight is kept", async () => {
   (host.querySelector('[aria-label="New task"]') as HTMLButtonElement).click();
   expect(chooser(host)!.textContent).toContain("Other");
 });
+
+// zerus-63rru.19: the queue's answer is a refusal only with a refusal's code. A
+// storage failure of the team store, or no answer, may have queued the task:
+// the notice says the result is not known and gives the store's sentence as it
+// came, and Send to team stays the way on.
+it.each([
+  ["a storage failure", "storage_failed", "The result is not known; repeat the same request with the same request ID."],
+  ["no answer from the queue", "", "The team did not confirm that it queued the task."],
+])("a card whose queue gave %s is not called refused", async (_label, code, reason) => {
+  f.setList({ teams: [fixes], truncated: false, next: null });
+  f.setView(card("example-project"));
+  const created = "55555555-5555-4555-8555-555555555555";
+  f.create.mockImplementationOnce(async () => {
+    f.setView(card("example-project", { text: "", created, not_queued: { task: created, team: TEAM, code, reason } }));
+    return true;
+  });
+  const host = setup(() => "example-project");
+  choose(host);
+  enter(host);
+  await vi.waitFor(() => expect(host.querySelector("[data-not-queued]")).not.toBeNull());
+  const text = host.querySelector("[data-not-queued]")!.textContent!;
+  expect(text).toContain(`The task was created; whether Fixes queued it is not known: ${reason}`);
+  expect(text).not.toContain("did not queue it");
+  expect([...host.querySelectorAll("[data-not-queued] button")].map((button) => button.textContent)).toContain("Send to team");
+});

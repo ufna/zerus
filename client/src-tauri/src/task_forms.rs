@@ -1197,6 +1197,11 @@ mod tests {
                 Some("Odd reply."),
             ),
             (
+                "a storage failure of the team store",
+                json!({"task": task, "task_exists": true, "team": {"id": TEAM, "queued": false, "error": {"code": "storage_failed", "message": "The result is not known; repeat the same request with the same request ID."}}, "message": "Task example/7 exists and was not queued (storage_failed): The result is not known; repeat the same request with the same request ID."}),
+                Some("The result is not known; repeat the same request with the same request ID."),
+            ),
+            (
                 "a null team",
                 json!({"task": task, "team": null}),
                 Some(GENERIC),
@@ -1222,6 +1227,24 @@ mod tests {
                 }
             }
         }
+    }
+    /// zerus-63rru.19: a storage failure of the team store keeps its code on
+    /// the notice, so the form does not call the queue's answer a refusal.
+    #[test]
+    fn a_storage_failure_keeps_its_code_on_the_notice() {
+        const TEAM: &str = "33333333-3333-4333-8333-333333333333";
+        const TASK: &str = "55555555-5555-4555-8555-555555555555";
+        let problem: Value = serde_json::from_str(include_str!(
+            "../../core/src/teams/fixtures/problem-storage-failed.json"
+        ))
+        .unwrap();
+        let reply = json!({"task": {"uuid": TASK, "project": "example"}, "task_exists": true, "team": {"id": TEAM, "queued": false, "error": problem}});
+        let notice = not_queued(reply.as_object().unwrap(), TASK, TEAM).unwrap();
+        assert_eq!(notice["code"], "storage_failed");
+        assert_eq!(
+            notice["reason"],
+            "The result is not known; repeat the same request with the same request ID."
+        );
     }
     #[test]
     fn malformed_reserved_identity_and_foreign_receipts_keep_the_draft() {

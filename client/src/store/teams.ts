@@ -637,8 +637,9 @@ export function createTeams(transport: TeamsTransport = tauriTeams()) {
     setCatalog(catalog() ? { ...catalog()!, templates: [...catalog()!.templates.filter((t) => t.id !== template.id), template] } : catalog());
   }
 
-  /** A refusal carries hgs's own `code: message`; anything else is unknown. */
-  const isRefusal = (detail: string) => /^[a-z][a-z0-9_]*(: |$)/.test(detail.trim());
+  /** A refusal carries hgs's own `code: message`; anything else is unknown,
+   * and so is the store's `storage_failed`, whose result is not known. */
+  const isRefusal = (detail: string) => /^[a-z][a-z0-9_]*(: |$)/.test(detail.trim()) && !/^storage_failed(: |$)/.test(detail.trim());
 
   /**
    * Turns the preview on or off, then asks discovery again so the entry points

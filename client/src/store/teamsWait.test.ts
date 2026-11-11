@@ -130,3 +130,19 @@ describe("Waiting for you", () => {
     expect(teams.waitingCount(), "a late page after off is not taken").toBe(0);
   });
 });
+
+describe("a storage failure of a decision (zerus-63rru.19)", () => {
+  it("stays unresolved with its request id, and Check sends that id", async () => {
+    const { transport, outcomes, calls } = fake();
+    const teams = createTeams(transport);
+    const sentence = "The result is not known; repeat the same request with the same request ID.";
+    outcomes.push({ outcome: "uncertain", detail: sentence, request_id: "x" });
+    const answer = await decideOn(teams, "approve");
+    expect(answer?.outcome).toBe("uncertain");
+    const id = calls.acts[0].request_id;
+    expect(teams.unresolved()).toEqual([expect.objectContaining({ detail: sentence, state: "uncertain", call: expect.objectContaining({ request_id: id }) })]);
+    await teams.check();
+    expect(calls.again.map((call) => call.request_id)).toEqual([id]);
+    expect(calls.acts).toHaveLength(1);
+  });
+});
