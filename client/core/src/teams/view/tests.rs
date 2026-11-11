@@ -375,3 +375,124 @@ fn the_pinned_waiting_reply_projects_the_open_owner_card() {
     assert_eq!(item.by, "local");
     assert_eq!(item.created_ms, 1_700_000_000_000);
 }
+
+/// One hand-written queue row in the shape package 9 will publish with the
+/// additive fields; until it regenerates `cli-queue.json` this keeps the
+/// client core's parsing tested against the contract.
+fn queue_row(id: u64, extra: Value) -> Value {
+    let mut row =
+        serde_json::json!({"id": id, "state": "pending", "role": "developer", "rank": "a01"});
+    if let (Some(row), Some(extra)) = (row.as_object_mut(), extra.as_object()) {
+        for (key, value) in extra {
+            row.insert(key.clone(), value.clone());
+        }
+    }
+    row
+}
+
+fn status_with(members: Value) -> Value {
+    serde_json::json!({
+        "ok": true,
+        "team": {"id": TEAM, "project": "example-project", "name": "Fixes", "status": "running", "lead": "lead", "revision": 16},
+        "members": members,
+        "counts": {"members": {}, "nodes": {}, "inbox": {"open": 0}, "cards": {"open": 0}}
+    })
+}
+
+fn queue_with(rows: Value) -> Value {
+    serde_json::json!({"ok": true, "rows": rows})
+}
+
+#[test]
+fn a_stage_row_carries_its_kind_its_target_and_the_target_round() {
+    let queue = queue_with(serde_json::json!([
+        queue_row(
+            1,
+            serde_json::json!({"kind": "task", "rounds": 3, "title": "Task 1"})
+        ),
+        queue_row(
+            7,
+            serde_json::json!({"kind": "stage", "stage_of": 1, "stage_index": 0, "state": "pending",
+            "stage": {"kind": "review", "target": 1, "round": 2}})
+        ),
+        queue_row(
+            8,
+            serde_json::json!({"kind": "stage", "stage_of": 1, "stage_index": 1, "state": "waiting",
+            "stage": {"kind": "land", "target": 1, "round": 2}})
+        ),
+    ]));
+    let status = status_with(serde_json::json!([
+        {"id": "lead", "role": "lead", "agent": "claude", "state": "active", "model": "sonnet-5"}
+    ]));
+    let view = team(&status, &queue);
+    let card = &view
+        .groups
+        .iter()
+        .find(|group| group.state == "pending")
+        .expect("the pending group carries the card")
+        .cards[0];
+    assert_eq!(card.kind, Some(RowKind::Task));
+    assert_eq!(card.rounds, Some(3));
+    assert_eq!(card.stages.len(), 2);
+    assert_eq!(card.stages[0].kind, Some(StageKind::Review));
+    assert_eq!(card.stages[0].target, Some(1));
+    assert_eq!(card.stages[0].round, Some(2));
+    assert_eq!(card.stages[1].kind, Some(StageKind::Land));
+    assert_eq!(card.stages[1].target, Some(1));
+    assert_eq!(view.members[0].model.as_deref(), Some("sonnet-5"));
+}
+
+#[test]
+fn an_unknown_stage_kind_is_absent_and_never_an_error() {
+    let queue = queue_with(serde_json::json!([
+        queue_row(1, serde_json::json!({"title": "Task 1"})),
+        queue_row(
+            7,
+            serde_json::json!({"kind": "stage", "stage_of": 1, "stage_index": 0,
+            "stage": {"kind": "deploy", "target": 1, "round": 4}})
+        ),
+    ]));
+    let view = team(&status_with(serde_json::json!([])), &queue);
+    let stage = &view
+        .groups
+        .iter()
+        .flat_map(|group| &group.cards)
+        .next()
+        .unwrap()
+        .stages[0];
+    assert_eq!(stage.kind, None, "an unknown kind is kept out as absent");
+    assert_eq!(stage.target, Some(1), "its target and round still parse");
+    assert_eq!(stage.round, Some(4));
+}
+
+#[test]
+fn the_additive_fields_are_absent_without_an_error_in_an_older_reply() {
+    let queue = queue_with(serde_json::json!([queue_row(
+        1,
+        serde_json::json!({"title": "Task 1"})
+    )]));
+    let status = status_with(
+        serde_json::json!([{"id": "lead", "role": "lead", "agent": "claude", "state": "active"}]),
+    );
+    let view = team(&status, &queue);
+    let card = &view
+        .groups
+        .iter()
+        .find(|group| group.state == "pending")
+        .expect("the pending group carries the card")
+        .cards[0];
+    assert_eq!(card.kind, None);
+    assert_eq!(card.rounds, None);
+    assert_eq!(view.members[0].model, None);
+}
+
+#[test]
+fn the_pinned_replies_still_parse_without_the_additive_fields() {
+    let view = team(&fixture("status"), &fixture("queue"));
+    assert!(view
+        .groups
+        .iter()
+        .flat_map(|group| &group.cards)
+        .all(|card| card.kind.is_none() && card.rounds.is_none()));
+    assert!(view.members.iter().all(|member| member.model.is_none()));
+}

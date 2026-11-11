@@ -40,6 +40,7 @@ fn member_cards(status: &Value) -> Vec<MemberCard> {
             state: or_default(member, "state", "not_created"),
             lead: member.get("id").and_then(Value::as_str) == Some(lead.as_str()),
             session: session(member),
+            model: optional_name(member, "model"),
         })
         .collect()
 }
@@ -47,6 +48,10 @@ fn member_cards(status: &Value) -> Vec<MemberCard> {
 /// A stage row: who does the stage (`assignee`) and who implemented the task
 /// it checks (`implementer`, the plan's binding decision).
 fn stage_card(node: &Value) -> StageCard {
+    // A stage row names its kind, its target and that target's round in its own
+    // `stage` object; an older command line omits the object, and a kind the
+    // core does not know is kept out as absent rather than refused.
+    let stage = node.get("stage").filter(|stage| stage.is_object());
     StageCard {
         node: count(node, "id"),
         index: count(node, "stage_index"),
@@ -54,6 +59,9 @@ fn stage_card(node: &Value) -> StageCard {
         state: or_default(node, "state", "draft"),
         assignee: name(node, "assignee"),
         implementer: name(node, "implementer"),
+        kind: stage.and_then(stage_kind),
+        target: stage.and_then(|stage| optional_count(stage, "target")),
+        round: stage.and_then(|stage| optional_count(stage, "round")),
     }
 }
 
@@ -75,6 +83,8 @@ fn card(node: &Value) -> QueueCard {
         implementer: name(node, "implementer"),
         rank: name(node, "rank"),
         round: count(node, "round"),
+        kind: row_kind(node),
+        rounds: optional_count(node, "rounds"),
         held: flag(node, "hold"),
         admitted: flag(node, "admitted"),
         integrated: flag(node, "integrated"),

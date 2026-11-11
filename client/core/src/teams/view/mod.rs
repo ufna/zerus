@@ -85,6 +85,59 @@ pub(crate) fn count(value: &Value, key: &str) -> u64 {
         .unwrap_or(0)
 }
 
+/// A string field that may be absent: empty and missing both mean no value.
+pub(crate) fn optional_name(value: &Value, key: &str) -> Option<String> {
+    value
+        .get(key)
+        .and_then(Value::as_str)
+        .map(|found| cut(found, NAME_CHARS))
+        .filter(|found| !found.is_empty())
+}
+
+/// A numeric field that may be absent.
+pub(crate) fn optional_count(value: &Value, key: &str) -> Option<u64> {
+    value.get(key).and_then(|found| {
+        found
+            .as_u64()
+            .or_else(|| found.as_f64().map(|n| n.max(0.0) as u64))
+    })
+}
+
+/// A queue row's own kind: `task` or `stage`; absent means a task.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RowKind {
+    Task,
+    Stage,
+}
+
+pub(crate) fn row_kind(value: &Value) -> Option<RowKind> {
+    match value.get("kind").and_then(Value::as_str) {
+        Some("task") => Some(RowKind::Task),
+        Some("stage") => Some(RowKind::Stage),
+        _ => None,
+    }
+}
+
+/// A stage's kind: `review`, `test` or `land`. Any other word is kept out as
+/// absent, never an error.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StageKind {
+    Review,
+    Test,
+    Land,
+}
+
+pub(crate) fn stage_kind(value: &Value) -> Option<StageKind> {
+    match value.get("kind").and_then(Value::as_str) {
+        Some("review") => Some(StageKind::Review),
+        Some("test") => Some(StageKind::Test),
+        Some("land") => Some(StageKind::Land),
+        _ => None,
+    }
+}
+
 pub(crate) fn flag(value: &Value, key: &str) -> bool {
     value.get(key).and_then(Value::as_bool).unwrap_or(false)
 }
@@ -166,6 +219,8 @@ pub struct MemberCard {
     pub state: String,
     pub lead: bool,
     pub session: Option<SessionRef>,
+    /// The model its role names, when it names one.
+    pub model: Option<String>,
 }
 
 /// The member counts of `team status`'s `counts.members`.
@@ -215,6 +270,13 @@ pub struct StageCard {
     /// The member who implemented the task the stage checks (the plan's
     /// binding decision). Never the stage's own worker.
     pub implementer: String,
+    /// `review`, `test` or `land`; absent when the row has no `stage` object or
+    /// names another kind.
+    pub kind: Option<StageKind>,
+    /// The node this stage checks.
+    pub target: Option<u64>,
+    /// The target's round this stage checks.
+    pub round: Option<u64>,
 }
 
 /// The task a card stands for: the replicated task, never the node alone.
@@ -248,6 +310,10 @@ pub struct QueueCard {
     /// The task's board rank: the queue's order.
     pub rank: String,
     pub round: u64,
+    /// The queue row's own kind; absent means a task.
+    pub kind: Option<RowKind>,
+    /// The pinned pipeline's rounds, when the row names them.
+    pub rounds: Option<u64>,
     pub held: bool,
     pub admitted: bool,
     pub integrated: bool,
