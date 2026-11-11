@@ -15,7 +15,7 @@ use super::*;
 use std::time::Duration;
 
 /// Raised whenever this package's layout changes.
-pub(crate) const EXTENSION: u32 = 1;
+pub(crate) const EXTENSION: u32 = 2;
 
 #[cfg(test)]
 type Hook = Box<dyn FnOnce() -> Result<()>>;
@@ -86,8 +86,10 @@ fn transition(db: &Connection) -> Result<()> {
     // after this transaction is seen by them, and none can commit inside it.
     db.execute_batch(include_str!("../timers.sql"))
         .map_err(storage)?;
+    migrate_outbox(db)?;
     backfill_teams(db)?;
-    backfill_outbox(db)?;
+    backfill_released(db)?;
+    backfill_stopped(db)?;
     #[cfg(test)]
     if let Some(hook) = BEFORE_MARK.with(|slot| slot.borrow_mut().take()) {
         hook()?;
@@ -119,11 +121,29 @@ fn backfill_teams(db: &Connection) -> Result<()> {
         }
     }
 }
-/// Walk the archive once, in pages, for stages released before the outbox.
-fn backfill_outbox(db: &Connection) -> Result<()> {
+/// Version 1 kept released stages in an outbox; they move to the frontier.
+fn migrate_outbox(db: &Connection) -> Result<()> {
+    let old: bool = db
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='key_clear_outbox')",
+            [],
+            |r| r.get(0),
+        )
+        .map_err(storage)?;
+    if old {
+        db.execute_batch(
+            "INSERT OR IGNORE INTO key_clear_work(team,node,kind) SELECT team,node,'stage' FROM key_clear_outbox;
+             DROP TABLE key_clear_outbox;",
+        )
+        .map_err(storage)?;
+    }
+    Ok(())
+}
+/// Walk the archive once, in pages, for stages released before the frontier.
+fn backfill_released(db: &Connection) -> Result<()> {
     let page =
         "SELECT team,id FROM node_archive WHERE (team,id)>(?1,?2) ORDER BY team,id LIMIT 200";
-    let insert = format!("INSERT OR IGNORE INTO key_clear_outbox(team,node) SELECT a.team,a.id FROM node_archive a WHERE a.team=?1 AND a.id=?2 AND {RELEASED}");
+    let insert = format!("INSERT OR IGNORE INTO key_clear_work(team,node,kind) SELECT a.team,a.id,'stage' FROM node_archive a WHERE a.team=?1 AND a.id=?2 AND {RELEASED}");
     let mut insert = db.prepare(&insert).map_err(storage)?;
     let mut after = (String::new(), 0u32);
     loop {
@@ -139,3 +159,24 @@ fn backfill_outbox(db: &Connection) -> Result<()> {
         }
     }
 }
+/// A stopped or archived team's open nodes whose cancel settled before the
+/// frontier existed; one statement per pending team, over its live nodes.
+fn backfill_stopped(db: &Connection) -> Result<()> {
+    let mut insert = db.prepare(STOPPED).map_err(storage)?;
+    let mut after = String::new();
+    loop {
+        let teams = column::<String>(
+            db,
+            "SELECT team FROM key_clear_teams WHERE pending=1 AND team>?1 ORDER BY team LIMIT 200",
+            params![after],
+        )?;
+        for team in &teams {
+            insert.execute([team]).map_err(storage)?;
+        }
+        match teams.last() {
+            Some(last) if teams.len() == 200 => after = last.clone(),
+            _ => return Ok(()),
+        }
+    }
+}
+const STOPPED: &str = "INSERT OR IGNORE INTO key_clear_work(team,node,kind) SELECT n.team,n.id,'stop' FROM nodes n JOIN node_identity i ON i.team=n.team AND i.id=n.id LEFT JOIN stage_tasks s ON s.team=n.team AND s.node=n.id WHERE n.team=?1 AND (i.task_uuid<>'' OR s.request_id IS NOT NULL) AND NOT EXISTS(SELECT 1 FROM decisions d WHERE d.team=n.team AND d.node=n.id AND d.state<>'settled' AND d.kind='cancel') AND NOT EXISTS(SELECT 1 FROM task_observations o WHERE o.team=n.team AND o.node=n.id AND json_extract(o.data,'$.key') IS NOT NULL) AND NOT EXISTS(SELECT 1 FROM key_clears k WHERE k.team=n.team AND k.node=n.id)";

@@ -246,3 +246,37 @@ fn the_transition_walks_each_archived_node_once() {
         "the walk is linear in the archive: {costs:?}"
     );
 }
+
+#[test]
+fn a_version_one_outbox_moves_into_the_frontier() {
+    let mut h = Harness::new();
+    let node = h.add(&person(), 1);
+    strip(&h);
+    db(&h)
+        .execute_batch(
+            "CREATE TABLE key_clear_outbox (team TEXT NOT NULL, node INTEGER NOT NULL, PRIMARY KEY(team,node));
+             CREATE TRIGGER key_clear_stage_settled_v1 AFTER UPDATE OF state ON stage_tasks BEGIN
+              INSERT OR IGNORE INTO key_clear_outbox(team,node) VALUES(NEW.team,NEW.node); END;",
+        )
+        .unwrap();
+    db(&h)
+        .execute(
+            "INSERT INTO key_clear_outbox VALUES(?1,?2)",
+            params![TEAM, node],
+        )
+        .unwrap();
+    reopen(&mut h);
+    let stages: Vec<u32> = h
+        .store
+        .released_stages(TEAM, 200, 0)
+        .unwrap()
+        .iter()
+        .map(|k| k.node)
+        .collect();
+    assert_eq!(stages, [node]);
+    let left = names(&h);
+    assert!(
+        !left.contains(&"key_clear_outbox".to_owned())
+            && !left.contains(&"key_clear_stage_settled_v1".to_owned())
+    );
+}

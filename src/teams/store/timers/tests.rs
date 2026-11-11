@@ -1,5 +1,6 @@
 use super::*;
 mod upgrade;
+mod work;
 use crate::teams::ops::{tests::*, Actor, Operation};
 
 fn reopen(h: &mut Harness) {
@@ -32,19 +33,21 @@ fn a_reopened_store_keeps_its_timer_triggers_under_their_versioned_names() {
     reopen(&mut h);
     let names: Vec<String> = column(
         db(&h),
-        "SELECT name FROM sqlite_master WHERE type='trigger' AND name LIKE '%_v1' ORDER BY name",
+        "SELECT name FROM sqlite_master WHERE type='trigger' ORDER BY name",
         [],
     )
     .unwrap();
     assert_eq!(
         names,
         [
-            "key_clear_stage_archived_v1",
-            "key_clear_stage_settled_v1",
+            "key_clear_cancel_settled_v1",
+            "key_clear_stage_archived_v2",
+            "key_clear_stage_settled_v2",
             "key_clear_terminal_v1",
             "timer_cards_decided_v1",
             "timer_cards_item_v1"
-        ]
+        ],
+        "a changed body is a new name; version 1 of the stage triggers is dropped"
     );
 }
 

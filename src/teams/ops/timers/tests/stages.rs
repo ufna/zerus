@@ -220,10 +220,10 @@ fn both_reads_may_name_a_stopped_teams_released_stage_and_the_second_record_chan
 }
 
 #[test]
-fn the_outbox_is_filled_once_from_an_older_store() {
+fn the_frontier_is_filled_from_an_older_store() {
     let mut s = stages();
     let db = s.h.store.db.as_ref().unwrap();
-    db.execute_batch("DROP TRIGGER key_clear_stage_archived_v1; DROP TRIGGER key_clear_stage_settled_v1; DROP TABLE key_clear_outbox; DROP TABLE timers_extension;").unwrap();
+    db.execute_batch("DROP TRIGGER key_clear_stage_archived_v2; DROP TRIGGER key_clear_stage_settled_v2; DROP TABLE key_clear_work; DROP TABLE timers_extension;").unwrap();
     s.h.store = Store::open(s.h.temp.path()).unwrap();
     assert_eq!(s.h.store.released_stages(TEAM, 200, 0).unwrap().len(), 2);
 }

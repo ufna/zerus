@@ -9,6 +9,7 @@ mod doorbell;
 mod late;
 mod record;
 mod timers;
+mod work;
 
 pub(super) const T0: i64 = 1234;
 pub(super) const MINUTE: i64 = 60_000;

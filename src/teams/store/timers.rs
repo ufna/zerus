@@ -109,13 +109,17 @@ pub(crate) mod sql {
     pub const FIRED: &str = "SELECT EXISTS(SELECT 1 FROM timer_firings WHERE team=?1 AND kind=?2 AND node=?3 AND generation=?4 AND item=?5)";
     pub const KEYED_TEAMS: &str =
         "SELECT team FROM key_clear_teams WHERE pending=1 AND team>?1 ORDER BY team LIMIT ?2";
-    /// A node of the team with a task key to clear: the bound task, or the
-    /// task its saved stage creation names; a key observed gone has none.
-    pub const KEYED: &str = "SELECT i.id,i.task_project,CASE WHEN i.task_uuid<>'' THEN i.task_uuid ELSE s.request_id END FROM node_identity i LEFT JOIN stage_tasks s ON s.team=i.team AND s.node=i.id WHERE i.team=?1 AND (i.task_uuid<>'' OR s.request_id IS NOT NULL) AND NOT EXISTS(SELECT 1 FROM task_observations o WHERE o.team=i.team AND o.node=i.id AND json_extract(o.data,'$.key') IS NOT NULL) AND NOT EXISTS(SELECT 1 FROM key_clears k WHERE k.team=i.team AND k.node=i.id) AND NOT EXISTS(SELECT 1 FROM decisions d WHERE d.team=i.team AND d.node=i.id AND d.state<>'settled' AND d.kind='cancel')";
-    pub const KEYED_PAGE: &str = "SELECT i.id,i.task_project,CASE WHEN i.task_uuid<>'' THEN i.task_uuid ELSE s.request_id END FROM node_identity i LEFT JOIN stage_tasks s ON s.team=i.team AND s.node=i.id WHERE i.team=?1 AND (i.task_uuid<>'' OR s.request_id IS NOT NULL) AND NOT EXISTS(SELECT 1 FROM task_observations o WHERE o.team=i.team AND o.node=i.id AND json_extract(o.data,'$.key') IS NOT NULL) AND NOT EXISTS(SELECT 1 FROM key_clears k WHERE k.team=i.team AND k.node=i.id) AND NOT EXISTS(SELECT 1 FROM decisions d WHERE d.team=i.team AND d.node=i.id AND d.state<>'settled' AND d.kind='cancel') AND i.id>?2 ORDER BY i.id LIMIT ?3";
-    pub const SETTLE: &str = "UPDATE key_clear_teams SET pending=0 WHERE team=?1 AND pending=1 AND NOT EXISTS(SELECT 1 FROM node_identity i LEFT JOIN stage_tasks s ON s.team=i.team AND s.node=i.id WHERE i.team=?1 AND (i.task_uuid<>'' OR s.request_id IS NOT NULL) AND NOT EXISTS(SELECT 1 FROM task_observations o WHERE o.team=i.team AND o.node=i.id AND json_extract(o.data,'$.key') IS NOT NULL) AND NOT EXISTS(SELECT 1 FROM key_clears k WHERE k.team=i.team AND k.node=i.id) LIMIT 1) AND NOT EXISTS(SELECT 1 FROM decisions d WHERE d.team=?1 AND d.state<>'settled' AND d.kind='cancel')";
-    /// Released stages pending a final key record, through the outbox only.
-    pub const RELEASED_STAGES: &str = "SELECT x.node,i.task_project,CASE WHEN i.task_uuid<>'' THEN i.task_uuid ELSE s.request_id END FROM key_clear_outbox x JOIN node_identity i ON i.team=x.team AND i.id=x.node LEFT JOIN stage_tasks s ON s.team=x.team AND s.node=x.node WHERE x.team=?1 AND x.node>?2 AND (i.task_uuid<>'' OR s.request_id IS NOT NULL) ORDER BY x.node LIMIT ?3";
+    /// The work frontier of a team, in node order: each row names the bound
+    /// task, or the task its saved stage creation names.
+    pub const KEYED_PAGE: &str = "SELECT w.node,i.task_project,CASE WHEN i.task_uuid<>'' THEN i.task_uuid ELSE s.request_id END FROM key_clear_work w JOIN node_identity i ON i.team=w.team AND i.id=w.node LEFT JOIN stage_tasks s ON s.team=w.team AND s.node=w.node WHERE w.team=?1 AND w.node>?2 ORDER BY w.node LIMIT ?3";
+    /// A team leaves the pending set when its frontier is empty and no cancel
+    /// waits; both are prefix searches of what is still open.
+    pub const SETTLE: &str = "UPDATE key_clear_teams SET pending=0 WHERE team=?1 AND pending=1 AND NOT EXISTS(SELECT 1 FROM key_clear_work w WHERE w.team=?1) AND NOT EXISTS(SELECT 1 FROM decisions d WHERE d.team=?1 AND d.state<>'settled' AND d.kind='cancel')";
+    /// Whether a node waits in the frontier: the admission of its record.
+    pub const WAITING_KEY: &str =
+        "SELECT EXISTS(SELECT 1 FROM key_clear_work WHERE team=?1 AND node=?2)";
+    /// Released stages pending a final key record, from the frontier only.
+    pub const RELEASED_STAGES: &str = "SELECT w.node,i.task_project,CASE WHEN i.task_uuid<>'' THEN i.task_uuid ELSE s.request_id END FROM key_clear_work w JOIN node_identity i ON i.team=w.team AND i.id=w.node LEFT JOIN stage_tasks s ON s.team=w.team AND s.node=w.node WHERE w.team=?1 AND w.kind='stage' AND w.node>?2 ORDER BY w.node LIMIT ?3";
     pub const LATE: &str =
         "SELECT card FROM late_sessions WHERE team=?1 AND member=?2 AND launch=?3";
     /// A refused request is proved only by its saved receipt.
@@ -124,7 +128,6 @@ pub(crate) mod sql {
     pub const WAITING: &str =
         "SELECT EXISTS(SELECT 1 FROM inbox WHERE team=?1 AND state='open' AND seq>?2)";
 }
-pub(crate) use sql::KEYED;
 
 impl Store {
     fn read<T: Default>(&self, f: impl FnOnce(&Connection) -> Result<T>) -> Result<T> {
