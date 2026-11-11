@@ -858,6 +858,21 @@ the process table can be overmounted, and a forged table let a command pass
 as another live session. The cost is stated: a lead or a member whose shell
 runs in a sandbox with its own user namespace cannot use `hgs team`.
 
+The namespace is read without crossing a mount (coordinator finding of
+2026-11-11, verified by a probe inside a private namespace). Opening
+`/proc/self/ns/user` by path and comparing the object is not enough: a
+handle to the initial namespace taken before entering a private user and
+mount namespace can be bound, with its directory, over the process's own
+`ns` directory, and the path then answers with the initial namespace. The
+admission opens `/proc`, requires a procfs root (file system type and root
+inode), resolves `self/ns/user` from it with `openat2` and
+`RESOLVE_NO_XDEV` without following the last link, and compares the link's
+own text with the initial namespace. Any failure refuses, including a
+kernel or a sandbox without `openat2`; there is no fallback to the path.
+The same admission serves the marked and the unmarked caller. It does not
+cover a caller that replaces or instruments `hgs` itself or writes the
+store directly: that is the stated limit of the interim rule.
+
 The preview is for Linux in this milestone. Where the ancestry cannot be
 evaluated, an unmarked command is refused and the preview cannot be turned
 on. macOS is treated that way until the real-process suite has run on a
