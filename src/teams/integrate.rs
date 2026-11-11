@@ -2,6 +2,7 @@
 #![allow(dead_code)] // The teams actor consumes this API in a later package.
 
 use std::collections::BTreeSet;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::time::{Duration, Instant};
@@ -39,7 +40,16 @@ pub fn create_branch(repo: &Repo, branch: &str, base: &str) -> Result<(), Proble
     git.available(&reference)?;
     let base = git.commit(base)?;
     let absent = "0".repeat(base.len());
-    let output = git.run(&["update-ref", "--no-deref", &reference, &base, &absent])?;
+    let message = format!("Zerus: create integration branch {branch}");
+    let output = git.run(&[
+        "update-ref",
+        "--no-deref",
+        "-m",
+        &message,
+        &reference,
+        &base,
+        &absent,
+    ])?;
     success(output).map(|_| ())
 }
 
@@ -51,11 +61,9 @@ pub fn reported_commit(worktree: &Path) -> Result<Reported, Problem> {
     let branch = git.head_branch()?;
     // A nested status has its own repository configuration. Until it has a
     // separate guarded reader, do not let it execute nested filters or hooks.
-    let index = git.read(&["ls-files", "--stage", "-z"])?;
-    if index
-        .split(|byte| *byte == 0)
-        .any(|row| row.starts_with(b"160000 "))
-    {
+    // Modes alone keep this bounded even for very large indexes and long paths.
+    let index = git.read(&["ls-files", "--format=%(objectmode)", "-z"])?;
+    if index.split(|byte| *byte == 0).any(|row| row == b"160000") {
         return Err(unavailable(
             "Worktree reports with submodules are unavailable",
         ));
@@ -70,17 +78,19 @@ pub fn reported_commit(worktree: &Path) -> Result<Reported, Problem> {
     ])?;
     // Disabling a clean filter can make a clean transformed file look dirty.
     // Refuse that case rather than execute the filter or invent its result.
-    for row in status.split(|byte| *byte == 0).filter(|row| row.len() >= 3) {
-        if git.filters.is_empty() {
-            break;
+    if !git.filters.is_empty() && !status.is_empty() {
+        let mut args = vec!["check-attr", "-z", "filter", "--"];
+        for row in status.split(|byte| *byte == 0).filter(|row| row.len() >= 3) {
+            args.push(
+                std::str::from_utf8(&row[3..])
+                    .map_err(|_| unavailable("A changed path is not UTF-8"))?,
+            );
         }
-        let path = std::str::from_utf8(&row[3..])
-            .map_err(|_| unavailable("A changed path is not UTF-8"))?;
-        let attrs = git.read(&["check-attr", "-z", "filter", "--", path])?;
+        let attrs = git.read(&args)?;
         let fields: Vec<_> = attrs.split(|byte| *byte == 0).collect();
-        if fields.get(2).is_some_and(|name| {
+        if fields.as_chunks::<3>().0.iter().any(|field| {
             git.filters
-                .contains(&String::from_utf8_lossy(name).into_owned())
+                .contains(&String::from_utf8_lossy(field[2]).into_owned())
         }) {
             return Err(unavailable(
                 "The worktree needs an external content filter to assess its changes",
@@ -136,18 +146,60 @@ fn merge_git(
     message: &str,
     before_update: impl FnOnce(),
 ) -> Result<Merge, Problem> {
+    if git.repository_drivers {
+        return Err(unavailable(
+            "The repository declares an external merge driver",
+        ));
+    }
     let reference = git.branch_ref(branch)?;
     git.available(&reference)?;
     let old = git.commit(&reference)?;
     let incoming = git.commit(commit)?;
-    let output = git.run(&[
+    let ancestry = git.run(&["merge-base", "--is-ancestor", &incoming, &old])?;
+    match ancestry.status.code() {
+        Some(0) => {
+            before_update();
+            git.available(&reference)?;
+            return Ok(if git.reference(&reference)? == Some(old.clone()) {
+                Merge::Merged { commit: old }
+            } else {
+                Merge::Stale
+            });
+        }
+        Some(1) => {}
+        _ => return Err(git_failure(&ancestry)),
+    }
+    // Bind attributes to the integration tip where Git supports attr.tree.
+    // A read-only primary worktree context also preserves Git 2.38's native
+    // attribute/index fallback. merge-tree never writes that checkout.
+    let worktrees = git.read(&["worktree", "list", "--porcelain", "-z"])?;
+    let primary: Vec<_> = worktrees
+        .split(|byte| *byte == 0)
+        .take_while(|field| !field.is_empty())
+        .collect();
+    let mut args = Vec::new();
+    if !primary.contains(&b"bare".as_slice()) {
+        let path = primary
+            .iter()
+            .find_map(|field| field.strip_prefix(b"worktree "))
+            .ok_or_else(|| unavailable("Cannot resolve the primary worktree"))?;
+        let path = std::str::from_utf8(path)
+            .map_err(|_| unavailable("The primary worktree path is not UTF-8"))?;
+        // Keep merge-tree's conflict paths relative to the repository root.
+        args.extend(["--work-tree", path, "-C", path]);
+    }
+    let attributes = format!("attr.tree={old}");
+    args.extend([
+        "-c",
+        &attributes,
         "merge-tree",
         "--write-tree",
         "--name-only",
         "-z",
         &old,
         &incoming,
-    ])?;
+    ]);
+    let output = git.run(&args)?;
     let mut fields = output.stdout.split(|byte| *byte == 0);
     let tree = fields.next().unwrap_or_default();
     if !valid_oid(tree) {
@@ -197,26 +249,23 @@ fn merge_git(
     // a Git hook or repository code, and production passes an empty closure.
     before_update();
     git.available(&reference)?;
-    let output = git.run(&["update-ref", "--no-deref", &reference, &new, &old])?;
+    let reflog = format!("Zerus: merge {incoming}: {message}");
+    let output = git.run(&[
+        "update-ref",
+        "--no-deref",
+        "-m",
+        &reflog,
+        &reference,
+        &new,
+        &old,
+    ])?;
     if output.status.success() {
         return Ok(Merge::Merged { commit: new });
     }
-    let current = git.run(&[
-        "rev-parse",
-        "--verify",
-        "--quiet",
-        "--end-of-options",
-        &reference,
-    ])?;
-    if current.status.success() && oid(&current.stdout)? == new {
-        return Ok(Merge::Merged { commit: new });
-    }
-    if current.status.code() == Some(1)
-        || (current.status.success() && oid(&current.stdout)? != old)
-    {
-        Ok(Merge::Stale)
-    } else {
-        Err(git_failure(&output))
+    match git.reference(&reference)? {
+        Some(current) if current == new => Ok(Merge::Merged { commit: new }),
+        Some(current) if current == old => Err(git_failure(&output)),
+        _ => Ok(Merge::Stale),
     }
 }
 
@@ -278,11 +327,13 @@ fn supported_version(bytes: &[u8]) -> bool {
 }
 
 struct Git {
+    program: PathBuf,
     path: PathBuf,
     common_dir: bool,
     hooks: tempfile::TempDir,
     overrides: Vec<String>,
     filters: BTreeSet<String>,
+    repository_drivers: bool,
     deadline: Instant,
 }
 
@@ -293,6 +344,7 @@ impl Git {
 
     fn open(path: &Path, common_dir: bool) -> Result<Self, Problem> {
         let mut git = Self {
+            program: PathBuf::from("git"),
             path: path
                 .canonicalize()
                 .map_err(|e| unavailable(format!("Cannot open repository: {e}")))?,
@@ -301,15 +353,16 @@ impl Git {
                 .map_err(|e| unavailable(format!("Cannot disable Git hooks: {e}")))?,
             overrides: Vec::new(),
             filters: BTreeSet::new(),
+            repository_drivers: false,
             deadline: Instant::now() + Duration::from_secs(30),
         };
         if !supported_version(&git.read(&["--version"])?) {
             return Err(unavailable("Integration requires Git 2.38 or newer"));
         }
-        // Do not run custom merge drivers, content filters, or lazy fetches.
+        // Do not run content filters or lazy fetches.
         // Filters are cleared even for status; a report that needs one refuses.
         let config = git.run(&["config", "--null", "--get-regexp",
-            "^(merge\\..*\\.driver|filter\\..*\\.(clean|smudge|process)|extensions\\.partialclone|remote\\..*\\.promisor)$"])?;
+            "^(filter\\..*\\.(clean|smudge|process)|extensions\\.partialclone|remote\\..*\\.promisor)$"])?;
         if !config.status.success() && config.status.code() != Some(1) {
             return Err(git_failure(&config));
         }
@@ -340,9 +393,7 @@ impl Git {
             } else if (!value.is_empty() || key.ends_with(".promisor"))
                 && !(key.ends_with(".promisor") && matches!(value, "false" | "no" | "off" | "0"))
             {
-                return Err(unavailable(
-                    "Integration cannot use custom merge drivers or partial clones",
-                ));
+                return Err(unavailable("Integration cannot use partial clones"));
             }
         }
         // A person's configured signer is honoured. A repository cannot name
@@ -363,27 +414,62 @@ impl Git {
             if scope == "--worktree" && !worktree_config {
                 continue;
             }
-            let signer = git.run(&[
-                "config",
-                scope,
-                "--includes",
-                "--get-regexp",
-                "^gpg(\\..*)?\\.(program|defaultkeycommand)$",
-            ])?;
-            if signer.status.success() {
-                return Err(unavailable(
-                    "The repository declares an external signing command",
-                ));
+            for key in git.config_keys(Some(scope), "^(hook\\..*\\.(command|event)|merge\\..*\\.driver|gpg(\\..*)?\\.(program|defaultkeycommand))$")? {
+                if key.starts_with("hook.") {
+                    return Err(unavailable("The repository declares a config hook"));
+                }
+                if key.starts_with("gpg.") {
+                    return Err(unavailable("The repository declares an external signing command"));
+                }
+                git.repository_drivers = true;
             }
-            if signer.status.code() != Some(1) {
-                return Err(git_failure(&signer));
-            }
+        }
+        // Config-defined hooks ignore core.hooksPath. Disable every personal
+        // hook by name; repository/worktree definitions were refused above.
+        // The ref-event switch is also fixed off from the very first command.
+        for key in git.config_keys(None, "^hook\\..*\\.(command|event)$")? {
+            let (name, _) = key
+                .rsplit_once('.')
+                .ok_or_else(|| unavailable("Invalid hook configuration"))?;
+            git.overrides.push(format!("{name}.enabled=false"));
         }
         Ok(git)
     }
 
+    fn config_keys(&self, scope: Option<&str>, pattern: &str) -> Result<Vec<String>, Problem> {
+        let mut args = vec!["config", "--includes", "--null", "--name-only"];
+        if let Some(scope) = scope {
+            args.push(scope);
+        }
+        args.extend(["--get-regexp", pattern]);
+        let output = self.run(&args)?;
+        match output.status.code() {
+            Some(1) => Ok(Vec::new()),
+            Some(0) => output
+                .stdout
+                .split(|byte| *byte == 0)
+                .filter(|key| !key.is_empty())
+                .map(|key| {
+                    let key = std::str::from_utf8(key)
+                        .map_err(|_| unavailable("Invalid Git configuration key"))?;
+                    if key.contains(['=', '\n', '\r']) {
+                        return Err(unavailable("Git configuration cannot be safely overridden"));
+                    }
+                    Ok(key.to_owned())
+                })
+                .collect(),
+            _ => Err(git_failure(&output)),
+        }
+    }
+
     fn run(&self, args: &[&str]) -> Result<Output, Problem> {
-        let mut command = Command::new("git");
+        // A deadline already elapsed is proof that no writer was launched.
+        if Instant::now() >= self.deadline {
+            return Err(unavailable(
+                "Git deadline passed before starting the command",
+            ));
+        }
+        let mut command = Command::new(&self.program);
         for (key, _) in std::env::vars_os() {
             if key.to_string_lossy().starts_with("GIT_")
                 && !matches!(
@@ -400,6 +486,8 @@ impl Git {
                 "--no-replace-objects",
                 "-c",
                 "core.fsmonitor=false",
+                "-c",
+                "hook.reference-transaction.enabled=false",
                 "-c",
                 "gc.auto=0",
                 "-c",
@@ -425,6 +513,8 @@ impl Git {
             .env("GIT_NO_LAZY_FETCH", "1")
             .env("GIT_TERMINAL_PROMPT", "0")
             .env("SSH_ASKPASS_REQUIRE", "never");
+        #[cfg(test)]
+        tests::configure(&mut command, args.first().copied());
         let (status, stdout, stderr) = crate::platform::run_bounded(
             &mut command,
             [8 * 1024 * 1024, 64 * 1024],
@@ -479,6 +569,21 @@ impl Git {
         Ok(reference)
     }
 
+    fn reference(&self, reference: &str) -> Result<Option<String>, Problem> {
+        let output = self.run(&[
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            "--end-of-options",
+            reference,
+        ])?;
+        match output.status.code() {
+            Some(0) => Ok(Some(oid(&output.stdout)?)),
+            Some(1) => Ok(None),
+            _ => Err(git_failure(&output)),
+        }
+    }
+
     fn head_branch(&self) -> Result<String, Problem> {
         let output = self.run(&["symbolic-ref", "-q", "HEAD"])?;
         match output.status.code() {
@@ -511,28 +616,139 @@ impl Git {
                 "The integration branch is checked out in a worktree",
             ));
         }
+        if protects_branch(&self.path, reference)? {
+            return Err(unavailable(
+                "The integration branch is being rebased or bisected",
+            ));
+        }
+        let worktrees = match std::fs::read_dir(self.path.join("worktrees")) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => {
+                return Err(unavailable(format!(
+                    "Cannot inspect worktree operation state: {error}"
+                )))
+            }
+        };
+        for (n, entry) in worktrees.enumerate() {
+            if n >= 20_000 || Instant::now() >= self.deadline {
+                return Err(unavailable(
+                    "Worktree operation inspection exceeded its bound",
+                ));
+            }
+            let entry = entry.map_err(|error| {
+                unavailable(format!("Cannot inspect worktree operation state: {error}"))
+            })?;
+            if protects_branch(&entry.path(), reference)? {
+                return Err(unavailable(
+                    "The integration branch is being rebased or bisected",
+                ));
+            }
+        }
         Ok(())
     }
+}
+
+fn protects_branch(admin: &Path, reference: &str) -> Result<bool, Problem> {
+    for name in [
+        "rebase-merge/head-name",
+        "rebase-apply/head-name",
+        "BISECT_START",
+    ] {
+        let file = match std::fs::File::open(admin.join(name)) {
+            Ok(file) => file,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => {
+                return Err(unavailable(format!(
+                    "Cannot read worktree operation state: {error}"
+                )))
+            }
+        };
+        let mut value = Vec::new();
+        file.take(4097).read_to_end(&mut value).map_err(|error| {
+            unavailable(format!("Cannot read worktree operation state: {error}"))
+        })?;
+        if value.len() > 4096 {
+            return Err(unavailable("Worktree operation state exceeded its bound"));
+        }
+        let value = std::str::from_utf8(&value)
+            .map_err(|_| unavailable("Invalid worktree operation state"))?
+            .trim_end_matches(['\r', '\n']);
+        if value == reference || Some(value) == reference.strip_prefix("refs/heads/") {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use sha2::{Digest, Sha256};
+    use std::cell::{Cell, RefCell};
     use std::collections::BTreeMap;
     use std::fs;
+    use std::io::Write;
     use std::process::{Command, Stdio};
+    use std::rc::Rc;
+
+    #[derive(Clone)]
+    struct Config {
+        global: PathBuf,
+        system: PathBuf,
+        attrs: Rc<Cell<u32>>,
+    }
+
+    thread_local! { static CONFIG: RefCell<Option<Config>> = const { RefCell::new(None) }; }
+
+    struct ConfigGuard(Option<Config>);
+
+    impl Drop for ConfigGuard {
+        fn drop(&mut self) {
+            CONFIG.with(|slot| {
+                slot.replace(self.0.take());
+            });
+        }
+    }
+
+    pub(super) fn configure(command: &mut Command, operation: Option<&str>) {
+        let null = if cfg!(windows) { "NUL" } else { "/dev/null" };
+        command
+            .env_remove("GIT_CONFIG_NOSYSTEM")
+            .env("GIT_CONFIG_GLOBAL", null)
+            .env("GIT_CONFIG_SYSTEM", null);
+        CONFIG.with(|slot| {
+            if let Some(config) = &*slot.borrow() {
+                command
+                    .env("GIT_CONFIG_GLOBAL", &config.global)
+                    .env("GIT_CONFIG_SYSTEM", &config.system);
+                if operation == Some("check-attr") {
+                    config.attrs.set(config.attrs.get() + 1);
+                }
+            }
+        });
+    }
 
     struct Fixture {
         root: tempfile::TempDir,
         main: PathBuf,
         repo: Repo,
         base: String,
+        config: Config,
+        _config_guard: ConfigGuard,
     }
 
     impl Fixture {
         fn new() -> Self {
             let root = tempfile::tempdir().unwrap();
+            let config = Config {
+                global: root.path().join("global-config"),
+                system: root.path().join("system-config"),
+                attrs: Rc::new(Cell::new(0)),
+            };
+            fs::write(&config.global, "").unwrap();
+            fs::write(&config.system, "").unwrap();
+            let guard = ConfigGuard(CONFIG.with(|slot| slot.replace(Some(config.clone()))));
             let main = root.path().join("main");
             fs::create_dir(&main).unwrap();
             git(&main, &["init", "-b", "main"]);
@@ -554,6 +770,8 @@ mod tests {
                 main,
                 repo,
                 base,
+                config,
+                _config_guard: guard,
             }
         }
 
@@ -573,6 +791,28 @@ mod tests {
 
         fn reachable(&self) -> String {
             git(&self.main, &["rev-list", "--all", "--count"])
+        }
+
+        fn objects(&self, commits_only: bool) -> BTreeSet<String> {
+            git(
+                &self.main,
+                &[
+                    "cat-file",
+                    "--batch-all-objects",
+                    "--batch-check=%(objecttype) %(objectname)",
+                ],
+            )
+            .lines()
+            .filter(|line| !commits_only || line.starts_with("commit "))
+            .map(str::to_owned)
+            .collect()
+        }
+
+        fn personal(&self, file: &Path, key: &str, value: &str) {
+            git(
+                &self.main,
+                &["config", "--file", file.to_str().unwrap(), key, value],
+            );
         }
 
         fn tip(&self) -> String {
@@ -600,18 +840,12 @@ mod tests {
                 command.env_remove(key);
             }
         }
-        let output = command
+        configure(&mut command, None);
+        command
             .current_dir(path)
             .args(args)
-            .env("GIT_CONFIG_NOSYSTEM", "1")
-            .env(
-                "GIT_CONFIG_GLOBAL",
-                if cfg!(windows) { "NUL" } else { "/dev/null" },
-            )
-            .env("GIT_TERMINAL_PROMPT", "0")
-            .stdin(Stdio::null())
-            .output()
-            .unwrap();
+            .env("GIT_TERMINAL_PROMPT", "0");
+        let output = fixture_output(&mut command);
         assert!(
             output.status.success(),
             "git {args:?}: {}",
@@ -621,6 +855,17 @@ mod tests {
             .unwrap()
             .trim_end()
             .to_owned()
+    }
+
+    fn fixture_output(command: &mut Command) -> Output {
+        command
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        crate::platform::spawn_service_child(command)
+            .unwrap()
+            .wait_with_output()
+            .unwrap()
     }
 
     // Compare every byte and name in the checkout, including untracked files
@@ -672,12 +917,40 @@ mod tests {
         create_branch(&f.repo, "integrate/team", &prior).unwrap();
         let linked = f.linked_branch("member");
         let before = (snapshot(&f.main), snapshot(&linked));
+        let refs = f.refs();
         let Merge::Merged { commit } =
             merge(&f.repo, "integrate/team", &member, "Accept task").unwrap()
         else {
             panic!("expected merge");
         };
         assert_eq!(f.tip(), commit);
+        let expected = refs
+            .lines()
+            .map(|line| {
+                let (_, name) = line.split_once(' ').unwrap();
+                if name == "refs/heads/integrate/team" {
+                    format!("{commit} {name}")
+                } else {
+                    line.to_owned()
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert_eq!(f.refs(), expected);
+        let reflog = git(
+            &f.main,
+            &[
+                "reflog",
+                "show",
+                "-1",
+                "--format=%gs",
+                "refs/heads/integrate/team",
+            ],
+        );
+        assert!(
+            reflog.contains("Zerus") && reflog.contains("Accept task"),
+            "{reflog}"
+        );
         assert_eq!(
             git(&f.main, &["show", "-s", "--format=%P", &commit]),
             format!("{prior} {member}")
@@ -701,6 +974,7 @@ mod tests {
         let prior = f.branch("prior", "shared.txt", "prior\n");
         create_branch(&f.repo, "integrate/team", &prior).unwrap();
         let linked = f.linked_branch("member");
+        let commits = f.objects(true);
         let before = (
             f.refs(),
             f.reachable(),
@@ -721,6 +995,11 @@ mod tests {
                 snapshot(&f.main),
                 snapshot(&linked)
             )
+        );
+        assert_eq!(
+            commits,
+            f.objects(true),
+            "a conflict must not create even an unreachable commit"
         );
     }
 
@@ -1015,11 +1294,21 @@ mod tests {
     #[test]
     fn a_repository_cannot_execute_merge_drivers_or_content_filters() {
         let f = Fixture::new();
+        let member = f.branch("member", "new.txt", "new\n");
         let marker = f.root.path().join("executed");
         let command = format!("printf ran > '{}'; cat", marker.display());
         git(&f.main, &["config", "merge.custom.driver", &command]);
+        create_branch(&f.repo, "integrate/team", &f.base).unwrap();
+        assert!(descends(&f.repo, &member, &f.base).unwrap());
+        assert!(!reported_commit(&f.main).unwrap().dirty);
         assert_eq!(
-            create_branch(&f.repo, "integrate/team", &f.base)
+            merge(&f.repo, "integrate/team", &member, "Accept")
+                .unwrap_err()
+                .code,
+            "integration_unavailable"
+        );
+        assert_eq!(
+            sync_base(&f.repo, "integrate/team", "main")
                 .unwrap_err()
                 .code,
             "integration_unavailable"
@@ -1061,12 +1350,11 @@ mod tests {
         let member = f.branch("member", "new.txt", "new\n");
         create_branch(&f.repo, "integrate/team", &f.base).unwrap();
         let key = f.root.path().join("signing-key");
-        let result = Command::new("ssh-keygen")
+        let mut command = Command::new("ssh-keygen");
+        command
             .args(["-q", "-t", "ed25519", "-N", "", "-f"])
-            .arg(&key)
-            .stdin(Stdio::null())
-            .output()
-            .unwrap();
+            .arg(&key);
+        let result = fixture_output(&mut command);
         assert!(
             result.status.success(),
             "{}",
@@ -1196,6 +1484,399 @@ mod tests {
         );
         assert!(!marker.exists());
         assert_eq!(before, snapshot(&f.main));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn personal_config_hooks_are_disabled_in_global_and_system_scopes() {
+        for system in [false, true] {
+            let f = Fixture::new();
+            let member = f.branch("member", "new.txt", "new\n");
+            let marker = f.root.path().join("hook-ran");
+            let probe = f.root.path().join("hook-probe");
+            executable(
+                &probe,
+                &format!("#!/bin/sh\nprintf ran >> '{}'\n", marker.display()),
+            );
+            let config = if system {
+                &f.config.system
+            } else {
+                &f.config.global
+            };
+            f.personal(
+                config,
+                "hook.integration-probe.command",
+                probe.to_str().unwrap(),
+            );
+            f.personal(
+                config,
+                "hook.integration-probe.event",
+                "reference-transaction",
+            );
+            let before = snapshot(&f.main);
+            create_branch(&f.repo, "integrate/team", &f.base).unwrap();
+            merge(&f.repo, "integrate/team", &member, "Accept").unwrap();
+            sync_base(&f.repo, "integrate/team", "main").unwrap();
+            assert!(
+                !marker.exists(),
+                "personal config hook ran (system={system})"
+            );
+            assert_eq!(before, snapshot(&f.main));
+        }
+    }
+
+    #[cfg(unix)]
+    fn repository_command_config_is_refused(worktree: bool, hooks: bool) {
+        for included in [false, true] {
+            let f = Fixture::new();
+            let member = f.branch("member", "new.txt", "new\n");
+            create_branch(&f.repo, "integrate/team", &f.base).unwrap();
+            let marker = f.root.path().join("ran");
+            let probe = f.root.path().join("probe");
+            executable(
+                &probe,
+                &format!("#!/bin/sh\nprintf ran >> '{}'\n", marker.display()),
+            );
+            if worktree {
+                git(&f.main, &["config", "extensions.worktreeConfig", "true"]);
+            }
+            let scope = if worktree { "--worktree" } else { "--local" };
+            let file = f.root.path().join("included-config");
+            if included {
+                git(
+                    &f.main,
+                    &["config", scope, "include.path", file.to_str().unwrap()],
+                );
+            }
+            let set = |key: &str, value: &str| {
+                if included {
+                    f.personal(&file, key, value);
+                } else {
+                    git(&f.main, &["config", scope, key, value]);
+                }
+            };
+            if hooks {
+                set("hook.probe.command", probe.to_str().unwrap());
+                set("hook.probe.event", "reference-transaction");
+            } else {
+                set("merge.custom.driver", probe.to_str().unwrap());
+            }
+            let before = (f.refs(), snapshot(&f.main));
+            if hooks {
+                assert_eq!(
+                    create_branch(&f.repo, "integrate/new", &f.base)
+                        .unwrap_err()
+                        .code,
+                    "integration_unavailable"
+                );
+            } else {
+                create_branch(&f.repo, "integrate/new", &f.base).unwrap();
+                assert!(descends(&f.repo, &member, &f.base).unwrap());
+                assert!(!reported_commit(&f.main).unwrap().dirty);
+            }
+            assert_eq!(
+                merge(&f.repo, "integrate/team", &member, "Accept")
+                    .unwrap_err()
+                    .code,
+                "integration_unavailable"
+            );
+            assert_eq!(
+                sync_base(&f.repo, "integrate/team", "main")
+                    .unwrap_err()
+                    .code,
+                "integration_unavailable"
+            );
+            assert!(!marker.exists());
+            if hooks {
+                assert_eq!(before, (f.refs(), snapshot(&f.main)));
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn repository_local_hooks_and_included_hooks_refuse() {
+        repository_command_config_is_refused(false, true);
+    }
+    #[cfg(unix)]
+    #[test]
+    fn worktree_hooks_and_included_hooks_refuse() {
+        repository_command_config_is_refused(true, true);
+    }
+    #[cfg(unix)]
+    #[test]
+    fn worktree_drivers_and_includes_only_block_merging() {
+        repository_command_config_is_refused(true, false);
+    }
+    #[cfg(unix)]
+    #[test]
+    fn local_drivers_and_includes_only_block_merging() {
+        repository_command_config_is_refused(false, false);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn personal_merge_drivers_are_honored_in_global_and_system_scopes() {
+        for system in [false, true] {
+            let f = Fixture::new();
+            fs::write(f.main.join(".gitattributes"), "shared.txt merge=personal\n").unwrap();
+            git(&f.main, &["add", "."]);
+            git(&f.main, &["commit", "-m", "Attributes"]);
+            let f = Fixture {
+                base: git(&f.main, &["rev-parse", "HEAD"]),
+                ..f
+            };
+            let member = f.branch("member", "shared.txt", "member\n");
+            let prior = f.branch("prior", "shared.txt", "prior\n");
+            let marker = f.root.path().join("driver-ran");
+            let driver = f.root.path().join("driver");
+            executable(
+                &driver,
+                &format!(
+                    "#!/bin/sh\nprintf ran >> '{}'\ncat \"$3\" > \"$2\"\n",
+                    marker.display()
+                ),
+            );
+            let config = if system {
+                &f.config.system
+            } else {
+                &f.config.global
+            };
+            f.personal(
+                config,
+                "merge.personal.driver",
+                &format!("'{}' %O %A %B", driver.display()),
+            );
+            create_branch(&f.repo, "integrate/team", &prior).unwrap();
+            assert!(!reported_commit(&f.main).unwrap().dirty);
+            assert!(descends(&f.repo, &member, &f.base).unwrap());
+            assert!(!marker.exists());
+            let Merge::Merged { commit } =
+                merge(&f.repo, "integrate/team", &member, "Accept").unwrap()
+            else {
+                panic!("expected personal driver merge");
+            };
+            assert_eq!(
+                git(&f.main, &["show", &format!("{commit}:shared.txt")]),
+                "member"
+            );
+            assert!(marker.exists());
+        }
+    }
+
+    fn git_input(path: &Path, args: &[&str], input: &[u8]) {
+        let mut command = Command::new("git");
+        for (key, _) in std::env::vars_os() {
+            if key.to_string_lossy().starts_with("GIT_") {
+                command.env_remove(key);
+            }
+        }
+        configure(&mut command, None);
+        command
+            .current_dir(path)
+            .args(args)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let mut child = crate::platform::spawn_service_child(&mut command).unwrap();
+        child.stdin.take().unwrap().write_all(input).unwrap();
+        let output = child.wait_with_output().unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[test]
+    fn report_handles_a_large_synthetic_index() {
+        let f = Fixture::new();
+        let blob = git(&f.main, &["rev-parse", "HEAD:shared.txt"]);
+        let mut entries = Vec::new();
+        let mut paths = Vec::new();
+        for n in 0..120_000 {
+            let path =
+                format!("generated/{n:06}-long-synthetic-name-for-index-scaling-qualification.txt");
+            write!(entries, "100644 {blob}\t{path}\0").unwrap();
+            write!(paths, "{path}\0").unwrap();
+        }
+        git_input(&f.main, &["update-index", "-z", "--index-info"], &entries);
+        git_input(
+            &f.main,
+            &["update-index", "--skip-worktree", "-z", "--stdin"],
+            &paths,
+        );
+        let tree = git(&f.main, &["write-tree"]);
+        let commit = git(
+            &f.main,
+            &["commit-tree", &tree, "-p", &f.base, "-m", "Synthetic index"],
+        );
+        git(
+            &f.main,
+            &["update-ref", "refs/heads/main", &commit, &f.base],
+        );
+        let before = snapshot(&f.main);
+        assert_eq!(
+            reported_commit(&f.main).unwrap(),
+            Reported {
+                commit,
+                branch: "main".into(),
+                dirty: false
+            }
+        );
+        assert_eq!(before, snapshot(&f.main));
+    }
+
+    #[test]
+    fn changed_path_attributes_are_read_in_one_call() {
+        let f = Fixture::new();
+        git(&f.main, &["config", "filter.unused.clean", "cat"]);
+        fs::write(f.main.join("shared.txt"), "changed\n").unwrap();
+        fs::write(f.main.join("other.txt"), "other\n").unwrap();
+        assert!(reported_commit(&f.main).unwrap().dirty);
+        assert_eq!(f.config.attrs.get(), 1);
+    }
+
+    #[test]
+    fn unchanged_base_sync_and_duplicate_merges_write_nothing() {
+        let f = Fixture::new();
+        let member = f.branch("member", "new.txt", "new\n");
+        create_branch(&f.repo, "integrate/team", &f.base).unwrap();
+        let before = (f.refs(), f.objects(false), snapshot(&f.main));
+        let log = f.repo.git_dir.join("logs/refs/heads/integrate/team");
+        let reflog = fs::read(&log).unwrap();
+        assert_eq!(
+            sync_base(&f.repo, "integrate/team", "main").unwrap(),
+            Merge::Merged {
+                commit: f.base.clone()
+            }
+        );
+        assert_eq!(before, (f.refs(), f.objects(false), snapshot(&f.main)));
+        assert_eq!(reflog, fs::read(&log).unwrap());
+        let Merge::Merged { commit } = merge(&f.repo, "integrate/team", &member, "Accept").unwrap()
+        else {
+            panic!("expected merge");
+        };
+        let before = (f.refs(), f.objects(false), snapshot(&f.main));
+        let reflog = fs::read(&log).unwrap();
+        assert_eq!(
+            merge(&f.repo, "integrate/team", &member, "Accept twice").unwrap(),
+            Merge::Merged { commit }
+        );
+        assert_eq!(before, (f.refs(), f.objects(false), snapshot(&f.main)));
+        assert_eq!(reflog, fs::read(&log).unwrap());
+    }
+
+    #[test]
+    fn recompute_after_another_writer_accepted_the_same_commit_is_a_noop() {
+        let f = Fixture::new();
+        let member = f.branch("member", "new.txt", "new\n");
+        create_branch(&f.repo, "integrate/team", &f.base).unwrap();
+        assert_eq!(
+            merge_with_hook(&f.repo, "integrate/team", &member, "This writer", || {
+                assert!(matches!(
+                    merge(&f.repo, "integrate/team", &member, "Other writer").unwrap(),
+                    Merge::Merged { .. }
+                ));
+            })
+            .unwrap(),
+            Merge::Stale
+        );
+        let tip = f.tip();
+        let before = (f.refs(), f.objects(false), snapshot(&f.main));
+        assert_eq!(
+            merge(&f.repo, "integrate/team", &member, "Recompute").unwrap(),
+            Merge::Merged { commit: tip }
+        );
+        assert_eq!(before, (f.refs(), f.objects(false), snapshot(&f.main)));
+    }
+
+    #[test]
+    fn detached_rebase_and_bisect_states_keep_the_integration_branch_busy() {
+        for state in [
+            "rebase-merge/head-name",
+            "rebase-apply/head-name",
+            "BISECT_START",
+        ] {
+            for linked in [false, true] {
+                let f = Fixture::new();
+                let member = f.branch("member", "new.txt", "new\n");
+                create_branch(&f.repo, "integrate/team", &f.base).unwrap();
+                let path = if linked { f.linked() } else { f.main.clone() };
+                git(&path, &["checkout", "--detach"]);
+                let admin = PathBuf::from(git(&path, &["rev-parse", "--absolute-git-dir"]));
+                let file = admin.join(state);
+                fs::create_dir_all(file.parent().unwrap()).unwrap();
+                fs::write(
+                    file,
+                    if state == "BISECT_START" {
+                        "integrate/team\n"
+                    } else {
+                        "refs/heads/integrate/team\n"
+                    },
+                )
+                .unwrap();
+                let before = (f.refs(), snapshot(&f.main), snapshot(&path));
+                assert_eq!(
+                    merge(&f.repo, "integrate/team", &member, "Accept")
+                        .unwrap_err()
+                        .code,
+                    "integration_unavailable",
+                    "{state}, linked={linked}"
+                );
+                assert_eq!(before, (f.refs(), snapshot(&f.main), snapshot(&path)));
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    fn delayed_writer(f: &Fixture) -> PathBuf {
+        let real = std::env::split_paths(&std::env::var_os("PATH").unwrap())
+            .map(|path| path.join("git"))
+            .find(|path| path.is_file())
+            .unwrap();
+        let program = f.root.path().join("delayed-git");
+        executable(&program, &format!("#!/bin/sh\nfor arg do\n if [ \"$arg\" = update-ref ]; then\n  '{}' \"$@\" || exit $?\n  printf ran > '{}'\n  exec sleep 5\n fi\ndone\nexec '{}' \"$@\"\n", real.display(), f.root.path().join("writer-ran").display(), real.display()));
+        program
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_expired_deadline_is_a_certain_nonwrite() {
+        let f = Fixture::new();
+        create_branch(&f.repo, "integrate/team", &f.base).unwrap();
+        let member = f.branch("member", "new.txt", "new\n");
+        let mut git = Git::repo(&f.repo).unwrap();
+        git.program = delayed_writer(&f);
+        git.deadline = Instant::now() - Duration::from_secs(1);
+        let before = f.refs();
+        assert_eq!(
+            git.run(&["update-ref", "refs/heads/integrate/team", &member, &f.base])
+                .unwrap_err()
+                .code,
+            "integration_unavailable"
+        );
+        assert!(!f.root.path().join("writer-ran").exists());
+        assert_eq!(before, f.refs());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_started_writer_with_a_lost_result_is_uncertain() {
+        let f = Fixture::new();
+        create_branch(&f.repo, "integrate/team", &f.base).unwrap();
+        let member = f.branch("member", "new.txt", "new\n");
+        let mut git = Git::repo(&f.repo).unwrap();
+        git.program = delayed_writer(&f);
+        git.deadline = Instant::now() + Duration::from_secs(1);
+        assert_eq!(
+            git.run(&["update-ref", "refs/heads/integrate/team", &member, &f.base])
+                .unwrap_err()
+                .code,
+            "delivery_uncertain"
+        );
+        assert!(f.root.path().join("writer-ran").exists());
+        assert_eq!(f.tip(), member);
     }
 
     #[test]
