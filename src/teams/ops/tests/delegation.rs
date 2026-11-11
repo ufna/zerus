@@ -70,10 +70,10 @@ fn a_leads_ready_accept_waits_for_the_owner_when_merge_delegation_is_revoked() {
     refused(
         h.run(
             &service(),
-            Operation::RecordIntegration {
+            Operation::RecordIntegrationConflict {
                 node,
                 decision: seq,
-                commit: COMMIT.into(),
+                conflicts: vec!["src/example.rs".into()],
             },
         ),
         code::INVALID_STATE,

@@ -145,7 +145,7 @@ pub(super) fn integration(ctx: &mut Context<'_>) -> Result<()> {
         unreachable!()
     };
     let n = ctx.node(*node)?;
-    let permit = integration::permit(ctx, *node, *decision)?;
+    let permit = integration::permit(ctx, *node, *decision, integration::FactKind::Merge)?;
     if !matches!(commit.len(), 40 | 64)
         || !commit
             .bytes()
@@ -156,9 +156,14 @@ pub(super) fn integration(ctx: &mut Context<'_>) -> Result<()> {
         ));
     }
     integration::record(ctx, &permit, *node, Some(commit), &[])?;
+    integration::complete_merge(ctx, &permit)?;
     // The fact belongs to the accepted generation. A person's restore starts
     // a new round whose completion must not inherit this older merge.
-    if !needs_merge(ctx, &n) || n.integrated || permit.generation != ctx.generation(*node)? {
+    if permit.provenance_only
+        || !needs_merge(ctx, &n)
+        || n.integrated
+        || permit.generation != ctx.generation(*node)?
+    {
         return Ok(());
     }
     let table = ctx.node_table(*node)?;
@@ -194,7 +199,7 @@ pub(super) fn conflict(ctx: &mut Context<'_>) -> Result<()> {
         unreachable!()
     };
     let n = ctx.node(*node)?;
-    let permit = integration::permit(ctx, *node, *decision)?;
+    let permit = integration::permit(ctx, *node, *decision, integration::FactKind::Conflict)?;
     if conflicts.is_empty() || conflicts.len() > 200 {
         return Err(invalid(
             "No unresolved integration conflict can be recorded.",

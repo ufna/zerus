@@ -104,7 +104,17 @@ fn merge_delegation_off_opens_an_owner_card_and_approval_authorizes_service_inte
         node,
         commit: COMMIT.into(),
     };
-    refused(h.run(&service(), op.clone()), code::INVALID_STATE);
+    refused(
+        h.run(
+            &service(),
+            Operation::RecordIntegrationConflict {
+                node,
+                decision: h.accept_decision(node),
+                conflicts: vec!["src/example.rs".into()],
+            },
+        ),
+        code::INVALID_STATE,
+    );
     h.run(
         &person(),
         Operation::DecideCard {
