@@ -195,18 +195,31 @@ fn text_of(stderr: &str) -> String {
     }
 }
 
+/// Whether the reply says it refused, whether or not its code is valid.
+fn names_a_refusal(stdout: &[u8]) -> bool {
+    serde_json::from_slice::<Value>(stdout)
+        .is_ok_and(|reply| reply.get("ok").and_then(Value::as_bool) == Some(false))
+}
+
 /// The standard output of a read, or why it gave none.
 fn output(exit: Exit) -> Result<Vec<u8>, TeamError> {
     match exit {
         Exit::Code {
             code: 0, stdout, ..
         } => Ok(stdout),
-        Exit::Code { stdout, stderr, .. } => match super::refusal::parse(&stdout) {
-            Some((code, message)) => Err(TeamError::Refused { code, message }),
-            None => Err(TeamError::Failed {
+        Exit::Code { stdout, stderr, .. } => {
+            if let Some((code, message)) = super::refusal::parse(&stdout) {
+                return Err(TeamError::Refused { code, message });
+            }
+            if names_a_refusal(&stdout) {
+                // A refusal envelope with no valid code proves nothing: it is
+                // an invalid read, never a refusal.
+                return Err(invalid("hgs refused the read without a valid code"));
+            }
+            Err(TeamError::Failed {
                 message: text_of(&stderr),
-            }),
-        },
+            })
+        }
         Exit::Abnormal { stderr } => Err(TeamError::Failed {
             message: text_of(&stderr),
         }),
@@ -265,12 +278,11 @@ pub fn decode(read: &TeamRead, exit: Exit) -> Result<Value, TeamError> {
     match value.get("ok").and_then(Value::as_bool) {
         Some(true) => {}
         Some(false) => {
-            let (code, message) = super::refusal::parse(&stdout).unwrap_or_else(|| {
-                (
-                    "failed".to_owned(),
-                    "hgs refused the read without a reason".to_owned(),
-                )
-            });
+            // Only a well-formed refusal is a refusal. Anything else is an
+            // invalid read, so it can never stand as a refused page.
+            let Some((code, message)) = super::refusal::parse(&stdout) else {
+                return Err(invalid("hgs refused the read without a valid code"));
+            };
             return Err(TeamError::Refused { code, message });
         }
         None => return Err(invalid("team reply gives no success flag")),
@@ -571,6 +583,53 @@ mod tests {
         )
         .unwrap_err();
         assert_eq!(error.code(), "unavailable");
+    }
+
+    #[test]
+    fn a_refusal_without_a_valid_code_is_an_invalid_read() {
+        for error in [
+            serde_json::json!({"ok": false, "error": {"code": ""}}),
+            serde_json::json!({"ok": false, "error": {}}),
+            serde_json::json!({"ok": false, "error": {"code": "has space"}}),
+            serde_json::json!({"ok": false, "error": {"message": "no code"}}),
+        ] {
+            let reply = serde_json::json!({"ok": true, "actor": {}, "rows": [], "next": null});
+            let mut reply = reply;
+            reply["ok"] = serde_json::json!(false);
+            reply["error"] = error["error"].clone();
+            // Both a started command that ends nonzero and one that ends zero
+            // with the malformed envelope are invalid reads.
+            for code in [1, 0] {
+                let decode_error = decode(
+                    &TeamRead::List { after: None },
+                    Exit::Code {
+                        code,
+                        stdout: serde_json::to_vec(&reply).unwrap(),
+                        stderr: String::new(),
+                    },
+                )
+                .unwrap_err();
+                assert!(
+                    matches!(decode_error, TeamError::Invalid { .. }),
+                    "{reply} is not a refusal: {decode_error:?}"
+                );
+            }
+        }
+        // A well-formed refusal is still a refusal with its code.
+        let refused = serde_json::json!({
+            "ok": false,
+            "error": {"code": "teams_inactive", "message": "Teams are off."},
+        });
+        let error = decode(
+            &TeamRead::List { after: None },
+            Exit::Code {
+                code: 1,
+                stdout: serde_json::to_vec(&refused).unwrap(),
+                stderr: String::new(),
+            },
+        )
+        .unwrap_err();
+        assert_eq!(error.code(), "teams_inactive");
     }
 
     #[test]

@@ -678,3 +678,94 @@ fn reopening_a_key_during_its_read_retires_the_old_generation() {
     let out = model.apply(&fresh, Ok(list_reply()), now);
     assert_eq!(out.len(), 1, "the new scope publishes its view");
 }
+
+#[test]
+fn a_refused_cursor_resets_only_the_followed_selected_page() {
+    let refused = || TeamError::Refused {
+        code: "invalid_state".into(),
+        message: "The cursor does not belong to this list.".into(),
+    };
+    let now = Instant::now();
+
+    // A key no longer followed: the refusal is dropped and nothing is read.
+    let mut model = TeamsModel::default();
+    model.follow(
+        TeamsFollow {
+            list: true,
+            waiting: false,
+            team: None,
+        },
+        now,
+    );
+    let read = model.next(now).expect("the first page");
+    model.apply(&read, Ok(list_reply()), now);
+    assert!(model.page("list", Some("t1.old")));
+    let read = model.next(now).expect("the old page");
+    model.follow(TeamsFollow::default(), now);
+    assert!(model.apply(&read, Err(refused()), now).is_empty());
+    assert_eq!(model.next(now), None, "a retired key is not read again");
+
+    // A newer selection: the old refusal neither resets nor is published.
+    let mut model = TeamsModel::default();
+    model.follow(
+        TeamsFollow {
+            list: true,
+            waiting: false,
+            team: None,
+        },
+        now,
+    );
+    let read = model.next(now).expect("the first page");
+    model.apply(&read, Ok(list_reply()), now);
+    assert!(model.page("list", Some("t1.old")));
+    let read = model.next(now).expect("the old page");
+    assert!(model.page("list", Some("t1.new")));
+    assert!(model.apply(&read, Err(refused()), now).is_empty());
+    assert_eq!(
+        model.next(now),
+        Some(TeamRead::List {
+            after: Some("t1.new".into())
+        }),
+        "the person's later choice stands"
+    );
+
+    // The current selection of a followed key: reset and mark the view.
+    let mut model = TeamsModel::default();
+    model.follow(
+        TeamsFollow {
+            list: true,
+            waiting: false,
+            team: None,
+        },
+        now,
+    );
+    let read = model.next(now).expect("the first page");
+    model.apply(&read, Ok(list_reply()), now);
+    assert!(model.page("list", Some("t1.bad")));
+    let read = model.next(now).expect("the bad page");
+    let out = model.apply(&read, Err(refused()), now);
+    assert_eq!(out[0].1.payload()["code"], "cursor_reset");
+    assert_eq!(model.next(now), Some(TeamRead::List { after: None }));
+}
+
+#[test]
+fn generations_do_not_accumulate_for_retired_teams() {
+    let now = Instant::now();
+    let mut model = TeamsModel::default();
+    for n in 0..100 {
+        model.follow(
+            TeamsFollow {
+                list: false,
+                waiting: false,
+                team: Some(format!("00000000-0000-4000-8000-{n:012x}")),
+            },
+            now,
+        );
+    }
+    model.follow(TeamsFollow::default(), now);
+    assert!(
+        model.generations.len() <= 3,
+        "retired team generation entries retained: {}",
+        model.generations.len()
+    );
+}

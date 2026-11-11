@@ -147,9 +147,13 @@ pub struct TeamsModel {
     /// The watched team's replies, dropped when it is no longer watched.
     parts: Option<(String, Parts)>,
     hidden: bool,
-    /// Each followed key's generation: a reply or an end issued under an older
-    /// generation never touches the scope followed now.
+    /// The scope records of the keys followed now: a reply or an end issued
+    /// under an older generation never touches the scope followed now. A
+    /// retired scope's record goes, so the map stays bounded by the followed
+    /// views; the counter itself only grows.
     generations: BTreeMap<String, u64>,
+    /// The last generation handed out; one counter for the whole model.
+    generation_counter: u64,
     /// The generation the slot's in-flight read was issued under.
     issued: BTreeMap<Slot, u64>,
     /// The selected page cursor per followed key; absent means page one.
@@ -236,12 +240,14 @@ impl TeamsModel {
     fn retire(&mut self, key: &str, out: &mut Vec<(String, TeamsUpdate)>) {
         self.end(key, out);
         self.selected.remove(key);
+        self.generations.remove(key);
         self.queued.retain(|read| key_of(read) != key);
     }
 
     /// Starts a scope with a new generation, due at once.
     fn start(&mut self, key: &str, now: Instant) {
-        let generation = self.generations.get(key).copied().unwrap_or(0) + 1;
+        self.generation_counter = self.generation_counter.saturating_add(1);
+        let generation = self.generation_counter;
         self.generations.insert(key.to_owned(), generation);
         match key {
             "list" => {
@@ -497,9 +503,16 @@ impl TeamsModel {
             // touches the scope followed now.
             return out;
         }
-        if let (Some(_), Err(TeamError::Refused { code, message })) = (read.after(), &reply) {
-            // The store refused the selected page: show the first page again
-            // and say why.
+        if let (Some(after), Err(TeamError::Refused { code, message })) = (read.after(), &reply) {
+            // Only the selected page of a still-followed key, in the generation
+            // that issued the request, may reset. Any other refusal is
+            // dropped: nothing is published and nothing is scheduled.
+            let current = self.followed_key(&key).is_some()
+                && self.selected.get(&key).map(String::as_str) == Some(after)
+                && issued.is_some_and(|issued| issued == self.generation_of(&key));
+            if !current {
+                return out;
+            }
             self.selected.remove(&key);
             self.queued.retain(|queued| key_of(queued) != key);
             self.due.insert(slot, now);
