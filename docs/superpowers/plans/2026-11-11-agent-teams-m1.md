@@ -1204,7 +1204,14 @@ is not visited again, and no answer is tried on a later pass without
 starving the rest of the page. A member launch that completes after the
 stop, the archive or the member's removal is recorded as provenance and
 gets one owner card naming the member and the session; the store never
-treats that session as a live member.
+treats that session as a live member. The record of a clear is one
+mechanism for both of its users: the same service-only operation and table
+take the answer for a task of a stopped or archived team (package 10's
+page) and for a released stage of a live team (package 8, part C), and a
+bounded read, `Store::released_stages(team, limit, after)`, returns only
+released stage nodes whose clear has no final record, with the task to
+name: the bound task, or the stored creation request ID of a creation that
+was saved and never bound. Neither read walks settled history.
 
 **Known limit.** A stage excludes the implementer of the target's current
 round. After a reassignment an earlier implementer could hold a stage of
