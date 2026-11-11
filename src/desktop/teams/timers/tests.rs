@@ -7,6 +7,7 @@ use zerus_team_plan::model::TaskRef;
 mod cleanup;
 mod doorbell;
 mod late;
+mod record;
 mod timers;
 
 pub(super) const T0: i64 = 1234;

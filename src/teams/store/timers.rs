@@ -212,6 +212,8 @@ pub(crate) mod sql {
     pub const RELEASED_STAGES: &str = "SELECT x.node,i.task_project,CASE WHEN i.task_uuid<>'' THEN i.task_uuid ELSE s.request_id END FROM key_clear_outbox x JOIN node_identity i ON i.team=x.team AND i.id=x.node LEFT JOIN stage_tasks s ON s.team=x.team AND s.node=x.node WHERE x.team=?1 AND x.node>?2 AND (i.task_uuid<>'' OR s.request_id IS NOT NULL) ORDER BY x.node LIMIT ?3";
     pub const LATE: &str =
         "SELECT card FROM late_sessions WHERE team=?1 AND member=?2 AND launch=?3";
+    /// A refused request is proved only by its saved receipt.
+    pub const SAVED_REFUSAL: &str = "SELECT EXISTS(SELECT 1 FROM requests WHERE id=?1 AND team=?2 AND json_type(result,'$.Refused') IS NOT NULL)";
     pub const REFUSALS: &str = "SELECT node,reason FROM key_clears WHERE team=?1 AND state='refused' AND node>?2 ORDER BY node LIMIT ?3";
     pub const WAITING: &str =
         "SELECT EXISTS(SELECT 1 FROM inbox WHERE team=?1 AND state='open' AND seq>?2)";
@@ -317,6 +319,15 @@ impl Store {
             rows(db, sql::REFUSALS, params![team, after, page], |r| {
                 Ok((r.get(0)?, r.get(1)?))
             })
+        })
+    }
+    /// Whether `request` of `team` was refused, by its saved receipt: an
+    /// error code alone never proves it, because a failed write carries the
+    /// same code.
+    pub fn saved_refusal(&self, team: &str, request: &str) -> Result<bool> {
+        self.read(|db| {
+            db.query_row(sql::SAVED_REFUSAL, params![request, team], |r| r.get(0))
+                .map_err(storage)
         })
     }
     /// The card a late launch's provenance opened, if it was recorded.

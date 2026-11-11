@@ -108,6 +108,7 @@ fn every_timer_read_searches_an_index() {
         ("SETTLE", sql::SETTLE),
         ("LATE", sql::LATE),
         ("REFUSALS", sql::REFUSALS),
+        ("SAVED_REFUSAL", sql::SAVED_REFUSAL),
         ("RELEASED_STAGES", sql::RELEASED_STAGES),
         ("WAITING", sql::WAITING),
     ] {

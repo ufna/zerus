@@ -130,15 +130,18 @@ fn roster(store: &Store, team: &Team) -> Result<Vec<Member>> {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Recorded {
     Done,
-    /// The condition passed or the fact exists: final for this key.
+    /// Proved by the request's saved refusal: the condition passed or the
+    /// fact exists. Final for this key.
     Refused,
-    /// Another writer came first; the next pass reads again.
-    Stale,
+    /// Another writer came first, or the write's fate is unproved (a storage
+    /// failure carries the same code as a refusal): the next pass tries again,
+    /// and the uniqueness keys make a repeat harmless.
+    Retry,
 }
 /// Record one service fact with a fresh revision.
 fn record(store: &mut Store, team: &Team, operation: Operation, now: i64) -> Result<Recorded> {
     let Some(current) = store.team(&team.id)? else {
-        return Ok(Recorded::Refused);
+        return Ok(Recorded::Retry);
     };
     let actor = Actor::Service {
         person: team.owner.clone(),
@@ -152,9 +155,14 @@ fn record(store: &mut Store, team: &Team, operation: Operation, now: i64) -> Res
     };
     match ops::apply(store, &actor, &request, now) {
         Ok(_) => Ok(Recorded::Done),
-        Err(p) if p.code == code::STALE_REVISION => Ok(Recorded::Stale),
+        Err(p) if p.code == code::STALE_REVISION => Ok(Recorded::Retry),
         Err(p) if p.code == code::INVALID_STATE || p.code == code::DUPLICATE => {
-            Ok(Recorded::Refused)
+            let proved = store.saved_refusal(&team.id, &request.request_id);
+            Ok(if proved.unwrap_or(false) {
+                Recorded::Refused
+            } else {
+                Recorded::Retry
+            })
         }
         Err(p) => Err(p),
     }

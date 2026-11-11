@@ -110,5 +110,5 @@ fn provenance(
         name: name.chars().take(256).collect(),
     };
     // A refusal is final: recorded before, or a live member binds normally.
-    Ok(record(store, &team, op, now)? != Recorded::Stale)
+    Ok(record(store, &team, op, now)? != Recorded::Retry)
 }

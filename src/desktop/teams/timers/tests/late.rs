@@ -5,9 +5,9 @@ use crate::desktop::teams::{
 };
 use crate::teams::ops::Operation;
 
-const LAUNCH: &str = "00000000-0000-4000-8000-00000000a001";
+pub(super) const LAUNCH: &str = "00000000-0000-4000-8000-00000000a001";
 
-fn row(w: &mut World, member: &str, state: State, unknown_until: i64) {
+pub(super) fn row(w: &mut World, member: &str, state: State, unknown_until: i64) {
     let team = w.h.store.team(TEAM).unwrap().unwrap();
     let mut row = Row::new(&team, member, "epoch-1", state);
     row.plan = Some(Plan {
@@ -36,7 +36,7 @@ fn row(w: &mut World, member: &str, state: State, unknown_until: i64) {
     row.unknown_until = unknown_until;
     assert!(w.ledger.launches().insert(&row, T0).unwrap());
 }
-fn session(w: &World) -> LaunchRead {
+pub(super) fn session(w: &World) -> LaunchRead {
     let home = w.h.store.team(TEAM).unwrap().unwrap().home;
     LaunchRead::Session(Box::new(ObservedSession {
         machine: home,
@@ -54,7 +54,7 @@ fn session(w: &World) -> LaunchRead {
         conversation_id: "conversation-example".into(),
     }))
 }
-fn launch_state(w: &mut World, member: &str) -> (State, bool) {
+pub(super) fn launch_state(w: &mut World, member: &str) -> (State, bool) {
     let row = w.ledger.launches().get(TEAM, member).unwrap().unwrap();
     (row.state, row.late_after_stop)
 }
