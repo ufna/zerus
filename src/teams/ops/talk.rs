@@ -54,9 +54,9 @@ pub(super) fn open_card(ctx: &mut Context<'_>) -> Result<()> {
         unreachable!()
     };
     ctx.active()?;
-    if kind == "integration" {
+    if matches!(kind.as_str(), "integration" | "pipeline_acceptance") {
         return Err(invalid(
-            "Integration cards are opened by an acceptance decision.",
+            "Acceptance cards are opened by their pipeline or decision.",
         ));
     }
     if let Some(node) = node {
@@ -102,6 +102,8 @@ pub(super) fn decide_card(ctx: &mut Context<'_>) -> Result<()> {
             seq.ok_or_else(missing)?,
             decision,
         )?
+    } else if kind == "pipeline_acceptance" {
+        pipeline::decide_card(ctx, node.ok_or_else(missing)?, decision)?
     } else {
         ctx.active()?;
         false
@@ -156,10 +158,10 @@ pub(super) fn close_card(ctx: &mut Context<'_>) -> Result<()> {
     };
     ctx.active()?;
     reason(why)?;
-    let changed = ctx.db.execute("UPDATE cards SET state='closed',decision='stale',decided_actor=?3 WHERE team=?1 AND seq=?2 AND state='open' AND kind<>'integration' AND actor=?3",params![ctx.team.id,card,encode(ctx.actor)?]).map_err(storage)?;
+    let changed = ctx.db.execute("UPDATE cards SET state='closed',decision='stale',decided_actor=?3 WHERE team=?1 AND seq=?2 AND state='open' AND kind NOT IN ('integration','pipeline_acceptance') AND actor=?3",params![ctx.team.id,card,encode(ctx.actor)?]).map_err(storage)?;
     if changed != 1 {
         return Err(invalid(
-            "Only an open non-integration card opened by this service can be closed.",
+            "Only an open ordinary card opened by this service can be closed.",
         ));
     }
     Ok(())

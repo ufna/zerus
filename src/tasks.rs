@@ -31,6 +31,7 @@ mod sessions;
 mod messages;
 mod history;
 mod index;
+mod teams;
 
 /// A send that pasted the prompt but could not record it: its outcome is
 /// uncertain, and the phone's receipt says so.
@@ -43,7 +44,7 @@ fn paste_uncertain(message: &str) -> bool {
     message.starts_with(SENT_UNRECORDED) || message.starts_with("delivery uncertain")
 }
 
-const USAGE: &str = "usage: hgs task list --project P [--stage S] | list --project P --stage S --limit 1..200 [--after CURSOR|--before CURSOR] [--if-revision R] [--session ID [--host ALIAS]] | get REF [--history-limit 1..80 [--history-before CURSOR] [--attachments metadata]] | attachment REF --file N [--entry ID] | add --project P [--backlog] [--start] [--target SESSION|any [--host ALIAS]] [--title TITLE [--request-id UUID]] [--position N] | edit REF | rename REF | move REF --top|--before REF|--after REF|--position N | stage REF backlog|todo|done | target REF SESSION|any|new-session|subagent [--parent SESSION] [--host ALIAS] | send REF [--session SESSION [--host ALIAS]] | start-plan REF --json | start-deliver REF --json [--recover-only] | cancel REF [--reason TEXT] | cancel-execution REF --json (guard JSON on stdin) | handoff REF --session SESSION [--host ALIAS] | start REF | report REF [--progress|--ready] [--considered REV] | report-attempt REF --attempt UUID [--progress|--ready] [--considered REV] | comment REF [--content-json] | message REF --request-id UUID --mode queue|send|reopen|note [--expect-dispatch ID] [--content-json] | worker REF --subagent ID --request-id REQUEST | settings --project P [--set] | review-copy --project P --uuid UUID [--confirm FINGERPRINT] --json | cutover --project P [--hold on|off [--confirm]] | digests --json | exchange --json | mobile-send|mobile-cancel|mobile-done --json
+const USAGE: &str = "usage: hgs task list --project P [--stage S] | list --project P --stage S --limit 1..200 [--after CURSOR|--before CURSOR] [--if-revision R] [--session ID [--host ALIAS]] | get REF [--history-limit 1..80 [--history-before CURSOR] [--attachments metadata]] | attachment REF --file N [--entry ID] | add --project P [--backlog] [--start] [--team TEAM [--role ROLE] [--pipeline PIPELINE]] [--target SESSION|any [--host ALIAS]] [--title TITLE [--request-id UUID]] [--position N] | edit REF | rename REF | move REF --top|--before REF|--after REF|--position N | stage REF backlog|todo|done | target REF SESSION|any|new-session|subagent|team TEAM [--role ROLE] [--pipeline PIPELINE] [--parent SESSION] [--host ALIAS] | send REF [--session SESSION [--host ALIAS]] | start-plan REF --json | start-deliver REF --json [--recover-only] | cancel REF [--reason TEXT] | cancel-execution REF --json (guard JSON on stdin) | handoff REF --session SESSION [--host ALIAS] | start REF | report REF [--progress|--ready] [--considered REV] | report-attempt REF --attempt UUID [--progress|--ready] [--considered REV] | comment REF [--content-json] | message REF --request-id UUID --mode queue|send|reopen|note [--expect-dispatch ID] [--content-json] | worker REF --subagent ID --request-id REQUEST | settings --project P [--set] | review-copy --project P --uuid UUID [--confirm FINGERPRINT] --json | cutover --project P [--hold on|off [--confirm]] | digests --json | exchange --json | mobile-send|mobile-cancel|mobile-done --json
   REF is T-xxxxxx with --project P, or PROJECT/T-xxxxxx; texts and --set settings are read from stdin;
   a change an agent makes prints one line, and --json prints the task";
 
@@ -977,13 +978,15 @@ fn position_index(args: &[String]) -> Result<Option<usize>> {
 }
 
 fn add(config: &Config, args: &[String]) -> Result<Value> {
+    let team = teams::add(config, args)?;
     let content = stdin_content(args)?;
     let text = content.text;
     let machines = machines(config)?;
-    let author = actor(&machines.here, args, false)?;
+    let author = teams::actor(config, &machines, args, false)?;
     let title = option(args, "--title")?;
     if title.is_none() { agent_text(&text, "add", &author)?; }
     let (id, name) = project_arg(config, args, &author)?;
+    if let Some(team) = &team { teams::destination(config, &machines, &id, team, args)?; }
     let stage = if flag(args, "--backlog") {
         Stage::Backlog
     } else {
@@ -993,7 +996,7 @@ fn add(config: &Config, args: &[String]) -> Result<Value> {
     if option(args, "--host")?.is_some() && matches!(option(args, "--target")?, None | Some("any")) {
         return Err(fail("--host needs a --target session"));
     }
-    let target = match (&author, option(args, "--target")?) {
+    let target = if team.is_some() { Target::Any } else { match (&author, option(args, "--target")?) {
         (Actor::Agent(_), Some(_)) => {
             return Err(fail(
                 "a task an agent files is pinned to its own session; --target is for people",
@@ -1002,7 +1005,7 @@ fn add(config: &Config, args: &[String]) -> Result<Value> {
         (Actor::Agent(own), None) => Target::Session(own.clone()),
         (Actor::Person, None | Some("any")) => Target::Any,
         (Actor::Person, Some(session)) => Target::Session(machines.target(machines.node(option(args, "--host")?)?, session, args)?),
-    };
+    }};
     let position = position_index(args)?.map_or(Position::End, Position::Index);
     let store = store(config, &id)?;
     let request = option(args, "--request-id")?;
@@ -1018,10 +1021,19 @@ fn add(config: &Config, args: &[String]) -> Result<Value> {
         if title.is_none() && flag(args, "--start") { task.record_start(&author, now()).map_err(fail)?; }
         store.save(&mut task).map_err(fail)?;
     }
+    let (store, task, team_reply) = if let Some(team) = &team {
+        let task_ref = zerus_team_plan::model::TaskRef { project:id.clone(), uuid:task.uuid().into() };
+        drop(store);
+        let team_reply = teams::send(config, &machines, &task_ref, team, args)?;
+        let store = self::store(config, &id)?;
+        let task = store.load(&task_ref.uuid).map_err(fail)?;
+        (store, task, team_reply)
+    } else { (store, task, json!({})) };
     let at = place(&store, &task)?;
-    let mut out = json!({"task": view(&task, &name, true, &machines)?});
+    let mut out = team_reply;
+    out["task"] = view(&task, &name, true, &machines)?;
     if created && flag(args, "--start") { reports::started(&mut out, &task, &name)?; }
-    Ok(with_answer(&author, "add", out, at, ""))
+    Ok(teams::annotate(with_answer(&author, "add", out, at, "")))
 }
 
 fn change(config: &Config, action: &str, args: &[String]) -> Result<Value> {
@@ -1035,6 +1047,7 @@ fn change_within(config: &Config, action: &str, args: &[String], wait: Option<st
 }
 
 fn change_guarded(config: &Config, action: &str, args: &[String], wait: Option<std::time::Duration>, guard: Option<&cancellation::Guard>) -> Result<Value> {
+    let team = teams::target(config, action, args)?;
     // A send's or handoff's attempt has one budget from here (C3 A3).
     let deadline = std::time::Instant::now() + attempts::BUDGET;
     let content = if action == "edit" || (action == "comment" && flag(args, "--content-json")) { Some(stdin_content(args)?) } else { None };
@@ -1055,38 +1068,12 @@ fn change_guarded(config: &Config, action: &str, args: &[String], wait: Option<s
         (machines(config)?, None)
     };
     let here = machines.here.as_str();
-    let who = actor(here, args, matches!(action, "send" | "handoff" | "cancel"))?;
+    let mut who = teams::actor(config, &machines, args, matches!(action, "send" | "handoff" | "cancel"))?;
     if let Some(text) = &text {
         if action != "edit" || !text.is_empty() { agent_text(text, action, &who)?; }
     }
     let r = reference_by(config, args, &who, projects.as_deref().map(|p| (p, deadline)))?;
     let (project_id, project_name) = (&r.project.0, &r.project.1);
-    // An agent reads a refused send as "SESSION cannot take it now: …"; a paste
-    // that happened is never reworded. A command another computer forwards
-    // (`--agent`) leaves the wording to that computer, where the agent reads it.
-    let forwarded_here = option(args, "--agent")?.is_some();
-    let refuse = |error: Error, to: &str| -> Error {
-        if matches!(who, Actor::Agent(_))
-            && !forwarded_here
-            && action == "send"
-            && !paste_uncertain(&error.message)
-        {
-            fail(answers::refused(to, &error.message))
-        } else {
-            error
-        }
-    };
-    // Explicit worker registration inspects the native roster once, before the
-    // project lock. Normal task listings never query providers for every row.
-    let worker_proof = if action == "worker" {
-        let Actor::Agent(own) = &who else { return Err(fail("worker is for the task's coordinator")); };
-        let id = option(args, "--subagent")?.ok_or_else(|| fail("worker needs --subagent ID"))?;
-        let request = option(args, "--request-id")?.ok_or_else(|| fail("worker needs the current --request-id"))?;
-        let caller = crate::state::session_graph::caller_record().ok_or_else(|| fail("the coordinator run is no longer live"))?;
-        let details = crate::state::reference_details(&own.session, "", "").map_err(fail)?;
-        let worker = observed_worker(own, &caller, &details, id, request)?;
-        Some(worker)
-    } else { None };
     let store = match wait {
         None if attempted => store_until(config, project_id, deadline)?,
         None => store(config, project_id)?,
@@ -1102,7 +1089,45 @@ fn change_guarded(config: &Config, action: &str, args: &[String], wait: Option<s
         }
     };
     let mut task = find(&store, &r.task)?;
+    if let Some(actor) = teams::actor_for_marked_task(config, &machines, args, matches!(action, "send" | "handoff" | "cancel"), &task)? { who = actor; }
+    // An agent reads a refused send as "SESSION cannot take it now: …"; a paste
+    // that happened is never reworded. A command another computer forwards
+    // (`--agent`) leaves the wording to that computer, where the agent reads it.
+    let forwarded_here = option(args, "--agent")?.is_some();
+    let refuse = |error: Error, to: &str| -> Error {
+        if matches!(who, Actor::Agent(_))
+            && !forwarded_here
+            && action == "send"
+            && !paste_uncertain(&error.message)
+        {
+            fail(answers::refused(to, &error.message))
+        } else {
+            error
+        }
+    };
+
     if let Some(guard) = guard { guard.check(&task)?; }
+    teams::guard(config, &machines, &task, action, args)?;
+    if let Some(team) = &team {
+        let task_ref = zerus_team_plan::model::TaskRef { project:project_id.clone(), uuid:task.uuid().into() };
+        drop(store);
+        let mut reply = teams::send(config, &machines, &task_ref, team, args)?;
+        let store = self::store(config, project_id)?;
+        let task = store.load(&task_ref.uuid).map_err(fail)?;
+        reply["task"] = view(&task, project_name, true, &machines)?;
+        return Ok(teams::annotate(with_answer(&who, action, reply, 0, "")));
+    }
+    // Explicit worker registration inspects the native roster once, after the
+    // team guard under the project lock. Normal task listings never query providers for every row.
+    let worker_proof = if action == "worker" {
+        let Actor::Agent(own) = &who else { return Err(fail("worker is for the task's coordinator")); };
+        let id = option(args, "--subagent")?.ok_or_else(|| fail("worker needs --subagent ID"))?;
+        let request = option(args, "--request-id")?.ok_or_else(|| fail("worker needs the current --request-id"))?;
+        let caller = crate::state::session_graph::caller_record().ok_or_else(|| fail("the coordinator run is no longer live"))?;
+        let details = crate::state::reference_details(&own.session, "", "").map_err(fail)?;
+        let worker = observed_worker(own, &caller, &details, id, request)?;
+        Some(worker)
+    } else { None };
     if action == "edit" && text.as_deref() == Some("") && task.title().is_empty() { agent_text("", action, &who)?; }
     enrich(&mut task, &machines)?;
     if let Some(expected) = option(args, "--expect-new-session-parent")? {
@@ -1183,8 +1208,10 @@ fn change_guarded(config: &Config, action: &str, args: &[String], wait: Option<s
                     return Ok(with_answer(&who, action, out, 0, &to.session));
                 }
                 None => {
+                    attempts::pause_at(&frozen.id, "legacy_reload");
                     let store = self::store(config, project_id)?;
                     let mut task = store.load(&uuid).map_err(fail)?;
+                    teams::guard(config, &machines, &task, action, args)?;
                     enrich(&mut task, &machines)?;
                     (store, task)
                 }
@@ -1274,6 +1301,7 @@ fn change_guarded(config: &Config, action: &str, args: &[String], wait: Option<s
                 Target::Session(machines.target(machines.node(option(args, "--host")?)?, value, args)? )
             };
             task.set_target(&target, &who, now()).map_err(fail)?;
+            teams::clear(config, here, &mut task, &who)?;
         }
         "send" | "handoff" => {
             let (session, pin) = session.expect("a send has its session");
@@ -1310,7 +1338,9 @@ fn change_guarded(config: &Config, action: &str, args: &[String], wait: Option<s
         out[key] = value.clone();
     }
     if action == "start" { reports::started(&mut out, &task, project_name)?; }
-    Ok(with_answer(&who, if action == "report-attempt" { "report" } else { action }, out, at, &destination))
+    let out = with_answer(&who, if action == "report-attempt" { "report" } else { action }, out, at, &destination);
+    drop(store);
+    Ok(out)
 }
 
 /// Binds the task's target and holder to the verified runs this computer

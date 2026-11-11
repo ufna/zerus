@@ -190,7 +190,7 @@ fn report_lookup_is_keyed_to_the_exact_node_and_generation() {
         .unwrap();
     assert!(
         plan.iter()
-            .any(|s| s.contains("effects_report")
+            .any(|s| s.contains("effects_attempt")
                 && s.contains("team=? AND node=? AND generation=?")),
         "{plan:?}"
     );

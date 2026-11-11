@@ -11,6 +11,9 @@ publish = false
 # Helpers that other crates' tests use to build documents only an older
 # replica writes (never enabled outside tests).
 test-support = []
+# Compatibility control: compile the current-schema reader without the
+# optional team field. Never enabled by production consumers.
+test-without-team = []
 
 [dependencies]
 base64 = "0.22"

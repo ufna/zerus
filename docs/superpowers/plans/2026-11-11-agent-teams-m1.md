@@ -858,6 +858,21 @@ the process table can be overmounted, and a forged table let a command pass
 as another live session. The cost is stated: a lead or a member whose shell
 runs in a sandbox with its own user namespace cannot use `hgs team`.
 
+The namespace is read without crossing a mount (coordinator finding of
+2026-11-11, verified by a probe inside a private namespace). Opening
+`/proc/self/ns/user` by path and comparing the object is not enough: a
+handle to the initial namespace taken before entering a private user and
+mount namespace can be bound, with its directory, over the process's own
+`ns` directory, and the path then answers with the initial namespace. The
+admission opens `/proc`, requires a procfs root (file system type and root
+inode), resolves `self/ns/user` from it with `openat2` and
+`RESOLVE_NO_XDEV` without following the last link, and compares the link's
+own text with the initial namespace. Any failure refuses, including a
+kernel or a sandbox without `openat2`; there is no fallback to the path.
+The same admission serves the marked and the unmarked caller. It does not
+cover a caller that replaces or instruments `hgs` itself or writes the
+store directly: that is the stated limit of the interim rule.
+
 The preview is for Linux in this milestone. Where the ancestry cannot be
 evaluated, an unmarked command is refused and the preview cannot be turned
 on. macOS is treated that way until the real-process suite has run on a
@@ -873,7 +888,7 @@ this computer's own `hgs` run as the actor's one original child:
 | Hand-out and reopen | `hgs task team-deliver` (below) |
 | Doorbell, a return's reason, a brief on resume | `hgs send SESSION --json`, bound to the run and conversation it read |
 | An answer to a member's prompt | `hgs answer SESSION --json`, after the approval journal reserved it |
-| Integration | the functions of `src/teams/integrate.rs` in a child of its own |
+| Integration | the functions of `src/teams/integrate.rs`, called in the actor's worker thread as package 7 calls `create_branch`; their Git commands are the bounded children. No command arm of `hgs` starts a merge |
 
 **Team delivery (package 6, second part).** The attempt writer is reachable
 only through the task CLI, and `start-deliver` is the person's. A new
@@ -896,6 +911,27 @@ its authority from a stored effect or decision, never from the caller:
 pipeline asked for. A stage's task is an ordinary task with the team key;
 its kind lives on the team's node. Its identity is derived from the effect's
 request ID, so a repeat creates nothing.
+
+Both answer in the envelope of `start-deliver`, echoing the request.
+`team-done`: `{schema, team, node, state, error}` with `done` (the task is
+Done after the call, whether this call moved it or it already was),
+`refused` (the store holds no accepted node of that team that this task
+finishes; nothing was written; not repeated before the node's observation
+or decision changes) or `cutting_over` (nothing was written; repeated with
+the backoff). It has no uncertain state: the observation settles it, and a
+repeat is safe until the observation says Done. `team-stage`:
+`{schema, id, team, node, state, error}` with `created` (also when the task
+of that derived identity already exists), `refused` or `cutting_over`. A
+reply that does not echo its request, an unknown state, a malformed reply
+and a failed child are all treated as no answer.
+
+A fourth command of the same kind clears what a released stage leaves
+behind: `hgs task team-clear REF --json` reads `{schema, team, node}` and
+removes the team key from the task of a stage node that the store holds as
+released for that team on this home, on an exact key match. It answers
+`{schema, team, node, state, error}` with `cleared` (also when the key is
+already absent), `refused` or `cutting_over`, never touches a task node or
+a live stage, and writes nothing to the team store.
 
 **The CLI as the desktop's interface (packages 3, 5 and 12).** The client
 core reads through `hgs team` and follows the shapes package 5 pins in
@@ -965,6 +1001,160 @@ task: `cancel`, `cancel-execution`, `move`, `edit` and `rename`. With the
 preview off, a key that names this computer does not guard, and a key that
 names another computer still refuses agents.
 
+## Decisions during wave 3
+
+Recorded 2026-11-11 after the review of package 9's core.
+
+**A lead accepts only what its pipeline handed over (package 9).** For the
+node's current generation a lead's Accept is refused unless the pipeline's
+run reached the lead. A lead's Return, Reassign or Cancel retires a pending
+stage but never opens the gate for the same attempt: when the reopen cannot
+be delivered, the lead decides again (Return, Reassign, Cancel) or asks the
+person. The person is never refused.
+
+**A stage ends by its holder's verdict or by the person (package 9, second
+review).** A lead may Return a stage to its holder or Reassign it; a lead's
+Accept and Cancel of a stage node are refused, because either one ends the
+stage without a verdict and the stage's end was then read as the person's
+override, which handed the target to the lead with no review. A holder that
+reports on a stage instead of giving a verdict produces a lead inbox item
+and nothing else; the stage's hand-out text tells the holder to answer with
+`hgs team verdict`. A report recorded by a store from before the pipeline
+tables has no run and cannot be accepted by the lead; the person accepts
+it. That affects development stores only and is a stated limit; so does a
+lead's Cancel of a stage recorded before this rule, which a later board
+cancel reads as the team's own end (the lead recovers with a Return of the
+target).
+
+**A stage node is never restored (package 9).** A stage whose creation is
+not wanted, reserved or created is released. A person who moves a finished
+stage's task back on the board changes that task only: the observation is
+recorded and the node stays archived. The service clears the team key of a
+stage task whose node is released, including one created by a late outcome
+for a superseded stage (package 8, part C).
+
+**A round is an attempt of the task (package 9).** Every reopen starts a
+round, whoever caused it: a pipeline's return, a lead's Return or Reassign,
+a person's reopen on the board. A pipeline hands the task to the lead when
+its rounds are used up, so a reassignment brings that moment closer. This
+is kept because one counter also names a stage's target round.
+
+**A report settles the open items of its attempt (package 9).** The
+member's unanswered questions on that node and an uncertain delivery are
+closed by the trusted report, for every pipeline. The lead's inbox item for
+a reported task carries the report's text first and then the pipeline's
+reason and findings; for a pipeline without stages it is the report's text
+as before.
+
+**A resumed member keeps its launch and conversation and gets a new run
+(packages 8 and 17).** A standing resume restores the member's exact session: launch ID,
+native session, machine, agent, account, worktree and conversation stay, and
+only the run is new: a resume continues the member's conversation, as the
+native session action requires. Package 17 records the run from the completed resume
+receipt and exposes `confirm::resumed_binding(state, team, member, launch)`,
+a bounded read-only fact that grants neither liveness nor authority to
+send. The actor takes a member's current run from that fact when it exists
+and from the launch otherwise, through one function of its availability
+port, and proves liveness and idleness from the fleet row of that exact
+run. A member whose launch ended and who has no resumed binding is not
+free.
+
+**What the board needs to show a stage (packages 5, 9, 12 and 13).** The
+Team tab follows the fork author's board: a card says which stage it is in
+and in which round. The reads gain additive, optional fields and nothing is
+inferred from a role's name. A queue row carries `kind` (`task` or `stage`,
+absent means task) and `rounds`, the pinned pipeline's rounds; a stage row
+also carries `stage: {kind, target, round}` with the kind `review`, `test`
+or `land`, the target node and the target's round that the stage checks. A
+member row carries `model` when its role names one. The client core passes
+them through as optional values; a view shows a stage by its kind when the
+kind is present and by its role's own name otherwise.
+
+**An effect is admitted at the moment it starts (packages 8 and 17, after
+their reviews).** The linearization point of an automatic effect is its
+start, not the read before it. For an effect that is a child process (a
+hand-out, a reopen, `team-done`, an answer, a resume) the stored facts that
+allow it are read and the child is spawned inside one immediate transaction
+on the team store, released as soon as the spawn has returned; the shared
+runner lets an admission hold a value across the spawn for this. For a
+merge the point is the update of the integration ref: the admission is read
+again inside such a transaction held only across that update, not across
+the tree merge before it. A pause, a stop or a switched-off delegation
+committed before the lock prevents the effect; one that waits behind it is
+ordered after. Facts outside the team store are read last in the same
+section, and the remaining window is the spawn call itself.
+
+**Merges (package 8, after its review).** A member reports from the branch
+of its task, which its agent creates; the reported commit is the HEAD of
+the member's owned worktree whatever its branch, and only the ownership
+record is checked. A conflict fact carries at most 199 paths within the
+ledger row's bound and then one entry that counts the rest. A merge whose
+result is unknown blocks only its own decision; it is settled by reading,
+and once a new worker epoch has started and the Git deadline has passed, a
+negative ancestry read is a certain non-write and a new original may
+start. An integration fact's commit is the commit of the integration
+branch that was verified to contain the work: the new merge commit, or the
+tip that already contained it; never the member's commit.
+
+**Who is a team's session (packages 5 and 14, after their review).** The
+desktop must know which sessions belong to a live team without loading
+each team: Waiting for you lists the requests of members as well as of
+leads, and a parent link proves nothing. A row of `hgs team list` for a
+team that is planning, running or paused carries, besides `lead_session`,
+an additive `member_sessions`: the bound sessions of its members as
+`{member, machine, session_id}`, at most the roster's size, absent when
+none is bound. The client core passes it through, and the frontend takes
+membership and the team's status from the same row.
+
+**Switching off the merge delegation takes back what has not merged
+(packages 3 and 8).** The authority to merge lives in the decision, and the
+actor checks only that the exact accept is still Ready at the moment the
+ref is updated. So the store keeps that state true: when a settings change
+switches `merge_accepted` off, every Ready accept that no person decided or
+approved and that has no integration fact yet goes back to awaiting the
+owner in the same transaction, with its integration card. An accept the
+person made, or approved on its card, stays Ready whatever the setting.
+
+**A doorbell points at the inbox and carries none of it (package 10).** The
+doorbell says how many items wait and names the command that reads them;
+the text of an item comes from members and is never put into a message of
+the service. It rings when the team is running, the lead's session is live
+and idle with no pending request, an open item is newer than the mark of
+the last doorbell, and the interval has passed since the last reservation.
+The reservation names the lead's run and conversation and the mark and is
+durable before the send; the send is admitted at its spawn. A refused
+doorbell may ring again after the interval; an uncertain one is never sent
+again for its mark, and a newer item rings a new one. A resumed lead gets a
+new doorbell, never a replay.
+
+**A timer fires once and only while its condition holds (package 10).**
+The store writes a timer's inbox item or owner card in one operation that
+rechecks the condition from stored facts in the same transaction, under a
+uniqueness key of the team, the timer, and the node with its generation or
+the inbox item. Times the store holds are read from it. Times only the
+service saw (a member idle, a lead not working) live in memory, so after a
+restart such a timer may be late and is never early. No timer fires while
+the team is paused or stopped, and the operation that ends a condition
+closes the timer's open card in the same transaction. An undecided report
+makes a lead inbox item after `remind_lead_minutes` and an owner card after
+`remind_person_minutes`. `answer_escalate_minutes` belongs to milestone 3.
+
+**After a stop Zerus releases tasks and ends no agent (package 10).** The
+service clears the team key of the stopped or archived team's open tasks in
+bounded pages through `team-clear`; an answer is recorded so that the node
+is not visited again, and no answer is tried on a later pass without
+starving the rest of the page. A member launch that completes after the
+stop, the archive or the member's removal is recorded as provenance and
+gets one owner card naming the member and the session; the store never
+treats that session as a live member.
+
+**Known limit.** A stage excludes the implementer of the target's current
+round. After a reassignment an earlier implementer could hold a stage of
+the same target where the stage's role equals the implementer's role; the
+built-in pipelines use a separate reviewing role. Excluding every earlier
+implementer needs a list on the stage node and in the kernel and is a
+tracked follow-up.
+
 ## Addendum: wave 3 (packages 8, 9, 10, 13, 14 and 17)
 
 Written 2026-11-11 against `integrate/teams` with packages 1, 2, 3, 4, 7, 11
@@ -1005,6 +1195,8 @@ Operation::{HandoutIntent, HandoutOutcome, ReopenIntent, ReopenOutcome,
             ObserveTask, RecordReport, RecordIntegration, RecordIntegrationConflict}
 // package 6
 crate::teams::tasks::observe(state, &TaskRef)
+crate::teams::tasks::report(state, &TaskRef) -> Result<Option<String>>   // 6b: the holder's report text of the current attempt
+zerus_replica::ProjectStore::changes_since(generation, offset) -> Changes
 hgs task team-deliver REF --json   {schema, id, team, node, member}
 hgs task team-done REF --json      {schema, team, node}
 // package 11
@@ -1015,10 +1207,12 @@ desktop::teams::Worker::wake, the original child kind and its custody
 
 **Deliver:**
 
-- *Observe.* One bounded read of the project's task window per team per
-  pass gives the revision of each task; `observe` is called only for a live
-  node whose revision differs from the store's observation, and for every
-  live node on the one-minute pass.
+- *Observe.* The actor keeps its place in each project's change journal
+  (`changes_since`: generation and offset) in its ledger. One read per
+  project per pass names the changed documents; `observe` is called only
+  for a live node whose task is among them, and for every live node, paged,
+  when the journal cannot tell, at the first pass after a start and on the
+  one-minute pass.
 - *Free members.* A member is free when its session is live and idle (not
   working, not `Background`, no pending request), the store holds no open
   effect or attempt for it, and it is not paused. Liveness comes from the
@@ -1034,7 +1228,7 @@ desktop::teams::Worker::wake, the original child kind and its custody
   `integrate::reported_commit` from the member's worktree, without writing.
   A dirty worktree is named in the report text.
 - *Integration.* For each row of `integration_accepts`: `descends` and
-  `merge` in a child of its own, then `RecordIntegration` or
+  `merge` after one ledger reservation, then `RecordIntegration` or
   `RecordIntegrationConflict` naming the decision. An accepted node that
   needs no merge, or whose fact is recorded, is finished with `team-done`.
 - *Reopens.* An open reopen effect is delivered with `team-deliver` and
@@ -1046,6 +1240,16 @@ desktop::teams::Worker::wake, the original child kind and its custody
 
 Every effect sits behind a trait; production adapters are this computer's
 own `hgs` as an original child. Functions of about 60 lines or fewer.
+
+The package is assigned in parts. A: the tick, observe, free members,
+hand-out and reopens. B: reports, integration, finish and wake. C, after
+packages 6, 6b, 9 and the CLI are merged: the stage-task step between
+reports and integration (package 9's read of stage nodes that need their
+task, `hgs task team-stage`), the adapters for `observe` and `report`, and
+the two status fields. A refused hand-out is not tried again before that
+task's observation changes or the retry policy of package 7 allows it. A
+merge whose result is unknown is settled by reading (`descends`), never by
+a second write while it is unread.
 
 **Tests:** Review focus 1 and 2; each step at a restart before and after
 its effect; an uncertain delivery makes one inbox item and no second send;

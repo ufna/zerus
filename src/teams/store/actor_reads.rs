@@ -10,7 +10,7 @@ pub struct Report {
     pub text: String,
     pub commit: String,
 }
-const REPORT: &str = "SELECT e.member,r.text,r.commit_id FROM reports r JOIN effects e INDEXED BY effects_report ON e.team=r.team AND e.node=r.node AND e.generation=r.generation WHERE r.team=?1 AND r.node=?2 AND r.generation=?3 AND e.state NOT IN ('refused','superseded') ORDER BY e.seq DESC LIMIT 1";
+const REPORT: &str = "SELECT e.member,r.text,r.commit_id FROM reports r JOIN effects e INDEXED BY effects_attempt ON e.team=r.team AND e.node=r.node AND e.generation=r.generation WHERE r.team=?1 AND r.node=?2 AND r.generation=?3 AND e.state NOT IN ('refused','superseded') ORDER BY e.seq DESC LIMIT 1";
 const ACCEPTS:&str="SELECT seq,node,generation,actor,kind,text,state FROM decisions INDEXED BY decision_pending WHERE team=?1 AND state<>'settled' AND state='ready' AND kind='accept' AND node>?2 AND node<=?3 ORDER BY node LIMIT ?4";
 const REOPENS: &str = "SELECT seq,node,generation,actor,kind,text,state FROM decisions INDEXED BY decision_pending WHERE team=?1 AND state<>'settled' AND state='pending' AND kind IN ('return','reassign') AND node>?2 AND node<=?3 ORDER BY node LIMIT ?4";
 const OPEN: &str = "SELECT seq,node,member,generation,request_id,actor,state,outcome,created_ms,kind FROM effects INDEXED BY effects_pending WHERE team=?1 AND state IN ('reserved','submitted','uncertain','cutting_over') AND seq>?2 AND seq<=?3 ORDER BY seq LIMIT ?4";

@@ -228,7 +228,7 @@ pub(super) fn report(ctx: &mut Context<'_>) -> Result<()> {
         unreachable!()
     };
     ctx.active()?;
-    let n = ctx.live_node(*node)?;
+    let mut n = ctx.live_node(*node)?;
     if n.state != NodeState::Reported
         || *generation != ctx.generation(*node)?
         || holder(ctx, *node)?.as_deref() != Some(member)
@@ -244,13 +244,23 @@ pub(super) fn report(ctx: &mut Context<'_>) -> Result<()> {
     reason(body)?;
     text(commit, 256)?;
     ctx.db.execute("INSERT INTO reports(team,node,generation,actor,text,commit_id) VALUES(?1,?2,?3,?4,?5,?6)",params![ctx.team.id,node,generation,encode(ctx.actor)?,body,commit]).map_err(storage)?;
+    // A trusted report proves delivery even when its submission outcome has
+    // not arrived. Freeze that implementer before choosing any stage staff.
+    if n.kind != NodeKind::Stage {
+        n.implementer = Some(member.clone());
+        ctx.db
+            .execute(
+                "UPDATE nodes SET data=?3 WHERE team=?1 AND id=?2",
+                params![ctx.team.id, node, rows::node_payload(&n)?],
+            )
+            .map_err(storage)?;
+    }
     ctx.db.execute(&format!("UPDATE effects SET state='reported' WHERE team=?1 AND node=?2 AND generation=?3 AND state IN {OPEN_EFFECT_STATES}"),params![ctx.team.id,node,generation]).map_err(storage)?;
     if ctx.reopening(*node)? {
         ctx.settle(*node)?;
         queue::set_hold(ctx, *node, false)?;
     }
-    ctx.reply.item = Some(ctx.inbox(*node, "report", body)?);
-    Ok(())
+    pipeline::reported(ctx, &n, body)
 }
 
 fn require_ready(ctx: &Context<'_>, node: u32) -> Result<()> {

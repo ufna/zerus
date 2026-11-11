@@ -41,6 +41,7 @@ fn another_connections_commit_wakes_the_worker_before_the_safety_interval() {
                 stop: stopped.clone(),
                 epoch: "fixture-worker".into(),
             },
+            confirmations: Default::default(),
             after_cycle: Some(Box::new(move |store| {
                 let _ = sent.send(store.team(TEAM).unwrap().unwrap().status);
             })),

@@ -131,6 +131,7 @@ struct Passes {
     native: Native,
     actor: actor::Runtime,
     effects: actor::native::Native,
+    confirmations: super::confirm::Scan,
     #[cfg(test)]
     after_cycle: Option<PassObserver>,
 }
@@ -175,6 +176,7 @@ fn run(
         native,
         actor,
         effects,
+        confirmations: Default::default(),
         #[cfg(test)]
         after_cycle: None,
     }
@@ -248,6 +250,16 @@ impl Passes {
                 )
             },
         );
+        if let Err(error) = super::confirm::step(
+            &self.effects.config,
+            &self.effects.epoch,
+            &self.native.machine,
+            &mut self.store,
+            &self.native.stop,
+            &mut self.confirmations,
+        ) {
+            eprintln!("hgs: Teams standing confirmation fault: {error}");
+        }
         #[cfg(test)]
         if let Some(hook) = &mut self.after_cycle {
             hook(&self.store);

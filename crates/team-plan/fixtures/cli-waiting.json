@@ -1,0 +1,29 @@
+{
+  "actor": {
+    "interim": true,
+    "kind": "person",
+    "note": "This interim rule does not detect commands whose ancestry does not pass through readable processes of the same user to their agent, for example after reparenting or credential-changing helpers, nor a caller that replaces or instruments hgs itself or writes the team store directly. Agents started without session markers are also not detected. A command in a sandbox with its own user namespace is refused, so team commands must run outside such a sandbox.",
+    "origin": "cli_interim",
+    "person": "local"
+  },
+  "next": null,
+  "ok": true,
+  "rows": [
+    {
+      "actor": {
+        "kind": "person",
+        "origin": "cli_interim",
+        "person": "local"
+      },
+      "created_ms": 1700000000000,
+      "decided_actor": null,
+      "decision": null,
+      "kind": "note",
+      "node": null,
+      "seq": 1,
+      "state": "open",
+      "team": "00000000-0000-4000-8000-00000000beef",
+      "text": "Tell the team the release moved to Monday."
+    }
+  ]
+}
