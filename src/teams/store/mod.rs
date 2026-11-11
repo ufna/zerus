@@ -221,7 +221,7 @@ fn connect(path: &Path, create: bool) -> Result<Connection> {
     .map_err(storage)?;
     #[cfg(unix)]
     crate::sqlite_file::bind_private(&db, path, identity).map_err(storage)?;
-    db.busy_timeout(Duration::from_secs(2)).map_err(storage)?;
+    db.busy_timeout(Duration::from_secs(8)).map_err(storage)?;
     initialize(&mut db)?;
     db.execute_batch("PRAGMA foreign_keys=ON; PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;")
         .map_err(storage)?;
@@ -249,7 +249,7 @@ fn initialize(db: &mut Connection) -> Result<()> {
     }
     let tx = db
         .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
-        .map_err(storage)?;
+        .map_err(begin_error)?;
     let current: u32 = tx
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .map_err(storage)?;
@@ -292,7 +292,7 @@ fn read_indexes(db: &Connection) -> Result<()> {
         // Only an older unique index needs replacement. Ordinary opens never
         // rebuild it; a savepoint keeps its replacement atomic, also at creation.
         if let Err(error) = db.execute_batch("SAVEPOINT replace_read_index") {
-            return if conversion_busy(&error) {
+            return if is_busy(&error) {
                 Ok(())
             } else {
                 Err(storage(error))
@@ -305,7 +305,7 @@ fn read_indexes(db: &Connection) -> Result<()> {
         if let Err(error) = replaced {
             db.execute_batch("ROLLBACK TO replace_read_index; RELEASE replace_read_index")
                 .map_err(storage)?;
-            if conversion_busy(&error) {
+            if is_busy(&error) {
                 // This optional index upgrade can wait. No product operation
                 // is replayed; the next open checks the actual index again.
                 return Ok(());
@@ -318,7 +318,19 @@ fn read_indexes(db: &Connection) -> Result<()> {
         .map_err(storage)
 }
 
-fn conversion_busy(error: &rusqlite::Error) -> bool {
+pub(crate) fn is_busy(error: &rusqlite::Error) -> bool {
     matches!(error, rusqlite::Error::SqliteFailure(e, _) if matches!(e.code,
         rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked))
+}
+
+/// A failed BEGIN IMMEDIATE has done no write and saved no request receipt.
+pub(crate) fn begin_error(error: rusqlite::Error) -> Problem {
+    if is_busy(&error) {
+        Problem::new(
+            code::STORE_BUSY,
+            "The team store is busy. Nothing was written; try again.",
+        )
+    } else {
+        storage(error)
+    }
 }

@@ -10,7 +10,7 @@ pub const MAX_DETAIL_BYTES: usize = 4096;
 pub struct Problem {
     /// One of the constants in [`code`]. Callers match on it; never on `message`.
     pub code: String,
-    /// One sentence for a person.
+    /// A short explanation for a person.
     pub message: String,
     /// Optional diagnostic cause, bounded by the producer and absent on old replies.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -66,6 +66,7 @@ pub mod code {
     pub const STALE_REVISION: &str = "stale_revision";
     pub const NOT_ALLOWED: &str = "not_allowed";
     pub const INVALID_STATE: &str = "invalid_state";
+    pub const STORE_BUSY: &str = "store_busy";
     /// Storage failed or its result was lost; retry with the same request ID.
     pub const STORAGE_FAILED: &str = "storage_failed";
     pub const UNKNOWN_ROLE: &str = "unknown_role";
@@ -83,12 +84,13 @@ pub mod code {
     pub const DELIVERY_UNCERTAIN: &str = "delivery_uncertain";
 
     /// Every code, for tests that pin the list.
-    pub const ALL: [&str; 19] = [
+    pub const ALL: [&str; 20] = [
         TEAMS_INACTIVE,
         NOT_FOUND,
         STALE_REVISION,
         NOT_ALLOWED,
         INVALID_STATE,
+        STORE_BUSY,
         STORAGE_FAILED,
         UNKNOWN_ROLE,
         UNKNOWN_PIPELINE,

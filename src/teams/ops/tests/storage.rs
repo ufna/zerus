@@ -193,3 +193,69 @@ fn reusing_an_effect_identity_is_a_saved_logical_refusal() {
     assert_eq!(saved(&h, &r.request_id), 1);
     assert_eq!(h.store.effects(TEAM, 200, None).unwrap().rows.len(), 1);
 }
+
+#[test]
+fn a_writer_waits_past_two_seconds_for_the_other_connection_and_applies_once() {
+    let mut h = Harness::new();
+    let r = pause_request(&h);
+    let configured: u32 = h
+        .store
+        .db
+        .as_ref()
+        .unwrap()
+        .query_row("PRAGMA busy_timeout", [], |r| r.get(0))
+        .unwrap();
+    let writer = Connection::open(h.temp.path().join("teams/teams-v1.sqlite3")).unwrap();
+    writer.execute_batch("BEGIN IMMEDIATE").unwrap();
+    let release = std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(3200));
+        writer.execute_batch("ROLLBACK").unwrap();
+    });
+    let result = crate::teams::ops::apply(&mut h.store, &person(), &r, 1234);
+    release.join().unwrap();
+    assert!(result.is_ok(), "{result:?}");
+    assert_eq!(configured, 8000);
+    assert_eq!(saved(&h, &r.request_id), 1);
+    assert_eq!(
+        crate::teams::ops::apply(&mut h.store, &person(), &r, 1235).unwrap(),
+        result.unwrap()
+    );
+    assert_eq!(h.store.journal(TEAM, 200, None).unwrap().rows.len(), 2);
+}
+
+#[test]
+fn a_busy_statement_after_begin_stays_storage_failed_and_leaves_no_receipt() {
+    use rusqlite::{ffi, functions::FunctionFlags};
+    let mut h = Harness::new();
+    let r = pause_request(&h);
+    let db = h.store.db.as_ref().unwrap();
+    db.create_scalar_function(
+        "busy_statement",
+        0,
+        FunctionFlags::SQLITE_UTF8,
+        |_| -> rusqlite::Result<i32> {
+            Err(rusqlite::Error::SqliteFailure(
+                ffi::Error::new(ffi::SQLITE_BUSY),
+                None,
+            ))
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        db.query_row("SELECT busy_statement()", [], |r| r.get::<_, i32>(0))
+            .unwrap_err()
+            .sqlite_error_code(),
+        Some(rusqlite::ErrorCode::DatabaseBusy)
+    );
+    db.execute_batch("CREATE TRIGGER fail_busy BEFORE UPDATE OF status ON teams BEGIN SELECT busy_statement(); END").unwrap();
+    let problem = crate::teams::ops::apply(&mut h.store, &person(), &r, 1234).unwrap_err();
+    assert_eq!(problem.code, "storage_failed");
+    assert_eq!(saved(&h, &r.request_id), 0);
+    h.store
+        .db
+        .as_ref()
+        .unwrap()
+        .execute_batch("DROP TRIGGER fail_busy")
+        .unwrap();
+    retry_once(&mut h, &r);
+}

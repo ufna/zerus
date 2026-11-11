@@ -140,3 +140,39 @@ fn storage_diagnostic_detail_is_kept_and_bounded_on_a_character_boundary() {
     assert!(detail.len() >= 4093);
     assert!(original.contains("cause: "));
 }
+
+#[test]
+fn a_writer_that_cannot_begin_is_certainly_busy_and_the_same_request_can_repeat() {
+    let h = Harness::new();
+    h.create();
+    let id = uid(0xf030);
+    let input = json!({"request_id":id,"team":TEAM,"expected_revision":h.revision()}).to_string();
+    let writer = rusqlite::Connection::open(h.state().join("teams/teams-v1.sqlite3")).unwrap();
+    writer.execute_batch("BEGIN IMMEDIATE").unwrap();
+    let (reply, exit) = h.cli(&Caller::Person, "pause", &input);
+    assert_eq!(exit, 1);
+    assert_eq!(code(&reply), "store_busy", "{reply}");
+    assert_eq!(
+        reply["error"]["message"],
+        "The team store is busy. Nothing was written; try again."
+    );
+    assert!(reply["error"].get("detail").is_none());
+    let store = h.store();
+    assert_eq!(
+        store
+            .db
+            .as_ref()
+            .unwrap()
+            .query_row("SELECT count(*) FROM requests WHERE id=?1", [&id], |r| r
+                .get::<_, u32>(0))
+            .unwrap(),
+        0
+    );
+    writer.execute_batch("ROLLBACK").unwrap();
+    let (first, exit) = h.cli(&Caller::Person, "pause", &input);
+    assert_eq!(exit, 0, "{first}");
+    let (replay, exit) = h.cli(&Caller::Person, "pause", &input);
+    assert_eq!(exit, 0, "{replay}");
+    assert_eq!(first, replay);
+    assert_eq!(h.store().journal(TEAM, 200, None).unwrap().rows.len(), 2);
+}

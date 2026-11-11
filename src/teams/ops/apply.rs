@@ -17,7 +17,7 @@ pub fn apply(store: &mut Store, actor: &Actor, request: &Request, now: i64) -> R
         .as_mut()
         .ok_or_else(missing)?
         .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
-        .map_err(storage)?;
+        .map_err(crate::teams::store::begin_error)?;
     let current = rows::team(&tx, &request.team)?;
     let team = current
         .clone()
