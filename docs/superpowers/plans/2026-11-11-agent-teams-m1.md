@@ -351,7 +351,9 @@ signed-in accounts of the agent; drop any with a window at 100 percent or
 more; headroom is 100 minus the highest `used_percent`; highest headroom
 wins, then the lower `taken` count, then the lower ID. Accounts with no
 windows are used only when no account with windows qualifies. Nothing left
-gives `no_account_available` with the earliest `resets_at` in `refs`.
+gives `no_account_available`; its `refs` hold the earliest time an account
+becomes usable again: for each account the latest reset among its full
+windows, then the earliest of those across accounts.
 
 Operation envelope, used by the CLI and by client core: a request is a JSON
 object `{"request_id": "<uuid>", "team": "<id>", "expected_revision": <n>,
@@ -631,6 +633,14 @@ changes no ref and no reachable object.
 **Catalog (package 4).** A seat counts only with a positive count. Duplicate
 IDs are checked inside each catalog before catalogs are merged. A template's
 default pipeline is required. Every role's pipeline must exist, seated or not.
+
+**Kernel (package 2).** A stage verdict counts only when the stage node's role
+equals the pipeline's stage at its index, and a stage is ready only in its
+target's round. A node ID that appears twice is ambiguous everywhere: nothing
+that depends on it or checks it is ready. Write sets are relative to the
+repository and are compared without regard to case; an absolute path, and a
+parent component after a pattern, cover the whole repository. Operations
+refuse an absolute path in a write set at input.
 
 **Shape.** One function per operation of about 60 lines or fewer; no file that
 is one long match.
