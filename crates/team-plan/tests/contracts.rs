@@ -169,6 +169,14 @@ fn unknown_fields_are_refused() {
     refused::<Pipeline>(r#"{"id":"p","name":"P","implementer":"r","extra":1}"#);
     refused::<Catalog>(r#"{"roles":[],"extra":1}"#);
     refused::<AccountChoice>(r#"{"mode":"named","account":"a","extra":1}"#);
+    refused::<AccountChoice>(r#"{"mode":"freest","colour":"red"}"#);
+    refused::<AccountChoice>(r#"{"mode":"freest","account":"a"}"#);
+    refused::<AccountChoice>(r#"{"mode":"named"}"#);
+    refused::<AccountChoice>(r#"{"account":"a"}"#);
+    refused::<AccountChoice>(r#"{"mode":"named","account":""}"#);
+    refused::<Role>(
+        r#"{"id":"r","name":"R","agent":"claude","account":{"mode":"freest","colour":"red"}}"#,
+    );
     refused::<TaskRef>(r#"{"project":"p","uuid":"u","extra":1}"#);
 }
 
@@ -211,6 +219,30 @@ fn seat_count_defaults_to_one_and_rounds_to_three() {
 
 #[test]
 fn error_codes_are_stable_and_unique() {
+    // Callers match these strings across crate and command boundaries.
+    assert_eq!(
+        code::ALL,
+        [
+            "teams_inactive",
+            "not_found",
+            "stale_revision",
+            "not_allowed",
+            "invalid_state",
+            "unknown_role",
+            "unknown_pipeline",
+            "unknown_member",
+            "unknown_account",
+            "no_account_available",
+            "no_seat_for_stage",
+            "dependency_cycle",
+            "over_cap",
+            "duplicate",
+            "unknown_field",
+            "integration_conflict",
+            "integration_unavailable",
+            "delivery_uncertain",
+        ]
+    );
     let mut codes = code::ALL.to_vec();
     assert_eq!(codes.len(), 18);
     assert!(codes
@@ -249,5 +281,21 @@ fn snake_case_enum_forms() {
     assert_eq!(
         serde_json::to_value(TeamStatus::Running).unwrap(),
         "running"
+    );
+}
+
+#[test]
+fn an_empty_catalog_writes_no_empty_lists() {
+    assert_eq!(
+        serde_json::to_value(Catalog::default()).unwrap(),
+        serde_json::json!({})
+    );
+    let rules_only = Catalog {
+        planning_rules: vec!["One rule.".into()],
+        ..Catalog::default()
+    };
+    assert_eq!(
+        serde_json::to_value(&rules_only).unwrap(),
+        serde_json::json!({"planning_rules": ["One rule."]})
     );
 }
