@@ -5,7 +5,8 @@ use super::*;
 
 pub(crate) mod sql {
     pub const PENDING: &str = "SELECT d.node,d.generation,d.seq,i.task_project,i.task_uuid FROM decisions d LEFT JOIN node_identity i ON i.team=d.team AND i.id=d.node WHERE d.team=?1 AND d.state<>'settled' AND d.node>?2 AND d.kind='cancel' AND d.state='pending' AND d.generation=COALESCE((SELECT n.generation FROM nodes n WHERE n.team=d.team AND n.id=d.node),(SELECT a.generation FROM node_archive a WHERE a.team=d.team AND a.id=d.node)) AND NOT EXISTS(SELECT 1 FROM cancel_outcomes c WHERE c.decision=d.seq) ORDER BY d.node LIMIT ?3";
-    pub const REFUSED: &str = "SELECT node,reason FROM cancel_outcomes WHERE team=?1 AND state='refused' AND node>?2 ORDER BY node LIMIT ?3";
+    /// Paged by the row: a node may have refused cancels of several decisions.
+    pub const REFUSED: &str = "SELECT node,decision,reason FROM cancel_outcomes WHERE team=?1 AND state='refused' AND (node,decision)>(?2,?3) ORDER BY node,decision LIMIT ?4";
 }
 
 /// One cancel decision for the service to carry out. `task` is the bound
@@ -49,18 +50,21 @@ impl Store {
         })
     }
     /// The cancels the team-cancel child refused, with their reasons, for the
-    /// team's status.
+    /// team's status: `(node, decision, reason)` after the row `after`.
     pub fn cancel_refusals(
         &self,
         team: &str,
-        after: u32,
+        after: (u32, u64),
         limit: u32,
-    ) -> Result<Vec<(u32, String)>> {
+    ) -> Result<Vec<(u32, u64, String)>> {
         let page = super::limit(limit)?;
         self.read(|db| {
-            rows(db, sql::REFUSED, params![team, after, page], |r| {
-                Ok((r.get(0)?, r.get(1)?))
-            })
+            rows(
+                db,
+                sql::REFUSED,
+                params![team, after.0, after.1, page],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
         })
     }
 }

@@ -107,7 +107,7 @@ const TERMINAL: [Read; 7] = [
         let _ = h.store.key_refusals(TEAM, 0, 16).unwrap();
     }),
     ("cancel_refusals", |h| {
-        let _ = h.store.cancel_refusals(TEAM, 0, 16).unwrap();
+        let _ = h.store.cancel_refusals(TEAM, (0, 0), 16).unwrap();
     }),
 ];
 /// Stop the team; one node's cancel settles and waits in the frontier, the

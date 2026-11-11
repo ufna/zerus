@@ -219,8 +219,8 @@ fn a_stop_cancels_first_and_clears_each_key_only_after_its_cancel_settles() {
     )
     .unwrap();
     assert_eq!(
-        h.store.cancel_refusals(TEAM, 0, 200).unwrap(),
-        vec![(nodes[3], "Delivery unknown".to_owned())]
+        h.store.cancel_refusals(TEAM, (0, 0), 200).unwrap(),
+        vec![(nodes[3], rows[3].decision, "Delivery unknown".to_owned())]
     );
     assert!(h
         .store
@@ -346,4 +346,39 @@ fn pending_cancels_page_in_node_order() {
     }
     assert_eq!(seen, nodes);
     refused(h.store.pending_cancels(TEAM, 201, 0), code::OVER_CAP);
+}
+
+#[test]
+fn a_page_boundary_between_two_refused_cancels_of_one_node_loses_neither() {
+    let (mut h, node, lead) = cancelling();
+    let first = decision(&h, node);
+    h.run(
+        &service(),
+        record(node, first, CancelState::Refused, "Delivery unknown"),
+    )
+    .unwrap();
+    h.run(
+        &lead,
+        Operation::Cancel {
+            node,
+            reason: "Try again".into(),
+        },
+    )
+    .unwrap();
+    let second = decision(&h, node);
+    h.run(
+        &service(),
+        record(node, second, CancelState::Refused, "Still unknown"),
+    )
+    .unwrap();
+    let all = h.store.cancel_refusals(TEAM, (0, 0), 200).unwrap();
+    assert_eq!(all.len(), 2);
+    let mut paged = Vec::new();
+    let mut after = (0, 0);
+    while let Some(row) = h.store.cancel_refusals(TEAM, after, 1).unwrap().pop() {
+        after = (row.0, row.1);
+        paged.push(row);
+    }
+    assert_eq!(paged, all, "a page of one returns both rows of the node");
+    assert_eq!((all[0].1, all[1].1), (first, second));
 }
