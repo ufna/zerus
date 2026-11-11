@@ -1,5 +1,6 @@
 //! A stored team effect is the permit for one ordinary task attempt.
 use super::*;
+pub(super) mod completion;
 use crate::swarm::fence::{Admission, Closed};
 use crate::teams::{store::Store, tasks::context};
 use rusqlite::{params, OptionalExtension};
@@ -46,6 +47,8 @@ impl Input {
     }
 }
 
+const UNCONFIRMED_WRITE: &str = "Unconfirmed team task write:";
+
 struct Permit {
     team: Team,
     node: Node,
@@ -83,8 +86,7 @@ fn scope(store: &Store, body: &Input, here: &str) -> Result<(Team, Node, TaskRef
     {
         return Err(fail("Delivery effect binding differs."));
     }
-    let node = store
-        .node(&body.team, body.node)
+    let node = crate::teams::store::rows::node(db, &body.team, body.node)
         .map_err(problem)?
         .ok_or_else(|| fail("Node not found."))?;
     let task = node
@@ -280,6 +282,7 @@ fn execute(config: &Config, args: &[String], delivery: &dyn Delivery) -> Result<
     if !crate::teams::enabled(&config.state) {
         return Err(fail("teams_inactive: Agent Teams preview is off."));
     }
+    arguments(args, true, true)?;
     let deadline = Instant::now() + attempts::BUDGET;
     let text = stdin_text("team delivery request")?;
     let body: Input = serde_json::from_str(&text).map_err(|error| {
@@ -297,6 +300,30 @@ fn execute(config: &Config, args: &[String], delivery: &dyn Delivery) -> Result<
         Ok(reply) => Ok(reply),
         Err(error) => Ok(body.reply("refused", &error.message, None)),
     }
+}
+
+fn arguments(args: &[String], reference: bool, recover: bool) -> Result<()> {
+    let mut at = usize::from(reference);
+    if reference && args.first().is_none_or(|s| s.starts_with('-')) {
+        return Err(fail("A task reference is required."));
+    }
+    let mut seen = std::collections::BTreeSet::new();
+    while at < args.len() {
+        let key = args[at].as_str();
+        if !seen.insert(key) {
+            return Err(fail("Duplicate team service option."));
+        }
+        match key {
+            "--json" => at += 1,
+            "--recover-only" if recover => at += 1,
+            "--project" if reference && at + 1 < args.len() => at += 2,
+            _ => return Err(fail("Unknown team service option.")),
+        }
+    }
+    if !seen.contains("--json") {
+        return Err(fail("Team service commands require --json."));
+    }
+    Ok(())
 }
 
 fn identity(config: &Config) -> Result<String> {
@@ -410,6 +437,7 @@ fn run(
         ));
     }
     let permit = permit(&teams_store, body, &here)?;
+    marker(&task, &body.team, &here)?;
     let state: String = teams_store
         .db
         .as_ref()
@@ -534,8 +562,10 @@ fn permit_for_reservation(
     task: &TaskDoc,
 ) -> Result<Permit> {
     let fresh = permit(store, body, here)?;
+    marker(task, &body.team, here)?;
     let current = task.view().map_err(fail)?;
     if fresh.team.revision != old.team.revision
+        || fresh.task != old.task
         || fresh.kind != old.kind
         || current.stage_at != bound.stage_at
         || current.target != bound.target
@@ -544,6 +574,19 @@ fn permit_for_reservation(
         return Err(fail(dispatch::CHANGED));
     }
     Ok(fresh)
+}
+
+fn marker(task: &TaskDoc, team: &str, here: &str) -> Result<()> {
+    if task
+        .team()
+        .map_err(fail)?
+        .as_ref()
+        .is_none_or(|key| key.team != team || key.home != here)
+        || task.team_invalid()
+    {
+        return Err(fail("Task no longer has this team's exact home marker."));
+    }
+    Ok(())
 }
 
 fn reserve(

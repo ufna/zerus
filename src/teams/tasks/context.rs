@@ -13,6 +13,20 @@ pub(crate) fn build(store: &Store, team: &Team, node: &Node, member: &Member) ->
         cut: false,
     };
     out.push("\n\nTeam context\nTeam: ", &team.name);
+    if node.kind == zerus_team_plan::model::NodeKind::Stage {
+        out.push("", "This is a pipeline stage.");
+        if let (Some(db), Some(target)) = (&store.db, node.stage_of) {
+            if let Some(target_node) = super::super::store::rows::node(db, &team.id, target)? {
+                out.push("Checking: ", &target_node.title);
+                out.push("Round: ", &node.round.to_string());
+                let commit: Option<String> = db.query_row("SELECT commit_id FROM reports WHERE team=?1 AND node=?2 ORDER BY generation DESC LIMIT 1",params![team.id,target],|r| r.get(0)).optional().map_err(storage)?;
+                if let Some(commit) = commit {
+                    out.push("Reported commit: ", &commit);
+                }
+            }
+        }
+        out.push("", &format!("Give the result with hgs team verdict for node {} of team {}: pass, or fail with the findings as text. A plain task report does not advance the pipeline.", node.id, team.id));
+    }
     out.push("Goal: ", &team.goal);
     if let Some(role) = team.bundle.roles.iter().find(|r| r.id == member.role) {
         out.push("Role: ", &role.name);
@@ -48,7 +62,7 @@ pub(crate) fn build(store: &Store, team: &Team, node: &Node, member: &Member) ->
     }
     let mut query = db
         .prepare(
-            "SELECT kind,text FROM decisions WHERE team=?1 AND node=?2 ORDER BY seq DESC LIMIT 32",
+            "SELECT kind,text FROM decisions WHERE team=?1 AND node=?2 AND (state IN ('ready','effect_reserved') OR (state='settled' AND stopped_ready=1)) ORDER BY seq DESC LIMIT 32",
         )
         .map_err(storage)?;
     let decisions = query
@@ -104,6 +118,77 @@ impl Context {
 mod tests {
     use super::*;
     use crate::teams::ops::tests::{fixture, person, Harness, TEAM};
+
+    #[test]
+    fn a_stage_prompt_requests_a_verdict_for_its_exact_target() {
+        let mut h = Harness::new();
+        let id = h.add(&person(), 1);
+        let mut node = h.node(id);
+        let target_title = node.title.clone();
+        node.kind = zerus_team_plan::model::NodeKind::Stage;
+        node.stage_of = Some(id);
+        node.round = 2;
+        let commit = "0123456789abcdef0123456789abcdef01234567";
+        h.store.db.as_ref().unwrap().execute("INSERT INTO reports(team,node,generation,actor,text,commit_id) VALUES(?1,?2,1,'{}','Reported result',?3)",params![TEAM,id,commit]).unwrap();
+        let f = fixture();
+        let text = build(&h.store, &f.team, &node, &f.members[1]).unwrap();
+        for expected in [
+            "pipeline stage",
+            &target_title,
+            "Round: 2",
+            commit,
+            "hgs team verdict",
+            "pass",
+            "fail",
+            "findings",
+            "A plain task report does not advance the pipeline.",
+        ] {
+            assert!(text.contains(expected), "Missing {expected}: {text}");
+        }
+    }
+
+    #[test]
+    fn dependency_reports_obey_each_and_total_character_budgets() {
+        let mut h = Harness::new();
+        let mut deps = Vec::new();
+        for index in 0..5 {
+            let id = h.add(&person(), index + 1);
+            h.store.db.as_ref().unwrap().execute("INSERT INTO reports(team,node,generation,actor,text,commit_id) VALUES(?1,?2,1,'{}',?3,'')",params![TEAM,id,((b'A'+index as u8) as char).to_string().repeat(3000)]).unwrap();
+            deps.push(zerus_team_plan::model::Dep {
+                node: id,
+                kind: DepKind::Hard,
+            });
+        }
+        let f = fixture();
+        let mut node = h.node(1);
+        node.deps = deps;
+        let text = build(&h.store, &f.team, &node, &f.members[1]).unwrap();
+        let reports: Vec<_> = text
+            .lines()
+            .filter(|line| line.starts_with("Dependency "))
+            .map(|line| line.split_once(": ").unwrap().1)
+            .collect();
+        assert_eq!(reports.len(), 3);
+        assert!(reports.iter().all(|report| report.chars().count() == 2000));
+        assert_eq!(
+            reports.iter().map(|r| r.chars().count()).sum::<usize>(),
+            6000
+        );
+        assert!(!text.contains("Team context was cut"));
+    }
+
+    #[test]
+    fn context_names_authorized_decisions_and_omits_unapproved_ones() {
+        let mut h = Harness::new();
+        let id = h.add(&person(), 1);
+        let db = h.store.db.as_ref().unwrap();
+        db.execute("INSERT INTO decisions(team,node,generation,actor,kind,text,state) VALUES(?1,?2,1,'{}','accept','Authorized binding','ready')",params![TEAM,id]).unwrap();
+        db.execute("INSERT INTO decisions(team,node,generation,actor,kind,text,state) VALUES(?1,?2,0,'{}','accept','Not yet authorized','settled')",params![TEAM,id]).unwrap();
+        let f = fixture();
+        let text = build(&h.store, &f.team, &h.node(id), &f.members[1]).unwrap();
+        assert!(text.contains("Authorized binding"));
+        assert!(!text.contains("Not yet authorized"));
+    }
 
     #[test]
     fn context_names_stored_role_goal_base_and_writes() {

@@ -18,9 +18,12 @@ mod header;
 mod intake;
 mod policy;
 pub(crate) use intake::{preflight, send};
-pub(crate) use policy::{clear, guard};
+pub(crate) use policy::{clear, clear_named, guard};
 
 pub(crate) mod context;
+mod report;
+#[allow(unused_imports)] // Consumed by the service package.
+pub(crate) use report::report;
 
 /// Native caller proof is resolved by the task command before entering here.
 pub(crate) struct Caller<'a> {

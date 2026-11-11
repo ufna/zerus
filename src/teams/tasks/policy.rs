@@ -106,6 +106,11 @@ pub(crate) fn clear(state: &Path, task: &mut TaskDoc, actor: &TaskActor) -> Resu
             }
         }
     }
-    task.set_team_named(None, &name, actor, now())
+    clear_named(task, &name, actor)
+}
+
+/// Shared marker writer for an authority already checked by a service command.
+pub(crate) fn clear_named(task: &mut TaskDoc, name: &str, actor: &TaskActor) -> Result<()> {
+    task.set_team_named(None, name, actor, now())
         .map_err(storage)
 }

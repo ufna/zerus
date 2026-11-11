@@ -36,6 +36,9 @@ impl Delivery for Fake {
         to: &SessionKey,
         request: &Value,
     ) -> attempts::Delivered {
+        if self.mode == "crash-reserved" {
+            std::process::exit(73);
+        }
         let mut count = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
@@ -74,7 +77,13 @@ impl Delivery for Fake {
                     receipt.to_string(),
                 )
                 .unwrap();
+                if self.mode == "crash-receipt" {
+                    std::process::exit(74);
+                }
                 attempts::settle(config, &task.project, &task.uuid, &body.id, &receipt).unwrap();
+                if self.mode == "crash-settled" {
+                    std::process::exit(75);
+                }
                 attempts::Delivered::Submitted(receipt)
             }
         }
@@ -93,14 +102,36 @@ fn entry() {
     } else {
         let args: Vec<String> =
             serde_json::from_str(&std::env::var("HGS_TEAM_DELIVER_ARGS").unwrap()).unwrap();
-        execute(
-            &config,
-            &args,
-            &Fake {
-                root: config.state.clone(),
-                mode,
-            },
-        )
+        if mode == "agent" {
+            use sha2::{Digest, Sha256};
+            let name = std::env::var("HGS_SESSION").unwrap();
+            let path = config
+                .state
+                .join(format!("{:x}.json", Sha256::digest(name.as_bytes())));
+            let mut record: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+            record["pid"] = json!(std::process::id());
+            record["process_start"] =
+                json!(crate::platform::process_start_time(std::process::id()).unwrap());
+            std::fs::write(path, record.to_string()).unwrap();
+            crate::tasks::execute(&config, &args)
+        } else if matches!(
+            mode.as_str(),
+            "team-done" | "team-clear" | "crash-team-done" | "crash-team-clear"
+        ) {
+            if mode.starts_with("crash-") {
+                std::env::set_var("HGS_TEST_TEAM_COMPLETION_AFTER_SAVE", "1");
+            }
+            completion::execute(&config, mode.strip_prefix("crash-").unwrap_or(&mode), &args)
+        } else {
+            execute(
+                &config,
+                &args,
+                &Fake {
+                    root: config.state.clone(),
+                    mode,
+                },
+            )
+        }
     };
     let reply = match result {
         Ok(reply) => json!({"ok":true,"reply":reply}),
@@ -179,7 +210,7 @@ impl Fixture {
             &crate::teams::tasks::Caller {
                 state: &f.config.state,
                 machine: &home,
-                actor: &Actor::Person,
+                actor: Actor::Person,
             },
             &f.task,
             TEAM,
@@ -256,6 +287,10 @@ impl Fixture {
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+        if mode == "agent" {
+            cmd.env("HGS_SESSION", &self.lead.session)
+                .env("HGS_RUN_ID", "run-lead");
+        }
         if barrier {
             cmd.env("HGS_TEAM_DELIVER_BARRIER", "1");
         }
@@ -304,6 +339,19 @@ impl Fixture {
             .unwrap_or_default()
             .lines()
             .count()
+    }
+    fn sessions(&self) -> BTreeMap<String, Vec<u8>> {
+        std::fs::read_dir(&self.config.state)
+            .unwrap()
+            .flatten()
+            .filter_map(|entry| {
+                let name = entry.file_name().to_string_lossy().into_owned();
+                (name.len() == 69
+                    && name.ends_with(".json")
+                    && name[..64].bytes().all(|b| b.is_ascii_hexdigit()))
+                .then(|| (name, std::fs::read(entry.path()).unwrap()))
+            })
+            .collect()
     }
     fn document(&self) -> TaskDoc {
         ProjectStore::open(&self.config.state.join("replica"), &self.task.project)
@@ -389,7 +437,7 @@ fn reopen_uses_the_recorded_reason_and_lead_once() {
         },
     )
     .unwrap();
-    crate::teams::tasks::changed(&f.config.state, &f.task).unwrap();
+    crate::teams::tasks::observe(&f.config.state, &f.task).unwrap();
     {
         let store = ProjectStore::open(&f.config.state.join("replica"), &f.task.project).unwrap();
         let mut task = store.load(&f.task.uuid).unwrap();
@@ -404,7 +452,7 @@ fn reopen_uses_the_recorded_reason_and_lead_once() {
         .unwrap();
         store.save(&mut task).unwrap();
     }
-    crate::teams::tasks::changed(&f.config.state, &f.task).unwrap();
+    crate::teams::tasks::observe(&f.config.state, &f.task).unwrap();
     let generation = f.h.store.generation(TEAM, f.body.node).unwrap().unwrap();
     f.h.run(
         &ops::tests::service(),
@@ -458,7 +506,7 @@ fn reopen_uses_the_recorded_reason_and_lead_once() {
 
 #[test]
 fn every_preflight_refusal_leaves_the_task_and_native_session_untouched() {
-    for change in 0..14 {
+    for change in 0..20 {
         let mut f = Fixture::new();
         let db = f.h.store.db.as_ref().unwrap();
         let mut args = f.args(false);
@@ -517,9 +565,44 @@ fn every_preflight_refusal_leaves_the_task_and_native_session_untouched() {
                 )
                 .unwrap();
             }
+            14 | 15 => {
+                db.execute(
+                    "UPDATE teams SET status=?1",
+                    [format!(
+                        "\"{}\"",
+                        if change == 14 { "stopped" } else { "archived" }
+                    )],
+                )
+                .unwrap();
+            }
+            16..=18 => {
+                let store = crate::tasks::store(&f.config, &f.task.project).unwrap();
+                let mut doc = store.load(&f.task.uuid).unwrap();
+                let key = match change {
+                    16 => None,
+                    17 => Some(zerus_replica::TaskTeam {
+                        team: uuid::Uuid::new_v4().to_string(),
+                        home: f.lead.machine.clone(),
+                    }),
+                    _ => Some(zerus_replica::TaskTeam {
+                        team: TEAM.into(),
+                        home: uuid::Uuid::new_v4().to_string(),
+                    }),
+                };
+                doc.set_team(key.as_ref(), &Actor::Person, now()).unwrap();
+                store.save(&mut doc).unwrap();
+            }
+            19 => {
+                db.execute(
+                    "UPDATE node_identity SET task_uuid=?1",
+                    [uuid::Uuid::new_v4().to_string()],
+                )
+                .unwrap();
+            }
             _ => unreachable!(),
         }
         let before = f.document().revision();
+        let sessions = f.sessions();
         let team = f.h.store.team(TEAM).unwrap().unwrap().revision;
         let (child, path) = f.spawn(
             "submitted",
@@ -532,8 +615,235 @@ fn every_preflight_refusal_leaves_the_task_and_native_session_untouched() {
             result["reply"]["state"], "refused",
             "mutation {change}: {result}"
         );
+        let expected = match change {
+            0 => "No recorded delivery effect",
+            1 => "Team not found",
+            2..=4 => "Delivery effect binding differs",
+            5 | 6 => "Effect is closed",
+            7 => "another computer",
+            8 | 14 | 15 => "Team is not Running",
+            9 | 10 | 13 => "no active local session binding",
+            12 => "not this team's live node",
+            16..=18 => "exact home marker",
+            19 => "Node task identity differs",
+            _ => "REF",
+        };
+        assert!(
+            result["reply"]["error"]
+                .as_str()
+                .unwrap()
+                .contains(expected),
+            "{change}: {result}"
+        );
         assert_eq!(f.document().revision(), before, "mutation {change}");
+        assert_eq!(f.sessions(), sessions, "mutation {change}");
         assert_eq!(f.h.store.team(TEAM).unwrap().unwrap().revision, team);
         assert_eq!(f.count(), 0);
     }
+}
+
+mod completion_tests;
+
+#[test]
+fn restarts_after_reservation_receipt_and_settlement_never_send_again() {
+    for (mode, code, state, count) in [
+        ("crash-reserved", 73, "uncertain", 0),
+        ("crash-receipt", 74, "submitted", 1),
+        ("crash-settled", 75, "submitted", 1),
+    ] {
+        let f = Fixture::new();
+        let (child, reply) = f.spawn(
+            mode,
+            &f.args(false),
+            &serde_json::to_string(&f.body).unwrap(),
+            false,
+        );
+        let out = child.wait_with_output().unwrap();
+        assert_eq!(
+            out.status.code(),
+            Some(code),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(!reply.exists());
+        for recover in [true, false, true] {
+            let out = f.run("submitted", recover);
+            assert_eq!(out["reply"]["state"], state, "{mode}: {out}");
+        }
+        assert_eq!(f.count(), count);
+    }
+}
+
+#[test]
+fn admission_rechecks_the_effect_marker_stage_and_executor_after_freeze() {
+    for change in 0..5 {
+        let f = Fixture::new();
+        let (child, path) = f.spawn(
+            "submitted",
+            &f.args(false),
+            &serde_json::to_string(&f.body).unwrap(),
+            true,
+        );
+        let until = Instant::now() + Duration::from_secs(6);
+        loop {
+            if std::fs::read_dir(&f.config.state)
+                .unwrap()
+                .flatten()
+                .any(|e| e.file_name().to_string_lossy().starts_with("ready-"))
+            {
+                break;
+            }
+            assert!(Instant::now() < until);
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        match change {
+            0 => {
+                f.h.store
+                    .db
+                    .as_ref()
+                    .unwrap()
+                    .execute("UPDATE teams SET status='\"paused\"'", [])
+                    .unwrap();
+            }
+            1 => {
+                f.h.store
+                    .db
+                    .as_ref()
+                    .unwrap()
+                    .execute("UPDATE effects SET state='superseded'", [])
+                    .unwrap();
+            }
+            _ => {
+                let store = crate::tasks::store(&f.config, &f.task.project).unwrap();
+                let mut doc = store.load(&f.task.uuid).unwrap();
+                if change == 2 {
+                    doc.set_team(None, &Actor::Person, now()).unwrap();
+                } else if change == 3 {
+                    doc.record_start(&Actor::Agent(f.lead.clone()), now())
+                        .unwrap();
+                } else {
+                    doc.record_send(&f.lead, "other-dispatch", &Actor::Person, now())
+                        .unwrap();
+                }
+                store.save(&mut doc).unwrap();
+            }
+        }
+        std::fs::write(f.config.state.join("release"), "go").unwrap();
+        let out = f.finish(child, path);
+        assert_eq!(out["reply"]["state"], "refused", "{change}: {out}");
+        assert!(f.document().attempt(&f.body.id).unwrap().is_none());
+        assert_eq!(f.count(), 0);
+    }
+}
+
+#[test]
+fn an_effect_cannot_authorize_a_different_valid_node_or_member() {
+    for other_node in [false, true] {
+        let mut f = Fixture::new();
+        if other_node {
+            let store = crate::tasks::store(&f.config, &f.task.project).unwrap();
+            let mut doc = store
+                .new_task(
+                    "Another task",
+                    Stage::Todo,
+                    Target::Any,
+                    Actor::Person,
+                    &Position::End,
+                    "example",
+                    now(),
+                )
+                .unwrap();
+            let reference = TaskRef {
+                project: f.task.project.clone(),
+                uuid: doc.uuid().into(),
+            };
+            store.save(&mut doc).unwrap();
+            drop(store);
+            let reply = crate::teams::tasks::send(
+                &crate::teams::tasks::Caller {
+                    state: &f.config.state,
+                    machine: &f.lead.machine,
+                    actor: Actor::Person,
+                },
+                &reference,
+                TEAM,
+                None,
+                None,
+            )
+            .unwrap();
+            f.task = reference;
+            f.body.node = reply.node.unwrap();
+        } else {
+            let machine = f.lead.machine.clone();
+            f.bind("m2", &machine);
+            f.body.member = "m2".into();
+        }
+        let before = f.document().revision();
+        let sessions = f.sessions();
+        let out = f.run("submitted", false);
+        assert_eq!(out["reply"]["state"], "refused", "{out}");
+        assert_eq!(f.document().revision(), before);
+        assert_eq!(f.sessions(), sessions);
+        assert_eq!(f.count(), 0);
+    }
+}
+
+#[test]
+fn delivery_cutover_repeats_reserve_nothing_and_recovery_never_sends() {
+    let f = Fixture::new();
+    let store = crate::tasks::store(&f.config, &f.task.project).unwrap();
+    let mut project = store.project().unwrap();
+    project
+        .set_cutover_hold(true, &Actor::Person, now())
+        .unwrap();
+    store.save_project(&project).unwrap();
+    drop(store);
+    let revision = f.document().revision();
+    for _ in 0..2 {
+        let out = f.run("submitted", false);
+        assert_eq!(out["reply"]["state"], "cutting_over", "{out}");
+    }
+    assert_eq!(f.run("submitted", true)["reply"]["state"], "uncertain");
+    assert_eq!(f.document().revision(), revision);
+    assert_eq!(f.count(), 0);
+}
+
+#[test]
+fn a_reused_session_caption_cannot_change_the_bound_destination() {
+    use sha2::{Digest, Sha256};
+    let f = Fixture::new();
+    let name = "codex/deliver-m1";
+    let renamed = "codex/renamed-member";
+    let original_path = f
+        .config
+        .state
+        .join(format!("{:x}.json", Sha256::digest(name.as_bytes())));
+    let original: Value = serde_json::from_slice(&std::fs::read(&original_path).unwrap()).unwrap();
+    let mut actual = original.clone();
+    actual["name"] = json!(renamed);
+    std::fs::write(
+        f.config
+            .state
+            .join(format!("{:x}.json", Sha256::digest(renamed.as_bytes()))),
+        actual.to_string(),
+    )
+    .unwrap();
+    let mut impostor = original.clone();
+    impostor["launch_id"] = json!(uuid::Uuid::new_v4().to_string());
+    impostor["run_id"] = json!("impostor-run");
+    std::fs::write(original_path, impostor.to_string()).unwrap();
+    let out = f.run("submitted", false);
+    assert_eq!(out["reply"]["state"], "submitted", "{out}");
+    let attempt = f.document().attempt(&f.body.id).unwrap().unwrap();
+    assert_eq!(attempt.executor.session, renamed);
+    assert_eq!(
+        attempt.executor.session_id,
+        format!("launch_id:{}", original["launch_id"].as_str().unwrap())
+    );
+    let request: Value = serde_json::from_slice(
+        &std::fs::read(f.config.state.join(format!("request-{}.json", f.body.id))).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(request["expected_run_id"], "run-m1");
+    assert_eq!(f.count(), 1);
 }
