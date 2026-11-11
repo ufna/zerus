@@ -1036,6 +1036,17 @@ port, and proves liveness and idleness from the fleet row of that exact
 run. A member whose launch ended and who has no resumed binding is not
 free.
 
+**What the board needs to show a stage (packages 5, 9, 12 and 13).** The
+Team tab follows the fork author's board: a card says which stage it is in
+and in which round. The reads gain additive, optional fields and nothing is
+inferred from a role's name. A queue row carries `kind` (`task` or `stage`,
+absent means task) and `rounds`, the pinned pipeline's rounds; a stage row
+also carries `stage: {kind, target, round}` with the kind `review`, `test`
+or `land`, the target node and the target's round that the stage checks. A
+member row carries `model` when its role names one. The client core passes
+them through as optional values; a view shows a stage by its kind when the
+kind is present and by its role's own name otherwise.
+
 **Known limit.** A stage excludes the implementer of the target's current
 round. After a reassignment an earlier implementer could hold a stage of
 the same target where the stage's role equals the implementer's role; the
