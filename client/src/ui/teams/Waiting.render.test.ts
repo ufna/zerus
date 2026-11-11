@@ -46,7 +46,8 @@ it("lists the cards oldest first with their team, kind, text and age", () => {
   const { host } = setup();
   const cards = [...host.querySelectorAll("[data-waiting]")];
   expect(cards.map((card) => card.getAttribute("data-kind"))).toEqual(["note", "integration", "pipeline_acceptance", "task_waits_owner"]);
-  expect(cards[0].textContent).toContain("Your word");
+  expect(cards[0].textContent).toContain("Note");
+  expect(cards[3].textContent, "a kind the store does not open shows its plain kind").toContain("Card: task_waits_owner");
   expect(cards[0].textContent).toContain("Fixes");
   expect(cards[0].textContent).toContain("Tell the team the release moved to Monday.");
   expect(cards[0].textContent).toContain("5 m");

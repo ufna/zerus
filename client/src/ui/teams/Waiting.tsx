@@ -3,7 +3,7 @@ import { tr } from "../../i18n";
 import { Icon } from "../lib/icons";
 import { TeamChip } from "./TeamChips";
 import type { WaitingItem, WaitingView } from "../../store/teams";
-import { waitingAge, waitingDecisions, waitingKindIcon, waitingKindLabel } from "./decisions";
+import { waitingAge, waitingDecisions, waitingKindIcon, waitingKindLabel, waitingKindSentence } from "./decisions";
 
 // Waiting for you (the fork's Waiting.tsx, adapted to M1): the open owner
 // cards of every team, oldest first, each with its team, its kind and the
@@ -29,6 +29,7 @@ export function WaitingCard(props: {
         </button>
         <span class="waiting-age dim">{waitingAge(props.item.created_ms, props.now)}</span>
       </div>
+      <p class="waiting-kind-sentence dim" data-kind-sentence>{waitingKindSentence(props.item)}</p>
       <p class="waiting-text">{props.item.text}</p>
       <div class="waiting-decisions">
         <For each={waitingDecisions(props.item)}>

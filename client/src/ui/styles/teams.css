@@ -149,6 +149,7 @@
 .waiting-team { max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .waiting-age { margin-left: auto; font-size: 11px; }
 .waiting-text { margin: 0; font-size: 13px; overflow-wrap: anywhere; }
+.waiting-kind-sentence { margin: 0; font-size: 12px; overflow-wrap: anywhere; }
 .waiting-decisions { display: flex; flex-wrap: wrap; gap: 6px; }
 .waiting-requests { display: flex; flex-direction: column; gap: 6px; }
 .waiting-requests h2 { margin: 6px 0 0; font-size: 13px; }
