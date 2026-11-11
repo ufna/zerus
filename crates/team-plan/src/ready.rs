@@ -12,7 +12,9 @@
 //!   from the view holds;
 //! - it is in no dependency cycle among the nodes that are not cancelled;
 //! - no node In progress or Reported has a write set that overlaps its own;
-//! - a stage checks a node that is Reported.
+//! - a stage checks a node that is Reported;
+//! - its ID appears once in the view: a node listed twice is never handed
+//!   out, since either row may be the stale one.
 //!
 //! "Before" follows the phases' display order: `order`, or the phase number
 //! when `order` is unset. The queue is no planned phase: it neither waits
@@ -228,6 +230,8 @@ struct Index<'a> {
     view: PlanView<'a>,
     staffing: Staffing<'a>,
     nodes: BTreeMap<NodeId, &'a Node>,
+    /// IDs that more than one row of the view carries.
+    duplicates: BTreeSet<NodeId>,
     phases: BTreeMap<u32, &'a Phase>,
     cycles: BTreeSet<NodeId>,
     /// The first planned phase that awaits acceptance.
@@ -241,8 +245,13 @@ struct Index<'a> {
 
 impl<'a> Index<'a> {
     fn new(view: &PlanView<'a>) -> Self {
-        let nodes: BTreeMap<NodeId, &Node> =
-            view.nodes.iter().map(|node| (node.id, node)).collect();
+        let mut nodes: BTreeMap<NodeId, &Node> = BTreeMap::new();
+        let mut duplicates = BTreeSet::new();
+        for node in view.nodes {
+            if nodes.insert(node.id, node).is_some() {
+                duplicates.insert(node.id);
+            }
+        }
         let phases: BTreeMap<u32, &Phase> =
             view.phases.iter().map(|phase| (phase.n, phase)).collect();
         let awaiting = phases
@@ -282,6 +291,7 @@ impl<'a> Index<'a> {
             view: *view,
             staffing: Staffing { view: *view },
             nodes,
+            duplicates,
             phases,
             cycles,
             awaiting,
@@ -308,12 +318,11 @@ impl<'a> Index<'a> {
         if planned.len() > 1 {
             planned = graph::dispatch_order(self.view.nodes, &planned);
         }
-        let uuid = |node: &Node| {
-            node.task
-                .as_ref()
-                .map_or(String::new(), |task| task.uuid.clone())
+        let board = |node: &&'a Node| {
+            let uuid = node.task.as_ref().map_or("", |task| task.uuid.as_str());
+            (node.rank.as_str(), uuid, node.id)
         };
-        queued.sort_by_key(|node| (node.rank.clone(), uuid(node), node.id));
+        queued.sort_by(|a, b| board(a).cmp(&board(b)));
         stages
             .into_iter()
             .chain(planned.iter().map(|id| self.nodes[id]))
@@ -334,6 +343,7 @@ impl<'a> Index<'a> {
             && !self.cycles.contains(&node.id)
             && !self.writes_held(node)
             && self.stage_target_reported(node)
+            && !self.duplicates.contains(&node.id)
     }
 
     fn phase_open(&self, node: &Node) -> bool {
@@ -697,6 +707,15 @@ mod tests {
         assert!(!is_ready(&plan, 2), "no task");
     }
 
+    #[test]
+    fn a_node_listed_twice_is_never_ready() {
+        let mut plan = Plan::new(vec![node(1, json!({})), node(2, json!({}))]);
+        assert_eq!(given(&plan), pairs(&[(1, "m1"), (2, "m2")]));
+        plan.nodes.push(node(1, json!({})));
+        assert_eq!(ready(&plan.view()), vec![2]);
+        assert_eq!(given(&plan), pairs(&[(2, "m1")]));
+    }
+
     // Hand-out.
 
     #[test]
@@ -720,20 +739,22 @@ mod tests {
             reported(4, "m1"),
             stage(20, 4, "m1"),
         ]);
+        // Equal ranks go by task UUID, which here runs against the node IDs.
+        plan.node(12).task.as_mut().unwrap().uuid = "00000000-0000-4000-8000-000000000000".into();
         plan.members = vec![member(LEAD, LEAD), member("r1", "reviewer")];
         for n in 1..=6 {
             plan.members.push(member(&format!("d{n}"), "developer"));
         }
-        // 2 unblocks 3, so it goes before 1; equal ranks go by task UUID.
-        assert_eq!(ready(&plan.view()), vec![20, 2, 1, 11, 12, 10]);
+        // 2 unblocks 3, so it goes before 1.
+        assert_eq!(ready(&plan.view()), vec![20, 2, 1, 12, 11, 10]);
         assert_eq!(
             given(&plan),
             pairs(&[
                 (20, "r1"),
                 (2, "d1"),
                 (1, "d2"),
-                (11, "d3"),
-                (12, "d4"),
+                (12, "d3"),
+                (11, "d4"),
                 (10, "d5")
             ])
         );
