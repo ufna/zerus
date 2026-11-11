@@ -11,6 +11,7 @@
 //! fork. See `docs/superpowers/specs/2026-11-11-agent-teams-design.md`.
 
 pub mod accounts;
+pub mod builtin;
 pub mod catalog;
 pub mod graph;
 pub mod model;
@@ -20,7 +21,9 @@ pub mod problem;
 pub mod ready;
 #[cfg(test)]
 mod testkit;
+pub mod validate;
 
+pub use builtin::builtin;
 pub use catalog::{
     AccountChoice, Catalog, LeadSpec, Pipeline, Role, Seat, Stage, StageKind, Template,
     TemplateBundle,
@@ -32,6 +35,7 @@ pub use model::{
     TeamFixture, TeamId, TeamStatus, Timers,
 };
 pub use problem::Problem;
+pub use validate::{bundle, validate_bundle, validate_catalog, validate_ids};
 
 /// True when a value equals its type's default; used to keep JSON short.
 pub(crate) fn is_default<T: Default + PartialEq>(value: &T) -> bool {

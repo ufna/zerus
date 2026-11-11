@@ -3,6 +3,10 @@
 //! A catalog holds them. A template's seats name roles from the catalog, and a
 //! bundle is one template with exactly the roles and pipelines it uses, which
 //! is what gets exported and what a team keeps as its own copy.
+//!
+//! Adapted from `src/state/teams/catalog.rs` in `WhiteWh/zerus` at
+//! `ca4cc4481`: reduced to roles, seats, pipelines and templates, with a
+//! lead's own spec and a template bundle added.
 
 use serde::{Deserialize, Serialize};
 
@@ -18,13 +22,61 @@ fn one() -> u32 {
 
 /// Which account of the role's agent a member is launched with.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "mode", rename_all = "snake_case", deny_unknown_fields)]
+#[serde(try_from = "AccountChoiceWire", into = "AccountChoiceWire")]
 pub enum AccountChoice {
     /// The signed-in account of that agent with the most room left.
     #[default]
     Freest,
     /// One account, by its ID on the member's computer.
     Named { account: String },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum AccountMode {
+    Freest,
+    Named,
+}
+
+/// The JSON form of [`AccountChoice`]: `{"mode":"freest"}` or
+/// `{"mode":"named","account":"..."}`. It is a strict struct because an
+/// internally tagged enum accepts unknown fields on a variant without data.
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AccountChoiceWire {
+    mode: AccountMode,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    account: Option<String>,
+}
+
+impl TryFrom<AccountChoiceWire> for AccountChoice {
+    type Error = &'static str;
+
+    fn try_from(wire: AccountChoiceWire) -> Result<Self, Self::Error> {
+        match (wire.mode, wire.account) {
+            (AccountMode::Freest, None) => Ok(Self::Freest),
+            (AccountMode::Freest, Some(_)) => Err("the freest account choice names no account"),
+            (AccountMode::Named, Some(account)) if !account.is_empty() => {
+                Ok(Self::Named { account })
+            }
+            (AccountMode::Named, _) => Err("a named account choice needs an account"),
+        }
+    }
+}
+
+impl From<AccountChoice> for AccountChoiceWire {
+    fn from(choice: AccountChoice) -> Self {
+        match choice {
+            AccountChoice::Freest => Self {
+                mode: AccountMode::Freest,
+                account: None,
+            },
+            AccountChoice::Named { account } => Self {
+                mode: AccountMode::Named,
+                account: Some(account),
+            },
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -139,10 +191,14 @@ pub struct Template {
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Catalog {
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub roles: Vec<Role>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub pipelines: Vec<Pipeline>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub templates: Vec<Template>,
     /// The planning rules given to a lead.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub planning_rules: Vec<String>,
 }
 

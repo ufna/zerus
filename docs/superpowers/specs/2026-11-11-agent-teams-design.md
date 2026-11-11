@@ -645,15 +645,21 @@ prompt confirmed at once is gone before anyone is notified.
   base; compute the merge with `git merge-tree --write-tree`; when it is
   clean, create the merge commit and advance the integration ref with a
   compare-and-swap on its old value. If the ref moved, compute again. If the
-  merge conflicts, nothing is written and the task returns to its member.
+  merge conflicts, no ref and no reachable object changes, and the task
+  returns to its member. A commit the branch already contains is a no-op.
 - Integration never runs `reset`, never writes the primary checkout or any
   other branch, and never pushes.
 - Because these merges are made with plumbing, commit hooks do not run on
-  them; the member's own commits ran the hooks in its worktree. A repository
+  them; the member's own commits ran the hooks in its worktree. Hooks defined
+  in Git configuration never run either: one defined by the repository makes
+  integration unavailable, and the person's own are switched off for these
+  calls. A merge driver defined by the repository also makes integration
+  unavailable; the person's own driver and signer are honoured. A repository
   that requires signed commits gets signed merges, and a signing step that
   needs the person stops integration with an owner card.
-- Git older than 2.38 lacks the merge command used here. Teams then run with
-  integration off, and say so.
+- Integration is unavailable, and the team runs without an integration
+  branch and says so, when Git is older than 2.38, when the repository has
+  submodules, or when changed files need an external content filter.
 
 **Shared folder.** The fork also lets all members work in one folder, for
 projects where a second checkout is too expensive or the folder is not a Git
