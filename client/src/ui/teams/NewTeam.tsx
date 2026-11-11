@@ -4,7 +4,7 @@ import { tr } from "../../i18n";
 import { selected } from "../../store/ui";
 import { machineCards } from "../../store/machines";
 import {
-  teams, newRequestId, type TeamCall, type TeamCatalog, type TeamCatalogTemplate, type TeamProjectFacts,
+  teams, type TeamCall, type TeamCatalog, type TeamCatalogTemplate, type TeamProjectFacts,
 } from "../../store/teams";
 import { NewTeamFooter } from "./NewTeamFooter";
 import { NewTeamHowTo, NewTeamIntroSteps } from "./NewTeamGuide";
@@ -90,6 +90,9 @@ export interface NewTeamProps {
   onCreate: (input: NewTeamInput) => Promise<import("../../store/teams").TeamOutcome>;
   onSaveTemplate: (template: TeamCatalogTemplate) => Promise<void>;
   onClose: () => void;
+  /** This dialog's refusal kept by the store: one that arrived while it was
+   * closed, or a Dismiss the core refused. */
+  failure?: string;
 }
 
 /** The form alone, from a catalog: the render tests pass their own. */
@@ -105,24 +108,27 @@ export function NewTeam(props: NewTeamProps): JSX.Element {
   const [checking, setChecking] = createSignal(false);
   const [error, setError] = createSignal("");
   const [creating, setCreating] = createSignal(false);
-  /** The one create intent: its team id and request id stay until it ends. */
-  const [intent, setIntent] = createSignal<{ team: string; request_id: string } | null>(null);
   let checkGeneration = 0;
-  /** The unresolved call of this form's create intent, when it has one. */
+  // The one create intent lives in the store, so closing the dialog keeps it
+  // and a reopened dialog adopts it, also one that becomes unresolved after
+  // the reopen. Only the store settles it: done, a refusal, or a Dismiss the
+  // core took. A Dismiss that fails or is refused changes nothing.
+  const intent = () => teams.createIntent();
+  /** The unresolved call of the create intent, when it has one. */
   const intentCall = () => {
     const current = intent();
     return current ? teams.unresolved().find((entry) => entry.call.request_id === current.request_id) : undefined;
   };
-  const locked = () => props.busy || creating() || !!intentCall();
+  /** The create intent's invoke is in flight (perhaps from a closed dialog). */
+  const sendingCreate = () => {
+    const current = intent();
+    return !!current && teams.sending().includes(current.request_id);
+  };
+  const locked = () => props.busy || creating() || sendingCreate() || !!intentCall();
   const checkedFolder = () => {
     const checked = facts();
     return checked && checked.path === folder().trim() ? checked.facts : undefined;
   };
-  onMount(() => {
-    // A create left unresolved keeps its ids across the dialog closing.
-    const open = teams.unresolved().find((entry) => entry.call.action.kind === "create");
-    if (open) setIntent({ team: open.call.team, request_id: open.call.request_id });
-  });
   const [saving, setSaving] = createSignal(false);
   const [saved, setSaved] = createSignal("");
   const [howto, setHowto] = createSignal(false);
@@ -157,18 +163,18 @@ export function NewTeam(props: NewTeamProps): JSX.Element {
   const create = async () => {
     const chosen = template();
     const checked = checkedFolder();
-    if (!chosen || !checked?.git || createWhy() || intentCall() || creating()) return;
-    const current = intent() ?? { team: newRequestId(), request_id: newRequestId() };
-    setIntent(current);
+    if (!chosen || !checked?.git || createWhy() || locked()) return;
+    // The held intent when there is one: never a second team id.
+    const current = teams.claimCreate();
     setCreating(true);
     setError("");
+    teams.clearFailure("new-team");
     try {
       const outcome = await props.onCreate({
         team: current.team, request_id: current.request_id, template: chosen.id, project: project().trim(), name: name().trim(), goal: goal().trim(),
         home: props.machineId, integration_branch: proposed(), base_commit: checked.head, integration: chosen.settings.integration,
       });
-      if (outcome.outcome === "done") setIntent(null);
-      else if (outcome.outcome === "failed") { setError(outcome.detail); setIntent(null); }
+      if (outcome.outcome === "failed") setError(outcome.detail);
       // uncertain and pending keep the intent; the store's unresolved entry
       // offers Check and Dismiss until it ends.
     } catch (failure) {
@@ -179,15 +185,16 @@ export function NewTeam(props: NewTeamProps): JSX.Element {
   const checkCreate = async () => {
     const entry = intentCall();
     if (!entry) return;
-    const outcome = await teams.runAgain(entry.call);
-    if (outcome.outcome === "done") setIntent(null);
-    else if (outcome.outcome === "failed") { setError(outcome.detail); setIntent(null); }
+    setError("");
+    const outcome = await teams.runAgain(entry.call, "new-team");
+    if (outcome.outcome === "done") props.onClose();
+    else if (outcome.outcome === "failed") setError(outcome.detail);
   };
   const dismissCreate = async () => {
     const entry = intentCall();
-    if (entry) await teams.dismiss(entry);
-    setIntent(null);
+    if (entry) await teams.dismiss(entry, "new-team");
   };
+  const shownError = () => error() || props.failure || "";
   const save = async () => {
     const chosen = template();
     if (!chosen) return;
@@ -265,15 +272,18 @@ export function NewTeam(props: NewTeamProps): JSX.Element {
             disabled={locked() || template()?.settings.integration !== "branch"} historyKey="team-branch" />
         </label>
       </section>
-      <Show when={error()}><div class="notice danger nt-error" role="alert" data-new-team-error><Icon name="triangle-alert" size={16} /><span>{error()}</span></div></Show>
+      <Show when={shownError()}><div class="notice danger nt-error" role="alert" data-new-team-error><Icon name="triangle-alert" size={16} /><span>{shownError()}</span></div></Show>
+      <Show when={sendingCreate() && !intentCall()}>
+        <div class="notice nt-note" role="status" data-create-sending><Icon name="loader-circle" size={16} /><span>{tr("The team is being created.")}</span></div>
+      </Show>
       <Show when={intentCall()}>
         {(entry) => (
           <div class="notice danger nt-error" role="alert" data-create-uncertain>
             <Icon name="triangle-alert" size={16} />
             <span>{entry().state === "pending" ? tr("The team is being created and waits for the core.") : tr("The create's result is unknown. Check it with the same request, or dismiss it.")}</span>
             <span class="nt-inline">
-              <button type="button" class="btn small" disabled={creating()} onClick={() => void checkCreate()}>{tr("Check")}</button>
-              <button type="button" class="btn small" disabled={creating()} onClick={() => void dismissCreate()}>{tr("Dismiss")}</button>
+              <button type="button" class="btn small" disabled={creating() || sendingCreate()} onClick={() => void checkCreate()}>{tr("Check")}</button>
+              <button type="button" class="btn small" disabled={creating() || sendingCreate()} onClick={() => void dismissCreate()}>{tr("Dismiss")}</button>
             </span>
           </div>
         )}
@@ -283,8 +293,8 @@ export function NewTeam(props: NewTeamProps): JSX.Element {
         <NewTeamIntroSteps />
         <NewTeamHowTo open={howto()} onToggle={setHowto} />
       </section>
-      <NewTeamFooter busy={props.busy || creating()} createWhy={createWhy()} error={error()} canSave={!!template() && !locked()}
-        saving={saving()} showCreate={!intentCall()} onSaveTemplate={() => void save()} onCancel={props.onClose} onCreate={() => void create()} />
+      <NewTeamFooter busy={props.busy || creating() || sendingCreate()} createWhy={createWhy()} error={shownError()} canSave={!!template() && !locked()}
+        saving={saving()} showCreate={!intentCall() && !sendingCreate()} onSaveTemplate={() => void save()} onCancel={props.onClose} onCreate={() => void create()} />
     </div>
   );
 }
@@ -330,6 +340,7 @@ export function NewTeamDialog() {
             }}
             onSaveTemplate={(template) => teams.saveTemplate(template)}
             onClose={close}
+            failure={teams.failureFor("new-team")?.message}
           />
         </NewTeamPage>
       </dialog>
