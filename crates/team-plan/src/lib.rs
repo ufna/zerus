@@ -11,8 +11,11 @@
 //! fork. See `docs/superpowers/specs/2026-11-11-agent-teams-design.md`.
 
 pub mod catalog;
+pub mod graph;
 pub mod model;
 pub mod problem;
+#[cfg(test)]
+mod testkit;
 
 pub use catalog::{
     AccountChoice, Catalog, LeadSpec, Pipeline, Role, Seat, Stage, StageKind, Template,
