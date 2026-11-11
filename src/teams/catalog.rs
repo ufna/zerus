@@ -5,6 +5,9 @@
 //! save or import.
 #![cfg_attr(not(test), allow(dead_code))] // The `hgs team` CLI in package 5 is the caller.
 
+mod roster;
+pub(crate) use roster::validate_roster;
+
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
@@ -72,7 +75,11 @@ fn merge_by_id<T: Clone>(base: &[T], over: &[T], id: impl Fn(&T) -> &str) -> Vec
 /// valid.
 pub fn save(config_dir: &Path, catalog: &Catalog) -> Result<(), Problem> {
     first_problem(validate_ids(catalog))?;
-    first_problem(validate_catalog(&merge(&builtin(), catalog)))?;
+    let merged = merge(&builtin(), catalog);
+    first_problem(validate_catalog(&merged))?;
+    for template in &merged.templates {
+        export_bundle(&merged, &template.id)?;
+    }
     write(config_dir, catalog)
 }
 
@@ -96,7 +103,9 @@ pub fn import_bundle(config_dir: &Path, bundle: &TemplateBundle) -> Result<(), P
 
 /// One template with exactly the roles and pipelines it uses.
 pub fn export_bundle(catalog: &Catalog, template: &str) -> Result<TemplateBundle, Problem> {
-    bundle(catalog, template)
+    let bundle = bundle(catalog, template)?;
+    validate_roster(&bundle)?;
+    Ok(bundle)
 }
 
 fn write(config_dir: &Path, catalog: &Catalog) -> Result<(), Problem> {
