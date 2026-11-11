@@ -295,6 +295,9 @@ struct Request {
     session: String,
     host: String,
     session_id: String,
+    /// The queue the card is reserved for (`task add --team`), when chosen.
+    #[serde(default)]
+    team: Option<String>,
 }
 fn request(slot: &Slot) -> Result<(Value, Request), String> {
     let raw = slot
@@ -315,16 +318,27 @@ fn request(slot: &Slot) -> Result<(Value, Request), String> {
             .any(|s| s.len() > 8192 || s.chars().any(char::is_control))
         || (parsed.session == "any" && (!parsed.host.is_empty() || !parsed.session_id.is_empty()))
         || (parsed.session != "any" && parsed.session_id.is_empty())
+        || parsed
+            .team
+            .as_deref()
+            .is_some_and(|team| !uuid::Uuid::parse_str(team).is_ok())
+        || (parsed.team.is_some() && parsed.session != "any")
     {
         return Err("The reserved card is invalid. Nothing was sent.".into());
     }
     Ok((raw, parsed))
 }
+/// Where the new card goes: the stage a person chose, or a team's queue.
+struct Placement {
+    backlog: bool,
+    team: Option<String>,
+}
+
 fn submitted(
     slot: &mut Slot,
     store: &DraftStore,
     recover: bool,
-    backlog: bool,
+    placement: Placement,
     target: TaskTarget,
     read: impl Fn(&str, &str) -> Result<Value, String>,
     run: impl Fn(&TaskCall) -> Result<serde_json::Map<String, Value>, String>,
@@ -332,6 +346,7 @@ fn submitted(
     if slot.blocked {
         return Err(zerus_client_core::drafts::NOT_RESTORED.into());
     }
+    let Placement { backlog, team } = placement;
     let wanted = if slot.kind == Kind::NewCard && slot.stored.form_state.contains_key("request") {
         request(slot)?.1.title
     } else {
@@ -386,7 +401,7 @@ fn submitted(
                 return Err("The reserved card is unavailable. Nothing was sent.".into());
             }
             slot.stored.form_state.insert("schema".into(), json!(1));
-            slot.stored.form_state.insert("request".into(),json!({"project":slot.project,"title":wanted,"request_id":uuid::Uuid::new_v4().to_string(),"stage":if backlog {"backlog"} else {"todo"},"session":if target.session.is_empty(){"any"}else{&target.session},"host":target.host,"session_id":target.session_id}));
+            slot.stored.form_state.insert("request".into(),json!({"project":slot.project,"title":wanted,"request_id":uuid::Uuid::new_v4().to_string(),"stage":if backlog {"backlog"} else {"todo"},"session":if target.session.is_empty(){"any"}else{&target.session},"host":target.host,"session_id":target.session_id,"team":team}));
             checkpoint(slot, store)?;
         } else if !recover {
             return Err("Creation was interrupted. Press Enter to recover this same card.".into());
@@ -402,14 +417,20 @@ fn submitted(
             session_id: intent.session_id,
             mode: String::new(),
         };
-        run(&TaskCall::add_named(
-            &intent.project,
-            &intent.title,
-            &intent.request_id,
-            &target,
-            intent.stage == "backlog",
-        ))
-        .and_then(|reply| {
+        let add = |target: TaskTarget| {
+            if let Some(team) = &intent.team {
+                TaskCall::add_team_named(&intent.project, &intent.title, &intent.request_id, team)
+            } else {
+                TaskCall::add_named(
+                    &intent.project,
+                    &intent.title,
+                    &intent.request_id,
+                    &target,
+                    intent.stage == "backlog",
+                )
+            }
+        };
+        run(&add(target)).and_then(|reply| {
             let task = tasks_write::created(&reply, &intent.request_id)?;
             if task["project"].as_str() != Some(&slot.project) {
                 return Err(
@@ -450,6 +471,8 @@ pub struct Submit {
     target: Option<zerus_client_core::actions::Target>,
     catalog_key: Option<String>,
     session_id: Option<String>,
+    /// A queue chosen in the New task form (`task add --team`).
+    team: Option<String>,
 }
 #[tauri::command]
 pub async fn task_form_submit(
@@ -468,6 +491,7 @@ pub async fn task_form_submit(
         target,
         catalog_key,
         session_id,
+        team,
     } = input;
     if crate::actions::blocked() {
         return Err(crate::screens::REPLAY_NEEDS_HGS.into());
@@ -486,7 +510,15 @@ pub async fn task_form_submit(
             .ok_or(CHANGED)?;
         // This is metadata creation, with no executor delivery. A known offline
         // target can receive a queued card; its stable identity still must match.
-        let assignment = if kind == Kind::NewCard && !slot.stored.form_state.contains_key("request")
+        if kind == Kind::NewCard
+            && team.is_some()
+            && (target.is_some() || catalog_key.is_some() || session_id.is_some())
+        {
+            return Err("A queued card names no session. Nothing was sent.".into());
+        }
+        let assignment = if kind == Kind::NewCard
+            && !slot.stored.form_state.contains_key("request")
+            && team.is_none()
         {
             if let Some(target) = target {
                 let row = pump
@@ -520,7 +552,7 @@ pub async fn task_form_submit(
             slot,
             &composers.0.store,
             recover,
-            backlog,
+            Placement { backlog, team },
             assignment,
             document,
             |call| tasks_write::run(&zerus_client_core::default_hgs(), call),

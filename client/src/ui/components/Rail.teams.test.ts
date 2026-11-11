@@ -19,7 +19,7 @@ vi.mock("../../store/teams", async () => {
   const [available, setAvailable] = signal<boolean | undefined>(undefined);
   const openNewTeam = vi.fn(async () => {});
   f.setAvailable = setAvailable;
-  return { teams: { available, openNewTeam } };
+  return { teams: { available, waitingCount: () => 0, openNewTeam } };
 });
 import { Rail } from "./Rail";
 

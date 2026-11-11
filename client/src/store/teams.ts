@@ -36,6 +36,22 @@ export interface TeamBar {
 }
 export interface TeamView { bar: TeamBar; members: TeamMember[]; groups: TeamGroup[]; truncated: boolean; next: string | null; revision: number }
 
+/** One open owner card that waits for the person. */
+export interface WaitingItem {
+  id: string;
+  team: string;
+  card: number;
+  kind: string;
+  node: number | null;
+  text: string;
+  state: string;
+  by: string;
+  created_ms: number;
+}
+
+/** The open owner cards of every team, oldest first, one bounded page. */
+export interface WaitingView { items: WaitingItem[]; next: string | null }
+
 export interface TeamConfirmation { name: string; title: string; text: string; action: string }
 export interface TeamCall {
   team: string;
@@ -117,6 +133,7 @@ export interface SessionIdentity { sessionId?: string | null; runId?: string | n
 
 export function createTeams(transport: TeamsTransport = tauriTeams()) {
   const [list, setList] = createSignal<TeamList>();
+  const [waitingView, setWaitingView] = createSignal<WaitingView>();
   const [team, setTeam] = createSignal<TeamView>();
   const [failure, setFailure] = createSignal<{ key: string; code: string; message: string } | null>(null);
   /** undefined until the first list answer; false when Teams are off or hgs cannot run. */
@@ -132,13 +149,21 @@ export function createTeams(transport: TeamsTransport = tauriTeams()) {
   const [busy, setBusy] = createSignal(false);
   /** Session key → its team, null when the session is not a lead. */
   const [sessionTeams, setSessionTeams] = createSignal<Record<string, string | null>>({});
-  /** Waiting resolvers by team id, for the session-to-team lookup. */
-  const waiting = new Map<string, (view: TeamView | null) => void>();
+  /** Resolvers by team id, for a team view a decision needs a revision from. */
+  const pendingViews = new Map<string, (view: TeamView | null) => void>();
   let probing = false, probingDone = false;
   const known = (key: string) => key in sessionTeams();
 
   function apply(entries: TeamsOut[]) {
     for (const entry of entries.slice(0, 8)) {
+      if (entry.key === "waiting") {
+        if (entry.kind === "waiting") {
+          setWaitingView(entry.payload as WaitingView);
+        } else if (entry.kind === "failed") {
+          setFailure({ key: "waiting", code: (entry.payload as { code: string }).code, message: (entry.payload as { message: string }).message });
+        }
+        continue;
+      }
       if (entry.key === "list") {
         if (entry.kind === "list") {
           const view = entry.payload as TeamList;
@@ -158,8 +183,8 @@ export function createTeams(transport: TeamsTransport = tauriTeams()) {
         if (entry.kind === "team") {
           const view = entry.payload as TeamView;
           if (view.bar.id === followed() || !followed()) batch(() => { setTeam(view); setAvailable(true); });
-          const resolve = waiting.get(view.bar.id);
-          if (resolve) { waiting.delete(view.bar.id); resolve(view); }
+          const resolve = pendingViews.get(view.bar.id);
+          if (resolve) { pendingViews.delete(view.bar.id); resolve(view); }
         } else if (entry.kind === "failed") {
           setFailure({ key: entry.key, code: (entry.payload as { code: string }).code, message: (entry.payload as { message: string }).message });
         } else if (entry.kind === "ended") {
@@ -174,7 +199,7 @@ export function createTeams(transport: TeamsTransport = tauriTeams()) {
   async function probe() {
     if (probing || probingDone) return;
     probing = true; probingDone = true;
-    try { await transport.follow({ list: true, waiting: false, team: null }); }
+    try { await transport.follow({ list: true, waiting: true, team: null }); }
     catch { batch(() => { setAvailable(false); setOff("unavailable"); }); }
     finally { probing = false; }
   }
@@ -182,12 +207,12 @@ export function createTeams(transport: TeamsTransport = tauriTeams()) {
   /** Follows one team's views (and the list); the tab's mount and the page's effect call it. */
   async function openTeam(id: string) {
     setFollowed(id);
-    await transport.follow({ list: false, waiting: false, team: id });
+    await transport.follow({ list: false, waiting: true, team: id });
   }
   async function closeTeam() {
     setFollowed(undefined);
     setTeam(undefined);
-    await transport.follow({ list: true, waiting: false, team: null });
+    await transport.follow({ list: true, waiting: true, team: null });
   }
   async function hidden(hidden: boolean) {
     setVisible(!hidden);
@@ -197,6 +222,30 @@ export function createTeams(transport: TeamsTransport = tauriTeams()) {
   }
   async function tasksChanged() { if (followed()) await transport.tasksChanged(); }
   async function page(key: string, cursor: string | null) { await transport.page(key, cursor); }
+  /** The Waiting page reads its first page; the rail's count follows the same key. */
+  async function openWaiting() { await transport.follow({ list: true, waiting: true, team: null }); }
+  async function pageWaiting(cursor: string | null) { await transport.page("waiting", cursor); }
+  /** The count the rail shows: the page's items, and one more when a next page exists. */
+  const waitingCount = () => {
+    const view = waitingView();
+    return !view ? 0 : view.items.length + (view.next ? 1 : 0);
+  };
+  /** The team's current revision, read once through the followed team. */
+  async function revisionOf(id: string): Promise<number | undefined> {
+    const shown = team();
+    if (shown?.bar.id === id) return shown.revision;
+    await transport.follow({ list: false, waiting: true, team: id });
+    return await new Promise<number | undefined>((resolve) => {
+      pendingViews.set(id, (view) => resolve(view?.revision));
+      setTimeout(() => { if (pendingViews.delete(id)) resolve(undefined); }, 5000);
+    });
+  }
+  /** One owner card's decision, against the team's current revision. */
+  async function decide(card: WaitingItem, decision: string): Promise<TeamOutcome | undefined> {
+    const expected_revision = await revisionOf(card.team);
+    if (expected_revision === undefined) return undefined;
+    return run({ team: card.team, expected_revision, request_id: newRequestId(), action: { kind: "decide", card: card.card, decision } });
+  }
 
   /** The session's team: the list's `lead_session` names the lead's session. */
   async function leadTeamFor(key: string, identity: SessionIdentity): Promise<string | null> {
@@ -204,7 +253,7 @@ export function createTeams(transport: TeamsTransport = tauriTeams()) {
     const ids = [identity.sessionId ? `launch_id:${identity.sessionId}` : "", identity.runId ? `run_id:${identity.runId}` : ""].filter(Boolean);
     const found = (list()?.teams ?? []).find((summary) => !!summary.lead_session && ids.includes(summary.lead_session.session_id));
     setSessionTeams({ ...sessionTeams(), [key]: found?.id ?? null });
-    if (found) { setFollowed(found.id); await transport.follow({ list: false, waiting: false, team: found.id }); }
+    if (found) { setFollowed(found.id); await transport.follow({ list: false, waiting: true, team: found.id }); }
     return found?.id ?? null;
   }
 
@@ -275,7 +324,7 @@ export function createTeams(transport: TeamsTransport = tauriTeams()) {
 
   return {
     list, team, failure, available, off, followed, visible, catalog, catalogError, newTeamOpen, confirmation, uncertain, busy, sessionTeams,
-    apply, probe, openTeam, closeTeam, hidden, tasksChanged, page, leadTeamFor, known,
+    waitingView, waitingCount, apply, probe, openTeam, closeTeam, hidden, tasksChanged, page, openWaiting, pageWaiting, decide, revisionOf, leadTeamFor, known,
     openNewTeam, closeNewTeam, saveTemplate, project, run, runAgain, confirm, cancelConfirmation, check, dismiss, clearFailure,
   };
 }

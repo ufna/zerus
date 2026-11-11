@@ -5,8 +5,10 @@ import { tasks } from "./tasks";
 import { STAGES, type Task } from "../ui/screens/tasks-ui";
 import { tr, trNoop } from "../i18n";
 
-export type BoardAction = { kind: "to_backlog" | "to_todo" | "back_to_todo" | "accept" | "top" } | { kind: "reorder"; anchor: string; before: boolean };
-export type MenuAction = Exclude<BoardAction["kind"], "reorder">;
+export type BoardAction = { kind: "to_backlog" | "to_todo" | "back_to_todo" | "accept" | "top" }
+  | { kind: "reorder"; anchor: string; before: boolean }
+  | { kind: "send_to_team"; team: string };
+export type MenuAction = "to_backlog" | "to_todo" | "back_to_todo" | "accept" | "top";
 export const ACTION_LABEL: Record<MenuAction, string> = { to_backlog: trNoop("Move to Backlog"), to_todo: trNoop("Move to To do"), back_to_todo: trNoop("Back to To do"), accept: trNoop("Accept"), top: trNoop("Move to the top of To do") };
 export const actionLabel = (action: MenuAction): string => tr(ACTION_LABEL[action]);
 export const ACTION_ICON: Record<MenuAction, string> = { to_backlog: "clock", to_todo: "list-todo", back_to_todo: "undo-2", accept: "check", top: "arrow-up-to-line" };
@@ -19,8 +21,26 @@ export const canDrag = (task: Task) => task.writable && (STAGES as readonly stri
 export const stageDropAction = (task: Task | undefined, stage: string): BoardAction | undefined => task?.writable && task.stage === "todo" && stage === "backlog" ? { kind: "to_backlog" }
   : task?.writable && task.stage === "backlog" && stage === "todo" ? { kind: "to_todo" } : undefined;
 
-export async function actOnTask(project: string, task: Task, action: BoardAction) {
+/** Sends a card in Backlog or To do to a team's queue (`task target REF team
+ * TEAM`). The task board does not decide the outcome: a refusal is the team's
+ * own reason, and a task already queued is not sent twice. */
+export async function sendToTeam(project: string, task: Task, team: string, teamName: string) {
   if (writingTask()) return;
+  const fresh = tasks.project() === project ? tasks.find(task.uuid) : undefined;
+  if (!fresh || !fresh.writable || (fresh.stage !== "backlog" && fresh.stage !== "todo")) {
+    notify("error", tr("The task changed. Nothing was changed. Refresh the task.")); return;
+  }
+  setWritingTask(task.uuid);
+  try {
+    await taskBoardAction(project, task.uuid, fresh.stage, { kind: "send_to_team", team });
+    notify("info", tr("Sent to %1", teamName));
+  } catch (error) {
+    notify("error", String(error));
+  } finally { setWritingTask(undefined); }
+}
+
+export async function actOnTask(project: string, task: Task, action: BoardAction) {
+  if (writingTask() || action.kind === "send_to_team") return;
   const fresh = tasks.project() === project ? tasks.find(task.uuid) : undefined;
   const anchor = action.kind === "reorder" ? tasks.find(action.anchor) : undefined;
   if (!fresh || !canDrag(fresh) || fresh.stage !== task.stage || (action.kind === "reorder"

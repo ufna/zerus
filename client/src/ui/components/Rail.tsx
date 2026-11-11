@@ -29,6 +29,10 @@ const ITEMS: { id: Page; icon: string; label: string; tip: string; command: stri
 ];
 
 export function Rail() {
+  const waitingTip = () => {
+    const count = teams.waitingCount();
+    return count > 0 ? tr("Waiting for you — %1", count) : tr("Waiting for you");
+  };
   onMount(() => { void refreshAppBuildInfo(); });
   const labeled = () => skin().layout.rail === "labeled";
   return (
@@ -41,6 +45,14 @@ export function Rail() {
         <Icon name="add" size={24} />
         <Show when={labeled()}><span>{tr("New")}</span></Show>
       </button>
+      <Show when={teams.available() === true}>
+        <button class="rail-btn" classList={{ on: page() === "waiting" }} data-tip={labeled() ? undefined : waitingTip()} data-tip-pos="right"
+          aria-label={waitingTip()} onClick={() => setPage("waiting")}>
+          <Icon name="message-square" size={24} />
+          <Show when={teams.waitingCount() > 0}><span class="rail-badge" aria-hidden="true">{teams.waitingCount() > 99 ? "99+" : teams.waitingCount()}</span></Show>
+          <Show when={labeled()}><span>{tr("Waiting")}</span></Show>
+        </button>
+      </Show>
       <Show when={teams.available() === true}>
         <button class="rail-btn" data-tip={labeled() ? undefined : tr("New team")} data-tip-pos="right" aria-label={tr("New team")} onClick={() => void teams.openNewTeam()}>
           <Icon name="users" size={24} />

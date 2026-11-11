@@ -8,6 +8,7 @@ fn fixture(name: &str) -> Value {
         "status" => include_str!("../fixtures/cli-status.json"),
         "queue" => include_str!("../fixtures/cli-queue.json"),
         "cards" => include_str!("../fixtures/cli-cards.json"),
+        "waiting" => include_str!("../fixtures/cli-waiting.json"),
         other => panic!("no fixture {other}"),
     };
     serde_json::from_str(text).expect("a pinned CLI fixture parses")
@@ -356,4 +357,21 @@ fn waiting_keeps_one_page() {
     }));
     assert_eq!(view.items.len(), PAGE);
     assert_eq!(view.next.as_deref(), Some("t1.bmV4dA"));
+}
+
+#[test]
+fn the_pinned_waiting_reply_projects_the_open_owner_card() {
+    let view = waiting(&fixture("waiting"));
+    assert_eq!(view.next, None);
+    assert_eq!(view.items.len(), 1);
+    let item = &view.items[0];
+    assert_eq!(item.id, "00000000-0000-4000-8000-00000000beef:1");
+    assert_eq!(item.team, TEAM);
+    assert_eq!(item.card, 1);
+    assert_eq!(item.kind, "note");
+    assert_eq!(item.node, None);
+    assert_eq!(item.text, "Tell the team the release moved to Monday.");
+    assert_eq!(item.state, "open");
+    assert_eq!(item.by, "local");
+    assert_eq!(item.created_ms, 1_700_000_000_000);
 }

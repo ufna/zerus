@@ -78,13 +78,13 @@ describe("the Teams store", () => {
     const { transport, calls } = fake();
     const teams = createTeams(transport);
     await teams.openTeam(TEAM_ID);
-    expect(calls.follow.at(-1)).toEqual({ list: false, waiting: false, team: TEAM_ID });
+    expect(calls.follow.at(-1)).toEqual({ list: false, waiting: true, team: TEAM_ID });
     await teams.hidden(true);
     expect(calls.hidden.at(-1)).toBe(true);
     await teams.page("team:" + TEAM_ID, "t1.next");
     expect(calls.pages.at(-1)).toEqual(["team:" + TEAM_ID, "t1.next"]);
     await teams.closeTeam();
-    expect(calls.follow.at(-1)).toEqual({ list: true, waiting: false, team: null });
+    expect(calls.follow.at(-1)).toEqual({ list: true, waiting: true, team: null });
   });
 
   it("has the five outcomes: done, failed, uncertain, confirm and pending", async () => {
@@ -162,7 +162,7 @@ describe("the Teams store", () => {
     const teams = createTeams(transport);
     teams.apply([entry("list", "list", list)]);
     expect(await teams.leadTeamFor("row-key", { sessionId: "00000000-0000-4000-8000-000000000064", runId: null })).toBe(TEAM_ID);
-    expect(calls.follow).toEqual([{ list: false, waiting: false, team: TEAM_ID }]);
+    expect(calls.follow).toEqual([{ list: false, waiting: true, team: TEAM_ID }]);
     expect(teams.sessionTeams()["row-key"]).toBe(TEAM_ID);
     // Another session reads no team at all: the list's lead session decides.
     const other = createTeams(transport);

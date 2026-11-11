@@ -63,6 +63,8 @@ const ShortcutHelpDialog = lazy(() => import("./ui/sessions/ShortcutHelpDialog")
 const PerfHost = lazy(() => import("./ui/PerfHost").then((m) => ({ default: m.PerfHost })));
 // New team loads the first time it opens; its catalog read happens then.
 const NewTeamDialog = lazy(() => import("./ui/teams/NewTeam").then((m) => ({ default: m.NewTeamDialog })));
+// Waiting for you loads the first time its rail entry opens.
+const WaitingScreen = lazy(() => import("./ui/screens/Waiting").then((m) => ({ default: m.WaitingScreen })));
 
 function LoginItemButton() {
   return (
@@ -155,6 +157,7 @@ export function App(props: { mode: () => BridgeMode | "starting" }) {
           <Match when={page() === "machines"}><MachinesScreen /></Match>
           <Match when={page() === "accounts"}><Suspense><AccountsScreen /></Suspense></Match>
           <Match when={page() === "projects"}><Suspense><ProjectsScreen /></Suspense></Match>
+          <Match when={page() === "waiting"}><Suspense><WaitingScreen /></Suspense></Match>
           <Match when={page() === "settings"}><Suspense><SettingsScreen /></Suspense></Match>
         </Switch>
       </main>

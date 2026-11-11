@@ -6,13 +6,16 @@ import { render } from "solid-js/web";
 import { NewTeam } from "../ui/teams/NewTeam";
 import { NewTeamPage } from "../ui/teams/NewTeamPage";
 import { TeamUncertain, TeamWorkspace } from "../ui/teams/TeamTab";
+import { WaitingList } from "../ui/teams/Waiting";
+import type { WaitingView } from "../store/teams";
+import { Icon } from "../ui/lib/icons";
 import { MemberCard } from "../ui/teams/MemberCard";
 import { catalog, teamView } from "../ui/teams/fixtures";
 import type { TeamView } from "../store/teams";
 import { applySkin, skins } from "../skin/runtime";
 
 // Fixture-only views: no store follows, IPC or desktop application. Query:
-// ?skin=zerus-dark|zerus-light|fjord|paper&screen=team|new|states&narrow=1
+// ?skin=zerus-dark|zerus-light|fjord|paper&screen=team|new|states|waiting|send&narrow=1
 // &detail=1 selects the review card; &ready=1 fills the name and checks the
 // synthetic folder. Without screen, the page shows every fixture.
 //   ./node_modules/.bin/vite --port 5181 --strictPort --host 127.0.0.1
@@ -35,6 +38,17 @@ const empty: TeamView = {
   groups: teamView.groups.map((group) => ({ ...group, cards: [] })),
   bar: { ...teamView.bar, counts: { ...teamView.bar.counts, nodes: { waiting: 0, pending: 0, in_progress: 0, reported: 0, accepted: 0, cancelled: 0 }, inbox: 0, cards: 0 } },
 };
+const TEAM_A = "00000000-0000-4000-8000-00000000aaaa";
+const TEAM_B = "00000000-0000-4000-8000-00000000bbbb";
+const waitingFixture: WaitingView = {
+  items: [
+    { id: `${TEAM_A}:3`, team: TEAM_A, card: 3, kind: "note", node: null, text: "Tell the team the release moved to Monday.", state: "open", by: "local", created_ms: Date.now() - 6 * 60_000 },
+    { id: `${TEAM_B}:4`, team: TEAM_B, card: 4, kind: "integration", node: 2, text: "Accept the merge of Task 2 into the integration branch?", state: "open", by: "local", created_ms: Date.now() - 3 * 3_600_000 },
+    { id: `${TEAM_A}:5`, team: TEAM_A, card: 5, kind: "task_waits_owner", node: 1, text: "Task 1 waits for your decision on its reported work.", state: "open", by: "lead", created_ms: Date.now() - 2 * 86_400_000 },
+  ],
+  next: "fixture-waiting-next",
+};
+const teamNames = new Map([[TEAM_A, "Fixes"], [TEAM_B, "Docs"]]);
 const previewCatalog = { ...catalog, templates: [...catalog.templates, {
   ...catalog.templates[0], id: "small", name: "Small", description: "One implementer and an independent checker.",
   roster: catalog.templates[0].roster.map((seat) => ({ ...seat, count: 1 })),
@@ -101,6 +115,49 @@ function App() {
     </Show>
     <Show when={show("new")}>
       <Section title="New team" form note="The real dialog frame. Use ready=1 to check the synthetic Git folder."><FormPreview /></Section>
+    </Show>
+    <Show when={show("waiting")}>
+      <Section title="Waiting for you: the owner cards" note="Oldest first, each with its team, kind, age and decisions; More uses a fixture cursor.">
+        <WaitingList view={waitingFixture} teamNames={teamNames} now={Date.now()} busy={false}
+          onDecide={() => {}} onOpenTeam={() => {}} onPage={() => {}} />
+      </Section>
+      <Section title="Waiting for you: the requests of team sessions" note="From the session attention data: only a question or an approval that asks for the person.">
+        <div class="waiting-requests">
+          <button type="button" class="waiting-request"><Icon name="shield-check" size={14} /><b>dev-1</b><span class="dim">Fixes</span><span class="waiting-request-caption">The member asks to run the test suite on the shared folder.</span></button>
+          <button type="button" class="waiting-request"><Icon name="message-square" size={14} /><b>lead</b><span class="dim">Docs</span><span class="waiting-request-caption">Needs input on the branch name.</span></button>
+        </div>
+      </Section>
+      <Section title="Waiting for you: nothing waits" note="The empty page and the read failure share the same notice.">
+        <WaitingList view={{ items: [], next: null }} teamNames={teamNames} now={Date.now()} busy={false} onDecide={() => {}} onOpenTeam={() => {}} onPage={() => {}} />
+        <div class="team-notice">Waiting could not be read: The computer is offline.</div>
+      </Section>
+    </Show>
+    <Show when={show("send")}>
+      <Section title="Send to team on a task card" note="A card in To do with the project's two teams: each is one menu item; the card stays where it was.">
+        <div class="tk-panel">
+          <div class="tk-head"><span class="tk-scope">1 task</span><select class="field tk-team" aria-label="Team"><option>No team</option><option>Fixes</option><option>Docs</option></select></div>
+          <article class="tk-card st-todo" data-task="fixture-task">
+            <span class="tk-glyph st-todo" aria-hidden="true" />
+            <div class="tk-card-main">
+              <div class="tk-card-title">Move the release notes to Monday</div>
+              <div class="tk-meta"><span class="mono tk-id">a01</span><span class="tk-target ell">Any session</span></div>
+            </div>
+            <div class="tk-card-acts"><button type="button" class="icon-btn tk-act" aria-label="Task actions" title="Task actions"><Icon name="ellipsis" size={15} /></button></div>
+            <div class="menu" style={{ position: "static", "margin-top": "8px" }}>
+              <button type="button" class="menu-item"><Icon name="users" size={14} />Send to team: Fixes</button>
+              <button type="button" class="menu-item"><Icon name="users" size={14} />Send to team: Docs</button>
+            </div>
+          </article>
+        </div>
+      </Section>
+      <Section title="Send to team on a task card: the refusal" note="A queue's own reason is shown as the notice, in its words.">
+        <div class="tk-panel"><div class="team-notice">The queue is full. Task 1 waits for the lead.</div>
+          <article class="tk-card st-backlog" data-task="fixture-refused">
+            <span class="tk-glyph st-backlog" aria-hidden="true" />
+            <div class="tk-card-main"><div class="tk-card-title">Fix the flaky upload test</div><div class="tk-meta"><span class="mono tk-id">a02</span><span class="tk-target ell">Any session</span></div></div>
+          </article>
+        </div>
+      </Section>
     </Show>
   </div>;
 }

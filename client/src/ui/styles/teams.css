@@ -99,3 +99,24 @@
     .team-chips { flex-basis: 100%; }
   }
 }
+
+/* Waiting for you (M1): the owner cards and the team sessions' requests, from
+   the same card/notice primitives as the Team tab. No new colours. */
+.waiting-page { height: 100%; overflow: auto; padding: 16px 20px; display: flex; flex-direction: column; gap: 12px; }
+.waiting-head { display: flex; flex-direction: column; gap: 2px; }
+.waiting-head h1 { margin: 0; font-size: 16px; }
+.waiting-list { display: flex; flex-direction: column; gap: 8px; align-items: stretch; }
+.waiting-card { display: flex; flex-direction: column; gap: 6px; padding: 10px 12px; border: 1px solid var(--z-color-card-border); border-radius: var(--z-radius-card); background: var(--z-color-card); }
+.waiting-card-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.waiting-kind { font-size: 12px; }
+.waiting-team { max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.waiting-age { margin-left: auto; font-size: 11px; }
+.waiting-text { margin: 0; font-size: 13px; overflow-wrap: anywhere; }
+.waiting-decisions { display: flex; flex-wrap: wrap; gap: 6px; }
+.waiting-requests { display: flex; flex-direction: column; gap: 6px; }
+.waiting-requests h2 { margin: 6px 0 0; font-size: 13px; }
+.waiting-request { display: flex; align-items: center; gap: 8px; width: 100%; text-align: left; padding: 8px 10px;
+  border: 1px solid var(--z-color-card-border); border-radius: var(--z-radius-md); background: var(--z-color-card); color: var(--z-color-text); cursor: pointer; }
+.waiting-request:hover { background: var(--z-color-card-hover); }
+.waiting-request b { font-size: 12px; }
+.waiting-request-caption { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--z-color-text-2); font-size: 12px; }
