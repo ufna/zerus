@@ -10,6 +10,7 @@
 //! Agent Teams were designed and first built by WhiteWh in the `WhiteWh/zerus`
 //! fork. See `docs/superpowers/specs/2026-11-11-agent-teams-design.md`.
 
+pub mod accounts;
 pub mod catalog;
 pub mod graph;
 pub mod model;
