@@ -284,3 +284,32 @@ fn a_pause_after_the_delivery_changes_nothing_of_the_hand_out() {
     assert_eq!(h.node(node).state, NodeState::Reported);
     assert_eq!(items(&h, "report").len(), 1);
 }
+
+#[test]
+fn a_late_session_name_is_bounded_by_the_native_contract_and_never_cut() {
+    let mut h = Harness::new();
+    h.run(&person(), Operation::Stop).unwrap();
+    let named = |name: String| {
+        let mut op = late("m1", LAUNCH);
+        if let Operation::RecordLateSession { name: n, .. } = &mut op {
+            *n = name;
+        }
+        op
+    };
+    let over = format!("claude/{}", "y".repeat(512 - 6));
+    refused(h.run(&service(), named(over)), code::OVER_CAP);
+    let whole = format!("claude/{}", "y".repeat(512 - 7));
+    assert_eq!(whole.len(), 512);
+    let card = h
+        .run(&service(), named(whole.clone()))
+        .unwrap()
+        .item
+        .unwrap();
+    assert!(h
+        .store
+        .card(TEAM, card)
+        .unwrap()
+        .unwrap()
+        .text
+        .contains(&whole));
+}

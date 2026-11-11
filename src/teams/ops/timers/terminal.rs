@@ -5,6 +5,10 @@
 use super::*;
 use store::timers::{settle, sql::WAITING_KEY};
 
+/// The native session name contract's own bound (a session name as the
+/// launch records hold it); a name is recorded whole, never cut.
+const NAME_BYTES: usize = 512;
+
 pub(in crate::teams::ops) fn key_clear(ctx: &mut Context<'_>) -> Result<()> {
     let Operation::RecordKeyClear {
         node,
@@ -82,7 +86,7 @@ pub(in crate::teams::ops) fn late_session(ctx: &mut Context<'_>) -> Result<()> {
         ));
     }
     reason(name)?;
-    text(name, 256)?;
+    text(name, NAME_BYTES)?;
     let known: bool = ctx
         .db
         .query_row(

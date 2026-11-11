@@ -142,3 +142,45 @@ fn without_a_deadline_reading_ends_one_hour_after_it_was_first_seen() {
     assert_eq!(launch_state(&mut w, "m1"), (State::Done, true));
     assert!(w.cards("late_session").is_empty());
 }
+
+#[test]
+fn a_valid_multibyte_name_is_recorded_whole() {
+    let mut w = World::new();
+    w.h.run(&person(), Operation::Stop).unwrap();
+    row(&mut w, "m1", State::Submitted, T0 + 5 * MINUTE);
+    let name = format!("claude/example/{}{}", "界".repeat(60), "a".repeat(250));
+    assert!(zerus_client_core::desktop::creation_launch::session_name(
+        &name
+    ));
+    assert!(
+        name.chars().count() > 256 && name.len() <= 512,
+        "{} bytes",
+        name.len()
+    );
+    let mut observed = session(&w);
+    if let LaunchRead::Session(s) = &mut observed {
+        s.name = name.clone();
+    }
+    w.effects.launches.insert(LAUNCH.into(), observed);
+    w.terminal(T0);
+    let cards = w.cards("late_session");
+    assert_eq!(cards.len(), 1);
+    assert!(cards[0].text.contains(&name), "nothing is cut");
+    assert_eq!(launch_state(&mut w, "m1"), (State::Done, true));
+}
+
+#[test]
+fn a_name_the_native_contract_would_not_hold_is_named_by_its_launch() {
+    let mut w = World::new();
+    w.h.run(&person(), Operation::Stop).unwrap();
+    row(&mut w, "m1", State::Submitted, T0 + 5 * MINUTE);
+    let mut observed = session(&w);
+    if let LaunchRead::Session(s) = &mut observed {
+        s.name = format!("claude/example/{}", "x".repeat(600));
+    }
+    w.effects.launches.insert(LAUNCH.into(), observed);
+    w.terminal(T0);
+    let cards = w.cards("late_session");
+    assert_eq!(cards.len(), 1);
+    assert!(cards[0].text.contains(LAUNCH));
+}

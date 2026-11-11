@@ -95,10 +95,13 @@ fn provenance(
     let Some(team) = store.team(&row.team)? else {
         return Ok(true);
     };
-    let name = if session.name.trim().is_empty() {
-        &plan.launch_id
-    } else {
+    // The name is recorded whole. One the native contract would not hold (it
+    // never reaches 512 bytes) is named by its launch instead of refused.
+    let valid = zerus_client_core::desktop::creation_launch::session_name(&session.name);
+    let name = if valid {
         &session.name
+    } else {
+        &plan.launch_id
     };
     let op = Operation::RecordLateSession {
         member: row.member.clone(),
@@ -107,7 +110,7 @@ fn provenance(
             machine: session.machine.clone(),
             session_id: format!("launch_id:{}", session.launch_id),
         },
-        name: name.chars().take(256).collect(),
+        name: name.clone(),
     };
     // A refusal is final: recorded before, or a live member binds normally.
     Ok(record(store, &team, op, now)? != Recorded::Retry)
