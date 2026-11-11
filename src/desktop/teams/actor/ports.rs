@@ -3,6 +3,10 @@ use zerus_team_plan::{model::*, Problem};
 pub(super) type Result<T> = std::result::Result<T, Problem>;
 
 pub(in crate::desktop::teams) trait Ports {
+    fn clock_ms(&self, fallback: i64) -> i64 {
+        fallback
+    }
+
     fn stopped(&self) -> bool {
         false
     }

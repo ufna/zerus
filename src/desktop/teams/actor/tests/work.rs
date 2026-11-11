@@ -7,6 +7,8 @@ use crate::teams::{
 #[derive(Default)]
 struct Work {
     text: Option<String>,
+    start_ms: Option<i64>,
+    clock_check: Option<std::path::PathBuf>,
     dirty: bool,
     reports: u32,
     heads: u32,
@@ -28,6 +30,9 @@ struct Work {
     demote_after_merge: Option<std::path::PathBuf>,
 }
 impl Ports for Work {
+    fn clock_ms(&self, fallback: i64) -> i64 {
+        self.start_ms.unwrap_or(fallback)
+    }
     fn stopped(&self) -> bool {
         self.stop
     }
@@ -92,6 +97,15 @@ impl Ports for Work {
             .ok_or_else(|| super::super::problem("Fixture ancestry unreadable"))
     }
     fn merge(&mut self, plan: &MergePlan) -> MergeResult {
+        if let Some(path) = &self.clock_check {
+            let db = rusqlite::Connection::open(path).unwrap();
+            let stamp:i64=db.query_row("SELECT json_extract(data,'$.reserved_ms') FROM actor_rows WHERE team=?1 AND key=?2",rusqlite::params![plan.team,format!("merge:{}",plan.decision)],|r|r.get(0)).unwrap();
+            assert_eq!(
+                stamp,
+                self.start_ms.unwrap(),
+                "the Git start still uses the page clock"
+            );
+        }
         self.phase.push("merge");
         self.merges += 1;
         self.ids.push(plan.id.clone());

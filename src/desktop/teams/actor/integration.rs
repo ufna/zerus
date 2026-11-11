@@ -133,7 +133,7 @@ impl Runtime {
             fact_id: None,
             fact_revision: None,
             epoch: self.epoch.clone(),
-            reserved_ms: now,
+            reserved_ms: ports.clock_ms(now),
             padding: String::new(),
             refused_fact: false,
         };
@@ -191,11 +191,11 @@ impl Runtime {
             return Ok(());
         }
         if row.outcome.is_none() || matches!(row.outcome, Some(MergeResult::Unknown { .. })) {
-            if row.epoch.is_empty() {
+            if row.epoch.is_empty() || row.reserved_ms <= 0 {
                 // Old rows have no reservation clock. Start a conservative
                 // bound now; a missing field never grants an immediate retry.
                 row.epoch = "legacy".into();
-                row.reserved_ms = now;
+                row.reserved_ms = ports.clock_ms(now);
                 self.put(&team.id, key, &row)?;
             }
             match ports.contains(&row.plan) {

@@ -124,6 +124,9 @@ impl Native {
     }
 }
 impl Ports for Native {
+    fn clock_ms(&self, _: i64) -> i64 {
+        chrono::Utc::now().timestamp_millis()
+    }
     fn stopped(&self) -> bool {
         self.stop.load(std::sync::atomic::Ordering::Acquire)
     }
