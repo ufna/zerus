@@ -957,6 +957,207 @@ task: `cancel`, `cancel-execution`, `move`, `edit` and `rename`. With the
 preview off, a key that names this computer does not guard, and a key that
 names another computer still refuses agents.
 
+## Addendum: wave 3 (packages 8, 9, 10, 13, 14 and 17)
+
+Written 2026-11-11 against `integrate/teams` with packages 1, 2, 3, 4, 7, 11
+and 12 merged. "Decisions during wave 2" binds every package below.
+
+**What the service does, in one pass.** The launch worker of package 7
+already wakes on fleet events and once a minute, pages `Store::live_teams`
+and ticks each team. Package 8 adds the work steps to that tick, in this
+order, each bounded and each restartable:
+
+1. observe the team's tasks that changed;
+2. take in reports;
+3. integrate accepted work and finish it;
+4. deliver reopens;
+5. hand out ready nodes.
+
+Packages 10 and 17 add steps of their own to the same tick after package 8
+is merged. A step never continues an effect across a restart: an effect
+row without an outcome is uncertain, becomes a lead inbox item and is never
+sent again.
+
+### Package 8: teams actor
+
+**Owns:** `src/desktop/teams/actor.rs`, `src/desktop/teams/actor/`, their
+ports and tests, and the call of the tick from the worker.
+
+**Consumes:**
+
+```rust
+// package 3, to be exposed for this package
+pub fn readiness(store: &Store, team: &str) -> Result<Readiness, Problem>;
+pub struct Readiness { pub phases: Vec<Phase>, pub nodes: Vec<Node> }  // bounded as require_ready is
+// kernel
+zerus_team_plan::ready::handouts(&PlanView) -> Vec<Handout>
+// package 3
+Store::integration_accepts, Store::effects, Store::member, Store::node
+Operation::{HandoutIntent, HandoutOutcome, ReopenIntent, ReopenOutcome,
+            ObserveTask, RecordReport, RecordIntegration, RecordIntegrationConflict}
+// package 6
+crate::teams::tasks::observe(state, &TaskRef)
+hgs task team-deliver REF --json   {schema, id, team, node, member}
+hgs task team-done REF --json      {schema, team, node}
+// package 11
+integrate::{reported_commit, descends, merge, sync_base}
+// package 7
+desktop::teams::Worker::wake, the original child kind and its custody
+```
+
+**Deliver:**
+
+- *Observe.* One bounded read of the project's task window per team per
+  pass gives the revision of each task; `observe` is called only for a live
+  node whose revision differs from the store's observation, and for every
+  live node on the one-minute pass.
+- *Free members.* A member is free when its session is live and idle (not
+  working, not `Background`, no pending request), the store holds no open
+  effect or attempt for it, and it is not paused. Liveness comes from the
+  fleet rows the worker already receives; a member whose row is unknown is
+  not free.
+- *Hand-out.* `readiness`, then `handouts` with the free members, then for
+  each: `HandoutIntent` with a new request ID, `team-deliver` as the one
+  original child, `HandoutOutcome` from its reply. Before the intent the
+  actor rechecks the task's merged stage and executor, because a task can
+  be driven on another computer before its key syncs.
+- *Reports.* A node whose task is observed In review with the holder's
+  report gets `RecordReport` with the commit read by
+  `integrate::reported_commit` from the member's worktree, without writing.
+  A dirty worktree is named in the report text.
+- *Integration.* For each row of `integration_accepts`: `descends` and
+  `merge` in a child of its own, then `RecordIntegration` or
+  `RecordIntegrationConflict` naming the decision. An accepted node that
+  needs no merge, or whose fact is recorded, is finished with `team-done`.
+- *Reopens.* An open reopen effect is delivered with `team-deliver` and
+  settled with `ReopenOutcome`.
+- *Wake.* A change of the team store's revision calls `Worker::wake`.
+- *Status.* `hgs team status` gains the service's presence and
+  `desktop::teams::health` (two fields of the reply and of
+  `cli-status.json`).
+
+Every effect sits behind a trait; production adapters are this computer's
+own `hgs` as an original child. Functions of about 60 lines or fewer.
+
+**Tests:** Review focus 1 and 2; each step at a restart before and after
+its effect; an uncertain delivery makes one inbox item and no second send;
+a refused delivery leaves no assignee; two free members and three ready
+nodes; a member that becomes busy between the view and the intent; a task
+driven elsewhere before the hand-out; a conflict changes no ref; a second
+pass with nothing changed has no effect and reads no task document.
+
+### Package 9: pipelines
+
+**Owns:** stage operations in `src/teams/ops/` (a new `pipeline.rs` and its
+tests), the `verdict` command in `src/teams/cli/`, and the kernel only
+where a rule is missing.
+
+**Deliver:**
+
+- At `RecordReport` the store asks `pipeline::after_report` and
+  `pipeline::staffed`. A `Stage` step creates the stage node (kind stage,
+  target and round of the reported node, role of the stage) and its Zerus
+  task through the intake of package 6, as the service; `ToLead` files the
+  lead inbox item; `ToPerson` opens an owner card; `Accept` opens the accept
+  decision as the pipeline, subject to the same merge rule as the lead's.
+- `Operation::Verdict { node, generation, pass, text }` from the member that
+  holds the stage node, and from nobody else. `after_verdict` decides the
+  next step; a return reopens the target to its implementer with the
+  findings through a reopen effect, and counts a round; after the
+  pipeline's rounds the node goes to the lead.
+- A stage is never given to the member that implemented its target.
+- `hgs team verdict` for a member: `{request_id, team, expected_revision,
+  node, generation, pass, text}`.
+
+**Tests:** Review focus 4; each built-in pipeline from report to done on
+the store alone; a return in each round and the escalation; a verdict by
+the wrong member, for a stage of another round, twice; a pipeline whose
+stage role has no free member; the person's override of a staged task.
+
+### Package 10: lead inbox, timers, stop
+
+**Owns:** `src/desktop/teams/timers.rs` and its step in the tick; inbox and
+card operations it needs in `src/teams/ops/`.
+
+**Deliver:**
+
+- Doorbells: one `hgs send` to the lead saying how many items wait, at most
+  one every 120 seconds, bound to the lead's run and conversation; an
+  uncertain doorbell is not sent again.
+- Timers from the team's `Timers`: a turn that ended without a report after
+  120 seconds, a hand-out not started after 180, a reminder for an
+  undecided report after 15 minutes, the person after 60, a silent lead
+  after 20, each as an inbox item or an owner card, each once.
+- Pause and resume: a paused team hands out nothing; a paused member takes
+  nothing; a team paused by the person is not resumed by the lead.
+- Stop and archive: the keys of the team's open tasks are cleared in
+  bounded pages through `clear_team_key`; a launch that completes after a
+  stop is recorded as provenance (tracker item `zerus-63rru.11`).
+
+**Tests:** each timer firing once and not after its condition passed; the
+120-second coalescing; a doorbell with an unknown result; pause at each
+step of a hand-out; stop with tasks in every state.
+
+### Package 13: New team and the Team tab
+
+**Owns:** `client/src/ui/teams/`, `client/src/store/teams*.ts`, the Teams
+entries in the i18n catalogs and skins, and the lines that register the
+lazy views.
+
+**Deliver:** the screens of the specification's Desktop section for M1: the
+New team dialog from a template (roster, pipelines, the settings a person
+confirms, Save as template), and the Team tab on the lead's session: team
+bar, member cards, the Board with the queue as its own group, the task card
+with its stages, Add task. Views that the fork has are imported unchanged in
+one commit with the fork's author and then adapted, as the specification's
+reuse table says. Data comes only from the `teams` key of the batch and the
+Tauri commands of package 12 (`teams_follow`, `teams_hidden`,
+`teams_tasks_changed`, `teams_page`, `team_action`, `team_action_again`,
+`team_intent_dismiss`); an action has five outcomes including `pending`,
+and an uncertain one offers Check and Dismiss. Teams views load lazily, the
+entry bundle stays under 500,000 bytes, strings go through the catalogs with
+Russian in the supplement, and no value is separated with a dot. With the
+preview off or `hgs` unavailable no entry point shows.
+
+**Tests:** render tests for each screen from the pinned fixtures; the five
+outcomes; a destructive action without confirmation is impossible; the
+bundle bound; `scripts/check-ui-separators.py`.
+
+### Package 14: Waiting for you and Send to team
+
+**Owns:** the Waiting rail entry and its page, the Send to team action on a
+task card and the team chooser of the New task form.
+
+**Deliver:** a rail entry with a count from the `waiting` key, listing open
+owner cards with their decisions and, from the desktop's own session
+attention data, the requests of team sessions that only a person can
+answer; a card in Backlog or To do gets Send to team, which runs
+`hgs task target REF team TEAM`; the New task form gets a team chooser that
+runs `hgs task add --team`. A refusal shows the team's reason.
+
+**Tests:** the count and its page bound; each card decision; a task sent
+twice; a refusal; the preview off.
+
+### Package 17: standing confirmations
+
+**Owns:** `src/desktop/teams/confirm.rs` and its step; the admission of the
+team's kinds in `src/approval_log.rs`.
+
+**Deliver:** under the team's `confirm_trust` and `resume_exited`
+delegations and nothing else: the startup folder trust prompt of a member
+whose worktree Zerus created for this team (verified ownership record) is
+answered at once; a member whose agent exited by itself is resumed with a
+brief, at most three times an hour. Each answer follows the rules of
+automatic approvals: exact run, conversation, question and hash, the
+journal entry reserved before delivery, `hgs answer` as the original child,
+the entry finished from its receipt, and an unknown delivery never
+repeated. A prompt of any other kind, a folder Zerus did not create, and a
+member a person stopped go to the person.
+
+**Tests:** each refusal; a prompt whose hash changed between the read and
+the answer; the journal entry before the delivery; three resumes in an
+hour and the fourth refused; the delegation switched off.
+
 ## Order
 
 | Wave | Packages | Starts when |
