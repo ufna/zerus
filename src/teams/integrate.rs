@@ -2,7 +2,7 @@
 #![allow(dead_code)] // The teams actor consumes this API in a later package.
 
 use std::collections::BTreeSet;
-use std::io::Read;
+use std::io::{BufRead, Read};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::time::{Duration, Instant};
@@ -79,22 +79,29 @@ pub fn reported_commit(worktree: &Path) -> Result<Reported, Problem> {
     // Disabling a clean filter can make a clean transformed file look dirty.
     // Refuse that case rather than execute the filter or invent its result.
     if !git.filters.is_empty() && !status.is_empty() {
-        let mut args = vec!["check-attr", "-z", "filter", "--"];
+        let mut paths = Vec::new();
+        let mut bytes = 0;
         for row in status.split(|byte| *byte == 0).filter(|row| row.len() >= 3) {
-            args.push(
-                std::str::from_utf8(&row[3..])
-                    .map_err(|_| unavailable("A changed path is not UTF-8"))?,
-            );
+            let path = std::str::from_utf8(&row[3..])
+                .map_err(|_| unavailable("A changed path is not UTF-8"))?;
+            let size = path.len() + 1;
+            // Keep both Unix argv and Windows command lines well below their
+            // limits, with room for Git's fixed arguments and quoting.
+            if size > 8192 {
+                return Err(unavailable(
+                    "A changed path exceeds the attribute query bound",
+                ));
+            }
+            if bytes + size > 8192 || paths.len() == 128 {
+                git.check_filters(&paths)?;
+                paths.clear();
+                bytes = 0;
+            }
+            paths.push(path);
+            bytes += size;
         }
-        let attrs = git.read(&args)?;
-        let fields: Vec<_> = attrs.split(|byte| *byte == 0).collect();
-        if fields.as_chunks::<3>().0.iter().any(|field| {
-            git.filters
-                .contains(&String::from_utf8_lossy(field[2]).into_owned())
-        }) {
-            return Err(unavailable(
-                "The worktree needs an external content filter to assess its changes",
-            ));
+        if !paths.is_empty() {
+            git.check_filters(&paths)?;
         }
     }
     if commit != git.commit("HEAD")? || branch != git.head_branch()? {
@@ -169,27 +176,21 @@ fn merge_git(
         Some(1) => {}
         _ => return Err(git_failure(&ancestry)),
     }
-    // Bind attributes to the integration tip where Git supports attr.tree.
-    // A read-only primary worktree context also preserves Git 2.38's native
-    // attribute/index fallback. merge-tree never writes that checkout.
-    let worktrees = git.read(&["worktree", "list", "--porcelain", "-z"])?;
-    let primary: Vec<_> = worktrees
-        .split(|byte| *byte == 0)
-        .take_while(|field| !field.is_empty())
-        .collect();
-    let mut args = Vec::new();
-    if !primary.contains(&b"bare".as_slice()) {
-        let path = primary
-            .iter()
-            .find_map(|field| field.strip_prefix(b"worktree "))
-            .ok_or_else(|| unavailable("Cannot resolve the primary worktree"))?;
-        let path = std::str::from_utf8(path)
-            .map_err(|_| unavailable("The primary worktree path is not UTF-8"))?;
-        // Keep merge-tree's conflict paths relative to the repository root.
-        args.extend(["--work-tree", path, "-C", path]);
-    }
+    // Drivers and Git's .merge_file_* files stay in this private directory.
+    // Never use a person's checkout, including on timeout or driver failure.
+    // Git before attr.tree support sees an empty attribute context instead.
+    let merge_worktree = tempfile::tempdir()
+        .map_err(|error| unavailable(format!("Cannot create private merge directory: {error}")))?;
+    let path = merge_worktree
+        .path()
+        .to_str()
+        .ok_or_else(|| unavailable("The private merge path is not UTF-8"))?;
     let attributes = format!("attr.tree={old}");
-    args.extend([
+    let output = git.run(&[
+        "--work-tree",
+        path,
+        "-C",
+        path,
         "-c",
         &attributes,
         "merge-tree",
@@ -198,8 +199,7 @@ fn merge_git(
         "-z",
         &old,
         &incoming,
-    ]);
-    let output = git.run(&args)?;
+    ])?;
     let mut fields = output.stdout.split(|byte| *byte == 0);
     let tree = fields.next().unwrap_or_default();
     if !valid_oid(tree) {
@@ -522,8 +522,9 @@ impl Git {
             &|| false,
         )
         .map_err(|error| {
-            // Once a writer started, a lost result can mean the ref advanced.
-            // The caller must reconcile its recorded intent, never retry it.
+            // Spawn proves non-start. Stopped is opaque: on Unix it also
+            // covers time spent waiting for the spawn turn. Do not infer that
+            // a writer started, or permit retry, from that unknown outcome.
             let code = if args.first() == Some(&"update-ref")
                 && !matches!(error, crate::platform::RunError::Spawn(_))
             {
@@ -545,6 +546,23 @@ impl Git {
 
     fn read(&self, args: &[&str]) -> Result<Vec<u8>, Problem> {
         success(self.run(args)?)
+    }
+
+    fn check_filters(&self, paths: &[&str]) -> Result<(), Problem> {
+        let mut args = vec!["check-attr", "-z", "filter", "--"];
+        args.extend_from_slice(paths);
+        let attrs = self.read(&args)?;
+        let fields: Vec<_> = attrs.split(|byte| *byte == 0).collect();
+        if fields.as_chunks::<3>().0.iter().any(|field| {
+            self.filters
+                .contains(&String::from_utf8_lossy(field[2]).into_owned())
+        }) {
+            Err(unavailable(
+                "The worktree needs an external content filter to assess its changes",
+            ))
+        } else {
+            Ok(())
+        }
     }
 
     fn commit(&self, name: &str) -> Result<String, Problem> {
@@ -616,7 +634,7 @@ impl Git {
                 "The integration branch is checked out in a worktree",
             ));
         }
-        if protects_branch(&self.path, reference)? {
+        if protects_branch(&self.path, reference, self.deadline)? {
             return Err(unavailable(
                 "The integration branch is being rebased or bisected",
             ));
@@ -639,7 +657,7 @@ impl Git {
             let entry = entry.map_err(|error| {
                 unavailable(format!("Cannot inspect worktree operation state: {error}"))
             })?;
-            if protects_branch(&entry.path(), reference)? {
+            if protects_branch(&entry.path(), reference, self.deadline)? {
                 return Err(unavailable(
                     "The integration branch is being rebased or bisected",
                 ));
@@ -649,7 +667,7 @@ impl Git {
     }
 }
 
-fn protects_branch(admin: &Path, reference: &str) -> Result<bool, Problem> {
+fn protects_branch(admin: &Path, reference: &str, deadline: Instant) -> Result<bool, Problem> {
     for name in [
         "rebase-merge/head-name",
         "rebase-apply/head-name",
@@ -677,6 +695,53 @@ fn protects_branch(admin: &Path, reference: &str) -> Result<bool, Problem> {
         if value == reference || Some(value) == reference.strip_prefix("refs/heads/") {
             return Ok(true);
         }
+    }
+    let file = match std::fs::File::open(admin.join("rebase-merge/update-refs")) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => {
+            return Err(unavailable(format!(
+                "Cannot read rebase update-refs: {error}"
+            )))
+        }
+    };
+    // Each record is a ref name followed by the old and replacement OIDs.
+    // Stream it: a rebase can protect many refs, not just its checked-out one.
+    const MAX_UPDATE_REFS: usize = 1024 * 1024;
+    let mut reader = std::io::BufReader::new(file.take(MAX_UPDATE_REFS as u64 + 1));
+    let mut line = String::new();
+    let mut bytes = 0;
+    let mut n = 0usize;
+    loop {
+        if Instant::now() >= deadline {
+            return Err(unavailable("Worktree operation inspection timed out"));
+        }
+        let read = reader
+            .read_line(&mut line)
+            .map_err(|error| unavailable(format!("Cannot read rebase update-refs: {error}")))?;
+        if read == 0 {
+            break;
+        }
+        bytes += read;
+        if bytes > MAX_UPDATE_REFS || read > 4096 {
+            return Err(unavailable("Rebase update-refs exceeded its bound"));
+        }
+        let value = line.trim_end_matches(['\r', '\n']);
+        if n.is_multiple_of(3) {
+            if value == reference {
+                return Ok(true);
+            }
+            if !value.starts_with("refs/") {
+                return Err(unavailable("Invalid ref in rebase update-refs"));
+            }
+        } else if !valid_oid(value.as_bytes()) {
+            return Err(unavailable("Invalid OID in rebase update-refs"));
+        }
+        n += 1;
+        line.clear();
+    }
+    if !n.is_multiple_of(3) {
+        return Err(unavailable("Incomplete rebase update-refs record"));
     }
     Ok(false)
 }
@@ -1664,6 +1729,196 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
+    fn private_driver_context(timeout: bool) {
+        let f = Fixture::new();
+        fs::write(f.main.join(".gitattributes"), "shared.txt merge=personal\n").unwrap();
+        git(&f.main, &["add", "."]);
+        git(&f.main, &["commit", "-m", "Attributes"]);
+        let f = Fixture {
+            base: git(&f.main, &["rev-parse", "HEAD"]),
+            ..f
+        };
+        let member = f.branch("member", "shared.txt", "member\n");
+        let prior = f.branch("prior", "shared.txt", "prior\n");
+        create_branch(&f.repo, "integrate/team", &prior).unwrap();
+        let cwd = f.root.path().join("driver-cwd");
+        let primary_temps = f.root.path().join("primary-temps");
+        let own_temps = f.root.path().join("driver-temps");
+        let driver = f.root.path().join("driver");
+        let finish = if timeout {
+            "exec sleep 5\n"
+        } else {
+            "cat \"$3\" > \"$2\"\n"
+        };
+        executable(&driver, &format!("#!/bin/sh\npwd -P > '{}'\nfor file in '{}'/.merge_file_*; do\n if [ -e \"$file\" ]; then printf found >> '{}'; fi\ndone\nfor file in .merge_file_*; do\n if [ -e \"$file\" ]; then printf found >> '{}'; fi\ndone\nprintf temporary > driver-output\n{finish}", cwd.display(), f.main.display(), primary_temps.display(), own_temps.display()));
+        f.personal(
+            &f.config.global,
+            "merge.personal.driver",
+            &format!("'{}' %O %A %B", driver.display()),
+        );
+        let before = (f.refs(), snapshot(&f.main));
+        let mut git = Git::repo(&f.repo).unwrap();
+        if timeout {
+            git.deadline = Instant::now() + Duration::from_secs(1);
+        }
+        let result = merge_git(&git, "integrate/team", &member, "Accept", || {});
+        if timeout {
+            assert_eq!(result.unwrap_err().code, "integration_unavailable");
+            assert_eq!(f.refs(), before.0);
+        } else {
+            assert!(matches!(result.unwrap(), Merge::Merged { .. }));
+        }
+        let actual = PathBuf::from(fs::read_to_string(cwd).unwrap().trim_end());
+        assert_ne!(actual, f.main.canonicalize().unwrap());
+        assert!(
+            !primary_temps.exists(),
+            "Git created merge files in the primary checkout"
+        );
+        assert!(
+            own_temps.exists(),
+            "the probe must observe Git's merge files while running"
+        );
+        assert!(
+            !actual.exists(),
+            "the private merge directory must be removed after success or failure"
+        );
+        assert_eq!(before.1, snapshot(&f.main));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn personal_driver_and_merge_files_use_a_private_directory() {
+        private_driver_context(false);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn timed_out_driver_leaves_no_checkout_files_or_private_directory() {
+        private_driver_context(true);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn uncommitted_checkout_attributes_cannot_select_a_personal_driver() {
+        let f = Fixture::new();
+        let member = f.branch("member", "shared.txt", "member\n");
+        let prior = f.branch("prior", "shared.txt", "prior\n");
+        create_branch(&f.repo, "integrate/team", &prior).unwrap();
+        fs::write(f.main.join(".gitattributes"), "shared.txt merge=personal\n").unwrap();
+        git(&f.main, &["add", ".gitattributes"]);
+        let marker = f.root.path().join("driver-ran");
+        let driver = f.root.path().join("driver");
+        executable(
+            &driver,
+            &format!(
+                "#!/bin/sh\nprintf ran >> '{}'\ncat \"$3\" > \"$2\"\n",
+                marker.display()
+            ),
+        );
+        f.personal(
+            &f.config.global,
+            "merge.personal.driver",
+            &format!("'{}' %O %A %B", driver.display()),
+        );
+        let before = (f.refs(), f.objects(true), snapshot(&f.main));
+        assert_eq!(
+            merge(&f.repo, "integrate/team", &member, "Accept").unwrap(),
+            Merge::Conflict {
+                files: vec!["shared.txt".to_owned()]
+            }
+        );
+        assert!(!marker.exists());
+        assert_eq!(before, (f.refs(), f.objects(true), snapshot(&f.main)));
+    }
+
+    #[test]
+    fn many_changed_paths_use_bounded_attribute_argument_batches() {
+        let f = Fixture::new();
+        let blob = git(&f.main, &["rev-parse", "HEAD:shared.txt"]);
+        let mut entries = Vec::new();
+        let suffix = "x".repeat(120);
+        for n in 0..25_000 {
+            write!(entries, "100644 {blob}\tchanged/{n:05}-{suffix}.txt\0").unwrap();
+        }
+        git_input(&f.main, &["update-index", "-z", "--index-info"], &entries);
+        let tree = git(&f.main, &["write-tree"]);
+        let commit = git(
+            &f.main,
+            &[
+                "commit-tree",
+                &tree,
+                "-p",
+                &f.base,
+                "-m",
+                "Missing tracked paths",
+            ],
+        );
+        git(
+            &f.main,
+            &["update-ref", "refs/heads/main", &commit, &f.base],
+        );
+        git(&f.main, &["config", "filter.unused.clean", "cat"]);
+        let before = (f.refs(), snapshot(&f.main));
+        assert_eq!(
+            reported_commit(&f.main).unwrap(),
+            Reported {
+                commit,
+                branch: "main".into(),
+                dirty: true
+            }
+        );
+        assert!(f.config.attrs.get() > 1 && f.config.attrs.get() < 25_000);
+        assert_eq!(before, (f.refs(), snapshot(&f.main)));
+        // A filter match in the final batch must still refuse the report.
+        fs::write(
+            f.main.join(".gitattributes"),
+            format!("changed/24999-{suffix}.txt filter=unused\n"),
+        )
+        .unwrap();
+        let before = (f.refs(), snapshot(&f.main));
+        assert_eq!(
+            reported_commit(&f.main).unwrap_err().code,
+            "integration_unavailable"
+        );
+        assert_eq!(before, (f.refs(), snapshot(&f.main)));
+    }
+
+    #[test]
+    fn a_failed_spawn_is_a_certain_nonwrite() {
+        let f = Fixture::new();
+        create_branch(&f.repo, "integrate/team", &f.base).unwrap();
+        let member = f.branch("member", "new.txt", "new\n");
+        let mut git = Git::repo(&f.repo).unwrap();
+        git.program = f.root.path().join("missing-git");
+        let before = f.refs();
+        assert_eq!(
+            git.run(&["update-ref", "refs/heads/integrate/team", &member, &f.base])
+                .unwrap_err()
+                .code,
+            "integration_unavailable"
+        );
+        assert_eq!(before, f.refs());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_spawn_turn_timeout_has_no_start_receipt() {
+        let f = Fixture::new();
+        create_branch(&f.repo, "integrate/team", &f.base).unwrap();
+        let member = f.branch("member", "new.txt", "new\n");
+        let mut git = Git::repo(&f.repo).unwrap();
+        let before = f.refs();
+        let turn = crate::platform::spawn_turn();
+        git.deadline = Instant::now() + Duration::from_millis(100);
+        let result = git.run(&["update-ref", "refs/heads/integrate/team", &member, &f.base]);
+        drop(turn);
+        // Stopped carries no launch phase. Retain uncertainty rather than
+        // claim a started writer or authorize retry from this opaque result.
+        assert_eq!(result.unwrap_err().code, "delivery_uncertain");
+        assert_eq!(before, f.refs());
+    }
+
     fn git_input(path: &Path, args: &[&str], input: &[u8]) {
         let mut command = Command::new("git");
         for (key, _) in std::env::vars_os() {
@@ -1728,7 +1983,7 @@ mod tests {
     }
 
     #[test]
-    fn changed_path_attributes_are_read_in_one_call() {
+    fn small_changed_path_sets_share_one_attribute_batch() {
         let f = Fixture::new();
         git(&f.main, &["config", "filter.unused.clean", "cat"]);
         fs::write(f.main.join("shared.txt"), "changed\n").unwrap();
@@ -1797,6 +2052,7 @@ mod tests {
             "rebase-merge/head-name",
             "rebase-apply/head-name",
             "BISECT_START",
+            "rebase-merge/update-refs",
         ] {
             for linked in [false, true] {
                 let f = Fixture::new();
@@ -1807,15 +2063,22 @@ mod tests {
                 let admin = PathBuf::from(git(&path, &["rev-parse", "--absolute-git-dir"]));
                 let file = admin.join(state);
                 fs::create_dir_all(file.parent().unwrap()).unwrap();
-                fs::write(
-                    file,
-                    if state == "BISECT_START" {
-                        "integrate/team\n"
-                    } else {
-                        "refs/heads/integrate/team\n"
-                    },
-                )
-                .unwrap();
+                let value = if state.ends_with("update-refs") {
+                    let mut value = String::new();
+                    for n in 0..200 {
+                        value.push_str(&format!("refs/heads/other-{n}\n{}\n{}\n", f.base, f.base));
+                    }
+                    value.push_str(&format!(
+                        "refs/heads/integrate/team\n{}\n{}\n",
+                        f.base, f.base
+                    ));
+                    value
+                } else if state == "BISECT_START" {
+                    "integrate/team\n".to_owned()
+                } else {
+                    "refs/heads/integrate/team\n".to_owned()
+                };
+                fs::write(file, value).unwrap();
                 let before = (f.refs(), snapshot(&f.main), snapshot(&path));
                 assert_eq!(
                     merge(&f.repo, "integrate/team", &member, "Accept")
