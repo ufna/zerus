@@ -128,8 +128,7 @@ impl Runtime {
         if event.is_none() || g.event.as_deref() != event {
             g.failures = g.failures.saturating_add(1);
             g.revision = revision.into();
-            g.at =
-                now.saturating_add(60_000 * (1i64 << g.failures.saturating_sub(1).min(4)).min(15));
+            g.at = now.saturating_add(delay(g.failures));
             g.event = event.map(String::from);
         }
         self.put(&team.id, &name, &g)?;
@@ -197,4 +196,8 @@ impl Runtime {
         }
         Ok(())
     }
+}
+
+pub(super) fn delay(failures: u32) -> i64 {
+    60_000 * (1i64 << failures.saturating_sub(1).min(4)).min(15)
 }

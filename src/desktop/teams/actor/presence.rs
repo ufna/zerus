@@ -1,11 +1,30 @@
 //! Passive read of the existing service status exchange, with its own bound.
 use crate::config::Config;
 pub(crate) fn presence(config: &Config) -> Option<bool> {
-    let location = crate::desktop::store::Location::new(config).ok()?;
-    match crate::desktop::exchange(&location, "status", None).ok()? {
-        None => Some(false),
-        Some(value) => value["running"].as_bool(),
+    use crate::desktop::{protocol, store::Location, transport::TIMEOUT};
+    use std::{io::BufReader, time::Instant};
+    let location = Location::new(config).ok()?;
+    let until = Instant::now() + TIMEOUT;
+    let Some(stream) = crate::desktop::connection_until(&location, "status", None, until).ok()?
+    else {
+        return Some(false);
+    };
+    let bytes = protocol::line_checked(
+        &mut BufReader::new(stream),
+        protocol::FRAME_BYTES,
+        |reader| {
+            let remaining = until.saturating_duration_since(Instant::now());
+            anyhow::ensure!(!remaining.is_zero(), "Teams status deadline expired");
+            reader.get_ref().set_read_timeout(Some(remaining))?;
+            Ok(())
+        },
+    )
+    .ok()??;
+    let response: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
+    if response["abi"] != crate::desktop::ABI || response["t"] == "error" {
+        return None;
     }
+    response["value"]["running"].as_bool()
 }
 
 #[cfg(all(test, unix))]
@@ -45,6 +64,13 @@ mod tests {
     }
 
     fn answering(bytes: Vec<u8>, wait: Duration) -> (Option<bool>, Duration) {
+        answering_chunks(bytes, wait, None)
+    }
+    fn answering_chunks(
+        bytes: Vec<u8>,
+        wait: Duration,
+        chunk_delay: Option<Duration>,
+    ) -> (Option<bool>, Duration) {
         let h = Harness::new();
         let config = config(&h);
         let location = Location::new(&config).unwrap();
@@ -75,7 +101,16 @@ mod tests {
             assert_eq!(request["op"], "status");
             assert!(request["request"].is_null());
             std::thread::sleep(wait);
-            let _ = stream.write_all(&bytes);
+            if let Some(delay) = chunk_delay {
+                for part in bytes.chunks(8) {
+                    if stream.write_all(part).is_err() {
+                        break;
+                    }
+                    std::thread::sleep(delay);
+                }
+            } else {
+                let _ = stream.write_all(&bytes);
+            }
         });
         let at = Instant::now();
         let result = presence(&config);
@@ -99,6 +134,18 @@ mod tests {
     #[test]
     fn a_slow_service_stays_unknown_with_the_existing_exchange_bound() {
         let (value, elapsed) = answering(vec![], Duration::from_millis(2200));
+        assert_eq!(value, None);
+        assert!(elapsed < Duration::from_secs(3), "{elapsed:?}");
+    }
+    #[test]
+    fn a_dribbling_status_frame_never_renews_the_original_deadline() {
+        let mut bytes = serde_json::to_vec(
+            &serde_json::json!({"abi":crate::desktop::ABI,"t":"status","value":{"running":true}}),
+        )
+        .unwrap();
+        bytes.push(b'\n');
+        let (value, elapsed) =
+            answering_chunks(bytes, Duration::ZERO, Some(Duration::from_millis(350)));
         assert_eq!(value, None);
         assert!(elapsed < Duration::from_secs(3), "{elapsed:?}");
     }

@@ -234,3 +234,49 @@ mod index_tests {
         }
     }
 }
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(super) struct TerminalRetry {
+    pub failures: u32,
+    pub next_ms: i64,
+    pub reason: String,
+}
+impl Ledger {
+    pub fn terminal_retry(&self) -> Result<Option<TerminalRetry>> {
+        terminal_retry(&self.0)
+    }
+    pub fn terminal_failed(&mut self, now: i64, reason: &str) -> Result<()> {
+        let tx = self
+            .0
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .map_err(storage)?;
+        let failures = terminal_retry(&tx)?
+            .unwrap_or_default()
+            .failures
+            .saturating_add(1);
+        let delay = super::retry::delay(failures);
+        tx.execute("INSERT INTO actor_terminal_retry VALUES(1,?1,?2,?3) ON CONFLICT(id) DO UPDATE SET failures=excluded.failures,next_ms=excluded.next_ms,reason=excluded.reason",params![failures,now.saturating_add(delay),super::cut(reason,2048)]).map_err(storage)?;
+        tx.commit().map_err(storage)
+    }
+    pub fn terminal_succeeded(&mut self) -> Result<()> {
+        self.0
+            .execute("DELETE FROM actor_terminal_retry WHERE id=1", [])
+            .map_err(storage)?;
+        Ok(())
+    }
+}
+fn terminal_retry(db: &Connection) -> Result<Option<TerminalRetry>> {
+    db.query_row(
+        "SELECT failures,next_ms,reason FROM actor_terminal_retry WHERE id=1",
+        [],
+        |r| {
+            Ok(TerminalRetry {
+                failures: r.get(0)?,
+                next_ms: r.get(1)?,
+                reason: r.get(2)?,
+            })
+        },
+    )
+    .optional()
+    .map_err(storage)
+}

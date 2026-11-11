@@ -7,6 +7,25 @@ pub(in crate::desktop::teams) trait Ports {
         fallback
     }
 
+    #[cfg(unix)]
+    fn team_timers(
+        &mut self,
+        _state: &mut super::auxiliary::State,
+        _store: &mut Store,
+        _team: &Team,
+        _now: i64,
+    ) -> Result<()> {
+        Ok(())
+    }
+    #[cfg(unix)]
+    fn terminal_timers(
+        &mut self,
+        _state: &mut super::auxiliary::State,
+        _store: &mut Store,
+        _now: i64,
+    ) -> Result<()> {
+        Ok(())
+    }
     fn stage(
         &mut self,
         _team: &Team,

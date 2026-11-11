@@ -30,3 +30,10 @@ CREATE TRIGGER IF NOT EXISTS actor_deleted AFTER DELETE ON actor_rows BEGIN
  UPDATE actor_budget SET rows=rows-1,bytes=bytes-length(CAST(old.data AS BLOB)) WHERE id=1;
 END;
 PRAGMA user_version=1;
+-- A fixed retry record for the terminal entry, independent of row budgets.
+CREATE TABLE IF NOT EXISTS actor_terminal_retry (
+ id INTEGER PRIMARY KEY CHECK(id=1),
+ failures INTEGER NOT NULL CHECK(failures BETWEEN 0 AND 4294967295),
+ next_ms INTEGER NOT NULL,
+ reason TEXT NOT NULL CHECK(length(CAST(reason AS BLOB))<=2048)
+);

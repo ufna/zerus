@@ -98,11 +98,7 @@ impl Native {
             }
         }
         let args = task_arguments(task, action);
-        let input = if let Some(m) = member {
-            json!({"schema":1,"id":id,"team":team.id,"node":node.id,"member":m.id})
-        } else {
-            json!({"schema":1,"team":team.id,"node":node.id})
-        };
+        let input = task_request(team, node, member, id);
         let input = input.to_string();
         let mut retry = None;
         let ended = child::run_guarded(
@@ -131,6 +127,23 @@ impl Native {
 impl Ports for Native {
     fn clock_ms(&self, _: i64) -> i64 {
         chrono::Utc::now().timestamp_millis()
+    }
+    fn team_timers(
+        &mut self,
+        state: &mut super::auxiliary::State,
+        store: &mut Store,
+        team: &Team,
+        now: i64,
+    ) -> Result<()> {
+        state.team(self, store, team, now)
+    }
+    fn terminal_timers(
+        &mut self,
+        state: &mut super::auxiliary::State,
+        store: &mut Store,
+        now: i64,
+    ) -> Result<()> {
+        state.terminal(self, store, now)
     }
     fn stage(
         &mut self,
@@ -338,3 +351,16 @@ pub(super) fn task_arguments(task: &TaskRef, action: &str) -> Vec<String> {
 
 #[cfg(test)]
 thread_local! {pub(super) static TEST_INVENTORY: std::cell::RefCell<Option<Value>> = const {std::cell::RefCell::new(None)};}
+
+pub(super) fn task_request(
+    team: &Team,
+    node: &Node,
+    member: Option<&Member>,
+    id: &str,
+) -> serde_json::Value {
+    if let Some(m) = member {
+        json!({"schema":1,"id":id,"team":team.id,"node":node.id,"member":m.id})
+    } else {
+        json!({"schema":1,"team":team.id,"node":node.id})
+    }
+}

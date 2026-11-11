@@ -2,6 +2,8 @@
 //! never grants permission to send: only this tick owns its original call.
 #![allow(dead_code)] // Parts A/B are wired into the worker in this package.
 #[cfg(unix)]
+mod auxiliary;
+#[cfg(unix)]
 mod availability;
 mod delivery;
 mod finish;
@@ -38,19 +40,24 @@ pub(super) struct Runtime {
     maintenance: Option<crate::teams::store::Cursor>,
     row_failure: bool,
     hints: BTreeMap<String, observe::Hint>,
+    #[cfg(unix)]
+    auxiliary: auxiliary::State,
 }
 impl Runtime {
     pub fn open(state: &Path, machine: &str) -> Result<Self> {
         if !crate::teams::enabled(state) {
             return Err(Problem::new(code::TEAMS_INACTIVE, "Teams preview is off"));
         }
+        let epoch = uuid::Uuid::new_v4().to_string();
         Ok(Self {
             ledger: Ledger::open(state)?,
             machine: machine.into(),
-            epoch: uuid::Uuid::new_v4().to_string(),
+            epoch: epoch.clone(),
             maintenance: None,
             row_failure: false,
             hints: BTreeMap::new(),
+            #[cfg(unix)]
+            auxiliary: auxiliary::State::new(state, &epoch),
         })
     }
     pub fn begin_pass(&mut self) {
@@ -101,7 +108,10 @@ impl Runtime {
             self.recover_merges(store, ports, &team, now)?;
             self.recover(store, ports, &team, now)?;
         }
-        self.cleanup_metadata(store, &team, now)
+        self.cleanup_metadata(store, &team, now)?;
+        #[cfg(unix)]
+        self.team_entry(store, ports, &team, now)?;
+        Ok(())
     }
 
     pub fn page(
@@ -123,6 +133,10 @@ impl Runtime {
                     fault = Some(error);
                 }
             }
+        }
+        #[cfg(unix)]
+        if let Err(error) = self.terminal_entry(store, ports, now) {
+            fault = Some(error);
         }
         if let Err(error) = self.maintain(store) {
             fault = Some(error);

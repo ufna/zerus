@@ -7,11 +7,19 @@ use serde_json::Value;
 use std::time::{Duration, Instant};
 const SQL:&str="SELECT r.json FROM desktop_catalog_sources s JOIN desktop_catalog_owner o ON o.id=1 AND o.epoch=s.epoch JOIN desktop_catalog_rows r ON r.generation=s.visible AND r.key=?1 WHERE s.computer='' AND s.epoch=?2 AND s.active=1 AND s.complete=1 AND json_extract(s.hello,'$.machine_id')=?3 AND r.bytes<=1048576 LIMIT 1";
 pub(super) fn free(config: &Config, epoch: &str, team: &str, member: &Member) -> Result<bool> {
+    Ok(record(config, epoch, team, member)?.is_some_and(|row| idle(&row)))
+}
+pub(super) fn record(
+    config: &Config,
+    epoch: &str,
+    team: &str,
+    member: &Member,
+) -> Result<Option<Value>> {
     let Some(session) = member.session.as_ref() else {
-        return Ok(false);
+        return Ok(None);
     };
     let Some(run) = current_run(config, team, member)? else {
-        return Ok(false);
+        return Ok(None);
     };
     let db = connection(config)?;
     let row: Option<String> = db
@@ -22,14 +30,15 @@ pub(super) fn free(config: &Config, epoch: &str, team: &str, member: &Member) ->
         )
         .optional()
         .map_err(crate::teams::store::storage)?;
-    let Some(row) = row else { return Ok(false) };
+    let Some(row) = row else { return Ok(None) };
     let value: Value = serde_json::from_str(&row).map_err(crate::teams::store::storage)?;
-    let identity = if let Some(id) = session.session_id.strip_prefix("launch_id:") {
-        value["launch_id"] == id
-    } else {
-        value["run_id"] == run
-    };
-    Ok(identity && value["run_id"] == run && idle(&value))
+    let identity = value["run_id"] == run
+        && if let Some(id) = session.session_id.strip_prefix("launch_id:") {
+            value["launch_id"] == id
+        } else {
+            value["run_id"] == run
+        };
+    Ok(identity.then_some(value))
 }
 /// Prefer the completed resumed-binding receipt here. That fact
 /// chooses a run only; the fleet and task-index checks still prove it free.
@@ -86,7 +95,7 @@ fn connection(config: &Config) -> Result<Connection> {
         .map_err(crate::teams::store::storage)?;
     Ok(db)
 }
-fn idle(row: &Value) -> bool {
+pub(super) fn idle(row: &Value) -> bool {
     let view = zerus_client_core::view::row(row);
     view.status == "ready"
         && row["state"] == "running"
@@ -204,7 +213,44 @@ mod record_tests {
         };
         let before = std::fs::read(&path).unwrap();
         assert!(free(&c, "epoch", "team", &m).unwrap());
-        assert_eq!(std::fs::read(&path).unwrap(), before);
+        let native = super::super::native::Native {
+            config: c.clone(),
+            machine: "machine".into(),
+            epoch: "epoch".into(),
+            stop: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        };
+        let mut team = crate::teams::ops::tests::fixture().team;
+        team.home = "machine".into();
+        let observed = super::super::auxiliary::presence(&native, &team, &m).unwrap();
+        assert!(observed.live && observed.idle());
+        assert_eq!(
+            (&*observed.run, &*observed.conversation),
+            ("run", "conversation")
+        );
+        assert!(
+            std::fs::read(&path).unwrap() == before,
+            "availability changed the catalog"
+        );
+        for (path, value, flag) in [
+            ("$.activity", json!("busy"), 0),
+            ("$.process_work.count", json!(1), 1),
+            ("$.optional_questions.count", json!(1), 2),
+        ] {
+            db.execute(
+                "UPDATE desktop_catalog_rows SET json=json_set(?1,?2,json(?3))",
+                params![row, path, value.to_string()],
+            )
+            .unwrap();
+            let observed = super::super::auxiliary::presence(&native, &team, &m).unwrap();
+            assert!(!observed.idle());
+            assert!(match flag {
+                0 => observed.working,
+                1 => observed.background,
+                _ => observed.pending,
+            });
+        }
+        db.execute("UPDATE desktop_catalog_rows SET json=?1", [&row])
+            .unwrap();
         assert!(!free(&c, "old-epoch", "team", &m).unwrap());
         db.execute(
             "UPDATE desktop_catalog_rows SET json=json_set(json,'$.run_id','other-run')",
@@ -224,6 +270,7 @@ mod record_tests {
             db.execute(&format!("UPDATE desktop_catalog_sources SET {field}=0"), [])
                 .unwrap();
             assert!(!free(&c, "epoch", "team", &m).unwrap());
+            assert!(super::super::auxiliary::presence(&native, &team, &m).is_none());
             db.execute(&format!("UPDATE desktop_catalog_sources SET {field}=1"), [])
                 .unwrap();
         }

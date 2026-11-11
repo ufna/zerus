@@ -21,8 +21,41 @@ struct Fake {
     reads: usize,
     lose_first: bool,
     clears: Vec<u32>,
+    timer_teams: Vec<String>,
+    terminals: usize,
+    fail_timers: bool,
 }
 impl Ports for Fake {
+    #[cfg(unix)]
+    fn team_timers(
+        &mut self,
+        _: &mut super::super::auxiliary::State,
+        _: &mut Store,
+        t: &Team,
+        _: i64,
+    ) -> Result<()> {
+        self.timer_teams.push(t.id.clone());
+        if self.fail_timers {
+            Err(super::super::problem("fixture team timer fault"))
+        } else {
+            Ok(())
+        }
+    }
+    #[cfg(unix)]
+    fn terminal_timers(
+        &mut self,
+        _: &mut super::super::auxiliary::State,
+        _: &mut Store,
+        _: i64,
+    ) -> Result<()> {
+        self.terminals += 1;
+        if self.fail_timers {
+            Err(super::super::problem("fixture terminal fault"))
+        } else {
+            Ok(())
+        }
+    }
+
     fn changes(&mut self, _: &str, g: &str, _: u64) -> Result<zerus_replica::Changes> {
         Ok(zerus_replica::Changes {
             generation: "journal".into(),
@@ -185,4 +218,50 @@ fn a_released_stage_is_cleared_once_and_the_store_removes_it_from_the_outbox() {
     let mut a = super::super::Runtime::open(h.temp.path(), &machine).unwrap();
     tick(&mut h, &mut a, &mut p, 102);
     assert_eq!(p.clears, vec![stage]);
+}
+
+#[cfg(unix)]
+#[test]
+fn the_tick_calls_each_live_team_entry_and_one_terminal_entry_per_pass() {
+    let mut h = Harness::new();
+    let mut other = create();
+    if let crate::teams::ops::Operation::Create {
+        integration_branch, ..
+    } = &mut other
+    {
+        *integration_branch = "teams/other-team".into();
+    }
+    h.run_for(TEAM_B, &person(), other).unwrap();
+    let machine = h.store.team(TEAM).unwrap().unwrap().home;
+    let mut a = super::super::Runtime::open(h.temp.path(), &machine).unwrap();
+    let mut p = Fake::default();
+    let teams = h.store.live_teams(16, None).unwrap().rows;
+    a.page(&mut h.store, &mut p, &teams, 100, false).unwrap();
+    assert_eq!(p.timer_teams.len(), 2);
+    assert!(p.timer_teams.contains(&TEAM.into()) && p.timer_teams.contains(&TEAM_B.into()));
+    assert_eq!(p.terminals, 1);
+}
+#[cfg(unix)]
+#[test]
+fn timer_entry_faults_back_off_as_rows_and_do_not_set_sweep_health() {
+    let mut h = Harness::new();
+    let machine = h.store.team(TEAM).unwrap().unwrap().home;
+    let mut a = super::super::Runtime::open(h.temp.path(), &machine).unwrap();
+    let mut p = Fake {
+        fail_timers: true,
+        ..Default::default()
+    };
+    let teams = h.store.live_teams(16, None).unwrap().rows;
+    a.page(&mut h.store, &mut p, &teams, 100, false).unwrap();
+    assert_eq!(p.terminals, 1);
+    assert_eq!(a.ledger.terminal_retry().unwrap().unwrap().failures, 1);
+    a.page(&mut h.store, &mut p, &teams, 101, false).unwrap();
+    assert_eq!(p.terminals, 1);
+    assert_eq!(p.timer_teams.len(), 1);
+    assert!(crate::desktop::teams::health(h.temp.path()).is_none());
+    p.fail_timers = false;
+    a.page(&mut h.store, &mut p, &teams, 60_100, false).unwrap();
+    assert_eq!(p.terminals, 2);
+    assert!(a.ledger.terminal_retry().unwrap().is_none());
+    assert!(crate::desktop::teams::health(h.temp.path()).is_none());
 }
