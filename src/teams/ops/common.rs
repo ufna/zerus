@@ -73,12 +73,18 @@ impl Context<'_> {
         }
     }
     pub fn settle(&self, node: u32) -> Result<()> {
+        self.settle_node(node, false)
+    }
+    pub fn settle_override(&self, node: u32) -> Result<()> {
+        self.settle_node(node, true)
+    }
+    fn settle_node(&self, node: u32, preserve_ready: bool) -> Result<()> {
         rows::settle_decisions(
             self.db,
             &self.team.id,
             Some(node),
             &encode(self.actor)?,
-            false,
+            preserve_ready,
         )?;
         for table in ["nodes", "node_archive"] {
             self.db
