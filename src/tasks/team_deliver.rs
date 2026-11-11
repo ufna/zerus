@@ -484,7 +484,7 @@ fn run(
                     reason: "existing",
                 }));
             }
-            let result = (|| -> Result<()> {
+            let result = (|| -> Result<Store> {
                 let store = Store::open(&config.state).map_err(problem)?;
                 // Hold the team's operation lock through the attempt's save.
                 store
@@ -510,11 +510,20 @@ fn run(
                 if current != frozen || current_to != to || current_actor != who {
                     return Err(fail(dispatch::CHANGED));
                 }
-                reserve(admitted, task, body, &fresh, &to, &who, &frozen)?;
-                Ok(())
+                reserve(task, body, &fresh, &to, &who, &frozen)?;
+                Ok(store)
             })();
             match result {
-                Ok(()) => Ok(Ok(())),
+                Ok(_permit_lock) => {
+                    // An error once saving starts can leave a durable attempt.
+                    // Let the fence turn it into Uncertain; never a refusal.
+                    admitted.save(task)?;
+                    #[cfg(test)]
+                    if std::env::var_os("HGS_TEST_TEAM_DELIVERY_SAVE_ERROR").is_some() {
+                        anyhow::bail!("fixture error after the durable task save");
+                    }
+                    Ok(Ok(()))
+                }
                 Err(error) => {
                     *detail.borrow_mut() = error.message;
                     Ok(Err(Closed {
@@ -590,7 +599,6 @@ fn marker(task: &TaskDoc, team: &str, here: &str) -> Result<()> {
 }
 
 fn reserve(
-    admitted: &mut zerus_replica::Admitted<'_>,
     task: &mut TaskDoc,
     body: &Input,
     permit: &Permit,
@@ -627,7 +635,7 @@ fn reserve(
         now(),
     )
     .map_err(fail)?;
-    admitted.save(task).map_err(fail)
+    Ok(())
 }
 
 fn delivered(body: &Input, result: attempts::Delivered) -> Value {

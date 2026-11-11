@@ -102,6 +102,9 @@ fn entry() {
     } else {
         let args: Vec<String> =
             serde_json::from_str(&std::env::var("HGS_TEAM_DELIVER_ARGS").unwrap()).unwrap();
+        if mode == "save-error" {
+            std::env::set_var("HGS_TEST_TEAM_DELIVERY_SAVE_ERROR", "1");
+        }
         if mode == "agent" {
             use sha2::{Digest, Sha256};
             let name = std::env::var("HGS_SESSION").unwrap();
@@ -846,4 +849,16 @@ fn a_reused_session_caption_cannot_change_the_bound_destination() {
     .unwrap();
     assert_eq!(request["expected_run_id"], "run-m1");
     assert_eq!(f.count(), 1);
+}
+
+#[test]
+fn a_save_error_after_the_attempt_is_durable_is_uncertain_and_never_sends() {
+    let f = Fixture::new();
+    let out = f.run("save-error", false);
+    assert_eq!(out["reply"]["state"], "uncertain", "{out}");
+    assert!(f.document().attempt(&f.body.id).unwrap().is_some());
+    for recover in [false, true] {
+        assert_eq!(f.run("submitted", recover)["reply"]["state"], "uncertain");
+    }
+    assert_eq!(f.count(), 0);
 }
