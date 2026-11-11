@@ -121,7 +121,13 @@ impl Ports for Work {
             commit: COMMIT.into(),
         })
     }
-    fn finish(&mut self, _: &Team, _: &Node, _: &str) -> Result<Finish> {
+    fn finish(
+        &mut self,
+        _: &Team,
+        _: &Node,
+        _: &crate::teams::store::Decision,
+        _: &str,
+    ) -> Result<Finish> {
         self.phase.push("finish");
         self.finishes += 1;
         Ok(self.finish_reply.clone().unwrap_or(Finish::Done))
@@ -920,4 +926,67 @@ fn stopped_team_maintenance_preserves_unread_merge_evidence() {
     h.run(&person(), Operation::Stop).unwrap();
     a.maintain(&h.store).unwrap();
     assert!(a.ledger.get(TEAM, &format!("merge:{d}")).unwrap().is_some());
+}
+
+#[test]
+fn finishing_does_not_use_a_previous_generations_acceptance() {
+    let mut h = Harness::new();
+    h.settings(|s| s.integration = Integration::None);
+    let (node, lead) = h.reported();
+    h.run(&lead, Operation::Accept { node }).unwrap();
+    let old = h
+        .store
+        .pending_accepts(TEAM, 200, None)
+        .unwrap()
+        .rows
+        .remove(0);
+    advance_attempt(h.temp.path());
+    let mut a = actor(&h);
+    let mut p = Work::default();
+    let t = h.store.team(TEAM).unwrap().unwrap();
+    a.finish_one(&mut h.store, &mut p, &t, &old, 100, &mut 8)
+        .unwrap();
+    assert_eq!(p.finishes, 0);
+}
+#[test]
+fn a_reserved_merge_in_a_new_epoch_still_waits_for_its_original_deadline() {
+    let mut h = Harness::new();
+    let (node, lead) = h.reported();
+    h.run(&lead, Operation::Accept { node }).unwrap();
+    let mut a = actor(&h);
+    let mut p = Work {
+        contains: Some(false),
+        ..Default::default()
+    };
+    super::super::integration::CRASH.with(|s| s.set(Some("reserved")));
+    assert!(
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run(
+            &mut h, &mut a, &mut p, 100
+        )))
+        .is_err()
+    );
+    assert_eq!(p.merges, 0);
+    drop(a);
+    let mut a = actor(&h);
+    run(&mut h, &mut a, &mut p, 200);
+    assert_eq!(p.merges, 0);
+    run(&mut h, &mut a, &mut p, 60_200);
+    assert_eq!(p.merges, 1);
+}
+
+#[test]
+fn a_merge_reserves_room_for_its_whole_result_before_git() {
+    let mut h = Harness::new();
+    let (node, lead) = h.reported();
+    h.run(&lead, Operation::Accept { node }).unwrap();
+    let mut a = actor(&h);
+    let mut p = Work::default();
+    let db = rusqlite::Connection::open(h.temp.path().join("teams/actor-v1.sqlite3")).unwrap();
+    db.execute("UPDATE actor_budget SET bytes=33554432-5000 WHERE id=1", [])
+        .unwrap();
+    run(&mut h, &mut a, &mut p, 100);
+    assert_eq!(
+        p.merges, 0,
+        "the result had no durable budget when Git started"
+    );
 }

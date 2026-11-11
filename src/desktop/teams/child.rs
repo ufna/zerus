@@ -62,7 +62,7 @@ pub(super) fn run(
 /// A Teams effect has its own stored-effect admission, with the same child,
 /// configuration, process group, bounded drains and close-only custody.
 #[allow(clippy::too_many_arguments)]
-pub(super) fn run_guarded(
+pub(super) fn run_guarded<T>(
     config: &Config,
     args: &[String],
     input: Option<&[u8]>,
@@ -70,20 +70,37 @@ pub(super) fn run_guarded(
     stderr: bool,
     deadline: Instant,
     stop: &AtomicBool,
-    admit: impl Fn() -> super::ports::Result<()>,
+    admit: impl FnOnce() -> super::ports::Result<T>,
 ) -> Ended {
     #[cfg(test)]
     if let Some(output) = FIXTURE_EXIT.with(|slot| slot.borrow_mut().take()) {
-        return Ended::Exited { code: 0, output };
+        let mut command = std::process::Command::new("fixture");
+        return match configure(config, &mut command, stop, admit) {
+            Ok(guard) => {
+                if let Some(hook) =
+                    original_child::AFTER_FINAL_CHECK.with(|s| s.borrow_mut().take())
+                {
+                    hook();
+                }
+                drop(guard);
+                if let Some(hook) = original_child::AFTER_SPAWN.with(|s| s.borrow_mut().take()) {
+                    hook();
+                }
+                Ended::Exited { code: 0, output }
+            }
+            Err(_) => Ended::NotStarted,
+        };
     }
 
     let Ok(program) = crate::self_exec::current() else {
         return Ended::NotStarted;
     };
     let spec = spec(input, stderr);
-    let check = |command: &mut std::process::Command| configure(config, command, stop, &admit);
+    let check = |command: &mut std::process::Command| configure(config, command, stop, admit);
     match original_id {
-        None => original_child::run_unheld(&program, args, spec, deadline, check),
+        None => original_child::run_unheld(&program, args, spec, deadline, |command| {
+            check(command).map(drop)
+        }),
         Some(id) => {
             let Some((held, path, identity)) = custody(config, id) else {
                 return Ended::NotStarted;
@@ -117,16 +134,15 @@ fn spec(input: Option<&[u8]>, stderr: bool) -> Spec<'_> {
         retain: None,
     }
 }
-fn configure(
+fn configure<T>(
     config: &Config,
     command: &mut std::process::Command,
     stop: &AtomicBool,
-    admit: &impl Fn() -> super::ports::Result<()>,
-) -> std::io::Result<()> {
+    admit: impl FnOnce() -> super::ports::Result<T>,
+) -> std::io::Result<T> {
     if stop.load(Ordering::Acquire) || !crate::teams::enabled(&config.state) {
         return Err(std::io::ErrorKind::Interrupted.into());
     }
-    admit().map_err(|_| std::io::Error::from(std::io::ErrorKind::PermissionDenied))?;
     for var in [
         "HGS_SESSION",
         "HGS_SESSION_ID",
@@ -144,7 +160,12 @@ fn configure(
     command
         .env("HGS_CONFIG_DIR", &config.dir)
         .env("HGS_STATE_DIR", &config.state);
-    Ok(())
+    let guard = admit().map_err(|_| std::io::Error::from(std::io::ErrorKind::PermissionDenied))?;
+    // Non-store facts are checked last while the store fence is held.
+    if stop.load(Ordering::Acquire) || !crate::teams::enabled(&config.state) {
+        return Err(std::io::ErrorKind::Interrupted.into());
+    }
+    Ok(guard)
 }
 
 fn custody(config: &Config, id: &str) -> Option<(Arc<InheritedLock>, PathBuf, (u64, u64))> {

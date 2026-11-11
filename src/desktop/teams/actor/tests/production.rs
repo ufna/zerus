@@ -42,7 +42,7 @@ fn git(dir: &Path, empty: &Path, args: &[&str]) -> String {
     );
     String::from_utf8(out.stdout).unwrap().trim().to_owned()
 }
-fn native(h: &Harness) -> native::Native {
+pub(super) fn native(h: &Harness) -> native::Native {
     native::Native {
         config: crate::config::Config {
             home: String::new(),
@@ -77,6 +77,13 @@ fn owned(h: &Harness) -> Owned {
     let empty = base.join("empty-config");
     std::fs::write(&empty, "").unwrap();
     git(&root, &empty, &["init", "-q", "--initial-branch", "main"]);
+    git(&root, &empty, &["config", "user.name", "Teams Fixture"]);
+    git(
+        &root,
+        &empty,
+        &["config", "user.email", "fixture@example.test"],
+    );
+    git(&root, &empty, &["config", "commit.gpgsign", "false"]);
     git(&root, &empty, &["commit", "--allow-empty", "-qm", "base"]);
     let wt = base.join("zerus-team-launch");
     git(
@@ -195,6 +202,12 @@ impl Drop for Owned {
         native_work::AFTER_REPORTED.with(|s| {
             s.borrow_mut().take();
         });
+        crate::teams::integrate::BEFORE_ADMISSION.with(|s| {
+            s.borrow_mut().take();
+        });
+        crate::teams::integrate::BEFORE_REF_WRITE.with(|s| {
+            s.borrow_mut().take();
+        });
     }
 }
 #[test]
@@ -271,5 +284,171 @@ fn production_recovery_returns_the_integration_tip_and_a_known_negative() {
     assert_eq!(
         git(&o.root, &o.empty, &["rev-parse", &t.integration_branch]),
         tip
+    );
+}
+
+fn merge_fixture() -> (Harness, Owned, ports::MergePlan) {
+    let mut h = Harness::empty();
+    let o = owned(&h);
+    let base = git(&o.root, &o.empty, &["rev-parse", "HEAD"]);
+    let commit = commit(&o, "member report");
+    let mut op = create();
+    if let Operation::Create {
+        base_commit,
+        integration_branch,
+        ..
+    } = &mut op
+    {
+        *base_commit = base.clone();
+        *integration_branch = "teams/integration".into();
+    }
+    h.run(&person(), op).unwrap();
+    h.bind("lead");
+    h.bind("m1");
+    h.add(&person(), 1);
+    h.submit(1, "m1");
+    h.observe(1, ops::TaskStage::InReview);
+    h.run(
+        &service(),
+        Operation::RecordReport {
+            node: 1,
+            generation: 1,
+            member: "m1".into(),
+            text: "Report".into(),
+            commit: commit.clone(),
+        },
+    )
+    .unwrap();
+    h.run(&person(), Operation::Accept { node: 1 }).unwrap();
+    let t = h.store.team(TEAM).unwrap().unwrap();
+    git(&o.root, &o.empty, &["branch", &t.integration_branch, &base]);
+    let plan = ports::MergePlan {
+        team: t.id,
+        owner: t.owner,
+        machine: t.home,
+        project: t.project,
+        branch: t.integration_branch,
+        base,
+        repo: o.root.join(".git").to_string_lossy().into_owned(),
+        node: 1,
+        generation: 1,
+        decision: h.accept_decision(1),
+        member: "m1".into(),
+        commit,
+        id: uuid::Uuid::new_v4().to_string(),
+    };
+    (h, o, plan)
+}
+#[test]
+fn pause_committed_during_tree_computation_prevents_the_ref_update() {
+    let (h, o, plan) = merge_fixture();
+    let state = h.temp.path().to_owned();
+    crate::teams::integrate::BEFORE_ADMISSION.with(|s| {
+        *s.borrow_mut() = Some(Box::new(move || {
+            let mut store = Store::open(&state).unwrap();
+            let t = store.team(TEAM).unwrap().unwrap();
+            ops::apply(
+                &mut store,
+                &person(),
+                &crate::teams::ops::tests::request(t.revision, Operation::Pause),
+                100,
+            )
+            .unwrap();
+        }))
+    });
+    let result = native(&h).work_merge(&plan);
+    eprintln!("MERGE_ADMISSION_RESULT {result:?}");
+    assert!(
+        matches!(result, ports::MergeResult::Unavailable { .. }),
+        "paused merge still moved the ref: {result:?}"
+    );
+    assert_eq!(
+        git(&o.root, &o.empty, &["rev-parse", &plan.branch]),
+        plan.base
+    );
+    assert_eq!(
+        h.store.team(TEAM).unwrap().unwrap().status,
+        TeamStatus::Paused
+    );
+}
+#[test]
+fn a_ready_accept_is_checked_again_at_the_ref_update() {
+    let (h, o, plan) = merge_fixture();
+    let state = h.temp.path().to_owned();
+    let decision = plan.decision;
+    crate::teams::integrate::BEFORE_ADMISSION.with(|s| {
+        *s.borrow_mut() = Some(Box::new(move || {
+            // Fixture the store owner's atomic demotion seam. Ready, rather than
+            // a copy of the delegation flag in this actor, is the authority.
+            let store = Store::open(&state).unwrap();
+            store
+                .db
+                .as_ref()
+                .unwrap()
+                .execute(
+                    "UPDATE decisions SET state=?2 WHERE seq=?1",
+                    rusqlite::params![decision, crate::teams::store::DecisionState::AwaitingOwner],
+                )
+                .unwrap();
+        }))
+    });
+    let result = native(&h).work_merge(&plan);
+    assert!(
+        matches!(result, ports::MergeResult::Unavailable { .. }),
+        "a demoted acceptance still moved the ref: {result:?}"
+    );
+    assert_eq!(
+        git(&o.root, &o.empty, &["rev-parse", &plan.branch]),
+        plan.base
+    );
+}
+#[test]
+fn the_store_admission_is_held_only_across_the_ref_writer() {
+    let (h, o, plan) = merge_fixture();
+    let path = h.temp.path().join("teams/teams-v1.sqlite3");
+    let checked = std::rc::Rc::new(std::cell::Cell::new(false));
+    let observed = checked.clone();
+    crate::teams::integrate::BEFORE_REF_WRITE.with(|s| {
+        *s.borrow_mut() = Some(Box::new(move || {
+            let db = rusqlite::Connection::open(path).unwrap();
+            db.busy_timeout(std::time::Duration::ZERO).unwrap();
+            assert!(
+                db.execute_batch("BEGIN IMMEDIATE").is_err(),
+                "the ref writer lost its admission"
+            );
+            observed.set(true);
+        }))
+    });
+    let result = native(&h).work_merge(&plan);
+    assert!(
+        matches!(result, ports::MergeResult::Merged { .. }),
+        "{result:?}"
+    );
+    assert!(checked.get());
+    let guard = Store::open(h.temp.path()).unwrap().admission().unwrap();
+    drop(guard);
+    assert_ne!(
+        git(&o.root, &o.empty, &["rev-parse", &plan.branch]),
+        plan.base
+    );
+}
+
+#[test]
+fn an_explicit_ready_accept_survives_the_merge_delegation_being_off() {
+    let (mut h, o, plan) = merge_fixture();
+    // This fixture's acceptance is the person's, so the store keeps it Ready.
+    h.settings(|s| s.delegations.merge_accepted = false);
+    assert_eq!(
+        h.store.pending_accepts(TEAM, 200, None).unwrap().rows[0].seq,
+        plan.decision
+    );
+    let result = native(&h).work_merge(&plan);
+    assert!(
+        matches!(result, ports::MergeResult::Merged { .. }),
+        "{result:?}"
+    );
+    assert_ne!(
+        git(&o.root, &o.empty, &["rev-parse", &plan.branch]),
+        plan.base
     );
 }

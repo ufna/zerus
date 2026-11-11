@@ -1,5 +1,7 @@
 //! Additive service reads. No effects, migrations or task document access.
 use super::*;
+mod admission;
+pub use admission::Admission;
 use rusqlite::params;
 
 #[derive(Clone, Debug, PartialEq, Eq)]

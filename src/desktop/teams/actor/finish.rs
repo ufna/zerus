@@ -39,7 +39,7 @@ impl Runtime {
         }
         self.finish_cleanup(store, team, now)
     }
-    fn finish_one(
+    pub(super) fn finish_one(
         &mut self,
         store: &mut Store,
         ports: &mut impl Ports,
@@ -86,23 +86,24 @@ impl Runtime {
             return Ok(());
         }
         *budget -= 1;
-        self.finish_request(store, ports, team, &n, &stamp, now)
+        self.finish_request(store, ports, team, (&n, d), &stamp, now)
     }
     fn finish_request(
         &mut self,
         store: &mut Store,
         ports: &mut impl Ports,
         team: &Team,
-        n: &Node,
+        target: (&Node, &crate::teams::store::Decision),
         stamp: &str,
         now: i64,
     ) -> Result<()> {
+        let (n, d) = target;
         let held = format!("finish_hold:{}", n.id);
         let refusal = format!("finish_refused:{}", n.id);
         let key = format!("finish:{}", n.id);
         let id = uuid::Uuid::new_v4().to_string();
         boundary("before");
-        let reply = ports.finish(team, n, &id);
+        let reply = ports.finish(team, n, d, &id);
         boundary("after");
         match reply {
             Ok(Finish::Done) => self.cooldown(store, team, &key, stamp, now.saturating_add(60_000)),

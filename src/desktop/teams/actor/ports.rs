@@ -41,7 +41,13 @@ pub(in crate::desktop::teams) trait Ports {
             reason: unavailable().message,
         }
     }
-    fn finish(&mut self, _team: &Team, _node: &Node, _id: &str) -> Result<Finish> {
+    fn finish(
+        &mut self,
+        _team: &Team,
+        _node: &Node,
+        _decision: &crate::teams::store::Decision,
+        _id: &str,
+    ) -> Result<Finish> {
         Err(unavailable())
     }
     /// Exactly one original child. A caller cannot reconstruct this invocation.

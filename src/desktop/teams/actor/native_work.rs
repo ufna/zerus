@@ -129,13 +129,14 @@ impl Native {
             };
         }
         let message = format!("Zerus team {} accept {}", plan.team, plan.decision);
-        match integrate::merge(
+        match integrate::merge_admitted(
             &integrate::Repo {
                 git_dir: PathBuf::from(&plan.repo),
             },
             &plan.branch,
             &plan.commit,
             &message,
+            || self.merge_admission(plan),
         ) {
             Ok(integrate::Merge::Merged { commit }) => MergeResult::Merged { commit },
             Ok(integrate::Merge::Conflict { files }) => MergeResult::Conflict { files },
@@ -150,8 +151,11 @@ impl Native {
             },
         }
     }
-    fn merge_admission(&self, plan: &MergePlan) -> Result<()> {
-        let store = Store::open(&self.config.state)?;
+    fn merge_admission(
+        &self,
+        plan: &MergePlan,
+    ) -> Result<crate::teams::store::actor_reads::Admission> {
+        let store = Store::open(&self.config.state)?.admission()?;
         let team = store
             .team(&plan.team)?
             .ok_or_else(|| problem("Integration team disappeared"))?;
@@ -184,7 +188,10 @@ impl Native {
                 if self.work_repository(&team)? != plan.repo {
                     return Err(problem("Integration placement changed"));
                 }
-                return Ok(());
+                if self.stop.load(Ordering::Acquire) || !crate::teams::enabled(&self.config.state) {
+                    return Err(problem("Integration did not start"));
+                }
+                return Ok(store);
             }
             cursor = page.next;
             if cursor.is_none() {
@@ -265,8 +272,13 @@ mod tests {
         wrong.decision += 1;
         refused(n.work_merge(&wrong), "exact Ready acceptance");
         wrong = p.clone();
+        wrong.base = "1123456789abcdef0123456789abcdef01234567".into();
+        refused(n.work_merge(&wrong), "admission changed");
+        wrong = p.clone();
         wrong.machine = "other-machine".into();
         refused(n.work_merge(&wrong), "admission changed");
+        h.run(&person(), Operation::Pause).unwrap();
+        refused(n.work_merge(&p), "admission changed");
         assert!(!Path::new(&p.repo).exists());
     }
 }

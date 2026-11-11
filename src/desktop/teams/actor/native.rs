@@ -1,4 +1,5 @@
 //! Original local CLI effects; missing part-C readers fail closed.
+mod admission;
 use super::*;
 use crate::{
     config::Config,
@@ -25,13 +26,20 @@ impl Native {
             _ => Err(problem("Bounded CLI read is unavailable")),
         }
     }
-    fn unoccupied(&self, m: &Member) -> Result<bool> {
+    fn project_inventory(&self) -> Result<Value> {
+        #[cfg(test)]
+        if let Some(value) = TEST_INVENTORY.with(|s| s.borrow().clone()) {
+            return Ok(value);
+        }
+        crate::swarm::organization(&self.config, false)
+            .map_err(|_| problem("Project inventory unavailable"))
+    }
+    pub(super) fn unoccupied(&self, m: &Member) -> Result<bool> {
         let s = m
             .session
             .as_ref()
             .ok_or_else(|| problem("Member has no session"))?;
-        let organization = crate::swarm::organization(&self.config, false)
-            .map_err(|_| problem("Project inventory unavailable"))?;
+        let organization = self.project_inventory()?;
         if organization["node_id"] != self.machine {
             return Err(problem("Project machine changed"));
         }
@@ -70,6 +78,7 @@ impl Native {
         member: Option<&Member>,
         id: &str,
         action: &str,
+        decision: Option<&crate::teams::store::Decision>,
     ) -> Ended {
         let Some(task) = node.task.as_ref() else {
             return Ended::NotStarted;
@@ -89,62 +98,8 @@ impl Native {
             false,
             Instant::now() + Duration::from_secs(30),
             &self.stop,
-            || self.admit(team, node, member, id),
+            || self.admit(team, node, member, id, decision),
         )
-    }
-    fn admit(&self, expected: &Team, node: &Node, member: Option<&Member>, id: &str) -> Result<()> {
-        let store = Store::open(&self.config.state)?;
-        let team = store
-            .team(&expected.id)?
-            .ok_or_else(|| problem("Team disappeared"))?;
-        if team.home != self.machine
-            || team.status != TeamStatus::Running
-            || team.owner != expected.owner
-            || team.project != expected.project
-        {
-            return Err(problem("Team effect admission changed"));
-        }
-        if let Some(member) = member {
-            if store.member(&team.id, &member.id)?.as_ref() != Some(member) {
-                return Err(problem("Member effect admission changed"));
-            }
-            let mut cursor = None;
-            for _ in 0..4 {
-                let page = store.open_effects(&team.id, 200, cursor.as_ref())?;
-                if page.rows.iter().any(|e| {
-                    e.request_id == id
-                        && e.node == node.id
-                        && e.member == member.id
-                        && e.outcome.is_none()
-                        && e.state == "reserved"
-                }) {
-                    return Ok(());
-                }
-                cursor = page.next;
-                if cursor.is_none() {
-                    break;
-                }
-            }
-            return Err(problem("Delivery effect is not reserved"));
-        }
-        let current = store
-            .node(&team.id, node.id)?
-            .ok_or_else(|| problem("Node disappeared"))?;
-        if current.task != node.task {
-            return Err(problem("Finishing task binding changed"));
-        }
-        let mut cursor = None;
-        for _ in 0..4 {
-            let page = store.pending_accepts(&team.id, 200, cursor.as_ref())?;
-            if page.rows.iter().any(|d| d.node == node.id) {
-                return Ok(());
-            }
-            cursor = page.next;
-            if cursor.is_none() {
-                break;
-            }
-        }
-        Err(problem("Task has no Ready acceptance"))
     }
 }
 impl Ports for Native {
@@ -197,12 +152,18 @@ impl Ports for Native {
     fn merge(&mut self, plan: &super::ports::MergePlan) -> super::ports::MergeResult {
         self.work_merge(plan)
     }
-    fn finish(&mut self, team: &Team, node: &Node, id: &str) -> Result<super::ports::Finish> {
-        self.done(team, node, id)
+    fn finish(
+        &mut self,
+        team: &Team,
+        node: &Node,
+        decision: &crate::teams::store::Decision,
+        id: &str,
+    ) -> Result<super::ports::Finish> {
+        self.done(team, node, decision, id)
     }
     fn deliver(&mut self, team: &Team, node: &Node, member: &Member, id: &str) -> HandoutOutcome {
         delivery_reply(
-            self.command(team, node, Some(member), id, "team-deliver"),
+            self.command(team, node, Some(member), id, "team-deliver", None),
             id,
         )
     }
@@ -260,8 +221,14 @@ pub(super) fn decode_delivery(raw: &[u8], id: &str) -> HandoutOutcome {
     }
 }
 impl Native {
-    pub(super) fn done(&self, team: &Team, node: &Node, id: &str) -> Result<super::ports::Finish> {
-        match self.command(team, node, None, id, "team-done") {
+    pub(super) fn done(
+        &self,
+        team: &Team,
+        node: &Node,
+        decision: &crate::teams::store::Decision,
+        id: &str,
+    ) -> Result<super::ports::Finish> {
+        match self.command(team, node, None, id, "team-done", Some(decision)) {
             Ended::Exited { code: 0, output } => decode_finish(&output, &team.id, node.id),
             _ => Err(problem(
                 "The original finishing child did not settle successfully",
@@ -312,3 +279,6 @@ pub(super) fn task_arguments(task: &TaskRef, action: &str) -> Vec<String> {
         "--json".into(),
     ]
 }
+
+#[cfg(test)]
+thread_local! {pub(super) static TEST_INVENTORY: std::cell::RefCell<Option<Value>> = const {std::cell::RefCell::new(None)};}

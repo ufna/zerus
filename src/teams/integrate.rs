@@ -163,6 +163,35 @@ pub fn merge(repo: &Repo, branch: &str, commit: &str, message: &str) -> Result<M
     merge_with_hook(repo, branch, commit, message, || {})
 }
 
+/// Team-owned admission at the ref writer. Existing merge callers keep their
+/// behavior; this guard lives only across update-ref, never tree computation.
+pub fn merge_admitted<T>(
+    repo: &Repo,
+    branch: &str,
+    commit: &str,
+    message: &str,
+    admit: impl FnOnce() -> Result<T, Problem>,
+) -> Result<Merge, Problem> {
+    merge_git(
+        &Git::repo(repo)?,
+        branch,
+        commit,
+        message,
+        || {
+            #[cfg(test)]
+            if let Some(hook) = BEFORE_ADMISSION.with(|s| s.borrow_mut().take()) {
+                hook();
+            }
+        },
+        admit,
+    )
+}
+#[cfg(test)]
+thread_local! {
+    pub(crate) static BEFORE_ADMISSION: std::cell::RefCell<Option<Box<dyn FnOnce()>>> = const {std::cell::RefCell::new(None)};
+    pub(crate) static BEFORE_REF_WRITE: std::cell::RefCell<Option<Box<dyn FnOnce()>>> = const {std::cell::RefCell::new(None)};
+}
+
 /// A new empty directory that only this user can enter. A person's merge
 /// driver runs there, and what it writes must not be readable by other users
 /// of a shared computer.
@@ -184,15 +213,23 @@ fn merge_with_hook(
     message: &str,
     before_update: impl FnOnce(),
 ) -> Result<Merge, Problem> {
-    merge_git(&Git::repo(repo)?, branch, commit, message, before_update)
+    merge_git(
+        &Git::repo(repo)?,
+        branch,
+        commit,
+        message,
+        before_update,
+        || Ok(()),
+    )
 }
 
-fn merge_git(
+fn merge_git<T>(
     git: &Git,
     branch: &str,
     commit: &str,
     message: &str,
     before_update: impl FnOnce(),
+    admit: impl FnOnce() -> Result<T, Problem>,
 ) -> Result<Merge, Problem> {
     if git.repository_drivers {
         return Err(unavailable(
@@ -291,6 +328,11 @@ fn merge_git(
     before_update();
     git.available(&reference)?;
     let reflog = format!("Zerus: merge {incoming}: {message}");
+    let admission = admit()?;
+    #[cfg(test)]
+    if let Some(hook) = BEFORE_REF_WRITE.with(|s| s.borrow_mut().take()) {
+        hook();
+    }
     let output = git.run(&[
         "update-ref",
         "--no-deref",
@@ -299,7 +341,9 @@ fn merge_git(
         &reference,
         &new,
         &old,
-    ])?;
+    ]);
+    drop(admission);
+    let output = output?;
     if output.status.success() {
         return Ok(Merge::Merged { commit: new });
     }
@@ -321,6 +365,7 @@ pub fn sync_base(repo: &Repo, branch: &str, base_branch: &str) -> Result<Merge, 
         &commit,
         &format!("Sync base branch {base_branch}"),
         || {},
+        || Ok(()),
     )
 }
 
@@ -1826,7 +1871,7 @@ mod tests {
         if timeout {
             git.deadline = Instant::now() + Duration::from_secs(1);
         }
-        let result = merge_git(&git, "integrate/team", &member, "Accept", || {});
+        let result = merge_git(&git, "integrate/team", &member, "Accept", || {}, || Ok(()));
         if timeout {
             assert_eq!(result.unwrap_err().code, "integration_unavailable");
             assert_eq!(f.refs(), before.0);
@@ -2237,17 +2282,26 @@ mod tests {
     }
     #[test]
     fn containing_tip_pins_the_branch_commit_and_keeps_failed_reads_unknown() {
-        let f=Fixture::new();
-        let member=f.branch("member","member.txt","member");
-        create_branch(&f.repo,"teams/integration",&f.base).unwrap();
-        assert_eq!(containing_tip(&f.repo,"teams/integration",&member).unwrap(),None);
-        let Merge::Merged {commit:tip}=merge(&f.repo,"teams/integration",&member,"Integrate").unwrap() else {panic!("fixture merge")};
-        assert_ne!(tip,member);
-        let refs=f.refs();
-        assert_eq!(containing_tip(&f.repo,"teams/integration",&member).unwrap(),Some(tip));
-        assert!(containing_tip(&f.repo,"missing",&member).is_err());
-        assert!(containing_tip(&f.repo,"teams/integration","missing").is_err());
-        assert_eq!(f.refs(),refs);
+        let f = Fixture::new();
+        let member = f.branch("member", "member.txt", "member");
+        create_branch(&f.repo, "teams/integration", &f.base).unwrap();
+        assert_eq!(
+            containing_tip(&f.repo, "teams/integration", &member).unwrap(),
+            None
+        );
+        let Merge::Merged { commit: tip } =
+            merge(&f.repo, "teams/integration", &member, "Integrate").unwrap()
+        else {
+            panic!("fixture merge")
+        };
+        assert_ne!(tip, member);
+        let refs = f.refs();
+        assert_eq!(
+            containing_tip(&f.repo, "teams/integration", &member).unwrap(),
+            Some(tip)
+        );
+        assert!(containing_tip(&f.repo, "missing", &member).is_err());
+        assert!(containing_tip(&f.repo, "teams/integration", "missing").is_err());
+        assert_eq!(f.refs(), refs);
     }
-
 }
