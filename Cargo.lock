@@ -3373,6 +3373,7 @@ dependencies = [
  "windows-sys 0.61.2",
  "zerus-desktop-migration",
  "zerus-desktop-read-policy",
+ "zerus-team-plan",
  "zerus-watch-protocol",
 ]
 

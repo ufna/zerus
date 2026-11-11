@@ -54,6 +54,7 @@ fn live_smoke() {
                 Change::Git { .. } => "git",
                 Change::Machine { .. } => "machine",
                 Change::Organization { .. } => "organization",
+                Change::Teams { .. } => "teams",
             };
             *kinds.entry(kind).or_default() += 1;
             coalescer.push(change);

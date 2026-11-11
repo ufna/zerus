@@ -7,7 +7,7 @@
 use crate::swarm::grouping::{GroupOut, GroupingOut};
 use crate::{
     ActivityUpdate, Change, ComputerId, ComputerStatus, MachineMeta, OrganizationUpdate,
-    ProcessesUpdate, TasksUpdate, ViewRow,
+    ProcessesUpdate, TasksUpdate, TeamsUpdate, ViewRow,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -143,6 +143,19 @@ pub struct TasksOut {
 /// `payload`: `state` carries `{value, digest}` (`value` is `swarm get`'s
 /// object without `versions` and `written`), `failed` `{code, message}` (the
 /// last state stays) and `ended` null.
+/// The latest change of one Teams view of this computer, keyed as
+/// [`crate::teams::model`] says (`list`, `waiting`, `team:<id>`). `kind` and
+/// `payload`: the view's name and its view model, `failed` `{code, message}`
+/// (the view keeps what it showed) or `ended` null (no longer followed). The
+/// payload is the projected view: the webview parses no `hgs` reply.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct TeamsOut {
+    pub computer: ComputerId,
+    pub key: String,
+    pub kind: String,
+    pub payload: Value,
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct OrganizationOut {
     pub computer: ComputerId,
@@ -159,7 +172,8 @@ pub struct MachineOut {
 
 /// Everything that changed since the previous batch. The view applies, in
 /// order: `computers`, `retries`, `machines`, `replaces`, `removes`, `upserts`,
-/// `activity`, `processes`, `tasks`, `organizations`, then `groups` and `grouping`. A `replaces`
+/// `activity`, `processes`, `tasks`, `organizations`, `teams`, then `groups` and
+/// `grouping`. A `replaces`
 /// entry keeps the groups of the keys it keeps: grouping does not resend
 /// unchanged rows after a Replace, so the view must not clear them. `machines` holds
 /// at most one entry per computer and none for a computer whose status became
@@ -187,6 +201,9 @@ pub struct Batch {
     pub tasks: Vec<TasksOut>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub organizations: Vec<OrganizationOut>,
+    /// The Teams views that changed, at most one entry per key.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub teams: Vec<TeamsOut>,
     /// Each row's project and rank in the Sessions list, for the rows whose
     /// grouping changed. The Coalescer leaves it empty; the Tauri pump fills
     /// it from `swarm::grouping` (zerus-5wmh.31).
@@ -213,6 +230,7 @@ impl Batch {
             && self.processes.is_empty()
             && self.tasks.is_empty()
             && self.organizations.is_empty()
+            && self.teams.is_empty()
             && self.groups.is_empty()
             && self.grouping.is_none()
             && self.desktop_service.is_none()
@@ -262,6 +280,8 @@ pub struct Coalescer {
     processes: BTreeMap<SessionKey, ProcessesUpdate>,
     tasks: BTreeMap<SessionKey, TasksUpdate>,
     organizations: BTreeMap<ComputerId, OrganizationUpdate>,
+    /// The latest Teams view per key, with its payload computed once.
+    teams: BTreeMap<SessionKey, (TeamsUpdate, std::sync::Arc<Value>)>,
 }
 
 impl Coalescer {
@@ -398,6 +418,24 @@ impl Coalescer {
                     && matches!(self.tasks.get(&id), Some(TasksUpdate::List { .. }));
                 if !keep {
                     self.tasks.insert(id, update);
+                }
+            }
+            Change::Teams {
+                computer,
+                key,
+                update,
+                payload,
+            } => {
+                // The latest view of a key wins; a failure never replaces a
+                // pending view, so the tab keeps what it showed.
+                let id = (computer, key);
+                let keep = matches!(update, TeamsUpdate::Failed { .. })
+                    && self
+                        .teams
+                        .get(&id)
+                        .is_some_and(|(shown, _)| shown.is_view());
+                if !keep {
+                    self.teams.insert(id, (update, payload));
                 }
             }
         }
@@ -544,6 +582,17 @@ impl Coalescer {
                 payload,
             });
         }
+        for ((computer, key), (update, payload)) in std::mem::take(&mut self.teams) {
+            // The model's payload, computed once for its digest.
+            let payload =
+                std::sync::Arc::try_unwrap(payload).unwrap_or_else(|shared| (*shared).clone());
+            batch.teams.push(TeamsOut {
+                computer,
+                key,
+                kind: update.kind().to_owned(),
+                payload,
+            });
+        }
         batch
     }
 
@@ -572,6 +621,7 @@ impl Coalescer {
             + self.processes.len()
             + self.tasks.len()
             + self.organizations.len()
+            + self.teams.len()
     }
 
     pub fn is_empty(&self) -> bool {
@@ -585,6 +635,7 @@ impl Coalescer {
             && self.processes.is_empty()
             && self.tasks.is_empty()
             && self.organizations.is_empty()
+            && self.teams.is_empty()
     }
 }
 
@@ -939,6 +990,54 @@ mod tests {
                 },
             ]
         );
+    }
+
+    #[test]
+    fn the_latest_teams_view_wins_and_a_failure_keeps_it() {
+        use crate::teams::view::TeamList;
+        use std::sync::Arc;
+
+        let first = TeamsUpdate::List(Arc::new(TeamList::default()));
+        let second = TeamsUpdate::List(Arc::new(TeamList {
+            truncated: true,
+            ..TeamList::default()
+        }));
+        let failed = TeamsUpdate::Failed {
+            code: "teams_inactive".into(),
+            message: "Teams are off.".into(),
+        };
+        let teams =
+            |key: &str, update: TeamsUpdate| crate::Change::teams(local(), key.to_owned(), update);
+        let mut coalescer = Coalescer::new();
+        coalescer.push(teams("list", first));
+        coalescer.push(teams("list", second));
+        // A failure does not replace a pending view: the tab keeps what it had.
+        coalescer.push(teams("list", failed.clone()));
+        coalescer.push(teams("waiting", failed));
+        assert_eq!(coalescer.pending(), 2);
+        let batch = coalescer.take();
+        let kinds: Vec<_> = batch
+            .teams
+            .iter()
+            .map(|out| (out.key.as_str(), out.kind.as_str()))
+            .collect();
+        assert_eq!(kinds, vec![("list", "list"), ("waiting", "failed")]);
+        assert_eq!(batch.teams[0].payload["truncated"], true);
+        let value = serde_json::to_value(&batch).unwrap();
+        assert_eq!(value["teams"][1]["payload"]["code"], "teams_inactive");
+        assert!(serde_json::to_value(Batch::default())
+            .unwrap()
+            .get("teams")
+            .is_none());
+        // An end of a followed view is the latest word.
+        coalescer.push(crate::Change::teams(
+            local(),
+            "list".to_owned(),
+            TeamsUpdate::Ended,
+        ));
+        let batch = coalescer.take();
+        assert_eq!(batch.teams[0].kind, "ended");
+        assert_eq!(batch.teams[0].payload, Value::Null);
     }
 
     #[test]

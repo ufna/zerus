@@ -1,0 +1,353 @@
+//! What an action sends on standard input and the checks it must pass before
+//! anything runs: the store's own bounds for text, nodes and write paths, and
+//! the confirmation a destructive action needs.
+use super::types::*;
+use serde_json::{json, Map, Value};
+use zerus_team_plan::model::{Integration, NodeId};
+
+fn plain(text: &str, what: &str, chars: usize) -> Result<(), String> {
+    if text.chars().count() > chars {
+        return Err(format!("{what} is too long."));
+    }
+    if text
+        .chars()
+        .any(|c| c.is_control() && c != '\n' && c != '\t')
+    {
+        return Err(format!("{what} contains control characters."));
+    }
+    Ok(())
+}
+
+/// The store's rule for a reason, comment, reply or question: text within its
+/// bound, and not blank.
+fn reason(text: &str, what: &str) -> Result<(), String> {
+    plain(text, what, TEXT_CHARS)?;
+    if text.trim().is_empty() {
+        return Err(format!("{what} is required."));
+    }
+    Ok(())
+}
+
+fn word(text: &str, what: &str) -> Result<(), String> {
+    if text.is_empty()
+        || text.len() > 128
+        || text.starts_with('-')
+        || text.chars().any(|c| c.is_control() || c.is_whitespace())
+    {
+        return Err(format!("Not a {what}."));
+    }
+    Ok(())
+}
+
+fn node(node: NodeId) -> Result<(), String> {
+    if node == 0 {
+        return Err("Not a node number.".into());
+    }
+    Ok(())
+}
+
+fn card(card: u64) -> Result<(), String> {
+    if card == 0 {
+        return Err("Not a card number.".into());
+    }
+    Ok(())
+}
+
+impl TeamAction {
+    /// The operation: `hgs team <op> --json`.
+    pub fn op(&self) -> &'static str {
+        match self {
+            Self::Create { .. } => "create",
+            Self::Pause => "pause",
+            Self::Resume => "resume",
+            Self::Stop => "stop",
+            Self::Archive => "archive",
+            Self::PauseMember { .. } => "pause-member",
+            Self::ResumeMember { .. } => "resume-member",
+            Self::StopMember { .. } => "stop-member",
+            Self::ArchiveMember { .. } => "archive-member",
+            Self::Settings { .. } => "settings",
+            Self::Decide { .. } => "decide",
+            Self::Admit { .. } => "admit",
+            Self::Route { .. } => "route",
+            Self::Accept { .. } => "accept",
+            Self::Return { .. } => "return",
+            Self::Reassign { .. } => "reassign",
+            Self::Hold { .. } => "hold",
+            Self::Release { .. } => "release",
+            Self::Cancel { .. } => "cancel",
+            Self::Reply { .. } => "reply",
+            Self::Ask { .. } => "ask",
+        }
+    }
+
+    /// Whether the call names a team. Only Create does not.
+    pub fn names_team(&self) -> bool {
+        !matches!(self, Self::Create { .. })
+    }
+
+    /// The fields the operation sends besides the envelope's.
+    pub fn input(&self) -> Map<String, Value> {
+        let value = match self {
+            Self::Create {
+                project,
+                name,
+                goal,
+                home,
+                integration_branch,
+                base_commit,
+                ..
+            } => json!({
+                "project": project,
+                "name": name,
+                "goal": goal,
+                "home": home,
+                "integration_branch": integration_branch,
+                "base_commit": base_commit,
+            }),
+            Self::Pause | Self::Resume | Self::Stop | Self::Archive => json!({}),
+            Self::PauseMember { member }
+            | Self::ResumeMember { member }
+            | Self::StopMember { member }
+            | Self::ArchiveMember { member } => json!({"member": member}),
+            Self::Settings { settings } => json!({"settings": settings}),
+            Self::Decide { card, decision } => json!({"card": card, "decision": decision}),
+            Self::Admit { node } => json!({"node": node}),
+            Self::Route {
+                node,
+                role,
+                pipeline,
+                deps,
+                writes,
+                assignee,
+            } => {
+                let mut input = json!({"node": node, "role": role, "pipeline": pipeline, "deps": deps, "writes": writes});
+                if let Some(assignee) = assignee {
+                    input["assignee"] = json!(assignee);
+                }
+                input
+            }
+            Self::Accept { node } => json!({"node": node}),
+            Self::Return { node, reason } => json!({"node": node, "reason": reason}),
+            Self::Reassign {
+                node,
+                member,
+                reason,
+            } => json!({"node": node, "member": member, "reason": reason}),
+            Self::Hold { node } | Self::Release { node } => json!({"node": node}),
+            Self::Cancel { node, reason } => json!({"node": node, "reason": reason}),
+            Self::Reply { item, text } => json!({"item": item, "text": text}),
+            Self::Ask {
+                node,
+                generation,
+                text,
+            } => json!({"node": node, "generation": generation, "text": text}),
+        };
+        match value {
+            Value::Object(map) => map,
+            _ => unreachable!("an action's input is an object"),
+        }
+    }
+
+    /// Checks what the call sends before anything runs.
+    pub fn check(&self) -> Result<(), String> {
+        match self {
+            Self::Create { .. } => check_create(self),
+            Self::Pause | Self::Resume | Self::Stop | Self::Archive | Self::Settings { .. } => {
+                Ok(())
+            }
+            Self::PauseMember { member }
+            | Self::ResumeMember { member }
+            | Self::StopMember { member }
+            | Self::ArchiveMember { member } => word(member, "member"),
+            Self::Decide { card: id, decision } => check_card(*id, decision),
+            Self::Admit { node: id }
+            | Self::Accept { node: id }
+            | Self::Hold { node: id }
+            | Self::Release { node: id } => node(*id),
+            Self::Route {
+                node: id,
+                role,
+                pipeline,
+                writes,
+                assignee,
+                ..
+            } => check_route(*id, role, pipeline, writes, assignee.as_deref()),
+            Self::Return {
+                node: id,
+                reason: why,
+            } => check_return(*id, why),
+            Self::Reassign {
+                node: id,
+                member,
+                reason: why,
+            } => check_reassign(*id, member, why),
+            Self::Cancel {
+                node: id,
+                reason: why,
+            } => check_cancel(*id, why),
+            Self::Reply { item, text } => check_reply(*item, text),
+            Self::Ask {
+                node: id,
+                generation: _,
+                text,
+            } => check_ask(*id, text),
+        }
+    }
+
+    /// What the person is asked before a destructive action.
+    pub fn confirmation(&self, team_name: &str) -> Option<Confirmation> {
+        let name = if team_name.trim().is_empty() {
+            "this team"
+        } else {
+            team_name.trim()
+        };
+        let ask = |dialog: &str, title: &str, text: String, action: &str| Confirmation {
+            name: dialog.to_owned(),
+            title: title.to_owned(),
+            text,
+            action: action.to_owned(),
+        };
+        match self {
+            Self::Stop => Some(ask(
+                "teamStopConfirm",
+                "Stop team?",
+                format!(
+                    "Stop {name}? Every open task is cancelled and no task is handed out again. Member sessions keep running; their current turns finish."
+                ),
+                "Stop team",
+            )),
+            Self::Archive => Some(ask(
+                "teamArchiveConfirm",
+                "Archive team?",
+                format!(
+                    "Archive {name}? Its history, tasks and reports stay; the team leaves the list of teams."
+                ),
+                "Archive",
+            )),
+            Self::StopMember { member } => Some(ask(
+                "teamStopMemberConfirm",
+                "Stop member?",
+                format!("Stop {member} of {name}? Its current turn finishes and it takes no new task."),
+                "Stop member",
+            )),
+            Self::ArchiveMember { member } => Some(ask(
+                "teamArchiveMemberConfirm",
+                "Remove member?",
+                format!("Remove {member} from {name}? Its history and reports stay."),
+                "Remove member",
+            )),
+            Self::Cancel { node, .. } => Some(ask(
+                "teamCancelConfirm",
+                "Cancel task?",
+                format!("Cancel task #{node} of {name}? Its work stops and its result is not accepted."),
+                "Cancel task",
+            )),
+            _ => None,
+        }
+    }
+}
+
+fn check_create(action: &TeamAction) -> Result<(), String> {
+    let TeamAction::Create {
+        template,
+        project,
+        name,
+        goal,
+        home,
+        integration_branch,
+        base_commit,
+        integration,
+    } = action
+    else {
+        return Err("Not a create.".into());
+    };
+    word(template, "template")?;
+    plain(project, "A project", 256)?;
+    if project.trim().is_empty() {
+        return Err("Name the project.".into());
+    }
+    if name.trim().is_empty() {
+        return Err("Name the team.".into());
+    }
+    plain(name, "A team name", NAME_CHARS)?;
+    plain(goal, "A goal", TEXT_CHARS)?;
+    word(home, "computer id")?;
+    // The store requires the integration branch only for a template that
+    // integrates on a branch.
+    match integration {
+        Integration::Branch => {
+            word(integration_branch, "branch")?;
+            word(base_commit, "commit")
+        }
+        Integration::None => {
+            for (value, what) in [(integration_branch, "branch"), (base_commit, "commit")] {
+                if !value.is_empty() {
+                    word(value, what)?;
+                }
+            }
+            Ok(())
+        }
+    }
+}
+
+fn check_card(id: u64, decision: &str) -> Result<(), String> {
+    card(id)?;
+    reason(decision, "A decision")
+}
+
+fn check_return(id: NodeId, why: &str) -> Result<(), String> {
+    node(id)?;
+    reason(why, "A return's reason")
+}
+
+fn check_cancel(id: NodeId, why: &str) -> Result<(), String> {
+    node(id)?;
+    reason(why, "A reason")
+}
+
+fn check_reply(item: u64, text: &str) -> Result<(), String> {
+    card(item)?;
+    reason(text, "A reply")
+}
+
+fn check_ask(id: NodeId, text: &str) -> Result<(), String> {
+    node(id)?;
+    reason(text, "A question")
+}
+
+fn check_route(
+    id: NodeId,
+    role: &str,
+    pipeline: &str,
+    writes: &[String],
+    assignee: Option<&str>,
+) -> Result<(), String> {
+    node(id)?;
+    word(role, "role")?;
+    word(pipeline, "pipeline")?;
+    if let Some(assignee) = assignee {
+        word(assignee, "member")?;
+    }
+    // The store's own write-path rule.
+    if writes.len() > 200 {
+        return Err("Too many write paths.".into());
+    }
+    for path in writes {
+        plain(path, "A write path", 4096)?;
+        let normalized = path.replace('\\', "/");
+        let bytes = normalized.as_bytes();
+        if normalized.starts_with('/')
+            || (bytes.len() > 1 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':')
+        {
+            return Err("A write path is relative to the repository.".into());
+        }
+    }
+    Ok(())
+}
+
+fn check_reassign(id: NodeId, member: &str, why: &str) -> Result<(), String> {
+    node(id)?;
+    word(member, "member")?;
+    reason(why, "A reason")
+}
