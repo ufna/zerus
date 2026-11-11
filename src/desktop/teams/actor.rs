@@ -19,6 +19,7 @@ pub(crate) use presence::presence;
 mod reports;
 mod retry;
 mod schedule;
+mod tasks;
 #[cfg(test)]
 mod tests;
 use crate::teams::{
@@ -83,7 +84,7 @@ impl Runtime {
         if ports.stopped() {
             return Ok(());
         }
-        // Part C stages tasks here, after reports and before integration.
+        self.stage_tasks(store, ports, &team, now)?;
         if store
             .team(id)?
             .is_some_and(|t| t.status == TeamStatus::Running)

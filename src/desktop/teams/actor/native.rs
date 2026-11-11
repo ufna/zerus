@@ -1,8 +1,13 @@
-//! Original local CLI effects; missing part-C readers fail closed.
+//! Original local CLI effects with exact stored admissions.
 //! Occupancy is a scheduling hint read just before admission, outside the
 //! process-wide spawn turn because it starts child readers. A task a person
 //! assigns in the remaining race can reach the member alongside this hand-out.
 //! The exact current fleet row is checked last inside the store admission.
+
+mod tasks;
+#[cfg(test)]
+#[allow(unused_imports)]
+pub(super) use tasks::{clear_request, stage_arguments, stage_request, task_reply};
 mod admission;
 use super::*;
 use crate::{
@@ -126,6 +131,22 @@ impl Native {
 impl Ports for Native {
     fn clock_ms(&self, _: i64) -> i64 {
         chrono::Utc::now().timestamp_millis()
+    }
+    fn stage(
+        &mut self,
+        team: &Team,
+        effect: &crate::teams::store::StageTaskEffect,
+        original: &str,
+    ) -> Result<super::ports::TaskReply> {
+        self.create_task(team, effect, original)
+    }
+    fn clear_stage(
+        &mut self,
+        team: &Team,
+        keyed: &crate::teams::store::timers::KeyedTask,
+        original: &str,
+    ) -> Result<super::ports::TaskReply> {
+        self.clear_task(team, keyed, original)
     }
     fn stopped(&self) -> bool {
         self.stop.load(std::sync::atomic::Ordering::Acquire)

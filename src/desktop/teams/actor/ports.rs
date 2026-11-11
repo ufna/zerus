@@ -7,6 +7,22 @@ pub(in crate::desktop::teams) trait Ports {
         fallback
     }
 
+    fn stage(
+        &mut self,
+        _team: &Team,
+        _effect: &crate::teams::store::StageTaskEffect,
+        _original: &str,
+    ) -> Result<TaskReply> {
+        Err(unavailable())
+    }
+    fn clear_stage(
+        &mut self,
+        _team: &Team,
+        _keyed: &crate::teams::store::timers::KeyedTask,
+        _original: &str,
+    ) -> Result<TaskReply> {
+        Err(unavailable())
+    }
     fn stopped(&self) -> bool {
         false
     }
@@ -70,6 +86,14 @@ impl From<HandoutOutcome> for DeliveryResult {
     fn from(value: HandoutOutcome) -> Self {
         Self::Outcome(value)
     }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub(in crate::desktop::teams) enum TaskReply {
+    Created,
+    Cleared,
+    Refused { reason: String },
+    CuttingOver { reason: String },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
