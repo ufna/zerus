@@ -13,6 +13,7 @@ use zerus_team_plan::problem::code;
 use zerus_team_plan::Problem;
 
 pub(crate) mod catalog;
+pub(crate) mod integrate;
 
 /// The folder of everything Teams keep under the `hgs` state directory.
 const DIR: &str = "teams";
