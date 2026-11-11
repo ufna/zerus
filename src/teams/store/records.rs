@@ -105,3 +105,12 @@ pub struct IntegrationFact {
     pub conflicts: Vec<String>,
     pub created_ms: i64,
 }
+
+/// An exact acceptance identity for a service integration attempt.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct IntegrationAccept {
+    pub seq: u64,
+    pub node: u32,
+    pub generation: u32,
+}
