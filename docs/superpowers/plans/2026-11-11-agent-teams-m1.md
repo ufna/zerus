@@ -1253,6 +1253,39 @@ doorbell may ring again after the interval; an uncertain one is never sent
 again for its mark, and a newer item rings a new one. A resumed lead gets a
 new doorbell, never a replay.
 
+**A lead's answer reaches its member through the member's own read and a
+doorbell (package 10, follow-up).** A reply stays on its inbox item.
+`hgs team current` shows, on each node the member holds, the member's own
+questions of the current attempt with their state and the lead's answer:
+newest first, at most ten, with a flag when there are more. A question of
+an earlier attempt is not shown; a Return's reason carries what the next
+attempt must know. A reply to a question of the current attempt marks the
+member. The member's doorbell says how many answers wait and names
+`hgs team current`; it never carries the text of a question or of an
+answer. It follows the lead's doorbell rules: the team is running, the
+member's session is live and idle with no pending request, the mark is
+newer than the last doorbell's, the interval has passed, the reservation
+names the member's run and conversation and the mark and is durable before
+the send, the send is admitted at its spawn, a refused doorbell may ring
+again after the interval and an uncertain one is never sent again for its
+mark. At the admission the member must still hold that attempt: after an
+accept, a return, a reassignment, a cancel or a stop the mark is dropped
+and nothing is sent. The member's guide page says where an answer appears.
+No other path carries a lead's text to a member outside a hand-out and a
+Return.
+
+**A card says which decisions it takes, and a row carries what a view needs
+to foresee a refusal (store contract, follow-up).** `OpenCard` takes an
+optional `decisions` list of at most four short tokens; the store keeps it
+and returns it on the card's row, and a card opened without it takes
+`acknowledged` alone. An integration card and a pipeline acceptance card
+return their fixed pairs. `DecideCard` refuses a decision the card does not
+list. Every opener states the decisions something reads: a decision that
+nothing acts on is not listed, so a view never offers it. A queue row
+carries the attempt's holder and the kind of a pending decision, and a
+member row carries whether the person stopped it; all three are additive
+fields of the pinned replies.
+
 **A timer fires once and only while its condition holds (package 10).**
 The store writes a timer's inbox item or owner card in one operation that
 rechecks the condition from stored facts in the same transaction, under a
