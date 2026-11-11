@@ -21,6 +21,16 @@ use sha2::{Digest, Sha256};
 mod attempts;
 pub use attempts::{Settled, Settlement};
 
+#[cfg(test)]
+#[path = "task_team_tests.rs"]
+mod team_key_tests;
+
+#[cfg(not(feature = "test-without-team"))]
+#[path = "task_team.rs"]
+mod team;
+#[cfg(not(feature = "test-without-team"))]
+pub use team::TaskTeam;
+
 pub struct NewTask<'a> {
     pub project: &'a str,
     pub id: &'a str,
@@ -706,6 +716,8 @@ impl TaskDoc {
                 author,
                 stage,
                 target,
+                #[cfg(not(feature = "test-without-team"))]
+                team: self.team()?,
                 rank: self.rank(),
                 session,
                 worker: match string(&fields, "worker")

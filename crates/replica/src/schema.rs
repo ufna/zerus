@@ -180,6 +180,10 @@ pub struct TaskView {
     pub author: Actor,
     pub stage: Stage,
     pub target: Target,
+    /// Optional routing metadata; older current-schema readers ignore it.
+    #[cfg(not(feature = "test-without-team"))]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub team: Option<crate::TaskTeam>,
     pub rank: String,
     pub session: Option<SessionKey>,
     #[serde(skip_serializing_if = "Option::is_none")]
