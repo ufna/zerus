@@ -102,3 +102,35 @@ it("an unknown result changes nothing and offers to read the state again", async
   (notice.querySelector("button") as HTMLButtonElement).click();
   expect(f.recheck).toHaveBeenCalledTimes(1);
 });
+
+// Second confirmation, finding 5: turning off skips the confirmation only when
+// the first page is the whole list and shows no live team.
+it.each([
+  ["a first page that goes on", { teams: Array.from({ length: 200 }, (_, n) => ({ id: `stopped-${n}`, status: "stopped" })), truncated: false, next: "live-team-on-page-two" }],
+  ["a page cut short", { teams: [{ id: "stopped", status: "stopped" }], truncated: true, next: null }],
+  ["a list not read yet", undefined],
+])("asks before turning off with %s", async (_label, list) => {
+  const host = setup(true);
+  f.setList(list);
+  toggle(host).click();
+  await wait();
+  expect(f.preview).not.toHaveBeenCalled();
+  expect(host.querySelector("dialog")).not.toBeNull();
+});
+
+it("turns off at once when the whole list shows no live team", async () => {
+  const host = setup(true);
+  f.setList({ teams: [{ id: "stopped", status: "stopped" }, { id: "done", status: "archived" }], truncated: false, next: null });
+  toggle(host).click();
+  await wait();
+  expect(host.querySelector("dialog")).toBeNull();
+  expect(f.preview).toHaveBeenCalledWith(false);
+});
+
+it("says only that the teams stop being served and nothing is deleted", async () => {
+  const host = setup(true, null, true);
+  toggle(host).click();
+  await wait();
+  const text = host.querySelector("#teams-off-text")?.textContent;
+  expect(text).toBe("Teams on this computer stop being served. Nothing is deleted.");
+});

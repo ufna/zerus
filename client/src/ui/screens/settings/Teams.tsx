@@ -8,8 +8,9 @@ import { Icon } from "../../lib/icons";
 // application's own discovery, never from a poll of its own; a change runs the
 // person's `hgs team preview on|off` through the native command and then asks
 // discovery again, so the entry points appear or disappear without a restart.
-// Turning it off while a team is live asks first: the teams stop being served,
-// nothing is deleted. A refusal keeps its reason in the row; an unknown result
+// Turning it off asks first unless the list is complete and shows no live
+// team: the teams stop being served, nothing is deleted. A list that is not
+// read yet, goes on past its first page or was cut short asks too. A refusal keeps its reason in the row; an unknown result
 // moves nothing on screen and offers a way to read the state again.
 
 /** The statuses the service still serves: a team live right now. */
@@ -35,7 +36,7 @@ function PreviewOffDialog(props: { onCancel: () => void; onConfirm: () => void }
     <dialog ref={dialog} class="dlg" aria-labelledby="teams-off-title" aria-describedby="teams-off-text"
       onCancel={(event) => { event.preventDefault(); props.onCancel(); }}>
       <div class="dlg-head"><Icon name="triangle-alert" size={18} class="warn" /><h2 id="teams-off-title">{tr("Turn Agent Teams off?")}</h2></div>
-      <div class="dlg-body"><p id="teams-off-text">{tr("Teams on this computer stop being served. Nothing is deleted: their data stays until it is deleted.")}</p></div>
+      <div class="dlg-body"><p id="teams-off-text">{tr("Teams on this computer stop being served. Nothing is deleted.")}</p></div>
       <div class="dlg-foot">
         <span class="spacer" />
         <button type="button" class="btn solid-danger" onClick={props.onConfirm}>{tr("Turn off")}</button>
@@ -51,7 +52,12 @@ export function TeamsSection() {
   const [uncertain, setUncertain] = createSignal("");
   const [confirming, setConfirming] = createSignal(false);
   const state = () => previewState(teams.available(), teams.off());
-  const live = () => (teams.list()?.teams ?? []).some((team) => LIVE.has(team.status));
+  /** Whether turning off needs the confirmation: unless the first page is the
+   * whole list and shows no live team. */
+  const mayHaveLive = () => {
+    const list = teams.list();
+    return !list || !!list.next || list.truncated || list.teams.some((team) => LIVE.has(team.status));
+  };
   const disabled = () => busy() || state() === "unavailable" || state() === "unknown";
   const apply = async (on: boolean) => {
     setBusy(true); setError(""); setUncertain("");
@@ -63,7 +69,7 @@ export function TeamsSection() {
   };
   const change = (on: boolean) => {
     if (on === (state() === "on") || disabled()) return;
-    if (!on && live()) { setConfirming(true); return; }
+    if (!on && mayHaveLive()) { setConfirming(true); return; }
     void apply(on);
   };
   return (
