@@ -676,3 +676,33 @@ fn an_unsaved_intent_error_preserves_the_original_reservation() {
     tick(&mut h, &mut a, &mut p, 101, false);
     assert_eq!(p.sends, 0);
 }
+
+#[test]
+fn a_reopen_waits_while_its_holder_is_busy_outside_the_team() {
+    let (mut h, mut a, mut p) = setup(1);
+    tick(&mut h, &mut a, &mut p, 100, false);
+    h.observe(1, TaskStage::InReview);
+    h.run(
+        &service(),
+        Operation::RecordReport {
+            node: 1,
+            generation: 1,
+            member: "m1".into(),
+            text: "Report".into(),
+            commit: COMMIT.into(),
+        },
+    )
+    .unwrap();
+    let lead = h.bind("lead");
+    h.run(
+        &lead,
+        Operation::Return {
+            node: 1,
+            reason: "Revise".into(),
+        },
+    )
+    .unwrap();
+    p.free.clear();
+    tick(&mut h, &mut a, &mut p, 101, false);
+    assert_eq!(p.sends, 1, "a busy holder was sent the reopen");
+}

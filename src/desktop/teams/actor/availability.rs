@@ -199,6 +199,20 @@ mod record_tests {
         assert!(free(&c, "epoch", "team", &m).unwrap());
         assert_eq!(std::fs::read(&path).unwrap(), before);
         assert!(!free(&c, "old-epoch", "team", &m).unwrap());
+        db.execute(
+            "UPDATE desktop_catalog_rows SET json=json_set(json,'$.run_id','other-run')",
+            [],
+        )
+        .unwrap();
+        assert!(
+            !free(&c, "epoch", "team", &m).unwrap(),
+            "a point key did not excuse a different payload identity"
+        );
+        db.execute(
+            "UPDATE desktop_catalog_rows SET json=?1,bytes=?2",
+            params![row, row.len()],
+        )
+        .unwrap();
         for field in ["active", "complete"] {
             db.execute(&format!("UPDATE desktop_catalog_sources SET {field}=0"), [])
                 .unwrap();

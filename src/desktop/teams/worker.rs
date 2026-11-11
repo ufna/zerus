@@ -123,12 +123,16 @@ impl Worker {
         self.work.is_none()
     }
 }
+#[cfg(test)]
+type PassObserver = Box<dyn FnMut(&Store) + Send>;
 struct Passes {
     launcher: launch::Runtime,
     store: Store,
     native: Native,
     actor: actor::Runtime,
     effects: actor::native::Native,
+    #[cfg(test)]
+    after_cycle: Option<PassObserver>,
 }
 fn run(
     config: Config,
@@ -171,6 +175,8 @@ fn run(
         native,
         actor,
         effects,
+        #[cfg(test)]
+        after_cycle: None,
     }
     .run(&config, &stop, receive);
 }
@@ -225,7 +231,7 @@ impl Passes {
         safety: bool,
     ) -> super::ports::Result<()> {
         let (work, effects) = (&mut self.actor, &mut self.effects);
-        pass_with(
+        let result = pass_with(
             &mut self.launcher,
             &mut self.store,
             &mut self.native,
@@ -241,7 +247,12 @@ impl Passes {
                     safety,
                 )
             },
-        )
+        );
+        #[cfg(test)]
+        if let Some(hook) = &mut self.after_cycle {
+            hook(&self.store);
+        }
+        result
     }
 }
 #[cfg(test)]
@@ -337,3 +348,6 @@ fn page(
     store.refresh()?;
     store.live_teams(16, cursor)
 }
+
+#[cfg(test)]
+mod revision_tests;
