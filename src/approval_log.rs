@@ -16,6 +16,9 @@ use std::{
     time::Duration,
 };
 
+mod team;
+pub(crate) use team::{begin_team, TeamKind};
+
 const MAX_INPUT: u64 = 128 * 1024;
 const PAGE: usize = 50;
 fn bad(message: impl ToString) -> Error {
@@ -183,8 +186,8 @@ pub(crate) fn open(root: &Path) -> Result<Connection> {
 }
 
 pub(crate) fn begin(db: &mut Connection, payload: &Value) -> Result<Value> {
-    let host = string(payload, "host", 256)?;
-    let session = string(payload, "session", 1024)?;
+    string(payload, "host", 256)?;
+    string(payload, "session", 1024)?;
     let provider = string(payload, "provider", 64)?;
     let question = &payload["question"];
     if !matches!(
@@ -198,8 +201,24 @@ pub(crate) fn begin(db: &mut Connection, payload: &Value) -> Result<Value> {
     let Some(answers) = answers(question) else {
         return Ok(json!({"eligible":false}));
     };
-    for key in ["question_id", "question_hash", "run_id", "conversation_id"] {
+    reserve(db, payload, answers, false)
+}
+
+fn reserve(
+    db: &mut Connection,
+    payload: &Value,
+    answers: Value,
+    empty_conversation: bool,
+) -> Result<Value> {
+    let host = string(payload, "host", 256)?;
+    let session = string(payload, "session", 1024)?;
+    let provider = string(payload, "provider", 64)?;
+    let question = &payload["question"];
+    for key in ["question_id", "question_hash", "run_id"] {
         string(question, key, 1024)?;
+    }
+    if !empty_conversation || question["conversation_id"] != "" {
+        string(question, "conversation_id", 1024)?;
     }
     let hash = string(question, "question_hash", 64)?;
     if hash.len() != 64 || !hash.bytes().all(|b| b.is_ascii_hexdigit()) {
