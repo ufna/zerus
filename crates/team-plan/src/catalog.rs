@@ -3,6 +3,10 @@
 //! A catalog holds them. A template's seats name roles from the catalog, and a
 //! bundle is one template with exactly the roles and pipelines it uses, which
 //! is what gets exported and what a team keeps as its own copy.
+//!
+//! Adapted from `src/state/teams/catalog.rs` in `WhiteWh/zerus` at
+//! `ca4cc4481`: reduced to roles, seats, pipelines and templates, with a
+//! lead's own spec and a template bundle added.
 
 use serde::{Deserialize, Serialize};
 
