@@ -1,7 +1,7 @@
 //! One bounded background reader/executor. The service thread never opens a
 //! Teams database, waits for a launch or reads an account. Shutdown keeps its
 //! original owner until this worker and its original children physically end.
-use super::{launch, native::Native};
+use super::{actor, launch, native::Native};
 use crate::{
     config::Config,
     desktop::{creation_clone::lease::Machine, feed, fleet},
@@ -123,6 +123,13 @@ impl Worker {
         self.work.is_none()
     }
 }
+struct Passes {
+    launcher: launch::Runtime,
+    store: Store,
+    native: Native,
+    actor: actor::Runtime,
+    effects: actor::native::Native,
+}
 fn run(
     config: Config,
     epoch: String,
@@ -130,44 +137,114 @@ fn run(
     stop: Arc<AtomicBool>,
     receive: mpsc::Receiver<()>,
 ) {
-    let Ok(mut actor) = launch::Runtime::open(&config.state, &machine, &epoch) else {
+    let Ok(mut launcher) = launch::Runtime::open(&config.state, &machine, &epoch) else {
         return;
     };
-    let mut store = match Store::open(&config.state) {
-        Ok(store) => store,
+    let opened = Store::open(&config.state)
+        .and_then(|store| Ok((store, actor::Runtime::open(&config.state, &machine)?)));
+    let (store, actor) = match opened {
+        Ok(values) => values,
         Err(error) => {
-            if let Err(fault) = actor.record_health(&error, chrono::Utc::now().timestamp_millis()) {
+            if let Err(fault) =
+                launcher.record_health(&error, chrono::Utc::now().timestamp_millis())
+            {
                 eprintln!("hgs: Teams health write failed: {}", fault.code);
             }
             return;
         }
     };
-    let mut native = Native {
+    let native = Native {
+        config: config.clone(),
+        machine: machine.clone(),
+        stop: stop.clone(),
+    };
+    let effects = actor::native::Native {
         config: config.clone(),
         machine,
         stop: stop.clone(),
+        epoch,
     };
     super::child::prune_custody(&config);
-    let mut cursor = None;
-    let mut cycle_fault = false;
-    while !stop.load(Ordering::Acquire) && crate::teams::enabled(&config.state) {
-        if let Err(error) = pass(
-            &mut actor,
-            &mut store,
-            &mut native,
-            &mut cursor,
-            &mut cycle_fault,
-            &stop,
-        ) {
-            eprintln!("hgs: Teams worker fault: {}", error.code);
-        }
-        if receive.recv_timeout(Duration::from_secs(60))
-            == Err(mpsc::RecvTimeoutError::Disconnected)
-        {
-            break;
+    Passes {
+        launcher,
+        store,
+        native,
+        actor,
+        effects,
+    }
+    .run(&config, &stop, receive);
+}
+impl Passes {
+    fn run(&mut self, config: &Config, stop: &AtomicBool, receive: mpsc::Receiver<()>) {
+        let mut cursor = None;
+        let mut cycle_fault = false;
+        let mut next_safety = Instant::now();
+        let mut token = self.store.change_token().ok();
+        let mut ready = true;
+        while !stop.load(Ordering::Acquire) && crate::teams::enabled(&config.state) {
+            let safety = Instant::now() >= next_safety;
+            if safety {
+                next_safety = Instant::now() + Duration::from_secs(60);
+            }
+            if ready || safety || cursor.is_some() {
+                if let Err(error) = self.cycle(&mut cursor, &mut cycle_fault, stop, safety) {
+                    eprintln!("hgs: Teams worker fault: {}", error.code);
+                }
+            }
+            ready = match receive.recv_timeout(Duration::from_secs(1)) {
+                Ok(()) => true,
+                Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                Err(mpsc::RecvTimeoutError::Timeout) => false,
+            };
+            // A missing store has no connection yet; discovery only checks its
+            // private leaf. Existing stores cost one data_version read per poll.
+            if token == Some(None) {
+                if let Err(error) = self.store.refresh() {
+                    let _ = record_fault(&mut self.launcher, &mut cycle_fault, &error);
+                }
+            }
+            match self.store.change_token() {
+                Ok(next) => {
+                    let next = Some(next);
+                    ready |= next != token;
+                    token = next;
+                }
+                Err(error) => {
+                    if let Err(fault) = record_fault(&mut self.launcher, &mut cycle_fault, &error) {
+                        eprintln!("hgs: Teams health write failed: {}", fault.code);
+                    }
+                }
+            }
         }
     }
+    fn cycle(
+        &mut self,
+        cursor: &mut Option<crate::teams::store::Cursor>,
+        cycle_fault: &mut bool,
+        stop: &AtomicBool,
+        safety: bool,
+    ) -> super::ports::Result<()> {
+        let (work, effects) = (&mut self.actor, &mut self.effects);
+        pass_with(
+            &mut self.launcher,
+            &mut self.store,
+            &mut self.native,
+            cursor,
+            cycle_fault,
+            stop,
+            |store, teams| {
+                work.page(
+                    store,
+                    effects,
+                    teams,
+                    chrono::Utc::now().timestamp_millis(),
+                    safety,
+                )
+            },
+        )
+    }
 }
+#[cfg(test)]
 pub(super) fn pass(
     actor: &mut launch::Runtime,
     store: &mut Store,
@@ -175,6 +252,20 @@ pub(super) fn pass(
     cursor: &mut Option<crate::teams::store::Cursor>,
     cycle_fault: &mut bool,
     stop: &AtomicBool,
+) -> super::ports::Result<()> {
+    pass_with(actor, store, effects, cursor, cycle_fault, stop, |_, _| {
+        Ok(())
+    })
+}
+#[allow(clippy::too_many_arguments)]
+fn pass_with(
+    actor: &mut launch::Runtime,
+    store: &mut Store,
+    effects: &mut impl super::ports::Effects,
+    cursor: &mut Option<crate::teams::store::Cursor>,
+    cycle_fault: &mut bool,
+    stop: &AtomicBool,
+    mut tick: impl FnMut(&mut Store, &[crate::teams::store::TeamRow]) -> super::ports::Result<()>,
 ) -> super::ports::Result<()> {
     actor.begin_pass();
     let page = match page(store, cursor.as_ref()) {
@@ -214,6 +305,9 @@ pub(super) fn pass(
             }
         }
         actor.release();
+    }
+    if let Err(error) = tick(store, &page.rows) {
+        record_fault(actor, cycle_fault, &error)?;
     }
     *cursor = page.next;
     if let Err(error) = actor.maintain(store) {

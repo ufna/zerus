@@ -51,6 +51,27 @@ pub(super) fn run(
     deadline: Instant,
     stop: &AtomicBool,
 ) -> Ended {
+    let id = original.as_ref().map(|o| o.id);
+    run_guarded(config, args, input, id, stderr, deadline, stop, || {
+        if let Some(o) = &original {
+            admission(config, o.plan, o.bound)?;
+        }
+        Ok(())
+    })
+}
+/// A Teams effect has its own stored-effect admission, with the same child,
+/// configuration, process group, bounded drains and close-only custody.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn run_guarded(
+    config: &Config,
+    args: &[String],
+    input: Option<&[u8]>,
+    original_id: Option<&str>,
+    stderr: bool,
+    deadline: Instant,
+    stop: &AtomicBool,
+    admit: impl Fn() -> super::ports::Result<()>,
+) -> Ended {
     #[cfg(test)]
     if let Some(output) = FIXTURE_EXIT.with(|slot| slot.borrow_mut().take()) {
         return Ended::Exited { code: 0, output };
@@ -59,6 +80,23 @@ pub(super) fn run(
     let Ok(program) = crate::self_exec::current() else {
         return Ended::NotStarted;
     };
+    let spec = spec(input, stderr);
+    let check = |command: &mut std::process::Command| configure(config, command, stop, &admit);
+    match original_id {
+        None => original_child::run_unheld(&program, args, spec, deadline, check),
+        Some(id) => {
+            let Some((held, path, identity)) = custody(config, id) else {
+                return Ended::NotStarted;
+            };
+            let result = original_child::run(&program, args, spec, &held, deadline, check);
+            if !matches!(result, Ended::Unknown(_)) {
+                remove_custody(&path, identity);
+            }
+            result
+        }
+    }
+}
+fn spec(input: Option<&[u8]>, stderr: bool) -> Spec<'_> {
     let input = input.map_or(Input::Closed, |bytes| Input::Frozen {
         stdin: Stdin::Bytes(bytes),
         unwritten: "team_input_unwritten",
@@ -71,54 +109,44 @@ pub(super) fn run(
             too_large: "team_output_too_large",
         }
     };
-    let spec = Spec {
+    Spec {
         custody_env: CUSTODY,
         input,
         output,
         codes: CODES,
         retain: None,
-    };
-    let check = |command: &mut std::process::Command| {
-        if stop.load(Ordering::Acquire) || !crate::teams::enabled(&config.state) {
-            return Err(std::io::ErrorKind::Interrupted.into());
-        }
-        if let Some(original) = &original {
-            admission(config, original.plan, original.bound)
-                .map_err(|_| std::io::Error::from(std::io::ErrorKind::PermissionDenied))?;
-        }
-        for var in [
-            "HGS_SESSION",
-            "HGS_SESSION_ID",
-            "HGS_RUN_ID",
-            "HGS_CONVERSATION_ID",
-            "HGS_LAUNCH_ID",
-            "HGS_LAUNCH_SESSION_ID",
-            "HGS_ACCOUNT_ID",
-            "HGS_PARENT",
-            "TMUX",
-            "TMUX_PANE",
-        ] {
-            command.env_remove(var);
-        }
-        command
-            .env("HGS_CONFIG_DIR", &config.dir)
-            .env("HGS_STATE_DIR", &config.state);
-        Ok(())
-    };
-    match original {
-        None => original_child::run_unheld(&program, args, spec, deadline, check),
-        Some(ref original) => {
-            let Some((held, path, identity)) = custody(config, original.id) else {
-                return Ended::NotStarted;
-            };
-            let result = original_child::run(&program, args, spec, &held, deadline, check);
-            if !matches!(result, Ended::Unknown(_)) {
-                remove_custody(&path, identity);
-            }
-            result
-        }
     }
 }
+fn configure(
+    config: &Config,
+    command: &mut std::process::Command,
+    stop: &AtomicBool,
+    admit: &impl Fn() -> super::ports::Result<()>,
+) -> std::io::Result<()> {
+    if stop.load(Ordering::Acquire) || !crate::teams::enabled(&config.state) {
+        return Err(std::io::ErrorKind::Interrupted.into());
+    }
+    admit().map_err(|_| std::io::Error::from(std::io::ErrorKind::PermissionDenied))?;
+    for var in [
+        "HGS_SESSION",
+        "HGS_SESSION_ID",
+        "HGS_RUN_ID",
+        "HGS_CONVERSATION_ID",
+        "HGS_LAUNCH_ID",
+        "HGS_LAUNCH_SESSION_ID",
+        "HGS_ACCOUNT_ID",
+        "HGS_PARENT",
+        "TMUX",
+        "TMUX_PANE",
+    ] {
+        command.env_remove(var);
+    }
+    command
+        .env("HGS_CONFIG_DIR", &config.dir)
+        .env("HGS_STATE_DIR", &config.state);
+    Ok(())
+}
+
 fn custody(config: &Config, id: &str) -> Option<(Arc<InheritedLock>, PathBuf, (u64, u64))> {
     if !uuid::Uuid::parse_str(id).is_ok_and(|u| !u.is_nil() && u.to_string() == id) {
         return None;

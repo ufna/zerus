@@ -1,0 +1,84 @@
+use super::ledger::Ledger;
+use serde_json::json;
+
+#[test]
+fn actor_ledger_reopen_preserves_original_and_compares_versions() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut ledger = Ledger::open(temp.path()).unwrap();
+    let mut row = ledger
+        .reserve("team", "delivery:one", json!({"state":"intent"}))
+        .unwrap();
+    assert_eq!(row.version, 0);
+    assert!(ledger
+        .reserve("team", "delivery:one", json!({"state":"new"}))
+        .is_err());
+    let mut stale = row.clone();
+    row.data = json!({"state":"outcome"});
+    ledger.save(&mut row).unwrap();
+    assert!(ledger.save(&mut stale).is_err());
+    drop(ledger);
+    let ledger = Ledger::open(temp.path()).unwrap();
+    assert_eq!(ledger.get("team", "delivery:one").unwrap().unwrap(), row);
+}
+
+#[test]
+fn actor_ledger_rejects_large_rows_and_unprivate_files() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut ledger = Ledger::open(temp.path()).unwrap();
+    assert!(ledger
+        .reserve("team", "huge", json!("x".repeat(16385)))
+        .is_err());
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        drop(ledger);
+        std::fs::set_permissions(
+            temp.path().join("teams/actor-v1.sqlite3"),
+            std::fs::Permissions::from_mode(0o644),
+        )
+        .unwrap();
+        assert!(Ledger::open(temp.path()).is_err());
+    }
+}
+
+use super::ports::Result;
+use crate::teams::{ops::tests::*, store::Store};
+use zerus_team_plan::model::*;
+mod core;
+#[cfg(unix)]
+mod native;
+#[test]
+fn disabled_actor_does_not_create_any_store() {
+    let temp = tempfile::tempdir().unwrap();
+    assert!(super::Runtime::open(temp.path(), "machine").is_err());
+    assert!(!temp.path().join("teams").exists());
+}
+#[test]
+fn newer_actor_ledger_is_refused_without_relabeling_it() {
+    let temp = tempfile::tempdir().unwrap();
+    let _ = Ledger::open(temp.path()).unwrap();
+    let db = rusqlite::Connection::open(temp.path().join("teams/actor-v1.sqlite3")).unwrap();
+    db.pragma_update(None, "user_version", 2).unwrap();
+    assert!(Ledger::open(temp.path()).is_err());
+    assert_eq!(
+        db.query_row("PRAGMA user_version", [], |r| r.get::<_, u32>(0))
+            .unwrap(),
+        2
+    );
+}
+#[cfg(unix)]
+#[test]
+fn actor_ledger_refuses_a_shared_or_linked_directory() {
+    use std::os::unix::fs::{symlink, PermissionsExt};
+    let temp = tempfile::tempdir().unwrap();
+    let dir = temp.path().join("teams");
+    std::fs::create_dir(&dir).unwrap();
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+    assert!(Ledger::open(temp.path()).is_err());
+    assert!(!dir.join("actor-v1.sqlite3").exists());
+    std::fs::remove_dir(&dir).unwrap();
+    let other = tempfile::tempdir().unwrap();
+    symlink(other.path(), &dir).unwrap();
+    assert!(Ledger::open(temp.path()).is_err());
+    assert!(!other.path().join("actor-v1.sqlite3").exists());
+}
