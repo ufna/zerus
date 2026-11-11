@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 use zerus_team_plan::problem::code;
 use zerus_team_plan::Problem;
 
-pub mod catalog;
+pub(crate) mod catalog;
 
 /// The folder of everything Teams keep under the `hgs` state directory.
 const DIR: &str = "teams";
