@@ -39,6 +39,8 @@ const DYNAMIC_FILES: Record<string, string> = {
   "./ui/sessions/opencode-models.ts": "its credential kind table",
   "./ui/sessions/session-usage-ui.ts": "its own token and time field tables",
   "./ui/sessions/transcript.ts": "its own event title, voice state and local stamp tables",
+  "./ui/teams/TeamTab.tsx": "the core's node states, roles and deciders, and its own label table",
+  "./ui/teams/NewTeam.tsx": "the catalog's role, pipeline, stage and setting names",
   "./ui/sessions/Activity.tsx": "the transcript's voice state table and inbox-actions' Remove texts",
   "./ui/sessions/shortcutHelp.ts": "the shortcut registry's command titles and its own group table",
   "./ui/screens/settings/Keyboard.tsx": "the shortcut registry's command titles and groups",

@@ -15,6 +15,7 @@ import { ActivityView, columnStyle } from "./Activity";
 import { KeepWarmChip } from "./KeepWarmChip";
 import { AgentBadge, MachineBadge, captionText, statusOf, folderOf } from "./SessionCard";
 import { detailTab, page, selected, setDetailTab, setMenu, subagentOpen, type MenuEntry } from "../../store/ui";
+import { teams } from "../../store/teams";
 import { activity, subagentActivity } from "../../store/session";
 import { activityReadOnly, type ActivitySource } from "../../store/activitySource";
 import { archiveActivity } from "../../store/archiveActivity";
@@ -48,6 +49,7 @@ const ProcessesTab = lazyView(() => import("./Processes"), (m) => m.ProcessesTab
 const TerminalTab = lazyView(() => import("./Terminal"), (m) => m.TerminalTab);
 
 const Inspector = lazy(() => import("./Inspector").then((m) => ({ default: m.Inspector })));
+const TeamTab = lazyView(() => import("../teams/TeamTab"), (m) => m.TeamTab);
 const TaskView = lazy(() => import("../screens/TaskView"));
 let reportedRemovedDetail = false;
 
@@ -217,6 +219,12 @@ createRoot(() => {
   createEffect(on(page, (p) => { if (p !== "sessions") void terminal.leavePage(); }, { defer: true }));
 });
 
+/** The Team tab is offered where a team of this project can be the session's. */
+const teamTabShown = () => {
+  const row = selected();
+  return !!row && teams.available() === true && !!teams.list()?.teams.some((summary) => summary.project === row.project);
+};
+
 const tabs = () => {
   const count = processes.view()?.count ?? 0;
   const all = [
@@ -225,6 +233,7 @@ const tabs = () => {
     { id: "native" as const, label: tr("Native UI"), show: selected()?.agent === "deepseek" && !subagentOpen() },
     processesTab(flag("processes/enabled"), count),
     { id: "taskview" as const, label: tr("Task View"), show: detailTab() === "taskview" && !!selectedTask() },
+    { id: "team" as const, label: tr("Team"), show: teamTabShown() },
   ];
   const s = selected();
   return s ? detailTabs(s.key, all) : all;
@@ -317,6 +326,7 @@ export function SessionDetail() {
                   <Match when={detailTab() === "terminal"}><LazyBoundary loading={<div class="lazy-waiting">{tr("Loading…")}</div>}><TerminalTab /></LazyBoundary></Match>
                   <Match when={detailTab() === "native"}><NativeUiTab /></Match>
                   <Match when={detailTab() === "processes"}><LazyBoundary loading={<div class="lazy-waiting">{tr("Loading…")}</div>}><ProcessesTab /></LazyBoundary></Match>
+                  <Match when={detailTab() === "team"}><LazyBoundary loading={<div class="lazy-waiting">{tr("Loading…")}</div>}><TeamTab /></LazyBoundary></Match>
                 </Switch>
               </div>
             </div>

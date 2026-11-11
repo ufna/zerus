@@ -1,12 +1,14 @@
-import { For, Show, onCleanup, onMount } from "solid-js";
+import { Show, onCleanup, onMount } from "solid-js";
 import { Icon } from "../lib/icons";
-import { teamConfirm, type Asking } from "../../store/teamConfirm";
+import { tr } from "../../i18n";
+import { teams } from "../../store/teams";
 
-// The owner's confirmation of a team action (store/teamConfirm.ts): the
-// action's own button (or a choice's answers) and Cancel, Cancel focused;
-// Escape and closing cancel.
+// The person's confirmation of a destructive team action: the core refused to
+// send it (`confirm`), so nothing ran yet. The dialog shows the core's own
+// title and text; its action button sends the same intent again marked
+// confirmed, and Cancel drops it. Escape and closing cancel.
 
-function Dialog(props: { asking: Asking }) {
+function Dialog(props: { name: string; title: string; text: string; action: string }) {
   let dialog!: HTMLDialogElement;
   const origin = document.activeElement instanceof HTMLElement ? document.activeElement : undefined;
   onMount(() => {
@@ -14,23 +16,35 @@ function Dialog(props: { asking: Asking }) {
     queueMicrotask(() => dialog.querySelector<HTMLElement>("[data-initial]")?.focus());
   });
   onCleanup(() => { if (dialog.open) dialog.close(); if (origin?.isConnected) origin.focus(); });
-  const focused = () => (document.activeElement instanceof HTMLElement ? document.activeElement.dataset.choice : undefined);
   return (
-    <dialog ref={dialog} class="dlg team-confirm" data-name={props.asking.confirmation.name} aria-labelledby="team-confirm-title" aria-describedby="team-confirm-text"
-      onCancel={(event) => { event.preventDefault(); teamConfirm.choose("cancel"); }}
-      onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); teamConfirm.key("Enter", focused() ?? "cancel"); } }}>
-      <div class="dlg-head"><Icon name="triangle-alert" size={18} class="warn" /><h2 id="team-confirm-title">{props.asking.confirmation.title}</h2></div>
-      <div class="dlg-body"><p id="team-confirm-text" class="team-confirm-text">{props.asking.confirmation.text}</p></div>
-      <div class="dlg-foot"><span class="spacer" />
-        <For each={props.asking.buttons}>{(button) => (
-          <button type="button" class="btn" classList={{ "solid-danger": button.danger, primary: button.initial }} data-choice={button.id}
-            data-initial={button.initial ? "" : undefined} autofocus={button.initial} onClick={() => teamConfirm.choose(button.id)}>{button.text}</button>
-        )}</For>
+    <dialog ref={dialog} class="dlg team-confirm" data-name={props.name}
+      aria-labelledby="team-confirm-title" aria-describedby="team-confirm-text"
+      onCancel={(event) => { event.preventDefault(); teams.cancelConfirmation(); }}
+      onKeyDown={(event) => {
+        if (event.key === "Escape") { event.preventDefault(); teams.cancelConfirmation(); }
+        if (event.key === "Enter" && (document.activeElement as HTMLElement | null)?.dataset.initial !== undefined) {
+          event.preventDefault();
+          void teams.confirm();
+        }
+      }}>
+      <div class="dlg-head"><Icon name="triangle-alert" size={18} class="warn" /><h2 id="team-confirm-title">{props.title}</h2></div>
+      <div class="dlg-body"><p id="team-confirm-text" class="team-confirm-text">{props.text}</p></div>
+      <div class="dlg-foot">
+        <span class="spacer" />
+        <button type="button" class="btn" onClick={() => teams.cancelConfirmation()}>{tr("Cancel")}</button>
+        <button type="button" class="btn solid-danger primary" data-initial="" autofocus onClick={() => void teams.confirm()}>{props.action}</button>
       </div>
     </dialog>
   );
 }
 
 export function TeamConfirmDialog() {
-  return <Show when={teamConfirm.asking()} keyed>{(asking) => <Dialog asking={asking} />}</Show>;
+  return (
+    <Show when={teams.confirmation()} keyed>
+      {(asking) => (
+        <Dialog name={asking.confirmation.name} title={asking.confirmation.title}
+          text={asking.confirmation.text} action={asking.confirmation.action} />
+      )}
+    </Show>
+  );
 }

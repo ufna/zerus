@@ -13,6 +13,7 @@ import { openAbout } from "../../store/desk";
 import { trNoop, tr } from "../../i18n";
 import { appBuildInfo, refreshAppBuildInfo } from "../../store/buildInfo";
 import { installedAppName, railVersion } from "../screens/settings/about-version";
+import { teams } from "../../store/teams";
 
 // The side screen switcher stays on the side (owner decision 2026-10-27).
 // Order follows SessionsWindow: brand -> Overview, New session, Sessions,
@@ -40,6 +41,12 @@ export function Rail() {
         <Icon name="add" size={24} />
         <Show when={labeled()}><span>{tr("New")}</span></Show>
       </button>
+      <Show when={teams.available() === true}>
+        <button class="rail-btn" data-tip={labeled() ? undefined : tr("New team")} data-tip-pos="right" aria-label={tr("New team")} onClick={() => void teams.openNewTeam()}>
+          <Icon name="users" size={24} />
+          <Show when={labeled()}><span>{tr("New team")}</span></Show>
+        </button>
+      </Show>
       <For each={ITEMS}>
         {(item) => (
           <button class="rail-btn" classList={{ on: page() === item.id }} aria-current={page() === item.id ? "page" : undefined}
