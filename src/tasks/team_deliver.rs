@@ -1,6 +1,7 @@
 //! A stored team effect is the permit for one ordinary task attempt.
 use super::*;
 pub(super) mod completion;
+pub(super) mod stage;
 use crate::swarm::fence::{Admission, Closed};
 use crate::teams::{store::Store, tasks::context};
 use rusqlite::{params, OptionalExtension};
@@ -596,6 +597,23 @@ fn marker(task: &TaskDoc, team: &str, here: &str) -> Result<()> {
         return Err(fail("Task no longer has this team's exact home marker."));
     }
     Ok(())
+}
+
+/// A bounded metadata read, under the caller's project/admission locks. A bad
+/// file or unreadable path is present or an error, never an absent task.
+fn task_present(config: &Config, reference: &TaskRef) -> Result<bool> {
+    if !zerus_replica::ids::is_uuid(&reference.uuid) {
+        return Err(fail("Invalid task identity."));
+    }
+    let directory = super::store_dir(config, &reference.project).join("tasks");
+    for suffix in ["loro", "updates"] {
+        match std::fs::symlink_metadata(directory.join(format!("{}.{suffix}", reference.uuid))) {
+            Ok(_) => return Ok(true),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(fail(error)),
+        }
+    }
+    Ok(false)
 }
 
 fn reserve(

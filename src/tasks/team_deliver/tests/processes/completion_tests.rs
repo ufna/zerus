@@ -193,3 +193,79 @@ fn a_restart_after_done_was_written_recovers_done_without_another_entry() {
     assert_eq!(out["reply"]["state"], "done", "{out}");
     assert_eq!(f.document().revision(), revision);
 }
+
+#[test]
+fn an_accept_of_an_older_attempt_cannot_finish_a_persons_new_execution() {
+    use zerus_replica::{
+        execution::{NativeRequest, Origin, Receipt, ReportKind},
+        Settlement,
+    };
+    let mut f = Fixture::new();
+    accepted(&mut f);
+    let store = crate::tasks::store(&f.config, &f.task.project).unwrap();
+    let mut doc = store.load(&f.task.uuid).unwrap();
+    let old = doc.attempt(&f.body.id).unwrap().unwrap();
+    let native = old.delivery.unwrap();
+    let id = uuid::Uuid::new_v4().to_string();
+    doc.set_stage(Stage::Todo, &Actor::Person, now()).unwrap();
+    doc.reserve_attempt(
+        &id,
+        Origin::Send,
+        &old.executor,
+        NativeRequest {
+            machine: native.machine.clone(),
+            name: native.name.clone(),
+            run_id: native.run_id.clone(),
+            conversation_id: native.conversation_id.clone(),
+            digest: native.digest.clone(),
+        },
+        &Actor::Person,
+        now(),
+    )
+    .unwrap();
+    doc.settle_attempt(
+        &id,
+        Settlement::Receipt(&Receipt {
+            request_id: id.clone(),
+            name: native.name,
+            run_id: native.run_id,
+            conversation_id: native.conversation_id.clone(),
+            first_message: native.conversation_id.is_empty(),
+            digest: native.digest,
+            submitted: true,
+        }),
+        &Actor::Person,
+        now(),
+    )
+    .unwrap();
+    doc.report_attempt(
+        &id,
+        "A different result",
+        ReportKind::Ready,
+        None,
+        &Actor::Agent(old.executor),
+        now(),
+    )
+    .unwrap();
+    store.save(&mut doc).unwrap();
+    let revision = doc.revision();
+    drop(store);
+    let out = call(&f, "team-done");
+    assert_eq!(out["reply"]["state"], "refused", "{out}");
+    assert_eq!(f.document().revision(), revision);
+}
+
+#[test]
+fn the_real_task_dispatch_finishes_the_stored_accepted_generation() {
+    let mut f = Fixture::new();
+    accepted(&mut f);
+    let args: Vec<String> = std::iter::once("team-done".into())
+        .chain(f.args(false))
+        .collect();
+    let body = json!({"schema":1,"team":TEAM,"node":f.body.node});
+    let (child, path) = f.spawn("command", &args, &body.to_string(), false);
+    let out = f.finish(child, path);
+    assert_eq!(out["reply"]["state"], "done", "{out}");
+    assert_eq!(out["exit"], 0);
+    assert_eq!(f.document().stage().unwrap(), Stage::Done);
+}

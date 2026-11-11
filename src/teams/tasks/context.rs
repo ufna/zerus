@@ -62,20 +62,29 @@ pub(crate) fn build(store: &Store, team: &Team, node: &Node, member: &Member) ->
     }
     let mut query = db
         .prepare(
-            "SELECT kind,text FROM decisions WHERE team=?1 AND node=?2 AND (state IN ('ready','effect_reserved') OR (state='settled' AND stopped_ready=1)) ORDER BY seq DESC LIMIT 32",
+            "SELECT kind,text,state,stopped_ready FROM decisions WHERE team=?1 AND node=?2 ORDER BY seq DESC LIMIT 32",
         )
         .map_err(storage)?;
     let decisions = query
         .query_map(params![team.id, node.id], |r| {
-            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, bool>(3)?,
+            ))
         })
         .map_err(storage)?;
     for decision in decisions {
         if out.cut {
             break;
         }
-        let (kind, text) = decision.map_err(storage)?;
-        out.push(&format!("Binding decision ({kind}): "), &text);
+        let (kind, text, state, stopped_ready) = decision.map_err(storage)?;
+        if matches!(state.as_str(), "ready" | "effect_reserved")
+            || (state == "settled" && stopped_ready)
+        {
+            out.push(&format!("Binding decision ({kind}): "), &text);
+        }
     }
     Ok(out.finish())
 }

@@ -82,7 +82,10 @@ pub(crate) fn guard(caller: &Caller<'_>, task: &TaskDoc, action: &str) -> Result
         project: task.view().map_err(storage)?.project,
         uuid: task.uuid().into(),
     };
-    if binding(&store, &reference)?.is_some_and(|(team, _)| team == link.team) {
+    if binding(&store, &reference)?.is_some_and(|(team, _)| team == link.team)
+        || (reference.project == header.project
+            && super::creation::pending(&store, &reference, &link.team)?)
+    {
         Err(denied())
     } else {
         Ok(())

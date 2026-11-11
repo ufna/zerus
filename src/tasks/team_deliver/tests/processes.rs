@@ -105,7 +105,9 @@ fn entry() {
         if mode == "save-error" {
             std::env::set_var("HGS_TEST_TEAM_DELIVERY_SAVE_ERROR", "1");
         }
-        if mode == "agent" {
+        if mode == "command" {
+            crate::tasks::dispatch(&config, &args, false).map(|exit| json!({"exit":exit}))
+        } else if matches!(mode.as_str(), "agent" | "holder" | "verdict") {
             use sha2::{Digest, Sha256};
             let name = std::env::var("HGS_SESSION").unwrap();
             let path = config
@@ -116,7 +118,16 @@ fn entry() {
             record["process_start"] =
                 json!(crate::platform::process_start_time(std::process::id()).unwrap());
             std::fs::write(path, record.to_string()).unwrap();
-            crate::tasks::execute(&config, &args)
+            if mode == "verdict" {
+                crate::teams::dispatch(&config, &args, false).map(|exit| json!({"exit":exit}))
+            } else {
+                crate::tasks::execute(&config, &args)
+            }
+        } else if matches!(mode.as_str(), "team-stage" | "crash-team-stage") {
+            if mode.starts_with("crash-") {
+                std::env::set_var("HGS_TEST_TEAM_STAGE_AFTER_SAVE", "1");
+            }
+            stage::execute(&config, &args)
         } else if matches!(
             mode.as_str(),
             "team-done" | "team-clear" | "crash-team-done" | "crash-team-clear"
@@ -195,15 +206,19 @@ impl Fixture {
         {
             let tasks =
                 ProjectStore::open(&f.config.state.join("replica"), "example-project").unwrap();
-            let mut task = tasks
-                .new_task(
+            let (mut task, _) = tasks
+                .new_named_task(
                     "Implement the fixture change",
+                    "Check the fixture behaviour",
+                    &[],
                     Stage::Todo,
                     Target::Any,
                     Actor::Person,
                     &Position::End,
                     "example",
                     now(),
+                    None,
+                    false,
                 )
                 .unwrap();
             f.task.uuid = task.uuid().into();
@@ -294,6 +309,10 @@ impl Fixture {
             cmd.env("HGS_SESSION", &self.lead.session)
                 .env("HGS_RUN_ID", "run-lead");
         }
+        if matches!(mode, "holder" | "verdict") {
+            cmd.env("HGS_SESSION", "codex/deliver-m3")
+                .env("HGS_RUN_ID", "run-m3");
+        }
         if barrier {
             cmd.env("HGS_TEAM_DELIVER_BARRIER", "1");
         }
@@ -306,7 +325,20 @@ impl Fixture {
             .unwrap();
         (child, reply)
     }
-    fn finish(&self, child: Child, reply: PathBuf) -> Value {
+    fn finish(&self, mut child: Child, reply: PathBuf) -> Value {
+        let until = Instant::now() + Duration::from_secs(18);
+        while child.try_wait().unwrap().is_none() {
+            if Instant::now() >= until {
+                child.kill().unwrap();
+                let result = child.wait_with_output().unwrap();
+                panic!(
+                    "private CLI fixture timed out: {} {}",
+                    String::from_utf8_lossy(&result.stdout),
+                    String::from_utf8_lossy(&result.stderr)
+                );
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
         let result = child.wait_with_output().unwrap();
         assert!(
             result.status.success(),
@@ -314,7 +346,22 @@ impl Fixture {
             String::from_utf8_lossy(&result.stdout),
             String::from_utf8_lossy(&result.stderr)
         );
-        serde_json::from_slice(&std::fs::read(reply).unwrap()).unwrap()
+        let mut reply: Value = serde_json::from_slice(&std::fs::read(reply).unwrap()).unwrap();
+        if let Some(exit) = reply["reply"]["exit"].as_i64() {
+            let mut values: Vec<Value> = String::from_utf8_lossy(&result.stdout)
+                .lines()
+                .filter_map(|line| serde_json::from_str(line).ok())
+                .collect();
+            assert_eq!(
+                values.len(),
+                1,
+                "{}",
+                String::from_utf8_lossy(&result.stdout)
+            );
+            reply["exit"] = json!(exit);
+            reply["reply"] = values.pop().unwrap();
+        }
+        reply
     }
     fn args(&self, recover: bool) -> Vec<String> {
         let mut args = vec![
@@ -862,3 +909,36 @@ fn a_save_error_after_the_attempt_is_durable_is_uncertain_and_never_sends() {
     }
     assert_eq!(f.count(), 0);
 }
+
+#[test]
+fn service_requests_refuse_unknown_authority_fields_without_writing() {
+    let f = Fixture::new();
+    let revision = f.document().revision();
+    let sessions = f.sessions();
+    for mode in ["submitted", "team-done", "team-clear", "team-stage"] {
+        let mut body = if mode == "submitted" {
+            serde_json::to_value(&f.body).unwrap()
+        } else {
+            json!({"schema":1,"team":TEAM,"node":f.body.node})
+        };
+        if mode == "team-stage" {
+            body["id"] = json!(&f.body.id);
+        }
+        body["actor"] = json!({"kind":"service"});
+        let args = if mode == "team-stage" {
+            vec!["--json".into()]
+        } else {
+            f.args(false)
+        };
+        let (child, path) = f.spawn(mode, &args, &body.to_string(), false);
+        let out = f.finish(child, path);
+        assert_eq!(out["ok"], false, "{out}");
+        assert!(out["error"].as_str().unwrap().contains("unknown"), "{out}");
+        assert_eq!(f.document().revision(), revision);
+        assert_eq!(f.sessions(), sessions);
+        assert_eq!(f.count(), 0);
+    }
+}
+
+mod clear_tests;
+mod stage_tests;
