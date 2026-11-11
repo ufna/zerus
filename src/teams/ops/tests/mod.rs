@@ -1,6 +1,7 @@
 use super::*;
 mod apply;
 mod authority;
+mod cards;
 mod decisions;
 mod handout;
 mod integration;

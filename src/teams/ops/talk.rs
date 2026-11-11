@@ -92,7 +92,9 @@ pub(super) fn decide_card(ctx: &mut Context<'_>) -> Result<()> {
         )
         .optional()
         .map_err(storage)?;
-    let (kind, node, seq) = row.ok_or_else(|| invalid("Card is missing or already decided."))?;
+    let Some((kind, node, seq)) = row else {
+        return Err(unavailable_card(ctx, *card)?);
+    };
     let stale = if kind == "integration" {
         decide_integration(
             ctx,
@@ -146,4 +148,29 @@ fn decide_integration(ctx: &Context<'_>, node: u32, seq: u64, answer: &str) -> R
         _ => return Err(invalid("Integration decision must be approve or reject.")),
     }
     Ok(false)
+}
+
+pub(super) fn close_card(ctx: &mut Context<'_>) -> Result<()> {
+    let Operation::CloseCard { card, reason: why } = ctx.op else {
+        unreachable!()
+    };
+    ctx.active()?;
+    reason(why)?;
+    let changed = ctx.db.execute("UPDATE cards SET state='closed',decision='stale',decided_actor=?3 WHERE team=?1 AND seq=?2 AND state='open' AND kind<>'integration' AND actor=?3",params![ctx.team.id,card,encode(ctx.actor)?]).map_err(storage)?;
+    if changed != 1 {
+        return Err(invalid(
+            "Only an open non-integration card opened by this service can be closed.",
+        ));
+    }
+    Ok(())
+}
+
+fn unavailable_card(ctx: &Context<'_>, card: u64) -> Result<Problem> {
+    let stale = rows::card(ctx.db, &ctx.team.id, card)?
+        .is_some_and(|c| c.decision.as_deref() == Some("stale"));
+    Ok(invalid(if stale {
+        "Card is stale."
+    } else {
+        "Card is missing or already decided."
+    }))
 }
