@@ -41,8 +41,8 @@ pub fn after_report(node: &Node, pipeline: &Pipeline) -> Step {
 /// last. A return goes back to the implementer for the next round, and to
 /// the lead when the task has used the pipeline's rounds. A stage node
 /// carries the round of the report it checks; a verdict that does not fit
-/// the task (another task, another round, a stage the pipeline lacks) goes
-/// to the lead and moves nothing.
+/// the task (another task, another round, a stage the pipeline lacks, or a
+/// role other than that stage's) goes to the lead and moves nothing.
 pub fn after_verdict(node: &Node, stage: &Node, pass: bool, pipeline: &Pipeline) -> Step {
     if stage.kind != NodeKind::Stage {
         return to_lead("The verdict does not come from a stage.");
@@ -57,10 +57,17 @@ pub fn after_verdict(node: &Node, stage: &Node, pass: bool, pipeline: &Pipeline)
             stage.round.max(1)
         ));
     }
-    if stage_step(pipeline, stage.stage_index).is_none() {
+    let number = stage.stage_index.saturating_add(1);
+    let spec = usize::try_from(stage.stage_index)
+        .ok()
+        .and_then(|index| pipeline.stages.get(index));
+    let Some(spec) = spec else {
+        return to_lead(format!("The pipeline has no stage {number}."));
+    };
+    if stage.role != spec.role {
         return to_lead(format!(
-            "The pipeline has no stage {}.",
-            stage.stage_index.saturating_add(1)
+            "The verdict comes from the role {}, and stage {number} of the pipeline is for the role {}.",
+            stage.role, spec.role
         ));
     }
     if pass {
@@ -141,12 +148,17 @@ mod tests {
         )
     }
 
-    /// Stage `index` of task 1 in `round`.
+    /// Stage `index` of task 1 in `round`, with the role the built-in
+    /// pipelines give that stage: a reviewer, then a tester.
     fn stage_of(index: u32, round: u32) -> Node {
+        let role = ["reviewer", "tester"]
+            .get(index as usize)
+            .copied()
+            .unwrap_or("reviewer");
         node(
             10 + index as NodeId,
             json!({"kind": "stage", "stage_of": 1, "stage_index": index, "round": round,
-                   "role": "reviewer", "implementer": "m1"}),
+                   "role": role, "implementer": "m1"}),
         )
     }
 
@@ -294,6 +306,30 @@ mod tests {
         to_lead(&after_verdict(&task(1), &not_a_stage, true, &code));
         // A stage reports no result.
         to_lead(&after_report(&stage_of(0, 1), &code));
+    }
+
+    #[test]
+    fn a_verdict_from_a_role_the_stage_does_not_have_goes_to_the_lead() {
+        // A developer's pass on the review of a docs task would accept it.
+        let docs = builtin_pipeline("docs");
+        let mut wrong = stage_of(0, 1);
+        wrong.role = "developer".into();
+        assert_eq!(
+            to_lead(&after_verdict(&task(1), &wrong, true, &docs)),
+            "The verdict comes from the role developer, and stage 1 of the pipeline \
+             is for the role reviewer."
+        );
+        to_lead(&after_verdict(&task(1), &wrong, false, &docs));
+        // The test stage of code is the tester's, not the reviewer's.
+        let code = builtin_pipeline("code");
+        let mut reviewer_on_test = stage_of(1, 1);
+        assert_eq!(reviewer_on_test.role, "tester");
+        assert!(matches!(
+            after_verdict(&task(1), &reviewer_on_test, true, &code),
+            Step::ToLead { .. }
+        ));
+        reviewer_on_test.role = "reviewer".into();
+        to_lead(&after_verdict(&task(1), &reviewer_on_test, true, &code));
     }
 
     #[test]
