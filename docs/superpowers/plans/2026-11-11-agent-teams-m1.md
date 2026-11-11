@@ -1344,6 +1344,37 @@ released stage nodes whose clear has no final record, with the task to
 name: the bound task, or the stored creation request ID of a creation that
 was saved and never bound. Neither read walks settled history.
 
+**The store follows the task's attempts (packages 6 and 10, after the
+confirmation of package 10).** The service reads only the newest state of a
+task, so two observations can skip what happened between them: a task that
+was cancelled, moved back and sent again looks active before and after, and
+an answer about the earlier execution can arrive after the later one was
+observed. The task document numbers its attempts. An observation carries
+`attempt`, the highest generation any attempt of the task claims (0 without
+one), and `attempt_id`, the ID of its current attempt (empty without one);
+the store keeps both with the observation. An attempt the team hands out
+has its effect's request ID as its ID, so the store knows its own. When an
+observation shows an active task whose attempt is newer than the stored one
+and is not an effect of that node, a person started a new execution, and
+the store does at once what the two observations it missed would have done
+in turn: the end of the earlier attempt, then the person's restore. Pending
+decisions of the node are settled, the node moves to its next generation
+and the event is `person_override`. A node that is already finished takes
+the restore it takes today.
+
+A cancel acts on one attempt. `team-cancel` compares, under its locks, the
+document's highest generation with the attempt the store holds for the
+node. When the document has an attempt the store has not observed, it
+writes nothing and answers `stale`, and the service observes the task
+before it asks again. Its reply names the attempt it acted on in `attempt`,
+`RecordCancel` carries that number, and the store applies a cancelled
+answer only while the node's stored attempt is still that one; otherwise
+the operation is refused and writes nothing. An answer about an earlier
+attempt therefore never ends a node whose task runs again, and both orders
+of the answer and the observation leave the same state. No service command
+finishes, reopens or cancels a task that has an attempt the store has not
+observed.
+
 **Known limit.** A stage excludes the implementer of the target's current
 round. After a reassignment an earlier implementer could hold a stage of
 the same target where the stage's role equals the implementer's role; the
