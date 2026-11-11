@@ -188,3 +188,138 @@ fn literal_stage_and_clear_replies_require_the_exact_echo_and_a_successful_child
         ));
     }
 }
+
+#[test]
+fn native_stage_and_clear_hold_the_store_transaction_until_the_spawn_returns() {
+    use crate::desktop::original_child;
+    for creation in [true, false] {
+        let (h, e) = reserved();
+        let (h, keyed) = if creation {
+            (h, None)
+        } else {
+            let (h, k) = released();
+            (h, Some(k))
+        };
+        let path = h.temp.path().join("teams/teams-v1.sqlite3");
+        let before = path.clone();
+        let checked = std::rc::Rc::new(std::cell::Cell::new(0));
+        let c = checked.clone();
+        original_child::AFTER_FINAL_CHECK.with(|s| {
+            *s.borrow_mut() = Some(Box::new(move || {
+                let db = rusqlite::Connection::open(before).unwrap();
+                db.busy_timeout(std::time::Duration::ZERO).unwrap();
+                assert!(
+                    db.execute_batch("BEGIN IMMEDIATE").is_err(),
+                    "task admission released before spawn"
+                );
+                c.set(1);
+            }))
+        });
+        let c = checked.clone();
+        original_child::AFTER_SPAWN.with(|s| {
+            *s.borrow_mut() = Some(Box::new(move || {
+                let db = rusqlite::Connection::open(path).unwrap();
+                db.execute_batch("BEGIN IMMEDIATE;ROLLBACK").unwrap();
+                c.set(2);
+            }))
+        });
+        let t = h.store.team(TEAM).unwrap().unwrap();
+        let reply = if let Some(k) = &keyed {
+            json!({"schema":1,"team":TEAM,"node":k.node,"state":"cleared","error":""})
+                .to_string()
+                .into_bytes()
+        } else {
+            created_reply(&e)
+        };
+        crate::desktop::teams::child::FIXTURE_EXIT.with(|s| *s.borrow_mut() = Some(reply));
+        let mut n = super::production::native(&h);
+        let answer = if let Some(k) = keyed {
+            n.clear_stage(&t, &k, &uuid::Uuid::new_v4().to_string())
+        } else {
+            n.stage(&t, &e, &uuid::Uuid::new_v4().to_string())
+        };
+        assert!(answer.is_ok());
+        assert_eq!(checked.get(), 2);
+    }
+}
+
+#[test]
+fn native_task_admission_refuses_changed_creation_and_a_live_or_other_task_clear() {
+    let (h, mut e) = reserved();
+    let t = h.store.team(TEAM).unwrap().unwrap();
+    e.text.push_str("changed");
+    crate::desktop::teams::child::FIXTURE_EXIT.with(|s| *s.borrow_mut() = Some(created_reply(&e)));
+    assert!(super::production::native(&h)
+        .stage(&t, &e, &uuid::Uuid::new_v4().to_string())
+        .is_err());
+    let (h, k) = released();
+    let t = h.store.team(TEAM).unwrap().unwrap();
+    for target in [
+        crate::teams::store::timers::KeyedTask {
+            node: k.node,
+            task: task(999),
+        },
+        crate::teams::store::timers::KeyedTask {
+            node: 1,
+            task: task(1),
+        },
+    ] {
+        crate::desktop::teams::child::FIXTURE_EXIT.with(|s| {
+            *s.borrow_mut() = Some(
+                json!({"schema":1,"team":TEAM,"node":target.node,"state":"cleared","error":""})
+                    .to_string()
+                    .into_bytes(),
+            )
+        });
+        assert!(super::production::native(&h)
+            .clear_stage(&t, &target, &uuid::Uuid::new_v4().to_string())
+            .is_err());
+    }
+}
+
+#[test]
+fn literal_cancel_replies_keep_release_distinct_until_the_store_fact() {
+    use super::super::native::task_reply;
+    use crate::desktop::teams::child::Ended;
+    let request = json!({"schema":1,"team":"team","node":2});
+    for state in ["cancelled", "released", "refused", "cutting_over"] {
+        let error = if matches!(state, "cancelled" | "released") {
+            ""
+        } else {
+            "Reason"
+        };
+        let raw = json!({"schema":1,"team":"team","node":2,"state":state,"error":error})
+            .to_string()
+            .into_bytes();
+        let reply = task_reply(
+            Ended::Exited {
+                code: 0,
+                output: raw,
+            },
+            &request,
+            "cancelled",
+        )
+        .unwrap();
+        assert!(matches!(
+            (state, reply),
+            ("cancelled", TaskReply::Cancelled)
+                | ("released", TaskReply::Released)
+                | ("refused", TaskReply::Refused { .. })
+                | ("cutting_over", TaskReply::CuttingOver { .. })
+        ));
+    }
+    for state in ["cleared", "done", "uncertain", "unknown"] {
+        let raw = json!({"schema":1,"team":"team","node":2,"state":state,"error":""})
+            .to_string()
+            .into_bytes();
+        assert!(task_reply(
+            Ended::Exited {
+                code: 0,
+                output: raw
+            },
+            &request,
+            "cancelled"
+        )
+        .is_err());
+    }
+}

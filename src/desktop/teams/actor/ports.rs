@@ -7,6 +7,31 @@ pub(in crate::desktop::teams) trait Ports {
         fallback
     }
 
+    fn cancels(
+        &mut self,
+        _store: &Store,
+        _team: &str,
+        _after: u32,
+    ) -> Result<Vec<super::cancel::Pending>> {
+        Ok(vec![])
+    }
+    fn cancel(
+        &mut self,
+        _team: &Team,
+        _pending: &super::cancel::Pending,
+        _original: &str,
+    ) -> Result<TaskReply> {
+        Err(unavailable())
+    }
+    fn record_cancel(
+        &mut self,
+        _store: &mut Store,
+        _team: &Team,
+        _fact: &super::cancel::Fact,
+        _now: i64,
+    ) -> Result<()> {
+        Err(unavailable())
+    }
     #[cfg(unix)]
     fn team_timers(
         &mut self,
@@ -109,6 +134,8 @@ impl From<HandoutOutcome> for DeliveryResult {
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(in crate::desktop::teams) enum TaskReply {
+    Cancelled,
+    Released,
     Created,
     Cleared,
     Refused { reason: String },

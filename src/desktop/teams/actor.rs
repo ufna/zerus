@@ -5,6 +5,7 @@
 mod auxiliary;
 #[cfg(unix)]
 mod availability;
+mod cancel;
 mod delivery;
 mod finish;
 mod integration;
@@ -40,6 +41,7 @@ pub(super) struct Runtime {
     maintenance: Option<crate::teams::store::Cursor>,
     row_failure: bool,
     hints: BTreeMap<String, observe::Hint>,
+    cancel_after: String,
     #[cfg(unix)]
     auxiliary: auxiliary::State,
 }
@@ -56,6 +58,7 @@ impl Runtime {
             maintenance: None,
             row_failure: false,
             hints: BTreeMap::new(),
+            cancel_after: String::new(),
             #[cfg(unix)]
             auxiliary: auxiliary::State::new(state, &epoch),
         })
@@ -87,6 +90,7 @@ impl Runtime {
         if ports.stopped() {
             return Ok(());
         }
+        self.cancels(store, ports, &team, now)?;
         self.reports(store, ports, &team, now)?;
         if ports.stopped() {
             return Ok(());

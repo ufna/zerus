@@ -130,7 +130,9 @@ impl Runtime {
         {
             return Ok(());
         }
-        match ports.terminal_timers(&mut self.auxiliary, store, now) {
+        let cancelled = self.terminal_cancels(store, ports, now);
+        let timers = ports.terminal_timers(&mut self.auxiliary, store, now);
+        match cancelled.and(timers) {
             Ok(()) => self.ledger.terminal_succeeded(),
             Err(error) => {
                 eprintln!("hgs: Teams terminal page will retry: {}", error.code);

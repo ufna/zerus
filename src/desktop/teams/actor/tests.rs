@@ -44,6 +44,7 @@ fn actor_ledger_rejects_large_rows_and_unprivate_files() {
 use super::ports::Result;
 use crate::teams::{ops::tests::*, store::Store};
 use zerus_team_plan::model::*;
+mod cancel;
 mod core;
 #[cfg(unix)]
 mod native;

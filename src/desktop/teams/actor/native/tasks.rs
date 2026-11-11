@@ -128,6 +128,10 @@ pub(in crate::desktop::teams::actor) fn task_reply(
     match value["state"].as_str() {
         Some("created") if success == "created" && reason.is_empty() => Ok(TaskReply::Created),
         Some("cleared") if success == "cleared" && reason.is_empty() => Ok(TaskReply::Cleared),
+        Some("cancelled") if success == "cancelled" && reason.is_empty() => {
+            Ok(TaskReply::Cancelled)
+        }
+        Some("released") if success == "cancelled" && reason.is_empty() => Ok(TaskReply::Released),
         Some("refused") if !reason.trim().is_empty() => Ok(TaskReply::Refused { reason }),
         Some("cutting_over") => Ok(TaskReply::CuttingOver { reason }),
         _ => Err(problem("The task reply has no recognized answer")),
