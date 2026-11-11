@@ -9,17 +9,20 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { createComponent } from "solid-js";
 import { render } from "solid-js/web";
 import type { TeamsOut } from "../../types";
+import { teamView } from "../teams/fixtures";
 
 const MACHINE = "00000000-0000-4000-8000-0000000000aa";
 const TEAM = "00000000-0000-4000-8000-00000000beef";
 const f = vi.hoisted(() => ({
-  rows: [] as Record<string, unknown>[], pages: [] as [string, string | null][], follows: [] as unknown[],
+  rows: [] as Record<string, unknown>[], pages: [] as [string, string | null][], follows: [] as unknown[], acts: [] as unknown[],
+  act: async (call: { request_id: string }): Promise<unknown> => ({ outcome: "done", receipt: {}, request_id: call.request_id }),
   select: vi.fn(), page: vi.fn(), detail: vi.fn(), open: vi.fn(),
 }));
 vi.mock("../../bridge", async (importOriginal) => ({ ...(await importOriginal<object>()), inTauri: () => true }));
 vi.mock("@tauri-apps/api/core", () => ({
   isTauri: () => false,
-  invoke: async (command: string, args: { key: string; cursor: string | null }) => {
+  invoke: async (command: string, args: { key: string; cursor: string | null; call: { request_id: string } }) => {
+    if (command === "team_action") { f.acts.push(args.call); return f.act(args.call); }
     if (command === "teams_page") f.pages.push([args.key, args.cursor]);
     if (command === "teams_follow") f.follows.push(args);
     return undefined;
@@ -37,7 +40,8 @@ beforeEach(async () => {
   vi.resetModules();
   ({ teams: store } = await import("../../store/teams"));
   ({ WaitingScreen } = await import("./Waiting"));
-  f.rows = []; f.pages = []; f.follows = [];
+  f.rows = []; f.pages = []; f.follows = []; f.acts = [];
+  f.act = async (call) => ({ outcome: "done", receipt: {}, request_id: call.request_id });
   f.select.mockClear(); f.page.mockClear(); f.detail.mockClear(); f.open.mockClear();
 });
 afterEach(() => { dispose?.(); dispose = undefined; document.body.replaceChildren(); });
@@ -127,4 +131,16 @@ it("with Teams off it reads nothing and says so", async () => {
   expect(host.querySelector("[data-waiting-off]")).not.toBeNull();
   await Promise.resolve();
   expect(f.follows).toEqual([]);
+});
+
+it("a refused decision shows the team's reason once, as this view's own", async () => {
+  f.act = async (call) => ({ outcome: "failed", detail: "invalid_state: The card was already decided.", code: "invalid_state", request_id: call.request_id });
+  store.apply([entry("waiting", "waiting", { items: [{ ...card, node: null }], next: null })]);
+  const host = show();
+  host.querySelector<HTMLButtonElement>("[data-decision]")!.click();
+  await vi.waitFor(() => expect(f.follows.some((follow) => (follow as { team: string | null }).team === TEAM)).toBe(true));
+  store.apply([entry(`team:${TEAM}`, "team", { ...teamView, bar: { ...teamView.bar, id: TEAM } })]);
+  await vi.waitFor(() => expect(host.querySelector("[data-waiting-action-failure]")?.textContent).toContain("already decided"));
+  expect(host.textContent!.split("The card was already decided.")).toHaveLength(2);
+  expect(f.acts[0]).toMatchObject({ team: TEAM, expected_revision: 16, action: { kind: "decide", card: 1 } });
 });

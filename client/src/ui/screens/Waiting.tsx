@@ -60,11 +60,11 @@ export function WaitingScreen() {
   });
   const decide = async (item: WaitingItem, decision: string) => {
     if (busy()) return;
-    setBusy(true); setNotice("");
+    setBusy(true); setNotice(""); teams.clearFailure("waiting");
     try {
+      // A refusal is this view's reason in the store, shown below once.
       const outcome = await teams.decide(item, decision);
       if (!outcome) setNotice(tr("The team could not be read. Nothing was sent."));
-      else if (outcome.outcome === "failed") setNotice(outcome.detail);
       else if (outcome.outcome === "pending") setNotice(tr("The decision waits for the team."));
     } finally { setBusy(false); }
   };
