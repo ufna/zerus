@@ -38,6 +38,8 @@ fn a_reopened_store_keeps_its_timer_triggers_under_their_versioned_names() {
     assert_eq!(
         names,
         [
+            "key_clear_stage_archived_v1",
+            "key_clear_stage_settled_v1",
             "key_clear_terminal_v1",
             "timer_cards_decided_v1",
             "timer_cards_item_v1"
@@ -106,6 +108,7 @@ fn every_timer_read_searches_an_index() {
         ("SETTLE", sql::SETTLE),
         ("LATE", sql::LATE),
         ("REFUSALS", sql::REFUSALS),
+        ("RELEASED_STAGES", sql::RELEASED_STAGES),
         ("WAITING", sql::WAITING),
     ] {
         let plan = explain(db(&h), sql);

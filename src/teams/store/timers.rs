@@ -57,21 +57,35 @@ pub struct Bell {
 /// no write lock; the terminal-team index is created once, under one, and
 /// filled from existing teams in pages.
 pub(super) fn extend(db: &Connection) -> Result<()> {
-    if !exists(db)? {
-        create(db)?;
-    }
+    once(db, "key_clear_teams", TEAMS_TABLE, backfill_teams)?;
+    once(db, "key_clear_outbox", OUTBOX_TABLE, backfill_outbox)?;
     db.execute_batch(include_str!("timers.sql"))
         .map_err(storage)
 }
-fn exists(db: &Connection) -> Result<bool> {
+const TEAMS_TABLE: &str =
+    "CREATE TABLE key_clear_teams (team TEXT PRIMARY KEY, pending INTEGER NOT NULL);
+    CREATE INDEX key_clear_pending ON key_clear_teams(team) WHERE pending=1;";
+/// Released stages whose task key waits for its final record.
+const OUTBOX_TABLE: &str =
+    "CREATE TABLE key_clear_outbox (team TEXT NOT NULL, node INTEGER NOT NULL, PRIMARY KEY(team,node));";
+fn exists(db: &Connection, table: &str) -> Result<bool> {
     db.query_row(
-        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='key_clear_teams')",
-        [],
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1)",
+        [table],
         |r| r.get(0),
     )
     .map_err(storage)
 }
-fn create(db: &Connection) -> Result<()> {
+/// Create `table` once, under a write lock, and fill it from the store.
+fn once(
+    db: &Connection,
+    table: &str,
+    sql: &str,
+    fill: fn(&Connection) -> Result<()>,
+) -> Result<()> {
+    if exists(db, table)? {
+        return Ok(());
+    }
     let own = db.is_autocommit();
     db.execute_batch(if own {
         "BEGIN IMMEDIATE;"
@@ -80,15 +94,11 @@ fn create(db: &Connection) -> Result<()> {
     })
     .map_err(storage)?;
     let result = (|| {
-        if exists(db)? {
+        if exists(db, table)? {
             return Ok(());
         }
-        db.execute_batch(
-            "CREATE TABLE key_clear_teams (team TEXT PRIMARY KEY, pending INTEGER NOT NULL);
-            CREATE INDEX key_clear_pending ON key_clear_teams(team) WHERE pending=1;",
-        )
-        .map_err(storage)?;
-        backfill(db)
+        db.execute_batch(sql).map_err(storage)?;
+        fill(db)
     })();
     let end = match (&result, own) {
         (Ok(()), true) => "COMMIT;",
@@ -99,7 +109,7 @@ fn create(db: &Connection) -> Result<()> {
     db.execute_batch(end).map_err(storage)?;
     result
 }
-fn backfill(db: &Connection) -> Result<()> {
+fn backfill_teams(db: &Connection) -> Result<()> {
     let sql =
         format!("SELECT id FROM teams WHERE id>?1 AND status IN {TERMINAL} ORDER BY id LIMIT 200");
     let mut after = String::new();
@@ -118,6 +128,28 @@ fn backfill(db: &Connection) -> Result<()> {
         }
     }
 }
+/// Walk the archive once, in pages, for stages released before the outbox.
+fn backfill_outbox(db: &Connection) -> Result<()> {
+    let page =
+        "SELECT team,id FROM node_archive WHERE (team,id)>(?1,?2) ORDER BY team,id LIMIT 200";
+    let insert = format!("INSERT OR IGNORE INTO key_clear_outbox(team,node) SELECT a.team,a.id FROM node_archive a WHERE a.team=?1 AND a.id=?2 AND {RELEASED}");
+    let mut after = (String::new(), 0u32);
+    loop {
+        let keys = rows(db, page, params![after.0, after.1], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, u32>(1)?))
+        })?;
+        for (team, id) in &keys {
+            db.execute(&insert, params![team, id]).map_err(storage)?;
+        }
+        match keys.last() {
+            Some(last) if keys.len() == 200 => after = last.clone(),
+            _ => return Ok(()),
+        }
+    }
+}
+/// An archived stage `a` is released when its creation is no longer live,
+/// and has a key to clear when a task was bound or its creation was saved.
+pub(crate) const RELEASED: &str = "json_extract(a.data,'$.kind')='stage' AND NOT EXISTS(SELECT 1 FROM stage_tasks s WHERE s.team=a.team AND s.node=a.id AND s.state IN ('wanted','reserved','created')) AND (EXISTS(SELECT 1 FROM node_identity i WHERE i.team=a.team AND i.id=a.id AND i.task_uuid<>'') OR EXISTS(SELECT 1 FROM stage_tasks s WHERE s.team=a.team AND s.node=a.id AND s.request_id IS NOT NULL)) AND NOT EXISTS(SELECT 1 FROM key_clears k WHERE k.team=a.team AND k.node=a.id)";
 fn column<T: rusqlite::types::FromSql>(
     db: &Connection,
     sql: &str,
@@ -171,9 +203,13 @@ pub(crate) mod sql {
     pub const FIRED: &str = "SELECT EXISTS(SELECT 1 FROM timer_firings WHERE team=?1 AND kind=?2 AND node=?3 AND generation=?4 AND item=?5)";
     pub const KEYED_TEAMS: &str =
         "SELECT team FROM key_clear_teams WHERE pending=1 AND team>?1 ORDER BY team LIMIT ?2";
-    pub const KEYED: &str = "SELECT i.id,i.task_project,i.task_uuid FROM node_identity i WHERE i.team=?1 AND NOT EXISTS(SELECT 1 FROM task_observations o WHERE o.team=i.team AND o.node=i.id AND o.released) AND NOT EXISTS(SELECT 1 FROM key_clears k WHERE k.team=i.team AND k.node=i.id)";
-    pub const KEYED_PAGE: &str = "SELECT i.id,i.task_project,i.task_uuid FROM node_identity i WHERE i.team=?1 AND NOT EXISTS(SELECT 1 FROM task_observations o WHERE o.team=i.team AND o.node=i.id AND o.released) AND NOT EXISTS(SELECT 1 FROM key_clears k WHERE k.team=i.team AND k.node=i.id) AND i.id>?2 ORDER BY i.id LIMIT ?3";
-    pub const SETTLE: &str = "UPDATE key_clear_teams SET pending=0 WHERE team=?1 AND pending=1 AND NOT EXISTS(SELECT 1 FROM node_identity i WHERE i.team=?1 AND NOT EXISTS(SELECT 1 FROM task_observations o WHERE o.team=i.team AND o.node=i.id AND o.released) AND NOT EXISTS(SELECT 1 FROM key_clears k WHERE k.team=i.team AND k.node=i.id) LIMIT 1)";
+    /// A node of the team with a task key to clear: the bound task, or the
+    /// task its saved stage creation names; a key observed gone has none.
+    pub const KEYED: &str = "SELECT i.id,i.task_project,CASE WHEN i.task_uuid<>'' THEN i.task_uuid ELSE s.request_id END FROM node_identity i LEFT JOIN stage_tasks s ON s.team=i.team AND s.node=i.id WHERE i.team=?1 AND (i.task_uuid<>'' OR s.request_id IS NOT NULL) AND NOT EXISTS(SELECT 1 FROM task_observations o WHERE o.team=i.team AND o.node=i.id AND json_extract(o.data,'$.key') IS NOT NULL) AND NOT EXISTS(SELECT 1 FROM key_clears k WHERE k.team=i.team AND k.node=i.id)";
+    pub const KEYED_PAGE: &str = "SELECT i.id,i.task_project,CASE WHEN i.task_uuid<>'' THEN i.task_uuid ELSE s.request_id END FROM node_identity i LEFT JOIN stage_tasks s ON s.team=i.team AND s.node=i.id WHERE i.team=?1 AND (i.task_uuid<>'' OR s.request_id IS NOT NULL) AND NOT EXISTS(SELECT 1 FROM task_observations o WHERE o.team=i.team AND o.node=i.id AND json_extract(o.data,'$.key') IS NOT NULL) AND NOT EXISTS(SELECT 1 FROM key_clears k WHERE k.team=i.team AND k.node=i.id) AND i.id>?2 ORDER BY i.id LIMIT ?3";
+    pub const SETTLE: &str = "UPDATE key_clear_teams SET pending=0 WHERE team=?1 AND pending=1 AND NOT EXISTS(SELECT 1 FROM node_identity i LEFT JOIN stage_tasks s ON s.team=i.team AND s.node=i.id WHERE i.team=?1 AND (i.task_uuid<>'' OR s.request_id IS NOT NULL) AND NOT EXISTS(SELECT 1 FROM task_observations o WHERE o.team=i.team AND o.node=i.id AND json_extract(o.data,'$.key') IS NOT NULL) AND NOT EXISTS(SELECT 1 FROM key_clears k WHERE k.team=i.team AND k.node=i.id) LIMIT 1)";
+    /// Released stages pending a final key record, through the outbox only.
+    pub const RELEASED_STAGES: &str = "SELECT x.node,i.task_project,CASE WHEN i.task_uuid<>'' THEN i.task_uuid ELSE s.request_id END FROM key_clear_outbox x JOIN node_identity i ON i.team=x.team AND i.id=x.node LEFT JOIN stage_tasks s ON s.team=x.team AND s.node=x.node WHERE x.team=?1 AND x.node>?2 AND (i.task_uuid<>'' OR s.request_id IS NOT NULL) ORDER BY x.node LIMIT ?3";
     pub const LATE: &str =
         "SELECT card FROM late_sessions WHERE team=?1 AND member=?2 AND launch=?3";
     pub const REFUSALS: &str = "SELECT node,reason FROM key_clears WHERE team=?1 AND state='refused' AND node>?2 ORDER BY node LIMIT ?3";
@@ -260,18 +296,14 @@ impl Store {
     /// recorded, in node order after `after`.
     pub fn keyed_tasks(&self, team: &str, after: u32, page: u32) -> Result<Vec<KeyedTask>> {
         let page = limit(page)?;
-        self.read(|db| {
-            rows(db, sql::KEYED_PAGE, params![team, after, page], |r| {
-                let task = TaskRef {
-                    project: r.get(1)?,
-                    uuid: r.get(2)?,
-                };
-                Ok(KeyedTask {
-                    node: r.get(0)?,
-                    task,
-                })
-            })
-        })
+        self.read(|db| rows(db, sql::KEYED_PAGE, params![team, after, page], keyed))
+    }
+    /// The team's released stages whose task key has no final record, in
+    /// node order after `after`, each with the task that team-clear names.
+    /// Read through the outbox; settled history is never walked.
+    pub fn released_stages(&self, team: &str, limit: u32, after: u32) -> Result<Vec<KeyedTask>> {
+        let page = self::limit(limit)?;
+        self.read(|db| rows(db, sql::RELEASED_STAGES, params![team, after, page], keyed))
     }
     /// Leave the pending set once no node of the team lacks a final record.
     pub fn settle_keyed(&self, team: &str) -> Result<bool> {
@@ -299,6 +331,16 @@ impl Store {
 /// A team leaves the pending set when no node lacks a final record.
 pub(crate) fn settle(db: &Connection, team: &str) -> Result<bool> {
     Ok(db.execute(sql::SETTLE, [team]).map_err(storage)? == 1)
+}
+fn keyed(r: &rusqlite::Row<'_>) -> rusqlite::Result<KeyedTask> {
+    let task = TaskRef {
+        project: r.get(1)?,
+        uuid: r.get(2)?,
+    };
+    Ok(KeyedTask {
+        node: r.get(0)?,
+        task,
+    })
 }
 fn attempt(r: &rusqlite::Row<'_>) -> rusqlite::Result<Attempt> {
     Ok(Attempt {

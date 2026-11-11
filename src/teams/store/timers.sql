@@ -39,3 +39,23 @@ CREATE TRIGGER IF NOT EXISTS timer_cards_item_v1 AFTER UPDATE OF state ON inbox
   WHERE state='open' AND kind IN ('report_waiting','silent_lead') AND seq IN
   (SELECT seq FROM timer_firings WHERE team=NEW.team AND subject=NEW.seq AND target='card');
 END;
+-- A stage is released when it is archived and its creation is no longer
+-- live, in either order; one with a key to clear enters the outbox.
+CREATE TRIGGER IF NOT EXISTS key_clear_stage_archived_v1 AFTER INSERT ON node_archive
+ WHEN json_extract(NEW.data,'$.kind')='stage' BEGIN
+ INSERT OR IGNORE INTO key_clear_outbox(team,node) SELECT a.team,a.id FROM node_archive a
+  WHERE a.team=NEW.team AND a.id=NEW.id AND json_extract(a.data,'$.kind')='stage'
+  AND NOT EXISTS(SELECT 1 FROM stage_tasks s WHERE s.team=a.team AND s.node=a.id AND s.state IN ('wanted','reserved','created'))
+  AND (EXISTS(SELECT 1 FROM node_identity i WHERE i.team=a.team AND i.id=a.id AND i.task_uuid<>'')
+   OR EXISTS(SELECT 1 FROM stage_tasks s WHERE s.team=a.team AND s.node=a.id AND s.request_id IS NOT NULL))
+  AND NOT EXISTS(SELECT 1 FROM key_clears k WHERE k.team=a.team AND k.node=a.id);
+END;
+CREATE TRIGGER IF NOT EXISTS key_clear_stage_settled_v1 AFTER UPDATE OF state ON stage_tasks
+ WHEN NEW.state NOT IN ('wanted','reserved','created') BEGIN
+ INSERT OR IGNORE INTO key_clear_outbox(team,node) SELECT a.team,a.id FROM node_archive a
+  WHERE a.team=NEW.team AND a.id=NEW.node AND json_extract(a.data,'$.kind')='stage'
+  AND NOT EXISTS(SELECT 1 FROM stage_tasks s WHERE s.team=a.team AND s.node=a.id AND s.state IN ('wanted','reserved','created'))
+  AND (EXISTS(SELECT 1 FROM node_identity i WHERE i.team=a.team AND i.id=a.id AND i.task_uuid<>'')
+   OR EXISTS(SELECT 1 FROM stage_tasks s WHERE s.team=a.team AND s.node=a.id AND s.request_id IS NOT NULL))
+  AND NOT EXISTS(SELECT 1 FROM key_clears k WHERE k.team=a.team AND k.node=a.id);
+END;

@@ -1,6 +1,7 @@
-//! What a stop leaves behind: the final answer for each task key the service
-//! cleared or was refused, and the provenance of a member launch that
-//! completed after the stop. Neither makes the session a member again.
+//! What a stop or a released stage leaves behind: the final answer for each
+//! task key the service cleared or was refused, and the provenance of a
+//! member launch that completed after the stop, which never makes the
+//! session a member again.
 use super::*;
 use store::timers::{settle, KEYED};
 
@@ -13,21 +14,10 @@ pub(in crate::teams::ops) fn key_clear(ctx: &mut Context<'_>) -> Result<()> {
     else {
         unreachable!()
     };
-    if !matches!(ctx.team.status, TeamStatus::Stopped | TeamStatus::Archived) {
+    if !clearable(ctx, *node)? {
         return Err(invalid(
-            "Task keys are cleared only for a stopped or archived team.",
+            "The task key was released, recorded, or is not this service's to clear.",
         ));
-    }
-    let keyed: bool = ctx
-        .db
-        .query_row(
-            &format!("SELECT EXISTS({KEYED} AND i.id=?2)"),
-            params![ctx.team.id, node],
-            |r| r.get(0),
-        )
-        .map_err(storage)?;
-    if !keyed {
-        return Err(invalid("The task key was released or already recorded."));
     }
     match state {
         KeyClearState::Cleared if !why.is_empty() => {
@@ -51,9 +41,37 @@ pub(in crate::teams::ops) fn key_clear(ctx: &mut Context<'_>) -> Result<()> {
             ],
         )
         .map_err(storage)?;
+    ctx.db
+        .execute(
+            "DELETE FROM key_clear_outbox WHERE team=?1 AND node=?2",
+            params![ctx.team.id, node],
+        )
+        .map_err(storage)?;
     settle(ctx.db, &ctx.team.id)?;
     ctx.reply.node = Some(*node);
     Ok(())
+}
+/// A released stage waits in the outbox in a team of any status; any other
+/// node's key is cleared only for a stopped or archived team.
+fn clearable(ctx: &Context<'_>, node: u32) -> Result<bool> {
+    let released: bool = ctx
+        .db
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM key_clear_outbox WHERE team=?1 AND node=?2)",
+            params![ctx.team.id, node],
+            |r| r.get(0),
+        )
+        .map_err(storage)?;
+    if released || !matches!(ctx.team.status, TeamStatus::Stopped | TeamStatus::Archived) {
+        return Ok(released);
+    }
+    ctx.db
+        .query_row(
+            &format!("SELECT EXISTS({KEYED} AND i.id=?2)"),
+            params![ctx.team.id, node],
+            |r| r.get(0),
+        )
+        .map_err(storage)
 }
 
 pub(in crate::teams::ops) fn late_session(ctx: &mut Context<'_>) -> Result<()> {
