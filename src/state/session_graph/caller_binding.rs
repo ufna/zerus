@@ -245,7 +245,7 @@ fn legacy_directory(
 }
 
 #[cfg(unix)]
-fn optional_child(
+pub(super) fn optional_child(
     root: &super::super::repositories::directory::Directory,
     name: &str,
 ) -> Result<Option<super::super::repositories::directory::Directory>> {

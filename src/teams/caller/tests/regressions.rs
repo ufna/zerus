@@ -17,7 +17,7 @@ base=Path(sys.argv[1]); mode=sys.argv[2]; exe=sys.argv[3]
 while not (base/'go').exists(): time.sleep(.01)
 if mode=='unreadable':
     assert ctypes.CDLL(None).prctl(4,0,0,0,0)==0
-keep=mode in ('marked','orphan-marked','withheld-middle','member-shell') or mode.startswith('id-marked')
+keep=mode in ('marked','orphan-marked','withheld-middle','member-shell') or mode.startswith('id-marked') or mode.startswith('hosted-')
 child=dict(os.environ)
 for key in list(child):
     if (not keep and key in ['HGS_SESSION','HGS_RUN_ID','HGS_SESSION_ID']) or key.startswith('PAD_'): child.pop(key,None)
@@ -151,6 +151,9 @@ impl Tree {
         if mode == "birth" {
             command.env("HGS_TEAMS_BIRTH_PROBE", "1");
         }
+        if let Some(name) = hosted_name(mode) {
+            command.env("HGS_SESSION", name);
+        }
         if let Some(action) = preview {
             command.env("HGS_TEAMS_PREVIEW_PROBE", action);
         }
@@ -174,6 +177,28 @@ impl Tree {
 
     fn born(&self) -> String {
         crate::platform::process_start_time(self.pid).unwrap()
+    }
+
+    /// Records `pid` and `birth` as this computer's running DeepSeek host,
+    /// in the host folder `folder`, as `dsh/host_identity.rs` writes it.
+    fn host(&self, folder: &str, pid: u32, birth: &str) {
+        let dir = self.state.join("dsh/hosts").join(folder);
+        std::fs::create_dir_all(&dir).unwrap();
+        let record = json!({"state":"running","version":2,"pid":pid,"birth":birth,
+            "pid_file":[1,2,3,4],"boot":"00000000-0000-4000-8000-0000000000b0"});
+        std::fs::write(dir.join("host.identity.json"), record.to_string()).unwrap();
+        std::fs::write(dir.join("host.pid"), pid.to_string()).unwrap();
+    }
+
+    /// OpenCode's own service file, registering `pid`, as OpenCode writes it.
+    fn opencode_service(&self, pid: u32) -> PathBuf {
+        let dir = self.temp.path().join(".local/state/opencode");
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("service.json");
+        let value =
+            json!({"id":"fixture","version":"2.0.32","url":"http://127.0.0.1:4096","pid":pid});
+        std::fs::write(&file, value.to_string()).unwrap();
+        file
     }
 
     fn record(&self, pid: u32, birth: &str) -> PathBuf {
@@ -415,6 +440,221 @@ fn a_member_below_a_withheld_shell_is_that_session() {
     assert!(shell != tree.pid, "{text}");
     assert!(text.contains(&format!("PARENT {shell}")), "{text}");
     assert!(text.contains("PROBE session:launch_id:"), "{text}");
+}
+
+/// The session name a `hosted-*` mode claims: one that a resident host serves.
+fn hosted_name(mode: &str) -> Option<&'static str> {
+    match mode {
+        "hosted-dsh" | "hosted-dsh-run" => Some("dsh/example/hosted"),
+        "hosted-opencode" => Some("opencode/example/hosted"),
+        _ => None,
+    }
+}
+
+const HOST: &str = "0123456789abcdef";
+const INSIDE_HOST: &str = "inside an agent host's process tree";
+
+fn host_reads(text: &str) -> usize {
+    text.lines()
+        .find_map(|line| line.strip_prefix("HOST_READS "))
+        .and_then(|reads| reads.trim().parse().ok())
+        .unwrap_or_else(|| panic!("{text}"))
+}
+
+/// A recorded DeepSeek host directly above a person's command: refused as
+/// inside the host's process tree, on every platform.
+#[test]
+fn an_unmarked_command_below_a_recorded_host_is_refused() {
+    let tree = Tree::start("person", None);
+    tree.host(HOST, tree.pid, &tree.birth);
+    let text = tree.answer();
+    assert!(text.contains(&format!("PARENT {}", tree.pid)), "{text}");
+    assert!(text.contains("PROBE refused:not_allowed"), "{text}");
+    assert!(text.contains(INSIDE_HOST), "{text}");
+}
+
+/// A recorded host with an unmarked shell below it. On macOS the system
+/// shell's environment is withheld below the top, which refuses first.
+#[test]
+fn an_unmarked_shell_below_a_recorded_host_is_refused() {
+    let tree = Tree::start("withheld-person", None);
+    tree.host(HOST, tree.pid, &tree.birth);
+    let text = tree.answer();
+    assert!(text.contains(&format!("PARENT {}", shell(&tree))), "{text}");
+    assert!(text.contains("PROBE refused:not_allowed"), "{text}");
+    if cfg!(target_os = "macos") {
+        assert!(text.contains("hides its environment"), "{text}");
+    } else {
+        assert!(text.contains(INSIDE_HOST), "{text}");
+    }
+}
+
+/// The shape observed with a real DeepSeek host: the host's own environment
+/// holds the markers of another, live session that started it. A command
+/// that keeps them is refused as before (that session's process is not its
+/// ancestor); one that drops them is refused as inside the host's tree.
+#[test]
+fn a_host_holding_another_sessions_markers_refuses_both_shells() {
+    let other = Job(Command::new("sleep").arg("30").spawn().unwrap());
+    let start = crate::platform::process_start_time(other.0.id()).unwrap();
+    let kept = Tree::start("member-shell", None);
+    kept.record(other.0.id(), &start);
+    kept.host(HOST, kept.pid, &kept.birth);
+    let text = kept.answer();
+    assert!(text.contains(&format!("PARENT {}", shell(&kept))), "{text}");
+    // As today: the descent from the claimed session's process fails, either
+    // at a process of another user above the host or at a non-ancestor.
+    refused(&text);
+    assert!(text.contains("verify the claimed agent"), "{text}");
+    assert!(!text.contains(INSIDE_HOST), "{text}");
+    for mode in ["normal", "withheld-middle"] {
+        let dropped = Tree::start(mode, None);
+        dropped.record(other.0.id(), &start);
+        dropped.host(HOST, dropped.pid, &dropped.birth);
+        if mode == "withheld-middle" {
+            std::fs::write(dropped.temp.path().join("go"), b"go").unwrap();
+            shell(&dropped);
+            std::fs::write(dropped.temp.path().join("recorded"), b"").unwrap();
+        }
+        let text = dropped.answer();
+        assert!(text.contains("PROBE refused:not_allowed"), "{mode}: {text}");
+        if mode == "withheld-middle" && cfg!(target_os = "macos") {
+            assert!(text.contains("hides its environment"), "{mode}: {text}");
+        } else {
+            assert!(text.contains(INSIDE_HOST), "{mode}: {text}");
+        }
+    }
+}
+
+/// A recorded host that is not above the command leaves the person.
+#[test]
+fn a_person_outside_a_recorded_host_is_the_person() {
+    let host = Job(Command::new("sleep").arg("30").spawn().unwrap());
+    let birth = crate::platform::process_identity(host.0.id())
+        .unwrap()
+        .birth;
+    let tree = Tree::start("person", None);
+    tree.host(HOST, host.0.id(), &birth);
+    let text = tree.answer();
+    person(&text);
+    assert_eq!(
+        host_reads(&text),
+        2,
+        "the identity record and host.pid: {text}"
+    );
+}
+
+/// The record's birth is the walk's own `process_identity` value, so the
+/// recorded host itself always matches. A different birth means that host has
+/// exited and its process ID was reused: this process is not the host, and
+/// the walk goes on as for any other ancestor.
+#[test]
+fn a_host_record_whose_birth_differs_is_not_that_host() {
+    let tree = Tree::start("person", None);
+    tree.host(HOST, tree.pid, &later_birth(&tree.birth));
+    person(&tree.answer());
+}
+
+/// A recorded process ID without a birth (an older `host.pid` alone) cannot
+/// be told apart from the host; neither can a corrupt record.
+#[test]
+fn a_host_id_without_a_birth_or_a_corrupt_record_refuses() {
+    for corrupt in [false, true] {
+        let tree = Tree::start("person", None);
+        let dir = tree.state.join("dsh/hosts").join(HOST);
+        std::fs::create_dir_all(&dir).unwrap();
+        if corrupt {
+            std::fs::write(dir.join("host.identity.json"), b"not json").unwrap();
+        } else {
+            std::fs::write(dir.join("host.pid"), tree.pid.to_string()).unwrap();
+        }
+        let text = tree.answer();
+        assert!(text.contains("PROBE refused:invalid_state"), "{text}");
+        assert!(
+            text.contains("Cannot verify a recorded agent host"),
+            "{text}"
+        );
+    }
+}
+
+/// At most 64 host folders are read, two small files each (the identity
+/// record and `host.pid`); a 65th folder refuses before any file is read.
+#[test]
+fn recorded_host_folders_are_read_within_their_bound() {
+    for (folders, refused) in [(64, false), (65, true)] {
+        let tree = Tree::start("person", None);
+        for n in 0..folders {
+            tree.host(&format!("{n:016x}"), 1 << 30, "1");
+        }
+        let text = tree.answer();
+        if refused {
+            assert!(text.contains("PROBE refused:invalid_state"), "{text}");
+            assert_eq!(host_reads(&text), 0, "{text}");
+        } else {
+            person(&text);
+            assert_eq!(host_reads(&text), 128, "{text}");
+        }
+        println!("HOST_FOLDERS {folders} HOST_READS {}", host_reads(&text));
+    }
+}
+
+/// OpenCode's own service file registers its process with no birth. An
+/// ancestor it registers that is not younger than the file is refused as
+/// inside the host's tree; a younger one, a malformed file or none is not.
+#[test]
+fn an_ancestor_registered_as_the_opencode_service_is_refused() {
+    let tree = Tree::start("person", None);
+    tree.opencode_service(tree.pid);
+    let text = tree.answer();
+    assert!(text.contains("PROBE refused:not_allowed"), "{text}");
+    assert!(text.contains(INSIDE_HOST), "{text}");
+    let younger = Tree::start("person", None);
+    let file = younger.opencode_service(younger.pid);
+    let hour_ago = std::time::SystemTime::now() - Duration::from_secs(3600);
+    std::fs::File::options()
+        .write(true)
+        .open(&file)
+        .unwrap()
+        .set_modified(hour_ago)
+        .unwrap();
+    person(&younger.answer());
+    let malformed = Tree::start("person", None);
+    let file = malformed.opencode_service(malformed.pid);
+    std::fs::write(file, b"{\"pid\":").unwrap();
+    person(&malformed.answer());
+}
+
+/// A marked caller whose binding says a resident host serves its session
+/// cannot be a lead or a member: refused with the sentence that says so. A
+/// binding whose run differs is not that session and refuses as unverified.
+#[test]
+fn a_marked_session_served_by_a_resident_host_is_refused_plainly() {
+    for (mode, backend, conversation) in [
+        ("hosted-dsh", "dsh", "session-0001"),
+        ("hosted-opencode", "opencode", "ses_0001"),
+        ("hosted-dsh-run", "dsh", "session-0001"),
+    ] {
+        let tree = Tree::start(mode, None);
+        let name = hosted_name(mode).unwrap();
+        let run = if mode == "hosted-dsh-run" {
+            "another-run"
+        } else {
+            RUN
+        };
+        let dir = tree.state.join(backend).join("bindings");
+        std::fs::create_dir_all(&dir).unwrap();
+        let binding = json!({"backend":backend,"name":name,"agent":backend,"run_id":run,
+            "conversation_id":conversation,"created":1.0,"paused":false});
+        std::fs::write(
+            dir.join(format!("{:x}.json", Sha256::digest(name.as_bytes()))),
+            binding.to_string(),
+        )
+        .unwrap();
+        let text = tree.answer();
+        refused(&text);
+        let plain = text.contains("served by a resident agent host");
+        assert_eq!(plain, mode != "hosted-dsh-run", "{mode}: {text}");
+    }
 }
 
 struct Job(Child);
