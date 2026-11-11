@@ -878,6 +878,20 @@ evaluated, an unmarked command is refused and the preview cannot be turned
 on. macOS is treated that way until the real-process suite has run on a
 Mac; Windows has no evaluation yet.
 
+The first run on a Mac (2026-11-11, macOS 27.2) found that the system
+withholds the environment of its own binaries, among them the shells and
+`ssh`, from a reader of the same user: the read ends after the arguments
+without an error. Read as an empty environment, a hidden ancestor would
+look unmarked. So on macOS an environment with nothing at all after the
+arguments is unreadable, and the existing rule applies: an unreadable
+ancestor is tolerated only at the verified top and refused below it. A
+person's command therefore passes from the Zerus window, which runs `hgs`
+with no shell between, and from a login terminal, and is refused from
+tmux, ssh and a terminal inside another application, with a sentence that
+says so. The marked path of a lead or a member reads no ancestor's
+environment and is not affected. The gate is lifted only by a Mac run of
+that candidate.
+
 **How the service reaches a session (packages 8, 10 and 17).** The desktop's
 deferred-send, deferred-answer and creation actors admit only the proof of a
 person's gesture. The teams actor does not enter them. Each of its effects is
