@@ -27,3 +27,32 @@ fn a_busy_first_open_keeps_the_old_index_and_defers_conversion() {
     let converted = Store::open(h.temp.path()).unwrap();
     assert_eq!(unique_flag(converted.db.as_ref().unwrap()), Some(false));
 }
+
+#[test]
+fn a_failed_index_conversion_rolls_back_the_drop_and_keeps_all_cards() {
+    let mut h = Harness::new();
+    let (node, lead) = h.reported();
+    h.run(&lead, Operation::Accept { node }).unwrap();
+    h.settings(|s| s.delegations.merge_accepted = false);
+    make_unique(&h);
+    let before = h.store.cards(TEAM, 200, None).unwrap();
+    h.store
+        .db
+        .as_ref()
+        .unwrap()
+        .execute_batch("DROP INDEX cards_waiting; CREATE TABLE cards_waiting(x)")
+        .unwrap();
+    let error = Store::open(h.temp.path()).unwrap_err();
+    assert_eq!(error.code, code::STORAGE_FAILED);
+    assert_eq!(unique_flag(h.store.db.as_ref().unwrap()), Some(true));
+    assert_eq!(h.store.cards(TEAM, 200, None).unwrap(), before);
+    h.store
+        .db
+        .as_ref()
+        .unwrap()
+        .execute_batch("DROP TABLE cards_waiting")
+        .unwrap();
+    let repaired = Store::open(h.temp.path()).unwrap();
+    assert_eq!(unique_flag(repaired.db.as_ref().unwrap()), Some(false));
+    assert_eq!(repaired.cards(TEAM, 200, None).unwrap(), before);
+}
