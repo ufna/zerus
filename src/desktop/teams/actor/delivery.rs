@@ -58,7 +58,8 @@ impl Runtime {
             serde_json::to_value(&d).map_err(crate::teams::store::storage)?,
         )?;
         boundary("reserved");
-        // This stack frame is the only admission. No durable row reconstructs it.
+        // This frame may attempt an original. A durably known non-start
+        // permits a later fresh admission; an unknown original never does.
         let intent = d.intent.as_ref().expect("reserved");
         if let Err(error) = ops::apply(store, &actor, intent, now) {
             if store.request_refused(&team.id, &intent.request_id)? {

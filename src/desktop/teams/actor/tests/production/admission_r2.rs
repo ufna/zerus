@@ -20,26 +20,9 @@ struct HoldAtDelivery {
     dep: u32,
     admissions: std::rc::Rc<std::cell::Cell<usize>>,
 }
-impl ports::Ports for HoldAtDelivery {
-    fn changes(&mut self, _: &str, _: &str, _: u64) -> ports::Result<zerus_replica::Changes> {
-        Ok(zerus_replica::Changes {
-            generation: "journal".into(),
-            offset: 0,
-            documents: Some(Default::default()),
-        })
-    }
-    fn observe(&mut self, _: &mut Store, _: &TaskRef) -> ports::Result<()> {
-        Ok(())
-    }
-    fn free(&mut self, _: &Team, m: &Member) -> ports::Result<bool> {
-        Ok(m.id == "m1")
-    }
-    fn deliver(&mut self, t: &Team, n: &Node, m: &Member, id: &str) -> ports::DeliveryResult {
-        self.calls += 1;
-        if self.mode.starts_with("fleet ") {
-            super::fleet::change(&self.native, self.mode);
-        }
-        let operation = match self.mode {
+impl HoldAtDelivery {
+    fn change(&self, n: &Node) -> Option<Operation> {
+        match self.mode {
             "hold" => Some(Operation::Hold { node: n.id }),
             "new hard dependency" => {
                 let mut op = crate::teams::ops::tests::route(n.id);
@@ -76,7 +59,29 @@ impl ports::Ports for HoldAtDelivery {
                 Some(op)
             }
             _ => None,
-        };
+        }
+    }
+}
+impl ports::Ports for HoldAtDelivery {
+    fn changes(&mut self, _: &str, _: &str, _: u64) -> ports::Result<zerus_replica::Changes> {
+        Ok(zerus_replica::Changes {
+            generation: "journal".into(),
+            offset: 0,
+            documents: Some(Default::default()),
+        })
+    }
+    fn observe(&mut self, _: &mut Store, _: &TaskRef) -> ports::Result<()> {
+        Ok(())
+    }
+    fn free(&mut self, _: &Team, m: &Member) -> ports::Result<bool> {
+        Ok(m.id == "m1")
+    }
+    fn deliver(&mut self, t: &Team, n: &Node, m: &Member, id: &str) -> ports::DeliveryResult {
+        self.calls += 1;
+        if self.mode.starts_with("fleet ") {
+            super::fleet::change(&self.native, self.mode);
+        }
+        let operation = self.change(n);
         if let Some(operation) = operation {
             let mut store = Store::open(&self.native.config.state).unwrap();
             let current = store.team(&t.id).unwrap().unwrap();
@@ -251,5 +256,123 @@ fn a_deferred_original_lost_after_arming_is_never_started_again() {
         assert_eq!(p.calls, calls, "{point}");
         assert_eq!(p.admissions.get(), admissions, "{point}");
         assert!(admissions <= 1);
+    }
+}
+
+#[test]
+fn finish_admission_requires_the_exact_ready_acceptance() {
+    finish_window("accept");
+}
+#[test]
+fn finish_admission_requires_the_integration_fact() {
+    finish_window("integration");
+}
+#[test]
+fn finish_admission_requires_the_frozen_task_binding() {
+    finish_window("task");
+}
+fn change_finish(h: &Harness, frozen: &mut Node, decision: u64, mode: &str) {
+    match mode {
+        "accept" => {
+            h.store
+                .db
+                .as_ref()
+                .unwrap()
+                .execute(
+                    "UPDATE decisions SET state='awaiting_owner' WHERE seq=?1",
+                    [decision],
+                )
+                .unwrap();
+        }
+        "integration" => {
+            h.store
+                .db
+                .as_ref()
+                .unwrap()
+                .execute(
+                    "UPDATE nodes SET integrated=0 WHERE team=?1 AND id=?2",
+                    rusqlite::params![TEAM, frozen.id],
+                )
+                .unwrap();
+        }
+        "task" => {
+            frozen.task = Some(crate::teams::ops::tests::task(999));
+        }
+        _ => unreachable!(),
+    }
+}
+fn finish_window(mode: &str) {
+    let mut h = Harness::new();
+    let (node, lead) = h.reported();
+    h.run(&lead, Operation::Accept { node }).unwrap();
+    let decision = h.accept_decision(node);
+    h.run(
+        &service(),
+        Operation::RecordIntegration {
+            node,
+            decision,
+            commit: COMMIT.into(),
+        },
+    )
+    .unwrap();
+    let team = h.store.team(TEAM).unwrap().unwrap();
+    let mut frozen = h.node(node);
+    let permit = h
+        .store
+        .pending_accepts(TEAM, 16, None)
+        .unwrap()
+        .rows
+        .remove(0);
+    change_finish(&h, &mut frozen, decision, mode);
+    let mut n = native(&h);
+    let admitted = std::rc::Rc::new(std::cell::Cell::new(false));
+    let seen = admitted.clone();
+    crate::desktop::original_child::AFTER_FINAL_CHECK
+        .with(|s| *s.borrow_mut() = Some(Box::new(move || seen.set(true))));
+    crate::desktop::teams::child::FIXTURE_EXIT.with(|s| {
+        *s.borrow_mut() = Some(
+            serde_json::json!({"schema":1,"team":TEAM,"node":node,"state":"done","error":""})
+                .to_string()
+                .into_bytes(),
+        )
+    });
+    let reply = ports::Ports::finish(
+        &mut n,
+        &team,
+        &frozen,
+        &permit,
+        &uuid::Uuid::new_v4().to_string(),
+    );
+    crate::desktop::original_child::AFTER_FINAL_CHECK.with(|s| s.borrow_mut().take());
+    assert!(reply.is_err(), "{mode}: {reply:?}");
+    assert!(!admitted.get(), "{mode}");
+}
+
+#[test]
+fn stop_and_preview_are_rechecked_after_the_admission_returns() {
+    use crate::desktop::teams::child::{self, Ended};
+    use std::sync::atomic::Ordering;
+    for stop in [true, false] {
+        let h = Harness::new();
+        let n = native(&h);
+        child::FIXTURE_EXIT.with(|s| *s.borrow_mut() = Some(b"never offered".to_vec()));
+        let ended = child::run_guarded(
+            &n.config,
+            &[],
+            None,
+            None,
+            false,
+            std::time::Instant::now() + std::time::Duration::from_secs(1),
+            &n.stop,
+            || {
+                if stop {
+                    n.stop.store(true, Ordering::Release)
+                } else {
+                    std::fs::remove_file(n.config.state.join("teams/preview")).unwrap();
+                }
+                Ok(())
+            },
+        );
+        assert!(matches!(ended, Ended::NotStarted), "stop={stop}");
     }
 }

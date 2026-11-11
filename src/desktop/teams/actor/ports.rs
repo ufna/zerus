@@ -54,7 +54,8 @@ pub(in crate::desktop::teams) trait Ports {
     ) -> Result<Finish> {
         Err(unavailable())
     }
-    /// Exactly one original child. A caller cannot reconstruct this invocation.
+    /// An uncertain original is never repeated. NotStarted proves no child
+    /// ran and permits a later attempt with a fresh admission.
     fn deliver(&mut self, team: &Team, node: &Node, member: &Member, id: &str) -> DeliveryResult;
 }
 
