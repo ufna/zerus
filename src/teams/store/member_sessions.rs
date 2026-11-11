@@ -20,7 +20,7 @@ impl Store {
                     r.get::<_, String>(0)?,
                     r.get::<_, Option<String>>(1)?,
                     r.get::<_, Option<String>>(2)?,
-                    sql_json::<MemberState>(r, 3)?,
+                    r.get::<_, String>(3)?,
                 ))
             })
             .map_err(storage)?
@@ -32,20 +32,28 @@ impl Store {
                 "The member roster exceeds its bound.",
             ));
         }
-        Ok(roster
+        roster
             .into_iter()
-            .filter_map(|(member, machine, session, state)| {
+            .map(|(member, machine, session, state)| {
+                let state: MemberState = serde_json::from_str(&state).map_err(|_| {
+                    Problem::new(
+                        code::INVALID_STATE,
+                        "The member roster contains an invalid state.",
+                    )
+                    .with_refs(["member_sessions"])
+                })?;
                 if state == MemberState::Removed {
-                    return None;
+                    return Ok(None);
                 }
-                machine
+                Ok(machine
                     .zip(session)
                     .map(|(machine, session_id)| MemberSession {
                         member,
                         machine,
                         session_id,
-                    })
+                    }))
             })
-            .collect())
+            .filter_map(|result| result.transpose())
+            .collect()
     }
 }

@@ -275,6 +275,28 @@ fn schema_extensions(db: &Connection) -> Result<()> {
         .map_err(storage)?;
     db.execute_batch(include_str!("observation-schema.sql"))
         .map_err(storage)?;
+    read_indexes(db)
+}
+
+fn read_indexes(db: &Connection) -> Result<()> {
+    let unique: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM pragma_index_list('cards') WHERE name='integration_card' AND \"unique\"=1)", [], |r| r.get(0)).map_err(storage)?;
+    if unique {
+        // Only an older unique index needs replacement. Ordinary opens never
+        // rebuild it; a savepoint keeps its replacement atomic, also at creation.
+        db.execute_batch("SAVEPOINT replace_read_index")
+            .map_err(storage)?;
+        let replaced = db
+            .execute_batch("DROP INDEX IF EXISTS integration_card")
+            .and_then(|()| db.execute_batch(include_str!("read-indexes.sql")));
+        if let Err(error) = replaced {
+            db.execute_batch("ROLLBACK TO replace_read_index; RELEASE replace_read_index")
+                .map_err(storage)?;
+            return Err(storage(error));
+        }
+        return db
+            .execute_batch("RELEASE replace_read_index")
+            .map_err(storage);
+    }
     db.execute_batch(include_str!("read-indexes.sql"))
         .map_err(storage)
 }

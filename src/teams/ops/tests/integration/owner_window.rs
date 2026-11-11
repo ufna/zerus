@@ -1,4 +1,5 @@
 use super::*;
+mod revoked;
 
 fn accepted(h: &mut Harness) -> (u32, Actor, u64) {
     let (node, lead) = h.reported();
@@ -108,6 +109,7 @@ fn owner_approval_before_the_receipt_keeps_the_one_approved_card_and_one_fact() 
     let mut h = Harness::new();
     let (node, _, seq) = accepted(&mut h);
     let card = revoke(&mut h, node);
+    assert!(preserved(&h, seq));
     h.run(
         &person(),
         Operation::DecideCard {
@@ -116,6 +118,7 @@ fn owner_approval_before_the_receipt_keeps_the_one_approved_card_and_one_fact() 
         },
     )
     .unwrap();
+    assert!(preserved(&h, seq));
     let approved = h.store.card(TEAM, card).unwrap().unwrap();
     let before = journal(&h).len();
     h.run(&service(), receipt(node, seq)).unwrap();
@@ -247,7 +250,7 @@ fn awaiting_and_rejected_accepts_refuse_conflicts_without_changing_anything() {
 }
 
 #[test]
-fn an_accept_made_with_delegation_off_never_ready_still_records_a_merge_fact() {
+fn an_accept_made_with_delegation_off_never_ready_refuses_a_merge_fact() {
     let mut h = Harness::new();
     let (node, lead) = h.reported();
     h.settings(|s| s.delegations.merge_accepted = false);
@@ -259,20 +262,31 @@ fn an_accept_made_with_delegation_off_never_ready_still_records_a_merge_fact() {
     let seq = h.accept_decision(node);
     assert_eq!(decision(&h, seq).state, DecisionState::AwaitingOwner);
     no_writes(&h);
-    h.run(&service(), receipt(node, seq)).unwrap();
-    assert_fact(&h, seq, Some(COMMIT), &[]);
-    assert_eq!(
-        h.store
-            .card(TEAM, card)
-            .unwrap()
-            .unwrap()
-            .decision
-            .as_deref(),
-        Some("stale")
-    );
-    h.observe(node, TaskStage::Done);
-    assert_eq!(h.node(node).state, NodeState::Accepted);
+    let before_node = h.node(node);
+    let before_decision = decision(&h, seq);
+    let before_card = h.store.card(TEAM, card).unwrap();
+    let before_team = h.store.team(TEAM).unwrap();
+    let before_journal = journal(&h);
     refused(h.run(&service(), receipt(node, seq)), code::INVALID_STATE);
+    assert!(h.store.integration_fact(TEAM, node).unwrap().is_none());
+    assert_eq!(h.node(node), before_node);
+    assert_eq!(decision(&h, seq), before_decision);
+    assert_eq!(h.store.card(TEAM, card).unwrap(), before_card);
+    assert_eq!(h.store.team(TEAM).unwrap(), before_team);
+    assert_eq!(journal(&h), before_journal);
+}
+
+fn preserved(h: &Harness, seq: u64) -> bool {
+    h.store
+        .db
+        .as_ref()
+        .unwrap()
+        .query_row(
+            "SELECT stopped_ready FROM decisions WHERE seq=?1",
+            [seq],
+            |r| r.get(0),
+        )
+        .unwrap()
 }
 
 #[test]

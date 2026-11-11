@@ -112,7 +112,7 @@ pub(super) fn list_teams(
 
 fn listed_team(store: &Store, row: TeamRow) -> Result<Value, Problem> {
     // One indexed roster read supplies both fields for each valid live row.
-    // An oversized roster omits memberships and uses one extra lead PK lookup;
+    // An oversized or invalid roster omits memberships and uses one lead PK lookup;
     // inactive rows keep just the existing lead lookup. No bundle is loaded.
     let live = matches!(
         row.status,
@@ -122,6 +122,11 @@ fn listed_team(store: &Store, row: TeamRow) -> Result<Value, Problem> {
         match store.member_sessions(&row.id) {
             Ok(sessions) => Some(sessions),
             Err(problem) if problem.code == code::OVER_CAP => None,
+            Err(problem)
+                if problem.code == code::INVALID_STATE && problem.refs == ["member_sessions"] =>
+            {
+                None
+            }
             Err(problem) => return Err(problem),
         }
     } else {

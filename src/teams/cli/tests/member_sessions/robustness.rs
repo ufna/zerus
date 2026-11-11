@@ -1,5 +1,65 @@
 use super::*;
 
+#[test]
+fn m2_a_malformed_member_state_omits_only_its_teams_member_sessions() {
+    let h = Harness::new();
+    h.create();
+    h.create_team(TEAM_B, "Docs", "zerus/team/docs");
+    h.bind("lead", LEAD_SESSION);
+    h.bind("m1", M1_SESSION);
+    h.bind_for(TEAM_B, "lead", "run_id:docs-lead-example");
+    h.bind_for(TEAM_B, "m1", "run_id:docs-member-example");
+    h.store()
+        .db
+        .as_ref()
+        .unwrap()
+        .execute(
+            "UPDATE members SET state='\"unknown_state\"' WHERE team=?1 AND id='m2'",
+            [TEAM_B],
+        )
+        .unwrap();
+    let (reply, exit) = h.cli(&Caller::Person, "list", "");
+    assert_eq!(exit, 0, "{reply}");
+    let rows = reply["rows"].as_array().unwrap();
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0]["id"], TEAM_B);
+    assert!(rows[0].get("member_sessions").is_none());
+    assert_eq!(
+        rows[0]["lead_session"],
+        json!(key("run_id:docs-lead-example"))
+    );
+    assert_eq!(rows[1]["id"], TEAM);
+    assert_eq!(rows[1]["member_sessions"].as_array().unwrap().len(), 2);
+    let (status, exit) = h.cli(&Caller::Person, &format!("status --team {TEAM_B}"), "");
+    assert_eq!(exit, 1, "{status}");
+    assert_eq!(code(&status), "invalid_state");
+    let (page, exit) = h.cli(&Caller::Person, "list --limit 1", "");
+    assert_eq!(exit, 0, "{page}");
+    let cursor = page["next"].as_str().unwrap();
+    let (page, exit) = h.cli(
+        &Caller::Person,
+        &format!("list --limit 1 --after {cursor}"),
+        "",
+    );
+    assert_eq!(exit, 0, "{page}");
+    assert_eq!(page["rows"][0]["id"], TEAM);
+}
+
+#[test]
+fn a_failed_member_read_is_not_hidden_as_an_unusable_roster() {
+    let h = Harness::new();
+    h.create();
+    h.store()
+        .db
+        .as_ref()
+        .unwrap()
+        .execute_batch("PRAGMA foreign_keys=OFF; DROP TABLE members")
+        .unwrap();
+    let (reply, exit) = h.cli(&Caller::Person, "list", "");
+    assert_eq!(exit, 1, "{reply}");
+    assert!(reply.get("rows").is_none());
+}
+
 fn fill_to(h: &Harness, team: &str, target: usize) {
     let store = h.store();
     let db = store.db.as_ref().unwrap();

@@ -7,7 +7,7 @@ pub(super) fn revoke_merges(ctx: &Context<'_>) -> Result<()> {
     for (seq, node) in delegated_accepts(ctx)? {
         ctx.db
             .execute(
-                "UPDATE decisions SET state=?2 WHERE seq=?1",
+                "UPDATE decisions SET state=?2,stopped_ready=1 WHERE seq=?1",
                 params![seq, DecisionState::AwaitingOwner],
             )
             .map_err(storage)?;

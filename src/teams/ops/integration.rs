@@ -33,8 +33,8 @@ pub(super) fn permit(
     let card = integration_card(ctx, decision)?;
     let rejected = card.as_ref().is_some_and(|c| c.rejected);
     let merge = matches!(kind, FactKind::Merge);
-    let awaiting_owner = merge && state == DecisionState::AwaitingOwner;
-    let late = state == DecisionState::Settled && (preserved || (merge && rejected));
+    let awaiting_owner = merge && state == DecisionState::AwaitingOwner && preserved;
+    let late = state == DecisionState::Settled && preserved;
     if !(state == DecisionState::Ready || awaiting_owner || late) || (!merge && rejected) {
         return Err(invalid(
             "The named decision has no unrecorded integration authority.",
