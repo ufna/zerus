@@ -725,14 +725,20 @@ and recorded the commit. The delegation `merge_accepted` says who triggers the
 merge: the lead's Accept when it is on, the person's approval of an owner card
 when it is off. A conflict is recorded by the service as a return with the
 conflict list. With no integration branch, and for a stage node, there is no
-merge and no receipt.
+merge and no receipt. A receipt or a conflict that arrives after the team
+was stopped is still recorded. When a node's decision settles, its open
+integration cards close.
 
 **Return.** The reopen message is an effect: an intent for the new generation
 before it is sent, an outcome after, never retried when uncertain. A report of
 the new generation is accepted once that effect is recorded.
 
 **Hand-out.** Only the service records a hand-out, and only for a node the
-kernel says is ready. The effect row holds the current holder. A node's
+kernel says is ready. The readiness view holds the live nodes with their
+direct dependencies and stage targets; an archived node is a leaf whose own
+dependencies are not followed. Reassigning a node that was never handed out
+only changes its assignee, and a reopen needs an earlier attempt of the node,
+so neither goes around the gate. The effect row holds the current holder. A node's
 `assignee` is the plan's and changes only by Route and Reassign. For a task
 node `implementer` is set when its hand-out is submitted; a refusal leaves
 neither. For a stage node `implementer` is the member who implemented the task
