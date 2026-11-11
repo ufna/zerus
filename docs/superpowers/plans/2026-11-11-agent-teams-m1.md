@@ -781,6 +781,131 @@ refuse an absolute path in a write set at input.
 **Shape.** One function per operation of about 60 lines or fewer; no file that
 is one long match.
 
+## Decisions during wave 2
+
+**Member launch (package 7).** The desktop's `creation_worktree` and
+`creation_launch` actors admit only the proof of a person's gesture, and they
+get no second admission. The teams actor launches through the path every CLI
+caller has, in the form `creation_launch::child` uses: this computer's own
+`hgs` as the one original child, run by the shared `desktop::original_child`
+runner with a child kind and custody of its own. It runs `worktrees create`
+and then the documented launch with the reserved launch ID. The arguments
+come only from the team store.
+
+A launch that never started leaves the member `NotCreated` for a later pass.
+A refused launch makes one owner card and no second launch. An unknown
+result, or an exit of 0 with no session carrying the launch ID within the
+bound, makes one card marked uncertain and is never retried.
+
+**Parent link.** A launch by the service cannot prove ancestry, so the link
+is written after binding with the existing `hgs parent` action `set`, and
+reads `manual`. It is written only when the member has none and never
+replaces one. An agent the command refuses (DeepSeek, OpenCode) has no link,
+which is a known skip. The link is presentation and attention routing: a
+failed write blocks nothing and makes no card, and the lead's authority over
+members comes from the team store. A source of its own for team links needs
+the aligned client change and waits for M3.
+
+**Integration facts (package 3).** `RecordIntegration` and
+`RecordIntegrationConflict` name the accept decision they belong to. The
+permit is that exact decision: an accept of that node, Ready or settled with
+preserved authority, with no fact yet; there is no fallback to the pending or
+the latest decision. The fact changes the node only when the decision's
+generation is the node's current one. The service reads the authorized
+accepts that have no fact as a bounded page and names the decision it acted
+on.
+
+**One caller proof (packages 5 and 6).** `crate::teams::caller`
+(`src/teams/caller.rs`, owned by package 5) answers who runs a command:
+`Caller::Person`, `Caller::Session(SessionKey)` or `Caller::Refused(Problem)`.
+The person is a call with no session markers and no live session agent among
+its process ancestors, found by a bounded lookup keyed by those ancestors and
+checked against a real process in a test; a lookup that cannot be read is a
+refusal. The CLI and the task intake both use it, and package 5 merges before
+package 6.
+
+**How the service reaches a session (packages 8, 10 and 17).** The desktop's
+deferred-send, deferred-answer and creation actors admit only the proof of a
+person's gesture. The teams actor does not enter them. Each of its effects is
+this computer's own `hgs` run as the actor's one original child:
+
+| Effect | Command |
+|---|---|
+| Hand-out and reopen | `hgs task team-deliver` (below) |
+| Doorbell, a return's reason, a brief on resume | `hgs send SESSION --json`, bound to the run and conversation it read |
+| An answer to a member's prompt | `hgs answer SESSION --json`, after the approval journal reserved it |
+| Integration | the functions of `src/teams/integrate.rs` in a child of its own |
+
+**Team delivery (package 6, second part).** The attempt writer is reachable
+only through the task CLI, and `start-deliver` is the person's. A new
+`hgs task team-deliver REF --json` reads `{schema, id, team, node, member}`
+and delivers only what the team store already holds: an open hand-out or
+reopen effect of that team with that request ID for that node and member, on
+the team's home computer. The effect is the authority; the caller is not
+asked who it is. It writes the attempt as the team's lead, with the prompt
+`freeze` builds followed by the team context from the store (role and goal,
+criteria, dependency reports within 2,000 characters each and 6,000 in total,
+binding decisions, base commit, branch, write set). It answers
+`{state: submitted|refused|uncertain|cutting_over}` in the form of
+`start-deliver`, and the same ID never sends twice. `--recover-only` reads
+the receipt and sends nothing.
+
+**The CLI as the desktop's interface (packages 3, 5 and 12).** The client
+core reads through `hgs team` and follows the shapes package 5 pins in
+`crates/team-plan/fixtures/cli-*.json`: a page is
+`{ok, actor, team, rows, next}`, `status` is
+`{ok, actor, team, members, counts}`, and a read takes `--team`, `--limit`
+and `--after`. Three things the desktop needs are added:
+
+- `hgs team list`: the teams of this computer, a page of
+  `{id, project, name, status, lead, home, revision}` in ID order
+  (`cli-list.json`);
+- `hgs team waiting`: the open owner cards of all teams, oldest first, each
+  a card row with its team ID (`cli-waiting.json`);
+- the person's `pause-member`, `resume-member`, `stop-member` and
+  `archive-member`.
+
+The store gains the reads behind them: `teams`, `live_teams` for the
+service's pass, and `waiting`, each a bounded page that does not scan
+archived teams or closed cards. A request of a team session that only the
+person can answer is not a card; the desktop takes it from its session
+attention data.
+
+**A fact after integration was switched off (package 3).** With a valid
+permit the fact is recorded as provenance; the node changes only when it
+still needs a merge and the decision's generation is current.
+
+**No agent drives a team's task (package 6, after its review).** The earlier
+exception for the team's lead is withdrawn: the lead decides through
+`hgs team` and the service acts. On a task of a live team these are refused
+for every agent: `send`, `handoff`, any stage change, `target`, `start` and
+`worker` as a claim, and `message --mode reopen`. An agent may still take its
+own protocol steps on an attempt that was delivered to it (the
+acknowledgement, the report, a worker under that attempt), comment, and add
+text. A person is never refused. The team's own writes come only from two
+commands the service runs, which take their authority from the team store
+and not from the caller: `hgs task team-deliver` and
+`hgs task team-done REF --json`, which moves a task to Done as the team's
+lead only when the store shows the node's current generation accepted with
+authority and, where it needs a merge, its integration fact.
+
+**The key is the marker (package 6).** A task without a `team` key is not a
+team's task, and no team check opens anything for it. A key that names
+another computer refuses agents without opening the store; a key that names
+this computer is checked against the store's live node. A key that does not
+decode never damages the task: it reads as no usable key with an invalid
+mark, and agents are refused as for another computer. Intake writes the key
+with the step that makes the task a team's and removes it when the team
+refuses; a person's retarget away from the team clears it; the service
+clears the keys of a stopped or archived team's open tasks (package 10).
+The package is one unit and merges after the repository owner confirms the
+replica change; everything under `crates/replica` stays a commit of its own.
+
+**Observation belongs to the service (packages 6 and 8).** Ordinary task
+commands do not observe for the team. Intake records the first observation;
+after that the service observes through one function that reads the document
+and records under the project lock.
+
 ## Order
 
 | Wave | Packages | Starts when |

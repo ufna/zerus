@@ -306,15 +306,15 @@ pub(super) fn observe(ctx: &mut Context<'_>) -> Result<()> {
     };
     let mut n = ctx.node(*node)?;
     let table = ctx.node_table(*node)?;
-    let stage = validate_observation(ctx, *node, &n, o)?;
+    let (stage, was_terminal) = validate_observation(ctx, *node, &n, o)?;
     let active = matches!(ctx.team.status, TeamStatus::Running | TeamStatus::Paused);
     if !active && table == "nodes" {
         archive_inactive(ctx, *node)?;
     }
-    if table == "node_archive" && !o.cancelled && o.stage != TaskStage::Done {
+    if (table == "node_archive" || was_terminal) && !o.cancelled && o.stage != TaskStage::Done {
         if active {
             restore(ctx, *node, &mut n)?;
-        } else if matches!(n.state, NodeState::Accepted | NodeState::Cancelled) {
+        } else if was_terminal {
             ctx.event = Some("person_override");
         }
     }
@@ -331,7 +331,7 @@ fn validate_observation(
     node: u32,
     n: &Node,
     o: &TaskObservation,
-) -> Result<String> {
+) -> Result<(String, bool)> {
     reason(&o.revision)?;
     text(&o.revision, 256)?;
     text(&o.previous_revision, 256)?;
@@ -346,12 +346,15 @@ fn validate_observation(
     {
         return Err(stale());
     }
-    Ok(stage)
+    Ok((stage, old.1 == "done" || old.2))
 }
 
 fn restore(ctx: &mut Context<'_>, node: u32, n: &mut Node) -> Result<()> {
     ctx.active()?;
-    check_capacity(ctx, n.admitted)?;
+    let archived = ctx.node_table(node)? == "node_archive";
+    if archived {
+        check_capacity(ctx, n.admitted)?;
+    }
     let task = n.task.as_ref().ok_or_else(missing)?;
     let binding: Option<(String, u32)> = ctx
         .db
@@ -369,6 +372,16 @@ fn restore(ctx: &mut Context<'_>, node: u32, n: &mut Node) -> Result<()> {
         return Err(invalid("Task is now owned by another live node."));
     }
     ctx.db.execute("INSERT OR IGNORE INTO live_tasks(task_project,task_uuid,team,node) VALUES(?1,?2,?3,?4)",params![task.project,task.uuid,ctx.team.id,node]).map_err(storage)?;
+    if archived {
+        restore_row(ctx, node)?;
+    }
+    ctx.settle_override(node)?;
+    ctx.advance(node, n)?;
+    ctx.db.execute("UPDATE nodes SET requested=NULL,decided_by=NULL,integrated=0,integration_commit=NULL,hold=0 WHERE team=?1 AND id=?2",params![ctx.team.id,node]).map_err(storage)?;
+    ctx.event = Some("person_override");
+    Ok(())
+}
+fn restore_row(ctx: &Context<'_>, node: u32) -> Result<()> {
     ctx.db
         .execute(
             &format!(
@@ -384,10 +397,6 @@ fn restore(ctx: &mut Context<'_>, node: u32, n: &mut Node) -> Result<()> {
             params![ctx.team.id, node],
         )
         .map_err(storage)?;
-    ctx.settle(node)?;
-    ctx.advance(node, n)?;
-    ctx.db.execute("UPDATE nodes SET requested=NULL,decided_by=NULL,integrated=0,integration_commit=NULL,hold=0 WHERE team=?1 AND id=?2",params![ctx.team.id,node]).map_err(storage)?;
-    ctx.event = Some("person_override");
     Ok(())
 }
 fn finish_observation(ctx: &Context<'_>, node: u32, cancelled: bool) -> Result<()> {
@@ -400,11 +409,11 @@ fn finish_observation(ctx: &Context<'_>, node: u32, cancelled: bool) -> Result<(
                 params![ctx.team.id, node],
             )
             .map_err(storage)?;
-        ctx.settle(node)?;
+        ctx.settle_override(node)?;
     } else if let Some((_, kind, _)) = ctx.pending(node)? {
         let n = ctx.node(node)?;
         if kind == "accept" && (!decisions::needs_merge(ctx, &n) || n.integrated) {
-            ctx.settle(node)?;
+            ctx.settle_override(node)?;
         }
     }
     Ok(())

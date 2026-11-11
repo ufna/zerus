@@ -42,7 +42,7 @@ fn start(
         rank: String::new(),
     })
 }
-fn finish<T>(
+pub(super) fn finish<T>(
     rows: Vec<T>,
     mut cursor: Cursor,
     limit: u32,
@@ -256,23 +256,7 @@ impl Store {
             "cards",
             limit,
             cursor,
-            |r| {
-                Ok(Card {
-                    seq: r.get(0)?,
-                    kind: r.get(1)?,
-                    node: r.get(2)?,
-                    actor: sql_json(r, 3)?,
-                    text: r.get(4)?,
-                    state: r.get(5)?,
-                    decision: r.get(6)?,
-                    decided_actor: r
-                        .get::<_, Option<String>>(7)?
-                        .map(|s| serde_json::from_str(&s))
-                        .transpose()
-                        .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?,
-                    created_ms: r.get(8)?,
-                })
-            },
+            rows::card_row,
             "seq,kind,node,actor,text,state,decision,decided_actor,created_ms",
         )
     }
@@ -358,6 +342,54 @@ impl Store {
             "seq,node,generation,actor,kind,text,state",
         )
     }
+    /// Discover only Ready accepts among open decisions, in node order.
+    /// The limit bounds examined open rows, so an empty page can have `next`.
+    /// Preserved settled accepts are facts already in flight, never new work.
+    pub fn integration_accepts(
+        &self,
+        team: &str,
+        limit: u32,
+        cursor: Option<&Cursor>,
+    ) -> Result<Page<IntegrationAccept>> {
+        self.active()?;
+        let c = start(
+            self.db.as_ref(),
+            format!("{team}:integration_accepts"),
+            "nodes",
+            team,
+            limit,
+            cursor,
+        )?;
+        let mut scanned = Vec::new();
+        if self
+            .team(team)?
+            .is_some_and(|t| t.settings.integration == zerus_team_plan::model::Integration::Branch)
+        {
+            if let Some(db) = &self.db {
+                let mut s = db.prepare(&integration_accepts_sql()).map_err(storage)?;
+                scanned = s
+                    .query_map(
+                        params![team, c.after, c.ceiling, limit, DecisionState::Ready],
+                        |r| {
+                            let row = IntegrationAccept {
+                                seq: r.get(0)?,
+                                node: r.get(1)?,
+                                generation: r.get(2)?,
+                            };
+                            Ok((row.node, r.get::<_, bool>(3)?.then_some(row)))
+                        },
+                    )
+                    .map_err(storage)?
+                    .collect::<std::result::Result<Vec<_>, _>>()
+                    .map_err(storage)?;
+            }
+        }
+        let page = finish(scanned, c, limit, |r| (u64::from(r.0), String::new()));
+        Ok(Page {
+            rows: page.rows.into_iter().filter_map(|(_, r)| r).collect(),
+            next: page.next,
+        })
+    }
     fn seq_page<T>(
         &self,
         team: &str,
@@ -400,4 +432,22 @@ impl Store {
             next: page.next,
         })
     }
+}
+
+pub(super) fn integration_accepts_sql() -> String {
+    format!(
+        "SELECT d.seq,d.node,d.generation,
+            d.kind='accept' AND d.state=?5
+            AND NOT EXISTS(SELECT 1 FROM integration_facts f WHERE f.decision=d.seq)
+            AND EXISTS(
+                SELECT 1 FROM nodes n WHERE n.team=d.team AND n.id=d.node
+                    AND COALESCE(json_extract(n.data,'$.kind'),'task')<>'stage'
+                UNION ALL
+                SELECT 1 FROM node_archive n WHERE n.team=d.team AND n.id=d.node
+                    AND COALESCE(json_extract(n.data,'$.kind'),'task')<>'stage')
+         FROM decisions d
+         WHERE d.team=?1 AND d.node>?2 AND d.node<=?3 AND d.state<>'{}'
+         ORDER BY d.node LIMIT ?4",
+        DecisionState::Settled.as_str()
+    )
 }

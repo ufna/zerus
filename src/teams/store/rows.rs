@@ -102,7 +102,8 @@ pub(crate) fn archive_decided(db: &Connection, team: &str, actor: &str) -> Resul
         return Err(storage("Live node count exceeds its bound."));
     }
     for node in ids {
-        settle_decisions(db, team, Some(node), actor, false)?;
+        // A settings change can make an in-flight accepted task terminal.
+        settle_decisions(db, team, Some(node), actor, true)?;
     }
     db.execute(
         "UPDATE nodes SET requested=NULL WHERE team=?1 AND node_state IN ('accepted','cancelled')",
@@ -123,10 +124,23 @@ pub(crate) fn settle_decisions(
     team: &str,
     node: Option<u32>,
     actor: &str,
-    by_stop: bool,
+    preserve_ready: bool,
 ) -> Result<()> {
-    db.execute(&format!("UPDATE decisions SET stopped_ready=(?4 AND kind='accept' AND state=?5),state=?2 WHERE team=?1 AND state<>'{}' AND (?3 IS NULL OR node=?3)",DecisionState::Settled.as_str()),params![team,DecisionState::Settled,node,by_stop,DecisionState::Ready]).map_err(storage)?;
-    db.execute("UPDATE cards SET state='closed',decision='stale',decided_actor=?3 WHERE team=?1 AND kind='integration' AND state='open' AND (?2 IS NULL OR node=?2)",params![team,node,actor]).map_err(storage)?;
+    // Terminal settlement cannot revoke a merge that was already authorized.
+    // The original stopped_ready column retains that provenance for late facts.
+    db.execute(&format!("UPDATE decisions SET stopped_ready=(?4 AND kind='accept' AND state=?5),state=?2 WHERE team=?1 AND state<>'{}' AND (?3 IS NULL OR node=?3)",DecisionState::Settled.as_str()),params![team,DecisionState::Settled,node,preserve_ready,DecisionState::Ready]).map_err(storage)?;
+    close_cards(db, team, node, actor)?;
+    Ok(())
+}
+/// A node's settlement expires its integration cards; team settlement expires
+/// every open card, including proposals without a node.
+pub(crate) fn close_cards(
+    db: &Connection,
+    team: &str,
+    node: Option<u32>,
+    actor: &str,
+) -> Result<()> {
+    db.execute("UPDATE cards SET state='closed',decision='stale',decided_actor=?3 WHERE team=?1 AND state='open' AND (?2 IS NULL OR (kind='integration' AND node=?2))",params![team,node,actor]).map_err(storage)?;
     Ok(())
 }
 pub(crate) fn archived_leaf(db: &Connection, team: &str, id: u32) -> Result<Option<Node>> {
@@ -137,4 +151,22 @@ pub(crate) fn archived_leaf(db: &Connection, team: &str, id: u32) -> Result<Opti
     )
     .optional()
     .map_err(storage)
+}
+
+pub(crate) fn card_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<Card> {
+    Ok(Card {
+        seq: r.get(0)?,
+        kind: r.get(1)?,
+        node: r.get(2)?,
+        actor: sql_json(r, 3)?,
+        text: r.get(4)?,
+        state: r.get(5)?,
+        decision: r.get(6)?,
+        decided_actor: r
+            .get::<_, Option<String>>(7)?
+            .map(|s| serde_json::from_str(&s))
+            .transpose()
+            .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?,
+        created_ms: r.get(8)?,
+    })
 }

@@ -1,6 +1,7 @@
 use super::DecisionState;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use zerus_team_plan::model::TeamStatus;
 
 pub const MAX_PAGE: u32 = 200;
 pub const LIVE_JOURNAL_CAP: u64 = 10_000;
@@ -104,4 +105,31 @@ pub struct IntegrationFact {
     pub commit: Option<String>,
     pub conflicts: Vec<String>,
     pub created_ms: i64,
+}
+
+/// An exact acceptance identity for a service integration attempt.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct IntegrationAccept {
+    pub seq: u64,
+    pub node: u32,
+    pub generation: u32,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TeamRow {
+    pub id: String,
+    pub project: String,
+    pub name: String,
+    pub status: TeamStatus,
+    pub lead: String,
+    pub home: String,
+    pub revision: u64,
+}
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WaitingCard {
+    pub team: String,
+    pub card: Card,
 }
