@@ -48,7 +48,6 @@ fn clear_refuses_task_nodes_live_stages_foreign_keys_and_rebound_nodes() {
         let f = match change {
             0 => {
                 let mut f = Fixture::new();
-                f.h.run(&person(), ops::Operation::Stop).unwrap();
                 f.h.cancel_fact(f.body.node);
                 f
             }

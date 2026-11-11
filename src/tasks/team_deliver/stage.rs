@@ -226,7 +226,7 @@ fn summary(doc: &TaskDoc, project: &str) -> Result<Value> {
 }
 
 #[cfg(test)]
-fn before_store(config: &Config) {
+pub(super) fn before_store(config: &Config) {
     if std::env::var_os("HGS_TEAM_DELIVER_BARRIER").is_none() {
         return;
     }

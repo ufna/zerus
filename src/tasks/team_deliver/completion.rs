@@ -103,6 +103,7 @@ fn authority(
     store: &Store,
     action: &str,
     body: &Input,
+    team: &Team,
     node: &Node,
     reference: &TaskRef,
 ) -> Result<()> {
@@ -118,8 +119,13 @@ fn authority(
                 |r| r.get(0),
             )
             .map_err(fail)?;
-        if node.kind != NodeKind::Stage || !retired || rebound {
-            return Err(fail("Node is not a released stage identity."));
+        let clearable_kind = node.kind == NodeKind::Stage
+            || (node.kind == NodeKind::Task
+                && matches!(team.status, TeamStatus::Stopped | TeamStatus::Archived));
+        if !clearable_kind || !retired || rebound {
+            return Err(fail(
+                "Node is not a released stage or a stopped or archived team's retired task.",
+            ));
         }
     } else {
         if released {
@@ -139,8 +145,10 @@ fn write(config: &Config, action: &str, args: &[String], body: &Input) -> Result
     let deadline = Instant::now() + attempts::BUDGET;
     let here = identity(config)?;
     let teams = Store::open(&config.state).map_err(problem)?;
-    let (_, node, reference) = bound(&teams, action, body, &here)?;
-    authority(&teams, action, body, &node, &reference)?;
+    let (team, node, reference) = bound(&teams, action, body, &here)?;
+    authority(&teams, action, body, &team, &node, &reference)?;
+    #[cfg(test)]
+    super::stage::before_store(config);
     let mut scoped = args.to_vec();
     if option(args, "--project")?.is_none() {
         scoped.extend(["--project".into(), reference.project.clone()]);
@@ -165,7 +173,7 @@ fn write(config: &Config, action: &str, args: &[String], body: &Input) -> Result
     if fresh != reference {
         return Err(fail(dispatch::CHANGED));
     }
-    authority(&teams, action, body, &node, &reference)?;
+    authority(&teams, action, body, &team, &node, &reference)?;
     if action == "team-clear" && !task_present(config, &reference)? {
         return if r.task == reference.uuid {
             Ok("cleared")

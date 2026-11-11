@@ -942,3 +942,4 @@ fn service_requests_refuse_unknown_authority_fields_without_writing() {
 
 mod clear_tests;
 mod stage_tests;
+mod terminal_clear_tests;
