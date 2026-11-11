@@ -45,7 +45,7 @@ pub(in crate::teams::store) fn extend(db: &Connection) -> Result<()> {
         "SAVEPOINT timers;"
     });
     let result = begun.map_err(storage).and_then(|()| {
-        let result = if marked(db)? { Ok(()) } else { transition(db) };
+        let result = marked(db).and_then(|done| if done { Ok(()) } else { transition(db) });
         let end = match (&result, own) {
             (Ok(()), true) => "COMMIT;",
             (Ok(()), false) => "RELEASE timers;",
@@ -61,7 +61,9 @@ pub(in crate::teams::store) fn extend(db: &Connection) -> Result<()> {
     }
     result
 }
-/// The completion marker holds this layout's version.
+/// Whether the completion marker holds this layout's version. A marker newer
+/// than this program's is a store written by a newer program: the open is
+/// refused as for a newer schema, and nothing is written.
 fn marked(db: &Connection) -> Result<bool> {
     let table: bool = db
         .query_row(
@@ -79,7 +81,12 @@ fn marked(db: &Connection) -> Result<bool> {
         })
         .optional()
         .map_err(storage)?;
-    Ok(version == Some(EXTENSION))
+    match version {
+        Some(v) if v > EXTENSION => {
+            Err(storage("store schema is newer than this version of Zerus"))
+        }
+        v => Ok(v == Some(EXTENSION)),
+    }
 }
 fn transition(db: &Connection) -> Result<()> {
     // Triggers exist before any backfill reads, so a write that commits

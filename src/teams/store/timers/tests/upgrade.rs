@@ -296,3 +296,25 @@ fn a_store_whose_older_read_index_is_replaced_is_extended_too() {
     assert_eq!(names(&h), full);
     assert_eq!(marker(&h), Some(EXTENSION));
 }
+
+#[test]
+fn a_marker_newer_than_this_program_refuses_the_open_and_writes_nothing() {
+    let h = stopped();
+    db(&h)
+        .execute("UPDATE timers_extension SET version=?1", [EXTENSION + 1])
+        .unwrap();
+    let full = names(&h);
+    let before = transitions();
+    let refused = Store::open(h.temp.path()).unwrap_err();
+    assert_eq!(refused.code, code::INVALID_STATE);
+    assert!(
+        refused
+            .message
+            .contains("store schema is newer than this version of Zerus"),
+        "{}",
+        refused.message
+    );
+    assert_eq!(transitions(), before, "no transition");
+    assert_eq!(marker(&h), Some(EXTENSION + 1), "no lowered mark");
+    assert_eq!(names(&h), full);
+}
