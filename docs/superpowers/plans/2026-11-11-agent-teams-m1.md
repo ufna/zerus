@@ -638,8 +638,11 @@ default pipeline is required. Every role's pipeline must exist, seated or not.
 equals the pipeline's stage at its index, and a stage is ready only in its
 target's round. A node ID that appears twice is ambiguous everywhere: nothing
 that depends on it or checks it is ready. Write sets are relative to the
-repository and are compared without regard to case; an absolute path, and a
-parent component after a pattern, cover the whole repository. Operations
+repository. ASCII components are compared without regard to case; a
+component with a non-ASCII character matches any component in its position
+unless the two are byte-equal, because case and normalization rules differ
+between file systems. An absolute path, and a parent component after a
+pattern, cover the whole repository. Operations
 refuse an absolute path in a write set at input.
 
 **Shape.** One function per operation of about 60 lines or fewer; no file that
