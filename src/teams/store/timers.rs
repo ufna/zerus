@@ -205,9 +205,9 @@ pub(crate) mod sql {
         "SELECT team FROM key_clear_teams WHERE pending=1 AND team>?1 ORDER BY team LIMIT ?2";
     /// A node of the team with a task key to clear: the bound task, or the
     /// task its saved stage creation names; a key observed gone has none.
-    pub const KEYED: &str = "SELECT i.id,i.task_project,CASE WHEN i.task_uuid<>'' THEN i.task_uuid ELSE s.request_id END FROM node_identity i LEFT JOIN stage_tasks s ON s.team=i.team AND s.node=i.id WHERE i.team=?1 AND (i.task_uuid<>'' OR s.request_id IS NOT NULL) AND NOT EXISTS(SELECT 1 FROM task_observations o WHERE o.team=i.team AND o.node=i.id AND json_extract(o.data,'$.key') IS NOT NULL) AND NOT EXISTS(SELECT 1 FROM key_clears k WHERE k.team=i.team AND k.node=i.id)";
-    pub const KEYED_PAGE: &str = "SELECT i.id,i.task_project,CASE WHEN i.task_uuid<>'' THEN i.task_uuid ELSE s.request_id END FROM node_identity i LEFT JOIN stage_tasks s ON s.team=i.team AND s.node=i.id WHERE i.team=?1 AND (i.task_uuid<>'' OR s.request_id IS NOT NULL) AND NOT EXISTS(SELECT 1 FROM task_observations o WHERE o.team=i.team AND o.node=i.id AND json_extract(o.data,'$.key') IS NOT NULL) AND NOT EXISTS(SELECT 1 FROM key_clears k WHERE k.team=i.team AND k.node=i.id) AND i.id>?2 ORDER BY i.id LIMIT ?3";
-    pub const SETTLE: &str = "UPDATE key_clear_teams SET pending=0 WHERE team=?1 AND pending=1 AND NOT EXISTS(SELECT 1 FROM node_identity i LEFT JOIN stage_tasks s ON s.team=i.team AND s.node=i.id WHERE i.team=?1 AND (i.task_uuid<>'' OR s.request_id IS NOT NULL) AND NOT EXISTS(SELECT 1 FROM task_observations o WHERE o.team=i.team AND o.node=i.id AND json_extract(o.data,'$.key') IS NOT NULL) AND NOT EXISTS(SELECT 1 FROM key_clears k WHERE k.team=i.team AND k.node=i.id) LIMIT 1)";
+    pub const KEYED: &str = "SELECT i.id,i.task_project,CASE WHEN i.task_uuid<>'' THEN i.task_uuid ELSE s.request_id END FROM node_identity i LEFT JOIN stage_tasks s ON s.team=i.team AND s.node=i.id WHERE i.team=?1 AND (i.task_uuid<>'' OR s.request_id IS NOT NULL) AND NOT EXISTS(SELECT 1 FROM task_observations o WHERE o.team=i.team AND o.node=i.id AND json_extract(o.data,'$.key') IS NOT NULL) AND NOT EXISTS(SELECT 1 FROM key_clears k WHERE k.team=i.team AND k.node=i.id) AND NOT EXISTS(SELECT 1 FROM decisions d WHERE d.team=i.team AND d.node=i.id AND d.state<>'settled' AND d.kind='cancel')";
+    pub const KEYED_PAGE: &str = "SELECT i.id,i.task_project,CASE WHEN i.task_uuid<>'' THEN i.task_uuid ELSE s.request_id END FROM node_identity i LEFT JOIN stage_tasks s ON s.team=i.team AND s.node=i.id WHERE i.team=?1 AND (i.task_uuid<>'' OR s.request_id IS NOT NULL) AND NOT EXISTS(SELECT 1 FROM task_observations o WHERE o.team=i.team AND o.node=i.id AND json_extract(o.data,'$.key') IS NOT NULL) AND NOT EXISTS(SELECT 1 FROM key_clears k WHERE k.team=i.team AND k.node=i.id) AND NOT EXISTS(SELECT 1 FROM decisions d WHERE d.team=i.team AND d.node=i.id AND d.state<>'settled' AND d.kind='cancel') AND i.id>?2 ORDER BY i.id LIMIT ?3";
+    pub const SETTLE: &str = "UPDATE key_clear_teams SET pending=0 WHERE team=?1 AND pending=1 AND NOT EXISTS(SELECT 1 FROM node_identity i LEFT JOIN stage_tasks s ON s.team=i.team AND s.node=i.id WHERE i.team=?1 AND (i.task_uuid<>'' OR s.request_id IS NOT NULL) AND NOT EXISTS(SELECT 1 FROM task_observations o WHERE o.team=i.team AND o.node=i.id AND json_extract(o.data,'$.key') IS NOT NULL) AND NOT EXISTS(SELECT 1 FROM key_clears k WHERE k.team=i.team AND k.node=i.id) LIMIT 1) AND NOT EXISTS(SELECT 1 FROM decisions d WHERE d.team=?1 AND d.state<>'settled' AND d.kind='cancel')";
     /// Released stages pending a final key record, through the outbox only.
     pub const RELEASED_STAGES: &str = "SELECT x.node,i.task_project,CASE WHEN i.task_uuid<>'' THEN i.task_uuid ELSE s.request_id END FROM key_clear_outbox x JOIN node_identity i ON i.team=x.team AND i.id=x.node LEFT JOIN stage_tasks s ON s.team=x.team AND s.node=x.node WHERE x.team=?1 AND x.node>?2 AND (i.task_uuid<>'' OR s.request_id IS NOT NULL) ORDER BY x.node LIMIT ?3";
     pub const LATE: &str =
@@ -390,5 +390,8 @@ fn refuse(text: &str) -> Problem {
     Problem::new(code::INVALID_STATE, text)
 }
 
+mod cancels;
+#[allow(unused_imports)] // The actor's cancel step (package 8) reads this.
+pub use cancels::PendingCancel;
 #[cfg(test)]
 mod tests;

@@ -39,6 +39,7 @@ fn stopped(w: &mut World) -> Vec<u32> {
     )
     .unwrap();
     h.run(&person(), Operation::Stop).unwrap();
+    settle_cancels(h);
     vec![waiting, pending, running, reported, left]
 }
 
@@ -85,6 +86,24 @@ fn a_stop_clears_tasks_in_every_state_and_records_each_answer_kind() {
     w.terminal(T0 + 3 * MINUTE);
     assert!(asked(&w).is_empty());
 }
+/// Record every pending cancel as the service's cancel step would, in pages.
+fn settle_cancels(h: &mut Harness) {
+    loop {
+        let page = h.store.pending_cancels(TEAM, 200, 0).unwrap();
+        if page.is_empty() {
+            return;
+        }
+        for row in page {
+            let op = Operation::RecordCancel {
+                node: row.node,
+                decision: row.decision,
+                state: crate::teams::ops::CancelState::Cancelled,
+                reason: String::new(),
+            };
+            h.run(&service(), op).unwrap();
+        }
+    }
+}
 fn task_ref(n: u32) -> TaskRef {
     task(n)
 }
@@ -106,6 +125,7 @@ fn pages_make_progress_over_500_nodes_past_nodes_that_never_answer() {
         w.h.enqueue(&person(), n);
     }
     w.h.run(&person(), Operation::Stop).unwrap();
+    settle_cancels(&mut w.h);
     for node in 1..=20 {
         w.effects
             .answers

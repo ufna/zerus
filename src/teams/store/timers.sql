@@ -59,3 +59,9 @@ CREATE TRIGGER IF NOT EXISTS key_clear_stage_settled_v1 AFTER UPDATE OF state ON
    OR EXISTS(SELECT 1 FROM stage_tasks s WHERE s.team=a.team AND s.node=a.id AND s.request_id IS NOT NULL))
   AND NOT EXISTS(SELECT 1 FROM key_clears k WHERE k.team=a.team AND k.node=a.id);
 END;
+-- The service's answer for each cancel decision it carried out.
+CREATE TABLE IF NOT EXISTS cancel_outcomes (
+ decision INTEGER PRIMARY KEY, team TEXT NOT NULL, node INTEGER NOT NULL, generation INTEGER NOT NULL,
+ state TEXT NOT NULL CHECK(state IN ('cancelled','refused')), reason TEXT NOT NULL, at_ms INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS cancel_refusals ON cancel_outcomes(team,node) WHERE state='refused';

@@ -45,7 +45,24 @@ fn stopped_with_every_state(h: &mut Harness) -> Vec<u32> {
     )
     .unwrap();
     h.run(&person(), Operation::Stop).unwrap();
+    assert!(
+        h.store.keyed_tasks(TEAM, 0, 200).unwrap().is_empty(),
+        "cancels come first"
+    );
+    settle_cancels(h);
     vec![waiting, pending, running, reported, left]
+}
+/// Record every pending cancel as the service's cancel step would.
+pub(super) fn settle_cancels(h: &mut Harness) {
+    for row in h.store.pending_cancels(TEAM, 200, 0).unwrap() {
+        let op = Operation::RecordCancel {
+            node: row.node,
+            decision: row.decision,
+            state: CancelState::Cancelled,
+            reason: String::new(),
+        };
+        h.run(&service(), op).unwrap();
+    }
 }
 
 #[test]

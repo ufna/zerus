@@ -3,7 +3,9 @@
 //! under a key that fires once. Times only the service saw arrive as
 //! `since_ms`; the store checks their arithmetic, never their truth.
 use super::*;
+mod cancel;
 mod terminal;
+pub(super) use cancel::record_cancel;
 pub(super) use terminal::{key_clear, late_session};
 
 enum Made {

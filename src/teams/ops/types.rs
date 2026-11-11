@@ -126,6 +126,14 @@ pub enum KeyClearState {
     Refused,
 }
 
+/// The service's record of a cancel decision it carried out.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CancelState {
+    Cancelled,
+    Refused,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Operation {
@@ -307,6 +315,13 @@ pub enum Operation {
         launch_id: String,
         session: SessionKey,
         name: String,
+    },
+    RecordCancel {
+        node: NodeId,
+        decision: u64,
+        state: CancelState,
+        #[serde(default)]
+        reason: String,
     },
 }
 

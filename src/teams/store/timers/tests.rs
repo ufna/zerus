@@ -109,6 +109,8 @@ fn every_timer_read_searches_an_index() {
         ("LATE", sql::LATE),
         ("REFUSALS", sql::REFUSALS),
         ("SAVED_REFUSAL", sql::SAVED_REFUSAL),
+        ("PENDING_CANCELS", super::cancels::sql::PENDING),
+        ("CANCEL_REFUSALS", super::cancels::sql::REFUSED),
         ("RELEASED_STAGES", sql::RELEASED_STAGES),
         ("WAITING", sql::WAITING),
     ] {
