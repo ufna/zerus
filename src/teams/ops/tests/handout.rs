@@ -241,6 +241,7 @@ fn service_handout_requires_kernel_ready_and_reads_archived_dependencies() {
     h.run(
         &service(),
         Operation::RecordIntegration {
+            decision: h.accept_decision(dep),
             node: dep,
             commit: COMMIT.into(),
         },

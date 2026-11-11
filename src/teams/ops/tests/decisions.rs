@@ -27,6 +27,7 @@ fn full_return_reopen_progress_report_accept_integration_cycle() {
     h.run(
         &service(),
         Operation::RecordIntegration {
+            decision: h.accept_decision(node),
             node,
             commit: COMMIT.into(),
         },
@@ -71,11 +72,17 @@ fn integration_requires_a_pending_accept_and_service_receipt_and_is_recorded_onc
     let mut h = Harness::new();
     let (node, lead) = h.reported();
     let op = Operation::RecordIntegration {
+        decision: h.accept_decision(node),
         node,
         commit: COMMIT.into(),
     };
     refused(h.run(&service(), op.clone()), code::INVALID_STATE);
     h.run(&lead, Operation::Accept { node }).unwrap();
+    let op = Operation::RecordIntegration {
+        node,
+        decision: h.accept_decision(node),
+        commit: COMMIT.into(),
+    };
     h.observe(node, TaskStage::Done);
     assert!(!h.node(node).integrated);
     h.run(&service(), op.clone()).unwrap();
@@ -93,6 +100,7 @@ fn merge_delegation_off_opens_an_owner_card_and_approval_authorizes_service_inte
         .item
         .unwrap();
     let op = Operation::RecordIntegration {
+        decision: h.accept_decision(node),
         node,
         commit: COMMIT.into(),
     };
@@ -147,6 +155,7 @@ fn integration_none_accepts_without_any_receipt() {
         h.run(
             &service(),
             Operation::RecordIntegration {
+                decision: h.accept_decision(node),
                 node,
                 commit: COMMIT.into(),
             },
@@ -177,6 +186,7 @@ fn stage_acceptance_has_no_merge_or_receipt() {
         h.run(
             &service(),
             Operation::RecordIntegration {
+                decision: h.accept_decision(node),
                 node,
                 commit: COMMIT.into(),
             },
@@ -194,6 +204,7 @@ fn conflict_is_a_service_recorded_return_with_its_findings() {
     h.run(
         &service(),
         Operation::RecordIntegrationConflict {
+            decision: h.accept_decision(node),
             node,
             conflicts: vec!["src/example.rs".into()],
         },
@@ -376,6 +387,7 @@ fn a_ready_accept_can_record_its_late_receipt_after_stop_or_archive() {
         h.run(
             &service(),
             Operation::RecordIntegration {
+                decision: h.accept_decision(node),
                 node,
                 commit: COMMIT.into(),
             },
@@ -400,6 +412,7 @@ fn a_ready_accept_can_record_its_late_receipt_after_stop_or_archive() {
             h.run(
                 &service(),
                 Operation::RecordIntegration {
+                    decision: h.accept_decision(node),
                     node,
                     commit: COMMIT.into(),
                 },
@@ -419,6 +432,7 @@ fn a_ready_accept_can_record_its_late_conflict_without_a_new_return_after_stop()
     h.run(
         &service(),
         Operation::RecordIntegrationConflict {
+            decision: h.accept_decision(node),
             node,
             conflicts: vec!["src/example.rs".into()],
         },
@@ -433,6 +447,7 @@ fn a_ready_accept_can_record_its_late_conflict_without_a_new_return_after_stop()
         h.run(
             &service(),
             Operation::RecordIntegrationConflict {
+                decision: h.accept_decision(node),
                 node,
                 conflicts: vec!["src/other.rs".into()],
             },
@@ -461,6 +476,7 @@ fn an_unapproved_accept_never_authorizes_late_integration_after_stop() {
         h.run(
             &service(),
             Operation::RecordIntegration {
+                decision: h.accept_decision(node),
                 node,
                 commit: COMMIT.into(),
             },
@@ -471,6 +487,7 @@ fn an_unapproved_accept_never_authorizes_late_integration_after_stop() {
         h.run(
             &service(),
             Operation::RecordIntegrationConflict {
+                decision: h.accept_decision(node),
                 node,
                 conflicts: vec!["src/example.rs".into()],
             },
@@ -540,28 +557,33 @@ fn cancellation_does_not_authorize_an_unapproved_accepts_late_fact() {
         h.run(&lead, Operation::Accept { node }).unwrap();
         h.cancel_fact(node);
         refused(
-            h.run(&service(), integration_outcome(node, conflict)),
+            h.run(
+                &service(),
+                integration_outcome(node, h.accept_decision(node), conflict),
+            ),
             code::INVALID_STATE,
         );
         assert!(h.store.integration_fact(TEAM, node).unwrap().is_none());
     }
 }
 
-fn integration_outcome(node: u32, conflict: bool) -> Operation {
+fn integration_outcome(node: u32, decision: u64, conflict: bool) -> Operation {
     if conflict {
         Operation::RecordIntegrationConflict {
+            decision,
             node,
             conflicts: vec!["src/example.rs".into()],
         }
     } else {
         Operation::RecordIntegration {
+            decision,
             node,
             commit: COMMIT.into(),
         }
     }
 }
 fn record_late_fact(h: &mut Harness, node: u32, conflict: bool) {
-    let op = integration_outcome(node, conflict);
+    let op = integration_outcome(node, h.accept_decision(node), conflict);
     h.run(&service(), op.clone()).unwrap();
     let fact = h.store.integration_fact(TEAM, node).unwrap().unwrap();
     assert_eq!(fact.actor["kind"], "service");

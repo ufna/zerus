@@ -3,6 +3,7 @@ mod apply;
 mod authority;
 mod decisions;
 mod handout;
+mod integration;
 mod members;
 mod queue;
 mod talk;
@@ -187,6 +188,16 @@ impl Harness {
             },
         )
         .unwrap();
+    }
+    pub fn accept_decision(&self, node: u32) -> u64 {
+        self.store
+            .decisions(TEAM, 200, None)
+            .unwrap()
+            .rows
+            .into_iter()
+            .rev()
+            .find(|d| d.node == node && d.kind == "accept")
+            .map_or(0, |d| d.seq)
     }
     pub fn intent(&mut self, node: u32, member: &str) -> String {
         let id = uuid::Uuid::new_v4().to_string();

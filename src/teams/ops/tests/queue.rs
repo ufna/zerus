@@ -210,6 +210,7 @@ fn restore_clears_acceptance_hold_and_journals_the_person_override() {
     h.run(
         &service(),
         Operation::RecordIntegration {
+            decision: h.accept_decision(node),
             node,
             commit: COMMIT.into(),
         },
@@ -261,6 +262,7 @@ fn a_person_reopened_task_can_be_reported_in_its_new_attempt() {
     h.run(
         &service(),
         Operation::RecordIntegration {
+            decision: h.accept_decision(node),
             node,
             commit: COMMIT.into(),
         },
