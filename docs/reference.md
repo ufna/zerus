@@ -4787,19 +4787,21 @@ stdin, at most 262,144 bytes, and refuses unknown fields with `unknown_field`.
 Unknown options and repeated options are refused. `--team` takes a lowercase
 canonical UUID; a lead or a member may omit it for its own team.
 
-**Who runs a command.** `hgs team`, and with the preview on every `hgs task`
-command, proves its caller with one interim check. A command carrying a
-session's markers is that session only when its live run, birth and process
-ancestry verify, and it maps to a lead or a member only by the team's exact
-`(machine, session_id)` binding, never by a name. A command without markers is
-the person's only when no live agent session is among its process ancestors;
-replies then carry `actor.origin: "cli_interim"`, `actor.interim: true` and a
-`note` that states the limits of this interim rule. A command inside a sandbox
-with its own user namespace is refused, marked or not. On macOS an unmarked
-command below a program whose environment the system hides, usually a system
-shell, cannot be checked and is refused; the Zerus window runs `hgs` with no
-shell between. Windows has no Teams preview. A request never names its actor or
-its operation: `op`, `actor` and any other foreign field are refused.
+**Who runs a command.** `hgs team` proves its caller with one interim check.
+With the preview on, so does an `hgs task` command that touches a team: one
+with `--team`, or one on a task whose team key guards it. Every other task
+command behaves as with the preview off. A command carrying a session's markers
+is that session only when its live run, birth and process ancestry verify, and
+it maps to a lead or a member only by the team's exact `(machine, session_id)`
+binding, never by a name. A command without markers is the person's only when
+no live agent session is among its process ancestors; replies then carry
+`actor.origin: "cli_interim"`, `actor.interim: true` and a `note` that states
+the limits of this interim rule. A command inside a sandbox with its own user
+namespace is refused, marked or not. On macOS an unmarked command below a
+program whose environment the system hides, usually a system shell, cannot be
+checked and is refused; the Zerus window runs `hgs` with no shell between.
+Windows has no Teams preview. A request never names its actor or its operation:
+`op`, `actor` and any other foreign field are refused.
 
 | Command | Person | Lead | Member | Input fields besides the envelope |
 |---|---|---|---|---|
@@ -4930,15 +4932,17 @@ for what agents may do with a team's task. The task is created even when the
 team refuses it; the reply then has `team.queued: false`, `team.error` and the
 message `Task REF exists and was not queued (CODE): REASON`.
 
-**Service commands.** Five `hgs task` commands belong to the desktop service
-on the team's home computer: `team-deliver` (a hand-out or a reopen),
-`team-done` (an accepted task to Done), `team-stage` (the task of a stage),
-`team-cancel` (a cancel decision: running work is cancelled with the task's
-ordinary notice, a task that is not running leaves the team in its stage) and
-`team-clear` (removes the team key of a released task or of a stopped team's
-task). Each takes its authority from a decision or an effect the team
-store already holds, never from its caller, and repeating one with the same
-input changes nothing. Nobody runs them by hand.
+**Service commands.** Five `hgs task` commands belong to the desktop service on
+the team's home computer: `team-deliver` (a hand-out or a reopen), `team-done`
+(an accepted task to Done), `team-stage` (the task of a stage), `team-cancel`
+(a cancel decision: running work with a known delivery is cancelled with the
+task's ordinary notice, a task with nothing running leaves the team in its
+stage, and a task whose delivery is unknown or that is Done is left as it is,
+with a lead inbox item in a live team) and `team-clear` (removes the team key
+of a released task or of a stopped team's task). Each takes its authority from
+a decision or an effect the team store already holds, never from its caller,
+and repeating one with the same input changes nothing. Nobody runs them by
+hand.
 
 **Standing confirmations.** Under the team's `confirm_trust` and
 `resume_exited` delegations, and nothing else, the service answers the startup

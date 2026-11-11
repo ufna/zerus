@@ -34,11 +34,12 @@ does the same, and `hgs team preview status` shows the state.
 Turning it on adds a marker file to this computer's `hgs` state directory and
 makes the desktop show **New team** and **Waiting for you** in the rail, the
 **Team** tab on a lead's session, **Send to team** on the task board and a team
-chooser in the New task form. It also makes every `hgs task` command use the
-caller check of `hgs team`: a command without session markers counts as yours
-only when no live agent session runs above it, and a command inside a sandbox
-with its own user namespace is refused. The team store is created only when
-the first team is created.
+chooser in the New task form. An `hgs task` command that touches a team, with
+`--team` or on a task whose team key guards it, then proves its caller as
+`hgs team` does: a command without session markers counts as yours only when
+no live agent session runs above it, and a command inside a sandbox with its
+own user namespace is refused. Every other task command behaves as with the
+preview off. The team store is created only when the first team is created.
 
 Turning it off asks "Turn Agent Teams off?": "Teams on this computer stop
 being served. Nothing is deleted." With the preview off, `hgs team` answers
@@ -158,10 +159,11 @@ A task has one decision at a time.
 - **Reassign**, to another active member of the same role, with a reason. The
   service hands the task over to that member.
 - **Hold** and **Release.** A held task is not handed out.
-- **Cancel**, with a reason. The task leaves the team. A task a member is
-  working on is cancelled, and the member gets the ordinary cancel notice of a
-  task. A task that is not running (Backlog, To do or In review) keeps its
-  stage and stays on the board as an ordinary task.
+- **Cancel**, with a reason. Running work is cancelled, and its member gets
+  the ordinary cancel notice of a task. A task with nothing running (Backlog,
+  To do or In review) leaves the team and stays in its stage as an ordinary
+  task. A task whose delivery is unknown, and a Done task, are left as they
+  are, and the lead gets an inbox item about it.
 
 A lead can accept only work its pipeline handed over, and cannot accept or
 cancel a stage: a stage ends by its holder's verdict or by you. You can make
@@ -209,10 +211,11 @@ waiting for you with an Integration card.
   but cannot resume what you paused or stopped.
 - **Stop** a member: it takes no new task, and neither the lead nor the
   service resumes it. **Remove** takes it out of the team.
-- **Stop** the team: each unfinished task leaves the team as after a Cancel.
-  Running work is cancelled and its member gets the ordinary cancel notice; a
-  task that is not running keeps its stage. Every task of the team then loses
-  its team key and is an ordinary task.
+- **Stop** the team: every unfinished task is cancelled as after a lead's
+  Cancel. Running work is cancelled with the ordinary notice; a task with
+  nothing running stays in its stage; a task whose delivery is unknown, and a
+  Done task, are left as they are. Every task of the team then loses its team
+  key and stays on the board as an ordinary task.
 - **Archive** follows a stop and closes the team's open cards.
 
 Zerus never stops a team's agents by itself. The sessions stay, and you end
