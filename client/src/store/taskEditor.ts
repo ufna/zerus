@@ -12,6 +12,8 @@ export interface TaskEditorView<M extends string = TaskEditorMode> extends TaskE
   files: (Fetched & { reference: string })[]; error: string; recovery: boolean; recovery_record?: TaskRecoveryRecord | null; blocked: boolean; saved: boolean; unsaved?: boolean; read_only?: boolean; created?: string | null;
   /** A reserved new card's team (`task add --team`), when it was reserved with one. */
   team?: string | null;
+  /** A card created for a team whose queue did not take it: the task, the team and the team's reason. */
+  not_queued?: { task: string; team: string; code?: string; reason: string } | null;
 }
 export interface TaskEditorPort<M extends string = TaskEditorMode> {
   open(target: TaskEditorTarget<M>): Promise<TaskEditorView<M>>;

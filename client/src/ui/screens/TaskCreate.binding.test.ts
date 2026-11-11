@@ -8,6 +8,7 @@ import { createComponent, createSignal } from "solid-js";
 import { render } from "solid-js/web";
 const f = vi.hoisted(() => ({
   create: vi.fn(async (..._args: unknown[]) => false),
+  send: vi.fn(async (..._args: unknown[]) => true),
   view: (() => undefined) as () => unknown,
   setView: (_value: unknown) => {},
   list: (() => undefined) as () => unknown,
@@ -25,6 +26,7 @@ vi.mock("../../store/taskForms", async () => {
   };
 });
 vi.mock("../../store/ui", () => ({ selected: () => undefined }));
+vi.mock("../../store/taskBoard", () => ({ sendToTeam: f.send }));
 vi.mock("../../store/taskNavigation", () => ({ requestTaskDescription: vi.fn() }));
 vi.mock("../../store/teams", async () => {
   const { createSignal: signal } = await import("solid-js");
@@ -114,4 +116,25 @@ it("an older reserved card without a team shows no chooser and sends no team", a
   enter(host);
   await vi.waitFor(() => expect(f.create).toHaveBeenCalled());
   expect(f.create).toHaveBeenCalledWith("example-project", false, undefined, undefined);
+});
+
+it("a card created but not queued says so with the team's reason and offers Send to team for that task (second confirmation, finding 6)", async () => {
+  f.setList({ teams: [fixes], truncated: false, next: null });
+  f.setView(card("example-project"));
+  const created = "55555555-5555-4555-8555-555555555555";
+  f.create.mockImplementationOnce(async () => {
+    f.setView(card("example-project", { text: "", created, not_queued: { task: created, team: TEAM, code: "invalid_state", reason: "The team is stopped." } }));
+    return true;
+  });
+  const host = setup(() => "example-project");
+  choose(host);
+  enter(host);
+  await vi.waitFor(() => expect(host.querySelector("[data-not-queued]")).not.toBeNull());
+  const notice = host.querySelector("[data-not-queued]")!;
+  expect(notice.textContent).toContain("The task was created, but Fixes did not queue it: The team is stopped.");
+  expect(f.create).toHaveBeenCalledTimes(1);
+  ([...notice.querySelectorAll("button")].find((button) => button.textContent === "Send to team") as HTMLButtonElement).click();
+  await vi.waitFor(() => expect(f.send).toHaveBeenCalledWith("example-project", { uuid: created }, TEAM, "Fixes"));
+  await vi.waitFor(() => expect(host.querySelector("[data-not-queued]")).toBeNull());
+  expect(f.create, "no second card").toHaveBeenCalledTimes(1);
 });

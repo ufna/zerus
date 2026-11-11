@@ -56,6 +56,9 @@ struct Slot {
     error: String,
     /// The queue chosen in this submit, when the New task form names one.
     team: Option<String>,
+    /// A card created for a team whose queue did not take it: the task, the
+    /// team and the team's reason, for this submit's answer only.
+    not_queued: Option<Value>,
 }
 #[derive(Clone, Default)]
 struct Editor {
@@ -155,6 +158,7 @@ fn opened(
         unsaved: false,
         error: loaded.storage_error.unwrap_or_default(),
         team: None,
+        not_queued: None,
     };
     if blocked {
         slot.error = zerus_client_core::drafts::NOT_RESTORED.into();
@@ -366,6 +370,31 @@ fn destination(slot: &mut Slot, team: Option<String>) -> Result<(), String> {
     }
     Ok(())
 }
+/// A task created for a team whose queue did not confirm it: the command
+/// line answers `task_exists: true` with `team.queued: false` and the team's
+/// structured error (package 6's late refusal). The task exists, so the card
+/// is done and its identity kept; the answer carries the team's reason so the
+/// person can send that task to the team instead of creating another. A reply
+/// that does not say this team queued it is not a confirmation either.
+fn not_queued(reply: &serde_json::Map<String, Value>, task: &str, team: &str) -> Option<Value> {
+    let answer = reply.get("team").filter(|answer| answer.is_object());
+    let queued = answer.is_some_and(|answer| {
+        answer["queued"].as_bool() == Some(true)
+            && answer["id"].as_str().is_none_or(|id| id == team)
+    });
+    if queued {
+        return None;
+    }
+    let reason = answer
+        .and_then(|answer| answer["error"]["message"].as_str())
+        .or_else(|| reply.get("message").and_then(Value::as_str))
+        .filter(|reason| !reason.trim().is_empty())
+        .unwrap_or("The team did not confirm that it queued the task.");
+    let code = answer
+        .and_then(|answer| answer["error"]["code"].as_str())
+        .unwrap_or_default();
+    Some(json!({"task": task, "team": team, "code": code, "reason": reason}))
+}
 fn submitted(
     slot: &mut Slot,
     store: &DraftStore,
@@ -378,6 +407,7 @@ fn submitted(
     if slot.blocked {
         return Err(zerus_client_core::drafts::NOT_RESTORED.into());
     }
+    slot.not_queued = None;
     let team = slot.team.clone();
     let wanted = if slot.kind == Kind::NewCard && slot.stored.form_state.contains_key("request") {
         request(slot)?.1.title
@@ -468,6 +498,9 @@ fn submitted(
                 return Err(
                     "Task creation needs review: the reply did not match the reserved card.".into(),
                 );
+            }
+            if let Some(team) = &intent.team {
+                slot.not_queued = not_queued(&reply, &intent.request_id, team);
             }
             Ok(Some(intent.request_id))
         })
@@ -607,6 +640,7 @@ pub async fn task_form_submit(
         };
         let mut answer = view(slot, saved);
         answer["created"] = json!(created);
+        answer["not_queued"] = slot.not_queued.take().unwrap_or(Value::Null);
         Ok(answer)
     })
     .await
@@ -967,6 +1001,124 @@ mod tests {
         let older_call = older_call.borrow().clone().unwrap();
         assert!(!older_call.args.iter().any(|arg| arg == "--team"));
         assert!(older_call.args.iter().any(|arg| arg == "--target"));
+        drop(store);
+        drop(root);
+    }
+    /// Second confirmation, finding 6: the command line created the task and
+    /// the team's queue refused it (`task_exists`, `team.queued: false`, the
+    /// team's error and a message, package 6's late refusal). The card is
+    /// done with the task's identity kept, and the answer says it was not
+    /// queued with the team's reason; nothing invites a second card.
+    #[test]
+    fn a_task_created_but_not_queued_keeps_its_identity_and_the_teams_reason() {
+        const TEAM: &str = "33333333-3333-4333-8333-333333333333";
+        let root = crate::composer::tests::dir("task-form-not-queued");
+        let store = crate::composer::tests::drafts(&root);
+        let forms = TaskForms::default();
+        let open = || {
+            opened(
+                &forms,
+                &store,
+                Kind::NewCard,
+                "example".into(),
+                String::new(),
+                |_, _| panic!("a new card reads no task"),
+            )
+            .unwrap()
+        };
+        let request_of = |call: &TaskCall| {
+            call.args[call
+                .args
+                .iter()
+                .position(|arg| arg == "--request-id")
+                .unwrap()
+                + 1]
+            .clone()
+        };
+        let mut slot = open();
+        edit(&mut slot, "Queued card");
+        destination(&mut slot, Some(TEAM.into())).unwrap();
+        let created = submitted(&mut slot, &store, false, false, TaskTarget::default(), |_, _| panic!(), |call| {
+            let id = request_of(call);
+            Ok(json!({
+                "task": {"uuid": id, "project": "example", "ref": "example/7"},
+                "task_exists": true,
+                "team": {"id": TEAM, "queued": false, "error": {"code": "invalid_state", "message": "The team is stopped."}},
+                "message": "Task example/7 exists and was not queued (invalid_state): The team is stopped.",
+            }).as_object().unwrap().clone())
+        })
+        .unwrap();
+        let id = created
+            .1
+            .clone()
+            .expect("the created task's identity is kept");
+        assert!(created.0);
+        assert!(
+            !slot.stored.form_state.contains_key("request"),
+            "the card is done: no recovery creates it again"
+        );
+        assert_eq!(
+            slot.not_queued,
+            Some(
+                json!({"task": id, "team": TEAM, "code": "invalid_state", "reason": "The team is stopped."})
+            )
+        );
+        // A reply that queued it carries nothing; one that says nothing about
+        // the team is no confirmation.
+        let mut queued = open();
+        edit(&mut queued, "Queued card");
+        destination(&mut queued, Some(TEAM.into())).unwrap();
+        submitted(&mut queued, &store, false, false, TaskTarget::default(), |_, _| panic!(), |call| {
+            Ok(json!({"task": {"uuid": request_of(call), "project": "example"}, "task_exists": true, "team": {"id": TEAM, "queued": true}}).as_object().unwrap().clone())
+        })
+        .unwrap();
+        assert_eq!(queued.not_queued, None);
+        let mut silent = open();
+        edit(&mut silent, "Queued card");
+        destination(&mut silent, Some(TEAM.into())).unwrap();
+        submitted(
+            &mut silent,
+            &store,
+            false,
+            false,
+            TaskTarget::default(),
+            |_, _| panic!(),
+            |call| {
+                Ok(
+                    json!({"task": {"uuid": request_of(call), "project": "example"}})
+                        .as_object()
+                        .unwrap()
+                        .clone(),
+                )
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            silent.not_queued.as_ref().unwrap()["reason"],
+            "The team did not confirm that it queued the task."
+        );
+        // A card without a team never reports a queue.
+        let mut plain = open();
+        edit(&mut plain, "Plain card");
+        destination(&mut plain, None).unwrap();
+        submitted(
+            &mut plain,
+            &store,
+            false,
+            false,
+            TaskTarget::default(),
+            |_, _| panic!(),
+            |call| {
+                Ok(
+                    json!({"task": {"uuid": request_of(call), "project": "example"}})
+                        .as_object()
+                        .unwrap()
+                        .clone(),
+                )
+            },
+        )
+        .unwrap();
+        assert_eq!(plain.not_queued, None);
         drop(store);
         drop(root);
     }

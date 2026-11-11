@@ -24,18 +24,20 @@ export const stageDropAction = (task: Task | undefined, stage: string): BoardAct
 /** Sends a card in Backlog or To do to a team's queue (`task target REF team
  * TEAM`). The task board does not decide the outcome: a refusal is the team's
  * own reason, and a task already queued is not sent twice. */
-export async function sendToTeam(project: string, task: Task, team: string, teamName: string) {
-  if (writingTask()) return;
+export async function sendToTeam(project: string, task: Pick<Task, "uuid">, team: string, teamName: string): Promise<boolean> {
+  if (writingTask()) return false;
   const fresh = tasks.project() === project ? tasks.find(task.uuid) : undefined;
   if (!fresh || !fresh.writable || (fresh.stage !== "backlog" && fresh.stage !== "todo")) {
-    notify("error", tr("The task changed. Nothing was changed. Refresh the task.")); return;
+    notify("error", tr("The task changed. Nothing was changed. Refresh the task.")); return false;
   }
   setWritingTask(task.uuid);
   try {
     await taskBoardAction(project, task.uuid, fresh.stage, { kind: "send_to_team", team });
     notify("info", tr("Sent to %1", teamName));
+    return true;
   } catch (error) {
     notify("error", String(error));
+    return false;
   } finally { setWritingTask(undefined); }
 }
 
