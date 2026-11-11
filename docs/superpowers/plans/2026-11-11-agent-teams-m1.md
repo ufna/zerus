@@ -1210,6 +1210,24 @@ can open the card the specification asks for (tracker item
 hand-out quoted, under a heading that says whose it is. A cleanup's history
 entry names its cause.
 
+**What an admission reads (package 8, after its confirmation review).**
+The admission of a hand-out asks the store the same question its intent
+asked, through the store's own predicate inside the held transaction: the
+node's hold, its readiness with its dependencies, its state, assignee and
+role, besides the team, the member, the effect and the generation. One
+predicate, two call sites; a Hold or a Route committed between the intent
+and the spawn refuses the delivery. Outside facts are read last in the
+same section when they can be read in the process: the stop flag, the
+Teams switch and the member's fleet row. The task occupancy cannot be,
+because reading it spawns children; it is read as late as possible before
+the admission and is a scheduling hint, not an authority. A held section
+is short: the spawn itself, or the ref update with its own deadline of 5
+seconds, after which the merge is unknown and settled by reading. Writers
+of the command line wait 8 seconds for the store, longer than any held
+section, and a writer that still cannot begin is told `store_busy`:
+nothing was written. The actor's own admission waits 100 milliseconds,
+and a busy store is a retry on a later pass, never a recorded refusal.
+
 **A doorbell points at the inbox and carries none of it (package 10).** The
 doorbell says how many items wait and names the command that reads them;
 the text of an item comes from members and is never put into a message of
