@@ -363,13 +363,13 @@ fn shell(tree: &Tree) -> u32 {
     })
 }
 
-/// A shell between a person's command and the top. On macOS the system
-/// withholds the shell's environment, so the walk cannot tell whether it is an
-/// agent and refuses with the sentence that names where a person's team
-/// commands run: when that shell is a recorded live agent, and when nothing
-/// in the tree is marked (the tmux, ssh and embedded-terminal shape).
-/// Elsewhere the shell is readable: the agent is found, and the unmarked
-/// tree is the person.
+/// A system shell between a person's command and the top. On macOS the
+/// system withholds the shell's environment, so the walk cannot tell whether
+/// it is an agent and refuses with the sentence that names the cause and the
+/// Zerus window: when that shell is a recorded live agent, and when nothing in
+/// the tree is marked (a person typing into a system shell below the top).
+/// Elsewhere the shell is readable: the agent is found, and the unmarked tree
+/// is the person.
 #[test]
 fn a_withheld_shell_below_the_top_refuses_a_persons_command() {
     for mode in ["withheld-middle", "withheld-person"] {
@@ -386,7 +386,7 @@ fn a_withheld_shell_below_the_top_refuses_a_persons_command() {
         if cfg!(target_os = "macos") {
             assert!(text.contains("PROBE refused:not_allowed"), "{text}");
             assert!(
-                text.contains("from the Zerus window or a login terminal, not from tmux, ssh"),
+                text.contains("below a program that hides its environment, usually a system shell; run it from the Zerus window"),
                 "{text}"
             );
         } else if mode == "withheld-middle" {

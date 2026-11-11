@@ -84,6 +84,34 @@ fn a_withheld_environment_refuses_below_the_top_and_is_tolerated_at_it() {
     assert_eq!(walk(4, table, denied).unwrap_err(), unreadable());
 }
 
+/// The caller's own markers come from the process itself, never from the
+/// system's read of it, which macOS may withhold for a signed release `hgs`.
+/// The system's read starts at the parent.
+#[test]
+fn the_callers_own_markers_come_from_itself_never_from_the_system_read() {
+    let table = |pid| {
+        Ok(match pid {
+            3 => own(2),
+            2 => own(1),
+            _ => Inspection::Foreign,
+        })
+    };
+    let chain = from_caller(
+        3,
+        table,
+        || b"HGS_SESSION=own\0HGS_RUN_ID=run\0".to_vec(),
+        |pid| {
+            assert_ne!(pid, 3, "the caller was read through the system");
+            Err(super::super::withheld())
+        },
+    )
+    .unwrap();
+    assert_eq!(chain.len(), 2);
+    let own_claim = chain[0].claim.as_ref().map(|claim| claim.name.as_str());
+    assert_eq!(own_claim, Some("own"));
+    assert!(chain[1].top && chain[1].claim.is_none());
+}
+
 #[test]
 fn a_foreign_parent_zero_is_still_refused() {
     // On macOS pid 0 is a foreign (root-owned) process, so the walk must

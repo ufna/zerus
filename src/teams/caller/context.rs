@@ -29,27 +29,37 @@
 //! `platform::process_identity` (`PROC_PIDTBSDINFO`, start seconds and
 //! microseconds).
 //!
-//! macOS withholds the environment of its own binaries (every program with a
-//! platform identifier, the shells and `ssh` among them) and of some signed
-//! programs, mostly those signed for library validation, from a reader of the
-//! same user. `KERN_PROCARGS2` still answers, but its answer ends right after
-//! the arguments. A process whose environment is really empty still leaves
-//! the kernel's own strings after its arguments, so nothing at all after them
-//! is a withheld read and never an empty environment. A withheld environment
-//! is unreadable, and the rule for an unreadable ancestor applies: tolerated
-//! at the verified top, refused below it.
+//! macOS withholds the environment of some programs from a reader of the
+//! same user: every program with a platform identifier (the system shells
+//! `/bin/zsh`, `/bin/bash` and `/bin/sh`, and `ssh`) and some signed programs,
+//! mostly those signed for library validation. `KERN_PROCARGS2` still
+//! answers, but nothing follows the arguments. A process whose environment is
+//! really empty still leaves the kernel's own `key=value` strings there, so a
+//! tail with no byte other than NUL is a withheld read and never an empty
+//! environment. The parser also refuses an answer that fills its buffer,
+//! which may be cut, and an argument that begins with a marker name, which
+//! means the split between arguments and environment has shifted. A marker
+//! named twice in one environment is unreadable on every platform. The
+//! caller's own markers come from the process itself, never from this read,
+//! so a release build of `hgs` that macOS hides is still read correctly.
 //!
-//! Three shapes pass. The Zerus window runs `hgs` as its own child with no
-//! shell between, and the window is the top of the user's tree. A login
-//! terminal's shell sits directly below the root-owned `login` and is itself
-//! the top. A lead's or a member's marked command reads only its own
-//! environment and proves its descent through `proc_pidinfo`, so a shell
-//! between it and its agent does not matter. A person's command from tmux,
-//! ssh or a terminal inside another application has a withheld shell below
-//! the top and is refused, with a sentence that names where it runs instead.
-//! The limit is at the top: an agent whose own environment is withheld and
-//! which is itself the top of the user's tree (started or adopted by
-//! launchd) is not detected, like an agent started without markers.
+//! A withheld environment is unreadable, and the rule for an unreadable
+//! ancestor applies: tolerated at the verified top, refused below it. What
+//! decides is whether a program that hides its environment stands between the
+//! command and the top, not the terminal or the connection as such. The Zerus
+//! window runs `hgs` as its own child with no shell between, and passes when
+//! launchd started it (Dock, Finder, `open`). A lead's or a member's marked
+//! command reads no ancestor's environment and passes below any shell. A
+//! person's command typed into a system shell is refused unless that shell is
+//! itself the top, as when a terminal starts it through the root-owned
+//! `login`; a shell installed outside the system, for example by Homebrew, is
+//! readable and does not refuse. The refusal names the cause and the Zerus
+//! window as the way out, and promises no terminal. The limit is at the top:
+//! an agent whose own environment is withheld and which is itself the top of
+//! the user's tree (started or adopted by launchd) is not detected, like an
+//! agent started without markers. `open`, `osascript` and `launchctl` start a
+//! process under launchd or `login`, a new top without markers, like `cron`,
+//! `at` and ssh to the same computer.
 //!
 //! A macOS sandbox (Seatbelt, the App Sandbox) cannot give a process its own
 //! process table, owner, parent or birth; it can only deny these reads, which

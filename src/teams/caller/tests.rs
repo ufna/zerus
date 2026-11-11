@@ -156,27 +156,8 @@ fn later_birth(birth: &str) -> String {
     }
 }
 
-/// What `KERN_PROCARGS2` answers on macOS: nothing at all after the arguments
-/// is a withheld environment, and any byte after them, even only the
-/// kernel's own strings of a really empty environment, is a readable one.
-#[test]
-fn a_withheld_environment_is_nothing_at_all_after_the_arguments() {
-    let answer = |tail: &[u8]| {
-        let mut bytes = 2i32.to_ne_bytes().to_vec();
-        bytes.extend_from_slice(b"/bin/sh\0\0\0\0sh\0-c\0");
-        bytes.extend_from_slice(tail);
-        procargs_environment(&bytes)
-    };
-    assert!(answer(b"").is_err_and(|error| is_withheld(&error)));
-    assert_eq!(answer(b"\0").unwrap(), b"\0");
-    let empty = answer(b"executable_path=/bin/sh\0ptr_munge=\0").unwrap();
-    assert_eq!(claim(&empty).unwrap(), None);
-    let marked = answer(b"HGS_SESSION=claude/example/one\0HGS_RUN_ID=run-1\0").unwrap();
-    assert!(claim(&marked).unwrap().is_some());
-    let mut short = 3i32.to_ne_bytes().to_vec();
-    short.extend_from_slice(b"/bin/sh\0sh\0-c\0");
-    assert!(procargs_environment(&short).is_err_and(|error| !is_withheld(&error)));
-}
+// The macOS parser and the claim it feeds, on every platform.
+mod environment;
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 fn catalog(config: &std::path::Path) {
