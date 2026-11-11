@@ -26,7 +26,7 @@ import type { Task } from "./tasks-ui";
 // the one the reply was started for and is still shown: cleared on success,
 // the reason kept on it otherwise, with Send still available; the native
 // fresh-stage and read-only checks decide a repeat. A notice is retired when
-// its form leaves its project or is disposed.
+// its form leaves its project.
 
 export interface NotQueued { project: string; task: string; team: string; name: string; reason: string }
 
