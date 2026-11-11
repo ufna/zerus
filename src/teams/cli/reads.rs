@@ -5,7 +5,7 @@ use super::actor::{self, Caller};
 use super::input::{self, Options};
 use super::{not_found_team, storage};
 use crate::config::Config;
-use crate::teams::store::{Cursor, Page, Store};
+use crate::teams::store::{Cursor, Page, Store, TeamRow};
 use serde::Serialize;
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
@@ -21,6 +21,8 @@ pub(super) fn status(config: &Config, caller: &Caller, args: &[String]) -> Resul
     let identity = actor::resolve(&store, caller)?;
     let team = actor::target_team(&store, &identity, options.team()?)?;
     let row = store.team(&team)?.ok_or_else(|| not_found_team(&team))?;
+    // The team-specific diagnostic keeps the hard roster-bound refusal.
+    let _ = store.member_sessions(&team)?;
     let mut view = serde_json::to_value(&row).map_err(storage)?;
     if !options.has("--bundle") {
         if let Some(object) = view.as_object_mut() {
@@ -100,49 +102,57 @@ pub(super) fn list_teams(
     let (limit, cursor) = options.page()?;
     let cursor = cursor.map(input::parse_cursor).transpose()?;
     let page = store.teams(limit, cursor.as_ref())?;
-    // At most 200 member reads per page: live rows use one indexed roster read
-    // (at most 201 rows); other rows keep the lead's primary-key lookup. The
-    // roster also supplies lead_session, so no second lookup or bundle is needed.
-    let mut rows = Vec::with_capacity(page.rows.len());
-    for row in page.rows {
-        let live = matches!(
-            row.status,
-            TeamStatus::Planning | TeamStatus::Running | TeamStatus::Paused
-        );
-        let sessions = if live {
-            store.member_sessions(&row.id)?
-        } else {
-            Vec::new()
-        };
-        let lead_session = if live {
-            sessions
-                .iter()
-                .find(|member| member.member == row.lead)
-                .map(|member| SessionKey {
-                    machine: member.machine.clone(),
-                    session_id: member.session_id.clone(),
-                })
-        } else {
-            store
-                .member(&row.id, &row.lead)?
-                .and_then(|member| member.session)
-        };
-        let mut value = serde_json::to_value(&row).map_err(storage)?;
-        if let Some(object) = value.as_object_mut() {
-            object.insert(
-                "lead_session".into(),
-                serde_json::to_value(lead_session).map_err(storage)?,
-            );
-            if !sessions.is_empty() {
-                object.insert(
-                    "member_sessions".into(),
-                    serde_json::to_value(sessions).map_err(storage)?,
-                );
-            }
-        }
-        rows.push(value);
-    }
+    let rows = page
+        .rows
+        .into_iter()
+        .map(|row| listed_team(&store, row))
+        .collect::<Result<Vec<_>, _>>()?;
     global_rows_with_next(&identity, rows, page.next.as_ref())
+}
+
+fn listed_team(store: &Store, row: TeamRow) -> Result<Value, Problem> {
+    // One indexed roster read supplies both fields for each valid live row.
+    // An oversized roster omits memberships and uses one extra lead PK lookup;
+    // inactive rows keep just the existing lead lookup. No bundle is loaded.
+    let live = matches!(
+        row.status,
+        TeamStatus::Planning | TeamStatus::Running | TeamStatus::Paused
+    );
+    let sessions = if live {
+        match store.member_sessions(&row.id) {
+            Ok(sessions) => Some(sessions),
+            Err(problem) if problem.code == code::OVER_CAP => None,
+            Err(problem) => return Err(problem),
+        }
+    } else {
+        None
+    };
+    let lead_session = match &sessions {
+        Some(sessions) => sessions
+            .iter()
+            .find(|member| member.member == row.lead)
+            .map(|member| SessionKey {
+                machine: member.machine.clone(),
+                session_id: member.session_id.clone(),
+            }),
+        None => store
+            .member(&row.id, &row.lead)?
+            .and_then(|member| member.session),
+    };
+    let mut value = serde_json::to_value(&row).map_err(storage)?;
+    if let Some(object) = value.as_object_mut() {
+        object.insert(
+            "lead_session".into(),
+            serde_json::to_value(lead_session).map_err(storage)?,
+        );
+        if let Some(sessions) = sessions.filter(|sessions| !sessions.is_empty()) {
+            object.insert(
+                "member_sessions".into(),
+                serde_json::to_value(sessions).map_err(storage)?,
+            );
+        }
+    }
+    Ok(value)
 }
 
 /// A global page's rows with their next cursor.
