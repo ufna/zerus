@@ -30,7 +30,6 @@ impl Fixture {
             },
             node: 0,
             id: String::new(),
-            members: Default::default(),
         };
         let initialized=f.process(&["swarm".into(),"initialize".into()],r##"{"projects":[{"id":"example-project","name":"example","color":"#123456","sessions":[],"folders":[]}]}"##,None);
         assert!(
@@ -47,7 +46,12 @@ impl Fixture {
         for member in ["lead", "m1", "m2", "m3"] {
             f.bind(member, &machine);
         }
-        let tasks = ProjectStore::open(&f.config.state.join("replica"), &f.task.project).unwrap();
+        f.add_task(&machine);
+        f
+    }
+    fn add_task(&mut self, machine: &str) {
+        let tasks =
+            ProjectStore::open(&self.config.state.join("replica"), &self.task.project).unwrap();
         let mut doc = tasks
             .new_task(
                 "Work",
@@ -59,16 +63,16 @@ impl Fixture {
                 1,
             )
             .unwrap();
-        f.task.uuid = doc.uuid().into();
+        self.task.uuid = doc.uuid().into();
         tasks.save(&mut doc).unwrap();
         drop(tasks);
-        f.node = crate::teams::tasks::send(
+        self.node = crate::teams::tasks::send(
             &crate::teams::tasks::Caller {
-                state: &f.config.state,
-                machine: &machine,
+                state: &self.config.state,
+                machine,
                 actor: TaskActor::Person,
             },
-            &f.task,
+            &self.task,
             TEAM,
             None,
             None,
@@ -76,8 +80,7 @@ impl Fixture {
         .unwrap()
         .node
         .unwrap();
-        f.id = f.h.intent(f.node, "m1");
-        f
+        self.id = self.h.intent(self.node, "m1");
     }
     fn bind(&mut self, member: &str, machine: &str) {
         use sha2::{Digest, Sha256};
@@ -109,7 +112,6 @@ impl Fixture {
             )
             .unwrap();
         private_write(&self.config.state.join(format!("{:x}.json",Sha256::digest(name.as_bytes()))),json!({"version":1,"agent":"codex","name":name,"launch_id":launch,"run_id":format!("run-{member}"),"conversation_id":format!("conversation-{member}"),"activity":"idle"}).to_string().as_bytes());
-        self.members.insert(member.into(), key);
     }
     pub(super) fn submitted(&mut self) {
         let id = self.id.clone();

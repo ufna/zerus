@@ -67,7 +67,6 @@ struct Fixture {
     task: TaskRef,
     node: u32,
     id: String,
-    members: std::collections::BTreeMap<String, SessionKey>,
 }
 impl Fixture {
     fn process(&self, args: &[String], input: &str, mode: Option<&str>) -> std::process::Output {

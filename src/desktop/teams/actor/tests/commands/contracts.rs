@@ -58,10 +58,7 @@ fn finish() {
         Stage::Done
     );
 }
-fn creation_and_clear() {
-    let mut f = Fixture::new();
-    f.submitted();
-    f.reported();
+fn created_stage(f: &mut Fixture) -> (u32, TaskRef) {
     let node = f.h.store.stage_tasks(TEAM, 1, None).unwrap().rows[0].node;
     let id = uuid::Uuid::new_v4().to_string();
     f.h.run(
@@ -118,6 +115,13 @@ fn creation_and_clear() {
         },
     )
     .unwrap();
+    (node, task)
+}
+fn creation_and_clear() {
+    let mut f = Fixture::new();
+    f.submitted();
+    f.reported();
+    let (node, task) = created_stage(&mut f);
     let team = f.h.store.team(TEAM).unwrap().unwrap();
     let request = clear_request(&team, node);
     {

@@ -8,15 +8,26 @@ import json
 import os
 from pathlib import Path
 import subprocess
-import sys
+import tempfile
 import unittest
 
-ROOT = Path(__file__).resolve().parents[5]
-sys.path.insert(0, str(ROOT / "tests"))
-from test_tasks import Fixture, HGS
+HGS = Path(os.environ["HGS_TEST_BIN"])
 
 
-class AdapterCommand(Fixture):
+class AdapterCommand(unittest.TestCase):
+    def setUp(self):
+        temp = tempfile.TemporaryDirectory(prefix="teams-actor-cli-")
+        self.addCleanup(temp.cleanup)
+        root = Path(temp.name)
+        self.env = dict(PATH=os.environ.get("PATH", "/usr/bin:/bin"),
+                        HOME=str(root), HGS_CONFIG_DIR=str(root / "config"),
+                        HGS_STATE_DIR=str(root / "state"), HGS_SELF="fixture")
+        catalog = {"projects": [{"id": "project-1", "name": "example", "color": "#123456",
+                                  "folders": [], "sessions": []}]}
+        initialized = subprocess.run([str(HGS), "swarm", "initialize"], input=json.dumps(catalog),
+                                     env=self.env, text=True, capture_output=True, timeout=30)
+        self.assertEqual(initialized.returncode, 0, initialized.stderr)
+
     def test_exact_occupancy_arguments(self):
         runner = os.environ["HGS_TEST_ACTOR_BINARY"]
         reply = subprocess.run(
