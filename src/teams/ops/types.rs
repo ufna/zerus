@@ -45,6 +45,21 @@ impl Actor {
     }
 }
 
+/// The task's team/home key as read by the trusted observer.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum KeyState {
+    #[default]
+    Ours,
+    Absent,
+    Other,
+}
+impl KeyState {
+    fn is_ours(&self) -> bool {
+        *self == Self::Ours
+    }
+}
+
 /// The task writer's authoritative snapshot, not an independently editable
 /// node state. Revisions are the task document's opaque tokens. Each update
 /// compares the previously projected token so delayed observations cannot
@@ -53,6 +68,8 @@ impl Actor {
 #[serde(deny_unknown_fields)]
 pub struct TaskObservation {
     pub revision: String,
+    #[serde(default, skip_serializing_if = "KeyState::is_ours")]
+    pub key: KeyState,
     #[serde(default)]
     pub previous_revision: String,
     pub stage: TaskStage,

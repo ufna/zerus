@@ -306,7 +306,17 @@ pub(super) fn observe(ctx: &mut Context<'_>) -> Result<()> {
     };
     let mut n = ctx.node(*node)?;
     let table = ctx.node_table(*node)?;
-    let (stage, was_terminal) = validate_observation(ctx, *node, &n, o)?;
+    let (stage, was_terminal) = validate_observation(ctx, *node, o)?;
+    let released = rows::released(ctx.db, &ctx.team.id, *node)?;
+    let left = o.key != KeyState::Ours;
+    if left || released {
+        let release = left && !released && table == "nodes";
+        rows::record_observation(ctx.db, &ctx.team.id, *node, o, release)?;
+        if release {
+            leave_team(ctx, *node)?;
+        }
+        return Ok(());
+    }
     let active = matches!(ctx.team.status, TeamStatus::Running | TeamStatus::Paused);
     if !active && table == "nodes" {
         archive_inactive(ctx, *node)?;
@@ -324,12 +334,11 @@ pub(super) fn observe(ctx: &mut Context<'_>) -> Result<()> {
     if o.cancelled || o.stage == TaskStage::Done {
         finish_observation(ctx, *node, o.cancelled)?;
     }
-    Ok(())
+    rows::record_observation(ctx.db, &ctx.team.id, *node, o, false)
 }
 fn validate_observation(
     ctx: &Context<'_>,
     node: u32,
-    n: &Node,
     o: &TaskObservation,
 ) -> Result<(String, bool)> {
     reason(&o.revision)?;
@@ -337,16 +346,26 @@ fn validate_observation(
     text(&o.previous_revision, 256)?;
     text(&o.rank, 256)?;
     text(&o.title, 1024)?;
-    let table = ctx.node_table(node)?;
-    let old:(String,String,bool,String)=ctx.db.query_row(&format!("SELECT task_revision,task_stage,task_cancelled,rank FROM {table} WHERE team=?1 AND id=?2"),params![ctx.team.id,node],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).map_err(storage)?;
+    let old = rows::observation(ctx.db, &ctx.team.id, node)?;
     let stage = encode(&o.stage)?.trim_matches('"').to_owned();
-    if (old.0 != o.revision && old.0 != o.previous_revision)
-        || (old.0 == o.revision
-            && (old.1 != stage || old.2 != o.cancelled || old.3 != o.rank || n.title != o.title))
-    {
+    if let Some(old) = &old {
+        let same = old.stage == o.stage
+            && old.cancelled == o.cancelled
+            && old.rank == o.rank
+            && old.title == o.title
+            && old.key == o.key;
+        if (old.revision != o.revision && old.revision != o.previous_revision)
+            || (old.revision == o.revision && !same)
+        {
+            return Err(stale());
+        }
+    } else if !o.previous_revision.is_empty() {
         return Err(stale());
     }
-    Ok((stage, old.1 == "done" || old.2))
+    Ok((
+        stage,
+        old.is_some_and(|old| old.stage == TaskStage::Done || old.cancelled),
+    ))
 }
 
 fn restore(ctx: &mut Context<'_>, node: u32, n: &mut Node) -> Result<()> {
@@ -435,5 +454,26 @@ fn archive_inactive(ctx: &Context<'_>, node: u32) -> Result<()> {
             params![ctx.team.id, node],
         )
         .map_err(storage)?;
+    Ok(())
+}
+
+fn leave_team(ctx: &mut Context<'_>, node: u32) -> Result<()> {
+    ctx.settle_override(node)?;
+    ctx.close_inbox(node)?;
+    ctx.db.execute(&format!("UPDATE effects SET state='superseded' WHERE team=?1 AND node=?2 AND state IN {OPEN_EFFECT_STATES}"),params![ctx.team.id,node]).map_err(storage)?;
+    ctx.db
+        .execute(
+            "DELETE FROM live_tasks WHERE team=?1 AND node=?2",
+            params![ctx.team.id, node],
+        )
+        .map_err(storage)?;
+    ctx.db
+        .execute(
+            "UPDATE nodes SET hold=1 WHERE team=?1 AND id=?2",
+            params![ctx.team.id, node],
+        )
+        .map_err(storage)?;
+    archive_inactive(ctx, node)?;
+    ctx.event = Some("person_override");
     Ok(())
 }

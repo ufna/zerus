@@ -41,6 +41,11 @@ pub(super) fn append(ctx: &Context<'_>, request: &Request) -> Result<()> {
         .map_or_else(|| kind(ctx.op), Ok)?;
     let body = match ctx.op {
         Operation::CloseCard { reason, .. } => reason.clone(),
+        Operation::ObserveTask { node, observation }
+            if ctx.event == Some("person_override") && observation.key != KeyState::Ours =>
+        {
+            format!("Task {node} left the team.")
+        }
         _ => format!("{kind} at revision {}", ctx.reply.revision),
     };
     ctx.db.execute("INSERT INTO journal(team,at_ms,actor,kind,request_id,text,refs) VALUES(?1,?2,?3,?4,?5,?6,?7)",params![ctx.team.id,ctx.now,encode(ctx.actor)?,kind,request.request_id,body,encode(&references(request)?)?]).map_err(storage)?;
