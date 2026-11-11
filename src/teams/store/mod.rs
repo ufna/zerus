@@ -5,6 +5,8 @@
 mod tests;
 
 mod cross;
+mod guards;
+pub(crate) use guards::Guard;
 mod decision_state;
 mod holder;
 mod member_sessions;
@@ -173,18 +175,19 @@ impl Store {
 fn connect(path: &Path, create: bool) -> Result<Connection> {
     let dir = path
         .parent()
-        .ok_or_else(|| storage("missing store directory"))?;
+        .ok_or_else(|| Guard::MissingDirectory.problem())?;
     if !crate::platform::verify_private(dir, crate::platform::Private::Directory)
         .map_err(storage)?
     {
-        return Err(storage("store directory is not private"));
+        return Err(Guard::DirectoryPrivacy.problem());
     }
     for suffix in ["", "-wal", "-shm", "-journal"] {
         let leaf = dir.join(format!("teams-v1.sqlite3{suffix}"));
         match crate::platform::verify_private(&leaf, crate::platform::Private::File) {
             Ok(true) => (),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => (),
-            _ => return Err(storage("store file is not private")),
+            Ok(false) => return Err(Guard::FilePrivacy.problem()),
+            Err(error) => return Err(storage(error)),
         }
     }
     #[cfg(unix)]
@@ -206,7 +209,7 @@ fn connect(path: &Path, create: bool) -> Result<Connection> {
         .open(path)
         .map_err(storage)?;
         if !crate::platform::verify_private_file(&file).map_err(storage)? {
-            return Err(storage("store file is not private"));
+            return Err(Guard::FilePrivacy.problem());
         }
     }
     let mut db = Connection::open_with_flags(

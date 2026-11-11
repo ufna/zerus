@@ -2,6 +2,8 @@
 
 use serde::{Deserialize, Serialize};
 
+pub const MAX_DETAIL_BYTES: usize = 4096;
+
 /// A logical refusal or a storage failure whose result is not known.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -10,6 +12,9 @@ pub struct Problem {
     pub code: String,
     /// One sentence for a person.
     pub message: String,
+    /// Optional diagnostic cause, bounded by the producer and absent on old replies.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
     /// What the problem is about: IDs, field names, a reset time.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub refs: Vec<String>,
@@ -20,8 +25,20 @@ impl Problem {
         Self {
             code: code.to_owned(),
             message: message.into(),
+            detail: None,
             refs: Vec::new(),
         }
+    }
+
+    pub fn with_detail(mut self, detail: impl Into<String>) -> Self {
+        let mut detail = detail.into();
+        let mut end = detail.len().min(MAX_DETAIL_BYTES);
+        while !detail.is_char_boundary(end) {
+            end -= 1;
+        }
+        detail.truncate(end);
+        self.detail = Some(detail);
+        self
     }
 
     pub fn with_refs<I, S>(mut self, refs: I) -> Self

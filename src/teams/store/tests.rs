@@ -1,5 +1,6 @@
 use super::*;
 mod cross;
+mod guards;
 mod holder;
 mod member_sessions;
 mod stage;
@@ -257,7 +258,7 @@ fn opening_another_connection_keeps_sqlite_locks_and_refuses_symlinks() {
     let moved = h.temp.path().join("teams/saved.sqlite3");
     std::fs::rename(&path, &moved).unwrap();
     std::os::unix::fs::symlink(&moved, &path).unwrap();
-    refused(Store::open(h.temp.path()), code::STORAGE_FAILED);
+    refused(Store::open(h.temp.path()), code::INVALID_STATE);
 }
 
 #[test]

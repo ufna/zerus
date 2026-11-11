@@ -8,7 +8,7 @@ use super::input::{self, Options};
 use super::{request_input, storage};
 use crate::config::Config;
 use crate::teams::catalog;
-use crate::teams::store::Store;
+use crate::teams::store::{Guard, Store};
 use serde_json::{json, Value};
 use zerus_team_plan::catalog::{Catalog, Template, TemplateBundle};
 use zerus_team_plan::problem::code;
@@ -18,7 +18,7 @@ use zerus_team_plan::Problem;
 fn reply(actor: &Value, fields: Value) -> Result<Value, Problem> {
     let mut object = match fields {
         Value::Object(object) => object,
-        _ => return Err(storage("a catalog reply must be an object")),
+        _ => return Err(Guard::CatalogReply.problem()),
     };
     object.insert("ok".into(), json!(true));
     object.insert("actor".into(), actor.clone());

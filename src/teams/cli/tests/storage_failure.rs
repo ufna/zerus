@@ -66,3 +66,77 @@ fn storage_reads_and_cli_conversion_errors_do_not_claim_a_logical_refusal() {
         "The result is not known; repeat the same request with the same request ID."
     );
 }
+
+#[test]
+#[cfg(unix)]
+fn u1_privacy_refusals_keep_their_cause_for_reads_and_writes() {
+    use std::os::unix::fs::PermissionsExt;
+    for (name, mode) in [("teams", 0o755), ("teams/teams-v1.sqlite3", 0o644)] {
+        let h = Harness::new();
+        h.create();
+        let path = h.state().join(name);
+        let original = std::fs::metadata(&path).unwrap().permissions();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode)).unwrap();
+        for command in [
+            "list".to_owned(),
+            format!("status --team {TEAM}"),
+            "pause".to_owned(),
+        ] {
+            let input =
+                json!({"request_id":uid(0xf020),"team":TEAM,"expected_revision":1}).to_string();
+            let (reply, exit) = h.cli(&Caller::Person, &command, &input);
+            assert_eq!(exit, 1, "{reply}");
+            assert_eq!(code(&reply), "invalid_state", "{reply}");
+            assert!(
+                reply["error"]["message"]
+                    .as_str()
+                    .unwrap()
+                    .contains("not private"),
+                "{reply}"
+            );
+            assert!(!reply["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("repeat"));
+        }
+        std::fs::set_permissions(path, original).unwrap();
+    }
+}
+
+#[test]
+fn a_storage_read_reports_its_cause_without_a_request_id_instruction() {
+    let h = Harness::new();
+    h.create();
+    h.store()
+        .db
+        .as_ref()
+        .unwrap()
+        .execute_batch("PRAGMA foreign_keys=OFF; DROP TABLE members")
+        .unwrap();
+    let (reply, exit) = h.cli(&Caller::Person, "list", "");
+    assert_eq!(exit, 1);
+    assert_eq!(code(&reply), "storage_failed");
+    assert_eq!(
+        reply["error"]["message"],
+        "The read failed and may be repeated."
+    );
+    assert!(
+        reply["error"]["detail"]
+            .as_str()
+            .unwrap()
+            .contains("no such table: members"),
+        "{reply}"
+    );
+}
+
+#[test]
+fn storage_diagnostic_detail_is_kept_and_bounded_on_a_character_boundary() {
+    let original = "cause: ".to_owned() + &"⚙".repeat(5000);
+    let (reply, exit) = crate::teams::cli::refusal(crate::teams::cli::storage(&original));
+    assert_eq!(exit, 1);
+    let detail = reply["error"]["detail"].as_str().expect("underlying cause");
+    assert!(detail.starts_with("Teams storage is unavailable: cause: "));
+    assert!(detail.len() <= 4096);
+    assert!(detail.len() >= 4093);
+    assert!(original.contains("cause: "));
+}

@@ -35,6 +35,7 @@ fn run(
 ) -> (Value, i32) {
     match execute(config, caller, args, provided) {
         Ok(reply) => (reply, 0),
+        Err(problem) if is_read(args) => problem_reply(problem, true),
         Err(problem) => refusal(problem),
     }
 }
@@ -94,12 +95,38 @@ fn too_large() -> Problem {
     )
 }
 
-pub(super) fn refusal(mut problem: Problem) -> (Value, i32) {
+pub(super) fn refusal(problem: Problem) -> (Value, i32) {
+    problem_reply(problem, false)
+}
+
+fn problem_reply(mut problem: Problem, read: bool) -> (Value, i32) {
     if problem.code == code::STORAGE_FAILED {
-        problem.message =
-            "The result is not known; repeat the same request with the same request ID.".into();
+        let detail = problem
+            .detail
+            .take()
+            .unwrap_or_else(|| problem.message.clone());
+        problem = problem.with_detail(detail);
+        problem.message = if read {
+            "The read failed and may be repeated."
+        } else {
+            "The result is not known; repeat the same request with the same request ID."
+        }
+        .into();
     }
     (json!({"ok": false, "error": problem}), 1)
+}
+
+fn is_read(args: &[String]) -> bool {
+    match args.first().map(String::as_str) {
+        Some(
+            "status" | "list" | "waiting" | "inbox" | "queue" | "cards" | "journal" | "current",
+        ) => true,
+        Some("catalog" | "template") => matches!(
+            args.get(1).map(String::as_str),
+            Some("show" | "list" | "export")
+        ),
+        _ => false,
+    }
 }
 
 pub(super) fn unknown(command: &str) -> Problem {

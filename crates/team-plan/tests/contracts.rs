@@ -312,3 +312,18 @@ fn storage_failure_has_a_distinct_pinned_problem_fixture() {
         "The result is not known; repeat the same request with the same request ID."
     );
 }
+
+#[test]
+fn diagnostic_detail_is_additive_and_old_problems_still_decode() {
+    let legacy: Problem = serde_json::from_value(
+        serde_json::json!({"code":"invalid_state","message":"Rule refused."}),
+    )
+    .unwrap();
+    assert!(serde_json::to_value(legacy)
+        .unwrap()
+        .get("detail")
+        .is_none());
+    let value = serde_json::json!({"code":"storage_failed","message":"The read failed and may be repeated.","detail":"database is locked"});
+    let problem: Problem = serde_json::from_value(value.clone()).unwrap();
+    assert_eq!(serde_json::to_value(problem).unwrap(), value);
+}
