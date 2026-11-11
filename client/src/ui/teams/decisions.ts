@@ -13,7 +13,11 @@ export interface WaitingDecision {
   danger?: boolean;
 }
 
-/** The card's kind in words. */
+/** The card's kind in words, keyed by the exact kind the store sends: the
+ * store opens `integration` and `pipeline_acceptance` itself (the acceptance
+ * a pipeline asks the person for; phases are milestone 2), and any other kind
+ * through an opened card. A kind not in this table shows its plain name,
+ * never another kind's label. */
 export function waitingKindLabel(item: Pick<WaitingItem, "kind">): string {
   switch (item.kind) {
     case "integration": return tr("Integration");
@@ -23,13 +27,14 @@ export function waitingKindLabel(item: Pick<WaitingItem, "kind">): string {
     case "permission_escalated": return tr("Permission");
     case "task_waits_owner": return tr("Held task");
     case "team_paused": return tr("Team paused");
-    case "pipeline_acceptance": return tr("Phase acceptance");
+    case "pipeline_acceptance": return tr("Work acceptance");
     case "lead_stalled": return tr("Lead stalled");
     default: return item.kind;
   }
 }
 
-/** The card's icon (ui/lib/icons names). */
+/** The card's icon (ui/lib/icons names), keyed like the label; a kind not in
+ * the table gets a neutral icon of its own. */
 export function waitingKindIcon(kind: string): string {
   switch (kind) {
     case "integration": return "git-merge";
@@ -38,9 +43,9 @@ export function waitingKindIcon(kind: string): string {
     case "permission_escalated": return "shield-check";
     case "task_waits_owner": return "clock";
     case "team_paused": return "pause";
-    case "phase_acceptance": return "check";
+    case "pipeline_acceptance": return "check";
     case "lead_stalled": return "triangle-alert";
-    default: return "triangle-alert";
+    default: return "info";
   }
 }
 
