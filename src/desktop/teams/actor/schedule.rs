@@ -230,6 +230,7 @@ impl Runtime {
         if m.state != MemberState::Active || !ports.free(team, &m)? {
             return Ok(());
         }
-        self.send(store, ports, team, (&node, &m), "reopen", now)
+        self.send(store, ports, team, (&node, &m), "reopen", now)?;
+        self.recovered(store, team, &format!("reopen:{}", d.seq), now)
     }
 }

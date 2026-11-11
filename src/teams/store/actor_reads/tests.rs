@@ -177,3 +177,27 @@ fn only_the_named_teams_saved_refusal_proves_no_intent_started() {
     crate::teams::ops::apply(&mut h.store, &person(), &r, 101).unwrap();
     assert!(!h.store.request_refused(TEAM, &r.request_id).unwrap());
 }
+
+#[test]
+fn report_lookup_is_keyed_to_the_exact_node_and_generation() {
+    let h = Harness::new();
+    let db = h.store.db.as_ref().unwrap();
+    let mut q = db.prepare(&format!("EXPLAIN QUERY PLAN {REPORT}")).unwrap();
+    let plan = q
+        .query_map(params![TEAM, 1, 1], |r| r.get::<_, String>(3))
+        .unwrap()
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .unwrap();
+    assert!(
+        plan.iter()
+            .any(|s| s.contains("effects_report")
+                && s.contains("team=? AND node=? AND generation=?")),
+        "{plan:?}"
+    );
+    assert!(
+        !plan
+            .iter()
+            .any(|s| s.contains("SCAN") || s.contains("TEMP B-TREE")),
+        "{plan:?}"
+    );
+}

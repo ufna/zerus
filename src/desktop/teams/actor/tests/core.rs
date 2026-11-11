@@ -528,3 +528,88 @@ fn a_full_actor_ledger_is_a_visible_sweep_fault_before_any_new_delivery() {
     assert_eq!(error.code, super::super::ledger::CAPACITY);
     assert_eq!(p.sends, 0);
 }
+
+#[test]
+fn delivered_reopen_closes_its_old_retry_card_and_gate() {
+    let (mut h, mut a, mut p) = setup(2);
+    p.free = ["m1".to_string()].into();
+    tick(&mut h, &mut a, &mut p, 100, false);
+    assert_eq!(p.sends, 1, "node 1 to m1");
+    h.observe(1, TaskStage::InReview);
+    h.run(
+        &service(),
+        Operation::RecordReport {
+            node: 1,
+            generation: 1,
+            member: "m1".into(),
+            text: "Report".into(),
+            commit: COMMIT.into(),
+        },
+    )
+    .unwrap();
+    tick(&mut h, &mut a, &mut p, 101, false);
+    assert_eq!(p.sends, 2, "node 2 to m1, which is now busy");
+    let lead = h.bind("lead");
+    h.run(
+        &lead,
+        Operation::Return {
+            node: 1,
+            reason: "Revise".into(),
+        },
+    )
+    .unwrap();
+    let seq = h
+        .store
+        .pending_reopens(TEAM, 200, None)
+        .unwrap()
+        .rows
+        .first()
+        .unwrap()
+        .seq;
+    // m1 is busy on node 2: the store refuses the reopen intent three times.
+    for now in [102, 60_102, 180_102, 420_102] {
+        tick(&mut h, &mut a, &mut p, now, false);
+    }
+    let open_before: Vec<String> = h
+        .store
+        .cards(TEAM, 200, None)
+        .unwrap()
+        .rows
+        .into_iter()
+        .filter(|c| c.state == "open")
+        .map(|c| c.text)
+        .collect();
+    // Node 2 is reported: m1 is no longer busy, and the reopen is delivered.
+    h.observe(2, TaskStage::InReview);
+    h.run(
+        &service(),
+        Operation::RecordReport {
+            node: 2,
+            generation: 1,
+            member: "m1".into(),
+            text: "Report".into(),
+            commit: COMMIT.into(),
+        },
+    )
+    .unwrap();
+    for now in [2_000_000, 2_060_000, 2_200_000] {
+        tick(&mut h, &mut a, &mut p, now, false);
+    }
+    let open_after: Vec<String> = h
+        .store
+        .cards(TEAM, 200, None)
+        .unwrap()
+        .rows
+        .into_iter()
+        .filter(|c| c.state == "open")
+        .map(|c| c.text)
+        .collect();
+    let gate = a.ledger.get(TEAM, &format!("gate:reopen:{seq}")).unwrap();
+    assert!(!open_before.is_empty());
+    assert!(
+        open_after.is_empty(),
+        "recovered reopen still shows cards: {open_after:?}"
+    );
+    assert!(gate.is_none(), "settled reopen kept its retry gate");
+    assert_eq!(p.sends, 3, "the reopen was delivered once");
+}

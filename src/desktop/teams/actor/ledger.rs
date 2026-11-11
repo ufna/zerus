@@ -5,6 +5,8 @@ use serde_json::Value;
 use std::{path::Path, time::Duration};
 use zerus_team_plan::Problem;
 type Result<T> = std::result::Result<T, Problem>;
+const PENDING_NODE: &str = "SELECT EXISTS(SELECT 1 FROM actor_rows INDEXED BY actor_delivery_node WHERE team=?1 AND json_extract(data,'$.node')=?2 AND key>='delivery:' AND key<'delivery;')";
+const PENDING_MEMBER: &str = "SELECT EXISTS(SELECT 1 FROM actor_rows INDEXED BY actor_delivery_member WHERE team=?1 AND json_extract(data,'$.member')=?2 AND key>='delivery:' AND key<'delivery;')";
 pub(super) const CAPACITY: &str = "team_actor_capacity";
 fn write_error(error: rusqlite::Error) -> Problem {
     if matches!(&error,rusqlite::Error::SqliteFailure(code,_) if code.extended_code==rusqlite::ffi::SQLITE_CONSTRAINT_TRIGGER)
@@ -152,10 +154,14 @@ impl Ledger {
         self.0.query_row("SELECT EXISTS(SELECT 1 FROM actor_rows WHERE team=?1 AND key>='merge:' AND key<'merge;')",[team],|r|r.get(0)).map_err(storage)
     }
     pub fn pending_node(&self, team: &str, node: u32) -> Result<bool> {
-        self.0.query_row("SELECT EXISTS(SELECT 1 FROM actor_rows WHERE team=?1 AND json_extract(data,'$.node')=?2 AND key>='delivery:' AND key<'delivery;')",params![team,node],|r|r.get(0)).map_err(storage)
+        self.0
+            .query_row(PENDING_NODE, params![team, node], |r| r.get(0))
+            .map_err(storage)
     }
     pub fn pending_member(&self, team: &str, member: &str) -> Result<bool> {
-        self.0.query_row("SELECT EXISTS(SELECT 1 FROM actor_rows WHERE team=?1 AND json_extract(data,'$.member')=?2 AND key>='delivery:' AND key<'delivery;')",params![team,member],|r|r.get(0)).map_err(storage)
+        self.0
+            .query_row(PENDING_MEMBER, params![team, member], |r| r.get(0))
+            .map_err(storage)
     }
     pub fn remove(&mut self, row: &Row) -> Result<()> {
         self.0
@@ -197,4 +203,37 @@ fn connection(path: &Path) -> Result<Connection> {
     #[cfg(unix)]
     crate::sqlite_file::bind_private(&db, path, identity).map_err(storage)?;
     Ok(db)
+}
+
+#[cfg(test)]
+mod index_tests {
+    use super::*;
+    #[test]
+    fn delivery_point_reads_use_their_partial_indexes() {
+        let temp = tempfile::tempdir().unwrap();
+        let ledger = Ledger::open(temp.path()).unwrap();
+        for (sql, index) in [
+            (PENDING_NODE, "actor_delivery_node"),
+            (PENDING_MEMBER, "actor_delivery_member"),
+        ] {
+            let mut q = ledger
+                .0
+                .prepare(&format!("EXPLAIN QUERY PLAN {sql}"))
+                .unwrap();
+            let plan = q
+                .query_map(params!["team", "value"], |r| r.get::<_, String>(3))
+                .unwrap()
+                .collect::<std::result::Result<Vec<_>, _>>()
+                .unwrap();
+            assert!(
+                plan.iter()
+                    .any(|p| p.contains(index) && p.contains("<expr>=?")),
+                "{plan:?}"
+            );
+            assert!(
+                !plan.iter().any(|p| p.contains("SCAN actor_rows")),
+                "{plan:?}"
+            );
+        }
+    }
 }

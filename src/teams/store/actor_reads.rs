@@ -8,6 +8,7 @@ pub struct Report {
     pub text: String,
     pub commit: String,
 }
+const REPORT: &str = "SELECT e.member,r.text,r.commit_id FROM reports r JOIN effects e INDEXED BY effects_report ON e.team=r.team AND e.node=r.node AND e.generation=r.generation WHERE r.team=?1 AND r.node=?2 AND r.generation=?3 AND e.state NOT IN ('refused','superseded') ORDER BY e.seq DESC LIMIT 1";
 const ACCEPTS:&str="SELECT seq,node,generation,actor,kind,text,state FROM decisions INDEXED BY decision_pending WHERE team=?1 AND state<>'settled' AND state='ready' AND kind='accept' AND node>?2 AND node<=?3 ORDER BY node LIMIT ?4";
 const REOPENS: &str = "SELECT seq,node,generation,actor,kind,text,state FROM decisions INDEXED BY decision_pending WHERE team=?1 AND state<>'settled' AND state='pending' AND kind IN ('return','reassign') AND node>?2 AND node<=?3 ORDER BY node LIMIT ?4";
 const OPEN: &str = "SELECT seq,node,member,generation,request_id,actor,state,outcome,created_ms,kind FROM effects INDEXED BY effects_pending WHERE team=?1 AND state IN ('reserved','submitted','uncertain','cutting_over') AND seq>?2 AND seq<=?3 ORDER BY seq LIMIT ?4";
@@ -20,9 +21,17 @@ impl Store {
     /// The immutable report and its holder in that exact attempt generation.
     pub fn report(&self, team: &str, node: NodeId, generation: u32) -> Result<Option<Report>> {
         self.active()?;
-        self.db.as_ref().map_or(Ok(None), |db| db.query_row(
-            "SELECT e.member,r.text,r.commit_id FROM reports r JOIN effects e ON e.team=r.team AND e.node=r.node AND e.generation=r.generation WHERE r.team=?1 AND r.node=?2 AND r.generation=?3 AND e.state NOT IN ('refused','superseded') ORDER BY e.seq DESC LIMIT 1",
-            params![team,node,generation],|r|Ok(Report{member:r.get(0)?,text:r.get(1)?,commit:r.get(2)?})).optional().map_err(storage))
+        self.db.as_ref().map_or(Ok(None), |db| {
+            db.query_row(REPORT, params![team, node, generation], |r| {
+                Ok(Report {
+                    member: r.get(0)?,
+                    text: r.get(1)?,
+                    commit: r.get(2)?,
+                })
+            })
+            .optional()
+            .map_err(storage)
+        })
     }
     /// Bounded ranges of the existing effects_pending(team,state,seq) index.
     pub fn open_effects(
