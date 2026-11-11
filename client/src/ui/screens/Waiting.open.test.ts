@@ -144,3 +144,19 @@ it("a refused decision shows the team's reason once, as this view's own", async 
   expect(host.textContent!.split("The card was already decided.")).toHaveLength(2);
   expect(f.acts[0]).toMatchObject({ team: TEAM, expected_revision: 16, action: { kind: "decide", card: 1 } });
 });
+
+it("a member's person-only request shows from the team's list row, with no team loaded (second confirmation, finding 3)", async () => {
+  const live = { ...summary(TEAM, leadBinding), member_sessions: [{ member: "m1", machine: MACHINE, session_id: "launch_id:launch-m1" }] };
+  store.apply([entry("list", "list", { teams: [live], truncated: false, next: null }), entry("waiting", "waiting", { items: [], next: null })]);
+  // The Team tab was opened and left, as navigating to Waiting does.
+  await store.openTeam(TEAM);
+  store.apply([entry(`team:${TEAM}`, "team", { ...teamView, bar: { ...teamView.bar, id: TEAM } })]);
+  await store.closeTeam();
+  expect(store.team()).toBeUndefined();
+  f.rows = [{ key: "member", name: "Member", computer: "", launchId: "launch-m1", status: "attention", attention: "approval", actionNeeded: true }];
+  const host = show();
+  expect(host.querySelector('[data-waiting-request="member"]')).not.toBeNull();
+  // The same row's status decides: a stopped team's member is not listed.
+  store.apply([entry("list", "list", { teams: [{ ...live, status: "stopped" }], truncated: false, next: null })]);
+  await vi.waitFor(() => expect(host.querySelector('[data-waiting-request="member"]')).toBeNull());
+});

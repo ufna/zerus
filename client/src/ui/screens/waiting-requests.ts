@@ -1,11 +1,12 @@
 // The requests of team sessions that only a person can answer: the desktop's
 // own session attention data (a question or an approval, unacknowledged and
-// not a supervised child's), matched to a team only by a verified binding: a
-// live team's lead session from the scanned list, or a member session of the
-// team view that is loaded. A parent link is presentation and never makes a
-// session a team's. A card in the team store is not this; the core says so in
-// the waiting read.
-import type { TeamSummary, TeamView } from "../../store/teams";
+// not a supervised child's), matched to a team only by a verified binding on
+// that team's own list row: its lead_session or one of its member_sessions,
+// and only while the same row says the team is live. A parent link is
+// presentation and never makes a session a team's; a loaded team view, which
+// can be older than the list, is not a source. A card in the team store is not
+// this; the core says so in the waiting read.
+import type { TeamSummary } from "../../store/teams";
 import { sessionKey } from "../teams/session-binding";
 
 /** The team statuses whose sessions can still ask. */
@@ -31,18 +32,19 @@ export interface TeamRequest {
   attention: string;
 }
 
-/** The verified team sessions: live leads from the scanned list (bounded by
- * its pages) and the loaded team's members (bounded by the core's member cap). */
-export function teamSessions(listed: readonly TeamSummary[], loaded?: TeamView): Map<string, { team: string; name: string }> {
+/** The verified team sessions of the scanned list (bounded by its pages and
+ * the core's member cap): each live row's lead and members, keyed by machine
+ * and session. Status and membership come from the same row. */
+export function teamSessions(listed: readonly TeamSummary[]): Map<string, { team: string; name: string }> {
   const sessions = new Map<string, { team: string; name: string }>();
   for (const summary of listed) {
-    const key = LIVE_TEAM.has(summary.status) ? sessionKey(summary.lead_session) : "";
-    if (key) sessions.set(key, { team: summary.id, name: summary.name });
-  }
-  if (loaded && LIVE_TEAM.has(loaded.bar.status)) {
-    for (const member of loaded.members) {
-      const key = member.state === "removed" ? "" : sessionKey(member.session);
-      if (key) sessions.set(key, { team: loaded.bar.id, name: loaded.bar.name });
+    if (!LIVE_TEAM.has(summary.status)) continue;
+    const team = { team: summary.id, name: summary.name };
+    const lead = sessionKey(summary.lead_session);
+    if (lead) sessions.set(lead, team);
+    for (const member of summary.member_sessions ?? []) {
+      const key = sessionKey(member);
+      if (key) sessions.set(key, team);
     }
   }
   return sessions;

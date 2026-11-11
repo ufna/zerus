@@ -174,6 +174,20 @@ pub struct TeamSummary {
     pub revision: u64,
     /// The lead's bound session: how the desktop finds a session's team.
     pub lead_session: Option<SessionRef>,
+    /// The bound sessions of a planning, running or paused team's members,
+    /// at most [`MEMBERS_KEPT`]; absent when the row names none, as an older
+    /// command line's row does, so the serialized summary is unchanged then.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub member_sessions: Option<Vec<MemberSession>>,
+}
+
+/// One member's bound session on a live team's list row: how Waiting for you
+/// knows a member's session without loading the team.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
+pub struct MemberSession {
+    pub member: String,
+    pub machine: String,
+    pub session_id: String,
 }
 
 impl TeamSummary {
@@ -213,6 +227,29 @@ pub(crate) fn lead_session(row: &Value) -> Option<SessionRef> {
         session_id: name(found, "session_id"),
     };
     (!view.session_id.is_empty()).then_some(view)
+}
+
+/// A list row's `member_sessions`: entries that name a member, a machine and a
+/// session, at most [`MEMBERS_KEPT`]; none when the row has no such array.
+pub(crate) fn member_sessions(row: &Value) -> Option<Vec<MemberSession>> {
+    let found = row.get("member_sessions")?.as_array()?;
+    Some(
+        found
+            .iter()
+            .filter_map(|entry| {
+                let session = MemberSession {
+                    member: name(entry, "member"),
+                    machine: name(entry, "machine"),
+                    session_id: name(entry, "session_id"),
+                };
+                (!session.member.is_empty()
+                    && !session.machine.is_empty()
+                    && !session.session_id.is_empty())
+                .then_some(session)
+            })
+            .take(MEMBERS_KEPT)
+            .collect(),
+    )
 }
 
 pub(crate) fn session(value: &Value) -> Option<SessionRef> {

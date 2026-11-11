@@ -16,7 +16,8 @@ import "../styles/teams.css";
 // Waiting for you: the open owner cards of every team (the `waiting` key, one
 // bounded page at a time, opened on its first page) and, from the desktop's
 // own session attention data, the requests of team sessions that only a
-// person can answer. A card is decided in place through the Teams store; a
+// person can answer, by the lead and member sessions of each live team's list
+// row. A card is decided in place through the Teams store; a
 // session request opens the session. Open team and Open task find the lead's
 // row by the same machine and launch binding the Team tab uses. With the
 // preview off the rail entry does not exist and this page reads nothing.
@@ -40,7 +41,7 @@ export function WaitingScreen() {
   onCleanup(() => { void teams.firstWaitingPage().catch(() => {}); teams.clearFailure("waiting"); });
   const view = () => teams.waitingView();
   const names = createMemo(() => new Map(teams.listed().map((team) => [team.id, team.name])));
-  const sessions = createMemo(() => teamSessions(teams.listed(), teams.team()));
+  const sessions = createMemo(() => teamSessions(teams.listed()));
   const requests = createMemo<TeamRequest[]>(() => teamRequests(requestRows(), sessions()));
   createEffect(() => {
     const asked = opening();

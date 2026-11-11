@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest";
 import { teamRequests, teamSessions, type RequestRow } from "./waiting-requests";
-import { teamView } from "../teams/fixtures";
 import type { TeamSummary } from "../../store/teams";
 
 // The requests of team sessions (finding 11 of the second review): only a
@@ -39,9 +38,14 @@ describe("the requests of team sessions", () => {
     ], sessions)).toEqual([]);
   });
 
-  it("takes a member of the loaded team by its verified binding", () => {
-    const member = row({ key: "m1", name: "developer", identities: [key("launch_id:00000000-0000-4000-8000-000000000031")] });
-    expect(teamRequests([member], teamSessions([], teamView))[0]).toMatchObject({ key: "m1", team: teamView.bar.id });
+  it("takes a member by the member_sessions of its team's live list row (second confirmation, finding 3)", () => {
+    const withMembers = { ...lead(), member_sessions: [{ member: "m1", machine: MACHINE, session_id: "launch_id:member-1" }] };
+    const member = row({ key: "m1", name: "developer", identities: [key("launch_id:member-1")] });
+    expect(teamRequests([member], teamSessions([withMembers]))[0]).toMatchObject({ key: "m1", team: "team-a" });
+    // The same row's status decides: a stopped team's members never count.
+    expect(teamRequests([member], teamSessions([{ ...withMembers, status: "stopped" }]))).toEqual([]);
+    // Another machine with the same session id is not the member.
+    expect(teamRequests([row({ identities: [`00000000-0000-4000-8000-0000000000bb\nlaunch_id:member-1`] })], teamSessions([withMembers]))).toEqual([]);
   });
 
   it("counts only live teams and reads no rows without a team session", () => {

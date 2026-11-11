@@ -580,3 +580,49 @@ fn an_orphan_stage_keeps_its_explicit_pipeline_facts() {
         vec![7]
     );
 }
+
+/// Second confirmation, finding 3 (plan on integrate/teams, "Who is a team's
+/// session"): a live team's list row carries `member_sessions`, which the
+/// core passes through beside `lead_session`. The row below has the agreed
+/// shape; the pinned `cli-list.json` follows when the command line change is
+/// merged. A row without the field keeps its serialized form.
+#[test]
+fn a_list_row_passes_its_member_sessions_through() {
+    let reply = serde_json::json!({"ok": true, "next": null, "rows": [{
+        "id": TEAM, "project": "example-project", "name": "Fixes", "status": "running", "lead": "lead",
+        "home": "00000000-0000-4000-8000-0000000000aa", "revision": 16,
+        "lead_session": {"machine": "00000000-0000-4000-8000-0000000000aa", "session_id": "launch_id:00000000-0000-4000-8000-000000000064"},
+        "member_sessions": [
+            {"member": "m1", "machine": "00000000-0000-4000-8000-0000000000aa", "session_id": "launch_id:00000000-0000-4000-8000-000000000031"},
+            {"member": "m2", "machine": "", "session_id": "launch_id:00000000-0000-4000-8000-000000000032"},
+            {"member": "m3"},
+        ],
+    }]});
+    let list = list(&reply);
+    let members = list.teams[0].member_sessions.as_ref().unwrap();
+    assert_eq!(
+        members,
+        &vec![MemberSession {
+            member: "m1".into(),
+            machine: "00000000-0000-4000-8000-0000000000aa".into(),
+            session_id: "launch_id:00000000-0000-4000-8000-000000000031".into(),
+        }],
+        "an entry without a machine or a session is left out"
+    );
+    let serialized = serde_json::to_value(&list).unwrap();
+    assert_eq!(serialized["teams"][0]["member_sessions"][0]["member"], "m1");
+    let pinned = super::list(&fixture("list"));
+    assert_eq!(pinned.teams[0].member_sessions, None);
+    assert!(serde_json::to_value(&pinned).unwrap()["teams"][0]
+        .get("member_sessions")
+        .is_none());
+    let many: Vec<_> = (0..MEMBERS_KEPT + 10)
+        .map(|n| serde_json::json!({"member": format!("m{n}"), "machine": "a", "session_id": format!("launch_id:{n}")}))
+        .collect();
+    let bounded =
+        super::list(&serde_json::json!({"rows": [{"id": TEAM, "member_sessions": many}]}));
+    assert_eq!(
+        bounded.teams[0].member_sessions.as_ref().unwrap().len(),
+        MEMBERS_KEPT
+    );
+}
