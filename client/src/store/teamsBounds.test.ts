@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createTeams, LIST_PAGES_MAX, REVISION_WAIT_MS, UNRESOLVED_MAX, type TeamCall, type TeamOutcome, type TeamsTransport } from "./teams";
+import { createTeams, HIDDEN_RECHECK_MS, LIST_PAGE_FRESH_MS, LIST_PAGES_MAX, REVISION_WAIT_MS, UNRESOLVED_MAX, type TeamCall, type TeamOutcome, type TeamsTransport } from "./teams";
 import { teamView, TEAM_ID } from "../ui/teams/fixtures";
 import type { TeamsOut } from "../types";
 
@@ -310,5 +310,90 @@ describe("a later waiting page (finding 13)", () => {
     transport.page.mockClear();
     await store.firstWaitingPage();
     expect(transport.page).toHaveBeenLastCalledWith("waiting", null);
+  });
+});
+
+describe("second confirmation", () => {
+  it("a refreshed second page replaces its previous lead binding (finding 1)", () => {
+    const { store } = fake();
+    store.apply([listPage([summary(1)], "c1")]);
+    store.apply([listPage([summary(2)], null, "c1")]);
+    expect(store.teamOfSession(identity)).toEqual({ state: "none" });
+    store.apply([listPage([summary(2, lead)], null, "c1")]);
+    expect(store.teamOfSession(identity)).toEqual({ state: "lead", team: summary(2).id });
+  });
+
+  it("a stale second page read again is taken (finding 1)", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(1000);
+    const { store, transport } = fake();
+    store.apply([listPage([summary(1)], "c1")]);
+    store.apply([listPage([summary(2)], null, "c1")]);
+    vi.setSystemTime(1000 + LIST_PAGE_FRESH_MS + 1);
+    expect(store.teamOfSession(identity).state).toBe("unknown");
+    expect(transport.page).toHaveBeenCalledWith("list", "c1");
+    store.apply([listPage([summary(2, lead)], null, "c1")]);
+    expect(store.teamOfSession(identity)).toEqual({ state: "lead", team: summary(2).id });
+  });
+
+  it("a long-hidden recheck keeps the list the core does not publish again (finding 2)", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(1000);
+    const { store, transport } = fake();
+    // The core publishes a list once per scope; an unchanged follow starts none.
+    let following = false;
+    transport.follow.mockImplementation(async (follow) => {
+      if (follow.list && !following) { following = true; store.apply([listPage([summary(1, lead)])]); }
+      else if (!follow.list) following = false;
+    });
+    await store.probe();
+    expect(store.teamOfSession(identity)).toEqual({ state: "lead", team: summary(1).id });
+    await store.hidden(true);
+    vi.setSystemTime(1000 + HIDDEN_RECHECK_MS + 1);
+    await store.hidden(false);
+    expect(transport.follow).toHaveBeenCalledTimes(2);
+    expect(store.teamOfSession(identity)).toEqual({ state: "lead", team: summary(1).id });
+    await store.recheck();
+    expect(store.teamOfSession(identity), "Settings' read the state again keeps it too").toEqual({ state: "lead", team: summary(1).id });
+  });
+
+  it("a preview change keeps the list until the off answer replaces it (finding 2)", async () => {
+    const { store, transport } = fake();
+    store.apply([listPage([summary(1, lead)])]);
+    transport.preview.mockResolvedValueOnce({ ok: true, preview: "off" });
+    expect(await store.preview(false)).toEqual({ outcome: "done" });
+    expect(store.teamOfSession(identity), "nothing replaced it yet").toEqual({ state: "lead", team: summary(1).id });
+    store.apply([entry("list", "failed", { code: "teams_inactive", message: "off" })]);
+    expect(store.listPages()).toEqual([]);
+    expect(store.available()).toBe(false);
+  });
+
+  it("a retired list scope forgets the reader's page selection", () => {
+    const { store, transport } = fake();
+    store.apply([listPage([summary(1)], "c1")]);
+    store.teamOfSession(identity);
+    expect(transport.page).toHaveBeenLastCalledWith("list", "c1");
+    store.apply([entry("list", "ended", null)]);
+    transport.page.mockClear();
+    store.apply([listPage([summary(1, lead)])]);
+    expect(store.teamOfSession(identity)).toEqual({ state: "lead", team: summary(1).id });
+    expect(transport.page, "the reader is already on the first page").not.toHaveBeenCalled();
+  });
+
+  it("a circular cursor ends the walk as an incomplete list (finding 4)", () => {
+    const { store } = fake();
+    store.apply([listPage([summary(1)], "c1")]);
+    store.apply([listPage([summary(2)], "c1", "c1")]);
+    expect(store.listPages().map((team) => team.id)).toEqual([summary(1).id, summary(2).id]);
+    expect(store.teamOfSession(identity)).toEqual({ state: "unknown" });
+    expect(store.summaryOf("00000000-0000-4000-8000-0000000000ff")).toEqual({ state: "unknown" });
+    expect(store.listNext()).toBeNull();
+    // A longer cycle too.
+    const other = fake().store;
+    other.apply([listPage([summary(1)], "c1")]);
+    other.apply([listPage([summary(2)], "c2", "c1")]);
+    other.apply([listPage([summary(3)], "c1", "c2")]);
+    expect(other.teamOfSession(identity)).toEqual({ state: "unknown" });
+    expect(other.listPages()).toHaveLength(3);
   });
 });

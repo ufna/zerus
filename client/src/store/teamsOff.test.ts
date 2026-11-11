@@ -71,13 +71,18 @@ describe("discovery and visibility", () => {
     expect(calls.follow.at(-1)).toEqual({ list: true, waiting: true, team: null });
   });
 
-  it("asking again starts from a fresh list", async () => {
+  it("asking again keeps the published list until a read replaces it", async () => {
     const { transport } = fake();
     const store = createTeams(transport);
-    store.apply([entry("list", "list", { teams: [{ id: "t", project: "p", name: "n", status: "running", lead: "l", home: "h", revision: 1, lead_session: null }], truncated: false, next: "c1" })]);
+    const team = { id: "t", project: "p", name: "n", status: "running", lead: "l", home: "h", revision: 1, lead_session: null };
+    store.apply([entry("list", "list", { teams: [team], truncated: false, next: "c1" })]);
     expect(store.listPages()).toHaveLength(1);
     await store.recheck();
-    expect(store.listPages()).toHaveLength(0);
+    // The core sends an unchanged list only once, so nothing would refill it.
+    expect(store.listPages()).toHaveLength(1);
+    expect(store.listNext()).toBe("c1");
+    store.apply([entry("list", "list", { teams: [{ ...team, name: "renamed" }], truncated: false, next: null })]);
+    expect(store.listPages()[0].name).toBe("renamed");
     expect(store.listNext()).toBeNull();
   });
 });

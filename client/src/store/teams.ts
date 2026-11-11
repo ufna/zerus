@@ -12,10 +12,15 @@ import type { TeamsOut } from "../types";
 
 /** A member's session: the computer UUID and the session identity. */
 export interface TeamSession { machine: string; session_id: string }
+/** A member's bound session on a live team's list row. */
+export interface TeamMemberSession { member: string; machine: string; session_id: string }
 export interface TeamSummary {
   id: string; project: string; name: string; status: string; lead: string; home: string; revision: number;
   /** The lead's bound session: how a session finds its team (package 5's list). */
   lead_session?: TeamSession | null;
+  /** The bound sessions of a planning, running or paused team's members;
+   * absent when none is bound or the command line does not send them. */
+  member_sessions?: TeamMemberSession[] | null;
 }
 export interface TeamList {
   teams: TeamSummary[]; truncated: boolean; next: string | null;
@@ -201,13 +206,28 @@ const OFF_CODES = new Set(["teams_inactive", "unavailable"]);
 interface ListPage { view: TeamList; at: number }
 interface ListScan { views: TeamList[]; complete: boolean; missing: string | null }
 
+/** The cursors of the chain from the first page, at most [`LIST_PAGES_MAX`],
+ * and the cursor after it: null when the chain ends, or when a cursor repeats
+ * (a cycle, which no page can complete). */
+function chainOf(pages: ReadonlyMap<string, ListPage>): { keys: Set<string>; next: string | null; cycle: boolean } {
+  const keys = new Set<string>();
+  let at: string | null = "";
+  while (at !== null && keys.size < LIST_PAGES_MAX && pages.has(at) && !keys.has(at)) { keys.add(at); at = pages.get(at)!.view.next; }
+  const cycle = at !== null && keys.has(at);
+  return { keys, next: cycle ? null : at, cycle };
+}
+
 /** The pages reachable from the first one, at most [`LIST_PAGES_MAX`]; a later
- * page older than `fresh` counts as missing. */
+ * page older than `fresh` counts as missing, and a repeated cursor ends the
+ * walk as an incomplete list. */
 function scanPages(pages: ReadonlyMap<string, ListPage>, now: number, fresh = LIST_PAGE_FRESH_MS): ListScan {
   const views: TeamList[] = [];
+  const seen = new Set<string>();
   let truncated = false;
   let key: string | null = "";
   while (key !== null && views.length < LIST_PAGES_MAX) {
+    if (seen.has(key)) return { views, complete: false, missing: null };
+    seen.add(key);
     const page = pages.get(key);
     if (!page || (key !== "" && now - page.at > fresh)) return { views, complete: false, missing: key === "" ? null : key };
     views.push(page.view);
@@ -336,22 +356,21 @@ export function createTeams(transport: TeamsTransport = tauriTeams()) {
 
   // --------------------------------------------------------------- list
 
-  /** Replaces a page by its cursor and keeps only the chain from the first page. */
+  /** Replaces a page by its cursor and keeps only the chain from the first
+   * page. A later page is taken when its cursor is already in the chain (a
+   * refresh, or a stale page read again) or is the chain's next cursor within
+   * the bound; a page of no cursor in the chain, or one that left it, is not. */
   function applyList(view: TeamList) {
     const key = view.after ?? "";
     const pages = new Map(listPagesBy());
-    const reachable = () => {
-      const keys = new Set<string>();
-      let at: string | null = "";
-      while (at !== null && keys.size < LIST_PAGES_MAX && pages.has(at)) { keys.add(at); at = pages.get(at)!.view.next; }
-      return { keys, next: at };
-    };
     if (key !== "") {
-      const chain = reachable();
-      if (chain.next !== key || chain.keys.size >= LIST_PAGES_MAX) { requestedPages.delete(key); return; }
+      const chain = chainOf(pages);
+      const known = chain.keys.has(key);
+      const tail = chain.next === key && chain.keys.size < LIST_PAGES_MAX;
+      if (!known && !tail) { requestedPages.delete(key); return; }
     }
     pages.set(key, { view, at: Date.now() });
-    const keep = reachable().keys;
+    const keep = chainOf(pages).keys;
     for (const known of [...pages.keys()]) if (!keep.has(known)) pages.delete(known);
     requestedPages.delete(key);
     setListPagesBy(pages);
@@ -441,6 +460,9 @@ export function createTeams(transport: TeamsTransport = tauriTeams()) {
         } else if (entry.kind === "failed") {
           if (payload.code === "cursor_reset") { listSelected = null; requestedPages.clear(); }
           setAvailable(true);
+        } else if (entry.kind === "ended") {
+          // The scope was retired: the reader forgot its page selection.
+          listSelected = null; requestedPages.clear();
         }
         continue;
       }
@@ -481,9 +503,8 @@ export function createTeams(transport: TeamsTransport = tauriTeams()) {
     if (probing) return;
     probing = true;
     stopped = false;
-    batch(() => { setListPagesBy(new Map()); });
-    requestedPages.clear();
-    listSelected = null;
+    // The published list stays until a read replaces it: an unchanged follow
+    // starts no new scope, and the core sends an unchanged read only once.
     try {
       await transport.hidden(false);
       await follow(scope());
@@ -741,11 +762,9 @@ export function createTeams(transport: TeamsTransport = tauriTeams()) {
   const list = () => listPagesBy().get("")?.view;
   /** The summaries of the scanned pages (bounded), for lookups by id or project. */
   const listPages = listed;
-  /** The next page after the scanned chain, null when it is complete. */
-  const listNext = () => {
-    const views = scanPages(listPagesBy(), Date.now(), Number.POSITIVE_INFINITY).views;
-    return views.at(-1)?.next ?? null;
-  };
+  /** The next page after the kept chain: null when it is complete or its
+   * cursors repeat. */
+  const listNext = () => chainOf(listPagesBy()).next;
 
   return {
     list, listed, listPages, listNext, team, failure, available, off, followed, visible, catalog, catalogError, newTeamOpen, confirmation, unresolved, uncertain, busy, sending,
