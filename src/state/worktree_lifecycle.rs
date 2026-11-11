@@ -62,11 +62,24 @@ pub(super) fn record_owner(common: &Path, path: &Path, value: Value) -> Result<V
 }
 
 pub(super) fn owned(common: &Path, path: &Path) -> Option<Value> {
+    owned_receipt(&receipt_path(common, path), common, path)
+}
+/// Same ownership rules, with an explicitly captured state root for the Teams worker.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub(super) fn owned_in(state: &Path, common: &Path, path: &Path) -> Option<Value> {
+    use sha2::{Digest, Sha256};
+    let key = format!("{}\n{}", common.display(), path.display());
+    let receipt = state
+        .join("worktree-cache")
+        .join(format!("owned-{:x}.json", Sha256::digest(key.as_bytes())));
+    owned_receipt(&receipt, common, path)
+}
+fn owned_receipt(receipt:&Path, common: &Path, path: &Path) -> Option<Value> {
     let read = |path: &Path| -> Option<Value> {
         let bytes=labels::read_file(path,16384).ok()??;
         serde_json::from_slice(&bytes).ok()
     };
-    let value = read(&receipt_path(common,path))?;
+    let value = read(receipt)?;
     if value["version"] != 1
         || value["common_dir"] != json!(common)
         || value["path"] != json!(path)
@@ -372,5 +385,41 @@ mod report_tests {
         retain_bounded_review(&mut small, Some(json!({"private":"x".repeat(65536)})));
         assert!(small.get("review").is_none());
         assert!(serde_json::to_vec(&value).unwrap().len() < 60 * 1024);
+    }
+}
+
+#[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
+mod team_reader_tests {
+    use super::*;
+    use sha2::{Digest, Sha256};
+    #[test]
+    fn explicit_state_ownership_uses_the_existing_pair_and_backlink_rules() {
+        let temp = tempfile::tempdir().unwrap();
+        let state = temp.path().join("state");
+        let common = temp.path().join("repository.git");
+        let metadata = common.join("worktrees/member");
+        let path = temp.path().join("missing-checkout");
+        fs::create_dir_all(&metadata).unwrap();
+        fs::create_dir_all(state.join("worktree-cache")).unwrap();
+        let owner = owner_value(&common, &path, "team-member", "fixture-head", &metadata);
+        let receipt = state.join("worktree-cache").join(format!(
+            "owned-{:x}.json",
+            Sha256::digest(format!("{}\n{}", common.display(), path.display()).as_bytes())
+        ));
+        fs::write(&receipt, owner.to_string()).unwrap();
+        fs::write(metadata.join("zerus-owner.json"), owner.to_string()).unwrap();
+        fs::write(metadata.join("gitdir"), path.join(".git").to_str().unwrap()).unwrap();
+        assert_eq!(owned_in(&state, &common, &path), Some(owner.clone()));
+        assert_eq!(
+            crate::state::team_worktree_ownership(&state, &common, &path),
+            Some(owner.clone())
+        );
+        let mut replaced = owner.clone();
+        replaced["id"] = json!(uuid::Uuid::new_v4().to_string());
+        fs::write(metadata.join("zerus-owner.json"), replaced.to_string()).unwrap();
+        assert!(owned_in(&state, &common, &path).is_none());
+        fs::write(metadata.join("zerus-owner.json"), owner.to_string()).unwrap();
+        fs::write(metadata.join("gitdir"), "/workspace/other/.git").unwrap();
+        assert!(owned_in(&state, &common, &path).is_none());
     }
 }

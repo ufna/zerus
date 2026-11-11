@@ -80,6 +80,7 @@ pub(crate) mod task_message;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 mod task_start_reconcile;
 pub(crate) mod task_controls;
+pub(crate) mod teams;
 mod termination_outcome;
 mod transport;
 mod ui_authority;
