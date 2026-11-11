@@ -94,8 +94,16 @@ impl Pin {
     }
 }
 impl Native<'_> {
+    pub fn anchored(&self, b: &Binding) -> Result<bool> {
+        let ledger = super::super::super::ledger::Ledger::open(&self.config.state)
+            .map_err(|e| e.to_string())?;
+        Ok(ledger
+            .checkout(&b.team, &b.member, &b.launch)
+            .map_err(|e| e.to_string())?
+            .is_some_and(|proof| proof.matches(&b.folder, &b.common, &b.nonce)))
+    }
     pub fn owned(&mut self, b: &Binding) -> Result<Ownership> {
-        let prior_ok = self.pins.iter().all(Pin::current);
+        let prior_ok = self.anchored(b)? && self.pins.iter().all(Pin::current);
         let raw = crate::state::team_worktree_ownership(
             &self.config.state,
             Path::new(&b.common),
