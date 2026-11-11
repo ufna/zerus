@@ -410,7 +410,7 @@ trait Delivery {
 }
 struct Native;
 #[cfg(test)]
-type NativeInputFixture = Box<dyn Fn(&Value) -> Value>;
+type NativeInputFixture = Box<dyn Fn(&Value, &SessionKey) -> Value>;
 #[cfg(test)]
 thread_local! {
     pub(crate) static FIXTURE_NATIVE_INPUT: std::cell::RefCell<Option<NativeInputFixture>> = const {std::cell::RefCell::new(None)};
@@ -426,7 +426,7 @@ impl Delivery for Native {
     ) -> attempts::Delivered {
         #[cfg(test)]
         if let Some(receipt) = FIXTURE_NATIVE_INPUT.with(|slot| {
-            slot.borrow().as_ref().map(|input| input(request))
+            slot.borrow().as_ref().map(|input| input(request, to))
         }) {
             return attempts::Delivered::Submitted(receipt);
         }
