@@ -1152,7 +1152,12 @@ whose card the person rejected, is refused: a fact row would mark the
 accept as integrated, and the merge that follows the person's approval
 could never be recorded. A conflict fact after a stop stays late
 provenance, as before. New writes are still found only among exact Ready
-accepts.
+accepts. The revocation marks each accept it takes back, and a stop or a
+board change that settles the accept keeps the mark, so that the fact of a
+merge written before the revocation is still taken afterwards. The mark is
+also what tells an accept that once had the authority from one that never
+did: an accept made while the delegation was off, and never approved, takes
+no merge fact in any state.
 
 **What the review of the service task commands settled (package 6b).** A
 team that is stopped or archived retires its nodes by that status:
