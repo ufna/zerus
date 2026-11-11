@@ -280,3 +280,19 @@ fn a_version_one_outbox_moves_into_the_frontier() {
             && !left.contains(&"key_clear_stage_settled_v1".to_owned())
     );
 }
+
+#[test]
+fn a_store_whose_older_read_index_is_replaced_is_extended_too() {
+    let mut h = stopped();
+    let full = names(&h);
+    strip(&h);
+    db(&h)
+        .execute_batch(
+            "DROP INDEX integration_card;
+             CREATE UNIQUE INDEX integration_card ON cards(decision_seq);",
+        )
+        .unwrap();
+    reopen(&mut h);
+    assert_eq!(names(&h), full);
+    assert_eq!(marker(&h), Some(EXTENSION));
+}

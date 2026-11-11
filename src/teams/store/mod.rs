@@ -276,7 +276,8 @@ fn schema_extensions(db: &Connection) -> Result<()> {
         .map_err(storage)?;
     db.execute_batch(include_str!("observation-schema.sql"))
         .map_err(storage)?;
-    read_indexes(db)
+    read_indexes(db)?;
+    timers::extend(db)
 }
 
 fn read_indexes(db: &Connection) -> Result<()> {
@@ -299,6 +300,5 @@ fn read_indexes(db: &Connection) -> Result<()> {
             .map_err(storage);
     }
     db.execute_batch(include_str!("read-indexes.sql"))
-        .map_err(storage)?;
-    timers::extend(db)
+        .map_err(storage)
 }
