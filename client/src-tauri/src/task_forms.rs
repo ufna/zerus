@@ -54,6 +54,8 @@ struct Slot {
     blocked: bool,
     unsaved: bool,
     error: String,
+    /// The queue chosen in this submit, when the New task form names one.
+    team: Option<String>,
 }
 #[derive(Clone, Default)]
 struct Editor {
@@ -146,6 +148,7 @@ fn opened(
         blocked,
         unsaved: false,
         error: loaded.storage_error.unwrap_or_default(),
+        team: None,
     };
     if blocked {
         slot.error = zerus_client_core::drafts::NOT_RESTORED.into();
@@ -328,17 +331,11 @@ fn request(slot: &Slot) -> Result<(Value, Request), String> {
     }
     Ok((raw, parsed))
 }
-/// Where the new card goes: the stage a person chose, or a team's queue.
-struct Placement {
-    backlog: bool,
-    team: Option<String>,
-}
-
 fn submitted(
     slot: &mut Slot,
     store: &DraftStore,
     recover: bool,
-    placement: Placement,
+    backlog: bool,
     target: TaskTarget,
     read: impl Fn(&str, &str) -> Result<Value, String>,
     run: impl Fn(&TaskCall) -> Result<serde_json::Map<String, Value>, String>,
@@ -346,7 +343,7 @@ fn submitted(
     if slot.blocked {
         return Err(zerus_client_core::drafts::NOT_RESTORED.into());
     }
-    let Placement { backlog, team } = placement;
+    let team = slot.team.clone();
     let wanted = if slot.kind == Kind::NewCard && slot.stored.form_state.contains_key("request") {
         request(slot)?.1.title
     } else {
@@ -552,7 +549,7 @@ pub async fn task_form_submit(
             slot,
             &composers.0.store,
             recover,
-            Placement { backlog, team },
+            backlog,
             assignment,
             document,
             |call| tasks_write::run(&zerus_client_core::default_hgs(), call),

@@ -62,9 +62,10 @@ describe("the Teams store", () => {
     expect(live.list()?.teams[0].id).toBe(TEAM_ID);
   });
 
-  it("keeps the shown team when a read fails, and names a cursor reset", () => {
+  it("keeps the shown team when a read fails, and names a cursor reset", async () => {
     const { transport } = fake();
     const teams = createTeams(transport);
+    await teams.openTeam(TEAM_ID);
     teams.apply([entry("team:" + TEAM_ID, "team", teamView)]);
     expect(teams.team()?.bar.name).toBe("Fixes");
     teams.apply([entry("team:" + TEAM_ID, "failed", { code: "cursor_reset", message: "The page could not be read; the first page will be shown." })]);

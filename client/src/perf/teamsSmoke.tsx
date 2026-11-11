@@ -76,7 +76,7 @@ function FormPreview() {
     catalog: previewCatalog, busy: false, machineId: "00000000-0000-4000-8000-0000000000aa",
     defaultProject: "example-project", defaultFolder: "/workspace/example",
     onCheckFolder: async () => ({ git: true, head: "0123456789abcdef0123456789abcdef01234567", branch: "main", reason: "" }),
-    onCreate: () => {}, onSaveTemplate: async () => {}, onClose: () => {},
+    onCreate: async () => ({ outcome: "done", receipt: {}, request_id: "fixture" }), onSaveTemplate: async () => {}, onClose: () => {},
   })}</NewTeamPage>;
   return params.get("screen") === "new"
     ? <dialog ref={dialog} class="dlg newteam-page-dialog" aria-labelledby="new-team-title">{form()}</dialog>

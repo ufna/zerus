@@ -232,8 +232,10 @@ export function createTeams(transport: TeamsTransport = tauriTeams()) {
       if (entry.key.startsWith("team:")) {
         if (entry.kind === "team") {
           const view = entry.payload as TeamView;
-          if (view.bar.id === followed() || !followed()) batch(() => { setTeam(view); setAvailable(true); });
           const resolve = pendingViews.get(view.bar.id);
+          // A view is shown only for the followed team, or to the one decision
+          // that asked for its revision; a late view after unfollow is dropped.
+          if (view.bar.id === followed() || resolve) batch(() => { setTeam(view); setAvailable(true); });
           if (resolve) { pendingViews.delete(view.bar.id); resolve(view); }
         } else if (entry.kind === "failed") {
           const payload = entry.payload as { code: string; message: string };

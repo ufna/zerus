@@ -176,3 +176,14 @@ describe("the launch identity, not the row's session id", () => {
     expect(store.teamOfSession({ machine: "00000000-0000-4000-8000-0000000000bb", launchId: launch, runId: null })).toEqual({ state: "none" });
   });
 });
+
+describe("a late view after unfollow", () => {
+  it("cannot resurrect the retired team", async () => {
+    const { transport } = fake();
+    const store = createTeams(transport);
+    await store.openTeam(TEAM_ID);
+    await store.closeTeam();
+    store.apply([entry(`team:${TEAM_ID}`, "team", teamView)]);
+    expect(store.team()).toBeUndefined();
+  });
+});
