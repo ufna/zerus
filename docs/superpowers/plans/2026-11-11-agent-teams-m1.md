@@ -886,11 +886,40 @@ look unmarked. So on macOS an environment with nothing at all after the
 arguments is unreadable, and the existing rule applies: an unreadable
 ancestor is tolerated only at the verified top and refused below it. A
 person's command therefore passes from the Zerus window, which runs `hgs`
-with no shell between, and from a login terminal, and is refused from
-tmux, ssh and a terminal inside another application, with a sentence that
-says so. The marked path of a lead or a member reads no ancestor's
-environment and is not affected. The gate is lifted only by a Mac run of
-that candidate.
+with no shell between, and is refused below any program whose environment
+the system hides, with a sentence that says so. The third run measured
+which programs those are: the ones whose code signature carries the
+restrict flag (464 of 513 processes; the system's zsh, ssh and its session
+helper among them), while a shell or tmux installed by the person is
+readable. So the rule is about the program above the command, not about
+tmux or ssh as such. The marked path of a lead or a member reads no
+ancestor's environment and is not affected, and the caller's own markers
+come from the process itself, never from the system read. The review of
+the first candidate hardened the parser of the system's answer: a tail
+with no byte other than NUL is withheld, an argument that begins with a
+marker name makes the read unreadable, an answer as large as the buffer is
+unreadable, and a marker named twice is unreadable on every platform. The
+gate was lifted by the third Mac run (65 tests, nine mutants caught) and
+merged on 2026-11-12. Not yet observed on a Mac: the hardened release
+`hgs`, and whether `claude` and `codex` have readable environments; if
+they do not, a person's command below them is refused.
+
+**A caller below a resident agent host is not a person (2026-11-12, from a
+real agent).** A probe from the tool shells of real sessions showed Claude
+and Codex behaving as designed, and a DeepSeek session, which one resident
+host process serves, passing as a person once the three markers were
+removed: the host is not below any agent's process, and its shells even
+carried the markers of the session that had started the host (tracker item
+`zerus-ppd26`). The person path now refuses when an ancestor is a recorded
+live resident agent host, matched by PID and birth from the host's own
+record, never by a program's name; a recorded PID without a verifiable
+birth, an unreadable record or more records than the bound refuse as
+unverifiable. For OpenCode, whose shared service Zerus does not record,
+the PID in OpenCode's own service file is used only to add a refusal. A
+session that a resident host serves cannot be a lead or a member in this
+milestone, because its commands cannot be bound to its own session by
+ancestry: the proof says so plainly, and team creation and member launch
+refuse such an agent kind.
 
 **How the service reaches a session (packages 8, 10 and 17).** The desktop's
 deferred-send, deferred-answer and creation actors admit only the proof of a
