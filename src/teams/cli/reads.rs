@@ -91,7 +91,37 @@ pub(super) fn list_teams(
     let (limit, cursor) = options.page()?;
     let cursor = cursor.map(input::parse_cursor).transpose()?;
     let page = store.teams(limit, cursor.as_ref())?;
-    global_page(&identity, page)
+    // The lead's binding is one primary-key member lookup per row of this page
+    // (at most 200): no bundle and no settings are read.
+    let mut rows = Vec::with_capacity(page.rows.len());
+    for row in page.rows {
+        let lead_session = store
+            .member(&row.id, &row.lead)?
+            .and_then(|member| member.session);
+        let mut value = serde_json::to_value(&row).map_err(storage)?;
+        if let Some(object) = value.as_object_mut() {
+            object.insert(
+                "lead_session".into(),
+                serde_json::to_value(lead_session).map_err(storage)?,
+            );
+        }
+        rows.push(value);
+    }
+    global_rows_with_next(&identity, rows, page.next.as_ref())
+}
+
+/// A global page's rows with their next cursor.
+fn global_rows_with_next(
+    identity: &actor::Identity,
+    rows: Vec<Value>,
+    next: Option<&Cursor>,
+) -> Result<Value, Problem> {
+    Ok(json!({
+        "ok": true,
+        "actor": actor::view(&identity.actor),
+        "rows": rows,
+        "next": next.map(input::cursor_token).transpose()?,
+    }))
 }
 
 /// `waiting [--limit] [--after]`: every open owner card, oldest first. The
@@ -116,22 +146,7 @@ pub(super) fn waiting(config: &Config, caller: &Caller, args: &[String]) -> Resu
             Ok(row)
         })
         .collect::<Result<Vec<_>, Problem>>()?;
-    Ok(json!({
-        "ok": true,
-        "actor": actor::view(&identity.actor),
-        "rows": rows,
-        "next": page.next.as_ref().map(input::cursor_token).transpose()?,
-    }))
-}
-
-fn global_page<T: Serialize>(identity: &actor::Identity, page: Page<T>) -> Result<Value, Problem> {
-    let next = page.next.as_ref().map(input::cursor_token).transpose()?;
-    Ok(json!({
-        "ok": true,
-        "actor": actor::view(&identity.actor),
-        "rows": page.rows,
-        "next": next,
-    }))
+    global_rows_with_next(&identity, rows, page.next.as_ref())
 }
 
 /// `current`: what a member holds now, bounded to this computer's open nodes.

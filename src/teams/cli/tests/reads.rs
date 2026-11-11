@@ -244,6 +244,7 @@ fn list_reads_the_teams_of_this_computer_in_id_order() {
     let harness = Harness::new();
     harness.create();
     harness.create_team(TEAM_B, "Docs", "zerus/team/docs");
+    harness.bind("lead", LEAD_SESSION);
     // Any proved caller may read the list, including another team's session.
     let (reply, exit) = harness.cli(&Caller::Session(key(OTHER_SESSION)), "list", "");
     assert_eq!(exit, 0, "{reply}");
@@ -261,8 +262,18 @@ fn list_reads_the_teams_of_this_computer_in_id_order() {
         assert_eq!(row["lead"], "lead");
         assert_eq!(row["home"], MACHINE);
         assert!(row["revision"].as_u64().is_some());
-        assert_eq!(row.as_object().unwrap().len(), 7);
+        assert_eq!(row.as_object().unwrap().len(), 8);
     }
+    let bound = rows.iter().find(|row| row["id"] == TEAM).unwrap();
+    assert_eq!(
+        bound["lead_session"],
+        serde_json::json!({"machine": MACHINE, "session_id": LEAD_SESSION})
+    );
+    let unbound = rows.iter().find(|row| row["id"] == TEAM_B).unwrap();
+    assert!(
+        unbound["lead_session"].is_null(),
+        "the unbound lead is null"
+    );
     let (reply, _) = harness.cli(&person_caller(), "list --limit 1", "");
     assert_eq!(reply["rows"].as_array().unwrap().len(), 1);
     assert!(reply["next"].is_string());
