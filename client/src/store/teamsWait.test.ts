@@ -34,7 +34,7 @@ function fake() {
     async act(call: TeamCall) { calls.acts.push(call); return outcomes.shift() ?? { outcome: "done", receipt: {}, request_id: call.request_id }; },
     async actAgain(call: TeamCall) { calls.again.push(call); return outcomes.shift() ?? { outcome: "done", receipt: {}, request_id: call.request_id }; },
     async dismiss(call: TeamCall) { calls.dismissed.push(call); },
-    async catalog() { return {}; }, async saveTemplate() {}, async project() { return {}; },
+    async catalog() { return {}; }, async saveTemplate() {}, async project() { return {}; }, async preview() { return {}; },
   };
   return { transport, calls, outcomes };
 }

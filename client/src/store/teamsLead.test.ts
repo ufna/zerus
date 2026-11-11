@@ -21,7 +21,7 @@ function fake(outcome?: TeamOutcome) {
     async page(key, cursor) { calls.pages.push([key, cursor]); },
     async act(call) { calls.acts.push(call); return outcome ?? { outcome: "done", receipt: {}, request_id: call.request_id }; },
     async actAgain(call) { return { outcome: "done", receipt: {}, request_id: call.request_id }; },
-    async dismiss() {}, async catalog() { return {}; }, async saveTemplate() {}, async project() { return {}; },
+    async dismiss() {}, async catalog() { return {}; }, async saveTemplate() {}, async project() { return {}; }, async preview() { return {}; },
   };
   return { transport, calls };
 }
