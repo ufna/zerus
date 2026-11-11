@@ -1208,12 +1208,24 @@ Stop cancels every unfinished task; the store records both as a pending
 decision of kind cancel, and until 2026-11-12 nothing carried it out. A
 fifth service task command does: `hgs task team-cancel REF --json` reads
 `{schema, team, node}` and answers `{schema, team, node, state, error}`
-with `cancelled` (also when the task is already cancelled), `refused` or
-`cutting_over`. Its only authority is that stored decision for the node's
-current generation; the write is the existing cancel of a task with the
-notice it already sends to the holder, recorded with the lead as the actor.
-The actor runs it for each pending cancel decision, in a live team and
-after a stop, and the observation settles the decision. It ends no agent.
+with `cancelled`, `released`, `refused` or `cutting_over`. Its only
+authority is that stored decision for the node's current generation. It
+does what the task document can already say, because existing commands do
+the work and a cancel exists there only for work that is running: a task
+that is Active with a known delivery is cancelled by the existing writer,
+with the notice it already sends to the holder (`cancelled`, also when the
+task is already cancelled); a task with nothing running (Backlog, To do,
+In review) loses its team key and stays in its stage as an ordinary task
+(`released`); an Active task whose delivery is unknown, and a Done task,
+are refused and nothing is written. No writer is added that would mark a
+task that never ran as cancelled. The actor runs the command for each
+pending cancel decision, in a live team and after a stop, and records the
+outcome with a service-only operation, `RecordCancel {node, decision,
+state, reason}`: `cancelled` and `released` both end the node as
+cancelled in the team, exactly as the observation of a cancelled task
+does; `refused` settles the decision and, in a live team, files one lead
+inbox item. The read is `Store::pending_cancels(team, limit, after)`. It
+ends no agent.
 
 **After a stop Zerus cancels the unfinished tasks, releases them and ends
 no agent (package 10).** For each node the cancel comes first and the
