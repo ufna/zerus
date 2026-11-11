@@ -13,6 +13,7 @@
 pub mod catalog;
 pub mod graph;
 pub mod model;
+pub mod overlap;
 pub mod problem;
 #[cfg(test)]
 mod testkit;
