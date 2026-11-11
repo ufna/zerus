@@ -1,0 +1,430 @@
+use super::*;
+
+pub(super) fn add(ctx: &mut Context<'_>) -> Result<()> {
+    let Operation::AddTask {
+        task,
+        role,
+        pipeline,
+    } = ctx.op
+    else {
+        unreachable!()
+    };
+    ctx.active()?;
+    if !ctx.team.settings.queue || task.project != ctx.team.project {
+        return Err(invalid("Team does not take this project's queued tasks."));
+    }
+    uuid(&task.uuid)?;
+    if let Some(node) = existing_node(ctx, task)? {
+        ctx.reply.node = Some(node);
+        return Ok(());
+    }
+    let admitted = is_router(ctx);
+    check_capacity(ctx, admitted)?;
+    let n = new_node(ctx, task, role.as_deref(), pipeline.as_deref(), admitted)?;
+    ctx.db
+        .execute(
+            "INSERT INTO node_identity(team,id,task_project,task_uuid) VALUES(?1,?2,?3,?4)",
+            params![ctx.team.id, n.id, task.project, task.uuid],
+        )
+        .map_err(storage)?;
+    ctx.db
+        .execute(
+            "INSERT INTO live_tasks(task_project,task_uuid,team,node) VALUES(?1,?2,?3,?4)",
+            params![task.project, task.uuid, ctx.team.id, n.id],
+        )
+        .map_err(storage)?;
+    let routed = !n.role.is_empty();
+    ctx.db.execute("INSERT INTO nodes(team,id,data,rank,admitted,routed,task_revision,task_stage,task_cancelled,integration_required) VALUES(?1,?2,?3,'',?4,?5,'','unobserved',0,?6)",params![ctx.team.id,n.id,rows::node_payload(&n)?,admitted,routed,ctx.team.settings.integration==Integration::Branch]).map_err(storage)?;
+    if !is_router(ctx) && (role.is_some() || pipeline.is_some()) {
+        ctx.db
+            .execute(
+                "INSERT INTO suggestions(team,node,role,pipeline) VALUES(?1,?2,?3,?4)",
+                params![ctx.team.id, n.id, role, pipeline],
+            )
+            .map_err(storage)?;
+    }
+    ctx.db
+        .execute(
+            "UPDATE teams SET next_node=next_node+1 WHERE id=?1",
+            [&ctx.team.id],
+        )
+        .map_err(storage)?;
+    ctx.reply.node = Some(n.id);
+    Ok(())
+}
+fn existing_node(ctx: &Context<'_>, task: &TaskRef) -> Result<Option<u32>> {
+    let existing: Option<(String, u32)> = ctx
+        .db
+        .query_row(
+            "SELECT team,node FROM live_tasks WHERE task_project=?1 AND task_uuid=?2",
+            params![task.project, task.uuid],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()
+        .map_err(storage)?;
+    match existing {
+        Some((team, node)) if team == ctx.team.id => Ok(Some(node)),
+        Some(_) => Err(Problem::new(
+            code::DUPLICATE,
+            "Task has a live node in another team.",
+        )),
+        None => Ok(None),
+    }
+}
+
+fn new_node(
+    ctx: &Context<'_>,
+    task: &TaskRef,
+    role: Option<&str>,
+    pipeline: Option<&str>,
+    admitted: bool,
+) -> Result<Node> {
+    let explicit = role.is_some() || pipeline.is_some();
+    let routed = if is_router(ctx) {
+        explicit || ctx.team.settings.routing == Routing::Direct
+    } else {
+        !explicit && ctx.team.settings.routing == Routing::Direct
+    };
+    if let Some(r) = role {
+        text(r, 256)?;
+    }
+    if let Some(p) = pipeline {
+        text(p, 256)?;
+    }
+    let pipe = if is_router(ctx) {
+        pipeline.unwrap_or(&ctx.team.bundle.template.default_pipeline)
+    } else {
+        &ctx.team.bundle.template.default_pipeline
+    };
+    let p = ctx
+        .team
+        .bundle
+        .pipelines
+        .iter()
+        .find(|p| p.id == pipe)
+        .ok_or_else(|| Problem::new(code::UNKNOWN_PIPELINE, "Unknown pipeline."))?;
+    let r = if is_router(ctx) {
+        role.unwrap_or(&p.implementer)
+    } else {
+        &p.implementer
+    };
+    if is_router(ctx) {
+        validation::route_valid(ctx.team, r, pipe)?;
+    }
+    let id: u32 = ctx
+        .db
+        .query_row(
+            "SELECT next_node FROM teams WHERE id=?1",
+            [&ctx.team.id],
+            |r| r.get(0),
+        )
+        .map_err(storage)?;
+    if id == u32::MAX {
+        return Err(over("Node IDs are exhausted."));
+    }
+    Ok(node_metadata(
+        id,
+        task,
+        if routed { r.into() } else { String::new() },
+        if routed { pipe.into() } else { String::new() },
+        admitted,
+    ))
+}
+fn node_metadata(id: u32, task: &TaskRef, role: String, pipeline: String, admitted: bool) -> Node {
+    Node {
+        id,
+        phase: QUEUE_PHASE,
+        task: Some(task.clone()),
+        title: String::new(),
+        text: String::new(),
+        source: NodeSource::Sent,
+        deps: vec![],
+        assignee: None,
+        role,
+        pipeline,
+        writes: vec![],
+        estimate_minutes: 0,
+        kind: NodeKind::Task,
+        severity: Severity::None,
+        origin: None,
+        stage_of: None,
+        stage_index: 0,
+        round: 1,
+        implementer: None,
+        hold: false,
+        admitted,
+        state: NodeState::Waiting,
+        decided_by: None,
+        integrated: false,
+        rank: String::new(),
+    }
+}
+pub(super) fn check_capacity(ctx: &Context<'_>, admitted: bool) -> Result<()> {
+    let limit = if admitted {
+        ctx.team.settings.caps.max_open_tasks
+    } else {
+        100
+    };
+    if ctx.count(admitted)? >= limit {
+        return Err(over(if admitted {
+            "Admitted task cap reached."
+        } else {
+            "Unadmitted submission cap reached."
+        }));
+    }
+    Ok(())
+}
+pub(super) fn admit(ctx: &mut Context<'_>) -> Result<()> {
+    let Operation::Admit { node } = ctx.op else {
+        unreachable!()
+    };
+    ctx.active()?;
+    let n = ctx.live_node(*node)?;
+    if n.admitted {
+        return Err(invalid("Task is already admitted."));
+    }
+    check_capacity(ctx, true)?;
+    ctx.db
+        .execute(
+            "UPDATE nodes SET admitted=1 WHERE team=?1 AND id=?2",
+            params![ctx.team.id, node],
+        )
+        .map_err(storage)?;
+    Ok(())
+}
+pub(super) fn route(ctx: &mut Context<'_>) -> Result<()> {
+    let Operation::Route {
+        node,
+        role,
+        pipeline,
+        deps,
+        writes,
+        assignee,
+    } = ctx.op
+    else {
+        unreachable!()
+    };
+    ctx.active()?;
+    ctx.undecided(*node)?;
+    let mut n = ctx.live_node(*node)?;
+    if !matches!(n.state, NodeState::Waiting | NodeState::Pending) {
+        return Err(invalid("Only waiting or pending tasks may be routed."));
+    }
+    validation::route_valid(ctx.team, role, pipeline)?;
+    validate_deps(ctx, *node, deps)?;
+    validation::write_paths(writes)?;
+    if let Some(id) = assignee {
+        let m = ctx.member(id)?;
+        if m.role != *role || m.id == ctx.team.lead || m.state == MemberState::Removed {
+            return Err(invalid("Assignee cannot take this role."));
+        }
+    }
+    n.role = role.clone();
+    n.pipeline = pipeline.clone();
+    n.writes = writes.clone();
+    n.assignee = assignee.clone();
+    ctx.db
+        .execute(
+            "UPDATE nodes SET data=?3,routed=1 WHERE team=?1 AND id=?2",
+            params![ctx.team.id, node, rows::node_payload(&n)?],
+        )
+        .map_err(storage)?;
+    ctx.db
+        .execute(
+            "DELETE FROM dependencies WHERE team=?1 AND node=?2",
+            params![ctx.team.id, node],
+        )
+        .map_err(storage)?;
+    for d in deps {
+        ctx.db
+            .execute(
+                "INSERT INTO dependencies(team,node,dependency,kind) VALUES(?1,?2,?3,?4)",
+                params![ctx.team.id, node, d.node, encode(&d.kind)?],
+            )
+            .map_err(storage)?;
+    }
+    Ok(())
+}
+fn validate_deps(ctx: &Context<'_>, node: u32, deps: &[Dep]) -> Result<()> {
+    if deps.len() > 200 {
+        return Err(over("Too many dependencies."));
+    }
+    let mut seen = std::collections::BTreeSet::new();
+    for d in deps {
+        if d.node == node
+            || !seen.insert(d.node)
+            || rows::node(ctx.db, &ctx.team.id, d.node)?.is_none()
+        {
+            return Err(invalid("Missing, repeated or self dependency."));
+        }
+        let cycle:bool=ctx.db.query_row("WITH RECURSIVE ancestors(id) AS (SELECT dependency FROM dependencies WHERE team=?1 AND node=?2 UNION SELECT d.dependency FROM dependencies d JOIN ancestors a ON d.node=a.id WHERE d.team=?1) SELECT EXISTS(SELECT 1 FROM ancestors WHERE id=?3)",params![ctx.team.id,d.node,node],|r|r.get(0)).map_err(storage)?;
+        if cycle {
+            return Err(Problem::new(code::DEPENDENCY_CYCLE, "Dependency cycle."));
+        }
+    }
+    Ok(())
+}
+pub(super) fn hold(ctx: &mut Context<'_>) -> Result<()> {
+    let Operation::Hold { node } = ctx.op else {
+        unreachable!()
+    };
+    ctx.active()?;
+    let n = ctx.live_node(*node)?;
+    if n.hold {
+        return Err(invalid("Task is already held."));
+    }
+    set_hold(ctx, *node, true)
+}
+pub(super) fn release(ctx: &mut Context<'_>) -> Result<()> {
+    let Operation::Release { node } = ctx.op else {
+        unreachable!()
+    };
+    ctx.active()?;
+    ctx.undecided(*node)?;
+    let n = ctx.live_node(*node)?;
+    if !n.hold {
+        return Err(invalid("Task is not held."));
+    }
+    set_hold(ctx, *node, false)
+}
+pub(super) fn set_hold(ctx: &Context<'_>, node: u32, value: bool) -> Result<()> {
+    ctx.db
+        .execute(
+            "UPDATE nodes SET hold=?3 WHERE team=?1 AND id=?2",
+            params![ctx.team.id, node, value],
+        )
+        .map_err(storage)?;
+    Ok(())
+}
+pub(super) fn observe(ctx: &mut Context<'_>) -> Result<()> {
+    let Operation::ObserveTask {
+        node,
+        observation: o,
+    } = ctx.op
+    else {
+        unreachable!()
+    };
+    let mut n = ctx.node(*node)?;
+    let table = ctx.node_table(*node)?;
+    let stage = validate_observation(ctx, *node, &n, o)?;
+    let active = matches!(ctx.team.status, TeamStatus::Running | TeamStatus::Paused);
+    if !active && table == "nodes" {
+        archive_inactive(ctx, *node)?;
+    }
+    if table == "node_archive" && !o.cancelled && o.stage != TaskStage::Done {
+        if active {
+            restore(ctx, *node, &mut n)?;
+        } else if matches!(n.state, NodeState::Accepted | NodeState::Cancelled) {
+            ctx.event = Some("person_override");
+        }
+    }
+    n.title = o.title.clone();
+    let target = ctx.node_table(*node)?;
+    ctx.db.execute(&format!("UPDATE {target} SET data=?3,task_revision=?4,task_stage=?5,task_cancelled=?6,rank=?7 WHERE team=?1 AND id=?2"),params![ctx.team.id,node,rows::node_payload(&n)?,o.revision,stage,o.cancelled,o.rank]).map_err(storage)?;
+    if o.cancelled || o.stage == TaskStage::Done {
+        finish_observation(ctx, *node, o.cancelled)?;
+    }
+    Ok(())
+}
+fn validate_observation(
+    ctx: &Context<'_>,
+    node: u32,
+    n: &Node,
+    o: &TaskObservation,
+) -> Result<String> {
+    reason(&o.revision)?;
+    text(&o.revision, 256)?;
+    text(&o.previous_revision, 256)?;
+    text(&o.rank, 256)?;
+    text(&o.title, 1024)?;
+    let table = ctx.node_table(node)?;
+    let old:(String,String,bool,String)=ctx.db.query_row(&format!("SELECT task_revision,task_stage,task_cancelled,rank FROM {table} WHERE team=?1 AND id=?2"),params![ctx.team.id,node],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).map_err(storage)?;
+    let stage = encode(&o.stage)?.trim_matches('"').to_owned();
+    if (old.0 != o.revision && old.0 != o.previous_revision)
+        || (old.0 == o.revision
+            && (old.1 != stage || old.2 != o.cancelled || old.3 != o.rank || n.title != o.title))
+    {
+        return Err(stale());
+    }
+    Ok(stage)
+}
+
+fn restore(ctx: &mut Context<'_>, node: u32, n: &mut Node) -> Result<()> {
+    ctx.active()?;
+    check_capacity(ctx, n.admitted)?;
+    let task = n.task.as_ref().ok_or_else(missing)?;
+    let binding: Option<(String, u32)> = ctx
+        .db
+        .query_row(
+            "SELECT team,node FROM live_tasks WHERE task_project=?1 AND task_uuid=?2",
+            params![task.project, task.uuid],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()
+        .map_err(storage)?;
+    if binding
+        .as_ref()
+        .is_some_and(|b| b != &(ctx.team.id.clone(), node))
+    {
+        return Err(invalid("Task is now owned by another live node."));
+    }
+    ctx.db.execute("INSERT OR IGNORE INTO live_tasks(task_project,task_uuid,team,node) VALUES(?1,?2,?3,?4)",params![task.project,task.uuid,ctx.team.id,node]).map_err(storage)?;
+    ctx.db
+        .execute(
+            &format!(
+                "INSERT INTO nodes({0}) SELECT {0} FROM node_archive WHERE team=?1 AND id=?2",
+                rows::NODE_COLUMNS
+            ),
+            params![ctx.team.id, node],
+        )
+        .map_err(storage)?;
+    ctx.db
+        .execute(
+            "DELETE FROM node_archive WHERE team=?1 AND id=?2",
+            params![ctx.team.id, node],
+        )
+        .map_err(storage)?;
+    ctx.settle(node)?;
+    ctx.advance(node, n)?;
+    ctx.db.execute("UPDATE nodes SET requested=NULL,decided_by=NULL,integrated=0,integration_commit=NULL,hold=0 WHERE team=?1 AND id=?2",params![ctx.team.id,node]).map_err(storage)?;
+    ctx.event = Some("person_override");
+    Ok(())
+}
+fn finish_observation(ctx: &Context<'_>, node: u32, cancelled: bool) -> Result<()> {
+    ctx.db.execute(&format!("UPDATE effects SET state='observed_done' WHERE team=?1 AND node=?2 AND state IN {OPEN_EFFECT_STATES}"),params![ctx.team.id,node]).map_err(storage)?;
+    ctx.close_inbox(node)?;
+    if cancelled {
+        ctx.db
+            .execute(
+                "DELETE FROM live_tasks WHERE team=?1 AND node=?2",
+                params![ctx.team.id, node],
+            )
+            .map_err(storage)?;
+        ctx.settle(node)?;
+    } else if let Some((_, kind, _)) = ctx.pending(node)? {
+        let n = ctx.node(node)?;
+        if kind == "accept" && (!decisions::needs_merge(ctx, &n) || n.integrated) {
+            ctx.settle(node)?;
+        }
+    }
+    Ok(())
+}
+
+fn archive_inactive(ctx: &Context<'_>, node: u32) -> Result<()> {
+    ctx.db
+        .execute(
+            &format!(
+                "INSERT INTO node_archive({0}) SELECT {0} FROM nodes WHERE team=?1 AND id=?2",
+                rows::NODE_COLUMNS
+            ),
+            params![ctx.team.id, node],
+        )
+        .map_err(storage)?;
+    ctx.db
+        .execute(
+            "DELETE FROM nodes WHERE team=?1 AND id=?2",
+            params![ctx.team.id, node],
+        )
+        .map_err(storage)?;
+    Ok(())
+}
