@@ -351,7 +351,8 @@ pub(super) fn render(
     if pin {
         view.target = Target::Session(to.clone());
     }
-    let (mut prompt, attachments) = super::dispatch_content(settings, &view, project_name, subagent)?;
+    let (mut prompt, attachments) =
+        super::dispatch_content(settings, &view, project_name, subagent)?;
     super::controls::pin_dispatch(&mut prompt, project_name, &view.id, id);
     crate::state::prepare_task_reply(to, "", id, &prompt, &attachments).map_err(fail)
 }
@@ -388,7 +389,13 @@ pub(super) fn send(
             *detail.borrow_mut() = why;
             Ok(Err(Closed { node: None, reason }))
         };
-        if let Err(error) = super::teams::guard(config, machines, task, if handoff { "handoff" } else { "send" }, args) {
+        if let Err(error) = super::teams::guard(
+            config,
+            machines,
+            task,
+            if handoff { "handoff" } else { "send" },
+            args,
+        ) {
             return refuse("not_sendable", error.message);
         }
         let check = if handoff {
@@ -563,13 +570,29 @@ pub(super) fn reopen_request(
     to: &SessionKey,
     dispatch: &str,
 ) -> Result<Value> {
-    let mut prompt = super::messages::prompt(
+    reopen_request_from(project_name, view, id, text, files, to, dispatch, None)
+}
+
+/// The service has proved the stored return's author under its team lock.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn reopen_request_from(
+    project_name: &str,
+    view: &zerus_replica::TaskView,
+    id: &str,
+    text: &str,
+    files: &[TaskAttachment],
+    to: &SessionKey,
+    dispatch: &str,
+    notice: Option<&str>,
+) -> Result<Value> {
+    let mut prompt = super::messages::prompt_from(
         project_name,
         &view.id,
         id,
         "reopen",
         text,
         view.worker.as_ref(),
+        notice,
     );
     super::controls::pin_dispatch(&mut prompt, project_name, &view.id, id);
     let attachments = files

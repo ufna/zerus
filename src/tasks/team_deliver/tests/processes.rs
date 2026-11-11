@@ -975,3 +975,5 @@ mod terminal_clear_tests;
 mod review_tests;
 
 mod cancel_tests;
+
+mod return_text_tests;
