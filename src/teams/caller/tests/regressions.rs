@@ -27,10 +27,6 @@ if mode=='intermediate':
     code="import os,sys,subprocess; e=dict(os.environ); [e.pop(k,None) for k in ['HGS_SESSION','HGS_RUN_ID','HGS_SESSION_ID']]; p=subprocess.run([sys.argv[1],'--exact','teams::caller::tests::probe','--nocapture'],env=e,capture_output=True,text=True,timeout=10); print(p.stdout+p.stderr)"
     cmd=[sys.executable,'-c',code,exe]
     child=dict(os.environ)
-if mode in ['id-marked-userns','id-marked-pidns']:
-    prefix=['unshare','--user','--map-current-user']
-    if mode=='id-marked-pidns': prefix+=['--pid','--fork','--mount-proc']
-    cmd=prefix+cmd
 if mode=='setsid':
     result=subprocess.run(cmd,env=child,capture_output=True,text=True,start_new_session=True,timeout=15)
 else:
@@ -749,6 +745,20 @@ fn a_legacy_route_refuses_an_id_layout_record_on_both_caller_paths() {
     }
 }
 
+/// Whether this machine can run a probe inside a private user namespace.
+#[cfg(target_os = "linux")]
+fn user_namespace_available(pid_namespace: bool) -> bool {
+    let mut command = Command::new("unshare");
+    command.args(["--user", "--map-root-user"]);
+    if pid_namespace {
+        command.args(["--pid", "--fork", "--mount-proc"]);
+    }
+    command
+        .arg("true")
+        .status()
+        .is_ok_and(|status| status.success())
+}
+
 /// Invoked inside the real namespace by the parent test below. Outside that
 /// fixture it is inert, so the ordinary host suite retains its positive cases.
 #[cfg(target_os = "linux")]
@@ -785,6 +795,10 @@ fn namespace_refusal_probe() {
 #[test]
 fn user_and_pid_namespace_controls_refuse_instead_of_becoming_the_person() {
     for pid_namespace in [false, true] {
+        if !user_namespace_available(pid_namespace) {
+            eprintln!("skipped: user namespaces are unavailable");
+            return;
+        }
         let temp = tempfile::tempdir().unwrap();
         let state = temp.path().join("state");
         let config = temp.path().join("config");
@@ -825,32 +839,257 @@ fn user_and_pid_namespace_controls_refuse_instead_of_becoming_the_person() {
     }
 }
 
+/// Runs the ordinary probe with session markers below `unshare`; `None` when
+/// this machine cannot create the namespace.
+#[cfg(target_os = "linux")]
+fn marked_probe_in_namespace(pid_namespace: bool) -> Option<String> {
+    if !user_namespace_available(pid_namespace) {
+        return None;
+    }
+    let temp = tempfile::tempdir().unwrap();
+    let state = temp.path().join("state");
+    let config = temp.path().join("config");
+    std::fs::create_dir(&state).unwrap();
+    std::fs::create_dir(&config).unwrap();
+    catalog(&config);
+    let mut command = Command::new("unshare");
+    command.args(["--user", "--map-current-user"]);
+    if pid_namespace {
+        command.args(["--pid", "--fork", "--mount-proc"]);
+    }
+    let output = command
+        .arg(std::env::current_exe().unwrap())
+        .args(["--exact", "teams::caller::tests::probe", "--nocapture"])
+        .env_clear()
+        .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+        .env("HOME", temp.path())
+        .env("HGS_STATE_DIR", &state)
+        .env("HGS_CONFIG_DIR", &config)
+        .env("HGS_TEAMS_CALLER_PROBE", "1")
+        .env("HGS_SESSION", NAME)
+        .env("HGS_RUN_ID", RUN)
+        .env("HGS_SESSION_ID", ID)
+        .output()
+        .unwrap();
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(output.status.success(), "{text}");
+    Some(text)
+}
+
+#[cfg(target_os = "linux")]
 #[test]
-fn a_marked_command_in_a_user_only_namespace_is_its_live_agent() {
-    let tree = Tree::start("id-marked-userns", None);
-    tree.record(tree.pid, &tree.born());
-    let text = tree.answer();
+fn a_marked_command_in_a_user_only_namespace_is_refused() {
+    let Some(text) = marked_probe_in_namespace(false) else {
+        eprintln!("skipped: user namespaces are unavailable");
+        return;
+    };
+    refused(&text);
     assert!(
-        text.contains("PROBE session:launch_id:00000000-0000-4000-8000-0000000000c1"),
+        text.contains("sandbox with its own user namespace"),
         "{text}"
     );
+    assert!(text.contains("must run outside it"), "{text}");
+    assert!(!text.contains("initial Linux user namespace"), "{text}");
     println!("MARKED_USER_NAMESPACE {text}");
 }
 
+#[cfg(target_os = "linux")]
 #[test]
-fn a_marked_command_in_a_user_and_pid_namespace_uses_marked_refusal() {
-    let tree = Tree::start("id-marked-pidns", None);
-    tree.record(tree.pid, &tree.born());
-    let text = tree.answer();
+fn a_marked_command_in_a_user_and_pid_namespace_is_refused() {
+    let Some(text) = marked_probe_in_namespace(true) else {
+        eprintln!("skipped: user and pid namespaces are unavailable");
+        return;
+    };
     refused(&text);
     assert!(
-        text.contains("birth") && text.contains("agent"),
-        "marked proof must explain unreadable process identity: {text}"
+        text.contains("sandbox with its own user namespace"),
+        "{text}"
     );
-    assert!(
-        !text.contains("requires the initial Linux user namespace"),
-        "the marked path must run its own proof: {text}"
-    );
-    assert!(!text.contains("ordinary terminal"), "{text}");
+    assert!(text.contains("must run outside it"), "{text}");
+    assert!(!text.contains("initial Linux user namespace"), "{text}");
     println!("MARKED_USER_PID_NAMESPACE {text}");
+}
+
+/// The coordinator's probe: descriptor 9 holds the initial user namespace
+/// before the shell enters a private user and mount namespace. The shell then
+/// binds that handle over its own `ns` directory and execs the probe, which
+/// keeps the same PID, inside its own private mount namespace.
+#[cfg(target_os = "linux")]
+const FORGERY: &str = "exec 9</proc/self/ns/user\n\
+exec unshare --user --map-root-user --mount --propagation private sh -c '\n\
+set -e\n\
+mkdir -p \"$1/ns\"\n\
+: > \"$1/ns/user\"\n\
+mount --bind /proc/self/fd/9 \"$1/ns/user\"\n\
+mount --rbind \"$1/ns\" \"/proc/$$/ns\"\n\
+exec \"$2\" --exact teams::caller::tests::regressions::forged_namespace_probe --nocapture\n\
+' fixture \"$1\" \"$2\"";
+
+/// The forged fixture's answer, or `None` when the private namespace or the
+/// overmount could not be made (the control then never sees the initial inode).
+#[cfg(target_os = "linux")]
+fn forged_namespace(marked: bool) -> Option<String> {
+    let temp = tempfile::tempdir().unwrap();
+    let state = temp.path().join("state");
+    let config = temp.path().join("config");
+    std::fs::create_dir(&state).unwrap();
+    std::fs::create_dir(&config).unwrap();
+    catalog(&config);
+    let mut command = Command::new("sh");
+    command
+        .arg("-c")
+        .arg(FORGERY)
+        .arg("fixture")
+        .arg(temp.path())
+        .arg(std::env::current_exe().unwrap())
+        .env_clear()
+        .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+        .env("HOME", temp.path())
+        .env("HGS_STATE_DIR", &state)
+        .env("HGS_CONFIG_DIR", &config)
+        .env("HGS_TEAMS_FORGED_NS_PROBE", "1");
+    if marked {
+        command
+            .env("HGS_SESSION", NAME)
+            .env("HGS_RUN_ID", RUN)
+            .env("HGS_SESSION_ID", ID);
+    }
+    let output = command.output().unwrap();
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    if !text.contains("FORGERY_CONTROL ok") {
+        return None;
+    }
+    assert!(
+        output.status.success(),
+        "the forged-namespace probe failed: {text}"
+    );
+    Some(text)
+}
+
+/// Shows the old path read answering with the initial namespace first, then
+/// the admission and both caller paths inside the forged fixture.
+#[cfg(target_os = "linux")]
+#[test]
+fn forged_namespace_probe() {
+    if std::env::var_os("HGS_TEAMS_FORGED_NS_PROBE").is_none() {
+        return;
+    }
+    use std::os::unix::fs::MetadataExt;
+    let old = std::fs::metadata("/proc/self/ns/user")
+        .map(|meta| meta.ino())
+        .unwrap_or(0);
+    println!("FORGERY_OLD_PATH {old}");
+    if old != context::USER_NS_INIT_INO {
+        println!("FORGERY_CONTROL unavailable");
+        return;
+    }
+    println!("FORGERY_CONTROL ok");
+    match context::admitted() {
+        Ok(()) => println!("FORGERY_ADMISSION admitted"),
+        Err(error) if error.raw_os_error() == Some(libc::EXDEV) => {
+            println!("FORGERY_ADMISSION EXDEV")
+        }
+        Err(error) => println!(
+            "FORGERY_ADMISSION {}",
+            error
+                .raw_os_error()
+                .map_or_else(|| "other".to_owned(), |code| code.to_string())
+        ),
+    }
+    let config = crate::config::Config::load().unwrap();
+    match caller(&config) {
+        Caller::Person => println!("FORGERY_CALLER person"),
+        Caller::Session(_) => println!("FORGERY_CALLER session"),
+        Caller::Refused(problem) => {
+            println!("FORGERY_CALLER refused:{}", problem.code);
+            println!("FORGERY_CALLER_DETAIL {}", problem.message);
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_forged_namespace_path_cannot_admit_a_caller() {
+    for marked in [false, true] {
+        let Some(text) = forged_namespace(marked) else {
+            eprintln!(
+                "skipped: user and mount namespaces or the namespace overmount are unavailable"
+            );
+            return;
+        };
+        assert!(text.contains("FORGERY_OLD_PATH 4026531837"), "{text}");
+        assert!(text.contains("FORGERY_ADMISSION EXDEV"), "{text}");
+        assert!(
+            text.contains("FORGERY_CALLER refused:not_allowed"),
+            "{text}"
+        );
+        if marked {
+            assert!(
+                text.contains("sandbox with its own user namespace"),
+                "{text}"
+            );
+            assert!(text.contains("must run outside it"), "{text}");
+        } else {
+            assert!(text.contains("initial Linux user namespace"), "{text}");
+            assert!(
+                !text.contains("sandbox with its own user namespace"),
+                "{text}"
+            );
+        }
+        println!("FORGED_NAMESPACE marked={marked} {text}");
+    }
+}
+
+/// The admission without its mount rules would not be distinguishable from
+/// the procfs root test elsewhere; keep that root rule pinned to procfs.
+#[cfg(target_os = "linux")]
+#[test]
+fn only_a_procfs_root_is_admitted() {
+    const TMPFS_MAGIC: libc::c_long = 0x0102_1994;
+    assert!(context::is_procfs_root(context::PROC_SUPER_MAGIC, 1));
+    assert!(!context::is_procfs_root(TMPFS_MAGIC, 1));
+    assert!(!context::is_procfs_root(context::PROC_SUPER_MAGIC, 2));
+    assert!(context::is_procfs(context::PROC_SUPER_MAGIC));
+    assert!(!context::is_procfs(TMPFS_MAGIC));
+}
+
+/// The ordinary positive case: the real admission passes a plain command in
+/// the initial user namespace.
+#[cfg(target_os = "linux")]
+#[test]
+fn the_admission_passes_in_the_plain_test_process() {
+    use std::os::unix::fs::MetadataExt;
+    let initial = std::fs::metadata("/proc/self/ns/user")
+        .is_ok_and(|meta| meta.ino() == context::USER_NS_INIT_INO);
+    if !initial {
+        eprintln!("skipped: /proc/self/ns/user is not the initial user namespace");
+        return;
+    }
+    assert_eq!(context::admission(), Ok(()));
+}
+
+/// The second `f_type` check: a link whose text is exactly the initial
+/// namespace, but whose filesystem is not procfs, must not be admitted.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_lookalike_link_on_another_filesystem_is_refused() {
+    use std::os::fd::OwnedFd;
+    use std::os::unix::fs::symlink;
+    let temp = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(temp.path().join("self/ns")).unwrap();
+    symlink(
+        format!("user:[{}]", context::USER_NS_INIT_INO),
+        temp.path().join("self/ns/user"),
+    )
+    .unwrap();
+    let root: OwnedFd = std::fs::File::open(temp.path()).unwrap().into();
+    assert!(context::admit_from(&root).is_err());
 }

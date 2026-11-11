@@ -54,6 +54,22 @@ fn readable_top_keeps_its_claim_but_parent_zero_refuses() {
 }
 
 #[test]
+fn a_foreign_parent_zero_is_still_refused() {
+    // On macOS pid 0 is a foreign (root-owned) process, so the walk must
+    // refuse a same-user parent of zero rather than treat it as a top.
+    assert!(walk(
+        2,
+        |pid| Ok(if pid == 2 {
+            own(0)
+        } else {
+            Inspection::Foreign
+        }),
+        empty
+    )
+    .is_err());
+}
+
+#[test]
 fn unreadable_middle_unknown_parent_loop_and_cap_refuse() {
     assert!(walk(
         3,

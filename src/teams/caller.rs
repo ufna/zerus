@@ -1,14 +1,24 @@
-//! Interim caller proof shared by Teams and task intake. A marked caller
-//! must descend from its live saved agent. An unmarked caller is the person
-//! only after a complete, bounded inspection finds no verified marked agent.
+//! Interim caller proof shared by Teams and task intake. Both callers pass one
+//! namespace admission first; then a marked caller must descend from its live
+//! saved agent, and an unmarked caller is the person only after a complete,
+//! bounded inspection finds no verified marked agent.
+//!
+//! The admission opens `/proc` and resolves `self/ns/user` from that
+//! descriptor with `openat2` under `RESOLVE_NO_XDEV`: the lookup crosses no
+//! mount and does not follow the last link, so a bind mount over the
+//! process's own `ns` directory cannot answer for the real namespace. Any
+//! failure refuses, including a kernel or sandbox without `openat2`; there is
+//! no path fallback. A command in a sandbox with its own user namespace is
+//! therefore refused for both marked and unmarked callers, so a lead or a
+//! member whose shell runs in such a sandbox cannot use `hgs team`; those
+//! team commands must run outside it.
 //!
 //! This is not verified Person authority. A command whose ancestry does not
 //! pass through readable same-user processes to its agent is outside this
-//! rule: reparenting, credential-changing helpers and namespaces can sever
-//! that chain. Agents started without session markers are also undetectable.
-//! The unmarked walk refuses parent zero and noninitial Linux user namespaces.
-//! A marked sandboxed caller instead proves descent from its claimed agent;
-//! hidden or unreadable owners/births refuse through that marked proof. Other
+//! rule: reparenting and credential-changing helpers can sever that chain.
+//! Agents started without session markers are also undetectable, and the walk
+//! refuses parent zero. A caller that replaces or instruments `hgs` itself or
+//! writes the team store directly is outside this interim proof. Other
 //! process boundaries still need the future verified Person authority.
 //! Discovery uses ancestor environments, never a saved-session inventory.
 //! The top is established from process-table owners and parentage, never a
@@ -37,7 +47,7 @@ use zerus_team_plan::model::SessionKey;
 use zerus_team_plan::problem::code;
 use zerus_team_plan::Problem;
 
-pub(crate) const INTERIM_NOTE: &str = "This interim rule does not detect commands whose ancestry does not pass through readable processes of the same user to their agent, for example after reparenting, credential-changing helpers or namespaces. Agents started without session markers are also not detected.";
+pub(crate) const INTERIM_NOTE: &str = "This interim rule does not detect commands whose ancestry does not pass through readable processes of the same user to their agent, for example after reparenting or credential-changing helpers, nor a caller that replaces or instruments hgs itself or writes the team store directly. Agents started without session markers are also not detected. A command in a sandbox with its own user namespace is refused, so team commands must run outside such a sandbox.";
 
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum Caller {
@@ -50,10 +60,16 @@ pub(crate) fn caller(config: &Config) -> Caller {
     if let Err(problem) = context::available() {
         return Caller::Refused(problem);
     }
+    // The admission runs before any marker is read into a proof and before
+    // anything reads the process table. Its refusal never falls through.
+    let admission = context::admission();
     let session = std::env::var_os("HGS_SESSION");
     let run = std::env::var_os("HGS_RUN_ID");
     let hint = std::env::var_os("HGS_SESSION_ID");
     let marked = session.is_some() || run.is_some() || hint.is_some();
+    if let Err(problem) = admission {
+        return Caller::Refused(if marked { sandboxed() } else { problem });
+    }
     if marked {
         let pair = session
             .as_ref()
@@ -80,17 +96,19 @@ pub(crate) fn caller(config: &Config) -> Caller {
             Err(problem) => Caller::Refused(problem),
         };
     }
-    // A user namespace can hide an ancestor from the negative Person proof.
-    // A marked caller has already returned through its positive descent proof.
-    if let Err(problem) = context::unmarked() {
-        return Caller::Refused(problem);
-    }
     match agent_above() {
         Ok(true) => Caller::Refused(Problem::new(code::NOT_ALLOWED,
             "A live agent session runs this command; person-only operations require a caller outside its process tree.")),
         Ok(false) => Caller::Person,
         Err(problem) => Caller::Refused(problem),
     }
+}
+
+/// A marked command carries the lead's or the member's shell environment, so
+/// its refusal must name the sandbox rather than the person proof.
+fn sandboxed() -> Problem {
+    Problem::new(code::NOT_ALLOWED,
+        "The command runs in a sandbox with its own user namespace. Team commands of a lead or a member must run outside it.")
 }
 
 fn not_allowed() -> Problem {
