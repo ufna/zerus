@@ -111,14 +111,16 @@ pub(super) fn cancel(ctx: &mut Context<'_>) -> Result<()> {
     Ok(())
 }
 pub(super) fn integration(ctx: &mut Context<'_>) -> Result<()> {
-    let Operation::RecordIntegration { node, commit } = ctx.op else {
+    let Operation::RecordIntegration {
+        node,
+        commit,
+        decision,
+    } = ctx.op
+    else {
         unreachable!()
     };
     let n = ctx.node(*node)?;
-    if !needs_merge(ctx, &n) || n.integrated {
-        return Err(invalid("This node does not need an integration receipt."));
-    }
-    let permit = integration::permit(ctx, *node)?;
+    let permit = integration::permit(ctx, *node, *decision)?;
     if !matches!(commit.len(), 40 | 64)
         || !commit
             .bytes()
@@ -129,6 +131,11 @@ pub(super) fn integration(ctx: &mut Context<'_>) -> Result<()> {
         ));
     }
     integration::record(ctx, &permit, *node, Some(commit), &[])?;
+    // The fact belongs to the accepted generation. A person's restore starts
+    // a new round whose completion must not inherit this older merge.
+    if !needs_merge(ctx, &n) || n.integrated || permit.generation != ctx.generation(*node)? {
+        return Ok(());
+    }
     let table = ctx.node_table(*node)?;
     ctx.db
         .execute(
@@ -153,16 +160,21 @@ pub(super) fn integration(ctx: &mut Context<'_>) -> Result<()> {
     Ok(())
 }
 pub(super) fn conflict(ctx: &mut Context<'_>) -> Result<()> {
-    let Operation::RecordIntegrationConflict { node, conflicts } = ctx.op else {
+    let Operation::RecordIntegrationConflict {
+        node,
+        conflicts,
+        decision,
+    } = ctx.op
+    else {
         unreachable!()
     };
     let n = ctx.node(*node)?;
-    if !needs_merge(ctx, &n) || n.integrated || conflicts.is_empty() || conflicts.len() > 200 {
+    let permit = integration::permit(ctx, *node, *decision)?;
+    if conflicts.is_empty() || conflicts.len() > 200 {
         return Err(invalid(
             "No unresolved integration conflict can be recorded.",
         ));
     }
-    let permit = integration::permit(ctx, *node)?;
     for path in conflicts {
         reason(path)?;
         text(path, 4096)?;
@@ -170,7 +182,11 @@ pub(super) fn conflict(ctx: &mut Context<'_>) -> Result<()> {
     let body = conflicts.join("\n");
     text(&body, 16_384)?;
     integration::record(ctx, &permit, *node, None, conflicts)?;
-    if permit.late {
+    if permit.late
+        || !needs_merge(ctx, &n)
+        || n.integrated
+        || permit.generation != ctx.generation(*node)?
+    {
         return Ok(());
     }
     ctx.settle(*node)?;

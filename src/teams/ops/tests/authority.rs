@@ -120,10 +120,12 @@ fn facts(o: TaskObservation) -> Vec<Operation> {
             commit: COMMIT.into(),
         },
         Operation::RecordIntegration {
+            decision: 1,
             node: 1,
             commit: COMMIT.into(),
         },
         Operation::RecordIntegrationConflict {
+            decision: 1,
             node: 1,
             conflicts: vec!["example.rs".into()],
         },

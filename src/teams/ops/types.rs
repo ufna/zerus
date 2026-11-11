@@ -186,10 +186,12 @@ pub enum Operation {
     },
     RecordIntegration {
         node: NodeId,
+        decision: u64,
         commit: String,
     },
     RecordIntegrationConflict {
         node: NodeId,
+        decision: u64,
         conflicts: Vec<String>,
     },
     Return {
