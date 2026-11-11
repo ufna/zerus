@@ -299,6 +299,7 @@ pub struct MemberView { pub id: MemberId, pub role: String, pub state: MemberSta
 pub struct PlanView<'a> {
     pub phases: &'a [Phase], pub nodes: &'a [Node],
     pub members: &'a [MemberView], pub lead: &'a str,
+    pub integration: Integration,
 }
 pub struct Handout { pub node: NodeId, pub member: MemberId }
 pub fn ready(view: &PlanView) -> Vec<NodeId>;
@@ -603,8 +604,13 @@ the new generation is accepted once that effect is recorded.
 
 **Hand-out.** Only the service records a hand-out, and only for a node the
 kernel says is ready. The effect row holds the current holder. A node's
-`assignee` is the plan's and changes only by Route and Reassign; `implementer`
-is set when a hand-out is submitted; a refusal leaves neither.
+`assignee` is the plan's and changes only by Route and Reassign. For a task
+node `implementer` is set when its hand-out is submitted; a refusal leaves
+neither. For a stage node `implementer` is the member who implemented the task
+it checks, copied when the stage is created and never changed by the stage's
+own hand-out. The teams actor passes `free: false` for every member with an
+open hand-out, because a stage's holder is only on its effect row. A
+dependency that names a stage node never releases.
 
 **Queue.** Only the person and the lead route a task by naming a role or a
 pipeline while sending; from anyone else the values are a suggestion. Only
