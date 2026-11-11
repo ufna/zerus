@@ -912,6 +912,19 @@ pipeline asked for. A stage's task is an ordinary task with the team key;
 its kind lives on the team's node. Its identity is derived from the effect's
 request ID, so a repeat creates nothing.
 
+Both answer in the envelope of `start-deliver`, echoing the request.
+`team-done`: `{schema, team, node, state, error}` with `done` (the task is
+Done after the call, whether this call moved it or it already was),
+`refused` (the store holds no accepted node of that team that this task
+finishes; nothing was written; not repeated before the node's observation
+or decision changes) or `cutting_over` (nothing was written; repeated with
+the backoff). It has no uncertain state: the observation settles it, and a
+repeat is safe until the observation says Done. `team-stage`:
+`{schema, id, team, node, state, error}` with `created` (also when the task
+of that derived identity already exists), `refused` or `cutting_over`. A
+reply that does not echo its request, an unknown state, a malformed reply
+and a failed child are all treated as no answer.
+
 **The CLI as the desktop's interface (packages 3, 5 and 12).** The client
 core reads through `hgs team` and follows the shapes package 5 pins in
 `crates/team-plan/fixtures/cli-*.json`: a page is
