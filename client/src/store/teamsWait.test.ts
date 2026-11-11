@@ -117,13 +117,16 @@ describe("Waiting for you", () => {
     expect(teams.uncertain()).toBeNull();
   });
 
-  it("hides the entry points when the preview is off", () => {
+  it("hides the entry points when the preview is off and takes no late page", () => {
     const { transport } = fake();
     const teams = createTeams(transport);
+    teams.apply([entry("waiting", "waiting", WAITING)]);
+    expect(teams.waitingCount()).toBe(2);
     teams.apply([entry("list", "failed", { code: "teams_inactive", message: "Teams are off." })]);
     expect(teams.available()).toBe(false);
     expect(teams.off()).toBe("inactive");
+    expect(teams.waitingCount(), "an off store counts nothing").toBe(0);
     teams.apply([entry("waiting", "waiting", WAITING)]);
-    expect(teams.waitingCount()).toBe(2);
+    expect(teams.waitingCount(), "a late page after off is not taken").toBe(0);
   });
 });

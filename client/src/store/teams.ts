@@ -17,7 +17,11 @@ export interface TeamSummary {
   /** The lead's bound session: how a session finds its team (package 5's list). */
   lead_session?: TeamSession | null;
 }
-export interface TeamList { teams: TeamSummary[]; truncated: boolean; next: string | null }
+export interface TeamList {
+  teams: TeamSummary[]; truncated: boolean; next: string | null;
+  /** The cursor this page was read from; absent or null is the first page. */
+  after?: string | null;
+}
 export interface TeamMember { id: string; role: string; agent: string; account: string; state: string; lead: boolean; session: TeamSession | null; model?: string | null }
 export interface TeamMemberCounts { total: number; not_created: number; active: number; paused: number; removed: number }
 export interface TeamNodeCounts { waiting: number; pending: number; in_progress: number; reported: number; accepted: number; cancelled: number }
@@ -35,7 +39,11 @@ export interface TeamBar {
   id: string; project: string; name: string; status: string; goal: string; lead: string;
   integration_branch: string; base_commit: string; revision: number; counts: TeamCounts;
 }
-export interface TeamView { bar: TeamBar; members: TeamMember[]; groups: TeamGroup[]; truncated: boolean; next: string | null; revision: number }
+export interface TeamView {
+  bar: TeamBar; members: TeamMember[]; groups: TeamGroup[]; truncated: boolean; next: string | null; revision: number;
+  /** The queue page's cursor; absent or null is the first page. */
+  after?: string | null;
+}
 
 /** One open owner card that waits for the person. */
 export interface WaitingItem {
@@ -51,7 +59,11 @@ export interface WaitingItem {
 }
 
 /** The open owner cards of every team, oldest first, one bounded page. */
-export interface WaitingView { items: WaitingItem[]; next: string | null }
+export interface WaitingView {
+  items: WaitingItem[]; next: string | null;
+  /** The cursor this page was read from; absent or null is the first page. */
+  after?: string | null;
+}
 
 export interface TeamConfirmation { name: string; title: string; text: string; action: string }
 export interface TeamCall {
@@ -122,6 +134,7 @@ export function tauriTeams(): TeamsTransport {
   };
 }
 
+
 /** A request identity for one intent, made once before the first send. */
 export function newRequestId(): string {
   const crypto = globalThis.crypto;
@@ -132,11 +145,12 @@ export function newRequestId(): string {
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-4${hex.slice(13, 16)}-8${hex.slice(17, 20)}-${hex.slice(20, 32)}`;
 }
 
-/** The session asking for its team, by this machine and its launch or run.
- * The row's `sessionId` is not this: a team binds the lead's launch id. */
+/** The session asking for its team: this computer's machine UUID and the
+ * session's launch or run. The row's native `sessionId` is not this: a team
+ * binds the lead's launch id. */
 export interface SessionIdentity { machine?: string | null; launchId?: string | null; runId?: string | null }
 
-/** What the current list says about a session's team; an incomplete list says
+/** What the scanned list says about a session's team; an incomplete list says
  * `unknown`, never `none`. */
 export interface TeamOfSession { state: "lead" | "none" | "unknown"; team?: string }
 
@@ -151,32 +165,69 @@ export type PreviewOutcome =
  * with its own request id or by Dismiss. */
 export interface UnresolvedCall { call: TeamCall; detail: string; state: "uncertain" | "pending" }
 
-/** A failed outcome's reason, for the view that asked for the action.
+/** A failed outcome's reason, for the view that asked for the action, or a
+ * read's failure for its key.
  *
  * A view names itself when it sends: `teams.run(call, "new-team")` (any stable
  * string; "" is the store's own). It reads `teams.failureFor("new-team")` in a
- * memo or an effect — the `failure` signal makes it reactive — and clears it
- * with `teams.clearFailure("new-team")` when the person has seen it or the view
- * changes. `teams.failure()` remains the newest reason of any view. */
+ * memo or an effect and clears it with `teams.clearFailure("new-team")` when
+ * the person has seen it or the view changes. A read failure never replaces
+ * a view's reason: it is read with `teams.readFailureFor(key)` and goes when
+ * that key reads again. `teams.failure()` is the newest reason of any kind. */
 export interface TeamFailure { key: string; code: string; message: string; source: string }
 
-/** Unresolved calls kept before a new action is refused. */
+/** The New team dialog's one create intent: its team and request ids, kept in
+ * the store so that closing the dialog keeps them. */
+export interface CreateIntent { team: string; request_id: string }
+
+/** Unresolved calls, in-flight ones included, before a new action is refused. */
 export const UNRESOLVED_MAX = 8;
-/** List pages followed to find a lead's session; an incomplete list says unknown. */
+/** List pages scanned to find a lead's session; a longer list says unknown. */
 export const LIST_PAGES_MAX = 5;
+/** A later list page older than this is read again before it decides an answer. */
+export const LIST_PAGE_FRESH_MS = 60 * 1000;
 /** A window hidden at least this long re-asks whether Teams exist when it returns. */
 export const HIDDEN_RECHECK_MS = 10 * 60 * 1000;
+/** How long a decision waits for its team's revision: the read in flight and
+ * the team's status read, each bounded at 15 seconds, and a margin. */
+export const REVISION_WAIT_MS = 35 * 1000;
+/** Asking views whose refusal is kept; the oldest goes first. */
+export const FAILURES_KEPT = 16;
+/** Read keys whose failure is kept: `list`, `waiting` and a few teams. */
+const READ_FAILURES_KEPT = 8;
+
+const OFF_CODES = new Set(["teams_inactive", "unavailable"]);
+
+interface ListPage { view: TeamList; at: number }
+interface ListScan { views: TeamList[]; complete: boolean; missing: string | null }
+
+/** The pages reachable from the first one, at most [`LIST_PAGES_MAX`]; a later
+ * page older than `fresh` counts as missing. */
+function scanPages(pages: ReadonlyMap<string, ListPage>, now: number, fresh = LIST_PAGE_FRESH_MS): ListScan {
+  const views: TeamList[] = [];
+  let truncated = false;
+  let key: string | null = "";
+  while (key !== null && views.length < LIST_PAGES_MAX) {
+    const page = pages.get(key);
+    if (!page || (key !== "" && now - page.at > fresh)) return { views, complete: false, missing: key === "" ? null : key };
+    views.push(page.view);
+    truncated ||= page.view.truncated;
+    key = page.view.next;
+  }
+  return { views, complete: key === null && !truncated, missing: null };
+}
 
 export function createTeams(transport: TeamsTransport = tauriTeams()) {
-  /** The latest list page, for a view that shows the list. */
-  const [list, setList] = createSignal<TeamList>();
-  /** Every page followed since the list was last asked for, for lead lookups. */
-  const [listPages, setListPages] = createSignal<TeamSummary[]>([]);
-  /** The last page's cursor; null once a page has no next. */
-  const [listNext, setListNext] = createSignal<string | null>(null);
+  /** The list pages by the cursor they were read from ("" is the first),
+   * replaced by every read of that page and pruned to the chain from the first. */
+  const [listPagesBy, setListPagesBy] = createSignal<ReadonlyMap<string, ListPage>>(new Map());
   const [waitingView, setWaitingView] = createSignal<WaitingView>();
+  /** The last first page of Waiting: the rail counts it, never a later page. */
+  const [waitingFirst, setWaitingFirst] = createSignal<WaitingView>();
   const [team, setTeam] = createSignal<TeamView>();
   const [failure, setFailure] = createSignal<TeamFailure | null>(null);
+  const [actionFailures, setActionFailures] = createSignal<ReadonlyMap<string, TeamFailure>>(new Map());
+  const [readFailures, setReadFailures] = createSignal<ReadonlyMap<string, TeamFailure>>(new Map());
   /** undefined until the first list answer; false when Teams are off or hgs cannot run. */
   const [available, setAvailable] = createSignal<boolean>();
   const [off, setOff] = createSignal<"inactive" | "unavailable" | null>(null);
@@ -188,88 +239,256 @@ export function createTeams(transport: TeamsTransport = tauriTeams()) {
   const [confirmation, setConfirmation] = createSignal<{ call: TeamCall; confirmation: TeamConfirmation } | null>(null);
   /** Every call whose result is unknown, bounded and never evicted by another. */
   const [unresolved, setUnresolved] = createSignal<UnresolvedCall[]>([]);
-  const [busy, setBusy] = createSignal(false);
-  /** Resolvers by team id, for a team view a decision needs a revision from. */
-  const pendingViews = new Map<string, (view: TeamView | null) => void>();
-  /** List page cursors already requested, so one page is never asked twice. */
+  /** The request ids whose invoke is in flight: each holds an admitted slot. */
+  const [sending, setSending] = createSignal<readonly string[]>([]);
+  const [createIntent, setCreateIntent] = createSignal<CreateIntent | null>(null);
+  /** Resolvers by team id, for the decisions that wait for that team's revision. */
+  const pendingViews = new Map<string, Set<(view: TeamView | null) => void>>();
+  /** List page cursors asked for and not yet answered, so one is never asked twice. */
   const requestedPages = new Set<string>();
+  /** The list page this store last selected for the reader; null is the first. */
+  let listSelected: string | null = null;
+  /** A positive off answer stops everything until the application asks again. */
+  let stopped = false;
   let probing = false;
   let hiddenAt: number | undefined;
+  /** Every follow this store sends; a borrowed follow restores only its own. */
+  let followGeneration = 0;
+  let lastFollow: TeamFollow | undefined;
 
+  const busy = () => sending().length > 0;
   const unresolvedOf = (requestId: string) => unresolved().find((entry) => entry.call.request_id === requestId);
   function putUnresolved(call: TeamCall, detail: string, state: UnresolvedCall["state"]) {
     setUnresolved([...unresolved().filter((entry) => entry.call.request_id !== call.request_id), { call, detail, state }]);
   }
-  function settleUnresolved(requestId: string) {
-    setUnresolved(unresolved().filter((entry) => entry.call.request_id !== requestId));
+  function settled(requestId: string) {
+    batch(() => {
+      setUnresolved(unresolved().filter((entry) => entry.call.request_id !== requestId));
+      if (createIntent()?.request_id === requestId) setCreateIntent(null);
+    });
   }
 
-  /** A positive off answer hides the entry points, unfollows and stops the reads. */
+  // ----------------------------------------------------------- failures
+
+  function failAction(source: string, code: string, message: string) {
+    const reason: TeamFailure = { key: "action", code, message, source };
+    const next = new Map(actionFailures());
+    next.delete(source);
+    next.set(source, reason);
+    for (const oldest of next.keys()) { if (next.size <= FAILURES_KEPT) break; next.delete(oldest); }
+    batch(() => { setActionFailures(next); setFailure(reason); });
+  }
+  function failRead(key: string, code: string, message: string) {
+    const reason: TeamFailure = { key, code, message, source: "" };
+    const next = new Map(readFailures());
+    next.delete(key);
+    next.set(key, reason);
+    for (const oldest of next.keys()) { if (next.size <= READ_FAILURES_KEPT) break; next.delete(oldest); }
+    batch(() => { setReadFailures(next); setFailure(reason); });
+  }
+  function readSucceeded(key: string) {
+    if (!readFailures().has(key)) return;
+    const next = new Map(readFailures());
+    next.delete(key);
+    batch(() => {
+      setReadFailures(next);
+      const newest = failure();
+      if (newest && newest.source === "" && newest.key === key) setFailure(null);
+    });
+  }
+  /** A view's own refusal; "" asks for the newest reason of any kind. */
+  const failureFor = (source: string) => source === "" ? failure() : actionFailures().get(source) ?? null;
+  /** The failure of one read (`list`, `waiting`, `team:<id>`) until it reads again. */
+  const readFailureFor = (key: string) => readFailures().get(key) ?? null;
+  /** Clears one view's reason, or every reason when no source is given. */
+  function clearFailure(source?: string) {
+    if (source === undefined) { batch(() => { setFailure(null); setActionFailures(new Map()); setReadFailures(new Map()); }); return; }
+    if (!actionFailures().has(source) && failure()?.source !== source) return;
+    const next = new Map(actionFailures());
+    next.delete(source);
+    batch(() => { setActionFailures(next); if (failure()?.source === source) setFailure(null); });
+  }
+
+  // ------------------------------------------------------------- follow
+
+  const scope = (): TeamFollow => ({ list: true, waiting: true, team: followed() ?? null });
+  const sameFollow = (a: TeamFollow | undefined, b: TeamFollow) => !!a && a.list === b.list && a.waiting === b.waiting && a.team === b.team;
+  function follow(next: TeamFollow): Promise<void> {
+    followGeneration++;
+    lastFollow = next;
+    return transport.follow(next);
+  }
+
+  /** A positive off answer hides the entry points, unfollows and stops the reads;
+   * only the application's recheck starts them again. */
   function stopFor(code: string) {
-    batch(() => { setAvailable(false); setOff(code === "unavailable" ? "unavailable" : "inactive"); setList(undefined); setTeam(undefined); setWaitingView(undefined); });
-    void transport.follow({ list: false, waiting: false, team: null }).catch(() => {});
+    stopped = true;
+    batch(() => {
+      setAvailable(false); setOff(code === "unavailable" ? "unavailable" : "inactive");
+      setListPagesBy(new Map()); setTeam(undefined); setWaitingView(undefined); setWaitingFirst(undefined);
+    });
+    requestedPages.clear();
+    listSelected = null;
+    for (const [id, waiters] of pendingViews) { pendingViews.delete(id); for (const settle of waiters) settle(null); }
+    void follow({ list: false, waiting: false, team: null }).catch(() => {});
     void transport.hidden(true).catch(() => {});
   }
 
+  // --------------------------------------------------------------- list
+
+  /** Replaces a page by its cursor and keeps only the chain from the first page. */
+  function applyList(view: TeamList) {
+    const key = view.after ?? "";
+    const pages = new Map(listPagesBy());
+    const reachable = () => {
+      const keys = new Set<string>();
+      let at: string | null = "";
+      while (at !== null && keys.size < LIST_PAGES_MAX && pages.has(at)) { keys.add(at); at = pages.get(at)!.view.next; }
+      return { keys, next: at };
+    };
+    if (key !== "") {
+      const chain = reachable();
+      if (chain.next !== key || chain.keys.size >= LIST_PAGES_MAX) { requestedPages.delete(key); return; }
+    }
+    pages.set(key, { view, at: Date.now() });
+    const keep = reachable().keys;
+    for (const known of [...pages.keys()]) if (!keep.has(known)) pages.delete(known);
+    requestedPages.delete(key);
+    setListPagesBy(pages);
+  }
+
+  function requestListPage(cursor: string | null) {
+    if (stopped) return;
+    if (cursor !== null) {
+      if (requestedPages.has(cursor)) return;
+      requestedPages.add(cursor);
+    } else if (listSelected === null) return;
+    const before = listSelected;
+    listSelected = cursor;
+    void transport.page("list", cursor).catch(() => {
+      if (cursor !== null) requestedPages.delete(cursor);
+      if (listSelected === cursor) listSelected = before;
+    });
+  }
+
+  /** The teams of the scanned pages: at most [`LIST_PAGES_MAX`] pages. */
+  const listed = () => scanPages(listPagesBy(), Date.now(), Number.POSITIVE_INFINITY).views.flatMap((page) => page.teams);
+
+  /**
+   * Whether a session leads a team, from the scanned list and nothing else: no
+   * cache and no prefix guessing. Pages are asked for one at a time up to
+   * [`LIST_PAGES_MAX`]; while a page is missing, or the list goes on past the
+   * bound, or a page is truncated, the answer is `unknown`. A complete list,
+   * an empty one included, answers `none`. The reader goes back to the first
+   * page once a scan has its answer.
+   */
+  function teamOfSession(identity: SessionIdentity): TeamOfSession {
+    const ids = [identity.launchId ? `launch_id:${identity.launchId}` : "", identity.runId ? `run_id:${identity.runId}` : ""].filter(Boolean);
+    if (!ids.length) return { state: "none" };
+    const machine = identity.machine ?? "";
+    if (!machine) return { state: "unknown" };
+    const scan = scanPages(listPagesBy(), Date.now());
+    const found = scan.views.flatMap((page) => page.teams).find((summary) => {
+      const lead = summary.lead_session;
+      return !!lead && lead.machine === machine && ids.includes(lead.session_id);
+    });
+    if (!found && scan.missing !== null) { requestListPage(scan.missing); return { state: "unknown" }; }
+    requestListPage(null);
+    if (found) return { state: "lead", team: found.id };
+    return scan.complete ? { state: "none" } : { state: "unknown" };
+  }
+
+  /**
+   * A team's summary from the scanned list, for a view that opens a team by
+   * its id: `reading` while a page is still to be read (it is asked for, one
+   * at a time up to [`LIST_PAGES_MAX`]), `none` when the scanned list is
+   * complete without it, `unknown` when the list goes on past the bound.
+   */
+  function summaryOf(id: string): { state: "found"; summary: TeamSummary } | { state: "reading" | "none" | "unknown" } {
+    const scan = scanPages(listPagesBy(), Date.now());
+    const summary = scan.views.flatMap((page) => page.teams).find((candidate) => candidate.id === id);
+    if (!summary && scan.missing !== null) { requestListPage(scan.missing); return { state: "reading" }; }
+    requestListPage(null);
+    if (summary) return { state: "found", summary };
+    if (!scan.views.length) return { state: "reading" };
+    return { state: scan.complete ? "none" : "unknown" };
+  }
+
+  // ------------------------------------------------------------- apply
+
   function apply(entries: TeamsOut[]) {
+    if (stopped) return;
     for (const entry of entries.slice(0, 8)) {
+      if (stopped) return;
+      const payload = entry.payload as { code: string; message: string };
+      if (entry.kind === "failed") {
+        failRead(entry.key, payload.code, payload.message);
+        if (OFF_CODES.has(payload.code)) { stopFor(payload.code); return; }
+      }
       if (entry.key === "waiting") {
         if (entry.kind === "waiting") {
-          setWaitingView(entry.payload as WaitingView);
-        } else if (entry.kind === "failed") {
-          const payload = entry.payload as { code: string; message: string };
-          setFailure({ key: "waiting", code: payload.code, message: payload.message, source: "" });
-          if (payload.code === "teams_inactive" || payload.code === "unavailable") stopFor(payload.code);
+          const view = entry.payload as WaitingView;
+          batch(() => { setWaitingView(view); if (!view.after) setWaitingFirst(view); });
+          readSucceeded("waiting");
         }
         continue;
       }
       if (entry.key === "list") {
         if (entry.kind === "list") {
-          const view = entry.payload as TeamList;
-          setList(view);
-          setListNext(view.next);
-          // Pages are kept for the lead lookup; the same team never counts twice.
-          const known = new Set(listPages().map((summary) => summary.id));
-          setListPages([...listPages(), ...view.teams.filter((summary) => !known.has(summary.id))]);
+          applyList(entry.payload as TeamList);
+          readSucceeded("list");
           batch(() => { setAvailable(true); setOff(null); });
         } else if (entry.kind === "failed") {
-          const payload = entry.payload as { code: string; message: string };
-          setFailure({ key: entry.key, code: payload.code, message: payload.message, source: "" });
-          if (payload.code === "teams_inactive" || payload.code === "unavailable") { stopFor(payload.code); continue; }
+          if (payload.code === "cursor_reset") { listSelected = null; requestedPages.clear(); }
           setAvailable(true);
         }
         continue;
       }
       if (entry.key.startsWith("team:")) {
+        const id = entry.key.slice("team:".length);
         if (entry.kind === "team") {
           const view = entry.payload as TeamView;
-          const resolve = pendingViews.get(view.bar.id);
-          // A view is shown only for the followed team, or to the one decision
-          // that asked for its revision; a late view after unfollow is dropped.
-          if (view.bar.id === followed() || resolve) batch(() => { setTeam(view); setAvailable(true); });
-          if (resolve) { pendingViews.delete(view.bar.id); resolve(view); }
+          // A view is shown only for the followed team; a late view after
+          // unfollow is dropped. A decision waiting for this team's revision
+          // takes it without showing it.
+          if (view.bar.id === followed()) { batch(() => { setTeam(view); setAvailable(true); }); readSucceeded(entry.key); }
+          settleViews(view.bar.id, view);
         } else if (entry.kind === "failed") {
-          const payload = entry.payload as { code: string; message: string };
-          setFailure({ key: entry.key, code: payload.code, message: payload.message, source: "" });
-          if (payload.code === "teams_inactive" || payload.code === "unavailable") stopFor(payload.code);
+          if (payload.code !== "cursor_reset") settleViews(id, null);
         } else if (entry.kind === "ended") {
           const shown = team();
           if (!shown || entry.key === `team:${shown.bar.id}` || entry.key === `team:${followed()}`) setTeam(undefined);
+          settleViews(id, null);
         }
       }
     }
   }
 
-  /** Asks whether Teams exist and follows the list and the waiting read. */
+  function settleViews(id: string, view: TeamView | null) {
+    const waiters = pendingViews.get(id);
+    if (!waiters) return;
+    pendingViews.delete(id);
+    for (const settle of waiters) settle(view);
+  }
+
+  // ------------------------------------------------- discovery and scope
+
+  /** Asks whether Teams exist and follows the list, the waiting read and the
+   * open tab's team. Only the application's availability owner calls it: the
+   * start, the preview switch, an explicit "read again" and a long-hidden
+   * window's return. */
   async function recheck() {
     if (probing) return;
     probing = true;
-    batch(() => { setListPages([]); setListNext(null); setList(undefined); });
+    stopped = false;
+    batch(() => { setListPagesBy(new Map()); });
     requestedPages.clear();
+    listSelected = null;
     try {
       await transport.hidden(false);
-      await transport.follow({ list: true, waiting: true, team: null });
+      await follow(scope());
     } catch {
+      stopped = true;
       batch(() => { setAvailable(false); setOff("unavailable"); });
     } finally { probing = false; }
   }
@@ -277,96 +496,93 @@ export function createTeams(transport: TeamsTransport = tauriTeams()) {
   /** The application asks once at start (App's mount); it never polls by itself. */
   async function probe() { await recheck(); }
 
-  /** Window visibility belongs to the application, not to a mounted tab. A
-   * platform that cannot take the call leaves the availability answer to say
-   * whether Teams exist, and never raises from a visibility change. */
+  /** Window visibility belongs to the application, not to a mounted tab. While
+   * Teams are off the reads stay stopped; a window hidden ten minutes or more
+   * asks again when it returns. Never raises from a visibility change. */
   async function hidden(hiddenNow: boolean) {
     setVisible(!hiddenNow);
     try {
       if (hiddenNow) { hiddenAt = Date.now(); await transport.hidden(true); return; }
       const was = hiddenAt;
       hiddenAt = undefined;
+      if (was !== undefined && Date.now() - was >= HIDDEN_RECHECK_MS) { await recheck(); return; }
+      if (stopped) return;
       await transport.hidden(false);
-      if (was !== undefined && Date.now() - was >= HIDDEN_RECHECK_MS) await recheck();
     } catch { /* a synthetic or failed helper: the reads stay as they are */ }
   }
 
+  /** A Team tab follows its team beside the list and the waiting read. With
+   * Teams off nothing is followed: only the application's recheck restarts. */
   async function openTeam(id: string) {
     setFollowed(id);
-    await transport.follow({ list: false, waiting: true, team: id });
+    if (stopped) return;
+    await follow(scope());
   }
   async function closeTeam() {
-    setFollowed(undefined);
-    setTeam(undefined);
-    await transport.follow({ list: true, waiting: true, team: null });
+    batch(() => { setFollowed(undefined); setTeam(undefined); });
+    if (stopped) return;
+    await follow(scope());
   }
-  async function tasksChanged() { if (followed()) await transport.tasksChanged(); }
-  async function page(key: string, cursor: string | null) { await transport.page(key, cursor); }
-  async function openWaiting() { await transport.follow({ list: true, waiting: true, team: null }); }
-  async function pageWaiting(cursor: string | null) { await transport.page("waiting", cursor); }
+  async function tasksChanged() { if (followed() && !stopped) await transport.tasksChanged(); }
+  async function page(key: string, cursor: string | null) { if (!stopped) await transport.page(key, cursor); }
+
+  // ------------------------------------------------------------- waiting
+
+  /** Waiting opens on its first page. */
+  async function openWaiting() {
+    if (stopped) return;
+    if (!sameFollow(lastFollow, scope())) await follow(scope());
+    if (waitingView()?.after) await transport.page("waiting", null);
+  }
+  async function pageWaiting(cursor: string | null) { if (!stopped) await transport.page("waiting", cursor); }
+  /** Back to Waiting's first page, when a later one is shown. */
+  async function firstWaitingPage() { if (!stopped && waitingView()?.after) await transport.page("waiting", null); }
+  /** The rail's count: the first page's cards and one more when a page follows. */
   const waitingCount = () => {
-    const view = waitingView();
+    const view = waitingFirst();
     return !view ? 0 : view.items.length + (view.next ? 1 : 0);
   };
+  const waitingLater = () => !!waitingView()?.after;
+
+  /**
+   * The revision of a team a decision is made on. The resolver is registered
+   * before the follow is sent, a read failure or an end settles it at once,
+   * and [`REVISION_WAIT_MS`] settles a silent read. Afterwards the scope the
+   * views want is followed again, unless another follow was sent meanwhile.
+   */
   async function revisionOf(id: string): Promise<number | undefined> {
     const shown = team();
-    if (shown?.bar.id === id) return shown.revision;
-    await transport.follow({ list: false, waiting: true, team: id });
-    return await new Promise<number | undefined>((resolve) => {
-      pendingViews.set(id, (view) => resolve(view?.revision));
-      setTimeout(() => { if (pendingViews.delete(id)) resolve(undefined); }, 5000);
-    });
+    if (shown?.bar.id === id && followed() === id) return shown.revision;
+    if (stopped) return undefined;
+    let settle!: (view: TeamView | null) => void;
+    const answer = new Promise<number | undefined>((resolve) => { settle = (view) => resolve(view?.revision); });
+    const waiters = pendingViews.get(id) ?? new Set();
+    waiters.add(settle);
+    pendingViews.set(id, waiters);
+    const timer = setTimeout(() => { pendingViews.get(id)?.delete(settle); settle(null); }, REVISION_WAIT_MS);
+    const borrowed: TeamFollow = { list: true, waiting: true, team: id };
+    const sent = follow(borrowed);
+    const generation = followGeneration;
+    try {
+      await sent;
+    } catch {
+      pendingViews.get(id)?.delete(settle);
+      settle(null);
+    }
+    const revision = await answer;
+    clearTimeout(timer);
+    const left = pendingViews.get(id);
+    if (left) { left.delete(settle); if (!left.size) pendingViews.delete(id); }
+    if (generation === followGeneration && !stopped && !sameFollow(borrowed, scope())) await follow(scope()).catch(() => {});
+    return revision;
   }
-  async function decide(card: WaitingItem, decision: string): Promise<TeamOutcome | undefined> {
+  async function decide(card: WaitingItem, decision: string, source = "waiting"): Promise<TeamOutcome | undefined> {
     const expected_revision = await revisionOf(card.team);
     if (expected_revision === undefined) return undefined;
-    return run({ team: card.team, expected_revision, request_id: newRequestId(), action: { kind: "decide", card: card.card, decision } });
+    return run({ team: card.team, expected_revision, request_id: newRequestId(), action: { kind: "decide", card: card.card, decision } }, source);
   }
 
-  /**
-   * Whether the selected session leads a team, from the followed list and
-   * nothing else: no cache, no prefix guessing, and no negative answer from an
-   * incomplete list. Pages are asked for one at a time up to the cap.
-   */
-  function teamOfSession(identity: SessionIdentity): TeamOfSession {
-    const ids = [identity.launchId ? `launch_id:${identity.launchId}` : "", identity.runId ? `run_id:${identity.runId}` : ""].filter(Boolean);
-    if (!ids.length) return { state: "none" };
-    const machine = identity.machine ?? "";
-    const found = listPages().find((summary) => {
-      const lead = summary.lead_session;
-      if (!lead || !ids.includes(lead.session_id)) return false;
-      return !machine || !lead.machine || lead.machine === machine;
-    });
-    if (found) return { state: "lead", team: found.id };
-    if (listPages().length === 0) return { state: "unknown" };
-    const cursor = listNext();
-    if (cursor && listPages().length < LIST_PAGES_MAX) {
-      if (!requestedPages.has(cursor)) { requestedPages.add(cursor); void transport.page("list", cursor); }
-      return { state: "unknown" };
-    }
-    // A list with no next page is complete: no match is a real "no team".
-    return { state: "none" };
-  }
-
-  /**
-   * The old per-session accessor, kept only until the Team tab's design branch
-   * is wired to `teamOfSession`: it remembers nothing and answers nothing, so
-   * the tab shows its "finding" state rather than a stale team.
-   */
-  function sessionTeams(): Record<string, string | null> { return {}; }
-
-  /** The Team tab's compatibility seam: the lead's team, followed when found. */
-  async function leadTeamFor(_key: string, identity: { launchId?: string | null; sessionId?: string | null; runId?: string | null }): Promise<string | null> {
-    // The old Team tab passed its row's `sessionId`; the launch id is the team's
-    // binding, so prefer it and keep the old field as a fallback only.
-    const found = teamOfSession({ launchId: identity.launchId ?? identity.sessionId, runId: identity.runId });
-    if (found.state !== "lead" || !found.team) return null;
-    if (followed() !== found.team) {
-      setFollowed(found.team);
-      await transport.follow({ list: false, waiting: true, team: found.team });
-    }
-    return found.team;
-  }
+  // ------------------------------------------------------------ New team
 
   async function openNewTeam() {
     setNewTeamOpen(true);
@@ -381,7 +597,19 @@ export function createTeams(transport: TeamsTransport = tauriTeams()) {
       setCatalogError("");
     } catch (error) { setCatalogError(errorText(error)); }
   }
-  function closeNewTeam() { setNewTeamOpen(false); }
+  /** Closing keeps the create intent; a reason the person has seen goes. */
+  function closeNewTeam() {
+    setNewTeamOpen(false);
+    if (!createIntent()) clearFailure("new-team");
+  }
+  /** The held create intent, or a new one when none is held: never two team ids. */
+  function claimCreate(): CreateIntent {
+    const held = createIntent();
+    if (held) return held;
+    const fresh = { team: newRequestId(), request_id: newRequestId() };
+    setCreateIntent(fresh);
+    return fresh;
+  }
 
   async function saveTemplate(template: TeamCatalogTemplate) {
     await transport.saveTemplate(template);
@@ -413,43 +641,66 @@ export function createTeams(transport: TeamsTransport = tauriTeams()) {
     return { git, head: reply.head ?? "", branch: reply.branch ?? "", reason: git ? "" : "not a Git repository" };
   }
 
-  /** Sends one intent; `source` names the view that asked for its reason. */
+  // ------------------------------------------------------------- actions
+
+  /** The admitted slots: unresolved calls and in-flight ones, each id once. */
+  function occupied(except?: string) {
+    const ids = new Set(unresolved().map((entry) => entry.call.request_id));
+    for (const id of sending()) ids.add(id);
+    if (except !== undefined) ids.delete(except);
+    return ids.size;
+  }
+  const refuseFull = (call: TeamCall, source: string): TeamOutcome => {
+    const detail = "There are too many unresolved actions. Check or dismiss them first.";
+    failAction(source, "unresolved_full", detail);
+    // Nothing was sent: a create intent refused here has no other trace.
+    if (!unresolvedOf(call.request_id) && createIntent()?.request_id === call.request_id) setCreateIntent(null);
+    return { outcome: "failed", detail, code: "unresolved_full", request_id: call.request_id };
+  };
+
+  /** Sends one intent; `source` names the view that asked for its reason. The
+   * slot is reserved before the invoke is awaited, so overlapping calls never
+   * pass the bound, and one request id is never in flight twice. */
   async function run(call: TeamCall, source = ""): Promise<TeamOutcome> {
-    if (unresolved().length >= UNRESOLVED_MAX) {
-      const detail = "There are too many unresolved actions. Check or dismiss them first.";
-      setFailure({ key: "action", code: "unresolved_full", message: detail, source });
-      return { outcome: "failed", detail, code: "unresolved_full", request_id: call.request_id };
-    }
-    setBusy(true);
+    if (sending().includes(call.request_id)) return { outcome: "pending", request_id: call.request_id };
+    if (occupied(call.request_id) >= UNRESOLVED_MAX) return refuseFull(call, source);
+    return send(call, source, () => transport.act(call));
+  }
+  /** Check: the same request id and content, sent again because the person asked. */
+  async function runAgain(call: TeamCall, source = ""): Promise<TeamOutcome> {
+    if (sending().includes(call.request_id)) return { outcome: "pending", request_id: call.request_id };
+    if (!unresolvedOf(call.request_id) && occupied() >= UNRESOLVED_MAX) return refuseFull(call, source);
+    return send(call, source, () => transport.actAgain(call));
+  }
+  async function send(call: TeamCall, source: string, act: () => Promise<TeamOutcome>): Promise<TeamOutcome> {
+    setSending([...sending(), call.request_id]);
     try {
-      const outcome = await transport.act(call);
-      accept(call, outcome, source);
-      return outcome;
+      const outcome = await act();
+      return accept(call, outcome, source);
     } catch (error) {
       const detail = errorText(error);
       putUnresolved(call, detail, "uncertain");
       return { outcome: "uncertain", detail, request_id: call.request_id };
-    } finally { setBusy(false); }
+    } finally {
+      setSending(sending().filter((id) => id !== call.request_id));
+    }
   }
-  async function runAgain(call: TeamCall, source = ""): Promise<TeamOutcome> {
-    setBusy(true);
-    try { const outcome = await transport.actAgain(call); accept(call, outcome, source); return outcome; }
-    catch (error) { const detail = errorText(error); putUnresolved(call, detail, "uncertain"); return { outcome: "uncertain", detail, request_id: call.request_id }; }
-    finally { setBusy(false); }
-  }
-  /** The newest failure of one view, or of any view when no source is given. */
-  const failureFor = (source: string) => {
-    const found = failure();
-    return found && (source === "" || found.source === source) ? found : null;
-  };
-  function accept(call: TeamCall, outcome: TeamOutcome, source: string) {
-    if (outcome.outcome === "confirm") setConfirmation({ call: { ...call, confirmed: false }, confirmation: outcome.confirmation });
-    else if (outcome.outcome === "uncertain") putUnresolved(call, outcome.detail, "uncertain");
-    else if (outcome.outcome === "pending") putUnresolved(call, "The action waits for the team.", "pending");
-    else if (outcome.outcome === "done") settleUnresolved(call.request_id);
-    else if (outcome.outcome === "failed") {
-      settleUnresolved(call.request_id);
-      setFailure({ key: "action", code: outcome.code ?? "", message: outcome.detail, source });
+  function accept(call: TeamCall, outcome: TeamOutcome, source: string): TeamOutcome {
+    switch (outcome?.outcome) {
+      case "confirm": setConfirmation({ call: { ...call, confirmed: false }, confirmation: outcome.confirmation }); return outcome;
+      case "pending": putUnresolved(call, "The action waits for the team.", "pending"); return outcome;
+      case "done": settled(call.request_id); return outcome;
+      case "failed":
+        settled(call.request_id);
+        failAction(source, outcome.code ?? "", outcome.detail);
+        return outcome;
+      case "uncertain": putUnresolved(call, outcome.detail, "uncertain"); return outcome;
+      default: {
+        // An answer of no known shape is an unknown result, never a success.
+        const detail = "The action's answer could not be read. Check it or dismiss it.";
+        putUnresolved(call, detail, "uncertain");
+        return { outcome: "uncertain", detail, request_id: call.request_id };
+      }
     }
   }
   async function confirm(source = "") {
@@ -465,14 +716,19 @@ export function createTeams(transport: TeamsTransport = tauriTeams()) {
     if (!asking) return;
     await runAgain(asking.call, source);
   }
-  async function dismiss(entry?: UnresolvedCall, source = "") {
+  /** Dismiss settles the entry only when the core took it; a refusal or a
+   * failed call keeps the entry and names the reason. */
+  async function dismiss(entry?: UnresolvedCall, source = ""): Promise<boolean> {
     const asking = entry ?? unresolved()[0];
-    if (!asking) return;
+    if (!asking) return false;
+    if (sending().includes(asking.call.request_id)) return false;
     try {
       await transport.dismiss(asking.call);
-      settleUnresolved(asking.call.request_id);
+      settled(asking.call.request_id);
+      return true;
     } catch (error) {
-      setFailure({ key: "action", code: "dismiss_failed", message: errorText(error), source });
+      failAction(source, "dismiss_failed", errorText(error));
+      return false;
     }
   }
   /** The first unresolved call, for a view that shows one at a time. */
@@ -480,16 +736,21 @@ export function createTeams(transport: TeamsTransport = tauriTeams()) {
     const first = unresolved()[0];
     return first ? { call: first.call, detail: first.detail } : null;
   };
-  /** Clears one view's reason, or every reason when no source is given. */
-  function clearFailure(source?: string) {
-    if (source === undefined) { setFailure(null); return; }
-    if (failure()?.source === source) setFailure(null);
-  }
+
+  /** The first list page, for the views that show the list. */
+  const list = () => listPagesBy().get("")?.view;
+  /** The summaries of the scanned pages (bounded), for lookups by id or project. */
+  const listPages = listed;
+  /** The next page after the scanned chain, null when it is complete. */
+  const listNext = () => {
+    const views = scanPages(listPagesBy(), Date.now(), Number.POSITIVE_INFINITY).views;
+    return views.at(-1)?.next ?? null;
+  };
 
   return {
-    list, listPages, listNext, team, failure, available, off, followed, visible, catalog, catalogError, newTeamOpen, confirmation, unresolved, uncertain, busy,
-    waitingView, waitingCount, apply, probe, recheck, hidden, openTeam, closeTeam, tasksChanged, page, openWaiting, pageWaiting, decide, revisionOf,
-    teamOfSession, sessionTeams, leadTeamFor, unresolvedOf, failureFor, preview, openNewTeam, closeNewTeam, saveTemplate, project, run, runAgain, confirm, cancelConfirmation, check, dismiss, clearFailure,
+    list, listed, listPages, listNext, team, failure, available, off, followed, visible, catalog, catalogError, newTeamOpen, confirmation, unresolved, uncertain, busy, sending,
+    waitingView, waitingCount, waitingLater, apply, probe, recheck, hidden, openTeam, closeTeam, tasksChanged, page, openWaiting, pageWaiting, firstWaitingPage, decide, revisionOf,
+    teamOfSession, summaryOf, unresolvedOf, failureFor, readFailureFor, preview, openNewTeam, closeNewTeam, createIntent, claimCreate, saveTemplate, project, run, runAgain, confirm, cancelConfirmation, check, dismiss, clearFailure,
   };
 }
 

@@ -73,13 +73,12 @@ describe("the reactive lead binding", () => {
     expect(store.teamOfSession({ machine: "00000000-0000-4000-8000-0000000000bb", launchId: "00000000-0000-4000-8000-000000000064" })).toEqual({ state: "none" });
   });
 
-  it("keeps no per-session cache: a repeated lookup reads the same list", async () => {
+  it("keeps no per-session cache: a repeated lookup reads the same list", () => {
     const { transport } = fake();
     const store = createTeams(transport);
     store.apply([entry("list", "list", list([summary({ machine: MACHINE, session_id: LEAD })]))]);
-    for (let n = 0; n < 128; n++) await store.leadTeamFor(`row-${n}`, { launchId: "00000000-0000-4000-8000-0000000000ff" });
+    for (let n = 0; n < 128; n++) store.teamOfSession({ machine: MACHINE, launchId: `00000000-0000-4000-9000-${String(n).padStart(12, "0")}` });
     expect(store.listPages()).toHaveLength(1);
-    expect(Object.keys(store.sessionTeams())).toEqual([]);
   });
 });
 

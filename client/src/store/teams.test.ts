@@ -79,7 +79,8 @@ describe("the Teams store", () => {
     const { transport, calls } = fake();
     const teams = createTeams(transport);
     await teams.openTeam(TEAM_ID);
-    expect(calls.follow.at(-1)).toEqual({ list: false, waiting: true, team: TEAM_ID });
+    // The list stays followed beside the team, so a lead lookup can page.
+    expect(calls.follow.at(-1)).toEqual({ list: true, waiting: true, team: TEAM_ID });
     await teams.hidden(true);
     expect(calls.hidden.at(-1)).toBe(true);
     await teams.page("team:" + TEAM_ID, "t1.next");
@@ -158,20 +159,15 @@ describe("the Teams store", () => {
     });
   });
 
-  it("derives a session's team from the followed list and follows it, without probing", async () => {
+  it("derives a session's team from the followed list, without probing or a per-session cache", () => {
     const { transport, calls } = fake();
     const teams = createTeams(transport);
     teams.apply([entry("list", "list", list)]);
-    const identity = { launchId: "00000000-0000-4000-8000-000000000064", runId: null };
+    const identity = { machine: "00000000-0000-4000-8000-0000000000aa", launchId: "00000000-0000-4000-8000-000000000064", runId: null };
     expect(teams.teamOfSession(identity)).toEqual({ state: "lead", team: TEAM_ID });
-    expect(await teams.leadTeamFor("row-key", identity)).toBe(TEAM_ID);
-    expect(calls.follow).toEqual([{ list: false, waiting: true, team: TEAM_ID }]);
-    // Another session is not a lead, and no per-session entry is kept.
-    const other = createTeams(transport);
-    other.apply([entry("list", "list", list)]);
-    expect(other.teamOfSession({ launchId: "00000000-0000-4000-8000-00000000ffff", runId: null })).toEqual({ state: "none" });
-    expect(await other.leadTeamFor("other-key", { launchId: "00000000-0000-4000-8000-00000000ffff", runId: null })).toBeNull();
-    expect(Object.keys(other.sessionTeams())).toEqual([]);
-    expect(other.listPages()).toHaveLength(1);
+    expect(calls.follow, "a lookup follows nothing by itself").toEqual([]);
+    // Another session is not a lead, and nothing per session is kept.
+    for (let n = 0; n < 128; n++) expect(teams.teamOfSession({ ...identity, launchId: `00000000-0000-4000-9000-${String(n).padStart(12, "0")}` })).toEqual({ state: "none" });
+    expect(teams.listPages()).toHaveLength(1);
   });
 });
