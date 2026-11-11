@@ -442,7 +442,7 @@ mod tests {
 
     #[test]
     fn the_input_bounds_refuse_before_a_child_runs() {
-        assert!(TEMPLATE_INPUT_MAX == 262_144 && PATH_INPUT_MAX == 4_096);
+        const { assert!(TEMPLATE_INPUT_MAX == 262_144 && PATH_INPUT_MAX == 4_096) };
         assert!(
             serde_json::to_vec(&json!({"x": "a".repeat(TEMPLATE_INPUT_MAX)}))
                 .unwrap()
