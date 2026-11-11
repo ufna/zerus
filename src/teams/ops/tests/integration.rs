@@ -185,3 +185,42 @@ fn assert_fact(h: &Harness, decision: u64, commit: Option<&str>, conflicts: &[St
     assert_eq!(fact.0.as_deref(), commit);
     assert_eq!(fact.1, conflicts);
 }
+
+#[test]
+fn switching_integration_off_keeps_receipts_and_conflicts_as_provenance_only() {
+    for (conflict, done) in [(false, false), (true, false), (false, true), (true, true)] {
+        let mut h = Harness::new();
+        let (node, lead) = h.reported();
+        h.run(&lead, Operation::Accept { node }).unwrap();
+        let decision = h.accept_decision(node);
+        if done {
+            h.observe(node, TaskStage::Done);
+        }
+        h.settings(|s| s.integration = Integration::None);
+        let before = h.node(node);
+        let decisions = h.store.decisions(TEAM, 200, None).unwrap().rows;
+        let op = if conflict {
+            Operation::RecordIntegrationConflict {
+                node,
+                decision,
+                conflicts: vec!["src/example.rs".into()],
+            }
+        } else {
+            Operation::RecordIntegration {
+                node,
+                decision,
+                commit: COMMIT.into(),
+            }
+        };
+        h.run(&service(), op.clone()).unwrap();
+        assert_eq!(h.node(node), before);
+        assert_eq!(h.store.decisions(TEAM, 200, None).unwrap().rows, decisions);
+        let paths = if conflict {
+            vec!["src/example.rs".into()]
+        } else {
+            vec![]
+        };
+        assert_fact(&h, decision, (!conflict).then_some(COMMIT), &paths);
+        refused(h.run(&service(), op), code::INVALID_STATE);
+    }
+}

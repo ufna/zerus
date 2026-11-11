@@ -121,9 +121,6 @@ pub(super) fn integration(ctx: &mut Context<'_>) -> Result<()> {
     };
     let n = ctx.node(*node)?;
     let permit = integration::permit(ctx, *node, *decision)?;
-    if !needs_merge(ctx, &n) || (n.integrated && permit.generation == ctx.generation(*node)?) {
-        return Err(invalid("This node does not need an integration receipt."));
-    }
     if !matches!(commit.len(), 40 | 64)
         || !commit
             .bytes()
@@ -136,7 +133,7 @@ pub(super) fn integration(ctx: &mut Context<'_>) -> Result<()> {
     integration::record(ctx, &permit, *node, Some(commit), &[])?;
     // The fact belongs to the accepted generation. A person's restore starts
     // a new round whose completion must not inherit this older merge.
-    if permit.generation != ctx.generation(*node)? {
+    if !needs_merge(ctx, &n) || n.integrated || permit.generation != ctx.generation(*node)? {
         return Ok(());
     }
     let table = ctx.node_table(*node)?;
@@ -173,11 +170,7 @@ pub(super) fn conflict(ctx: &mut Context<'_>) -> Result<()> {
     };
     let n = ctx.node(*node)?;
     let permit = integration::permit(ctx, *node, *decision)?;
-    if !needs_merge(ctx, &n)
-        || (n.integrated && permit.generation == ctx.generation(*node)?)
-        || conflicts.is_empty()
-        || conflicts.len() > 200
-    {
+    if conflicts.is_empty() || conflicts.len() > 200 {
         return Err(invalid(
             "No unresolved integration conflict can be recorded.",
         ));
@@ -189,7 +182,11 @@ pub(super) fn conflict(ctx: &mut Context<'_>) -> Result<()> {
     let body = conflicts.join("\n");
     text(&body, 16_384)?;
     integration::record(ctx, &permit, *node, None, conflicts)?;
-    if permit.late || permit.generation != ctx.generation(*node)? {
+    if permit.late
+        || !needs_merge(ctx, &n)
+        || n.integrated
+        || permit.generation != ctx.generation(*node)?
+    {
         return Ok(());
     }
     ctx.settle(*node)?;

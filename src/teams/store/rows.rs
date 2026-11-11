@@ -102,7 +102,8 @@ pub(crate) fn archive_decided(db: &Connection, team: &str, actor: &str) -> Resul
         return Err(storage("Live node count exceeds its bound."));
     }
     for node in ids {
-        settle_decisions(db, team, Some(node), actor, false)?;
+        // A settings change can make an in-flight accepted task terminal.
+        settle_decisions(db, team, Some(node), actor, true)?;
     }
     db.execute(
         "UPDATE nodes SET requested=NULL WHERE team=?1 AND node_state IN ('accepted','cancelled')",
@@ -125,7 +126,7 @@ pub(crate) fn settle_decisions(
     actor: &str,
     preserve_ready: bool,
 ) -> Result<()> {
-    // Stop and board overrides cannot revoke a merge that was already authorized.
+    // Terminal settlement cannot revoke a merge that was already authorized.
     // The original stopped_ready column retains that provenance for late facts.
     db.execute(&format!("UPDATE decisions SET stopped_ready=(?4 AND kind='accept' AND state=?5),state=?2 WHERE team=?1 AND state<>'{}' AND (?3 IS NULL OR node=?3)",DecisionState::Settled.as_str()),params![team,DecisionState::Settled,node,preserve_ready,DecisionState::Ready]).map_err(storage)?;
     close_cards(db, team, node, actor)?;
