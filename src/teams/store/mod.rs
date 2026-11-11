@@ -121,6 +121,12 @@ impl Store {
             .map_err(storage)
         })
     }
+    pub fn card(&self, team: &str, seq: u64) -> Result<Option<Card>> {
+        self.active()?;
+        self.db
+            .as_ref()
+            .map_or(Ok(None), |db| rows::card(db, team, seq))
+    }
     pub fn member(&self, team: &str, id: &str) -> Result<Option<Member>> {
         self.active()?;
         self.db

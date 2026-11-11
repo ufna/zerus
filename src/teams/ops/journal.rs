@@ -39,7 +39,11 @@ pub(super) fn append(ctx: &Context<'_>, request: &Request) -> Result<()> {
         .event
         .map(str::to_owned)
         .map_or_else(|| kind(ctx.op), Ok)?;
-    ctx.db.execute("INSERT INTO journal(team,at_ms,actor,kind,request_id,text,refs) VALUES(?1,?2,?3,?4,?5,?6,?7)",params![ctx.team.id,ctx.now,encode(ctx.actor)?,kind,request.request_id,format!("{kind} at revision {}",ctx.reply.revision),encode(&references(request)?)?]).map_err(storage)?;
+    let body = match ctx.op {
+        Operation::CloseCard { reason, .. } => reason.clone(),
+        _ => format!("{kind} at revision {}", ctx.reply.revision),
+    };
+    ctx.db.execute("INSERT INTO journal(team,at_ms,actor,kind,request_id,text,refs) VALUES(?1,?2,?3,?4,?5,?6,?7)",params![ctx.team.id,ctx.now,encode(ctx.actor)?,kind,request.request_id,body,encode(&references(request)?)?]).map_err(storage)?;
     let cutoff: Option<u64> = ctx
         .db
         .query_row(
