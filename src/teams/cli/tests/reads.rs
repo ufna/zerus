@@ -262,7 +262,10 @@ fn list_reads_the_teams_of_this_computer_in_id_order() {
         assert_eq!(row["lead"], "lead");
         assert_eq!(row["home"], MACHINE);
         assert!(row["revision"].as_u64().is_some());
-        assert_eq!(row.as_object().unwrap().len(), 8);
+        assert_eq!(
+            row.as_object().unwrap().len(),
+            if id == TEAM { 9 } else { 8 }
+        );
     }
     let bound = rows.iter().find(|row| row["id"] == TEAM).unwrap();
     assert_eq!(

@@ -6,6 +6,15 @@ use zerus_team_plan::model::TeamStatus;
 pub const MAX_PAGE: u32 = 200;
 pub const LIVE_JOURNAL_CAP: u64 = 10_000;
 
+/// The bound part of one roster, without accounts, paths or member state.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MemberSession {
+    pub member: String,
+    pub machine: String,
+    pub session_id: String,
+}
+
 /// Snapshot high-water mark excludes additions while the person turns pages.
 /// The scope binds the cursor to the team, list and filter that issued it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

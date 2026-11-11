@@ -128,8 +128,9 @@ pub(crate) fn settle_decisions(
     preserve_ready: bool,
 ) -> Result<()> {
     // Terminal settlement cannot revoke a merge that was already authorized.
-    // The original stopped_ready column retains that provenance for late facts.
-    db.execute(&format!("UPDATE decisions SET stopped_ready=(?4 AND kind='accept' AND state=?5),state=?2 WHERE team=?1 AND state<>'{}' AND (?3 IS NULL OR node=?3)",DecisionState::Settled.as_str()),params![team,DecisionState::Settled,node,preserve_ready,DecisionState::Ready]).map_err(storage)?;
+    // Revocation marks an awaiting accept that was once Ready. Keep that mark
+    // even on rejection: its receipt is provenance, never a new write permit.
+    db.execute(&format!("UPDATE decisions SET stopped_ready=(kind='accept' AND ((?4 AND state=?5) OR (state=?6 AND stopped_ready))),state=?2 WHERE team=?1 AND state<>'{}' AND (?3 IS NULL OR node=?3)",DecisionState::Settled.as_str()),params![team,DecisionState::Settled,node,preserve_ready,DecisionState::Ready,DecisionState::AwaitingOwner]).map_err(storage)?;
     close_cards(db, team, node, actor)?;
     Ok(())
 }

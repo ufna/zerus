@@ -1,6 +1,7 @@
 use super::*;
 mod cross;
 mod holder;
+mod member_sessions;
 mod stage;
 
 #[test]
@@ -290,6 +291,30 @@ fn integration_accepts_page_by_open_node_and_filter_authority_and_recorded_facts
     h.run(&lead, Operation::Accept { node: ready }).unwrap();
     let expected = h.accept_decision(ready);
     h.settings(|s| s.delegations.merge_accepted = false);
+    assert!(h
+        .store
+        .integration_accepts(TEAM, 200, None)
+        .unwrap()
+        .rows
+        .is_empty());
+    let card = h
+        .store
+        .waiting(200, None)
+        .unwrap()
+        .rows
+        .into_iter()
+        .find(|r| r.card.node == Some(ready))
+        .unwrap()
+        .card
+        .seq;
+    h.run(
+        &person(),
+        Operation::DecideCard {
+            card,
+            decision: "approve".into(),
+        },
+    )
+    .unwrap();
     let owner = h.add(&person(), 4);
     h.submit(owner, "m1");
     h.report(owner, "m1");
