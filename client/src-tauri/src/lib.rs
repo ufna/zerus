@@ -1735,6 +1735,7 @@ fn handler() -> impl Fn(tauri::ipc::Invoke) -> bool + Send + Sync + 'static {
         teams::teams_page,
         teams::team_action,
         teams::team_action_again,
+        teams::team_intent_dismiss,
         task_details::task_details,
         task_details::task_reference,
         task_details::task_page,

@@ -19,7 +19,9 @@
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use tauri::State;
-use zerus_client_core::teams::action::{run_action, Admission, Intents, TeamCall, TeamOutcome};
+use zerus_client_core::teams::action::{
+    run_action, Admission, Intents, Pending, TeamCall, TeamOutcome,
+};
 use zerus_client_core::teams::read::valid_team;
 use zerus_client_core::teams::{TeamsFollow, TeamsPoller};
 
@@ -110,14 +112,19 @@ pub fn teams_tasks_changed(teams: State<'_, Teams>) -> Result<(), String> {
 }
 
 /// Reads one page of a followed view by its `next` cursor; the page replaces
-/// the shown one. The key is `list`, `waiting` or `team:<id>`.
+/// the shown one and stays selected for every later read. No cursor selects
+/// the first page again. The key is `list`, `waiting` or `team:<id>`.
 #[tauri::command]
-pub fn teams_page(teams: State<'_, Teams>, key: String, cursor: String) -> Result<(), String> {
+pub fn teams_page(
+    teams: State<'_, Teams>,
+    key: String,
+    cursor: Option<String>,
+) -> Result<(), String> {
     let poller = teams.poller();
     let Some(poller) = poller.as_ref() else {
         return Err("No Teams view is followed.".into());
     };
-    if poller.page(&key, &cursor) {
+    if poller.page(&key, cursor.as_deref()) {
         Ok(())
     } else {
         Err("No such page for this view.".into())
@@ -155,14 +162,36 @@ async fn run(
         }),
         Admission::Recorded(outcome) | Admission::Refused(outcome) => Ok(outcome),
         Admission::Send => {
+            // The guard settles this intent on every way out, including a
+            // panicking or failed worker: an unknown outcome, never a stray
+            // Pending entry.
+            let pending = Pending::new(&teams.intents, &call);
             let hgs = zerus_client_core::default_hgs();
             let sent = call.clone();
-            let outcome = tauri::async_runtime::spawn_blocking(move || run_action(&hgs, &sent))
-                .await
-                .map_err(|error| error.to_string())?;
-            let recorded = teams.intents().settle(&call, outcome);
+            let outcome =
+                match tauri::async_runtime::spawn_blocking(move || run_action(&hgs, &sent)).await {
+                    Ok(outcome) => outcome,
+                    Err(error) => TeamOutcome::Uncertain {
+                        detail: format!(
+                            "The action's worker failed: {error}. Read the team before checking it."
+                        ),
+                        request_id: call.request_id.clone(),
+                    },
+                };
+            let recorded = pending.settle(outcome);
             teams.refresh();
             Ok(recorded)
         }
+    }
+}
+
+/// The person dismisses an uncertain intent: it settles as abandoned and
+/// nothing is sent. Only an uncertain intent can be dismissed.
+#[tauri::command]
+pub fn team_intent_dismiss(teams: State<'_, Teams>, call: TeamCall) -> Result<(), String> {
+    if teams.intents().dismiss(&call) {
+        Ok(())
+    } else {
+        Err("Only an uncertain action can be dismissed.".into())
     }
 }
