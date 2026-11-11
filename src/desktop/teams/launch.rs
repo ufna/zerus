@@ -1,0 +1,156 @@
+//! A single worker advances one fixed original at a time. Durable state alone
+//! cannot populate `admitted`: a replacement runtime only reads and reports
+//! an unfinished original. It never executes its remaining steps.
+use super::{
+    ledger::{BranchPlan, Ledger, Row, State, BRANCH},
+    ports::{Effect, Effects, Plan, Result},
+};
+use crate::teams::{
+    ops::{self, Actor, Operation, Request},
+    store::Store,
+};
+use std::{
+    collections::BTreeMap,
+    path::{Path, PathBuf},
+};
+use zerus_team_plan::{
+    accounts::pick_account, catalog::AccountChoice, model::*, problem::code, Problem,
+};
+
+pub(super) struct Runtime {
+    state: PathBuf,
+    machine: String,
+    epoch: String,
+    ledger: Option<Ledger>,
+    admitted: Option<(String, String)>,
+}
+mod branch;
+mod card;
+mod effects;
+mod member;
+impl Runtime {
+    pub fn open(state: &Path, machine: &str, epoch: &str) -> Result<Self> {
+        Ok(Self {
+            state: state.into(),
+            machine: machine.into(),
+            epoch: epoch.into(),
+            ledger: None,
+            admitted: None,
+        })
+    }
+    /// One bounded transition; `true` permits the worker to advance another
+    /// step. NotStarted yields until the next external wakeup/safety pass.
+    pub fn tick(
+        &mut self,
+        store: &mut Store,
+        effects: &mut impl Effects,
+        id: &str,
+        now: i64,
+    ) -> Result<bool> {
+        if !crate::teams::enabled(&self.state) {
+            self.admitted = None;
+            return Ok(false);
+        }
+        if self.admitted.as_ref().is_some_and(|(team, _)| team != id) {
+            return Ok(false);
+        }
+        store.refresh()?;
+        let Some(team) = store.team(id)? else {
+            return Ok(false);
+        };
+        if team.status != TeamStatus::Running || team.home != self.machine {
+            self.admitted = None;
+            return Ok(false);
+        }
+        if self.ledger.is_none() {
+            self.ledger = Some(Ledger::open(&self.state)?);
+        }
+        if team.settings.integration == Integration::Branch
+            && !self.branch(store, effects, &team, now)?
+        {
+            return Ok(self
+                .ledger()
+                .get(&team.id, BRANCH)?
+                .is_some_and(|r| r.state == State::BranchIntent && self.owns(&r)));
+        }
+        let lead = store
+            .member(id, &team.lead)?
+            .ok_or_else(|| invalid("Lead member is missing"))?;
+        if lead.session.is_none() {
+            return self.member(store, effects, &team, &lead, None, now);
+        }
+        // Caps bound the roster at 201 including the lead. Read pages rather
+        // than a journal, session catalog or a serialized whole-team value.
+        let mut cursor = None;
+        for _ in 0..2 {
+            let page = store.members(id, 200, cursor.as_ref())?;
+            for member in page.rows {
+                if member.id == team.lead || member.state == MemberState::Removed {
+                    continue;
+                }
+                if self.member(store, effects, &team, &member, lead.session.clone(), now)? {
+                    return Ok(true);
+                }
+            }
+            cursor = page.next;
+            if cursor.is_none() {
+                break;
+            }
+        }
+        Ok(false)
+    }
+    pub fn busy(&self) -> bool {
+        self.admitted.is_some()
+    }
+    fn ledger(&mut self) -> &mut Ledger {
+        self.ledger
+            .as_mut()
+            .expect("opened after running team read")
+    }
+    fn save(&mut self, row: &mut Row, now: i64) -> Result<()> {
+        self.ledger().save(row, now)
+    }
+    fn owns(&self, row: &Row) -> bool {
+        row.epoch == self.epoch
+            && self
+                .admitted
+                .as_ref()
+                .is_some_and(|(team, original)| team == &row.team && original == &row.original)
+    }
+    fn block(&mut self, row: &mut Row, problem: Problem, now: i64) -> Result<()> {
+        if row.state != State::Blocked {
+            row.state = State::Blocked;
+            row.problem = Some(problem);
+            self.admitted = None;
+            self.save(row, now)?;
+        }
+        Ok(())
+    }
+}
+fn apply(store: &mut Store, team: &Team, operation: Operation, now: i64) -> Result<()> {
+    let current = store
+        .team(&team.id)?
+        .ok_or_else(|| invalid("Team disappeared"))?;
+    let actor = Actor::Service {
+        person: team.owner.clone(),
+        team: team.id.clone(),
+    };
+    let request = Request {
+        request_id: uuid::Uuid::new_v4().to_string(),
+        team: team.id.clone(),
+        expected_revision: current.revision,
+        operation,
+    };
+    ops::apply(store, &actor, &request, now).map(|_| ())
+}
+pub(super) fn invalid(text: &str) -> Problem {
+    Problem::new(code::INVALID_STATE, text)
+}
+pub(super) fn uncertain(text: &str) -> Problem {
+    Problem::new(code::DELIVERY_UNCERTAIN, text)
+}
+
+fn as_uncertain(mut p: Problem) -> Problem {
+    p.code = code::DELIVERY_UNCERTAIN.into();
+    p
+}
