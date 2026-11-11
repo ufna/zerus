@@ -42,7 +42,7 @@ fn start(
         rank: String::new(),
     })
 }
-fn finish<T>(
+pub(super) fn finish<T>(
     rows: Vec<T>,
     mut cursor: Cursor,
     limit: u32,
@@ -256,23 +256,7 @@ impl Store {
             "cards",
             limit,
             cursor,
-            |r| {
-                Ok(Card {
-                    seq: r.get(0)?,
-                    kind: r.get(1)?,
-                    node: r.get(2)?,
-                    actor: sql_json(r, 3)?,
-                    text: r.get(4)?,
-                    state: r.get(5)?,
-                    decision: r.get(6)?,
-                    decided_actor: r
-                        .get::<_, Option<String>>(7)?
-                        .map(|s| serde_json::from_str(&s))
-                        .transpose()
-                        .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?,
-                    created_ms: r.get(8)?,
-                })
-            },
+            rows::card_row,
             "seq,kind,node,actor,text,state,decision,decided_actor,created_ms",
         )
     }

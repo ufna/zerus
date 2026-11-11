@@ -4,6 +4,7 @@
 #[cfg(test)]
 mod tests;
 
+mod cross;
 mod decision_state;
 pub use decision_state::DecisionState;
 mod pages;
@@ -231,7 +232,7 @@ fn initialize(db: &mut Connection) -> Result<()> {
         return Err(storage("store schema is newer than this version of Zerus"));
     }
     if version == SCHEMA_VERSION {
-        return Ok(());
+        return read_indexes(db);
     }
     let tx = db
         .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
@@ -257,5 +258,13 @@ fn initialize(db: &mut Connection) -> Result<()> {
         )
         .map_err(storage)?;
     }
+    read_indexes(&tx)?;
     tx.commit().map_err(storage)
+}
+
+// Install these additive indexes on first creation and when a version-2
+// store from before these reads is opened.
+fn read_indexes(db: &Connection) -> Result<()> {
+    db.execute_batch(include_str!("read-indexes.sql"))
+        .map_err(storage)
 }

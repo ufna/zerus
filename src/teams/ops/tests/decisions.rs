@@ -146,27 +146,27 @@ fn owner_rejection_settles_acceptance_without_an_integration_receipt() {
     .unwrap();
 }
 #[test]
-fn integration_none_accepts_without_any_receipt() {
+fn integration_none_acceptance_only_records_receipt_provenance() {
     let mut h = Harness::new();
     let (node, lead) = h.reported();
     h.settings(|s| s.integration = Integration::None);
     h.run(&lead, Operation::Accept { node }).unwrap();
-    refused(
-        h.run(
-            &service(),
-            Operation::RecordIntegration {
-                decision: h.accept_decision(node),
-                node,
-                commit: COMMIT.into(),
-            },
-        ),
-        code::INVALID_STATE,
-    );
+    // A service fact is provenance; neither acceptance nor this node needs a merge.
+    h.run(
+        &service(),
+        Operation::RecordIntegration {
+            decision: h.accept_decision(node),
+            node,
+            commit: COMMIT.into(),
+        },
+    )
+    .unwrap();
+    assert!(h.store.integration_fact(TEAM, node).unwrap().is_some());
     h.observe(node, TaskStage::Done);
     assert!(!h.node(node).integrated);
 }
 #[test]
-fn stage_acceptance_has_no_merge_or_receipt() {
+fn stage_acceptance_only_records_receipt_provenance() {
     let mut h = Harness::new();
     let (node, lead) = h.reported();
     let mut n = h.node(node);
@@ -182,17 +182,17 @@ fn stage_acceptance_has_no_merge_or_receipt() {
         )
         .unwrap();
     h.run(&lead, Operation::Accept { node }).unwrap();
-    refused(
-        h.run(
-            &service(),
-            Operation::RecordIntegration {
-                decision: h.accept_decision(node),
-                node,
-                commit: COMMIT.into(),
-            },
-        ),
-        code::INVALID_STATE,
-    );
+    // A service fact is provenance; neither acceptance nor this node needs a merge.
+    h.run(
+        &service(),
+        Operation::RecordIntegration {
+            decision: h.accept_decision(node),
+            node,
+            commit: COMMIT.into(),
+        },
+    )
+    .unwrap();
+    assert!(h.store.integration_fact(TEAM, node).unwrap().is_some());
     h.observe(node, TaskStage::Done);
     assert!(!h.node(node).integrated);
 }
