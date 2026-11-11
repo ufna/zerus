@@ -4,7 +4,7 @@
 use super::super::actor::Caller;
 use crate::config::Config;
 use crate::teams::ops::{
-    self, Actor, Operation, PersonOrigin, Reply, Request, TaskObservation, TaskStage,
+    self, Actor, KeyState, Operation, PersonOrigin, Reply, Request, TaskObservation, TaskStage,
 };
 use crate::teams::store::Store;
 use serde_json::Value;
@@ -274,6 +274,7 @@ impl Harness {
             .map_or(String::new(), |observation| observation.revision);
         let observation = TaskObservation {
             revision: format!("token-{node}-{}", stage_name(stage)),
+            key: KeyState::Ours,
             previous_revision: previous,
             stage,
             cancelled: false,
