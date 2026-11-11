@@ -1,7 +1,7 @@
 import { TextInput } from "../lib/TextField";
 import { For, Show, createEffect, createMemo, createSignal, on, onCleanup, type JSX } from "solid-js";
 import { createCard, newCard } from "../../store/taskForms";
-import { sendToTeam } from "../../store/taskBoard";
+import { createRecovery } from "./task-recovery";
 import { selected } from "../../store/ui";
 import { requestTaskDescription } from "../../store/taskNavigation";
 import { Icon } from "../lib/icons";
@@ -18,8 +18,7 @@ export default function TaskCreate(props: { project?: string; scope: string; bac
   const [refusal, setRefusal] = createSignal("");
   /** A card the command line created and the team's queue did not take: the
    * task exists, so the way on is Send to team for that task, never a new card. */
-  const [notQueued, setNotQueued] = createSignal<{ project: string; task: string; team: string; name: string; reason: string } | null>(null);
-  const [sending, setSending] = createSignal(false);
+  const recovery = createRecovery();
   let field!: HTMLInputElement;
   /** The project's teams on the list's first page, while the preview is on: the card can join one's queue. */
   const teamChoices = createMemo(() => teams.available() === true
@@ -47,21 +46,17 @@ export default function TaskCreate(props: { project?: string; scope: string; bac
       setTeam(""); setRefusal(tr("The chosen team is no longer offered for this project. Nothing was sent."));
       return;
     }
-    setRefusal(""); setNotQueued(null);
+    setRefusal(""); recovery.dismiss();
     const name = teamChoices().find((candidate) => candidate.id === chosen)?.name ?? chosen;
     if (await createCard(project, chosen ? false : props.backlog, selected(), chosen || undefined)) {
-      setCreating(false); setTeam("");
-      const done = newCard.view(), id = done?.created, refused = done?.not_queued;
-      if (id && refused && refused.task === id) setNotQueued({ project, task: id, team: refused.team, name: refused.team === chosen ? name : refused.team, reason: refused.reason });
+      // The answer settles this submit only: its project's card, and the team
+      // choice it sent, never one the person made meanwhile.
+      setCreating(false); if (team() === chosen) setTeam("");
+      const done = newCard.view();
+      const id = done?.project === project ? done.created : undefined, refused = done?.not_queued;
+      if (id && refused && refused.task === id && (!chosen || refused.team === chosen)) recovery.show({ project, task: id, team: refused.team, name: refused.team === chosen ? name : teamChoices().find((candidate) => candidate.id === refused.team)?.name ?? refused.team, reason: refused.reason });
       if (id) requestTaskDescription(project, id);
     }
-  };
-  const sendCreated = async () => {
-    const created = notQueued();
-    if (!created || sending()) return;
-    setSending(true);
-    try { if (await sendToTeam(created.project, { uuid: created.task }, created.team, created.name)) setNotQueued(null); }
-    finally { setSending(false); }
   };
   return <><div class="tk-head"><Show when={creating() && props.project} fallback={<span class="tk-scope" aria-live="polite">{props.scope}</span>}>
     <TextInput ref={field} class="field tk-newtitle" maxlength={512} placeholder={tr("Task title")} aria-label={tr("New task title")} data-shortcut-context="none" value={view()?.text ?? ""} disabled={!!view()?.blocked} readOnly={newCard.opening() || newCard.busy() || view()?.read_only}
@@ -75,9 +70,16 @@ export default function TaskCreate(props: { project?: string; scope: string; bac
         value={team()} onChange={(value) => { setTeam(value); setRefusal(""); }} options={[{ value: "", label: tr("No team") }, ...teamChoices().map((candidate) => ({ value: candidate.id, textValue: candidate.name, label: () => <TeamChip name={candidate.name} /> }))]} />
     </Show><button class="tk-sq add" aria-label={tr("New task")} title={tr("New task")} disabled={!props.project || !props.accessible} onClick={() => { setCreating(true); queueMicrotask(() => field?.focus()); }}><Icon name="plus" size={16} /></button>{props.children}</div>
     <Show when={(refusal() || newCard.error()) && creating()}><div class="tk-create-error" role="alert">{refusal() || newCard.error()}</div></Show>
-    <Show when={notQueued()?.project === props.project ? notQueued() : undefined}>{(created) => <div class="tk-create-error" role="alert" data-not-queued>
+    <Show when={recovery.notice()?.project === props.project ? recovery.notice() : undefined}>{(created) => <div class="tk-create-error" role="alert" data-not-queued>
       <span>{tr("The task was created, but %1 did not queue it: %2", created().name, created().reason)}</span>{" "}
-      <button type="button" class="btn small" disabled={sending()} onClick={() => void sendCreated()}>{tr("Send to team")}</button>{" "}
-      <button type="button" class="btn small" onClick={() => setNotQueued(null)}>{tr("Dismiss")}</button>
+      <Show when={!recovery.row() && recovery.reading().state === "reading"}><span class="dim" role="status" data-recovery-reading>{tr("Reading the task…")}</span>{" "}</Show>
+      <Show when={!recovery.row() ? recovery.reading() : undefined}>{(answer) => <Show when={answer().state === "failed"}>
+        <span data-recovery-unread>{tr("The task could not be read: %1", (answer() as { reason: string }).reason)}</span>{" "}
+        <button type="button" class="btn small" onClick={() => recovery.readAgain()}>{tr("Read again")}</button>{" "}
+      </Show>}</Show>
+      <Show when={recovery.refusal()}><span data-recovery-refusal>{recovery.refusal()}</span>{" "}</Show>
+      <button type="button" class="btn small" disabled={!recovery.row() || recovery.sending()} aria-busy={!recovery.row() || recovery.sending() ? "true" : undefined}
+        title={!recovery.row() ? tr("Reading the task…") : undefined} onClick={() => void recovery.send()}>{tr("Send to team")}</button>{" "}
+      <button type="button" class="btn small" onClick={() => recovery.dismiss()}>{tr("Dismiss")}</button>
     </div>}</Show></>;
 }

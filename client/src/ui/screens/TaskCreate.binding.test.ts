@@ -8,7 +8,7 @@ import { createComponent, createSignal } from "solid-js";
 import { render } from "solid-js/web";
 const f = vi.hoisted(() => ({
   create: vi.fn(async (..._args: unknown[]) => false),
-  send: vi.fn(async (..._args: unknown[]) => true),
+  send: vi.fn(async (..._args: unknown[]) => ({ sent: true })),
   view: (() => undefined) as () => unknown,
   setView: (_value: unknown) => {},
   list: (() => undefined) as () => unknown,
@@ -27,6 +27,7 @@ vi.mock("../../store/taskForms", async () => {
 });
 vi.mock("../../store/ui", () => ({ selected: () => undefined }));
 vi.mock("../../store/taskBoard", () => ({ sendToTeam: f.send }));
+vi.mock("./task-view-read", () => ({ readSelectedTask: async (key: string) => ({ uuid: key.split("\n")[1], stage: "todo", writable: true }) }));
 vi.mock("../../store/taskNavigation", () => ({ requestTaskDescription: vi.fn() }));
 vi.mock("../../store/teams", async () => {
   const { createSignal: signal } = await import("solid-js");
@@ -134,7 +135,62 @@ it("a card created but not queued says so with the team's reason and offers Send
   expect(notice.textContent).toContain("The task was created, but Fixes did not queue it: The team is stopped.");
   expect(f.create).toHaveBeenCalledTimes(1);
   ([...notice.querySelectorAll("button")].find((button) => button.textContent === "Send to team") as HTMLButtonElement).click();
-  await vi.waitFor(() => expect(f.send).toHaveBeenCalledWith("example-project", { uuid: created }, TEAM, "Fixes"));
+  await vi.waitFor(() => expect(f.send).toHaveBeenCalledWith("example-project", { uuid: created }, TEAM, "Fixes", expect.objectContaining({ uuid: created })));
   await vi.waitFor(() => expect(host.querySelector("[data-not-queued]")).toBeNull());
   expect(f.create, "no second card").toHaveBeenCalledTimes(1);
+});
+
+// Third confirmation, the same two classes in the rest of the recovery: an
+// answer is taken only for the card it confirms, and settles only what it was
+// started for.
+it("an answer for another project's card shows no not-queued notice", async () => {
+  f.setList({ teams: [fixes], truncated: false, next: null });
+  f.setView(card("example-project"));
+  const created = "55555555-5555-4555-8555-555555555555";
+  f.create.mockImplementationOnce(async () => {
+    f.setView(card("other-project", { text: "", created, not_queued: { task: created, team: TEAM, reason: "Not ours." } }));
+    return true;
+  });
+  const host = setup(() => "example-project");
+  choose(host);
+  enter(host);
+  await vi.waitFor(() => expect(f.create).toHaveBeenCalled());
+  await Promise.resolve(); await Promise.resolve();
+  expect(host.querySelector("[data-not-queued]")).toBeNull();
+});
+
+it("a notice naming another team than the one sent is not taken", async () => {
+  f.setList({ teams: [fixes, { id: OTHER, project: "example-project", name: "Other" }], truncated: false, next: null });
+  f.setView(card("example-project"));
+  const created = "55555555-5555-4555-8555-555555555555";
+  f.create.mockImplementationOnce(async () => {
+    f.setView(card("example-project", { text: "", created, not_queued: { task: created, team: OTHER, reason: "Another team." } }));
+    return true;
+  });
+  const host = setup(() => "example-project");
+  choose(host);
+  expect(chooser(host)!.textContent).toContain("Fixes");
+  enter(host);
+  await vi.waitFor(() => expect(f.create).toHaveBeenCalled());
+  await Promise.resolve(); await Promise.resolve();
+  expect(host.querySelector("[data-not-queued]")).toBeNull();
+});
+
+it("a team chosen while the submit was in flight is kept", async () => {
+  f.setList({ teams: [fixes, { id: OTHER, project: "example-project", name: "Other" }], truncated: false, next: null });
+  f.setView(card("example-project"));
+  let finish!: (value: boolean) => void;
+  f.create.mockImplementationOnce(() => new Promise<boolean>((resolve) => { finish = resolve; }));
+  const host = setup(() => "example-project");
+  choose(host);
+  enter(host);
+  await vi.waitFor(() => expect(f.create).toHaveBeenCalled());
+  // The form is open again with the next card; the person picks another team.
+  (host.querySelector('[aria-label="New task"]') as HTMLButtonElement).click();
+  choose(host);
+  expect(chooser(host)!.textContent).toContain("Other");
+  finish(true);
+  await Promise.resolve(); await Promise.resolve();
+  (host.querySelector('[aria-label="New task"]') as HTMLButtonElement).click();
+  expect(chooser(host)!.textContent).toContain("Other");
 });
