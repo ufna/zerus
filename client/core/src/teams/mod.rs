@@ -24,6 +24,13 @@
 //! part of [`read::TeamRead::Waiting`]: it arrives in the desktop's session
 //! attention data. [`view::WaitingView`] carries the open owner cards only.
 //!
+//! An action's intent lives in memory for this milestone
+//! ([`action::Intents`]): a restarted desktop forgets it, so a new gesture
+//! gets a new request id and carries the revision of what the person saw. The
+//! store's own request record still answers a repeated id, which is why an id
+//! is made once and never replaced. A page of a followed key stays selected
+//! until the person chooses another; every later read reads that page.
+//!
 //! Teams are inactive unless the person turned the preview on; with it off
 //! every read and action answers `teams_inactive` and the desktop shows no
 //! entry point.
@@ -31,6 +38,7 @@ pub mod action;
 pub mod model;
 pub mod poller;
 pub mod read;
+mod refusal;
 pub mod view;
 
 pub use action::{Confirmation, TeamAction, TeamCall, TeamOutcome};

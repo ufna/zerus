@@ -91,24 +91,6 @@ fn stderr_text(stderr: &str) -> Option<String> {
     (!text.is_empty()).then_some(text)
 }
 
-/// The refusal an `hgs` reply carries, when it carries one.
-fn refusal(stdout: &[u8]) -> Option<(String, String)> {
-    let reply: Value = serde_json::from_slice(stdout).ok()?;
-    if reply.get("ok").and_then(Value::as_bool) != Some(false) {
-        return None;
-    }
-    let error = reply.get("error")?;
-    let code = error.get("code").and_then(Value::as_str)?.to_owned();
-    let message = error
-        .get("message")
-        .and_then(Value::as_str)
-        .unwrap_or_default()
-        .chars()
-        .take(DETAIL_CHARS)
-        .collect();
-    Some((code, message))
-}
-
 /// Whether a success reply is the complete receipt of this call: `ok: true`, a
 /// revision, an actor and the call's own team.
 fn complete_receipt(call: &TeamCall, receipt: &Value) -> bool {
@@ -150,7 +132,7 @@ pub fn classify(call: &TeamCall, exit: Exit) -> TeamOutcome {
             code,
             stdout,
             stderr,
-        } if code != 0 => match refusal(&stdout) {
+        } if code != 0 => match super::super::refusal::parse(&stdout) {
             Some((code, message)) => TeamOutcome::Failed {
                 detail: message,
                 code,
@@ -173,7 +155,7 @@ pub fn classify(call: &TeamCall, exit: Exit) -> TeamOutcome {
             ),
         },
         Exit::Code { stdout, .. } => {
-            if let Some((code, message)) = refusal(&stdout) {
+            if let Some((code, message)) = super::super::refusal::parse(&stdout) {
                 return TeamOutcome::Failed {
                     detail: message,
                     code,

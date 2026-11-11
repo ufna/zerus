@@ -481,7 +481,10 @@ fn a_page_read_replaces_the_shown_page() {
         panic!("a team view");
     };
     assert_eq!(view.next.as_deref(), Some("t1.first"));
-    assert!(model.page("team:00000000-0000-4000-8000-00000000beef", "t1.first"));
+    assert!(model.page(
+        "team:00000000-0000-4000-8000-00000000beef",
+        Some("t1.first")
+    ));
     let read = model.next(now).expect("the page read");
     assert_eq!(
         read,
@@ -496,14 +499,17 @@ fn a_page_read_replaces_the_shown_page() {
     };
     assert_eq!(view.next, None, "the page replaced the shown one");
     // Only a followed key can ask, and only with a cursor.
-    assert!(!model.page("team:00000000-0000-4000-8000-00000000ffff", "t1.x"));
-    assert!(!model.page("unknown", "t1.x"));
-    assert!(!model.page("team:00000000-0000-4000-8000-00000000beef", ""));
-    assert!(!model.page("team:00000000-0000-4000-8000-00000000beef", "has space"));
+    assert!(!model.page("team:00000000-0000-4000-8000-00000000ffff", Some("t1.x")));
+    assert!(!model.page("unknown", Some("t1.x")));
+    assert!(!model.page("team:00000000-0000-4000-8000-00000000beef", Some("")));
+    assert!(!model.page(
+        "team:00000000-0000-4000-8000-00000000beef",
+        Some("has space")
+    ));
     let mut bare = TeamsModel::default();
-    assert!(!bare.page("list", "t1.x"), "the list is not followed");
-    assert!(!bare.page("waiting", "t1.x"));
-    assert!(!bare.page("team:00000000-0000-4000-8000-00000000beef", "t1.x"));
+    assert!(!bare.page("list", Some("t1.x")), "the list is not followed");
+    assert!(!bare.page("waiting", Some("t1.x")));
+    assert!(!bare.page("team:00000000-0000-4000-8000-00000000beef", Some("t1.x")));
 }
 
 #[test]
@@ -512,13 +518,14 @@ fn a_page_read_is_bounded_and_once() {
     let mut model = TeamsModel::default();
     model.follow(follow_all(TEAM), now);
     for at in 0..QUEUED {
-        assert!(model.page(
-            "team:00000000-0000-4000-8000-00000000beef",
-            &format!("t1.{at}")
-        ));
+        let cursor = format!("t1.{at}");
+        assert!(model.page("team:00000000-0000-4000-8000-00000000beef", Some(&cursor)));
     }
-    assert!(!model.page("team:00000000-0000-4000-8000-00000000beef", "t1.again"));
-    assert!(!model.page("team:00000000-0000-4000-8000-00000000beef", "t1.0"));
+    assert!(!model.page(
+        "team:00000000-0000-4000-8000-00000000beef",
+        Some("t1.again")
+    ));
+    assert!(!model.page("team:00000000-0000-4000-8000-00000000beef", Some("t1.0")));
     assert_eq!(model.wait(now), Duration::ZERO);
 }
 
@@ -552,4 +559,122 @@ fn a_short_wait_never_exceeds_the_poll() {
     model.apply(&TeamRead::Waiting { after: None }, Ok(waiting_reply()), now);
     assert_eq!(model.wait(now), POLL);
     assert_eq!(model.wait(now + POLL / 2), POLL / 2);
+}
+
+#[test]
+fn a_selected_page_is_polled_until_another_is_chosen() {
+    let now = Instant::now();
+    let mut model = TeamsModel::default();
+    model.follow(
+        TeamsFollow {
+            list: true,
+            waiting: false,
+            team: None,
+        },
+        now,
+    );
+    let read = model.next(now).expect("the first page");
+    model.apply(&read, Ok(list_reply()), now);
+    assert!(model.page("list", Some("t1.second")));
+    let read = model.next(now).expect("the selected page");
+    assert_eq!(
+        read,
+        TeamRead::List {
+            after: Some("t1.second".into())
+        }
+    );
+    model.apply(&read, Ok(list_reply()), now);
+    assert_eq!(
+        model.next(now + POLL),
+        Some(TeamRead::List {
+            after: Some("t1.second".into())
+        }),
+        "the poll reads the selected page, not page one"
+    );
+    // The poll read above was answered; no cursor then selects the first page.
+    model.apply(
+        &TeamRead::List {
+            after: Some("t1.second".into()),
+        },
+        Ok(list_reply()),
+        now,
+    );
+    assert!(model.page("list", None));
+    assert_eq!(model.next(now + POLL), Some(TeamRead::List { after: None }));
+}
+
+#[test]
+fn a_refused_page_cursor_returns_to_the_first_page() {
+    let now = Instant::now();
+    let mut model = TeamsModel::default();
+    model.follow(
+        TeamsFollow {
+            list: true,
+            waiting: false,
+            team: None,
+        },
+        now,
+    );
+    let read = model.next(now).expect("the first page");
+    model.apply(&read, Ok(list_reply()), now);
+    assert!(model.page("list", Some("t1.stale")));
+    let read = model.next(now).expect("the selected page");
+    let out = model.apply(
+        &read,
+        Err(TeamError::Refused {
+            code: "invalid_state".into(),
+            message: "The cursor does not belong to this list.".into(),
+        }),
+        now,
+    );
+    assert_eq!(out.len(), 1);
+    assert_eq!(out[0].1.kind(), "failed");
+    assert_eq!(out[0].1.payload()["code"], "cursor_reset");
+    assert!(
+        out[0].1.payload()["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("first page")),
+        "the view says why the page was dropped"
+    );
+    assert_eq!(
+        model.next(now),
+        Some(TeamRead::List { after: None }),
+        "the first page is read again at once"
+    );
+}
+
+#[test]
+fn reopening_a_key_during_its_read_retires_the_old_generation() {
+    let now = Instant::now();
+    let mut model = TeamsModel::default();
+    model.follow(
+        TeamsFollow {
+            list: true,
+            waiting: false,
+            team: None,
+        },
+        now,
+    );
+    // The first page is shown, then a refresh's read is in flight when the key
+    // is unfollowed and followed again.
+    let first = model.next(now).expect("the first read");
+    model.apply(&first, Ok(list_reply()), now);
+    model.refresh(now);
+    let old = model.next(now).expect("the refresh read");
+    let ended = model.follow(TeamsFollow::default(), now);
+    assert!(matches!(ended[0].1, TeamsUpdate::Ended));
+    model.follow(
+        TeamsFollow {
+            list: true,
+            waiting: false,
+            team: None,
+        },
+        now,
+    );
+    let late = model.apply(&old, Ok(list_reply()), now);
+    assert!(late.is_empty(), "a reply of the retired scope is dropped");
+    let fresh = model.next(now).expect("the reopened scope is read");
+    assert_eq!(fresh, TeamRead::List { after: None });
+    let out = model.apply(&fresh, Ok(list_reply()), now);
+    assert_eq!(out.len(), 1, "the new scope publishes its view");
 }

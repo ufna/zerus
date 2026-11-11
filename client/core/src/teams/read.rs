@@ -9,7 +9,7 @@
 //! arrives in the desktop's session attention data.
 use crate::actions::{Exit, Invocation};
 use crate::reads::READ_LIMIT;
-use crate::run::{run_limited, TooLarge};
+use crate::run::{run_cancellable, run_limited, Stopped, TooLarge};
 use serde_json::Value;
 use std::path::Path;
 use std::time::Duration;
@@ -56,6 +56,16 @@ impl TeamRead {
         match self {
             Self::Status { team } | Self::Queue { team, .. } => Some(team),
             Self::List { .. } | Self::Waiting { .. } => None,
+        }
+    }
+
+    /// The page cursor the read carries, if any.
+    pub fn after(&self) -> Option<&str> {
+        match self {
+            Self::List { after } | Self::Waiting { after } | Self::Queue { after, .. } => {
+                after.as_deref()
+            }
+            Self::Status { .. } => None,
         }
     }
 
@@ -139,6 +149,8 @@ pub enum TeamError {
     Invalid { message: String },
     /// The reply passed the read's limit; the command was ended.
     TooLarge { limit: usize },
+    /// The shutdown ended the read's child before it answered.
+    Cancelled,
 }
 
 impl TeamError {
@@ -150,6 +162,7 @@ impl TeamError {
             Self::Failed { .. } => "failed",
             Self::Invalid { .. } => "invalid_reply",
             Self::TooLarge { .. } => "too_large",
+            Self::Cancelled => "cancelled",
         }
     }
 
@@ -160,6 +173,7 @@ impl TeamError {
             | Self::Failed { message }
             | Self::Invalid { message } => message,
             Self::TooLarge { .. } => "the reply passed the read's limit",
+            Self::Cancelled => "the read was cancelled",
         }
     }
 }
@@ -181,37 +195,13 @@ fn text_of(stderr: &str) -> String {
     }
 }
 
-/// The refusal an `hgs` reply carries, when it carries one:
-/// `{"ok": false, "error": {"code", "message"}}`.
-fn refusal(stdout: &[u8]) -> Option<(String, String)> {
-    let reply: Value = serde_json::from_slice(stdout).ok()?;
-    if reply.get("ok").and_then(Value::as_bool) != Some(false) {
-        return None;
-    }
-    let error = reply.get("error")?;
-    let code = error
-        .get("code")
-        .and_then(Value::as_str)
-        .unwrap_or_default();
-    let message = error
-        .get("message")
-        .and_then(Value::as_str)
-        .unwrap_or_default();
-    (!code.is_empty()).then(|| {
-        (
-            code.chars().take(64).collect(),
-            message.chars().take(MESSAGE_CHARS).collect(),
-        )
-    })
-}
-
 /// The standard output of a read, or why it gave none.
 fn output(exit: Exit) -> Result<Vec<u8>, TeamError> {
     match exit {
         Exit::Code {
             code: 0, stdout, ..
         } => Ok(stdout),
-        Exit::Code { stdout, stderr, .. } => match refusal(&stdout) {
+        Exit::Code { stdout, stderr, .. } => match super::refusal::parse(&stdout) {
             Some((code, message)) => Err(TeamError::Refused { code, message }),
             None => Err(TeamError::Failed {
                 message: text_of(&stderr),
@@ -275,7 +265,7 @@ pub fn decode(read: &TeamRead, exit: Exit) -> Result<Value, TeamError> {
     match value.get("ok").and_then(Value::as_bool) {
         Some(true) => {}
         Some(false) => {
-            let (code, message) = refusal(&stdout).unwrap_or_else(|| {
+            let (code, message) = super::refusal::parse(&stdout).unwrap_or_else(|| {
                 (
                     "failed".to_owned(),
                     "hgs refused the read without a reason".to_owned(),
@@ -324,6 +314,25 @@ pub fn decode(read: &TeamRead, exit: Exit) -> Result<Value, TeamError> {
         }
     }
     Ok(value)
+}
+
+/// [`read`] that ends its child within one poll once `cancel` is set: the
+/// shutdown of the reader uses it, so closing the application never waits for
+/// a slow read.
+pub fn read_cancellable(
+    hgs: &Path,
+    read: &TeamRead,
+    cancel: &std::sync::atomic::AtomicBool,
+) -> Result<Value, TeamError> {
+    let invocation = invocation(read)?;
+    let exit =
+        run_cancellable(hgs, &invocation, &[], READ_LIMIT, cancel).map_err(
+            |stopped| match stopped {
+                Stopped::TooLarge(TooLarge { cap, .. }) => TeamError::TooLarge { limit: cap },
+                Stopped::Cancelled => TeamError::Cancelled,
+            },
+        )?;
+    decode(read, exit)
 }
 
 /// Runs one read through `hgs` and checks its reply. Blocks for at most the

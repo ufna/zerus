@@ -8,6 +8,7 @@ use super::read::{self, TeamError, TeamRead};
 use crate::{Change, ComputerId};
 use serde_json::Value;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::thread;
 use std::time::Instant;
@@ -29,6 +30,9 @@ struct State {
 struct Shared {
     state: Mutex<State>,
     wake: Condvar,
+    /// Set at shutdown: the read in flight ends its child within a poll, so
+    /// closing the application never waits for a slow read.
+    cancel: Arc<AtomicBool>,
 }
 
 impl Shared {
@@ -46,17 +50,30 @@ pub struct TeamsPoller {
 impl TeamsPoller {
     /// Polls this computer's teams through `hgs`.
     pub fn spawn(hgs: PathBuf, emit: impl Fn(Change) + Send + 'static) -> std::io::Result<Self> {
-        Self::spawn_with(
-            Box::new(move |read: &TeamRead| read::read(&hgs, read)),
+        let cancel = Arc::new(AtomicBool::new(false));
+        let flag = Arc::clone(&cancel);
+        Self::spawn_with_cancel(
+            Box::new(move |read: &TeamRead| read::read_cancellable(&hgs, read, &flag)),
             Box::new(emit),
+            cancel,
         )
     }
 
-    /// Polls with `runner` instead of `hgs`.
+    /// Polls with `runner` instead of `hgs`; its reads are not cancelled at
+    /// shutdown (the caller's runner ends its own work).
     pub fn spawn_with(runner: Runner, emit: Emit) -> std::io::Result<Self> {
+        Self::spawn_with_cancel(runner, emit, Arc::new(AtomicBool::new(false)))
+    }
+
+    fn spawn_with_cancel(
+        runner: Runner,
+        emit: Emit,
+        cancel: Arc<AtomicBool>,
+    ) -> std::io::Result<Self> {
         let shared = Arc::new(Shared {
             state: Mutex::new(State::default()),
             wake: Condvar::new(),
+            cancel,
         });
         let thread_shared = Arc::clone(&shared);
         let computer = ComputerId::local();
@@ -94,7 +111,7 @@ impl TeamsPoller {
     /// Asks for one page of a followed key by its cursor; the page replaces
     /// the shown one. False when the key is not followed or the cursor is not
     /// a page token.
-    pub fn page(&self, key: &str, cursor: &str) -> bool {
+    pub fn page(&self, key: &str, cursor: Option<&str>) -> bool {
         let asked = self.shared.lock().model.page(key, cursor);
         if asked {
             self.shared.wake.notify_all();
@@ -117,12 +134,13 @@ impl TeamsPoller {
 }
 
 impl Drop for TeamsPoller {
-    /// Ends every published view, then waits for the worker: a read in flight
-    /// finishes (its reply is applied, or dropped when no longer followed),
-    /// the queued ends go out, and only then does the thread stop. A new
-    /// reader can therefore never run beside this one — the desktop keeps one
-    /// poller for the life of the application, and this is its shutdown.
+    /// Ends every published view, cancels the read in flight and waits for the
+    /// worker: the child is ended, the queued ends go out, and only then does
+    /// the thread stop. A new reader can therefore never run beside this one —
+    /// the desktop keeps one poller for the life of the application, and this
+    /// is its shutdown. A read is read-only, so cancelling it is safe.
     fn drop(&mut self) {
+        self.shared.cancel.store(true, Ordering::SeqCst);
         {
             let mut state = self.shared.lock();
             let ended = state.model.follow(TeamsFollow::default(), Instant::now());
@@ -288,6 +306,199 @@ mod tests {
             panic!("not a teams change");
         };
         assert!(matches!(update, TeamsUpdate::Ended), "{end:?}");
+    }
+
+    #[test]
+    fn a_stop_on_another_thread_ends_every_published_key() {
+        let (entered_tx, entered_rx) = channel();
+        let (release_tx, release_rx) = channel();
+        let release_rx = Mutex::new(release_rx);
+        let (changes, received) = channel();
+        let calls = std::sync::atomic::AtomicUsize::new(0);
+        let poller = TeamsPoller::spawn_with(
+            Box::new(move |read| {
+                if calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 4 {
+                    entered_tx.send(()).unwrap();
+                    release_rx.lock().unwrap().recv().unwrap();
+                }
+                Ok(match read {
+                    TeamRead::Status { team } => serde_json::json!({
+                        "ok": true, "actor": {},
+                        "team": {"id": team, "revision": 1},
+                        "members": [], "counts": {}
+                    }),
+                    TeamRead::Queue { team, .. } => serde_json::json!({
+                        "ok": true, "actor": {}, "team": team, "rows": [], "next": null
+                    }),
+                    _ => serde_json::json!({
+                        "ok": true, "actor": {}, "rows": [], "next": null
+                    }),
+                })
+            }),
+            Box::new(move |change| {
+                let _ = changes.send(change);
+            }),
+        )
+        .expect("the poller starts");
+        poller.follow(TeamsFollow {
+            list: true,
+            waiting: true,
+            team: Some("00000000-0000-4000-8000-00000000beef".into()),
+        });
+        let mut shown = std::collections::BTreeSet::new();
+        while shown.len() < 3 {
+            if let Change::Teams { key, update, .. } =
+                received.recv_timeout(Duration::from_secs(5)).unwrap()
+            {
+                if update.is_view() {
+                    shown.insert(key);
+                }
+            }
+        }
+        poller.refresh();
+        entered_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        let shared = Arc::clone(&poller.shared);
+        let (done_tx, done_rx) = channel();
+        let handle = std::thread::spawn(move || {
+            drop(poller);
+            done_tx.send(()).unwrap();
+        });
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while !shared.lock().stop && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert!(
+            shared.lock().stop,
+            "drop must request stop before the read is released"
+        );
+        assert!(
+            done_rx.recv_timeout(Duration::from_millis(60)).is_err(),
+            "drop must join the blocked worker"
+        );
+        release_tx.send(()).unwrap();
+        handle.join().unwrap();
+        let mut ended = std::collections::BTreeSet::new();
+        while let Ok(Change::Teams { key, update, .. }) =
+            received.recv_timeout(Duration::from_millis(200))
+        {
+            if matches!(update, TeamsUpdate::Ended) {
+                ended.insert(key);
+            }
+        }
+        assert_eq!(
+            ended, shown,
+            "each published key ends when stop precedes its reply"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_shutdown_cancels_the_read_in_flight() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("zerus-teams-cancel-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let once = dir.join("once");
+        let script = dir.join("hgs");
+        std::fs::write(
+            &script,
+            format!(
+                "#!/bin/sh\nif [ -e '{}' ]; then exec /bin/sleep 30; fi\n: > '{}'\nprintf '%s' '{{\"ok\":true,\"actor\":{{}},\"rows\":[],\"next\":null}}'\n",
+                once.display(),
+                once.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let (changes, received) = channel();
+        let poller = TeamsPoller::spawn(
+            script.clone(),
+            Box::new(move |change| {
+                let _ = changes.send(change);
+            }),
+        )
+        .expect("the poller starts");
+        poller.follow(TeamsFollow {
+            list: true,
+            waiting: false,
+            team: None,
+        });
+        let first = received.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert_eq!(first_key(&first), Some("list"));
+        // The next read blocks in a child that sleeps; the shutdown cancels it
+        // instead of waiting for the read's deadline.
+        poller.refresh();
+        std::thread::sleep(Duration::from_millis(300));
+        let started = Instant::now();
+        drop(poller);
+        let elapsed = started.elapsed();
+        assert!(
+            elapsed < Duration::from_secs(5),
+            "a shutdown must cancel the read, took {elapsed:?}"
+        );
+        let end = received
+            .recv_timeout(Duration::from_secs(2))
+            .expect("the published view ends");
+        let Change::Teams { update, .. } = &end else {
+            panic!("not a teams change");
+        };
+        assert!(matches!(update, TeamsUpdate::Ended), "{end:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_reopened_key_ends_before_it_shows_again() {
+        let (entered_tx, entered_rx) = channel();
+        let (release_tx, release_rx) = channel();
+        let release_rx = Mutex::new(release_rx);
+        let calls = std::sync::atomic::AtomicUsize::new(0);
+        let (changes, received) = channel();
+        let poller = TeamsPoller::spawn_with(
+            Box::new(move |_read| {
+                let call = calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                if call == 1 {
+                    entered_tx.send(()).unwrap();
+                    release_rx.lock().unwrap().recv().unwrap();
+                }
+                Ok(serde_json::json!({
+                    "ok": true, "actor": {},
+                    "rows": [{"id": if call == 0 { "initial" } else { "later" }, "name": "x"}],
+                    "next": null,
+                }))
+            }),
+            Box::new(move |change| {
+                let _ = changes.send(change);
+            }),
+        )
+        .expect("the poller starts");
+        let follow = TeamsFollow {
+            list: true,
+            waiting: false,
+            team: None,
+        };
+        poller.follow(follow.clone());
+        let first = received.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert_eq!(first_key(&first), Some("list"));
+        poller.refresh();
+        entered_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        poller.follow(TeamsFollow::default());
+        poller.follow(follow);
+        release_tx.send(()).unwrap();
+        let mut seen = Vec::new();
+        for _ in 0..2 {
+            if let Change::Teams { key, update, .. } =
+                received.recv_timeout(Duration::from_secs(5)).unwrap()
+            {
+                seen.push((key, update.kind()));
+            }
+        }
+        assert_eq!(
+            seen,
+            [("list".to_owned(), "ended"), ("list".to_owned(), "list")],
+            "the old end precedes the reopened view, which the stale reply cannot clear"
+        );
+        assert!(poller.following().list);
+        drop(poller);
     }
 
     #[test]

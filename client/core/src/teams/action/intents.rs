@@ -3,16 +3,29 @@
 //! The person's action makes a request id before the first send, and the core
 //! keeps it. [`Intents`] records what became of each id: while it is pending a
 //! second call does nothing; once settled a call returns the recorded outcome;
-//! an uncertain intent is never sent again automatically, only the person's
-//! `check_again` sends it, with the same id and content, and the store answers
-//! from its own record.
+//! an uncertain intent is never sent again automatically. It has two ways out:
+//! the person's explicit [`Intents::check_again`], which sends the same id and
+//! content again (the store answers from its own record), and the person's
+//! explicit [`Intents::dismiss`], which settles it as abandoned without
+//! sending anything.
+//!
+//! The table lives in memory for this milestone. A restarted desktop forgets
+//! it, so a new gesture after a restart gets a new request id and carries the
+//! revision of what the person saw; the store's own request record still
+//! answers a repeated id, which is why an id is never replaced.
+//!
+//! Room is made only by settled entries (done, failed, abandoned): a pending or
+//! uncertain intent is never evicted, because evicting it would let the
+//! ordinary send path reauthorize an unresolved action. When every remembered
+//! intent is unresolved, a new intent is refused and nothing is sent until the
+//! person checks or dismisses one.
 use super::types::{canonical_uuid, TeamCall, TeamOutcome};
 use super::wire::run_action;
 use serde::Serialize;
-use std::collections::hash_map::DefaultHasher;
 use std::collections::{BTreeMap, VecDeque};
-use std::hash::{Hash, Hasher};
 use std::path::Path;
+use std::sync::{Mutex, MutexGuard, PoisonError};
+use zerus_team_plan::problem::code;
 
 /// Intents the desktop remembers; the oldest settled ones go first.
 pub const INTENTS_KEPT: usize = 64;
@@ -25,6 +38,8 @@ pub enum IntentState {
     Done,
     Failed,
     Uncertain,
+    /// The person dismissed it without sending again; it may be forgotten.
+    Abandoned,
 }
 
 /// What the intent table says about a call.
@@ -36,14 +51,16 @@ pub enum Admission {
     InFlight,
     /// It settled: this outcome stands.
     Recorded(TeamOutcome),
-    /// The request id was reused with different content, or the table is full:
-    /// nothing is sent.
+    /// The request id was reused with different content, was abandoned, or the
+    /// table holds no entry it may evict: nothing is sent.
     Refused(TeamOutcome),
 }
 
 #[derive(Debug)]
 struct Intent {
-    fingerprint: u64,
+    /// The call exactly as it was admitted; two calls with one id must match
+    /// byte for byte.
+    content: String,
     state: IntentState,
     outcome: Option<TeamOutcome>,
 }
@@ -55,13 +72,24 @@ pub struct Intents {
     order: VecDeque<String>,
 }
 
-/// The call's content, so one id reused for another action is refused.
-fn fingerprint(call: &TeamCall) -> u64 {
-    let mut hasher = DefaultHasher::new();
-    if let Ok(content) = serde_json::to_string(call) {
-        content.hash(&mut hasher);
+/// A refusal from the table itself: nothing was sent.
+fn refused(request_id: &str, code: &str, detail: &str) -> Admission {
+    Admission::Refused(TeamOutcome::Failed {
+        detail: detail.to_owned(),
+        code: code.to_owned(),
+        request_id: request_id.to_owned(),
+    })
+}
+
+fn pending(request_id: &str) -> TeamOutcome {
+    TeamOutcome::Pending {
+        request_id: request_id.to_owned(),
     }
-    hasher.finish()
+}
+
+/// The call as stored: the whole serialized call, compared exactly.
+fn content(call: &TeamCall) -> Option<String> {
+    serde_json::to_string(call).ok()
 }
 
 fn state_of(outcome: &TeamOutcome) -> Option<IntentState> {
@@ -73,18 +101,13 @@ fn state_of(outcome: &TeamOutcome) -> Option<IntentState> {
     }
 }
 
-fn pending(request_id: &str) -> TeamOutcome {
-    TeamOutcome::Pending {
-        request_id: request_id.to_owned(),
-    }
-}
-
-fn refused(request_id: &str, detail: &str) -> TeamOutcome {
-    TeamOutcome::Failed {
-        detail: detail.to_owned(),
-        code: String::new(),
-        request_id: request_id.to_owned(),
-    }
+/// Whether an entry may be evicted: only settled work makes room. Pending and
+/// uncertain intents are unresolved and stay.
+fn evictable(state: IntentState) -> bool {
+    matches!(
+        state,
+        IntentState::Done | IntentState::Failed | IntentState::Abandoned
+    )
 }
 
 impl Intents {
@@ -111,32 +134,47 @@ impl Intents {
     /// What to do with a call the desktop sends by itself.
     pub fn admit(&mut self, call: &TeamCall) -> Admission {
         if !canonical_uuid(&call.request_id) {
-            return Admission::Refused(refused(&call.request_id, "Not a request id."));
+            return refused(&call.request_id, code::INVALID_STATE, "Not a request id.");
         }
-        let fingerprint = fingerprint(call);
+        let Some(content) = content(call) else {
+            return refused(
+                &call.request_id,
+                code::INVALID_STATE,
+                "The action has no wire form.",
+            );
+        };
         if let Some(intent) = self.entries.get(&call.request_id) {
-            if intent.fingerprint != fingerprint {
-                return Admission::Refused(refused(
+            if intent.content != content {
+                return refused(
                     &call.request_id,
+                    code::DUPLICATE,
                     "This request id was used for a different action.",
-                ));
+                );
             }
-            return match (&intent.state, &intent.outcome) {
-                (IntentState::Pending, _) => Admission::InFlight,
-                (_, Some(outcome)) => Admission::Recorded(outcome.clone()),
-                _ => Admission::InFlight,
+            return match intent.state {
+                IntentState::Pending => Admission::InFlight,
+                IntentState::Abandoned => refused(
+                    &call.request_id,
+                    code::NOT_ALLOWED,
+                    "The person dismissed this action; start a new one.",
+                ),
+                _ => match &intent.outcome {
+                    Some(outcome) => Admission::Recorded(outcome.clone()),
+                    None => Admission::InFlight,
+                },
             };
         }
-        if !self.make_room(&call.request_id) {
-            return Admission::Refused(refused(
+        if !self.make_room() {
+            return refused(
                 &call.request_id,
-                "Too many actions are in flight; wait for one to finish.",
-            ));
+                code::OVER_CAP,
+                "Too many unresolved actions; check or dismiss them first.",
+            );
         }
         self.entries.insert(
             call.request_id.clone(),
             Intent {
-                fingerprint,
+                content,
                 state: IntentState::Pending,
                 outcome: None,
             },
@@ -145,13 +183,12 @@ impl Intents {
         Admission::Send
     }
 
-    /// What to do with the person's explicit "check this intent again": the
-    /// same id and content of an uncertain intent is sent again, because the
-    /// store answers a repeated request from its record.
+    /// What to do with the person's explicit "check this intent again": only
+    /// an uncertain intent with the same content is sent again.
     pub fn admit_again(&mut self, call: &TeamCall) -> Admission {
-        let fingerprint = fingerprint(call);
         let uncertain = self.entries.get(&call.request_id).is_some_and(|intent| {
-            intent.fingerprint == fingerprint && intent.state == IntentState::Uncertain
+            intent.state == IntentState::Uncertain
+                && content(call).is_some_and(|content| content == intent.content)
         });
         if !uncertain {
             return self.admit(call);
@@ -160,6 +197,23 @@ impl Intents {
             intent.state = IntentState::Pending;
         }
         Admission::Send
+    }
+
+    /// The person dismisses an uncertain intent: it is settled as abandoned and
+    /// nothing is sent. False when there is no uncertain intent with this exact
+    /// content to dismiss.
+    pub fn dismiss(&mut self, call: &TeamCall) -> bool {
+        let Some(intent) = self.entries.get_mut(&call.request_id) else {
+            return false;
+        };
+        if intent.state != IntentState::Uncertain
+            || content(call).is_none_or(|content| content != intent.content)
+        {
+            return false;
+        }
+        intent.state = IntentState::Abandoned;
+        intent.outcome = None;
+        true
     }
 
     /// Records an outcome for an intent that was admitted. A confirmation sent
@@ -172,16 +226,24 @@ impl Intents {
             self.order.retain(|id| id != &call.request_id);
             return outcome;
         };
-        let fingerprint = fingerprint(call);
-        self.entries.insert(
-            call.request_id.clone(),
-            Intent {
-                fingerprint,
-                state,
-                outcome: Some(outcome.clone()),
-            },
-        );
-        if !self.order.iter().any(|id| id == &call.request_id) {
+        if let Some(intent) = self.entries.get_mut(&call.request_id) {
+            if let Some(content) = content(call) {
+                intent.content = content;
+            }
+            intent.state = state;
+            intent.outcome = Some(outcome.clone());
+        } else {
+            let Some(content) = content(call) else {
+                return outcome;
+            };
+            self.entries.insert(
+                call.request_id.clone(),
+                Intent {
+                    content,
+                    state,
+                    outcome: Some(outcome.clone()),
+                },
+            );
             self.order.push_back(call.request_id.clone());
         }
         outcome
@@ -211,16 +273,13 @@ impl Intents {
     }
 
     /// Makes room for one more intent: the oldest settled one goes. False when
-    /// every remembered intent is still pending.
-    fn make_room(&mut self, request_id: &str) -> bool {
-        if self.entries.contains_key(request_id) {
-            return true;
-        }
+    /// every remembered intent is still pending or uncertain.
+    fn make_room(&mut self) -> bool {
         while self.entries.len() >= INTENTS_KEPT {
             let Some(at) = self.order.iter().position(|id| {
                 self.entries
                     .get(id)
-                    .is_some_and(|intent| intent.state != IntentState::Pending)
+                    .is_some_and(|intent| evictable(intent.state))
             }) else {
                 return false;
             };
@@ -232,14 +291,63 @@ impl Intents {
     }
 }
 
+/// Guards an admitted intent from the send to its recorded outcome: every way
+/// out settles it, including a panic in the worker. A worker that ended without
+/// an outcome is unknown, so the guard records it as uncertain; the person can
+/// then check or dismiss it.
+pub struct Pending<'a> {
+    intents: &'a Mutex<Intents>,
+    call: &'a TeamCall,
+    settled: bool,
+}
+
+impl<'a> Pending<'a> {
+    /// The caller has already admitted this call (its admission was `Send`).
+    pub fn new(intents: &'a Mutex<Intents>, call: &'a TeamCall) -> Self {
+        Self {
+            intents,
+            call,
+            settled: false,
+        }
+    }
+
+    /// Records the outcome and gives it back.
+    pub fn settle(mut self, outcome: TeamOutcome) -> TeamOutcome {
+        self.settled = true;
+        self.lock().settle(self.call, outcome)
+    }
+
+    fn lock(&self) -> MutexGuard<'_, Intents> {
+        self.intents.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+}
+
+impl Drop for Pending<'_> {
+    fn drop(&mut self) {
+        if self.settled {
+            return;
+        }
+        self.lock().settle(
+            self.call,
+            TeamOutcome::Uncertain {
+                detail: "The action's worker ended without an outcome; the change may have been made. Read the team before checking it.".into(),
+                request_id: self.call.request_id.clone(),
+            },
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::teams::action::TeamAction;
 
+    const ID: &str = "11111111-2222-4333-8444-555555555555";
+    const TEAM: &str = "00000000-0000-4000-8000-00000000beef";
+
     fn call(id: &str) -> TeamCall {
         TeamCall {
-            team: "00000000-0000-4000-8000-00000000beef".into(),
+            team: TEAM.into(),
             team_name: "Fixes".into(),
             action: TeamAction::Accept { node: 1 },
             expected_revision: Some(16),
@@ -251,30 +359,35 @@ mod tests {
     fn done(id: &str) -> TeamOutcome {
         TeamOutcome::Done {
             receipt: serde_json::json!({"ok": true, "revision": 17, "actor": {"kind": "person"},
-                "team": "00000000-0000-4000-8000-00000000beef"}),
+                "team": TEAM}),
             request_id: id.into(),
         }
     }
 
+    fn uncertain(id: &str) -> TeamOutcome {
+        TeamOutcome::Uncertain {
+            detail: "unknown".into(),
+            request_id: id.into(),
+        }
+    }
+
+    fn id_at(n: usize) -> String {
+        format!("00000000-0000-4000-8000-{n:012x}")
+    }
+
     #[test]
     fn one_intent_is_pending_once_and_settles_to_its_outcome() {
-        const ID: &str = "11111111-2222-4333-8444-555555555555";
         let mut intents = Intents::default();
         assert_eq!(intents.admit(&call(ID)), Admission::Send);
         assert_eq!(intents.state(ID), Some(IntentState::Pending));
         assert_eq!(intents.admit(&call(ID)), Admission::InFlight);
-        assert_eq!(
-            intents.settle(&call(ID), done(ID)),
-            done(ID),
-            "the outcome is recorded"
-        );
+        assert_eq!(intents.settle(&call(ID), done(ID)), done(ID));
         assert_eq!(intents.admit(&call(ID)), Admission::Recorded(done(ID)));
         assert_eq!(intents.state(ID), Some(IntentState::Done));
     }
 
     #[test]
     fn a_confirmation_does_not_settle_the_intent() {
-        const ID: &str = "11111111-2222-4333-8444-555555555555";
         let mut intents = Intents::default();
         intents.admit(&call(ID));
         let confirmation = TeamOutcome::Confirm {
@@ -295,13 +408,13 @@ mod tests {
 
     #[test]
     fn one_id_used_for_different_content_is_refused() {
-        const ID: &str = "11111111-2222-4333-8444-555555555555";
         let mut intents = Intents::default();
         intents.admit(&call(ID));
         let mut other = call(ID);
         other.action = TeamAction::Hold { node: 2 };
         match intents.admit(&other) {
-            Admission::Refused(TeamOutcome::Failed { detail, .. }) => {
+            Admission::Refused(TeamOutcome::Failed { code, detail, .. }) => {
+                assert_eq!(code, "duplicate");
                 assert!(detail.contains("different action"), "{detail}");
             }
             other => panic!("a reused id is refused, got {other:?}"),
@@ -309,53 +422,163 @@ mod tests {
     }
 
     #[test]
-    fn the_table_is_bounded() {
+    fn an_uncertain_intent_survives_capacity_pressure() {
         let mut intents = Intents::default();
-        for at in 0..INTENTS_KEPT {
-            let id = format!("00000000-0000-4000-8000-{at:012x}");
-            assert_eq!(intents.admit(&call(&id)), Admission::Send, "{id}");
-            intents.settle(&call(&id), done(&id));
+        let first = call(ID);
+        intents.admit(&first);
+        intents.settle(&first, uncertain(ID));
+        for n in 1..INTENTS_KEPT {
+            let id = id_at(n);
+            let call = call(&id);
+            intents.admit(&call);
+            intents.settle(&call, done(&id));
         }
-        assert_eq!(intents.len(), INTENTS_KEPT);
-        let next = "ffffffff-0000-4000-8000-000000000001";
         assert_eq!(
-            intents.admit(&call(next)),
+            intents.admit(&call("ffffffff-0000-4000-8000-000000000001")),
             Admission::Send,
-            "the oldest settled intent makes room"
+            "a done entry makes room"
         );
-        assert_eq!(intents.len(), INTENTS_KEPT);
-        // Every remembered intent pending: nothing more is admitted.
-        let mut full = Intents::default();
-        for at in 0..INTENTS_KEPT {
-            let id = format!("00000000-0000-4000-8000-{at:012x}");
-            full.admit(&call(&id));
+        assert_eq!(
+            intents.state(ID),
+            Some(IntentState::Uncertain),
+            "the uncertain intent was not evicted"
+        );
+        assert_eq!(
+            intents.admit(&first),
+            Admission::Recorded(uncertain(ID)),
+            "an uncertain intent is never reauthorized by the ordinary path"
+        );
+    }
+
+    #[test]
+    fn a_full_table_of_unresolved_intents_refuses_new_ones() {
+        let mut intents = Intents::default();
+        for n in 0..INTENTS_KEPT {
+            let id = id_at(n);
+            let call = call(&id);
+            intents.admit(&call);
+            intents.settle(&call, uncertain(&id));
         }
+        match intents.admit(&call(ID)) {
+            Admission::Refused(TeamOutcome::Failed { code, detail, .. }) => {
+                assert_eq!(code, "over_cap");
+                assert!(detail.contains("check or dismiss"), "{detail}");
+            }
+            other => panic!("a full unresolved table refuses, got {other:?}"),
+        }
+        assert_eq!(intents.len(), INTENTS_KEPT);
+    }
+
+    #[test]
+    fn a_full_table_of_pending_intents_refuses_new_ones() {
+        let mut intents = Intents::default();
+        for n in 0..INTENTS_KEPT {
+            assert_eq!(intents.admit(&call(&id_at(n))), Admission::Send);
+        }
+        assert_eq!(intents.len(), INTENTS_KEPT);
         assert!(matches!(
-            full.admit(&call("ffffffff-0000-4000-8000-000000000001")),
-            Admission::Refused(_)
+            intents.admit(&call(ID)),
+            Admission::Refused(TeamOutcome::Failed { .. })
         ));
+        assert_eq!(intents.admit(&call(&id_at(0))), Admission::InFlight);
+    }
+
+    #[test]
+    fn a_person_dismisses_an_uncertain_intent_without_sending() {
+        let mut intents = Intents::default();
+        intents.admit(&call(ID));
+        intents.settle(&call(ID), uncertain(ID));
+        assert!(intents.dismiss(&call(ID)));
+        assert_eq!(intents.state(ID), Some(IntentState::Abandoned));
+        assert!(matches!(
+            intents.admit(&call(ID)),
+            Admission::Refused(TeamOutcome::Failed { .. })
+        ));
+        // A settled or unknown intent cannot be dismissed.
+        let mut other = Intents::default();
+        other.admit(&call(ID));
+        assert!(!other.dismiss(&call(ID)));
+        assert!(!Intents::default().dismiss(&call(ID)));
+    }
+
+    #[test]
+    fn an_abandoned_intent_makes_room() {
+        let mut intents = Intents::default();
+        for n in 0..INTENTS_KEPT {
+            let id = id_at(n);
+            let call = call(&id);
+            intents.admit(&call);
+            intents.settle(&call, uncertain(&id));
+        }
+        assert!(intents.dismiss(&call(&id_at(0))));
+        assert_eq!(
+            intents.admit(&call("ffffffff-0000-4000-8000-000000000001")),
+            Admission::Send,
+            "the dismissed entry makes room"
+        );
     }
 
     #[test]
     fn an_uncertain_intent_is_not_sent_again_by_itself() {
-        const ID: &str = "11111111-2222-4333-8444-555555555555";
         let mut intents = Intents::default();
         intents.admit(&call(ID));
-        let uncertain = TeamOutcome::Uncertain {
-            detail: "may have been applied".into(),
-            request_id: ID.into(),
-        };
-        intents.settle(&call(ID), uncertain.clone());
-        assert_eq!(intents.admit(&call(ID)), Admission::Recorded(uncertain));
+        intents.settle(&call(ID), uncertain(ID));
+        assert_eq!(intents.admit(&call(ID)), Admission::Recorded(uncertain(ID)));
         assert_eq!(intents.state(ID), Some(IntentState::Uncertain));
-        // The person may ask to check it with the same id and content.
         assert_eq!(intents.admit_again(&call(ID)), Admission::Send);
         assert_eq!(intents.state(ID), Some(IntentState::Pending));
-        // A settled intent is not sent again even by the person's request.
         intents.settle(&call(ID), done(ID));
         assert_eq!(
             intents.admit_again(&call(ID)),
             Admission::Recorded(done(ID))
         );
+    }
+
+    #[test]
+    fn a_worker_that_panics_still_settles_its_intent() {
+        let intents = Mutex::new(Intents::default());
+        {
+            let mut table = intents.lock().unwrap();
+            assert_eq!(table.admit(&call(ID)), Admission::Send);
+        }
+        let admitted = call(ID);
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _pending = Pending::new(&intents, &admitted);
+            panic!("the action worker panicked");
+        }));
+        assert!(outcome.is_err());
+        assert_eq!(
+            intents.lock().unwrap().state(ID),
+            Some(IntentState::Uncertain),
+            "a panicking worker is an unknown outcome, not a lost intent"
+        );
+        // And the person can still check or dismiss it.
+        let mut table = intents.lock().unwrap();
+        assert!(table.dismiss(&call(ID)));
+    }
+
+    #[test]
+    fn the_guard_records_the_outcome_it_is_given() {
+        let intents = Mutex::new(Intents::default());
+        {
+            let mut table = intents.lock().unwrap();
+            assert_eq!(table.admit(&call(ID)), Admission::Send);
+        }
+        let admitted = call(ID);
+        let pending = Pending::new(&intents, &admitted);
+        assert_eq!(pending.settle(done(ID)), done(ID));
+        assert_eq!(intents.lock().unwrap().state(ID), Some(IntentState::Done));
+    }
+
+    #[test]
+    fn an_abandoned_intent_is_refused_by_the_person_s_check_too() {
+        let mut intents = Intents::default();
+        intents.admit(&call(ID));
+        intents.settle(&call(ID), uncertain(ID));
+        assert!(intents.dismiss(&call(ID)));
+        assert!(matches!(
+            intents.admit_again(&call(ID)),
+            Admission::Refused(_)
+        ));
     }
 }

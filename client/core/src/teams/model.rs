@@ -147,6 +147,13 @@ pub struct TeamsModel {
     /// The watched team's replies, dropped when it is no longer watched.
     parts: Option<(String, Parts)>,
     hidden: bool,
+    /// Each followed key's generation: a reply or an end issued under an older
+    /// generation never touches the scope followed now.
+    generations: BTreeMap<String, u64>,
+    /// The generation the slot's in-flight read was issued under.
+    issued: BTreeMap<Slot, u64>,
+    /// The selected page cursor per followed key; absent means page one.
+    selected: BTreeMap<String, String>,
 }
 
 /// Feeds the serialized payload straight into the hasher, without a string.
@@ -175,32 +182,39 @@ impl TeamsModel {
         &self.follow
     }
 
-    /// Follows `next` from now on: newly followed reads are due at once, and
-    /// views no longer followed end (only the ones that were sent).
+    /// Follows `next` from now on. A scope that stops being followed is
+    /// retired before anything of the new one can be published: its end goes
+    /// out now, and a reply or a late end of its old generation is dropped. A
+    /// scope that starts is due at once with a new generation.
     pub fn follow(&mut self, next: TeamsFollow, now: Instant) -> Vec<(String, TeamsUpdate)> {
         let mut out = Vec::new();
         let previous = std::mem::replace(&mut self.follow, next);
+        if previous.list && !self.follow.list {
+            self.retire("list", &mut out);
+        }
+        if previous.waiting && !self.follow.waiting {
+            self.retire("waiting", &mut out);
+        }
         if previous.team != self.follow.team {
             if let Some(old) = &previous.team {
-                self.end(&team_key("team", old), &mut out);
+                self.retire(&team_key("team", old), &mut out);
             }
             self.parts = None;
-            self.due.remove(&Slot::Status);
-            self.due.remove(&Slot::Queue);
-            self.dirty.remove(&Slot::Status);
-            self.dirty.remove(&Slot::Queue);
-            self.queued
-                .retain(|read| !matches!(read, TeamRead::Queue { .. }));
+            for slot in [Slot::Status, Slot::Queue] {
+                self.due.remove(&slot);
+                self.dirty.remove(&slot);
+            }
         }
-        if !self.follow.list {
-            self.end("list", &mut out);
-            self.queued
-                .retain(|read| !matches!(read, TeamRead::List { .. }));
+        if !previous.list && self.follow.list {
+            self.start("list", now);
         }
-        if !self.follow.waiting {
-            self.end("waiting", &mut out);
-            self.queued
-                .retain(|read| !matches!(read, TeamRead::Waiting { .. }));
+        if !previous.waiting && self.follow.waiting {
+            self.start("waiting", now);
+        }
+        if previous.team != self.follow.team {
+            if let Some(team) = self.follow.team.clone() {
+                self.start(&team_key("team", &team), now);
+            }
         }
         let wanted = [
             (Slot::List, self.follow.list),
@@ -209,15 +223,42 @@ impl TeamsModel {
             (Slot::Queue, self.follow.team.is_some()),
         ];
         for (slot, on) in wanted {
-            if on {
-                self.due.entry(slot).or_insert(now);
-            } else {
+            if !on {
                 self.due.remove(&slot);
                 self.dirty.remove(&slot);
-                self.in_flight.remove(&slot);
             }
         }
         out
+    }
+
+    /// Ends a scope and forgets its page: the old end is published before the
+    /// next view of the key, and its late replies are stale.
+    fn retire(&mut self, key: &str, out: &mut Vec<(String, TeamsUpdate)>) {
+        self.end(key, out);
+        self.selected.remove(key);
+        self.queued.retain(|read| key_of(read) != key);
+    }
+
+    /// Starts a scope with a new generation, due at once.
+    fn start(&mut self, key: &str, now: Instant) {
+        let generation = self.generations.get(key).copied().unwrap_or(0) + 1;
+        self.generations.insert(key.to_owned(), generation);
+        match key {
+            "list" => {
+                self.due.insert(Slot::List, now);
+            }
+            "waiting" => {
+                self.due.insert(Slot::Waiting, now);
+            }
+            _ => {
+                self.due.insert(Slot::Status, now);
+                self.due.insert(Slot::Queue, now);
+            }
+        }
+    }
+
+    fn generation_of(&self, key: &str) -> u64 {
+        self.generations.get(key).copied().unwrap_or(0)
     }
 
     /// Whether the tab is hidden: a hidden tab reads nothing.
@@ -267,33 +308,37 @@ impl TeamsModel {
         }
     }
 
-    /// Asks for one page of a followed key by its cursor: `list`, `waiting` or
-    /// `team:<id>` (the queue's page). The page replaces the shown one.
-    pub fn page(&mut self, key: &str, cursor: &str) -> bool {
-        if cursor.is_empty()
-            || cursor.len() > super::read::CURSOR_BYTES
-            || cursor.starts_with('-')
-            || cursor.chars().any(|c| c.is_control() || c.is_whitespace())
-        {
+    /// Asks for one page of a followed key by its cursor, or for the first
+    /// page when there is none. The page is selected for the key, so every
+    /// later read — the poll, a refresh, a tasks change — reads that page
+    /// until another is selected.
+    pub fn page(&mut self, key: &str, cursor: Option<&str>) -> bool {
+        if self.followed_key(key).is_none() {
             return false;
         }
+        let after = match cursor {
+            Some(cursor) => {
+                if !valid_cursor(cursor) {
+                    return false;
+                }
+                self.selected.insert(key.to_owned(), cursor.to_owned());
+                Some(cursor.to_owned())
+            }
+            None => {
+                self.selected.remove(key);
+                None
+            }
+        };
         let read = match key {
-            "list" if self.follow.list => TeamRead::List {
-                after: Some(cursor.to_owned()),
-            },
-            "waiting" if self.follow.waiting => TeamRead::Waiting {
-                after: Some(cursor.to_owned()),
-            },
+            "list" => TeamRead::List { after },
+            "waiting" => TeamRead::Waiting { after },
             _ => {
                 let Some(team) = key.strip_prefix("team:") else {
                     return false;
                 };
-                if self.follow.team.as_deref() != Some(team) {
-                    return false;
-                }
                 TeamRead::Queue {
                     team: team.to_owned(),
-                    after: Some(cursor.to_owned()),
+                    after,
                 }
             }
         };
@@ -302,6 +347,18 @@ impl TeamsModel {
         }
         self.queued.push_back(read);
         true
+    }
+
+    /// The key when the follow wants its view.
+    fn followed_key<'k>(&self, key: &'k str) -> Option<&'k str> {
+        match key {
+            "list" if self.follow.list => Some("list"),
+            "waiting" if self.follow.waiting => Some("waiting"),
+            _ => {
+                let team = key.strip_prefix("team:")?;
+                (self.follow.team.as_deref() == Some(team)).then_some(key)
+            }
+        }
     }
 
     /// The next read to run now, if any: an asked-for page first, then the
@@ -326,6 +383,7 @@ impl TeamsModel {
         if let Some(read) = self.queued.pop_front_if(|read| wanted(read)) {
             let slot = Slot::of(&read);
             self.in_flight.insert(slot);
+            self.issued.insert(slot, self.generation_of(&key_of(&read)));
             self.due.insert(slot, now + POLL);
             return Some(read);
         }
@@ -337,17 +395,23 @@ impl TeamsModel {
             .min_by_key(|(slot, due)| (slot.rank(), **due))
             .map(|(slot, _)| *slot)?;
         let read = match slot {
-            Slot::List => TeamRead::List { after: None },
-            Slot::Waiting => TeamRead::Waiting { after: None },
+            Slot::List => TeamRead::List {
+                after: self.selected.get("list").cloned(),
+            },
+            Slot::Waiting => TeamRead::Waiting {
+                after: self.selected.get("waiting").cloned(),
+            },
             Slot::Status => TeamRead::Status {
                 team: watched.clone()?,
             },
-            Slot::Queue => TeamRead::Queue {
-                team: watched?,
-                after: None,
-            },
+            Slot::Queue => {
+                let team = watched?;
+                let after = self.selected.get(&team_key("team", &team)).cloned();
+                TeamRead::Queue { team, after }
+            }
         };
         self.in_flight.insert(slot);
+        self.issued.insert(slot, self.generation_of(&key_of(&read)));
         self.due.insert(slot, now + POLL);
         Some(read)
     }
@@ -426,6 +490,28 @@ impl TeamsModel {
         let mut out = Vec::new();
         let slot = Slot::of(read);
         self.in_flight.remove(&slot);
+        let issued = self.issued.remove(&slot);
+        let key = key_of(read);
+        if issued.is_some_and(|issued| issued != self.generation_of(&key)) {
+            // A reply of a scope that was retired and followed again: it never
+            // touches the scope followed now.
+            return out;
+        }
+        if let (Some(_), Err(TeamError::Refused { code, message })) = (read.after(), &reply) {
+            // The store refused the selected page: show the first page again
+            // and say why.
+            self.selected.remove(&key);
+            self.queued.retain(|queued| key_of(queued) != key);
+            self.due.insert(slot, now);
+            let update = TeamsUpdate::Failed {
+                code: "cursor_reset".into(),
+                message: format!(
+                    "The page could not be read ({code}: {message}); the first page will be shown."
+                ),
+            };
+            self.send(key, update, &mut out);
+            return out;
+        }
         match read {
             TeamRead::List { .. } => self.apply_list(slot, reply, now, &mut out),
             TeamRead::Waiting { .. } => self.apply_waiting(slot, reply, now, &mut out),
@@ -557,3 +643,20 @@ pub fn change(computer: &ComputerId, sent: Sent) -> crate::Change {
 
 #[cfg(test)]
 mod tests;
+
+/// The key of the view a read belongs to.
+fn key_of(read: &TeamRead) -> String {
+    match read {
+        TeamRead::List { .. } => "list".to_owned(),
+        TeamRead::Waiting { .. } => "waiting".to_owned(),
+        TeamRead::Status { team } | TeamRead::Queue { team, .. } => team_key("team", team),
+    }
+}
+
+/// A page cursor as the CLI gives it back (`t1.` and its page).
+fn valid_cursor(cursor: &str) -> bool {
+    !cursor.is_empty()
+        && cursor.len() <= super::read::CURSOR_BYTES
+        && !cursor.starts_with('-')
+        && !cursor.chars().any(|c| c.is_control() || c.is_whitespace())
+}

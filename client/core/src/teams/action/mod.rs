@@ -23,9 +23,17 @@
 //!   nothing ran, and the confirmation names what the person is asked;
 //! - `pending`: the same intent is still being sent; nothing new was sent.
 //!
+//! An uncertain intent has two ways out, both the person's: [`Intents::check_again`]
+//! sends the same id and content again (the store answers from its record),
+//! and [`Intents::dismiss`] settles it as abandoned without sending.
+//!
 //! [`Intents`] keeps a small bounded table of intents by request id with their
 //! state, so a second call for a pending intent does nothing and a call for a
-//! settled one returns its recorded outcome.
+//! settled one returns its recorded outcome. The table is in memory only: a
+//! restart forgets it, and the new gesture that follows carries a new id and
+//! the revision the person saw. Only settled entries make room; pending and
+//! uncertain intents are never evicted, and the table refuses a new intent
+//! when every entry is unresolved.
 pub mod input;
 pub mod intents;
 pub mod types;
@@ -34,6 +42,6 @@ pub mod wire;
 #[cfg(test)]
 mod tests;
 
-pub use intents::{Admission, IntentState, Intents};
+pub use intents::{Admission, IntentState, Intents, Pending};
 pub use types::{canonical_uuid, Confirmation, TeamAction, TeamCall, TeamOutcome};
 pub use wire::{classify, prepare, run_action};
