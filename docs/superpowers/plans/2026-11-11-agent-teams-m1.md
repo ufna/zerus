@@ -825,11 +825,17 @@ The interim person rule, exactly: for each ancestor of the command, at most
 64, read its environment; an ancestor that names a session is verified
 against the one saved record its name and run point to, by process ID and
 birth identity. A verified live session agent among the ancestors means the
-command is not a person's. Whatever cannot be established is a refusal: an
-ancestor of the same user that cannot be read, a walk that stops early or
-hits its cap, a record that is corrupt or unreadable. The proof changes no
-process environment, reads no session inventory and prints no path. Turning
-the preview on or off goes through it.
+command is not a person's. The walk ends at the top of the user's own
+process tree: the first ancestor of that user whose parent belongs to
+another user. It ends there whether or not that process can be read, because
+a person's terminal and the desktop application both descend from the
+user's service manager, whose environment the same user cannot read; the
+top is decided by the owners in the process table, never by a name. Below
+the top, whatever cannot be established is a refusal: an ancestor that
+cannot be read, a walk that stops early or hits its cap, a record that is
+corrupt or unreadable. The proof changes no process environment, reads no
+session inventory and prints no path. Turning the preview on or off goes
+through it.
 
 Two limits are stated, not hidden. A child that was reparented away from
 its agent, and a registered agent that was started without the markers in
