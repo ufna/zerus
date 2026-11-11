@@ -51,13 +51,11 @@ impl Ledger {
             .optional()
             .map_err(err)?;
         if let Some(raw) = prior {
-            return Ok(Claim {
-                record: decode(&raw)?,
-                fresh: false,
-                limited: false,
-            });
+            let claim = reclaim(&tx, &raw, plan, epoch, now)?;
+            tx.commit().map_err(err)?;
+            return Ok(claim);
         }
-        let limited = plan.kind == Kind::Resume && quota(&tx, &plan.binding, now)?;
+        let limited = plan.kind == Kind::Resume && quota(&tx, &plan.binding, now, &plan.key)?;
         let mut row = Record {
             plan: plan.clone(),
             original: uuid::Uuid::new_v4().to_string(),
@@ -109,15 +107,24 @@ impl Ledger {
             || (old.audit.is_some() && old.audit != row.audit)
             || (old.audit_done && !row.audit_done)
             || (old.card_done && !row.card_done)
-            || (expected != "prepared" && expected != row.state)
+            || (expected != "prepared"
+                && expected != row.state
+                && !(expected == "waiting" && row.state == "cancelled"))
         {
             return Err("Standing claim identity or terminal state changed".into());
+        }
+        if row.state == "waiting"
+            && (row.audit.as_ref().is_none_or(|a| !a.fresh)
+                || row.audit_done
+                || row.result.is_some())
+        {
+            return Err("A retryable nonstart must retain its untouched audit reservation".into());
         }
         if row.state == "approved" && row.plan.kind == Kind::Resume && row.result.is_none() {
             return Err("A completed resume has no native receipt target".into());
         }
         old = row.clone();
-        let pending = old.state == "prepared"
+        let pending = matches!(old.state.as_str(), "prepared" | "waiting")
             || (old.audit.is_none() && old.plan.kind != Kind::Notice)
             || (old.audit.is_some() && !old.audit_done)
             || (old.state != "approved" && !old.card_done);
@@ -201,6 +208,30 @@ impl Ledger {
         Ok(())
     }
 }
+// A fresh claim after a recorded lock timeout still names an audit that was
+// never offered to a child. Change custody/epoch atomically; a crash after this
+// reservation is Prepared/Unknown, never another waiting claim.
+fn reclaim(tx: &Connection, raw: &str, plan: &Plan, epoch: &str, now: i64) -> Result<Claim> {
+    let mut row = decode(raw)?;
+    let fresh = row.state == "waiting" && row.plan == *plan;
+    let limited = fresh && plan.kind == Kind::Resume && quota(tx, &plan.binding, now, &plan.key)?;
+    if fresh {
+        row.at = now;
+        row.state = "prepared".into();
+        row.epoch = epoch.into();
+        row.original = uuid::Uuid::new_v4().to_string();
+        tx.execute(
+            "UPDATE standing_effects SET body=?1,at=?3,kind=CASE WHEN ?4 THEN 'other' ELSE kind END WHERE key=?2",
+            params![encode(&row)?, plan.key, now, limited],
+        )
+        .map_err(err)?;
+    }
+    Ok(Claim {
+        record: row,
+        fresh,
+        limited,
+    })
+}
 fn record(db: &Connection, key: &str) -> Result<Option<Record>> {
     let raw: Option<String> = db
             .query_row(
@@ -232,8 +263,8 @@ fn completed(before: &Snapshot, target: &Snapshot) -> Result<()> {
     }
     Ok(())
 }
-fn quota(db: &Connection, b: &Binding, now: i64) -> Result<bool> {
-    let count: i64 = db.query_row("SELECT count(*) FROM (SELECT 1 FROM standing_effects WHERE team=?1 AND member=?2 AND kind='resume' AND at>?3 LIMIT 3)",params![b.team,b.member,now.saturating_sub(3_600_000)],|r|r.get(0)).map_err(err)?;
+fn quota(db: &Connection, b: &Binding, now: i64, key: &str) -> Result<bool> {
+    let count: i64 = db.query_row("SELECT count(*) FROM (SELECT 1 FROM standing_effects WHERE team=?1 AND member=?2 AND kind='resume' AND at>?3 AND key<>?4 LIMIT 3)",params![b.team,b.member,now.saturating_sub(3_600_000),key],|r|r.get(0)).map_err(err)?;
     Ok(count >= 3)
 }
 fn encode(row: &Record) -> Result<String> {

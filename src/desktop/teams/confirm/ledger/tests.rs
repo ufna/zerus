@@ -103,3 +103,113 @@ fn claim_identity_is_immutable_and_pending_reads_are_indexed_and_bounded() {
     let plan:String=db.0.query_row("EXPLAIN QUERY PLAN SELECT 1 FROM standing_effects WHERE team=?1 AND member=?2 AND kind='resume' AND at>?3 LIMIT 3",params![b.team,b.member,100],|r|r.get(3)).unwrap();
     assert!(plan.contains("standing_quota"), "{plan}");
 }
+
+#[test]
+fn a_recorded_nonstart_can_be_reclaimed_once_but_an_unknown_cannot() {
+    let temp = tempfile::tempdir().unwrap();
+    let (b, _, s) = sample();
+    let plan = engine::candidate(&b, &s, Kind::Trust, s.questions[0].clone());
+    let mut db = Ledger::open(temp.path()).unwrap();
+    let mut row = db.claim(&plan, "epoch-1", 100).unwrap().record;
+    row.audit = Some(Audit {
+        id: 1,
+        request: uuid::Uuid::new_v4().to_string(),
+        answers: serde_json::json!([]),
+        fresh: true,
+    });
+    row.state = "waiting".into();
+    db.save(&row).unwrap();
+    drop(db);
+    let mut db = Ledger::open(temp.path()).unwrap();
+    let retry = db.claim(&plan, "epoch-2", 200).unwrap();
+    assert!(
+        retry.fresh,
+        "a recorded nonstart may be admitted in a later pass"
+    );
+    assert_eq!(retry.record.state, "prepared");
+    assert_ne!(retry.record.original, row.original);
+    assert_eq!(retry.record.epoch, "epoch-2");
+    assert_eq!(retry.record.at, 200);
+    assert!(!db.claim(&plan, "another-writer", 300).unwrap().fresh);
+    assert!(
+        db.save(&row).is_err(),
+        "the prior writer lost its original identity"
+    );
+    let mut unknown = retry.record;
+    unknown.state = "unknown".into();
+    db.save(&unknown).unwrap();
+    assert!(!db.claim(&plan, "epoch-3", 400).unwrap().fresh);
+    unknown.state = "waiting".into();
+    assert!(
+        db.save(&unknown).is_err(),
+        "unknown cannot become retryable"
+    );
+}
+
+#[test]
+fn a_nonstart_reclaim_renews_and_rechecks_the_resume_quota() {
+    let temp = tempfile::tempdir().unwrap();
+    let (b, _, s) = sample();
+    let mut db = Ledger::open(temp.path()).unwrap();
+    let plan = engine::candidate(&b, &s, Kind::Resume, serde_json::Value::Null);
+    let mut row = db.claim(&plan, "epoch-1", 100).unwrap().record;
+    row.audit = Some(Audit {
+        id: 1,
+        request: uuid::Uuid::new_v4().to_string(),
+        answers: serde_json::json!([]),
+        fresh: true,
+    });
+    row.state = "waiting".into();
+    db.save(&row).unwrap();
+    for n in 0..3 {
+        let mut b = b.clone();
+        let mut s = s.clone();
+        b.run = format!("other-{n}");
+        s.run = b.run.clone();
+        let p = engine::candidate(&b, &s, Kind::Resume, serde_json::Value::Null);
+        assert!(!db.claim(&p, "epoch-2", 4_000_000 + n).unwrap().limited);
+    }
+    let retry = db.claim(&plan, "epoch-3", 4_000_010).unwrap();
+    assert!(retry.fresh);
+    assert!(
+        retry.limited,
+        "an old nonstart cannot evade the current hourly quota"
+    );
+    assert_eq!(retry.record.at, 4_000_010);
+}
+
+#[test]
+fn a_waiting_claim_may_be_cancelled_but_never_settled_or_started_directly() {
+    let temp = tempfile::tempdir().unwrap();
+    let (b, _, s) = sample();
+    let plan = engine::candidate(&b, &s, Kind::Trust, s.questions[0].clone());
+    let mut db = Ledger::open(temp.path()).unwrap();
+    let mut row = db.claim(&plan, "epoch-1", 100).unwrap().record;
+    row.state = "waiting".into();
+    assert!(
+        db.save(&row).is_err(),
+        "a missing audit cannot be made retryable"
+    );
+    row.audit = Some(Audit {
+        id: 1,
+        request: uuid::Uuid::new_v4().to_string(),
+        answers: serde_json::json!([]),
+        fresh: true,
+    });
+    db.save(&row).unwrap();
+    let mut illegal = row.clone();
+    illegal.state = "prepared".into();
+    assert!(
+        db.save(&illegal).is_err(),
+        "only the atomic claim may start a waiting original"
+    );
+    illegal = row.clone();
+    illegal.audit_done = true;
+    assert!(
+        db.save(&illegal).is_err(),
+        "a finished audit cannot admit a retry"
+    );
+    row.state = "cancelled".into();
+    db.save(&row).unwrap();
+    assert!(!db.claim(&plan, "epoch-2", 200).unwrap().fresh);
+}

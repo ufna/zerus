@@ -1,5 +1,7 @@
-//! Only a newly inserted claim can start an original child. A claim recovered
-//! after a restart is history, even when it was reserved before the child ran.
+//! Only a newly reserved claim can start an original child. Prepared claims
+//! recovered after a restart are Unknown. The sole retryable record is a
+//! durably confirmed admission-lock nonstart, atomically claimed again before
+//! any spawn; its exact audit has never been offered to a child.
 use super::{
     policy,
     ports::{Ports, Result},
@@ -14,6 +16,15 @@ pub(super) fn key(parts: &Value) -> String {
 
 pub(super) fn step(p: &mut impl Ports, b: &Binding, epoch: &str, now: i64) -> Result<()> {
     if let Some(mut row) = p.unsettled(b)? {
+        if row.state == "waiting" {
+            if let Err(why) = validate(p, &row.plan) {
+                row.state = "cancelled".into();
+                row.detail = why;
+                p.save(&row)?;
+                return settle(p, &mut row);
+            }
+            return execute(p, row.plan, epoch, now);
+        }
         if row.state == "prepared" {
             row.state = "unknown".into();
             row.detail =
@@ -76,6 +87,10 @@ fn execute(p: &mut impl Ports, mut plan: Plan, epoch: &str, now: i64) -> Result<
 }
 
 fn reserve_audit(p: &mut impl Ports, row: &mut Record) -> Result<bool> {
+    if row.audit.is_some() {
+        // Only a durable, definite non-start can reach a new claim with an audit.
+        return Ok(true);
+    }
     match p.audit_begin(&row.plan) {
         Ok(audit) => row.audit = Some(audit),
         Err(error) => {
@@ -97,6 +112,10 @@ fn reserve_audit(p: &mut impl Ports, row: &mut Record) -> Result<bool> {
 fn deliver(p: &mut impl Ports, row: &mut Record) {
     let outcome = p.original(row, &mut |p| validate(p, &row.plan));
     match outcome {
+        Outcome::Retry => {
+            row.state = "waiting".into();
+            row.detail = "Admission lock busy; the original child never started".into();
+        }
         Outcome::Approved(target) => {
             row.state = "approved".into();
             row.result = target.map(|s| *s);
@@ -128,6 +147,9 @@ fn recover_audit(p: &mut impl Ports, row: &mut Record) -> Result<()> {
 }
 
 fn settle(p: &mut impl Ports, row: &mut Record) -> Result<()> {
+    if row.state == "waiting" {
+        return Ok(());
+    }
     let audit_error = if row.audit.is_some() && !row.audit_done {
         p.audit_finish(row).err()
     } else {

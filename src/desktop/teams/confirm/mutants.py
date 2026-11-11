@@ -16,7 +16,7 @@ import tempfile
 import time
 
 ROOT = Path(__file__).resolve().parents[4]
-OUT = ROOT / "artifacts/test-results/wp17-review"
+OUT = ROOT / "artifacts/test-results/wp17-spawn"
 BASE = "src/desktop/teams/confirm/"
 DELIVERY = "desktop::teams::confirm::native::original::delivery::"
 LEDGER = "desktop::teams::confirm::ledger::"
@@ -64,6 +64,18 @@ def cases():
     yield "final_self_exit", original, DELIVERY + "missing_pins", ("!super::observation::self_exit(&current, snapshot.archive.is_some())", "false")
     yield "producer_records_object", "src/desktop/teams/launch/effects.rs", "desktop::teams::launch::effects::checkout_tests::", "producer"
 
+    admission_test = DELIVERY + "admission::"
+    yield "admission_facts_outside_lock", original, admission_test, "outside_lock"
+    yield "admission_deferred_transaction", original, admission_test, ("TransactionBehavior::Immediate", "TransactionBehavior::Deferred")
+    yield "admission_released_before_spawn", "src/desktop/original_child.rs", "desktop::original_child::admission_tests::", ("let spawned = command.spawn();\n                drop(admission);", "drop(admission);\n                let spawned = command.spawn();")
+    yield "admission_held_until_child_end", "src/desktop/original_child.rs", "desktop::original_child::admission_tests::", "hold_guard"
+    yield "admission_discarded_by_caller", original, admission_test, ("                Ok(admission)", "                drop(admission); Ok(())")
+    yield "admission_bound_computer", original, admission_test + "the_store_and_native_capture", ("b.machine != self.machine", "false")
+    yield "admission_busy_is_uncertain", original, admission_test + "a_busy", ("Ended::NotStarted if waiting.get() => Outcome::Retry", "Ended::NotStarted if waiting.get() => Outcome::Unknown(\"busy\".into())")
+    yield "waiting_unknown_reclaimed", BASE + "ledger.rs", LEDGER + "tests::a_recorded_nonstart", ("row.state == \"waiting\" && row.plan == *plan", "matches!(row.state.as_str(), \"waiting\" | \"unknown\") && row.plan == *plan")
+    yield "waiting_quota_ignored", BASE + "ledger.rs", LEDGER + "tests::a_nonstart_reclaim", ("fresh && plan.kind == Kind::Resume && quota(tx, &plan.binding, now, &plan.key)?", "false")
+    yield "waiting_opens_card", BASE + "engine.rs", "desktop::teams::confirm::engine::tests::busy_admission", ("if row.state == \"waiting\" {\n        return Ok(());", "if false {\n        return Ok(());")
+
 
 def mutate(text, edit):
     if isinstance(edit, tuple):
@@ -84,8 +96,18 @@ def mutate(text, edit):
             raise RuntimeError("Writer limit target missing")
         return text[:begin] + part.replace("if raw.len() > ROW_LIMIT", "if false", 1)
     if edit == "call":
-        old = '                self.final_admit(row, &roots, &snapshot, &raw)\n                    .map_err(|_| std::io::Error::from(std::io::ErrorKind::PermissionDenied))?;'
+        old = '                self.final_admit(row, &roots, &snapshot, &raw, &admission)\n                    .map_err(|_| std::io::Error::from(std::io::ErrorKind::PermissionDenied))?;'
         return mutate(text, (old, ""))
+    if edit == "outside_lock":
+        begin = text.index("                let admission = admission(db)")
+        mid = text.index("                self.final_admit(", begin)
+        end = text.index("                Ok(admission)", mid)
+        locked = text[begin:mid]
+        read = text[mid:end].replace("&admission)", "db)")
+        return text[:begin] + read + locked + text[end:]
+    if edit == "hold_guard":
+        text = mutate(text, ("    let spawned = {\n", "    let mut held_admission = None;\n    let spawned = {\n"))
+        return mutate(text, ("                drop(admission);", "                held_admission = Some(admission);"))
     if edit == "producer":
         return mutate_producer(text)
     raise RuntimeError("Unknown mutation")
@@ -128,12 +150,14 @@ def run(cmd, log, env):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--case")
+    parser.add_argument("--spawn", action="store_true", help="the spawn/admission and definite-nonstart regressions")
     args = parser.parse_args()
-    selected = [case for case in cases() if not args.case or case[0] == args.case]
+    selected = [case for case in cases() if (not args.case or case[0] == args.case)
+                and (not args.spawn or case[0].startswith(("admission_", "waiting_")))]
     if not selected:
         parser.error("Unknown case")
     OUT.mkdir(parents=True, exist_ok=True)
-    name = "production-mutants" + ("-" + args.case if args.case else "") + ".log"
+    name = "production-mutants" + ("-" + args.case if args.case else "-spawn" if args.spawn else "") + ".log"
     with tempfile.TemporaryDirectory(prefix="zerus-confirm-production-") as temporary, (OUT / name).open("w") as log:
         source = Path(temporary)
         shutil.copytree(ROOT / "src", source / "src")

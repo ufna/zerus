@@ -19,6 +19,7 @@ struct Fake {
     resumes: usize,
     briefs: usize,
     unknown: bool,
+    busy: bool,
     before_original: Option<fn(&mut Fake)>,
     crash_after_audit: bool,
     crash_after_card: bool,
@@ -49,6 +50,7 @@ impl Fake {
             resumes: 0,
             briefs: 0,
             unknown: false,
+            busy: false,
             before_original: None,
             crash_after_audit: false,
             crash_after_card: false,
@@ -116,10 +118,16 @@ impl Ports for Fake {
     }
     fn claim(&mut self, plan: &Plan, epoch: &str, now: i64) -> Result<Claim> {
         let mut db = self.durable.borrow_mut();
-        if let Some(row) = db.rows.get(&plan.key) {
+        if let Some(row) = db.rows.get_mut(&plan.key) {
+            let fresh = row.state == "waiting" && row.plan == *plan;
+            if fresh {
+                row.state = "prepared".into();
+                row.epoch = epoch.into();
+                row.original = uuid::Uuid::new_v4().to_string();
+            }
             return Ok(Claim {
                 record: row.clone(),
-                fresh: false,
+                fresh,
                 limited: false,
             });
         }
@@ -225,6 +233,9 @@ impl Ports for Fake {
         }
         if let Err(reason) = check(self) {
             return Outcome::NotStarted(reason);
+        }
+        if self.busy {
+            return Outcome::Retry;
         }
         match row.plan.kind {
             Kind::Trust => self.answers += 1,
@@ -597,4 +608,45 @@ fn an_unknown_delivery_has_one_card_even_while_audit_finish_is_unavailable() {
         .audits
         .values()
         .all(|state| state == "unknown"));
+}
+
+#[test]
+fn busy_admission_makes_no_card_and_a_later_pass_starts_once() {
+    let mut p = Fake::new();
+    p.busy = true;
+    p.run("epoch-1", 100).unwrap();
+    assert_eq!(p.answers, 0);
+    assert!(p.durable.borrow().cards.is_empty());
+    assert_eq!(
+        p.durable.borrow().rows.values().next().unwrap().state,
+        "waiting"
+    );
+    assert_eq!(
+        p.durable.borrow().audits.values().next().unwrap(),
+        "prepared"
+    );
+    p.busy = false;
+    p.run("epoch-2", 200).unwrap();
+    assert_eq!(p.answers, 1);
+    p.run("epoch-3", 300).unwrap();
+    assert_eq!(p.answers, 1);
+    assert!(p.durable.borrow().cards.is_empty());
+    assert_eq!(
+        p.durable.borrow().audits.values().next().unwrap(),
+        "approved"
+    );
+}
+#[test]
+fn a_revocation_while_waiting_finishes_the_reservation_without_delivery() {
+    let mut p = Fake::new();
+    p.busy = true;
+    p.run("epoch-1", 100).unwrap();
+    p.facts.team.settings.delegations.confirm_trust = false;
+    p.busy = false;
+    p.run("epoch-2", 200).unwrap();
+    assert_eq!(p.answers, 0);
+    assert_eq!(p.durable.borrow().cards.len(), 1);
+    p.run("epoch-3", 300).unwrap();
+    assert_eq!(p.answers, 0);
+    assert_eq!(p.durable.borrow().cards.len(), 1);
 }

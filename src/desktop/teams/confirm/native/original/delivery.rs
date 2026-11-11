@@ -7,6 +7,7 @@ use crate::{
 use sha2::{Digest, Sha256};
 use std::{cell::RefCell, os::unix::fs::PermissionsExt, path::Path};
 thread_local! {
+    pub(super) static LOCKED_FACTS:RefCell<Option<Box<dyn FnOnce()>>>=const {RefCell::new(None)};
     pub(super) static AFTER_FACTS:RefCell<Option<Box<dyn FnOnce()>>>=const {RefCell::new(None)};
     pub(super) static PROGRAM:RefCell<Option<PathBuf>>=const {RefCell::new(None)};
     pub(super) static BEFORE:RefCell<Option<Box<dyn FnOnce()>>>=const {RefCell::new(None)};
@@ -22,6 +23,9 @@ impl Drop for Reset {
         PROGRAM.with(|slot| slot.borrow_mut().take());
         BEFORE.with(|slot| slot.borrow_mut().take());
         AFTER_FACTS.with(|slot| slot.borrow_mut().take());
+        LOCKED_FACTS.with(|slot| slot.borrow_mut().take());
+        original_child::AFTER_FINAL_CHECK.with(|slot| slot.borrow_mut().take());
+        original_child::AFTER_SPAWN.with(|slot| slot.borrow_mut().take());
     }
 }
 struct Fixture {
@@ -91,13 +95,10 @@ impl Fixture {
         }
     }
     fn deliver(&mut self, change: impl FnOnce() + 'static) -> Outcome {
-        let mut n = Native::new(
-            &self.own.config,
-            &self.own.b.machine,
-            &self.stop,
-            &mut self.store,
-        )
-        .unwrap();
+        self.deliver_on(&self.own.b.machine.clone(), change)
+    }
+    fn deliver_on(&mut self, machine: &str, change: impl FnOnce() + 'static) -> Outcome {
+        let mut n = Native::new(&self.own.config, machine, &self.stop, &mut self.store).unwrap();
         n.capture = Some((self.row.plan.snapshot.clone(), self.raw.clone()));
         let proof = n.owned(&self.own.b).unwrap();
         super::super::super::policy::ownership(&self.own.b, &proof).unwrap();
@@ -243,6 +244,7 @@ fn complete_delivery_runs_only_the_stub_and_reads_its_exact_receipt() {
         let result = f.deliver(|| {});
         let why = match &result {
             Outcome::NotStarted(s) | Outcome::Refused(s) | Outcome::Unknown(s) => s.as_str(),
+            Outcome::Retry => "retry",
             _ => "approved",
         };
         assert!(
@@ -438,3 +440,6 @@ fn a_stop_after_the_stored_read_prevents_the_original_child() {
     assert!(matches!(result, Outcome::NotStarted(_)));
     assert!(!f.called());
 }
+
+#[cfg(test)]
+mod admission;

@@ -3,7 +3,9 @@ use crate::desktop::{
     original_child::{self, Codes, Ended, Input, Output, Spec, Stdin},
     original_store::{self, Roots},
 };
+use rusqlite::{Connection, Transaction, TransactionBehavior};
 use std::{
+    cell::Cell,
     fs::{File, OpenOptions},
     io::Write,
     os::unix::fs::MetadataExt,
@@ -37,38 +39,40 @@ impl Native<'_> {
         };
         let mut scoped = vec!["--expect-machine".into(), self.machine.into()];
         scoped.extend(args);
-        let spec = Spec {
-            custody_env: CUSTODY,
-            input: Input::Frozen {
-                stdin: Stdin::Bytes(&input),
-                unwritten: "team_confirmation_unwritten",
-            },
-            output: Output::Stdout {
-                bytes: 64 << 10,
-                too_large: "team_confirmation_output_large",
-            },
-            codes: CODES,
-            retain: None,
-        };
+        let waiting = Cell::new(false);
         let ended = original_child::run(
             &program,
             &scoped,
-            spec,
+            specification(&input),
             &held,
             Instant::now() + Duration::from_secs(45),
             |cmd| {
                 #[cfg(test)]
                 delivery::before();
-                self.final_admit(row, &roots, &snapshot, &raw)
-                    .map_err(|_| std::io::Error::from(std::io::ErrorKind::PermissionDenied))?;
                 configure(cmd, self.config);
-                Ok(())
+                // The preflight snapshot is not permission: re-read under the lock.
+                #[cfg(test)]
+                if let Some(hook) = delivery::AFTER_FACTS.with(|slot| slot.borrow_mut().take()) {
+                    hook();
+                }
+                let db = self
+                    .store
+                    .db
+                    .as_ref()
+                    .ok_or(std::io::ErrorKind::PermissionDenied)?;
+                let admission = admission(db).inspect_err(|error| {
+                    waiting.set(error.kind() == std::io::ErrorKind::WouldBlock);
+                })?;
+                self.final_admit(row, &roots, &snapshot, &raw, &admission)
+                    .map_err(|_| std::io::Error::from(std::io::ErrorKind::PermissionDenied))?;
+                Ok(admission)
             },
         );
         if !matches!(ended, Ended::Unknown(_)) {
             remove(&path, id);
         }
         match ended {
+            Ended::NotStarted if waiting.get() => Outcome::Retry,
             Ended::NotStarted => Outcome::NotStarted(
                 "Final standing-confirmation admission refused; nothing started".into(),
             ),
@@ -82,18 +86,28 @@ impl Native<'_> {
         roots: &Roots,
         snapshot: &Snapshot,
         raw: &Value,
+        db: &Connection,
     ) -> Result<()> {
         let plan = &row.plan;
         let b = &plan.binding;
-        let facts = self.fresh_facts(b)?;
+        let facts = stored_facts(db, b)?;
         super::super::policy::stored(b, &facts)?;
         let delegated = if plan.kind == Kind::Trust {
             facts.team.settings.delegations.confirm_trust
         } else {
             facts.team.settings.delegations.resume_exited
         };
-        if !self.anchored(b)?
-            || !delegated
+        if !delegated {
+            return Err("Standing delegation was revoked".into());
+        }
+        #[cfg(test)]
+        if let Some(hook) = delivery::LOCKED_FACTS.with(|slot| slot.borrow_mut().take()) {
+            hook();
+        }
+        if !crate::teams::enabled(&self.config.state)
+            || b.machine != self.machine
+            || self.binding(&b.team, &b.member)?.0 != *b
+            || !self.anchored(b)?
             || !roots.root_current()
             || self.pins.is_empty()
             || !self.pins.iter().all(super::ownership::Pin::current)
@@ -102,10 +116,6 @@ impl Native<'_> {
         }
         if crate::state::lifecycle_receipt_machine(self.config)? != self.machine {
             return Err("The local computer changed".into());
-        }
-        #[cfg(test)]
-        if let Some(hook) = delivery::AFTER_FACTS.with(|slot| slot.borrow_mut().take()) {
-            hook();
         }
         let current = held_current(roots, snapshot)?;
         unchanged_record(&current, raw)?;
@@ -119,6 +129,52 @@ impl Native<'_> {
         }
         Ok(())
     }
+}
+fn specification(input: &[u8]) -> Spec<'_> {
+    Spec {
+        custody_env: CUSTODY,
+        input: Input::Frozen {
+            stdin: Stdin::Bytes(input),
+            unwritten: "team_confirmation_unwritten",
+        },
+        output: Output::Stdout {
+            bytes: 64 << 10,
+            too_large: "team_confirmation_output_large",
+        },
+        codes: CODES,
+        retain: None,
+    }
+}
+// A busy writer is a certain non-start, not a refused permission or an Unknown.
+fn admission(db: &Connection) -> std::io::Result<Transaction<'_>> {
+    let prior: u64 = db
+        .query_row("PRAGMA busy_timeout", [], |r| r.get(0))
+        .map_err(std::io::Error::other)?;
+    db.busy_timeout(Duration::from_millis(100))
+        .map_err(std::io::Error::other)?;
+    let result = Transaction::new_unchecked(db, TransactionBehavior::Immediate);
+    db.busy_timeout(Duration::from_millis(prior))
+        .map_err(std::io::Error::other)?;
+    result.map_err(|error| {
+        let kind = if matches!(error, rusqlite::Error::SqliteFailure(e, _) if matches!(e.code, rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked)) {
+            std::io::ErrorKind::WouldBlock
+        } else { std::io::ErrorKind::PermissionDenied };
+        std::io::Error::new(kind, error)
+    })
+}
+fn stored_facts(db: &Connection, b: &Binding) -> Result<Facts> {
+    use crate::teams::store::rows;
+    Ok(Facts {
+        team: rows::team(db, &b.team)
+            .map_err(|e| e.to_string())?
+            .ok_or("Team disappeared")?,
+        member: rows::member(db, &b.team, &b.member)
+            .map_err(|e| e.to_string())?
+            .ok_or("Member disappeared")?,
+        // Both are checked from their external stores last, inside the lock.
+        binding: b.clone(),
+        preview: true,
+    })
 }
 fn program() -> std::io::Result<PathBuf> {
     #[cfg(test)]

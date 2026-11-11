@@ -109,6 +109,8 @@ pub(super) struct Record {
 }
 
 pub(super) enum Outcome {
+    /// The bounded admission lock was busy; no child started.
+    Retry,
     NotStarted(String),
     Refused(String),
     Approved(Option<Box<Snapshot>>),
