@@ -1,10 +1,11 @@
 use super::*;
 
 pub(in crate::teams::ops) fn released_stage(ctx: &Context<'_>, n: &Node) -> Result<bool> {
-    if n.kind != NodeKind::Stage {
+    // A finished live stage still awaits the writer's Done observation.
+    if n.kind != NodeKind::Stage || ctx.node_table(n.id)? == "nodes" {
         return Ok(false);
     }
-    ctx.db.query_row("SELECT EXISTS(SELECT 1 FROM stage_tasks WHERE team=?1 AND node=?2 AND state IN ('superseded','refused','uncertain'))",params![ctx.team.id,n.id],|r|r.get(0)).map_err(storage)
+    ctx.db.query_row("SELECT EXISTS(SELECT 1 FROM stage_tasks WHERE team=?1 AND node=?2 AND state NOT IN ('wanted','reserved','created'))",params![ctx.team.id,n.id],|r|r.get(0)).map_err(storage)
 }
 
 pub(in crate::teams::ops) fn override_task(ctx: &Context<'_>, target: u32) -> Result<()> {
@@ -54,14 +55,14 @@ pub(in crate::teams::ops) fn observe_override(ctx: &mut Context<'_>, n: &Node) -
     }
 }
 pub(in crate::teams::ops) fn before_decision(ctx: &Context<'_>, node: u32) -> Result<()> {
-    let busy:bool=ctx.db.query_row("SELECT EXISTS(SELECT 1 FROM pipeline_runs WHERE team=?1 AND node=?2 AND state IN ('active','person'))",params![ctx.team.id,node],|r|r.get(0)).map_err(storage)?;
-    if busy && !is_person(ctx.actor) {
-        return Err(invalid(
-            "The pipeline's stages or the person's decision are still pending.",
-        ));
+    if is_person(ctx.actor) {
+        return override_task(ctx, node);
     }
-    if busy {
-        override_task(ctx, node)?;
+    let handed_over:bool=ctx.db.query_row("SELECT EXISTS(SELECT 1 FROM pipeline_runs WHERE team=?1 AND node=?2 AND generation=?3 AND state='lead')",params![ctx.team.id,node,ctx.generation(node)?],|r|r.get(0)).map_err(storage)?;
+    if !handed_over {
+        return Err(invalid(
+            "The pipeline has not handed this attempt to the lead.",
+        ));
     }
     Ok(())
 }

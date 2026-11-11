@@ -1,3 +1,4 @@
+//! A round is a task attempt: a return, reassignment or board reopen uses one.
 use super::*;
 use zerus_team_plan::{
     catalog::Pipeline,
@@ -23,14 +24,17 @@ fn spec<'a>(ctx: &'a Context<'_>, n: &Node) -> Result<&'a Pipeline> {
         .ok_or_else(|| Problem::new(code::UNKNOWN_PIPELINE, "The node's pipeline is missing."))
 }
 pub(super) fn reported(ctx: &mut Context<'_>, n: &Node, body: &str) -> Result<()> {
+    ctx.close_inbox(n.id)?;
+    ctx.db.execute("INSERT INTO pipeline_runs(team,node,generation,state) VALUES(?1,?2,?3,'active') ON CONFLICT(team,node) DO UPDATE SET generation=excluded.generation,state='active',stage=NULL",params![ctx.team.id,n.id,ctx.generation(n.id)?]).map_err(storage)?;
     // Reports on legacy stage nodes remain lead facts. Only Verdict advances
     // a pipeline; the observer cannot attest to a reviewer's decision.
     if n.kind == NodeKind::Stage {
-        ctx.reply.item = Some(ctx.inbox(n.id, "report", body)?);
-        return Ok(());
+        return to_lead(
+            ctx,
+            n,
+            "A stage gives a verdict; it does not report a result.",
+        );
     }
-    ctx.close_inbox(n.id)?;
-    ctx.db.execute("INSERT INTO pipeline_runs(team,node,generation,state) VALUES(?1,?2,?3,'active') ON CONFLICT(team,node) DO UPDATE SET generation=excluded.generation,state='active',stage=NULL",params![ctx.team.id,n.id,ctx.generation(n.id)?]).map_err(storage)?;
     step(ctx, n, kernel::after_report(n, spec(ctx, n)?), body)
 }
 fn staffed(ctx: &Context<'_>, n: &Node, step: kernel::Step) -> Result<kernel::Step> {
@@ -79,7 +83,14 @@ fn state(ctx: &Context<'_>, node: u32, value: &str, stage: Option<u32>) -> Resul
 fn step(ctx: &mut Context<'_>, n: &Node, next: kernel::Step, findings: &str) -> Result<()> {
     match staffed(ctx, n, next)? {
         kernel::Step::Stage { index, kind, role } => want_stage(ctx, n, index, kind, &role),
-        kernel::Step::ToLead { reason } => to_lead(ctx, n, &format!("{reason}\n{findings}")),
+        kernel::Step::ToLead { reason } => {
+            let extra = if findings == report_text(ctx, n)? {
+                reason
+            } else {
+                format!("{reason}\n{findings}")
+            };
+            to_lead(ctx, n, &extra)
+        }
         kernel::Step::Accept => {
             state(ctx, n.id, "accepted", None)?;
             decisions::accept_result(ctx, n, Decider::Pipeline, false)
@@ -169,8 +180,27 @@ fn require_holder(ctx: &Context<'_>, n: &Node) -> Result<()> {
     Ok(())
 }
 pub(super) fn to_lead(ctx: &mut Context<'_>, n: &Node, why: &str) -> Result<()> {
+    let mut body = report_text(ctx, n)?;
+    if !spec(ctx, n)?.stages.is_empty() {
+        body.push('\n');
+        body.push_str(why);
+        let mut end = body.len().min(16_384);
+        while !body.is_char_boundary(end) {
+            end -= 1;
+        }
+        body.truncate(end);
+    }
     state(ctx, n.id, "lead", None)?;
     queue::set_hold(ctx, n.id, false)?;
-    ctx.reply.item = Some(ctx.inbox(n.id, "report", why)?);
+    ctx.reply.item = Some(ctx.inbox(n.id, "report", &body)?);
     Ok(())
+}
+fn report_text(ctx: &Context<'_>, n: &Node) -> Result<String> {
+    ctx.db
+        .query_row(
+            "SELECT text FROM reports WHERE team=?1 AND node=?2 AND generation=?3",
+            params![ctx.team.id, n.id, ctx.generation(n.id)?],
+            |r| r.get(0),
+        )
+        .map_err(storage)
 }
