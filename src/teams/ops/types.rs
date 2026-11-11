@@ -218,6 +218,10 @@ pub enum Operation {
         #[serde(default)]
         node: Option<NodeId>,
     },
+    CloseCard {
+        card: u64,
+        reason: String,
+    },
     DecideCard {
         card: u64,
         decision: String,

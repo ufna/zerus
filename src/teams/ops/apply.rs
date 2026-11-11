@@ -193,6 +193,7 @@ fn dispatch(ctx: &mut Context<'_>) -> Result<()> {
         Operation::Ask { .. } => talk::ask(ctx),
         Operation::Reply { .. } => talk::reply(ctx),
         Operation::OpenCard { .. } => talk::open_card(ctx),
+        Operation::CloseCard { .. } => talk::close_card(ctx),
         Operation::DecideCard { .. } => talk::decide_card(ctx),
     }
 }
