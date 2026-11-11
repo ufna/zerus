@@ -364,8 +364,8 @@ same `request_id` with the same content returns the first reply.
 ## Packages
 
 Each package lists what it owns, what it must deliver and the tests that
-prove it. Interfaces of packages 5 to 17 that depend on the store are fixed
-in an addendum to this plan when package 3 is merged.
+prove it. Packages 5, 6, 7 and 12 are in the addendum below; the rest follow
+when their dependencies are merged.
 
 ### Package 1: contracts
 
@@ -476,35 +476,9 @@ bundle is complete on an empty catalog; an unknown field in a file is refused
 with `unknown_field` and the file is left untouched; a person's entry
 overrides a built-in one with the same ID.
 
-### Package 5: CLI and guides
+### Packages 5, 6 and 7
 
-**Owns:** `src/teams/cli.rs`, `src/agent_guide/team.md`, `team-lead.md`, the
-guide index.
-
-**Deliver:** `hgs team` subcommands of M1 over `ops::apply`, JSON in and out;
-actor resolution shared with `hgs task` (`src/tasks.rs`); the interim
-person rule of the specification; the two guide pages, each within 2,400
-bytes.
-
-### Package 6: tasks and teams
-
-**Owns:** the `team` key in `crates/replica` task fields, `hgs task add
---team`, `hgs task target REF team TEAM`, the three refusals in `src/tasks`.
-
-**Deliver:** reading and writing the optional key without raising the schema;
-old readers unaffected (a test with the key present and the reader at the
-current schema); sending creates one plan node; the refusals apply to every
-agent except the team's lead on the home computer.
-
-### Package 7: member launch and identity
-
-**Owns:** `src/desktop/teams/launch.rs`.
-
-**Deliver:** at Create team, the lead and each member are launched through
-the service's session creation with a generated worktree; a member is a child
-of the lead; the account comes from `pick_account` over `hgs account inspect`
-data; the session key is bound to the member from the launch ID; an unknown
-launch is a card, never a retry.
+Their briefs are in the addendum for wave 2 below.
 
 ### Package 8: teams actor
 
@@ -567,14 +541,167 @@ from the base is reported; a dirty worktree is reported; `sync_base` merges
 the base in and reports a conflict the same way; no file in any worktree
 changes during any call (compare a tree hash of the working directories).
 
-### Packages 12 to 17
+## Addendum: wave 2 (packages 5, 6, 7 and 12)
 
-12 client core projections and actions; 13 New team and the Team tab with
-Board and task card; 14 Waiting for you and Send to team; 15 isolated
-real-agent coverage; 16 guide, reference and credit; 17 standing
-confirmations (folder trust for a team worktree, resume of an exited member).
-Their briefs are written into the addendum when packages 3, 7 and 8 are
-merged, because their interfaces are those packages' results.
+Written 2026-11-11 against the store package as reviewed. The interface the
+four packages share:
+
+```rust
+// src/teams/ops (package 3)
+pub fn apply(store: &mut Store, actor: &Actor, request: &Request, now_ms: i64) -> Result<Reply, Problem>;
+pub enum Actor { Person { .. }, Session { .. }, Other { .. }, Service { .. } }   // never deserialized
+pub struct Request { pub request_id: String, pub team: String, pub expected_revision: u64, pub operation: Operation }
+pub struct Reply { pub ok: bool, pub revision: u64, pub node: Option<NodeId>, pub item: Option<u64> }
+```
+
+`Operation` has one variant per operation of the store. Facts (`ObserveTask`,
+`HandoutIntent`, `HandoutOutcome`, `ReopenIntent`, `ReopenOutcome`,
+`SetMemberSession`, `RecordReport`, `RecordIntegration`,
+`RecordIntegrationConflict`) are accepted only from `Actor::Service`, and no
+package builds that actor from input.
+
+**How a team comes to life.** `Create` only records the team: its copy of the
+template, its members in state `NotCreated`, its settings. The desktop service
+(package 7) sees members that are not created and launches them. So the CLI
+and the desktop create a team the same way, and neither launches anything.
+
+### Package 5: CLI and guides
+
+**Owns:** `src/teams/cli.rs` (and `src/teams/cli/` if it needs more than one
+file), the dispatch in `src/teams/mod.rs` that today answers `not_found`,
+`src/agent_guide/team.md`, `src/agent_guide/team-lead.md` and their
+registration.
+
+**Deliver:**
+
+- `hgs team` subcommands of M1, each reading one JSON request on stdin where
+  it has input and printing one JSON reply: `catalog show|import|export`,
+  `template list|show|save|import|export|remove`, `create`, `settings`,
+  `pause`, `resume`, `stop`, `archive`, `decide` for the person; `status`,
+  `inbox`, `queue`, `cards`, `journal`, `admit`, `route`, `accept`, `return`,
+  `reassign`, `hold`, `release`, `cancel`, `reply`, `pause`, `resume` for the
+  lead; `current` and `ask` for a member. `verdict` belongs to package 9.
+- Actor resolution. A caller with `HGS_SESSION` and `HGS_RUN_ID` is verified
+  exactly as `hgs task` verifies it (live run and process ancestry, the code
+  in `src/tasks.rs`), then mapped by session identity to the team's lead or a
+  member, else `Actor::Other`. A caller without them is the person only when
+  no live session agent is among its process ancestors; the reply says the
+  interim rule was used. A request field never names the actor.
+- Reads are pages of the store: a limit of at most 200 and a cursor. `status`
+  returns the team without its bundle, its members and counts; `status
+  --bundle` adds the bundle.
+- The reply shapes of the five reads are written as fixtures in
+  `crates/team-plan/fixtures/` (`cli-status.json`, `cli-queue.json`,
+  `cli-inbox.json`, `cli-cards.json`, `cli-journal.json`) and pinned by tests,
+  because package 12 reads them.
+- The two guide pages, each within 2,400 bytes: what a member does (the task
+  protocol stays `hgs task`; `hgs team current` and `ask`), and what a lead
+  does (inbox first, decide every report, never build or merge a member's
+  work).
+
+**Tests:** every command against a temporary state directory with the preview
+on; each actor mapping, including a member trying a lead's command and a
+session of another team; a request that tries to name its actor is refused
+with `unknown_field`; with the preview off every command answers
+`teams_inactive`; page stability; the fixtures round-trip.
+
+### Package 6: tasks and teams
+
+**Owns:** the optional `team` key in `crates/replica` task fields; in
+`src/tasks.rs` and `src/tasks/`: `hgs task add --team TEAM`, `hgs task target
+REF team TEAM`, and the three refusals; `src/teams/tasks.rs`.
+
+**Deliver:**
+
+- `team` is `{ "team": <team id>, "home": <computer UUID> }` in a task's field
+  map, read and written without raising the task schema. A reader at the
+  current schema that does not know the key is unaffected: pin that with a
+  test that decodes a document carrying the key with the key's code removed.
+- `src/teams/tasks.rs`: `observe(project, uuid) -> TaskObservation` built from
+  the task document this code read itself (stage, cancelled, rank, title and
+  the document's revision token), and `send(actor, task, team, role,
+  pipeline)`, which applies `AddTask` as the caller and then `ObserveTask` as
+  the service from that observation.
+- `hgs task add --team` and `hgs task target REF team` call `send`. The
+  replicated `target` stays `any`.
+- On the home computer, for a task whose `team` key names a live team:
+  `send`, `handoff` and `stage done` are refused for every agent except that
+  team's lead. On another computer they are refused for every agent. A person
+  is never refused; the override is observed by the service.
+
+**Tests:** Review focus 3 through the CLI; the key survives a sync round trip
+and an edit by a build that does not know it; each refusal and its two
+exceptions; a task sent twice has one node; with the preview off `--team`
+answers `teams_inactive` and writes nothing.
+
+### Package 7: member launch and identity
+
+**Owns:** `src/desktop/teams/` (the launch part) and its registration in the
+desktop service.
+
+**Deliver:** a service actor in the service's own pattern (admission, a fixed
+plan, the original child and its custody; a restart never continues an
+operation). For a team that is Running:
+
+- the integration branch is created with `integrate::create_branch` when the
+  team's integration is a branch and the branch does not exist;
+- the lead, then each `NotCreated` member, is launched through the service's
+  existing worktree and launch actors, each member in its own generated
+  worktree and as a child of the lead;
+- the account is `pick_account` over the usage windows of `hgs account
+  inspect` for the member's agent, with the accounts already given to this
+  team's members as `taken`;
+- the launch ID binds the session: when the session appears with that launch
+  ID, `SetMemberSession` records its key, its worktree and the ownership
+  nonce;
+- a launch whose outcome is unknown becomes an owner card and is never
+  retried; `no_account_available` becomes an owner card that names the reset
+  time.
+
+Effects sit behind traits so tests use fakes.
+
+**Tests:** the order (branch, lead, members); one launch per member across a
+restart at every step; an unknown launch produces one card and no second
+launch; account choice spreads two seats over two accounts; a member is bound
+only by its launch ID, never by its name.
+
+### Package 12: client core
+
+**Owns:** `client/core/src/teams/`, `client/src-tauri/src/teams.rs`, the
+`teams` key of the batch, and the lines that add `zerus-team-plan` to
+`client/core/Cargo.toml` and the client lock files.
+
+**Deliver:**
+
+- Typed projections for the desktop: `list` (teams of the computer), `team`
+  (bar, members, the queue as board groups by state, each card with its
+  stages), `waiting` (owner cards and person-only requests of team sessions).
+  The view structures start as an import of the fork's
+  `client/core/src/teams/view.rs` in the two-commit form, reduced to what M1
+  shows.
+- Pure functions from the read replies of package 5 (the `cli-*.json`
+  fixtures) to those views. Until package 5 is merged, build them on
+  `team-queue.json`.
+- Actions as `TeamCall { team, action, request_id }` with the outcomes done,
+  failed, uncertain and confirm; an uncertain action is never repeated
+  automatically.
+- Tauri commands that run the reads and actions through `hgs team`, follow
+  one team at a time, and stop when the tab is hidden. The view is read again
+  after the desktop's own action, when the project's tasks topic changes, and
+  every 10 seconds while the Team tab is visible. A `teams` watch topic
+  replaces the timer in M4.
+
+**Tests:** each projection from the fixtures, including a card with a stage
+in each state and an empty queue; the 200-row page bound; an action outcome
+of each kind; the follow set never holds more than one team.
+
+### Packages 8 to 10 and 13 to 17
+
+8 the teams actor; 9 pipelines; 10 lead inbox, timers and escalation; 13 New
+team and the Team tab with Board and task card; 14 Waiting for you and Send to
+team; 15 isolated real-agent coverage; 16 guide, reference and credit; 17
+standing confirmations (folder trust for a team worktree, resume of an exited
+member). Their briefs are written when packages 5 and 7 are merged.
 
 ## Decisions after the first reviews
 
@@ -598,14 +725,20 @@ and recorded the commit. The delegation `merge_accepted` says who triggers the
 merge: the lead's Accept when it is on, the person's approval of an owner card
 when it is off. A conflict is recorded by the service as a return with the
 conflict list. With no integration branch, and for a stage node, there is no
-merge and no receipt.
+merge and no receipt. A receipt or a conflict that arrives after the team
+was stopped is still recorded. When a node's decision settles, its open
+integration cards close.
 
 **Return.** The reopen message is an effect: an intent for the new generation
 before it is sent, an outcome after, never retried when uncertain. A report of
 the new generation is accepted once that effect is recorded.
 
 **Hand-out.** Only the service records a hand-out, and only for a node the
-kernel says is ready. The effect row holds the current holder. A node's
+kernel says is ready. The readiness view holds the live nodes with their
+direct dependencies and stage targets; an archived node is a leaf whose own
+dependencies are not followed. Reassigning a node that was never handed out
+only changes its assignee, and a reopen needs an earlier attempt of the node,
+so neither goes around the gate. The effect row holds the current holder. A node's
 `assignee` is the plan's and changes only by Route and Reassign. For a task
 node `implementer` is set when its hand-out is submitted; a refusal leaves
 neither. For a stage node `implementer` is the member who implemented the task
@@ -638,12 +771,161 @@ default pipeline is required. Every role's pipeline must exist, seated or not.
 equals the pipeline's stage at its index, and a stage is ready only in its
 target's round. A node ID that appears twice is ambiguous everywhere: nothing
 that depends on it or checks it is ready. Write sets are relative to the
-repository and are compared without regard to case; an absolute path, and a
-parent component after a pattern, cover the whole repository. Operations
+repository. ASCII components are compared without regard to case; a
+component with a non-ASCII character matches any component in its position
+unless the two are byte-equal, because case and normalization rules differ
+between file systems. An absolute path, and a parent component after a
+pattern, cover the whole repository. Operations
 refuse an absolute path in a write set at input.
 
 **Shape.** One function per operation of about 60 lines or fewer; no file that
 is one long match.
+
+## Decisions during wave 2
+
+**Member launch (package 7).** The desktop's `creation_worktree` and
+`creation_launch` actors admit only the proof of a person's gesture, and they
+get no second admission. The teams actor launches through the path every CLI
+caller has, in the form `creation_launch::child` uses: this computer's own
+`hgs` as the one original child, run by the shared `desktop::original_child`
+runner with a child kind and custody of its own. It runs `worktrees create`
+and then the documented launch with the reserved launch ID. The arguments
+come only from the team store.
+
+A launch that never started leaves the member `NotCreated` for a later pass.
+A refused launch makes one owner card and no second launch. An unknown
+result, or an exit of 0 with no session carrying the launch ID within the
+bound, makes one card marked uncertain and is never retried.
+
+**Parent link.** A launch by the service cannot prove ancestry, so the link
+is written after binding with the existing `hgs parent` action `set`, and
+reads `manual`. It is written only when the member has none and never
+replaces one. An agent the command refuses (DeepSeek, OpenCode) has no link,
+which is a known skip. The link is presentation and attention routing: a
+failed write blocks nothing and makes no card, and the lead's authority over
+members comes from the team store. A source of its own for team links needs
+the aligned client change and waits for M3.
+
+**Integration facts (package 3).** `RecordIntegration` and
+`RecordIntegrationConflict` name the accept decision they belong to. The
+permit is that exact decision: an accept of that node, Ready or settled with
+preserved authority, with no fact yet; there is no fallback to the pending or
+the latest decision. The fact changes the node only when the decision's
+generation is the node's current one. The service reads the authorized
+accepts that have no fact as a bounded page and names the decision it acted
+on.
+
+**One caller proof (packages 5 and 6).** `crate::teams::caller`
+(`src/teams/caller.rs`) answers who runs a command: `Caller::Person`,
+`Caller::Session(SessionKey)` or `Caller::Refused(Problem)`. The CLI and the
+task intake both use it. After its review it is a piece of its own, on its
+own branch, and merges before the rest of package 5 and before package 6.
+
+The interim person rule, exactly: for each ancestor of the command, at most
+64, read its environment; an ancestor that names a session is verified
+against the one saved record its name and run point to, by process ID and
+birth identity. A verified live session agent among the ancestors means the
+command is not a person's. The walk ends at the top of the user's own
+process tree: the first ancestor of that user whose parent belongs to
+another user. It ends there whether or not that process can be read, because
+a person's terminal and the desktop application both descend from the
+user's service manager, whose environment the same user cannot read; the
+top is decided by the owners in the process table, never by a name. Below
+the top, whatever cannot be established is a refusal: an ancestor that
+cannot be read, a walk that stops early or hits its cap, a record that is
+corrupt or unreadable. The proof changes no process environment, reads no
+session inventory and prints no path. Turning the preview on or off goes
+through it.
+
+Two limits are stated, not hidden. A child that was reparented away from
+its agent, and a registered agent that was started without the markers in
+its environment, are not detected: finding them needs an index of sessions
+by process, which belongs with the verified Person authority
+(`zerus-cg5h.4.11`) that replaces this rule. And the preview is for Linux
+and macOS in this milestone: where the ancestry cannot be evaluated, an
+unmarked command is refused and the preview cannot be turned on.
+
+**How the service reaches a session (packages 8, 10 and 17).** The desktop's
+deferred-send, deferred-answer and creation actors admit only the proof of a
+person's gesture. The teams actor does not enter them. Each of its effects is
+this computer's own `hgs` run as the actor's one original child:
+
+| Effect | Command |
+|---|---|
+| Hand-out and reopen | `hgs task team-deliver` (below) |
+| Doorbell, a return's reason, a brief on resume | `hgs send SESSION --json`, bound to the run and conversation it read |
+| An answer to a member's prompt | `hgs answer SESSION --json`, after the approval journal reserved it |
+| Integration | the functions of `src/teams/integrate.rs` in a child of its own |
+
+**Team delivery (package 6, second part).** The attempt writer is reachable
+only through the task CLI, and `start-deliver` is the person's. A new
+`hgs task team-deliver REF --json` reads `{schema, id, team, node, member}`
+and delivers only what the team store already holds: an open hand-out or
+reopen effect of that team with that request ID for that node and member, on
+the team's home computer. The effect is the authority; the caller is not
+asked who it is. It writes the attempt as the team's lead, with the prompt
+`freeze` builds followed by the team context from the store (role and goal,
+criteria, dependency reports within 2,000 characters each and 6,000 in total,
+binding decisions, base commit, branch, write set). It answers
+`{state: submitted|refused|uncertain|cutting_over}` in the form of
+`start-deliver`, and the same ID never sends twice. `--recover-only` reads
+the receipt and sends nothing.
+
+**The CLI as the desktop's interface (packages 3, 5 and 12).** The client
+core reads through `hgs team` and follows the shapes package 5 pins in
+`crates/team-plan/fixtures/cli-*.json`: a page is
+`{ok, actor, team, rows, next}`, `status` is
+`{ok, actor, team, members, counts}`, and a read takes `--team`, `--limit`
+and `--after`. Three things the desktop needs are added:
+
+- `hgs team list`: the teams of this computer, a page of
+  `{id, project, name, status, lead, home, revision}` in ID order
+  (`cli-list.json`);
+- `hgs team waiting`: the open owner cards of all teams, oldest first, each
+  a card row with its team ID (`cli-waiting.json`);
+- the person's `pause-member`, `resume-member`, `stop-member` and
+  `archive-member`.
+
+The store gains the reads behind them: `teams`, `live_teams` for the
+service's pass, and `waiting`, each a bounded page that does not scan
+archived teams or closed cards. A request of a team session that only the
+person can answer is not a card; the desktop takes it from its session
+attention data.
+
+**A fact after integration was switched off (package 3).** With a valid
+permit the fact is recorded as provenance; the node changes only when it
+still needs a merge and the decision's generation is current.
+
+**No agent drives a team's task (package 6, after its review).** The earlier
+exception for the team's lead is withdrawn: the lead decides through
+`hgs team` and the service acts. On a task of a live team these are refused
+for every agent: `send`, `handoff`, any stage change, `target`, `start` and
+`worker` as a claim, and `message --mode reopen`. An agent may still take its
+own protocol steps on an attempt that was delivered to it (the
+acknowledgement, the report, a worker under that attempt), comment, and add
+text. A person is never refused. The team's own writes come only from two
+commands the service runs, which take their authority from the team store
+and not from the caller: `hgs task team-deliver` and
+`hgs task team-done REF --json`, which moves a task to Done as the team's
+lead only when the store shows the node's current generation accepted with
+authority and, where it needs a merge, its integration fact.
+
+**The key is the marker (package 6).** A task without a `team` key is not a
+team's task, and no team check opens anything for it. A key that names
+another computer refuses agents without opening the store; a key that names
+this computer is checked against the store's live node. A key that does not
+decode never damages the task: it reads as no usable key with an invalid
+mark, and agents are refused as for another computer. Intake writes the key
+with the step that makes the task a team's and removes it when the team
+refuses; a person's retarget away from the team clears it; the service
+clears the keys of a stopped or archived team's open tasks (package 10).
+The package is one unit and merges after the repository owner confirms the
+replica change; everything under `crates/replica` stays a commit of its own.
+
+**Observation belongs to the service (packages 6 and 8).** Ordinary task
+commands do not observe for the team. Intake records the first observation;
+after that the service observes through one function that reads the document
+and records under the project lock.
 
 ## Order
 

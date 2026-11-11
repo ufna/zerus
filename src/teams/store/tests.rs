@@ -1,0 +1,531 @@
+use super::*;
+mod cross;
+
+#[test]
+fn missing_store_is_lazy_and_preview_is_required() {
+    let temp = tempfile::tempdir().unwrap();
+    assert_eq!(Store::open(temp.path()).unwrap_err().code, "teams_inactive");
+    assert!(!temp.path().join("teams").exists());
+    std::fs::create_dir(temp.path().join("teams")).unwrap();
+    std::fs::write(temp.path().join("teams/preview"), "on").unwrap();
+    let store = Store::open(temp.path()).unwrap();
+    assert!(store.team("missing").unwrap().is_none());
+    assert!(!temp.path().join("teams/teams-v1.sqlite3").exists());
+}
+
+use crate::teams::ops::{
+    self,
+    tests::{create, person, refused, request, route, task, Harness, TEAM},
+    Operation,
+};
+
+#[test]
+fn empty_published_store_recovers_schema_initialization() {
+    let mut h = Harness::empty();
+    let path = h.temp.path().join("teams/teams-v1.sqlite3");
+    #[cfg(unix)]
+    crate::sqlite_file::create(&path).unwrap();
+    #[cfg(windows)]
+    drop(
+        crate::platform::private_open(std::fs::OpenOptions::new().create_new(true).write(true))
+            .open(&path)
+            .unwrap(),
+    );
+    h.store = Store::open(h.temp.path()).unwrap();
+    h.run(&person(), create()).unwrap();
+    assert_eq!(h.store.team(TEAM).unwrap().unwrap().revision, 1);
+}
+#[test]
+fn newer_schema_is_refused_without_modifying_its_version() {
+    let h = Harness::new();
+    h.store
+        .db
+        .as_ref()
+        .unwrap()
+        .pragma_update(None, "user_version", SCHEMA_VERSION + 1)
+        .unwrap();
+    refused(Store::open(h.temp.path()), code::INVALID_STATE);
+    let version: u32 = h
+        .store
+        .db
+        .as_ref()
+        .unwrap()
+        .query_row("PRAGMA user_version", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(version, SCHEMA_VERSION + 1);
+}
+#[test]
+fn version_one_is_refused_as_an_unreleased_store() {
+    let h = Harness::new();
+    let db = h.store.db.as_ref().unwrap();
+    db.pragma_update(None, "user_version", 1).unwrap();
+    let error = Store::open(h.temp.path()).unwrap_err();
+    assert_eq!(error.code, code::INVALID_STATE);
+    assert!(error.message.contains("pre-release"));
+    assert_eq!(
+        db.query_row("PRAGMA user_version", [], |r| r.get::<_, u32>(0))
+            .unwrap(),
+        1
+    );
+}
+#[test]
+fn an_empty_handle_can_refresh_after_another_writer_creates_a_team() {
+    let mut h = Harness::empty();
+    let mut writer = Store::open(h.temp.path()).unwrap();
+    ops::apply(&mut writer, &person(), &request(0, create()), 1).unwrap();
+    h.store.refresh().unwrap();
+    assert!(h.store.team(TEAM).unwrap().is_some());
+}
+#[test]
+fn queue_and_journal_pages_exclude_additions_after_the_first_page() {
+    let mut h = Harness::new();
+    for n in 1..=5 {
+        h.add(&person(), n);
+    }
+    let first = h.store.queue(TEAM, 2, None).unwrap();
+    let journal = h.store.journal(TEAM, 2, None).unwrap();
+    let old_count = h.store.journal(TEAM, 200, None).unwrap().rows.len();
+    h.add(&person(), 6);
+    let mut ids = first.rows.iter().map(|n| n.id).collect::<Vec<_>>();
+    let mut cursor = first.next;
+    while let Some(c) = cursor {
+        let p = h.store.queue(TEAM, 2, Some(&c)).unwrap();
+        ids.extend(p.rows.iter().map(|n| n.id));
+        cursor = p.next;
+    }
+    assert_eq!(ids, vec![1, 2, 3, 4, 5]);
+    let mut count = journal.rows.len();
+    let mut cursor = journal.next;
+    while let Some(c) = cursor {
+        let p = h.store.journal(TEAM, 2, Some(&c)).unwrap();
+        count += p.rows.len();
+        cursor = p.next;
+    }
+    assert_eq!(count, old_count);
+}
+#[test]
+fn node_rows_and_dependencies_share_one_snapshot_during_a_concurrent_route() {
+    let mut h = Harness::new();
+    for n in 1..=3 {
+        h.add(&person(), n);
+    }
+    let mut old = route(1);
+    if let Operation::Route { deps, writes, .. } = &mut old {
+        deps.push(Dep {
+            node: 2,
+            kind: DepKind::Hard,
+        });
+        writes.push("old.rs".into());
+    }
+    h.run(&person(), old).unwrap();
+    let mut writer = Store::open(h.temp.path()).unwrap();
+    let p = h
+        .store
+        .node_page_with(TEAM, None, 200, None, || {
+            let mut new = route(1);
+            if let Operation::Route { deps, writes, .. } = &mut new {
+                deps.push(Dep {
+                    node: 3,
+                    kind: DepKind::Hard,
+                });
+                writes.push("new.rs".into());
+            }
+            let rev = writer.team(TEAM).unwrap().unwrap().revision;
+            ops::apply(&mut writer, &person(), &request(rev, new), 1).unwrap();
+        })
+        .unwrap();
+    assert_eq!(p.rows[0].writes, vec!["old.rs"]);
+    assert_eq!(p.rows[0].deps[0].node, 2);
+    assert_eq!(h.node(1).writes, vec!["new.rs"]);
+    assert_eq!(h.node(1).deps[0].node, 3);
+}
+#[test]
+fn every_list_rejects_over_limit_and_foreign_cursors() {
+    let mut h = Harness::new();
+    h.add(&person(), 1);
+    refused(h.store.queue(TEAM, 201, None), code::OVER_CAP);
+    refused(h.store.members(TEAM, 0, None), code::OVER_CAP);
+    let c = h.store.queue(TEAM, 1, None).unwrap().next.unwrap();
+    refused(h.store.cards(TEAM, 1, Some(&c)), code::INVALID_STATE);
+    refused(h.store.inbox(TEAM, 201, None), code::OVER_CAP);
+    refused(h.store.effects(TEAM, 201, None), code::OVER_CAP);
+    refused(h.store.journal(TEAM, 201, None), code::OVER_CAP);
+}
+#[test]
+fn a_thousand_decided_nodes_leave_the_live_page_unchanged() {
+    let mut h = Harness::new();
+    h.add(&person(), 1);
+    let before = h.store.queue(TEAM, 200, None).unwrap();
+    for n in 2..=1001 {
+        let node = h.add(&person(), n);
+        h.cancel_fact(node);
+    }
+    assert_eq!(h.store.queue(TEAM, 200, None).unwrap(), before);
+    assert_eq!(
+        h.store
+            .nodes_by_state(TEAM, NodeState::Cancelled, 200, None)
+            .unwrap()
+            .rows
+            .len(),
+        200
+    );
+    h.run(
+        &person(),
+        Operation::AddTask {
+            task: task(1002),
+            role: None,
+            pipeline: None,
+        },
+    )
+    .unwrap();
+}
+#[test]
+fn journal_is_capped_and_archived_rows_keep_sequence_order() {
+    let mut h = Harness::new();
+    let tx = h.store.db.as_mut().unwrap().transaction().unwrap();
+    for n in 0..=LIVE_JOURNAL_CAP {
+        tx.execute("INSERT INTO journal(team,at_ms,actor,kind,request_id,text) VALUES(?1,0,?2,'fixture',?3,'Example')",rusqlite::params![TEAM,encode(&person()).unwrap(),format!("fixture-{n}")]).unwrap();
+    }
+    tx.commit().unwrap();
+    h.run(&person(), Operation::Pause).unwrap();
+    let count: u64 = h
+        .store
+        .db
+        .as_ref()
+        .unwrap()
+        .query_row("SELECT count(*) FROM journal WHERE team=?1", [TEAM], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert_eq!(count, LIVE_JOURNAL_CAP);
+    assert_eq!(
+        h.store
+            .journal(TEAM, 3, None)
+            .unwrap()
+            .rows
+            .iter()
+            .map(|r| r.seq)
+            .collect::<Vec<_>>(),
+        vec![1, 2, 3]
+    );
+}
+#[test]
+fn late_observations_keep_archived_journals_archived_and_record_node_references() {
+    let mut h = Harness::new();
+    let node = h.add(&person(), 1);
+    h.run(&person(), Operation::Stop).unwrap();
+    h.run(&person(), Operation::Archive).unwrap();
+    h.cancel_fact(node);
+    let count: u32 = h
+        .store
+        .db
+        .as_ref()
+        .unwrap()
+        .query_row("SELECT count(*) FROM journal WHERE team=?1", [TEAM], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert_eq!(count, 0);
+    let rows = h.store.journal(TEAM, 200, None).unwrap().rows;
+    assert!(rows.last().unwrap().refs.contains(&format!("node:{node}")));
+}
+#[cfg(unix)]
+#[test]
+fn opening_another_connection_keeps_sqlite_locks_and_refuses_symlinks() {
+    let h = Harness::new();
+    let path = h.temp.path().join("teams/teams-v1.sqlite3");
+    h.store
+        .db
+        .as_ref()
+        .unwrap()
+        .execute_batch("BEGIN IMMEDIATE;")
+        .unwrap();
+    assert!(crate::sqlite_file::foreign_lock_refused(&path));
+    let reopened = Store::open(h.temp.path()).unwrap();
+    assert!(crate::sqlite_file::foreign_lock_refused(&path));
+    drop(reopened);
+    h.store
+        .db
+        .as_ref()
+        .unwrap()
+        .execute_batch("ROLLBACK;")
+        .unwrap();
+    drop(h.store);
+    let moved = h.temp.path().join("teams/saved.sqlite3");
+    std::fs::rename(&path, &moved).unwrap();
+    std::os::unix::fs::symlink(&moved, &path).unwrap();
+    refused(Store::open(h.temp.path()), code::INVALID_STATE);
+}
+
+#[test]
+fn integration_accepts_page_by_open_node_and_filter_authority_and_recorded_facts() {
+    use ops::tests::{service, COMMIT, TEAM_B};
+    let mut h = Harness::new();
+    let (node, lead) = h.reported();
+    h.run(&lead, Operation::Accept { node }).unwrap();
+    let recorded = h.accept_decision(node);
+    h.run(
+        &service(),
+        Operation::RecordIntegration {
+            node,
+            decision: recorded,
+            commit: COMMIT.into(),
+        },
+    )
+    .unwrap();
+    let cancelled = h.add(&person(), 2);
+    h.run(
+        &lead,
+        Operation::Cancel {
+            node: cancelled,
+            reason: "No work needed".into(),
+        },
+    )
+    .unwrap();
+    let ready = h.add(&person(), 3);
+    h.submit(ready, "m1");
+    h.report(ready, "m1");
+    h.run(&lead, Operation::Accept { node: ready }).unwrap();
+    let expected = h.accept_decision(ready);
+    h.settings(|s| s.delegations.merge_accepted = false);
+    let owner = h.add(&person(), 4);
+    h.submit(owner, "m1");
+    h.report(owner, "m1");
+    h.run(&lead, Operation::Accept { node: owner }).unwrap();
+    let first = h.store.integration_accepts(TEAM, 1, None).unwrap();
+    assert!(first.rows.is_empty());
+    let mut cursor = first.next.clone();
+    assert!(cursor.is_some());
+    let mut rows = Vec::new();
+    while let Some(c) = cursor {
+        let page = h.store.integration_accepts(TEAM, 1, Some(&c)).unwrap();
+        assert!(page.rows.len() <= 1);
+        rows.extend(page.rows);
+        cursor = page.next;
+    }
+    assert_eq!(
+        rows,
+        vec![IntegrationAccept {
+            seq: expected,
+            node: ready,
+            generation: 1
+        }]
+    );
+    refused(h.store.integration_accepts(TEAM, 0, None), code::OVER_CAP);
+    refused(h.store.integration_accepts(TEAM, 201, None), code::OVER_CAP);
+    refused(
+        h.store.integration_accepts(TEAM_B, 1, first.next.as_ref()),
+        code::INVALID_STATE,
+    );
+    h.cancel_fact(ready);
+    assert!(h
+        .store
+        .integration_accepts(TEAM, 200, None)
+        .unwrap()
+        .rows
+        .is_empty());
+    h.settings(|s| s.integration = Integration::None);
+    assert!(h
+        .store
+        .integration_accepts(TEAM, 200, None)
+        .unwrap()
+        .rows
+        .is_empty());
+}
+
+#[test]
+fn integration_accept_discovery_uses_the_open_decision_index() {
+    let h = Harness::new();
+    let db = h.store.db.as_ref().unwrap();
+    let mut s = db
+        .prepare(&format!(
+            "EXPLAIN QUERY PLAN {}",
+            pages::integration_accepts_sql()
+        ))
+        .unwrap();
+    let plan = s
+        .query_map(
+            rusqlite::params![TEAM, 0, 100, 1, DecisionState::Ready],
+            |r| r.get::<_, String>(3),
+        )
+        .unwrap()
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .unwrap();
+    assert!(
+        plan.iter()
+            .any(|line| line.contains("USING INDEX decision_pending")),
+        "{plan:?}"
+    );
+    assert!(
+        !plan.iter().any(|line| line.contains("TEMP B-TREE")),
+        "{plan:?}"
+    );
+}
+
+#[test]
+fn settled_decision_history_does_not_delay_the_first_open_accept_page() {
+    let mut h = Harness::new();
+    let (node, lead) = h.reported();
+    let tx = h.store.db.as_mut().unwrap().transaction().unwrap();
+    for _ in 0..4000 {
+        tx.execute("INSERT INTO decisions(team,node,generation,actor,kind,text,state,stopped_ready) VALUES(?1,?2,1,?3,'accept','Historical acceptance',?4,1)",rusqlite::params![TEAM,node,encode(&person()).unwrap(),DecisionState::Settled]).unwrap();
+    }
+    tx.commit().unwrap();
+    h.run(&lead, Operation::Accept { node }).unwrap();
+    let seq: u64 = h
+        .store
+        .db
+        .as_ref()
+        .unwrap()
+        .query_row(
+            "SELECT seq FROM decisions WHERE team=?1 AND state=?2",
+            rusqlite::params![TEAM, DecisionState::Ready],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let page = h.store.integration_accepts(TEAM, 1, None).unwrap();
+    assert_eq!(
+        page.rows,
+        vec![IntegrationAccept {
+            seq,
+            node,
+            generation: 1
+        }]
+    );
+}
+
+#[test]
+fn integration_accept_pages_use_node_order_and_keep_their_node_ceiling() {
+    use ops::tests::service;
+    let mut h = Harness::new();
+    let (first_node, lead) = h.reported();
+    h.run(&lead, Operation::Accept { node: first_node })
+        .unwrap();
+    let low = h.add(&person(), 2);
+    let high = h.add(&person(), 3);
+    for node in [high, low] {
+        h.submit(node, "m1");
+        h.report(node, "m1");
+        h.run(&lead, Operation::Accept { node }).unwrap();
+    }
+    assert!(h.accept_decision(high) < h.accept_decision(low));
+    let first = h.store.integration_accepts(TEAM, 1, None).unwrap();
+    let added = h.add(&person(), 4);
+    h.submit(added, "m1");
+    h.report(added, "m1");
+    h.run(&lead, Operation::Accept { node: added }).unwrap();
+    let mut rows = first.rows;
+    let mut cursor = first.next;
+    while let Some(c) = cursor {
+        let page = h.store.integration_accepts(TEAM, 1, Some(&c)).unwrap();
+        rows.extend(page.rows);
+        cursor = page.next;
+    }
+    assert_eq!(
+        rows.iter().map(|r| r.node).collect::<Vec<_>>(),
+        vec![first_node, low, high]
+    );
+    assert_eq!(
+        h.store
+            .integration_accepts(TEAM, 200, None)
+            .unwrap()
+            .rows
+            .len(),
+        4
+    );
+    // A service uses the listed identity directly in its subsequent fact.
+    h.run(
+        &service(),
+        Operation::RecordIntegration {
+            node: low,
+            decision: rows[1].seq,
+            commit: ops::tests::COMMIT.into(),
+        },
+    )
+    .unwrap();
+}
+
+#[test]
+fn integration_discovery_excludes_stage_and_no_branch_accepts() {
+    for stage in [false, true] {
+        let mut h = Harness::new();
+        let (node, lead) = h.reported();
+        if stage {
+            let mut n = h.node(node);
+            n.kind = NodeKind::Stage;
+            n.stage_of = Some(2);
+            h.store
+                .db
+                .as_ref()
+                .unwrap()
+                .execute(
+                    "UPDATE nodes SET data=?3 WHERE team=?1 AND id=?2",
+                    rusqlite::params![TEAM, node, rows::node_payload(&n).unwrap()],
+                )
+                .unwrap();
+        } else {
+            h.settings(|s| s.integration = Integration::None);
+        }
+        h.run(&lead, Operation::Accept { node }).unwrap();
+        assert!(h
+            .store
+            .integration_accepts(TEAM, 200, None)
+            .unwrap()
+            .rows
+            .is_empty());
+    }
+}
+
+#[test]
+fn card_lookup_is_scoped_and_reads_the_persons_decision_by_primary_key() {
+    let mut h = Harness::new();
+    let card = h
+        .run(
+            &person(),
+            Operation::OpenCard {
+                kind: "proposal".into(),
+                text: "Wait for a person".into(),
+                node: None,
+            },
+        )
+        .unwrap()
+        .item
+        .unwrap();
+    let before = h.store.cards(TEAM, 1, None).unwrap().rows.pop().unwrap();
+    assert_eq!(h.store.card(TEAM, card).unwrap(), Some(before));
+    h.run(
+        &person(),
+        Operation::DecideCard {
+            card,
+            decision: "Wait until tomorrow".into(),
+        },
+    )
+    .unwrap();
+    let c = h.store.card(TEAM, card).unwrap().unwrap();
+    assert_eq!(c.decision.as_deref(), Some("Wait until tomorrow"));
+    assert_eq!(c.decided_actor.unwrap()["kind"], "person");
+    assert!(h.store.card(TEAM, 9_999_999).unwrap().is_none());
+    refused(h.store.card(ops::tests::TEAM_B, card), code::INVALID_STATE);
+    let db = h.store.db.as_ref().unwrap();
+    let mut s = db
+        .prepare(&format!("EXPLAIN QUERY PLAN {}", rows::CARD_BY_SEQ_SQL))
+        .unwrap();
+    let plan = s
+        .query_map([card], |r| r.get::<_, String>(3))
+        .unwrap()
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .unwrap();
+    assert!(
+        plan.iter().any(|r| r.contains("USING INTEGER PRIMARY KEY")),
+        "{plan:?}"
+    );
+}
+
+#[test]
+fn card_lookup_is_lazy_and_honors_the_preview_gate() {
+    let h = Harness::empty();
+    assert!(h.store.card(TEAM, 1).unwrap().is_none());
+    assert!(!h.temp.path().join("teams/teams-v1.sqlite3").exists());
+    std::fs::remove_file(h.temp.path().join("teams/preview")).unwrap();
+    refused(h.store.card(TEAM, 1), code::TEAMS_INACTIVE);
+}
