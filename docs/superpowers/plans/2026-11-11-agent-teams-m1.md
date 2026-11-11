@@ -781,6 +781,37 @@ refuse an absolute path in a write set at input.
 **Shape.** One function per operation of about 60 lines or fewer; no file that
 is one long match.
 
+## Decisions during wave 2
+
+**Member launch (package 7).** The desktop's `creation_worktree` and
+`creation_launch` actors admit only the proof of a person's gesture, and they
+get no second admission. The teams actor launches through the path every CLI
+caller has, in the form `creation_launch::child` uses: this computer's own
+`hgs` as the one original child, run by the shared `desktop::original_child`
+runner with a child kind and custody of its own. It runs `worktrees create`
+and then the documented launch with the reserved launch ID. The arguments
+come only from the team store.
+
+A launch that never started leaves the member `NotCreated` for a later pass.
+A refused launch makes one owner card and no second launch. An unknown
+result, or an exit of 0 with no session carrying the launch ID within the
+bound, makes one card marked uncertain and is never retried.
+
+**Parent link.** A launch by the service cannot prove ancestry, so the link
+is written after binding with the existing `hgs parent` action `set`, and
+reads `manual`. It is written only when the member has none and never
+replaces one. An agent the command refuses (DeepSeek, OpenCode) has no link,
+which is a known skip. The link is presentation and attention routing: a
+failed write blocks nothing and makes no card, and the lead's authority over
+members comes from the team store. A source of its own for team links needs
+the aligned client change and waits for M3.
+
+**Task key (package 6).** Everything under `crates/replica` is one commit of
+its own with its compatibility tests, merged after the repository owner
+confirms the replica change. Sending a task to a team and the three refusals
+work on the home computer from the team store alone; the key adds only what
+another computer needs.
+
 ## Order
 
 | Wave | Packages | Starts when |
