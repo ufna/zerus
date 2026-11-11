@@ -85,3 +85,39 @@ fn member_session_read_includes_the_whole_roster_and_refuses_an_oversized_one() 
     .unwrap();
     refused(h.store.member_sessions(TEAM), code::OVER_CAP);
 }
+
+#[test]
+fn the_single_session_read_is_lazy_gated_and_uses_the_primary_key() {
+    use crate::teams::store::member_sessions::MEMBER_SESSION_SQL;
+    let h = Harness::empty();
+    assert_eq!(h.store.member_session(TEAM, "lead").unwrap(), None);
+    std::fs::remove_file(h.temp.path().join("teams/preview")).unwrap();
+    refused(h.store.member_session(TEAM, "lead"), code::TEAMS_INACTIVE);
+    let mut h = Harness::new();
+    h.bind("lead");
+    let expected = h.store.member(TEAM, "lead").unwrap().unwrap().session;
+    assert_eq!(h.store.member_session(TEAM, "lead").unwrap(), expected);
+    assert_eq!(h.store.member_session(TEAM, "m1").unwrap(), None);
+    assert_eq!(h.store.member_session("missing", "lead").unwrap(), None);
+    let db = h.store.db.as_ref().unwrap();
+    db.execute(
+        "UPDATE members SET data='broken' WHERE team=?1 AND id='lead'",
+        [TEAM],
+    )
+    .unwrap();
+    assert_eq!(h.store.member_session(TEAM, "lead").unwrap(), expected);
+    let mut q = db
+        .prepare(&format!("EXPLAIN QUERY PLAN {MEMBER_SESSION_SQL}"))
+        .unwrap();
+    let plan = q
+        .query_map(params![TEAM, "lead"], |r| r.get::<_, String>(3))
+        .unwrap()
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .unwrap()
+        .join("\n");
+    assert!(
+        plan.contains("SEARCH members USING INDEX sqlite_autoindex_members_1 (team=? AND id=?)"),
+        "{plan}"
+    );
+    assert!(!plan.contains("SCAN "), "{plan}");
+}
