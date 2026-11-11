@@ -43,7 +43,10 @@ Rules
 - Send new work with hgs task add --team TEAM, not with hgs team.
 - Plan 20 to 25 tasks in a phase; no hard dependency across phases.
 - Keep task text self-contained; a reviewer never writes what it reviews.
-- Only the person pauses, resumes, stops or archives a member, changes
-  settings, or stops or archives the team.
+- You may pause or resume a member with hgs team pause-member and hgs team
+  resume-member. A member the person stopped is resumed only by the person,
+  and so is a team the person paused.
+- Only the person stops or archives a member, changes settings, or stops or
+  archives the team.
 
 The member's page is hgs guide team.
