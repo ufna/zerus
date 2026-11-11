@@ -1004,6 +1004,17 @@ stage but never opens the gate for the same attempt: when the reopen cannot
 be delivered, the lead decides again (Return, Reassign, Cancel) or asks the
 person. The person is never refused.
 
+**A stage ends by its holder's verdict or by the person (package 9, second
+review).** A lead may Return a stage to its holder or Reassign it; a lead's
+Accept and Cancel of a stage node are refused, because either one ends the
+stage without a verdict and the stage's end was then read as the person's
+override, which handed the target to the lead with no review. A holder that
+reports on a stage instead of giving a verdict produces a lead inbox item
+and nothing else; the stage's hand-out text tells the holder to answer with
+`hgs team verdict`. A report recorded by a store from before the pipeline
+tables has no run and cannot be accepted by the lead; the person accepts
+it. That affects development stores only and is a stated limit.
+
 **A stage node is never restored (package 9).** A stage whose creation is
 not wanted, reserved or created is released. A person who moves a finished
 stage's task back on the board changes that task only: the observation is
