@@ -816,13 +816,34 @@ accepts that have no fact as a bounded page and names the decision it acted
 on.
 
 **One caller proof (packages 5 and 6).** `crate::teams::caller`
-(`src/teams/caller.rs`, owned by package 5) answers who runs a command:
-`Caller::Person`, `Caller::Session(SessionKey)` or `Caller::Refused(Problem)`.
-The person is a call with no session markers and no live session agent among
-its process ancestors, found by a bounded lookup keyed by those ancestors and
-checked against a real process in a test; a lookup that cannot be read is a
-refusal. The CLI and the task intake both use it, and package 5 merges before
-package 6.
+(`src/teams/caller.rs`) answers who runs a command: `Caller::Person`,
+`Caller::Session(SessionKey)` or `Caller::Refused(Problem)`. The CLI and the
+task intake both use it. After its review it is a piece of its own, on its
+own branch, and merges before the rest of package 5 and before package 6.
+
+The interim person rule, exactly: for each ancestor of the command, at most
+64, read its environment; an ancestor that names a session is verified
+against the one saved record its name and run point to, by process ID and
+birth identity. A verified live session agent among the ancestors means the
+command is not a person's. The walk ends at the top of the user's own
+process tree: the first ancestor of that user whose parent belongs to
+another user. It ends there whether or not that process can be read, because
+a person's terminal and the desktop application both descend from the
+user's service manager, whose environment the same user cannot read; the
+top is decided by the owners in the process table, never by a name. Below
+the top, whatever cannot be established is a refusal: an ancestor that
+cannot be read, a walk that stops early or hits its cap, a record that is
+corrupt or unreadable. The proof changes no process environment, reads no
+session inventory and prints no path. Turning the preview on or off goes
+through it.
+
+Two limits are stated, not hidden. A child that was reparented away from
+its agent, and a registered agent that was started without the markers in
+its environment, are not detected: finding them needs an index of sessions
+by process, which belongs with the verified Person authority
+(`zerus-cg5h.4.11`) that replaces this rule. And the preview is for Linux
+and macOS in this milestone: where the ancestry cannot be evaluated, an
+unmarked command is refused and the preview cannot be turned on.
 
 **How the service reaches a session (packages 8, 10 and 17).** The desktop's
 deferred-send, deferred-answer and creation actors admit only the proof of a
