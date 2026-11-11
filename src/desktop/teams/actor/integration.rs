@@ -14,6 +14,8 @@ struct MergeRow {
     reserved_ms: i64,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     padding: String,
+    #[serde(default)]
+    refused_fact: bool,
 }
 impl Runtime {
     pub(super) fn integrations(
@@ -133,6 +135,7 @@ impl Runtime {
             epoch: self.epoch.clone(),
             reserved_ms: now,
             padding: String::new(),
+            refused_fact: false,
         };
         outcome::reserve(&mut row)?;
         self.ledger.reserve(
@@ -218,6 +221,19 @@ impl Runtime {
         row: &mut MergeRow,
         now: i64,
     ) -> Result<()> {
+        if row.refused_fact {
+            if !store.ready_accept(
+                &team.id,
+                row.plan.node,
+                row.plan.generation,
+                row.plan.decision,
+            )? {
+                return self.discard_conflict(store, team, key, gate, now);
+            }
+            return Err(problem(
+                "The corrected conflict fact was refused; the service will not repeat it.",
+            ));
+        }
         // A prior fact in this batch can stale another saved envelope. Only
         // fact writes are retried here, with a new ID after a saved refusal.
         for _ in 0..2 {
@@ -239,14 +255,22 @@ impl Runtime {
                 Err(error) => {
                     if matches!(row.outcome, Some(MergeResult::Conflict { .. }))
                         && store.request_refused(&team.id, &request.request_id)?
-                        && !store.ready_accept(
+                    {
+                        if !store.ready_accept(
                             &team.id,
                             row.plan.node,
                             row.plan.generation,
                             row.plan.decision,
-                        )?
-                    {
-                        return self.discard_conflict(store, team, key, gate, now);
+                        )? {
+                            return self.discard_conflict(store, team, key, gate, now);
+                        }
+                        if !outcome::omit_refused_names(row)? {
+                            row.refused_fact = true;
+                        }
+                        self.put(&team.id, key, row)?;
+                        if !row.refused_fact {
+                            continue;
+                        }
                     }
                     return Err(error);
                 }

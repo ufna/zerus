@@ -1080,3 +1080,5 @@ fn a_failed_conflict_fact_write_keeps_its_known_outcome_until_the_store_recovers
     );
     assert!(!a.ledger.merge_pending(TEAM).unwrap());
 }
+
+mod r2;

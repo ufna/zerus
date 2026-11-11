@@ -7,9 +7,10 @@ struct Git {
     hooks: PathBuf,
     base: String,
     incoming: String,
+    file: String,
 }
 impl Git {
-    fn new() -> Self {
+    fn with_name(name: &str) -> Self {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("repo");
         let hooks = temp.path().join("hooks");
@@ -24,6 +25,7 @@ impl Git {
             hooks,
             base: String::new(),
             incoming: String::new(),
+            file: name.into(),
         };
         f.run(&["init", "--initial-branch", "main"]);
         f.run(&["config", "user.name", "Teams Fixture"]);
@@ -59,15 +61,27 @@ impl Git {
         String::from_utf8(out.stdout).unwrap().trim().into()
     }
     fn commit(&self, text: &str) -> String {
-        std::fs::write(self.path.join("file.txt"), format!("{text}\n")).unwrap();
-        self.run(&["add", "file.txt"]);
+        std::fs::write(self.path.join(&self.file), format!("{text}\n")).unwrap();
+        self.run(&["add", &self.file]);
         self.run(&["commit", "-m", text]);
         self.run(&["rev-parse", "HEAD"])
     }
 }
 #[test]
 fn an_actor_conflict_records_its_decision_and_changes_no_ref_or_checkout() {
-    let git = Git::new();
+    assert_eq!(actor_conflict("file.txt"), vec!["file.txt"]);
+}
+#[test]
+fn blank_or_control_git_paths_are_quoted_in_the_conflict_fact() {
+    for path in ["   ", "\t", "line\nbreak"] {
+        assert_eq!(
+            actor_conflict(path),
+            vec![serde_json::to_string(path).unwrap()]
+        );
+    }
+}
+fn actor_conflict(name: &str) -> Vec<String> {
+    let git = Git::with_name(name);
     let mut h = Harness::empty();
     let mut op = create();
     if let Operation::Create {
@@ -119,6 +133,6 @@ fn an_actor_conflict_records_its_decision_and_changes_no_ref_or_checkout() {
     assert_eq!(git.run(&["status", "--porcelain"]), "");
     let fact = h.store.integration_fact(TEAM, node).unwrap().unwrap();
     assert_eq!(fact.decision, decision);
-    assert_eq!(fact.conflicts, vec!["file.txt"]);
     assert!(fact.commit.is_none());
+    fact.conflicts
 }

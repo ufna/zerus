@@ -30,11 +30,10 @@ pub(super) fn reserve(row: &mut MergeRow) -> Result<()> {
     row.padding = " ".repeat(MAX_ROW - size(row)? + 1);
     Ok(())
 }
-fn conflicts(row: &MergeRow, files: Vec<String>) -> Result<Vec<String>> {
-    let total = files.len();
+fn conflicts(row: &MergeRow, files: Vec<String>, total: usize) -> Result<Vec<String>> {
     let mut kept = Vec::new();
     for name in files.into_iter().take(199) {
-        kept.push(cut(&name, 4096));
+        kept.push(render_path(&name));
         let mut candidate = kept.clone();
         if total > kept.len() {
             candidate.push(format!("and {} more files", total - kept.len()));
@@ -53,7 +52,10 @@ pub(super) fn save(row: &mut MergeRow, reply: MergeResult) -> Result<()> {
     row.padding.clear();
     row.outcome = Some(match reply {
         MergeResult::Conflict { files } => MergeResult::Conflict {
-            files: conflicts(row, files)?,
+            files: {
+                let total = files.len();
+                conflicts(row, files, total)?
+            },
         },
         MergeResult::Unknown { reason } => MergeResult::Unknown {
             reason: cut(&reason, 2048),
@@ -64,4 +66,44 @@ pub(super) fn save(row: &mut MergeRow, reply: MergeResult) -> Result<()> {
         merged => merged,
     });
     Ok(())
+}
+
+fn render_path(name: &str) -> String {
+    let name = cut(name, 4096);
+    if !name.trim().is_empty() && !name.chars().any(char::is_control) {
+        return name;
+    }
+    let mut rendered = String::from("\"");
+    for ch in name.chars() {
+        let quoted = serde_json::to_string(&ch.to_string()).expect("a character is JSON text");
+        let piece = &quoted[1..quoted.len() - 1];
+        if rendered.len() + piece.len() + 1 > 4096 {
+            break;
+        }
+        rendered.push_str(piece);
+    }
+    rendered.push('"');
+    rendered
+}
+pub(super) fn omit_refused_names(row: &mut MergeRow) -> Result<bool> {
+    let Some(MergeResult::Conflict { files }) = &row.outcome else {
+        return Ok(false);
+    };
+    let total = files.len().max(1);
+    let mut good: Vec<String> = files
+        .iter()
+        .filter(|s| !s.trim().is_empty() && !s.chars().any(char::is_control) && s.len() <= 4096)
+        .cloned()
+        .collect();
+    if good.len() == files.len() {
+        good.clear();
+    }
+    let kept = conflicts(row, good, total)?;
+    if &kept == files {
+        return Ok(false);
+    }
+    row.outcome = Some(MergeResult::Conflict { files: kept });
+    row.fact_id = None;
+    row.fact_revision = None;
+    Ok(true)
 }
