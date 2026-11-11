@@ -172,7 +172,7 @@ fn prepare_launch(own: &super::super::ownership_launch::Fixture, store: &Store) 
         .insert(&row, 100)
         .unwrap();
     crate::platform::private_dir(&own.config.dir.join("swarm")).unwrap();
-    private_write(&own.config.dir.join("swarm/catalog.json"),json!({"node_id":own.b.machine,"catalog":{"schema":1,"swarm_id":uuid::Uuid::new_v4(),"operations":{}}}).to_string().as_bytes());
+    private_write(&own.config.dir.join("swarm/catalog.json"),json!({"node_id":own.b.machine,"catalog":{"schema":1,"swarm_id":uuid::Uuid::new_v4().to_string(),"operations":{}}}).to_string().as_bytes());
     row
 }
 fn native_record(b: &Binding, kind: &Kind) -> (Snapshot, Value) {
