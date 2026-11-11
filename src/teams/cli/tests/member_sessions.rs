@@ -1,4 +1,5 @@
 use super::harness::*;
+mod removed;
 use crate::teams::cli::actor::Caller;
 use crate::teams::ops::Operation;
 use serde_json::json;

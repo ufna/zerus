@@ -3,7 +3,7 @@ use super::*;
 // Settings admit at most 200 members, plus the separate lead roster row.
 pub(super) const MAX_ROSTER: usize = 201;
 pub(super) const MEMBER_SESSIONS_SQL: &str =
-    "SELECT id,machine,session_id FROM members WHERE team=?1 ORDER BY id LIMIT ?2";
+    "SELECT id,machine,session_id,state FROM members WHERE team=?1 ORDER BY id LIMIT ?2";
 
 impl Store {
     /// One primary-key range read, including unbound rows in the bound so a
@@ -20,6 +20,7 @@ impl Store {
                     r.get::<_, String>(0)?,
                     r.get::<_, Option<String>>(1)?,
                     r.get::<_, Option<String>>(2)?,
+                    sql_json::<MemberState>(r, 3)?,
                 ))
             })
             .map_err(storage)?
@@ -33,7 +34,10 @@ impl Store {
         }
         Ok(roster
             .into_iter()
-            .filter_map(|(member, machine, session)| {
+            .filter_map(|(member, machine, session, state)| {
+                if state == MemberState::Removed {
+                    return None;
+                }
                 machine
                     .zip(session)
                     .map(|(machine, session_id)| MemberSession {
