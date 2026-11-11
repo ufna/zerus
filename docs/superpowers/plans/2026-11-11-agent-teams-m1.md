@@ -1154,6 +1154,25 @@ could never be recorded. A conflict fact after a stop stays late
 provenance, as before. New writes are still found only among exact Ready
 accepts.
 
+**What the review of the service task commands settled (package 6b).** A
+team that is stopped or archived retires its nodes by that status:
+`team-clear` asks for no archive row there, for a task node and a stage
+node alike, because a stop leaves live nodes where they are and nothing
+observes them again. Under the project lock and the team transaction a
+command compares the facts its permit rests on (the effect and its state,
+the generation, the member and its binding, the team's status), never the
+team's revision: an unrelated write must not refuse a hand-out or retire a
+stage. A reopen whose member is not the task's executor, which is what a
+reassignment is, is delivered as a hand-over through the same attempt
+writer as a first hand-out. `team-stage` answers `created` by the task's
+identity whatever its text has become. A failure that is not a rule's
+refusal fails the child and is repeated; a refusal by a project limit
+(`agents_other`, `agent_limit`) carries a stable code so that the service
+can open the card the specification asks for (tracker item
+`zerus-63rru.23`). Text that came from a member or a task enters a
+hand-out quoted, under a heading that says whose it is. A cleanup's history
+entry names its cause.
+
 **A doorbell points at the inbox and carries none of it (package 10).** The
 doorbell says how many items wait and names the command that reads them;
 the text of an item comes from members and is never put into a message of
