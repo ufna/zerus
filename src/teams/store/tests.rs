@@ -1,6 +1,7 @@
 use super::*;
 mod cross;
 mod holder;
+mod member_sessions;
 mod stage;
 
 #[test]

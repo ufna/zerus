@@ -7,6 +7,7 @@ mod tests;
 mod cross;
 mod decision_state;
 mod holder;
+mod member_sessions;
 pub use decision_state::DecisionState;
 mod pages;
 mod records;

@@ -9,7 +9,7 @@ use crate::teams::store::{Cursor, Page, Store};
 use serde::Serialize;
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
-use zerus_team_plan::model::Node;
+use zerus_team_plan::model::{Node, SessionKey, TeamStatus};
 use zerus_team_plan::problem::code;
 use zerus_team_plan::Problem;
 
@@ -100,19 +100,45 @@ pub(super) fn list_teams(
     let (limit, cursor) = options.page()?;
     let cursor = cursor.map(input::parse_cursor).transpose()?;
     let page = store.teams(limit, cursor.as_ref())?;
-    // The lead's binding is one primary-key member lookup per row of this page
-    // (at most 200): no bundle and no settings are read.
+    // At most 200 member reads per page: live rows use one indexed roster read
+    // (at most 201 rows); other rows keep the lead's primary-key lookup. The
+    // roster also supplies lead_session, so no second lookup or bundle is needed.
     let mut rows = Vec::with_capacity(page.rows.len());
     for row in page.rows {
-        let lead_session = store
-            .member(&row.id, &row.lead)?
-            .and_then(|member| member.session);
+        let live = matches!(
+            row.status,
+            TeamStatus::Planning | TeamStatus::Running | TeamStatus::Paused
+        );
+        let sessions = if live {
+            store.member_sessions(&row.id)?
+        } else {
+            Vec::new()
+        };
+        let lead_session = if live {
+            sessions
+                .iter()
+                .find(|member| member.member == row.lead)
+                .map(|member| SessionKey {
+                    machine: member.machine.clone(),
+                    session_id: member.session_id.clone(),
+                })
+        } else {
+            store
+                .member(&row.id, &row.lead)?
+                .and_then(|member| member.session)
+        };
         let mut value = serde_json::to_value(&row).map_err(storage)?;
         if let Some(object) = value.as_object_mut() {
             object.insert(
                 "lead_session".into(),
                 serde_json::to_value(lead_session).map_err(storage)?,
             );
+            if !sessions.is_empty() {
+                object.insert(
+                    "member_sessions".into(),
+                    serde_json::to_value(sessions).map_err(storage)?,
+                );
+            }
         }
         rows.push(value);
     }
