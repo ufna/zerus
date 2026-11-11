@@ -1024,6 +1024,18 @@ a reported task carries the report's text first and then the pipeline's
 reason and findings; for a pipeline without stages it is the report's text
 as before.
 
+**A resumed member keeps its launch and gets a new run (packages 8 and
+17).** A standing resume restores the member's exact session: launch ID,
+native session, machine, agent, account and worktree stay, the run and the
+conversation are new. Package 17 records them from the completed resume
+receipt and exposes `confirm::resumed_binding(state, team, member, launch)`,
+a bounded read-only fact that grants neither liveness nor authority to
+send. The actor takes a member's current run from that fact when it exists
+and from the launch otherwise, through one function of its availability
+port, and proves liveness and idleness from the fleet row of that exact
+run. A member whose launch ended and who has no resumed binding is not
+free.
+
 **Known limit.** A stage excludes the implementer of the target's current
 round. After a reassignment an earlier implementer could hold a stage of
 the same target where the stage's role equals the implementer's role; the
