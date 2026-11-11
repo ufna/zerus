@@ -5,11 +5,13 @@
 import { afterEach, expect, it, vi } from "vitest";
 import { createComponent } from "solid-js";
 import { render } from "solid-js/web";
+import { MenuLayer } from "../components/Overlays";
+import { setMenu } from "../../store/ui";
 import { MemberCard } from "./MemberCard";
 import type { MemberView } from "./types";
 
 let dispose: (() => void) | undefined;
-afterEach(() => { dispose?.(); dispose = undefined; document.body.replaceChildren(); });
+afterEach(() => { dispose?.(); dispose = undefined; document.body.replaceChildren(); setMenu(undefined); });
 
 const member = (over: Partial<MemberView> = {}): MemberView => ({
   id: "m1", role: "developer", agent: "claude", account: "account-example", state: "active", lead: false,
@@ -20,49 +22,69 @@ const member = (over: Partial<MemberView> = {}): MemberView => ({
 function setup(value: MemberView, onAction = vi.fn()) {
   const host = document.createElement("div");
   document.body.append(host);
-  dispose = render(() => createComponent(MemberCard, { member: value, busy: false, onAction }), host);
-  return { host, onAction };
+  dispose = render(() => [createComponent(MemberCard, { member: value, busy: false, onAction }), createComponent(MenuLayer, {})], host);
+  const openDetails = () => {
+    (host.querySelector('[aria-label="Member actions"]') as HTMLButtonElement).click();
+    ([...host.querySelectorAll<HTMLButtonElement>('[role="menuitemcheckbox"]')].find((button) => button.textContent === "Member details"))!.click();
+  };
+  return { host, onAction, openDetails };
 }
 
-it("shows the member's role, state, account and bound session", () => {
-  const { host } = setup(member());
+it("keeps a linked session as a plain localized fact without a technical keyboard stop (review 13)", () => {
+  const { host, openDetails } = setup(member());
+  openDetails();
   expect(host.querySelector(".team-member-name")?.textContent).toBe("m1");
   expect(host.querySelector(".role-badge")?.textContent).toBe("developer");
-  expect(host.textContent).toContain("active");
+  expect(host.querySelector(".tm-state-badge")).toBeNull();
   expect(host.textContent).toContain("account-example");
-  expect(host.querySelector(".team-member-session")?.textContent).toContain("launch_id:");
   const session = host.querySelector(".team-member-session")!;
-  expect(session.textContent!.length).toBeLessThan(member().session!.session_id.length);
-  expect(session.getAttribute("title")).toBe(member().session!.session_id);
-  expect(session.getAttribute("aria-label")).toBe(member().session!.session_id);
+  expect(session.textContent).toBe("Session linked");
+  expect(session.hasAttribute("tabindex")).toBe(false);
+  expect(session.hasAttribute("aria-label")).toBe(false);
+  expect(host.innerHTML).not.toContain("launch_id:");
 });
 
 it("marks the lead and a state's tone", () => {
   const { host } = setup(member({ id: "lead", role: "lead", lead: true }));
   expect(host.querySelector(".team-member-card")?.classList.contains("team-lead")).toBe(true);
-  expect(host.querySelector(".tm-state-badge")?.getAttribute("data-tone")).toBe("info");
+  expect(host.querySelector(".tm-state-badge")).toBeNull();
   expect(host.querySelector(".team-member-card")?.getAttribute("data-state-color")).toBe("info");
   expect(host.querySelector(".team-member-lead")?.textContent).toBe("lead");
 });
 
 it("shows a not-created member without a session", () => {
-  const { host } = setup(member({ state: "not_created", account: "", session: null }));
+  const { host, openDetails } = setup(member({ state: "not_created", account: "", session: null }));
+  openDetails();
   expect(host.querySelector(".tm-state-badge")?.getAttribute("data-tone")).toBe("dim");
   expect(host.textContent).toContain("not created");
   expect(host.textContent).toContain("the default account");
-  expect(host.querySelector(".team-member-session")).toBeNull();
+  expect(host.querySelector(".team-member-session")?.textContent).toBe("No linked session");
 });
 
 it("offers only the M1 operations and sends them by member id", () => {
   const { host, onAction } = setup(member());
-  const buttons = [...host.querySelectorAll("[data-member-actions] button")].map((button) => button.getAttribute("data-member-action"));
-  expect(buttons).toEqual(["pause-member", "stop-member", "archive-member"]);
-  (host.querySelector('[data-member-action="pause-member"]') as HTMLButtonElement).click();
+  (host.querySelector('[aria-label="Member actions"]') as HTMLButtonElement).click();
+  const buttons = [...host.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')];
+  expect(buttons.map((button) => button.textContent)).toEqual(["Pause", "Stop", "Remove"]);
+  expect(buttons.filter((button) => button.classList.contains("danger"))).toHaveLength(2);
+  buttons[0].click();
   expect(onAction).toHaveBeenCalledWith("pause-member", "m1");
 });
 
 it("offers resume only to a paused member", () => {
   const { host } = setup(member({ state: "paused" }));
-  const buttons = [...host.querySelectorAll("[data-member-actions] button")].map((button) => button.getAttribute("data-member-action"));
-  expect(buttons).toEqual(["resume-member", "stop-member", "archive-member"]);
+  (host.querySelector('[aria-label="Member actions"]') as HTMLButtonElement).click();
+  const buttons = [...host.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')];
+  expect(buttons.map((button) => button.textContent)).toEqual(["Resume", "Stop", "Remove"]);
+});
+
+it("keeps lead Pause/Stop and disables Remove with its reason (review 5)", () => {
+  const { host, onAction } = setup(member({ lead: true }));
+  (host.querySelector('[aria-label="Member actions"]') as HTMLButtonElement).click();
+  const buttons = [...host.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')];
+  expect(buttons.map((button) => button.textContent)).toEqual(["Pause", "Stop", "Remove"]);
+  expect(buttons[2].getAttribute("aria-disabled")).toBe("true");
+  expect(buttons[2].title).toContain("lead cannot be removed");
+  buttons[2].click(); expect(onAction).not.toHaveBeenCalled();
+  buttons[1].click(); expect(onAction).toHaveBeenCalledWith("stop-member", "m1");
 });

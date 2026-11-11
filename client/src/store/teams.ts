@@ -18,16 +18,17 @@ export interface TeamSummary {
   lead_session?: TeamSession | null;
 }
 export interface TeamList { teams: TeamSummary[]; truncated: boolean; next: string | null }
-export interface TeamMember { id: string; role: string; agent: string; account: string; state: string; lead: boolean; session: TeamSession | null }
+export interface TeamMember { id: string; role: string; agent: string; account: string; state: string; lead: boolean; session: TeamSession | null; model?: string | null }
 export interface TeamMemberCounts { total: number; not_created: number; active: number; paused: number; removed: number }
 export interface TeamNodeCounts { waiting: number; pending: number; in_progress: number; reported: number; accepted: number; cancelled: number }
 export interface TeamCounts { members: TeamMemberCounts; nodes: TeamNodeCounts; inbox: number; cards: number }
-export interface TeamStage { node: number; index: number; role: string; state: string; assignee: string; implementer: string }
+export interface TeamStage { node: number; index: number; role: string; state: string; assignee: string; implementer: string; kind?: "review" | "test" | "land" | null; target?: number | null; round?: number | null }
 export interface TeamTaskRef { project: string; uuid: string }
 export interface TeamCard {
   node: number; title: string; state: string; task: TeamTaskRef | null; role: string; pipeline: string;
   assignee: string; implementer: string; rank: string; round: number; held: boolean; admitted: boolean;
   integrated: boolean; decided_by: string; stages: TeamStage[];
+  kind?: "task" | "stage" | null; rounds?: number | null;
 }
 export interface TeamGroup { state: string; cards: TeamCard[] }
 export interface TeamBar {

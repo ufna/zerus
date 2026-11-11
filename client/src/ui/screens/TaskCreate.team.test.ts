@@ -43,18 +43,20 @@ function setup(teamsOn = true) {
   return host;
 }
 
-const chooser = (host: HTMLElement) => host.querySelector<HTMLSelectElement>("select.tk-team");
+const chooser = (host: HTMLElement) => host.querySelector<HTMLButtonElement>("button.tk-team");
 
 it("offers the project's teams in the form", () => {
   const host = setup();
   expect(chooser(host)).not.toBeNull();
-  expect([...chooser(host)!.options].map((option) => option.textContent)).toEqual(["No team", "Fixes"]);
+  expect(chooser(host)!.textContent).toContain("No team");
+  chooser(host)!.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
+  expect(chooser(host)!.textContent).toContain("Fixes");
+  expect(chooser(host)!.querySelector(".team-identity svg")).not.toBeNull();
 });
 
 it("creates the card in the chosen team's queue", async () => {
   const host = setup();
-  chooser(host)!.value = TEAM;
-  chooser(host)!.dispatchEvent(new Event("change", { bubbles: true }));
+  chooser(host)!.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
   const input = host.querySelector("input.tk-newtitle") as HTMLInputElement;
   input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
   await vi.waitFor(() => expect(f.create).toHaveBeenCalled());

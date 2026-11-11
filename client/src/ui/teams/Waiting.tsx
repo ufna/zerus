@@ -1,6 +1,7 @@
 import { For, Show } from "solid-js";
 import { tr } from "../../i18n";
 import { Icon } from "../lib/icons";
+import { TeamChip } from "./TeamChips";
 import type { WaitingItem, WaitingView } from "../../store/teams";
 import { waitingAge, waitingDecisions, waitingKindIcon, waitingKindLabel } from "./decisions";
 
@@ -22,10 +23,9 @@ export function WaitingCard(props: {
   return (
     <article class="waiting-card" data-waiting={props.item.id} data-kind={props.item.kind}>
       <div class="waiting-card-head">
-        <Icon name={waitingKindIcon(props.item.kind)} size={14} />
-        <b class="waiting-kind">{waitingKindLabel(props.item)}</b>
-        <button type="button" class="waiting-team btn ghost small" title={tr("Open the team")} onClick={() => props.onOpenTeam(props.item)}>
-          {props.teamName || props.item.team}
+        <span class="team-stage-chip waiting-kind"><Icon name={waitingKindIcon(props.item.kind)} size={12} /><b>{waitingKindLabel(props.item)}</b></span>
+        <button type="button" class="waiting-team btn small" title={tr("Open the team")} onClick={() => props.onOpenTeam(props.item)}>
+          <TeamChip name={props.teamName || props.item.team} />
         </button>
         <span class="waiting-age dim">{waitingAge(props.item.created_ms, props.now)}</span>
       </div>

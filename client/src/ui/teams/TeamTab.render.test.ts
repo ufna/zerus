@@ -42,20 +42,20 @@ it("shows the member cards, the lead marked", () => {
 it("draws the queue's own board groups and the cards", () => {
   const { host } = setup();
   const groups = [...host.querySelectorAll("[data-team-board] .team-column")].map((group) => group.getAttribute("data-group"));
-  expect(groups).toEqual(["waiting", "pending", "in_progress", "reported", "accepted", "cancelled"]);
-  const reported = host.querySelector('[data-group="reported"]');
+  expect(groups).toEqual(["queue", "work", "submitted", "role:reviewer", "accepted"]);
+  const reported = host.querySelector('[data-group="submitted"]');
   expect(reported?.querySelector(".team-task-title")?.textContent).toBe("Task 2");
 });
 
 it("shows a stage's own worker apart from the task's implementer", () => {
   const { host } = setup();
-  const stage = host.querySelector('[data-group="reported"] .team-task-stage');
-  expect(stage?.textContent).toContain("reviewer: m3, checks the work of m1");
+  const stage = host.querySelector('[data-group="submitted"] .team-stage-chip');
+  expect(stage?.getAttribute("title")).toContain("reviewer: m3, checks the work of m1");
 });
 
 it("a selected card shows its facts and decisions, sending by node", () => {
   const { host, actions } = setup();
-  (host.querySelector('[data-group="reported"] .team-task-card') as HTMLButtonElement).click();
+  (host.querySelector('[data-group="submitted"] .team-task-card') as HTMLButtonElement).click();
   const detail = host.querySelector("[data-team-detail]")?.textContent ?? "";
   expect(detail).toContain("example-project");
   expect(detail).toContain("00000000-0000-4000-8000-000000000002");
@@ -66,7 +66,7 @@ it("a selected card shows its facts and decisions, sending by node", () => {
 
 it("asks for a reason before a return", () => {
   const { host, actions } = setup();
-  (host.querySelector('[data-group="reported"] .team-task-card') as HTMLButtonElement).click();
+  (host.querySelector('[data-group="submitted"] .team-task-card') as HTMLButtonElement).click();
   (host.querySelector('[data-task-action="return"]') as HTMLButtonElement).click();
   const input = host.querySelector(".team-reason input") as HTMLInputElement;
   input.value = "Add a test"; input.dispatchEvent(new Event("input", { bubbles: true }));

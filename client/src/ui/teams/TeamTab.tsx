@@ -1,8 +1,9 @@
-import { For, Show, createEffect, createMemo, createSignal, onCleanup, onMount } from "solid-js";
+import { For, Show, createEffect, createMemo, createSignal, on, onCleanup, onMount } from "solid-js";
 import { tr } from "../../i18n";
 import { detailTab, page, selected, setPage } from "../../store/ui";
 import { pageHidden } from "../../store/visibility";
-import { newRequestId, teams, type TeamCall, type TeamView } from "../../store/teams";
+import { machineCards } from "../../store/machines";
+import { newRequestId, teams, type TeamCall, type UnresolvedCall } from "../../store/teams";
 import { teamCall, type TaskButton } from "./actions";
 import { MemberCard } from "./MemberCard";
 import { TeamBar } from "./team-bar";
@@ -11,7 +12,10 @@ import { TeamConfirmDialog } from "./TeamConfirmDialog";
 import { stageLine } from "./task-line";
 import { TextInput } from "../lib/TextField";
 import { Icon } from "../lib/icons";
-import type { MemberView, TaskView } from "./types";
+import type { TeamView } from "./types";
+import { boardColumns, type BoardColumn } from "./pipeline-view";
+import { followTeamScope, type TeamScope } from "./team-tab-scope";
+import { TeamTaskCard } from "./TeamTaskCard";
 import { openTeamNode, setOpenTeamNode } from "./openNode";
 import "../styles/teams.css";
 
@@ -22,39 +26,47 @@ import "../styles/teams.css";
 // not part of M1 and are not here. Data comes only from the store's followed
 // team view; every action is one intent through the store.
 
-export const GROUPS = ["waiting", "pending", "in_progress", "reported", "accepted", "cancelled"] as const;
-const LABELS: Record<string, string> = {
-  draft: "Draft", waiting: "Waiting", pending: "To do", in_progress: "In progress",
-  reported: "In review", accepted: "Done", cancelled: "Cancelled",
-};
+function columnLabel(column: BoardColumn): string {
+  switch (column.key) {
+    case "queue": return tr("Queue");
+    case "work": return tr("In work");
+    case "submitted": return tr("Submitted");
+    case "review": return tr("In review");
+    case "test": return tr("In test");
+    case "land": return tr("Landing");
+    case "accepted": return tr("Accepted");
+    case "cancelled": return tr("Cancelled");
+    default: return column.role || column.key;
+  }
+}
 
 /** The workspace, from a view the store has already projected. */
 export function TeamWorkspace(props: {
   view: TeamView;
   busy: boolean;
   failure: { code: string; message: string } | null;
+  actionFailure?: string | null;
   onAction: (kind: string, fields?: Record<string, unknown>) => void;
   onPage: (cursor: string) => void;
   onAddTask: () => void;
 }) {
   const [selectedNode, setSelectedNode] = createSignal<number | null>(null);
+  const [asking, setAsking] = createSignal<TaskButton | null>(null);
+  const [reason, setReason] = createSignal("");
+  createEffect(on(() => props.view.bar.id, () => { setSelectedNode(null); setAsking(null); setReason(""); }, { defer: true }));
   // Waiting for you's Open task: the node it names is selected once.
   createEffect(() => {
     const wanted = openTeamNode();
     if (wanted && wanted.team === props.view.bar.id) { setSelectedNode(wanted.node); setOpenTeamNode(null); }
   });
-  const [asking, setAsking] = createSignal<TaskButton | null>(null);
-  const [reason, setReason] = createSignal("");
-  const groups = createMemo(() => {
-    const byState = new Map(props.view.groups.map((group) => [group.state, group.cards]));
-    return GROUPS.map((state) => ({ state, cards: byState.get(state) ?? [] }));
-  });
+  const groups = createMemo(() => boardColumns(props.view));
   const all = createMemo(() => props.view.groups.flatMap((group) => group.cards));
   const card = createMemo(() => all().find((candidate) => candidate.node === selectedNode()) ?? null);
   const send = (kind: string, fields: Record<string, unknown> = {}) => { props.onAction(kind, fields); setAsking(null); setReason(""); };
   return (
     <div class="team-tab" data-team-tab>
       <TeamBar view={props.view} busy={props.busy} onAction={(kind) => send(kind)} />
+      <Show when={props.actionFailure}>{(reason) => <div class="notice danger team-notice" role="alert" data-team-action-failure><Icon name="triangle-alert" size={16} /><span>{reason()}</span></div>}</Show>
       <Show when={props.failure}>
         {(failure) => (
           <div class="notice danger team-notice" role="alert" data-team-failure>
@@ -64,49 +76,25 @@ export function TeamWorkspace(props: {
         )}
       </Show>
       <div class="team-body">
-        <aside class="team-members" data-team-members aria-label={tr("Members")}>
-          <header class="team-section-head"><Icon name="users" size={14} /><h3>{tr("Members")}</h3><span class="count">{props.view.members.length}</span></header>
-          <For each={props.view.members}>
-            {(member: MemberView) => <MemberCard member={member} busy={props.busy}
-              onAction={(kind, id) => send(kind, { member: id })} />}
-          </For>
-        </aside>
         <section class="team-main">
+          <header class="team-board-head"><Icon name="columns-3" size={14} /><b>{tr("Board")}</b><span class="grow" /><button type="button" class="btn small" onClick={props.onAddTask}><Icon name="plus" size={12} />{tr("Add task")}</button></header>
           <div class="team-canvas">
             <Show when={all().length} fallback={
               <div class="empty team-empty"><Icon name="list-todo" size={24} /><h3>{tr("The queue is empty.")}</h3><p>{tr("Send a task to the team from the task board.")}</p></div>
             }>
-            <div class="team-board" data-team-board>
-              <For each={groups()}>
-                {(group) => (
-                  <div class="team-column" data-group={group.state}>
-                    <h3><span>{tr(LABELS[group.state] ?? group.state)}</span><span class="count">{group.cards.length}</span></h3>
-                    <Show when={!group.cards.length}><p class="team-column-empty">{tr("No tasks")}</p></Show>
-                    <For each={group.cards}>
-                      {(task: TaskView) => (
-                        <button type="button" class="team-task-card" classList={{ "team-task-selected": selectedNode() === task.node }}
-                          data-node={task.node} onClick={() => setSelectedNode(task.node)} aria-pressed={selectedNode() === task.node} aria-label={task.title || tr("Task %1", task.node)}>
-                          <span class="team-task-title">{task.title || tr("Task %1", task.node)}</span>
-                          <span class="team-task-meta">
-                            <span class="mono">{task.rank}</span>
-                            <Show when={task.role}><span>{tr(task.role)}</span></Show>
-                            <Show when={task.assignee}><span>{tr("by %1", task.assignee)}</span></Show>
-                            <Show when={!task.assignee && task.implementer}><span>{tr("Implemented by")}: {task.implementer}</span></Show>
-                            <Show when={task.held}><span>{tr("held")}</span></Show>
-                            <Show when={task.integrated}><span>{tr("merged")}</span></Show>
-                          </span>
-                          <Show when={task.stages.length}>
-                            <span class="team-task-stages">
-                              <For each={task.stages}>{(stage) => <span class="team-task-stage" data-stage={stage.node}><b>{tr(stage.state)}</b> {stageLine(stage)}</span>}</For>
-                            </span>
-                          </Show>
-                        </button>
-                      )}
-                    </For>
-                  </div>
-                )}
-              </For>
-            </div>
+              <div class="team-board" data-team-board>
+                <For each={groups()}>
+                  {(group) => (
+                    <section class="team-column" data-group={group.key}>
+                      <h3><Show when={group.kind}><Icon name={group.kind === "review" ? "search-check" : group.kind === "test" ? "flask-conical" : "git-merge"} size={12} /></Show><span>{columnLabel(group)}</span><span class="count">{group.cards.length}</span></h3>
+                      <div class="team-column-cards">
+                        <Show when={!group.cards.length}><p class="team-column-empty">—</p></Show>
+                        <For each={group.cards}>{(task) => <TeamTaskCard task={task} members={props.view.members} selected={selectedNode() === task.node} onSelect={() => setSelectedNode(task.node)} />}</For>
+                      </div>
+                    </section>
+                  )}
+                </For>
+              </div>
             </Show>
             <Show when={card()}>
               {(shown) => (
@@ -159,9 +147,15 @@ export function TeamWorkspace(props: {
             <Show when={props.view.next}>
               {(cursor) => <button type="button" class="btn small" onClick={() => props.onPage(cursor())}>{tr("More…")}</button>}
             </Show>
-            <button type="button" class="btn small" onClick={props.onAddTask}><Icon name="plus" size={14} />{tr("Add task")}</button>
           </div>
         </section>
+        <aside class="team-members" data-team-members aria-label={tr("Members")}>
+          <header class="team-section-head"><Icon name="users" size={14} /><h3>{tr("Members")}</h3><span class="count">{props.view.members.length}</span></header>
+          <For each={props.view.members}>
+            {(member) => <MemberCard member={member} cards={all()} busy={props.busy} onSelect={setSelectedNode}
+              onAction={(kind, id) => send(kind, { member: id })} />}
+          </For>
+        </aside>
       </div>
     </div>
   );
@@ -181,50 +175,67 @@ export function TeamUncertain(props: { detail: string; busy: boolean; onCheck: (
   );
 }
 
-/** The session's team: resolved from the list's lead session, then followed. */
-export function TeamTab() {
+/** The two store seams stay separate from rendering and following. */
+function selectedLeadBinding() {
   const row = selected();
-  onMount(() => {
-    void teams.probe();
-    void teams.leadTeamFor(row?.key ?? "", { sessionId: row?.sessionId ?? null, runId: row?.runId ?? null });
-  });
-  createEffect(() => {
-    const hidden = pageHidden() || page() !== "sessions" || detailTab() !== "team";
-    void teams.hidden(hidden);
-  });
-  onCleanup(() => { void teams.closeTeam(); });
-  const teamId = createMemo(() => (row ? teams.sessionTeams()[row.key] : undefined));
+  if (!row) return { state: "none" as const };
+  const machine = machineCards[row.computer]?.machine_id;
+  if (!machine) return { state: "unknown" as const };
+  return teams.teamOfSession({ machine, launchId: row.launchId, runId: row.runId });
+}
+const actionReason = (source: string) => teams.failureFor(source)?.message;
+
+/** Every unresolved call keeps its own identity and explicit Check/Dismiss. */
+export function TeamUnresolvedList(props: { entries: readonly UnresolvedCall[]; busy: boolean; onCheck: (entry: UnresolvedCall) => void; onDismiss: (entry: UnresolvedCall) => void }) {
+  return <For each={props.entries}>{(entry) => <section class="team-unresolved-entry" data-team-request={entry.call.request_id}>
+    <div class="team-unresolved-name">{entry.call.team_name || entry.call.team}</div>
+    <TeamUncertain detail={entry.detail} busy={props.busy} onCheck={() => props.onCheck(entry)} onDismiss={() => props.onDismiss(entry)} />
+  </section>}</For>;
+}
+
+/** Selection and list changes rebind the tab; old reads settle before new ones. */
+export function TeamTab() {
+  onMount(() => { void teams.probe(); });
+  const binding = createMemo(selectedLeadBinding);
+  const target = createMemo(() => {
+    const row = selected(), found = binding();
+    return { key: JSON.stringify([row?.key, machineCards[row?.computer ?? ""]?.machine_id, row?.launchId, row?.runId]), team: found.state === "lead" ? found.team : undefined };
+  }, undefined, { equals: (a, b) => a.key === b.key && a.team === b.team });
+  const scope = followTeamScope(target, { close: () => teams.closeTeam(), open: (id) => teams.openTeam(id) });
+  const sourceFor = (scope: TeamScope) => `team-tab:${scope.key}:${scope.team ?? ""}`;
+  const source = () => sourceFor(target());
+  createEffect(on(target, (_next, previous) => {
+    if (previous) {
+      teams.clearFailure(sourceFor(previous));
+      if (teams.confirmation()?.call.team === previous.team) teams.cancelConfirmation();
+    }
+  }));
+  createEffect(() => { void teams.hidden(pageHidden() || page() !== "sessions" || detailTab() !== "team"); });
+  onCleanup(() => { teams.clearFailure(source()); });
   const view = createMemo(() => {
-    const shown = teams.team();
-    return shown && teamId() && shown.bar.id === teamId() ? shown : undefined;
+    const current = target(), ready = scope.ready(), shown = teams.team();
+    return ready?.key === current.key && ready.team === current.team && shown?.bar.id === current.team ? shown : undefined;
   });
+  const readFailure = () => {
+    const failure = teams.failure();
+    return failure?.key === `team:${target().team}` ? failure : null;
+  };
   const act = (kind: string, fields: Record<string, unknown> = {}) => {
     const current = view();
     if (!current) return;
     const call: TeamCall = teamCall(current, newRequestId(), kind, fields);
-    void teams.run(call);
+    void teams.run(call, source());
   };
-  return (
-    <>
-      <Show when={view()} fallback={
-        <div class="team-loading" role="status" data-team-waiting>
-          <Show when={teamId() === undefined} fallback={<span class="dim">{tr("This session is not a team lead.")}</span>}>
-            <span class="dim">{tr("Finding the team of this session…")}</span>
-          </Show>
-        </div>
-      }>
-        {(current) => (
-          <>
-            <TeamWorkspace view={current()} busy={teams.busy()} failure={teams.failure()}
-              onAction={act} onPage={(cursor) => void teams.page(`team:${current().bar.id}`, cursor)}
-              onAddTask={() => setPage("projects")} />
-            <Show when={teams.uncertain()} keyed>
-              {(asking) => <TeamUncertain detail={asking.detail} busy={teams.busy()} onCheck={() => void teams.check()} onDismiss={() => void teams.dismiss()} />}
-            </Show>
-          </>
-        )}
-      </Show>
-      <TeamConfirmDialog />
-    </>
-  );
+  return <>
+    <Show when={scope.failure()}>{(reason) => <div class="notice danger team-notice" role="alert"><Icon name="triangle-alert" size={16} /><span>{reason()}</span></div>}</Show>
+    <Show when={view()} fallback={
+      <div class="team-loading" role="status" data-team-waiting>
+        <span class="dim">{binding().state === "none" ? tr("This session is not a team lead.") : tr("Finding the team of this session…")}</span>
+      </div>
+    }>{(current) => <TeamWorkspace view={current()} busy={teams.busy()} failure={readFailure()} actionFailure={actionReason(source())}
+      onAction={act} onPage={(cursor) => void teams.page(`team:${current().bar.id}`, cursor)} onAddTask={() => setPage("projects")} />}</Show>
+    <Show when={!view() && actionReason(source())}>{(reason) => <div class="notice danger team-notice" role="alert" data-team-action-failure><Icon name="triangle-alert" size={16} /><span>{reason()}</span></div>}</Show>
+    <TeamUnresolvedList entries={teams.unresolved()} busy={teams.busy()} onCheck={(entry) => void teams.check(entry, source())} onDismiss={(entry) => void teams.dismiss(entry, source())} />
+    <TeamConfirmDialog source={source()} />
+  </>;
 }

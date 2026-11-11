@@ -1,6 +1,7 @@
 // Keep the shared layer order first, just as main.tsx does.
 import "../ui/styles/base.css";
 import "../ui/styles/tasks.css";
+import "../ui/styles/sessions.css";
 import { For, Show, createComponent, onMount, type JSX } from "solid-js";
 import { render } from "solid-js/web";
 import { NewTeam } from "../ui/teams/NewTeam";
@@ -9,8 +10,13 @@ import { TeamUncertain, TeamWorkspace } from "../ui/teams/TeamTab";
 import { WaitingList } from "../ui/teams/Waiting";
 import type { WaitingView } from "../store/teams";
 import { Icon } from "../ui/lib/icons";
+import { TeamConfirmation } from "../ui/teams/TeamConfirmDialog";
+import { Dropdown } from "../ui/lib/Dropdown";
+import { TeamChip } from "../ui/teams/TeamChips";
+import { createSignal } from "solid-js";
+import { MenuLayer } from "../ui/components/Overlays";
 import { MemberCard } from "../ui/teams/MemberCard";
-import { catalog, teamView } from "../ui/teams/fixtures";
+import { catalog, teamView, fidelityView } from "../ui/teams/fixtures";
 import type { TeamView } from "../store/teams";
 import { applySkin, skins } from "../skin/runtime";
 
@@ -86,15 +92,24 @@ function FormPreview() {
 function App() {
   const show = (screen: string) => !params.has("screen") || params.get("screen") === screen;
   onMount(() => {
+    if (params.has("stages")) queueMicrotask(() => {
+      const board = document.querySelector<HTMLElement>(".team-board");
+      if (board) board.scrollLeft = board.scrollWidth;
+    });
     if (params.has("detail")) queueMicrotask(() => {
-      const card = document.querySelector<HTMLButtonElement>('[data-group="reported"] .team-task-card');
+      const card = document.querySelector<HTMLButtonElement>('[data-group="review"] .team-task-card');
       card?.click();
       if (window.innerWidth <= 900) card?.scrollIntoView({ block: "nearest", inline: "nearest" });
       window.scrollTo(0, 0);
     });
   });
+  if (params.get("screen") === "confirm") return <TeamConfirmation name="teamStopConfirm" title="Stop team?" text="Stop Orbit platform / checkout? Every unfinished task is cancelled." action="Stop team" onCancel={() => { document.body.dataset.confirmResult = "cancel"; }} onConfirm={() => { document.body.dataset.confirmResult = "confirm"; }} />;
+  if (["board", "fallback"].includes(params.get("screen") ?? "")) {
+    const view = params.get("screen") === "fallback" ? { ...fidelityView, members: fidelityView.members.map(({ model: _model, ...member }) => member), groups: fidelityView.groups.map((group) => ({ ...group, cards: group.cards.map(({ rounds: _rounds, kind: _kind, ...card }) => ({ ...card, stages: card.stages.map(({ kind: _stageKind, round: _round, target: _target, ...stage }) => stage) })) })) } : fidelityView;
+    return <div class="smoke-board-viewport"><TeamWorkspace view={view} busy={false} failure={null} onAction={() => {}} onPage={() => {}} onAddTask={() => {}} /><MenuLayer /></div>;
+  }
   return <div class="smoke" classList={{ "smoke-narrow": params.has("narrow") }}>
-    <header class="smoke-head"><h1>Teams screens (M1)</h1><nav aria-label="Preview skins"><For each={skins}>{(choice) => {
+    <MenuLayer /><header class="smoke-head"><h1>Teams screens (M1)</h1><nav aria-label="Preview skins"><For each={skins}>{(choice) => {
       const query = new URLSearchParams(params); query.set("skin", choice.id);
       return <a class="btn small" aria-current={choice.id === skin.id ? "page" : undefined} href={`?${query}`}>{choice.name}</a>;
     }}</For></nav></header>
@@ -135,7 +150,7 @@ function App() {
     <Show when={show("send")}>
       <Section title="Send to team on a task card" note="A card in To do with the project's two teams: each is one menu item; the card stays where it was.">
         <div class="tk-panel">
-          <div class="tk-head"><span class="tk-scope">1 task</span><select class="field tk-team" aria-label="Team"><option>No team</option><option>Fixes</option><option>Docs</option></select></div>
+          <div class="tk-head"><span class="tk-scope">1 task</span>{(() => { const [choice, setChoice] = createSignal(""); return <Dropdown class="field tk-team" aria-label="Team" value={choice()} onChange={setChoice} options={[{ value: "", label: "No team" }, ...["Fixes", "Docs"].map((name) => ({ value: name, textValue: name, label: () => <TeamChip name={name} /> }))]} />; })()}</div>
           <article class="tk-card st-todo" data-task="fixture-task">
             <span class="tk-glyph st-todo" aria-hidden="true" />
             <div class="tk-card-main">

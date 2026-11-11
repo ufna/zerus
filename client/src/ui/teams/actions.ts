@@ -52,14 +52,14 @@ export function taskButtons(card: TaskView): TaskButton[] {
 }
 
 /** A member's operations, by its state. */
-export function memberActions(member: MemberView): { id: string; text: string; danger?: boolean }[] {
+export function memberActions(member: MemberView): { id: string; text: string; danger?: boolean; disabled?: boolean; reason?: string }[] {
   const active = member.state === "active";
   const paused = member.state === "paused";
   return [
     ...(active ? [{ id: "pause-member", text: tr("Pause") }] : []),
     ...(paused ? [{ id: "resume-member", text: tr("Resume") }] : []),
     ...(active || paused ? [{ id: "stop-member", text: tr("Stop"), danger: true }] : []),
-    ...(active || paused ? [{ id: "archive-member", text: tr("Remove"), danger: true }] : []),
+    ...(active || paused ? [{ id: "archive-member", text: tr("Remove"), danger: true, disabled: member.lead, reason: member.lead ? tr("The team's lead cannot be removed.") : undefined }] : []),
   ];
 }
 

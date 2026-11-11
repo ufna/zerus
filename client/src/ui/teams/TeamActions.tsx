@@ -1,5 +1,7 @@
-import { For, Show } from "solid-js";
+import { For, Show, onCleanup } from "solid-js";
 import { tr } from "../../i18n";
+import { menu, setMenu, type MenuEntry } from "../../store/ui";
+import { Icon } from "../lib/icons";
 import { memberActions, taskButtons, type TaskButton } from "./actions";
 import { barActions } from "./actions";
 import type { MemberView, TaskView, TeamView } from "./types";
@@ -41,16 +43,24 @@ export function TaskActions(props: {
 }
 
 /** A member's operations in its card. */
-export function MemberActions(props: { member: MemberView; busy: boolean; onAction: (kind: string, member: string) => void }) {
+export function MemberActions(props: { member: MemberView; busy: boolean; onAction: (kind: string, member: string) => void; onDetails?: () => void; detailsOpen?: boolean }) {
+  let items: MenuEntry[] | undefined;
+  onCleanup(() => { if (items && menu()?.items === items) setMenu(undefined); });
   return (
-    <Show when={memberActions(props.member).length}>
+    <Show when={memberActions(props.member).length || props.onDetails}>
       <span class="team-member-actions" data-member-actions>
-        <For each={memberActions(props.member)}>
-          {(action) => (
-            <button type="button" class="btn small" classList={{ danger: action.danger }} disabled={props.busy}
-              data-member-action={action.id} onClick={() => props.onAction(action.id, props.member.id)}>{action.text}</button>
-          )}
-        </For>
+        <button type="button" class="icon-btn small team-member-more" aria-label={tr("Member actions")} title={tr("Member actions")} aria-haspopup="menu" disabled={props.busy}
+          onClick={(event) => {
+            const trigger = event.currentTarget, box = trigger.getBoundingClientRect(), memberId = props.member.id;
+            items = [
+              ...(props.onDetails ? [{ label: tr("Member details"), icon: "info", checked: props.detailsOpen, action: () => { trigger.focus(); props.onDetails?.(); } }] : []),
+              ...memberActions(props.member).map((action) => ({
+              label: action.text, icon: action.id.startsWith("pause") ? "pause" : action.id.startsWith("resume") ? "play" : action.id.startsWith("stop") ? "square" : "trash",
+              danger: action.danger, disabled: props.busy || action.disabled, hint: action.reason,
+              action: () => { if (props.busy || action.disabled) return; trigger.focus(); props.onAction(action.id, memberId); },
+            }))];
+            setMenu({ x: box.right - 200, y: box.bottom + 4, items });
+          }}><Icon name="ellipsis" size={14} /></button>
       </span>
     </Show>
   );

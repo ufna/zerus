@@ -1,37 +1,57 @@
-import { Show } from "solid-js";
+import { For, Show, createMemo, createSignal } from "solid-js";
 import { tr } from "../../i18n";
+import { Icon } from "../lib/icons";
 import { accountLabel } from "./members";
 import { memberStatus } from "./team-model";
-import { roleStyle } from "./roles";
 import { MemberActions } from "./TeamActions";
-import type { MemberView } from "./types";
+import { RoleChip, StageChip, TeamAgent } from "./TeamChips";
+import { memberWork, type MemberWork } from "./pipeline-view";
+import type { MemberView, TaskView } from "./types";
 
-// One member of the team, as the Team tab's column shows it: its role and
-// colour, its state, the agent and account it runs on and its bound session.
-// The operations are the M1 ones only (pause, resume, stop, remove).
-
-export function MemberCard(props: { member: MemberView; busy: boolean; onAction: (kind: string, member: string) => void }) {
+// The reference's compact right-side member card. Only current page assignments
+// establish its work line/queue; missing model, findings and full-queue data are
+// omitted, never inferred from a role or a live session.
+export function MemberCard(props: { member: MemberView; cards?: readonly TaskView[]; busy: boolean; onAction: (kind: string, member: string) => void; onSelect?: (node: number) => void }) {
+  const [detailsOpen, setDetailsOpen] = createSignal(false);
   const status = () => memberStatus(props.member);
-  const role = () => props.member.role || props.member.id;
-  const sessionLabel = (value: string) => value.length > 26 ? `${value.slice(0, 14)}…${value.slice(-8)}` : value;
-  return (
-    <div class="team-member-card" classList={{ "team-lead": props.member.lead }} data-member={props.member.id} data-state={status().state} data-state-color={status().tone}>
+  const work = createMemo(() => memberWork(props.member, props.cards ?? []));
+  const current = () => work().find((item) => (item.stage?.state ?? item.card.state) === "in_progress") ?? work()[0];
+  const queue = () => work().filter((item) => item.stage && ["pending", "waiting"].includes(item.stage.state));
+  const activity = (item: MemberWork) => {
+    if (item.stage) {
+      if (item.stage.state === "in_progress") return item.stage.kind === "review" ? tr("Reviewing #%1", item.card.node)
+        : item.stage.kind === "test" ? tr("Testing #%1", item.card.node)
+        : item.stage.kind === "land" ? tr("Landing #%1", item.card.node) : tr("Stage work on #%1", item.card.node);
+      return item.stage.state === "reported" ? tr("Stage reported for #%1", item.card.node) : tr("Queued for #%1", item.card.node);
+    }
+    if (item.card.held) return tr("Task #%1 is held", item.card.node);
+    return item.card.state === "in_progress" ? tr("Working on #%1", item.card.node) : item.card.state === "reported" ? tr("Reported #%1", item.card.node) : tr("Assigned to #%1", item.card.node);
+  };
+  return <div class="team-member-card" classList={{ "team-lead": props.member.lead }} data-member={props.member.id} data-state={status().state} data-state-color={status().tone}>
+    <TeamAgent agent={props.member.agent} />
+    <div class="team-member-content">
       <div class="team-member-line">
-        <b class="team-member-name ell" title={props.member.id}>{props.member.id}</b>
-        <span class="tm-state-badge" data-tone={status().tone}>{status().label}</span>
+        <RoleChip role={props.member.role || props.member.id} lead={props.member.lead} />
+        <Show when={props.member.id !== props.member.role}><b class="team-member-name ell" title={props.member.id}>{props.member.id}</b></Show>
+        <span class="team-member-agent ell" title={props.member.model || props.member.agent}>{props.member.model || props.member.agent}</span>
+        <Show when={props.member.state !== "active"}><span class="team-member-state tm-state-badge" data-tone={status().tone}>{status().label}</span></Show>
+        <MemberActions member={props.member} busy={props.busy} onAction={props.onAction} detailsOpen={detailsOpen()} onDetails={() => setDetailsOpen(!detailsOpen())} />
       </div>
-      <div class="team-member-line">
-        <span class="role-badge" classList={{ "team-member-lead": props.member.lead && role() === "lead" }} style={roleStyle(role(), props.member.lead)}>{tr(role())}</span>
-        <Show when={props.member.lead && role() !== "lead"}><span class="chip team-member-lead">{tr("lead")}</span></Show>
-      </div>
-      <div class="team-member-main">
-        <span>{props.member.agent}</span>
-        <span class="team-account">{accountLabel(props.member)}</span>
-      </div>
-      <Show when={props.member.session}>
-        {(session) => <span class="team-member-session mono" tabindex="0" title={session().session_id} aria-label={session().session_id}>{sessionLabel(session().session_id)}</span>}
+      <Show when={props.member.state === "active" ? current() : undefined} fallback={<p class="team-member-idle">{props.member.state === "active" ? tr("No current assignment on this page.") : status().label}</p>}>
+        {(item) => <div class="team-member-activity">
+          <Show when={props.onSelect} fallback={<span>{activity(item()!)}</span>}><button type="button" onClick={() => props.onSelect?.(item()!.card.node)}>{activity(item()!)}<span class="ell">{item()!.card.title}</span></button></Show>
+          <Show when={item()!.stage} fallback={<Show when={item()!.card.round > 0}><span class="dim">{tr("Round %1", item()!.card.round)}</span></Show>}>{(stage) => <StageChip stage={stage()} rounds={item()!.card.rounds} />}</Show>
+        </div>}
       </Show>
-      <MemberActions member={props.member} busy={props.busy} onAction={props.onAction} />
+      <Show when={queue().length}>
+        <div class="team-member-queue"><span class="team-queue-caption"><Icon name="workflow" size={11} />{tr("Stage queue on this page")} <span>{queue().length}</span></span>
+          <For each={queue().slice(0, 5)}>{(item) => <div class="team-member-queue-row"><StageChip stage={item.stage!} rounds={item.card.rounds} /><Show when={props.onSelect} fallback={<span>#{item.card.node} {item.card.title}</span>}><button type="button" class="ell" title={item.card.title} onClick={() => props.onSelect?.(item.card.node)}>#{item.card.node} {item.card.title}</button></Show></div>}</For>
+          <Show when={queue().length > 5}><span class="dim">{tr("+%1 more", queue().length - 5)}</span></Show>
+        </div>
+      </Show>
+      <Show when={detailsOpen()}><div class="team-member-details-body"><span class="team-account">{accountLabel(props.member)}</span>
+        <span class="team-member-session">{props.member.session ? tr("Session linked") : tr("No linked session")}</span>
+      </div></Show>
     </div>
-  );
+  </div>;
 }

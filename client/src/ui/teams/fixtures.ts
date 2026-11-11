@@ -85,3 +85,47 @@ export const catalog: TeamCatalog = {
   }],
   planning_rules: [],
 };
+
+// Optional projection fields, for the board-reference preview and render tests.
+// Every fact below is synthetic. Role words intentionally differ from stage
+// kinds: a Test stage is assigned to the member whose custom role is "quality".
+const boardMember = (id: string, role: string, agent: string, model: string, lead = false) => ({
+  id, role, agent, model, lead, account: "account-example", state: "active",
+  session: { machine: "00000000-0000-4000-8000-0000000000aa", session_id: `launch_id:00000000-0000-4000-8000-${id.padStart(12, "0")}` },
+});
+const boardMembers = [
+  boardMember("lead", "lead", "claude", "example-lead", true),
+  boardMember("backend", "backend", "deepseek", "example-code"),
+  boardMember("frontend", "frontend", "codex", "example-code"),
+  boardMember("reviewer", "reviewer", "claude", "example-review"),
+  boardMember("quality", "quality", "kimi", "example-test"),
+];
+const boardCard = (node: number, title: string, state: string, role: string, assignee: string, round = 1): import("./types").TaskView => ({
+  node, title, state, role, assignee, round, kind: "task", rounds: 3,
+  task: { project: "example-project", uuid: `00000000-0000-4000-8000-${String(node).padStart(12, "0")}` },
+  pipeline: "reviewed-and-tested", implementer: assignee, rank: `a${String(node).padStart(2, "0")}`,
+  held: false, admitted: true, integrated: false, decided_by: "", stages: [],
+});
+const boardStage = (target: number, kind: "review" | "test" | "land", state: string, index: number, round = 1): import("./types").StageView => ({
+  node: target * 10 + index + 100, index, target, kind, state, round,
+  role: kind === "test" ? "quality" : kind === "land" ? "lead" : "reviewer",
+  assignee: kind === "test" ? "quality" : kind === "land" ? "lead" : "reviewer", implementer: "frontend",
+});
+const boardCards = [
+  { ...boardCard(9, "Card form keyboard order", "pending", "frontend", "frontend"), held: true },
+  boardCard(6, "Rate limits and retries", "pending", "backend", "backend"),
+  boardCard(2, "Saved cards API", "in_progress", "backend", "backend", 2),
+  { ...boardCard(5, "Contract tests", "reported", "quality", "quality", 3), stages: [boardStage(5, "review", "accepted", 0, 3), boardStage(5, "test", "accepted", 1, 3)] },
+  { ...boardCard(10, "Saved cards API docs", "reported", "backend", "backend"), stages: [boardStage(10, "review", "pending", 0)] },
+  { ...boardCard(3, "Card form UI", "reported", "frontend", "frontend"), stages: [boardStage(3, "review", "in_progress", 0)] },
+  { ...boardCard(4, "Address validation", "reported", "frontend", "frontend", 2), stages: [boardStage(4, "review", "accepted", 0, 2), boardStage(4, "test", "in_progress", 1, 1)] },
+  { ...boardCard(12, "Provider token vault", "accepted", "backend", "backend"), decided_by: "lead", stages: [boardStage(12, "review", "accepted", 0), boardStage(12, "test", "accepted", 1)] },
+  { ...boardCard(13, "Checkout copy review", "accepted", "frontend", "frontend"), decided_by: "lead", stages: [boardStage(13, "review", "accepted", 0)] },
+];
+export const fidelityView: TeamView = {
+  ...teamView,
+  bar: { ...teamView.bar, name: "Orbit platform / checkout", counts: { members: { total: 5, active: 5, paused: 0, not_created: 0, removed: 0 }, nodes: { waiting: 0, pending: 2, in_progress: 1, reported: 4, accepted: 2, cancelled: 0 }, inbox: 1, cards: 1 } },
+  members: boardMembers,
+  groups: ["waiting", "pending", "in_progress", "reported", "accepted", "cancelled"].map((state) => ({ state, cards: boardCards.filter((card) => card.state === state) })),
+  truncated: false, next: null,
+};

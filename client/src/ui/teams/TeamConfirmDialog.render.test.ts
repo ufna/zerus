@@ -67,3 +67,21 @@ it("cancels without sending", () => {
   expect(f.cancel).toHaveBeenCalledTimes(1);
   expect(f.confirm).not.toHaveBeenCalled();
 });
+
+it("focuses rightmost Cancel and leaves Enter activation to the focused button (review 8)", async () => {
+  vi.spyOn(HTMLDialogElement.prototype, "showModal").mockImplementation(function (this: HTMLDialogElement) { this.open = true; });
+  f.setAsking({ call: { request_id: "11111111-2222-4333-8444-555555555555", action: { kind: "stop" } }, confirmation: { name: "stop", title: "Stop team?", text: "Every unfinished task is cancelled.", action: "Stop team" } });
+  const host = show(); await Promise.resolve();
+  const buttons = [...host.querySelectorAll<HTMLButtonElement>("button")];
+  expect(buttons.map((button) => button.textContent)).toEqual(["Stop team", "Cancel"]);
+  expect(document.activeElement).toBe(buttons[1]);
+  for (const button of buttons) {
+    button.focus();
+    const enter = new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true });
+    button.dispatchEvent(enter);
+    expect(enter.defaultPrevented).toBe(false);
+  }
+  expect(f.confirm).not.toHaveBeenCalled(); expect(f.cancel).not.toHaveBeenCalled();
+  buttons[1].click(); expect(f.cancel).toHaveBeenCalledTimes(1); expect(f.confirm).not.toHaveBeenCalled();
+  buttons[0].click(); expect(f.confirm).toHaveBeenCalledTimes(1);
+});

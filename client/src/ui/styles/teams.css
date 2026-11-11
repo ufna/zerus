@@ -1,19 +1,18 @@
-/* The fork's team strip, member colours and queue board, adapted to M1.
-   Shared buttons, chips, notices and empty states come from base.css. */
+/* Queue-board and compact member anatomy adapted from the fork's PNG design
+   references at ca4cc4481. M1 has one queue and no phase/mode/profile controls. */
 @layer components {
-  .team-tab { container: team / inline-size; flex: 1; min-height: 0; min-width: 0; display: flex; flex-direction: column; font-size: var(--fs-sm); }
+  .team-tab { container: team / inline-size; flex: 1; min-height: 0; min-width: 0; display: flex; flex-direction: column; font-size: var(--fs-sm); background: var(--z-color-pane); }
   .team-loading { padding: 18px; }
-
-  .team-bar { display: flex; align-items: center; flex-wrap: wrap; gap: 10px 12px; min-height: 52px; flex: none; padding: 10px 14px; border-bottom: 1px solid var(--z-color-divider); }
+  .team-bar { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 10px; min-height: 44px; flex: none; padding: 8px 14px; border-bottom: 1px solid var(--z-color-divider); }
   .team-bar > svg { flex: none; color: var(--z-color-muted); }
   .team-name { font-size: var(--fs-md); max-width: 28%; }
-  .tm-state-badge { --tone: var(--z-color-muted); display: inline-flex; align-items: center; flex: none; padding: 1px 7px; border-radius: var(--z-radius-sm); font-size: var(--fs-xs); font-weight: 600; white-space: nowrap; color: var(--tone); background: color-mix(in srgb, var(--tone) 12%, transparent); border: 1px solid color-mix(in srgb, var(--tone) 35%, transparent); }
+  .tm-state-badge { --tone: var(--z-color-muted); display: inline-flex; align-items: center; flex: none; gap: 4px; padding: 1px 7px; border-radius: 12px; font-size: var(--fs-xs); font-weight: 600; white-space: nowrap; color: var(--tone); background: color-mix(in srgb, var(--tone) 9%, transparent); border: 1px solid color-mix(in srgb, var(--tone) 50%, transparent); }
   .tm-state-badge.tone-active { --tone: var(--z-color-accent); }
   .tm-state-badge.tone-done { --tone: var(--z-color-status-ready); }
   .tm-state-badge.tone-warn { --tone: var(--z-color-warn); }
   .tm-state-badge.tone-danger { --tone: var(--z-color-danger); }
   .tm-state-badge.tone-planning { --tone: var(--z-color-info); }
-  .team-progress { display: flex; flex: 0 1 160px; min-width: 80px; max-width: 180px; height: 6px; border-radius: 3px; background: var(--z-color-tile); overflow: hidden; }
+  .team-progress { display: flex; flex: 0 1 150px; min-width: 80px; max-width: 180px; height: 5px; border-radius: 3px; background: var(--z-color-tile); overflow: hidden; }
   .team-progress .seg { display: block; height: 100%; flex: 0 1 0; }
   .team-progress .accepted { background: var(--z-color-accent-muted); }
   .team-progress .reported { background: var(--z-color-info); }
@@ -24,51 +23,88 @@
   .team-chips, .team-bar-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
   .team-bar-actions { margin-left: auto; }
   .team-bar-compact .team-bar-actions { flex-basis: 100%; justify-content: flex-end; }
-
   .team-body { flex: 1; min-height: 0; display: flex; }
-  .team-members { flex: 0 0 250px; min-width: 0; display: flex; flex-direction: column; gap: 8px; padding: 12px; overflow-y: auto; border-right: 1px solid var(--z-color-divider); background: var(--z-color-members-surface, var(--z-color-pane)); }
-  .team-section-head { display: flex; align-items: center; gap: 8px; min-height: 24px; padding: 0 2px 4px; }
+  .team-main { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; }
+  .team-board-head, .team-section-head { display: flex; align-items: center; gap: 8px; min-height: 42px; padding: 8px 12px; flex: none; }
   .team-section-head h3 { font-size: var(--fs-sm); font-weight: 600; }
   .team-section-head .count { margin-left: auto; }
-  .team-main { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; }
-  .team-canvas { flex: 1; min-width: 0; min-height: 0; overflow: auto; padding: 12px; }
+  .team-canvas { flex: 1; min-width: 0; min-height: 0; overflow: auto; padding: 0 10px 12px; }
+  .team-board { display: flex; gap: 8px; align-items: stretch; overflow-x: auto; padding: 2px 0 10px; }
+  .team-column { flex: 1 0 236px; min-width: 0; display: flex; flex-direction: column; padding: 8px; border: 1px solid var(--z-color-card-border); border-radius: var(--z-radius-lg); background: color-mix(in srgb, var(--z-color-surface) 35%, var(--z-color-pane)); }
+  .team-column[data-group="review"] { border-color: color-mix(in srgb, var(--z-color-violet) 50%, var(--z-color-card-border)); }
+  .team-column[data-group="test"] { border-color: color-mix(in srgb, var(--z-color-info) 50%, var(--z-color-card-border)); }
+  .team-column h3 { display: flex; align-items: center; gap: 6px; padding: 2px 3px 9px; text-transform: uppercase; font-size: var(--fs-xs); font-weight: 500; color: var(--z-color-muted); }
+  .team-column h3 .count { margin-left: auto; background: transparent; font-size: inherit; font-weight: 500; }
+  .team-column-cards { display: flex; flex-direction: column; gap: 6px; }
+  .team-column-empty { padding: 12px 0; text-align: center; font-size: var(--fs-xs); color: var(--z-color-dim); border: 1px dashed var(--z-color-border); border-radius: var(--z-radius-md); }
+  .team-task-card { display: flex; flex-direction: column; gap: 5px; width: 100%; min-width: 0; text-align: left; padding: 8px 9px; border: 1px solid var(--z-color-card-border); border-radius: var(--z-radius-lg); background: var(--z-color-card); color: var(--z-color-text); transition: background var(--z-motion-fast), border-color var(--z-motion-fast); }
+  .team-task-card:hover { background: var(--z-color-card-hover); }
+  .team-task-card.needs-decision, .team-task-card.is-held { border-color: var(--z-color-warn); }
+  .team-task-card.is-working { border-color: var(--z-color-accent-muted); }
+  .team-task-card.team-task-selected { outline: 2px solid var(--z-color-accent); outline-offset: -2px; }
+  .team-task-card:focus-visible { outline: 2px solid var(--z-color-focus); outline-offset: 1px; }
+  .team-task-heading { display: flex; gap: 6px; align-items: center; min-width: 0; }
+  .team-task-heading > svg { flex: none; color: var(--z-color-accent-muted); }
+  .team-task-ref { flex: none; font-variant-numeric: tabular-nums; font-size: var(--fs-xs); font-weight: 600; }
+  .team-task-title { min-width: 0; font-size: var(--fs-sm); font-weight: 600; line-height: 1.35; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .team-task-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; min-width: 0; font-size: var(--fs-xs); color: var(--z-color-muted); }
+  .team-task-round { white-space: nowrap; }
+  .team-task-worker { min-width: 0; white-space: normal; overflow-wrap: anywhere; }
+  .team-task-meta .role-badge { max-width: 50%; flex-shrink: 1; }
+  .role-badge { --role: var(--role-dark, var(--z-color-muted)); display: inline-flex; align-items: center; gap: 4px; flex: none; max-width: 100%; padding: 1px 6px; border-radius: 12px; font-size: var(--fs-xs); font-weight: 600; color: var(--role); border: 1px solid color-mix(in srgb, var(--role) 50%, transparent); background: color-mix(in srgb, var(--role) 12%, transparent); }
+  .role-badge > svg { flex: none; }
+  .role-badge > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  :root[data-appearance="light"] .role-badge { --role: var(--role-light, var(--z-color-muted)); }
+  .team-agent { display: inline-flex; flex: none; }
+  .team-task-stages { display: flex; align-items: center; flex-wrap: wrap; gap: 4px; min-height: 18px; }
+  .team-stage-chip { --stage-color: var(--z-color-muted); display: inline-flex; align-items: center; gap: 4px; padding: 2px 6px; border: 1px solid transparent; border-radius: var(--z-radius-sm); font-size: var(--fs-xs); line-height: 1.2; color: var(--stage-color); background: color-mix(in srgb, var(--stage-color) 12%, transparent); }
+  .team-stage-chip > svg { flex: none; }
+  .team-stage-chip[data-kind="review"] { --stage-color: var(--z-color-violet); }
+  .team-stage-chip[data-kind="test"] { --stage-color: var(--z-color-info); }
+  .team-stage-chip[data-kind="land"], .team-decision-chip { --stage-color: var(--z-color-accent); }
+  .team-stage-chip[data-kind="role"] { --stage-color: var(--role-dark, var(--z-color-muted)); }
+  :root[data-appearance="light"] .team-stage-chip[data-kind="role"] { --stage-color: var(--role-light, var(--z-color-muted)); }
+  .team-stage-chip[data-state="pending"], .team-stage-chip[data-state="waiting"] { border-color: color-mix(in srgb, var(--stage-color) 50%, transparent); background: transparent; }
+  .team-stage-chip[data-state="cancelled"] { color: var(--z-color-muted); text-decoration: line-through; }
+  .team-held-chip { --stage-color: var(--z-color-warn); }
+  .team-card-progress { display: flex; gap: 2px; align-items: center; flex: none; width: 48px; height: 5px; margin-left: auto; }
+  .team-card-progress i { flex: 1; height: 4px; border-radius: 2px; background: var(--z-color-border); }
+  .team-card-progress i[data-state="accepted"] { background: var(--z-color-accent-muted); }
+  .team-card-progress i[data-state="in_progress"] { background: var(--z-color-accent); }
+  .team-card-progress i[data-state="in_progress"][data-kind="review"] { background: var(--z-color-violet); }
+  .team-card-progress i[data-state="in_progress"][data-kind="test"] { background: var(--z-color-info); }
+  .team-card-progress i[data-state="reported"] { background: var(--z-color-info); }
 
-  /* Member cards keep the fork's role badge and state rail. */
-  .team-member-card { --member-state: var(--z-color-muted); position: relative; min-width: 0; display: flex; flex-direction: column; gap: 7px; padding: 10px 10px 10px 13px; border: 1px solid var(--z-color-card-border); border-radius: var(--z-radius-lg); background: var(--z-color-card); }
-  .team-member-card::before { content: ""; position: absolute; left: -1px; top: 10px; bottom: 10px; width: 3px; border-radius: 0 2px 2px 0; background: var(--member-state); }
-  .team-member-card.team-lead { border-color: var(--z-color-accent-muted); }
+  /* The reference's right-hand member panel: one compact header, one activity
+     line, and only the queued stage assignments present on this bounded page. */
+  .team-members { flex: 0 0 clamp(290px, 28cqw, 390px); min-width: 0; display: flex; flex-direction: column; gap: 8px; padding: 0 10px 12px; overflow-y: auto; border-left: 1px solid var(--z-color-divider); }
+  .team-members .team-section-head { padding-left: 2px; padding-right: 2px; margin-bottom: -8px; }
+  .team-member-card { --member-state: var(--z-color-muted); display: flex; align-items: flex-start; gap: 8px; min-width: 0; padding: 10px; border: 1px solid var(--z-color-card-border); border-radius: var(--z-radius-lg); background: var(--z-color-card); }
+  .team-member-card > .team-agent { padding-top: 1px; }
+  .team-member-content { display: flex; flex-direction: column; gap: 6px; min-width: 0; flex: 1; }
   .team-member-card[data-state-color="info"] { --member-state: var(--z-color-info); }
-  .team-member-card[data-state-color="warn"] { --member-state: var(--z-color-warn); }
+  .team-member-card[data-state-color="warn"] { --member-state: var(--z-color-warn); border-color: color-mix(in srgb, var(--z-color-warn) 50%, var(--z-color-card-border)); }
   .team-member-card[data-state-color="danger"] { --member-state: var(--z-color-danger); }
   .team-member-card[data-state-color="dim"] { --member-state: var(--z-color-dim); }
-  .team-member-card .tm-state-badge { --tone: var(--member-state); margin-left: auto; }
-  .team-member-line { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; min-width: 0; }
-  .team-member-name { font-size: var(--fs-sm); }
-  .team-member-main { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; font-size: var(--fs-xs); color: var(--z-color-text-2); }
+  .team-member-line { display: flex; align-items: center; gap: 6px; min-width: 0; }
+  .team-member-name { font-size: var(--fs-xs); color: var(--z-color-muted); font-weight: 400; }
+  .team-member-actions { margin-left: auto; flex: none; }
+  .team-member-agent { color: var(--z-color-muted); font-size: var(--fs-xs); min-width: 0; }
+  .team-member-card .tm-state-badge { --tone: var(--member-state); align-self: flex-start; padding: 0 5px; font-size: var(--fs-2xs); }
+  .team-member-activity { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; font-size: var(--fs-xs); }
+  .team-member-activity > button { text-align: left; display: flex; align-items: center; gap: 6px; min-width: 0; color: var(--z-color-text-2); }
+  .team-member-activity > button:hover, .team-member-queue button:hover { color: var(--z-color-accent); }
+  .team-member-idle { color: var(--z-color-muted); font-size: var(--fs-xs); }
+  .team-member-queue { display: flex; flex-direction: column; gap: 5px; padding: 6px 8px; border-radius: var(--z-radius-md); background: var(--z-color-hover); font-size: var(--fs-xs); }
+  .team-queue-caption { display: flex; align-items: center; gap: 4px; color: var(--z-color-muted); }
+  .team-member-queue-row { display: flex; align-items: center; gap: 6px; min-width: 0; }
+  .team-member-queue-row > .team-stage-chip { flex: none; }
+  .team-member-queue-row > button { text-align: left; }
+  .team-member-details-body { display: flex; flex-direction: column; gap: 4px; padding-top: 6px; }
   .team-account { overflow-wrap: anywhere; }
-  .team-member-session { display: block; min-width: 0; font-size: var(--fs-2xs); color: var(--z-color-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .team-member-actions { display: flex; flex-wrap: wrap; gap: 4px; padding-top: 6px; border-top: 1px solid var(--z-color-divider); }
-  .role-badge { --role: var(--role-dark, var(--z-color-muted)); display: inline-flex; align-items: center; flex: none; max-width: 100%; padding: 1px 7px; border-radius: var(--z-radius-sm); font-size: var(--fs-xs); font-weight: 600; color: var(--role); border: 1px solid color-mix(in srgb, var(--role) 45%, transparent); background: color-mix(in srgb, var(--role) 12%, transparent); overflow-wrap: anywhere; }
-  :root[data-appearance="light"] .role-badge { --role: var(--role-light, var(--z-color-muted)); }
+  .team-member-session { display: block; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
-  /* The queue scrolls horizontally like a board; columns never shrink cards. */
-  .team-board { display: flex; gap: 12px; align-items: stretch; overflow-x: auto; padding: 0 2px 10px; }
-  .team-column { flex: 1 0 200px; min-width: 0; display: flex; flex-direction: column; gap: 8px; padding: 10px; min-height: 220px; border: 1px solid var(--z-color-divider); border-radius: var(--z-radius-lg); background: color-mix(in srgb, var(--z-color-surface) 55%, var(--z-color-pane)); }
-  .team-column h3 { display: flex; align-items: center; gap: 12px; margin-bottom: 2px; min-height: 22px; font-size: var(--fs-xs); font-weight: 600; color: var(--z-color-text-2); }
-  .team-column h3 .count { margin-left: auto; }
-  .team-column[data-group="reported"] h3 { color: var(--z-color-info); }
-  .team-column[data-group="in_progress"] h3 { color: var(--z-color-accent); }
-  .team-column[data-group="accepted"] h3 { color: var(--z-color-status-ready); }
-  .team-column-empty { padding: 14px 0; text-align: center; font-size: var(--fs-xs); color: var(--z-color-dim); }
-  .team-task-card { display: flex; flex-direction: column; gap: 8px; width: 100%; min-width: 0; text-align: left; padding: 10px; border: 1px solid var(--z-color-card-border); border-radius: var(--z-radius-dialog); background: var(--z-color-card); color: var(--z-color-text); transition: background var(--z-motion-fast), border-color var(--z-motion-fast); }
-  .team-task-card:hover { background: var(--z-color-card-hover); border-color: var(--z-color-border); }
-  .team-task-card.team-task-selected { background: var(--z-color-card-selected); border-color: var(--z-color-card-selected-border); }
-  .team-task-title { font-size: var(--fs-md); font-weight: 600; line-height: 1.32; overflow-wrap: anywhere; }
-  .team-task-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; font-size: var(--fs-xs); color: var(--z-color-muted); }
-  .team-task-stages { display: flex; flex-direction: column; gap: 6px; padding-top: 8px; border-top: 1px solid var(--z-color-divider); }
-  .team-task-stage { display: flex; flex-direction: column; gap: 4px; font-size: var(--fs-xs); line-height: 1.5; color: var(--z-color-text-2); overflow-wrap: anywhere; }
-  .team-task-stage b { font-weight: 600; color: var(--z-color-info); }
-  .team-task-detail { margin-top: 12px; padding: 14px; border: 1px solid var(--z-color-card-border); border-radius: var(--z-radius-dialog); background: var(--z-color-card); }
+  .team-task-detail { margin-top: 12px; padding: 14px; border: 1px solid var(--z-color-card-border); border-radius: var(--z-radius-lg); background: var(--z-color-card); }
   .team-task-detail h3 { font-size: var(--fs-md); margin-bottom: 12px; }
   .team-facts { display: grid; grid-template-columns: minmax(100px, 130px) minmax(0, 1fr); gap: 6px 12px; margin: 0 0 12px; font-size: var(--fs-sm); }
   .team-facts dt { color: var(--z-color-muted); }
@@ -78,22 +114,23 @@
   .team-task-detail > .team-finding-actions { display: flex; padding-top: 12px; border-top: 1px solid var(--z-color-divider); }
   .team-reason { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-top: 10px; }
   .team-reason input { flex: 1 1 200px; }
+  .team-unresolved-entry { flex: none; }
+  .team-unresolved-name { margin: 8px 12px -6px; font-size: var(--fs-xs); color: var(--z-color-muted); }
   .team-notice, .team-uncertain { margin: 10px 12px; }
   .team-uncertain { flex-wrap: wrap; align-items: center; }
   .team-uncertain > span:first-of-type { flex: 1 1 240px; }
-  .team-toolbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding: 10px 12px; border-top: 1px solid var(--z-color-divider); }
+  .team-toolbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding: 8px 12px; border-top: 1px solid var(--z-color-divider); min-height: 38px; }
   .team-note { color: var(--z-color-muted); font-size: var(--fs-xs); }
-  .team-empty { min-height: 220px; border: 1px dashed var(--z-color-border); border-radius: var(--z-radius-dialog); }
-
-  @container team (max-width: 700px) {
+  .team-empty { min-height: 220px; border: 1px dashed var(--z-color-border); border-radius: var(--z-radius-lg); }
+  @container team (max-width: 760px) {
     .team-body { flex-direction: column; overflow: auto; }
-    .team-members { flex: none; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); border-right: 0; border-bottom: 1px solid var(--z-color-divider); overflow: visible; }
-    .team-section-head { grid-column: 1 / -1; }
     .team-main, .team-canvas { flex: none; overflow: visible; }
-    .team-board { overflow-x: auto; }
+    .team-members { flex: none; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); border-left: 0; border-top: 1px solid var(--z-color-divider); overflow: visible; padding-top: 8px; }
+    .team-section-head { grid-column: 1 / -1; }
+    .team-main { min-height: 280px; }
     .team-name { max-width: 45%; }
   }
-  @container team (max-width: 420px) {
+  @container team (max-width: 460px) {
     .team-members { grid-template-columns: minmax(0, 1fr); }
     .team-progress { flex-basis: 80px; }
     .team-chips { flex-basis: 100%; }

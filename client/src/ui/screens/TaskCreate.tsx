@@ -5,6 +5,8 @@ import { selected } from "../../store/ui";
 import { requestTaskDescription } from "../../store/taskNavigation";
 import { Icon } from "../lib/icons";
 import { tr } from "../../i18n";
+import { Dropdown } from "../lib/Dropdown";
+import { TeamChip } from "../teams/TeamChips";
 import { teams } from "../../store/teams";
 
 /** Mockup's inline new-card title; Escape retains its private per-project draft. */
@@ -32,11 +34,8 @@ export default function TaskCreate(props: { project?: string; scope: string; bac
       onInput={(e) => newCard.edit(e.currentTarget.value, e.currentTarget.selectionEnd ?? 0, e.currentTarget.selectionStart ?? 0)} onBlur={() => void newCard.flush().catch(() => {})}
       onKeyDown={(e) => { if (e.isComposing) return; if (e.key === "Enter") { e.preventDefault(); void submit(); } else if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); setCreating(false); void newCard.flush().catch(() => {}); } }} />
   </Show><Show when={creating() && teamChoices().length}>
-      <select class="field tk-team" aria-label={tr("Team")} title={tr("Send the new task to a team's queue")}
-        value={team()} onChange={(event) => setTeam(event.currentTarget.value)}>
-        <option value="">{tr("No team")}</option>
-        <For each={teamChoices()}>{(candidate) => <option value={candidate.id}>{candidate.name}</option>}</For>
-      </select>
+      <Dropdown class="field tk-team" aria-label={tr("Team")} title={tr("Send the new task to a team's queue")}
+        value={team()} onChange={setTeam} options={[{ value: "", label: tr("No team") }, ...teamChoices().map((candidate) => ({ value: candidate.id, textValue: candidate.name, label: () => <TeamChip name={candidate.name} /> }))]} />
     </Show><button class="tk-sq add" aria-label={tr("New task")} title={tr("New task")} disabled={!props.project || !props.accessible} onClick={() => { setCreating(true); queueMicrotask(() => field?.focus()); }}><Icon name="plus" size={16} /></button>{props.children}</div>
     <Show when={newCard.error() && creating()}><div class="tk-create-error" role="alert">{newCard.error()}</div></Show></>;
 }
