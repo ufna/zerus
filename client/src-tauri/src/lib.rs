@@ -124,6 +124,8 @@ mod task_settings;
 #[cfg(feature = "live")]
 mod task_start;
 #[cfg(feature = "live")]
+mod teams;
+#[cfg(feature = "live")]
 mod terminal;
 #[cfg(feature = "live")]
 mod termination_cleanup;
@@ -763,6 +765,7 @@ fn launch(context: tauri::Context<tauri::Wry>, startup: Startup) {
                     }
                 }
                 app.manage(speech_settings::SpeechPage::default());
+                app.manage(teams::Teams::new());
                 app.manage(termination_cleanup::TerminationCleanup::default());
                 app.manage(worktree_cleanup::WorktreeCleanup::default());
                 app.manage(recovery::start(app.handle()));
@@ -1726,6 +1729,10 @@ fn handler() -> impl Fn(tauri::ipc::Invoke) -> bool + Send + Sync + 'static {
         session_folders::session_terminal_open,
         actions::inspect_subagent_activity,
         commands::tasks_follow,
+        teams::teams_follow,
+        teams::teams_hidden,
+        teams::teams_tasks_changed,
+        teams::team_action,
         task_details::task_details,
         task_details::task_reference,
         task_details::task_page,
