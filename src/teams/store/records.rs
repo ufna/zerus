@@ -118,6 +118,13 @@ pub struct IntegrationAccept {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct AttemptHolder {
+    pub member: String,
+    pub generation: u32,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct TeamRow {
     pub id: String,
     pub project: String,

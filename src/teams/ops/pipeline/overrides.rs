@@ -5,7 +5,7 @@ pub(in crate::teams::ops) fn released_stage(ctx: &Context<'_>, n: &Node) -> Resu
     if n.kind != NodeKind::Stage || ctx.node_table(n.id)? == "nodes" {
         return Ok(false);
     }
-    ctx.db.query_row("SELECT EXISTS(SELECT 1 FROM stage_tasks WHERE team=?1 AND node=?2 AND state NOT IN ('wanted','reserved','created'))",params![ctx.team.id,n.id],|r|r.get(0)).map_err(storage)
+    ctx.db.query_row("SELECT NOT EXISTS(SELECT 1 FROM stage_tasks WHERE team=?1 AND node=?2 AND state IN ('wanted','reserved','created'))",params![ctx.team.id,n.id],|r|r.get(0)).map_err(storage)
 }
 
 pub(in crate::teams::ops) fn override_task(ctx: &Context<'_>, target: u32) -> Result<()> {

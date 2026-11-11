@@ -21,6 +21,16 @@ UUID is a fresh identifier and TEAM is the team current names. The reply's
 item number is what the lead answers. A request that names its own actor, or
 names the operation, is refused.
 
+After checking a stage, its holder gives a verdict on stdin:
+
+  hgs team verdict
+    {"request_id":"UUID","team":"TEAM","expected_revision":42,
+     "node":7,"generation":1,"pass":true,"text":"Checks passed."}
+
+Use the stage's node and generation from current. Set pass to false to return
+the task, and give the exact findings in text. Only the stage's holder may
+give its verdict; the person, lead and other members cannot give it for you.
+
 Do
 - Work only on the task you hold, in your own worktree, inside its write set.
 - Report with the command pinned in the task's prompt, then report what you

@@ -313,6 +313,14 @@ pub(super) fn observe(ctx: &mut Context<'_>) -> Result<()> {
     if left || released {
         let release = left && !released && table == "nodes";
         rows::record_observation(ctx.db, &ctx.team.id, *node, o, release || released)?;
+        if released && n.kind == NodeKind::Stage {
+            ctx.db
+                .execute(
+                    "DELETE FROM live_tasks WHERE team=?1 AND node=?2",
+                    params![ctx.team.id, node],
+                )
+                .map_err(storage)?;
+        }
         if release {
             pipeline::observe_override(ctx, &n)?;
             leave_team(ctx, *node)?;

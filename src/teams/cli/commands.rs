@@ -32,6 +32,7 @@ pub(super) fn variant(command: &str) -> Option<&'static str> {
         "cancel" => "cancel",
         "reply" => "reply",
         "ask" => "ask",
+        "verdict" => "verdict",
         "pause-member" => "pause_member",
         "resume-member" => "resume_member",
         "stop-member" => "stop_member",
@@ -56,8 +57,8 @@ pub(super) fn run(
     }
     let mut store = Store::open(&config.state)?;
     let identity = actor::resolve(&store, caller)?;
-    if command == "ask" {
-        actor::member_session(&identity, "ask")?;
+    if matches!(command, "ask" | "verdict") {
+        actor::member_session(&identity, command)?;
     }
     let request = build(variant, &request_input(provided)?)?;
     let reply = ops::apply(&mut store, &identity.actor, &request, input::now_ms())?;

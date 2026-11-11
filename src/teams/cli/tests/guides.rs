@@ -112,6 +112,7 @@ fn line(example: &Example) -> String {
 /// The node an example acts on: a fresh reported task for each decision.
 fn node_for(command: &str) -> u32 {
     match command {
+        "verdict" => 2,
         "return" => 2,
         "reassign" => 3,
         _ => 1,
@@ -167,13 +168,28 @@ fn every_example_of_both_pages_runs() {
         harness.reported(node);
     }
     let known = [
-        "current", "ask", "inbox", "queue", "status", "accept", "return", "reassign", "reply",
+        "current", "ask", "verdict", "inbox", "queue", "status", "accept", "return", "reassign",
+        "reply",
     ];
     let steps = Cell::new(0);
     let mut item = 0u64;
+    let mut verdicts = 0;
     for example in examples(MEMBER_PAGE) {
         let command = example.args[0].as_str();
         assert!(known.contains(&command), "the member page names {command}");
+        if command == "verdict" {
+            let (stage_harness, stage) = super::verdict::stage_harness();
+            assert_eq!(node_for(command), stage);
+            let input = prepare(&example, &stage_harness, 0, &steps);
+            let (reply, exit) = stage_harness.cli(
+                &Caller::Session(key(super::verdict::REVIEWER_SESSION)),
+                &line(&example),
+                &input,
+            );
+            assert_eq!(exit, 0, "member page verdict: {reply}");
+            verdicts += 1;
+            continue;
+        }
         let input = example
             .input
             .as_ref()
@@ -204,6 +220,7 @@ fn every_example_of_both_pages_runs() {
         assert_eq!(exit, 0, "lead page `{command}`: {reply}");
     }
     assert!(item > 0, "the member page's ask was never answered");
+    assert_eq!(verdicts, 1, "the member page's verdict was never executed");
 }
 
 #[test]
@@ -214,6 +231,9 @@ fn the_pages_keep_their_bounds_and_name_the_new_commands() {
         assert!(page.ends_with('\n'));
         assert!(page.lines().all(|line| line.len() <= 100), "{name}");
     }
+    assert!(examples(MEMBER_PAGE)
+        .iter()
+        .any(|example| example.args[0] == "verdict"));
     let lead = examples(LEAD_PAGE)
         .into_iter()
         .map(|example| example.args[0].clone())

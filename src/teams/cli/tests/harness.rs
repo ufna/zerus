@@ -166,7 +166,10 @@ impl Harness {
 
     /// A second team on this computer, for cross-team reads and `list`.
     pub fn create_team(&self, id: &str, name: &str, branch: &str) {
-        let team = fixture().team;
+        let mut team = fixture().team;
+        // General CLI fixtures isolate the command protocol from pipelines.
+        // Verdict tests construct and complete a real reviewed stage.
+        team.bundle.pipelines[0].stages.clear();
         self.apply_for(
             id,
             &person(),

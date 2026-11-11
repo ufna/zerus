@@ -106,9 +106,35 @@ fn pd_a_finished_stage_stays_archived_when_its_task_is_reopened() {
                     params![TEAM, stage],
                 )
                 .unwrap();
+            let task = h.node(stage).task.unwrap();
+            h.store
+                .db
+                .as_ref()
+                .unwrap()
+                .execute(
+                    "INSERT INTO live_tasks(task_project,task_uuid,team,node) VALUES(?1,?2,?3,?4)",
+                    params![task.project, task.uuid, TEAM, stage],
+                )
+                .unwrap();
         }
         h.observe(stage, TaskStage::Todo);
         assert_eq!(h.node(stage), archived);
+        let bound: bool = h
+            .store
+            .db
+            .as_ref()
+            .unwrap()
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM live_tasks WHERE team=?1 AND node=?2)",
+                params![TEAM, stage],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(
+            !bound,
+            "A finished stage must release an older version-2 binding"
+        );
+
         assert!(!h
             .store
             .queue(TEAM, 200, None)
