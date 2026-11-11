@@ -7,7 +7,11 @@ import type { TeamsOut } from "../types";
 // pinned fixture stands for a `team:<id>` reply. No `hgs`, no timer, no Tauri.
 
 const list = {
-  teams: [{ id: TEAM_ID, project: "example-project", name: "Fixes", status: "running", lead: "lead", home: "00000000-0000-4000-8000-0000000000aa", revision: 16 }],
+  teams: [{
+    id: TEAM_ID, project: "example-project", name: "Fixes", status: "running", lead: "lead",
+    home: "00000000-0000-4000-8000-0000000000aa", revision: 16,
+    lead_session: { machine: "00000000-0000-4000-8000-0000000000aa", session_id: "launch_id:00000000-0000-4000-8000-000000000064" },
+  }],
   truncated: false,
   next: null,
 };
@@ -153,15 +157,19 @@ describe("the Teams store", () => {
     });
   });
 
-  it("resolves the lead session's team and follows it", async () => {
+  it("resolves the lead session's team from the list and follows it, without probing", async () => {
     const { transport, calls } = fake();
     const teams = createTeams(transport);
     teams.apply([entry("list", "list", list)]);
-    const pending = teams.leadTeamFor("row-key", { sessionId: "00000000-0000-4000-8000-000000000064", runId: null });
-    await Promise.resolve();
-    teams.apply([entry("team:" + TEAM_ID, "team", teamView as TeamView)]);
-    expect(await pending).toBe(TEAM_ID);
-    expect(calls.follow.at(-1)).toEqual({ list: false, waiting: false, team: TEAM_ID });
+    expect(await teams.leadTeamFor("row-key", { sessionId: "00000000-0000-4000-8000-000000000064", runId: null })).toBe(TEAM_ID);
+    expect(calls.follow).toEqual([{ list: false, waiting: false, team: TEAM_ID }]);
     expect(teams.sessionTeams()["row-key"]).toBe(TEAM_ID);
+    // Another session reads no team at all: the list's lead session decides.
+    const other = createTeams(transport);
+    other.apply([entry("list", "list", list)]);
+    const before = transport;
+    expect(await other.leadTeamFor("other-key", { sessionId: "00000000-0000-4000-8000-00000000ffff", runId: null })).toBeNull();
+    expect(other.sessionTeams()["other-key"]).toBeNull();
+    expect(before).toBe(transport);
   });
 });

@@ -12,7 +12,11 @@ import type { TeamsOut } from "../types";
 
 /** A member's session: the computer UUID and the session identity. */
 export interface TeamSession { machine: string; session_id: string }
-export interface TeamSummary { id: string; project: string; name: string; status: string; lead: string; home: string; revision: number }
+export interface TeamSummary {
+  id: string; project: string; name: string; status: string; lead: string; home: string; revision: number;
+  /** The lead's bound session, when package 5 sends it: how a session finds its team. */
+  lead_session?: TeamSession | null;
+}
 export interface TeamList { teams: TeamSummary[]; truncated: boolean; next: string | null }
 export interface TeamMember { id: string; role: string; agent: string; account: string; state: string; lead: boolean; session: TeamSession | null }
 export interface TeamMemberCounts { total: number; not_created: number; active: number; paused: number; removed: number }
@@ -194,27 +198,14 @@ export function createTeams(transport: TeamsTransport = tauriTeams()) {
   async function tasksChanged() { if (followed()) await transport.tasksChanged(); }
   async function page(key: string, cursor: string | null) { await transport.page(key, cursor); }
 
-  /** The session's team, from the followed team list and its lead's session. */
+  /** The session's team: the list's `lead_session` names the lead's session. */
   async function leadTeamFor(key: string, identity: SessionIdentity): Promise<string | null> {
     if (known(key)) return sessionTeams()[key];
     const ids = [identity.sessionId ? `launch_id:${identity.sessionId}` : "", identity.runId ? `run_id:${identity.runId}` : ""].filter(Boolean);
-    if (!ids.length) { setSessionTeams({ ...sessionTeams(), [key]: null }); return null; }
-    for (const summary of (list()?.teams ?? []).slice(0, 8)) {
-      await transport.follow({ list: false, waiting: false, team: summary.id });
-      const view = await new Promise<TeamView | null>((resolve) => {
-        waiting.set(summary.id, resolve);
-        setTimeout(() => { if (waiting.get(summary.id) === resolve) { waiting.delete(summary.id); resolve(null); } }, 5000);
-      });
-      const lead = view?.members.find((member) => member.lead);
-      if (lead?.session && ids.includes(lead.session.session_id)) {
-        setSessionTeams({ ...sessionTeams(), [key]: summary.id });
-        setFollowed(summary.id);
-        return summary.id;
-      }
-    }
-    setSessionTeams({ ...sessionTeams(), [key]: null });
-    await transport.follow({ list: true, waiting: false, team: null });
-    return null;
+    const found = (list()?.teams ?? []).find((summary) => !!summary.lead_session && ids.includes(summary.lead_session.session_id));
+    setSessionTeams({ ...sessionTeams(), [key]: found?.id ?? null });
+    if (found) { setFollowed(found.id); await transport.follow({ list: false, waiting: false, team: found.id }); }
+    return found?.id ?? null;
   }
 
   /** Opens the New team dialog: its catalog read is lazy, as the dialog is. */

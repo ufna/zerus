@@ -1,166 +1,63 @@
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { createServer, type ViteDevServer } from "vite";
-import solid from "vite-plugin-solid";
-import type { TeamMemberView, TeamView } from "../../types";
-import type { MemberStatus } from "./team-model";
+// @vitest-environment happy-dom
+// The member card (the fork's MemberCard, adapted): its role and colour, its
+// state word, the account and the session it runs on, and only the M1 member
+// operations.
+import { afterEach, expect, it, vi } from "vitest";
+import { createComponent } from "solid-js";
+import { render } from "solid-js/web";
+import { MemberCard } from "./MemberCard";
+import type { MemberView } from "./types";
 
-// Task #347: render the real MemberCard in Node, mocking only the stores and
-// the dialogs it opens; the state model, roles and progress stay production.
-const entry = "\0member-card-render";
-let server: ViteDevServer | undefined;
-let render: (member: TeamMemberView, status: MemberStatus, options?: { rowKey?: string; selectedKey?: string }) => string;
+let dispose: (() => void) | undefined;
+afterEach(() => { dispose?.(); dispose = undefined; document.body.replaceChildren(); });
 
-const mocks = new Map(["../../i18n", "../lib/icons", "../../store/catalog", "../../store/teams", "../../store/composer", "../../store/ui", "./ProposalCards", "./actions", "./TeamActions", "./SwapMemberDialog", "./roles", "./permissionAnswers", "./members"].map((id) => [id, `\0member-${id}`] as const));
-
-beforeAll(async () => {
-  const { fileURLToPath } = await import(/* @vite-ignore */ ["node", "url"].join(":")) as { fileURLToPath(url: URL): string };
-  server = await createServer({
-    configFile: false, root: fileURLToPath(new URL("../../../", import.meta.url)),
-    server: { middlewareMode: true, watch: null }, logLevel: "silent",
-    plugins: [{
-      name: "member-card-render-mocks", enforce: "pre",
-      resolveId(id, importer) {
-        if (id === entry) return entry;
-        if (!importer?.endsWith("/MemberCard.tsx")) return undefined;
-        return mocks.get(id);
-      },
-      load(id) {
-        const base = [...mocks].find(([, virtual]) => virtual === id)?.[0];
-        if (base === "../../i18n") return `export const tr = (s, ...args) => s.replace(/%(\d+)/g, (_, n) => String(args[n - 1])); export const trNoop = (s) => s;`;
-        if (base === "../lib/icons") return `export const Icon = () => null; export const AgentGlyph = () => null;`;
-        if (base === "../../store/catalog") return `export const agentKind = (agent) => agent || "claude";`;
-        if (base === "../../store/teams") return `export const memberRow = () => (globalThis.__memberRowKey ? { key: globalThis.__memberRowKey } : undefined);`;
-        if (base === "../../store/composer") return `export const composer = { view: () => undefined, locked: () => true, input() {}, text: () => "" };`;
-        if (base === "../../store/ui") return `export const selected = () => (globalThis.__selectedKey ? { key: globalThis.__selectedKey } : undefined); export const setDetailTab = () => {}; export const setSelectedKey = () => {}; export const now = () => 0;`;
-        if (base === "./ProposalCards") return `export const windowPort = { send: async () => ({outcome: "failed"}) };
-          const methods = ["pauseMember", "resumeMember", "relaunch", "drain", "removeMember", "subLead", "reportsTo", "answerMember", "addMember"];
-          export const useModel = (make) => ({ model: Object.assign(make(() => {}), Object.fromEntries(methods.map((name) => [name, async () => ({})]))), tick: () => 0 });`;
-        if (base === "./actions") return `export class TeamActions { constructor() {} }`;
-        if (base === "./TeamActions") return `export const TextDialog = () => null;`;
-        if (base === "./SwapMemberDialog") return `export const SwapMemberDialog = () => null;`;
-        if (base === "./roles") return `export const roleStyle = () => ({});`;
-        if (base === "./permissionAnswers") return `export const answerRow = () => ({}); export const newestAnswers = () => ({shown: [], more: 0}); export const permissionSummary = () => "";`;
-        if (base === "./members") return `export const reportsOf = () => []; export const memberMenu = () => []; export const waitingForTask = () => false;
-          export const accountLabel = () => "work"; export const memberAccount = () => "work"; export const limitText = () => "";
-          export const moveAffected = () => false; export const scaleRoom = () => ({enabled: false, text: "", hint: ""});`;
-        if (id === entry) return `import {createComponent} from "solid-js";
-          import {renderToString} from "solid-js/web";
-          import {MemberCard} from "/src/ui/teams/MemberCard.tsx";
-          export const render = (member, status, options = {}) => {
-            globalThis.__memberRowKey = options.rowKey;
-            globalThis.__selectedKey = options.selectedKey;
-            return renderToString(() => createComponent(MemberCard, {
-              computer: "host", team: {id: "t1", status: "running", members: [member], tasks: [{id: 3, assignee: member.id, status: "assigned", attempt_state: "delivering", title: "Fix the thing"}], settings: {}},
-              member, status, depth: 1, focused: false, onFocus() {}, folded: false, onFold() {}, onTask() {},
-            }));
-          };`;
-        return undefined;
-      },
-    }, solid({ ssr: true })],
-  });
-  render = (await server.ssrLoadModule(entry)).render;
+const member = (over: Partial<MemberView> = {}): MemberView => ({
+  id: "m1", role: "developer", agent: "claude", account: "account-example", state: "active", lead: false,
+  session: { machine: "00000000-0000-4000-8000-0000000000aa", session_id: "launch_id:00000000-0000-4000-8000-000000000031" },
+  ...over,
 });
 
-afterAll(async () => { await server?.close(); });
+function setup(value: MemberView, onAction = vi.fn()) {
+  const host = document.createElement("div");
+  document.body.append(host);
+  dispose = render(() => createComponent(MemberCard, { member: value, busy: false, onAction }), host);
+  return { host, onAction };
+}
 
-const member = (extra: Partial<TeamMemberView> = {}): TeamMemberView => ({
-  id: "m1", role: "Backend", agent: "codex", model: "gpt", account: "work", computer: "host", folder: "", state: "active",
-  lead: false, sub: false, session: "", queue: [], permission_answers: [], unread: 0, checks: {}, ...extra,
-} as TeamMemberView);
-
-const status = (kind: string, extra: Partial<MemberStatus> = {}): MemberStatus => ({
-  kind, text: "Working on #3 Fix the thing", short: "#3", tone: "active", task: 3, problem: false, icon: "play", ...extra,
+it("shows the member's role, state, account and bound session", () => {
+  const { host } = setup(member());
+  expect(host.querySelector(".team-member-name")?.textContent).toBe("m1");
+  expect(host.querySelector(".role-badge")?.textContent).toBe("developer");
+  expect(host.textContent).toContain("active");
+  expect(host.textContent).toContain("account-example");
+  expect(host.querySelector(".team-member-session")?.textContent).toContain("launch_id:");
 });
 
-describe("the compact member card (task 347)", () => {
-  it.each([
-    ["working", "info"], ["sent", "info"], ["submitted", "info"], ["planning", "info"],
-    ["stuck", "warn"], ["no_report", "warn"], ["input_blocked", "warn"], ["asking", "warn"],
-    ["answer", "danger"], ["failed", "danger"], ["unconfirmed", "danger"],
-    ["paused", "muted"], ["offline", "muted"], ["idle", "dim"], ["done", "dim"],
-  ])("shows %s with its state colour", (kind, colour) => {
-    const html = render(member(), status(kind));
-    expect(html).toContain(`data-kind="${kind}"`);
-    expect(html).toContain(`data-state-color="${colour}"`);
-    expect(html).toContain("team-member-card");
-    expect(html).toContain("team-status");
-  });
-
-  it("keeps one header and one status line, with the rest folded", () => {
-    const html = render(member(), status("working"));
-    // Header (role, model, progress, actions) and the state line only.
-    expect(html.match(/class="team-member-line"/g)).toHaveLength(1);
-    expect(html.match(/class="team-member-line sub"/g)).toHaveLength(1);
-    expect(html).toContain("team-member-progress");
-    expect(html).toContain("data-action=\"member-details\"");
-    expect(html).not.toContain("team-account");
-    expect(html).not.toContain("team-member-tasks");
-    expect(html).not.toContain("team-member-marks");
-    expect(html).not.toContain("team-member-queue");
-  });
-
-  it("keeps an approval request in full beside the compact lines", () => {
-    const html = render(member({ permission: { question_id: "q1", question_hash: "h", answer: { question_id: "q1", allow: "yes", deny: "no" }, tool: "Bash", command: "rm -rf build", reason: "why" } } as never), status("answer"));
-    expect(html).toContain("team-member-permission");
-    expect(html).toContain("permission-deny");
-    expect(html).toContain("permission-allow");
-    expect(html).toContain("rm -rf build");
-    // The compact lines still stand; the request is the only extra block.
-    expect(html.match(/class="team-member-line"/g)?.length).toBeGreaterThanOrEqual(1);
-  });
-  it("draws a compact card: two lines and a tighter box (height check)", async () => {
-    const { readFileSync } = await import(/* @vite-ignore */ ["node", "fs"].join(":")) as { readFileSync(path: URL): string };
-    const css = String(readFileSync(new URL("../../ui/styles/teams.css", import.meta.url))).replace(/\r\n/g, "\n");
-    const rule = (selector: string) => {
-      const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-      return [...css.matchAll(new RegExp(`${escaped} \\{([^}]*)\\}`, "g"))].at(-1)?.[1] ?? "";
-    };
-    expect(rule(".team-member-card")).toMatch(/padding:\s*5px 7px 5px 11px/);
-    expect(rule(".team-member-card .team-member-main")).toMatch(/gap:\s*1px/);
-    expect(rule(".team-member-card")).toMatch(/--member-state:/);
-    for (const colour of ["info", "warn", "danger", "muted", "dim"]) {
-      expect(rule(`.team-member-card[data-state-color="${colour}"]`)).toContain(`var(--z-color-${colour})`);
-    }
-    const html = render(member(), status("working"));
-    expect(html.match(/class="team-member-line"/g)).toHaveLength(1);
-    expect(html.match(/class="team-member-line sub"/g)).toHaveLength(1);
-    expect(html).not.toContain("team-member-pulse");
-    expect(html).not.toContain("team-member-marks");
-  });
+it("marks the lead and a state's tone", () => {
+  const { host } = setup(member({ id: "lead", role: "lead", lead: true }));
+  expect(host.querySelector(".team-member-card")?.classList.contains("team-lead")).toBe(true);
+  expect(host.querySelector(".tm-state-badge")?.getAttribute("data-tone")).toBe("info");
+  expect(host.querySelector(".team-member-lead")?.textContent).toBe("lead");
 });
 
-describe("the member row's state and its session (task 355)", () => {
-  /** Solid's SSR comments sit between a text node's markers; strip them to read the row. */
-  const plain = (html: string) => html.replace(/<!--\$-->|<!--\/-->/g, "");
+it("shows a not-created member without a session", () => {
+  const { host } = setup(member({ state: "not_created", account: "", session: null }));
+  expect(host.querySelector(".tm-state-badge")?.getAttribute("data-tone")).toBe("dim");
+  expect(host.textContent).toContain("not created");
+  expect(host.textContent).toContain("the default account");
+  expect(host.querySelector(".team-member-session")).toBeNull();
+});
 
-  it("shows the state as a word in its colour with the task number beside it", () => {
-    const cases: [string, string, number][] = [
-      ["working", "Working", 3], ["idle", "Idle", 0], ["paused", "Paused", 0],
-      ["offline", "Offline", 0], ["stuck", "Stuck", 3], ["answer", "Answer", 3],
-      ["failed", "Failed", 0], ["input_blocked", "Blocked", 3],
-    ];
-    for (const [kind, word, task] of cases) {
-      const html = plain(render(member(), status(kind, { short: word, task })));
-      expect(html, kind).toContain(`data-state="${kind}"`);
-      expect(html, kind).toContain(`>${word}<`);
-      if (task > 0) expect(html, kind).toContain(`data-task-number="${task}">#${task}<`);
-      else expect(html, kind).not.toContain("data-task-number");
-    }
-  });
+it("offers only the M1 operations and sends them by member id", () => {
+  const { host, onAction } = setup(member());
+  const buttons = [...host.querySelectorAll("[data-member-actions] button")].map((button) => button.getAttribute("data-member-action"));
+  expect(buttons).toEqual(["pause-member", "stop-member", "archive-member"]);
+  (host.querySelector('[data-member-action="pause-member"]') as HTMLButtonElement).click();
+  expect(onAction).toHaveBeenCalledWith("pause-member", "m1");
+});
 
-  it("shows a queued task beside an idle member, so it does not read as work", () => {
-    const html = plain(render(member({ queue: [342] }), status("idle", { short: "Idle", task: 0 })));
-    expect(html).toContain(">Idle<");
-    expect(html).toContain('data-task-number="342">#342<');
-    expect(html).toContain("data-state=\"idle\"");
-  });
-
-  it("marks the row of the session you are looking at as you", () => {
-    const session = (name: string) => ({ host: "", name, run_id: "r", conversation_id: "c" });
-    const you = render(member({ session: session("claude/p/me") }), status("working"), { rowKey: "row-me", selectedKey: "row-me" });
-    expect(you).toContain("data-you");
-    expect(you).toContain(">you<");
-    const other = render(member({ session: session("claude/p/other") }), status("working"), { rowKey: "row-other", selectedKey: "row-me" });
-    expect(other).not.toContain("data-you");
-  });
+it("offers resume only to a paused member", () => {
+  const { host } = setup(member({ state: "paused" }));
+  const buttons = [...host.querySelectorAll("[data-member-actions] button")].map((button) => button.getAttribute("data-member-action"));
+  expect(buttons).toEqual(["resume-member", "stop-member", "archive-member"]);
 });

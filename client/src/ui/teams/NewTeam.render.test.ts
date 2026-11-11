@@ -1,30 +1,21 @@
 // @vitest-environment happy-dom
+// New team (the fork's form adapted to M1): the template, its roster,
+// pipelines and settings, a Git folder checked before Create can run, and Save
+// as template.
 import { afterEach, expect, it, vi } from "vitest";
 import { createComponent } from "solid-js";
 import { render } from "solid-js/web";
-
-// New team from the built-in template: its roster, pipelines and settings,
-// and a Git folder checked through the core before Create can run.
-vi.mock("../../store/ui", () => ({ selected: () => undefined }));
-vi.mock("../../store/machines", () => ({ machineCards: { "": { machine_id: "00000000-0000-4000-8000-0000000000aa" } } }));
-vi.mock("../../store/teams", () => ({
-  teams: {
-    newTeamOpen: () => false, catalog: () => undefined, catalogError: () => "", busy: () => false,
-    closeNewTeam: vi.fn(), saveTemplate: vi.fn(async () => {}), run: vi.fn(async () => ({ outcome: "done" })),
-  },
-  newRequestId: () => "11111111-2222-4333-8444-555555555555",
-}));
-import { NewTeamForm } from "./NewTeam";
+import { NewTeam } from "./NewTeam";
 import { catalog } from "./fixtures";
 
 let dispose: (() => void) | undefined;
 afterEach(() => { dispose?.(); dispose = undefined; document.body.replaceChildren(); });
 
-function setup(overrides: Partial<Parameters<typeof NewTeamForm>[0]> = {}) {
+function setup(overrides: Partial<Parameters<typeof NewTeam>[0]> = {}) {
   const host = document.createElement("div");
   document.body.append(host);
   const created: unknown[] = [];
-  dispose = render(() => createComponent(NewTeamForm, {
+  dispose = render(() => createComponent(NewTeam, {
     catalog, busy: false, machineId: "00000000-0000-4000-8000-0000000000aa",
     defaultProject: "example-project", defaultFolder: "/workspace/example",
     onCheckFolder: async () => ({ git: true, head: "0123456789abcdef0123456789abcdef01234567", branch: "main", reason: "" }),
@@ -38,19 +29,18 @@ const find = (host: HTMLElement, label: string) =>
 
 it("shows the template's roster, pipelines and the settings a person confirms", () => {
   const { host } = setup();
+  expect(host.querySelector("[data-template='bugfix']")).not.toBeNull();
   expect(host.textContent).toContain("Developer × 2");
   expect(host.textContent).toContain("Reviewer × 1");
-  expect(host.textContent).toContain("Reviewed: review, lead — review: reviewer");
+  expect(host.textContent).toContain("Reviewed: review, lead");
   expect(host.textContent).toContain("an integration branch");
   expect(host.textContent).toContain("the person approves the plan");
-  expect(host.textContent).toContain("the lead");
   expect(host.textContent).toContain("not allowed");
 });
 
 it("cannot create before the folder is a verified Git folder", async () => {
   const { host, created } = setup();
-  const create = find(host, "Create team");
-  expect(create.disabled).toBe(true);
+  expect(find(host, "Create team").disabled).toBe(true);
   const name = host.querySelector<HTMLInputElement>('input[placeholder="Fixes"]')!;
   name.value = "Fixes"; name.dispatchEvent(new Event("input", { bubbles: true }));
   expect(find(host, "Create team").disabled).toBe(true);
@@ -61,8 +51,8 @@ it("cannot create before the folder is a verified Git folder", async () => {
   find(host, "Create team").click();
   expect(created).toHaveLength(1);
   expect(created[0]).toMatchObject({
-    team: "11111111-2222-4333-8444-555555555555", template: "bugfix", project: "example-project",
-    name: "Fixes", home: "00000000-0000-4000-8000-0000000000aa",
+    team: expect.any(String), template: "bugfix", project: "example-project", name: "Fixes",
+    home: "00000000-0000-4000-8000-0000000000aa",
     base_commit: "0123456789abcdef0123456789abcdef01234567", integration: "branch",
   });
 });

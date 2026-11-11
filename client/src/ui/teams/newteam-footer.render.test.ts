@@ -1,41 +1,41 @@
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { createServer, type ViteDevServer } from "vite";
-import solid from "vite-plugin-solid";
+// @vitest-environment happy-dom
+// The New team footer (the fork's NewTeamFooter, adapted to M1): what blocks
+// Create team is written out, Save as template and Cancel sit beside it, and
+// Create is disabled until the form is ready.
+import { afterEach, expect, it, vi } from "vitest";
+import { createComponent } from "solid-js";
+import { render } from "solid-js/web";
+import { NewTeamFooter } from "./NewTeamFooter";
 
-// Task #328 (F10b): the footer Qt draws above the status bar, rendered as the
-// Tauri client draws it; no draft has a disabled Create team and says why.
-let server: ViteDevServer | undefined;
-let render: (props: Record<string, unknown>) => string;
+let dispose: (() => void) | undefined;
+afterEach(() => { dispose?.(); dispose = undefined; document.body.replaceChildren(); });
 
-beforeAll(async () => {
-  const { fileURLToPath } = await import(/* @vite-ignore */ ["node", "url"].join(":")) as { fileURLToPath(url: URL): string };
-  server = await createServer({
-    configFile: false, root: fileURLToPath(new URL("../../../", import.meta.url)),
-    server: { middlewareMode: true, watch: null }, logLevel: "silent",
-    plugins: [solid({ ssr: true })],
-  });
-  const { renderToString } = await server.ssrLoadModule("solid-js/web");
-  const { createComponent } = await server.ssrLoadModule("solid-js");
-  const { NewTeamFooter } = await server.ssrLoadModule("/src/ui/teams/NewTeamFooter.tsx");
-  render = (props) => renderToString(() => createComponent(NewTeamFooter, props));
+function setup(over: Partial<Parameters<typeof NewTeamFooter>[0]> = {}) {
+  const host = document.createElement("div");
+  document.body.append(host);
+  const onCreate = vi.fn();
+  dispose = render(() => createComponent(NewTeamFooter, {
+    busy: false, createWhy: "", canSave: true, saving: false, onSaveTemplate: vi.fn(), onCancel: vi.fn(), onCreate, ...over,
+  }), host);
+  return { host, onCreate };
+}
+
+it("says nothing is created until Create team and enables it when ready", () => {
+  const { host, onCreate } = setup();
+  expect(host.textContent).toContain("Nothing is created until you press Create team.");
+  (host.querySelector(".nt-create") as HTMLButtonElement).click();
+  expect(onCreate).toHaveBeenCalledTimes(1);
 });
 
-afterAll(async () => { await server?.close(); });
+it("writes out what blocks Create team", () => {
+  const { host, onCreate } = setup({ createWhy: "Check the project folder: it must be a Git folder." });
+  expect(host.querySelector("[data-create-blocker]")?.textContent).toContain("must be a Git folder");
+  expect((host.querySelector(".nt-create") as HTMLButtonElement).disabled).toBe(true);
+  (host.querySelector(".nt-create") as HTMLButtonElement).click();
+  expect(onCreate).not.toHaveBeenCalled();
+});
 
-describe("New team footer (task #328)", () => {
-  it("offers a disabled Create team and Start planning first before a draft", () => {
-    const html = render({ draft: false, dirty: false, revision: 0, busy: false, createWhy: "Start planning first", onCreate: () => {} });
-    const button = html.match(/<button[^>]*>Create team<\/button>/)?.[0] ?? "";
-    expect(button).toContain("Create team");
-    expect(button).toContain("disabled");
-    expect(html).toContain("Start planning first");
-    expect(html).toContain('title="Start planning first"');
-  });
-  it("enables Create team for a valid draft", () => {
-    const html = render({ draft: true, dirty: false, revision: 2, busy: false, preflightErrors: 0, createWhy: "", onCreate: () => {} });
-    expect(html).toContain("Draft saved, revision 2");
-    expect(html).toContain("Preflight: ok");
-    const button = html.match(/<button[^>]*>Create team<\/button>/)?.[0] ?? "";
-    expect(button).not.toContain("disabled");
-  });
+it("shows the last refusal", () => {
+  const { host } = setup({ error: "refused: no such template" });
+  expect(host.querySelector("[data-create-error]")?.textContent).toContain("no such template");
 });

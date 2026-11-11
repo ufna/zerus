@@ -201,3 +201,21 @@
 
 /* Task #13 (team ede724c4): the lead's offers for the owner's settings. */
 .nt-setting-offers { border: 1px solid color-mix(in srgb, var(--z-color-accent) 60%, var(--z-color-border)); border-radius: var(--z-radius-lg); padding: 8px 10px; display: flex; flex-direction: column; gap: 4px; font-size: var(--fs-sm); }
+
+/* M1's New team: the template list, the field pairs and the sections the
+   adapted form shows. The fork's grid rows belong to its draft form. */
+.nt-templates { display: flex; flex-direction: column; gap: 6px; }
+.nt-template-list { display: flex; flex-direction: column; gap: 4px; }
+.nt-template-row { display: flex; flex-direction: column; gap: 2px; text-align: left; padding: 7px 10px;
+  border: 1px solid var(--z-color-card-border); border-radius: var(--z-radius-md); background: var(--z-color-card); color: var(--z-color-text); cursor: pointer; }
+.nt-template-row:hover { background: var(--z-color-card-hover); }
+.nt-template-row[aria-selected="true"] { border-color: var(--z-color-accent); }
+.nt-template-row .nt-hint { color: var(--z-color-text-3); }
+.nt-pair { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.nt-body > .nt-row { grid-template-columns: 1fr; }
+.nt-field .nt-inline { display: flex; align-items: center; gap: 6px; }
+.nt-field .nt-inline input { flex: 1 1 auto; width: auto; min-width: 0; }
+.nt-caps { display: grid; grid-template-columns: 150px 1fr; gap: 2px 10px; font-size: var(--fs-sm); color: var(--z-color-text-2); margin: 0; }
+.nt-caps dt { color: var(--z-color-text-3); }
+.nt-caps dd { margin: 0; }
+.nt-list { margin: 0; padding-left: 18px; color: var(--z-color-text-2); }
