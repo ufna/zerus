@@ -156,3 +156,19 @@ describe("a refreshed view of the same team (found next to finding 14)", () => {
     expect(element.querySelector("[data-team-detail]")).toBeNull();
   });
 });
+
+describe("Open task through a page that names itself next (second confirmation, finding 4)", () => {
+  it("ends the lookup with a notice instead of waiting on the same page", async () => {
+    const { createSignal } = await import("solid-js");
+    const [view, setView] = createSignal<TeamView>({ ...teamView, next: "q1" });
+    const pages: (string | null)[] = [];
+    const element = host();
+    dispose = render(() => createComponent(TeamWorkspace, { get view() { return view(); }, busy: false, failure: null, onAction: () => {}, onPage: (cursor) => pages.push(cursor), onAddTask: () => {} }), element);
+    setOpenTeamNode({ team: teamView.bar.id, node: 42 });
+    expect(pages).toEqual(["q1"]);
+    setView({ ...teamView, after: "q1", next: "q1" });
+    expect(pages).toEqual(["q1"]);
+    expect(element.querySelector("[data-team-open-notice]")?.textContent).toContain("is not on the board's pages");
+    expect(openTeamNode()).toBeNull();
+  });
+});

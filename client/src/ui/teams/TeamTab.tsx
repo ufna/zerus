@@ -61,10 +61,12 @@ export function TeamWorkspace(props: {
   const [asking, setAsking] = createSignal<TaskButton | null>(null);
   const [reason, setReason] = createSignal("");
   let lookups = 0;
+  /** The page cursors this lookup has been on: a cursor seen again ends it. */
+  const looked = new Set<string>();
   // Only another team resets the selection: a refreshed view of the same team
   // keeps the open card and a reason being typed.
   const teamId = createMemo(() => props.view.bar.id);
-  createEffect(on(teamId, () => { setSelectedNode(null); setFocusStage(null); setOpenNotice(""); setAsking(null); setReason(""); lookups = 0; }, { defer: true }));
+  createEffect(on(teamId, () => { setSelectedNode(null); setFocusStage(null); setOpenNotice(""); setAsking(null); setReason(""); lookups = 0; looked.clear(); }, { defer: true }));
   const groups = createMemo(() => boardColumns(props.view));
   const all = createMemo(() => props.view.groups.flatMap((group) => group.cards));
   // Waiting for you's Open task: the node it names, or the card a stage of that
@@ -79,10 +81,12 @@ export function TeamWorkspace(props: {
     const parent = own ? undefined : cards.find((candidate) => candidate.stages.some((stage) => stage.node === wanted.node));
     if (own || parent) {
       setSelectedNode((own ?? parent)!.node); setFocusStage(parent ? wanted.node : null);
-      setOpenNotice(""); setOpenTeamNode(null); lookups = 0;
+      setOpenNotice(""); setOpenTeamNode(null); lookups = 0; looked.clear();
       return;
     }
-    const cursor = lookups === 0 && props.view.after ? null : lookups < OPEN_NODE_PAGES ? props.view.next : null;
+    if (lookups > 0 && props.view.after) looked.add(props.view.after);
+    const next = props.view.next && !looked.has(props.view.next) ? props.view.next : null;
+    const cursor = lookups === 0 && props.view.after ? null : lookups < OPEN_NODE_PAGES ? next : null;
     if (cursor !== null || (lookups === 0 && props.view.after)) {
       lookups++;
       setOpenNotice(tr("Looking for task #%1 on the board's pages…", wanted.node));
@@ -90,7 +94,7 @@ export function TeamWorkspace(props: {
       return;
     }
     setOpenNotice(tr("Task #%1 is not on the board's pages that were read.", wanted.node));
-    setOpenTeamNode(null); lookups = 0;
+    setOpenTeamNode(null); lookups = 0; looked.clear();
   });
   const select = (node: number) => { setSelectedNode(node); setFocusStage(null); setOpenNotice(""); };
   const card = createMemo(() => all().find((candidate) => candidate.node === selectedNode()) ?? null);
