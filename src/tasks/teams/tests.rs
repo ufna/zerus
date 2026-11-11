@@ -485,13 +485,16 @@ fn a_send_that_becomes_a_team_task_after_freeze_never_reserves_an_attempt() {
     assert!(ready, "{}", String::from_utf8_lossy(&output.stdout));
     assert_eq!(joined.unwrap()["value"]["team"]["queued"], true);
     let response: Value = serde_json::from_slice(&std::fs::read(reply).unwrap()).unwrap();
+    let id = std::fs::read_to_string(pause.join("ready")).unwrap();
+    assert!(
+        f.document(task).attempt(&id).unwrap().is_none(),
+        "a guarded task received an attempt: {response}"
+    );
     assert_eq!(response["ok"], false, "{response}");
     assert!(
         response["error"].as_str().unwrap().contains("not_allowed"),
         "{response}"
     );
-    let id = std::fs::read_to_string(pause.join("ready")).unwrap();
-    assert!(f.document(task).attempt(&id).unwrap().is_none());
 }
 
 #[test]
