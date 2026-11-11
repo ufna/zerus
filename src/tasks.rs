@@ -1206,6 +1206,7 @@ fn change_guarded(config: &Config, action: &str, args: &[String], wait: Option<s
                     return Ok(with_answer(&who, action, out, 0, &to.session));
                 }
                 None => {
+                    attempts::pause_at(&frozen.id, "legacy_reload");
                     let store = self::store(config, project_id)?;
                     let mut task = store.load(&uuid).map_err(fail)?;
                     teams::guard(config, here, &who, &task, action, args)?;

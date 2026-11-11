@@ -209,6 +209,51 @@ impl Fixture {
         (command.spawn().unwrap(), reply)
     }
 
+    fn paused_command(
+        &self,
+        args: &[&str],
+        input: &str,
+        session: &str,
+        pause: &std::path::Path,
+        phase: &str,
+    ) -> (std::process::Child, std::path::PathBuf) {
+        let reply = self
+            .h
+            .temp
+            .path()
+            .join(format!("reply-{}.json", uuid::Uuid::new_v4()));
+        let mut command = Command::new(std::env::current_exe().unwrap());
+        command
+            .args(["--exact", "tasks::teams::tests::cli_entry", "--nocapture"])
+            .env_clear()
+            .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+            .env("HOME", self.h.temp.path())
+            .env("HGS_CONFIG_DIR", self.h.temp.path().join("config"))
+            .env("HGS_STATE_DIR", self.h.temp.path())
+            .env("HGS_SELF", "test")
+            .env("HGS_TAB", "0")
+            .env("HGS_SESSION", session)
+            .env(
+                "HGS_RUN_ID",
+                format!("run-{}", session.rsplit('/').next().unwrap()),
+            )
+            .env("HGS_TEST_ATTEMPT_PAUSE", pause)
+            .env("HGS_TEST_ATTEMPT_PAUSE_AT", phase)
+            .env("HGS_TEAMS_TEST_REPLY", &reply)
+            .env("HGS_TEAMS_TEST_ARGS", serde_json::to_string(args).unwrap())
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let mut child = command.spawn().unwrap();
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(input.as_bytes())
+            .unwrap();
+        (child, reply)
+    }
+
     fn observer(
         &self,
         task: &Value,
@@ -233,6 +278,7 @@ impl Fixture {
             .env("HGS_STATE_DIR", self.h.temp.path())
             .env("HGS_SELF", "test")
             .env("HGS_TEAM_OBSERVE_READY", ready)
+            .env("HGS_TEST_TEAM_OBSERVE_PAUSE", ready.with_extension("pause"))
             .env("HGS_TEAMS_TEST_REPLY", &reply)
             .env("HGS_TEAMS_TEST_ARGS", serde_json::to_string(&args).unwrap())
             .stdin(Stdio::null())
@@ -329,6 +375,10 @@ fn cli_guarded_tasks_refuse_all_agent_control_actions() {
         vec!["target", &reference, "any", "--json"],
         vec!["start", &reference, "--json"],
         vec!["worker", &reference, "--json"],
+        vec!["cancel", &reference, "--json"],
+        vec!["move", &reference, "--top", "--json"],
+        vec!["edit", &reference, "--json"],
+        vec!["rename", &reference, "--json"],
         vec![
             "message",
             &reference,
@@ -719,4 +769,265 @@ fn service_observation_waits_for_the_project_lock_and_reads_the_later_document()
     let observation = f.h.store.task_observation(TEAM, node).unwrap().unwrap();
     assert_eq!(observation.revision, revision);
     assert_eq!(observation.title, "Updated while the observer waits");
+}
+
+fn restore_marker_while_paused(f: &Fixture, task: &Value, pause: &std::path::Path) -> bool {
+    let until = std::time::Instant::now() + std::time::Duration::from_secs(6);
+    while !pause.join("ready").exists() && std::time::Instant::now() < until {
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    let ready = pause.join("ready").is_file();
+    if ready {
+        let store =
+            ProjectStore::open(&f.h.temp.path().join("replica"), "example-project").unwrap();
+        let mut doc = store.load(task["uuid"].as_str().unwrap()).unwrap();
+        doc.set_team(
+            Some(&zerus_replica::TaskTeam {
+                team: TEAM.into(),
+                home: f.machine.clone(),
+            }),
+            &Actor::Person,
+            now(),
+        )
+        .unwrap();
+        store.save(&mut doc).unwrap();
+    }
+    std::fs::write(pause.join("release"), "go").unwrap();
+    ready
+}
+
+fn guarded_reload_case(reopen: bool, legacy: bool) {
+    let mut f = Fixture::new();
+    let member = f.bind("m1");
+    let task = f.add();
+    let reference = format!("example/{}", task["id"].as_str().unwrap());
+    {
+        let store =
+            ProjectStore::open(&f.h.temp.path().join("replica"), "example-project").unwrap();
+        let mut doc = store.load(task["uuid"].as_str().unwrap()).unwrap();
+        // Simulate a remote copy whose team marker has not arrived yet.
+        doc.set_team(None, &Actor::Person, now()).unwrap();
+        if reopen {
+            let bound =
+                f.h.store
+                    .member(TEAM, "m1")
+                    .unwrap()
+                    .unwrap()
+                    .session
+                    .unwrap();
+            let key = SessionKey {
+                machine: bound.machine,
+                session_id: bound.session_id,
+                session: member.clone(),
+            };
+            doc.record_send(&key, "fixture-send", &Actor::Person, now())
+                .unwrap();
+            doc.report("Ready", ReportKind::Ready, None, &Actor::Person, now())
+                .unwrap();
+        }
+        store.save(&mut doc).unwrap();
+        if legacy {
+            let mut project = store.project().unwrap();
+            project
+                .set_cutover_hold(true, &Actor::Person, now())
+                .unwrap();
+            store.save_project(&project).unwrap();
+        }
+    }
+    let id = uuid::Uuid::new_v4().to_string();
+    let args = if reopen {
+        vec![
+            "message",
+            &reference,
+            "--mode",
+            "reopen",
+            "--request-id",
+            &id,
+            "--json",
+        ]
+    } else {
+        vec!["send", &reference, "--session", &member, "--json"]
+    };
+    let pause = f.h.temp.path().join("reload-pause");
+    std::fs::create_dir(&pause).unwrap();
+    let (child, reply) = f.paused_command(
+        &args,
+        if reopen { "Please revise" } else { "" },
+        &member,
+        &pause,
+        if legacy { "legacy_reload" } else { "admission" },
+    );
+    let ready = restore_marker_while_paused(&f, &task, &pause);
+    let before = f.document(&task).revision();
+    let output = child.wait_with_output().unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(ready, "{}", String::from_utf8_lossy(&output.stdout));
+    let out: Value = serde_json::from_slice(&std::fs::read(reply).unwrap()).unwrap();
+    let doc = f.document(&task);
+    assert!(doc.attempt(&id).unwrap().is_none(), "{out}");
+    assert!(
+        !doc.view()
+            .unwrap()
+            .log
+            .iter()
+            .any(|e| e.request_id.as_deref() == Some(&id)),
+        "{out}"
+    );
+    if legacy {
+        assert_eq!(doc.revision(), before, "{out}");
+    }
+    assert_eq!(
+        doc.stage().unwrap(),
+        if reopen { Stage::Review } else { Stage::Todo }
+    );
+    assert_eq!(out["ok"], false, "{out}");
+    assert!(
+        out["error"].as_str().unwrap().contains("not_allowed"),
+        "{out}"
+    );
+}
+
+#[test]
+fn send_legacy_reload_rechecks_a_new_team_marker() {
+    guarded_reload_case(false, true);
+}
+#[test]
+fn reopen_admission_rechecks_a_new_team_marker() {
+    guarded_reload_case(true, false);
+}
+#[test]
+fn reopen_legacy_reload_rechecks_a_new_team_marker() {
+    guarded_reload_case(true, true);
+}
+
+#[test]
+fn observation_keeps_the_project_lock_from_load_through_record() {
+    let f = Fixture::new();
+    let task = f.add();
+    let ready = f.h.temp.path().join("observe-after-load");
+    let pause = ready.with_extension("pause");
+    std::fs::create_dir(&pause).unwrap();
+    let (child, reply) = f.observer(&task, &ready);
+    let until = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while !pause.join("ready").exists() && std::time::Instant::now() < until {
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    let loaded = pause.join("ready").exists();
+    // An attempted write between load and record must wait for that lock. If a
+    // mutant drops it, write and observe a newer document before releasing it.
+    let writer = ProjectStore::open_within(
+        &f.h.temp.path().join("replica"),
+        "example-project",
+        std::time::Duration::from_millis(100),
+    )
+    .unwrap();
+    let lock_held = writer.is_none();
+    if let Some(store) = writer {
+        let mut doc = store.load(task["uuid"].as_str().unwrap()).unwrap();
+        doc.set_title("Newer write between load and record", &Actor::Person, now())
+            .unwrap();
+        store.save(&mut doc).unwrap();
+        drop(store);
+        crate::teams::tasks::observe(
+            f.h.temp.path(),
+            &zerus_team_plan::model::TaskRef {
+                project: "example-project".into(),
+                uuid: task["uuid"].as_str().unwrap().into(),
+            },
+        )
+        .unwrap();
+    }
+    std::fs::write(pause.join("release"), "go").unwrap();
+    let output = child.wait_with_output().unwrap();
+    assert!(output.status.success());
+    assert!(loaded);
+    let out: Value = serde_json::from_slice(&std::fs::read(reply).unwrap()).unwrap();
+    assert_eq!(out["ok"], true, "{out}");
+    let node = f.h.store.queue(TEAM, 200, None).unwrap().rows[0].id;
+    assert_eq!(
+        f.h.store
+            .task_observation(TEAM, node)
+            .unwrap()
+            .unwrap()
+            .revision,
+        f.document(&task).revision(),
+        "an older read overwrote the newer observation"
+    );
+    assert!(
+        lock_held,
+        "observation released the project lock before recording"
+    );
+}
+
+#[test]
+fn a_legacy_holder_acknowledges_and_reports_while_a_non_holder_cannot_cancel() {
+    let mut f = Fixture::new();
+    let lead = f.bind("lead");
+    let member = f.bind("m1");
+    let task = f.add();
+    {
+        let store =
+            ProjectStore::open(&f.h.temp.path().join("replica"), "example-project").unwrap();
+        let mut doc = store.load(task["uuid"].as_str().unwrap()).unwrap();
+        let bound =
+            f.h.store
+                .member(TEAM, "m1")
+                .unwrap()
+                .unwrap()
+                .session
+                .unwrap();
+        doc.record_send(
+            &SessionKey {
+                machine: bound.machine,
+                session_id: bound.session_id,
+                session: member.clone(),
+            },
+            "legacy-dispatch",
+            &Actor::Person,
+            now(),
+        )
+        .unwrap();
+        store.save(&mut doc).unwrap();
+    }
+    let reference = format!("example/{}", task["id"].as_str().unwrap());
+    let before = f.document(&task).revision();
+    let current = f.document(&task).view().unwrap();
+    let holder = current.session.as_ref().unwrap();
+    let guard = json!({"schema":1,"dispatch_id":current.execution_id().unwrap(),"stage_at":current.stage_at,"machine":holder.machine,"session_id":holder.session_id,"reason":"Stop"}).to_string();
+    for action in ["cancel", "cancel-execution"] {
+        let out = f.run(&[action, &reference, "--json"], &guard, Some(&lead));
+        assert_eq!(out["ok"], false, "{out}");
+        assert!(
+            out["error"].as_str().unwrap().contains("not_allowed"),
+            "{out}"
+        );
+        assert_eq!(f.document(&task).revision(), before);
+    }
+    let out = f.run(&["start", &reference, "--json"], "", Some(&member));
+    assert_eq!(out["ok"], true, "{out}");
+    let out = f.run(&["report", &reference, "--json"], "Ready", Some(&member));
+    assert_eq!(out["ok"], true, "{out}");
+    assert_eq!(f.document(&task).stage().unwrap(), Stage::Review);
+}
+
+#[test]
+fn home_marked_tasks_follow_ordinary_commands_while_the_preview_is_off() {
+    let mut f = Fixture::new();
+    let member = f.bind("m1");
+    let task = f.add();
+    let reference = format!("example/{}", task["id"].as_str().unwrap());
+    std::fs::remove_file(f.h.temp.path().join("teams/preview")).unwrap();
+    for (args, text) in [
+        (vec!["stage", &reference, "backlog", "--json"], ""),
+        (vec!["rename", &reference, "--json"], "Dormant local team"),
+    ] {
+        let out = f.run(&args, text, Some(&member));
+        assert_eq!(out["ok"], true, "{out}");
+        assert_eq!(f.document(&task).team().unwrap().unwrap().team, TEAM);
+    }
+    assert_eq!(f.document(&task).stage().unwrap(), Stage::Backlog);
 }

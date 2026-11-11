@@ -110,6 +110,8 @@ pub(crate) fn observe(state: &Path, task: &TaskRef) -> Result<()> {
     }
     let tasks = ProjectStore::open(&state.join("replica"), &task.project).map_err(storage)?;
     let document = load(&tasks, &task.uuid)?;
+    #[cfg(test)]
+    observe_pause();
     let Some(link) = document.team().map_err(storage)? else {
         return Ok(());
     };
@@ -119,6 +121,21 @@ pub(crate) fn observe(state: &Path, task: &TaskRef) -> Result<()> {
         record(&mut store, &link.team, node, &document)?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+fn observe_pause() {
+    let Some(path) = std::env::var_os("HGS_TEST_TEAM_OBSERVE_PAUSE") else {
+        return;
+    };
+    let path = std::path::PathBuf::from(path);
+    if std::fs::write(path.join("ready"), "loaded").is_err() {
+        return;
+    }
+    let until = std::time::Instant::now() + std::time::Duration::from_secs(8);
+    while !path.join("release").exists() && std::time::Instant::now() < until {
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
 }
 
 /// Package 10 clears the marker only if this exact team still owns it.

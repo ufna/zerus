@@ -6,12 +6,24 @@ fn acknowledgement(task: &TaskDoc, actor: &TaskActor) -> Result<bool> {
         return Ok(false);
     };
     let view = task.view().map_err(storage)?;
-    Ok(view.stage == Stage::Active
-        && view.execution.and_then(|e| e.current).is_some_and(|a| {
-            !a.legacy
-                && a.origin != Origin::Start
-                && a.executor.as_ref() == Some(key)
-                && matches!(a.phase, Phase::Submitted | Phase::Running)
+    if view.stage != Stage::Active {
+        return Ok(false);
+    }
+    let same = |holder: &zerus_replica::SessionKey| {
+        !key.session_id.is_empty()
+            && holder.machine == key.machine
+            && holder.session_id == key.session_id
+    };
+    // The execution projection includes legacy dispatches, and distinguishes
+    // their holder from a direct claim (Origin::Start) on either fence route.
+    Ok(view
+        .execution
+        .and_then(|e| e.current)
+        .is_some_and(|attempt| {
+            attempt.origin != Origin::Start
+                && attempt.executor.as_ref().is_some_and(same)
+                && matches!(attempt.phase, Phase::Submitted | Phase::Running)
+                && (!attempt.legacy || attempt.at > 0)
         }))
 }
 
@@ -19,7 +31,19 @@ fn acknowledgement(task: &TaskDoc, actor: &TaskActor) -> Result<bool> {
 pub(crate) fn guard(caller: &Caller<'_>, task: &TaskDoc, action: &str) -> Result<()> {
     if !matches!(
         action,
-        "send" | "handoff" | "stage" | "done" | "target" | "start" | "worker" | "reopen"
+        "send"
+            | "handoff"
+            | "stage"
+            | "done"
+            | "target"
+            | "start"
+            | "worker"
+            | "reopen"
+            | "cancel"
+            | "cancel-execution"
+            | "move"
+            | "edit"
+            | "rename"
     ) {
         return Ok(());
     }
@@ -43,6 +67,9 @@ pub(crate) fn guard(caller: &Caller<'_>, task: &TaskDoc, action: &str) -> Result
     let link = link.expect("checked marker");
     if link.home != caller.machine {
         return Err(denied());
+    }
+    if !super::super::enabled(caller.state) {
+        return Ok(());
     }
     let store = Store::open(caller.state)?;
     let Some(header) = header::read(&store, &link.team)? else {

@@ -397,3 +397,155 @@ fn terminal_team_cleanup_clears_only_the_expected_marker() {
         .starts_with("Removed from team "));
     assert_eq!(h.store.team(TEAM).unwrap().unwrap().revision, before);
 }
+
+#[test]
+fn local_preview_off_is_dormant_but_foreign_and_invalid_markers_still_guard_without_io() {
+    let mut h = Harness::new();
+    let member = agent(h.bind("m1"));
+    let reference = document(&h);
+    send(
+        &caller(&h, &TaskActor::Person),
+        &reference,
+        TEAM,
+        None,
+        None,
+    )
+    .unwrap();
+    let mut doc = task(&h, &reference);
+    let private = tempfile::tempdir().unwrap();
+    // No preview, and a corrupt store: any attempt to open it is observable.
+    std::fs::create_dir(private.path().join("teams")).unwrap();
+    std::fs::write(private.path().join("teams/teams-v1.sqlite3"), "corrupt").unwrap();
+    let mut calling = caller(&h, &member);
+    calling.state = private.path();
+    assert!(guard(&calling, &doc, "stage").is_ok());
+    // A different home with no corresponding team in this computer's store.
+    doc.set_team(
+        Some(&zerus_replica::TaskTeam {
+            team: uuid::Uuid::new_v4().to_string(),
+            home: uuid::Uuid::new_v4().to_string(),
+        }),
+        &TaskActor::Person,
+        5,
+    )
+    .unwrap();
+    for preview in [false, true] {
+        if preview {
+            std::fs::write(private.path().join("teams/preview"), "on").unwrap();
+        }
+        assert_eq!(
+            guard(&calling, &doc, "stage").unwrap_err().code,
+            code::NOT_ALLOWED
+        );
+    }
+    doc.set_raw_team_for_test("invalid JSON");
+    assert_eq!(
+        guard(&calling, &doc, "stage").unwrap_err().code,
+        code::NOT_ALLOWED
+    );
+    assert_eq!(
+        std::fs::read_to_string(private.path().join("teams/teams-v1.sqlite3")).unwrap(),
+        "corrupt"
+    );
+}
+
+#[test]
+fn the_holder_of_a_legacy_dispatch_can_acknowledge_and_report_but_cannot_drive_the_team() {
+    let mut h = Harness::new();
+    let member = agent(h.bind("m1"));
+    let lead = agent(h.bind("lead"));
+    let reference = document(&h);
+    send(
+        &caller(&h, &TaskActor::Person),
+        &reference,
+        TEAM,
+        None,
+        None,
+    )
+    .unwrap();
+    let mut doc = task(&h, &reference);
+    let TaskActor::Agent(key) = &member else {
+        unreachable!()
+    };
+    doc.record_send(key, "legacy-request", &lead, 2).unwrap();
+    for action in ["start", "worker"] {
+        assert!(
+            guard(&caller(&h, &member), &doc, action).is_ok(),
+            "{action}"
+        );
+        assert!(guard(&caller(&h, &lead), &doc, action).is_err());
+    }
+    for action in ["cancel", "cancel-execution", "move", "edit", "rename"] {
+        assert!(
+            guard(&caller(&h, &member), &doc, action).is_err(),
+            "{action}"
+        );
+        assert!(guard(&caller(&h, &lead), &doc, action).is_err(), "{action}");
+    }
+    doc.record_start(&member, 3).unwrap();
+    assert!(guard(&caller(&h, &member), &doc, "report").is_ok());
+    doc.report(
+        "Ready",
+        zerus_replica::execution::ReportKind::Ready,
+        None,
+        &member,
+        4,
+    )
+    .unwrap();
+    assert_eq!(doc.stage().unwrap(), Stage::Review);
+}
+
+#[test]
+fn foreign_home_is_guarded_when_this_computers_store_has_no_team() {
+    let h = Harness::empty();
+    let reference = document(&h);
+    let mut doc = task(&h, &reference);
+    doc.set_team(
+        Some(&zerus_replica::TaskTeam {
+            team: uuid::Uuid::new_v4().to_string(),
+            home: uuid::Uuid::new_v4().to_string(),
+        }),
+        &TaskActor::Person,
+        2,
+    )
+    .unwrap();
+    let foreign = TaskActor::Agent(zerus_replica::SessionKey {
+        machine: fixture().team.home,
+        session_id: "run_id:caller".into(),
+        session: "codex/caller".into(),
+    });
+    for action in [
+        "send", "handoff", "stage", "start", "worker", "cancel", "edit", "rename", "move",
+    ] {
+        assert_eq!(
+            guard(&caller(&h, &foreign), &doc, action).unwrap_err().code,
+            code::NOT_ALLOWED
+        );
+    }
+    assert!(h
+        .store
+        .team(doc.team().unwrap().unwrap().team.as_str())
+        .unwrap()
+        .is_none());
+    assert!(!h.temp.path().join("teams/teams-v1.sqlite3").exists());
+}
+
+#[test]
+fn a_legacy_direct_claim_does_not_gain_a_delivered_holders_exception() {
+    let mut h = Harness::new();
+    let member = agent(h.bind("m1"));
+    let reference = document(&h);
+    send(
+        &caller(&h, &TaskActor::Person),
+        &reference,
+        TEAM,
+        None,
+        None,
+    )
+    .unwrap();
+    let mut doc = task(&h, &reference);
+    doc.record_start(&member, 2).unwrap();
+    for action in ["start", "worker"] {
+        assert!(guard(&caller(&h, &member), &doc, action).is_err());
+    }
+}

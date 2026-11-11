@@ -161,6 +161,7 @@ pub(super) fn execute(config: &Config, args: &[String]) -> Result<Value> {
             }
             // Legacy: read again; the message path below rechecks it all,
             // and refuses a task that is managed by now.
+            super::attempts::pause_at(id, "legacy_reload");
             store = super::store(config, &r.project.0)?;
             task = store.load(&uuid).map_err(fail)?;
             super::teams::guard(config, &machines.here, &who, &task, "message", args)?;

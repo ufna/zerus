@@ -157,7 +157,8 @@ pub(super) fn guard(
     args: &[String],
 ) -> Result<()> {
     let action = match action {
-        "send" | "handoff" | "stage" | "target" | "start" | "worker" | "reopen" => action,
+        "send" | "handoff" | "stage" | "target" | "start" | "worker" | "reopen" | "cancel"
+        | "cancel-execution" | "move" | "edit" | "rename" => action,
         "message" if option(args, "--mode")? == Some("reopen") => "reopen",
         _ => return Ok(()),
     };

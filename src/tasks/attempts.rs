@@ -274,6 +274,14 @@ pub(super) fn admitted_starts(
 /// is held, nothing is skipped, and the one budget keeps running.
 #[cfg(debug_assertions)]
 pub(super) fn pause(id: &str) {
+    pause_at(id, "admission");
+}
+
+#[cfg(debug_assertions)]
+pub(super) fn pause_at(id: &str, phase: &str) {
+    if std::env::var("HGS_TEST_ATTEMPT_PAUSE_AT").unwrap_or_else(|_| "admission".into()) != phase {
+        return;
+    }
     let Some(folder) = std::env::var_os("HGS_TEST_ATTEMPT_PAUSE") else {
         return;
     };
@@ -289,6 +297,9 @@ pub(super) fn pause(id: &str) {
 
 #[cfg(not(debug_assertions))]
 pub(super) fn pause(_: &str) {}
+
+#[cfg(not(debug_assertions))]
+pub(super) fn pause_at(_: &str, _: &str) {}
 
 /// Freezes the request a `task send` or `task handoff` would submit to `to`,
 /// under the project lock the command holds, before any admission.
