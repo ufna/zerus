@@ -3851,6 +3851,8 @@
   "~%1 GB estimated": "~%1 ГБ по оценке",
   "~%1m": "~%1 мин",
   "“%1” changes the agent's permissions beyond this request. Select Confirm to send it.": "«%1» меняет права агента за пределами этого запроса. Нажмите «Подтвердить», чтобы отправить.",
+  "“%1” was not sent to %2: %3": "«%1» не отправлена команде %2: %3",
+  "“%1” was sent to %2.": "«%1» отправлена команде %2.",
   "“Shown now” is a temporary display choice, not a resolved conflict.": "«Показано сейчас» — это временный выбор отображения, а не разрешенный конфликт.",
   "← Back": "← Назад",
   "← Main activity": "← Основная активность",
