@@ -33,7 +33,6 @@ impl Runtime {
                     return Ok(());
                 }
                 if budget == 0
-                    || self.ledger.merge_unread(&team.id)?
                     || self
                         .ledger
                         .get(&team.id, &format!("merge:{}", d.seq))?
@@ -189,9 +188,23 @@ impl Runtime {
             return Ok(());
         }
         if row.outcome.is_none() || matches!(row.outcome, Some(MergeResult::Unknown { .. })) {
+            if row.epoch.is_empty() {
+                // Old rows have no reservation clock. Start a conservative
+                // bound now; a missing field never grants an immediate retry.
+                row.epoch = "legacy".into();
+                row.reserved_ms = now;
+                self.put(&team.id, key, &row)?;
+            }
             match ports.contains(&row.plan) {
-                Ok(true)=>{row.outcome=Some(MergeResult::Merged{commit:row.plan.commit.clone()});self.put(&team.id,key,&row)?;},
-                _=>return self.force_failure(store,team,&gate,&stamp,&problem("Integration result is uncertain. Checks only read ancestry; this merge will not be started again."),now),
+                Ok(Some(commit))=>{
+                    row.outcome=Some(MergeResult::Merged {commit});
+                    row.padding.clear();
+                    self.put(&team.id,key,&row)?;
+                },
+                Ok(None) if row.epoch!=self.epoch && now>=row.reserved_ms.saturating_add(30_000)=>{
+                    return self.merge_settled(store,team,key,&gate,now);
+                },
+                _=>return self.force_failure(store,team,&gate,&stamp,&problem("Integration is unread; only this acceptance waits. Recovery reads ancestry. A later worker may start a new original only after the Git deadline and a known negative read."),now),
             }
         }
         self.record_merge(store, team, key, &gate, &mut row, now)

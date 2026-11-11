@@ -127,9 +127,6 @@ impl Ledger {
             .collect();
         rows
     }
-    pub fn merge_unread(&self, team: &str) -> Result<bool> {
-        self.0.query_row("SELECT EXISTS(SELECT 1 FROM actor_rows WHERE team=?1 AND key>='merge:' AND key<'merge;' AND (json_type(data,'$.outcome')='null' OR json_type(data,'$.outcome.Unknown') IS NOT NULL))",[team],|r|r.get(0)).map_err(storage)
-    }
     pub fn prefix_page(&self, team: &str, prefix: &str, after: &str) -> Result<Vec<Row>> {
         let mut s=self.0.prepare("SELECT key,version,data FROM actor_rows WHERE team=?1 AND key>=?2 AND key<?3 AND key>?4 ORDER BY key LIMIT 200").map_err(storage)?;
         let rows = s

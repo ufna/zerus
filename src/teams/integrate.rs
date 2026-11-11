@@ -140,6 +140,22 @@ pub fn descends(repo: &Repo, commit: &str, base: &str) -> Result<bool, Problem> 
     }
 }
 
+/// The pinned integration tip proven to contain this report, or a known
+/// negative ancestry result. Neither an unreadable ref nor a failed read is
+/// a negative result. One Git deadline covers the pin and its ancestry check.
+pub fn containing_tip(repo: &Repo, branch: &str, commit: &str) -> Result<Option<String>, Problem> {
+    let git = Git::repo(repo)?;
+    let reference = git.branch_ref(branch)?;
+    let tip = git.commit(&reference)?;
+    let incoming = git.commit(commit)?;
+    let output = git.run(&["merge-base", "--is-ancestor", &incoming, &tip])?;
+    match output.status.code() {
+        Some(0) => Ok(Some(tip)),
+        Some(1) => Ok(None),
+        _ => Err(git_failure(&output)),
+    }
+}
+
 /// Merge a pinned report into an unchecked-out integration branch. The actor
 /// first checks [`descends`] against the base assigned to that task. A lost
 /// ref-write result returns `delivery_uncertain`, never permission to retry.
@@ -2219,4 +2235,19 @@ mod tests {
         );
         assert_eq!(before, (f.refs(), f.reachable(), snapshot(&f.main)));
     }
+    #[test]
+    fn containing_tip_pins_the_branch_commit_and_keeps_failed_reads_unknown() {
+        let f=Fixture::new();
+        let member=f.branch("member","member.txt","member");
+        create_branch(&f.repo,"teams/integration",&f.base).unwrap();
+        assert_eq!(containing_tip(&f.repo,"teams/integration",&member).unwrap(),None);
+        let Merge::Merged {commit:tip}=merge(&f.repo,"teams/integration",&member,"Integrate").unwrap() else {panic!("fixture merge")};
+        assert_ne!(tip,member);
+        let refs=f.refs();
+        assert_eq!(containing_tip(&f.repo,"teams/integration",&member).unwrap(),Some(tip));
+        assert!(containing_tip(&f.repo,"missing",&member).is_err());
+        assert!(containing_tip(&f.repo,"teams/integration","missing").is_err());
+        assert_eq!(f.refs(),refs);
+    }
+
 }

@@ -99,8 +99,7 @@ fn owned(h: &Harness) -> Owned {
     std::fs::create_dir_all(receipt.parent().unwrap()).unwrap();
     std::fs::write(&receipt, owner.to_string()).unwrap();
     std::fs::write(metadata.join("zerus-owner.json"), owner.to_string()).unwrap();
-    native_work::TEST_REPO
-        .with(|s| *s.borrow_mut() = Some(common.to_str().unwrap().to_owned()));
+    native_work::TEST_REPO.with(|s| *s.borrow_mut() = Some(common.to_str().unwrap().to_owned()));
     Owned {
         wt,
         root,
@@ -234,5 +233,43 @@ fn production_report_checks_ownership_again_after_reading_the_head() {
     assert!(
         native(&h).work_reported(&t, &member(&o)).is_err(),
         "ownership changed during the read"
+    );
+}
+
+#[test]
+fn production_recovery_returns_the_integration_tip_and_a_known_negative() {
+    let h = Harness::new();
+    let o = owned(&h);
+    let incoming = commit(&o, "member task");
+    git(
+        &o.root,
+        &o.empty,
+        &["merge", "--no-ff", "--no-edit", "zerus/team/member-launch"],
+    );
+    let tip = git(&o.root, &o.empty, &["rev-parse", "HEAD"]);
+    assert_ne!(tip, incoming);
+    let t = h.store.team(TEAM).unwrap().unwrap();
+    git(&o.root, &o.empty, &["branch", &t.integration_branch, &tip]);
+    let mut plan = ports::MergePlan {
+        team: t.id.clone(),
+        owner: t.owner.clone(),
+        machine: t.home.clone(),
+        project: t.project.clone(),
+        branch: t.integration_branch.clone(),
+        base: t.base_commit.clone(),
+        repo: o.root.join(".git").to_string_lossy().into_owned(),
+        node: 1,
+        generation: 1,
+        decision: 1,
+        member: "m1".into(),
+        commit: incoming,
+        id: uuid::Uuid::new_v4().to_string(),
+    };
+    assert_eq!(native(&h).work_contains(&plan).unwrap(), Some(tip.clone()));
+    plan.commit = commit(&o, "not integrated");
+    assert_eq!(native(&h).work_contains(&plan).unwrap(), None);
+    assert_eq!(
+        git(&o.root, &o.empty, &["rev-parse", &t.integration_branch]),
+        tip
     );
 }

@@ -83,7 +83,7 @@ impl Native {
             &plan.base,
         )
     }
-    pub(super) fn work_contains(&self, plan: &MergePlan) -> Result<bool> {
+    pub(super) fn work_contains(&self, plan: &MergePlan) -> Result<Option<String>> {
         if self.stop.load(Ordering::Acquire) {
             return Err(problem("Integration read stopped"));
         }
@@ -104,7 +104,7 @@ impl Native {
                 .strip_prefix("refs/heads/")
                 .unwrap_or(&plan.branch)
         );
-        integrate::descends(
+        integrate::containing_tip(
             &integrate::Repo {
                 git_dir: PathBuf::from(&plan.repo),
             },

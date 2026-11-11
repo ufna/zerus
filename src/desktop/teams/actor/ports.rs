@@ -33,7 +33,7 @@ pub(in crate::desktop::teams) trait Ports {
     fn descends(&mut self, _plan: &MergePlan) -> Result<bool> {
         Err(unavailable())
     }
-    fn contains(&mut self, _plan: &MergePlan) -> Result<bool> {
+    fn contains(&mut self, _plan: &MergePlan) -> Result<Option<String>> {
         Err(unavailable())
     }
     fn merge(&mut self, _plan: &MergePlan) -> MergeResult {

@@ -613,3 +613,66 @@ fn delivered_reopen_closes_its_old_retry_card_and_gate() {
     assert!(gate.is_none(), "settled reopen kept its retry gate");
     assert_eq!(p.sends, 3, "the reopen was delivered once");
 }
+
+#[test]
+fn a_new_worker_epoch_observes_all_live_tasks_without_a_journal_change() {
+    let (mut h, mut a, mut p) = setup(3);
+    p.free.clear();
+    tick(&mut h, &mut a, &mut p, 100, false);
+    assert_eq!(p.reads, 3);
+    drop(a);
+    let home = h.store.team(TEAM).unwrap().unwrap().home;
+    let mut a = super::super::Runtime::open(h.temp.path(), &home).unwrap();
+    tick(&mut h, &mut a, &mut p, 101, false);
+    assert_eq!(p.reads, 6);
+    tick(&mut h, &mut a, &mut p, 102, false);
+    assert_eq!(p.reads, 6);
+}
+#[test]
+fn recovery_adopts_an_open_store_effect_without_a_local_ledger_row() {
+    let (mut h, mut a, mut p) = setup(1);
+    h.intent(1, "m1");
+    tick(&mut h, &mut a, &mut p, 100, false);
+    tick(&mut h, &mut a, &mut p, 101, false);
+    assert_eq!(p.sends, 0);
+    let e = h
+        .store
+        .open_effects(TEAM, 200, None)
+        .unwrap()
+        .rows
+        .remove(0);
+    assert!(matches!(
+        serde_json::from_value::<HandoutOutcome>(e.outcome.unwrap()).unwrap(),
+        HandoutOutcome::Uncertain { .. }
+    ));
+    assert_eq!(
+        h.store
+            .inbox(TEAM, 200, None)
+            .unwrap()
+            .rows
+            .iter()
+            .filter(|i| i.kind == "delivery_uncertain")
+            .count(),
+        1
+    );
+}
+#[test]
+fn an_unsaved_intent_error_preserves_the_original_reservation() {
+    let (mut h, mut a, mut p) = setup(1);
+    let db = rusqlite::Connection::open(h.temp.path().join("teams/teams-v1.sqlite3")).unwrap();
+    db.execute_batch("BEGIN IMMEDIATE").unwrap();
+    let t = h.store.team(TEAM).unwrap().unwrap();
+    let n = h.store.node(TEAM, 1).unwrap().unwrap();
+    let m = h.store.member(TEAM, "m1").unwrap().unwrap();
+    assert!(a
+        .send(&mut h.store, &mut p, &t, (&n, &m), "handout", 100)
+        .is_err());
+    assert_eq!(p.sends, 0);
+    assert!(
+        a.ledger.pending_node(TEAM, 1).unwrap(),
+        "an unread refusal was taken as saved"
+    );
+    db.execute_batch("ROLLBACK").unwrap();
+    tick(&mut h, &mut a, &mut p, 101, false);
+    assert_eq!(p.sends, 0);
+}

@@ -191,7 +191,7 @@ impl Ports for Native {
     fn descends(&mut self, plan: &super::ports::MergePlan) -> Result<bool> {
         self.work_descends(plan)
     }
-    fn contains(&mut self, plan: &super::ports::MergePlan) -> Result<bool> {
+    fn contains(&mut self, plan: &super::ports::MergePlan) -> Result<Option<String>> {
         self.work_contains(plan)
     }
     fn merge(&mut self, plan: &super::ports::MergePlan) -> super::ports::MergeResult {

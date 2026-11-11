@@ -78,9 +78,10 @@ impl Ports for Work {
         }
         Ok(true)
     }
-    fn contains(&mut self, _: &MergePlan) -> Result<bool> {
+    fn contains(&mut self, _: &MergePlan) -> Result<Option<String>> {
         self.phase.push("contains");
         self.contains
+            .map(|yes| yes.then(|| "1123456789abcdef0123456789abcdef01234567".into()))
             .ok_or_else(|| super::super::problem("Fixture ancestry unreadable"))
     }
     fn merge(&mut self, plan: &MergePlan) -> MergeResult {
@@ -216,6 +217,15 @@ fn unknown_merge_is_only_read_and_makes_one_card_until_ancestry_settles_it() {
     p.contains = Some(true);
     run(&mut h, &mut a, &mut p, 900_101);
     assert_eq!(p.merges, 1);
+    assert_eq!(
+        h.store
+            .integration_fact(TEAM, node)
+            .unwrap()
+            .unwrap()
+            .commit
+            .as_deref(),
+        Some("1123456789abcdef0123456789abcdef01234567")
+    );
     assert_eq!(
         h.store
             .integration_fact(TEAM, node)
@@ -823,4 +833,91 @@ fn conflict_facts_bound_three_two_hundred_one_and_three_hundred_paths() {
         assert_eq!(p.merges, 2);
         assert!(!a.ledger.merge_pending(TEAM).unwrap());
     }
+}
+
+#[test]
+fn an_unread_merge_fences_only_its_own_decision() {
+    let mut h = Harness::new();
+    h.bind("m1");
+    let lead = h.bind("lead");
+    for node in [1, 2] {
+        h.add(&person(), node);
+        h.submit(node, "m1");
+        h.observe(node, TaskStage::InReview);
+        h.run(
+            &service(),
+            Operation::RecordReport {
+                node,
+                generation: 1,
+                member: "m1".into(),
+                text: "Report".into(),
+                commit: COMMIT.into(),
+            },
+        )
+        .unwrap();
+        h.run(&lead, Operation::Accept { node }).unwrap();
+    }
+    let mut p = Work {
+        merge_reply: Some(MergeResult::Unknown {
+            reason: "Lost result".into(),
+        }),
+        ..Default::default()
+    };
+    let mut a = actor(&h);
+    run(&mut h, &mut a, &mut p, 100);
+    assert_eq!(p.merges, 2, "an unread decision blocked another decision");
+    run(&mut h, &mut a, &mut p, 60_100);
+    assert_eq!(p.merges, 2, "an unread decision started another original");
+}
+#[test]
+fn a_negative_read_allows_a_new_original_only_after_a_new_epoch_and_deadline() {
+    let mut h = Harness::new();
+    let (node, lead) = h.reported();
+    h.run(&lead, Operation::Accept { node }).unwrap();
+    let mut a = actor(&h);
+    let mut p = Work {
+        contains: Some(false),
+        merge_reply: Some(MergeResult::Unknown {
+            reason: "Lost result".into(),
+        }),
+        ..Default::default()
+    };
+    run(&mut h, &mut a, &mut p, 100);
+    let first = p.ids[0].clone();
+    run(&mut h, &mut a, &mut p, 10_000);
+    assert_eq!(p.merges, 1);
+    drop(a);
+    let mut a = actor(&h);
+    run(&mut h, &mut a, &mut p, 20_000);
+    assert_eq!(p.merges, 1, "the original deadline has not elapsed");
+    p.merge_reply = None;
+    run(&mut h, &mut a, &mut p, 60_100);
+    assert_eq!(p.merges, 2);
+    assert_ne!(p.ids[1], first);
+    assert!(h.node(node).integrated);
+    assert!(h
+        .store
+        .cards(TEAM, 200, None)
+        .unwrap()
+        .rows
+        .iter()
+        .all(|c| c.state != "open"));
+}
+#[test]
+fn stopped_team_maintenance_preserves_unread_merge_evidence() {
+    let mut h = Harness::new();
+    let (node, lead) = h.reported();
+    h.run(&lead, Operation::Accept { node }).unwrap();
+    let d = h.accept_decision(node);
+    let mut a = actor(&h);
+    let mut p = Work {
+        merge_reply: Some(MergeResult::Unknown {
+            reason: "Unread".into(),
+        }),
+        ..Default::default()
+    };
+    run(&mut h, &mut a, &mut p, 100);
+    h.run(&person(), Operation::Stop).unwrap();
+    a.maintain(&h.store).unwrap();
+    assert!(a.ledger.get(TEAM, &format!("merge:{d}")).unwrap().is_some());
 }
