@@ -24,6 +24,7 @@ struct Work {
     stop_team: Option<std::path::PathBuf>,
     stop: bool,
     last_plan: Option<MergePlan>,
+    conflicts_for: Option<(u32, Vec<String>)>,
 }
 impl Ports for Work {
     fn stopped(&self) -> bool {
@@ -107,6 +108,13 @@ impl Ports for Work {
                 integrate::Merge::Conflict { files } => MergeResult::Conflict { files },
                 integrate::Merge::Stale => panic!("fixture ref moved"),
             };
+        }
+        if let Some((node, files)) = &self.conflicts_for {
+            if *node == plan.node {
+                return MergeResult::Conflict {
+                    files: files.clone(),
+                };
+            }
         }
         self.merge_reply.clone().unwrap_or(MergeResult::Merged {
             commit: COMMIT.into(),
@@ -749,4 +757,70 @@ fn a_saved_unavailable_outcome_counts_as_one_failure_after_a_restart() {
     assert_eq!(gate.data["failures"], 1);
     assert_eq!(gate.data["at"], 60_100);
     assert_eq!(p.merges, 1);
+}
+
+#[test]
+fn conflict_facts_bound_three_two_hundred_one_and_three_hundred_paths() {
+    for n in [3, 201, 300] {
+        let mut h = Harness::new();
+        h.bind("m1");
+        let lead = h.bind("lead");
+        for node in [1, 2] {
+            h.add(&person(), node);
+            h.submit(node, "m1");
+            h.observe(node, TaskStage::InReview);
+            h.run(
+                &service(),
+                Operation::RecordReport {
+                    node,
+                    generation: 1,
+                    member: "m1".into(),
+                    text: "Report".into(),
+                    commit: COMMIT.into(),
+                },
+            )
+            .unwrap();
+            h.run(&lead, Operation::Accept { node }).unwrap();
+        }
+        let width = if n == 300 { 5000 } else { 8 };
+        let mut p = Work {
+            conflicts_for: Some((
+                1,
+                (0..n)
+                    .map(|i| format!("{i:04}/{}", "é".repeat(width)))
+                    .collect(),
+            )),
+            ..Default::default()
+        };
+        let mut a = actor(&h);
+        run(&mut h, &mut a, &mut p, 100);
+        let fact = h
+            .store
+            .integration_fact(TEAM, 1)
+            .unwrap()
+            .expect("certain conflict was lost");
+        assert!(fact.commit.is_none());
+        assert!(fact.conflicts.len() <= 200);
+        assert!(fact.conflicts.iter().all(|s| s.len() <= 4096));
+        if n == 3 {
+            assert_eq!(fact.conflicts.len(), 3);
+        } else {
+            let kept = fact.conflicts.len() - 1;
+            assert_eq!(
+                fact.conflicts.last().unwrap(),
+                &format!("and {} more files", n - kept)
+            );
+        }
+        assert!(
+            h.store
+                .integration_fact(TEAM, 2)
+                .unwrap()
+                .unwrap()
+                .commit
+                .is_some(),
+            "a conflict stopped the next independent merge"
+        );
+        assert_eq!(p.merges, 2);
+        assert!(!a.ledger.merge_pending(TEAM).unwrap());
+    }
 }

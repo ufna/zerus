@@ -1,12 +1,19 @@
 use super::*;
+mod outcome;
 use ports::{MergePlan, MergeResult};
 use serde::{Deserialize, Serialize};
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 struct MergeRow {
     plan: MergePlan,
     outcome: Option<MergeResult>,
     fact_id: Option<String>,
     fact_revision: Option<u64>,
+    #[serde(default)]
+    epoch: String,
+    #[serde(default)]
+    reserved_ms: i64,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    padding: String,
 }
 impl Runtime {
     pub(super) fn integrations(
@@ -124,7 +131,11 @@ impl Runtime {
             outcome: None,
             fact_id: None,
             fact_revision: None,
+            epoch: self.epoch.clone(),
+            reserved_ms: now,
+            padding: String::new(),
         };
+        outcome::reserve(&mut row)?;
         self.ledger.reserve(
             &team.id,
             &key,
@@ -132,7 +143,8 @@ impl Runtime {
         )?;
         boundary("reserved");
         *budget -= 1;
-        row.outcome = Some(ports.merge(&row.plan));
+        let reply = ports.merge(&row.plan);
+        outcome::save(&mut row, reply)?;
         boundary("effect");
         self.put(&team.id, &key, &row)?;
         boundary("outcome");

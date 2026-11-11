@@ -7,10 +7,19 @@ use std::{
     path::{Path, PathBuf},
     sync::atomic::Ordering,
 };
+#[cfg(test)]
+thread_local! {
+    pub(super) static TEST_REPO: std::cell::RefCell<Option<String>> = const {std::cell::RefCell::new(None)};
+    pub(super) static AFTER_REPORTED: std::cell::RefCell<Option<Box<dyn FnOnce()>>> = const {std::cell::RefCell::new(None)};
+}
 impl Native {
     pub(super) fn work_repository(&self, team: &Team) -> Result<String> {
         if self.stop.load(Ordering::Acquire) {
             return Err(problem("Integration read stopped"));
+        }
+        #[cfg(test)]
+        if let Some(repo) = TEST_REPO.with(|s| s.borrow().clone()) {
+            return Ok(repo);
         }
         let mut launches = crate::desktop::teams::native::Native {
             config: self.config.clone(),
@@ -52,9 +61,13 @@ impl Native {
             return Err(problem("Report read stopped"));
         }
         let head = integrate::reported_commit(Path::new(&member.worktree))?;
+        #[cfg(test)]
+        if let Some(hook) = AFTER_REPORTED.with(|s| s.borrow_mut().take()) {
+            hook();
+        }
         let after = owned()?;
-        if after["id"] != member.ownership_nonce || after["branch"] != head.branch {
-            return Err(problem("Report worktree ownership or branch changed"));
+        if after["id"] != member.ownership_nonce {
+            return Err(problem("Report worktree ownership changed"));
         }
         Ok(head)
     }
