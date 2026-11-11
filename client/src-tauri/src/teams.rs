@@ -201,8 +201,9 @@ pub fn team_intent_dismiss(teams: State<'_, Teams>, call: TeamCall) -> Result<()
 
 /// The person's Teams catalog: `hgs team catalog show --json` answers
 /// `{"ok": true, "catalog": {...}}` (roles, pipelines, templates and the
-/// lead's planning rules). The form indexes the catalog's arrays, so the
-/// boundary refuses a success that does not carry them.
+/// lead's planning rules). The reply is read into the command line's own
+/// catalog type, so a malformed entry refuses the catalog before the form
+/// dereferences it, and every field the form reads is present.
 #[tauri::command]
 pub async fn teams_catalog() -> Result<Value, String> {
     let reply = read_team_json(&["team", "catalog", "show", "--json"], None).await?;
@@ -222,15 +223,14 @@ pub async fn teams_template_save(template: Value) -> Result<Value, String> {
             "The template is {size} bytes; the limit is {TEMPLATE_INPUT_MAX}."
         ));
     }
-    let reply = read_team_json(&["team", "template", "save", "--json"], Some(template)).await?;
-    let saved = reply
-        .get("saved")
+    let sent = template
+        .get("id")
         .and_then(Value::as_str)
-        .unwrap_or_default();
-    if reply.get("ok").and_then(Value::as_bool) != Some(true) || saved.is_empty() {
-        return Err("The template was not saved: the answer named no template.".into());
-    }
-    Ok(reply)
+        .filter(|id| !id.is_empty())
+        .ok_or("The template has no id. Nothing was saved.")?
+        .to_owned();
+    let reply = read_team_json(&["team", "template", "save", "--json"], Some(template)).await?;
+    zerus_client_core::teams::catalog::saved_receipt(&reply, &sent)
 }
 
 /// A project folder's checkout facts (`hgs git-status --path PATH --json`):
@@ -287,31 +287,10 @@ fn preview_shape(reply: &Value, on: bool) -> Result<Value, String> {
     Ok(reply.clone())
 }
 
-/// The catalog's own shape: a success with the three arrays the form reads.
+/// The catalog's own shape: the command line's catalog type, given back with
+/// every field the form reads.
 fn catalog_shape(reply: &Value) -> Result<Value, String> {
-    if reply.get("ok").and_then(Value::as_bool) != Some(true) {
-        return Err("The catalog answer is not a success.".into());
-    }
-    let catalog = reply
-        .get("catalog")
-        .filter(|catalog| catalog.is_object())
-        .ok_or("The catalog answer has no catalog.")?;
-    for key in ["roles", "pipelines", "templates"] {
-        if catalog.get(key).and_then(Value::as_array).is_none() {
-            return Err(format!("The catalog answer has no {key} array."));
-        }
-    }
-    let templates = catalog["templates"].as_array().ok_or("no templates")?;
-    if templates.iter().any(|template| {
-        !template.is_object()
-            || template
-                .get("id")
-                .and_then(Value::as_str)
-                .is_none_or(str::is_empty)
-    }) {
-        return Err("The catalog has a template without an id.".into());
-    }
-    Ok(reply.clone())
+    zerus_client_core::teams::catalog::form_catalog(reply)
 }
 
 /// The CLI's own request bound for one write (262,144 bytes).
@@ -409,10 +388,31 @@ mod tests {
     #[test]
     fn a_malformed_success_is_refused_by_the_catalog_shape() {
         assert!(catalog_shape(&json!({})).is_err());
-        assert!(catalog_shape(&json!({"ok": true, "catalog": {}})).is_err());
+        assert!(catalog_shape(&json!({"ok": true})).is_err());
         assert!(catalog_shape(&json!({"ok": true, "catalog": {"roles": [], "pipelines": [], "templates": [{"name": "No id"}]}})).is_err());
-        let catalog = json!({"ok": true, "catalog": {"roles": [], "pipelines": [], "templates": [{"id": "bugfix", "name": "Bugfix"}]}});
-        assert!(catalog_shape(&catalog).is_ok());
+        // Second review, finding 7: an entry the form dereferences must be whole.
+        let broken = json!({"ok": true, "catalog": {"roles": [], "pipelines": [], "templates": [{"id": "broken", "name": "Broken"}]}});
+        assert!(
+            catalog_shape(&broken).is_err(),
+            "a template without roster or settings"
+        );
+        assert!(
+            catalog_shape(&json!({"ok": true, "catalog": {"roles": [{"id": "r", "name": "R"}]}}))
+                .is_err(),
+            "a role without an agent"
+        );
+        let builtin: Value = serde_json::from_str(include_str!(
+            "../../../crates/team-plan/fixtures/catalog-builtin.json"
+        ))
+        .unwrap();
+        let shaped = catalog_shape(&json!({"ok": true, "catalog": builtin})).unwrap();
+        let template = &shaped["catalog"]["templates"][0];
+        assert!(template["roster"].is_array() && template["settings"]["integration"].is_string());
+        // An empty catalog is three empty arrays, never a missing key.
+        assert_eq!(
+            catalog_shape(&json!({"ok": true, "catalog": {}})).unwrap()["catalog"]["templates"],
+            json!([])
+        );
     }
 
     #[test]

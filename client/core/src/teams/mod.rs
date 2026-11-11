@@ -35,6 +35,7 @@
 //! every read and action answers `teams_inactive` and the desktop shows no
 //! entry point.
 pub mod action;
+pub mod catalog;
 pub mod model;
 pub mod poller;
 pub mod read;
