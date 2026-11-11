@@ -156,11 +156,6 @@ impl Fixture {
         tasks.save(&mut doc).unwrap();
         drop(tasks);
         crate::teams::tasks::observe(&self.config.state, &self.task).unwrap();
-        eprintln!(
-            "COMMAND_REPORTED node={:?} observation={:?}",
-            self.h.node(self.node),
-            self.h.store.task_observation(TEAM, self.node).unwrap()
-        );
         let generation = self.h.store.generation(TEAM, self.node).unwrap().unwrap();
         self.h
             .run(

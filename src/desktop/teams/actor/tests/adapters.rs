@@ -118,3 +118,123 @@ fn current_run_prefers_the_completed_resume_and_does_not_infer_liveness() {
         Ok(true)
     ));
 }
+
+struct ResumeAtView {
+    native: super::super::native::Native,
+    launch: String,
+    free_reads: usize,
+}
+impl Ports for ResumeAtView {
+    fn changes(&mut self, _: &str, _: &str, _: u64) -> Result<zerus_replica::Changes> {
+        Ok(zerus_replica::Changes {
+            generation: "journal".into(),
+            offset: 0,
+            documents: Some(Default::default()),
+        })
+    }
+    fn observe(&mut self, _: &mut Store, _: &TaskRef) -> Result<()> {
+        Ok(())
+    }
+    fn free(&mut self, t: &Team, m: &Member) -> Result<bool> {
+        let free = self.native.free(t, m)?;
+        self.free_reads += 1;
+        if self.free_reads == 1 {
+            resumed(
+                &self.native.config.state,
+                &t.id,
+                &m.id,
+                &self.launch,
+                "new-run",
+            );
+        }
+        Ok(free)
+    }
+    fn deliver(
+        &mut self,
+        _: &Team,
+        _: &Node,
+        _: &Member,
+        _: &str,
+    ) -> crate::teams::ops::HandoutOutcome {
+        panic!("busy resumed member must not be sent a task")
+    }
+}
+fn fleet_runs(native: &super::super::native::Native, launch: &str) {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&native.config.state, std::fs::Permissions::from_mode(0o700)).unwrap();
+    crate::platform::private_dir(&native.config.dir).unwrap();
+    crate::platform::private_dir(&native.config.state.join("desktop")).unwrap();
+    let path = native.config.state.join("desktop/state.sqlite3");
+    crate::sqlite_file::create(&path).unwrap();
+    let db = rusqlite::Connection::open(path).unwrap();
+    zerus_desktop_catalog::migrate(&db).unwrap();
+    db.execute(
+        "UPDATE desktop_catalog_owner SET epoch=?1 WHERE id=1",
+        [&native.epoch],
+    )
+    .unwrap();
+    db.execute("INSERT INTO desktop_catalog_sources(computer,epoch,incarnation,generation,stream,seq,visible,complete,active,hello) VALUES('',?1,1,1,'stream',1,1,1,1,?2)",rusqlite::params![native.epoch,json!({"machine_id":native.machine}).to_string()]).unwrap();
+    db.execute(
+        "INSERT INTO desktop_catalog_generations(id,computer) VALUES(1,'')",
+        [],
+    )
+    .unwrap();
+    for (run, activity) in [("old-run", "idle"), ("new-run", "busy")] {
+        let row=json!({"name":"codex/resumed","agent":"codex","cmd":"codex","state":"running","process_state":"running","activity":activity,"phase":"idle","run_id":run,"launch_id":launch,"conversation_id":"conversation","conversation_state":"active","process_work":{"count":0},"subagents_active":0,"optional_questions":{"count":0}}).to_string();
+        db.execute(
+            "INSERT INTO desktop_catalog_rows(generation,key,json,bytes) VALUES(1,?1,?2,?3)",
+            rusqlite::params![format!("run:{run}"), row, row.len()],
+        )
+        .unwrap();
+    }
+}
+#[test]
+fn a_member_resumed_between_the_view_and_the_intent_is_rechecked_on_its_new_run() {
+    let mut h = Harness::new();
+    let launch = uuid::Uuid::new_v4().to_string();
+    let mut native = super::production::native(&h);
+    let sample = fixture()
+        .members
+        .into_iter()
+        .find(|m| m.id == "m1")
+        .unwrap();
+    h.run(
+        &service(),
+        crate::teams::ops::Operation::SetMemberSession {
+            member: "m1".into(),
+            session: zerus_team_plan::model::SessionKey {
+                machine: native.machine.clone(),
+                session_id: format!("launch_id:{launch}"),
+            },
+            account: sample.account,
+            worktree: sample.worktree,
+            ownership_nonce: sample.ownership_nonce,
+        },
+    )
+    .unwrap();
+    let node = h.add(&person(), 1);
+    fleet_runs(&native, &launch);
+    resumed(h.temp.path(), TEAM, "m1", &launch, "old-run");
+    super::super::native::TEST_INVENTORY.with(|s| {
+        *s.borrow_mut() = Some(json!({"node_id":native.machine,"organization":{"projects":[]}}))
+    });
+    let team = h.store.team(TEAM).unwrap().unwrap();
+    assert!(native
+        .free(&team, &h.store.member(TEAM, "m1").unwrap().unwrap())
+        .unwrap());
+    assert!(!crate::teams::ops::readiness(&h.store, TEAM)
+        .unwrap()
+        .nodes
+        .is_empty());
+    let mut a = super::super::Runtime::open(h.temp.path(), &native.machine).unwrap();
+    let mut p = ResumeAtView {
+        native,
+        launch,
+        free_reads: 0,
+    };
+    a.tick(&mut h.store, &mut p, TEAM, 100, false).unwrap();
+    assert_eq!(p.free_reads, 2);
+    assert!(h.node(node).assignee.is_none());
+    assert!(h.store.effects(TEAM, 16, None).unwrap().rows.is_empty());
+    super::super::native::TEST_INVENTORY.with(|s| s.borrow_mut().take());
+}
