@@ -221,35 +221,7 @@ impl Runtime {
         // A prior fact in this batch can stale another saved envelope. Only
         // fact writes are retried here, with a new ID after a saved refusal.
         for _ in 0..2 {
-            if row.fact_id.is_none() {
-                row.fact_id = Some(uuid::Uuid::new_v4().to_string());
-                row.fact_revision = Some(
-                    store
-                        .team(&team.id)?
-                        .ok_or_else(|| problem("Team disappeared"))?
-                        .revision,
-                );
-                self.put(&team.id, key, row)?;
-            }
-            let operation = match row.outcome.as_ref().expect("known outcome") {
-                MergeResult::Merged { commit } => Operation::RecordIntegration {
-                    node: row.plan.node,
-                    decision: row.plan.decision,
-                    commit: commit.clone(),
-                },
-                MergeResult::Conflict { files } => Operation::RecordIntegrationConflict {
-                    node: row.plan.node,
-                    decision: row.plan.decision,
-                    conflicts: files.clone(),
-                },
-                _ => return Err(problem("Integration has no settled result")),
-            };
-            let request = Request {
-                request_id: row.fact_id.clone().expect("reserved"),
-                team: team.id.clone(),
-                expected_revision: row.fact_revision.expect("reserved"),
-                operation,
-            };
+            let request = self.merge_fact_request(store, team, key, row)?;
             let actor = Actor::Service {
                 person: row.plan.owner.clone(),
                 team: team.id.clone(),
@@ -264,8 +236,81 @@ impl Runtime {
                     row.fact_revision = None;
                     self.put(&team.id, key, row)?;
                 }
-                Err(error) => return Err(error),
+                Err(error) => {
+                    if matches!(row.outcome, Some(MergeResult::Conflict { .. }))
+                        && store.request_refused(&team.id, &request.request_id)?
+                        && !store.ready_accept(
+                            &team.id,
+                            row.plan.node,
+                            row.plan.generation,
+                            row.plan.decision,
+                        )?
+                    {
+                        return self.discard_conflict(store, team, key, gate, now);
+                    }
+                    return Err(error);
+                }
             }
+        }
+        Ok(())
+    }
+    fn merge_fact_request(
+        &mut self,
+        store: &Store,
+        team: &Team,
+        key: &str,
+        row: &mut MergeRow,
+    ) -> Result<Request> {
+        if row.fact_id.is_none() {
+            row.fact_id = Some(uuid::Uuid::new_v4().to_string());
+            row.fact_revision = Some(
+                store
+                    .team(&team.id)?
+                    .ok_or_else(|| problem("Team disappeared"))?
+                    .revision,
+            );
+            self.put(&team.id, key, row)?;
+        }
+        let operation = match row.outcome.as_ref().expect("known outcome") {
+            MergeResult::Merged { commit } => Operation::RecordIntegration {
+                node: row.plan.node,
+                decision: row.plan.decision,
+                commit: commit.clone(),
+            },
+            MergeResult::Conflict { files } => Operation::RecordIntegrationConflict {
+                node: row.plan.node,
+                decision: row.plan.decision,
+                conflicts: files.clone(),
+            },
+            _ => return Err(problem("Integration has no settled result")),
+        };
+        Ok(Request {
+            request_id: row.fact_id.clone().expect("reserved"),
+            team: team.id.clone(),
+            expected_revision: row.fact_revision.expect("reserved"),
+            operation,
+        })
+    }
+    fn discard_conflict(
+        &mut self,
+        store: &mut Store,
+        team: &Team,
+        key: &str,
+        gate: &str,
+        now: i64,
+    ) -> Result<()> {
+        if store
+            .team(&team.id)?
+            .is_some_and(|t| matches!(t.status, TeamStatus::Running | TeamStatus::Paused))
+        {
+            self.recovered(store, team, gate, now)?;
+        } else if let Some(row) = self.ledger.get(&team.id, &format!("gate:{gate}"))? {
+            // Inactive cards belong to stop cleanup. A certain conflict wrote
+            // no ref, so its local retry record grants nothing to retain.
+            self.ledger.remove(&row)?;
+        }
+        if let Some(row) = self.ledger.get(&team.id, key)? {
+            self.ledger.remove(&row)?;
         }
         Ok(())
     }

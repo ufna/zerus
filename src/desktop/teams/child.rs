@@ -320,7 +320,15 @@ mod tests {
         prune_custody(&config);
         assert!(path.exists());
         drop(held);
-        prune_custody(&config);
+        // A concurrent fixture may be between fork and exec, before its
+        // CLOEXEC descriptor closes. Pruning conservatively waits for release.
+        for _ in 0..100 {
+            prune_custody(&config);
+            if !path.exists() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
         assert!(!path.exists());
         assert!(other.exists());
     }

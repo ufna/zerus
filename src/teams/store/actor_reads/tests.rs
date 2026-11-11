@@ -201,3 +201,41 @@ fn report_lookup_is_keyed_to_the_exact_node_and_generation() {
         "{plan:?}"
     );
 }
+
+#[test]
+fn exact_ready_accept_is_keyed_and_false_after_demotion() {
+    let mut h = Harness::new();
+    let (node, lead) = h.reported();
+    h.run(&lead, crate::teams::ops::Operation::Accept { node })
+        .unwrap();
+    let d = h.accept_decision(node);
+    assert!(h.store.ready_accept(TEAM, node, 1, d).unwrap());
+    assert!(!h.store.ready_accept(TEAM_B, node, 1, d).unwrap());
+    assert!(!h.store.ready_accept(TEAM, node, 2, d).unwrap());
+    h.store
+        .db
+        .as_ref()
+        .unwrap()
+        .execute(
+            "UPDATE decisions SET state='awaiting_owner' WHERE seq=?1",
+            [d],
+        )
+        .unwrap();
+    assert!(!h.store.ready_accept(TEAM, node, 1, d).unwrap());
+    let mut q = h
+        .store
+        .db
+        .as_ref()
+        .unwrap()
+        .prepare("EXPLAIN QUERY PLAN SELECT 1 FROM decisions WHERE seq=?1 AND team=?2")
+        .unwrap();
+    let plan = q
+        .query_map(params![d, TEAM], |r| r.get::<_, String>(3))
+        .unwrap()
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .unwrap();
+    assert!(
+        plan.iter().any(|p| p.contains("INTEGER PRIMARY KEY")),
+        "{plan:?}"
+    );
+}

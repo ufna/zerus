@@ -25,6 +25,7 @@ struct Work {
     stop: bool,
     last_plan: Option<MergePlan>,
     conflicts_for: Option<(u32, Vec<String>)>,
+    demote_after_merge: Option<std::path::PathBuf>,
 }
 impl Ports for Work {
     fn stopped(&self) -> bool {
@@ -92,6 +93,18 @@ impl Ports for Work {
         if let Some(path) = self.stop_team.take() {
             let mut store = Store::open(&path).unwrap();
             apply(&mut store, &person(), Operation::Stop);
+        }
+        if let Some(state) = self.demote_after_merge.take() {
+            let store = Store::open(&state).unwrap();
+            store
+                .db
+                .as_ref()
+                .unwrap()
+                .execute(
+                    "UPDATE decisions SET state='awaiting_owner' WHERE seq=?1",
+                    [plan.decision],
+                )
+                .unwrap();
         }
         if let Some(path) = self.advance.take() {
             advance_attempt(&path);
@@ -989,4 +1002,81 @@ fn a_merge_reserves_room_for_its_whole_result_before_git() {
         p.merges, 0,
         "the result had no durable budget when Git started"
     );
+}
+
+#[test]
+fn a_refused_conflict_fact_is_settled_after_its_accept_is_demoted() {
+    let mut h = Harness::new();
+    let (node, lead) = h.reported();
+    h.run(&lead, Operation::Accept { node }).unwrap();
+    let mut a = actor(&h);
+    let mut p = Work {
+        demote_after_merge: Some(h.temp.path().to_owned()),
+        merge_reply: Some(MergeResult::Conflict {
+            files: vec!["conflict.txt".into()],
+        }),
+        ..Default::default()
+    };
+    run(&mut h, &mut a, &mut p, 100);
+    for now in [101, 60_100, 180_100] {
+        run(&mut h, &mut a, &mut p, now);
+    }
+    assert_eq!(p.merges, 1);
+    assert!(!a.ledger.merge_pending(TEAM).unwrap());
+    assert!(h.store.integration_fact(TEAM, node).unwrap().is_none());
+    assert!(h.store.cards(TEAM, 200, None).unwrap().rows.is_empty());
+    assert!(!h
+        .store
+        .inbox(TEAM, 200, None)
+        .unwrap()
+        .rows
+        .iter()
+        .any(|r| r.kind == "integration_conflict"));
+    // The store owner's approval makes it discoverable for a new original.
+    h.store
+        .db
+        .as_ref()
+        .unwrap()
+        .execute(
+            "UPDATE decisions SET state='ready' WHERE team=?1 AND node=?2",
+            rusqlite::params![TEAM, node],
+        )
+        .unwrap();
+    p.merge_reply = None;
+    run(&mut h, &mut a, &mut p, 180_101);
+    assert_eq!(p.merges, 2);
+    assert!(h.node(node).integrated);
+}
+
+#[test]
+fn a_failed_conflict_fact_write_keeps_its_known_outcome_until_the_store_recovers() {
+    let mut h = Harness::new();
+    let (node, lead) = h.reported();
+    h.run(&lead, Operation::Accept { node }).unwrap();
+    let mut a = actor(&h);
+    let mut p = Work {
+        lock_after_merge: Some(h.temp.path().join("teams/teams-v1.sqlite3")),
+        merge_reply: Some(MergeResult::Conflict {
+            files: vec!["conflict.txt".into()],
+        }),
+        ..Default::default()
+    };
+    run(&mut h, &mut a, &mut p, 100);
+    assert_eq!(p.merges, 1);
+    assert!(a.ledger.merge_pending(TEAM).unwrap());
+    assert!(h.store.integration_fact(TEAM, node).unwrap().is_none());
+    drop(p.held.take());
+    drop(a);
+    let mut a = actor(&h);
+    run(&mut h, &mut a, &mut p, 60_101);
+    assert_eq!(p.merges, 1);
+    assert_eq!(
+        h.store
+            .integration_fact(TEAM, node)
+            .unwrap()
+            .unwrap()
+            .conflicts,
+        vec!["conflict.txt"]
+    );
+    assert!(!a.ledger.merge_pending(TEAM).unwrap());
 }

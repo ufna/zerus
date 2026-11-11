@@ -452,3 +452,86 @@ fn an_explicit_ready_accept_survives_the_merge_delegation_being_off() {
         plan.base
     );
 }
+
+struct PauseAtDelivery {
+    native: native::Native,
+    team_pause: bool,
+    calls: usize,
+}
+impl ports::Ports for PauseAtDelivery {
+    fn changes(&mut self, _: &str, _: &str, _: u64) -> ports::Result<zerus_replica::Changes> {
+        Ok(zerus_replica::Changes {
+            generation: "journal".into(),
+            offset: 0,
+            documents: Some(Default::default()),
+        })
+    }
+    fn observe(&mut self, _: &mut Store, _: &TaskRef) -> ports::Result<()> {
+        Ok(())
+    }
+    fn free(&mut self, _: &Team, m: &Member) -> ports::Result<bool> {
+        Ok(m.id == "m1")
+    }
+    fn deliver(&mut self, t: &Team, n: &Node, m: &Member, id: &str) -> ops::HandoutOutcome {
+        self.calls += 1;
+        let mut store = Store::open(&self.native.config.state).unwrap();
+        assert!(store
+            .open_effects(&t.id, 200, None)
+            .unwrap()
+            .rows
+            .iter()
+            .any(|e| e.request_id == id && e.state == "reserved"));
+        let current = store.team(&t.id).unwrap().unwrap();
+        let operation = if self.team_pause {
+            Operation::Pause
+        } else {
+            Operation::PauseMember {
+                member: m.id.clone(),
+            }
+        };
+        ops::apply(
+            &mut store,
+            &person(),
+            &crate::teams::ops::tests::request(current.revision, operation),
+            100,
+        )
+        .unwrap();
+        crate::desktop::teams::child::FIXTURE_EXIT.with(|s| {
+            *s.borrow_mut() = Some(
+                serde_json::json!({"schema":1,"id":id,"state":"submitted","error":""})
+                    .to_string()
+                    .into_bytes(),
+            )
+        });
+        ports::Ports::deliver(&mut self.native, t, n, m, id)
+    }
+}
+#[test]
+fn pause_between_handout_intent_and_delivery_records_refusal_without_an_assignee() {
+    for team_pause in [true, false] {
+        let mut h = Harness::new();
+        h.bind("m1");
+        h.bind("m2");
+        let node = h.add(&person(), 1);
+        let machine = h.store.team(TEAM).unwrap().unwrap().home;
+        let mut a = Runtime::open(h.temp.path(), &machine).unwrap();
+        let mut p = PauseAtDelivery {
+            native: native(&h),
+            team_pause,
+            calls: 0,
+        };
+        a.tick(&mut h.store, &mut p, TEAM, 100, false).unwrap();
+        assert_eq!(p.calls, 1);
+        let effect = h.store.effects(TEAM, 200, None).unwrap().rows.remove(0);
+        assert_eq!(effect.state, "refused");
+        let outcome: ops::HandoutOutcome = serde_json::from_value(effect.outcome.unwrap()).unwrap();
+        assert!(matches!(outcome, ops::HandoutOutcome::Refused { .. }));
+        assert!(h
+            .store
+            .node(TEAM, node)
+            .unwrap()
+            .unwrap()
+            .assignee
+            .is_none());
+    }
+}

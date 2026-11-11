@@ -73,11 +73,13 @@ fn an_actor_conflict_records_its_decision_and_changes_no_ref_or_checkout() {
     if let Operation::Create {
         base_commit,
         integration_branch,
+        bundle,
         ..
     } = &mut op
     {
         *base_commit = git.base.clone();
         *integration_branch = "teams/integration".into();
+        bundle.pipelines[0].stages.clear();
     }
     h.run(&person(), op).unwrap();
     let lead = h.bind("lead");

@@ -15,7 +15,21 @@ const ACCEPTS:&str="SELECT seq,node,generation,actor,kind,text,state FROM decisi
 const REOPENS: &str = "SELECT seq,node,generation,actor,kind,text,state FROM decisions INDEXED BY decision_pending WHERE team=?1 AND state<>'settled' AND state='pending' AND kind IN ('return','reassign') AND node>?2 AND node<=?3 ORDER BY node LIMIT ?4";
 const OPEN: &str = "SELECT seq,node,member,generation,request_id,actor,state,outcome,created_ms,kind FROM effects INDEXED BY effects_pending WHERE team=?1 AND state IN ('reserved','submitted','uncertain','cutting_over') AND seq>?2 AND seq<=?3 ORDER BY seq LIMIT ?4";
 impl Store {
-    /// Only a saved refusal proves an intent was refused before its effect.
+    /// Whether this exact permit still admits a new write. Facts about an
+    /// earlier admitted write have their separate store authority.
+    pub fn ready_accept(
+        &self,
+        team: &str,
+        node: u32,
+        generation: u32,
+        decision: u64,
+    ) -> Result<bool> {
+        self.active()?;
+        self.db.as_ref().map_or(Ok(false),|db|db.query_row(
+            "SELECT EXISTS(SELECT 1 FROM decisions WHERE seq=?1 AND team=?2 AND node=?3 AND generation=?4 AND kind='accept' AND state='ready')",
+            params![decision,team,node,generation],|r|r.get(0)).map_err(storage))
+    }
+    /// Only a saved refusal proves that this request was refused.
     pub fn request_refused(&self, team: &str, id: &str) -> Result<bool> {
         self.active()?;
         self.db.as_ref().map_or(Ok(false),|db|db.query_row("SELECT COALESCE(json_type(result,'$.Refused')='object',0) FROM requests WHERE id=?1 AND team=?2",params![id,team],|r|r.get(0)).optional().map_err(storage).map(|v|v.unwrap_or(false)))
