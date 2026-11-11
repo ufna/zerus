@@ -82,3 +82,4 @@ fn actor_ledger_refuses_a_shared_or_linked_directory() {
     assert!(Ledger::open(temp.path()).is_err());
     assert!(!other.path().join("actor-v1.sqlite3").exists());
 }
+mod work;

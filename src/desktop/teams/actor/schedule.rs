@@ -37,6 +37,38 @@ impl Runtime {
             }
         }
     }
+    fn cooled_readiness(
+        &mut self,
+        store: &mut Store,
+        team: &Team,
+        now: i64,
+    ) -> Result<ops::Readiness> {
+        let mut r = ops::readiness(store, &team.id)?;
+        let view = PlanView {
+            phases: &r.phases,
+            nodes: &r.nodes,
+            members: &[],
+            lead: &team.lead,
+            integration: team.settings.integration,
+        };
+        let mut cooling = std::collections::BTreeSet::new();
+        for id in ready::ready(&view) {
+            let revision = store
+                .task_observation(&team.id, id)?
+                .map_or(String::new(), |o| o.revision);
+            if !self.due(store, team, &format!("handout:{id}"), &revision, now)? {
+                cooling.insert(id);
+            }
+        }
+        // This narrows the view only. Each selected node is checked again
+        // against the store's unchanged kernel view before its intent.
+        for n in &mut r.nodes {
+            if cooling.contains(&n.id) {
+                n.hold = true;
+            }
+        }
+        Ok(r)
+    }
     pub(super) fn handouts(
         &mut self,
         store: &mut Store,
@@ -44,7 +76,7 @@ impl Runtime {
         team: &Team,
         now: i64,
     ) -> Result<()> {
-        let r = ops::readiness(store, &team.id)?;
+        let r = self.cooled_readiness(store, team, now)?;
         let initial = PlanView {
             phases: &r.phases,
             nodes: &r.nodes,
@@ -52,17 +84,7 @@ impl Runtime {
             lead: &team.lead,
             integration: team.settings.integration,
         };
-        let mut any = false;
-        for id in ready::ready(&initial) {
-            let revision = store
-                .task_observation(&team.id, id)?
-                .map_or(String::new(), |o| o.revision);
-            if self.due(store, team, &format!("handout:{id}"), &revision, now)? {
-                any = true;
-                break;
-            }
-        }
-        if !any {
+        if ready::ready(&initial).is_empty() {
             return Ok(());
         }
         let effects = self.open_effects(store, &team.id)?;
@@ -157,6 +179,9 @@ impl Runtime {
         for _ in 0..4 {
             let page = store.pending_reopens(&team.id, 200, cursor.as_ref())?;
             for d in page.rows {
+                if ports.stopped() {
+                    return Ok(());
+                }
                 let key = format!("reopen:{}", d.seq);
                 if !self.due(store, team, &key, "", now)? {
                     continue;

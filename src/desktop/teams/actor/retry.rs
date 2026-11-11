@@ -7,6 +7,8 @@ struct Gate {
     at: i64,
     card: Option<u64>,
     notice: Option<Request>,
+    #[serde(default)]
+    event: Option<String>,
 }
 impl Runtime {
     pub(super) fn due(
@@ -28,7 +30,7 @@ impl Runtime {
         e: &Problem,
         now: i64,
     ) -> Result<()> {
-        self.for_row(|a| a.failure_write(store, team, key, revision, e, now))
+        self.for_row(|a| a.failure_write(store, team, (key, revision, None), e, now, false))
     }
     pub(super) fn recovered(
         &mut self,
@@ -40,6 +42,52 @@ impl Runtime {
         self.for_row(|a| a.recover_gate(store, team, key, now))
     }
 
+    pub(super) fn force_failure(
+        &mut self,
+        store: &mut Store,
+        team: &Team,
+        key: &str,
+        revision: &str,
+        e: &Problem,
+        now: i64,
+    ) -> Result<()> {
+        self.for_row(|a| a.failure_write(store, team, (key, revision, None), e, now, true))
+    }
+    pub(super) fn recorded_failure(
+        &mut self,
+        store: &mut Store,
+        team: &Team,
+        scope: (&str, &str),
+        event: &str,
+        e: &Problem,
+        now: i64,
+    ) -> Result<()> {
+        self.for_row(|a| {
+            a.failure_write(store, team, (scope.0, scope.1, Some(event)), e, now, false)
+        })
+    }
+    pub(super) fn cooldown(
+        &mut self,
+        store: &mut Store,
+        team: &Team,
+        key: &str,
+        revision: &str,
+        at: i64,
+    ) -> Result<()> {
+        self.recovered(store, team, key, at.saturating_sub(60_000))?;
+        self.for_row(|a| {
+            a.put(
+                &team.id,
+                &format!("gate:{key}"),
+                &Gate {
+                    revision: revision.into(),
+                    at,
+                    ..Default::default()
+                },
+            )?;
+            Ok(())
+        })
+    }
     fn due_read(
         &mut self,
         store: &mut Store,
@@ -69,20 +117,46 @@ impl Runtime {
         &mut self,
         store: &mut Store,
         team: &Team,
-        key: &str,
-        revision: &str,
+        scope: (&str, &str, Option<&str>),
         e: &Problem,
         now: i64,
+        force: bool,
     ) -> Result<()> {
+        let (key, revision, event) = scope;
         let name = format!("gate:{key}");
         let mut g = self.load::<Gate>(&team.id, &name)?.unwrap_or_default();
-        g.failures = g.failures.saturating_add(1);
-        g.revision = revision.into();
-        g.at = now.saturating_add(60_000 * (1i64 << g.failures.saturating_sub(1).min(4)).min(15));
+        if event.is_none() || g.event.as_deref() != event {
+            g.failures = g.failures.saturating_add(1);
+            g.revision = revision.into();
+            g.at =
+                now.saturating_add(60_000 * (1i64 << g.failures.saturating_sub(1).min(4)).min(15));
+            g.event = event.map(String::from);
+        }
         self.put(&team.id, &name, &g)?;
-        if g.failures >= 3 && g.card.is_none() {
+        if (force || g.failures >= 3) && g.card.is_none() {
             if g.notice.is_none() {
-                g.notice=Some(request(store,&team.id,Operation::OpenCard{kind:"team_actor_blocked".into(),node:None,text:format!("{}: {}. Automatic retry uses a backoff from one to fifteen minutes. Choosing Retry checks on the next service pass (60-second safety interval).",cut(key,200),cut(&e.message,2000))})?.1);
+                let timing = if key.starts_with("finish_refused:") {
+                    "The service waits for this task's observation or acceptance to change before another finish attempt. Retry checks that state on the next pass."
+                } else {
+                    "Automatic checks use a backoff from one to fifteen minutes. Choosing Retry checks on the next service pass (60-second safety interval)."
+                };
+                g.notice = Some(
+                    request(
+                        store,
+                        &team.id,
+                        Operation::OpenCard {
+                            kind: "team_actor_blocked".into(),
+                            node: None,
+                            text: format!(
+                                "{}: {}. {}",
+                                cut(key, 200),
+                                cut(&e.message, 2000),
+                                timing
+                            ),
+                        },
+                    )?
+                    .1,
+                );
                 self.put(&team.id, &name, &g)?;
             }
             let actor = Actor::Service {

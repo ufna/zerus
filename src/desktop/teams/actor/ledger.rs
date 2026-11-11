@@ -5,6 +5,15 @@ use serde_json::Value;
 use std::{path::Path, time::Duration};
 use zerus_team_plan::Problem;
 type Result<T> = std::result::Result<T, Problem>;
+pub(super) const CAPACITY: &str = "team_actor_capacity";
+fn write_error(error: rusqlite::Error) -> Problem {
+    if matches!(&error,rusqlite::Error::SqliteFailure(code,_) if code.extended_code==rusqlite::ffi::SQLITE_CONSTRAINT_TRIGGER)
+    {
+        Problem::new(CAPACITY, "Team actor ledger is full")
+    } else {
+        storage(error)
+    }
+}
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub(super) struct Row {
@@ -76,14 +85,14 @@ impl Ledger {
                 "INSERT OR IGNORE INTO actor_rows(team,key,version,data) VALUES(?1,?2,0,?3)",
                 params![team, key, Self::encode(&row)?],
             )
-            .map_err(storage)?;
+            .map_err(write_error)?;
         if changed != 1 {
             return Err(storage("Actor row already reserved"));
         }
         Ok(row)
     }
     pub fn save(&mut self, row: &mut Row) -> Result<()> {
-        let changed = self.0.execute("UPDATE actor_rows SET version=version+1,data=?4 WHERE team=?1 AND key=?2 AND version=?3",params![row.team,row.key,row.version,Self::encode(row)?]).map_err(storage)?;
+        let changed = self.0.execute("UPDATE actor_rows SET version=version+1,data=?4 WHERE team=?1 AND key=?2 AND version=?3",params![row.team,row.key,row.version,Self::encode(row)?]).map_err(write_error)?;
         if changed != 1 {
             return Err(storage("Actor row changed"));
         }
@@ -115,6 +124,32 @@ impl Ledger {
             })
             .collect();
         rows
+    }
+    pub fn merge_unread(&self, team: &str) -> Result<bool> {
+        self.0.query_row("SELECT EXISTS(SELECT 1 FROM actor_rows WHERE team=?1 AND key>='merge:' AND key<'merge;' AND (json_type(data,'$.outcome')='null' OR json_type(data,'$.outcome.Unknown') IS NOT NULL))",[team],|r|r.get(0)).map_err(storage)
+    }
+    pub fn prefix_page(&self, team: &str, prefix: &str, after: &str) -> Result<Vec<Row>> {
+        let mut s=self.0.prepare("SELECT key,version,data FROM actor_rows WHERE team=?1 AND key>=?2 AND key<?3 AND key>?4 ORDER BY key LIMIT 200").map_err(storage)?;
+        let rows = s
+            .query_map(
+                params![team, prefix, format!("{prefix}\u{10ffff}"), after],
+                |r| Ok((r.get::<_, String>(0)?, r.get(1)?, r.get::<_, String>(2)?)),
+            )
+            .map_err(storage)?
+            .map(|r| {
+                let (key, version, data) = r.map_err(storage)?;
+                Ok(Row {
+                    team: team.into(),
+                    key,
+                    version,
+                    data: serde_json::from_str(&data).map_err(storage)?,
+                })
+            })
+            .collect();
+        rows
+    }
+    pub fn merge_pending(&self, team: &str) -> Result<bool> {
+        self.0.query_row("SELECT EXISTS(SELECT 1 FROM actor_rows WHERE team=?1 AND key>='merge:' AND key<'merge;')",[team],|r|r.get(0)).map_err(storage)
     }
     pub fn pending_node(&self, team: &str, node: u32) -> Result<bool> {
         self.0.query_row("SELECT EXISTS(SELECT 1 FROM actor_rows WHERE team=?1 AND json_extract(data,'$.node')=?2 AND key>='delivery:' AND key<'delivery;')",params![team,node],|r|r.get(0)).map_err(storage)

@@ -4,21 +4,30 @@ use crate::teams::ops::HandoutOutcome;
 fn literal_delivery_replies_preserve_each_authoritative_state() {
     assert!(matches!(
         decode_delivery(
-            br#"{"schema":1,"state":"submitted","task":{"id":"a"}}"#,
+            br#"{"schema":1,"id":"effect","state":"submitted","error":"","task":{"id":"a"}}"#,
             "effect"
         ),
         HandoutOutcome::Submitted { .. }
     ));
     assert!(matches!(
-        decode_delivery(br#"{"state":"refused","error":"Busy"}"#, "effect"),
+        decode_delivery(
+            br#"{"schema":1,"id":"effect","state":"refused","error":"Busy"}"#,
+            "effect"
+        ),
         HandoutOutcome::Refused { .. }
     ));
     assert!(matches!(
-        decode_delivery(br#"{"state":"uncertain","error":"Lost"}"#, "effect"),
+        decode_delivery(
+            br#"{"schema":1,"id":"effect","state":"uncertain","error":"Lost"}"#,
+            "effect"
+        ),
         HandoutOutcome::Uncertain { .. }
     ));
     assert!(matches!(
-        decode_delivery(br#"{"state":"cutting_over","error":"Cutover"}"#, "effect"),
+        decode_delivery(
+            br#"{"schema":1,"id":"effect","state":"cutting_over","error":"Cutover"}"#,
+            "effect"
+        ),
         HandoutOutcome::CuttingOver { .. }
     ));
     for raw in [
@@ -37,7 +46,7 @@ fn literal_delivery_replies_preserve_each_authoritative_state() {
 fn reply_of_another_effect_is_never_a_delivery_receipt() {
     assert!(matches!(
         decode_delivery(
-            br#"{"schema":1,"id":"other","state":"submitted"}"#,
+            br#"{"schema":1,"id":"other","state":"submitted","error":""}"#,
             "effect"
         ),
         HandoutOutcome::Uncertain { .. }
@@ -85,4 +94,27 @@ fn literal_finishing_replies_echo_the_team_and_node_and_have_no_uncertain_state(
     }
     assert!(decode_finish(b"{}", "team", 7).is_err());
     assert!(decode_finish(b"bad", "team", 7).is_err());
+}
+#[test]
+fn delivery_requires_the_echoed_id_and_version_and_never_accepts_a_failed_child() {
+    use crate::desktop::teams::child::Ended;
+    for raw in [
+        br#"{"schema":1,"state":"submitted","error":""}"#.as_slice(),
+        br#"{"id":"effect","state":"submitted","error":""}"#,
+    ] {
+        assert!(matches!(
+            decode_delivery(raw, "effect"),
+            HandoutOutcome::Uncertain { .. }
+        ));
+    }
+    assert!(matches!(
+        delivery_reply(
+            Ended::Exited {
+                code: 1,
+                output: br#"{"schema":1,"id":"effect","state":"submitted","error":""}"#.to_vec()
+            },
+            "effect"
+        ),
+        HandoutOutcome::Uncertain { .. }
+    ));
 }

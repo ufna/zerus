@@ -55,7 +55,7 @@ impl super::super::ports::Ports for Fake {
         if self.failed_task.as_deref() == Some(&task.uuid) {
             return Err(super::super::problem("Fixture observation unavailable"));
         }
-        if self.driven {
+        if self.driven && self.reads > 1 {
             for node in store.queue(TEAM, 200, None)?.rows {
                 if node.task.as_ref() == Some(task) {
                     let old = store.task_observation(TEAM, node.id)?.unwrap();
@@ -131,6 +131,34 @@ fn two_free_members_receive_only_two_of_three_ready_nodes() {
     tick(&mut h, &mut a, &mut p, 100, false);
     assert_eq!(p.sends, 2);
     assert_eq!(h.store.open_effects(TEAM, 200, None).unwrap().rows.len(), 2);
+}
+#[test]
+fn a_part_a_retry_row_reopens_without_the_new_failure_event_field() {
+    let (mut h, mut a, _) = setup(0);
+    a.put(
+        TEAM,
+        "gate:report:1",
+        &json!({"revision":"old","failures":2,"at":60_100,"card":null,"notice":null}),
+    )
+    .unwrap();
+    drop(a);
+    let t = h.store.team(TEAM).unwrap().unwrap();
+    let mut a = super::super::Runtime::open(h.temp.path(), &t.home).unwrap();
+    assert!(!a.due(&mut h.store, &t, "report:1", "old", 100).unwrap());
+    a.failure(
+        &mut h.store,
+        &t,
+        "report:1",
+        "old",
+        &super::super::problem("Still unavailable"),
+        60_100,
+    )
+    .unwrap();
+    assert_eq!(
+        a.ledger.get(TEAM, "gate:report:1").unwrap().unwrap().data["failures"],
+        3
+    );
+    assert_eq!(h.store.cards(TEAM, 200, None).unwrap().rows.len(), 1);
 }
 #[test]
 fn unknown_delivery_creates_one_inbox_and_never_sends_again_after_restart() {
@@ -466,5 +494,37 @@ fn a_fault_of_a_known_row_does_not_become_a_worker_health_fault() {
     .unwrap();
     let teams = h.store.live_teams(16, None).unwrap().rows;
     assert!(a.page(&mut h.store, &mut p, &teams, 100, false).is_ok());
+    assert_eq!(p.sends, 0);
+}
+#[test]
+fn cooling_refused_tasks_do_not_claim_members_from_other_ready_tasks() {
+    let (mut h, mut a, mut p) = setup(2);
+    p.reply = HandoutOutcome::Refused {
+        reason: "Task writer refused".into(),
+    };
+    tick(&mut h, &mut a, &mut p, 100, false);
+    assert_eq!(p.sends, 2);
+    let node = h.add(&person(), 3);
+    p.reply = HandoutOutcome::Submitted {
+        receipt: "new task".into(),
+    };
+    tick(&mut h, &mut a, &mut p, 101, false);
+    assert_eq!(p.sends, 3);
+    assert!(h.node(node).implementer.is_some());
+}
+#[test]
+fn a_full_actor_ledger_is_a_visible_sweep_fault_before_any_new_delivery() {
+    let (mut h, mut a, mut p) = setup(1);
+    p.free.clear();
+    let teams = h.store.live_teams(16, None).unwrap().rows;
+    a.page(&mut h.store, &mut p, &teams, 100, false).unwrap();
+    let db = rusqlite::Connection::open(h.temp.path().join("teams/actor-v1.sqlite3")).unwrap();
+    db.execute("UPDATE actor_budget SET rows=8192 WHERE id=1", [])
+        .unwrap();
+    p.free.insert("m1".into());
+    let error = a
+        .page(&mut h.store, &mut p, &teams, 101, false)
+        .unwrap_err();
+    assert_eq!(error.code, super::super::ledger::CAPACITY);
     assert_eq!(p.sends, 0);
 }

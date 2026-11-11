@@ -106,6 +106,9 @@ impl Runtime {
         for _ in 0..4 {
             let page = store.queue(&team.id, 200, cursor.as_ref())?;
             for n in page.rows {
+                if ports.stopped() {
+                    return Ok(false);
+                }
                 let Some(task) = n.task else { continue };
                 if documents.is_some_and(|d| !d.contains(&task.uuid)) {
                     continue;

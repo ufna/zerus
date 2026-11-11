@@ -162,6 +162,9 @@ impl Native {
     }
 }
 impl Ports for Native {
+    fn stopped(&self) -> bool {
+        self.stop.load(std::sync::atomic::Ordering::Acquire)
+    }
     fn changes(
         &mut self,
         project: &str,
@@ -192,16 +195,53 @@ impl Ports for Native {
         }
         self.unoccupied(m)
     }
+    fn repository(&mut self, team: &Team) -> Result<String> {
+        self.work_repository(team)
+    }
+    fn reported(
+        &mut self,
+        team: &Team,
+        member: &Member,
+    ) -> Result<crate::teams::integrate::Reported> {
+        self.work_reported(team, member)
+    }
+    fn descends(&mut self, plan: &super::ports::MergePlan) -> Result<bool> {
+        self.work_descends(plan)
+    }
+    fn contains(&mut self, plan: &super::ports::MergePlan) -> Result<bool> {
+        self.work_contains(plan)
+    }
+    fn merge(&mut self, plan: &super::ports::MergePlan) -> super::ports::MergeResult {
+        self.work_merge(plan)
+    }
+    fn finish(&mut self, team: &Team, node: &Node, id: &str) -> Result<super::ports::Finish> {
+        self.done(team, node, id)
+    }
     fn deliver(&mut self, team: &Team, node: &Node, member: &Member, id: &str) -> HandoutOutcome {
-        match self.command(team, node, Some(member), id, "team-deliver") {
-            Ended::Exited { code: _, output } => decode_delivery(&output, id),
-            Ended::NotStarted => HandoutOutcome::Refused {
-                reason: "Delivery did not start".into(),
-            },
-            Ended::Unknown(_) => HandoutOutcome::Uncertain {
-                reason: "The original delivery child did not settle".into(),
-            },
+        delivery_reply(
+            self.command(team, node, Some(member), id, "team-deliver"),
+            id,
+        )
+    }
+}
+pub(super) fn delivery_reply(ended: Ended, id: &str) -> HandoutOutcome {
+    match ended {
+        Ended::Exited { code, output } => {
+            let reply = decode_delivery(&output, id);
+            if code != 0 && matches!(reply, HandoutOutcome::Submitted { .. }) {
+                HandoutOutcome::Uncertain {
+                    reason: "A failed child cannot confirm delivery".into(),
+                }
+            } else {
+                reply
+            }
         }
+        Ended::NotStarted => HandoutOutcome::Refused {
+            reason: "Delivery did not start".into(),
+        },
+        Ended::Unknown(_) => HandoutOutcome::Uncertain {
+            reason: "The original delivery child did not settle".into(),
+        },
     }
 }
 pub(super) fn decode_delivery(raw: &[u8], id: &str) -> HandoutOutcome {
@@ -211,17 +251,21 @@ pub(super) fn decode_delivery(raw: &[u8], id: &str) -> HandoutOutcome {
     let Ok(v) = serde_json::from_slice::<Value>(raw) else {
         return bad();
     };
-    if v.get("id").is_some_and(|value| value.as_str() != Some(id)) {
+    if v["id"].as_str() != Some(id) {
         return bad();
     }
-    if v.get("schema").is_some_and(|s| s.as_u64() != Some(1)) {
+    if v["schema"].as_u64() != Some(1) {
         return bad();
     }
+    let Some(error) = v["error"].as_str() else {
+        return bad();
+    };
     let reason = cut(
-        v["error"]
-            .as_str()
-            .or(v["reason"].as_str())
-            .unwrap_or("The task writer did not complete delivery"),
+        if error.trim().is_empty() {
+            "The task writer did not complete delivery"
+        } else {
+            error
+        },
         2048,
     );
     match v["state"].as_str() {

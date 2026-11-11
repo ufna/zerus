@@ -4,11 +4,17 @@
 #[cfg(unix)]
 mod availability;
 mod delivery;
+mod finish;
+mod integration;
 mod ledger;
+mod maintenance;
 #[cfg(unix)]
 pub(super) mod native;
+#[cfg(unix)]
+mod native_work;
 mod observe;
 mod ports;
+mod reports;
 mod retry;
 mod schedule;
 #[cfg(test)]
@@ -56,19 +62,45 @@ impl Runtime {
         safety: bool,
     ) -> Result<()> {
         self.row_failure = false;
+        if ports.stopped() {
+            return Ok(());
+        }
         let Some(team) = store.team(id)? else {
             return Ok(());
         };
-        if team.home != self.machine || team.status != TeamStatus::Running {
+        if team.home != self.machine
+            || !matches!(team.status, TeamStatus::Running | TeamStatus::Paused)
+        {
             return Ok(());
         }
         self.observe(store, ports, &team, now, safety)?;
-        // Reports are added in part B, then stage-task creation in part C.
-        // Integration and finishing follow the stage-task slot.
-        self.recover(store, &team, now)?;
-        self.reopens(store, ports, &team, now)?;
-        self.handouts(store, ports, &team, now)
+        if ports.stopped() {
+            return Ok(());
+        }
+        self.reports(store, ports, &team, now)?;
+        if ports.stopped() {
+            return Ok(());
+        }
+        // Part C stages tasks here, after reports and before integration.
+        if store
+            .team(id)?
+            .is_some_and(|t| t.status == TeamStatus::Running)
+        {
+            self.integrations(store, ports, &team, now)?;
+            if ports.stopped() {
+                return Ok(());
+            }
+            self.finish(store, ports, &team, now)?;
+            self.recover(store, &team, now)?;
+            self.reopens(store, ports, &team, now)?;
+            self.handouts(store, ports, &team, now)?;
+        } else {
+            self.recover_merges(store, ports, &team, now)?;
+            self.recover(store, &team, now)?;
+        }
+        self.cleanup_metadata(store, &team, now)
     }
+
     pub fn page(
         &mut self,
         store: &mut Store,
@@ -80,8 +112,11 @@ impl Runtime {
         self.prepare(teams)?;
         let mut fault = None;
         for team in teams {
+            if ports.stopped() {
+                return Ok(());
+            }
             if let Err(error) = self.tick(store, ports, &team.id, now, safety) {
-                if !self.row_failure {
+                if !self.row_failure || error.code == ledger::CAPACITY {
                     fault = Some(error);
                 }
             }
@@ -110,7 +145,7 @@ impl Runtime {
             }
             for row in self.ledger.page(&team.id, "delivery;")? {
                 // Unresolved receipts remain evidence for stop/restart work.
-                if !row.key.starts_with("delivery:") {
+                if !row.key.starts_with("delivery:") && !row.key.starts_with("merge:") {
                     self.ledger.remove(&row)?;
                 }
             }
