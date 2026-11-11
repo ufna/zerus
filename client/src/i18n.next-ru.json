@@ -1278,6 +1278,7 @@
   "The task reached its executor. Nothing was sent again.": "Задача дошла до исполнителя. Повторно ничего не отправлено.",
   "The task subscription ended. Reopen Tasks to reconnect.": "Подписка на задачи завершилась. Откройте «Задачи» снова, чтобы переподключиться.",
   "The task was created, but %1 did not queue it: %2": "Задача создана, но команда %1 не поставила её в очередь: %2",
+  "The task was created; whether %1 queued it is not known: %2": "Задача создана; поставила ли её команда %1 в очередь, неизвестно: %2",
   "The team accepts accepted work into one integration branch; you follow it in the Team tab.": "Принятая работа сливается в одну ветку интеграции; вы следите за ней на вкладке «Команда».",
   "The team could not be read. Nothing was sent.": "Не удалось прочитать команду. Ничего не отправлено.",
   "The team is being created and waits for the core.": "Команда создаётся и ожидает ядро.",
