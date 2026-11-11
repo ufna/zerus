@@ -3877,6 +3877,23 @@ task and works with them offline. Every command prints
 JSON. Tasks belong to a catalog project, named by its ID or name; a task is
 `T-` plus six characters, and `PROJECT/T-xxxxxx` names it anywhere.
 
+With the Agent Teams preview on, a task's `team` key identifies its team and
+home computer. Agents cannot send, hand off, retarget, cancel, reorder, edit,
+rename or change the stage of a live team's task. Its delivered holder may
+acknowledge its own attempt or legacy dispatch, register a worker and report;
+comments and messages that only add text remain available. The person can
+override these restrictions. A person's retarget away from the team clears the
+key and releases its live node under the same project lock; a refused release
+keeps the task unchanged.
+
+Turning the preview off makes a local team's marked tasks dormant: ordinary
+task commands do not open the team store or apply its guards. A foreign-home
+or invalid key still refuses agent control without opening the store, whether
+the preview is on or off. The refusal points the person to `hgs task target
+REF any` to clear the key. When a key is cleared or replaced on another
+computer, the home service releases the node at its next observation; that
+sync and observation window is accepted.
+
 ```sh
 hgs task add --project orchard [--backlog] [--target codex/api|any [--host ALIAS]] [--position N] < prompt.txt
 hgs task add --project orchard --title "Task title" --request-id UUID < description.txt
