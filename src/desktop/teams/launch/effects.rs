@@ -13,19 +13,25 @@ impl Runtime {
             .as_ref()
             .ok_or_else(|| invalid("Launch plan is missing"))?;
         match effects.worktree(plan, &row.original) {
-            Effect::Submitted(tree)
+            Effect::Submitted(Some(tree))
                 if !tree.path.is_empty() && !tree.ownership_nonce.is_empty() =>
             {
                 row.worktree = Some(tree);
                 row.state = State::WorktreeDone;
             }
-            Effect::Submitted(_) => {
+            Effect::Submitted(None) => row.state = State::WorktreeVerify,
+            Effect::Submitted(Some(_)) => {
                 self.block(row, uncertain("Worktree ownership is unconfirmed"), now)?;
                 return Ok(true);
             }
             Effect::NotStarted => {
                 row.state = State::WorktreeReady;
                 self.admitted = None;
+            }
+            Effect::Deferred(p) => {
+                row.state = State::WorktreeReady;
+                self.save(row, now)?;
+                return Err(p);
             }
             Effect::Refused(p) => {
                 self.block(row, p, now)?;
@@ -38,6 +44,35 @@ impl Runtime {
         }
         self.save(row, now)?;
         Ok(row.state != State::WorktreeReady)
+    }
+    pub(super) fn verify_worktree(
+        &mut self,
+        effects: &mut impl Effects,
+        row: &mut Row,
+        now: i64,
+    ) -> Result<bool> {
+        let plan = row
+            .plan
+            .as_ref()
+            .ok_or_else(|| invalid("Launch plan is missing"))?;
+        match effects.verify_worktree(plan) {
+            Ok(tree) if !tree.path.is_empty() && !tree.ownership_nonce.is_empty() => {
+                row.worktree = Some(tree);
+                row.state = State::WorktreeDone;
+                row.retry_at = 0;
+            }
+            Ok(_) => {
+                self.block(row, uncertain("Worktree ownership is unconfirmed"), now)?;
+                return Ok(true);
+            }
+            Err(p) if p.code == code::DELIVERY_UNCERTAIN => {
+                self.block(row, p, now)?;
+                return Ok(true);
+            }
+            Err(p) => return Err(p),
+        }
+        self.save(row, now)?;
+        Ok(true)
     }
     pub(super) fn launch(
         &mut self,
@@ -62,6 +97,11 @@ impl Runtime {
             Effect::NotStarted => {
                 row.state = State::LaunchReady;
                 self.admitted = None;
+            }
+            Effect::Deferred(p) => {
+                row.state = State::LaunchReady;
+                self.save(row, now)?;
+                return Err(p);
             }
             Effect::Refused(p) => {
                 self.block(row, p, now)?;
@@ -98,22 +138,23 @@ impl Runtime {
         let observed = match read {
             Ok(LaunchRead::Session(s)) => *s,
             Ok(LaunchRead::Ended { code }) => {
-                self.block(
+                self.block_binding(
+                    store,
+                    team,
                     row,
                     uncertain(&format!("The original launch ended with exit {code}")),
                     now,
                 )?;
                 return Ok(true);
             }
-            Ok(LaunchRead::Absent { legacy }) => {
+            Ok(LaunchRead::Absent { .. }) => {
                 if row.unknown_until == 0 {
                     row.unknown_until = now.saturating_add(5 * 60_000);
                 }
-                if row.unknown_until > 0
-                    && now >= row.unknown_until
-                    && (row.state == State::LaunchUnknown || legacy)
-                {
-                    self.block(
+                if row.unknown_until > 0 && now >= row.unknown_until {
+                    self.block_binding(
+                        store,
+                        team,
                         row,
                         uncertain("The original launch has no identity after five minutes"),
                         now,
@@ -125,7 +166,7 @@ impl Runtime {
                 return Ok(false);
             }
             Err(p) if p.code == code::DELIVERY_UNCERTAIN => {
-                self.block(row, p, now)?;
+                self.block_binding(store, team, row, p, now)?;
                 return Ok(true);
             }
             Err(p) => {
@@ -145,7 +186,9 @@ impl Runtime {
             || observed.account != plan.account
             || Some(&observed.worktree) != row.worktree.as_ref()
         {
-            self.block(
+            self.block_binding(
+                store,
+                team,
                 row,
                 uncertain("The original launch record has a different identity or owned worktree"),
                 now,
@@ -186,6 +229,22 @@ impl Runtime {
         self.save(row, now)?;
         self.admitted = None;
         Ok(true)
+    }
+    fn block_binding(
+        &mut self,
+        store: &mut Store,
+        team: &Team,
+        row: &mut Row,
+        problem: Problem,
+        now: i64,
+    ) -> Result<()> {
+        if row.card_request.is_some() {
+            // Recover an uncertain card receipt before retiring its old read
+            // failure, so an earlier committed outbox cannot leave a second card.
+            self.card(store, row, now)?;
+            self.close_stale(store, team, row, now)?;
+        }
+        self.block(row, problem, now)
     }
     pub(super) fn parent(
         &mut self,

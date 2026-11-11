@@ -5,6 +5,7 @@ use super::{
 };
 use crate::teams::ops::{self, tests::Harness};
 use std::collections::BTreeMap;
+use zerus_team_plan::problem::code;
 use zerus_team_plan::{
     accounts::{AccountUsage, UsageWindow},
     catalog::AccountChoice,
@@ -28,6 +29,8 @@ struct FakeEffects {
     placement_error: bool,
     read_error: bool,
     parent_pending: bool,
+    worktree_unverified: bool,
+    launch_verification_unavailable: bool,
 }
 impl Default for FakeEffects {
     fn default() -> Self {
@@ -46,6 +49,8 @@ impl Default for FakeEffects {
             placement_error: false,
             read_error: false,
             parent_pending: false,
+            worktree_unverified: false,
+            launch_verification_unavailable: false,
         }
     }
 }
@@ -88,14 +93,29 @@ impl Effects for FakeEffects {
         }
         Ok(self.accounts.clone())
     }
-    fn worktree(&mut self, plan: &Plan, _: &str) -> Effect<Worktree> {
+    fn worktree(&mut self, plan: &Plan, _: &str) -> Effect<Option<Worktree>> {
         self.events.push(format!("worktree:{}", plan.member));
-        Effect::Submitted(Worktree {
+        if self.worktree_unverified {
+            return Effect::Submitted(None);
+        }
+        Effect::Submitted(Some(Worktree {
             path: format!("/workspace/example-{}", plan.member),
+            ownership_nonce: format!("owned-{}", plan.member),
+        }))
+    }
+    fn verify_worktree(&mut self, plan: &Plan) -> Result<Worktree> {
+        if self.read_error {
+            return Err(invalid("Ownership read unavailable"));
+        }
+        Ok(Worktree {
+            path: plan.placement.destination.clone(),
             ownership_nonce: format!("owned-{}", plan.member),
         })
     }
     fn launch(&mut self, plan: &Plan, tree: &Worktree, _: &str) -> Effect<()> {
+        if self.launch_verification_unavailable {
+            return Effect::Deferred(invalid("Ownership read unavailable"));
+        }
         if std::mem::take(&mut self.not_started) {
             return Effect::NotStarted;
         }
@@ -152,6 +172,24 @@ fn advance(r: &mut Runtime, h: &mut Harness, e: &mut FakeEffects, count: usize) 
     for _ in 0..count {
         tick(r, h, e);
     }
+}
+// No fixture may spin on a broken or mutated transition on the shared computer.
+fn until(
+    r: &mut Runtime,
+    h: &mut Harness,
+    e: &mut FakeEffects,
+    reached: impl Fn(&Harness, &FakeEffects) -> bool,
+) {
+    for _ in 0..100 {
+        if reached(h, e) {
+            return;
+        }
+        tick(r, h, e);
+    }
+    assert!(
+        reached(h, e),
+        "expected fixture transition was not reached in 100 steps"
+    );
 }
 fn cards(h: &Harness) -> Vec<crate::teams::store::Card> {
     h.store.cards(ops::tests::TEAM, 200, None).unwrap().rows
@@ -291,9 +329,7 @@ fn launch_id_binds_after_rename_and_the_same_name_with_another_id_is_refused() {
             ..Default::default()
         };
         let mut r = runtime(&h);
-        while e.plans.is_empty() {
-            tick(&mut r, &mut h, &mut e);
-        }
+        until(&mut r, &mut h, &mut e, |_, e| !e.plans.is_empty());
         for s in e.sessions.values_mut() {
             s.name = "claude/example/renamed".into();
         }
@@ -322,9 +358,7 @@ fn identity_also_checks_machine_account_agent_and_owned_worktree() {
             ..Default::default()
         };
         let mut r = runtime(&h);
-        while e.plans.is_empty() {
-            tick(&mut r, &mut h, &mut e);
-        }
+        until(&mut r, &mut h, &mut e, |_, e| !e.plans.is_empty());
         let s = e.sessions.values_mut().next().unwrap();
         match field {
             "machine" => s.machine = "other".into(),
@@ -385,9 +419,9 @@ fn not_started_is_retryable_but_does_not_spin_inside_one_pass() {
         ..Default::default()
     };
     let mut r = runtime(&h);
-    while row_if(&h, "lead").is_none_or(|r| r.state != State::LaunchIntent) {
-        tick(&mut r, &mut h, &mut e);
-    }
+    until(&mut r, &mut h, &mut e, |h, _| {
+        row_if(h, "lead").is_some_and(|r| r.state == State::LaunchIntent)
+    });
     assert!(!tick(&mut r, &mut h, &mut e));
     assert_eq!(row(&h, "lead").state, State::LaunchReady);
     drop(r);
@@ -516,9 +550,9 @@ fn presentation_parent_never_delays_binding_or_opens_an_owner_card() {
     let mut h = Harness::new();
     let mut e = FakeEffects::default();
     let mut r = runtime(&h);
-    while row_if(&h, "m1").is_none_or(|r| r.state != State::ParentIntent) {
-        tick(&mut r, &mut h, &mut e);
-    }
+    until(&mut r, &mut h, &mut e, |h, _| {
+        row_if(h, "m1").is_some_and(|r| r.state == State::ParentIntent)
+    });
     assert_eq!(
         h.store
             .member(ops::tests::TEAM, "m1")
@@ -568,9 +602,9 @@ fn pausing_an_earlier_member_does_not_withdraw_another_members_original() {
     let mut h = Harness::new();
     let mut e = FakeEffects::default();
     let mut r = runtime(&h);
-    while row_if(&h, "m1").is_none_or(|r| r.state != State::ParentIntent) {
-        tick(&mut r, &mut h, &mut e);
-    }
+    until(&mut r, &mut h, &mut e, |h, _| {
+        row_if(h, "m1").is_some_and(|r| r.state == State::ParentIntent)
+    });
     h.run(
         &ops::tests::person(),
         ops::Operation::PauseMember {
@@ -632,9 +666,9 @@ fn review07_removed_member_does_not_starve_other_teams() {
         ..Default::default()
     };
     let mut r = runtime(&h);
-    while row_if(&h, "m3").is_none_or(|r| r.state != State::WorktreeIntent) {
-        tick(&mut r, &mut h, &mut e);
-    }
+    until(&mut r, &mut h, &mut e, |h, _| {
+        row_if(h, "m3").is_some_and(|r| r.state == State::WorktreeIntent)
+    });
     assert!(r.busy());
     h.run(
         &ops::tests::person(),
@@ -695,10 +729,13 @@ impl Effects for LockingEffects {
     fn accounts(&mut self, a: &str) -> Result<Vec<AccountUsage>> {
         self.inner.accounts(a)
     }
-    fn worktree(&mut self, p: &Plan, o: &str) -> Effect<Worktree> {
+    fn worktree(&mut self, p: &Plan, o: &str) -> Effect<Option<Worktree>> {
         let result = self.inner.worktree(p, o);
         self.after("worktree");
         result
+    }
+    fn verify_worktree(&mut self, plan: &Plan) -> Result<Worktree> {
+        self.inner.verify_worktree(plan)
     }
     fn launch(&mut self, p: &Plan, t: &Worktree, o: &str) -> Effect<()> {
         let result = self.inner.launch(p, t, o);
@@ -769,9 +806,9 @@ fn a_changed_lead_invalidates_the_member_plan_before_an_effect() {
         ..Default::default()
     };
     let mut r = runtime(&h);
-    while row_if(&h, "m1").is_none_or(|r| r.state != State::WorktreeIntent) {
-        tick(&mut r, &mut h, &mut e);
-    }
+    until(&mut r, &mut h, &mut e, |h, _| {
+        row_if(h, "m1").is_some_and(|r| r.state == State::WorktreeIntent)
+    });
     let mut saved = row(&h, "m1");
     saved.plan.as_mut().unwrap().parent = Some(zerus_team_plan::model::SessionKey {
         machine: MACHINE.into(),
@@ -793,9 +830,9 @@ fn a_member_paused_after_reservation_never_runs_its_effect() {
         ..Default::default()
     };
     let mut r = runtime(&h);
-    while row_if(&h, "m1").is_none_or(|r| r.state != State::WorktreeIntent) {
-        tick(&mut r, &mut h, &mut e);
-    }
+    until(&mut r, &mut h, &mut e, |h, _| {
+        row_if(h, "m1").is_some_and(|r| r.state == State::WorktreeIntent)
+    });
     h.run(
         &ops::tests::service(),
         ops::Operation::SetMemberState {
@@ -815,9 +852,9 @@ fn a_saved_worktree_can_launch_after_restart_without_being_created_again() {
         ..Default::default()
     };
     let mut r = runtime(&h);
-    while row_if(&h, "lead").is_none_or(|r| r.state != State::WorktreeDone) {
-        tick(&mut r, &mut h, &mut e);
-    }
+    until(&mut r, &mut h, &mut e, |h, _| {
+        row_if(h, "lead").is_some_and(|r| r.state == State::WorktreeDone)
+    });
     drop(r);
     advance(&mut runtime(&h), &mut h, &mut e, 60);
     assert_eq!(
@@ -844,9 +881,7 @@ fn a_session_at_folder_trust_binds_without_a_conversation() {
         ..Default::default()
     };
     let mut r = runtime(&h);
-    while e.plans.is_empty() {
-        tick(&mut r, &mut h, &mut e);
-    }
+    until(&mut r, &mut h, &mut e, |_, e| !e.plans.is_empty());
     for s in e.sessions.values_mut() {
         s.conversation_id.clear();
     }
@@ -915,6 +950,9 @@ fn account_choice_retries_after_reset_and_closes_its_one_card_as_stale() {
     let mut r = runtime(&h);
     advance(&mut r, &mut h, &mut e, 20);
     assert_eq!(cards(&h).len(), 1);
+    assert!(cards(&h)[0]
+        .text
+        .contains("Automatic retry follows that account window reset"));
     let card = cards(&h)[0].seq;
     assert_eq!(e.account_reads, 1);
     for a in &mut e.accounts {
@@ -1024,9 +1062,7 @@ fn observation_read_errors_do_not_turn_a_running_launch_into_uncertainty() {
         ..Default::default()
     };
     let mut r = runtime(&h);
-    while e.plans.is_empty() {
-        tick(&mut r, &mut h, &mut e);
-    }
+    until(&mut r, &mut h, &mut e, |_, e| !e.plans.is_empty());
     e.read_error = true;
     for now in [1234, 61_234, 181_234] {
         r.tick(&mut h.store, &mut e, ops::tests::TEAM, now).unwrap();
@@ -1086,9 +1122,7 @@ fn stopped_and_removed_pending_launches_are_noted_for_the_lifecycle_owner() {
         ..Default::default()
     };
     let mut r = runtime(&h);
-    while e.plans.is_empty() {
-        tick(&mut r, &mut h, &mut e);
-    }
+    until(&mut r, &mut h, &mut e, |_, e| !e.plans.is_empty());
     h.run(&ops::tests::person(), ops::Operation::Stop).unwrap();
     tick(&mut r, &mut h, &mut e);
     assert!(row(&h, "lead").late_after_stop);
@@ -1170,4 +1204,302 @@ fn losing_an_outcome_never_repeats_branch_worktree_or_parent_effects() {
             "{kind} was replayed"
         );
     }
+}
+
+// Regressions from the review07b reproductions, asserting the corrected behavior.
+#[test]
+fn review07b_a_failed_person_retry_opens_exactly_one_new_card() {
+    let mut h = Harness::new();
+    let mut e = FakeEffects {
+        exists: true,
+        account_error: true,
+        ..Default::default()
+    };
+    let mut r = runtime(&h);
+    advance(&mut r, &mut h, &mut e, 20);
+    let open = |h: &Harness| cards(h).into_iter().filter(|c| c.state == "open").count();
+    assert_eq!(open(&h), 1);
+    let card = cards(&h)[0].seq;
+    h.run(
+        &ops::tests::person(),
+        ops::Operation::DecideCard {
+            card,
+            decision: "retry".into(),
+        },
+    )
+    .unwrap();
+    // The condition still holds: the retry fails again.
+    r.begin_pass();
+    for _ in 0..5 {
+        let _ = r.tick(&mut h.store, &mut e, ops::tests::TEAM, 1234);
+    }
+    let lead = row(&h, "lead");
+    eprintln!(
+        "REVIEW07B state={:?} failures={} card_done={} open_cards={} all_cards={}",
+        lead.state,
+        lead.failures,
+        lead.card_done,
+        open(&h),
+        cards(&h).len()
+    );
+    // Much later, still failing:
+    r.begin_pass();
+    for _ in 0..5 {
+        let _ = r.tick(&mut h.store, &mut e, ops::tests::TEAM, 10_000_000);
+    }
+    let lead = row(&h, "lead");
+    eprintln!(
+        "REVIEW07B later state={:?} failures={} open_cards={}",
+        lead.state,
+        lead.failures,
+        open(&h)
+    );
+    assert_eq!(open(&h), 1, "the failed requested retry must be visible");
+    assert_eq!(
+        cards(&h).len(),
+        2,
+        "automatic retries must keep the new card"
+    );
+}
+#[test]
+fn review07b_a_full_ledger_budget_opens_one_durable_team_card() {
+    let mut h = Harness::new();
+    drop(Ledger::open(h.temp.path()).unwrap());
+    let db =
+        rusqlite::Connection::open(h.temp.path().join("teams/member-launch-v1.sqlite3")).unwrap();
+    db.execute_batch("UPDATE launch_budget SET rows=16384 WHERE id=1")
+        .unwrap();
+    drop(db);
+    let mut e = FakeEffects {
+        exists: true,
+        ..Default::default()
+    };
+    let mut r = runtime(&h);
+    let mut errors = 0;
+    for _ in 0..20 {
+        if let Err(p) = r.tick(&mut h.store, &mut e, ops::tests::TEAM, 1234) {
+            errors += 1;
+            if errors == 1 {
+                eprintln!("REVIEW07B tick error: {} {}", p.code, p.message);
+            }
+        }
+    }
+    let lead = Ledger::open(h.temp.path())
+        .unwrap()
+        .get(ops::tests::TEAM, "lead")
+        .unwrap();
+    eprintln!(
+        "REVIEW07B errors={errors} lead_row={} cards={} events={:?}",
+        lead.is_some(),
+        cards(&h).len(),
+        e.events
+    );
+    assert!(lead.is_none());
+    assert_eq!(
+        cards(&h).len(),
+        1,
+        "one card tells the person about the full ledger"
+    );
+    drop(r);
+    advance(&mut runtime(&h), &mut h, &mut e, 20);
+    assert_eq!(cards(&h).len(), 1, "restart must reuse the budget card");
+}
+
+#[test]
+fn a_submitted_launch_with_missing_identity_expires_once_without_relaunching() {
+    let mut h = Harness::new();
+    let mut e = FakeEffects {
+        exists: true,
+        ..Default::default()
+    };
+    let mut r = runtime(&h);
+    until(&mut r, &mut h, &mut e, |_, e| !e.plans.is_empty());
+    e.sessions.clear();
+    for now in [1234, 61_234, 301_234, 500_000, 10_000_000] {
+        for _ in 0..3 {
+            r.tick(&mut h.store, &mut e, ops::tests::TEAM, now).unwrap();
+        }
+    }
+    assert_eq!(row(&h, "lead").state, State::Blocked);
+    assert_eq!(cards(&h).len(), 1);
+    assert_eq!(cards(&h)[0].kind, "launch_uncertain");
+    assert_eq!(e.plans.len(), 1);
+}
+#[test]
+fn retry_card_distinguishes_automatic_backoff_from_a_persons_retry() {
+    let mut h = Harness::new();
+    let mut e = FakeEffects {
+        exists: true,
+        account_error: true,
+        ..Default::default()
+    };
+    advance(&mut runtime(&h), &mut h, &mut e, 10);
+    let text = &cards(&h)[0].text;
+    assert!(!text.contains("within 60 seconds"));
+    assert!(text.contains("Automatic retry"));
+    assert!(text.contains("Retry checks sooner"));
+}
+
+#[test]
+fn a_created_worktree_can_finish_its_ownership_read_after_restart_without_recreation() {
+    let mut h = Harness::new();
+    let mut e = FakeEffects {
+        exists: true,
+        read_error: true,
+        worktree_unverified: true,
+        ..Default::default()
+    };
+    let mut r = runtime(&h);
+    until(&mut r, &mut h, &mut e, |h, _| {
+        row_if(h, "lead").is_some_and(|r| r.state == State::WorktreeVerify)
+    });
+    assert_eq!(
+        r.tick(&mut h.store, &mut e, ops::tests::TEAM, 1234)
+            .unwrap_err()
+            .code,
+        code::INVALID_STATE
+    );
+    assert_eq!(row(&h, "lead").state, State::WorktreeVerify);
+    drop(r);
+    let mut r = runtime(&h);
+    e.read_error = false;
+    for _ in 0..10 {
+        r.tick(&mut h.store, &mut e, ops::tests::TEAM, 61_234)
+            .unwrap();
+    }
+    assert!(h
+        .store
+        .member(ops::tests::TEAM, "lead")
+        .unwrap()
+        .unwrap()
+        .session
+        .is_some());
+    assert_eq!(
+        e.events
+            .iter()
+            .filter(|e| e.as_str() == "worktree:lead")
+            .count(),
+        1
+    );
+}
+#[test]
+fn ownership_verification_before_a_launch_backs_off_and_recovers_without_a_refusal() {
+    let mut h = Harness::new();
+    let mut e = FakeEffects {
+        exists: true,
+        launch_verification_unavailable: true,
+        ..Default::default()
+    };
+    let mut r = runtime(&h);
+    until(&mut r, &mut h, &mut e, |h, _| {
+        row_if(h, "lead").is_some_and(|r| r.state == State::LaunchIntent)
+    });
+    for now in [1234, 61_234, 181_234] {
+        for _ in 0..2 {
+            let _ = r.tick(&mut h.store, &mut e, ops::tests::TEAM, now);
+        }
+        assert_eq!(row(&h, "lead").state, State::LaunchReady);
+        assert!(row(&h, "lead").retry_at > now);
+    }
+    assert_eq!(cards(&h).len(), 1);
+    assert_eq!(cards(&h)[0].kind, "launch_blocked");
+    assert!(!e.events.iter().any(|e| e.starts_with("launch:")));
+    e.launch_verification_unavailable = false;
+    for _ in 0..4 {
+        r.tick(&mut h.store, &mut e, ops::tests::TEAM, 500_000)
+            .unwrap();
+    }
+    assert!(h
+        .store
+        .member(ops::tests::TEAM, "lead")
+        .unwrap()
+        .unwrap()
+        .session
+        .is_some());
+    assert_eq!(
+        e.events
+            .iter()
+            .filter(|e| e.as_str() == "launch:lead")
+            .count(),
+        1
+    );
+    assert_eq!(cards(&h)[0].state, "closed");
+    assert_eq!(cards(&h)[0].decision.as_deref(), Some("stale"));
+}
+
+#[test]
+fn a_budget_card_survives_its_reserved_outbox_and_closes_when_capacity_recovers() {
+    let mut h = Harness::new();
+    let team = h.store.team(ops::tests::TEAM).unwrap().unwrap();
+    let mut ledger = Ledger::open(h.temp.path()).unwrap();
+    // Crash after the independent notice row was inserted, before opening its card.
+    let mut alert = super::ledger::Row::new(&team, super::ledger::BUDGET, EPOCH, State::Retry);
+    alert.problem = Some(
+        zerus_team_plan::Problem::new(
+            code::OVER_CAP,
+            "Team member creation is temporarily at capacity.",
+        )
+        .with_refs(["member_launch_ledger"]),
+    );
+    ledger.insert(&alert, 1234).unwrap();
+    drop(ledger);
+    let db =
+        rusqlite::Connection::open(h.temp.path().join("teams/member-launch-v1.sqlite3")).unwrap();
+    db.execute("UPDATE launch_budget SET rows=16384 WHERE id=1", [])
+        .unwrap();
+    let mut e = FakeEffects {
+        exists: true,
+        ..Default::default()
+    };
+    let mut r = runtime(&h);
+    for _ in 0..5 {
+        let _ = r.tick(&mut h.store, &mut e, ops::tests::TEAM, 1234);
+    }
+    assert_eq!(cards(&h).len(), 1);
+    assert_eq!(cards(&h)[0].kind, "launch_capacity");
+    assert!(cards(&h)[0].text.starts_with("Team member creation:"));
+    assert!(!cards(&h)[0].text.contains("@budget"));
+    assert!(!cards(&h)[0].text.contains("member_launch_ledger"));
+    drop(r);
+    db.execute(
+        "UPDATE launch_budget SET rows=(SELECT COUNT(*) FROM originals) WHERE id=1",
+        [],
+    )
+    .unwrap();
+    drop(db);
+    let mut r = runtime(&h);
+    for _ in 0..8 {
+        r.tick(&mut h.store, &mut e, ops::tests::TEAM, 61_234)
+            .unwrap();
+    }
+    assert_eq!(cards(&h).len(), 1);
+    assert_eq!(cards(&h)[0].state, "closed");
+    assert_eq!(cards(&h)[0].decision.as_deref(), Some("stale"));
+}
+
+#[test]
+fn missing_submitted_identity_replaces_an_earlier_read_error_card_with_uncertainty() {
+    let mut h = Harness::new();
+    let mut e = FakeEffects {
+        exists: true,
+        ..Default::default()
+    };
+    let mut r = runtime(&h);
+    until(&mut r, &mut h, &mut e, |_, e| !e.plans.is_empty());
+    e.read_error = true;
+    for now in [1234, 61_234, 181_234] {
+        r.tick(&mut h.store, &mut e, ops::tests::TEAM, now).unwrap();
+    }
+    assert_eq!(cards(&h)[0].kind, "launch_blocked");
+    e.read_error = false;
+    e.sessions.clear();
+    for _ in 0..3 {
+        r.tick(&mut h.store, &mut e, ops::tests::TEAM, 600_000)
+            .unwrap();
+    }
+    let all = cards(&h);
+    let open: Vec<_> = all.iter().filter(|c| c.state == "open").collect();
+    assert_eq!(open.len(), 1);
+    assert_eq!(open[0].kind, "launch_uncertain");
+    assert_eq!(all[0].decision.as_deref(), Some("stale"));
 }

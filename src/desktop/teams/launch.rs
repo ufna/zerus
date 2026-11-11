@@ -28,6 +28,7 @@ pub(super) struct Runtime {
     prune_after: String,
 }
 mod branch;
+mod budget;
 mod card;
 mod effects;
 mod member;
@@ -69,7 +70,11 @@ impl Runtime {
             self.admitted = None;
         }
         if let Err(error) = &result {
-            let _ = self.record_failure(store, id, error.clone(), now);
+            if super::ledger::is_budget(error) {
+                self.notify_budget(store, id, error.clone(), now)?;
+            } else {
+                let _ = self.record_failure(store, id, error.clone(), now);
+            }
         }
         result
     }
@@ -93,6 +98,9 @@ impl Runtime {
         }
         if self.ledger.is_none() {
             self.ledger = Some(Ledger::open(&self.state)?);
+        }
+        if !self.budget_due(store, &team, now)? {
+            return Ok(false);
         }
         if team.settings.integration == Integration::Branch
             && !self.branch(store, effects, &team, now)?

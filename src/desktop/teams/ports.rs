@@ -70,6 +70,8 @@ pub(super) enum LaunchRead {
 
 pub(super) enum Effect<T> {
     NotStarted,
+    /// A read failed before the effect started; retry preparation with backoff.
+    Deferred(Problem),
     Submitted(T),
     Refused(Problem),
     Unknown(Problem),
@@ -85,7 +87,9 @@ pub(super) trait Effects {
     fn branch_exists(&mut self, plan: &super::ledger::BranchPlan) -> Result<bool>;
     fn create_branch(&mut self, plan: &super::ledger::BranchPlan) -> Effect<()>;
     fn accounts(&mut self, agent: &str) -> Result<Vec<AccountUsage>>;
-    fn worktree(&mut self, plan: &Plan, original: &str) -> Effect<Worktree>;
+    /// None means creation settled successfully but ownership still needs a read.
+    fn worktree(&mut self, plan: &Plan, original: &str) -> Effect<Option<Worktree>>;
+    fn verify_worktree(&mut self, plan: &Plan) -> Result<Worktree>;
     fn launch(&mut self, plan: &Plan, worktree: &Worktree, original: &str) -> Effect<()>;
     /// Exact launch ID lookup; ambiguity must return an error, not one match.
     fn observe(&mut self, plan: &Plan) -> Result<LaunchRead>;

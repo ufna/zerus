@@ -11,7 +11,7 @@ impl Runtime {
         self.selected = Some((team.id.clone(), BRANCH.into()));
         let Some(mut row) = self.ledger().get(&team.id, BRANCH)? else {
             let mut row = Row::new(team, BRANCH, &self.epoch, State::Retry);
-            if !self.ledger().insert(&row, now)? {
+            if !self.reserve_row(store, team, &row, now)? {
                 return Ok(false);
             }
             return self.reserve_branch(store, effects, team, &mut row, now);
@@ -59,6 +59,11 @@ impl Runtime {
                     Effect::NotStarted => {
                         self.admitted = None;
                         row.state = State::BranchReady;
+                    }
+                    Effect::Deferred(p) => {
+                        row.state = State::BranchReady;
+                        self.save(&mut row, now)?;
+                        return Err(p);
                     }
                     Effect::Refused(p) => {
                         self.block(&mut row, p, now)?;

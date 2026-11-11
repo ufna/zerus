@@ -76,6 +76,7 @@ impl Runtime {
                 Ok(true)
             }
             State::WorktreeIntent => self.worktree(effects, &mut row, now),
+            State::WorktreeVerify => self.verify_worktree(effects, &mut row, now),
             State::WorktreeDone => {
                 row.state = State::LaunchIntent;
                 row.original = uuid::Uuid::new_v4().to_string();
@@ -101,7 +102,7 @@ impl Runtime {
         now: i64,
     ) -> Result<bool> {
         let mut row = Row::new(team, &member.id, &self.epoch, State::Retry);
-        if !self.ledger().insert(&row, now)? {
+        if !self.reserve_row(store, team, &row, now)? {
             return Ok(false);
         }
         self.choose(store, effects, team, member, parent, &mut row, now)

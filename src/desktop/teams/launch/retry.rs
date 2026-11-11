@@ -19,6 +19,14 @@ impl Runtime {
         now: i64,
     ) -> Result<()> {
         self.admitted = None;
+        // A decided card describes the previous failed attempt. Reserve a new
+        // outbox only when the person's requested retry has actually failed.
+        if row.retry_seen {
+            row.card_id = None;
+            row.card_request = None;
+            row.card_done = false;
+            row.retry_seen = false;
+        }
         row.problem = Some(bounded_problem(problem));
         row.state = State::Retry;
         row.failures = row.failures.saturating_add(1);
@@ -44,6 +52,7 @@ impl Runtime {
                     .is_some_and(|c| c.decision.as_deref() == Some("retry"))
                 {
                     row.retry_seen = true;
+                    row.retry_at = now;
                     self.save(row, now)?;
                     return Ok(true);
                 }

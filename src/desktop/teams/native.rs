@@ -170,7 +170,7 @@ impl Effects for Native {
         }
         Ok(accounts)
     }
-    fn worktree(&mut self, plan: &Plan, original: &str) -> Effect<Worktree> {
+    fn worktree(&mut self, plan: &Plan, original: &str) -> Effect<Option<Worktree>> {
         let args = arguments::worktree(plan);
         match child::run(
             &self.config,
@@ -201,7 +201,8 @@ impl Effects for Native {
                     observation::ownership(&self.config, &plan.placement)
                 })();
                 match result {
-                    Ok(tree) => Effect::Submitted(tree),
+                    Ok(tree) => Effect::Submitted(Some(tree)),
+                    Err(p) if p.code != code::DELIVERY_UNCERTAIN => Effect::Submitted(None),
                     Err(p) => Effect::Unknown(p),
                 }
             }
@@ -210,13 +211,19 @@ impl Effects for Native {
             ))),
         }
     }
+    fn verify_worktree(&mut self, plan: &Plan) -> Result<Worktree> {
+        observation::ownership(&self.config, &plan.placement)
+    }
     fn launch(&mut self, plan: &Plan, worktree: &Worktree, original: &str) -> Effect<()> {
         let args = match arguments::launch(plan, worktree) {
             Ok(args) => args,
             Err(p) => return Effect::Refused(p),
         };
-        if observation::ownership(&self.config, &plan.placement).as_ref() != Ok(worktree) {
-            return Effect::Refused(invalid("Generated worktree ownership changed"));
+        match observation::ownership(&self.config, &plan.placement) {
+            Ok(current) if &current == worktree => (),
+            Ok(_) => return Effect::Refused(uncertain("Generated worktree ownership changed")),
+            Err(p) if p.code == code::DELIVERY_UNCERTAIN => return Effect::Refused(p),
+            Err(p) => return Effect::Deferred(p),
         }
         match child::run(
             &self.config,
