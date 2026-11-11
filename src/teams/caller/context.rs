@@ -29,11 +29,13 @@
 //! `platform::process_identity` (`PROC_PIDTBSDINFO`, start seconds and
 //! microseconds).
 //!
-//! macOS withholds the environment of some programs from a reader of the
-//! same user: every program with a platform identifier (the system shells
-//! `/bin/zsh`, `/bin/bash` and `/bin/sh`, and `ssh`) and some signed programs,
-//! mostly those signed for library validation. `KERN_PROCARGS2` still
-//! answers, but nothing follows the arguments. A process whose environment is
+//! macOS withholds the environment of a process whose code-signing status
+//! carries the `restrict` flag from a reader of the same user. On the Mac
+//! that qualified this proof the flag held for every one of 464 withheld
+//! processes and for none of 49 readable ones. The system shells `/bin/zsh`,
+//! `/bin/bash` and `/bin/sh`, `ssh` and `sshd-session` carry it; a shell
+//! installed by Homebrew does not. `KERN_PROCARGS2` still answers, but nothing
+//! follows the arguments. A process whose environment is
 //! really empty still leaves the kernel's own `key=value` strings there, so a
 //! tail with no byte other than NUL is a withheld read and never an empty
 //! environment. The parser also refuses an answer that fills its buffer,
