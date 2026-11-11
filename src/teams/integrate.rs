@@ -172,8 +172,10 @@ pub fn merge_admitted<T>(
     message: &str,
     admit: impl FnOnce() -> Result<T, Problem>,
 ) -> Result<Merge, Problem> {
+    let mut git = Git::repo(repo)?;
+    git.ref_budget = Some(Duration::from_secs(5));
     merge_git(
-        &Git::repo(repo)?,
+        &git,
         branch,
         commit,
         message,
@@ -329,19 +331,28 @@ fn merge_git<T>(
     git.available(&reference)?;
     let reflog = format!("Zerus: merge {incoming}: {message}");
     let admission = admit()?;
+    // Only the admitted ref writer gets this short bound. Plain merge and
+    // sync callers keep their existing shared Git deadline.
+    let ref_deadline = git
+        .ref_budget
+        .map(|budget| git.deadline.min(Instant::now() + budget))
+        .unwrap_or(git.deadline);
     #[cfg(test)]
     if let Some(hook) = BEFORE_REF_WRITE.with(|s| s.borrow_mut().take()) {
         hook();
     }
-    let output = git.run(&[
-        "update-ref",
-        "--no-deref",
-        "-m",
-        &reflog,
-        &reference,
-        &new,
-        &old,
-    ]);
+    let output = git.run_until(
+        &[
+            "update-ref",
+            "--no-deref",
+            "-m",
+            &reflog,
+            &reference,
+            &new,
+            &old,
+        ],
+        ref_deadline,
+    );
     drop(admission);
     let output = output?;
     if output.status.success() {
@@ -421,6 +432,7 @@ struct Git {
     filters: BTreeSet<String>,
     repository_drivers: bool,
     deadline: Instant,
+    ref_budget: Option<Duration>,
 }
 
 impl Git {
@@ -430,7 +442,16 @@ impl Git {
 
     fn open(path: &Path, common_dir: bool) -> Result<Self, Problem> {
         let mut git = Self {
-            program: PathBuf::from("git"),
+            program: {
+                #[cfg(test)]
+                {
+                    tests::program()
+                }
+                #[cfg(not(test))]
+                {
+                    PathBuf::from("git")
+                }
+            },
             path: path
                 .canonicalize()
                 .map_err(|e| unavailable(format!("Cannot open repository: {e}")))?,
@@ -441,6 +462,7 @@ impl Git {
             filters: BTreeSet::new(),
             repository_drivers: false,
             deadline: Instant::now() + Duration::from_secs(30),
+            ref_budget: None,
         };
         if !supported_version(&git.read(&["--version"])?) {
             return Err(unavailable("Integration requires Git 2.38 or newer"));
@@ -549,8 +571,11 @@ impl Git {
     }
 
     fn run(&self, args: &[&str]) -> Result<Output, Problem> {
+        self.run_until(args, self.deadline)
+    }
+    fn run_until(&self, args: &[&str], deadline: Instant) -> Result<Output, Problem> {
         // A deadline already elapsed is proof that no writer was launched.
-        if Instant::now() >= self.deadline {
+        if Instant::now() >= deadline {
             return Err(unavailable(
                 "Git deadline passed before starting the command",
             ));
@@ -604,7 +629,7 @@ impl Git {
         let (status, stdout, stderr) = crate::platform::run_bounded(
             &mut command,
             [8 * 1024 * 1024, 64 * 1024],
-            self.deadline,
+            deadline,
             &|| false,
         )
         .map_err(|error| {
@@ -863,6 +888,12 @@ mod tests {
         attrs: Rc<Cell<u32>>,
     }
 
+    thread_local! { static PROGRAM: RefCell<Option<PathBuf>> = const {RefCell::new(None)}; }
+    pub(super) fn program() -> PathBuf {
+        PROGRAM
+            .with(|p| p.borrow().clone())
+            .unwrap_or_else(|| PathBuf::from("git"))
+    }
     thread_local! { static CONFIG: RefCell<Option<Config>> = const { RefCell::new(None) }; }
 
     struct ConfigGuard(Option<Config>);
@@ -876,6 +907,12 @@ mod tests {
     }
 
     pub(super) fn configure(command: &mut Command, operation: Option<&str>) {
+        if PROGRAM.with(|p| p.borrow().is_some()) {
+            command.env(
+                "HGS_FIXTURE_REAL_GIT",
+                crate::platform::which("git").unwrap(),
+            );
+        }
         let null = if cfg!(windows) { "NUL" } else { "/dev/null" };
         command
             .env_remove("GIT_CONFIG_NOSYSTEM")
@@ -2303,5 +2340,81 @@ mod tests {
         assert!(containing_tip(&f.repo, "missing", &member).is_err());
         assert!(containing_tip(&f.repo, "teams/integration", "missing").is_err());
         assert_eq!(f.refs(), refs);
+    }
+    #[cfg(unix)]
+    fn with_fixture_git<T>(fixture: &Fixture, mode: &str, run: impl FnOnce() -> T) -> T {
+        use std::os::unix::fs::PermissionsExt;
+        let path = fixture.root.path().join("fixture-git");
+        let branch = match mode {
+            "hung-ref" => "if [ \"$arg\" = update-ref ]; then exec sleep 60; fi",
+            "ancestry-error" => "if [ \"$arg\" = merge-base ]; then exit 2; fi",
+            _ => panic!("unknown Git fixture"),
+        };
+        let body = format!(
+            "#!/bin/sh\nfor arg do\n {branch}\ndone\nexec \"$HGS_FIXTURE_REAL_GIT\" \"$@\"\n"
+        );
+        fs::write(&path, body).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o700)).unwrap();
+        struct Reset(Option<PathBuf>);
+        impl Drop for Reset {
+            fn drop(&mut self) {
+                PROGRAM.with(|p| *p.borrow_mut() = self.0.take());
+            }
+        }
+        let _reset = Reset(PROGRAM.with(|p| p.replace(Some(path))));
+        run()
+    }
+    #[cfg(unix)]
+    #[test]
+    fn an_ancestry_command_failure_after_both_commits_resolve_is_not_a_negative() {
+        let f = Fixture::new();
+        let incoming = f.branch("member", "new.txt", "incoming");
+        create_branch(&f.repo, "teams/held", &f.base).unwrap();
+        let result = with_fixture_git(&f, "ancestry-error", || {
+            containing_tip(&f.repo, "teams/held", &incoming)
+        });
+        assert!(
+            result.is_err(),
+            "a failed merge-base was treated as not contained: {result:?}"
+        );
+    }
+    #[cfg(unix)]
+    #[test]
+    fn an_admitted_ref_update_releases_the_store_within_its_five_second_budget() {
+        let f = Fixture::new();
+        let incoming = f.branch("member", "new.txt", "incoming");
+        create_branch(&f.repo, "teams/held", &f.base).unwrap();
+        let h = crate::teams::ops::tests::Harness::new();
+        let state = h.temp.path().to_path_buf();
+        let mark = Rc::new(Cell::new(false));
+        let seen = mark.clone();
+        BEFORE_REF_WRITE.with(|s| {
+            *s.borrow_mut() = Some(Box::new(move || {
+                let db = rusqlite::Connection::open(state.join("teams/teams-v1.sqlite3")).unwrap();
+                db.busy_timeout(Duration::ZERO).unwrap();
+                assert!(db.execute_batch("BEGIN IMMEDIATE").is_err());
+                seen.set(true);
+            }))
+        });
+        let started = Instant::now();
+        let result = with_fixture_git(&f, "hung-ref", || {
+            merge_admitted(&f.repo, "teams/held", &incoming, "Admitted fixture", || {
+                crate::teams::store::Store::open(h.temp.path())?.admission()
+            })
+        });
+        let elapsed = started.elapsed();
+        assert!(mark.get());
+        assert_eq!(result.unwrap_err().code, code::DELIVERY_UNCERTAIN);
+        let db = rusqlite::Connection::open(h.temp.path().join("teams/teams-v1.sqlite3")).unwrap();
+        db.busy_timeout(Duration::ZERO).unwrap();
+        db.execute_batch("BEGIN IMMEDIATE;ROLLBACK").unwrap();
+        assert_eq!(
+            git(&f.main, &["rev-parse", "refs/heads/teams/held"]),
+            f.base
+        );
+        assert!(
+            elapsed < Duration::from_secs(8),
+            "the store remained held for {elapsed:?}"
+        );
     }
 }
