@@ -1,47 +1,45 @@
 use super::*;
 
-/// The only operation policy. Actors have already passed the native caller
-/// boundary; apply also rechecks a session's exact persisted binding.
-pub fn authority(actor: &Actor, operation: &Operation, team: &Team) -> Result<(), Problem> {
+/// Operation policy is centralized here. Service facts never inherit Person
+/// authority. Native caller and exact persisted session identity are verified
+/// separately, before operation authority or a saved receipt is consulted.
+pub fn authority(actor: &Actor, op: &Operation, team: &Team) -> Result<()> {
     let denied = || {
         Problem::new(
             code::NOT_ALLOWED,
-            "This actor is not allowed to perform this team operation.",
+            "This actor cannot perform this team operation.",
         )
     };
     if actor.person() != team.owner {
         return Err(denied());
     }
-    if matches!(actor, Actor::Person { .. }) {
-        return Ok(());
-    }
-    let lead =
-        matches!(actor,Actor::Session{team:id,member,..} if id==&team.id && member==&team.lead);
-    let member = matches!(actor,Actor::Session{team:id,..} if id==&team.id);
-    let service = matches!(actor,Actor::Service{team:id,..} if id==&team.id);
-    let allowed = match operation {
+    let service = matches!(actor, Actor::Service { team: id, .. } if id == &team.id);
+    let person = matches!(actor, Actor::Person { .. });
+    let lead = matches!(actor, Actor::Session { team: id, member, .. } if id == &team.id && member == &team.lead);
+    let member = matches!(actor, Actor::Session { team: id, member, .. } if id == &team.id && member != &team.lead);
+    let allowed = match op {
+        Operation::ObserveTask { .. }
+        | Operation::HandoutIntent { .. }
+        | Operation::HandoutOutcome { .. }
+        | Operation::ReopenIntent { .. }
+        | Operation::ReopenOutcome { .. }
+        | Operation::SetMemberSession { .. }
+        | Operation::SetMemberState { .. }
+        | Operation::RecordReport { .. }
+        | Operation::RecordIntegration { .. }
+        | Operation::RecordIntegrationConflict { .. } => service,
         Operation::Create { .. }
         | Operation::Stop
         | Operation::Archive
         | Operation::StopMember { .. }
         | Operation::ArchiveMember { .. }
         | Operation::ChangeSettings { .. }
-        | Operation::DecideCard { .. } => false,
-        Operation::SetMemberSession { .. }
-        | Operation::SetMemberState { .. }
-        | Operation::HandoutOutcome { .. }
-        | Operation::ObserveTask { .. } => service,
-        Operation::HandoutIntent { .. } | Operation::OpenCard { .. } => lead || service,
-        Operation::RecordReport { .. } => member || service,
-        Operation::Ask { .. } => member && !lead,
-        Operation::AddTask { .. } => true, // Other sessions submit for admission only.
-        Operation::Accept {
-            integration_commit, ..
-        } => {
-            lead && team.settings.delegations.accept_results
-                && (integration_commit.is_none() || team.settings.delegations.merge_accepted)
-        }
-        Operation::Reply { .. } => lead && team.settings.delegations.answer_members,
+        | Operation::DecideCard { .. } => person,
+        Operation::AddTask { .. } => true,
+        Operation::Ask { .. } => member || person,
+        Operation::Accept { .. } => person || (lead && team.settings.delegations.accept_results),
+        Operation::Reply { .. } => person || (lead && team.settings.delegations.answer_members),
+        Operation::OpenCard { .. } => person || lead || service,
         Operation::Pause
         | Operation::Resume
         | Operation::PauseMember { .. }
@@ -50,9 +48,9 @@ pub fn authority(actor: &Actor, operation: &Operation, team: &Team) -> Result<()
         | Operation::Route { .. }
         | Operation::Hold { .. }
         | Operation::Release { .. }
-        | Operation::Cancel { .. }
         | Operation::Return { .. }
-        | Operation::Reassign { .. } => lead,
+        | Operation::Reassign { .. }
+        | Operation::Cancel { .. } => person || lead,
     };
     if allowed {
         Ok(())

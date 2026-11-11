@@ -1,0 +1,364 @@
+use super::*;
+#[test]
+fn full_return_reopen_progress_report_accept_integration_cycle() {
+    let mut h = Harness::new();
+    let (node, lead) = h.reported();
+    h.run(
+        &lead,
+        Operation::Return {
+            node,
+            reason: "Fix the edge case".into(),
+        },
+    )
+    .unwrap();
+    let id = h.reopen(node, "m1");
+    assert!(h.node(node).implementer.is_none());
+    assert_eq!(h.store.generation(TEAM, node).unwrap(), Some(2));
+    h.reopen_outcome(
+        &id,
+        HandoutOutcome::Submitted {
+            receipt: "Reopen receipt".into(),
+        },
+    );
+    h.observe(node, TaskStage::InProgress);
+    h.report(node, "m1");
+    h.run(&lead, Operation::Accept { node }).unwrap();
+    assert!(!h.node(node).integrated);
+    h.run(
+        &service(),
+        Operation::RecordIntegration {
+            node,
+            commit: COMMIT.into(),
+        },
+    )
+    .unwrap();
+    h.observe(node, TaskStage::Done);
+    assert_eq!(h.node(node).state, NodeState::Accepted);
+    assert!(h.node(node).integrated);
+}
+fn competing(node: u32) -> Vec<Operation> {
+    vec![
+        Operation::Accept { node },
+        Operation::Return {
+            node,
+            reason: "Another decision".into(),
+        },
+        Operation::Reassign {
+            node,
+            member: "m1".into(),
+            reason: "Another decision".into(),
+        },
+        Operation::Cancel {
+            node,
+            reason: "Another decision".into(),
+        },
+        Operation::Release { node },
+    ]
+}
+#[test]
+fn each_pending_decision_blocks_all_competing_decisions_and_release() {
+    for first in competing(1).into_iter().take(4) {
+        let mut h = Harness::new();
+        let (_, lead) = h.reported();
+        h.run(&lead, first).unwrap();
+        for next in competing(1) {
+            refused(h.run(&lead, next), code::INVALID_STATE);
+        }
+    }
+}
+#[test]
+fn integration_requires_a_pending_accept_and_service_receipt_and_is_recorded_once() {
+    let mut h = Harness::new();
+    let (node, lead) = h.reported();
+    let op = Operation::RecordIntegration {
+        node,
+        commit: COMMIT.into(),
+    };
+    refused(h.run(&service(), op.clone()), code::INVALID_STATE);
+    h.run(&lead, Operation::Accept { node }).unwrap();
+    h.observe(node, TaskStage::Done);
+    assert!(!h.node(node).integrated);
+    h.run(&service(), op.clone()).unwrap();
+    assert!(h.node(node).integrated);
+    refused(h.run(&service(), op), code::INVALID_STATE);
+}
+#[test]
+fn merge_delegation_off_opens_an_owner_card_and_approval_authorizes_service_integration() {
+    let mut h = Harness::new();
+    let (node, lead) = h.reported();
+    h.settings(|s| s.delegations.merge_accepted = false);
+    let card = h
+        .run(&lead, Operation::Accept { node })
+        .unwrap()
+        .item
+        .unwrap();
+    let op = Operation::RecordIntegration {
+        node,
+        commit: COMMIT.into(),
+    };
+    refused(h.run(&service(), op.clone()), code::INVALID_STATE);
+    h.run(
+        &person(),
+        Operation::DecideCard {
+            card,
+            decision: "approve".into(),
+        },
+    )
+    .unwrap();
+    h.run(&service(), op).unwrap();
+    h.observe(node, TaskStage::Done);
+    assert!(h.node(node).integrated);
+}
+#[test]
+fn owner_rejection_settles_acceptance_without_an_integration_receipt() {
+    let mut h = Harness::new();
+    let (node, lead) = h.reported();
+    h.settings(|s| s.delegations.merge_accepted = false);
+    let card = h
+        .run(&lead, Operation::Accept { node })
+        .unwrap()
+        .item
+        .unwrap();
+    h.run(
+        &person(),
+        Operation::DecideCard {
+            card,
+            decision: "reject".into(),
+        },
+    )
+    .unwrap();
+    assert!(!h.node(node).integrated);
+    h.run(
+        &lead,
+        Operation::Return {
+            node,
+            reason: "Use another approach".into(),
+        },
+    )
+    .unwrap();
+}
+#[test]
+fn integration_none_accepts_without_any_receipt() {
+    let mut h = Harness::new();
+    let (node, lead) = h.reported();
+    h.settings(|s| s.integration = Integration::None);
+    h.run(&lead, Operation::Accept { node }).unwrap();
+    refused(
+        h.run(
+            &service(),
+            Operation::RecordIntegration {
+                node,
+                commit: COMMIT.into(),
+            },
+        ),
+        code::INVALID_STATE,
+    );
+    h.observe(node, TaskStage::Done);
+    assert!(!h.node(node).integrated);
+}
+#[test]
+fn stage_acceptance_has_no_merge_or_receipt() {
+    let mut h = Harness::new();
+    let (node, lead) = h.reported();
+    let mut n = h.node(node);
+    n.kind = NodeKind::Stage;
+    n.stage_of = Some(2);
+    h.store
+        .db
+        .as_ref()
+        .unwrap()
+        .execute(
+            "UPDATE nodes SET data=?3 WHERE team=?1 AND id=?2",
+            params![TEAM, node, rows::node_payload(&n).unwrap()],
+        )
+        .unwrap();
+    h.run(&lead, Operation::Accept { node }).unwrap();
+    refused(
+        h.run(
+            &service(),
+            Operation::RecordIntegration {
+                node,
+                commit: COMMIT.into(),
+            },
+        ),
+        code::INVALID_STATE,
+    );
+    h.observe(node, TaskStage::Done);
+    assert!(!h.node(node).integrated);
+}
+#[test]
+fn conflict_is_a_service_recorded_return_with_its_findings() {
+    let mut h = Harness::new();
+    let (node, lead) = h.reported();
+    h.run(&lead, Operation::Accept { node }).unwrap();
+    h.run(
+        &service(),
+        Operation::RecordIntegrationConflict {
+            node,
+            conflicts: vec!["src/example.rs".into()],
+        },
+    )
+    .unwrap();
+    let decisions = h.store.decisions(TEAM, 200, None).unwrap().rows;
+    assert_eq!(decisions[0].state, "settled");
+    assert_eq!(decisions[1].kind, "return");
+    assert!(decisions[1].text.contains("src/example.rs"));
+    h.reopen(node, "m1");
+}
+#[test]
+fn unknown_reopen_is_not_retried_and_explicit_reassignment_opens_a_new_generation() {
+    let mut h = Harness::new();
+    let (node, lead) = h.reported();
+    h.bind("m2");
+    h.run(
+        &lead,
+        Operation::Return {
+            node,
+            reason: "Fix".into(),
+        },
+    )
+    .unwrap();
+    let id = h.reopen(node, "m1");
+    h.reopen_outcome(
+        &id,
+        HandoutOutcome::Uncertain {
+            reason: "No delivery receipt".into(),
+        },
+    );
+    refused(
+        h.run(
+            &service(),
+            Operation::ReopenIntent {
+                node,
+                member: "m1".into(),
+                effect_request_id: uuid::Uuid::new_v4().to_string(),
+            },
+        ),
+        code::INVALID_STATE,
+    );
+    h.run(
+        &lead,
+        Operation::Reassign {
+            node,
+            member: "m2".into(),
+            reason: "Checked; use a new attempt".into(),
+        },
+    )
+    .unwrap();
+    h.reopen(node, "m2");
+    assert_eq!(h.store.generation(TEAM, node).unwrap(), Some(3));
+}
+#[test]
+fn report_can_arrive_after_reopen_intent_but_before_its_receipt() {
+    let mut h = Harness::new();
+    let (node, lead) = h.reported();
+    h.run(
+        &lead,
+        Operation::Return {
+            node,
+            reason: "Fix".into(),
+        },
+    )
+    .unwrap();
+    let id = h.reopen(node, "m1");
+    h.observe(node, TaskStage::InProgress);
+    h.report(node, "m1");
+    h.reopen_outcome(
+        &id,
+        HandoutOutcome::Submitted {
+            receipt: "Late receipt".into(),
+        },
+    );
+    assert_eq!(
+        h.store
+            .effects(TEAM, 200, None)
+            .unwrap()
+            .rows
+            .last()
+            .unwrap()
+            .state,
+        "reported"
+    );
+    h.run(&lead, Operation::Accept { node }).unwrap();
+}
+#[test]
+fn cancel_is_a_decision_until_the_service_observes_cancellation() {
+    let mut h = Harness::new();
+    let lead = h.bind("lead");
+    let node = h.add(&person(), 1);
+    h.run(
+        &lead,
+        Operation::Cancel {
+            node,
+            reason: "Superseded".into(),
+        },
+    )
+    .unwrap();
+    assert_eq!(h.node(node).state, NodeState::Pending);
+    assert!(h.node(node).hold);
+    h.cancel_fact(node);
+    assert_eq!(h.node(node).state, NodeState::Cancelled);
+}
+
+#[test]
+fn an_old_report_does_not_settle_a_reassignment_before_its_reopen_intent() {
+    let mut h = Harness::new();
+    let lead = h.bind("lead");
+    h.bind("m1");
+    h.bind("m2");
+    let node = h.add(&person(), 1);
+    h.submit(node, "m1");
+    h.run(
+        &lead,
+        Operation::Reassign {
+            node,
+            member: "m2".into(),
+            reason: "Use a replacement".into(),
+        },
+    )
+    .unwrap();
+    h.report(node, "m1");
+    assert_eq!(
+        h.store
+            .decisions(TEAM, 200, None)
+            .unwrap()
+            .rows
+            .last()
+            .unwrap()
+            .state,
+        "pending"
+    );
+    h.reopen(node, "m2");
+    assert_eq!(h.store.generation(TEAM, node).unwrap(), Some(2));
+}
+#[test]
+fn a_late_reopen_receipt_cannot_settle_a_later_team_stop() {
+    let mut h = Harness::new();
+    let (node, lead) = h.reported();
+    h.run(
+        &lead,
+        Operation::Return {
+            node,
+            reason: "Fix".into(),
+        },
+    )
+    .unwrap();
+    let id = h.reopen(node, "m1");
+    h.run(&person(), Operation::Stop).unwrap();
+    h.reopen_outcome(
+        &id,
+        HandoutOutcome::Submitted {
+            receipt: "Late receipt".into(),
+        },
+    );
+    let last = h
+        .store
+        .decisions(TEAM, 200, None)
+        .unwrap()
+        .rows
+        .pop()
+        .unwrap();
+    assert_eq!(last.kind, "cancel");
+    assert_eq!(last.state, "pending");
+    assert!(h.node(node).hold);
+}

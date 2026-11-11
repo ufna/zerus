@@ -17,6 +17,9 @@ use std::{
 };
 use zerus_team_plan::{model::*, problem::code, Problem};
 
+pub(crate) const OPEN_EFFECT_STATES: &str = "('reserved','submitted','uncertain','cutting_over')";
+pub(crate) const SCHEMA_VERSION: u32 = 2;
+
 pub type Result<T> = std::result::Result<T, Problem>;
 
 #[derive(Debug)]
@@ -98,6 +101,23 @@ impl Store {
         self.active()?;
         self.db.as_ref().map_or(Ok(None), |db| rows::team(db, id))
     }
+    pub fn suggestion(&self, team: &str, node: u32) -> Result<Option<RoutingSuggestion>> {
+        self.active()?;
+        self.db.as_ref().map_or(Ok(None), |db| {
+            db.query_row(
+                "SELECT role,pipeline FROM suggestions WHERE team=?1 AND node=?2",
+                rusqlite::params![team, node],
+                |r| {
+                    Ok(RoutingSuggestion {
+                        role: r.get(0)?,
+                        pipeline: r.get(1)?,
+                    })
+                },
+            )
+            .optional()
+            .map_err(storage)
+        })
+    }
     pub fn member(&self, team: &str, id: &str) -> Result<Option<Member>> {
         self.active()?;
         self.db
@@ -106,9 +126,12 @@ impl Store {
     }
     pub fn node(&self, team: &str, id: NodeId) -> Result<Option<Node>> {
         self.active()?;
-        self.db
-            .as_ref()
-            .map_or(Ok(None), |db| rows::node(db, team, id))
+        self.db.as_ref().map_or(Ok(None), |db| {
+            let tx = db.unchecked_transaction().map_err(storage)?;
+            let node = rows::node(&tx, team, id)?;
+            tx.commit().map_err(storage)?;
+            Ok(node)
+        })
     }
     pub fn task_observation(
         &self,
@@ -117,10 +140,10 @@ impl Store {
     ) -> Result<Option<super::ops::TaskObservation>> {
         self.active()?;
         self.db.as_ref().map_or(Ok(None),|db| {
-            let raw: Option<(String,String,bool,String)> = db.query_row(
-                "SELECT task_revision,task_stage,task_cancelled,rank FROM nodes WHERE team=?1 AND id=?2 UNION ALL SELECT task_revision,task_stage,task_cancelled,rank FROM node_archive WHERE team=?1 AND id=?2 LIMIT 1",
-                rusqlite::params![team,id], |r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).optional().map_err(storage)?;
-            raw.map(|(revision,stage,cancelled,rank)|Ok(super::ops::TaskObservation{previous_revision:revision.clone(),revision,stage:serde_json::from_value(serde_json::Value::String(stage)).map_err(storage)?,cancelled,rank})).transpose()
+            let raw: Option<(String,String,bool,String,String)> = db.query_row(
+                "SELECT task_revision,task_stage,task_cancelled,rank,data FROM nodes WHERE team=?1 AND id=?2 UNION ALL SELECT task_revision,task_stage,task_cancelled,rank,data FROM node_archive WHERE team=?1 AND id=?2 LIMIT 1",
+                rusqlite::params![team,id], |r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,sql_json::<Node>(r,4)?.title))).optional().map_err(storage)?;
+            raw.filter(|r| !r.0.is_empty()).map(|(revision,stage,cancelled,rank,title)|Ok(super::ops::TaskObservation{previous_revision:revision.clone(),revision,stage:serde_json::from_value(serde_json::Value::String(stage)).map_err(storage)?,cancelled,rank,title})).transpose()
         })
     }
     pub fn generation(&self, team: &str, id: NodeId) -> Result<Option<u32>> {
@@ -180,32 +203,37 @@ fn connect(path: &Path, create: bool) -> Result<Connection> {
     #[cfg(unix)]
     crate::sqlite_file::bind_private(&db, path, identity).map_err(storage)?;
     db.busy_timeout(Duration::from_secs(2)).map_err(storage)?;
-    let version: u32 = db
-        .query_row("PRAGMA user_version", [], |r| r.get(0))
-        .map_err(storage)?;
-    if version > 1 {
-        return Err(storage("store schema is newer than this version of Zerus"));
-    }
-    if version == 0 {
-        if !create {
-            return Err(storage("uninitialized store"));
-        }
-        let tx = db
-            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
-            .map_err(storage)?;
-        // Another first creator may have initialized the database while we waited.
-        let current: u32 = tx
-            .query_row("PRAGMA user_version", [], |r| r.get(0))
-            .map_err(storage)?;
-        if current == 0 {
-            tx.execute_batch(include_str!("schema.sql"))
-                .map_err(storage)?;
-        } else if current != 1 {
-            return Err(storage("store schema changed"));
-        }
-        tx.commit().map_err(storage)?;
-    }
+    initialize(&mut db)?;
     db.execute_batch("PRAGMA foreign_keys=ON; PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;")
         .map_err(storage)?;
     Ok(db)
+}
+
+fn initialize(db: &mut Connection) -> Result<()> {
+    let version: u32 = db
+        .query_row("PRAGMA user_version", [], |r| r.get(0))
+        .map_err(storage)?;
+    if version > SCHEMA_VERSION {
+        return Err(storage("store schema is newer than this version of Zerus"));
+    }
+    if version == SCHEMA_VERSION {
+        return Ok(());
+    }
+    let tx = db
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+        .map_err(storage)?;
+    let current: u32 = tx
+        .query_row("PRAGMA user_version", [], |r| r.get(0))
+        .map_err(storage)?;
+    let sql = match current {
+        0 => Some(include_str!("schema.sql")),
+        1 => Some(include_str!("migrate-v1.sql")),
+        SCHEMA_VERSION => None,
+        _ => return Err(storage("store schema changed")),
+    };
+    if let Some(sql) = sql {
+        tx.execute_batch(&sql.replace("__OPEN_EFFECT_STATES__", OPEN_EFFECT_STATES))
+            .map_err(storage)?;
+    }
+    tx.commit().map_err(storage)
 }

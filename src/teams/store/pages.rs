@@ -148,33 +148,45 @@ impl Store {
         limit: u32,
         cursor: Option<&Cursor>,
     ) -> Result<Page<Node>> {
+        self.node_page_with(team, state, limit, cursor, || {})
+    }
+    pub(super) fn node_page_with(
+        &self,
+        team: &str,
+        state: Option<NodeState>,
+        limit: u32,
+        cursor: Option<&Cursor>,
+        after_rows: impl FnOnce(),
+    ) -> Result<Page<Node>> {
         self.active()?;
         let filter = state
-            .map(|state| encode(&state))
+            .map(|s| encode(&s))
             .transpose()?
             .map(|s| s.trim_matches('"').to_owned());
-        let c = start(
-            self.db.as_ref(),
-            format!("{team}:nodes:{filter:?}"),
-            "nodes",
-            team,
-            limit,
-            cursor,
-        )?;
-        let mut rows = Vec::new();
-        if let Some(db) = &self.db {
-            let table = if matches!(state, Some(NodeState::Accepted | NodeState::Cancelled)) {
-                "node_archive"
-            } else {
-                "nodes"
-            };
-            let sql = if filter.is_some() {
-                format!("SELECT {} FROM {table} WHERE team=?1 AND node_state=?5 AND id>?2 AND id<=?3 ORDER BY id LIMIT ?4",rows::NODE_SELECT)
-            } else {
-                format!("SELECT {} FROM nodes WHERE team=?1 AND id<=?3 AND (rank>?5 OR (rank=?5 AND id>?2)) ORDER BY rank,id LIMIT ?4",rows::NODE_SELECT)
-            };
-            let mut s = db.prepare(&sql).map_err(storage)?;
-            rows = s
+        let scope = format!("{team}:nodes:{filter:?}");
+        let Some(db) = &self.db else {
+            let c = start(None, scope, "nodes", team, limit, cursor)?;
+            return Ok(finish(Vec::new(), c, limit, |n: &Node| {
+                (u64::from(n.id), n.rank.clone())
+            }));
+        };
+        // The high-water mark, node rows and every dependency row share the
+        // same SQLite snapshot, including while a concurrent Route commits.
+        let tx = db.unchecked_transaction().map_err(storage)?;
+        let c = start(Some(&tx), scope, "nodes", team, limit, cursor)?;
+        let table = if matches!(state, Some(NodeState::Accepted | NodeState::Cancelled)) {
+            "node_archive"
+        } else {
+            "nodes"
+        };
+        let sql = if filter.is_some() {
+            format!("SELECT {} FROM {table} WHERE team=?1 AND node_state=?5 AND id>?2 AND id<=?3 ORDER BY id LIMIT ?4",rows::NODE_SELECT)
+        } else {
+            format!("SELECT {} FROM nodes WHERE team=?1 AND id<=?3 AND (rank>?5 OR (rank=?5 AND id>?2)) ORDER BY rank,id LIMIT ?4",rows::NODE_SELECT)
+        };
+        let mut nodes = {
+            let mut statement = tx.prepare(&sql).map_err(storage)?;
+            let mapped = statement
                 .query_map(
                     params![
                         team,
@@ -185,18 +197,21 @@ impl Store {
                     ],
                     rows::node_row,
                 )
-                .map_err(storage)?
-                .collect::<std::result::Result<Vec<_>, _>>()
                 .map_err(storage)?;
-            for node in &mut rows {
-                node.deps = rows::deps(db, team, node.id)?;
-            }
+            mapped
+                .collect::<std::result::Result<Vec<_>, _>>()
+                .map_err(storage)?
+        };
+        after_rows();
+        for n in &mut nodes {
+            n.deps = rows::deps(&tx, team, n.id)?;
         }
-        Ok(finish(rows, c, limit, |r| {
+        tx.commit().map_err(storage)?;
+        Ok(finish(nodes, c, limit, |n| {
             (
-                u64::from(r.id),
+                u64::from(n.id),
                 if state.is_none() {
-                    r.rank.clone()
+                    n.rank.clone()
                 } else {
                     String::new()
                 },
@@ -306,6 +321,7 @@ impl Store {
                     request_id: r.get(4)?,
                     actor: sql_json(r, 5)?,
                     state: r.get(6)?,
+                    kind: r.get(9)?,
                     outcome: r
                         .get::<_, Option<String>>(7)?
                         .map(|s| serde_json::from_str(&s))
@@ -314,7 +330,7 @@ impl Store {
                     created_ms: r.get(8)?,
                 })
             },
-            "seq,node,member,generation,request_id,actor,state,outcome,created_ms",
+            "seq,node,member,generation,request_id,actor,state,outcome,created_ms,kind",
         )
     }
     pub fn decisions(
@@ -330,6 +346,7 @@ impl Store {
             cursor,
             |r| {
                 Ok(Decision {
+                    state: r.get(6)?,
                     seq: r.get(0)?,
                     node: r.get(1)?,
                     generation: r.get(2)?,
@@ -338,7 +355,7 @@ impl Store {
                     text: r.get(5)?,
                 })
             },
-            "seq,node,generation,actor,kind,text",
+            "seq,node,generation,actor,kind,text,state",
         )
     }
     fn seq_page<T>(

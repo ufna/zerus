@@ -17,7 +17,7 @@ pub(crate) fn member(db: &Connection, team: &str, id: &str) -> Result<Option<Mem
     .optional()
     .map_err(storage)
 }
-pub(crate) const NODE_COLUMNS: &str = "team,id,data,rank,admitted,routed,hold,task_revision,task_stage,task_cancelled,generation,decided_by,integrated,integration_commit,requested";
+pub(crate) const NODE_COLUMNS: &str = "team,id,data,rank,admitted,routed,hold,task_revision,task_stage,task_cancelled,generation,decided_by,integrated,integration_commit,requested,integration_required";
 
 pub(crate) fn node_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<Node> {
     let mut node: Node = sql_json(r, 0)?;
@@ -89,6 +89,12 @@ pub(crate) fn node_payload(node: &Node) -> Result<String> {
 }
 
 pub(crate) fn archive_decided(db: &Connection, team: &str) -> Result<()> {
+    db.execute("UPDATE decisions SET state='settled' WHERE team=?1 AND node IN (SELECT id FROM nodes WHERE team=?1 AND node_state IN ('accepted','cancelled'))",[team]).map_err(storage)?;
+    db.execute(
+        "UPDATE nodes SET requested=NULL WHERE team=?1 AND node_state IN ('accepted','cancelled')",
+        [team],
+    )
+    .map_err(storage)?;
     db.execute(&format!("INSERT INTO node_archive({NODE_COLUMNS}) SELECT {NODE_COLUMNS} FROM nodes WHERE team=?1 AND node_state IN ('accepted','cancelled')"),[team]).map_err(storage)?;
     db.execute(
         "DELETE FROM nodes WHERE team=?1 AND node_state IN ('accepted','cancelled')",

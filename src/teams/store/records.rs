@@ -71,16 +71,25 @@ pub struct EffectIntent {
     pub request_id: String,
     pub actor: Value,
     pub state: String,
+    pub kind: String,
     pub outcome: Option<Value>,
     pub created_ms: i64,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Decision {
+    pub state: String,
     pub seq: u64,
     pub node: u32,
     pub generation: u32,
     pub actor: Value,
     pub kind: String,
     pub text: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RoutingSuggestion {
+    pub role: Option<String>,
+    pub pipeline: Option<String>,
 }

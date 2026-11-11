@@ -59,6 +59,8 @@ pub struct TaskObservation {
     #[serde(default)]
     pub cancelled: bool,
     pub rank: String,
+    #[serde(default)]
+    pub title: String,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -121,8 +123,6 @@ pub enum Operation {
     },
     AddTask {
         task: TaskRef,
-        title: String,
-        observation: TaskObservation,
         #[serde(default)]
         role: Option<String>,
         #[serde(default)]
@@ -139,6 +139,8 @@ pub enum Operation {
         deps: Vec<Dep>,
         #[serde(default)]
         writes: Vec<String>,
+        #[serde(default)]
+        assignee: Option<MemberId>,
     },
     Hold {
         node: NodeId,
@@ -159,6 +161,15 @@ pub enum Operation {
         effect_request_id: String,
         outcome: HandoutOutcome,
     },
+    ReopenIntent {
+        node: NodeId,
+        member: MemberId,
+        effect_request_id: String,
+    },
+    ReopenOutcome {
+        effect_request_id: String,
+        outcome: HandoutOutcome,
+    },
     ObserveTask {
         node: NodeId,
         observation: TaskObservation,
@@ -166,14 +177,20 @@ pub enum Operation {
     RecordReport {
         node: NodeId,
         generation: u32,
-        observation: TaskObservation,
+        member: MemberId,
         text: String,
         commit: String,
     },
     Accept {
         node: NodeId,
-        #[serde(default)]
-        integration_commit: Option<String>,
+    },
+    RecordIntegration {
+        node: NodeId,
+        commit: String,
+    },
+    RecordIntegrationConflict {
+        node: NodeId,
+        conflicts: Vec<String>,
     },
     Return {
         node: NodeId,
