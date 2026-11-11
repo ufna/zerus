@@ -74,10 +74,16 @@ fn view(slot: &Slot, saved: bool) -> Value {
     let pending = slot.stored.form_state.contains_key("request");
     let read_only =
         pending || (slot.kind == Kind::NewCard && (slot.stored.sending || slot.stored.uncertain));
+    // A reserved card shows the team it was reserved for: recovery keeps it.
+    let team = if slot.kind == Kind::NewCard && pending {
+        slot.stored.form_state["request"]["team"].as_str()
+    } else {
+        None
+    };
     json!({"project":slot.project,"task":slot.task,"mode":slot.kind,"handle":slot.handle,"rev":slot.rev,
         "text":if slot.kind==Kind::NewCard && pending {slot.stored.form_state["request"]["title"].as_str().unwrap_or("")} else {&slot.stored.draft.text},"position":slot.stored.position,"anchor":slot.stored.anchor,
         "files":[],"error":slot.error,"blocked":slot.blocked,"unsaved":slot.unsaved,
-        "recovery":pending,"read_only":read_only,"saved":saved})
+        "recovery":pending,"read_only":read_only,"saved":saved,"team":team})
 }
 fn checkpoint(slot: &mut Slot, store: &DraftStore) -> Result<(), String> {
     slot.unsaved = true;
@@ -331,6 +337,35 @@ fn request(slot: &Slot) -> Result<(Value, Request), String> {
     }
     Ok((raw, parsed))
 }
+/// The queue a New task submit names, set on the slot before anything is
+/// reserved: a new card takes the chosen team (a canonical UUID), and a card
+/// already reserved keeps the destination it was reserved with, so a submit
+/// naming another team is refused. A title names no team.
+fn destination(slot: &mut Slot, team: Option<String>) -> Result<(), String> {
+    if team
+        .as_deref()
+        .is_some_and(|team| !zerus_client_core::creation::canonical_uuid(team))
+    {
+        return Err("Not a team id. Nothing was sent.".into());
+    }
+    if slot.kind == Kind::Title {
+        return if team.is_some() {
+            Err("A task title names no team. Nothing was sent.".into())
+        } else {
+            Ok(())
+        };
+    }
+    if slot.stored.form_state.contains_key("request") {
+        let reserved = request(slot)?.1.team;
+        if team.is_some() && team != reserved {
+            return Err("The reserved card keeps its team. Nothing was sent.".into());
+        }
+        slot.team = reserved;
+    } else {
+        slot.team = team;
+    }
+    Ok(())
+}
 fn submitted(
     slot: &mut Slot,
     store: &DraftStore,
@@ -513,6 +548,7 @@ pub async fn task_form_submit(
         {
             return Err("A queued card names no session. Nothing was sent.".into());
         }
+        destination(slot, team.clone())?;
         let assignment = if kind == Kind::NewCard
             && !slot.stored.form_state.contains_key("request")
             && team.is_none()
@@ -815,6 +851,122 @@ mod tests {
         }).unwrap();
         assert_eq!(result, (true, Some(original.request_id)));
         assert!(!restored.stored.form_state.contains_key("request"));
+        drop(store);
+        drop(root);
+    }
+    /// Second review, finding 8: the New task form's chosen team reaches the
+    /// reservation and the command (`task add --team`), a reserved card keeps
+    /// the destination it was reserved with, and an older draft without a
+    /// team still recovers to its original destination.
+    #[test]
+    fn the_chosen_team_is_reserved_and_sent_and_recovery_keeps_it() {
+        const TEAM: &str = "33333333-3333-4333-8333-333333333333";
+        const OTHER: &str = "44444444-4444-4444-8444-444444444444";
+        let root = crate::composer::tests::dir("task-form-team");
+        let store = crate::composer::tests::drafts(&root);
+        let forms = TaskForms::default();
+        let open = || {
+            opened(
+                &forms,
+                &store,
+                Kind::NewCard,
+                "example".into(),
+                String::new(),
+                |_, _| panic!("a new card reads no task"),
+            )
+            .unwrap()
+        };
+        let mut slot = open();
+        edit(&mut slot, "Queued card");
+        assert!(destination(&mut slot, Some("not-a-team".into())).is_err());
+        destination(&mut slot, Some(TEAM.into())).unwrap();
+        let sent = RefCell::new(None);
+        assert!(submitted(
+            &mut slot,
+            &store,
+            false,
+            false,
+            TaskTarget::default(),
+            |_, _| panic!(),
+            |call| {
+                let persisted = crate::task_editor::load(&store, "tasks/newCard/example/title")
+                    .unwrap()
+                    .draft;
+                assert_eq!(
+                    persisted.form_state["request"]["team"], TEAM,
+                    "reserved before the call"
+                );
+                *sent.borrow_mut() = Some(call.clone());
+                Err("unknown outcome".into())
+            }
+        )
+        .is_err());
+        let call = sent.borrow().clone().unwrap();
+        let at = call
+            .args
+            .iter()
+            .position(|arg| arg == "--team")
+            .expect("the command names the team");
+        assert_eq!(call.args[at + 1], TEAM);
+        assert!(!call.args.iter().any(|arg| arg == "--target"));
+        // Reopened, the reserved card shows its team and keeps it.
+        let mut restored = open();
+        assert_eq!(view(&restored, false)["team"], TEAM);
+        assert!(
+            destination(&mut restored, Some(OTHER.into())).is_err(),
+            "another team is refused"
+        );
+        destination(&mut restored, None).unwrap();
+        let result = submitted(
+            &mut restored,
+            &store,
+            true,
+            false,
+            TaskTarget::default(),
+            |_, _| panic!(),
+            |again| {
+                assert_eq!(again, &call, "recovery sends the same reserved card");
+                let id = again.args[again
+                    .args
+                    .iter()
+                    .position(|arg| arg == "--request-id")
+                    .unwrap()
+                    + 1]
+                .clone();
+                Ok(json!({"task":{"uuid":id,"project":"example","stage":"todo","title":"Queued card"}}).as_object().unwrap().clone())
+            },
+        );
+        assert!(result.unwrap().0);
+        // An older reserved draft without a team recovers to any session.
+        let mut older = open();
+        edit(&mut older, "Older card");
+        older.stored.form_state.insert("schema".into(), json!(1));
+        older.stored.form_state.insert("request".into(), json!({"project":"example","title":"Older card","request_id":"55555555-5555-4555-8555-555555555555","stage":"todo","session":"any","host":"","session_id":""}));
+        checkpoint(&mut older, &store).unwrap();
+        let mut older = open();
+        assert_eq!(view(&older, false)["team"], Value::Null);
+        destination(&mut older, None).unwrap();
+        assert!(
+            destination(&mut older, Some(TEAM.into())).is_err(),
+            "an older draft keeps its destination"
+        );
+        destination(&mut older, None).unwrap();
+        let older_call = RefCell::new(None);
+        let _ = submitted(
+            &mut older,
+            &store,
+            true,
+            false,
+            TaskTarget::default(),
+            |_, _| panic!(),
+            |call| {
+                *older_call.borrow_mut() = Some(call.clone());
+                Err("unknown outcome".into())
+            },
+        );
+        let older_call = older_call.borrow().clone().unwrap();
+        assert!(!older_call.args.iter().any(|arg| arg == "--team"));
+        assert!(older_call.args.iter().any(|arg| arg == "--target"));
         drop(store);
         drop(root);
     }
