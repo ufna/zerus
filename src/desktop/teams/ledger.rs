@@ -14,6 +14,8 @@ const FILE: &str = "member-launch-v1.sqlite3";
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub(super) enum State {
+    Retry,
+    LaunchUnknown,
     BranchReady,
     BranchIntent,
     BranchDone,
@@ -70,6 +72,22 @@ pub(super) struct Row {
     pub problem: Option<Problem>,
     pub card_request: Option<Request>,
     pub card_done: bool,
+    #[serde(default)]
+    pub card_id: Option<u64>,
+    #[serde(default)]
+    pub retry_at: i64,
+    #[serde(default)]
+    pub failures: u32,
+    #[serde(default)]
+    pub retry_seen: bool,
+    #[serde(default)]
+    pub parent_tries: u32,
+    #[serde(default)]
+    pub unknown_until: i64,
+    #[serde(default)]
+    pub late_after_stop: bool,
+    #[serde(default)]
+    pub placement: Option<Placement>,
 }
 impl Row {
     pub fn new(team: &Team, member: &str, epoch: &str, state: State) -> Self {
@@ -89,6 +107,14 @@ impl Row {
             problem: None,
             card_request: None,
             card_done: false,
+            card_id: None,
+            retry_at: 0,
+            failures: 0,
+            retry_seen: false,
+            parent_tries: 0,
+            unknown_until: 0,
+            late_after_stop: false,
+            placement: None,
         }
     }
 }
@@ -151,10 +177,18 @@ impl Ledger {
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .map_err(storage)?;
         match version {
-            0 => tx
-                .execute_batch(include_str!("schema.sql"))
-                .map_err(storage)?,
-            1 => (),
+            0 => {
+                tx.execute_batch(include_str!("schema.sql"))
+                    .map_err(storage)?;
+                tx.execute_batch(include_str!("bounds.sql"))
+                    .map_err(storage)?;
+            }
+            1 => {
+                tx.execute_batch("UPDATE originals SET data=json_remove(data,'$.plan.instructions','$.plan.parent_session'); PRAGMA user_version=2;").map_err(storage)?;
+                tx.execute_batch(include_str!("bounds.sql"))
+                    .map_err(storage)?;
+            }
+            2 => (),
             _ => return Err(storage("Member launch schema is newer than this Zerus")),
         }
         tx.commit().map_err(storage)?;
@@ -183,6 +217,79 @@ impl Ledger {
         }
         Ok(row)
     }
+    pub fn rows_page(&self, team: &str, after: &str) -> Result<Vec<Row>> {
+        let mut q = self
+            .0
+            .prepare(
+                "SELECT data FROM originals WHERE team=?1 AND member>?2 ORDER BY member LIMIT 200",
+            )
+            .map_err(storage)?;
+        let values = q
+            .query_map([team, after], |r| r.get::<_, String>(0))
+            .map_err(storage)?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(storage)?;
+        values
+            .into_iter()
+            .map(|s| serde_json::from_str(&s).map_err(storage))
+            .collect()
+    }
+    pub fn prune(&mut self, store: &crate::teams::store::Store, after: &mut String) -> Result<()> {
+        let teams = {
+            let mut q = self
+                .0
+                .prepare(
+                    "SELECT team FROM originals WHERE team>?1 GROUP BY team ORDER BY team LIMIT 16",
+                )
+                .map_err(storage)?;
+            let values = q
+                .query_map([after.as_str()], |r| r.get::<_, String>(0))
+                .map_err(storage)?
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .map_err(storage)?;
+            values
+        };
+        for team in &teams {
+            let status = store.team(team)?.map(|t| t.status);
+            if matches!(
+                status,
+                Some(
+                    zerus_team_plan::model::TeamStatus::Stopped
+                        | zerus_team_plan::model::TeamStatus::Archived
+                )
+            ) {
+                let mut member_after = String::new();
+                for _ in 0..2 {
+                    let page = self.rows_page(team, &member_after)?;
+                    member_after = page.last().map(|r| r.member.clone()).unwrap_or_default();
+                    let more = page.len() == 200;
+                    for mut row in page {
+                        if !row.late_after_stop
+                            && matches!(
+                                row.state,
+                                State::LaunchIntent | State::Submitted | State::LaunchUnknown
+                            )
+                        {
+                            row.late_after_stop = true;
+                            self.save(&mut row, chrono::Utc::now().timestamp_millis())?;
+                        }
+                    }
+                    if !more {
+                        break;
+                    }
+                }
+            }
+            if status == Some(zerus_team_plan::model::TeamStatus::Archived) {
+                self.0.execute("DELETE FROM originals WHERE rowid IN (SELECT rowid FROM originals WHERE team=?1 AND json_extract(data,'$.state') IN ('done','branch_done') LIMIT 202)",[team]).map_err(storage)?;
+            }
+        }
+        *after = if teams.len() == 16 {
+            teams.last().cloned().unwrap_or_default()
+        } else {
+            String::new()
+        };
+        Ok(())
+    }
     pub fn insert(&mut self, row: &Row, now_ms: i64) -> Result<bool> {
         let tx = self
             .0
@@ -204,7 +311,8 @@ impl Ledger {
     }
     pub fn save(&mut self, row: &mut Row, now_ms: i64) -> Result<()> {
         let old = row.version;
-        row.version = old
+        let mut next = row.clone();
+        next.version = old
             .checked_add(1)
             .ok_or_else(|| storage("Launch revision overflow"))?;
         let tx = self
@@ -213,13 +321,15 @@ impl Ledger {
             .map_err(storage)?;
         let changed = tx.execute(
             "UPDATE originals SET version=?3,data=?4 WHERE team=?1 AND member=?2 AND version=?5",
-            params![row.team,row.member,row.version,encoded(row)?,old],
+            params![row.team,row.member,next.version,encoded(&next)?,old],
         ).map_err(storage)?;
         if changed != 1 {
             return Err(storage("Member launch original changed"));
         }
-        journal(&tx, row, now_ms)?;
-        tx.commit().map_err(storage)
+        journal(&tx, &next, now_ms)?;
+        tx.commit().map_err(storage)?;
+        *row = next;
+        Ok(())
     }
 }
 fn encoded(row: &Row) -> Result<String> {
@@ -244,4 +354,63 @@ fn journal(tx: &rusqlite::Transaction<'_>, row: &Row, now_ms: i64) -> Result<()>
     )
     .map_err(storage)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::teams::ops::tests::{Harness, TEAM};
+    #[test]
+    fn a_stale_writer_is_refused_even_after_its_journal_was_pruned() {
+        let h = Harness::new();
+        let t = h.store.team(TEAM).unwrap().unwrap();
+        let mut l = Ledger::open(h.temp.path()).unwrap();
+        let mut row = Row::new(&t, "lead", "epoch", State::WorktreeReady);
+        assert!(l.insert(&row, 1).unwrap());
+        let mut stale = row.clone();
+        row.state = State::WorktreeDone;
+        l.save(&mut row, 2).unwrap();
+        // Retention can remove the earlier version's journal uniqueness guard.
+        l.0.execute("DELETE FROM journal", []).unwrap();
+        stale.state = State::LaunchReady;
+        assert!(l.save(&mut stale, 3).is_err());
+        assert_eq!(l.get(TEAM, "lead").unwrap().unwrap(), row);
+    }
+    #[test]
+    fn reserving_the_same_key_never_replaces_its_original() {
+        let h = Harness::new();
+        let t = h.store.team(TEAM).unwrap().unwrap();
+        let mut l = Ledger::open(h.temp.path()).unwrap();
+        let row = Row::new(&t, "lead", "epoch", State::WorktreeReady);
+        assert!(l.insert(&row, 1).unwrap());
+        let replacement = Row::new(&t, "lead", "another-epoch", State::LaunchReady);
+        assert!(!l.insert(&replacement, 2).unwrap());
+        assert_eq!(l.get(TEAM, "lead").unwrap().unwrap(), row);
+    }
+    #[test]
+    fn ledger_budgets_refuse_growth_and_archived_settled_rows_are_collected() {
+        let mut h = Harness::new();
+        let t = h.store.team(TEAM).unwrap().unwrap();
+        let mut l = Ledger::open(h.temp.path()).unwrap();
+        let row = Row::new(&t, "lead", "epoch", State::Done);
+        l.insert(&row, 1).unwrap();
+        l.0.execute("UPDATE launch_budget SET bytes=67108864 WHERE id=1", [])
+            .unwrap();
+        assert!(l
+            .insert(&Row::new(&t, "m1", "epoch", State::WorktreeReady), 2)
+            .is_err());
+        l.0.execute("UPDATE launch_budget SET bytes=length((SELECT data FROM originals LIMIT 1)) WHERE id=1",[]).unwrap();
+        h.run(
+            &crate::teams::ops::tests::person(),
+            crate::teams::ops::Operation::Stop,
+        )
+        .unwrap();
+        h.run(
+            &crate::teams::ops::tests::person(),
+            crate::teams::ops::Operation::Archive,
+        )
+        .unwrap();
+        l.prune(&h.store, &mut String::new()).unwrap();
+        assert!(l.get(TEAM, "lead").unwrap().is_none());
+    }
 }

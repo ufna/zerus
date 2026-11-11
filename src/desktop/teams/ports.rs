@@ -20,11 +20,9 @@ pub(super) struct Plan {
     pub account: String,
     pub model: String,
     pub effort: String,
-    pub instructions: String,
     pub base_commit: String,
     pub placement: Placement,
     pub parent: Option<SessionKey>,
-    pub parent_session: Option<ObservedSession>,
     pub launch_id: String,
 }
 
@@ -55,9 +53,19 @@ pub(super) struct ObservedSession {
     pub parent: Option<SessionKey>,
     // Display data deliberately does not participate in binding.
     pub name: String,
+    #[serde(default)]
     pub session_id: String,
+    #[serde(default)]
     pub run_id: String,
+    #[serde(default)]
     pub conversation_id: String,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(super) enum LaunchRead {
+    Session(Box<ObservedSession>),
+    Absent { legacy: bool },
+    Ended { code: i32 },
 }
 
 pub(super) enum Effect<T> {
@@ -80,6 +88,6 @@ pub(super) trait Effects {
     fn worktree(&mut self, plan: &Plan, original: &str) -> Effect<Worktree>;
     fn launch(&mut self, plan: &Plan, worktree: &Worktree, original: &str) -> Effect<()>;
     /// Exact launch ID lookup; ambiguity must return an error, not one match.
-    fn observe(&mut self, plan: &Plan) -> Result<Option<ObservedSession>>;
+    fn observe(&mut self, plan: &Plan) -> Result<LaunchRead>;
     fn parent(&mut self, plan: &Plan, session: &ObservedSession, original: &str) -> String;
 }

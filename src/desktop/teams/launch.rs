@@ -3,7 +3,7 @@
 //! an unfinished original. It never executes its remaining steps.
 use super::{
     ledger::{BranchPlan, Ledger, Row, State, BRANCH},
-    ports::{Effect, Effects, Plan, Result},
+    ports::{Effect, Effects, LaunchRead, Plan, Result},
 };
 use crate::teams::{
     ops::{self, Actor, Operation, Request},
@@ -23,11 +23,17 @@ pub(super) struct Runtime {
     epoch: String,
     ledger: Option<Ledger>,
     admitted: Option<(String, String)>,
+    accounts: BTreeMap<String, Result<Vec<zerus_team_plan::accounts::AccountUsage>>>,
+    selected: Option<(String, String)>,
+    prune_after: String,
 }
 mod branch;
 mod card;
 mod effects;
 mod member;
+mod retry;
+#[cfg(test)]
+mod tests;
 impl Runtime {
     pub fn open(state: &Path, machine: &str, epoch: &str) -> Result<Self> {
         Ok(Self {
@@ -36,6 +42,9 @@ impl Runtime {
             epoch: epoch.into(),
             ledger: None,
             admitted: None,
+            accounts: BTreeMap::new(),
+            selected: None,
+            prune_after: String::new(),
         })
     }
     /// One bounded transition; `true` permits the worker to advance another
@@ -52,13 +61,33 @@ impl Runtime {
             return Ok(false);
         }
         if self.admitted.as_ref().is_some_and(|(team, _)| team != id) {
-            return Ok(false);
+            self.admitted = None;
         }
+        self.selected = None;
+        let result = self.tick_inner(store, effects, id, now);
+        if !matches!(result, Ok(true)) {
+            self.admitted = None;
+        }
+        if let Err(error) = &result {
+            let _ = self.record_failure(store, id, error.clone(), now);
+        }
+        result
+    }
+    fn tick_inner(
+        &mut self,
+        store: &mut Store,
+        effects: &mut impl Effects,
+        id: &str,
+        now: i64,
+    ) -> Result<bool> {
         store.refresh()?;
         let Some(team) = store.team(id)? else {
             return Ok(false);
         };
         if team.status != TeamStatus::Running || team.home != self.machine {
+            if matches!(team.status, TeamStatus::Stopped | TeamStatus::Archived) {
+                self.note_late(&team, now)?;
+            }
             self.admitted = None;
             return Ok(false);
         }
@@ -85,7 +114,11 @@ impl Runtime {
         for _ in 0..2 {
             let page = store.members(id, 200, cursor.as_ref())?;
             for member in page.rows {
-                if member.id == team.lead || member.state == MemberState::Removed {
+                if member.id == team.lead {
+                    continue;
+                }
+                if member.state == MemberState::Removed {
+                    self.note_removed(&team, &member, now)?;
                     continue;
                 }
                 if self.member(store, effects, &team, &member, lead.session.clone(), now)? {
@@ -99,6 +132,18 @@ impl Runtime {
         }
         Ok(false)
     }
+    pub fn begin_pass(&mut self) {
+        self.accounts.clear();
+    }
+    pub fn maintain(&mut self, store: &Store) -> Result<()> {
+        if let Some(ledger) = self.ledger.as_mut() {
+            ledger.prune(store, &mut self.prune_after)?;
+        }
+        Ok(())
+    }
+    pub fn release(&mut self) {
+        self.admitted = None;
+    }
     pub fn busy(&self) -> bool {
         self.admitted.is_some()
     }
@@ -111,11 +156,16 @@ impl Runtime {
         self.ledger().save(row, now)
     }
     fn owns(&self, row: &Row) -> bool {
-        row.epoch == self.epoch
-            && self
-                .admitted
-                .as_ref()
-                .is_some_and(|(team, original)| team == &row.team && original == &row.original)
+        self.admitted
+            .as_ref()
+            .is_some_and(|(team, original)| team == &row.team && original == &row.original)
+    }
+    fn take(&mut self, row: &Row) -> Result<()> {
+        if !self.owns(row) {
+            return Err(uncertain("Original admission is unavailable"));
+        }
+        self.admitted.take();
+        Ok(())
     }
     fn block(&mut self, row: &mut Row, problem: Problem, now: i64) -> Result<()> {
         if row.state != State::Blocked {

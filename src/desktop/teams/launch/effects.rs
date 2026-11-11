@@ -7,6 +7,7 @@ impl Runtime {
         row: &mut Row,
         now: i64,
     ) -> Result<bool> {
+        self.take(row)?;
         let plan = row
             .plan
             .as_ref()
@@ -44,6 +45,7 @@ impl Runtime {
         row: &mut Row,
         now: i64,
     ) -> Result<bool> {
+        self.take(row)?;
         let plan = row
             .plan
             .as_ref()
@@ -53,7 +55,10 @@ impl Runtime {
             .as_ref()
             .ok_or_else(|| invalid("Worktree is missing"))?;
         match effects.launch(plan, tree, &row.original) {
-            Effect::Submitted(()) => row.state = State::Submitted,
+            Effect::Submitted(()) => {
+                row.state = State::Submitted;
+                row.unknown_until = now.saturating_add(5 * 60_000);
+            }
             Effect::NotStarted => {
                 row.state = State::LaunchReady;
                 self.admitted = None;
@@ -63,8 +68,12 @@ impl Runtime {
                 return Ok(true);
             }
             Effect::Unknown(p) => {
-                self.block(row, as_uncertain(p), now)?;
-                return Ok(true);
+                row.state = State::LaunchUnknown;
+                row.problem = Some(as_uncertain(p));
+                // Five minutes covers the ordinary 180-second startup budget
+                // plus two safety passes. Only a complete absence read can
+                // expire this unknown child's identity wait.
+                row.unknown_until = now.saturating_add(5 * 60_000);
             }
         }
         self.save(row, now)?;
@@ -82,21 +91,67 @@ impl Runtime {
             .plan
             .as_ref()
             .ok_or_else(|| invalid("Launch plan is missing"))?;
-        let observed = effects.observe(plan)?;
-        let Some(observed) = observed.filter(|s| {
-            s.launch_id == plan.launch_id
-                && s.machine == plan.machine
-                && s.agent == plan.agent
-                && s.account == plan.account
-                && Some(&s.worktree) == row.worktree.as_ref()
-        }) else {
+        let read = match &row.observed {
+            Some(s) => Ok(LaunchRead::Session(Box::new(s.clone()))),
+            None => effects.observe(plan),
+        };
+        let observed = match read {
+            Ok(LaunchRead::Session(s)) => *s,
+            Ok(LaunchRead::Ended { code }) => {
+                self.block(
+                    row,
+                    uncertain(&format!("The original launch ended with exit {code}")),
+                    now,
+                )?;
+                return Ok(true);
+            }
+            Ok(LaunchRead::Absent { legacy }) => {
+                if row.unknown_until == 0 {
+                    row.unknown_until = now.saturating_add(5 * 60_000);
+                }
+                if row.unknown_until > 0
+                    && now >= row.unknown_until
+                    && (row.state == State::LaunchUnknown || legacy)
+                {
+                    self.block(
+                        row,
+                        uncertain("The original launch has no identity after five minutes"),
+                        now,
+                    )?;
+                    return Ok(true);
+                }
+                row.retry_at = now.saturating_add(60_000);
+                self.save(row, now)?;
+                return Ok(false);
+            }
+            Err(p) if p.code == code::DELIVERY_UNCERTAIN => {
+                self.block(row, p, now)?;
+                return Ok(true);
+            }
+            Err(p) => {
+                row.failures = row.failures.saturating_add(1);
+                row.retry_at = now.saturating_add(super::retry::backoff(row.failures));
+                row.problem = Some(p);
+                self.save(row, now)?;
+                if row.failures >= 3 {
+                    self.card(store, row, now)?;
+                }
+                return Ok(false);
+            }
+        };
+        if observed.launch_id != plan.launch_id
+            || observed.machine != plan.machine
+            || observed.agent != plan.agent
+            || observed.account != plan.account
+            || Some(&observed.worktree) != row.worktree.as_ref()
+        {
             self.block(
                 row,
-                uncertain("No exact session binding appeared for the original launch ID"),
+                uncertain("The original launch record has a different identity or owned worktree"),
                 now,
             )?;
             return Ok(true);
-        };
+        }
         let key = SessionKey {
             machine: plan.machine.clone(),
             session_id: format!("launch_id:{}", plan.launch_id),
@@ -122,7 +177,11 @@ impl Runtime {
                 now,
             )?;
         }
+        self.close_stale(store, team, row, now)?;
         row.observed = Some(observed);
+        row.problem = None;
+        row.retry_at = 0;
+        row.failures = 0;
         row.state = State::Bound;
         self.save(row, now)?;
         self.admitted = None;
@@ -144,9 +203,11 @@ impl Runtime {
             row.state = State::ParentIntent;
             row.original = uuid::Uuid::new_v4().to_string();
             row.epoch = self.epoch.clone();
+            row.retry_at = 0;
             self.admitted = Some((row.team.clone(), row.original.clone()));
         } else {
             row.parent_result = Some(if self.owns(row) {
+                self.take(row)?;
                 effects.parent(
                     plan,
                     row.observed
@@ -157,7 +218,16 @@ impl Runtime {
             } else {
                 "unknown_after_restart".into()
             });
-            row.state = State::Done;
+            row.parent_tries = row.parent_tries.saturating_add(1);
+            if row.parent_result.as_deref() == Some("identity_pending") && row.parent_tries < 10 {
+                row.state = State::Bound;
+                row.retry_at = now.saturating_add(60_000);
+            } else {
+                if row.parent_result.as_deref() == Some("identity_pending") {
+                    row.parent_result = Some("identity_timeout".into());
+                }
+                row.state = State::Done;
+            }
             self.admitted = None;
         }
         self.save(row, now)?;

@@ -16,4 +16,4 @@ CREATE TABLE journal (
     UNIQUE(team, member, version)
 );
 CREATE INDEX journal_team_sequence ON journal(team, seq);
-PRAGMA user_version=1;
+PRAGMA user_version=2;

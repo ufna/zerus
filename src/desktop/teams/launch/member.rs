@@ -10,6 +10,7 @@ impl Runtime {
         parent: Option<SessionKey>,
         now: i64,
     ) -> Result<bool> {
+        self.selected = Some((team.id.clone(), member.id.clone()));
         let existing = self.ledger().get(&team.id, &member.id)?;
         let Some(mut row) = existing else {
             if member.state != MemberState::NotCreated || member.session.is_some() {
@@ -17,6 +18,18 @@ impl Runtime {
             }
             return self.prepare(store, effects, team, member, parent, now);
         };
+        if row.state == State::Retry {
+            if row.problem.is_some() {
+                self.card(store, &mut row, now)?;
+            }
+            if !self.due(store, &mut row, now)? {
+                return Ok(false);
+            }
+            return self.choose(store, effects, team, member, parent, &mut row, now);
+        }
+        if row.retry_at > now {
+            return Ok(false);
+        }
         if row.state == State::Blocked {
             self.card(store, &mut row, now)?;
             return Ok(false);
@@ -42,9 +55,7 @@ impl Runtime {
             }
         }
         match row.state {
-            State::WorktreeIntent | State::WorktreeDone | State::LaunchIntent
-                if !self.owns(&row) =>
-            {
+            State::WorktreeIntent | State::LaunchIntent if !self.owns(&row) => {
                 self.block(
                     &mut row,
                     uncertain("Member creation was interrupted; the original is never continued"),
@@ -73,84 +84,97 @@ impl Runtime {
                 Ok(true)
             }
             State::LaunchIntent => self.launch(effects, &mut row, now),
-            State::Submitted => self.bind(store, effects, team, &mut row, now),
+            State::Submitted | State::LaunchUnknown => {
+                self.bind(store, effects, team, &mut row, now)
+            }
             State::Bound | State::ParentIntent => self.parent(effects, &mut row, now),
             _ => Err(invalid("Invalid member creation state")),
         }
     }
     pub(super) fn prepare(
         &mut self,
-        store: &Store,
+        store: &mut Store,
         effects: &mut impl Effects,
         team: &Team,
         member: &Member,
         parent: Option<SessionKey>,
         now: i64,
     ) -> Result<bool> {
-        let (choice, model, effort, instructions) = role(team, member)?;
-        let accounts = effects.accounts(&member.agent)?;
-        if accounts.len() > 200 {
-            return Err(invalid("Account read exceeds its bound"));
+        let mut row = Row::new(team, &member.id, &self.epoch, State::Retry);
+        if !self.ledger().insert(&row, now)? {
+            return Ok(false);
         }
-        let taken = taken(store, self.ledger(), &team.id)?;
-        let parent_session = if parent.is_some() {
-            self.ledger()
-                .get(&team.id, &team.lead)?
-                .and_then(|r| r.observed)
-        } else {
-            None
-        };
-        let mut row = Row::new(team, &member.id, &self.epoch, State::WorktreeIntent);
-        match pick_account(&member.agent, choice, &accounts, &taken) {
-            Ok(account) => {
-                row.plan = Some(Plan {
-                    id: uuid::Uuid::new_v4().to_string(),
-                    team: team.id.clone(),
-                    person: team.owner.clone(),
-                    machine: team.home.clone(),
-                    project: team.project.clone(),
-                    member: member.id.clone(),
-                    role: member.role.clone(),
-                    agent: member.agent.clone(),
-                    account,
-                    model: model.into(),
-                    effort: effort.into(),
-                    instructions: instructions.into(),
-                    base_commit: team.base_commit.clone(),
-                    placement: effects.placement(&team.project, &row.original)?,
-                    parent,
-                    parent_session,
-                    launch_id: row.original.clone(),
-                })
+        self.choose(store, effects, team, member, parent, &mut row, now)
+    }
+    #[allow(clippy::too_many_arguments)]
+    fn choose(
+        &mut self,
+        store: &mut Store,
+        effects: &mut impl Effects,
+        team: &Team,
+        member: &Member,
+        parent: Option<SessionKey>,
+        row: &mut Row,
+        now: i64,
+    ) -> Result<bool> {
+        let selection = (|| -> Result<Plan> {
+            let placement = effects.placement(&team.project, &row.original)?;
+            row.placement = Some(placement.clone());
+            let (choice, model, effort) = role(team, member)?;
+            let accounts = self.cached_accounts(effects, &member.agent)?;
+            if accounts.len() > 200 {
+                return Err(invalid("Account read exceeds its bound"));
+            }
+            let taken = taken(store, self.ledger(), &team.id)?;
+            let account = pick_account(&member.agent, choice, &accounts, &taken)?;
+            Ok(Plan {
+                id: uuid::Uuid::new_v4().to_string(),
+                team: team.id.clone(),
+                person: team.owner.clone(),
+                machine: team.home.clone(),
+                project: team.project.clone(),
+                member: member.id.clone(),
+                role: member.role.clone(),
+                agent: member.agent.clone(),
+                account,
+                model: model.into(),
+                effort: effort.into(),
+                base_commit: team.base_commit.clone(),
+                placement,
+                parent,
+                launch_id: row.original.clone(),
+            })
+        })();
+        match selection {
+            Ok(plan) => {
+                self.close_stale(store, team, row, now)?;
+                row.plan = Some(plan);
+                row.state = State::WorktreeIntent;
+                self.save(row, now)?;
+                self.admitted = Some((row.team.clone(), row.original.clone()));
+                Ok(true)
             }
             Err(p) => {
-                row.state = State::Blocked;
-                row.problem = Some(p);
+                self.retry(store, row, p, now)?;
+                Ok(false)
             }
         }
-        if self.ledger().insert(&row, now)? && row.state != State::Blocked {
-            self.admitted = Some((row.team.clone(), row.original));
-        }
-        Ok(true)
     }
 }
-
-fn role<'a>(
-    team: &'a Team,
-    member: &Member,
-) -> Result<(&'a AccountChoice, &'a str, &'a str, &'a str)> {
+fn role<'a>(team: &'a Team, member: &Member) -> Result<(&'a AccountChoice, &'a str, &'a str)> {
     if member.id == team.lead {
-        let spec = &team.bundle.template.lead;
-        return Ok((&spec.account, &spec.model, &spec.effort, &spec.rules));
+        let s = &team.bundle.template.lead;
+        return Ok((&s.account, &s.model, &s.effort));
     }
-    let role = team
+    let r = team
         .bundle
         .roles
         .iter()
         .find(|r| r.id == member.role)
         .ok_or_else(|| invalid("Member role is missing"))?;
-    Ok((&role.account, &role.model, &role.effort, &role.prompt))
+    Ok((&r.account, &r.model, &r.effort))
 }
+
 fn taken(store: &Store, ledger: &mut Ledger, team: &str) -> Result<BTreeMap<String, u32>> {
     let mut taken = BTreeMap::new();
     let mut cursor = None;

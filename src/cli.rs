@@ -2863,6 +2863,13 @@ fn resolve_project(
         ),
     ))
 }
+fn record_native_launch(launch: Option<&str>, name: &str) {
+    let Some(id) = launch else { return };
+    let _ = match state::session_id_of(name) {
+        Some(session) => state::launches::started_with_session(id, name, &session),
+        None => state::launches::started(id, name),
+    };
+}
 fn launch(
     config: &Config,
     command: &str,
@@ -2880,6 +2887,7 @@ fn launch(
         let project=if project=="/" {"root".into()}else{sanitize(&project)};
         let tag=if options.tag.is_empty(){"main"}else{&options.tag};let name=format!("opencode/{project}/{tag}");
         state::opencode::launch(&name,&directory,options.launch_id.as_deref(),options.model.as_deref(),options.effort.as_deref(),options.dry,options.new_only).map_err(|e|Error::new(1,e))?;
+        if !options.dry { record_native_launch(options.launch_id.as_deref(), &name); }
         if !options.dry {println!("OpenCode session ready: {name}\nOpen this session in Zerus.");}return Ok(0);
     }
     if options.model.is_some() || options.effort.is_some() {return Err(Error::new(1,"--model and --effort are OpenCode launch options; other agent flags go after --"));}
@@ -2921,6 +2929,7 @@ fn launch(
             options.new_only,
         )
         .map_err(|e| Error::new(1, e))?;
+        if !options.dry { record_native_launch(options.launch_id.as_deref(), &name); }
         if !options.dry {
             println!("DeepSeek session ready: {name}\nOpen this session in Zerus.");
         }
@@ -3277,7 +3286,11 @@ fn launch(
             if let Some(id) = &options.launch_id {
                 // A session that ends before a listing shows it still ends
                 // its launch's placeholder (`state::launches`).
-                if let Err(error) = state::launches::started(id, &session) {
+                let evidence=match &allocation {
+                    Some(allocation)=>state::launches::started_with_session(id,&session,allocation.session()),
+                    None=>state::launches::started(id,&session),
+                };
+                if let Err(error) = evidence {
                     eprintln!("hgs: cannot record launch {id}: {error}");
                 }
             }

@@ -141,11 +141,19 @@ fn run(
         machine,
         stop: stop.clone(),
     };
-    let mut after = String::new();
+    super::child::prune_custody(&config);
+    let mut cursor = None;
     while !stop.load(Ordering::Acquire) && crate::teams::enabled(&config.state) {
-        if let Ok(ids) = page(&mut store, &after) {
-            for id in &ids {
-                for _ in 0..128 {
+        actor.begin_pass();
+        if let Ok(page) = page(&mut store, cursor.as_ref()) {
+            for team in &page.rows {
+                let id = &team.id;
+                // Eight transitions per team, plus at most one original's
+                // drain, keep a large roster from monopolizing the pass.
+                for step in 0..12 {
+                    if step >= 8 && !actor.busy() {
+                        break;
+                    }
                     if stop.load(Ordering::Acquire) {
                         break;
                     }
@@ -157,17 +165,10 @@ fn run(
                         break;
                     }
                 }
-                // A bounded turn may end mid-admission on a large roster.
-                // Keep that team first on the next pass: another team's
-                // admission must never displace its fixed live original.
-                if actor.busy() {
-                    break;
-                }
-                after = id.clone();
+                actor.release();
             }
-            if !actor.busy() && ids.len() < 16 {
-                after.clear();
-            }
+            cursor = page.next;
+            let _ = actor.maintain(&store);
         }
         if receive.recv_timeout(Duration::from_secs(60))
             == Err(mpsc::RecvTimeoutError::Disconnected)
@@ -176,18 +177,10 @@ fn run(
         }
     }
 }
-fn page(store: &mut Store, after: &str) -> super::ports::Result<Vec<String>> {
+fn page(
+    store: &mut Store,
+    cursor: Option<&crate::teams::store::Cursor>,
+) -> super::ports::Result<crate::teams::store::Page<crate::teams::store::TeamRow>> {
     store.refresh()?;
-    let Some(db) = store.db.as_ref() else {
-        return Ok(vec![]);
-    };
-    let mut query = db
-        .prepare("SELECT id FROM teams WHERE id>?1 ORDER BY id LIMIT 16")
-        .map_err(crate::teams::store::storage)?;
-    let rows = query
-        .query_map([after], |row| row.get(0))
-        .map_err(crate::teams::store::storage)?
-        .collect::<rusqlite::Result<Vec<String>>>()
-        .map_err(crate::teams::store::storage);
-    rows
+    store.live_teams(16, cursor)
 }

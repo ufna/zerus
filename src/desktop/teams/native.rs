@@ -110,7 +110,12 @@ impl Effects for Native {
         })
     }
     fn branch_exists(&mut self, plan: &BranchPlan) -> Result<bool> {
-        observation::branch_exists(plan)
+        integrate::branch_exists(
+            &integrate::Repo {
+                git_dir: PathBuf::from(&plan.placement.git_dir),
+            },
+            &plan.branch,
+        )
     }
     fn create_branch(&mut self, plan: &BranchPlan) -> Effect<()> {
         if self.stop.load(Ordering::Acquire) || !crate::teams::enabled(&self.config.state) {
@@ -143,7 +148,8 @@ impl Effects for Native {
         }
     }
     fn accounts(&mut self, agent: &str) -> Result<Vec<AccountUsage>> {
-        let list = self.read(&["account".into(), "ls".into()], None)?;
+        let deadline = Instant::now() + Duration::from_secs(30);
+        let list = self.read_until(&["account".into(), "ls".into()], None, deadline)?;
         let profiles = list["profiles"]
             .as_array()
             .ok_or_else(|| invalid("Account catalog unavailable"))?;
@@ -155,7 +161,11 @@ impl Effects for Native {
             let id = row["id"]
                 .as_str()
                 .ok_or_else(|| invalid("Account has no identity"))?;
-            let data = self.read(&["account".into(), "inspect".into(), id.into()], None)?;
+            let data = self.read_until(
+                &["account".into(), "inspect".into(), id.into()],
+                None,
+                deadline,
+            )?;
             accounts.push(arguments::usage(&data, agent, id)?);
         }
         Ok(accounts)
@@ -223,20 +233,7 @@ impl Effects for Native {
         ) {
             Ended::NotStarted => Effect::NotStarted,
             Ended::Unknown(reason) => Effect::Unknown(uncertain(reason)),
-            Ended::Exited { code: 0, .. } => {
-                let deadline = Instant::now() + Duration::from_secs(10);
-                while Instant::now() < deadline && !self.stop.load(Ordering::Acquire) {
-                    if observation::session(self, plan, deadline)
-                        .ok()
-                        .flatten()
-                        .is_some()
-                    {
-                        return Effect::Submitted(());
-                    }
-                    std::thread::sleep(Duration::from_millis(100));
-                }
-                Effect::Unknown(uncertain("Launch exited successfully but no session carrying its launch ID appeared within 10 seconds"))
-            }
+            Ended::Exited { code: 0, .. } => Effect::Submitted(()),
             Ended::Exited { code, output } => {
                 let reason = String::from_utf8_lossy(&output);
                 Effect::Refused(invalid(&format!(
@@ -246,16 +243,55 @@ impl Effects for Native {
             }
         }
     }
-    fn observe(&mut self, plan: &Plan) -> Result<Option<ObservedSession>> {
+    fn observe(&mut self, plan: &Plan) -> Result<LaunchRead> {
         observation::session(self, plan, Instant::now() + Duration::from_secs(15))
     }
-    fn parent(&mut self, plan: &Plan, session: &ObservedSession, original: &str) -> String {
+    fn parent(&mut self, plan: &Plan, _session: &ObservedSession, original: &str) -> String {
         if matches!(plan.agent.as_str(), "dsh" | "opencode") {
             return "unsupported_agent".into();
         }
         let result = (|| -> Result<String> {
-            let mut request = json!({"expected_run_id":session.run_id,"expected_conversation_id":session.conversation_id,"action":"read"});
-            let args = vec!["parent".into(), session.name.clone(), "--json".into()];
+            let current =
+                match observation::session(self, plan, Instant::now() + Duration::from_secs(3))? {
+                    LaunchRead::Session(s) => *s,
+                    _ => return Ok("identity_pending".into()),
+                };
+            if current.run_id.is_empty()
+                || current.conversation_id.is_empty()
+                || current.session_id.is_empty()
+            {
+                return Ok("identity_pending".into());
+            }
+            let store = crate::teams::store::Store::open(&self.config.state)?;
+            let team = store
+                .team(&plan.team)?
+                .ok_or_else(|| invalid("Team disappeared"))?;
+            let lead_member = store
+                .member(&plan.team, &team.lead)?
+                .ok_or_else(|| invalid("Lead disappeared"))?;
+            if lead_member.session != plan.parent {
+                return Ok("changed_lead".into());
+            }
+            let lead_plan = super::ledger::Ledger::open(&self.config.state)?
+                .get(&plan.team, &team.lead)?
+                .and_then(|r| r.plan)
+                .ok_or_else(|| invalid("Lead original unavailable"))?;
+            let lead = match observation::session(
+                self,
+                &lead_plan,
+                Instant::now() + Duration::from_secs(3),
+            )? {
+                LaunchRead::Session(s) => *s,
+                _ => return Ok("identity_pending".into()),
+            };
+            if lead.run_id.is_empty()
+                || lead.conversation_id.is_empty()
+                || lead.session_id.is_empty()
+            {
+                return Ok("identity_pending".into());
+            }
+            let mut request = json!({"expected_run_id":current.run_id,"expected_conversation_id":current.conversation_id,"action":"read"});
+            let args = vec!["parent".into(), current.name.clone(), "--json".into()];
             let read = self.read(
                 &args,
                 Some(
@@ -266,28 +302,8 @@ impl Effects for Native {
             if !read["parent"].is_null() {
                 return Ok("existing_link_kept".into());
             }
-            let key = plan
-                .parent
-                .as_ref()
-                .ok_or_else(|| invalid("No parent requested"))?;
-            let launch = key
-                .session_id
-                .strip_prefix("launch_id:")
-                .ok_or_else(|| invalid("Lead launch identity unavailable"))?;
-            let expected = plan
-                .parent_session
-                .as_ref()
-                .ok_or_else(|| invalid("Lead identity unavailable"))?;
-            let lead = observation::inspect(self, &expected.name)?;
-            if lead["launch_id"] != launch
-                || lead["session_id"] != expected.session_id
-                || lead["run_id"] != expected.run_id
-                || lead["conversation_id"] != expected.conversation_id
-            {
-                return Err(invalid("Lead launch identity changed"));
-            }
             request["action"] = json!("set");
-            request["parent"] = json!({"session_id":lead["session_id"],"name":lead["name"],"run_id":lead["run_id"],"conversation_id":lead["conversation_id"]});
+            request["parent"] = json!({"session_id":lead.session_id,"name":lead.name,"run_id":lead.run_id,"conversation_id":lead.conversation_id});
             let bytes =
                 serde_json::to_vec(&request).map_err(|_| invalid("Parent request unavailable"))?;
             match child::run(
@@ -309,6 +325,6 @@ impl Effects for Native {
                 Ended::Unknown(_) => Ok("unknown".into()),
             }
         })();
-        result.unwrap_or_else(|_| "unavailable".into())
+        result.unwrap_or_else(|_| "identity_pending".into())
     }
 }

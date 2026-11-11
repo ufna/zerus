@@ -21,9 +21,6 @@ pub(super) fn worktree(plan: &Plan) -> Vec<String> {
     .map(str::to_owned)
     .into()
 }
-pub(super) fn hint(agent: &str, launch: &str) -> String {
-    format!("{agent}/zerus-team-{launch}/team-{launch}")
-}
 pub(super) fn launch(plan: &Plan, tree: &Worktree) -> Result<Vec<String>> {
     let mut args = launch::launch_invocation(
         &ComputerId::local(),

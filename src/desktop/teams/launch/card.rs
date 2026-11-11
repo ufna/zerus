@@ -13,13 +13,19 @@ impl Runtime {
                 .problem
                 .as_ref()
                 .ok_or_else(|| invalid("Blocked launch has no reason"))?;
-            let detail: String = problem.message.chars().take(4096).collect();
+            let detail = cut(&problem.message, 2048);
+            let timing = if row.state == State::Retry {
+                " Retry checks this precondition on the next service pass, within 60 seconds."
+            } else {
+                ""
+            };
             let text = format!(
-                "Member {}: {}. {} {}",
+                "Member {}: {}. {} {}{}",
                 row.member,
                 problem.code,
                 detail,
-                problem_refs(problem)
+                problem_refs(problem),
+                timing
             );
             row.card_request = Some(Request {
                 request_id: uuid::Uuid::new_v4().to_string(),
@@ -32,7 +38,7 @@ impl Runtime {
                         "launch_blocked"
                     }
                     .into(),
-                    text,
+                    text: cut(&text, 3072).into(),
                     node: None,
                 },
             });
@@ -44,7 +50,10 @@ impl Runtime {
             team: row.team.clone(),
         };
         match ops::apply(store, &actor, request, now) {
-            Ok(_) => row.card_done = true,
+            Ok(reply) => {
+                row.card_done = true;
+                row.card_id = reply.item;
+            }
             Err(p) if p.code == code::STALE_REVISION => row.card_request = None,
             Err(p) => return Err(p),
         }
@@ -67,4 +76,12 @@ fn problem_refs(problem: &Problem) -> String {
         }
     }
     problem.refs.join(", ")
+}
+
+pub(super) fn cut(s: &str, max: usize) -> &str {
+    let mut end = s.len().min(max);
+    while !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    &s[..end]
 }

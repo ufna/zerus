@@ -33,6 +33,17 @@ pub struct Reported {
     pub dirty: bool,
 }
 
+/// Read a validated local ref through the same bounded, hook-free Git adapter.
+pub fn branch_exists(repo: &Repo, branch: &str) -> Result<bool, Problem> {
+    let git = Git::repo(repo)?;
+    let reference = git.branch_ref(branch)?;
+    let output = git.run(&["show-ref", "--verify", "--quiet", &reference])?;
+    match output.status.code() {
+        Some(0) => Ok(true),
+        Some(1) => Ok(false),
+        _ => Err(git_failure(&output)),
+    }
+}
 /// Create an absent local branch. Never replace an existing branch.
 pub fn create_branch(repo: &Repo, branch: &str, base: &str) -> Result<(), Problem> {
     let git = Git::repo(repo)?;
@@ -925,6 +936,16 @@ mod tests {
         }
     }
 
+    #[test]
+    fn branch_observation_uses_git_for_loose_and_packed_refs_and_refuses_invalid_names() {
+        let f = Fixture::new();
+        assert!(!branch_exists(&f.repo, "integrate/team").unwrap());
+        create_branch(&f.repo, "integrate/team", &f.base).unwrap();
+        assert!(branch_exists(&f.repo, "integrate/team").unwrap());
+        git(&f.main, &["pack-refs", "--all"]);
+        assert!(branch_exists(&f.repo, "integrate/team").unwrap());
+        assert!(branch_exists(&f.repo, "../outside").is_err());
+    }
     fn git(path: &Path, args: &[&str]) -> String {
         let mut command = Command::new("git");
         for (key, _) in std::env::vars_os() {

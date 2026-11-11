@@ -125,6 +125,13 @@ mod workspace;
 mod git_status;
 pub(crate) mod repositories;
 mod launch_observation;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub(crate) use launch_observation::{observe_team_launch, TeamObservation};
+/// The maintained ownership reader; Teams supplies the exact generated path.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub(crate) fn team_worktree_ownership(state: &Path, common: &Path, path: &Path) -> Option<Value> {
+    worktree_lifecycle::owned_in(state, common, path)
+}
 pub(crate) mod launch_identity;
 /// Evidence about original launch `launch` under this process's own state
 /// root (`HGS_STATE_DIR` or its default), read within `deadline`. A root that
