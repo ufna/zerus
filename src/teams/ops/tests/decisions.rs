@@ -168,7 +168,7 @@ fn integration_none_acceptance_only_records_receipt_provenance() {
 #[test]
 fn stage_acceptance_only_records_receipt_provenance() {
     let mut h = Harness::new();
-    let (node, lead) = h.reported();
+    let (node, _) = h.reported();
     let mut n = h.node(node);
     n.kind = NodeKind::Stage;
     n.stage_of = Some(2);
@@ -181,7 +181,7 @@ fn stage_acceptance_only_records_receipt_provenance() {
             params![TEAM, node, rows::node_payload(&n).unwrap()],
         )
         .unwrap();
-    h.run(&lead, Operation::Accept { node }).unwrap();
+    h.run(&person(), Operation::Accept { node }).unwrap();
     // A service fact is provenance; neither acceptance nor this node needs a merge.
     h.run(
         &service(),

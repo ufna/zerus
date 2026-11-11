@@ -9,7 +9,7 @@ use crate::teams::store::{Cursor, Page, Store};
 use serde::Serialize;
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
-use zerus_team_plan::model::{Node, NodeState};
+use zerus_team_plan::model::Node;
 use zerus_team_plan::problem::code;
 use zerus_team_plan::Problem;
 
@@ -32,7 +32,7 @@ pub(super) fn status(config: &Config, caller: &Caller, args: &[String]) -> Resul
         "ok": true,
         "actor": actor::view(&identity.actor),
         "team": view,
-        "members": members.rows,
+        "members": super::board::members(&row,members.rows)?,
         "counts": counts(&store, &team)?,
     }))
 }
@@ -54,7 +54,16 @@ pub(super) fn list(
     let cursor = cursor.map(input::parse_cursor).transpose()?;
     let cursor = cursor.as_ref();
     match command {
-        "queue" => page(&identity, &team, store.queue(&team, limit, cursor)?),
+        "queue" => {
+            // One extra team primary-key lookup per page, no per-row SQL:
+            // stage kinds, rounds and roles all use this pinned bundle.
+            let pinned = store.team(&team)?.ok_or_else(|| not_found_team(&team))?;
+            page(
+                &identity,
+                &team,
+                super::board::queue(&pinned, store.queue(&team, limit, cursor)?)?,
+            )
+        }
         "inbox" => page(&identity, &team, store.inbox(&team, limit, cursor)?),
         "cards" => page(&identity, &team, store.cards(&team, limit, cursor)?),
         "journal" => page(&identity, &team, store.journal(&team, limit, cursor)?),
@@ -187,8 +196,12 @@ fn held(store: &Store, team: &str, member: &str) -> Result<Vec<Value>, Problem> 
         let page = store.queue(team, crate::teams::store::MAX_PAGE, cursor.as_ref())?;
         let mut rows = page.rows;
         cursor = page.next;
-        for node in rows.drain(..).filter(|node| holds(node, member)) {
-            found.push(held_view(store, team, node)?);
+        for node in rows.drain(..) {
+            if let Some(holder) = store.attempt_holder(team, node.id)? {
+                if holder.member == member {
+                    found.push(held_view(node, holder.generation)?);
+                }
+            }
         }
         if cursor.is_none() {
             break;
@@ -199,21 +212,12 @@ fn held(store: &Store, team: &str, member: &str) -> Result<Vec<Value>, Problem> 
 
 /// A held node with the attempt generation `ask` and a verdict need. The node
 /// itself does not store it; the store keeps it beside the row.
-fn held_view(store: &Store, team: &str, node: Node) -> Result<Value, Problem> {
-    let generation = store
-        .generation(team, node.id)?
-        .ok_or_else(|| Problem::new(code::NOT_FOUND, "Node does not exist."))?;
+fn held_view(node: Node, generation: u32) -> Result<Value, Problem> {
     let mut value = serde_json::to_value(&node).map_err(storage)?;
     if let Some(object) = value.as_object_mut() {
         object.insert("generation".into(), json!(generation));
     }
     Ok(value)
-}
-
-fn holds(node: &Node, member: &str) -> bool {
-    let mine =
-        node.assignee.as_deref() == Some(member) || node.implementer.as_deref() == Some(member);
-    mine && !matches!(node.state, NodeState::Accepted | NodeState::Cancelled)
 }
 
 /// The counts a team bar shows. Each is one aggregate query, never a whole

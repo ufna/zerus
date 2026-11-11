@@ -18,6 +18,16 @@ fn lead() -> Caller {
 
 fn replies() -> [(&'static str, Value); 7] {
     let harness = seeded();
+    let (board, _) = super::verdict::configured_stage(
+        zerus_team_plan::catalog::StageKind::Review,
+        3,
+        Some("example-model"),
+    );
+    let board_read = |caller: &Caller, line: &str| {
+        let (reply, exit) = board.cli(caller, line, "");
+        assert_eq!(exit, 0, "{line}: {reply}");
+        reply
+    };
     let read = |caller: &Caller, line: &str| {
         let (reply, exit) = harness.cli(caller, line, "");
         assert_eq!(exit, 0, "{line}: {reply}");
@@ -26,11 +36,11 @@ fn replies() -> [(&'static str, Value); 7] {
     [
         (
             "cli-status.json",
-            read(&Caller::Person, &format!("status --team {TEAM}")),
+            board_read(&Caller::Person, &format!("status --team {TEAM}")),
         ),
         (
             "cli-queue.json",
-            read(&lead(), &format!("queue --team {TEAM}")),
+            board_read(&lead(), &format!("queue --team {TEAM}")),
         ),
         (
             "cli-inbox.json",

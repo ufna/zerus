@@ -10,14 +10,18 @@
   "rows": [
     {
       "admitted": true,
+      "hold": true,
       "id": 1,
+      "implementer": "m1",
+      "kind": "task",
       "phase": 0,
       "pipeline": "reviewed",
       "rank": "a01",
       "role": "developer",
       "round": 1,
+      "rounds": 3,
       "source": "sent",
-      "state": "pending",
+      "state": "reported",
       "task": {
         "project": "example-project",
         "uuid": "00000000-0000-4000-8000-000000000001"
@@ -28,17 +32,26 @@
       "admitted": true,
       "id": 2,
       "implementer": "m1",
+      "kind": "stage",
       "phase": 0,
       "pipeline": "reviewed",
       "rank": "a02",
-      "role": "developer",
+      "role": "reviewer",
       "round": 1,
+      "rounds": 3,
       "source": "sent",
-      "state": "reported",
+      "stage": {
+        "kind": "review",
+        "round": 1,
+        "target": 1
+      },
+      "stage_of": 1,
+      "state": "in_progress",
       "task": {
         "project": "example-project",
-        "uuid": "00000000-0000-4000-8000-000000000002"
+        "uuid": "00000000-0000-4000-8000-000000000064"
       },
+      "text": "Review task 1 in round 1 at commit 0123456789abcdef0123456789abcdef01234567. Give a verdict with the findings.\n\nImplementer report:\nTrimmed the label and added a case for an empty one.",
       "title": "Task 2"
     }
   ],

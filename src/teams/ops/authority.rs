@@ -18,6 +18,7 @@ pub fn authority(actor: &Actor, op: &Operation, team: &Team) -> Result<()> {
     let lead = matches!(actor, Actor::Session { team: id, member, .. } if id == &team.id && member == &team.lead);
     let member = matches!(actor, Actor::Session { team: id, member, .. } if id == &team.id && member != &team.lead);
     let allowed = match op {
+        Operation::Verdict { .. } => member,
         Operation::CloseCard { .. } => service,
         Operation::ObserveTask { .. }
         | Operation::HandoutIntent { .. }
@@ -27,6 +28,8 @@ pub fn authority(actor: &Actor, op: &Operation, team: &Team) -> Result<()> {
         | Operation::SetMemberSession { .. }
         | Operation::SetMemberState { .. }
         | Operation::RecordReport { .. }
+        | Operation::StageTaskIntent { .. }
+        | Operation::StageTaskOutcome { .. }
         | Operation::RecordIntegration { .. }
         | Operation::RecordIntegrationConflict { .. } => service,
         Operation::Create { .. }
