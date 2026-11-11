@@ -23,7 +23,7 @@ impl Native<'_> {
         let Some((snapshot, raw)) = self.capture.clone() else {
             return Outcome::NotStarted("No exact native observation is held".into());
         };
-        let Ok(program) = crate::self_exec::current() else {
+        let Ok(program) = program() else {
             return Outcome::NotStarted("The own CLI image is unavailable".into());
         };
         let Ok((args, input, folder)) = super::receipt::invocation(row) else {
@@ -57,6 +57,8 @@ impl Native<'_> {
             &held,
             Instant::now() + Duration::from_secs(45),
             |cmd| {
+                #[cfg(test)]
+                delivery::before();
                 self.final_admit(row, &roots, &snapshot, &raw)
                     .map_err(|_| std::io::Error::from(std::io::ErrorKind::PermissionDenied))?;
                 configure(cmd, self.config);
@@ -90,7 +92,8 @@ impl Native<'_> {
         } else {
             facts.team.settings.delegations.resume_exited
         };
-        if !delegated
+        if !self.anchored(b)?
+            || !delegated
             || !roots.root_current()
             || self.pins.is_empty()
             || !self.pins.iter().all(super::ownership::Pin::current)
@@ -100,12 +103,13 @@ impl Native<'_> {
         if crate::state::lifecycle_receipt_machine(self.config)? != self.machine {
             return Err("The local computer changed".into());
         }
+        #[cfg(test)]
+        if let Some(hook) = delivery::AFTER_FACTS.with(|slot| slot.borrow_mut().take()) {
+            hook();
+        }
         let current = held_current(roots, snapshot)?;
         unchanged_record(&current, raw)?;
-        if super::observation::paused(&current)
-            || current.get("pausing").is_some()
-            || self.stop.load(Ordering::Acquire)
-        {
+        if super::observation::paused(&current) || self.stop.load(Ordering::Acquire) {
             return Err("The member was paused, stopped or replaced".into());
         }
         if plan.kind == Kind::Resume
@@ -115,6 +119,13 @@ impl Native<'_> {
         }
         Ok(())
     }
+}
+fn program() -> std::io::Result<PathBuf> {
+    #[cfg(test)]
+    if let Some(path) = delivery::PROGRAM.with(|slot| slot.borrow().clone()) {
+        return Ok(path);
+    }
+    crate::self_exec::current()
 }
 fn unchanged_record(current: &Value, raw: &Value) -> Result<()> {
     for key in [
@@ -253,3 +264,5 @@ mod tests {
         remove(&path, identity);
     }
 }
+#[cfg(test)]
+mod delivery;

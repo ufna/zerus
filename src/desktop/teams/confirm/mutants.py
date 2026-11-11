@@ -1,186 +1,167 @@
 #!/usr/bin/env python3
-"""Mutate production guards in a scratch copy; never exercise a real session.
+"""Compile the complete hgs test binary with production call-site mutations.
 
-Uses this worktree's compiled Cargo dependencies. Policy, engine and real
-SQLite ledger tests run unchanged. Native pure record/ownership functions are
-extracted unchanged; full hgs tests cover their I/O adapters and audit storage.
+No extracted helpers or policy shims. Fixtures run the actual Native::deliver,
+original-child runner and SQLite stores, with an isolated stub executable.
+Use --case NAME to run one regression mutant after an implementation change.
 """
+import argparse
 import json
 import os
-from pathlib import Path
 import re
+from pathlib import Path
 import shutil
 import subprocess
 import tempfile
+import time
 
 ROOT = Path(__file__).resolve().parents[4]
-SOURCE = Path(__file__).resolve().parent
-DEPS = ROOT / "target/debug/deps"
+OUT = ROOT / "artifacts/test-results/wp17-review"
+BASE = "src/desktop/teams/confirm/"
+DELIVERY = "desktop::teams::confirm::native::original::delivery::"
+LEDGER = "desktop::teams::confirm::ledger::"
+OWNER = "desktop::teams::confirm::native::ownership_launch::"
 
 
-def block(text, start):
-    begin = text.index("{", start)
-    depth = 1
-    end = begin + 1
-    while depth:
-        depth += (text[end] == "{") - (text[end] == "}")
-        end += 1
-    return text[start:end]
-
-
-def native_pure(directory):
-    observation = (SOURCE / "native/observation.rs").read_text()
-    tests = observation[observation.index("#[cfg(test)]"):]
-    pure = "\n".join(block(observation, observation.index(name)) for name in
-                     ["fn text(", "pub(super) fn parse_view(", "pub(super) fn paused(", "pub(super) fn self_exit("])
-    (directory / "native/observation.rs").write_text("use super::*;\n" + pure + "\n" + tests)
-    original = (SOURCE / "native/original.rs").read_text()
-    test = block(original, original.index("fn a_final_record_read"))
-    pure = block(original, original.index("fn unchanged_record("))
-    (directory / "native/original.rs").write_text("use super::*;\n" + pure + "\n#[test]\n" + test)
-    owner = (SOURCE / "native/ownership.rs").read_text()
-    owner = owner.replace(block(owner, owner.index("impl Native<'_>")), "")
-    (directory / "native/ownership.rs").write_text(owner)
-
-
-def harness(directory):
-    modules = "\n".join(f"#[path={json.dumps(str(directory / (m + '.rs')))}] mod {m};" for m in
-                        ["types", "ports", "policy", "engine", "ledger", "resumed"])
-    native = "\n".join(f"#[path={json.dumps(str(directory / 'native' / (m + '.rs')))}] mod {m};" for m in
-                       ["observation", "original", "ownership"])
-    return r'''#![allow(dead_code, unused_imports)]
-mod platform {
-    pub enum Private { File }
-    pub fn canonical(p: impl AsRef<std::path::Path>)->std::io::Result<std::path::PathBuf> { std::fs::canonicalize(p) }
-    pub fn verify_private(p: &std::path::Path,_:Private)->std::io::Result<bool> {Ok(std::fs::metadata(p)?.is_file())}
-}
-mod approval_log {
-    pub fn open(root:&std::path::Path)->Result<rusqlite::Connection,String> {
-        std::fs::create_dir_all(root).map_err(|e|e.to_string())?;
-        let db=rusqlite::Connection::open(root.join("journal.sqlite3")).map_err(|e|e.to_string())?;
-        db.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL").map_err(|e|e.to_string())?;
-        Ok(db)
-    }
-}
-mod teams {pub mod ops {pub type Request=serde_json::Value;}}
-mod desktop {pub mod teams {pub mod confirm {
-''' + modules + "\nmod native { use super::{types::*,ports::Result}; use serde_json::{json,Value};\n" + native + "\n}\n}}}\n"
-
-
-def commands(scratch):
-    command = ["rustup", "run", "1.99.1", "rustc", "--edition=2021", "--test", str(scratch / "harness.rs"),
-               "-L", "dependency=" + str(DEPS), "-o", str(scratch / "tests")]
-    fingerprint = ROOT / "target/debug/.fingerprint"
-    targets = [p for p in fingerprint.glob("hgs-*/test-bin-hgs.json") if (DEPS / p.parent.name).is_file()]
+def command(source, binary):
+    deps, fp = ROOT / "target/debug/deps", ROOT / "target/debug/.fingerprint"
+    targets = [p for p in fp.glob("hgs-*/test-bin-hgs.json") if (deps / p.parent.name).is_file()]
     target = max(targets, key=os.path.getmtime)
     wanted = {dep[1]: dep[3] for dep in json.loads(target.read_text())["deps"]}
-    for name in ["serde", "serde_json", "sha2", "uuid", "zerus_team_plan", "rusqlite", "tempfile", "libc"]:
-        matched = [p for p in fingerprint.glob("*/lib-" + name)
-                   if int.from_bytes(bytes.fromhex(p.read_text()), "little") == wanted[name]]
-        if len(matched) != 1:
+    cmd = ["rustc", "+1.99.1", "--edition=2021", "--test", "--crate-name", "hgs", str(source / "src/main.rs"),
+           "-o", str(binary), "-L", "dependency=" + str(deps), "-C", "debuginfo=0", "-C", "codegen-units=8"]
+    for name, identity in wanted.items():
+        if name == "build_script_build":
+            continue
+        candidates = [p for p in fp.glob("*/lib-" + name)
+                      if int.from_bytes(bytes.fromhex(p.read_text()), "little") == identity]
+        if len(candidates) != 1:
             raise RuntimeError("Cannot resolve Cargo dependency: " + name)
-        suffix = matched[0].parent.name.rsplit("-", 1)[1]
-        command += ["--extern", name + "=" + str(DEPS / ("lib" + name + "-" + suffix + ".rlib"))]
-    return command
+        suffix = candidates[0].parent.name.rsplit("-", 1)[1]
+        cmd += ["--extern", name + "=" + str(deps / ("lib" + name + "-" + suffix + ".rlib"))]
+    return cmd
 
 
-def need_mutants(source):
-    for index, match in enumerate(re.finditer(r"\bneed\(", source)):
-        if source[max(0, match.start() - 4):match.start()] == "fn ":
-            continue
-        start = match.start()
-        depth, end = 1, match.end()
-        while depth:
-            depth += (source[end] == "(") - (source[end] == ")")
-            end += 1
-        if source[end:end + 1] != "?":
-            continue
-        line = source[:start].count("\n") + 1
-        yield f"policy_need_{index}_line_{line}", "policy.rs", source[start:end], "Ok::<(),String>(())"
+def cases():
+    yield "terminal_unknown_race", BASE + "ledger.rs", LEDGER + "concurrency::", "race"
+    yield "launch_object_evidence", BASE + "native/ownership.rs", OWNER, ("self.anchored(b)? && ", "")
+    yield "card_read_bound", BASE + "ledger.rs", LEDGER + "cards::oversized_card_read", ("length(CAST(request AS BLOB))<=?2", "length(CAST(request AS BLOB))>=0*?2")
+    yield "card_write_bound", BASE + "ledger.rs", LEDGER + "cards::card_write", "write_bound"
+    original = BASE + "native/original.rs"
+    yield "final_admission_call", original, DELIVERY, "call"
+    yield "final_stored_facts", original, DELIVERY + "current_team_member", ("super::super::policy::stored(b, &facts)?;", "();")
+    yield "final_delegation", original, DELIVERY + "delegation_revoked", ("!delegated", "false")
+    yield "final_resume_delegation", original, DELIVERY + "delegation_revoked", ("facts.team.settings.delegations.resume_exited", "true")
+    yield "final_directory_anchor", original, DELIVERY + "final_store_ownership", ("!self.anchored(b)?", "false")
+    yield "final_root", original, DELIVERY + "root_replacement", ("!roots.root_current()", "false")
+    yield "final_pins_present", original, DELIVERY + "missing_pins", ("self.pins.is_empty()", "false")
+    yield "final_pins_current", original, DELIVERY + "final_store_ownership", ("!self.pins.iter().all(super::ownership::Pin::current)", "false")
+    yield "final_machine", original, DELIVERY + "final_store_ownership", ("crate::state::lifecycle_receipt_machine(self.config)? != self.machine", "false")
+    yield "final_record_read", original, DELIVERY + "final_native_record", ("held_current(roots, snapshot)?", "raw.clone()")
+    yield "final_record_identity", original, DELIVERY + "final_native_record", ("unchanged_record(&current, raw)?;", "();")
+    yield "final_pause", original, DELIVERY + "final_native_record", ("super::observation::paused(&current)", "false")
+    yield "final_late_stop", original, DELIVERY + "a_stop_after", ("self.stop.load(Ordering::Acquire)", "false")
+    yield "final_self_exit", original, DELIVERY + "missing_pins", ("!super::observation::self_exit(&current, snapshot.archive.is_some())", "false")
+    yield "producer_records_object", "src/desktop/teams/launch/effects.rs", "desktop::teams::launch::effects::checkout_tests::", "producer"
 
 
-def mutations(directory):
-    policy = (directory / "policy.rs").read_text()
-    yield from need_mutants(policy)
-    yield "claim_and_audit_replay", "engine.rs", "if !claim.fresh {", "if false {"
-    yield "recovered_claim_uncertain", "engine.rs", 'row.state = "unknown".into();', 'row.state = "cancelled".into();'
-    yield "journal_missing_before_delivery", "engine.rs", "p.audit_begin(&row.plan)", 'Ok(Audit {id:1,request:uuid::Uuid::new_v4().to_string(),answers:json!([]),fresh:true})'
-    yield "audit_binding_not_saved_before_delivery", "engine.rs", "p.save(row)?;\n    if !row.audit", "if !row.audit"
-    yield "finish_journal", "engine.rs", "p.audit_finish(row).err()", "None"
-    yield "recover_orphan_audit", "engine.rs", "recover_audit(p, &mut row).err()", "None"
-    yield "stable_card_after_restart", "engine.rs", "p.card(row)?;", "row.card_request=uuid::Uuid::new_v4().to_string(); p.card(row)?;"
-    yield "question_hash_reopens_original", "engine.rs", 'b.launch, s.run, tag', 'b.launch, s.run, tag, question["question_hash"]'
-    yield "exit_metadata_reopens_original", "engine.rs", 'b.launch, s.run, tag', 'b.launch, s.run, tag, s.exit_identity'
-    yield "fourth_resume_allowed", "ledger.rs", "Ok(count >= 3)", "Ok(count >= 4)"
-    yield "quota_forgets_previous_epoch", "ledger.rs", "now.saturating_sub(3_600_000)", "now"
-    yield "terminal_state_reopened", "ledger.rs", '(expected != "prepared" && expected != row.state)', "false"
-    yield "original_identity_replaced", "ledger.rs", "old.original != row.original", "false"
-    yield "plan_identity_replaced", "ledger.rs", "old.plan != row.plan", "false"
-    yield "uncertain_binding_published", "ledger.rs", 'old.state == "approved" && old.plan.kind == Kind::Resume', 'old.plan.kind == Kind::Resume'
-    yield "native_view_owner_ignored", "native/observation.rs", 'raw["worktree_owner"]["id"] != b.nonce', "false"
-    yield "supervisor_origin_ignored", "native/observation.rs", 'v["completion_source"] != "supervisor"', "false"
-    yield "ambiguous_exit_allowed", "native/observation.rs", "_ => false,", "_ => true,"
-    yield "archived_crash_restored", "native/observation.rs", "if !archived", "if true"
-    yield "final_native_record_replaced", "native/original.rs", "current[key] != raw[key]", "false"
-    yield "ownership_replacement_ignored", "native/ownership.rs", "version(&m) != self.version", "false"
+def mutate(text, edit):
+    if isinstance(edit, tuple):
+        old, new = edit
+        if old not in text:
+            raise RuntimeError("Mutation target missing: " + old)
+        return text.replace(old, new, 1)
+    if edit == "race":
+        begin = text.index("        let tx =", text.index("    pub fn save("))
+        end = text.index("        let expected =", begin)
+        current = text[begin:end]
+        row = current.index("        let mut old =")
+        return text[:begin] + current[row:].replace("record(&tx,", "record(&self.0,") + current[:row] + text[end:]
+    if edit == "write_bound":
+        begin = text.index("    pub fn save_card(")
+        part = text[begin:]
+        if "if raw.len() > ROW_LIMIT" not in part:
+            raise RuntimeError("Writer limit target missing")
+        return text[:begin] + part.replace("if raw.len() > ROW_LIMIT", "if false", 1)
+    if edit == "call":
+        old = '                self.final_admit(row, &roots, &snapshot, &raw)\n                    .map_err(|_| std::io::Error::from(std::io::ErrorKind::PermissionDenied))?;'
+        return mutate(text, (old, ""))
+    if edit == "producer":
+        return mutate_producer(text)
+    raise RuntimeError("Unknown mutation")
 
 
-def execute(command, log):
-    result = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=120)
-    log.write("COMMAND: " + " ".join(command) + "\n" + result.stdout + f"EXIT: {result.returncode}\n")
+def mutate_producer(text):
+    # Remove both real producer calls, keeping every helper and test unchanged.
+    lines = text.splitlines(True)
+    removed = 0
+    for end in reversed(range(len(lines))):
+        if ".record_checkout(plan, &tree)?;" in lines[end]:
+            start = end
+            while "#[cfg(" not in lines[start]:
+                start -= 1
+            del lines[start:end + 1]
+            removed += 1
+    if removed != 2:
+        raise RuntimeError("Expected both verified producer paths")
+    return "".join(lines)
+
+
+def run(cmd, log, env):
+    log.write("COMMAND: " + " ".join(cmd) + "\n")
     log.flush()
+    offset = log.tell()
+    start = time.monotonic()
+    result = subprocess.run(cmd, stdout=log, stderr=subprocess.STDOUT, env=env, timeout=300)
+    log.write(f"EXIT: {result.returncode}; SECONDS: {time.monotonic()-start:.3f}\n")
+    log.flush()
+    if cmd[0] != "rustc":
+        with open(log.name, "rb") as saved:
+            saved.seek(offset)
+            output = saved.read().decode("utf-8", "replace")
+        count = re.search(r"running (\d+) tests?", output)
+        if not count or int(count[1]) == 0 or result.returncode not in (0, 101):
+            raise RuntimeError("The production test did not execute normally")
     return result.returncode
 
 
-def check_one(directory, command, log, mutation, baseline):
-    name, file, old, new = mutation
-    original = baseline[file]
-    if old not in original:
-        raise RuntimeError(f"Mutant target missing: {name}: {old}")
-    changed = original.replace(old, new, 1)
-    if name == "ownership_replacement_ignored":
-        if "version(&m) == self.version" not in changed:
-            raise RuntimeError("Held ownership version target missing")
-        changed = changed.replace("version(&m) == self.version", "true")
-    if name == "claim_and_audit_replay":
-        changed = changed.replace("if !row.audit.as_ref().is_some_and(|audit| audit.fresh) {", "if false {")
-    (directory / file).write_text(changed)
-    log.write("\nMUTANT: " + name + "\n")
-    if execute(command, log):
-        raise RuntimeError("Mutant did not compile: " + name)
-    killed = execute([command[command.index("-o") + 1], "--test-threads=8"], log) != 0
-    (directory / file).write_text(original)
-    print(("KILLED " if killed else "SURVIVED ") + name, flush=True)
-    return killed
-
-
 def main():
-    output = ROOT / "artifacts/test-results/wp17-mutants.log"
-    output.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(prefix="zerus-confirm-mutants-") as temporary, output.open("w") as log:
-        scratch = Path(temporary)
-        directory = scratch / "src/desktop/teams/confirm"
-        shutil.copytree(SOURCE, directory)
-        fixture = scratch / "crates/team-plan/fixtures"
-        fixture.mkdir(parents=True)
-        shutil.copy(ROOT / "crates/team-plan/fixtures/team-queue.json", fixture)
-        for module in ["policy", "engine", "ledger"]:
-            path = directory / (module + ".rs")
-            text = path.read_text()
-            text = text.replace("pub(super) mod tests;", '#[path="' + module + '/tests.rs"] pub(super) mod tests;') if module == "policy" else text.replace("mod tests;", '#[path="' + module + '/tests.rs"] mod tests;')
-            path.write_text(text)
-        native_pure(directory)
-        (scratch / "harness.rs").write_text(harness(directory))
-        command = commands(scratch)
-        if execute(command, log) or execute([str(scratch / "tests"), "--test-threads=8"], log):
-            raise RuntimeError("Baseline failed; see " + str(output))
-        baseline = {str(p.relative_to(directory)): p.read_text() for p in directory.rglob("*.rs")}
-        cases = list(mutations(directory))
-        killed = sum(check_one(directory, command, log, case, baseline) for case in cases)
-        result = f"MUTANTS: {killed} killed; {len(cases) - killed} survived; {len(cases)} executed"
-        print(result)
-        log.write(result + "\n")
-        if killed != len(cases):
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--case")
+    args = parser.parse_args()
+    selected = [case for case in cases() if not args.case or case[0] == args.case]
+    if not selected:
+        parser.error("Unknown case")
+    OUT.mkdir(parents=True, exist_ok=True)
+    name = "production-mutants" + ("-" + args.case if args.case else "") + ".log"
+    with tempfile.TemporaryDirectory(prefix="zerus-confirm-production-") as temporary, (OUT / name).open("w") as log:
+        source = Path(temporary)
+        shutil.copytree(ROOT / "src", source / "src")
+        for entry in ROOT.iterdir():
+            if entry.name not in ["src", "target", ".git"]:
+                (source / entry.name).symlink_to(entry, target_is_directory=entry.is_dir())
+        binary = source / "full-tests"
+        cmd = command(source, binary)
+        env = dict(os.environ, CARGO_MANIFEST_DIR=str(ROOT), CARGO_PKG_VERSION="1.58.0")
+        if run(cmd, log, env) or run([str(binary), "desktop::teams::", "--test-threads=8"], log, env):
+            raise RuntimeError("Production baseline failed")
+        killed = 0
+        for name, file, test, edit in selected:
+            path = source / file
+            original = path.read_text()
+            path.write_text(mutate(original, edit))
+            log.write("MUTANT: " + name + "\n")
+            if run(cmd, log, env):
+                raise RuntimeError("Mutant did not compile: " + name)
+            result = run([str(binary), test, "--test-threads=1"], log, env)
+            if result:
+                killed += 1
+            print(("KILLED " if result else "SURVIVED ") + name, flush=True)
+            path.write_text(original)
+        summary = f"PRODUCTION MUTANTS: {len(selected)} executed; {killed} killed; {len(selected)-killed} survived"
+        print(summary, flush=True)
+        log.write(summary + "\n")
+        if killed != len(selected):
             raise SystemExit(1)
 
 
