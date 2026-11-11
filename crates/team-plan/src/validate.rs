@@ -480,6 +480,17 @@ mod tests {
     }
 
     #[test]
+    fn the_exported_bugfix_bundle_equals_the_fixture() {
+        let fixture: TemplateBundle =
+            serde_json::from_str(include_str!("../fixtures/bundle-bugfix.json"))
+                .expect("fixture parses");
+        assert_eq!(
+            bundle(&builtin(), "bugfix").expect("bugfix bundles"),
+            fixture
+        );
+    }
+
+    #[test]
     fn an_unknown_template_is_refused() {
         let problem = bundle(&builtin(), "ghost").expect_err("no such template");
         assert_eq!(problem.code, code::NOT_FOUND);

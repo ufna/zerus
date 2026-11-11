@@ -16,6 +16,7 @@ pub mod model;
 pub mod problem;
 pub mod validate;
 
+pub use builtin::builtin;
 pub use catalog::{
     AccountChoice, Catalog, LeadSpec, Pipeline, Role, Seat, Stage, StageKind, Template,
     TemplateBundle,
