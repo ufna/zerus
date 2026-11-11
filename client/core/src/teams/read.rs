@@ -129,6 +129,10 @@ pub enum TeamError {
     /// `hgs` refused it: its stable code (`teams_inactive`, `not_found`, ...)
     /// and one sentence.
     Refused { code: String, message: String },
+    /// `hgs` could not run here (it is missing or not executable): Teams are
+    /// unavailable on this computer, not merely failing. The desktop hides
+    /// the entry point for it.
+    Unavailable { message: String },
     /// `hgs` failed, timed out or gave no reply.
     Failed { message: String },
     /// The reply is not the JSON the read expects.
@@ -142,6 +146,7 @@ impl TeamError {
     pub fn code(&self) -> &str {
         match self {
             Self::Refused { code, .. } => code,
+            Self::Unavailable { .. } => "unavailable",
             Self::Failed { .. } => "failed",
             Self::Invalid { .. } => "invalid_reply",
             Self::TooLarge { .. } => "too_large",
@@ -151,6 +156,7 @@ impl TeamError {
     pub fn message(&self) -> &str {
         match self {
             Self::Refused { message, .. }
+            | Self::Unavailable { message }
             | Self::Failed { message }
             | Self::Invalid { message } => message,
             Self::TooLarge { .. } => "the reply passed the read's limit",
@@ -217,8 +223,8 @@ fn output(exit: Exit) -> Result<Vec<u8>, TeamError> {
         Exit::TimedOut => Err(TeamError::Failed {
             message: "hgs did not answer in time".into(),
         }),
-        Exit::StartFailed(message) => Err(TeamError::Failed {
-            message: format!("hgs did not start: {message}"),
+        Exit::StartFailed(message) => Err(TeamError::Unavailable {
+            message: format!("hgs could not run here: {message}"),
         }),
         Exit::WriteFailed => Err(TeamError::Failed {
             message: "hgs did not take the request".into(),
@@ -264,15 +270,20 @@ pub fn decode(read: &TeamRead, exit: Exit) -> Result<Value, TeamError> {
     if !value.is_object() {
         return Err(invalid("not a JSON object"));
     }
-    // Every reply says whether the store took the read.
-    if value.get("ok").and_then(Value::as_bool) == Some(false) {
-        let (code, message) = refusal(&stdout).unwrap_or_else(|| {
-            (
-                "failed".to_owned(),
-                "hgs refused the read without a reason".to_owned(),
-            )
-        });
-        return Err(TeamError::Refused { code, message });
+    // Every reply says whether the store took the read; only `true` is a
+    // success, so a reply without the flag can never replace a shown view.
+    match value.get("ok").and_then(Value::as_bool) {
+        Some(true) => {}
+        Some(false) => {
+            let (code, message) = refusal(&stdout).unwrap_or_else(|| {
+                (
+                    "failed".to_owned(),
+                    "hgs refused the read without a reason".to_owned(),
+                )
+            });
+            return Err(TeamError::Refused { code, message });
+        }
+        None => return Err(invalid("team reply gives no success flag")),
     }
     if !actor(&value) {
         return Err(invalid("team reply gives no actor"));
@@ -531,6 +542,26 @@ mod tests {
         .unwrap_err();
         assert_eq!(error.code(), "teams_inactive");
         assert_eq!(error.message(), "Teams are off.");
+    }
+
+    #[test]
+    fn a_missing_success_flag_is_invalid() {
+        let error = decode(
+            &TeamRead::List { after: None },
+            ok(serde_json::json!({"actor": {}, "rows": [], "next": null})),
+        )
+        .unwrap_err();
+        assert_eq!(error.code(), "invalid_reply");
+    }
+
+    #[test]
+    fn a_missing_hgs_is_unavailable_not_failed() {
+        let error = read(
+            std::path::Path::new("/nonexistent/example-review-hgs"),
+            &TeamRead::List { after: None },
+        )
+        .unwrap_err();
+        assert_eq!(error.code(), "unavailable");
     }
 
     #[test]

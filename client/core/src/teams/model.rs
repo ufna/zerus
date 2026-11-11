@@ -6,25 +6,30 @@
 //! first. A followed read runs every [`POLL`] while the tab is visible; a
 //! hidden tab reads nothing. The view is read again after the desktop's own
 //! action ([`TeamsModel::refresh`]) and when the project's tasks topic changed
-//! ([`TeamsModel::tasks_changed`]); a `teams` watch topic replaces the timer in
-//! M4.
+//! ([`TeamsModel::tasks_changed`]); a change that arrives while its read is in
+//! flight is not lost: it marks the slot and the slot is read again at once
+//! when the reply lands.
 //!
 //! A reply becomes an update only when the view it projects differs from the
 //! last one sent for that key, so an unchanged team costs a read and nothing
-//! more. Keys: `list`, `waiting` and `team:<id>`.
+//! more. Keys: `list`, `waiting` and `team:<id>`. One page is kept per key; a
+//! page of a key is read on request with [`TeamsModel::page`] and replaces the
+//! shown page, and the projected view names the next page's cursor.
 use super::read::{TeamError, TeamRead};
 use super::view::{self, TeamList, TeamView, WaitingView};
 use crate::ComputerId;
 use serde::Serialize;
 use serde_json::Value;
 use std::collections::hash_map::DefaultHasher;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 /// How often a followed read runs while the Team tab is visible.
 pub const POLL: Duration = Duration::from_secs(10);
+/// Page reads that may wait at once (one key each).
+const QUEUED: usize = 8;
 
 /// What the Teams views follow on this computer. A team tab follows one team
 /// at a time: `team` is a single id, never a set.
@@ -74,9 +79,7 @@ impl TeamsUpdate {
             Self::List(view) => value(&**view),
             Self::Team(view) => value(&**view),
             Self::Waiting(view) => value(&**view),
-            Self::Failed { code, message } => {
-                serde_json::json!({"code": code, "message": message})
-            }
+            Self::Failed { code, message } => serde_json::json!({"code": code, "message": message}),
             Self::Ended => Value::Null,
         }
     }
@@ -109,6 +112,15 @@ impl Slot {
             Self::Waiting => 3,
         }
     }
+
+    fn of(read: &TeamRead) -> Self {
+        match read {
+            TeamRead::List { .. } => Self::List,
+            TeamRead::Waiting { .. } => Self::Waiting,
+            TeamRead::Status { .. } => Self::Status,
+            TeamRead::Queue { .. } => Self::Queue,
+        }
+    }
 }
 
 /// The replies a watched team's view is built from: its status (the team and
@@ -127,6 +139,11 @@ pub struct TeamsModel {
     /// The digest of the last update sent per key.
     shown: BTreeMap<String, u64>,
     in_flight: BTreeSet<Slot>,
+    /// Slots a refresh or a tasks change marked while their read was in
+    /// flight: they are due at once when the reply lands.
+    dirty: BTreeSet<Slot>,
+    /// Page reads asked for by the view, run before the due ones.
+    queued: VecDeque<TeamRead>,
     /// The watched team's replies, dropped when it is no longer watched.
     parts: Option<(String, Parts)>,
     hidden: bool,
@@ -170,12 +187,20 @@ impl TeamsModel {
             self.parts = None;
             self.due.remove(&Slot::Status);
             self.due.remove(&Slot::Queue);
+            self.dirty.remove(&Slot::Status);
+            self.dirty.remove(&Slot::Queue);
+            self.queued
+                .retain(|read| !matches!(read, TeamRead::Queue { .. }));
         }
         if !self.follow.list {
             self.end("list", &mut out);
+            self.queued
+                .retain(|read| !matches!(read, TeamRead::List { .. }));
         }
         if !self.follow.waiting {
             self.end("waiting", &mut out);
+            self.queued
+                .retain(|read| !matches!(read, TeamRead::Waiting { .. }));
         }
         let wanted = [
             (Slot::List, self.follow.list),
@@ -188,6 +213,8 @@ impl TeamsModel {
                 self.due.entry(slot).or_insert(now);
             } else {
                 self.due.remove(&slot);
+                self.dirty.remove(&slot);
+                self.in_flight.remove(&slot);
             }
         }
         out
@@ -211,28 +238,96 @@ impl TeamsModel {
     }
 
     /// Reads every followed view again at once: after the desktop's own action.
+    /// A slot whose read is in flight is marked and read again at once when
+    /// that reply lands, so the action never loses its reread.
     pub fn refresh(&mut self, now: Instant) {
-        for due in self.due.values_mut() {
-            *due = now;
-        }
-    }
-
-    /// The project's tasks topic changed: the watched team's status and queue
-    /// are due now (a report moves a node's state).
-    pub fn tasks_changed(&mut self, now: Instant) {
-        for slot in [Slot::Status, Slot::Queue] {
-            if let Some(due) = self.due.get_mut(&slot) {
-                *due = now;
+        for slot in [Slot::Status, Slot::Queue, Slot::List, Slot::Waiting] {
+            if self.due.contains_key(&slot) {
+                self.mark(slot, now);
             }
         }
     }
 
-    /// The next read to run now, if any: the watched team's status first, then
-    /// its queue, then the list and what waits for the person. Its slot is in
-    /// flight until its reply is applied.
+    /// The project's tasks topic changed: the watched team's status and queue
+    /// are read again (a report moves a node's state).
+    pub fn tasks_changed(&mut self, now: Instant) {
+        for slot in [Slot::Status, Slot::Queue] {
+            if self.due.contains_key(&slot) {
+                self.mark(slot, now);
+            }
+        }
+    }
+
+    /// Due now, or marked when its read is in flight.
+    fn mark(&mut self, slot: Slot, now: Instant) {
+        if self.in_flight.contains(&slot) {
+            self.dirty.insert(slot);
+        } else if let Some(due) = self.due.get_mut(&slot) {
+            *due = now;
+        }
+    }
+
+    /// Asks for one page of a followed key by its cursor: `list`, `waiting` or
+    /// `team:<id>` (the queue's page). The page replaces the shown one.
+    pub fn page(&mut self, key: &str, cursor: &str) -> bool {
+        if cursor.is_empty()
+            || cursor.len() > super::read::CURSOR_BYTES
+            || cursor.starts_with('-')
+            || cursor.chars().any(|c| c.is_control() || c.is_whitespace())
+        {
+            return false;
+        }
+        let read = match key {
+            "list" if self.follow.list => TeamRead::List {
+                after: Some(cursor.to_owned()),
+            },
+            "waiting" if self.follow.waiting => TeamRead::Waiting {
+                after: Some(cursor.to_owned()),
+            },
+            _ => {
+                let Some(team) = key.strip_prefix("team:") else {
+                    return false;
+                };
+                if self.follow.team.as_deref() != Some(team) {
+                    return false;
+                }
+                TeamRead::Queue {
+                    team: team.to_owned(),
+                    after: Some(cursor.to_owned()),
+                }
+            }
+        };
+        if self.queued.len() >= QUEUED || self.queued.contains(&read) {
+            return false;
+        }
+        self.queued.push_back(read);
+        true
+    }
+
+    /// The next read to run now, if any: an asked-for page first, then the
+    /// watched team's status, its queue, the list and what waits for the
+    /// person. Its slot is in flight until its reply is applied.
     pub fn next(&mut self, now: Instant) -> Option<TeamRead> {
         if self.hidden {
             return None;
+        }
+        let follow = self.follow.clone();
+        let in_flight = self.in_flight.clone();
+        let wanted = |read: &TeamRead| {
+            !in_flight.contains(&Slot::of(read))
+                && match read {
+                    TeamRead::List { .. } => follow.list,
+                    TeamRead::Waiting { .. } => follow.waiting,
+                    TeamRead::Status { team } | TeamRead::Queue { team, .. } => {
+                        follow.team.as_deref() == Some(team.as_str())
+                    }
+                }
+        };
+        if let Some(read) = self.queued.pop_front_if(|read| wanted(read)) {
+            let slot = Slot::of(&read);
+            self.in_flight.insert(slot);
+            self.due.insert(slot, now + POLL);
+            return Some(read);
         }
         let watched = self.follow.team.clone();
         let slot = self
@@ -261,6 +356,9 @@ impl TeamsModel {
     pub fn wait(&self, now: Instant) -> Duration {
         if self.hidden {
             return POLL;
+        }
+        if !self.queued.is_empty() {
+            return Duration::ZERO;
         }
         self.due
             .iter()
@@ -296,18 +394,29 @@ impl TeamsModel {
         if Some(team.as_str()) != self.watched() {
             return None;
         }
-        let empty = Value::Null;
-        let status = parts.status.as_ref().unwrap_or(&empty);
-        let queue = parts.queue.as_ref().unwrap_or(&empty);
         if parts.status.is_none() && parts.queue.is_none() {
             return None;
         }
+        let empty = Value::Null;
+        let status = parts.status.as_ref().unwrap_or(&empty);
+        let queue = parts.queue.as_ref().unwrap_or(&empty);
         Some(view::team(status, queue))
     }
 
-    /// Applies a read's reply: its slot is due again after [`POLL`], and the
-    /// views it changed are returned. A reply about a team no longer watched
-    /// gives nothing.
+    /// The slot's next due time: at once when a change marked it during the
+    /// read, else one [`POLL`] from now.
+    fn settled(&mut self, slot: Slot, now: Instant) {
+        let due = if self.dirty.remove(&slot) {
+            now
+        } else {
+            now + POLL
+        };
+        self.due.insert(slot, due);
+    }
+
+    /// Applies a read's reply: its slot is due again after [`POLL`] (or at
+    /// once when a change marked it), and the views it changed are returned.
+    /// A reply about a view no longer followed gives nothing.
     pub fn apply(
         &mut self,
         read: &TeamRead,
@@ -315,63 +424,92 @@ impl TeamsModel {
         now: Instant,
     ) -> Vec<(String, TeamsUpdate)> {
         let mut out = Vec::new();
-        let slot = match read {
-            TeamRead::List { .. } => Slot::List,
-            TeamRead::Waiting { .. } => Slot::Waiting,
-            TeamRead::Status { .. } => Slot::Status,
-            TeamRead::Queue { .. } => Slot::Queue,
-        };
+        let slot = Slot::of(read);
         self.in_flight.remove(&slot);
         match read {
-            TeamRead::List { .. } => {
-                self.due.insert(slot, now + POLL);
-                let update = match reply {
-                    Ok(reply) => TeamsUpdate::List(Arc::new(view::list(&reply))),
-                    Err(error) => failure(error),
-                };
-                self.send("list".into(), update, &mut out);
-            }
-            TeamRead::Waiting { .. } => {
-                self.due.insert(slot, now + POLL);
-                let update = match reply {
-                    Ok(reply) => TeamsUpdate::Waiting(Arc::new(view::waiting(&reply))),
-                    Err(error) => failure(error),
-                };
-                self.send("waiting".into(), update, &mut out);
-            }
+            TeamRead::List { .. } => self.apply_list(slot, reply, now, &mut out),
+            TeamRead::Waiting { .. } => self.apply_waiting(slot, reply, now, &mut out),
             TeamRead::Status { team } | TeamRead::Queue { team, .. } => {
-                if Some(team.as_str()) != self.watched() {
-                    // The slot belongs to the team followed now, which stays
-                    // due; this reply is about a team no tab shows.
-                    return out;
-                }
-                self.due.insert(slot, now + POLL);
-                if let Ok(reply) = &reply {
-                    if self
-                        .parts
-                        .as_ref()
-                        .is_none_or(|(watched, _)| watched != team)
-                    {
-                        self.parts = Some((team.clone(), Parts::default()));
-                    }
-                    if let Some((_, parts)) = self.parts.as_mut() {
-                        match read {
-                            TeamRead::Status { .. } => parts.status = Some(reply.clone()),
-                            _ => parts.queue = Some(reply.clone()),
-                        }
-                    }
-                }
-                let update = match reply {
-                    Ok(_) => match self.team_view() {
-                        Some(view) => TeamsUpdate::Team(Arc::new(view)),
-                        None => return out,
-                    },
-                    Err(error) => failure(error),
-                };
-                self.send(team_key("team", team), update, &mut out);
+                self.apply_team(read, slot, team, reply, now, &mut out)
             }
         }
         out
+    }
+
+    fn apply_list(
+        &mut self,
+        slot: Slot,
+        reply: Result<Value, TeamError>,
+        now: Instant,
+        out: &mut Vec<(String, TeamsUpdate)>,
+    ) {
+        if !self.follow.list {
+            return;
+        }
+        self.settled(slot, now);
+        let update = match reply {
+            Ok(reply) => TeamsUpdate::List(Arc::new(view::list(&reply))),
+            Err(error) => failure(error),
+        };
+        self.send("list".into(), update, out);
+    }
+
+    fn apply_waiting(
+        &mut self,
+        slot: Slot,
+        reply: Result<Value, TeamError>,
+        now: Instant,
+        out: &mut Vec<(String, TeamsUpdate)>,
+    ) {
+        if !self.follow.waiting {
+            return;
+        }
+        self.settled(slot, now);
+        let update = match reply {
+            Ok(reply) => TeamsUpdate::Waiting(Arc::new(view::waiting(&reply))),
+            Err(error) => failure(error),
+        };
+        self.send("waiting".into(), update, out);
+    }
+
+    fn apply_team(
+        &mut self,
+        read: &TeamRead,
+        slot: Slot,
+        team: &str,
+        reply: Result<Value, TeamError>,
+        now: Instant,
+        out: &mut Vec<(String, TeamsUpdate)>,
+    ) {
+        if Some(team) != self.watched() {
+            // The slot belongs to the team followed now, which stays due; this
+            // reply is about a team no tab shows.
+            return;
+        }
+        self.settled(slot, now);
+        if let Ok(reply) = &reply {
+            if self
+                .parts
+                .as_ref()
+                .is_none_or(|(watched, _)| watched != team)
+            {
+                self.parts = Some((team.to_owned(), Parts::default()));
+            }
+            if let Some((_, parts)) = self.parts.as_mut() {
+                match read {
+                    TeamRead::Status { .. } => parts.status = Some(reply.clone()),
+                    _ => parts.queue = Some(reply.clone()),
+                }
+            }
+        }
+        let update = match reply {
+            Ok(_) => match self.team_view() {
+                Some(view) => TeamsUpdate::Team(Arc::new(view)),
+                None => return,
+            },
+            Err(error) => failure(error),
+        };
+        self.send(team_key("team", team), update, out);
     }
 }
 
@@ -418,377 +556,4 @@ pub fn change(computer: &ComputerId, sent: Sent) -> crate::Change {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::teams::view::GROUPS;
-
-    const TEAM_A: &str = "aaaaaaaa-0000-4000-8000-000000000001";
-    const TEAM_B: &str = "bbbbbbbb-0000-4000-8000-000000000002";
-
-    fn fixture() -> Value {
-        serde_json::from_str(include_str!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../crates/team-plan/fixtures/team-queue.json"
-        )))
-        .expect("the shared team fixture parses")
-    }
-
-    fn status(team: &str) -> Value {
-        let mut reply = fixture();
-        reply["team"]["id"] = serde_json::json!(team);
-        reply
-    }
-
-    fn queue() -> Value {
-        fixture()
-    }
-
-    fn keys(out: &[(String, TeamsUpdate)]) -> Vec<&str> {
-        out.iter().map(|(key, _)| key.as_str()).collect()
-    }
-
-    fn kinds(out: &[(String, TeamsUpdate)]) -> Vec<&'static str> {
-        out.iter().map(|(_, update)| update.kind()).collect()
-    }
-
-    fn due(model: &mut TeamsModel, now: Instant) -> Option<TeamRead> {
-        model.next(now)
-    }
-
-    fn follow_all(team: &str) -> TeamsFollow {
-        TeamsFollow {
-            list: true,
-            waiting: true,
-            team: Some(team.to_owned()),
-        }
-    }
-
-    /// The last update per key, in the order the keys first changed.
-    fn latest(out: Vec<(String, TeamsUpdate)>) -> Vec<(String, TeamsUpdate)> {
-        let mut order: Vec<String> = Vec::new();
-        let mut last: BTreeMap<String, TeamsUpdate> = BTreeMap::new();
-        for (key, update) in out {
-            if !last.contains_key(&key) {
-                order.push(key.clone());
-            }
-            last.insert(key, update);
-        }
-        order
-            .into_iter()
-            .map(|key| {
-                let update = last.remove(&key).expect("listed");
-                (key, update)
-            })
-            .collect()
-    }
-
-    fn watched(model: &mut TeamsModel, now: Instant, team: &str) -> Vec<(String, TeamsUpdate)> {
-        let mut out = Vec::new();
-        let read = TeamRead::Status {
-            team: team.to_owned(),
-        };
-        assert_eq!(due(model, now), Some(read.clone()));
-        out.extend(model.apply(&read, Ok(status(team)), now));
-        assert_eq!(
-            due(model, now),
-            Some(TeamRead::Queue {
-                team: team.to_owned(),
-                after: None,
-            })
-        );
-        out.extend(model.apply(
-            &TeamRead::Queue {
-                team: team.to_owned(),
-                after: None,
-            },
-            Ok(queue()),
-            now,
-        ));
-        latest(out)
-    }
-
-    #[test]
-    fn the_follow_set_never_holds_more_than_one_team() {
-        let now = Instant::now();
-        let mut model = TeamsModel::default();
-        assert!(model.follow(follow_all(TEAM_A), now).is_empty());
-        let first = watched(&mut model, now, TEAM_A);
-        assert_eq!(keys(&first), ["team:aaaaaaaa-0000-4000-8000-000000000001"]);
-        assert_eq!(
-            model.following().team.as_deref(),
-            Some(TEAM_A),
-            "one team is followed"
-        );
-
-        let ended = model.follow(follow_all(TEAM_B), now);
-        assert_eq!(keys(&ended), [team_key("team", TEAM_A)]);
-        assert!(matches!(ended[0].1, TeamsUpdate::Ended));
-        assert_eq!(model.following().team.as_deref(), Some(TEAM_B));
-        assert_eq!(
-            due(&mut model, now),
-            Some(TeamRead::Status {
-                team: TEAM_B.to_owned()
-            }),
-            "the new tab's team is read at once, never the old one"
-        );
-    }
-
-    #[test]
-    fn each_followed_view_is_read_once_per_poll() {
-        let now = Instant::now();
-        let mut model = TeamsModel::default();
-        model.follow(follow_all(TEAM_A), now);
-        assert_eq!(
-            due(&mut model, now),
-            Some(TeamRead::Status {
-                team: TEAM_A.to_owned()
-            })
-        );
-        model.apply(
-            &TeamRead::Status {
-                team: TEAM_A.to_owned(),
-            },
-            Ok(status(TEAM_A)),
-            now,
-        );
-        assert_eq!(
-            due(&mut model, now),
-            Some(TeamRead::Queue {
-                team: TEAM_A.to_owned(),
-                after: None,
-            })
-        );
-        model.apply(
-            &TeamRead::Queue {
-                team: TEAM_A.to_owned(),
-                after: None,
-            },
-            Ok(queue()),
-            now,
-        );
-        assert_eq!(due(&mut model, now), Some(TeamRead::List { after: None }));
-        model.apply(&TeamRead::List { after: None }, Ok(fixture()), now);
-        assert_eq!(
-            due(&mut model, now),
-            Some(TeamRead::Waiting { after: None })
-        );
-        model.apply(&TeamRead::Waiting { after: None }, Ok(fixture()), now);
-        assert_eq!(due(&mut model, now), None, "one read per view per poll");
-        assert_eq!(model.wait(now), POLL);
-        assert_eq!(
-            due(&mut model, now + POLL),
-            Some(TeamRead::Status {
-                team: TEAM_A.to_owned()
-            }),
-            "every poll reads it again"
-        );
-    }
-
-    #[test]
-    fn a_hidden_tab_reads_nothing() {
-        let now = Instant::now();
-        let mut model = TeamsModel::default();
-        model.follow(follow_all(TEAM_A), now);
-        model.set_hidden(true, now);
-        assert!(model.hidden());
-        assert_eq!(due(&mut model, now), None);
-        assert_eq!(due(&mut model, now + POLL * 10), None);
-        assert_eq!(model.wait(now), POLL);
-        model.set_hidden(false, now);
-        assert_eq!(
-            due(&mut model, now),
-            Some(TeamRead::Status {
-                team: TEAM_A.to_owned()
-            }),
-            "shown again, the views are read at once"
-        );
-    }
-
-    #[test]
-    fn the_desktop_action_reads_the_view_again() {
-        let now = Instant::now();
-        let mut model = TeamsModel::default();
-        model.follow(follow_all(TEAM_A), now);
-        watched(&mut model, now, TEAM_A);
-        assert_eq!(due(&mut model, now), Some(TeamRead::List { after: None }));
-        model.apply(&TeamRead::List { after: None }, Ok(fixture()), now);
-        assert_eq!(
-            due(&mut model, now),
-            Some(TeamRead::Waiting { after: None })
-        );
-        model.apply(&TeamRead::Waiting { after: None }, Ok(fixture()), now);
-        assert_eq!(due(&mut model, now), None, "all read, the poll is next");
-        model.refresh(now);
-        assert_eq!(
-            due(&mut model, now),
-            Some(TeamRead::Status {
-                team: TEAM_A.to_owned()
-            }),
-            "an action reads the team again"
-        );
-    }
-
-    #[test]
-    fn a_tasks_topic_change_reads_the_team_again() {
-        let now = Instant::now();
-        let mut model = TeamsModel::default();
-        model.follow(follow_all(TEAM_A), now);
-        watched(&mut model, now, TEAM_A);
-        model.apply(&TeamRead::List { after: None }, Ok(fixture()), now);
-        model.apply(&TeamRead::Waiting { after: None }, Ok(fixture()), now);
-        assert_eq!(due(&mut model, now), None);
-        model.tasks_changed(now);
-        assert_eq!(
-            due(&mut model, now),
-            Some(TeamRead::Status {
-                team: TEAM_A.to_owned()
-            })
-        );
-        assert_eq!(
-            due(&mut model, now),
-            Some(TeamRead::Queue {
-                team: TEAM_A.to_owned(),
-                after: None,
-            })
-        );
-        assert_eq!(
-            due(&mut model, now),
-            None,
-            "a task change does not re-read the list"
-        );
-    }
-
-    #[test]
-    fn an_unchanged_view_is_not_sent_twice() {
-        let now = Instant::now();
-        let mut model = TeamsModel::default();
-        model.follow(follow_all(TEAM_A), now);
-        let first = watched(&mut model, now, TEAM_A);
-        assert_eq!(first.len(), 1);
-        assert_eq!(kinds(&first), ["team"]);
-        let read = TeamRead::Status {
-            team: TEAM_A.to_owned(),
-        };
-        let again = model.apply(&read, Ok(status(TEAM_A)), now);
-        assert!(again.is_empty(), "the same reply shows nothing new");
-        let read = TeamRead::Queue {
-            team: TEAM_A.to_owned(),
-            after: None,
-        };
-        let again = model.apply(&read, Ok(queue()), now);
-        assert!(again.is_empty());
-    }
-
-    #[test]
-    fn the_view_carries_the_teams_bar_members_and_groups() {
-        let now = Instant::now();
-        let mut model = TeamsModel::default();
-        model.follow(follow_all(TEAM_A), now);
-        let out = watched(&mut model, now, TEAM_A);
-        let TeamsUpdate::Team(view) = &out[0].1 else {
-            panic!("a team view");
-        };
-        assert_eq!(view.bar.name, "Fixes");
-        assert_eq!(view.members.len(), 4);
-        assert_eq!(view.groups.len(), GROUPS.len());
-    }
-
-    #[test]
-    fn a_failure_is_sent_and_the_view_is_not_ended() {
-        let now = Instant::now();
-        let mut model = TeamsModel::default();
-        model.follow(follow_all(TEAM_A), now);
-        watched(&mut model, now, TEAM_A);
-        let read = TeamRead::Status {
-            team: TEAM_A.to_owned(),
-        };
-        let out = model.apply(
-            &read,
-            Err(TeamError::Refused {
-                code: "teams_inactive".into(),
-                message: "Teams are off.".into(),
-            }),
-            now,
-        );
-        assert_eq!(keys(&out), [team_key("team", TEAM_A)]);
-        assert_eq!(out[0].1.kind(), "failed");
-        assert_eq!(
-            out[0].1.payload(),
-            serde_json::json!({"code": "teams_inactive", "message": "Teams are off."})
-        );
-        assert!(!out[0].1.is_view());
-        // The failure is not sent again unchanged.
-        let again = model.apply(
-            &read,
-            Err(TeamError::Refused {
-                code: "teams_inactive".into(),
-                message: "Teams are off.".into(),
-            }),
-            now,
-        );
-        assert!(again.is_empty());
-    }
-
-    #[test]
-    fn an_unfollowed_view_ends() {
-        let now = Instant::now();
-        let mut model = TeamsModel::default();
-        model.follow(follow_all(TEAM_A), now);
-        watched(&mut model, now, TEAM_A);
-        let out = model.follow(
-            TeamsFollow {
-                list: false,
-                waiting: false,
-                team: None,
-            },
-            now,
-        );
-        assert_eq!(keys(&out), [team_key("team", TEAM_A)]);
-        assert!(matches!(out[0].1, TeamsUpdate::Ended));
-        assert_eq!(due(&mut model, now), None);
-        assert!(model.following().team.is_none());
-        // Nothing ends twice.
-        assert!(model
-            .follow(
-                TeamsFollow {
-                    list: false,
-                    waiting: false,
-                    team: None,
-                },
-                now
-            )
-            .is_empty());
-    }
-
-    #[test]
-    fn a_reply_about_a_team_no_longer_watched_gives_nothing() {
-        let now = Instant::now();
-        let mut model = TeamsModel::default();
-        model.follow(follow_all(TEAM_A), now);
-        let read = TeamRead::Status {
-            team: TEAM_A.to_owned(),
-        };
-        assert_eq!(due(&mut model, now), Some(read.clone()));
-        model.follow(follow_all(TEAM_B), now);
-        let out = model.apply(&read, Ok(status(TEAM_A)), now);
-        assert!(out.is_empty());
-        assert_eq!(
-            due(&mut model, now),
-            Some(TeamRead::Status {
-                team: TEAM_B.to_owned()
-            })
-        );
-    }
-
-    #[test]
-    fn a_short_wait_never_exceeds_the_poll() {
-        let now = Instant::now();
-        let mut model = TeamsModel::default();
-        model.follow(follow_all(TEAM_A), now);
-        watched(&mut model, now, TEAM_A);
-        model.apply(&TeamRead::List { after: None }, Ok(fixture()), now);
-        model.apply(&TeamRead::Waiting { after: None }, Ok(fixture()), now);
-        assert_eq!(model.wait(now), POLL);
-        assert_eq!(model.wait(now + POLL / 2), POLL / 2);
-    }
-}
+mod tests;

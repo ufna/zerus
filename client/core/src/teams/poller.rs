@@ -40,6 +40,7 @@ impl Shared {
 /// The Teams reads of this computer.
 pub struct TeamsPoller {
     shared: Arc<Shared>,
+    handle: Option<thread::JoinHandle<()>>,
 }
 
 impl TeamsPoller {
@@ -61,10 +62,13 @@ impl TeamsPoller {
         let computer = ComputerId::local();
         let runner = Arc::new(runner);
         let emit: SharedEmit = Arc::new(Mutex::new(emit));
-        thread::Builder::new()
+        let handle = thread::Builder::new()
             .name("teams-poll".into())
             .spawn(move || run(&thread_shared, &computer, &runner, &emit))?;
-        Ok(Self { shared })
+        Ok(Self {
+            shared,
+            handle: Some(handle),
+        })
     }
 
     /// Follows `follow` from now on; following nothing ends every view.
@@ -87,6 +91,17 @@ impl TeamsPoller {
         self.shared.wake.notify_all();
     }
 
+    /// Asks for one page of a followed key by its cursor; the page replaces
+    /// the shown one. False when the key is not followed or the cursor is not
+    /// a page token.
+    pub fn page(&self, key: &str, cursor: &str) -> bool {
+        let asked = self.shared.lock().model.page(key, cursor);
+        if asked {
+            self.shared.wake.notify_all();
+        }
+        asked
+    }
+
     /// The project's tasks topic changed: the watched team is read again.
     pub fn tasks_changed(&self) {
         self.shared.lock().model.tasks_changed(Instant::now());
@@ -102,9 +117,22 @@ impl TeamsPoller {
 }
 
 impl Drop for TeamsPoller {
+    /// Ends every published view, then waits for the worker: a read in flight
+    /// finishes (its reply is applied, or dropped when no longer followed),
+    /// the queued ends go out, and only then does the thread stop. A new
+    /// reader can therefore never run beside this one — the desktop keeps one
+    /// poller for the life of the application, and this is its shutdown.
     fn drop(&mut self) {
-        self.shared.lock().stop = true;
+        {
+            let mut state = self.shared.lock();
+            let ended = state.model.follow(TeamsFollow::default(), Instant::now());
+            state.outbox.extend(ended);
+            state.stop = true;
+        }
         self.shared.wake.notify_all();
+        if let Some(handle) = self.handle.take() {
+            let _ = handle.join();
+        }
     }
 }
 
@@ -143,10 +171,13 @@ fn run(shared: &Arc<Shared>, computer: &ComputerId, runner: &Arc<Runner>, emit: 
         let reply = runner(&read);
         let updates = {
             let mut state = shared.lock();
+            // A stop still has ends in the outbox: the loop below sends them
+            // before the thread exits, so every published key ends.
             if state.stop {
-                return;
+                Vec::new()
+            } else {
+                state.model.apply(&read, reply, Instant::now())
             }
-            state.model.apply(&read, reply, Instant::now())
         };
         shared.wake.notify_all();
         for (key, update) in updates {
@@ -179,7 +210,7 @@ mod tests {
         })
     }
 
-    fn change_key(change: &Change) -> Option<&str> {
+    fn first_key(change: &Change) -> Option<&str> {
         match change {
             Change::Teams { key, .. } => Some(key),
             _ => None,
@@ -204,7 +235,7 @@ mod tests {
         let change = receiver
             .recv_timeout(Duration::from_secs(5))
             .expect("a followed read gives a change");
-        assert_eq!(change_key(&change), Some("list"));
+        assert_eq!(first_key(&change), Some("list"));
         let Change::Teams {
             update, payload, ..
         } = &change
@@ -214,6 +245,49 @@ mod tests {
         assert_eq!(update.kind(), "list");
         assert_eq!(payload["teams"][0]["name"], "Fixes");
         drop(poller);
+    }
+
+    #[test]
+    fn a_stop_during_a_read_still_emits_ended() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let (begin_tx, begin_rx) = channel();
+        let (go_tx, go_rx) = channel();
+        let go_rx = Mutex::new(go_rx);
+        let calls = AtomicUsize::new(0);
+        let (changes, received) = channel();
+        let poller = TeamsPoller::spawn_with(
+            Box::new(move |_read| {
+                if calls.fetch_add(1, Ordering::SeqCst) == 1 {
+                    begin_tx.send(()).unwrap();
+                    go_rx.lock().unwrap().recv().unwrap();
+                }
+                Ok(list_reply())
+            }),
+            Box::new(move |change| {
+                let _ = changes.send(change);
+            }),
+        )
+        .expect("the poller starts");
+        poller.follow(TeamsFollow {
+            list: true,
+            waiting: false,
+            team: None,
+        });
+        let first = received.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert_eq!(first_key(&first), Some("list"));
+        // The refresh's read is in flight when the follow ends.
+        poller.refresh();
+        begin_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        poller.follow(TeamsFollow::default());
+        go_tx.send(()).unwrap();
+        drop(poller);
+        let end = received
+            .recv_timeout(Duration::from_secs(5))
+            .expect("the published list view ends");
+        let Change::Teams { update, .. } = &end else {
+            panic!("not a teams change");
+        };
+        assert!(matches!(update, TeamsUpdate::Ended), "{end:?}");
     }
 
     #[test]
