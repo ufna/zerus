@@ -47,7 +47,8 @@ export function WaitingCard(props: {
   );
 }
 
-/** The page's list, paged by its `next` cursor. */
+/** The page's list, paged by its `next` cursor; a later page has the way back
+ * to the first and never says that nothing waits. */
 export function WaitingList(props: {
   view: WaitingView;
   teamNames: ReadonlyMap<string, string>;
@@ -57,21 +58,33 @@ export function WaitingList(props: {
   onOpenTeam: (item: WaitingItem) => void;
   onOpenTask?: (item: WaitingItem) => void;
   onPage: (cursor: string) => void;
+  onFirst?: () => void;
 }) {
   return (
     <section class="waiting-list" aria-label={tr("Waiting for you")} data-waiting-list>
       <Show when={props.view.items.length} fallback={
-        <div class="empty team-empty"><Icon name="list-todo" size={24} /><h3>{tr("Nothing waits for you.")}</h3><p>{tr("Decisions that only you can make appear here.")}</p></div>
+        <Show when={props.view.after} fallback={
+          <div class="empty team-empty"><Icon name="list-todo" size={24} /><h3>{tr("Nothing waits for you.")}</h3><p>{tr("Decisions that only you can make appear here.")}</p></div>
+        }>
+          <div class="empty team-empty" data-waiting-later-empty><Icon name="list-todo" size={24} /><h3>{tr("No open cards on this page.")}</h3><p>{tr("Earlier pages can still have open cards.")}</p></div>
+        </Show>
       }>
         <For each={props.view.items}>
           {(item) => <WaitingCard item={item} teamName={props.teamNames.get(item.team) ?? ""} now={props.now} busy={props.busy}
             onDecide={props.onDecide} onOpenTeam={props.onOpenTeam} onOpenTask={props.onOpenTask} />}
         </For>
       </Show>
-      <Show when={props.view.next}>
-        {(cursor) => (
-          <button type="button" class="btn small" disabled={props.busy} onClick={() => props.onPage(cursor())}>{tr("More…")}</button>
-        )}
+      <Show when={props.view.after || props.view.next}>
+        <div class="waiting-pages">
+          <Show when={props.view.after}>
+            <button type="button" class="btn small" disabled={props.busy} data-waiting-first onClick={() => props.onFirst?.()}>{tr("First page")}</button>
+          </Show>
+          <Show when={props.view.next}>
+            {(cursor) => (
+              <button type="button" class="btn small" disabled={props.busy} onClick={() => props.onPage(cursor())}>{tr("More…")}</button>
+            )}
+          </Show>
+        </div>
       </Show>
     </section>
   );

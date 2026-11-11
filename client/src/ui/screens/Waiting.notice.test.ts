@@ -6,7 +6,8 @@ import { createComponent } from "solid-js";
 import { render } from "solid-js/web";
 vi.mock("../../store/teams", () => ({
   teams: {
-    failure: () => ({ key: "waiting", code: "read_failed", message: "The computer is offline." }),
+    failure: () => null, readFailureFor: (key: string) => key === "waiting" ? { key: "waiting", code: "read_failed", message: "The computer is offline.", source: "" } : null,
+    failureFor: () => null, clearFailure: vi.fn(), firstWaitingPage: vi.fn(async () => {}), listed: () => [], team: () => undefined, summaryOf: () => ({ state: "reading" }), busy: () => false,
     waitingView: () => undefined, list: () => undefined, probe: vi.fn(async () => {}), openWaiting: vi.fn(async () => {}),
     pageWaiting: vi.fn(async () => {}), decide: vi.fn(async () => undefined), uncertain: () => null,
     check: vi.fn(), dismiss: vi.fn(), available: () => true, waitingCount: () => 0,

@@ -157,3 +157,5 @@
 .waiting-request:hover { background: var(--z-color-card-hover); }
 .waiting-request b { font-size: 12px; }
 .waiting-request-caption { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--z-color-text-2); font-size: 12px; }
+.waiting-pages { display: flex; gap: 8px; }
+.waiting-pages > .btn { flex: 1; }
