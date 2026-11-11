@@ -235,12 +235,19 @@ fn cli_preview_off_team_add_and_target_write_nothing() {
 }
 
 #[test]
-fn cli_each_bypass_is_refused_before_task_changes_without_the_key() {
-    {
+fn cli_each_bypass_is_refused_before_task_changes_with_and_without_the_key() {
+    for keyed in [false, true] {
         let mut f = Fixture::new();
         let lead = f.bind("lead");
         let member = f.bind("m1");
         let task = f.add();
+        if !keyed {
+            let tasks =
+                ProjectStore::open(&f.h.temp.path().join("replica"), "example-project").unwrap();
+            let mut doc = tasks.load(task["uuid"].as_str().unwrap()).unwrap();
+            doc.set_team(None, &Actor::Person, 3).unwrap();
+            tasks.save(&mut doc).unwrap();
+        }
         let reference = format!("example/{}", task["id"].as_str().unwrap());
         for args in [
             vec!["send", &reference, "--json"],
@@ -311,5 +318,57 @@ fn cli_home_lead_and_person_can_accept_a_reported_task() {
         assert_eq!(result["ok"], true, "{result}");
         assert_eq!(f.document(&task).stage().unwrap(), Stage::Done);
         assert_eq!(f.h.store.queue(TEAM, 200, None).unwrap().rows.len(), 0);
+    }
+}
+
+#[test]
+fn cli_another_computer_refuses_even_the_home_lead_but_allows_a_person() {
+    let mut f = Fixture::new();
+    let lead = f.bind("lead");
+    let task = f.add();
+    {
+        let tasks =
+            ProjectStore::open(&f.h.temp.path().join("replica"), "example-project").unwrap();
+        let mut doc = tasks.load(task["uuid"].as_str().unwrap()).unwrap();
+        doc.set_team(
+            Some(&zerus_replica::TaskTeam {
+                team: TEAM.into(),
+                home: uuid::Uuid::new_v4().to_string(),
+            }),
+            &Actor::Person,
+            now(),
+        )
+        .unwrap();
+        tasks.save(&mut doc).unwrap();
+    }
+    let reference = format!("example/{}", task["id"].as_str().unwrap());
+    for args in [
+        vec!["send", &reference],
+        vec!["handoff", &reference],
+        vec!["stage", &reference, "done"],
+    ] {
+        let result = f.run(&args, "", Some(&lead));
+        assert_eq!(result["ok"], false, "{result}");
+        assert!(
+            result["error"].as_str().unwrap().contains("not_allowed"),
+            "{result}"
+        );
+        let mut safe = args.clone();
+        if args[0] != "stage" {
+            safe.extend([
+                "--session",
+                "codex/unavailable",
+                "--session-id",
+                "launch_id:missing-fixture",
+            ]);
+        }
+        let person = f.run(&safe, "", None);
+        assert!(
+            !person["error"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("not_allowed"),
+            "{person}"
+        );
     }
 }

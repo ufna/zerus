@@ -1,5 +1,5 @@
-//! Local intake and guards use the team store. Optional replicated metadata
-//! is added separately, after the replica-owner check-in.
+//! The optional replicated key adds cross-computer routing. The home
+//! computer's intake and policy use the team store independently of it.
 use super::*;
 
 pub(super) struct Link {
@@ -7,14 +7,22 @@ pub(super) struct Link {
     pub home: String,
 }
 
-pub(super) fn read(_document: &TaskDoc) -> Result<Option<Link>> {
-    Ok(None)
+pub(super) fn read(document: &TaskDoc) -> Result<Option<Link>> {
+    Ok(document.team().map_err(storage)?.map(|link| Link {
+        team: link.team,
+        home: link.home,
+    }))
 }
-pub(super) fn write(
-    _document: &mut TaskDoc,
-    _team: &Team,
-    _who: &TaskActor,
-    _now: i64,
-) -> Result<()> {
-    Ok(())
+
+pub(super) fn write(document: &mut TaskDoc, team: &Team, who: &TaskActor, now: i64) -> Result<()> {
+    document
+        .set_team(
+            Some(&zerus_replica::TaskTeam {
+                team: team.id.clone(),
+                home: team.home.clone(),
+            }),
+            who,
+            now,
+        )
+        .map_err(storage)
 }

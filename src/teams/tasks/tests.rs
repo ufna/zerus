@@ -89,6 +89,7 @@ fn sends_twice_share_one_node_and_service_reads_the_document() {
         doc.revision()
     );
     assert_eq!(doc.view().unwrap().target, Target::Any);
+    assert_eq!(doc.team().unwrap().unwrap().team, TEAM);
     let actors = store.journal(TEAM, 200, None).unwrap().rows;
     assert!(actors
         .iter()
@@ -177,6 +178,7 @@ fn local_guards_work_without_the_replica_key_and_stopped_teams_release_them() {
     )
     .unwrap();
     let doc = task(&h, &reference);
+    assert_eq!(doc.team().unwrap(), None);
     for action in ["send", "handoff", "done"] {
         assert!(guard(&caller(&h, &member), &doc, action).is_err());
     }
