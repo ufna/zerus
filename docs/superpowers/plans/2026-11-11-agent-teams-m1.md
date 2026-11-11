@@ -1114,6 +1114,15 @@ switches `merge_accepted` off, every Ready accept that no person decided or
 approved and that has no integration fact yet goes back to awaiting the
 owner in the same transaction, with its integration card. An accept the
 person made, or approved on its card, stays Ready whatever the setting.
+The actor releases the store right after the ref update, so the switch can
+fall between a merge and its fact, as a restart can. A refusal cannot undo
+a merge: the fact of a merge for an accept that awaits the owner is
+recorded, its integration card is closed as overtaken in the same
+transaction, and the node goes on as after any merge fact; after the person
+rejected that card the fact is late provenance, as after a stop. A conflict
+wrote nothing, so a conflict fact for an accept that is not Ready is
+refused, and the merge is tried again if the person approves. New writes
+are still found only among exact Ready accepts.
 
 **A doorbell points at the inbox and carries none of it (package 10).** The
 doorbell says how many items wait and names the command that reads them;
