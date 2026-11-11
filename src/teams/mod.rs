@@ -16,6 +16,7 @@ pub(crate) mod catalog;
 pub(crate) mod integrate;
 pub(crate) mod ops;
 pub(crate) mod store;
+pub(crate) mod tasks;
 
 /// The folder of everything Teams keep under the `hgs` state directory.
 const DIR: &str = "teams";

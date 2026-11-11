@@ -31,6 +31,7 @@ mod sessions;
 mod messages;
 mod history;
 mod index;
+mod teams;
 
 /// A send that pasted the prompt but could not record it: its outcome is
 /// uncertain, and the phone's receipt says so.
@@ -43,7 +44,7 @@ fn paste_uncertain(message: &str) -> bool {
     message.starts_with(SENT_UNRECORDED) || message.starts_with("delivery uncertain")
 }
 
-const USAGE: &str = "usage: hgs task list --project P [--stage S] | list --project P --stage S --limit 1..200 [--after CURSOR|--before CURSOR] [--if-revision R] [--session ID [--host ALIAS]] | get REF [--history-limit 1..80 [--history-before CURSOR] [--attachments metadata]] | attachment REF --file N [--entry ID] | add --project P [--backlog] [--start] [--target SESSION|any [--host ALIAS]] [--title TITLE [--request-id UUID]] [--position N] | edit REF | rename REF | move REF --top|--before REF|--after REF|--position N | stage REF backlog|todo|done | target REF SESSION|any|new-session|subagent [--parent SESSION] [--host ALIAS] | send REF [--session SESSION [--host ALIAS]] | start-plan REF --json | start-deliver REF --json [--recover-only] | cancel REF [--reason TEXT] | cancel-execution REF --json (guard JSON on stdin) | handoff REF --session SESSION [--host ALIAS] | start REF | report REF [--progress|--ready] [--considered REV] | report-attempt REF --attempt UUID [--progress|--ready] [--considered REV] | comment REF [--content-json] | message REF --request-id UUID --mode queue|send|reopen|note [--expect-dispatch ID] [--content-json] | worker REF --subagent ID --request-id REQUEST | settings --project P [--set] | review-copy --project P --uuid UUID [--confirm FINGERPRINT] --json | cutover --project P [--hold on|off [--confirm]] | digests --json | exchange --json | mobile-send|mobile-cancel|mobile-done --json
+const USAGE: &str = "usage: hgs task list --project P [--stage S] | list --project P --stage S --limit 1..200 [--after CURSOR|--before CURSOR] [--if-revision R] [--session ID [--host ALIAS]] | get REF [--history-limit 1..80 [--history-before CURSOR] [--attachments metadata]] | attachment REF --file N [--entry ID] | add --project P [--backlog] [--start] [--team TEAM [--role ROLE] [--pipeline PIPELINE]] [--target SESSION|any [--host ALIAS]] [--title TITLE [--request-id UUID]] [--position N] | edit REF | rename REF | move REF --top|--before REF|--after REF|--position N | stage REF backlog|todo|done | target REF SESSION|any|new-session|subagent|team TEAM [--parent SESSION] [--host ALIAS] | send REF [--session SESSION [--host ALIAS]] | start-plan REF --json | start-deliver REF --json [--recover-only] | cancel REF [--reason TEXT] | cancel-execution REF --json (guard JSON on stdin) | handoff REF --session SESSION [--host ALIAS] | start REF | report REF [--progress|--ready] [--considered REV] | report-attempt REF --attempt UUID [--progress|--ready] [--considered REV] | comment REF [--content-json] | message REF --request-id UUID --mode queue|send|reopen|note [--expect-dispatch ID] [--content-json] | worker REF --subagent ID --request-id REQUEST | settings --project P [--set] | review-copy --project P --uuid UUID [--confirm FINGERPRINT] --json | cutover --project P [--hold on|off [--confirm]] | digests --json | exchange --json | mobile-send|mobile-cancel|mobile-done --json
   REF is T-xxxxxx with --project P, or PROJECT/T-xxxxxx; texts and --set settings are read from stdin;
   a change an agent makes prints one line, and --json prints the task";
 
@@ -977,6 +978,7 @@ fn position_index(args: &[String]) -> Result<Option<usize>> {
 }
 
 fn add(config: &Config, args: &[String]) -> Result<Value> {
+    let team = teams::add(config, args)?;
     let content = stdin_content(args)?;
     let text = content.text;
     let machines = machines(config)?;
@@ -984,6 +986,7 @@ fn add(config: &Config, args: &[String]) -> Result<Value> {
     let title = option(args, "--title")?;
     if title.is_none() { agent_text(&text, "add", &author)?; }
     let (id, name) = project_arg(config, args, &author)?;
+    if let Some(team) = &team { teams::destination(config, &machines, &id, team)?; }
     let stage = if flag(args, "--backlog") {
         Stage::Backlog
     } else {
@@ -993,7 +996,7 @@ fn add(config: &Config, args: &[String]) -> Result<Value> {
     if option(args, "--host")?.is_some() && matches!(option(args, "--target")?, None | Some("any")) {
         return Err(fail("--host needs a --target session"));
     }
-    let target = match (&author, option(args, "--target")?) {
+    let target = if team.is_some() { Target::Any } else { match (&author, option(args, "--target")?) {
         (Actor::Agent(_), Some(_)) => {
             return Err(fail(
                 "a task an agent files is pinned to its own session; --target is for people",
@@ -1002,7 +1005,7 @@ fn add(config: &Config, args: &[String]) -> Result<Value> {
         (Actor::Agent(own), None) => Target::Session(own.clone()),
         (Actor::Person, None | Some("any")) => Target::Any,
         (Actor::Person, Some(session)) => Target::Session(machines.target(machines.node(option(args, "--host")?)?, session, args)?),
-    };
+    }};
     let position = position_index(args)?.map_or(Position::End, Position::Index);
     let store = store(config, &id)?;
     let request = option(args, "--request-id")?;
@@ -1018,6 +1021,14 @@ fn add(config: &Config, args: &[String]) -> Result<Value> {
         if title.is_none() && flag(args, "--start") { task.record_start(&author, now()).map_err(fail)?; }
         store.save(&mut task).map_err(fail)?;
     }
+    let (store, task) = if let Some(team) = &team {
+        let task_ref = zerus_team_plan::model::TaskRef { project:id.clone(), uuid:task.uuid().into() };
+        drop(store);
+        teams::send(config, &machines, &author, &task_ref, team, args)?;
+        let store = self::store(config, &id)?;
+        let task = store.load(&task_ref.uuid).map_err(fail)?;
+        (store, task)
+    } else { (store, task) };
     let at = place(&store, &task)?;
     let mut out = json!({"task": view(&task, &name, true, &machines)?});
     if created && flag(args, "--start") { reports::started(&mut out, &task, &name)?; }
@@ -1035,6 +1046,7 @@ fn change_within(config: &Config, action: &str, args: &[String], wait: Option<st
 }
 
 fn change_guarded(config: &Config, action: &str, args: &[String], wait: Option<std::time::Duration>, guard: Option<&cancellation::Guard>) -> Result<Value> {
+    let team = teams::target(config, action, args)?;
     // A send's or handoff's attempt has one budget from here (C3 A3).
     let deadline = std::time::Instant::now() + attempts::BUDGET;
     let content = if action == "edit" || (action == "comment" && flag(args, "--content-json")) { Some(stdin_content(args)?) } else { None };
@@ -1103,6 +1115,15 @@ fn change_guarded(config: &Config, action: &str, args: &[String], wait: Option<s
     };
     let mut task = find(&store, &r.task)?;
     if let Some(guard) = guard { guard.check(&task)?; }
+    teams::guard(config, here, &who, &task, action, args)?;
+    if let Some(team) = &team {
+        let task_ref = zerus_team_plan::model::TaskRef { project:project_id.clone(), uuid:task.uuid().into() };
+        drop(store);
+        teams::send(config, &machines, &who, &task_ref, team, args)?;
+        let store = self::store(config, project_id)?;
+        let task = store.load(&task_ref.uuid).map_err(fail)?;
+        return Ok(with_answer(&who, action, json!({"task":view(&task, project_name, true, &machines)?}), 0, ""));
+    }
     if action == "edit" && text.as_deref() == Some("") && task.title().is_empty() { agent_text("", action, &who)?; }
     enrich(&mut task, &machines)?;
     if let Some(expected) = option(args, "--expect-new-session-parent")? {
@@ -1178,6 +1199,7 @@ fn change_guarded(config: &Config, action: &str, args: &[String], wait: Option<s
             .map_err(|e| refuse(e, &to.session))?;
             match sent {
                 Some(receipt) => {
+                    teams::changed(config, project_id, &uuid);
                     let task = self::store(config, project_id)?.load(&uuid).map_err(fail)?;
                     let out = json!({"task": view(&task, project_name, guard.is_none(), &machines)?, "receipt": receipt});
                     return Ok(with_answer(&who, action, out, 0, &to.session));
@@ -1185,6 +1207,7 @@ fn change_guarded(config: &Config, action: &str, args: &[String], wait: Option<s
                 None => {
                     let store = self::store(config, project_id)?;
                     let mut task = store.load(&uuid).map_err(fail)?;
+                    teams::guard(config, here, &who, &task, action, args)?;
                     enrich(&mut task, &machines)?;
                     (store, task)
                 }
@@ -1310,7 +1333,10 @@ fn change_guarded(config: &Config, action: &str, args: &[String], wait: Option<s
         out[key] = value.clone();
     }
     if action == "start" { reports::started(&mut out, &task, project_name)?; }
-    Ok(with_answer(&who, if action == "report-attempt" { "report" } else { action }, out, at, &destination))
+    let out = with_answer(&who, if action == "report-attempt" { "report" } else { action }, out, at, &destination);
+    drop(store);
+    teams::changed(config, project_id, task.uuid());
+    Ok(out)
 }
 
 /// Binds the task's target and holder to the verified runs this computer

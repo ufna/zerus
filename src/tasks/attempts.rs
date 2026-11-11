@@ -377,6 +377,9 @@ pub(super) fn send(
             *detail.borrow_mut() = why;
             Ok(Err(Closed { node: None, reason }))
         };
+        if let Err(error) = super::teams::guard(config, &machines.here, who, task, if handoff { "handoff" } else { "send" }, args) {
+            return refuse("not_sendable", error.message);
+        }
         let check = if handoff {
             super::handoff_check(task, who)
         } else {
