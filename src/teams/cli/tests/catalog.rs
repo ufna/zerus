@@ -171,3 +171,38 @@ fn a_template_save_that_breaks_the_merged_catalog_writes_nothing() {
     assert_eq!((code(&reply), exit), ("unknown_role", 1), "{reply}");
     assert!(!catalog::path(&harness.config.dir).exists());
 }
+
+#[test]
+fn every_catalog_reply_names_the_person_and_the_interim_rule() {
+    let harness = Harness::new();
+    let actor_is_shown = |reply: &Value, line: &str| {
+        assert_eq!(reply["actor"]["kind"], "person", "{line}");
+        assert_eq!(reply["actor"]["origin"], "cli_interim", "{line}");
+        assert_eq!(reply["actor"]["interim"], true, "{line}");
+    };
+    for line in [
+        "catalog show",
+        "catalog export",
+        "template list",
+        "template show bugfix",
+        "template export bugfix",
+    ] {
+        let (reply, exit) = run(&harness, line, "");
+        assert_eq!(exit, 0, "{line}: {reply}");
+        actor_is_shown(&reply, line);
+    }
+    let (reply, _) = run(
+        &harness,
+        "catalog import",
+        r#"{"roles":[{"id":"architect","name":"Architect","agent":"claude"}]}"#,
+    );
+    actor_is_shown(&reply, "catalog import");
+    let (bundle, _) = run(&harness, "template export bugfix", "");
+    let (reply, _) = run(&harness, "template import", &bundle["bundle"].to_string());
+    actor_is_shown(&reply, "template import");
+    let (template, _) = run(&harness, "template show bugfix", "");
+    let (reply, _) = run(&harness, "template save", &template["template"].to_string());
+    actor_is_shown(&reply, "template save");
+    let (reply, _) = run(&harness, "template remove bugfix", "");
+    actor_is_shown(&reply, "template remove");
+}

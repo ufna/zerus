@@ -17,7 +17,7 @@ use serde_json::{json, Value};
 use zerus_team_plan::problem::code;
 use zerus_team_plan::Problem;
 
-pub(super) const USAGE: &str = "usage: hgs team preview on|off|status | catalog show|import|export | template list|show|save|import|export|remove | create --template ID | status|inbox|queue|cards|journal [--team ID] [--limit 1..200] [--after CURSOR] [--bundle] | current | settings|pause|resume|stop|archive|decide|admit|route|accept|return|reassign|hold|release|cancel|reply|ask (JSON on stdin)";
+pub(super) const USAGE: &str = "usage: hgs team preview on|off|status | catalog show|import|export | template list|show|save|import|export|remove | create --template ID | list|waiting|status|inbox|queue|cards|journal [--team ID] [--limit 1..200] [--after CURSOR] [--bundle] | current | settings|pause|resume|stop|archive|decide|admit|route|accept|return|reassign|hold|release|cancel|reply|ask|pause-member|resume-member|stop-member|archive-member (JSON on stdin)";
 
 /// The running command. `args` are the words after `team`; `provided` is a
 /// test's stdin, and `None` reads this command's own stdin when it needs one.
@@ -51,20 +51,46 @@ fn execute(
         "catalog" | "template" => catalog_cmd::run(config, caller, command, rest, provided),
         "create" => commands::create(config, caller, rest, provided),
         "status" => reads::status(config, caller, rest),
+        "list" => reads::list_teams(config, caller, rest),
+        "waiting" => reads::waiting(config, caller, rest),
         "inbox" | "queue" | "cards" | "journal" => reads::list(config, caller, command, rest),
         "current" => reads::current(config, caller, rest),
         other => commands::run(config, caller, other, rest, provided),
     }
 }
 
+/// One request's largest accepted size: the same bound the operation envelope
+/// validates against.
+const MAX_REQUEST: u64 = 262_144;
+
 /// A command that reads one JSON request never waits on a terminal's stdin
-/// twice: the text is read once, here, only when the command needs it.
+/// twice: the text is read once, here, only when the command needs it, and
+/// never past the request bound. A request one byte over the bound is refused
+/// before anything parses it.
 fn request_input(provided: Option<&str>) -> Result<String, Problem> {
     if let Some(text) = provided {
+        if text.len() as u64 > MAX_REQUEST {
+            return Err(too_large());
+        }
         return Ok(text.to_owned());
     }
-    std::io::read_to_string(std::io::stdin())
-        .map_err(|error| input::invalid(format!("Cannot read the request on stdin: {error}")))
+    use std::io::Read;
+    let mut bytes = Vec::new();
+    std::io::stdin()
+        .take(MAX_REQUEST + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|error| input::invalid(format!("Cannot read the request on stdin: {error}")))?;
+    if bytes.len() as u64 > MAX_REQUEST {
+        return Err(too_large());
+    }
+    String::from_utf8(bytes).map_err(|_| input::invalid("The request on stdin is not UTF-8."))
+}
+
+fn too_large() -> Problem {
+    Problem::new(
+        code::OVER_CAP,
+        format!("The request is larger than {MAX_REQUEST} bytes."),
+    )
 }
 
 pub(super) fn refusal(problem: Problem) -> (Value, i32) {

@@ -32,6 +32,10 @@ pub(super) fn variant(command: &str) -> Option<&'static str> {
         "cancel" => "cancel",
         "reply" => "reply",
         "ask" => "ask",
+        "pause-member" => "pause_member",
+        "resume-member" => "resume_member",
+        "stop-member" => "stop_member",
+        "archive-member" => "archive_member",
         _ => return None,
     })
 }

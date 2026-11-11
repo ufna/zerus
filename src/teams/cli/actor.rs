@@ -143,7 +143,16 @@ pub(super) fn lead_reader(
 ) -> Result<Option<String>, Problem> {
     match &caller.actor {
         Actor::Person { .. } => Ok(None),
-        Actor::Session { member, .. } => {
+        Actor::Session {
+            team: session_team,
+            member,
+            ..
+        } => {
+            // A lead is a lead of one team. A member ID is unique only inside
+            // its own team, so the proved session's team must be the target.
+            if session_team != team {
+                return Err(not_allowed("This session does not belong to that team."));
+            }
             let lead = store
                 .team(team)?
                 .map(|team| team.lead)

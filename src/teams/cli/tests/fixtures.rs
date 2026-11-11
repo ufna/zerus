@@ -1,4 +1,4 @@
-//! The five read replies, pinned as shared fixtures: the desktop's projections
+//! The seven read replies, pinned as shared fixtures: the desktop's projections
 //! are built from exactly the JSON a person's `hgs team` prints.
 use super::harness::*;
 use crate::teams::cli::actor::Caller;
@@ -9,12 +9,14 @@ const QUEUE: &str = include_str!("../../../../crates/team-plan/fixtures/cli-queu
 const INBOX: &str = include_str!("../../../../crates/team-plan/fixtures/cli-inbox.json");
 const CARDS: &str = include_str!("../../../../crates/team-plan/fixtures/cli-cards.json");
 const JOURNAL: &str = include_str!("../../../../crates/team-plan/fixtures/cli-journal.json");
+const LIST: &str = include_str!("../../../../crates/team-plan/fixtures/cli-list.json");
+const WAITING: &str = include_str!("../../../../crates/team-plan/fixtures/cli-waiting.json");
 
 fn lead() -> Caller {
     Caller::Session(key(LEAD_SESSION))
 }
 
-fn replies() -> [(&'static str, Value); 5] {
+fn replies() -> [(&'static str, Value); 7] {
     let harness = seeded();
     let read = |caller: &Caller, line: &str| {
         let (reply, exit) = harness.cli(caller, line, "");
@@ -42,6 +44,8 @@ fn replies() -> [(&'static str, Value); 5] {
             "cli-journal.json",
             read(&lead(), &format!("journal --team {TEAM} --limit 200")),
         ),
+        ("cli-list.json", read(&Caller::Person, "list")),
+        ("cli-waiting.json", read(&Caller::Person, "waiting")),
     ]
 }
 
@@ -53,6 +57,8 @@ fn the_read_fixtures_are_the_replies_the_cli_prints() {
         ("cli-inbox.json", INBOX),
         ("cli-cards.json", CARDS),
         ("cli-journal.json", JOURNAL),
+        ("cli-list.json", LIST),
+        ("cli-waiting.json", WAITING),
     ];
     let replies = replies();
     for ((name, actual), (pinned_name, text)) in replies.iter().zip(pinned) {

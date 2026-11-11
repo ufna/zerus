@@ -1,6 +1,8 @@
 //! The person's own catalog and templates. These commands are the CLI half of
 //! the designer: they read and write the one JSON file a person owns, and they
-//! create nothing in it until an explicit save or import.
+//! create nothing in it until an explicit save or import. Every reply names
+//! the actor like the store's replies do, so the interim person rule is
+//! visible here too.
 use super::actor::{self, Caller};
 use super::input::{self, Options};
 use super::{request_input, storage};
@@ -12,6 +14,17 @@ use zerus_team_plan::catalog::{Catalog, Template, TemplateBundle};
 use zerus_team_plan::problem::code;
 use zerus_team_plan::Problem;
 
+/// One reply: the actor first, then the command's own fields.
+fn reply(actor: &Value, fields: Value) -> Result<Value, Problem> {
+    let mut object = match fields {
+        Value::Object(object) => object,
+        _ => return Err(storage("a catalog reply must be an object")),
+    };
+    object.insert("ok".into(), json!(true));
+    object.insert("actor".into(), actor.clone());
+    Ok(Value::Object(object))
+}
+
 pub(super) fn run(
     config: &Config,
     caller: &Caller,
@@ -22,32 +35,36 @@ pub(super) fn run(
     let store = Store::open(&config.state)?;
     let identity = actor::resolve(&store, caller)?;
     actor::person_only(&identity, group)?;
+    let actor = actor::view(&identity.actor);
     let (command, rest) = args
         .split_first()
         .ok_or_else(|| input::usage(format!("{group} needs a command")))?;
     match (group, command.as_str()) {
-        ("catalog", "show") => catalog_of(config, &catalog::load(&config.dir)?),
-        ("catalog", "export") => catalog_of(config, &catalog::person(&config.dir)?),
-        ("catalog", "import") => import_catalog(config, provided),
-        ("template", "list") => templates(config, rest),
-        ("template", "show") => show(config, rest),
-        ("template", "save") => save(config, provided),
-        ("template", "import") => import_bundle(config, provided),
-        ("template", "export") => export(config, rest),
-        ("template", "remove") => remove(config, rest),
+        ("catalog", "show") => catalog_of(&actor, &catalog::load(&config.dir)?),
+        ("catalog", "export") => catalog_of(&actor, &catalog::person(&config.dir)?),
+        ("catalog", "import") => import_catalog(&actor, config, provided),
+        ("template", "list") => templates(&actor, config, rest),
+        ("template", "show") => show(&actor, config, rest),
+        ("template", "save") => save(&actor, config, provided),
+        ("template", "import") => import_bundle(&actor, config, provided),
+        ("template", "export") => export(&actor, config, rest),
+        ("template", "remove") => remove(&actor, config, rest),
         _ => Err(super::unknown(&format!("{group} {command}"))),
     }
 }
 
-fn catalog_of(_config: &Config, catalog: &Catalog) -> Result<Value, Problem> {
-    Ok(json!({"ok": true, "catalog": serde_json::to_value(catalog).map_err(storage)?}))
+fn catalog_of(actor: &Value, catalog: &Catalog) -> Result<Value, Problem> {
+    reply(
+        actor,
+        json!({"catalog": serde_json::to_value(catalog).map_err(storage)?}),
+    )
 }
 
 fn words(args: &[String]) -> Result<Options, Problem> {
     Options::parse(args, &[], &[])
 }
 
-fn list_reply(catalog: &Catalog) -> Result<Value, Problem> {
+fn list_reply(actor: &Value, catalog: &Catalog) -> Result<Value, Problem> {
     let rows: Vec<Value> = catalog
         .templates
         .iter()
@@ -59,15 +76,15 @@ fn list_reply(catalog: &Catalog) -> Result<Value, Problem> {
             })
         })
         .collect();
-    Ok(json!({"ok": true, "templates": rows}))
+    reply(actor, json!({"templates": rows}))
 }
 
-fn templates(config: &Config, args: &[String]) -> Result<Value, Problem> {
+fn templates(actor: &Value, config: &Config, args: &[String]) -> Result<Value, Problem> {
     words(args)?.nothing_else("template list")?;
-    list_reply(&catalog::load(&config.dir)?)
+    list_reply(actor, &catalog::load(&config.dir)?)
 }
 
-fn show(config: &Config, args: &[String]) -> Result<Value, Problem> {
+fn show(actor: &Value, config: &Config, args: &[String]) -> Result<Value, Problem> {
     let options = words(args)?;
     let id = options.required("a template ID")?;
     let catalog = catalog::load(&config.dir)?;
@@ -76,18 +93,24 @@ fn show(config: &Config, args: &[String]) -> Result<Value, Problem> {
         .iter()
         .find(|template| template.id == id)
         .ok_or_else(|| unknown_template(id))?;
-    Ok(json!({"ok": true, "template": serde_json::to_value(template).map_err(storage)?}))
+    reply(
+        actor,
+        json!({"template": serde_json::to_value(template).map_err(storage)?}),
+    )
 }
 
-fn export(config: &Config, args: &[String]) -> Result<Value, Problem> {
+fn export(actor: &Value, config: &Config, args: &[String]) -> Result<Value, Problem> {
     let options = words(args)?;
     let id = options.required("a template ID")?;
     let catalog = catalog::load(&config.dir)?;
     let bundle = catalog::export_bundle(&catalog, id)?;
-    Ok(json!({"ok": true, "bundle": serde_json::to_value(bundle).map_err(storage)?}))
+    reply(
+        actor,
+        json!({"bundle": serde_json::to_value(bundle).map_err(storage)?}),
+    )
 }
 
-fn remove(config: &Config, args: &[String]) -> Result<Value, Problem> {
+fn remove(actor: &Value, config: &Config, args: &[String]) -> Result<Value, Problem> {
     let options = words(args)?;
     let id = options.required("a template ID")?;
     let mut person = catalog::person(&config.dir)?;
@@ -108,10 +131,10 @@ fn remove(config: &Config, args: &[String]) -> Result<Value, Problem> {
         .templates
         .iter()
         .any(|template| template.id == id);
-    Ok(json!({"ok": true, "removed": id, "still_available": built_in}))
+    reply(actor, json!({"removed": id, "still_available": built_in}))
 }
 
-fn save(config: &Config, provided: Option<&str>) -> Result<Value, Problem> {
+fn save(actor: &Value, config: &Config, provided: Option<&str>) -> Result<Value, Problem> {
     let template: Template = parsed(&request_input(provided)?, "template")?;
     let mut person = catalog::person(&config.dir)?;
     match person
@@ -123,19 +146,23 @@ fn save(config: &Config, provided: Option<&str>) -> Result<Value, Problem> {
         None => person.templates.push(template.clone()),
     }
     catalog::save(&config.dir, &person)?;
-    Ok(json!({"ok": true, "saved": template.id}))
+    reply(actor, json!({"saved": template.id}))
 }
 
-fn import_bundle(config: &Config, provided: Option<&str>) -> Result<Value, Problem> {
+fn import_bundle(actor: &Value, config: &Config, provided: Option<&str>) -> Result<Value, Problem> {
     let bundle: TemplateBundle = parsed(&request_input(provided)?, "template bundle")?;
     catalog::import_bundle(&config.dir, &bundle)?;
-    Ok(json!({"ok": true, "imported": bundle.template.id}))
+    reply(actor, json!({"imported": bundle.template.id}))
 }
 
-fn import_catalog(config: &Config, provided: Option<&str>) -> Result<Value, Problem> {
+fn import_catalog(
+    actor: &Value,
+    config: &Config,
+    provided: Option<&str>,
+) -> Result<Value, Problem> {
     let catalog: Catalog = parsed(&request_input(provided)?, "catalog")?;
     catalog::save(&config.dir, &catalog)?;
-    Ok(json!({"ok": true, "saved": true}))
+    reply(actor, json!({"saved": true}))
 }
 
 /// One JSON document of the type the command stores, with an unknown field

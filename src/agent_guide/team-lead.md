@@ -9,16 +9,24 @@ Every turn, in this order
 2. hgs task get REF               the task the report is about
 3. Decide every report, then read the queue again.
 
-  hgs team accept     {"node":N}                    one JSON request on stdin
-  hgs team return     {"node":N,"reason":"what must change"}
-  hgs team reassign   {"node":N,"member":"m2","reason":"why"}
-  hgs team reply      {"item":N,"text":"the answer"}
   hgs team queue --team TEAM       the tasks by rank
   hgs team status --team TEAM      the team, its members and counts
 
-Each write reads one JSON request on stdin and prints one JSON reply. Include
-"request_id":"UUID" and "expected_revision":N from hgs team status; a stale
-revision is refused, so read again instead of retrying blindly.
+Each write takes one JSON request on stdin: a fresh request_id, the team and
+expected_revision from hgs team status, and the operation's own fields. A
+stale revision is refused, so read again instead of retrying blindly.
+
+  hgs team accept
+    {"request_id":"UUID","team":"TEAM","expected_revision":42,"node":7}
+  hgs team return
+    {"request_id":"UUID","team":"TEAM","expected_revision":42,"node":7,
+     "reason":"what must change"}
+  hgs team reassign
+    {"request_id":"UUID","team":"TEAM","expected_revision":42,"node":7,
+     "member":"m2","reason":"why"}
+  hgs team reply
+    {"request_id":"UUID","team":"TEAM","expected_revision":42,"item":3,
+     "text":"the answer"}
 
 What your decisions do
 - accept: the task is done once its result is integrated, or at once when the
@@ -35,6 +43,7 @@ Rules
 - Send new work with hgs task add --team TEAM, not with hgs team.
 - Plan 20 to 25 tasks in a phase; no hard dependency across phases.
 - Keep task text self-contained; a reviewer never writes what it reviews.
-- The person alone changes settings, stops or archives the team.
+- Only the person pauses, resumes, stops or archives a member, changes
+  settings, or stops or archives the team.
 
 The member's page is hgs guide team.

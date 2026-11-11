@@ -77,6 +77,63 @@ fn page<T: Serialize>(
     }))
 }
 
+/// `list [--limit] [--after]`: the teams of this computer, in ID order. Any
+/// proved caller may read it; it is metadata only.
+pub(super) fn list_teams(
+    config: &Config,
+    caller: &Caller,
+    args: &[String],
+) -> Result<Value, Problem> {
+    let options = Options::parse(args, &["--limit", "--after"], &[])?;
+    options.nothing_else("list")?;
+    let store = Store::open(&config.state)?;
+    let identity = actor::resolve(&store, caller)?;
+    let (limit, cursor) = options.page()?;
+    let cursor = cursor.map(input::parse_cursor).transpose()?;
+    let page = store.teams(limit, cursor.as_ref())?;
+    global_page(&identity, page)
+}
+
+/// `waiting [--limit] [--after]`: every open owner card, oldest first. The
+/// person's read; a lead sees its own team's cards with `cards`.
+pub(super) fn waiting(config: &Config, caller: &Caller, args: &[String]) -> Result<Value, Problem> {
+    let options = Options::parse(args, &["--limit", "--after"], &[])?;
+    options.nothing_else("waiting")?;
+    let store = Store::open(&config.state)?;
+    let identity = actor::resolve(&store, caller)?;
+    actor::person_only(&identity, "waiting")?;
+    let (limit, cursor) = options.page()?;
+    let cursor = cursor.map(input::parse_cursor).transpose()?;
+    let page = store.waiting(limit, cursor.as_ref())?;
+    let rows = page
+        .rows
+        .into_iter()
+        .map(|waiting| {
+            let mut row = serde_json::to_value(&waiting.card).map_err(storage)?;
+            if let Some(object) = row.as_object_mut() {
+                object.insert("team".into(), json!(waiting.team));
+            }
+            Ok(row)
+        })
+        .collect::<Result<Vec<_>, Problem>>()?;
+    Ok(json!({
+        "ok": true,
+        "actor": actor::view(&identity.actor),
+        "rows": rows,
+        "next": page.next.as_ref().map(input::cursor_token).transpose()?,
+    }))
+}
+
+fn global_page<T: Serialize>(identity: &actor::Identity, page: Page<T>) -> Result<Value, Problem> {
+    let next = page.next.as_ref().map(input::cursor_token).transpose()?;
+    Ok(json!({
+        "ok": true,
+        "actor": actor::view(&identity.actor),
+        "rows": page.rows,
+        "next": next,
+    }))
+}
+
 /// `current`: what a member holds now, bounded to this computer's open nodes.
 pub(super) fn current(config: &Config, caller: &Caller, args: &[String]) -> Result<Value, Problem> {
     let options = Options::parse(args, &[], &[])?;
@@ -95,10 +152,12 @@ pub(super) fn current(config: &Config, caller: &Caller, args: &[String]) -> Resu
     let row = store
         .member(&team, &member)?
         .ok_or_else(|| Problem::new(code::UNKNOWN_MEMBER, "Member does not exist."))?;
+    let team_row = store.team(&team)?.ok_or_else(|| not_found_team(&team))?;
     Ok(json!({
         "ok": true,
         "actor": actor::view(&identity.actor),
         "team": team,
+        "revision": team_row.revision,
         "member": row,
         "nodes": held(&store, &team, &member)?,
     }))
@@ -106,19 +165,34 @@ pub(super) fn current(config: &Config, caller: &Caller, args: &[String]) -> Resu
 
 /// A member's own live nodes. The queue is bounded by the team's cap, and this
 /// walk stops after three pages even when a page keeps growing.
-fn held(store: &Store, team: &str, member: &str) -> Result<Vec<Node>, Problem> {
+fn held(store: &Store, team: &str, member: &str) -> Result<Vec<Value>, Problem> {
     let mut found = Vec::new();
     let mut cursor: Option<Cursor> = None;
     for _ in 0..3 {
         let page = store.queue(team, crate::teams::store::MAX_PAGE, cursor.as_ref())?;
         let mut rows = page.rows;
         cursor = page.next;
-        found.extend(rows.drain(..).filter(|node| holds(node, member)));
+        for node in rows.drain(..).filter(|node| holds(node, member)) {
+            found.push(held_view(store, team, node)?);
+        }
         if cursor.is_none() {
             break;
         }
     }
     Ok(found)
+}
+
+/// A held node with the attempt generation `ask` and a verdict need. The node
+/// itself does not store it; the store keeps it beside the row.
+fn held_view(store: &Store, team: &str, node: Node) -> Result<Value, Problem> {
+    let generation = store
+        .generation(team, node.id)?
+        .ok_or_else(|| Problem::new(code::NOT_FOUND, "Node does not exist."))?;
+    let mut value = serde_json::to_value(&node).map_err(storage)?;
+    if let Some(object) = value.as_object_mut() {
+        object.insert("generation".into(), json!(generation));
+    }
+    Ok(value)
 }
 
 fn holds(node: &Node, member: &str) -> bool {

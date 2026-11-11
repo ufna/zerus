@@ -1,0 +1,21 @@
+{
+  "actor": {
+    "interim": true,
+    "kind": "person",
+    "origin": "cli_interim",
+    "person": "local"
+  },
+  "next": null,
+  "ok": true,
+  "rows": [
+    {
+      "home": "00000000-0000-4000-8000-0000000000aa",
+      "id": "00000000-0000-4000-8000-00000000beef",
+      "lead": "lead",
+      "name": "Fixes",
+      "project": "example-project",
+      "revision": 16,
+      "status": "running"
+    }
+  ]
+}

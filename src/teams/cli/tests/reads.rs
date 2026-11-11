@@ -213,3 +213,112 @@ fn a_read_refuses_words_it_does_not_take() {
         assert_eq!((code(&reply), exit), (expected, 1), "{line}: {reply}");
     }
 }
+
+const LEAD_B_SESSION: &str = "launch_id:00000000-0000-4000-8000-000000000065";
+
+#[test]
+fn another_teams_lead_does_not_pass_the_lead_reads() {
+    let harness = Harness::new();
+    harness.create();
+    harness.create_team(TEAM_B, "Docs", "zerus/team/docs");
+    harness.bind("lead", LEAD_SESSION);
+    harness.bind_for(TEAM_B, "lead", LEAD_B_SESSION);
+    // Both teams call their lead "lead"; only the session's own team counts.
+    let b_lead = Caller::Session(key(LEAD_B_SESSION));
+    for line in ["inbox", "queue", "cards", "journal"] {
+        let (reply, exit) = harness.cli(&b_lead, &format!("{line} --team {TEAM}"), "");
+        assert_eq!((code(&reply), exit), ("not_allowed", 1), "{line}");
+        let (reply, exit) = harness.cli(&b_lead, &format!("{line} --team {TEAM_B}"), "");
+        assert_eq!(exit, 0, "its own team: {line}: {reply}");
+    }
+    let (reply, exit) = harness.cli(&lead_caller(), &format!("inbox --team {TEAM_B}"), "");
+    assert_eq!(
+        (code(&reply), exit),
+        ("not_allowed", 1),
+        "the same the other way"
+    );
+}
+
+#[test]
+fn list_reads_the_teams_of_this_computer_in_id_order() {
+    let harness = Harness::new();
+    harness.create();
+    harness.create_team(TEAM_B, "Docs", "zerus/team/docs");
+    // Any proved caller may read the list, including another team's session.
+    let (reply, exit) = harness.cli(&Caller::Session(key(OTHER_SESSION)), "list", "");
+    assert_eq!(exit, 0, "{reply}");
+    assert_eq!(reply["ok"], true);
+    let rows = reply["rows"].as_array().unwrap();
+    assert_eq!(rows.len(), 2);
+    // ID order: beee sorts before beef.
+    assert_eq!(rows[0]["id"], TEAM_B);
+    assert_eq!(rows[1]["id"], TEAM);
+    for (id, name) in [(TEAM, "Fixes"), (TEAM_B, "Docs")] {
+        let row = rows.iter().find(|row| row["id"] == id).unwrap();
+        assert_eq!(row["name"], name);
+        assert_eq!(row["project"], "example-project");
+        assert_eq!(row["status"], "running");
+        assert_eq!(row["lead"], "lead");
+        assert_eq!(row["home"], MACHINE);
+        assert!(row["revision"].as_u64().is_some());
+        assert_eq!(row.as_object().unwrap().len(), 7);
+    }
+    let (reply, _) = harness.cli(&person_caller(), "list --limit 1", "");
+    assert_eq!(reply["rows"].as_array().unwrap().len(), 1);
+    assert!(reply["next"].is_string());
+    let cursor = reply["next"].as_str().unwrap().to_owned();
+    let (reply, _) = harness.cli(
+        &person_caller(),
+        &format!("list --limit 1 --after {cursor}"),
+        "",
+    );
+    assert_eq!(reply["rows"][0]["id"], TEAM);
+    let (reply, _) = harness.cli(&person_caller(), "list --team x", "");
+    assert_eq!(code(&reply), "invalid_state", "list takes no team");
+}
+
+#[test]
+fn waiting_lists_every_open_owner_card_oldest_first_and_only_for_the_person() {
+    let harness = seeded();
+    harness.create_team(TEAM_B, "Docs", "zerus/team/docs");
+    harness.apply_for(
+        TEAM_B,
+        &person(),
+        crate::teams::ops::Operation::OpenCard {
+            kind: "note".into(),
+            text: "Decide the release date.".into(),
+            node: None,
+        },
+    );
+    let (reply, exit) = harness.cli(&person_caller(), "waiting", "");
+    assert_eq!(exit, 0, "{reply}");
+    let rows = reply["rows"].as_array().unwrap();
+    assert_eq!(rows.len(), 2, "{rows:?}");
+    assert!(
+        rows[0]["seq"].as_u64() < rows[1]["seq"].as_u64(),
+        "oldest first"
+    );
+    assert_eq!(rows[0]["team"], TEAM);
+    assert_eq!(rows[0]["kind"], "note");
+    assert_eq!(rows[1]["team"], TEAM_B);
+    for row in rows {
+        for field in [
+            "seq",
+            "kind",
+            "node",
+            "actor",
+            "text",
+            "state",
+            "decision",
+            "decided_actor",
+            "created_ms",
+            "team",
+        ] {
+            assert!(row.get(field).is_some(), "{field} is missing from {row}");
+        }
+    }
+    let (reply, exit) = harness.cli(&lead_caller(), "waiting", "");
+    assert_eq!((code(&reply), exit), ("not_allowed", 1), "{reply}");
+    let (reply, _) = harness.cli(&Caller::Session(key(M1_SESSION)), "waiting", "");
+    assert_eq!(code(&reply), "not_allowed");
+}

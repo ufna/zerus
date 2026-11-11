@@ -13,6 +13,7 @@ use std::path::Path;
 use zerus_team_plan::model::{SessionKey, TeamFixture};
 
 pub(super) const TEAM: &str = "00000000-0000-4000-8000-00000000beef";
+pub(super) const TEAM_B: &str = "00000000-0000-4000-8000-00000000beee";
 pub(super) const MACHINE: &str = "00000000-0000-4000-8000-0000000000aa";
 pub(super) const LEAD_SESSION: &str = "launch_id:00000000-0000-4000-8000-000000000064";
 pub(super) const M1_SESSION: &str = "launch_id:00000000-0000-4000-8000-000000000031";
@@ -107,8 +108,12 @@ impl Harness {
     }
 
     pub fn revision(&self) -> u64 {
+        self.revision_of(TEAM)
+    }
+
+    pub fn revision_of(&self, team: &str) -> u64 {
         self.store()
-            .team(TEAM)
+            .team(team)
             .unwrap()
             .map_or(0, |team| team.revision)
     }
@@ -117,25 +122,29 @@ impl Harness {
         Store::open(&self.config.state).unwrap()
     }
 
-    /// One operation, at a fixed clock and with a fixed request ID.
+    /// One operation on the first team, at a fixed clock and request ID.
     pub fn apply(&self, actor: &Actor, operation: Operation) -> Reply {
-        let request = self.request(operation);
+        self.apply_for(TEAM, actor, operation)
+    }
+
+    /// One operation on `team`.
+    pub fn apply_for(&self, team: &str, actor: &Actor, operation: Operation) -> Reply {
+        let request = self.request_for(team, operation);
         let mut store = self.store();
         ops::apply(&mut store, actor, &request, NOW).expect("the seed operation succeeds")
     }
 
     pub fn request(&self, operation: Operation) -> Request {
+        self.request_for(TEAM, operation)
+    }
+
+    pub fn request_for(&self, team: &str, operation: Operation) -> Request {
         let step = self.step.get() + 1;
         self.step.set(step);
-        let revision = self
-            .store()
-            .team(TEAM)
-            .unwrap()
-            .map_or(0, |team| team.revision);
         Request {
             request_id: uid(step),
-            team: TEAM.into(),
-            expected_revision: revision,
+            team: team.into(),
+            expected_revision: self.revision_of(team),
             operation,
         }
     }
@@ -152,16 +161,22 @@ impl Harness {
     }
 
     pub fn create(&self) {
+        self.create_team(TEAM, "Fixes", "zerus/team/fixes");
+    }
+
+    /// A second team on this computer, for cross-team reads and `list`.
+    pub fn create_team(&self, id: &str, name: &str, branch: &str) {
         let team = fixture().team;
-        self.apply(
+        self.apply_for(
+            id,
             &person(),
             Operation::Create {
                 project: team.project,
-                name: team.name,
+                name: name.into(),
                 goal: team.goal,
                 home: team.home,
                 bundle: Box::new(team.bundle),
-                integration_branch: team.integration_branch,
+                integration_branch: branch.into(),
                 base_commit: team.base_commit,
             },
         );
@@ -170,14 +185,23 @@ impl Harness {
     /// Binds a member to its session through the service actor, as package 7
     /// does when a launch appears.
     pub fn bind(&self, id: &str, session_id: &str) {
+        self.bind_for(TEAM, id, session_id);
+    }
+
+    pub fn bind_for(&self, team: &str, id: &str, session_id: &str) {
         let member = fixture()
             .members
             .into_iter()
             .find(|member| member.id == id)
             .expect("the fixture's member");
         let session = key(session_id);
-        self.apply(
-            &service(),
+        let service = Actor::Service {
+            person: "local".into(),
+            team: team.into(),
+        };
+        self.apply_for(
+            team,
+            &service,
             Operation::SetMemberSession {
                 member: id.into(),
                 session,
