@@ -152,3 +152,21 @@ pub(crate) fn archived_leaf(db: &Connection, team: &str, id: u32) -> Result<Opti
     .optional()
     .map_err(storage)
 }
+
+pub(crate) fn card_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<Card> {
+    Ok(Card {
+        seq: r.get(0)?,
+        kind: r.get(1)?,
+        node: r.get(2)?,
+        actor: sql_json(r, 3)?,
+        text: r.get(4)?,
+        state: r.get(5)?,
+        decision: r.get(6)?,
+        decided_actor: r
+            .get::<_, Option<String>>(7)?
+            .map(|s| serde_json::from_str(&s))
+            .transpose()
+            .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?,
+        created_ms: r.get(8)?,
+    })
+}
