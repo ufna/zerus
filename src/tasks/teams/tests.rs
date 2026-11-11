@@ -16,7 +16,19 @@ fn cli_entry() {
     let config = Config::load().unwrap();
     let args: Vec<String> =
         serde_json::from_str(&std::env::var("HGS_TEAMS_TEST_ARGS").unwrap()).unwrap();
-    let result = if args[0] == "swarm" {
+    let result = if args[0] == "observe-team-fixture" {
+        let ready = std::env::var_os("HGS_TEAM_OBSERVE_READY").unwrap();
+        std::fs::write(ready, "ready").unwrap();
+        crate::teams::tasks::observe(
+            &config.state,
+            &zerus_team_plan::model::TaskRef {
+                project: args[1].clone(),
+                uuid: args[2].clone(),
+            },
+        )
+        .map(|_| json!({}))
+        .map_err(|error| fail(error.message))
+    } else if args[0] == "swarm" {
         crate::swarm::dispatch(&config, &args[1..], false).map(|_| json!({}))
     } else {
         execute(&config, &args)
@@ -160,6 +172,74 @@ impl Fixture {
             .load(task["uuid"].as_str().unwrap())
             .unwrap()
     }
+
+    fn paused_send(
+        &self,
+        reference: &str,
+        session: &str,
+        pause: &std::path::Path,
+    ) -> (std::process::Child, std::path::PathBuf) {
+        let reply = self
+            .h
+            .temp
+            .path()
+            .join(format!("reply-{}.json", uuid::Uuid::new_v4()));
+        let args = ["send", reference, "--session", session, "--json"];
+        let mut command = Command::new(std::env::current_exe().unwrap());
+        command
+            .args(["--exact", "tasks::teams::tests::cli_entry", "--nocapture"])
+            .env_clear()
+            .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+            .env("HOME", self.h.temp.path())
+            .env("HGS_CONFIG_DIR", self.h.temp.path().join("config"))
+            .env("HGS_STATE_DIR", self.h.temp.path())
+            .env("HGS_SELF", "test")
+            .env("HGS_TAB", "0")
+            .env("HGS_SESSION", session)
+            .env(
+                "HGS_RUN_ID",
+                format!("run-{}", session.rsplit('/').next().unwrap()),
+            )
+            .env("HGS_TEST_ATTEMPT_PAUSE", pause)
+            .env("HGS_TEAMS_TEST_REPLY", &reply)
+            .env("HGS_TEAMS_TEST_ARGS", serde_json::to_string(&args).unwrap())
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        (command.spawn().unwrap(), reply)
+    }
+
+    fn observer(
+        &self,
+        task: &Value,
+        ready: &std::path::Path,
+    ) -> (std::process::Child, std::path::PathBuf) {
+        let reply = self
+            .h
+            .temp
+            .path()
+            .join(format!("reply-{}.json", uuid::Uuid::new_v4()));
+        let args = [
+            "observe-team-fixture",
+            "example-project",
+            task["uuid"].as_str().unwrap(),
+        ];
+        let mut cmd = Command::new(std::env::current_exe().unwrap());
+        cmd.args(["--exact", "tasks::teams::tests::cli_entry", "--nocapture"])
+            .env_clear()
+            .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+            .env("HOME", self.h.temp.path())
+            .env("HGS_CONFIG_DIR", self.h.temp.path().join("config"))
+            .env("HGS_STATE_DIR", self.h.temp.path())
+            .env("HGS_SELF", "test")
+            .env("HGS_TEAM_OBSERVE_READY", ready)
+            .env("HGS_TEAMS_TEST_REPLY", &reply)
+            .env("HGS_TEAMS_TEST_ARGS", serde_json::to_string(&args).unwrap())
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        (cmd.spawn().unwrap(), reply)
+    }
 }
 
 #[test]
@@ -235,60 +315,45 @@ fn cli_preview_off_team_add_and_target_write_nothing() {
 }
 
 #[test]
-fn cli_each_bypass_is_refused_before_task_changes_with_and_without_the_key() {
-    for keyed in [false, true] {
-        let mut f = Fixture::new();
-        let lead = f.bind("lead");
-        let member = f.bind("m1");
-        let task = f.add();
-        if !keyed {
-            let tasks =
-                ProjectStore::open(&f.h.temp.path().join("replica"), "example-project").unwrap();
-            let mut doc = tasks.load(task["uuid"].as_str().unwrap()).unwrap();
-            doc.set_team(None, &Actor::Person, 3).unwrap();
-            tasks.save(&mut doc).unwrap();
-        }
-        let reference = format!("example/{}", task["id"].as_str().unwrap());
-        for args in [
-            vec!["send", &reference, "--json"],
-            vec!["handoff", &reference, "--json"],
-            vec!["stage", &reference, "done", "--json"],
-        ] {
+fn cli_guarded_tasks_refuse_all_agent_control_actions() {
+    let mut f = Fixture::new();
+    let lead = f.bind("lead");
+    let member = f.bind("m1");
+    let task = f.add();
+    let reference = format!("example/{}", task["id"].as_str().unwrap());
+    for args in [
+        vec!["send", &reference, "--json"],
+        vec!["handoff", &reference, "--json"],
+        vec!["stage", &reference, "done", "--json"],
+        vec!["stage", &reference, "backlog", "--json"],
+        vec!["target", &reference, "any", "--json"],
+        vec!["start", &reference, "--json"],
+        vec!["worker", &reference, "--json"],
+        vec![
+            "message",
+            &reference,
+            "--request-id",
+            "00000000-0000-4000-8000-000000000001",
+            "--mode",
+            "reopen",
+            "--json",
+        ],
+    ] {
+        for actor in [&lead, &member] {
             let before = f.document(&task).revision();
-            let refused = f.run(&args, "", Some(&member));
-            assert_eq!(refused["ok"], false, "{refused}");
+            let result = f.run(&args, "Continue", Some(actor));
+            assert_eq!(result["ok"], false, "{result}");
             assert!(
-                refused["error"].as_str().unwrap().contains("team"),
-                "{refused}"
+                result["error"].as_str().unwrap().contains("not_allowed"),
+                "{result}"
             );
             assert_eq!(f.document(&task).revision(), before);
-            let mut safe = args.clone();
-            if args[0] != "stage" {
-                // Resolve a deliberately absent immutable target before any
-                // native delivery path can be reached by an allowed caller.
-                safe.extend([
-                    "--session",
-                    "codex/unavailable",
-                    "--session-id",
-                    "launch_id:missing-fixture",
-                ]);
-            }
-            for session in [None, Some(lead.as_str())] {
-                let allowed = f.run(&safe, "", session);
-                assert!(
-                    !allowed["error"]
-                        .as_str()
-                        .unwrap_or_default()
-                        .contains("not_allowed"),
-                    "{allowed}"
-                );
-            }
         }
     }
 }
 
 #[test]
-fn cli_home_lead_and_person_can_accept_a_reported_task() {
+fn cli_only_the_person_can_accept_a_reported_task_and_observation_is_explicit() {
     for as_lead in [false, true] {
         let mut f = Fixture::new();
         let lead = f.bind("lead");
@@ -315,9 +380,22 @@ fn cli_home_lead_and_person_can_accept_a_reported_task() {
             "",
             as_lead.then_some(lead.as_str()),
         );
-        assert_eq!(result["ok"], true, "{result}");
-        assert_eq!(f.document(&task).stage().unwrap(), Stage::Done);
-        assert_eq!(f.h.store.queue(TEAM, 200, None).unwrap().rows.len(), 0);
+        assert_eq!(result["ok"], !as_lead, "{result}");
+        if as_lead {
+            assert_eq!(f.document(&task).stage().unwrap(), Stage::Review);
+        } else {
+            assert_eq!(f.document(&task).stage().unwrap(), Stage::Done);
+            assert_eq!(f.h.store.queue(TEAM, 200, None).unwrap().rows.len(), 1);
+            crate::teams::tasks::observe(
+                f.h.temp.path(),
+                &zerus_team_plan::model::TaskRef {
+                    project: "example-project".into(),
+                    uuid: task["uuid"].as_str().unwrap().into(),
+                },
+            )
+            .unwrap();
+            assert_eq!(f.h.store.queue(TEAM, 200, None).unwrap().rows.len(), 0);
+        }
     }
 }
 
@@ -371,4 +449,271 @@ fn cli_another_computer_refuses_even_the_home_lead_but_allows_a_person() {
             "{person}"
         );
     }
+}
+
+#[test]
+fn a_send_that_becomes_a_team_task_after_freeze_never_reserves_an_attempt() {
+    let mut f = Fixture::new();
+    let member = f.bind("m1");
+    let ordinary = f.run(
+        &["add", "--project", "example", "--json"],
+        "Ordinary task",
+        None,
+    );
+    let task = &ordinary["value"]["task"];
+    let reference = format!("example/{}", task["id"].as_str().unwrap());
+    let pause = f.h.temp.path().join("attempt-pause");
+    std::fs::create_dir(&pause).unwrap();
+    let (child, reply) = f.paused_send(&reference, &member, &pause);
+    let until = std::time::Instant::now() + std::time::Duration::from_secs(6);
+    while !pause.join("ready").exists() && std::time::Instant::now() < until {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    let ready = pause.join("ready").is_file();
+    let joined = if ready {
+        Some(f.run(&["target", &reference, "team", TEAM, "--json"], "", None))
+    } else {
+        None
+    };
+    std::fs::write(pause.join("release"), "go").unwrap();
+    let output = child.wait_with_output().unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(ready, "{}", String::from_utf8_lossy(&output.stdout));
+    assert_eq!(joined.unwrap()["value"]["team"]["queued"], true);
+    let response: Value = serde_json::from_slice(&std::fs::read(reply).unwrap()).unwrap();
+    assert_eq!(response["ok"], false, "{response}");
+    assert!(
+        response["error"].as_str().unwrap().contains("not_allowed"),
+        "{response}"
+    );
+    let id = std::fs::read_to_string(pause.join("ready")).unwrap();
+    assert!(f.document(task).attempt(&id).unwrap().is_none());
+}
+
+#[test]
+fn preflight_capacity_and_routing_fail_before_creating_a_task() {
+    let mut f = Fixture::new();
+    f.h.settings(|s| s.caps.max_open_tasks = 1);
+    f.add();
+    let out = f.run(
+        &["add", "--project", "example", "--team", TEAM, "--json"],
+        "Over capacity",
+        None,
+    );
+    assert_eq!(out["ok"], false, "{out}");
+    assert!(out["error"].as_str().unwrap().contains("over_cap"));
+    let tasks = ProjectStore::open(&f.h.temp.path().join("replica"), "example-project").unwrap();
+    assert_eq!(tasks.uuids().unwrap().len(), 1);
+    drop(tasks);
+    f.h.settings(|s| s.caps.max_open_tasks = 10);
+    for option in ["--role", "--pipeline"] {
+        let out = f.run(
+            &[
+                "add",
+                "--project",
+                "example",
+                "--team",
+                TEAM,
+                option,
+                "missing",
+                "--json",
+            ],
+            "Unknown route",
+            None,
+        );
+        assert_eq!(out["ok"], false, "{out}");
+    }
+    assert_eq!(
+        ProjectStore::open(&f.h.temp.path().join("replica"), "example-project")
+            .unwrap()
+            .uuids()
+            .unwrap()
+            .len(),
+        1
+    );
+}
+
+#[test]
+fn late_refusal_reports_the_existing_task_and_removes_its_marker() {
+    let f = Fixture::new();
+    f.h.store.db.as_ref().unwrap().execute_batch("CREATE TRIGGER reject_team_intake BEFORE INSERT ON live_tasks BEGIN SELECT RAISE(ABORT,'fixture team refusal'); END").unwrap();
+    let out = f.run(
+        &["add", "--project", "example", "--team", TEAM, "--json"],
+        "Task survives team refusal",
+        None,
+    );
+    assert_eq!(out["ok"], true, "{out}");
+    assert_eq!(out["value"]["task_exists"], true);
+    assert_eq!(out["value"]["team"]["queued"], false);
+    assert_eq!(out["value"]["team"]["error"]["code"], "invalid_state");
+    assert!(out["value"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("exists and was not queued"));
+    assert_eq!(f.document(&out["value"]["task"]).team().unwrap(), None);
+    assert!(f.h.store.queue(TEAM, 200, None).unwrap().rows.is_empty());
+}
+
+#[test]
+fn an_observation_refusal_keeps_successful_intake_and_marks_it_pending() {
+    let f = Fixture::new();
+    f.h.store.db.as_ref().unwrap().execute_batch("CREATE TRIGGER reject_first_observation BEFORE UPDATE OF task_revision ON nodes BEGIN SELECT RAISE(ABORT,'fixture observation refusal'); END").unwrap();
+    let out = f.run(
+        &["add", "--project", "example", "--team", TEAM, "--json"],
+        "Queued with pending observation",
+        None,
+    );
+    assert_eq!(out["ok"], true, "{out}");
+    assert_eq!(out["value"]["team"]["queued"], true);
+    assert_eq!(out["value"]["team"]["observation_pending"], true);
+    assert!(f.document(&out["value"]["task"]).team().unwrap().is_some());
+    assert_eq!(f.h.store.queue(TEAM, 200, None).unwrap().rows.len(), 1);
+}
+
+#[test]
+fn retarget_clears_the_marker_and_the_bare_team_word_remains_a_session() {
+    let f = Fixture::new();
+    let task = f.add();
+    let reference = format!("example/{}", task["id"].as_str().unwrap());
+    let out = f.run(&["target", &reference, "team", "--json"], "", None);
+    assert_eq!(out["ok"], true, "{out}");
+    assert_eq!(out["value"]["task"]["target"]["session"], "team");
+    let doc = f.document(&task);
+    assert_eq!(doc.team().unwrap(), None);
+    assert!(doc
+        .view()
+        .unwrap()
+        .log
+        .last()
+        .unwrap()
+        .text
+        .starts_with("Removed from team "));
+    for option in ["--role", "--pipeline"] {
+        let out = f.run(
+            &["add", "--project", "example", option, "developer", "--json"],
+            "Wrong flags",
+            None,
+        );
+        assert_eq!(out["ok"], false, "{out}");
+        assert!(out["error"].as_str().unwrap().contains("require --team"));
+    }
+}
+
+#[test]
+fn invalid_and_extended_keys_still_get_and_list_as_tasks() {
+    let f = Fixture::new();
+    let task = f.add();
+    let reference = format!("example/{}", task["id"].as_str().unwrap());
+    for (raw, invalid) in [
+        (
+            json!({"team":TEAM,"home":f.machine,"future":true}).to_string(),
+            false,
+        ),
+        ("not JSON".into(), true),
+        ("false".into(), true),
+        (
+            json!({"team":TEAM,"home":f.machine,"future":"x".repeat(2049)}).to_string(),
+            true,
+        ),
+    ] {
+        {
+            let store =
+                ProjectStore::open(&f.h.temp.path().join("replica"), "example-project").unwrap();
+            let mut doc = store.load(task["uuid"].as_str().unwrap()).unwrap();
+            doc.set_raw_team_for_test(&raw);
+            store.save(&mut doc).unwrap();
+        }
+        let get = f.run(&["get", &reference, "--json"], "", None);
+        assert_eq!(get["ok"], true, "{get}");
+        assert_eq!(
+            get["value"]["task"]["team_invalid"]
+                .as_bool()
+                .unwrap_or(false),
+            invalid
+        );
+        let list = f.run(&["list", "--project", "example", "--json"], "", None);
+        assert_eq!(list["ok"], true, "{list}");
+        assert_eq!(
+            list["value"]["tasks"].as_array().unwrap().len(),
+            1,
+            "{list}"
+        );
+    }
+}
+
+#[test]
+fn a_foreign_home_marker_requires_a_person_to_clear_it_before_intake() {
+    let mut f = Fixture::new();
+    let member = f.bind("m1");
+    let task = f.add();
+    let reference = format!("example/{}", task["id"].as_str().unwrap());
+    let home = uuid::Uuid::new_v4().to_string();
+    {
+        let store =
+            ProjectStore::open(&f.h.temp.path().join("replica"), "example-project").unwrap();
+        let mut doc = store.load(task["uuid"].as_str().unwrap()).unwrap();
+        doc.set_team(
+            Some(&zerus_replica::TaskTeam {
+                team: TEAM.into(),
+                home: home.clone(),
+            }),
+            &Actor::Person,
+            now(),
+        )
+        .unwrap();
+        store.save(&mut doc).unwrap();
+    }
+    let agent = f.run(
+        &["target", &reference, "team", TEAM, "--json"],
+        "",
+        Some(&member),
+    );
+    assert_eq!(agent["ok"], false, "{agent}");
+    let person = f.run(&["target", &reference, "team", TEAM, "--json"], "", None);
+    assert_eq!(person["ok"], true, "{person}");
+    assert_eq!(person["value"]["team"]["queued"], false);
+    assert!(person["value"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("target REF any"));
+    assert_eq!(f.document(&task).team().unwrap().unwrap().home, home);
+    assert_eq!(
+        f.run(&["target", &reference, "any", "--json"], "", None)["ok"],
+        true
+    );
+    let queued = f.run(&["target", &reference, "team", TEAM, "--json"], "", None);
+    assert_eq!(queued["value"]["team"]["queued"], true, "{queued}");
+}
+
+#[test]
+fn service_observation_waits_for_the_project_lock_and_reads_the_later_document() {
+    let f = Fixture::new();
+    let task = f.add();
+    let tasks = ProjectStore::open(&f.h.temp.path().join("replica"), "example-project").unwrap();
+    let mut doc = tasks.load(task["uuid"].as_str().unwrap()).unwrap();
+    let ready = f.h.temp.path().join("observe-ready");
+    let (child, reply) = f.observer(&task, &ready);
+    let until = std::time::Instant::now() + std::time::Duration::from_secs(4);
+    while !ready.exists() && std::time::Instant::now() < until {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    let started = ready.exists();
+    doc.set_title("Updated while the observer waits", &Actor::Person, now())
+        .unwrap();
+    tasks.save(&mut doc).unwrap();
+    let revision = doc.revision();
+    drop(tasks);
+    let result = child.wait_with_output().unwrap();
+    assert!(result.status.success());
+    assert!(started);
+    let answer: Value = serde_json::from_slice(&std::fs::read(reply).unwrap()).unwrap();
+    assert_eq!(answer["ok"], true, "{answer}");
+    let node = f.h.store.queue(TEAM, 200, None).unwrap().rows[0].id;
+    let observation = f.h.store.task_observation(TEAM, node).unwrap().unwrap();
+    assert_eq!(observation.revision, revision);
+    assert_eq!(observation.title, "Updated while the observer waits");
 }

@@ -36,6 +36,7 @@ pub(super) fn execute(config: &Config, args: &[String]) -> Result<Value> {
         store(config, &r.project.0)?
     };
     let mut task = store.find(&r.task).map_err(fail)?;
+    super::teams::guard(config, &machines.here, &who, &task, "message", args)?;
     let mut before = task.view().map_err(fail)?;
     let existing = before
         .log
@@ -162,6 +163,7 @@ pub(super) fn execute(config: &Config, args: &[String]) -> Result<Value> {
             // and refuses a task that is managed by now.
             store = super::store(config, &r.project.0)?;
             task = store.load(&uuid).map_err(fail)?;
+            super::teams::guard(config, &machines.here, &who, &task, "message", args)?;
             before = task.view().map_err(fail)?;
         }
     }

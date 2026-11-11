@@ -44,7 +44,7 @@ fn paste_uncertain(message: &str) -> bool {
     message.starts_with(SENT_UNRECORDED) || message.starts_with("delivery uncertain")
 }
 
-const USAGE: &str = "usage: hgs task list --project P [--stage S] | list --project P --stage S --limit 1..200 [--after CURSOR|--before CURSOR] [--if-revision R] [--session ID [--host ALIAS]] | get REF [--history-limit 1..80 [--history-before CURSOR] [--attachments metadata]] | attachment REF --file N [--entry ID] | add --project P [--backlog] [--start] [--team TEAM [--role ROLE] [--pipeline PIPELINE]] [--target SESSION|any [--host ALIAS]] [--title TITLE [--request-id UUID]] [--position N] | edit REF | rename REF | move REF --top|--before REF|--after REF|--position N | stage REF backlog|todo|done | target REF SESSION|any|new-session|subagent|team TEAM [--parent SESSION] [--host ALIAS] | send REF [--session SESSION [--host ALIAS]] | start-plan REF --json | start-deliver REF --json [--recover-only] | cancel REF [--reason TEXT] | cancel-execution REF --json (guard JSON on stdin) | handoff REF --session SESSION [--host ALIAS] | start REF | report REF [--progress|--ready] [--considered REV] | report-attempt REF --attempt UUID [--progress|--ready] [--considered REV] | comment REF [--content-json] | message REF --request-id UUID --mode queue|send|reopen|note [--expect-dispatch ID] [--content-json] | worker REF --subagent ID --request-id REQUEST | settings --project P [--set] | review-copy --project P --uuid UUID [--confirm FINGERPRINT] --json | cutover --project P [--hold on|off [--confirm]] | digests --json | exchange --json | mobile-send|mobile-cancel|mobile-done --json
+const USAGE: &str = "usage: hgs task list --project P [--stage S] | list --project P --stage S --limit 1..200 [--after CURSOR|--before CURSOR] [--if-revision R] [--session ID [--host ALIAS]] | get REF [--history-limit 1..80 [--history-before CURSOR] [--attachments metadata]] | attachment REF --file N [--entry ID] | add --project P [--backlog] [--start] [--team TEAM [--role ROLE] [--pipeline PIPELINE]] [--target SESSION|any [--host ALIAS]] [--title TITLE [--request-id UUID]] [--position N] | edit REF | rename REF | move REF --top|--before REF|--after REF|--position N | stage REF backlog|todo|done | target REF SESSION|any|new-session|subagent|team TEAM [--role ROLE] [--pipeline PIPELINE] [--parent SESSION] [--host ALIAS] | send REF [--session SESSION [--host ALIAS]] | start-plan REF --json | start-deliver REF --json [--recover-only] | cancel REF [--reason TEXT] | cancel-execution REF --json (guard JSON on stdin) | handoff REF --session SESSION [--host ALIAS] | start REF | report REF [--progress|--ready] [--considered REV] | report-attempt REF --attempt UUID [--progress|--ready] [--considered REV] | comment REF [--content-json] | message REF --request-id UUID --mode queue|send|reopen|note [--expect-dispatch ID] [--content-json] | worker REF --subagent ID --request-id REQUEST | settings --project P [--set] | review-copy --project P --uuid UUID [--confirm FINGERPRINT] --json | cutover --project P [--hold on|off [--confirm]] | digests --json | exchange --json | mobile-send|mobile-cancel|mobile-done --json
   REF is T-xxxxxx with --project P, or PROJECT/T-xxxxxx; texts and --set settings are read from stdin;
   a change an agent makes prints one line, and --json prints the task";
 
@@ -986,7 +986,7 @@ fn add(config: &Config, args: &[String]) -> Result<Value> {
     let title = option(args, "--title")?;
     if title.is_none() { agent_text(&text, "add", &author)?; }
     let (id, name) = project_arg(config, args, &author)?;
-    if let Some(team) = &team { teams::destination(config, &machines, &id, team)?; }
+    if let Some(team) = &team { teams::destination(config, &machines, &author, &id, team, args)?; }
     let stage = if flag(args, "--backlog") {
         Stage::Backlog
     } else {
@@ -1021,18 +1021,19 @@ fn add(config: &Config, args: &[String]) -> Result<Value> {
         if title.is_none() && flag(args, "--start") { task.record_start(&author, now()).map_err(fail)?; }
         store.save(&mut task).map_err(fail)?;
     }
-    let (store, task) = if let Some(team) = &team {
+    let (store, task, team_reply) = if let Some(team) = &team {
         let task_ref = zerus_team_plan::model::TaskRef { project:id.clone(), uuid:task.uuid().into() };
         drop(store);
-        teams::send(config, &machines, &author, &task_ref, team, args)?;
+        let team_reply = teams::send(config, &machines, &author, &task_ref, team, args)?;
         let store = self::store(config, &id)?;
         let task = store.load(&task_ref.uuid).map_err(fail)?;
-        (store, task)
-    } else { (store, task) };
+        (store, task, team_reply)
+    } else { (store, task, json!({})) };
     let at = place(&store, &task)?;
-    let mut out = json!({"task": view(&task, &name, true, &machines)?});
+    let mut out = team_reply;
+    out["task"] = view(&task, &name, true, &machines)?;
     if created && flag(args, "--start") { reports::started(&mut out, &task, &name)?; }
-    Ok(with_answer(&author, "add", out, at, ""))
+    Ok(teams::annotate(with_answer(&author, "add", out, at, "")))
 }
 
 fn change(config: &Config, action: &str, args: &[String]) -> Result<Value> {
@@ -1088,17 +1089,6 @@ fn change_guarded(config: &Config, action: &str, args: &[String], wait: Option<s
             error
         }
     };
-    // Explicit worker registration inspects the native roster once, before the
-    // project lock. Normal task listings never query providers for every row.
-    let worker_proof = if action == "worker" {
-        let Actor::Agent(own) = &who else { return Err(fail("worker is for the task's coordinator")); };
-        let id = option(args, "--subagent")?.ok_or_else(|| fail("worker needs --subagent ID"))?;
-        let request = option(args, "--request-id")?.ok_or_else(|| fail("worker needs the current --request-id"))?;
-        let caller = crate::state::session_graph::caller_record().ok_or_else(|| fail("the coordinator run is no longer live"))?;
-        let details = crate::state::reference_details(&own.session, "", "").map_err(fail)?;
-        let worker = observed_worker(own, &caller, &details, id, request)?;
-        Some(worker)
-    } else { None };
     let store = match wait {
         None if attempted => store_until(config, project_id, deadline)?,
         None => store(config, project_id)?,
@@ -1119,11 +1109,23 @@ fn change_guarded(config: &Config, action: &str, args: &[String], wait: Option<s
     if let Some(team) = &team {
         let task_ref = zerus_team_plan::model::TaskRef { project:project_id.clone(), uuid:task.uuid().into() };
         drop(store);
-        teams::send(config, &machines, &who, &task_ref, team, args)?;
+        let mut reply = teams::send(config, &machines, &who, &task_ref, team, args)?;
         let store = self::store(config, project_id)?;
         let task = store.load(&task_ref.uuid).map_err(fail)?;
-        return Ok(with_answer(&who, action, json!({"task":view(&task, project_name, true, &machines)?}), 0, ""));
+        reply["task"] = view(&task, project_name, true, &machines)?;
+        return Ok(teams::annotate(with_answer(&who, action, reply, 0, "")));
     }
+    // Explicit worker registration inspects the native roster once, after the
+    // team guard under the project lock. Normal task listings never query providers for every row.
+    let worker_proof = if action == "worker" {
+        let Actor::Agent(own) = &who else { return Err(fail("worker is for the task's coordinator")); };
+        let id = option(args, "--subagent")?.ok_or_else(|| fail("worker needs --subagent ID"))?;
+        let request = option(args, "--request-id")?.ok_or_else(|| fail("worker needs the current --request-id"))?;
+        let caller = crate::state::session_graph::caller_record().ok_or_else(|| fail("the coordinator run is no longer live"))?;
+        let details = crate::state::reference_details(&own.session, "", "").map_err(fail)?;
+        let worker = observed_worker(own, &caller, &details, id, request)?;
+        Some(worker)
+    } else { None };
     if action == "edit" && text.as_deref() == Some("") && task.title().is_empty() { agent_text("", action, &who)?; }
     enrich(&mut task, &machines)?;
     if let Some(expected) = option(args, "--expect-new-session-parent")? {
@@ -1199,7 +1201,6 @@ fn change_guarded(config: &Config, action: &str, args: &[String], wait: Option<s
             .map_err(|e| refuse(e, &to.session))?;
             match sent {
                 Some(receipt) => {
-                    teams::changed(config, project_id, &uuid);
                     let task = self::store(config, project_id)?.load(&uuid).map_err(fail)?;
                     let out = json!({"task": view(&task, project_name, guard.is_none(), &machines)?, "receipt": receipt});
                     return Ok(with_answer(&who, action, out, 0, &to.session));
@@ -1297,6 +1298,7 @@ fn change_guarded(config: &Config, action: &str, args: &[String], wait: Option<s
                 Target::Session(machines.target(machines.node(option(args, "--host")?)?, value, args)? )
             };
             task.set_target(&target, &who, now()).map_err(fail)?;
+            teams::clear(config, &mut task, &who)?;
         }
         "send" | "handoff" => {
             let (session, pin) = session.expect("a send has its session");
@@ -1335,7 +1337,6 @@ fn change_guarded(config: &Config, action: &str, args: &[String], wait: Option<s
     if action == "start" { reports::started(&mut out, &task, project_name)?; }
     let out = with_answer(&who, if action == "report-attempt" { "report" } else { action }, out, at, &destination);
     drop(store);
-    teams::changed(config, project_id, task.uuid());
     Ok(out)
 }
 

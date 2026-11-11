@@ -597,6 +597,9 @@ pub(super) fn reopen(
             *detail.borrow_mut() = why;
             Ok(Err(Closed { node: None, reason }))
         };
+        if let Err(error) = super::teams::guard(config, &machines.here, who, task, "reopen", &[]) {
+            return refuse("not_sendable", error.message);
+        }
         let view = task.view()?;
         // The target and stage time it was frozen with (zerus-frehz).
         let normalized = |target: &Target| super::dispatch::normalized(target, machines);

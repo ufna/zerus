@@ -1,22 +1,11 @@
-//! Task command seams for team intake and the three plan-bypass guards.
+//! Task command seams for team intake and caller guards.
 use super::*;
 use crate::teams::tasks::{self as bridge, Caller};
 use zerus_team_plan::{model::TaskRef, Problem};
 
-/// Single caller seam for the original package. After package 5 is merged,
-/// consume its shared native proof here; never add another ancestry check.
-fn caller<'a>(config: &'a Config, here: &'a str, who: &'a Actor) -> Caller<'a> {
-    Caller {
-        state: &config.state,
-        machine: here,
-        actor: who,
-    }
-}
-
 fn problem(error: Problem) -> Error {
     fail(format!("{}: {}", error.code, error.message))
 }
-
 fn active(config: &Config) -> Result<()> {
     if crate::teams::enabled(&config.state) {
         Ok(())
@@ -26,9 +15,17 @@ fn active(config: &Config) -> Result<()> {
         ))
     }
 }
-
+fn routing(args: &[String], team: bool) -> Result<()> {
+    if !team && (option(args, "--role")?.is_some() || option(args, "--pipeline")?.is_some()) {
+        return Err(fail(
+            "--role and --pipeline require --team TEAM or target REF team TEAM",
+        ));
+    }
+    Ok(())
+}
 pub(super) fn add(config: &Config, args: &[String]) -> Result<Option<String>> {
     let team = option(args, "--team")?;
+    routing(args, team.is_some())?;
     if let Some(team) = team {
         active(config)?;
         if !zerus_replica::ids::is_uuid(team) {
@@ -45,15 +42,18 @@ pub(super) fn add(config: &Config, args: &[String]) -> Result<Option<String>> {
     }
     Ok(team.map(str::to_owned))
 }
-
 pub(super) fn target(config: &Config, action: &str, args: &[String]) -> Result<Option<String>> {
-    if action != "target" || args.get(1).is_none_or(|s| s != "team") {
+    if action != "target" {
+        return Ok(None);
+    }
+    let team = args.get(2).filter(|value| !value.starts_with("--"));
+    let form = args.get(1).is_some_and(|s| s == "team") && team.is_some();
+    routing(args, form)?;
+    if !form {
         return Ok(None);
     }
     active(config)?;
-    let team = args
-        .get(2)
-        .ok_or_else(|| fail("target REF team TEAM needs a team UUID"))?;
+    let team = team.expect("team form");
     if !zerus_replica::ids::is_uuid(team) {
         return Err(fail("a team is named by its UUID"));
     }
@@ -62,18 +62,28 @@ pub(super) fn target(config: &Config, action: &str, args: &[String]) -> Result<O
     }
     Ok(Some(team.clone()))
 }
-
 pub(super) fn destination(
     config: &Config,
     machines: &Machines,
+    who: &Actor,
     project: &str,
     team: &str,
+    args: &[String],
 ) -> Result<()> {
-    bridge::destination(&config.state, &machines.here, project, team)
-        .map(|_| ())
-        .map_err(problem)
+    bridge::preflight(
+        &Caller {
+            state: &config.state,
+            machine: &machines.here,
+            actor: who,
+        },
+        project,
+        team,
+        option(args, "--role")?,
+        option(args, "--pipeline")?,
+        option(args, "--request-id")?,
+    )
+    .map_err(problem)
 }
-
 pub(super) fn send(
     config: &Config,
     machines: &Machines,
@@ -81,18 +91,63 @@ pub(super) fn send(
     task: &TaskRef,
     team: &str,
     args: &[String],
-) -> Result<()> {
-    bridge::send(
-        &caller(config, &machines.here, who),
+) -> Result<Value> {
+    let result = bridge::send(
+        &Caller {
+            state: &config.state,
+            machine: &machines.here,
+            actor: who,
+        },
         task,
         team,
         option(args, "--role")?,
         option(args, "--pipeline")?,
-    )
-    .map(|_| ())
-    .map_err(problem)
+    );
+    let mut out = json!({"task_exists":true,"team":{"id":team,"queued":false}});
+    match result {
+        Ok(intake) => {
+            out["team"]["queued"] = json!(intake.queued);
+            if let Some(node) = intake.node {
+                out["team"]["node"] = json!(node);
+            }
+            if let Some(error) = intake.refusal {
+                out["team"]["error"] = json!(error);
+            }
+            if let Some(error) = intake.observation_pending {
+                out["team"]["observation_pending"] = json!(true);
+                out["message"] = json!(format!(
+                    "Task was queued; its first observation is pending: {}",
+                    error.message
+                ));
+            }
+        }
+        Err(error) => out["team"]["error"] = json!(error),
+    }
+    Ok(out)
 }
-
+pub(super) fn annotate(mut out: Value) -> Value {
+    if out["team"]["queued"] == false {
+        let message = format!(
+            "Task {} exists and was not queued ({}): {}",
+            out["task"]["ref"].as_str().unwrap_or(""),
+            out["team"]["error"]["code"]
+                .as_str()
+                .unwrap_or("invalid_state"),
+            out["team"]["error"]["message"]
+                .as_str()
+                .unwrap_or("Team intake was refused.")
+        );
+        if out.get("answer").is_some() {
+            out["answer"] = json!(message);
+        }
+        out["message"] = json!(message);
+    } else if out["team"]["observation_pending"] == true {
+        if let Some(answer) = out["answer"].as_str() {
+            out["answer"] = json!(format!("{answer} Observation is pending."));
+        }
+    }
+    out
+}
 pub(super) fn guard(
     config: &Config,
     here: &str,
@@ -101,27 +156,24 @@ pub(super) fn guard(
     action: &str,
     args: &[String],
 ) -> Result<()> {
-    let guarded = match action {
-        "send" | "handoff" => action,
-        "stage" if args.get(1).is_some_and(|s| s == "done") => "done",
+    let action = match action {
+        "send" | "handoff" | "stage" | "target" | "start" | "worker" | "reopen" => action,
+        "message" if option(args, "--mode")? == Some("reopen") => "reopen",
         _ => return Ok(()),
     };
-    bridge::guard(&caller(config, here, who), task, guarded).map_err(problem)
-}
-
-pub(super) fn changed(config: &Config, project: &str, uuid: &str) {
-    if let Err(error) = bridge::changed(
-        &config.state,
-        &TaskRef {
-            project: project.into(),
-            uuid: uuid.into(),
+    bridge::guard(
+        &Caller {
+            state: &config.state,
+            machine: here,
+            actor: who,
         },
-    ) {
-        // The task write succeeded. A projection failure must not misreport a
-        // send as refused or cause the caller to repeat an effect.
-        eprintln!("hgs: team observation pending: {}", error.message);
-    }
+        task,
+        action,
+    )
+    .map_err(problem)
 }
-
+pub(super) fn clear(config: &Config, task: &mut TaskDoc, who: &Actor) -> Result<()> {
+    bridge::clear(&config.state, task, who).map_err(problem)
+}
 #[cfg(test)]
 mod tests;
