@@ -49,20 +49,7 @@ impl Native {
             let id = project["id"]
                 .as_str()
                 .ok_or_else(|| problem("Invalid project identity"))?;
-            let args = [
-                "task",
-                "list",
-                "--project",
-                id,
-                "--stage",
-                "in_progress",
-                "--limit",
-                "1",
-                "--session",
-                &s.session_id,
-                "--json",
-            ]
-            .map(String::from);
+            let args = occupancy_arguments(id, &s.session_id);
             let r = self.read(&args, until)?;
             if r["damaged_total"].as_u64() != Some(0) {
                 return Err(problem("Task occupancy is unknown"));
@@ -87,8 +74,7 @@ impl Native {
         let Some(task) = node.task.as_ref() else {
             return Ended::NotStarted;
         };
-        let reference = format!("{}/{}", task.project, task.uuid);
-        let args = ["task".into(), action.into(), reference, "--json".into()];
+        let args = task_arguments(task, action);
         let input = if let Some(m) = member {
             json!({"schema":1,"id":id,"team":team.id,"node":node.id,"member":m.id})
         } else {
@@ -171,15 +157,12 @@ impl Ports for Native {
         generation: &str,
         offset: u64,
     ) -> Result<zerus_replica::Changes> {
-        zerus_replica::ProjectStore::open_within(
+        Ok(zerus_replica::ProjectStore::read_changes_since(
             &self.config.state.join("replica"),
             project,
-            Duration::from_secs(2),
-        )
-        .map_err(|_| problem("Task change journal is unavailable"))?
-        .ok_or_else(|| problem("Task change journal lock is busy"))?
-        .changes_since(generation, offset)
-        .map_err(|_| problem("Task change journal is unavailable"))
+            generation,
+            offset,
+        ))
     }
     fn observe(&mut self, _: &mut Store, _: &TaskRef) -> Result<()> {
         Err(problem("Team task observation is not available yet"))
@@ -301,4 +284,31 @@ pub(super) fn decode_finish(raw: &[u8], team: &str, node: u32) -> Result<super::
         Some("cutting_over") => Finish::CuttingOver(cut(reason, 2048)),
         _ => return Err(problem("Unknown finishing reply state")),
     })
+}
+
+/// Shared with real-command contract tests; no adapter reconstructs this vector.
+pub(super) fn occupancy_arguments(project: &str, session: &str) -> Vec<String> {
+    [
+        "task",
+        "list",
+        "--project",
+        project,
+        "--stage",
+        "active",
+        "--limit",
+        "1",
+        "--session",
+        session,
+        "--json",
+    ]
+    .map(String::from)
+    .into()
+}
+pub(super) fn task_arguments(task: &TaskRef, action: &str) -> Vec<String> {
+    vec![
+        "task".into(),
+        action.into(),
+        format!("{}/{}", task.project, task.uuid),
+        "--json".into(),
+    ]
 }

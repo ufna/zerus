@@ -118,3 +118,22 @@ fn delivery_requires_the_echoed_id_and_version_and_never_accepts_a_failed_child(
         HandoutOutcome::Uncertain { .. }
     ));
 }
+
+#[test]
+fn adapter_argument_vectors_use_the_shared_builders() {
+    let task = zerus_team_plan::model::TaskRef {
+        project: "project-1".into(),
+        uuid: "00000000-0000-4000-8000-000000000001".into(),
+    };
+    let occupancy = occupancy_arguments("project-1", "run_id:review-run");
+    assert!(occupancy.windows(2).any(|a| a == ["--stage", "active"]));
+    let deliver = task_arguments(&task, "team-deliver");
+    let done = task_arguments(&task, "team-done");
+    assert_eq!(deliver[1], "team-deliver");
+    assert_eq!(done[1], "team-done");
+    assert_eq!(deliver[2], "project-1/00000000-0000-4000-8000-000000000001");
+    println!(
+        "TEAM_ACTOR_ARGUMENTS={}",
+        serde_json::json!({"occupancy":occupancy,"deliver":deliver,"done":done})
+    );
+}
