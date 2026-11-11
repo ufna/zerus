@@ -123,10 +123,23 @@ pub(crate) fn settle_decisions(
     team: &str,
     node: Option<u32>,
     actor: &str,
-    by_stop: bool,
+    preserve_ready: bool,
 ) -> Result<()> {
-    db.execute(&format!("UPDATE decisions SET stopped_ready=(?4 AND kind='accept' AND state=?5),state=?2 WHERE team=?1 AND state<>'{}' AND (?3 IS NULL OR node=?3)",DecisionState::Settled.as_str()),params![team,DecisionState::Settled,node,by_stop,DecisionState::Ready]).map_err(storage)?;
-    db.execute("UPDATE cards SET state='closed',decision='stale',decided_actor=?3 WHERE team=?1 AND kind='integration' AND state='open' AND (?2 IS NULL OR node=?2)",params![team,node,actor]).map_err(storage)?;
+    // Stop and board overrides cannot revoke a merge that was already authorized.
+    // The original stopped_ready column retains that provenance for late facts.
+    db.execute(&format!("UPDATE decisions SET stopped_ready=(?4 AND kind='accept' AND state=?5),state=?2 WHERE team=?1 AND state<>'{}' AND (?3 IS NULL OR node=?3)",DecisionState::Settled.as_str()),params![team,DecisionState::Settled,node,preserve_ready,DecisionState::Ready]).map_err(storage)?;
+    close_cards(db, team, node, actor)?;
+    Ok(())
+}
+/// A node's settlement expires its integration cards; team settlement expires
+/// every open card, including proposals without a node.
+pub(crate) fn close_cards(
+    db: &Connection,
+    team: &str,
+    node: Option<u32>,
+    actor: &str,
+) -> Result<()> {
+    db.execute("UPDATE cards SET state='closed',decision='stale',decided_actor=?3 WHERE team=?1 AND state='open' AND (?2 IS NULL OR (kind='integration' AND node=?2))",params![team,node,actor]).map_err(storage)?;
     Ok(())
 }
 pub(crate) fn archived_leaf(db: &Connection, team: &str, id: u32) -> Result<Option<Node>> {

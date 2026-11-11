@@ -129,6 +129,11 @@ pub(super) fn integration(ctx: &mut Context<'_>) -> Result<()> {
         ));
     }
     integration::record(ctx, &permit, *node, Some(commit), &[])?;
+    // The fact belongs to the accepted generation. A person's restore starts
+    // a new round whose completion must not inherit this older merge.
+    if permit.generation != ctx.generation(*node)? {
+        return Ok(());
+    }
     let table = ctx.node_table(*node)?;
     ctx.db
         .execute(

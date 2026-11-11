@@ -1,10 +1,11 @@
 use super::*;
 
-/// A ready accept may already have been in flight when Stop settled it.
+/// A ready accept may have been in flight at Stop or a board override.
 /// Preserve that authorization as provenance; it grants no new effect.
 pub(super) struct Permit {
     pub decision: u64,
     pub late: bool,
+    pub generation: u32,
 }
 pub(super) fn permit(ctx: &Context<'_>, node: u32) -> Result<Permit> {
     if let Some((decision, kind, state)) = ctx.pending(node)? {
@@ -14,19 +15,26 @@ pub(super) fn permit(ctx: &Context<'_>, node: u32) -> Result<Permit> {
                 Permit {
                     decision,
                     late: false,
+                    generation: ctx.generation(node)?,
                 },
             );
         }
     }
-    if !matches!(ctx.team.status, TeamStatus::Stopped | TeamStatus::Archived) {
-        return Err(invalid("Acceptance has not authorized integration."));
-    }
-    let decision=ctx.db.query_row("SELECT seq FROM decisions WHERE team=?1 AND node=?2 AND generation=?3 AND kind='accept' AND state=?4 AND stopped_ready=1 ORDER BY seq DESC LIMIT 1",params![ctx.team.id,node,ctx.generation(node)?,DecisionState::Settled],|r|r.get(0)).optional().map_err(storage)?.ok_or_else(||invalid("No ready acceptance was settled by Stop."))?;
+    let (decision, generation) = ctx.db
+        .query_row(
+            "SELECT seq,generation FROM decisions WHERE team=?1 AND node=?2 AND kind='accept' AND state=?3 AND stopped_ready=1 ORDER BY seq DESC LIMIT 1",
+            params![ctx.team.id, node, DecisionState::Settled],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()
+        .map_err(storage)?
+        .ok_or_else(|| invalid("No ready acceptance was settled by Stop or a board override."))?;
     unused(
         ctx,
         Permit {
             decision,
             late: true,
+            generation,
         },
     )
 }
