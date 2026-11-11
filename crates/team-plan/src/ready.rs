@@ -9,11 +9,12 @@
 //! - in a barrier phase, no planned phase before it has an undecided node;
 //! - every hard dependency is Accepted and, in a team with an integration
 //!   branch, integrated; every soft one is at least In progress; a cancelled
-//!   one releases; a dependency missing from the view, or one that names a
-//!   stage, holds;
+//!   one releases; a dependency missing from the view, listed twice in it,
+//!   or naming a stage, holds;
 //! - it is in no dependency cycle among the nodes that are not cancelled;
 //! - no node In progress or Reported has a write set that overlaps its own;
-//! - a stage checks a node that is Reported;
+//! - a stage checks a node that is Reported, in the stage's round, and
+//!   listed once;
 //! - its ID appears once in the view: a node listed twice is never handed
 //!   out, since either row may be the stale one.
 //!
@@ -387,6 +388,10 @@ impl<'a> Index<'a> {
         let Some(dep) = self.nodes.get(&id) else {
             return false;
         };
+        // Which of two rows is true is unknown, so neither releases.
+        if self.duplicates.contains(&id) {
+            return false;
+        }
         // A stage is never a dependency; naming one holds, like a missing node.
         if dep.kind == NodeKind::Stage {
             return false;
@@ -412,12 +417,21 @@ impl<'a> Index<'a> {
                 .any(|(id, writes)| *id != node.id && overlaps(&node.writes, writes))
     }
 
+    /// A stage checks a report that is current: its node is Reported in the
+    /// stage's round and listed once. A stage of an earlier round is obsolete.
     fn stage_target_reported(&self, node: &Node) -> bool {
-        node.kind != NodeKind::Stage
-            || node
-                .stage_of
-                .and_then(|id| self.nodes.get(&id))
-                .is_some_and(|target| target.state == NodeState::Reported)
+        if node.kind != NodeKind::Stage {
+            return true;
+        }
+        let Some(id) = node.stage_of else {
+            return false;
+        };
+        if self.duplicates.contains(&id) {
+            return false;
+        }
+        self.nodes.get(&id).is_some_and(|target| {
+            target.state == NodeState::Reported && target.round.max(1) == node.round.max(1)
+        })
     }
 
     /// The node as staffing sees it. A stage never goes to the member who
@@ -785,6 +799,56 @@ mod tests {
         plan.nodes.push(node(1, json!({})));
         assert_eq!(ready(&plan.view()), vec![2]);
         assert_eq!(given(&plan), pairs(&[(2, "m1")]));
+    }
+
+    #[test]
+    fn a_node_listed_twice_holds_what_depends_on_it() {
+        let mut plan = Plan::new(vec![
+            node(1, json!({"state": "accepted", "integrated": true})),
+            node(2, json!({"deps": [{"node": 1}]})),
+            node(3, json!({"deps": [{"node": 1, "kind": "soft"}]})),
+        ]);
+        assert!(is_ready(&plan, 2) && is_ready(&plan, 3));
+        // Which row is true is unknown, so neither releases.
+        plan.nodes.insert(0, node(1, json!({})));
+        let found = ready(&plan.view());
+        assert!(!found.contains(&2) && !found.contains(&3), "{found:?}");
+    }
+
+    #[test]
+    fn a_stage_of_a_task_listed_twice_is_not_ready() {
+        let mut plan = Plan::new(vec![
+            reported(1, "m1"),
+            node(
+                5,
+                json!({"kind": "stage", "stage_of": 1, "role": "reviewer"}),
+            ),
+        ]);
+        plan.members.push(member("m4", "reviewer"));
+        assert!(is_ready(&plan, 5));
+        // Two rows name different implementers; either could be the reviewer.
+        plan.nodes.push(reported(1, "m3"));
+        assert!(!is_ready(&plan, 5));
+        assert!(given(&plan).is_empty());
+    }
+
+    #[test]
+    fn a_stage_of_an_earlier_round_is_not_ready() {
+        let mut plan = Plan::new(vec![
+            node(
+                1,
+                json!({"state": "reported", "implementer": "m1", "round": 2}),
+            ),
+            node(
+                5,
+                json!({"kind": "stage", "stage_of": 1, "role": "reviewer", "implementer": "m1", "round": 2}),
+            ),
+        ]);
+        assert!(is_ready(&plan, 5));
+        plan.node(5).round = 1;
+        assert!(!is_ready(&plan, 5), "the round-1 stage is obsolete");
+        plan.node(5).round = 3;
+        assert!(!is_ready(&plan, 5));
     }
 
     // Hand-out.
