@@ -1,0 +1,327 @@
+//! A person's catalog on disk, under the `hgs` configuration directory.
+//!
+//! The file holds only the person's own entries; [`load`] merges them over the
+//! built-in catalog by ID. Nothing here creates the file except an explicit
+//! save or import.
+#![cfg_attr(not(test), allow(dead_code))] // The `hgs team` CLI in package 5 is the caller.
+
+use std::io::{self, Write};
+use std::path::{Path, PathBuf};
+
+use zerus_team_plan::catalog::{Catalog, TemplateBundle};
+use zerus_team_plan::model::Caps;
+use zerus_team_plan::problem::code;
+use zerus_team_plan::{builtin, bundle, validate_bundle, validate_catalog, Problem};
+
+/// The folder that holds the catalog below the configuration directory.
+const DIR: &str = "teams";
+/// The one JSON file a person edits and the designer saves.
+const FILE: &str = "catalog.json";
+
+/// Where the person's catalog lives.
+pub fn path(config_dir: &Path) -> PathBuf {
+    config_dir.join(DIR).join(FILE)
+}
+
+/// Only the person's own entries, or an empty catalog when there is no file.
+pub fn person(config_dir: &Path) -> Result<Catalog, Problem> {
+    match std::fs::read_to_string(path(config_dir)) {
+        Ok(text) => parse(&text),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(Catalog::default()),
+        Err(error) => Err(read_error(error)),
+    }
+}
+
+/// The built-in catalog with the person's entries merged over it by ID,
+/// checked so a broken file is refused instead of shown.
+pub fn load(config_dir: &Path) -> Result<Catalog, Problem> {
+    let catalog = merge(&builtin(), &person(config_dir)?);
+    first_problem(validate_catalog(&catalog))?;
+    Ok(catalog)
+}
+
+/// A base catalog with the second catalog's entries replacing entries of the
+/// same ID and new ones appended. Empty planning rules keep the base's.
+pub fn merge(base: &Catalog, person: &Catalog) -> Catalog {
+    Catalog {
+        roles: merge_by_id(&base.roles, &person.roles, |role| &role.id),
+        pipelines: merge_by_id(&base.pipelines, &person.pipelines, |pipeline| &pipeline.id),
+        templates: merge_by_id(&base.templates, &person.templates, |template| &template.id),
+        planning_rules: if person.planning_rules.is_empty() {
+            base.planning_rules.clone()
+        } else {
+            person.planning_rules.clone()
+        },
+    }
+}
+
+fn merge_by_id<T: Clone>(base: &[T], over: &[T], id: impl Fn(&T) -> &str) -> Vec<T> {
+    let mut out = base.to_vec();
+    for item in over {
+        match out.iter().position(|existing| id(existing) == id(item)) {
+            Some(index) => out[index] = item.clone(),
+            None => out.push(item.clone()),
+        }
+    }
+    out
+}
+
+/// Replaces the person's catalog. Writes nothing unless the merged catalog is
+/// valid.
+pub fn save(config_dir: &Path, catalog: &Catalog) -> Result<(), Problem> {
+    first_problem(validate_catalog(&merge(&builtin(), catalog)))?;
+    write(config_dir, catalog)
+}
+
+/// Adds a bundle's template, roles and pipelines to the person's catalog.
+/// Writes nothing when the bundle is incomplete or over this computer's cap.
+pub fn import_bundle(config_dir: &Path, bundle: &TemplateBundle) -> Result<(), Problem> {
+    first_problem(validate_bundle(bundle, &Caps::default()))?;
+    let mut person = person(config_dir)?;
+    person.templates = merge_by_id(
+        &person.templates,
+        std::slice::from_ref(&bundle.template),
+        |template| &template.id,
+    );
+    person.roles = merge_by_id(&person.roles, &bundle.roles, |role| &role.id);
+    person.pipelines = merge_by_id(&person.pipelines, &bundle.pipelines, |pipeline| {
+        &pipeline.id
+    });
+    save(config_dir, &person)
+}
+
+/// One template with exactly the roles and pipelines it uses.
+pub fn export_bundle(catalog: &Catalog, template: &str) -> Result<TemplateBundle, Problem> {
+    bundle(catalog, template)
+}
+
+fn write(config_dir: &Path, catalog: &Catalog) -> Result<(), Problem> {
+    let directory = config_dir.join(DIR);
+    crate::platform::private_dir(&directory).map_err(write_error)?;
+    let text = serde_json::to_string_pretty(catalog)
+        .map_err(|error| write_error(io::Error::other(error.to_string())))?;
+    let mut temporary = tempfile::NamedTempFile::new_in(&directory).map_err(write_error)?;
+    temporary.write_all(text.as_bytes()).map_err(write_error)?;
+    temporary.write_all(b"\n").map_err(write_error)?;
+    temporary.as_file().sync_all().map_err(write_error)?;
+    crate::platform::persist(temporary, path(config_dir))
+        .map_err(|error| write_error(error.error))?;
+    Ok(())
+}
+
+fn parse(text: &str) -> Result<Catalog, Problem> {
+    serde_json::from_str(text).map_err(|error| {
+        let message = error.to_string();
+        match unknown_field(&message) {
+            Some(field) => Problem::new(
+                code::UNKNOWN_FIELD,
+                format!("The team catalog has an unknown field: {field}."),
+            )
+            .with_refs([field]),
+            None => Problem::new(
+                code::INVALID_STATE,
+                format!("The team catalog is not valid JSON: {message}"),
+            ),
+        }
+    })
+}
+
+/// The field serde names in `unknown field \`name\`, expected ...`.
+fn unknown_field(message: &str) -> Option<&str> {
+    let rest = message.strip_prefix("unknown field `")?;
+    rest.split('`').next()
+}
+
+fn first_problem(problems: Vec<Problem>) -> Result<(), Problem> {
+    match problems.into_iter().next() {
+        Some(problem) => Err(problem),
+        None => Ok(()),
+    }
+}
+
+fn read_error(error: io::Error) -> Problem {
+    Problem::new(
+        code::INVALID_STATE,
+        format!("Cannot read the team catalog: {error}"),
+    )
+}
+
+fn write_error(error: io::Error) -> Problem {
+    Problem::new(
+        code::INVALID_STATE,
+        format!("Cannot write the team catalog: {error}"),
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use zerus_team_plan::builtin::builtin;
+    use zerus_team_plan::catalog::{Catalog, Role};
+    use zerus_team_plan::problem::code;
+
+    fn temp() -> tempfile::TempDir {
+        tempfile::tempdir().expect("a temporary folder")
+    }
+
+    fn write(dir: &Path, text: &str) {
+        let file = path(dir);
+        fs::create_dir_all(file.parent().expect("a parent")).unwrap();
+        fs::write(file, text).unwrap();
+    }
+
+    #[test]
+    fn the_built_in_catalog_loads_when_the_person_has_no_file() {
+        let dir = temp();
+        assert_eq!(load(dir.path()).unwrap(), builtin());
+        assert!(!path(dir.path()).exists());
+        assert!(!dir.path().join(DIR).exists(), "reading creates nothing");
+    }
+
+    #[test]
+    fn a_persons_entry_overrides_a_built_in_one_with_the_same_id() {
+        let dir = temp();
+        write(
+            dir.path(),
+            r#"{"roles":[{"id":"developer","name":"Builder","agent":"codex"}]}"#,
+        );
+        let loaded = load(dir.path()).unwrap();
+        let developer = loaded
+            .roles
+            .iter()
+            .find(|role| role.id == "developer")
+            .expect("the built-in developer");
+        assert_eq!(developer.name, "Builder");
+        assert_eq!(developer.agent, "codex");
+        assert_eq!(loaded.roles.len(), 3, "the other built-in roles stay");
+        assert!(loaded
+            .roles
+            .iter()
+            .any(|role| role.id == "reviewer" && role.name == "Reviewer"));
+    }
+
+    #[test]
+    fn a_person_template_replaces_the_built_in_template_of_the_same_id() {
+        let dir = temp();
+        write(
+            dir.path(),
+            r#"{"templates":[{"id":"bugfix","name":"My bugfix","lead":{"agent":"claude"},"roster":[{"role":"developer","count":1},{"role":"reviewer","count":1}],"default_pipeline":"reviewed"}]}"#,
+        );
+        let loaded = load(dir.path()).unwrap();
+        assert_eq!(loaded.templates.len(), 3);
+        let bugfix = loaded
+            .templates
+            .iter()
+            .find(|template| template.id == "bugfix")
+            .expect("the person's bugfix");
+        assert_eq!(bugfix.name, "My bugfix");
+    }
+
+    #[test]
+    fn an_unknown_field_is_refused_and_the_file_is_left_untouched() {
+        let dir = temp();
+        let text = r#"{"roles":[],"colour":"red"}"#;
+        write(dir.path(), text);
+        let problem = load(dir.path()).unwrap_err();
+        assert_eq!(problem.code, code::UNKNOWN_FIELD);
+        assert_eq!(problem.refs, ["colour"]);
+        assert_eq!(fs::read_to_string(path(dir.path())).unwrap(), text);
+    }
+
+    #[test]
+    fn an_imported_bundle_is_complete_on_an_empty_catalog() {
+        let dir = temp();
+        let bugfix = export_bundle(&builtin(), "bugfix").expect("bugfix exports");
+        import_bundle(dir.path(), &bugfix).unwrap();
+        let loaded = load(dir.path()).unwrap();
+        assert_eq!(
+            export_bundle(&loaded, "bugfix").expect("bugfix exports again"),
+            bugfix
+        );
+        assert!(
+            loaded
+                .templates
+                .iter()
+                .any(|template| template.id == "feature-delivery"),
+            "the built-in templates stay"
+        );
+        let person = person(dir.path()).unwrap();
+        assert_eq!(person.templates.len(), 1, "only the imported template");
+        assert_eq!(person.roles.len(), 2);
+        assert_eq!(person.pipelines.len(), 1);
+    }
+
+    #[test]
+    fn importing_the_same_bundle_twice_changes_nothing() {
+        let dir = temp();
+        let bugfix = export_bundle(&builtin(), "bugfix").expect("bugfix exports");
+        import_bundle(dir.path(), &bugfix).unwrap();
+        let once = fs::read_to_string(path(dir.path())).unwrap();
+        import_bundle(dir.path(), &bugfix).unwrap();
+        assert_eq!(fs::read_to_string(path(dir.path())).unwrap(), once);
+    }
+
+    #[test]
+    fn an_incomplete_bundle_is_refused_and_writes_nothing() {
+        let dir = temp();
+        write(dir.path(), "{}");
+        let mut bundle = export_bundle(&builtin(), "bugfix").expect("bugfix exports");
+        bundle.pipelines[0].stages[0].role = "ghost".into();
+        let problem = import_bundle(dir.path(), &bundle).unwrap_err();
+        assert!(
+            matches!(
+                problem.code.as_str(),
+                code::UNKNOWN_ROLE | code::NO_SEAT_FOR_STAGE
+            ),
+            "{problem}"
+        );
+        assert_eq!(fs::read_to_string(path(dir.path())).unwrap(), "{}");
+    }
+
+    #[test]
+    fn a_saved_entry_is_merged_over_the_built_in_catalog() {
+        let dir = temp();
+        let mut architect: Role = builtin().roles[0].clone();
+        architect.id = "architect".into();
+        architect.name = "Architect".into();
+        let only = Catalog {
+            roles: vec![architect],
+            ..Catalog::default()
+        };
+        save(dir.path(), &only).unwrap();
+
+        let loaded = load(dir.path()).unwrap();
+        assert_eq!(loaded.roles.len(), 4);
+        assert!(loaded.roles.iter().any(|role| role.id == "architect"));
+        assert_eq!(person(dir.path()).unwrap().roles.len(), 1);
+    }
+
+    #[test]
+    fn a_save_that_breaks_the_merged_catalog_writes_nothing() {
+        let dir = temp();
+        let mut template = builtin().templates[1].clone();
+        template.id = "broken".into();
+        template.roster[0].role = "ghost".into();
+        let only = Catalog {
+            templates: vec![template],
+            ..Catalog::default()
+        };
+        let problem = save(dir.path(), &only).unwrap_err();
+        assert_eq!(problem.code, code::UNKNOWN_ROLE);
+        assert!(!path(dir.path()).exists());
+    }
+
+    #[test]
+    fn malformed_json_is_refused_as_invalid_state() {
+        let dir = temp();
+        write(dir.path(), "not json");
+        assert_eq!(load(dir.path()).unwrap_err().code, code::INVALID_STATE);
+    }
+
+    #[test]
+    fn an_unknown_template_cannot_be_exported() {
+        let problem = export_bundle(&builtin(), "ghost").unwrap_err();
+        assert_eq!(problem.code, code::NOT_FOUND);
+    }
+}

@@ -12,6 +12,8 @@ use std::path::{Path, PathBuf};
 use zerus_team_plan::problem::code;
 use zerus_team_plan::Problem;
 
+pub mod catalog;
+
 /// The folder of everything Teams keep under the `hgs` state directory.
 const DIR: &str = "teams";
 /// Its presence turns the preview on for this computer.
