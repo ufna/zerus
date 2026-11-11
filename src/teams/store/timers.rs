@@ -53,100 +53,6 @@ pub struct Bell {
     pub after: u64,
 }
 
-/// Add the timers' companion tables on open. Opening an extended store takes
-/// no write lock; the terminal-team index is created once, under one, and
-/// filled from existing teams in pages.
-pub(super) fn extend(db: &Connection) -> Result<()> {
-    once(db, "key_clear_teams", TEAMS_TABLE, backfill_teams)?;
-    once(db, "key_clear_outbox", OUTBOX_TABLE, backfill_outbox)?;
-    db.execute_batch(include_str!("timers.sql"))
-        .map_err(storage)
-}
-const TEAMS_TABLE: &str =
-    "CREATE TABLE key_clear_teams (team TEXT PRIMARY KEY, pending INTEGER NOT NULL);
-    CREATE INDEX key_clear_pending ON key_clear_teams(team) WHERE pending=1;";
-/// Released stages whose task key waits for its final record.
-const OUTBOX_TABLE: &str =
-    "CREATE TABLE key_clear_outbox (team TEXT NOT NULL, node INTEGER NOT NULL, PRIMARY KEY(team,node));";
-fn exists(db: &Connection, table: &str) -> Result<bool> {
-    db.query_row(
-        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1)",
-        [table],
-        |r| r.get(0),
-    )
-    .map_err(storage)
-}
-/// Create `table` once, under a write lock, and fill it from the store.
-fn once(
-    db: &Connection,
-    table: &str,
-    sql: &str,
-    fill: fn(&Connection) -> Result<()>,
-) -> Result<()> {
-    if exists(db, table)? {
-        return Ok(());
-    }
-    let own = db.is_autocommit();
-    db.execute_batch(if own {
-        "BEGIN IMMEDIATE;"
-    } else {
-        "SAVEPOINT timers;"
-    })
-    .map_err(storage)?;
-    let result = (|| {
-        if exists(db, table)? {
-            return Ok(());
-        }
-        db.execute_batch(sql).map_err(storage)?;
-        fill(db)
-    })();
-    let end = match (&result, own) {
-        (Ok(()), true) => "COMMIT;",
-        (Ok(()), false) => "RELEASE timers;",
-        (Err(_), true) => "ROLLBACK;",
-        (Err(_), false) => "ROLLBACK TO timers; RELEASE timers;",
-    };
-    db.execute_batch(end).map_err(storage)?;
-    result
-}
-fn backfill_teams(db: &Connection) -> Result<()> {
-    let sql =
-        format!("SELECT id FROM teams WHERE id>?1 AND status IN {TERMINAL} ORDER BY id LIMIT 200");
-    let mut after = String::new();
-    loop {
-        let ids = column::<String>(db, &sql, params![after])?;
-        for id in &ids {
-            db.execute(
-                "INSERT OR IGNORE INTO key_clear_teams(team,pending) VALUES(?1,1)",
-                [id],
-            )
-            .map_err(storage)?;
-        }
-        match ids.last() {
-            Some(last) if ids.len() == 200 => after = last.clone(),
-            _ => return Ok(()),
-        }
-    }
-}
-/// Walk the archive once, in pages, for stages released before the outbox.
-fn backfill_outbox(db: &Connection) -> Result<()> {
-    let page =
-        "SELECT team,id FROM node_archive WHERE (team,id)>(?1,?2) ORDER BY team,id LIMIT 200";
-    let insert = format!("INSERT OR IGNORE INTO key_clear_outbox(team,node) SELECT a.team,a.id FROM node_archive a WHERE a.team=?1 AND a.id=?2 AND {RELEASED}");
-    let mut after = (String::new(), 0u32);
-    loop {
-        let keys = rows(db, page, params![after.0, after.1], |r| {
-            Ok((r.get::<_, String>(0)?, r.get::<_, u32>(1)?))
-        })?;
-        for (team, id) in &keys {
-            db.execute(&insert, params![team, id]).map_err(storage)?;
-        }
-        match keys.last() {
-            Some(last) if keys.len() == 200 => after = last.clone(),
-            _ => return Ok(()),
-        }
-    }
-}
 /// An archived stage `a` is released when its creation is no longer live,
 /// and has a key to clear when a task was bound or its creation was saved.
 pub(crate) const RELEASED: &str = "json_extract(a.data,'$.kind')='stage' AND NOT EXISTS(SELECT 1 FROM stage_tasks s WHERE s.team=a.team AND s.node=a.id AND s.state IN ('wanted','reserved','created')) AND (EXISTS(SELECT 1 FROM node_identity i WHERE i.team=a.team AND i.id=a.id AND i.task_uuid<>'') OR EXISTS(SELECT 1 FROM stage_tasks s WHERE s.team=a.team AND s.node=a.id AND s.request_id IS NOT NULL)) AND NOT EXISTS(SELECT 1 FROM key_clears k WHERE k.team=a.team AND k.node=a.id)";
@@ -391,7 +297,9 @@ fn refuse(text: &str) -> Problem {
 }
 
 mod cancels;
+mod schema;
 #[allow(unused_imports)] // The actor's cancel step (package 8) reads this.
 pub use cancels::PendingCancel;
+pub(super) use schema::extend;
 #[cfg(test)]
 mod tests;

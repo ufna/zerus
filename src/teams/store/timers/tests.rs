@@ -1,4 +1,5 @@
 use super::*;
+mod upgrade;
 use crate::teams::ops::{tests::*, Actor, Operation};
 
 fn reopen(h: &mut Harness) {
@@ -9,11 +10,11 @@ fn db(h: &Harness) -> &Connection {
 }
 
 #[test]
-fn the_terminal_index_is_filled_once_when_it_is_created() {
+fn the_terminal_index_is_filled_by_the_transition_and_never_by_a_marked_open() {
     let mut h = Harness::new();
     h.run(&person(), Operation::Stop).unwrap();
     db(&h)
-        .execute_batch("DROP TRIGGER key_clear_terminal_v1; DROP TABLE key_clear_teams;")
+        .execute_batch("DROP TRIGGER key_clear_terminal_v1; DROP TABLE key_clear_teams; DROP TABLE timers_extension;")
         .unwrap();
     reopen(&mut h);
     assert_eq!(h.store.keyed_teams("", 10).unwrap(), vec![TEAM.to_owned()]);

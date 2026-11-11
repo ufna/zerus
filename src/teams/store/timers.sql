@@ -1,3 +1,11 @@
+-- This package's layout. Every statement is idempotent: the transition in
+-- timers/schema.rs runs them in one immediate transaction, triggers before
+-- the backfills, and writes timers_extension last.
+CREATE TABLE IF NOT EXISTS timers_extension (id INTEGER PRIMARY KEY CHECK(id=1), version INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS key_clear_teams (team TEXT PRIMARY KEY, pending INTEGER NOT NULL);
+CREATE INDEX IF NOT EXISTS key_clear_pending ON key_clear_teams(team) WHERE pending=1;
+-- Released stages whose task key waits for its final record.
+CREATE TABLE IF NOT EXISTS key_clear_outbox (team TEXT NOT NULL, node INTEGER NOT NULL, PRIMARY KEY(team,node));
 CREATE TABLE IF NOT EXISTS timer_firings (
  team TEXT NOT NULL, kind TEXT NOT NULL, node INTEGER NOT NULL, generation INTEGER NOT NULL,
  item INTEGER NOT NULL, target TEXT NOT NULL CHECK(target IN ('inbox','card')),
