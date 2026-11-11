@@ -23,7 +23,7 @@ pub(super) fn execute(config: &Config, args: &[String]) -> Result<Value> {
     } else {
         (machines(config)?, None)
     };
-    let who = actor(&machines.here, args, true)?;
+    let mut who = super::teams::actor(config, &machines, args, true)?;
     let r = super::reference_by(
         config,
         args,
@@ -36,6 +36,8 @@ pub(super) fn execute(config: &Config, args: &[String]) -> Result<Value> {
         store(config, &r.project.0)?
     };
     let mut task = store.find(&r.task).map_err(fail)?;
+    if let Some(actor) = super::teams::actor_for_marked_task(config, &machines, args, true, &task)? { who = actor; }
+    super::teams::guard(config, &machines, &task, "message", args)?;
     let mut before = task.view().map_err(fail)?;
     let existing = before
         .log
@@ -153,6 +155,7 @@ pub(super) fn execute(config: &Config, args: &[String]) -> Result<Value> {
                 &frozen,
                 (&before.target, before.stage_at),
                 &who,
+                args,
                 deadline,
             )?;
             if let Some(out) = reopened {
@@ -160,8 +163,10 @@ pub(super) fn execute(config: &Config, args: &[String]) -> Result<Value> {
             }
             // Legacy: read again; the message path below rechecks it all,
             // and refuses a task that is managed by now.
+            super::attempts::pause_at(id, "legacy_reload");
             store = super::store(config, &r.project.0)?;
             task = store.load(&uuid).map_err(fail)?;
+            super::teams::guard(config, &machines, &task, "message", args)?;
             before = task.view().map_err(fail)?;
         }
     }

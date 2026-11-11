@@ -12,7 +12,9 @@ use std::path::{Path, PathBuf};
 use zerus_team_plan::problem::code;
 use zerus_team_plan::Problem;
 
+pub(crate) mod caller;
 pub(crate) mod catalog;
+mod cli;
 pub(crate) mod integrate;
 pub(crate) mod ops;
 pub(crate) mod store;
@@ -38,27 +40,37 @@ pub(crate) fn enabled(state: &Path) -> bool {
 }
 
 pub(crate) fn dispatch(config: &Config, args: &[String], _dry: bool) -> Result<i32> {
-    let (reply, exit) = answer(&config.state, args, from_session());
+    let words: Vec<&str> = args
+        .iter()
+        .map(String::as_str)
+        .filter(|word| *word != "--json")
+        .collect();
+    let (reply, exit) = match words.first().copied() {
+        Some("preview") => preview(
+            &config.state,
+            words.get(1).copied().unwrap_or("status"),
+            || caller::caller(config),
+        ),
+        _ if !enabled(&config.state) => inactive(),
+        _ => cli::dispatch(config, args),
+    };
     println!("{reply}");
     Ok(exit)
 }
 
-/// An agent's shell carries both variables; a person's terminal does not.
-/// This is the interim person rule of the specification, not proof.
-fn from_session() -> bool {
-    session_markers(|name| std::env::var_os(name))
-}
-
-/// True when both session variables are present and not empty.
-fn session_markers(get: impl Fn(&str) -> Option<std::ffi::OsString>) -> bool {
-    let set = |name: &str| get(name).is_some_and(|value| !value.is_empty());
-    set("HGS_SESSION") && set("HGS_RUN_ID")
+/// The answer of every command but `preview` while the preview is off.
+pub(crate) fn inactive() -> (Value, i32) {
+    refusal(Problem::new(INACTIVE, INACTIVE_MESSAGE))
 }
 
 fn refusal(problem: Problem) -> (Value, i32) {
     (json!({"ok": false, "error": problem}), 1)
 }
 
+/// The preview switch's own entry, and the off answer for every command. The
+/// commands themselves live in [`cli`]; kept here for the preview switch's
+/// tests, which never reach a command.
+#[cfg(test)]
 fn answer(state: &Path, args: &[String], from_session: bool) -> (Value, i32) {
     let words: Vec<&str> = args
         .iter()
@@ -66,11 +78,16 @@ fn answer(state: &Path, args: &[String], from_session: bool) -> (Value, i32) {
         .filter(|word| *word != "--json")
         .collect();
     if words.first() == Some(&"preview") {
-        return preview(
-            state,
-            words.get(1).copied().unwrap_or("status"),
-            from_session,
-        );
+        return preview(state, words.get(1).copied().unwrap_or("status"), || {
+            if from_session {
+                caller::Caller::Refused(Problem::new(
+                    code::NOT_ALLOWED,
+                    "A session cannot change the preview.",
+                ))
+            } else {
+                caller::Caller::Person
+            }
+        });
     }
     if !enabled(state) {
         return refusal(Problem::new(INACTIVE, INACTIVE_MESSAGE));
@@ -82,27 +99,37 @@ fn answer(state: &Path, args: &[String], from_session: bool) -> (Value, i32) {
     )
 }
 
-fn preview(state: &Path, action: &str, from_session: bool) -> (Value, i32) {
-    let shown =
-        |state: &Path| json!({"ok": true, "preview": if enabled(state) { "on" } else { "off" }});
+fn preview(state: &Path, action: &str, proof: impl FnOnce() -> caller::Caller) -> (Value, i32) {
+    let shown = |state: &Path| {
+        json!({
+            "ok": true, "preview": if enabled(state) { "on" } else { "off" },
+            "note": caller::INTERIM_NOTE,
+        })
+    };
+    // Status is public and does not read caller state. Mutating either way
+    // uses the same caller proof as every person-only Teams operation.
+    if matches!(action, "on" | "off") {
+        match proof() {
+            caller::Caller::Person => (),
+            caller::Caller::Refused(problem) => return refusal(problem),
+            caller::Caller::Session(_) => return refusal(Problem::new(code::NOT_ALLOWED,
+                "Only a person turns the Teams preview on or off, from a terminal outside any session.")),
+        }
+    }
     match action {
         "status" => (shown(state), 0),
-        "on" | "off" if from_session => refusal(Problem::new(
-            code::NOT_ALLOWED,
-            "Only a person turns the Teams preview on or off, from a terminal outside any session.",
-        )),
         "on" => match turn_on(state) {
             Ok(()) => (shown(state), 0),
-            Err(error) => refusal(Problem::new(
+            Err(_) => refusal(Problem::new(
                 code::INVALID_STATE,
-                format!("Cannot turn the preview on: {error}"),
+                "Cannot turn the preview on.",
             )),
         },
         "off" => match turn_off(state) {
             Ok(()) => (shown(state), 0),
-            Err(error) => refusal(Problem::new(
+            Err(_) => refusal(Problem::new(
                 code::INVALID_STATE,
-                format!("Cannot turn the preview off: {error}"),
+                "Cannot turn the preview off.",
             )),
         },
         other => refusal(
@@ -161,31 +188,6 @@ mod tests {
 
     fn code_of(reply: &Value) -> &str {
         reply["error"]["code"].as_str().unwrap_or("")
-    }
-
-    #[test]
-    fn a_session_is_known_by_both_variables() {
-        let with = |pairs: &'static [(&'static str, &'static str)]| {
-            session_markers(move |name| {
-                pairs
-                    .iter()
-                    .find(|(key, _)| *key == name)
-                    .map(|(_, value)| (*value).into())
-            })
-        };
-        assert!(with(&[
-            ("HGS_SESSION", "claude/example/tag"),
-            ("HGS_RUN_ID", "run-1")
-        ]));
-        assert!(!with(&[("HGS_SESSION", "claude/example/tag")]));
-        assert!(!with(&[("HGS_RUN_ID", "run-1")]));
-        assert!(!with(&[("HGS_SESSION", ""), ("HGS_RUN_ID", "run-1")]));
-        assert!(!with(&[
-            ("HGS_SESSION", "claude/example/tag"),
-            ("HGS_RUN_ID", "")
-        ]));
-        assert!(!with(&[]));
-        assert_eq!(INACTIVE, "teams_inactive");
     }
 
     #[test]

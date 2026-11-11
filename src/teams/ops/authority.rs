@@ -18,6 +18,7 @@ pub fn authority(actor: &Actor, op: &Operation, team: &Team) -> Result<()> {
     let lead = matches!(actor, Actor::Session { team: id, member, .. } if id == &team.id && member == &team.lead);
     let member = matches!(actor, Actor::Session { team: id, member, .. } if id == &team.id && member != &team.lead);
     let allowed = match op {
+        Operation::CloseCard { .. } => service,
         Operation::ObserveTask { .. }
         | Operation::HandoutIntent { .. }
         | Operation::HandoutOutcome { .. }

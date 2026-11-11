@@ -718,6 +718,8 @@ impl TaskDoc {
                 target,
                 #[cfg(not(feature = "test-without-team"))]
                 team: self.team()?,
+                #[cfg(not(feature = "test-without-team"))]
+                team_invalid: self.team_invalid(),
                 rank: self.rank(),
                 session,
                 worker: match string(&fields, "worker")

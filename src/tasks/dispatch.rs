@@ -239,7 +239,7 @@ pub(super) fn execute(config: &Config, action: &str, args: &[String]) -> Result<
     // The catalog and the project's lock within that budget too (#1519
     // review, zerus-9gzdp): a held lock refuses as busy, never waits on.
     let (machines, projects) = super::entry_until(config, deadline)?;
-    if actor(&machines.here, args, false)? != Actor::Person {
+    if super::teams::actor(config, &machines, args, false)? != Actor::Person {
         return Err(fail(
             "task start plans are for the person's explicit desktop Start",
         ));
@@ -247,6 +247,7 @@ pub(super) fn execute(config: &Config, action: &str, args: &[String]) -> Result<
     let r = super::reference_by(config, args, &Actor::Person, Some((&projects, deadline)))?;
     let mut store = super::store_until(config, &r.project.0, deadline)?;
     let mut task = store.find(&r.task).map_err(fail)?;
+    super::teams::guard(config, &machines, &task, "send", args)?;
     let current = task.view().map_err(fail)?;
     let (selection, to) = if action == "start-plan" {
         let prepare: Prepare = serde_json::from_value(body.clone()).map_err(fail)?;
@@ -451,6 +452,9 @@ pub(super) fn execute(config: &Config, action: &str, args: &[String]) -> Result<
                     *detail.borrow_mut() = why;
                     Ok(Err(Closed { node: None, reason }))
                 };
+                if let Err(error) = super::teams::guard(config, &machines, task, "send", args) {
+                    return refuse("not_sendable", error.message);
+                }
                 // The frozen plan's business binding, against the task as
                 // admitted (after the proof's imports) and the current
                 // executor, selection and settings (condition 2).
@@ -563,6 +567,7 @@ pub(super) fn execute(config: &Config, action: &str, args: &[String]) -> Result<
         }
         store = super::store(config, &r.project.0)?;
         task = store.load(&uuid).map_err(fail)?;
+        super::teams::guard(config, &machines, &task, "send", args)?;
         let current = task.view().map_err(fail)?;
         return legacy(
             &store,

@@ -1,6 +1,6 @@
 //! Bounded prompt context, read only from the team's stored model.
 use super::*;
-use zerus_team_plan::model::{DepKind, Node};
+use zerus_team_plan::model::{DepKind, Member, Node, Team};
 
 const LIMIT: usize = 12_000;
 const CUT: &str = "\n[Team context was cut.]\n";

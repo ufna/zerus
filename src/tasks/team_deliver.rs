@@ -439,7 +439,6 @@ fn run(
         &machines,
         &teams_store,
     )?;
-    teams::guard(config, &here, &who, &task, "send", &[])?;
     let bound = task.view().map_err(fail)?;
     drop(tasks);
     drop(teams_store);
@@ -480,7 +479,6 @@ fn run(
                     &machines,
                     &store,
                 )?;
-                teams::guard(config, &here, &current_actor, task, "send", &[])?;
                 if current != frozen || current_to != to || current_actor != who {
                     return Err(fail(dispatch::CHANGED));
                 }

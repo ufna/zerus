@@ -89,6 +89,7 @@ pub mod task_start;
 pub mod task_view;
 pub mod tasks;
 pub mod tasks_write;
+pub mod teams;
 pub mod terminal;
 pub mod terminal_launch;
 pub mod termination_cleanup;
@@ -130,6 +131,7 @@ pub use state::{ActivityState, CatalogState};
 pub use stream::{RestartDelays, StreamEvent, StreamHandle, Timing};
 pub use swarm::grouping::{GroupOut, GroupingOut, HeaderOut, SyncView};
 pub use tasks::{TasksState, TasksUpdate};
+pub use teams::{TeamAction, TeamCall, TeamOutcome, TeamsFollow, TeamsPoller, TeamsUpdate};
 pub use view::ViewRow;
 pub use zerus_watch_protocol::SessionRef;
 
@@ -341,9 +343,29 @@ pub enum Change {
         computer: ComputerId,
         update: OrganizationUpdate,
     },
+    /// A Teams view of this computer, keyed as [`teams::model`] says; see
+    /// [`teams`]. `payload` is the update's batch payload, computed once by
+    /// the model for its digest.
+    Teams {
+        computer: ComputerId,
+        key: String,
+        update: TeamsUpdate,
+        payload: std::sync::Arc<serde_json::Value>,
+    },
 }
 
 impl Change {
+    /// A Teams change whose payload is computed here.
+    pub fn teams(computer: ComputerId, key: String, update: TeamsUpdate) -> Self {
+        let payload = std::sync::Arc::new(update.payload());
+        Self::Teams {
+            computer,
+            key,
+            update,
+            payload,
+        }
+    }
+
     pub fn computer(&self) -> &ComputerId {
         match self {
             Self::Upsert { computer, .. }
@@ -356,6 +378,7 @@ impl Change {
             | Self::Tasks { computer, .. }
             | Self::Machine { computer, .. }
             | Self::Organization { computer, .. }
+            | Self::Teams { computer, .. }
             | Self::Git { computer, .. } => computer,
         }
     }

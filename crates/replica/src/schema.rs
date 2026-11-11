@@ -184,6 +184,9 @@ pub struct TaskView {
     #[cfg(not(feature = "test-without-team"))]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub team: Option<crate::TaskTeam>,
+    #[cfg(not(feature = "test-without-team"))]
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub team_invalid: bool,
     pub rank: String,
     pub session: Option<SessionKey>,
     #[serde(skip_serializing_if = "Option::is_none")]

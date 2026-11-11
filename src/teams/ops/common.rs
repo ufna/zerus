@@ -16,6 +16,9 @@ impl Context<'_> {
     }
     pub fn live_node(&self, id: u32) -> Result<Node> {
         let n = self.node(id)?;
+        if self.node_table(id)? != "nodes" {
+            return Err(invalid("Task has left the live plan."));
+        }
         if matches!(n.state, NodeState::Accepted | NodeState::Cancelled) {
             return Err(invalid("Task is already decided."));
         }
@@ -73,12 +76,18 @@ impl Context<'_> {
         }
     }
     pub fn settle(&self, node: u32) -> Result<()> {
+        self.settle_node(node, false)
+    }
+    pub fn settle_override(&self, node: u32) -> Result<()> {
+        self.settle_node(node, true)
+    }
+    fn settle_node(&self, node: u32, preserve_ready: bool) -> Result<()> {
         rows::settle_decisions(
             self.db,
             &self.team.id,
             Some(node),
             &encode(self.actor)?,
-            false,
+            preserve_ready,
         )?;
         for table in ["nodes", "node_archive"] {
             self.db

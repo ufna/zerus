@@ -254,19 +254,7 @@ pub(super) fn report(ctx: &mut Context<'_>) -> Result<()> {
 }
 
 fn require_ready(ctx: &Context<'_>, node: u32) -> Result<()> {
-    let nodes = kernel_nodes(ctx)?;
-    let mut statement = ctx
-        .db
-        .prepare("SELECT data FROM phases WHERE team=?1 ORDER BY n LIMIT 201")
-        .map_err(storage)?;
-    let phases = statement
-        .query_map([&ctx.team.id], |r| store::sql_json::<Phase>(r, 0))
-        .map_err(storage)?
-        .collect::<std::result::Result<Vec<_>, _>>()
-        .map_err(storage)?;
-    if phases.len() > 200 {
-        return Err(over("Too many phases for one readiness decision."));
-    }
+    let Readiness { phases, nodes } = readiness::load(ctx.db, &ctx.team.id)?;
     let view = zerus_team_plan::ready::PlanView {
         phases: &phases,
         nodes: &nodes,
@@ -283,82 +271,14 @@ fn require_ready(ctx: &Context<'_>, node: u32) -> Result<()> {
     }
     Ok(())
 }
-fn kernel_nodes(ctx: &Context<'_>) -> Result<Vec<Node>> {
-    let mut map = std::collections::BTreeMap::new();
-    let mut pending = Vec::new();
-    let mut bytes = 0usize;
-    let mut after = 0;
-    loop {
-        let mut statement = ctx
-            .db
-            .prepare(&format!(
-                "SELECT {} FROM nodes WHERE team=?1 AND id>?2 ORDER BY id LIMIT 200",
-                rows::NODE_SELECT
-            ))
-            .map_err(storage)?;
-        let mut count = 0;
-        for row in statement
-            .query_map(params![ctx.team.id, after], rows::node_row)
-            .map_err(storage)?
-        {
-            let mut n = row.map_err(storage)?;
-            n.deps = rows::deps(ctx.db, &ctx.team.id, n.id)?;
-            after = n.id;
-            count += 1;
-            add_kernel_node(&mut map, &mut pending, &mut bytes, n, true)?;
-        }
-        if map.len() > 600 {
-            return Err(over("Live readiness rows exceed their cap."));
-        }
-        if count < 200 {
-            break;
-        }
-    }
-    if map.len() > 600 {
-        return Err(over("Live readiness rows exceed their cap."));
-    }
-    while let Some(id) = pending.pop() {
-        if map.contains_key(&id) {
-            continue;
-        }
-        if let Some(n) = rows::archived_leaf(ctx.db, &ctx.team.id, id)? {
-            add_kernel_node(&mut map, &mut pending, &mut bytes, n, false)?;
-        }
-        // Missing dependencies remain missing: the kernel refuses them.
-    }
-    Ok(map.into_values().collect())
-}
-fn add_kernel_node(
-    map: &mut std::collections::BTreeMap<u32, Node>,
-    pending: &mut Vec<u32>,
-    bytes: &mut usize,
-    mut node: Node,
-    live: bool,
-) -> Result<()> {
-    // Only live nodes contribute outgoing edges. An archived dependency is a
-    // state/round witness, not a reason to traverse the team's history.
-    if !live {
-        node.deps.clear();
-    }
-    *bytes += encode(&node)?.len();
-    // 600 live nodes, each with at most 200 dependencies and one stage target.
-    if map.len() >= 600 * (200 + 2) || *bytes > 8 * 1024 * 1024 {
-        return Err(over("Readiness view exceeds its row or byte bound."));
-    }
-    if live {
-        pending.extend(node.deps.iter().map(|d| d.node));
-        if let Some(parent) = node.stage_of {
-            pending.push(parent);
-        }
-    }
-    map.insert(node.id, node);
-    Ok(())
+pub(super) fn kernel_nodes(ctx: &Context<'_>) -> Result<Vec<Node>> {
+    readiness::nodes(ctx.db, &ctx.team.id)
 }
 
 pub(super) fn has_attempt(ctx: &Context<'_>, node: u32) -> Result<bool> {
     ctx.db
         .query_row(
-            "SELECT EXISTS(SELECT 1 FROM effects WHERE team=?1 AND node=?2 AND generation<=?3)",
+            "SELECT EXISTS(SELECT 1 FROM effects WHERE team=?1 AND node=?2 AND generation<=?3 AND state<>'refused')",
             params![ctx.team.id, node, ctx.generation(node)?],
             |r| r.get(0),
         )

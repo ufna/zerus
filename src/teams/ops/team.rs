@@ -141,6 +141,7 @@ pub(super) fn archive(ctx: &mut Context<'_>) -> Result<()> {
     if !matches!(ctx.team.status, TeamStatus::Stopped | TeamStatus::Finished) {
         return Err(invalid("Only a stopped or finished team can be archived."));
     }
+    rows::close_cards(ctx.db, &ctx.team.id, None, &encode(ctx.actor)?)?;
     ctx.db
         .execute("DELETE FROM live_tasks WHERE team=?1", [&ctx.team.id])
         .map_err(storage)?;
