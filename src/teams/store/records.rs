@@ -118,6 +118,13 @@ pub struct IntegrationAccept {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct AttemptHolder {
+    pub member: String,
+    pub generation: u32,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct TeamRow {
     pub id: String,
     pub project: String,
@@ -132,4 +139,37 @@ pub struct TeamRow {
 pub struct WaitingCard {
     pub team: String,
     pub card: Card,
+}
+
+/// A task creation that the service must perform once or reconcile as uncertain.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StageTask {
+    pub node: u32,
+    pub target: u32,
+    /// Generation of the target report that asked for this stage.
+    pub generation: u32,
+    pub state: String,
+    pub request_id: Option<String>,
+}
+
+/// One snapshot supplies the native stage writer's exact reserved authority
+/// and content. The writer also verifies that home is this computer.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StageTaskEffect {
+    pub team: String,
+    pub node: u32,
+    pub request_id: String,
+    pub home: String,
+    pub project: String,
+    pub title: String,
+    pub text: String,
+    pub kind: zerus_team_plan::model::NodeKind,
+    pub role: String,
+    pub target: zerus_team_plan::model::TaskRef,
+    pub target_title: String,
+    pub round: u32,
+    /// Generation of the target, not of the stage's own later hand-out.
+    pub generation: u32,
 }

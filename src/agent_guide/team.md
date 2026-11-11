@@ -10,6 +10,8 @@ team only says which work it gave you and lets you ask the lead.
   hgs task add --title T  file a finding for the lead
   hgs task report REF     report the work your task's prompt names
 
+During reassignment, current follows the holder until the reopen is reserved.
+
 Ask takes one JSON request on stdin and prints one JSON reply. Take revision,
 node and generation from hgs team current:
 
@@ -20,6 +22,16 @@ node and generation from hgs team current:
 UUID is a fresh identifier and TEAM is the team current names. The reply's
 item number is what the lead answers. A request that names its own actor, or
 names the operation, is refused.
+
+After checking a stage, its holder gives a verdict on stdin:
+
+  hgs team verdict
+    {"request_id":"UUID","team":"TEAM","expected_revision":42,
+     "node":7,"generation":1,"pass":true,"text":"Checks passed."}
+
+Use the stage's node and generation from current. Set pass to false to return
+the task, and give the exact findings in text. Only the stage's holder may
+give its verdict; the person, lead and other members cannot give it for you.
 
 Do
 - Work only on the task you hold, in your own worktree, inside its write set.

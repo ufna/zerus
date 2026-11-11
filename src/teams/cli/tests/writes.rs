@@ -423,6 +423,7 @@ fn every_operation_word_is_known() {
         "cancel",
         "reply",
         "ask",
+        "verdict",
         "pause-member",
         "resume-member",
         "stop-member",
@@ -539,14 +540,6 @@ fn a_node_a_member_was_handed_shows_in_status_counts() {
         "",
     );
     assert!(reply["team"].get("bundle").is_some());
-}
-
-#[test]
-fn a_stage_word_that_belongs_to_a_later_package_is_not_invented() {
-    let harness = Harness::new();
-    bind_lead_and_m1(&harness);
-    let (reply, _) = harness.cli(&lead_caller(), "verdict", "");
-    assert_eq!(code(&reply), "not_found", "package 9 owns verdict");
 }
 
 #[test]

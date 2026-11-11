@@ -100,6 +100,14 @@ pub enum HandoutOutcome {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "status", rename_all = "snake_case", deny_unknown_fields)]
+pub enum StageTaskOutcome {
+    Created { task: TaskRef },
+    Refused { reason: String },
+    Uncertain { reason: String },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Operation {
     Create {
@@ -197,6 +205,20 @@ pub enum Operation {
         member: MemberId,
         text: String,
         commit: String,
+    },
+    StageTaskIntent {
+        node: NodeId,
+        effect_request_id: String,
+    },
+    StageTaskOutcome {
+        effect_request_id: String,
+        outcome: StageTaskOutcome,
+    },
+    Verdict {
+        node: NodeId,
+        generation: u32,
+        pass: bool,
+        text: String,
     },
     Accept {
         node: NodeId,

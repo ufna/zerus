@@ -8,14 +8,14 @@
   },
   "counts": {
     "cards": {
-      "open": 1
+      "open": 0
     },
     "inbox": {
-      "open": 1
+      "open": 0
     },
     "members": {
-      "active": 2,
-      "not_created": 2,
+      "active": 3,
+      "not_created": 1,
       "paused": 0,
       "removed": 0,
       "total": 4
@@ -23,8 +23,8 @@
     "nodes": {
       "accepted": 0,
       "cancelled": 0,
-      "in_progress": 0,
-      "pending": 1,
+      "in_progress": 1,
+      "pending": 0,
       "reported": 1,
       "waiting": 0
     }
@@ -62,9 +62,18 @@
       "role": "developer"
     },
     {
+      "account": "account-example",
       "agent": "claude",
       "id": "m3",
-      "role": "reviewer"
+      "model": "example-model",
+      "ownership_nonce": "nonce-m3",
+      "role": "reviewer",
+      "session": {
+        "machine": "00000000-0000-4000-8000-0000000000aa",
+        "session_id": "launch_id:00000000-0000-4000-8000-000000000033"
+      },
+      "state": "active",
+      "worktree": "/workspace/example-team-m3"
     }
   ],
   "ok": true,
@@ -77,7 +86,7 @@
     "name": "Fixes",
     "owner": "local",
     "project": "example-project",
-    "revision": 16,
+    "revision": 18,
     "settings": {
       "caps": {
         "max_members": 6,

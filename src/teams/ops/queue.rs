@@ -307,21 +307,36 @@ pub(super) fn observe(ctx: &mut Context<'_>) -> Result<()> {
     let mut n = ctx.node(*node)?;
     let table = ctx.node_table(*node)?;
     let (stage, was_terminal) = validate_observation(ctx, *node, o)?;
-    let released = rows::released(ctx.db, &ctx.team.id, *node)?;
+    let released =
+        rows::released(ctx.db, &ctx.team.id, *node)? || pipeline::released_stage(ctx, &n)?;
     let left = o.key != KeyState::Ours;
     if left || released {
         let release = left && !released && table == "nodes";
-        rows::record_observation(ctx.db, &ctx.team.id, *node, o, release)?;
+        rows::record_observation(ctx.db, &ctx.team.id, *node, o, release || released)?;
+        if released && n.kind == NodeKind::Stage {
+            ctx.db
+                .execute(
+                    "DELETE FROM live_tasks WHERE team=?1 AND node=?2",
+                    params![ctx.team.id, node],
+                )
+                .map_err(storage)?;
+        }
         if release {
+            pipeline::observe_override(ctx, &n)?;
             leave_team(ctx, *node)?;
         }
         return Ok(());
     }
     let active = matches!(ctx.team.status, TeamStatus::Running | TeamStatus::Paused);
+    pipeline::before_observation(ctx, &mut n, o, table == "nodes" && !was_terminal)?;
     if !active && table == "nodes" {
         archive_inactive(ctx, *node)?;
     }
-    if (table == "node_archive" || was_terminal) && !o.cancelled && o.stage != TaskStage::Done {
+    if n.kind != NodeKind::Stage
+        && (table == "node_archive" || was_terminal)
+        && !o.cancelled
+        && o.stage != TaskStage::Done
+    {
         if active {
             restore(ctx, *node, &mut n)?;
         } else if was_terminal {
@@ -334,7 +349,13 @@ pub(super) fn observe(ctx: &mut Context<'_>) -> Result<()> {
     if o.cancelled || o.stage == TaskStage::Done {
         finish_observation(ctx, *node, o.cancelled)?;
     }
-    rows::record_observation(ctx.db, &ctx.team.id, *node, o, false)
+    rows::record_observation(
+        ctx.db,
+        &ctx.team.id,
+        *node,
+        o,
+        n.kind == NodeKind::Stage && (o.cancelled || o.stage == TaskStage::Done),
+    )
 }
 fn validate_observation(
     ctx: &Context<'_>,
@@ -421,7 +442,7 @@ fn restore_row(ctx: &Context<'_>, node: u32) -> Result<()> {
 fn finish_observation(ctx: &Context<'_>, node: u32, cancelled: bool) -> Result<()> {
     ctx.db.execute(&format!("UPDATE effects SET state='observed_done' WHERE team=?1 AND node=?2 AND state IN {OPEN_EFFECT_STATES}"),params![ctx.team.id,node]).map_err(storage)?;
     ctx.close_inbox(node)?;
-    if cancelled {
+    if cancelled || ctx.node(node)?.kind == NodeKind::Stage {
         ctx.db
             .execute(
                 "DELETE FROM live_tasks WHERE team=?1 AND node=?2",
