@@ -850,6 +850,31 @@ binding decisions, base commit, branch, write set). It answers
 `start-deliver`, and the same ID never sends twice. `--recover-only` reads
 the receipt and sends nothing.
 
+**The CLI as the desktop's interface (packages 3, 5 and 12).** The client
+core reads through `hgs team` and follows the shapes package 5 pins in
+`crates/team-plan/fixtures/cli-*.json`: a page is
+`{ok, actor, team, rows, next}`, `status` is
+`{ok, actor, team, members, counts}`, and a read takes `--team`, `--limit`
+and `--after`. Three things the desktop needs are added:
+
+- `hgs team list`: the teams of this computer, a page of
+  `{id, project, name, status, lead, home, revision}` in ID order
+  (`cli-list.json`);
+- `hgs team waiting`: the open owner cards of all teams, oldest first, each
+  a card row with its team ID (`cli-waiting.json`);
+- the person's `pause-member`, `resume-member`, `stop-member` and
+  `archive-member`.
+
+The store gains the reads behind them: `teams`, `live_teams` for the
+service's pass, and `waiting`, each a bounded page that does not scan
+archived teams or closed cards. A request of a team session that only the
+person can answer is not a card; the desktop takes it from its session
+attention data.
+
+**A fact after integration was switched off (package 3).** With a valid
+permit the fact is recorded as provenance; the node changes only when it
+still needs a merge and the decision's generation is current.
+
 **Task key (package 6).** Everything under `crates/replica` is one commit of
 its own with its compatibility tests, merged after the repository owner
 confirms the replica change. Sending a task to a team and the three refusals
