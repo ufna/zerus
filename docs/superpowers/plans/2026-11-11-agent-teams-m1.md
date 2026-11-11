@@ -1021,7 +1021,10 @@ reports on a stage instead of giving a verdict produces a lead inbox item
 and nothing else; the stage's hand-out text tells the holder to answer with
 `hgs team verdict`. A report recorded by a store from before the pipeline
 tables has no run and cannot be accepted by the lead; the person accepts
-it. That affects development stores only and is a stated limit.
+it. That affects development stores only and is a stated limit; so does a
+lead's Cancel of a stage recorded before this rule, which a later board
+cancel reads as the team's own end (the lead recovers with a Return of the
+target).
 
 **A stage node is never restored (package 9).** A stage whose creation is
 not wanted, reserved or created is released. A person who moves a finished
