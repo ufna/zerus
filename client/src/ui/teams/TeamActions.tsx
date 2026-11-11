@@ -12,7 +12,7 @@ export function TeamBarActions(props: { view: TeamView; busy: boolean; onAction:
     <span class="team-bar-actions" data-strip-actions>
       <For each={barActions(props.view)}>
         {(action) => (
-          <button type="button" class="btn ghost small" classList={{ danger: action.danger }} disabled={props.busy || action.disabled}
+          <button type="button" class="btn small" classList={{ danger: action.danger }} disabled={props.busy || action.disabled}
             data-strip-action={action.id} onClick={() => props.onAction(action.id)}>{action.text}</button>
         )}
       </For>
@@ -47,7 +47,7 @@ export function MemberActions(props: { member: MemberView; busy: boolean; onActi
       <span class="team-member-actions" data-member-actions>
         <For each={memberActions(props.member)}>
           {(action) => (
-            <button type="button" class="btn ghost small" classList={{ danger: action.danger }} disabled={props.busy}
+            <button type="button" class="btn small" classList={{ danger: action.danger }} disabled={props.busy}
               data-member-action={action.id} onClick={() => props.onAction(action.id, props.member.id)}>{action.text}</button>
           )}
         </For>

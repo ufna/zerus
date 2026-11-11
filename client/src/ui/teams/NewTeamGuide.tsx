@@ -41,7 +41,7 @@ export function NewTeamHowTo(props: NewTeamHowToProps): JSX.Element {
   ];
   return (
     <section class="nt-howto" data-howto={props.open ? "open" : "closed"}>
-      <button type="button" class="nt-howto-toggle" aria-expanded={props.open} onClick={() => props.onToggle(!props.open)}>
+      <button type="button" class="btn ghost small nt-howto-toggle" aria-expanded={props.open} onClick={() => props.onToggle(!props.open)}>
         <Icon name={props.open ? "chevron-down" : "chevron-right"} size={13} />
         <span>{tr("How it works")}</span>
       </button>

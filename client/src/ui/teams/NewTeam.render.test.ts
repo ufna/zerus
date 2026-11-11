@@ -38,6 +38,25 @@ it("shows the template's roster, pipelines and the settings a person confirms", 
   expect(host.textContent).toContain("not allowed");
 });
 
+it("selects a template with a labelled native radio and creates from that choice", async () => {
+  const other = { ...catalog.templates[0], id: "small", name: "Small", roster: [{ role: "developer", count: 1, optional: false }] };
+  const { host, created } = setup({ catalog: { ...catalog, templates: [...catalog.templates, other] } });
+  const radios = host.querySelectorAll<HTMLInputElement>('input[type="radio"]');
+  expect(radios[0].checked).toBe(true);
+  expect(radios[1].closest("label")?.textContent).toContain("Small");
+  radios[1].click();
+  expect(radios[1].checked).toBe(true);
+  expect(host.textContent).toContain("Developer × 1");
+  expect(host.textContent).not.toContain("Developer × 2");
+  const name = host.querySelector<HTMLInputElement>('input[placeholder="Fixes"]')!;
+  name.value = "Small fixes"; name.dispatchEvent(new Event("input", { bubbles: true }));
+  find(host, "Check folder").click();
+  await vi.waitFor(() => expect(host.querySelector("[data-folder-ok]")).not.toBeNull());
+  find(host, "Create team").click();
+  expect(created).toHaveLength(1);
+  expect(created[0]).toMatchObject({ template: "small", name: "Small fixes" });
+});
+
 it("cannot create before the folder is a verified Git folder", async () => {
   const { host, created } = setup();
   expect(find(host, "Create team").disabled).toBe(true);

@@ -44,10 +44,15 @@ it("offers the team's own operations by its status", () => {
   expect(onAction).toHaveBeenCalledWith("stop");
 });
 
-it("folds the actions by the strip's own width", () => {
+it("folds the action row by the strip's own width while keeping operations reachable", () => {
   expect(setup(teamView, vi.fn(), 1300).host.querySelector("[data-strip-actions]")).not.toBeNull();
-  expect(setup(teamView, vi.fn(), 1000).host.querySelector("[data-strip-actions]")).toBeNull();
-  expect(setup(teamView, vi.fn(), 1000).host.querySelector(".team-bar")?.getAttribute("data-compact")).toBe("low");
+  for (const width of [1000, 850, 320]) {
+    const { host, onAction } = setup(teamView, vi.fn(), width);
+    expect(host.querySelector(".team-bar")?.getAttribute("data-compact")).toBe(width === 1000 ? "low" : "high");
+    expect([...host.querySelectorAll("[data-strip-action]")].map((button) => button.getAttribute("data-strip-action"))).toEqual(["pause", "stop"]);
+    (host.querySelector('[data-strip-action="pause"]') as HTMLButtonElement).click();
+    expect(onAction).toHaveBeenCalledWith("pause");
+  }
 });
 
 it("offers resume to a paused team and archive to a stopped one", () => {

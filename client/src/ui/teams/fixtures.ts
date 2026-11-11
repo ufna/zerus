@@ -1,3 +1,4 @@
+import { trNoop } from "../../i18n";
 import type { TeamCatalog, TeamView } from "../../store/teams";
 
 // The pinned Teams replies of package 5 (`crates/team-plan/fixtures/cli-status.json`
@@ -75,8 +76,8 @@ export const catalog: TeamCatalog = {
   ],
   templates: [{
     id: "bugfix",
-    name: "Bugfix",
-    description: "A queue of independent fixes: a developer and a reviewer.",
+    name: trNoop("Bugfix"),
+    description: trNoop("A queue of independent fixes: a developer and a reviewer."),
     lead: { agent: "claude", account: { mode: "freest" }, model: "", effort: "", rules: "" },
     roster: [{ role: "developer", count: 2, optional: false }, { role: "reviewer", count: 1, optional: false }],
     default_pipeline: "reviewed",

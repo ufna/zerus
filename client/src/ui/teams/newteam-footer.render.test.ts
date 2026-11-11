@@ -22,6 +22,7 @@ function setup(over: Partial<Parameters<typeof NewTeamFooter>[0]> = {}) {
 
 it("says nothing is created until Create team and enables it when ready", () => {
   const { host, onCreate } = setup();
+  expect([...host.querySelectorAll("button")].map((button) => button.textContent)).toEqual(["Save as template", "Create team", "Cancel"]);
   expect(host.textContent).toContain("Nothing is created until you press Create team.");
   (host.querySelector(".nt-create") as HTMLButtonElement).click();
   expect(onCreate).toHaveBeenCalledTimes(1);

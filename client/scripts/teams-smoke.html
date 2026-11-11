@@ -1,11 +1,22 @@
 <!doctype html>
 <html lang="en"><head><meta charset="utf-8"><title>Zerus Teams screens (M1, synthetic)</title>
-<style>body{margin:0;background:#161b21;color:#e8edf4;font:13px/1.4 system-ui,sans-serif}
-.smoke{display:flex;flex-direction:column;gap:18px;padding:16px;max-width:1280px}
-.smoke h1{font-size:17px;margin:0}
-.smoke-section h2{font-size:14px;margin:0 0 2px}
-.smoke-frame{border:1px solid #333c47;border-radius:8px;overflow:hidden;margin-top:6px;min-height:120px}
-.smoke-members{display:flex;flex-wrap:wrap;gap:8px;padding:10px}
-.smoke-off{padding:10px}.dim{color:#b9c2cd;font-size:12px}</style>
+<style>
+@layer utilities {
+  body { overflow: auto; }
+  .smoke { display: flex; flex-direction: column; gap: 24px; padding: 24px; max-width: 1440px; margin: auto; }
+  .smoke-head { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; }
+  .smoke-head h1 { font-size: var(--fs-xl); margin-right: auto; }
+  .smoke-head nav { display: flex; flex-wrap: wrap; gap: 6px; }
+  .smoke-head a { text-decoration: none; }
+  .smoke-head a[aria-current] { border-color: var(--z-color-accent); }
+  .smoke-narrow { max-width: 900px; }
+  .smoke-form .smoke-frame { max-width: 760px; margin-inline: auto; background: var(--z-color-surface); }
+  .smoke-section > h2 { font-size: var(--fs-md); margin-bottom: 4px; }
+  .smoke-section > p { font-size: var(--fs-sm); }
+  .smoke-frame { border: 1px solid var(--z-color-border); border-radius: var(--z-radius-lg); overflow: hidden; margin-top: 10px; background: var(--z-color-pane); }
+  .smoke-members { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 8px; padding: 12px; }
+  .smoke-off { padding: 12px; }
+}
+</style>
 </head>
 <body><div id="root"></div><script type="module" src="../src/perf/teamsSmoke.tsx"></script></body></html>

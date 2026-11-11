@@ -20,22 +20,22 @@ export function NewTeamFooter(props: NewTeamFooterProps) {
   return (
     <footer class="nt-foot" data-new-team-footer>
       <Show when={props.error}>
-        <div class="nt-blocker" role="alert" data-create-error>
+        <div class="notice danger nt-blocker" role="alert" data-create-error>
           <b>{tr("New team did not go through:")}</b> <span>{props.error}</span>
         </div>
       </Show>
       <Show when={!props.error && props.createWhy}>
-        <div class="nt-blocker" role="alert" data-create-blocker>
+        <div class="notice warn nt-blocker" role="status" data-create-blocker>
           <b>{tr("Create team is blocked:")}</b> <span>{props.createWhy}</span>
         </div>
       </Show>
       <div class="nt-foot-row">
         <span class="nt-hint grow">{tr("Nothing is created until you press Create team.")}</span>
-        <button type="button" class="btn small ghost" disabled={!props.canSave || props.saving || props.busy}
+        <button type="button" class="btn nt-save" disabled={!props.canSave || props.saving || props.busy}
           onClick={props.onSaveTemplate}>{tr("Save as template")}</button>
-        <button type="button" class="btn" disabled={props.busy} onClick={props.onCancel}>{tr("Cancel")}</button>
         <button type="button" class="btn primary nt-create" disabled={!!props.createWhy || props.busy}
           title={props.createWhy} onClick={props.onCreate}>{tr("Create team")}</button>
+        <button type="button" class="btn" disabled={props.busy} onClick={props.onCancel}>{tr("Cancel")}</button>
       </div>
     </footer>
   );

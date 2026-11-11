@@ -1,221 +1,56 @@
-/* New team and Team settings: the compact form the Team tab opens. */
-.nt {
-  display: flex;
-  flex-direction: column;
-  min-width: 0;
-  min-height: 0;
-  height: 100%;
-  background: var(--z-color-page);
-  color: var(--z-color-text);
+/* The fork's New team form, trimmed to the M1 template, settings and folder.
+   Controls and notices use the client's shared classes and skin tokens. */
+@layer components {
+  dialog.newteam-page-dialog { width: min(760px, calc(100vw - 48px)); overflow: hidden; }
+  .newteam-page { display: flex; flex-direction: column; min-height: 0; width: 100%; }
+  .nt-page-head { display: flex; align-items: center; gap: 10px; padding: 16px 20px 12px; border-bottom: 1px solid var(--z-color-divider); }
+  .nt-page-head > svg { color: var(--z-color-accent); flex: none; }
+  .nt-page-head h1 { font-size: var(--fs-lg); font-weight: 600; }
+  .nt-page-head .icon-btn { margin-left: auto; }
+  .nt-body { flex: 1; min-height: 0; min-width: 0; overflow: auto; display: flex; flex-direction: column; gap: 16px; padding: 16px 20px 0; font-size: var(--fs-sm); }
+  .nt-section { display: flex; flex-direction: column; gap: 12px; }
+  .nt-section + .nt-section { padding-top: 16px; border-top: 1px solid var(--z-color-divider); }
+  .nt-section h2, .nt-templates > b { font-size: var(--fs-sm); font-weight: 600; color: var(--z-color-text); }
+  .nt-field { display: flex; flex-direction: column; gap: 6px; min-width: 0; color: var(--z-color-label); }
+  .nt-field > .field { width: 100%; }
+  .nt-pair { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 12px; }
+  .nt-inline { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; min-width: 0; }
+  .nt-inline > .field { flex: 1 1 220px; min-width: 0; }
+  .nt-hint { color: var(--z-color-muted); font-size: var(--fs-xs); line-height: 1.5; }
+  .nt-templates { margin: 0; padding: 0; border: 0; min-width: 0; display: flex; flex-direction: column; gap: 8px; }
+  .nt-templates legend { margin-bottom: 8px; padding: 0; font-weight: 600; }
+  .nt-template-list { display: flex; flex-direction: column; gap: 6px; max-height: 210px; overflow: auto; padding: 2px; margin: -2px; }
+  .nt-template-row { display: flex; align-items: center; gap: 10px; min-height: 54px; padding: 10px 12px; text-align: left; border: 1px solid var(--z-color-card-border); border-radius: var(--z-radius-lg); background: var(--z-color-card); color: var(--z-color-text); }
+  .nt-template-row:hover { background: var(--z-color-card-hover); }
+  .nt-template-row.on { border-color: var(--z-color-card-selected-border); background: var(--z-color-card-selected); }
+  .nt-template-row input { margin: 0; flex: none; width: 14px; height: 14px; accent-color: var(--z-color-accent); }
+  .nt-template-copy { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+  .nt-template-name { font-weight: 600; font-size: var(--fs-sm); }
+  .nt-template-summary { padding: 12px; display: flex; flex-direction: column; gap: 14px; }
+  .nt-template-summary .nt-field > b { color: var(--z-color-text-2); font-weight: 600; }
+  .nt-list { display: flex; flex-direction: column; gap: 4px; color: var(--z-color-text-2); list-style: none; }
+  .nt-list li { overflow-wrap: anywhere; }
+  .nt-caps { display: grid; grid-template-columns: 130px minmax(0, 1fr); gap: 6px 12px; margin: 0; color: var(--z-color-text-2); }
+  .nt-caps dt { color: var(--z-color-muted); }
+  .nt-caps dd { margin: 0; overflow-wrap: anywhere; }
+  .nt-ok { font-size: var(--fs-xs); color: var(--z-color-status-ready); }
+  .nt-foot-bad { color: var(--z-color-danger); font-size: var(--fs-xs); }
+  .nt-intro-guide { display: flex; flex-direction: column; gap: 8px; font-size: var(--fs-xs); color: var(--z-color-muted); }
+  .nt-intro-guide h3 { font-size: var(--fs-sm); color: var(--z-color-text-2); }
+  .nt-intro-guide ol, .nt-howto-steps { display: flex; flex-direction: column; gap: 6px; margin: 0; padding-left: 20px; list-style: decimal; line-height: 1.5; }
+  .nt-howto { display: flex; flex-direction: column; gap: 8px; }
+  .nt-howto-toggle { align-self: flex-start; }
+  .nt-howto-steps { font-size: var(--fs-xs); color: var(--z-color-muted); }
+  .nt-foot { position: sticky; bottom: 0; z-index: 1; display: flex; flex-direction: column; gap: 10px; flex: none; padding: 12px 0 16px; border-top: 1px solid var(--z-color-divider); background: var(--z-color-surface); }
+  .nt-foot-row { display: flex; align-items: center; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
+  .nt-foot-row > .nt-hint { flex: 1 1 100%; }
+  .nt-foot-row > .btn { height: auto; min-height: var(--control-h); white-space: normal; }
+  .nt-foot-row > .nt-save { margin-right: auto; }
+  .nt-blocker { align-items: center; }
+  @media (max-width: 600px) {
+    .nt-pair { grid-template-columns: minmax(0, 1fr); }
+    .nt-caps { grid-template-columns: 110px minmax(0, 1fr); }
+    .nt-body { padding-left: 14px; padding-right: 14px; }
+    .nt-page-head { padding-left: 14px; padding-right: 14px; }
+  }
 }
-.nt-head { display: flex; align-items: center; gap: 8px; padding: 10px 14px; border-bottom: 1px solid var(--z-color-divider); }
-.nt-head h2 { margin: 0; font-size: var(--fs-lg); font-weight: 600; }
-.nt-body { flex: 1; min-height: 0; overflow: auto; display: flex; flex-direction: column; gap: 10px; padding: 12px 14px; }
-.nt-field { display: flex; flex-direction: column; gap: 4px; font-size: var(--fs-sm); color: var(--z-color-text-2); }
-.nt-field input, .nt-field textarea, .nt-row input, .nt-row select {
-  box-sizing: border-box;
-  min-width: 0;
-  padding: 6px 8px;
-  border: 1px solid var(--z-color-card-border);
-  border-radius: var(--z-radius-md);
-  background: var(--z-color-field);
-  color: var(--z-color-text);
-  font: inherit;
-}
-.nt-field textarea { resize: vertical; }
-.nt-goal { flex: none; }
-.nt-note { margin: 0; color: var(--z-color-warn); font-size: var(--fs-xs); line-height: 1.4; }
-.nt-members { display: flex; flex-direction: column; gap: 6px; padding-top: 4px; }
-.nt-members-head { display: flex; align-items: center; gap: 8px; font-size: var(--fs-sm); }
-.nt-hint { color: var(--z-color-muted); font-size: var(--fs-xs); }
-.nt-row { display: grid; grid-template-columns: minmax(120px, 1.4fr) 130px 180px; gap: 6px; align-items: center; }
-.nt-row .nt-error { grid-column: 1 / -1; }
-.nt-error { color: var(--z-color-danger); font-size: var(--fs-xs); }
-.nt-block-error { margin: 0; }
-.nt-created { margin: 0; color: var(--z-color-status-ready); font-size: var(--fs-sm); }
-.nt-foot { flex: none; display: flex; align-items: center; gap: 8px; padding: 10px 14px; border-top: 1px solid var(--z-color-divider); }
-.nt-check { display: flex; align-items: center; gap: 8px; font-size: var(--fs-sm); color: var(--z-color-text-2); }
-.nt-check input { flex: none; }
-.nt-settings {
-  position: absolute; right: 16px; top: 16px; bottom: 16px; width: 380px;
-  display: flex; flex-direction: column;
-  border: 1px solid var(--z-color-card-border); border-radius: 11px;
-  background: var(--z-color-raised);
-  box-shadow: var(--z-shadow, 0 8px 24px rgba(0, 0, 0, .25));
-  z-index: 4;
-}
-.nt-settings .nt-body { gap: 12px; }
-/* Task 324 (Qt IronRulesEditor): the rules are a real text box, 2 to 6 rows
-   high, never the one-line bar the bare textarea fell back to; Qt caps it at
-   110 px. */
-.nt-settings textarea.nt-rules {
-  flex: none; box-sizing: border-box; min-height: 58px; max-height: 110px; width: 100%;
-  padding: 6px 8px; border: 1px solid var(--z-color-card-border); border-radius: var(--z-radius-md);
-  background: var(--z-color-field); color: var(--z-color-text); font-size: var(--fs-sm);
-  line-height: 1.4; resize: vertical;
-}
-.nt-settings .nt-field textarea.nt-rules { min-height: 46px; }
-/* Task 42: Qt's New team fields. */
-.nt-inline { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-.nt-inline .grow { flex: 1; min-width: 0; }
-.nt-unseen { border: 0; background: none; padding: 0 2px; color: var(--z-color-accent); cursor: pointer; font-size: 10px; }
-.nt-add { position: relative; }
-.nt-add-menu { position: absolute; right: 0; top: calc(100% + 4px); z-index: 5; min-width: 220px; }
-.nt-member { grid-template-columns: minmax(110px, 1.2fr) 96px minmax(110px, 1fr) 90px 90px 120px 130px auto 28px 28px; }
-.nt-options { display: flex; flex-direction: column; gap: 8px; padding-top: 6px; border-top: 1px solid var(--z-color-divider); }
-.nt-max { width: 80px; }
-.nt-lead { display: flex; flex-direction: column; gap: 6px; margin: 0; padding: 10px 12px; border: 1px solid var(--z-color-card-border); border-radius: 9px; }
-.nt-lead legend { padding: 0 4px; font-size: var(--fs-sm); color: var(--z-color-text-2); }
-.nt-lead-row { grid-template-columns: 110px minmax(120px, 1fr) 100px 140px; }
-@media (max-width: 700px) {
-  .nt-row, .nt-member, .nt-lead-row { grid-template-columns: 1fr; }
-  .nt-settings { left: 12px; right: 12px; width: auto; }
-}
-.nt-confirm { margin: 8px 14px; padding: 10px 12px; border: 1px solid var(--z-color-warn); border-radius: var(--z-radius-md); background: var(--z-color-warn-bg); }
-.nt-confirm p { margin: 0 0 8px; font-size: var(--fs-sm); }
-.nt-confirm-actions { display: flex; gap: 6px; justify-content: flex-end; }
-.newteam-page, .catalog-page { height: 100%; overflow: auto; padding: 18px 22px; }
-.nt-page-head { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; }
-.nt-page-head h1 { margin: 0; font-size: var(--fs-lg); }
-.set-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
-.set-note { color: var(--z-color-muted); font-size: var(--fs-sm); max-width: 620px; }
-
-/* Task 88: the Tests section of the team settings. */
-.nt-mono { font-family: var(--z-font-mono, ui-monospace, monospace); font-size: var(--fs-xs); white-space: pre-wrap; overflow-wrap: anywhere; }
-.nt-list { margin: 4px 0 8px; padding-left: 18px; font-size: var(--fs-sm); color: var(--z-color-text2, inherit); }
-.nt-list li { overflow-wrap: anywhere; }
-
-/* Task 200: settings on the left, the lead's pane (Chat, Goal, Plan) on the right, as Qt's TeamNewTab. */
-.nt-split { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(360px, 1fr) minmax(320px, 0.9fr); }
-.nt-split > .nt-body { border-right: 1px solid var(--z-color-divider); }
-.nt-lead-pane { min-width: 0; min-height: 0; display: flex; flex-direction: column; gap: 10px; padding: 12px 14px; overflow: auto; }
-.nt-lead-pane .team-conversation { flex: 1; min-height: 260px; }
-.nt-lead-head { display: flex; align-items: center; gap: 8px; }
-.nt-caps { font-size: 10px; letter-spacing: 0.06em; color: var(--z-color-muted); }
-.ell { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.nt-lead-tabs { display: inline-flex; border: 1px solid var(--z-color-card-border); border-radius: 7px; overflow: hidden; flex: none; }
-.nt-lead-tabs button { border: 0; background: none; color: var(--z-color-text-2); padding: 3px 10px; font: inherit; font-size: var(--fs-sm); cursor: pointer; }
-.nt-lead-tabs button.on { background: var(--z-color-accent-bg); color: var(--z-color-accent); }
-.nt-start { display: flex; justify-content: center; padding-top: 4px; }
-.nt-goal textarea { min-height: 200px; }
-.nt-plan-list { margin: 6px 0 0; padding-left: 20px; display: flex; flex-direction: column; gap: 4px; font-size: var(--fs-sm); }
-.nt-plan-list li > span + span { margin-left: 8px; }
-.nt-templates { display: flex; flex-direction: column; gap: 4px; }
-.nt-template-list { display: flex; flex-direction: column; max-height: 210px; overflow: auto; border: 1px solid var(--z-color-card-border); border-radius: 8px; }
-.nt-template-row { display: flex; align-items: center; gap: 8px; min-height: 30px; padding: 0 4px 0 10px; cursor: pointer; color: var(--z-color-text); font-size: var(--fs-sm); }
-.nt-template-row:hover { background: var(--z-color-raised); }
-.nt-template-row.on { background: var(--z-color-accent-bg); }
-.nt-star, .nt-star-filter { border: 0; background: none; cursor: pointer; color: var(--z-color-muted); font-size: 14px; padding: 0 6px; }
-.nt-star.on, .nt-star-filter.on { color: #c99a1e; }
-.nt-star-filter { border: 1px solid var(--z-color-card-border); border-radius: 6px; padding: 2px 8px; }
-.nt-template-detail { margin: 0; white-space: pre-line; }
-.nt-drafts { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-bottom: 10px; }
-.nt-drafts .btn.on { border-color: var(--z-color-accent); color: var(--z-color-accent); }
-.newteam-page.embedded { padding: 0; }
-@media (max-width: 860px) {
-  .nt-split { grid-template-columns: 1fr; }
-  .nt-split > .nt-body { border-right: 0; border-bottom: 1px solid var(--z-color-divider); }
-}
-/* The narrower settings column: each member takes two lines (role, agent, model, effort, permissions; computer, account, worktree, duplicate, remove). */
-.nt-split .nt-member { grid-template-columns: repeat(5, minmax(0, 1fr)); padding-bottom: 8px; border-bottom: 1px dashed var(--z-color-divider); }
-.nt-split .nt-member > .icon-btn { justify-self: start; }
-.nt-split .nt-member > .nt-error { grid-column: 1 / -1; }
-.nt-split .nt-lead-row { grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr); }
-
-/* Task #308: the project's working-mode proposal. */
-.nt-working-mode { border: 1px solid var(--z-color-border); border-radius: var(--z-radius-lg); padding: 8px 10px; display: flex; flex-direction: column; gap: 5px; }
-.nt-working-reasons { margin: 0; padding-left: 18px; color: var(--z-color-text-3); font-size: var(--fs-sm); }
-/* Task #308, #337: the project's working-mode suggestion, as one compact row
-   (its title row, the differing settings and the three actions); the reasons
-   stay in the row's tooltip. */
-.team-working-mode { border: 1px solid color-mix(in srgb, var(--z-color-warn) 55%, var(--z-color-border)); background: color-mix(in srgb, var(--z-color-warn) 6%, var(--z-color-raised)); border-radius: var(--z-radius-lg); padding: 6px 10px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 6px 0; font-size: var(--fs-sm); }
-.team-working-mode > b { color: var(--z-color-warn); font-weight: 600; min-width: 0; }
-.team-working-mode .team-working-mode-wrong { color: var(--z-color-text-3); min-width: 0; }
-.team-working-mode .grow { flex: 1; }
-/* Task #451 (owner, 2026-11-09): the block's buttons answer: what hgs did, or
-   why it refused, stays under the row until the owner dismisses it. */
-.team-working-mode-note { display: flex; align-items: center; gap: 8px; margin: -2px 0 6px; padding: 4px 10px; border: 1px solid var(--z-color-border); border-radius: var(--z-radius-lg); background: var(--z-color-raised); color: var(--z-color-text-2); font-size: var(--fs-sm); }
-.team-working-mode-note > .ell { flex: 1; min-width: 0; }
-.team-working-mode-note.danger { border-color: color-mix(in srgb, var(--z-color-danger) 55%, var(--z-color-border)); color: var(--z-color-danger); }
-
-/* Task #314 (F1)'s member-card rules moved to sessions.css with the session list's own class names (task 425). */
-/* Task #314 (F10): New team fills the window; only the form body scrolls and
-   the footer stays visible instead of a second page scrollbar. */
-.newteam-page, .newteam-page.embedded { width: 100%; max-width: none; box-sizing: border-box; overflow: hidden; }
-/* Task #328 (F10b): the rail page ends above the 28 px status bar, so its
-   footer is fully visible. */
-.newteam-page:not(.embedded) { padding-bottom: 34px; }
-.newteam-page .nt { width: 100%; max-width: none; }
-.newteam-page .nt-split { width: 100%; min-width: 0; }
-.newteam-page .nt-body, .newteam-page .nt-lead-pane { min-width: 0; }
-.newteam-page .nt-foot { position: relative; z-index: 1; background: var(--z-color-page); }
-
-/* Task #8 (team ede724c4): the plan mode the owner chooses (the lead may
-   offer one; a lead change is marked until seen), and the page's how-to. */
-.nt-plan-mode { border: 1px solid var(--z-color-border); border-radius: var(--z-radius-lg); padding: 8px 10px; display: flex; flex-direction: column; gap: 6px; }
-.nt-plan-mode.nt-changed { border-color: color-mix(in srgb, var(--z-color-accent) 60%, var(--z-color-border)); }
-.nt-plan-modes { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 6px; }
-.nt-plan-mode-choice { display: flex; align-items: flex-start; gap: 6px; padding: 6px 8px; border: 1px solid var(--z-color-divider); border-radius: var(--z-radius-md); cursor: pointer; font-size: var(--fs-sm); color: var(--z-color-text-2); }
-.nt-plan-mode-choice.on { border-color: var(--z-color-accent); }
-.nt-plan-mode-choice input { margin-top: 2px; }
-.nt-plan-mode-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
-.nt-plan-mode-label { color: var(--z-color-text); font-weight: 600; }
-.nt-plan-offer { font-size: var(--fs-sm); }
-.nt-howto { display: flex; flex-direction: column; gap: 4px; flex: none; }
-.nt-howto-toggle { align-self: flex-start; display: inline-flex; align-items: center; gap: 4px; border: 0; background: none; padding: 0; color: var(--z-color-text-2); font-size: var(--fs-sm); font-weight: 600; cursor: pointer; }
-.nt-howto-steps { margin: 0; padding-left: 22px; color: var(--z-color-text-3); font-size: var(--fs-xs); line-height: 1.5; }
-
-/* Owner, 2026-11-09: the New team intro (before a draft) and the draft's Phases page. Unlayered: packaged layer order. */
-.nt-intro { display: grid; grid-template-columns: minmax(280px, 1fr) minmax(320px, 1fr); gap: 24px; padding: 16px; overflow: auto; }
-@media (max-width: 900px) { .nt-intro { grid-template-columns: 1fr; } }
-.nt-intro-guide h3 { margin: 0 0 10px; font-size: var(--fs-md); }
-.nt-intro-guide ol { margin: 0; padding-left: 20px; display: flex; flex-direction: column; gap: 8px; line-height: 1.5; }
-.nt-intro-lead { display: flex; flex-direction: column; gap: 12px; }
-.nt-intro-start { align-self: flex-start; height: 40px; padding: 0 22px; font-size: var(--fs-md); font-weight: 600; display: inline-flex; align-items: center; gap: 8px; }
-.nt-phases { display: flex; flex-direction: column; gap: 8px; padding: 4px 0; overflow: auto; }
-.nt-phase-list { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 8px; }
-.nt-phase { padding: 8px 10px; border: 1px solid var(--z-color-card-border); border-radius: 8px; background: var(--z-color-card); display: flex; flex-direction: column; gap: 4px; }
-.nt-phase-goal { margin: 0; font-size: var(--fs-xs); }
-.nt-phase-goal.empty { color: var(--z-color-muted); font-style: italic; }
-.nt-phase-tasks { margin: 0; padding-left: 16px; font-size: var(--fs-xs); }
-/* Owner, 2026-11-09: the create bar under the form, with what blocks it. */
-.nt-body > .nt-foot { position: sticky; bottom: 0; display: flex; flex-direction: column; gap: 6px; padding: 10px 0 4px; background: var(--z-color-pane); border-top: 1px solid var(--z-color-divider); }
-.nt-foot-row { display: flex; align-items: center; gap: 8px; }
-.nt-blocker { padding: 8px 10px; border-radius: 8px; border: 1px solid color-mix(in srgb, var(--z-color-danger, #e5484d) 55%, transparent); background: color-mix(in srgb, var(--z-color-danger, #e5484d) 10%, transparent); font-size: var(--fs-xs); display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
-.nt-blocker-list { flex-basis: 100%; margin: 2px 0 0; padding-left: 18px; }
-.nt-foot-bad { color: var(--z-color-danger, #e5484d); }
-.nt-create { height: 32px; padding: 0 18px; font-weight: 600; }
-
-/* Owner, 2026-11-09 ("кому говорилось в одну строчку выровнять?"): one line per
-   member in the split New team: role, agent, model, effort, permissions,
-   computer, account, own worktree, duplicate, remove. Unlayered: packaged order. */
-.nt-split .nt-member {
-  grid-template-columns: minmax(96px, 1.3fr) 76px minmax(96px, 1fr) 82px 92px 104px minmax(96px, 1fr) 22px 26px 26px;
-  gap: 4px; padding-bottom: 4px; border-bottom: 1px dashed var(--z-color-divider);
-}
-.nt-split .nt-member select, .nt-split .nt-member input:not([type="checkbox"]) { min-width: 0; height: 28px; padding: 0 6px; font-size: 12px; }
-.nt-split .nt-member .nt-check { font-size: 0; justify-self: center; }
-.nt-split .nt-member .nt-check input { margin: 0; }
-.nt-split .nt-member > .icon-btn { justify-self: center; }
-@media (max-width: 1100px) { .nt-split .nt-member { grid-template-columns: repeat(5, minmax(0, 1fr)); } .nt-split .nt-member .nt-check { font-size: inherit; } }
-
-/* Task #13 (team ede724c4): the lead's offers for the owner's settings. */
-.nt-setting-offers { border: 1px solid color-mix(in srgb, var(--z-color-accent) 60%, var(--z-color-border)); border-radius: var(--z-radius-lg); padding: 8px 10px; display: flex; flex-direction: column; gap: 4px; font-size: var(--fs-sm); }
-
-/* M1's New team: the template list, the field pairs and the sections the
-   adapted form shows. The fork's grid rows belong to its draft form. */
-.nt-templates { display: flex; flex-direction: column; gap: 6px; }
-.nt-template-list { display: flex; flex-direction: column; gap: 4px; }
-.nt-template-row { display: flex; flex-direction: column; gap: 2px; text-align: left; padding: 7px 10px;
-  border: 1px solid var(--z-color-card-border); border-radius: var(--z-radius-md); background: var(--z-color-card); color: var(--z-color-text); cursor: pointer; }
-.nt-template-row:hover { background: var(--z-color-card-hover); }
-.nt-template-row[aria-selected="true"] { border-color: var(--z-color-accent); }
-.nt-template-row .nt-hint { color: var(--z-color-text-3); }
-.nt-pair { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
-.nt-body > .nt-row { grid-template-columns: 1fr; }
-.nt-field .nt-inline { display: flex; align-items: center; gap: 6px; }
-.nt-field .nt-inline input { flex: 1 1 auto; width: auto; min-width: 0; }
-.nt-caps { display: grid; grid-template-columns: 150px 1fr; gap: 2px 10px; font-size: var(--fs-sm); color: var(--z-color-text-2); margin: 0; }
-.nt-caps dt { color: var(--z-color-text-3); }
-.nt-caps dd { margin: 0; }
-.nt-list { margin: 0; padding-left: 18px; color: var(--z-color-text-2); }

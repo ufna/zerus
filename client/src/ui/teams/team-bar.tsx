@@ -1,14 +1,12 @@
-import { For, Show, createMemo, createSignal, onCleanup, onMount } from "solid-js";
+import { For, createMemo, createSignal, onCleanup, onMount } from "solid-js";
 import { tr } from "../../i18n";
 import { Icon } from "../lib/icons";
 import { progress, stateLabel, stateTone } from "./team-model";
 import { TeamBarActions } from "./TeamActions";
 import type { TeamView } from "./types";
 
-// Task #427/#463 (the fork's strip): the team bar. One row with fixed gaps: the
-// name shrinks, the progress track keeps a min and a max, the counts never
-// wrap, and below 1100 px the actions fold by the strip's own width. M1 shows
-// only the operations of a queue team.
+// The fork's strip, adapted to queue teams. Narrow strips fold the action row
+// below the counts; every operation remains reachable.
 
 /** The strip's fold thresholds, on the strip's own width. */
 export const compactFor = (width: number): "none" | "low" | "high" => (width < 900 ? "high" : width < 1100 ? "low" : "none");
@@ -43,6 +41,7 @@ export function TeamBar(props: {
     { key: "reported", n: counts().reported },
     { key: "active", n: counts().active },
     { key: "waiting", n: counts().waiting },
+    { key: "rest", n: counts().total - counts().accepted - counts().reported - counts().active - counts().waiting },
   ].filter((segment) => segment.n > 0);
   const countsTip = () => [tr("Accepted %1", counts().accepted), tr("In review %1", counts().reported),
     tr("In progress %1", counts().active), tr("Waiting %1", counts().waiting)].join(", ");
@@ -56,14 +55,11 @@ export function TeamBar(props: {
       </div>
       <span class="mono team-count">{counts().accepted}/{counts().total}</span>
       <span class="team-chips" data-strip-chips>
-        <span class="team-chip" title={tr("Active members")}>{tr("%1 active", props.view.bar.counts.members.active)}</span>
-        <span class="team-chip" title={tr("Open inbox items")}>{tr("%1 inbox", props.view.bar.counts.inbox)}</span>
-        <span class="team-chip" title={tr("Open cards")}>{tr("%1 cards", props.view.bar.counts.cards)}</span>
+        <span class="chip team-chip" title={tr("Active members")}><Icon name="users" size={12} />{tr("%1 active", props.view.bar.counts.members.active)}</span>
+        <span class="chip team-chip" title={tr("Open inbox items")}><Icon name="inbox" size={12} />{tr("%1 inbox", props.view.bar.counts.inbox)}</span>
+        <span class="chip team-chip" title={tr("Open cards")}><Icon name="layers" size={12} />{tr("%1 cards", props.view.bar.counts.cards)}</span>
       </span>
-      <span class="grow" />
-      <Show when={compact() === "none"}>
-        <TeamBarActions view={props.view} busy={props.busy} onAction={props.onAction} />
-      </Show>
+      <TeamBarActions view={props.view} busy={props.busy} onAction={props.onAction} />
     </header>
   );
 }

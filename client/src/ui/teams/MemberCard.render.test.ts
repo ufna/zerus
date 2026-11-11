@@ -31,12 +31,17 @@ it("shows the member's role, state, account and bound session", () => {
   expect(host.textContent).toContain("active");
   expect(host.textContent).toContain("account-example");
   expect(host.querySelector(".team-member-session")?.textContent).toContain("launch_id:");
+  const session = host.querySelector(".team-member-session")!;
+  expect(session.textContent!.length).toBeLessThan(member().session!.session_id.length);
+  expect(session.getAttribute("title")).toBe(member().session!.session_id);
+  expect(session.getAttribute("aria-label")).toBe(member().session!.session_id);
 });
 
 it("marks the lead and a state's tone", () => {
   const { host } = setup(member({ id: "lead", role: "lead", lead: true }));
   expect(host.querySelector(".team-member-card")?.classList.contains("team-lead")).toBe(true);
   expect(host.querySelector(".tm-state-badge")?.getAttribute("data-tone")).toBe("info");
+  expect(host.querySelector(".team-member-card")?.getAttribute("data-state-color")).toBe("info");
   expect(host.querySelector(".team-member-lead")?.textContent).toBe("lead");
 });
 

@@ -1,4 +1,4 @@
-import { For, Show, createMemo, createSignal, onCleanup, onMount } from "solid-js";
+import { For, Show, createMemo, createSignal, createUniqueId, onCleanup, onMount } from "solid-js";
 import type { JSX } from "solid-js";
 import { tr } from "../../i18n";
 import { selected } from "../../store/ui";
@@ -10,6 +10,7 @@ import { NewTeamFooter } from "./NewTeamFooter";
 import { NewTeamHowTo, NewTeamIntroSteps } from "./NewTeamGuide";
 import { NewTeamPage } from "./NewTeamPage";
 import { TextInput } from "../lib/TextField";
+import { Icon } from "../lib/icons";
 import "../styles/newteam.css";
 
 // New team (Qt's NewTeamWindow, the fork's form adapted to M1): a dialog from a
@@ -80,6 +81,7 @@ export interface NewTeamProps {
 
 /** The form alone, from a catalog: the render tests pass their own. */
 export function NewTeam(props: NewTeamProps): JSX.Element {
+  const templateGroup = createUniqueId();
   const [templateId, setTemplateId] = createSignal(props.catalog?.templates[0]?.id ?? "");
   const [name, setName] = createSignal("");
   const [goal, setGoal] = createSignal("");
@@ -131,77 +133,76 @@ export function NewTeam(props: NewTeamProps): JSX.Element {
 
   return (
     <div class="nt-body" data-new-team-form>
-      <Show when={props.catalogError}><div class="nt-error" role="alert">{props.catalogError}</div></Show>
-      <section class="nt-templates" aria-label={tr("Template")}>
-        <div class="nt-inline"><b>{tr("Template")}</b></div>
-        <div class="nt-template-list" role="listbox" aria-label={tr("Template")}>
+      <Show when={props.catalogError}><div class="notice danger nt-error" role="alert"><Icon name="triangle-alert" size={16} /><span>{props.catalogError}</span></div></Show>
+      <fieldset class="nt-templates">
+        <legend>{tr("Template")}</legend>
+        <div class="nt-template-list">
           <For each={props.catalog?.templates ?? []}>
             {(candidate) => (
-              <button type="button" class="nt-template-row" role="option" aria-selected={templateId() === candidate.id}
-                data-template={candidate.id} title={candidate.description || candidate.name} onClick={() => setTemplateId(candidate.id)}>
-                <span class="nt-template-name">{candidate.name || candidate.id}</span>
-                <span class="nt-hint">{candidate.description}</span>
-              </button>
+              <label class="nt-template-row" classList={{ on: templateId() === candidate.id }} data-template={candidate.id}>
+                <input type="radio" name={templateGroup} value={candidate.id} checked={templateId() === candidate.id} onChange={() => setTemplateId(candidate.id)} />
+                <span class="nt-template-copy"><span class="nt-template-name">{tr(candidate.name || candidate.id)}</span><span class="nt-hint">{tr(candidate.description)}</span></span>
+              </label>
             )}
           </For>
         </div>
-        <Show when={template()}>{(chosen) => <p class="nt-hint nt-template-detail">{chosen().description}</p>}</Show>
-      </section>
-      <div class="nt-pair">
-        <label class="nt-field">{tr("Team name")}
-          <TextInput class="field" value={name()} onInput={(event) => setName(event.currentTarget.value)} placeholder={tr("Fixes")} historyKey="team-name" />
-        </label>
-        <label class="nt-field">{tr("Goal")}
-          <TextInput class="field" value={goal()} onInput={(event) => setGoal(event.currentTarget.value)} placeholder={tr("What should the team work on?")} historyKey="team-goal" />
-        </label>
-      </div>
-      <div class="nt-pair">
+      </fieldset>
+      <section class="nt-section" aria-label={tr("Team")}>
+        <h2>{tr("Team")}</h2>
+        <div class="nt-pair">
+          <label class="nt-field">{tr("Team name")}
+            <TextInput class="field" value={name()} onInput={(event) => setName(event.currentTarget.value)} placeholder={tr("Fixes")} historyKey="team-name" />
+          </label>
+          <label class="nt-field">{tr("Goal")}
+            <TextInput class="field" value={goal()} onInput={(event) => setGoal(event.currentTarget.value)} placeholder={tr("What should the team work on?")} historyKey="team-goal" />
+          </label>
+        </div>
         <label class="nt-field">{tr("Project")}
           <TextInput class="field" value={project()} onInput={(event) => setProject(event.currentTarget.value)} historyKey="team-project" />
         </label>
-      </div>
+      </section>
       <Show when={template()}>
         {(chosen) => (
-          <div class="nt-pair">
-            <section class="nt-field" aria-label={tr("Roster")}>
-              <b>{tr("Roster")}</b>
-              <ul class="nt-list"><For each={rosterLines(props.catalog!, chosen())}>{(line) => <li>{line}</li>}</For></ul>
-            </section>
-            <section class="nt-field" aria-label={tr("Pipelines")}>
-              <b>{tr("Pipelines")}</b>
-              <ul class="nt-list"><For each={pipelineLines(props.catalog!, chosen())}>{(line) => <li>{line}</li>}</For></ul>
-            </section>
-          </div>
-        )}
-      </Show>
-      <Show when={template()}>
-        {(chosen) => (
-          <section class="nt-field" aria-label={tr("Settings")}>
-            <b>{tr("Settings")}</b>
-            <dl class="nt-caps"><For each={settingLines(chosen())}>{([label, value]) => <><dt>{label}</dt><dd>{value}</dd></>}</For></dl>
+          <section class="nt-section" aria-label={tr("Settings")}>
+            <h2>{tr("Settings")}</h2>
+            <div class="box nt-template-summary">
+              <div class="nt-pair">
+                <section class="nt-field" aria-label={tr("Roster")}>
+                  <b>{tr("Roster")}</b>
+                  <ul class="nt-list"><For each={rosterLines(props.catalog!, chosen())}>{(line) => <li>{line}</li>}</For></ul>
+                </section>
+                <section class="nt-field" aria-label={tr("Pipelines")}>
+                  <b>{tr("Pipelines")}</b>
+                  <ul class="nt-list"><For each={pipelineLines(props.catalog!, chosen())}>{(line) => <li>{line}</li>}</For></ul>
+                </section>
+              </div>
+              <dl class="nt-caps"><For each={settingLines(chosen())}>{([label, value]) => <><dt>{label}</dt><dd>{value}</dd></>}</For></dl>
+            </div>
           </section>
         )}
       </Show>
-      <section class="nt-field" aria-label={tr("Project folder")}>
-        <b>{tr("Project folder")}</b>
+      <section class="nt-section" aria-label={tr("Project folder")}>
+        <h2>{tr("Project folder")}</h2>
         <div class="nt-inline">
-          <TextInput class="field grow" value={folder()} onInput={(event) => { setFolder(event.currentTarget.value); setFacts(undefined); }} historyKey="team-folder" />
-          <button type="button" class="btn small" disabled={checking() || !folder().trim()} onClick={() => void check()}>{tr("Check folder")}</button>
+          <TextInput class="field mono" aria-label={tr("Project folder")} value={folder()} onInput={(event) => { setFolder(event.currentTarget.value); setFacts(undefined); }} historyKey="team-folder" />
+          <button type="button" class="btn" data-check-folder disabled={checking() || !folder().trim()} onClick={() => void check()}>{tr("Check folder")}</button>
         </div>
         <Show when={facts()}>
           {(checked) => checked().git
-            ? <span class="nt-ok" data-folder-ok>{tr("A Git folder at %1, base commit %2.", checked().branch || tr("detached"), checked().head.slice(0, 12))}</span>
-            : <span class="nt-foot-bad" data-folder-bad>{tr("Not a Git folder: %1", checked().reason)}</span>}
+            ? <span class="nt-ok" role="status" data-folder-ok>{tr("A Git folder at %1, base commit %2.", checked().branch || tr("detached"), checked().head.slice(0, 12))}</span>
+            : <span class="nt-foot-bad" role="status" data-folder-bad>{tr("Not a Git folder: %1", checked().reason)}</span>}
         </Show>
         <label class="nt-field">{tr("Integration branch")}
-          <TextInput class="field" value={proposed()} onInput={(event) => setBranch(event.currentTarget.value)}
+          <TextInput class="field mono" value={proposed()} onInput={(event) => setBranch(event.currentTarget.value)}
             disabled={template()?.settings.integration !== "branch"} historyKey="team-branch" />
         </label>
       </section>
-      <Show when={error()}><div class="nt-error" role="alert" data-new-team-error>{error()}</div></Show>
-      <Show when={saved()}><div class="nt-note" role="status">{saved()}</div></Show>
-      <NewTeamIntroSteps />
-      <NewTeamHowTo open={howto()} onToggle={setHowto} />
+      <Show when={error()}><div class="notice danger nt-error" role="alert" data-new-team-error><Icon name="triangle-alert" size={16} /><span>{error()}</span></div></Show>
+      <Show when={saved()}><div class="notice nt-note" role="status"><Icon name="check" size={16} /><span>{saved()}</span></div></Show>
+      <section class="nt-section">
+        <NewTeamIntroSteps />
+        <NewTeamHowTo open={howto()} onToggle={setHowto} />
+      </section>
       <NewTeamFooter busy={props.busy} createWhy={createWhy()} error={error()} canSave={!!template()} saving={saving()}
         onSaveTemplate={() => void save()} onCancel={props.onClose} onCreate={create} />
     </div>
@@ -211,13 +212,19 @@ export function NewTeam(props: NewTeamProps): JSX.Element {
 /** The dialog the rail and the command table open; the catalog is read on open. */
 export function NewTeamDialog() {
   let dialog: HTMLDialogElement | undefined;
+  const origin = document.activeElement instanceof HTMLElement ? document.activeElement : undefined;
   const open = createMemo(() => teams.newTeamOpen());
-  onMount(() => { if (open()) dialog?.showModal(); });
-  onCleanup(() => { if (dialog?.open) dialog.close(); });
+  onMount(() => {
+    if (open()) {
+      dialog?.showModal();
+      queueMicrotask(() => dialog?.querySelector<HTMLInputElement>('input[type="radio"]:checked')?.focus());
+    }
+  });
+  onCleanup(() => { if (dialog?.open) dialog.close(); if (origin?.isConnected) origin.focus(); });
   const close = () => teams.closeNewTeam();
   return (
     <Show when={open()}>
-      <dialog ref={dialog} class="dlg newteam-page-dialog" aria-labelledby="new-team-title" open
+      <dialog ref={dialog} class="dlg newteam-page-dialog" aria-labelledby="new-team-title"
         onCancel={(event) => { event.preventDefault(); close(); }}>
         <NewTeamPage onClose={close}>
           <NewTeam

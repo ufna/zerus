@@ -10,6 +10,7 @@ import { TaskActions } from "./TeamActions";
 import { TeamConfirmDialog } from "./TeamConfirmDialog";
 import { stageLine } from "./task-line";
 import { TextInput } from "../lib/TextField";
+import { Icon } from "../lib/icons";
 import type { MemberView, TaskView } from "./types";
 import "../styles/teams.css";
 
@@ -50,13 +51,15 @@ export function TeamWorkspace(props: {
       <TeamBar view={props.view} busy={props.busy} onAction={(kind) => send(kind)} />
       <Show when={props.failure}>
         {(failure) => (
-          <div class="team-notice" role="alert" data-team-failure>
-            {failure().code === "cursor_reset" ? failure().message : tr("Teams read failed: %1", failure().message)}
+          <div class="notice danger team-notice" role="alert" data-team-failure>
+            <Icon name="triangle-alert" size={16} />
+            <span>{failure().code === "cursor_reset" ? failure().message : tr("Teams read failed: %1", failure().message)}</span>
           </div>
         )}
       </Show>
       <div class="team-body">
         <aside class="team-members" data-team-members aria-label={tr("Members")}>
+          <header class="team-section-head"><Icon name="users" size={14} /><h3>{tr("Members")}</h3><span class="count">{props.view.members.length}</span></header>
           <For each={props.view.members}>
             {(member: MemberView) => <MemberCard member={member} busy={props.busy}
               onAction={(kind, id) => send(kind, { member: id })} />}
@@ -64,20 +67,25 @@ export function TeamWorkspace(props: {
         </aside>
         <section class="team-main">
           <div class="team-canvas">
+            <Show when={all().length} fallback={
+              <div class="empty team-empty"><Icon name="list-todo" size={24} /><h3>{tr("The queue is empty.")}</h3><p>{tr("Send a task to the team from the task board.")}</p></div>
+            }>
             <div class="team-board" data-team-board>
               <For each={groups()}>
                 {(group) => (
                   <div class="team-column" data-group={group.state}>
-                    <h3><span>{tr(LABELS[group.state] ?? group.state)}</span><span>{group.cards.length}</span></h3>
+                    <h3><span>{tr(LABELS[group.state] ?? group.state)}</span><span class="count">{group.cards.length}</span></h3>
+                    <Show when={!group.cards.length}><p class="team-column-empty">{tr("No tasks")}</p></Show>
                     <For each={group.cards}>
                       {(task: TaskView) => (
                         <button type="button" class="team-task-card" classList={{ "team-task-selected": selectedNode() === task.node }}
-                          data-node={task.node} onClick={() => setSelectedNode(task.node)} aria-label={task.title || tr("Task %1", task.node)}>
-                          <span class="team-task-title ell">{task.title || tr("Task %1", task.node)}</span>
-                          <span class="team-task-meta dim">
+                          data-node={task.node} onClick={() => setSelectedNode(task.node)} aria-pressed={selectedNode() === task.node} aria-label={task.title || tr("Task %1", task.node)}>
+                          <span class="team-task-title">{task.title || tr("Task %1", task.node)}</span>
+                          <span class="team-task-meta">
                             <span class="mono">{task.rank}</span>
                             <Show when={task.role}><span>{tr(task.role)}</span></Show>
                             <Show when={task.assignee}><span>{tr("by %1", task.assignee)}</span></Show>
+                            <Show when={!task.assignee && task.implementer}><span>{tr("Implemented by")}: {task.implementer}</span></Show>
                             <Show when={task.held}><span>{tr("held")}</span></Show>
                             <Show when={task.integrated}><span>{tr("merged")}</span></Show>
                           </span>
@@ -93,6 +101,7 @@ export function TeamWorkspace(props: {
                 )}
               </For>
             </div>
+            </Show>
             <Show when={card()}>
               {(shown) => (
                 <div class="team-task-detail" data-team-detail>
@@ -125,7 +134,7 @@ export function TeamWorkspace(props: {
                   <Show when={asking()}>
                     {(button) => (
                       <div class="team-reason">
-                        <TextInput class="input" aria-label={tr("Reason")} historyKey={`team-reason-${shown().node}`}
+                        <TextInput class="field" aria-label={tr("Reason")} historyKey={`team-reason-${shown().node}`}
                           placeholder={button().id === "return" ? tr("What must change?") : tr("Why is it cancelled?")}
                           value={reason()} onInput={(event) => setReason(event.currentTarget.value)} />
                         <button type="button" class="btn small primary" disabled={!reason().trim()}
@@ -138,14 +147,13 @@ export function TeamWorkspace(props: {
               )}
             </Show>
           </div>
-          <Show when={!all().length}><div class="team-empty">{tr("The queue is empty. Send a task to the team from the task board.")}</div></Show>
           <div class="team-toolbar">
             <Show when={props.view.truncated}><span class="team-note">{tr("Some cards are not shown.")}</span></Show>
             <span class="grow" />
             <Show when={props.view.next}>
               {(cursor) => <button type="button" class="btn small" onClick={() => props.onPage(cursor())}>{tr("More…")}</button>}
             </Show>
-            <button type="button" class="btn small" onClick={props.onAddTask}>{tr("Add task")}</button>
+            <button type="button" class="btn small" onClick={props.onAddTask}><Icon name="plus" size={14} />{tr("Add task")}</button>
           </div>
         </section>
       </div>
@@ -156,7 +164,8 @@ export function TeamWorkspace(props: {
 /** The two exits from an uncertain action; nothing repeats it by itself. */
 export function TeamUncertain(props: { detail: string; busy: boolean; onCheck: () => void; onDismiss: () => void }) {
   return (
-    <div class="team-uncertain" role="alert" data-team-uncertain>
+    <div class="notice warn team-uncertain" role="alert" data-team-uncertain>
+      <Icon name="triangle-alert" size={16} />
       <span>{props.detail}</span>
       <span class="team-finding-actions">
         <button type="button" class="btn small primary" disabled={props.busy} onClick={props.onCheck}>{tr("Check")}</button>
