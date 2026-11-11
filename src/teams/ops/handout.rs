@@ -66,10 +66,13 @@ pub(super) fn reopen_intent(ctx: &mut Context<'_>) -> Result<()> {
         unreachable!()
     };
     let n = ctx.live_node(*node)?;
+    if !has_attempt(ctx, *node)? {
+        return Err(invalid("Reopen requires a recorded earlier attempt."));
+    }
     let (seq, kind, state) = ctx
         .pending(*node)?
         .ok_or_else(|| invalid("No reopen decision is pending."))?;
-    if !matches!(kind.as_str(), "return" | "reassign") || state != "pending" {
+    if !matches!(kind.as_str(), "return" | "reassign") || state != DecisionState::Pending {
         return Err(invalid("Reopen was already reserved or is not requested."));
     }
     let target = if kind == "reassign" {
@@ -92,8 +95,8 @@ pub(super) fn reopen_intent(ctx: &mut Context<'_>) -> Result<()> {
     ctx.advance(*node, &mut revised)?;
     ctx.db
         .execute(
-            "UPDATE decisions SET state='effect_reserved',generation=?2 WHERE seq=?1",
-            params![seq, ctx.generation(*node)?],
+            "UPDATE decisions SET state=?3,generation=?2 WHERE seq=?1",
+            params![seq, ctx.generation(*node)?, DecisionState::EffectReserved],
         )
         .map_err(storage)?;
     reserve(ctx, *node, member, effect_request_id, "reopen")
@@ -302,7 +305,7 @@ fn kernel_nodes(ctx: &Context<'_>) -> Result<Vec<Node>> {
             n.deps = rows::deps(ctx.db, &ctx.team.id, n.id)?;
             after = n.id;
             count += 1;
-            add_kernel_node(&mut map, &mut pending, &mut bytes, n)?;
+            add_kernel_node(&mut map, &mut pending, &mut bytes, n, true)?;
         }
         if map.len() > 600 {
             return Err(over("Live readiness rows exceed their cap."));
@@ -318,8 +321,8 @@ fn kernel_nodes(ctx: &Context<'_>) -> Result<Vec<Node>> {
         if map.contains_key(&id) {
             continue;
         }
-        if let Some(n) = rows::node(ctx.db, &ctx.team.id, id)? {
-            add_kernel_node(&mut map, &mut pending, &mut bytes, n)?;
+        if let Some(n) = rows::archived_leaf(ctx.db, &ctx.team.id, id)? {
+            add_kernel_node(&mut map, &mut pending, &mut bytes, n, false)?;
         }
         // Missing dependencies remain missing: the kernel refuses them.
     }
@@ -329,16 +332,35 @@ fn add_kernel_node(
     map: &mut std::collections::BTreeMap<u32, Node>,
     pending: &mut Vec<u32>,
     bytes: &mut usize,
-    node: Node,
+    mut node: Node,
+    live: bool,
 ) -> Result<()> {
+    // Only live nodes contribute outgoing edges. An archived dependency is a
+    // state/round witness, not a reason to traverse the team's history.
+    if !live {
+        node.deps.clear();
+    }
     *bytes += encode(&node)?.len();
-    if map.len() >= 2048 || *bytes > 8 * 1024 * 1024 {
+    // 600 live nodes, each with at most 200 dependencies and one stage target.
+    if map.len() >= 600 * (200 + 2) || *bytes > 8 * 1024 * 1024 {
         return Err(over("Readiness view exceeds its row or byte bound."));
     }
-    pending.extend(node.deps.iter().map(|d| d.node));
-    if let Some(parent) = node.stage_of {
-        pending.push(parent);
+    if live {
+        pending.extend(node.deps.iter().map(|d| d.node));
+        if let Some(parent) = node.stage_of {
+            pending.push(parent);
+        }
     }
     map.insert(node.id, node);
     Ok(())
+}
+
+pub(super) fn has_attempt(ctx: &Context<'_>, node: u32) -> Result<bool> {
+    ctx.db
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM effects WHERE team=?1 AND node=?2 AND generation<=?3)",
+            params![ctx.team.id, node, ctx.generation(node)?],
+            |r| r.get(0),
+        )
+        .map_err(storage)
 }

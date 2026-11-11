@@ -106,3 +106,120 @@ fn ask(node: u32, body: impl Into<String>) -> Operation {
         text: body.into(),
     }
 }
+
+#[test]
+fn settling_a_node_closes_its_open_integration_cards() {
+    let mut h = Harness::new();
+    let (node, lead) = h.reported();
+    h.settings(|s| s.delegations.merge_accepted = false);
+    let card = h
+        .run(&lead, Operation::Accept { node })
+        .unwrap()
+        .item
+        .unwrap();
+    h.cancel_fact(node);
+    let cards = h.store.cards(TEAM, 200, None).unwrap().rows;
+    let c = cards.iter().find(|c| c.seq == card).unwrap();
+    assert_eq!(c.state, "closed");
+    assert_eq!(c.decision.as_deref(), Some("stale"));
+}
+#[test]
+fn a_stale_integration_card_is_closed_without_reviving_its_accept() {
+    for answer in ["approve", "reject"] {
+        let mut h = Harness::new();
+        let (node, lead) = h.reported();
+        h.settings(|s| s.delegations.merge_accepted = false);
+        let card = h
+            .run(&lead, Operation::Accept { node })
+            .unwrap()
+            .item
+            .unwrap();
+        h.cancel_fact(node);
+        // Retained stale rows from before automatic closure still need dismissal.
+        h.store.db.as_ref().unwrap().execute("UPDATE cards SET state='open',decision=NULL,decided_actor=NULL WHERE team=?1 AND seq=?2",params![TEAM,card]).unwrap();
+        h.run(
+            &person(),
+            Operation::DecideCard {
+                card,
+                decision: answer.into(),
+            },
+        )
+        .unwrap();
+        let c = h.store.cards(TEAM, 200, None).unwrap().rows.pop().unwrap();
+        assert_eq!(c.state, "closed");
+        assert_eq!(c.decision.as_deref(), Some("stale"));
+        assert_eq!(
+            h.store.decisions(TEAM, 200, None).unwrap().rows[0].state,
+            DecisionState::Settled
+        );
+    }
+}
+#[test]
+fn a_person_cannot_make_a_hand_made_integration_card() {
+    let mut h = Harness::new();
+    let node = h.add(&person(), 1);
+    refused(
+        h.run(
+            &person(),
+            Operation::OpenCard {
+                kind: "integration".into(),
+                text: "Approve a fabricated integration".into(),
+                node: Some(node),
+            },
+        ),
+        code::INVALID_STATE,
+    );
+    assert!(h.store.cards(TEAM, 200, None).unwrap().rows.is_empty());
+}
+
+#[test]
+fn a_retained_stale_integration_card_can_be_dismissed_after_stop() {
+    let mut h = Harness::new();
+    let (node, lead) = h.reported();
+    h.settings(|s| s.delegations.merge_accepted = false);
+    let card = h
+        .run(&lead, Operation::Accept { node })
+        .unwrap()
+        .item
+        .unwrap();
+    h.run(&person(), Operation::Stop).unwrap();
+    assert_eq!(
+        h.store
+            .cards(TEAM, 200, None)
+            .unwrap()
+            .rows
+            .last()
+            .unwrap()
+            .state,
+        "closed"
+    );
+    h.store
+        .db
+        .as_ref()
+        .unwrap()
+        .execute(
+            "UPDATE cards SET state='open',decision=NULL WHERE team=?1 AND seq=?2",
+            params![TEAM, card],
+        )
+        .unwrap();
+    h.run(
+        &person(),
+        Operation::DecideCard {
+            card,
+            decision: "approve".into(),
+        },
+    )
+    .unwrap();
+    let c = h.store.cards(TEAM, 200, None).unwrap().rows.pop().unwrap();
+    assert_eq!(c.state, "closed");
+    assert_eq!(c.decision.as_deref(), Some("stale"));
+    let last = h
+        .store
+        .decisions(TEAM, 200, None)
+        .unwrap()
+        .rows
+        .pop()
+        .unwrap();
+    assert_eq!(last.kind, "cancel");
+    assert_eq!(last.state, DecisionState::Pending);
+}

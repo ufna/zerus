@@ -307,8 +307,16 @@ pub(super) fn observe(ctx: &mut Context<'_>) -> Result<()> {
     let mut n = ctx.node(*node)?;
     let table = ctx.node_table(*node)?;
     let stage = validate_observation(ctx, *node, &n, o)?;
+    let active = matches!(ctx.team.status, TeamStatus::Running | TeamStatus::Paused);
+    if !active && table == "nodes" {
+        archive_inactive(ctx, *node)?;
+    }
     if table == "node_archive" && !o.cancelled && o.stage != TaskStage::Done {
-        restore(ctx, *node, &mut n)?;
+        if active {
+            restore(ctx, *node, &mut n)?;
+        } else if matches!(n.state, NodeState::Accepted | NodeState::Cancelled) {
+            ctx.event = Some("person_override");
+        }
     }
     n.title = o.title.clone();
     let target = ctx.node_table(*node)?;
@@ -399,5 +407,24 @@ fn finish_observation(ctx: &Context<'_>, node: u32, cancelled: bool) -> Result<(
             ctx.settle(node)?;
         }
     }
+    Ok(())
+}
+
+fn archive_inactive(ctx: &Context<'_>, node: u32) -> Result<()> {
+    ctx.db
+        .execute(
+            &format!(
+                "INSERT INTO node_archive({0}) SELECT {0} FROM nodes WHERE team=?1 AND id=?2",
+                rows::NODE_COLUMNS
+            ),
+            params![ctx.team.id, node],
+        )
+        .map_err(storage)?;
+    ctx.db
+        .execute(
+            "DELETE FROM nodes WHERE team=?1 AND id=?2",
+            params![ctx.team.id, node],
+        )
+        .map_err(storage)?;
     Ok(())
 }

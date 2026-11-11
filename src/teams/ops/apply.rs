@@ -131,7 +131,7 @@ fn run(ctx: &mut Context<'_>, request: &Request, existed: bool) -> Result<Reply>
         )
         .map_err(storage)?;
     journal::append(ctx, request)?;
-    rows::archive_decided(ctx.db, &ctx.team.id)?;
+    rows::archive_decided(ctx.db, &ctx.team.id, &encode(ctx.actor)?)?;
     Ok(ctx.reply.clone())
 }
 fn save(db: &Connection, actor: &Actor, request: &Request, result: &Result<Reply>) -> Result<()> {

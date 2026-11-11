@@ -200,7 +200,7 @@ fn conflict_is_a_service_recorded_return_with_its_findings() {
     )
     .unwrap();
     let decisions = h.store.decisions(TEAM, 200, None).unwrap().rows;
-    assert_eq!(decisions[0].state, "settled");
+    assert_eq!(decisions[0].state, DecisionState::Settled);
     assert_eq!(decisions[1].kind, "return");
     assert!(decisions[1].text.contains("src/example.rs"));
     h.reopen(node, "m1");
@@ -326,7 +326,7 @@ fn an_old_report_does_not_settle_a_reassignment_before_its_reopen_intent() {
             .last()
             .unwrap()
             .state,
-        "pending"
+        DecisionState::Pending
     );
     h.reopen(node, "m2");
     assert_eq!(h.store.generation(TEAM, node).unwrap(), Some(2));
@@ -359,6 +359,152 @@ fn a_late_reopen_receipt_cannot_settle_a_later_team_stop() {
         .pop()
         .unwrap();
     assert_eq!(last.kind, "cancel");
-    assert_eq!(last.state, "pending");
+    assert_eq!(last.state, DecisionState::Pending);
     assert!(h.node(node).hold);
+}
+
+#[test]
+fn a_ready_accept_can_record_its_late_receipt_after_stop_or_archive() {
+    for archive in [false, true] {
+        let mut h = Harness::new();
+        let (node, lead) = h.reported();
+        h.run(&lead, Operation::Accept { node }).unwrap();
+        h.run(&person(), Operation::Stop).unwrap();
+        if archive {
+            h.run(&person(), Operation::Archive).unwrap();
+        }
+        h.run(
+            &service(),
+            Operation::RecordIntegration {
+                node,
+                commit: COMMIT.into(),
+            },
+        )
+        .unwrap();
+        assert!(h.node(node).integrated && h.node(node).hold);
+        let fact = h.store.integration_fact(TEAM, node).unwrap().unwrap();
+        assert_eq!(fact.commit.as_deref(), Some(COMMIT));
+        assert_eq!(fact.actor["kind"], "service");
+        h.store = Store::open(h.temp.path()).unwrap();
+        assert_eq!(h.store.integration_fact(TEAM, node).unwrap(), Some(fact));
+        let last = h
+            .store
+            .decisions(TEAM, 200, None)
+            .unwrap()
+            .rows
+            .pop()
+            .unwrap();
+        assert_eq!(last.kind, "cancel");
+        assert_eq!(last.state, DecisionState::Pending);
+        refused(
+            h.run(
+                &service(),
+                Operation::RecordIntegration {
+                    node,
+                    commit: COMMIT.into(),
+                },
+            ),
+            code::INVALID_STATE,
+        );
+    }
+}
+#[test]
+fn a_ready_accept_can_record_its_late_conflict_without_a_new_return_after_stop() {
+    let mut h = Harness::new();
+    let (node, lead) = h.reported();
+    h.run(&lead, Operation::Accept { node }).unwrap();
+    h.run(&person(), Operation::Stop).unwrap();
+    h.cancel_fact(node);
+    h.run(&person(), Operation::Archive).unwrap();
+    h.run(
+        &service(),
+        Operation::RecordIntegrationConflict {
+            node,
+            conflicts: vec!["src/example.rs".into()],
+        },
+    )
+    .unwrap();
+    assert_eq!(h.node(node).state, NodeState::Cancelled);
+    let fact = h.store.integration_fact(TEAM, node).unwrap().unwrap();
+    assert_eq!(fact.conflicts, vec!["src/example.rs"]);
+    assert!(fact.commit.is_none());
+    assert_eq!(fact.actor["kind"], "service");
+    refused(
+        h.run(
+            &service(),
+            Operation::RecordIntegrationConflict {
+                node,
+                conflicts: vec!["src/other.rs".into()],
+            },
+        ),
+        code::INVALID_STATE,
+    );
+    let decisions = h.store.decisions(TEAM, 200, None).unwrap().rows;
+    assert_eq!(decisions.len(), 2);
+    assert_eq!(decisions.last().unwrap().kind, "cancel");
+    assert!(h
+        .store
+        .effects(TEAM, 200, None)
+        .unwrap()
+        .rows
+        .iter()
+        .all(|e| e.kind == "handout"));
+}
+#[test]
+fn an_unapproved_accept_never_authorizes_late_integration_after_stop() {
+    let mut h = Harness::new();
+    let (node, lead) = h.reported();
+    h.settings(|s| s.delegations.merge_accepted = false);
+    h.run(&lead, Operation::Accept { node }).unwrap();
+    h.run(&person(), Operation::Stop).unwrap();
+    refused(
+        h.run(
+            &service(),
+            Operation::RecordIntegration {
+                node,
+                commit: COMMIT.into(),
+            },
+        ),
+        code::INVALID_STATE,
+    );
+    refused(
+        h.run(
+            &service(),
+            Operation::RecordIntegrationConflict {
+                node,
+                conflicts: vec!["src/example.rs".into()],
+            },
+        ),
+        code::INVALID_STATE,
+    );
+}
+
+#[test]
+fn an_accept_settled_by_an_override_has_no_late_stop_authority() {
+    let mut h = Harness::new();
+    let (node, lead) = h.reported();
+    h.run(&lead, Operation::Accept { node }).unwrap();
+    h.cancel_fact(node);
+    h.run(&person(), Operation::Stop).unwrap();
+    refused(
+        h.run(
+            &service(),
+            Operation::RecordIntegration {
+                node,
+                commit: COMMIT.into(),
+            },
+        ),
+        code::INVALID_STATE,
+    );
+    refused(
+        h.run(
+            &service(),
+            Operation::RecordIntegrationConflict {
+                node,
+                conflicts: vec!["src/example.rs".into()],
+            },
+        ),
+        code::INVALID_STATE,
+    );
+    assert!(h.store.integration_fact(TEAM, node).unwrap().is_none());
 }

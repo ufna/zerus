@@ -4,6 +4,8 @@
 #[cfg(test)]
 mod tests;
 
+mod decision_state;
+pub use decision_state::DecisionState;
 mod pages;
 mod records;
 pub(crate) mod rows;
@@ -146,6 +148,13 @@ impl Store {
             raw.filter(|r| !r.0.is_empty()).map(|(revision,stage,cancelled,rank,title)|Ok(super::ops::TaskObservation{previous_revision:revision.clone(),revision,stage:serde_json::from_value(serde_json::Value::String(stage)).map_err(storage)?,cancelled,rank,title})).transpose()
         })
     }
+    pub fn integration_fact(&self, team: &str, node: NodeId) -> Result<Option<IntegrationFact>> {
+        self.active()?;
+        self.db.as_ref().map_or(Ok(None), |db| db.query_row(
+            "SELECT decision,node,actor,commit_id,conflicts,created_ms FROM integration_facts WHERE team=?1 AND node=?2 ORDER BY decision DESC LIMIT 1",
+            rusqlite::params![team,node], |r|Ok(IntegrationFact{decision:r.get(0)?,node:r.get(1)?,actor:sql_json(r,2)?,commit:r.get(3)?,conflicts:sql_json(r,4)?,created_ms:r.get(5)?}))
+            .optional().map_err(storage))
+    }
     pub fn generation(&self, team: &str, id: NodeId) -> Result<Option<u32>> {
         self.active()?;
         self.db.as_ref().map_or(Ok(None), |db| db.query_row(
@@ -213,6 +222,11 @@ fn initialize(db: &mut Connection) -> Result<()> {
     let version: u32 = db
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .map_err(storage)?;
+    if version == 1 {
+        return Err(storage(
+            "Version-1 Teams store belongs to an unsupported pre-release build.",
+        ));
+    }
     if version > SCHEMA_VERSION {
         return Err(storage("store schema is newer than this version of Zerus"));
     }
@@ -227,13 +241,21 @@ fn initialize(db: &mut Connection) -> Result<()> {
         .map_err(storage)?;
     let sql = match current {
         0 => Some(include_str!("schema.sql")),
-        1 => Some(include_str!("migrate-v1.sql")),
+        1 => {
+            return Err(storage(
+                "Version-1 Teams store belongs to an unsupported pre-release build.",
+            ))
+        }
         SCHEMA_VERSION => None,
         _ => return Err(storage("store schema changed")),
     };
     if let Some(sql) = sql {
-        tx.execute_batch(&sql.replace("__OPEN_EFFECT_STATES__", OPEN_EFFECT_STATES))
-            .map_err(storage)?;
+        tx.execute_batch(
+            &sql.replace("__OPEN_EFFECT_STATES__", OPEN_EFFECT_STATES)
+                .replace("__DECISION_PENDING__", DecisionState::Pending.as_str())
+                .replace("__DECISION_SETTLED__", DecisionState::Settled.as_str()),
+        )
+        .map_err(storage)?;
     }
     tx.commit().map_err(storage)
 }

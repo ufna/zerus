@@ -18,7 +18,11 @@ pub(super) fn accept(ctx: &mut Context<'_>) -> Result<()> {
         *node,
         "accept",
         "",
-        if owner { "awaiting_owner" } else { "ready" },
+        if owner {
+            DecisionState::AwaitingOwner
+        } else {
+            DecisionState::Ready
+        },
     )?;
     let decider = if is_person(ctx.actor) {
         Decider::Person
@@ -55,7 +59,7 @@ pub(super) fn return_task(ctx: &mut Context<'_>) -> Result<()> {
             "Only a reported task with a holder can be returned.",
         ));
     }
-    ctx.decision(*node, "return", why, "pending")?;
+    ctx.decision(*node, "return", why, DecisionState::Pending)?;
     Ok(())
 }
 pub(super) fn reassign(ctx: &mut Context<'_>) -> Result<()> {
@@ -87,7 +91,12 @@ pub(super) fn reassign(ctx: &mut Context<'_>) -> Result<()> {
             params![ctx.team.id, node, rows::node_payload(&n)?],
         )
         .map_err(storage)?;
-    ctx.decision(*node, "reassign", why, "pending")?;
+    let state = if handout::has_attempt(ctx, *node)? {
+        DecisionState::Pending
+    } else {
+        DecisionState::Settled
+    };
+    ctx.decision(*node, "reassign", why, state)?;
     Ok(())
 }
 pub(super) fn cancel(ctx: &mut Context<'_>) -> Result<()> {
@@ -98,7 +107,7 @@ pub(super) fn cancel(ctx: &mut Context<'_>) -> Result<()> {
     ctx.undecided(*node)?;
     ctx.live_node(*node)?;
     reason(why)?;
-    ctx.decision(*node, "cancel", why, "pending")?;
+    ctx.decision(*node, "cancel", why, DecisionState::Pending)?;
     Ok(())
 }
 pub(super) fn integration(ctx: &mut Context<'_>) -> Result<()> {
@@ -109,7 +118,7 @@ pub(super) fn integration(ctx: &mut Context<'_>) -> Result<()> {
     if !needs_merge(ctx, &n) || n.integrated {
         return Err(invalid("This node does not need an integration receipt."));
     }
-    require_ready_accept(ctx, *node)?;
+    let permit = integration::permit(ctx, *node)?;
     if !matches!(commit.len(), 40 | 64)
         || !commit
             .bytes()
@@ -119,6 +128,7 @@ pub(super) fn integration(ctx: &mut Context<'_>) -> Result<()> {
             "Integration receipt must name a full lowercase commit ID.",
         ));
     }
+    integration::record(ctx, &permit, *node, Some(commit), &[])?;
     let table = ctx.node_table(*node)?;
     ctx.db
         .execute(
@@ -136,7 +146,7 @@ pub(super) fn integration(ctx: &mut Context<'_>) -> Result<()> {
             |r| r.get(0),
         )
         .map_err(storage)?;
-    if done {
+    if done && !permit.late {
         ctx.settle(*node)?;
         ctx.close_inbox(*node)?;
     }
@@ -146,30 +156,25 @@ pub(super) fn conflict(ctx: &mut Context<'_>) -> Result<()> {
     let Operation::RecordIntegrationConflict { node, conflicts } = ctx.op else {
         unreachable!()
     };
-    let n = ctx.live_node(*node)?;
+    let n = ctx.node(*node)?;
     if !needs_merge(ctx, &n) || n.integrated || conflicts.is_empty() || conflicts.len() > 200 {
         return Err(invalid(
             "No unresolved integration conflict can be recorded.",
         ));
     }
-    require_ready_accept(ctx, *node)?;
-    for c in conflicts {
-        reason(c)?;
-        text(c, 4096)?;
+    let permit = integration::permit(ctx, *node)?;
+    for path in conflicts {
+        reason(path)?;
+        text(path, 4096)?;
     }
     let body = conflicts.join("\n");
     text(&body, 16_384)?;
-    ctx.settle(*node)?;
-    ctx.decision(*node, "return", &body, "pending")?;
-    ctx.reply.item = Some(ctx.inbox(*node, "integration_conflict", &body)?);
-    Ok(())
-}
-fn require_ready_accept(ctx: &Context<'_>, node: u32) -> Result<()> {
-    if !ctx
-        .pending(node)?
-        .is_some_and(|(_, kind, state)| kind == "accept" && state == "ready")
-    {
-        return Err(invalid("Acceptance has not authorized integration."));
+    integration::record(ctx, &permit, *node, None, conflicts)?;
+    if permit.late {
+        return Ok(());
     }
+    ctx.settle(*node)?;
+    ctx.decision(*node, "return", &body, DecisionState::Pending)?;
+    ctx.reply.item = Some(ctx.inbox(*node, "integration_conflict", &body)?);
     Ok(())
 }

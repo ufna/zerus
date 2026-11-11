@@ -6,6 +6,7 @@ mod authority;
 mod common;
 mod decisions;
 mod handout;
+mod integration;
 mod journal;
 mod members;
 mod queue;
@@ -13,7 +14,7 @@ mod talk;
 mod team;
 mod types;
 mod validation;
-use super::store::{self, rows, Store};
+use super::store::{self, rows, DecisionState, Store};
 #[allow(unused_imports)]
 pub use apply::apply;
 pub use authority::authority;

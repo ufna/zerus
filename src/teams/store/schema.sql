@@ -91,11 +91,16 @@ CREATE TABLE reports (team TEXT NOT NULL, node INTEGER NOT NULL, generation INTE
  FOREIGN KEY(team,node) REFERENCES node_identity(team,id));
 CREATE TABLE decisions (seq INTEGER PRIMARY KEY AUTOINCREMENT, team TEXT NOT NULL, node INTEGER NOT NULL,
  generation INTEGER NOT NULL, actor TEXT NOT NULL, kind TEXT NOT NULL, text TEXT NOT NULL,
- state TEXT NOT NULL DEFAULT 'pending',
+ state TEXT NOT NULL DEFAULT '__DECISION_PENDING__', stopped_ready INTEGER NOT NULL DEFAULT 0,
  FOREIGN KEY(team,node) REFERENCES node_identity(team,id));
 CREATE INDEX decisions_node ON decisions(team,node,seq);
 CREATE INDEX decisions_page ON decisions(team,seq);
-CREATE UNIQUE INDEX decision_pending ON decisions(team,node) WHERE state<>'settled';
+CREATE UNIQUE INDEX decision_pending ON decisions(team,node) WHERE state<>'__DECISION_SETTLED__';
+CREATE TABLE integration_facts (decision INTEGER PRIMARY KEY REFERENCES decisions(seq),
+ team TEXT NOT NULL, node INTEGER NOT NULL, actor TEXT NOT NULL,
+ commit_id TEXT, conflicts TEXT NOT NULL, created_ms INTEGER NOT NULL,
+ FOREIGN KEY(team,node) REFERENCES node_identity(team,id));
+CREATE INDEX integration_node ON integration_facts(team,node,decision);
 CREATE TABLE requests (id TEXT PRIMARY KEY, team TEXT NOT NULL, actor TEXT NOT NULL,
  content TEXT NOT NULL, result TEXT NOT NULL);
 PRAGMA user_version=2;

@@ -62,8 +62,8 @@ impl Context<'_> {
             .map_err(storage)?;
         Ok(())
     }
-    pub fn pending(&self, node: u32) -> Result<Option<(u64, String, String)>> {
-        self.db.query_row("SELECT seq,kind,state FROM decisions WHERE team=?1 AND node=?2 AND state<>'settled' LIMIT 1",params![self.team.id,node], |r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional().map_err(storage)
+    pub fn pending(&self, node: u32) -> Result<Option<(u64, String, DecisionState)>> {
+        self.db.query_row(&format!("SELECT seq,kind,state FROM decisions WHERE team=?1 AND node=?2 AND state<>'{}' LIMIT 1",DecisionState::Settled.as_str()),params![self.team.id,node], |r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional().map_err(storage)
     }
     pub fn undecided(&self, node: u32) -> Result<()> {
         if self.pending(node)?.is_some() {
@@ -73,7 +73,13 @@ impl Context<'_> {
         }
     }
     pub fn settle(&self, node: u32) -> Result<()> {
-        self.db.execute("UPDATE decisions SET state='settled' WHERE team=?1 AND node=?2 AND state<>'settled'",params![self.team.id,node]).map_err(storage)?;
+        rows::settle_decisions(
+            self.db,
+            &self.team.id,
+            Some(node),
+            &encode(self.actor)?,
+            false,
+        )?;
         for table in ["nodes", "node_archive"] {
             self.db
                 .execute(
@@ -86,7 +92,7 @@ impl Context<'_> {
     }
     pub fn reopening(&self, node: u32) -> Result<bool> {
         Ok(self.pending(node)?.is_some_and(|(_, kind, state)| {
-            matches!(kind.as_str(), "return" | "reassign") && state == "effect_reserved"
+            matches!(kind.as_str(), "return" | "reassign") && state == DecisionState::EffectReserved
         }))
     }
     pub fn advance(&self, node: u32, n: &mut Node) -> Result<()> {
@@ -117,16 +123,18 @@ impl Context<'_> {
             .map_err(storage)?;
         Ok(if live { "nodes" } else { "node_archive" })
     }
-    pub fn decision(&self, node: u32, kind: &str, text: &str, state: &str) -> Result<u64> {
+    pub fn decision(&self, node: u32, kind: &str, text: &str, state: DecisionState) -> Result<u64> {
         self.undecided(node)?;
         self.db.execute("INSERT INTO decisions(team,node,generation,actor,kind,text,state) VALUES(?1,?2,?3,?4,?5,?6,?7)",params![self.team.id,node,self.generation(node)?,encode(self.actor)?,kind,text,state]).map_err(storage)?;
         let seq = self.db.last_insert_rowid() as u64;
-        self.db
-            .execute(
-                "UPDATE nodes SET requested=?3,hold=1 WHERE team=?1 AND id=?2",
-                params![self.team.id, node, kind],
-            )
-            .map_err(storage)?;
+        if state != DecisionState::Settled {
+            self.db
+                .execute(
+                    "UPDATE nodes SET requested=?3,hold=1 WHERE team=?1 AND id=?2",
+                    params![self.team.id, node, kind],
+                )
+                .map_err(storage)?;
+        }
         Ok(seq)
     }
     pub fn inbox(&self, node: u32, kind: &str, text: &str) -> Result<u64> {

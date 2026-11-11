@@ -1,3 +1,4 @@
+use super::DecisionState;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -78,7 +79,7 @@ pub struct EffectIntent {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Decision {
-    pub state: String,
+    pub state: DecisionState,
     pub seq: u64,
     pub node: u32,
     pub generation: u32,
@@ -92,4 +93,15 @@ pub struct Decision {
 pub struct RoutingSuggestion {
     pub role: Option<String>,
     pub pipeline: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct IntegrationFact {
+    pub decision: u64,
+    pub node: u32,
+    pub actor: Value,
+    pub commit: Option<String>,
+    pub conflicts: Vec<String>,
+    pub created_ms: i64,
 }

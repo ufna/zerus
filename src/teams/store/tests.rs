@@ -54,34 +54,18 @@ fn newer_schema_is_refused_without_modifying_its_version() {
     assert_eq!(version, SCHEMA_VERSION + 1);
 }
 #[test]
-fn version_one_store_migrates_without_losing_the_team() {
-    let mut h = Harness::empty();
-    let path = h.temp.path().join("teams/teams-v1.sqlite3");
-    #[cfg(unix)]
-    crate::sqlite_file::create(&path).unwrap();
-    #[cfg(windows)]
-    drop(
-        crate::platform::private_open(std::fs::OpenOptions::new().create_new(true).write(true))
-            .open(&path)
-            .unwrap(),
-    );
-    let db = Connection::open(&path).unwrap();
-    db.execute_batch(include_str!("schema-v1.sql")).unwrap();
-    let t = ops::tests::fixture().team;
-    db.execute("INSERT INTO teams(id,project,name,goal,home,owner,status,lead,settings,bundle,integration_branch,base_commit,revision) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)",rusqlite::params![t.id,t.project,t.name,t.goal,t.home,t.owner,encode(&t.status).unwrap(),t.lead,encode(&t.settings).unwrap(),encode(&t.bundle).unwrap(),t.integration_branch,t.base_commit,t.revision]).unwrap();
-    drop(db);
-    h.store = Store::open(h.temp.path()).unwrap();
-    assert_eq!(h.store.team(TEAM).unwrap(), Some(t));
+fn version_one_is_refused_as_an_unreleased_store() {
+    let h = Harness::new();
+    let db = h.store.db.as_ref().unwrap();
+    db.pragma_update(None, "user_version", 1).unwrap();
+    let error = Store::open(h.temp.path()).unwrap_err();
+    assert_eq!(error.code, code::INVALID_STATE);
+    assert!(error.message.contains("pre-release"));
     assert_eq!(
-        h.store
-            .db
-            .as_ref()
-            .unwrap()
-            .query_row("PRAGMA user_version", [], |r| r.get::<_, u32>(0))
+        db.query_row("PRAGMA user_version", [], |r| r.get::<_, u32>(0))
             .unwrap(),
-        SCHEMA_VERSION
+        1
     );
-    h.run(&person(), Operation::Stop).unwrap();
 }
 #[test]
 fn an_empty_handle_can_refresh_after_another_writer_creates_a_team() {

@@ -118,13 +118,8 @@ pub(super) fn stop(ctx: &mut Context<'_>) -> Result<()> {
     ctx.active()?;
     // A stop settles older decisions and records cancellation commands; the
     // existing task writer still owns their actual task-state transitions.
-    ctx.db
-        .execute(
-            "UPDATE decisions SET state='settled' WHERE team=?1 AND state<>'settled'",
-            [&ctx.team.id],
-        )
-        .map_err(storage)?;
-    ctx.db.execute("INSERT INTO decisions(team,node,generation,actor,kind,text) SELECT team,id,generation,?2,'cancel','Team stopped' FROM nodes WHERE team=?1",params![ctx.team.id,encode(ctx.actor)?]).map_err(storage)?;
+    rows::settle_decisions(ctx.db, &ctx.team.id, None, &encode(ctx.actor)?, true)?;
+    ctx.db.execute("INSERT INTO decisions(team,node,generation,actor,kind,text,state) SELECT team,id,generation,?2,'cancel','Team stopped',?3 FROM nodes WHERE team=?1",params![ctx.team.id,encode(ctx.actor)?,DecisionState::Pending]).map_err(storage)?;
     ctx.db
         .execute(
             "UPDATE nodes SET requested='cancel',hold=1 WHERE team=?1",

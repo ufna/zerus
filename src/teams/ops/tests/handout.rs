@@ -286,3 +286,127 @@ fn returning_a_stage_advances_its_attempt_but_keeps_the_checked_round() {
     assert_eq!(h.node(node).round, h.node(parent).round);
     assert_eq!(h.node(node).implementer.as_deref(), Some("m1"));
 }
+
+#[test]
+fn archived_dependency_history_is_a_leaf_for_dependent_and_unrelated_handouts() {
+    let mut h = Harness::new();
+    h.bind("m1");
+    h.bind("m2");
+    let dependent = h.add(&person(), 1);
+    let unrelated = h.add(&person(), 2);
+    let mut archived = h.node(dependent);
+    archived.task = None;
+    archived.state = NodeState::Accepted;
+    let tx = h.store.db.as_mut().unwrap().transaction().unwrap();
+    for id in 3..=2102 {
+        archived.id = id;
+        archived.task = Some(task(id));
+        tx.execute("INSERT INTO node_identity(team,id,task_project,task_uuid) VALUES(?1,?2,'example-project',?3)",params![TEAM,id,task(id).uuid]).unwrap();
+        tx.execute("INSERT INTO node_archive(team,id,data,rank,admitted,routed,task_revision,task_stage,task_cancelled,integrated) VALUES(?1,?2,?3,'',1,1,'archived','done',0,1)",params![TEAM,id,rows::node_payload(&archived).unwrap()]).unwrap();
+        if id > 3 {
+            tx.execute(
+                "INSERT INTO dependencies(team,node,dependency,kind) VALUES(?1,?2,?3,?4)",
+                params![TEAM, id, id - 1, encode(&DepKind::Hard).unwrap()],
+            )
+            .unwrap();
+        }
+    }
+    tx.execute(
+        "INSERT INTO dependencies(team,node,dependency,kind) VALUES(?1,?2,2102,?3)",
+        params![TEAM, dependent, encode(&DepKind::Hard).unwrap()],
+    )
+    .unwrap();
+    tx.commit().unwrap();
+    h.intent(dependent, "m1");
+    h.intent(unrelated, "m2");
+}
+#[test]
+fn reassigning_a_never_handed_node_cannot_bypass_readiness_with_a_reopen() {
+    let mut h = Harness::new();
+    let lead = h.bind("lead");
+    h.bind("m1");
+    let dep = h.add(&person(), 1);
+    let node = h.add(&person(), 2);
+    let mut op = route(node);
+    if let Operation::Route { deps, .. } = &mut op {
+        deps.push(Dep {
+            node: dep,
+            kind: DepKind::Hard,
+        });
+    }
+    h.run(&lead, op).unwrap();
+    h.run(
+        &lead,
+        Operation::Reassign {
+            node,
+            member: "m1".into(),
+            reason: "Plan assignment".into(),
+        },
+    )
+    .unwrap();
+    refused(
+        h.run(
+            &service(),
+            Operation::ReopenIntent {
+                node,
+                member: "m1".into(),
+                effect_request_id: uuid::Uuid::new_v4().to_string(),
+            },
+        ),
+        code::INVALID_STATE,
+    );
+    refused(
+        h.run(
+            &service(),
+            Operation::HandoutIntent {
+                node,
+                member: "m1".into(),
+                effect_request_id: uuid::Uuid::new_v4().to_string(),
+            },
+        ),
+        code::INVALID_STATE,
+    );
+    assert!(!h.node(node).hold);
+    assert_eq!(
+        h.store
+            .decisions(TEAM, 200, None)
+            .unwrap()
+            .rows
+            .last()
+            .unwrap()
+            .state,
+        DecisionState::Settled
+    );
+    h.cancel_fact(dep);
+    h.intent(node, "m1");
+}
+
+#[test]
+fn reopen_requires_an_older_effect_even_for_a_retained_pending_reassignment() {
+    let mut h = Harness::new();
+    let lead = h.bind("lead");
+    h.bind("m1");
+    let node = h.add(&person(), 1);
+    let mut planned = h.node(node);
+    planned.assignee = Some("m1".into());
+    let db = h.store.db.as_ref().unwrap();
+    db.execute(
+        "UPDATE nodes SET data=?3,requested='reassign',hold=1 WHERE team=?1 AND id=?2",
+        params![TEAM, node, rows::node_payload(&planned).unwrap()],
+    )
+    .unwrap();
+    db.execute("INSERT INTO decisions(team,node,generation,actor,kind,text,state) VALUES(?1,?2,1,?3,'reassign','Retained pre-fix decision',?4)",params![TEAM,node,encode(&lead).unwrap(),DecisionState::Pending]).unwrap();
+    refused(
+        h.run(
+            &service(),
+            Operation::ReopenIntent {
+                node,
+                member: "m1".into(),
+                effect_request_id: uuid::Uuid::new_v4().to_string(),
+            },
+        ),
+        code::INVALID_STATE,
+    );
+    assert!(h.store.effects(TEAM, 200, None).unwrap().rows.is_empty());
+    assert_eq!(h.store.generation(TEAM, node).unwrap(), Some(1));
+}

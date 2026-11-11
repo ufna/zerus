@@ -82,7 +82,6 @@ pub(super) fn decide_card(ctx: &mut Context<'_>) -> Result<()> {
     let Operation::DecideCard { card, decision } = ctx.op else {
         unreachable!()
     };
-    ctx.active()?;
     reason(decision)?;
     let row: Option<(String, Option<u32>, Option<u64>)> = ctx
         .db
@@ -94,30 +93,45 @@ pub(super) fn decide_card(ctx: &mut Context<'_>) -> Result<()> {
         .optional()
         .map_err(storage)?;
     let (kind, node, seq) = row.ok_or_else(|| invalid("Card is missing or already decided."))?;
-    if kind == "integration" {
+    let stale = if kind == "integration" {
         decide_integration(
             ctx,
             node.ok_or_else(missing)?,
             seq.ok_or_else(missing)?,
             decision,
-        )?;
+        )?
+    } else {
+        ctx.active()?;
+        false
+    };
+    if stale {
+        ctx.event = Some("stale_card_decision");
     }
     ctx.db
         .execute(
             "UPDATE cards SET decision=?3,decided_actor=?4,state='closed' WHERE team=?1 AND seq=?2",
-            params![ctx.team.id, card, decision, encode(ctx.actor)?],
+            params![
+                ctx.team.id,
+                card,
+                if stale { "stale" } else { decision },
+                encode(ctx.actor)?
+            ],
         )
         .map_err(storage)?;
     Ok(())
 }
-fn decide_integration(ctx: &Context<'_>, node: u32, seq: u64, answer: &str) -> Result<()> {
-    if ctx.pending(node)? != Some((seq, "accept".into(), "awaiting_owner".into())) {
-        return Err(invalid("Integration approval is stale."));
+fn decide_integration(ctx: &Context<'_>, node: u32, seq: u64, answer: &str) -> Result<bool> {
+    if ctx.pending(node)? != Some((seq, "accept".into(), DecisionState::AwaitingOwner)) {
+        return Ok(true);
     }
+    ctx.active()?;
     match answer {
         "approve" => {
             ctx.db
-                .execute("UPDATE decisions SET state='ready' WHERE seq=?1", [seq])
+                .execute(
+                    "UPDATE decisions SET state=?2 WHERE seq=?1",
+                    params![seq, DecisionState::Ready],
+                )
                 .map_err(storage)?;
         }
         "reject" => {
@@ -131,5 +145,5 @@ fn decide_integration(ctx: &Context<'_>, node: u32, seq: u64, answer: &str) -> R
         }
         _ => return Err(invalid("Integration decision must be approve or reject.")),
     }
-    Ok(())
+    Ok(false)
 }

@@ -88,8 +88,22 @@ pub(crate) fn node_payload(node: &Node) -> Result<String> {
     encode(&value)
 }
 
-pub(crate) fn archive_decided(db: &Connection, team: &str) -> Result<()> {
-    db.execute("UPDATE decisions SET state='settled' WHERE team=?1 AND node IN (SELECT id FROM nodes WHERE team=?1 AND node_state IN ('accepted','cancelled'))",[team]).map_err(storage)?;
+pub(crate) fn archive_decided(db: &Connection, team: &str, actor: &str) -> Result<()> {
+    let ids = {
+        let mut statement=db.prepare("SELECT id FROM nodes WHERE team=?1 AND node_state IN ('accepted','cancelled') ORDER BY id LIMIT 601").map_err(storage)?;
+        let mapped = statement
+            .query_map([team], |r| r.get::<_, u32>(0))
+            .map_err(storage)?;
+        mapped
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(storage)?
+    };
+    if ids.len() > 600 {
+        return Err(storage("Live node count exceeds its bound."));
+    }
+    for node in ids {
+        settle_decisions(db, team, Some(node), actor, false)?;
+    }
     db.execute(
         "UPDATE nodes SET requested=NULL WHERE team=?1 AND node_state IN ('accepted','cancelled')",
         [team],
@@ -102,4 +116,25 @@ pub(crate) fn archive_decided(db: &Connection, team: &str) -> Result<()> {
     )
     .map_err(storage)?;
     Ok(())
+}
+
+pub(crate) fn settle_decisions(
+    db: &Connection,
+    team: &str,
+    node: Option<u32>,
+    actor: &str,
+    by_stop: bool,
+) -> Result<()> {
+    db.execute(&format!("UPDATE decisions SET stopped_ready=(?4 AND kind='accept' AND state=?5),state=?2 WHERE team=?1 AND state<>'{}' AND (?3 IS NULL OR node=?3)",DecisionState::Settled.as_str()),params![team,DecisionState::Settled,node,by_stop,DecisionState::Ready]).map_err(storage)?;
+    db.execute("UPDATE cards SET state='closed',decision='stale',decided_actor=?3 WHERE team=?1 AND kind='integration' AND state='open' AND (?2 IS NULL OR node=?2)",params![team,node,actor]).map_err(storage)?;
+    Ok(())
+}
+pub(crate) fn archived_leaf(db: &Connection, team: &str, id: u32) -> Result<Option<Node>> {
+    db.query_row(
+        &format!("SELECT {NODE_SELECT} FROM node_archive WHERE team=?1 AND id=?2"),
+        params![team, id],
+        node_row,
+    )
+    .optional()
+    .map_err(storage)
 }

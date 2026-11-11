@@ -290,3 +290,46 @@ fn route_refuses_absolute_write_paths_from_all_platforms() {
         refused(h.run(&person(), op), code::INVALID_STATE);
     }
 }
+
+#[test]
+fn inactive_teams_record_person_reopens_only_on_the_archive_row() {
+    for (archive, terminal) in [(false, true), (true, true), (false, false), (true, false)] {
+        let mut h = Harness::new();
+        let node = h.add(&person(), 1);
+        if terminal {
+            h.cancel_fact(node);
+        }
+        h.run(&person(), Operation::Stop).unwrap();
+        if archive {
+            h.run(&person(), Operation::Archive).unwrap();
+        }
+        h.observe(node, TaskStage::Todo);
+        h.observe(node, TaskStage::InProgress);
+        assert_eq!(h.node(node).state, NodeState::InProgress);
+        assert!(h.store.queue(TEAM, 200, None).unwrap().rows.is_empty());
+        let rows: u32 = h
+            .store
+            .db
+            .as_ref()
+            .unwrap()
+            .query_row(
+                "SELECT count(*) FROM node_archive WHERE team=?1 AND id=?2",
+                params![TEAM, node],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(rows, 1);
+        let bindings: u32 = h
+            .store
+            .db
+            .as_ref()
+            .unwrap()
+            .query_row(
+                "SELECT count(*) FROM live_tasks WHERE team=?1 AND node=?2",
+                params![TEAM, node],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(bindings, 0);
+    }
+}
