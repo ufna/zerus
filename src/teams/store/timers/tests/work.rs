@@ -28,8 +28,28 @@ fn history(db: &Connection, n: u32) {
         db.execute(&sql, params![TEAM, n]).unwrap();
     }
 }
+/// `n` settled generations of one live node before its current one: their
+/// decisions, finished effects, closed report items and fired reminders.
+fn generations(db: &Connection, node: u32, n: u32) {
+    let current = n + 1;
+    for table in ["nodes", "effects", "inbox", "reports"] {
+        let column = if table == "nodes" { "id" } else { "node" };
+        let sql = format!("UPDATE {table} SET generation=?3 WHERE team=?1 AND {column}=?2");
+        db.execute(&sql, params![TEAM, node, current]).unwrap();
+    }
+    let gens = "WITH RECURSIVE g(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM g WHERE x<?3)";
+    for sql in [
+        format!("{gens} INSERT INTO decisions(team,node,generation,actor,kind,text,state) SELECT ?1,?2,x,'{{}}','return','Old','settled' FROM g"),
+        format!("{gens} INSERT INTO effects(team,node,member,generation,request_id,actor,kind,state,created_ms) SELECT ?1,?2,'m1',x,printf('00000000-0000-4000-b000-%012x',x),'{{}}','reopen','reported',1 FROM g"),
+        format!("{gens} INSERT INTO inbox(team,kind,node,generation,actor,text,state,created_ms) SELECT ?1,'report',?2,x,'{{}}','Old','closed',1 FROM g"),
+        format!("{gens} INSERT INTO timer_firings SELECT ?1,'remind_lead',?2,x,x,'inbox',0,x,1 FROM g"),
+    ] {
+        db.execute(&sql, params![TEAM, node, n]).unwrap();
+    }
+}
 /// A store with a live team whose report waits, a stopped clone of its
-/// history, and `n` settled nodes.
+/// history, `n` settled nodes, and `n` settled generations of the reported
+/// node.
 fn store(n: u32) -> Harness {
     let mut h = Harness::new();
     h.bind("lead");
@@ -43,6 +63,7 @@ fn store(n: u32) -> Harness {
     let running = h.add(&person(), 3);
     h.submit(running, "m2");
     history(db(&h), n);
+    generations(db(&h), reported, n);
     h
 }
 fn steps(h: &Harness, read: impl FnOnce(&Harness)) -> u64 {

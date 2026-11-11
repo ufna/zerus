@@ -101,3 +101,7 @@ CREATE TABLE IF NOT EXISTS cancel_outcomes (
  state TEXT NOT NULL CHECK(state IN ('cancelled','refused')), reason TEXT NOT NULL, at_ms INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS cancel_refusals ON cancel_outcomes(team,node) WHERE state='refused';
+-- A node's decisions of one attempt, without its settled generations. The
+-- generation comes before the node so that a node-range read keeps using
+-- the index of open decisions.
+CREATE INDEX IF NOT EXISTS decisions_attempt ON decisions(team,generation,node);
