@@ -15,6 +15,7 @@ pub mod graph;
 pub mod model;
 pub mod overlap;
 pub mod problem;
+pub mod ready;
 #[cfg(test)]
 mod testkit;
 

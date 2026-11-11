@@ -14,7 +14,7 @@ use crate::model::{Node, NodeId};
 /// The dependency edges between the nodes of one slice, by dense index. Each
 /// walk below is iterative, so a long chain never deepens the stack.
 struct Graph<'a> {
-    nodes: &'a [Node],
+    nodes: Vec<&'a Node>,
     /// Node IDs, ascending and distinct; a position here is a node's index.
     ids: Vec<NodeId>,
     index: BTreeMap<NodeId, usize>,
@@ -23,7 +23,8 @@ struct Graph<'a> {
 }
 
 impl<'a> Graph<'a> {
-    fn new(nodes: &'a [Node]) -> Self {
+    fn new(nodes: impl IntoIterator<Item = &'a Node>) -> Self {
+        let nodes: Vec<&'a Node> = nodes.into_iter().collect();
         let ids: Vec<NodeId> = nodes
             .iter()
             .map(|node| node.id)
@@ -33,7 +34,7 @@ impl<'a> Graph<'a> {
         let index: BTreeMap<NodeId, usize> =
             ids.iter().enumerate().map(|(i, id)| (*id, i)).collect();
         let mut dependants: Vec<BTreeSet<usize>> = vec![BTreeSet::new(); ids.len()];
-        for node in nodes {
+        for node in &nodes {
             let to = index[&node.id];
             for dep in &node.deps {
                 if let Some(&from) = index.get(&dep.node) {
@@ -126,7 +127,7 @@ impl<'a> Graph<'a> {
         const BLACK: u8 = 2;
         let mut colour = vec![WHITE; self.len()];
         let mut back = BTreeSet::new();
-        let mut starts: Vec<&Node> = self.nodes.iter().collect();
+        let mut starts: Vec<&Node> = self.nodes.clone();
         starts.sort_by_key(|node| (!node.deps.is_empty(), node.id));
         for start in starts {
             let root = self.index[&start.id];
@@ -163,6 +164,16 @@ impl<'a> Graph<'a> {
 /// its first ID. A node that depends on itself is a cycle of one.
 pub fn cycles(nodes: &[Node]) -> Vec<Vec<NodeId>> {
     Graph::new(nodes).components()
+}
+
+/// Every node in a cycle among `nodes`, for readiness, which passes only the
+/// nodes that still count.
+pub(crate) fn cycle_members<'a>(nodes: impl IntoIterator<Item = &'a Node>) -> BTreeSet<NodeId> {
+    Graph::new(nodes)
+        .components()
+        .into_iter()
+        .flatten()
+        .collect()
 }
 
 /// Each node's layer: the longest dependency path from a root. Back edges of
