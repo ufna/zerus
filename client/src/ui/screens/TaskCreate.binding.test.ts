@@ -66,6 +66,21 @@ it("does not submit a previous project's hidden team choice", async () => {
   expect(f.create).toHaveBeenCalledWith("other-project", false, undefined, undefined);
 });
 
+it("keeps the choice while the title is edited", async () => {
+  f.setList({ teams: [fixes], truncated: false, next: null });
+  f.setView(card("example-project"));
+  const host = setup(() => "example-project");
+  choose(host);
+  expect(chooser(host)!.textContent).toContain("Fixes");
+  // Each edit is a new view of the same card.
+  f.setView(card("example-project", { text: "Task title, edited", rev: 2 }));
+  f.setView(card("example-project", { text: "Task title, edited again", rev: 3 }));
+  expect(chooser(host)!.textContent).toContain("Fixes");
+  enter(host);
+  await vi.waitFor(() => expect(f.create).toHaveBeenCalled());
+  expect(f.create).toHaveBeenCalledWith("example-project", false, undefined, TEAM);
+});
+
 it("refuses a choice the form no longer offers and sends nothing", async () => {
   f.setList({ teams: [fixes, { id: OTHER, project: "example-project", name: "Other" }], truncated: false, next: null });
   f.setView(card("example-project"));

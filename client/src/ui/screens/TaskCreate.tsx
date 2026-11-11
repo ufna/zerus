@@ -25,7 +25,9 @@ export default function TaskCreate(props: { project?: string; scope: string; bac
   const view = () => newCard.view()?.project === props.project ? newCard.view() : undefined;
   // A choice belongs to the form's project and to a new card: another project,
   // lost access, Teams going off or a reserved card clear it.
-  createEffect(on(() => [props.project, props.accessible, teams.available(), view()?.handle, !!view()?.recovery] as const, () => { setTeam(""); setRefusal(""); }, { defer: true }));
+  // Compared by value: an edit of the title is a new view of the same card and keeps the choice.
+  const binding = createMemo(() => JSON.stringify([props.project ?? "", props.accessible, teams.available() ?? null, view()?.handle ?? null, !!view()?.recovery]));
+  createEffect(on(binding, () => { setTeam(""); setRefusal(""); }, { defer: true }));
   /** A reserved card keeps the destination it was reserved with. */
   const reserved = () => view()?.recovery ? view()?.team ?? "" : undefined;
   const reservedName = () => teamChoices().find((candidate) => candidate.id === reserved())?.name ?? reserved() ?? "";
