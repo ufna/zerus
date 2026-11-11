@@ -12,11 +12,10 @@ use crate::catalog::{Catalog, TemplateBundle};
 use crate::model::{Acceptance, Caps};
 use crate::problem::{code, Problem};
 
-/// Everything wrong with a catalog, in catalog order. Empty means usable.
-pub fn validate_catalog(catalog: &Catalog) -> Vec<Problem> {
+/// Only the duplicated IDs of one catalog, for a partial catalog that is
+/// merged over another: a merge must not hide a duplicate before validation.
+pub fn validate_ids(catalog: &Catalog) -> Vec<Problem> {
     let mut problems = Vec::new();
-    let roles: HashSet<&str> = catalog.roles.iter().map(|role| role.id.as_str()).collect();
-
     duplicates(&catalog.roles, "role", |role| &role.id, &mut problems);
     duplicates(
         &catalog.pipelines,
@@ -30,6 +29,34 @@ pub fn validate_catalog(catalog: &Catalog) -> Vec<Problem> {
         |template| &template.id,
         &mut problems,
     );
+    unique(problems)
+}
+
+/// Everything wrong with a catalog, in catalog order. Empty means usable.
+pub fn validate_catalog(catalog: &Catalog) -> Vec<Problem> {
+    let mut problems = validate_ids(catalog);
+    let roles: HashSet<&str> = catalog.roles.iter().map(|role| role.id.as_str()).collect();
+    let pipelines: HashSet<&str> = catalog
+        .pipelines
+        .iter()
+        .map(|pipeline| pipeline.id.as_str())
+        .collect();
+
+    // A role names a pipeline even when no template seats it today.
+    for role in &catalog.roles {
+        if !role.pipeline.is_empty() && !pipelines.contains(role.pipeline.as_str()) {
+            problems.push(
+                Problem::new(
+                    code::UNKNOWN_PIPELINE,
+                    format!(
+                        "Role {} names a pipeline that is not in the catalog: {}.",
+                        role.id, role.pipeline
+                    ),
+                )
+                .with_refs([role.id.as_str(), role.pipeline.as_str()]),
+            );
+        }
+    }
 
     for pipeline in &catalog.pipelines {
         if !roles.contains(pipeline.implementer.as_str()) {
@@ -64,7 +91,9 @@ pub fn validate_catalog(catalog: &Catalog) -> Vec<Problem> {
         let mut seats = HashSet::new();
         let mut members = 0u32;
         for seat in &template.roster {
-            seats.insert(seat.role.as_str());
+            if seat.count > 0 {
+                seats.insert(seat.role.as_str());
+            }
             members = members.saturating_add(seat.count);
             if !roles.contains(seat.role.as_str()) {
                 problems.push(
@@ -104,22 +133,34 @@ pub fn validate_catalog(catalog: &Catalog) -> Vec<Problem> {
             );
         }
 
-        for pipeline_id in used_pipelines(catalog, template) {
+        if template.default_pipeline.is_empty() {
+            problems.push(
+                Problem::new(
+                    code::UNKNOWN_PIPELINE,
+                    format!("Template {} has no default pipeline.", template.id),
+                )
+                .with_refs([template.id.as_str(), "default_pipeline"]),
+            );
+        } else if !pipelines.contains(template.default_pipeline.as_str()) {
+            problems.push(
+                Problem::new(
+                    code::UNKNOWN_PIPELINE,
+                    format!(
+                        "Template {} has a default pipeline that is not in the catalog: {}.",
+                        template.id, template.default_pipeline
+                    ),
+                )
+                .with_refs([template.id.as_str(), template.default_pipeline.as_str()]),
+            );
+        }
+
+        for pipeline_id in active_pipelines(catalog, template) {
             let Some(pipeline) = catalog
                 .pipelines
                 .iter()
                 .find(|pipeline| pipeline.id == pipeline_id)
             else {
-                problems.push(
-                    Problem::new(
-                        code::UNKNOWN_PIPELINE,
-                        format!(
-                            "Template {} uses a pipeline that is not in the catalog: {}.",
-                            template.id, pipeline_id
-                        ),
-                    )
-                    .with_refs([template.id.as_str(), pipeline_id]),
-                );
+                // The missing default or role pipeline was reported above.
                 continue;
             };
             for role in std::iter::once(&pipeline.implementer)
@@ -148,8 +189,8 @@ pub fn validate_catalog(catalog: &Catalog) -> Vec<Problem> {
     unique(problems)
 }
 
-/// The pipelines a template's tasks may use: its default and each seated
-/// role's own default.
+/// The pipelines a template's tasks may use: its default and each roster
+/// role's own default. A bundle carries them all so an export stays complete.
 fn used_pipelines<'a>(
     catalog: &'a Catalog,
     template: &'a crate::catalog::Template,
@@ -159,6 +200,30 @@ fn used_pipelines<'a>(
         used.insert(template.default_pipeline.as_str());
     }
     for seat in &template.roster {
+        if let Some(role) = catalog.roles.iter().find(|role| role.id == seat.role) {
+            if !role.pipeline.is_empty() {
+                used.insert(role.pipeline.as_str());
+            }
+        }
+    }
+    used
+}
+
+/// The pipelines a template's tasks may use in this validation: its default
+/// and the default of each role it actually seats. A seat with count 0 does
+/// not make its role a pipeline user.
+fn active_pipelines<'a>(
+    catalog: &'a Catalog,
+    template: &'a crate::catalog::Template,
+) -> BTreeSet<&'a str> {
+    let mut used = BTreeSet::new();
+    if !template.default_pipeline.is_empty() {
+        used.insert(template.default_pipeline.as_str());
+    }
+    for seat in &template.roster {
+        if seat.count == 0 {
+            continue;
+        }
         if let Some(role) = catalog.roles.iter().find(|role| role.id == seat.role) {
             if !role.pipeline.is_empty() {
                 used.insert(role.pipeline.as_str());
@@ -226,6 +291,14 @@ pub fn bundle(catalog: &Catalog, template: &str) -> Result<TemplateBundle, Probl
             )
             .with_refs([id])
         })?;
+
+    if template.default_pipeline.is_empty() {
+        return Err(Problem::new(
+            code::UNKNOWN_PIPELINE,
+            format!("Template {id} has no default pipeline."),
+        )
+        .with_refs([id, "default_pipeline"]));
+    }
 
     let mut role_ids = BTreeSet::new();
     for seat in &template.roster {
@@ -440,6 +513,82 @@ mod tests {
             &validate_catalog(&catalog),
             code::NO_SEAT_FOR_STAGE,
             "developer"
+        ));
+    }
+
+    #[test]
+    fn a_seat_with_count_zero_does_not_count_as_seated() {
+        let mut catalog = builtin();
+        catalog.templates[1]
+            .roster
+            .iter_mut()
+            .find(|seat| seat.role == "reviewer")
+            .expect("the bugfix reviewer seat")
+            .count = 0;
+        assert!(has(
+            &validate_catalog(&catalog),
+            code::NO_SEAT_FOR_STAGE,
+            "reviewer"
+        ));
+
+        let mut catalog = builtin();
+        catalog.templates[1]
+            .roster
+            .iter_mut()
+            .find(|seat| seat.role == "developer")
+            .expect("the bugfix developer seat")
+            .count = 0;
+        assert!(has(
+            &validate_catalog(&catalog),
+            code::NO_SEAT_FOR_STAGE,
+            "developer"
+        ));
+    }
+
+    #[test]
+    fn an_empty_default_pipeline_is_refused() {
+        let mut catalog = builtin();
+        catalog.templates[1].default_pipeline.clear();
+        assert!(has(
+            &validate_catalog(&catalog),
+            code::UNKNOWN_PIPELINE,
+            "bugfix"
+        ));
+        let problem = bundle(&catalog, "bugfix").expect_err("cannot export");
+        assert_eq!(problem.code, code::UNKNOWN_PIPELINE);
+    }
+
+    #[test]
+    fn a_role_outside_every_roster_naming_an_unknown_pipeline_is_refused() {
+        let mut catalog = builtin();
+        let mut role = catalog.roles[0].clone();
+        role.id = "architect".into();
+        role.name = "Architect".into();
+        role.pipeline = "ghost".into();
+        catalog.roles.push(role);
+        assert!(has(
+            &validate_catalog(&catalog),
+            code::UNKNOWN_PIPELINE,
+            "ghost"
+        ));
+    }
+
+    #[test]
+    fn duplicate_ids_are_found_in_each_kind_on_their_own() {
+        let mut catalog = builtin();
+        catalog.roles.push(catalog.roles[0].clone());
+        assert!(has(&validate_ids(&catalog), code::DUPLICATE, "developer"));
+
+        let mut catalog = builtin();
+        catalog.pipelines.push(catalog.pipelines[0].clone());
+        assert!(has(&validate_ids(&catalog), code::DUPLICATE, "code"));
+
+        let mut catalog = builtin();
+        catalog.templates.push(catalog.templates[0].clone());
+        assert!(has(
+            &validate_ids(&catalog),
+            code::DUPLICATE,
+            "feature-delivery"
         ));
     }
 

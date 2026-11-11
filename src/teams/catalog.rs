@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use zerus_team_plan::catalog::{Catalog, TemplateBundle};
 use zerus_team_plan::model::Caps;
 use zerus_team_plan::problem::code;
-use zerus_team_plan::{builtin, bundle, validate_bundle, validate_catalog, Problem};
+use zerus_team_plan::{builtin, bundle, validate_bundle, validate_catalog, validate_ids, Problem};
 
 /// The folder that holds the catalog below the configuration directory.
 const DIR: &str = "teams";
@@ -35,7 +35,9 @@ pub fn person(config_dir: &Path) -> Result<Catalog, Problem> {
 /// The built-in catalog with the person's entries merged over it by ID,
 /// checked so a broken file is refused instead of shown.
 pub fn load(config_dir: &Path) -> Result<Catalog, Problem> {
-    let catalog = merge(&builtin(), &person(config_dir)?);
+    let person = person(config_dir)?;
+    first_problem(validate_ids(&person))?;
+    let catalog = merge(&builtin(), &person);
     first_problem(validate_catalog(&catalog))?;
     Ok(catalog)
 }
@@ -69,6 +71,7 @@ fn merge_by_id<T: Clone>(base: &[T], over: &[T], id: impl Fn(&T) -> &str) -> Vec
 /// Replaces the person's catalog. Writes nothing unless the merged catalog is
 /// valid.
 pub fn save(config_dir: &Path, catalog: &Catalog) -> Result<(), Problem> {
+    first_problem(validate_ids(catalog))?;
     first_problem(validate_catalog(&merge(&builtin(), catalog)))?;
     write(config_dir, catalog)
 }
@@ -78,6 +81,7 @@ pub fn save(config_dir: &Path, catalog: &Catalog) -> Result<(), Problem> {
 pub fn import_bundle(config_dir: &Path, bundle: &TemplateBundle) -> Result<(), Problem> {
     first_problem(validate_bundle(bundle, &Caps::default()))?;
     let mut person = person(config_dir)?;
+    first_problem(validate_ids(&person))?;
     person.templates = merge_by_id(
         &person.templates,
         std::slice::from_ref(&bundle.template),
@@ -317,6 +321,102 @@ mod tests {
         let dir = temp();
         write(dir.path(), "not json");
         assert_eq!(load(dir.path()).unwrap_err().code, code::INVALID_STATE);
+    }
+
+    #[test]
+    fn duplicate_ids_in_the_person_file_are_refused() {
+        let dir = temp();
+        let texts = [
+            r#"{"roles":[{"id":"developer","name":"One","agent":"claude"},{"id":"developer","name":"Two","agent":"claude"}]}"#,
+            r#"{"pipelines":[{"id":"code","name":"One","implementer":"developer"},{"id":"code","name":"Two","implementer":"developer"}]}"#,
+            r#"{"templates":[{"id":"bugfix","name":"One","lead":{"agent":"claude"},"roster":[{"role":"developer","count":1}],"default_pipeline":"reviewed"},{"id":"bugfix","name":"Two","lead":{"agent":"claude"},"roster":[{"role":"developer","count":1}],"default_pipeline":"reviewed"}]}"#,
+        ];
+        for text in texts {
+            write(dir.path(), text);
+            let problem = load(dir.path()).unwrap_err();
+            assert_eq!(problem.code, code::DUPLICATE, "{text}");
+            assert_eq!(fs::read_to_string(path(dir.path())).unwrap(), text);
+        }
+    }
+
+    #[test]
+    fn save_refuses_duplicate_ids_in_each_kind() {
+        let dir = temp();
+        let mut catalogs = Vec::new();
+        let role = builtin().roles[0].clone();
+        catalogs.push(Catalog {
+            roles: vec![role.clone(), role],
+            ..Catalog::default()
+        });
+        let pipeline = builtin().pipelines[0].clone();
+        catalogs.push(Catalog {
+            pipelines: vec![pipeline.clone(), pipeline],
+            ..Catalog::default()
+        });
+        let template = builtin().templates[1].clone();
+        catalogs.push(Catalog {
+            templates: vec![template.clone(), template],
+            ..Catalog::default()
+        });
+        for catalog in catalogs {
+            let problem = save(dir.path(), &catalog).unwrap_err();
+            assert_eq!(problem.code, code::DUPLICATE);
+            assert!(!path(dir.path()).exists(), "nothing is written");
+        }
+    }
+
+    #[test]
+    fn a_person_template_with_an_empty_default_pipeline_is_refused() {
+        let dir = temp();
+        write(
+            dir.path(),
+            r#"{"templates":[{"id":"bugfix","name":"Bugfix","lead":{"agent":"claude"},"roster":[{"role":"developer","count":1},{"role":"reviewer","count":1}],"default_pipeline":""}]}"#,
+        );
+        let problem = load(dir.path()).unwrap_err();
+        assert_eq!(problem.code, code::UNKNOWN_PIPELINE);
+
+        let mut bundle = export_bundle(&builtin(), "bugfix").expect("bugfix exports");
+        bundle.template.default_pipeline.clear();
+        let problem = import_bundle(dir.path(), &bundle).unwrap_err();
+        assert_eq!(problem.code, code::UNKNOWN_PIPELINE);
+    }
+
+    #[test]
+    fn import_refuses_duplicate_ids_in_the_person_file() {
+        let dir = temp();
+        let text = r#"{"roles":[{"id":"developer","name":"One","agent":"claude"},{"id":"developer","name":"Two","agent":"claude"}]}"#;
+        write(dir.path(), text);
+        let bundle = export_bundle(&builtin(), "bugfix").expect("bugfix exports");
+        let problem = import_bundle(dir.path(), &bundle).unwrap_err();
+        assert_eq!(problem.code, code::DUPLICATE);
+        assert_eq!(fs::read_to_string(path(dir.path())).unwrap(), text);
+    }
+
+    #[test]
+    fn a_person_template_with_a_zero_count_seat_is_refused() {
+        let dir = temp();
+        write(
+            dir.path(),
+            r#"{"templates":[{"id":"bugfix","name":"Bugfix","lead":{"agent":"claude"},"roster":[{"role":"developer","count":1},{"role":"reviewer","count":0}],"default_pipeline":"reviewed"}]}"#,
+        );
+        let problem = load(dir.path()).unwrap_err();
+        assert_eq!(problem.code, code::NO_SEAT_FOR_STAGE);
+
+        let mut bundle = export_bundle(&builtin(), "bugfix").expect("bugfix exports");
+        bundle.template.roster[1].count = 0;
+        let problem = import_bundle(dir.path(), &bundle).unwrap_err();
+        assert_eq!(problem.code, code::NO_SEAT_FOR_STAGE);
+    }
+
+    #[test]
+    fn an_unknown_field_inside_an_account_choice_is_refused() {
+        let dir = temp();
+        let text = r#"{"roles":[{"id":"developer","name":"Developer","agent":"claude","account":{"mode":"freest","colour":"red"}}]}"#;
+        write(dir.path(), text);
+        let problem = load(dir.path()).unwrap_err();
+        assert_eq!(problem.code, code::UNKNOWN_FIELD);
+        assert_eq!(problem.refs, ["colour"]);
+        assert_eq!(fs::read_to_string(path(dir.path())).unwrap(), text);
     }
 
     #[test]
