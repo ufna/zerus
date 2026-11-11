@@ -56,6 +56,8 @@ impl Fixture {
         let owner = Arc::new(location.lock().unwrap());
         let mut broker = feed::Broker::new(&epoch);
         let runtime = Runtime {
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            teams: crate::desktop::teams::Worker::new(&config, &epoch, owner.clone()),
             fleet: fleet::Runtime::empty_for_test(&epoch),
             producer: broker.claim_internal().unwrap(),
             presence: None,

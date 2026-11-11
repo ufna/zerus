@@ -6,7 +6,9 @@ mod decisions;
 mod handout;
 mod integration;
 mod members;
+mod observations;
 mod queue;
+mod readiness;
 mod talk;
 mod team;
 
@@ -155,6 +157,7 @@ impl Harness {
     pub fn observation(&mut self, node: u32, stage: TaskStage) -> TaskObservation {
         self.clock += 1;
         TaskObservation {
+            key: KeyState::Ours,
             revision: format!("token-{}", self.clock),
             previous_revision: self
                 .store

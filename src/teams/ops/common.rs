@@ -16,6 +16,9 @@ impl Context<'_> {
     }
     pub fn live_node(&self, id: u32) -> Result<Node> {
         let n = self.node(id)?;
+        if self.node_table(id)? != "nodes" {
+            return Err(invalid("Task has left the live plan."));
+        }
         if matches!(n.state, NodeState::Accepted | NodeState::Cancelled) {
             return Err(invalid("Task is already decided."));
         }

@@ -47,6 +47,11 @@ fn main() {
         eprintln!("hgs: {error}");
         std::process::exit(2);
     }
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    if let Err(error) = desktop::teams::adopt_custody() {
+        eprintln!("hgs: {error}");
+        std::process::exit(2);
+    }
     // The same for a task message child, with its own descriptor.
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     if let Err(error) = desktop::task_message::adopt_custody() {
