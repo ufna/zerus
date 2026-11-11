@@ -32,7 +32,8 @@ if mode=='setsid':
 else:
     if mode=='nohup': cmd.insert(0,'nohup')
     result=subprocess.run(cmd,env=child,capture_output=True,text=True,timeout=15)
-(base/'answer').write_text(result.stdout+result.stderr)
+(base/'answer.tmp').write_text(result.stdout+result.stderr)
+os.replace(base/'answer.tmp',base/'answer')
 "#;
 
 struct Tree {
@@ -72,6 +73,18 @@ impl Tree {
             .stderr(Stdio::null());
         if !["clean-agent", "person", "partial", "empty"].contains(&mode) {
             command.env("HGS_SESSION", NAME).env("HGS_RUN_ID", RUN);
+        }
+        if mode == "id-marked-home-symlink" {
+            let linked = temp.path().join("linked-home");
+            std::os::unix::fs::symlink(temp.path(), &linked).unwrap();
+            command
+                .env("HGS_CONFIG_DIR", linked.join("config"))
+                .env("HGS_STATE_DIR", linked.join("state"));
+        }
+        if mode == "id-marked-symlink" {
+            let linked = temp.path().join("linked-config");
+            std::os::unix::fs::symlink(&config, &linked).unwrap();
+            command.env("HGS_CONFIG_DIR", linked);
         }
         if mode.starts_with("id-") && !mode.ends_with("nohint") {
             command.env(
@@ -137,7 +150,12 @@ impl Tree {
 
     fn answer(&self) -> String {
         std::fs::write(self.temp.path().join("go"), b"go").unwrap();
-        wait(|| std::fs::read_to_string(self.temp.path().join("answer")).ok())
+        wait(|| {
+            let text = std::fs::read_to_string(self.temp.path().join("answer")).ok()?;
+            text.lines()
+                .any(|line| line.starts_with("PROBE ") || line.starts_with("DISPATCH "))
+                .then_some(text)
+        })
     }
 }
 
@@ -690,5 +708,115 @@ fn a_present_index_never_falls_back_and_disagreeing_probes_refuse() {
                 "{case}: {text}"
             );
         }
+    }
+}
+
+#[test]
+fn a_marked_session_accepts_a_symlinked_config_root_but_not_links_below_it() {
+    for mode in ["id-marked-symlink", "id-marked-home-symlink"] {
+        let tree = Tree::start(mode, None);
+        tree.record(tree.pid, &tree.born());
+        let text = tree.answer();
+        assert!(text.contains("PROBE session:launch_id:"), "{text}");
+    }
+    let tree = Tree::start("id-marked", None);
+    tree.record(tree.pid, &tree.born());
+    let config = tree.temp.path().join("config");
+    std::fs::rename(config.join("swarm"), config.join("actual-swarm")).unwrap();
+    std::os::unix::fs::symlink(config.join("actual-swarm"), config.join("swarm")).unwrap();
+    let text = tree.answer();
+    refused(&text);
+    assert!(
+        !text.contains("ordinary terminal"),
+        "marked refusal must explain session proof: {text}"
+    );
+}
+
+#[test]
+fn a_legacy_route_refuses_an_id_layout_record_on_both_caller_paths() {
+    for mode in ["marked", "normal"] {
+        let tree = Tree::start(mode, None);
+        let path = tree.record(tree.pid, &tree.born());
+        let mut record: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        record["layout"] = json!("id");
+        std::fs::write(path, record.to_string()).unwrap();
+        let text = tree.answer();
+        assert!(text.contains("PROBE refused:invalid_state"), "{text}");
+    }
+}
+
+/// Invoked inside the real namespace by the parent test below. Outside that
+/// fixture it is inert, so the ordinary host suite retains its positive cases.
+#[cfg(target_os = "linux")]
+#[test]
+fn namespace_refusal_probe() {
+    if std::env::var_os("HGS_EXPECT_NAMESPACE_REFUSAL").is_none() {
+        return;
+    }
+    let config = crate::config::Config::load().unwrap();
+    let result = caller(&config);
+    assert!(
+        matches!(result,Caller::Refused(ref problem) if problem.message.contains("initial Linux user namespace")),
+        "{result:?}"
+    );
+    for action in ["on", "off"] {
+        assert_eq!(
+            crate::teams::dispatch(&config, &["preview".into(), action.into()], false).unwrap(),
+            1
+        );
+        assert!(!crate::teams::enabled(&config.state));
+    }
+    assert_eq!(
+        crate::teams::dispatch(&config, &["preview".into(), "status".into()], false).unwrap(),
+        0
+    );
+    assert_eq!(
+        crate::teams::dispatch(&config, &["status".into()], false).unwrap(),
+        1
+    );
+    println!("NAMESPACE_REFUSAL_CONFIRMED");
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn user_and_pid_namespace_controls_refuse_instead_of_becoming_the_person() {
+    for pid_namespace in [false, true] {
+        let temp = tempfile::tempdir().unwrap();
+        let state = temp.path().join("state");
+        let config = temp.path().join("config");
+        std::fs::create_dir(&state).unwrap();
+        std::fs::create_dir(&config).unwrap();
+        catalog(&config);
+        let mut command = Command::new("unshare");
+        command.args(["--user", "--map-current-user"]);
+        if pid_namespace {
+            command.args(["--pid", "--fork", "--mount-proc"]);
+        }
+        let output = command
+            .arg(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "teams::caller::tests::regressions::namespace_refusal_probe",
+                "--nocapture",
+            ])
+            .env_clear()
+            .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+            .env("HOME", temp.path())
+            .env("HGS_STATE_DIR", &state)
+            .env("HGS_CONFIG_DIR", &config)
+            .env("HGS_EXPECT_NAMESPACE_REFUSAL", "1")
+            .output()
+            .unwrap();
+        let text = format!(
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            output.status.success(),
+            "namespace admission or control failed: {text}"
+        );
+        assert!(text.contains("NAMESPACE_REFUSAL_CONFIRMED"), "{text}");
+        println!("NAMESPACE pid_namespace={pid_namespace} {text}");
     }
 }

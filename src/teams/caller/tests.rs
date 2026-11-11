@@ -110,7 +110,7 @@ fn probe() {
     }
 }
 
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 fn catalog(config: &std::path::Path) {
     std::fs::create_dir_all(config.join("swarm")).unwrap();
     let value = json!({"node_id":"00000000-0000-4000-8000-0000000000a1",
@@ -118,10 +118,12 @@ fn catalog(config: &std::path::Path) {
     std::fs::write(config.join("swarm/catalog.json"), value.to_string()).unwrap();
 }
 
-#[cfg(unix)]
+// The unqualified macOS context is checked below. Keep the shared process
+// fixture sources for a Mac qualification candidate before lifting its gate.
+#[cfg(target_os = "linux")]
 mod regressions;
 
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 mod process {
     use super::*;
     use sha2::{Digest, Sha256};
@@ -330,5 +332,48 @@ mod process {
     fn a_marked_command_with_no_live_record_is_refused() {
         let probe = Probe::start(true);
         assert_eq!(probe.answer(), "refused:invalid_state");
+    }
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn macos_refuses_both_callers_and_preview_mutations_until_qualified() {
+    for marked in [false, true] {
+        for action in ["on", "off"] {
+            let temp = tempfile::tempdir().unwrap();
+            let state = temp.path().join("state");
+            let config = temp.path().join("config");
+            std::fs::create_dir(&state).unwrap();
+            std::fs::create_dir(&config).unwrap();
+            let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+            command
+                .args(["--exact", "teams::caller::tests::probe", "--nocapture"])
+                .env_clear()
+                .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+                .env("HOME", temp.path())
+                .env("HGS_STATE_DIR", &state)
+                .env("HGS_CONFIG_DIR", &config)
+                .env("HGS_TEAMS_CALLER_PROBE", "1")
+                .env("HGS_TEAMS_PREVIEW_PROBE", action);
+            if marked {
+                command
+                    .env("HGS_SESSION", "claude/example/unavailable")
+                    .env("HGS_RUN_ID", "run-unavailable");
+            }
+            let output = command.output().unwrap();
+            let text = String::from_utf8_lossy(&output.stdout);
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert!(
+                text.contains("PROBE refused:not_allowed")
+                    && text.contains("not available on this platform")
+                    && text.contains("PREVIEW 1"),
+                "{text}"
+            );
+            assert!(!crate::teams::enabled(&state));
+        }
     }
 }

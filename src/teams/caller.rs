@@ -2,13 +2,19 @@
 //! must descend from its live saved agent. An unmarked caller is the person
 //! only after a complete, bounded inspection finds no verified marked agent.
 //!
-//! This is not verified Person authority: a child reparented away from its
-//! agent, or an agent started without session markers, is outside this rule.
+//! This is not verified Person authority. A command whose ancestry does not
+//! pass through readable same-user processes to its agent is outside this
+//! rule: reparenting, credential-changing helpers and namespaces can sever
+//! that chain. Agents started without session markers are also undetectable.
+//! Parent zero and noninitial Linux user namespaces refuse; other process or
+//! credential boundaries still need the future verified Person authority.
 //! Discovery uses ancestor environments, never a saved-session inventory.
 //! The top is established from process-table owners and parentage, never a
-//! program name. Its environment may be unreadable; every environment below
-//! it must be inspected. An unreadable helper in the middle (for example a
-//! sandbox launcher) still refuses: use an ordinary terminal in that case.
+//! program name. A same-user parent of zero refuses. Only a verified foreign
+//! parent ends the walk. Its top may have an unreadable environment; every node below
+//! it must be inspected. An unreadable or credential-changing helper in the
+//! middle still refuses; the message explains that process boundary without
+//! assuming the person has left a terminal.
 //! With a session-ID hint, ids/<ID>.json selects one verified record.
 //! Without an index entry, fixed ID-layout and legacy-label paths are both
 //! probed; disagreement refuses. Without a hint only the exact legacy name
@@ -20,6 +26,7 @@
 //! The walk is capped at 64 processes; environments and bindings at 1 MiB,
 //! index entries at 4 KiB. No process environment is changed.
 mod ancestry;
+mod context;
 use ancestry::ancestors;
 
 use crate::config::Config;
@@ -28,7 +35,7 @@ use zerus_team_plan::model::SessionKey;
 use zerus_team_plan::problem::code;
 use zerus_team_plan::Problem;
 
-pub(crate) const INTERIM_NOTE: &str = "This interim rule does not detect a child reparented away from its agent or an agent started without session markers.";
+pub(crate) const INTERIM_NOTE: &str = "This interim rule does not detect commands whose ancestry does not pass through readable processes of the same user to their agent, for example after reparenting, credential-changing helpers or namespaces. Agents started without session markers are also not detected.";
 
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum Caller {
@@ -38,9 +45,8 @@ pub(crate) enum Caller {
 }
 
 pub(crate) fn caller(config: &Config) -> Caller {
-    if !cfg!(any(target_os = "linux", target_os = "macos")) {
-        return Caller::Refused(Problem::new(code::NOT_ALLOWED,
-            "The Teams preview is not available on this platform yet: process ancestry cannot be verified."));
+    if let Err(problem) = context::available() {
+        return Caller::Refused(problem);
     }
     let session = std::env::var_os("HGS_SESSION");
     let run = std::env::var_os("HGS_RUN_ID");
@@ -73,7 +79,8 @@ pub(crate) fn caller(config: &Config) -> Caller {
         };
     }
     match agent_above() {
-        Ok(true) => Caller::Refused(not_allowed()),
+        Ok(true) => Caller::Refused(Problem::new(code::NOT_ALLOWED,
+            "A live agent session runs this command; person-only operations require a caller outside its process tree.")),
         Ok(false) => Caller::Person,
         Err(problem) => Caller::Refused(problem),
     }
@@ -81,12 +88,22 @@ pub(crate) fn caller(config: &Config) -> Caller {
 
 fn not_allowed() -> Problem {
     Problem::new(code::NOT_ALLOWED,
-        "This command cannot act as the person or prove its claimed live session. Use the agent's own shell for session commands, or a terminal outside any session for person commands.")
+        "The session markers do not prove a live agent running this command. Run session commands from the agent's own shell with its original launch markers.")
 }
 
 fn unreadable() -> Problem {
     Problem::new(code::INVALID_STATE,
-        "Cannot completely inspect this command's ancestry or saved session binding. An unreadable helper below the top of your user process tree prevents this interim check. Run the command from an ordinary terminal.")
+        "Cannot complete the process ancestry check. A process between this command and the session start changed its credentials or cannot be read, or the walk exceeded its bound.")
+}
+
+fn marked_unreadable() -> Problem {
+    Problem::new(code::INVALID_STATE,
+        "Cannot verify this session's live process, saved binding or computer identity. Run session commands from the agent's own shell after its saved session state is available.")
+}
+
+fn binding_unreadable() -> Problem {
+    Problem::new(code::INVALID_STATE,
+        "Cannot verify an ancestor's saved session binding; this interim check cannot establish a person as caller.")
 }
 
 /// A saved binding's immutable identity: its launch ID, else its run ID.
@@ -102,9 +119,10 @@ pub(crate) fn identity(record: &Value) -> String {
 fn session_key(config: &Config, record: &Value) -> Result<SessionKey, Problem> {
     let session_id = identity(record);
     if session_id.is_empty() {
-        return Err(unreadable());
+        return Err(marked_unreadable());
     }
-    let machine = crate::state::session_graph::caller_machine(config).map_err(|_| unreadable())?;
+    let machine =
+        crate::state::session_graph::caller_machine(config).map_err(|_| marked_unreadable())?;
     Ok(SessionKey {
         machine,
         session_id,
@@ -134,7 +152,7 @@ fn prove_read(
     read: impl FnOnce(&str, &str, Option<&str>) -> std::result::Result<Option<Value>, &'static str>,
 ) -> Result<Option<SessionKey>, Problem> {
     read(name, run, session)
-        .map_err(|_| unreadable())?
+        .map_err(|_| marked_unreadable())?
         .map(|record| session_key(config, &record))
         .transpose()
 }
@@ -148,15 +166,17 @@ fn agent_above() -> Result<bool, Problem> {
                 &claim.run,
                 claim.session.as_deref(),
                 ancestor.pid,
-                &ancestor.identity.birth,
+                ancestor.identity.birth.as_deref().ok_or_else(unreadable)?,
             )
-            .map_err(|_| unreadable())?
+            .map_err(|_| binding_unreadable())?
             .is_some()
             {
                 return Ok(true);
             }
         }
     }
+    // T2: no deterministic test pins this post-proof race window; changing a
+    // real process exactly after the binding read needs a timing/injection seam.
     // Recheck original edges and births before accepting a negative proof.
     ancestry::unchanged(&chain)?;
     Ok(false)

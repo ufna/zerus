@@ -26,7 +26,8 @@ pub(super) fn reads() -> usize {
 #[cfg(unix)]
 pub(super) fn machine(config: &crate::config::Config) -> Result<String> {
     use super::super::repositories::directory::Directory;
-    let directory = Directory::open(&config.dir)
+    let config_root = std::fs::canonicalize(&config.dir).map_err(|_| UNREADABLE)?;
+    let directory = Directory::open(&config_root)
         .map_err(|_| UNREADABLE)?
         .child("swarm")
         .map_err(|_| UNREADABLE)?;
@@ -97,6 +98,8 @@ pub(super) fn record(
     } else if !descends_from(pid)? {
         return Ok(None);
     }
+    // R2: no deterministic test pins a replacement between these native reads;
+    // controlling that exact race would require an injected production seam.
     if platform::process_identity(pid).as_ref() != Some(&pinned)
         || platform::process_start_time(pid).as_deref() != Some(start)
     {
@@ -135,7 +138,8 @@ fn exact(name: &str, run: &str, session: Option<&str>) -> Result<Option<Value>> 
     {
         return Err(UNREADABLE);
     }
-    let root = Directory::open(&storage::root()).map_err(|_| UNREADABLE)?;
+    let state_root = std::fs::canonicalize(storage::root()).map_err(|_| UNREADABLE)?;
+    let root = Directory::open(&state_root).map_err(|_| UNREADABLE)?;
     let Some(id) = session else {
         return legacy(&root, name, run);
     };
@@ -317,4 +321,15 @@ fn bytes(
 #[cfg(not(unix))]
 fn exact(_name: &str, _run: &str, _session: Option<&str>) -> Result<Option<Value>> {
     Err(UNREADABLE)
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    #[test]
+    fn hinted_requires_the_claimed_run_even_after_route_validation() {
+        let record =
+            serde_json::json!({"name":"claude/example/one","session_id":"id","run_id":"different"});
+        assert!(hinted(record, "claude/example/one", "claimed", "id").is_err());
+    }
 }

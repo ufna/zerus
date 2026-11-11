@@ -1,12 +1,13 @@
 //! Bounded process-table walk. An unreadable environment is tolerated only at
-//! the verified top of this user's tree, whose parent is foreign or absent.
+//! the verified top of this user's tree, whose parent is foreign. Parent zero
+//! refuses, including a same-user process at a PID namespace boundary.
 use super::{claim, environment, unreadable};
 use zerus_team_plan::Problem;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct Process {
     pub(super) parent: u32,
-    pub(super) birth: String,
+    pub(super) birth: Option<String>,
 }
 
 #[derive(Debug)]
@@ -41,20 +42,24 @@ pub(super) fn walk(
             return Err(unreadable());
         };
         let parent = identity.parent;
-        if chain.iter().any(|row| row.pid == pid) || parent == pid {
+        if chain.iter().any(|row| row.pid == pid) || parent == pid || parent == 0 {
             return Err(unreadable());
         }
-        let next = if parent == 0 {
-            Inspection::Foreign
-        } else {
-            inspect(parent)?
-        };
+        let next = inspect(parent)?;
         let top = matches!(next, Inspection::Foreign);
         let claim = match environment(pid) {
-            Ok(bytes) => claim(&bytes)?,
+            Ok(bytes) => {
+                if identity.birth.is_none() {
+                    return Err(unreadable());
+                }
+                claim(&bytes)?
+            }
             Err(_) if top => None,
             Err(_) => return Err(unreadable()),
         };
+        if !top && identity.birth.is_none() {
+            return Err(unreadable());
+        }
         if !matches!(inspect(pid)?, Inspection::Own(ref now) if *now == identity) {
             return Err(unreadable());
         }
@@ -79,10 +84,9 @@ pub(super) fn unchanged(chain: &[Ancestor]) -> Result<(), Problem> {
         {
             return Err(unreadable());
         }
-        if ancestor.top
-            && ancestor.identity.parent != 0
-            && !matches!(inspect(ancestor.identity.parent)?, Inspection::Foreign)
-        {
+        // T3: no deterministic test pins a credential change in the boundary
+        // parent after the first walk; that requires a native race/injection seam.
+        if ancestor.top && !matches!(inspect(ancestor.identity.parent)?, Inspection::Foreign) {
             return Err(unreadable());
         }
     }
@@ -94,6 +98,33 @@ pub(super) fn unchanged(chain: &[Ancestor]) -> Result<(), Problem> {
 #[cfg(target_os = "linux")]
 pub(super) fn inspect(pid: u32) -> Result<Inspection, Problem> {
     let status = bounded(&format!("/proc/{pid}/status"))?;
+    if !effective_owner(&status, unsafe { libc::geteuid() })? {
+        return Ok(Inspection::Foreign);
+    }
+    let stat = bounded(&format!("/proc/{pid}/stat"))?;
+    let (_, tail) = stat.rsplit_once(')').ok_or_else(unreadable)?;
+    let fields: Vec<_> = tail.split_whitespace().collect();
+    if fields.len() < 20 || matches!(fields[0], "Z" | "X") {
+        return Err(unreadable());
+    }
+    let parent = fields[1].parse().map_err(|_| unreadable())?;
+    let native = crate::platform::process_identity(pid);
+    if native
+        .as_ref()
+        .is_some_and(|native| native.parent != parent)
+    {
+        return Err(unreadable());
+    }
+    // No synthetic birth: None is usable only at the verified foreign-parent
+    // top with an unreadable environment, and never verifies an agent claim.
+    Ok(Inspection::Own(Process {
+        parent,
+        birth: native.map(|native| native.birth),
+    }))
+}
+
+#[cfg(target_os = "linux")]
+fn effective_owner(status: &str, owner: u32) -> Result<bool, Problem> {
     let uids = status
         .lines()
         .find_map(|line| line.strip_prefix("Uid:"))
@@ -105,19 +136,7 @@ pub(super) fn inspect(pid: u32) -> Result<Inspection, Problem> {
     if uids.len() != 4 {
         return Err(unreadable());
     }
-    if uids[1] != unsafe { libc::geteuid() } {
-        return Ok(Inspection::Foreign);
-    }
-    let stat = bounded(&format!("/proc/{pid}/stat"))?;
-    let (_, tail) = stat.rsplit_once(')').ok_or_else(unreadable)?;
-    let fields: Vec<_> = tail.split_whitespace().collect();
-    if fields.len() < 20 || matches!(fields[0], "Z" | "X") {
-        return Err(unreadable());
-    }
-    Ok(Inspection::Own(Process {
-        parent: fields[1].parse().map_err(|_| unreadable())?,
-        birth: fields[19].to_owned(),
-    }))
+    Ok(uids[1] == owner)
 }
 
 #[cfg(target_os = "linux")]
@@ -155,33 +174,19 @@ pub(super) fn inspect(pid: u32) -> Result<Inspection, Problem> {
     if info.pbsi_uid != unsafe { libc::geteuid() } {
         return Ok(Inspection::Foreign);
     }
-    // KERN_PROC_PID exposes the process-table start timeval even when full
-    // proc_pidinfo/environment access is denied to an unprivileged caller.
-    let mut mib = [
-        libc::CTL_KERN,
-        libc::KERN_PROC,
-        libc::KERN_PROC_PID,
-        pid as i32,
-    ];
-    let mut table = [0u64; 128];
-    let mut bytes = std::mem::size_of_val(&table);
-    // SAFETY: the table, MIB and size cover the writable buffers.
-    let rc = unsafe {
-        libc::sysctl(
-            mib.as_mut_ptr(),
-            4,
-            table.as_mut_ptr().cast(),
-            &mut bytes,
-            std::ptr::null_mut(),
-            0,
-        )
-    };
-    if rc != 0 || !(16..=std::mem::size_of_val(&table)).contains(&bytes) || info.pbsi_status == 5 {
+    if info.pbsi_status == 5 {
+        return Err(unreadable());
+    }
+    let native = crate::platform::process_identity(pid);
+    if native
+        .as_ref()
+        .is_some_and(|native| native.parent != info.pbsi_ppid)
+    {
         return Err(unreadable());
     }
     Ok(Inspection::Own(Process {
         parent: info.pbsi_ppid,
-        birth: format!("{}:{}", table[0], table[1]),
+        birth: native.map(|native| native.birth),
     }))
 }
 
