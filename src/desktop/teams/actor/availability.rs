@@ -31,26 +31,33 @@ pub(super) fn free(config: &Config, epoch: &str, team: &str, member: &Member) ->
     };
     Ok(identity && value["run_id"] == run && idle(&value))
 }
-/// Part C prefers the completed resumed-binding receipt here. That fact
+/// Prefer the completed resumed-binding receipt here. That fact
 /// chooses a run only; the fleet and task-index checks still prove it free.
-pub(super) fn current_run(config: &Config, _team: &str, member: &Member) -> Result<Option<String>> {
+pub(super) fn current_run(config: &Config, team: &str, member: &Member) -> Result<Option<String>> {
     let Some(session) = member.session.as_ref() else {
         return Ok(None);
     };
     let run = if let Some(id) = session.session_id.strip_prefix("run_id:") {
         id.to_owned()
     } else if let Some(id) = session.session_id.strip_prefix("launch_id:") {
-        match crate::state::observe_team_launch(
-            &config.state,
-            id,
-            Instant::now() + Duration::from_millis(300),
-        ) {
-            crate::state::TeamObservation::Record(r)
-                if r.launch_id == id && r.cwd == member.worktree && r.agent == member.agent =>
-            {
-                r.run_id
+        if let Some(binding) =
+            crate::desktop::teams::confirm::resumed_binding(&config.state, team, &member.id, id)
+                .map_err(|error| problem(&error))?
+        {
+            binding.run_id
+        } else {
+            match crate::state::observe_team_launch(
+                &config.state,
+                id,
+                Instant::now() + Duration::from_millis(300),
+            ) {
+                crate::state::TeamObservation::Record(r)
+                    if r.launch_id == id && r.cwd == member.worktree && r.agent == member.agent =>
+                {
+                    r.run_id
+                }
+                _ => return Ok(None),
             }
-            _ => return Ok(None),
         }
     } else {
         return Ok(None);

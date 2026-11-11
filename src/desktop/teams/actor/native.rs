@@ -143,8 +143,11 @@ impl Ports for Native {
             offset,
         ))
     }
-    fn observe(&mut self, _: &mut Store, _: &TaskRef) -> Result<()> {
-        Err(problem("Team task observation is not available yet"))
+    fn observe(&mut self, _: &mut Store, task: &TaskRef) -> Result<()> {
+        crate::teams::tasks::observe(&self.config.state, task)
+    }
+    fn report(&mut self, task: &TaskRef) -> Result<Option<String>> {
+        crate::teams::tasks::report(&self.config.state, task)
     }
     fn free(&mut self, team: &Team, m: &Member) -> Result<bool> {
         let Some(session) = m.session.as_ref() else {

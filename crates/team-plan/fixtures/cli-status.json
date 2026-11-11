@@ -29,6 +29,7 @@
       "waiting": 0
     }
   },
+  "health": null,
   "members": [
     {
       "account": "account-example",
@@ -77,6 +78,7 @@
     }
   ],
   "ok": true,
+  "service_running": null,
   "team": {
     "base_commit": "0123456789abcdef0123456789abcdef01234567",
     "home": "00000000-0000-4000-8000-0000000000aa",
