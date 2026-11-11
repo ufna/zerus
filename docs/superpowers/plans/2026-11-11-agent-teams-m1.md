@@ -930,8 +930,13 @@ behind: `hgs task team-clear REF --json` reads `{schema, team, node}` and
 removes the team key from the task of a stage node that the store holds as
 released for that team on this home, on an exact key match. It answers
 `{schema, team, node, state, error}` with `cleared` (also when the key is
-already absent), `refused` or `cutting_over`, never touches a task node or
-a live stage, and writes nothing to the team store.
+already absent), `refused` or `cutting_over`, never touches a live stage,
+and writes nothing to the team store. It clears the key of a task node only
+when the store holds that node's team as stopped or archived on this home
+(package 10 releases a stopped team's tasks this way): the task keeps its
+stage, executor and attempt and loses only the key. A task node of a team
+that is planning, running or paused is refused; there the person retargets
+the task.
 
 **The CLI as the desktop's interface (packages 3, 5 and 12).** The client
 core reads through `hgs team` and follows the shapes package 5 pins in
