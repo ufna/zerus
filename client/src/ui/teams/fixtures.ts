@@ -81,7 +81,10 @@ export const catalog: TeamCatalog = {
     lead: { agent: "claude", account: { mode: "freest" }, model: "", effort: "", rules: "" },
     roster: [{ role: "developer", count: 2, optional: false }, { role: "reviewer", count: 1, optional: false }],
     default_pipeline: "reviewed",
-    settings: { queue: true, routing: "direct", plan_approval: "review", phase_acceptance: "lead", integration: "branch", land_allowed: false },
+    settings: {
+      queue: true, routing: "direct", plan_approval: "review", phase_acceptance: "lead", integration: "branch", land_allowed: false,
+      delegations: { accept_results: true, answer_members: true, confirm_trust: true, resume_exited: true, merge_accepted: true },
+    },
   }],
   planning_rules: [],
 };

@@ -91,7 +91,11 @@ export interface TeamCatalogRole { id: string; name: string; agent: string; acco
 export interface TeamCatalogStage { kind: string; role: string }
 export interface TeamCatalogPipeline { id: string; name: string; implementer: string; stages: TeamCatalogStage[]; max_rounds: number; accept: string }
 export interface TeamCatalogSeat { role: string; count: number; optional: boolean }
-export interface TeamCatalogSettings { queue: boolean; routing: string; plan_approval: string; phase_acceptance: string; integration: string; land_allowed: boolean }
+export interface TeamCatalogSettings {
+  queue: boolean; routing: string; plan_approval: string; phase_acceptance: string; integration: string; land_allowed: boolean;
+  /** What the person lets the team decide without them (the contract's Delegations), by name. */
+  delegations?: Record<string, boolean>;
+}
 export interface TeamCatalogLead { agent: string; account: { mode: string; account?: string }; model: string; effort: string; rules: string }
 export interface TeamCatalogTemplate {
   id: string; name: string; description: string; lead: TeamCatalogLead;

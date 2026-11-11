@@ -1,4 +1,4 @@
-import { For, Show, createMemo, createSignal, createUniqueId, onCleanup, onMount } from "solid-js";
+import { For, Show, createEffect, createMemo, createSignal, createUniqueId, on, onCleanup, onMount } from "solid-js";
 import type { JSX } from "solid-js";
 import { tr } from "../../i18n";
 import { selected } from "../../store/ui";
@@ -25,17 +25,41 @@ export function slug(text: string): string {
   return text.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 60) || "team";
 }
 
-/** The settings a person confirms, as the template's own values. */
+/** The settings a person confirms, as the template's own values. Phases and
+ * their approval belong to milestone 2 and are not shown. */
 export function settingLines(template: TeamCatalogTemplate): [string, string][] {
   const settings = template.settings;
   return [
     [tr("Integration"), settings.integration === "branch" ? tr("an integration branch") : tr("no integration branch")],
-    [tr("Plan approval"), settings.plan_approval === "review" ? tr("the person approves the plan") : tr("automatic")],
-    [tr("Acceptance"), settings.phase_acceptance === "lead" ? tr("the lead") : settings.phase_acceptance === "person" ? tr("the person") : tr("the pipeline")],
-    [tr("Queue"), settings.queue ? tr("the team takes tasks as they come") : tr("planned phases only")],
-    [tr("Routing"), settings.routing === "direct" ? tr("straight to a free member") : tr("the lead routes first")],
+    [tr("Queue"), settings.queue ? tr("the team takes tasks as they come") : tr("no queue")],
+    [tr("Routing"), settings.routing === "direct" ? tr("straight to a free member, without the lead") : tr("the lead routes first")],
     [tr("Land stage"), settings.land_allowed ? tr("allowed") : tr("not allowed")],
   ];
+}
+
+/** A delegation in words: its name and what it lets the lead or the service
+ * do without the person. The names and values come from the template (the
+ * contract's Delegations); one this version does not know shows its plain
+ * name. */
+export function delegationWords(key: string): { name: string; sentence: string } {
+  switch (key) {
+    case "accept_results": return { name: tr("Accept results"), sentence: tr("The lead may accept a team task's result without you.") };
+    case "answer_members": return { name: tr("Answer members"), sentence: tr("The lead answers members' questions and permission requests without you.") };
+    case "confirm_trust": return { name: tr("Confirm folder trust"), sentence: tr("Zerus confirms the trust prompt of a folder it created for the team.") };
+    case "resume_exited": return { name: tr("Resume exited members"), sentence: tr("Zerus resumes a member whose agent exited by itself.") };
+    case "merge_accepted": return { name: tr("Merge accepted work"), sentence: tr("An accepted result is merged into the integration branch without your approval.") };
+    default: return { name: key, sentence: tr("A permission this version does not describe.") };
+  }
+}
+
+/** Who ends a pipeline: the lead, the person, or the pipeline by itself. */
+export function acceptanceWords(accept: string): string {
+  switch (accept) {
+    case "lead": return tr("the lead accepts");
+    case "person": return tr("you accept");
+    case "pipeline": return tr("it accepts by itself");
+    default: return accept;
+  }
 }
 
 export function rosterLines(catalog: TeamCatalog, template: TeamCatalogTemplate): string[] {
@@ -61,7 +85,7 @@ export function pipelineLines(catalog: TeamCatalog, template: TeamCatalogTemplat
     .map((pipeline) => {
       const stages = pipeline.stages.map((stage) => `${tr(stage.kind)}: ${stage.role}`).join(" → ");
       const mark = pipeline.id === template.default_pipeline ? ` (${tr("default")})` : "";
-      return `${pipeline.name || pipeline.id}${mark}${stages ? ` — ${stages}` : ""}`;
+      return `${pipeline.name || pipeline.id}${mark}${stages ? ` — ${stages}` : ""} — ${acceptanceWords(pipeline.accept)}`;
     });
 }
 
@@ -134,11 +158,23 @@ export function NewTeam(props: NewTeamProps): JSX.Element {
   const [howto, setHowto] = createSignal(false);
   const template = createMemo(() => props.catalog?.templates.find((candidate) => candidate.id === templateId()));
   const proposed = createMemo(() => branch() || `zerus/team/${slug(name() || template()?.name || "team")}`);
+  // The template's delegations as the person sets them here. A team is created
+  // from its template's settings (the create request names the template and
+  // nothing else carries settings), so the request carries exactly what the
+  // form shows only while these equal the template's; changed ones are saved
+  // as a template first and the team is created from it.
+  const [delegations, setDelegations] = createSignal<Record<string, boolean>>({});
+  createEffect(on(template, (chosen) => setDelegations({ ...(chosen?.settings.delegations ?? {}) })));
+  const delegationsChanged = () => {
+    const given = template()?.settings.delegations ?? {};
+    return Object.entries(delegations()).some(([key, value]) => given[key] !== value);
+  };
   const createWhy = createMemo(() => {
     if (!template()) return tr("Choose a template.");
     if (!name().trim()) return tr("Name the team.");
     if (!project().trim()) return tr("Name the project.");
     if (!checkedFolder()?.git) return tr("Check the project folder: it must be a Git folder.");
+    if (delegationsChanged()) return tr("Save the changed permissions as a template, then create the team from it.");
     if (locked()) return tr("Wait for the team to be created.");
     return "";
   });
@@ -200,8 +236,11 @@ export function NewTeam(props: NewTeamProps): JSX.Element {
     if (!chosen) return;
     setSaving(true); setError("");
     try {
-      await props.onSaveTemplate({ ...chosen, id: slug(`${chosen.id}-${name() || chosen.name}`), name: name().trim() || chosen.name });
+      const saving = { ...chosen, id: slug(`${chosen.id}-${name() || chosen.name}`), name: name().trim() || chosen.name, settings: { ...chosen.settings, delegations: { ...delegations() } } };
+      await props.onSaveTemplate(saving);
       setSaved(tr("Template saved."));
+      // The saved template carries the permissions shown: create from it.
+      if (props.catalog?.templates.some((candidate) => candidate.id === saving.id)) setTemplateId(saving.id);
     } catch (failure) { setError(String(failure)); }
     finally { setSaving(false); }
   };
@@ -252,6 +291,21 @@ export function NewTeam(props: NewTeamProps): JSX.Element {
                 </section>
               </div>
               <dl class="nt-caps"><For each={settingLines(chosen())}>{([label, value]) => <><dt>{label}</dt><dd>{value}</dd></>}</For></dl>
+              <Show when={Object.keys(delegations()).length}>
+                <fieldset class="nt-permissions" data-permissions>
+                  <legend>{tr("Permissions")}</legend>
+                  <span class="nt-hint">{tr("What the lead and the service may do without you.")}</span>
+                  <For each={Object.keys(delegations())}>
+                    {(key) => (
+                      <label class="nt-template-row" classList={{ on: delegations()[key] }} data-delegation={key}>
+                        <input type="checkbox" checked={delegations()[key]} disabled={locked()}
+                          onChange={(event) => setDelegations({ ...delegations(), [key]: event.currentTarget.checked })} />
+                        <span class="nt-template-copy"><span class="nt-template-name">{delegationWords(key).name}</span><span class="nt-hint">{delegationWords(key).sentence}</span></span>
+                      </label>
+                    )}
+                  </For>
+                </fieldset>
+              </Show>
             </div>
           </section>
         )}

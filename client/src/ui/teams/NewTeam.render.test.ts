@@ -34,7 +34,8 @@ it("shows the template's roster, pipelines and the settings a person confirms", 
   expect(host.textContent).toContain("Reviewer × 1");
   expect(host.textContent).toContain("Reviewed: review, lead");
   expect(host.textContent).toContain("an integration branch");
-  expect(host.textContent).toContain("the person approves the plan");
+  expect(host.textContent, "phases and their approval belong to milestone 2").not.toContain("the person approves the plan");
+  expect(host.textContent).not.toContain("Plan approval");
   expect(host.textContent).toContain("not allowed");
 });
 
