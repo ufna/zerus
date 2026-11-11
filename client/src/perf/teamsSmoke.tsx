@@ -140,7 +140,7 @@ function App() {
     </Show>
     <Show when={show("states")}>
       <Section title="Members in each state" note="active, paused, not created and removed, with the lead marked.">
-        <div class="smoke-members"><For each={members}>{(member) => <MemberCard member={member} busy={false} onAction={() => {}} />}</For></div>
+        <div class="smoke-members"><For each={members}>{(member) => <MemberCard member={member} teamStatus="running" busy={false} onAction={() => {}} />}</For></div>
       </Section>
       <Section title="Teams off"><p class="smoke-off dim">With the preview off, the rail's New team button, the team.new command and the Team tab have no entry point.</p></Section>
     </Show>

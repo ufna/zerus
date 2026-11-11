@@ -116,7 +116,7 @@ describe("contradictory stage facts (finding 17)", () => {
     expect(element.querySelector('[data-stage="9"]')?.getAttribute("data-inconsistent")).toBe("true");
     expect(element.querySelector('[data-stage="9"]')?.getAttribute("title")).toContain("names task #999");
     dispose(); element.replaceChildren();
-    dispose = render(() => createComponent(MemberCard, { member: { ...member("m3"), state: "active" }, cards: [nested], busy: false, onAction: () => {} }), element);
+    dispose = render(() => createComponent(MemberCard, { teamStatus: "running", member: { ...member("m3"), state: "active" }, cards: [nested], busy: false, onAction: () => {} }), element);
     expect(element.textContent).not.toContain("Reviewing #1");
   });
 
@@ -136,7 +136,7 @@ describe("an orphan stage (finding 15)", () => {
     expect(orphanStage(orphan)).toMatchObject({ kind: "review", target: 999, round: 2 });
     expect(boardColumns({ ...teamView, groups: [{ state: "in_progress", cards: [orphan] }] }).find((column) => column.key === "review")?.cards).toHaveLength(1);
     const element = host();
-    dispose = render(() => createComponent(MemberCard, { member: { ...member("m3"), state: "active" }, cards: [orphan], busy: false, onAction: () => {} }), element);
+    dispose = render(() => createComponent(MemberCard, { teamStatus: "running", member: { ...member("m3"), state: "active" }, cards: [orphan], busy: false, onAction: () => {} }), element);
     expect(element.textContent).toContain("Reviewing #999");
     expect(element.textContent).toContain("r2/3");
   });

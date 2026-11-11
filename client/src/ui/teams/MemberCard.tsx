@@ -11,7 +11,7 @@ import type { MemberView, TaskView } from "./types";
 // The reference's compact right-side member card. Only current page assignments
 // establish its work line/queue; missing model, findings and full-queue data are
 // omitted, never inferred from a role or a live session.
-export function MemberCard(props: { member: MemberView; cards?: readonly TaskView[]; busy: boolean; onAction: (kind: string, member: string) => void; onSelect?: (node: number) => void }) {
+export function MemberCard(props: { member: MemberView; teamStatus: string; cards?: readonly TaskView[]; busy: boolean; onAction: (kind: string, member: string) => void; onSelect?: (node: number) => void }) {
   const [detailsOpen, setDetailsOpen] = createSignal(false);
   const status = () => memberStatus(props.member);
   const work = createMemo(() => memberWork(props.member, props.cards ?? []));
@@ -39,7 +39,7 @@ export function MemberCard(props: { member: MemberView; cards?: readonly TaskVie
         <Show when={props.member.id !== props.member.role}><b class="team-member-name ell" title={props.member.id}>{props.member.id}</b></Show>
         <span class="team-member-agent ell" title={props.member.model || props.member.agent}>{props.member.model || props.member.agent}</span>
         <Show when={props.member.state !== "active"}><span class="team-member-state tm-state-badge" data-tone={status().tone}>{status().label}</span></Show>
-        <MemberActions member={props.member} busy={props.busy} onAction={props.onAction} detailsOpen={detailsOpen()} onDetails={() => setDetailsOpen(!detailsOpen())} />
+        <MemberActions member={props.member} teamStatus={props.teamStatus} busy={props.busy} onAction={props.onAction} detailsOpen={detailsOpen()} onDetails={() => setDetailsOpen(!detailsOpen())} />
       </div>
       {/* A member who is not active shows its state chip alone; a line under
           the name that repeated the chip said nothing more. */}

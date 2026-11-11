@@ -163,7 +163,7 @@ export function TeamWorkspace(props: {
                       )}</For>
                     </dl>
                   </Show>
-                  <TaskActions card={shown()} busy={props.busy} onAction={(kind) => send(kind, { node: shown().node })}
+                  <TaskActions card={shown()} teamStatus={props.view.bar.status} busy={props.busy} onAction={(kind) => send(kind, { node: shown().node })}
                     onReason={(button) => { setAsking(button); setReason(""); }} />
                   <Show when={asking()}>
                     {(button) => (
@@ -193,7 +193,7 @@ export function TeamWorkspace(props: {
         <aside class="team-members" data-team-members aria-label={tr("Members")}>
           <header class="team-section-head"><Icon name="users" size={14} /><h3>{tr("Members")}</h3><span class="count">{props.view.members.length}</span></header>
           <For each={props.view.members}>
-            {(member) => <MemberCard member={member} cards={all()} busy={props.busy} onSelect={select}
+            {(member) => <MemberCard member={member} teamStatus={props.view.bar.status} cards={all()} busy={props.busy} onSelect={select}
               onAction={(kind, id) => send(kind, { member: id })} />}
           </For>
         </aside>

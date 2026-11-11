@@ -25,13 +25,15 @@ export function TeamBarActions(props: { view: TeamView; busy: boolean; onAction:
 /** The decisions a card offers; a reason button asks for its text first. */
 export function TaskActions(props: {
   card: TaskView;
+  /** The team's status: the store takes task actions only from an active team. */
+  teamStatus: string;
   busy: boolean;
   onAction: (kind: string) => void;
   onReason: (button: TaskButton) => void;
 }) {
   return (
     <span class="team-finding-actions" data-task-actions>
-      <For each={taskButtons(props.card)}>
+      <For each={taskButtons(props.card, props.teamStatus)}>
         {(button) => (
           <button type="button" class="btn small" classList={{ danger: button.danger, primary: button.id === "accept" }}
             disabled={props.busy} data-task-action={button.id}
@@ -43,18 +45,18 @@ export function TaskActions(props: {
 }
 
 /** A member's operations in its card. */
-export function MemberActions(props: { member: MemberView; busy: boolean; onAction: (kind: string, member: string) => void; onDetails?: () => void; detailsOpen?: boolean }) {
+export function MemberActions(props: { member: MemberView; teamStatus: string; busy: boolean; onAction: (kind: string, member: string) => void; onDetails?: () => void; detailsOpen?: boolean }) {
   let items: MenuEntry[] | undefined;
   onCleanup(() => { if (items && menu()?.items === items) setMenu(undefined); });
   return (
-    <Show when={memberActions(props.member).length || props.onDetails}>
+    <Show when={memberActions(props.member, props.teamStatus).length || props.onDetails}>
       <span class="team-member-actions" data-member-actions>
         <button type="button" class="icon-btn small team-member-more" aria-label={tr("Member actions")} title={tr("Member actions")} aria-haspopup="menu" disabled={props.busy}
           onClick={(event) => {
             const trigger = event.currentTarget, box = trigger.getBoundingClientRect(), memberId = props.member.id;
             items = [
               ...(props.onDetails ? [{ label: tr("Member details"), icon: "info", checked: props.detailsOpen, action: () => { trigger.focus(); props.onDetails?.(); } }] : []),
-              ...memberActions(props.member).map((action) => ({
+              ...memberActions(props.member, props.teamStatus).map((action) => ({
               label: action.text, icon: action.id.startsWith("pause") ? "pause" : action.id.startsWith("resume") ? "play" : action.id.startsWith("stop") ? "square" : "trash",
               danger: action.danger, disabled: props.busy || action.disabled, hint: action.reason,
               action: () => { if (props.busy || action.disabled) return; trigger.focus(); props.onAction(action.id, memberId); },

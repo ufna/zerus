@@ -22,7 +22,7 @@ const member = (over: Partial<MemberView> = {}): MemberView => ({
 function setup(value: MemberView, onAction = vi.fn()) {
   const host = document.createElement("div");
   document.body.append(host);
-  dispose = render(() => [createComponent(MemberCard, { member: value, busy: false, onAction }), createComponent(MenuLayer, {})], host);
+  dispose = render(() => [createComponent(MemberCard, { teamStatus: "running", member: value, busy: false, onAction }), createComponent(MenuLayer, {})], host);
   const openDetails = () => {
     (host.querySelector('[aria-label="Member actions"]') as HTMLButtonElement).click();
     ([...host.querySelectorAll<HTMLButtonElement>('[role="menuitemcheckbox"]')].find((button) => button.textContent === "Member details"))!.click();
@@ -78,14 +78,11 @@ it("offers resume only to a paused member", () => {
   expect(buttons.map((button) => button.textContent)).toEqual(["Resume", "Stop", "Remove"]);
 });
 
-it("keeps lead Pause/Stop and disables Remove with its reason (review 5)", () => {
+it("keeps lead Pause/Stop and offers no Remove, which the store refuses for the lead", () => {
   const { host, onAction } = setup(member({ lead: true }));
   (host.querySelector('[aria-label="Member actions"]') as HTMLButtonElement).click();
   const buttons = [...host.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')];
-  expect(buttons.map((button) => button.textContent)).toEqual(["Pause", "Stop", "Remove"]);
-  expect(buttons[2].getAttribute("aria-disabled")).toBe("true");
-  expect(buttons[2].title).toContain("lead cannot be removed");
-  buttons[2].click(); expect(onAction).not.toHaveBeenCalled();
+  expect(buttons.map((button) => button.textContent)).toEqual(["Pause", "Stop"]);
   buttons[1].click(); expect(onAction).toHaveBeenCalledWith("stop-member", "m1");
 });
 
