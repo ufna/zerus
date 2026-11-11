@@ -96,7 +96,9 @@ fn card(node: &Value) -> QueueCard {
 /// Folds the stage rows into the card they check, keeping every group in
 /// [`GROUPS`]' order and the rest by state name. A stage whose target is
 /// outside the page stays a card of its own, so its work is not lost; its
-/// target's card may come with a later page.
+/// target's card may come with a later page. That card's `stages` holds its
+/// own stage facts (kind, target, round), which the queue card has no field
+/// for.
 fn fold_stages(nodes: &[Value]) -> (Vec<QueueCard>, bool) {
     let mut cards: Vec<QueueCard> = Vec::new();
     let mut stages: Vec<(u64, StageCard, QueueCard)> = Vec::new();
@@ -114,9 +116,10 @@ fn fold_stages(nodes: &[Value]) -> (Vec<QueueCard>, bool) {
         }
         cards.push(card(node));
     }
-    for (target, stage, own_card) in stages {
+    for (target, stage, mut own_card) in stages {
         let Some(card) = cards.iter_mut().find(|card| card.node == target) else {
             if cards.len() < PAGE {
+                own_card.stages.push(stage);
                 cards.push(own_card);
             } else {
                 dropped = true;
@@ -191,5 +194,6 @@ pub fn team(status: &Value, queue: &Value) -> TeamView {
         truncated,
         next: next_cursor(queue),
         revision,
+        after: None,
     }
 }

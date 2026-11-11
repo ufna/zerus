@@ -189,6 +189,10 @@ pub struct TeamList {
     pub truncated: bool,
     /// The cursor of the next page, when the reply names one.
     pub next: Option<String>,
+    /// The cursor this page was read from; absent for the first page, so a
+    /// view can keep pages by their cursor and tell a later page apart.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub after: Option<String>,
 }
 
 // --------------------------------------------------------------- one team
@@ -366,6 +370,9 @@ pub struct TeamView {
     /// The cursor of the queue's next page, when the reply names one.
     pub next: Option<String>,
     pub revision: u64,
+    /// The queue page's cursor; absent for the first page.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub after: Option<String>,
 }
 
 // ----------------------------------------------------------------- waiting
@@ -395,6 +402,10 @@ pub struct WaitingView {
     pub items: Vec<WaitingItem>,
     /// The cursor of the next page, when the reply names one.
     pub next: Option<String>,
+    /// The cursor this page was read from; absent for the first page, which
+    /// alone can say that nothing waits.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub after: Option<String>,
 }
 
 #[cfg(test)]

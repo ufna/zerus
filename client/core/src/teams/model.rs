@@ -129,6 +129,8 @@ impl Slot {
 struct Parts {
     status: Option<Value>,
     queue: Option<Value>,
+    /// The cursor the queue reply was read from; none for the first page.
+    queue_after: Option<String>,
 }
 
 /// The Teams read model of this computer.
@@ -470,7 +472,10 @@ impl TeamsModel {
         let empty = Value::Null;
         let status = parts.status.as_ref().unwrap_or(&empty);
         let queue = parts.queue.as_ref().unwrap_or(&empty);
-        Some(view::team(status, queue))
+        Some(TeamView {
+            after: parts.queue_after.clone(),
+            ..view::team(status, queue)
+        })
     }
 
     /// The slot's next due time: at once when a change marked it during the
@@ -525,9 +530,10 @@ impl TeamsModel {
             self.send(key, update, &mut out);
             return out;
         }
+        let after = read.after().map(str::to_owned);
         match read {
-            TeamRead::List { .. } => self.apply_list(slot, reply, now, &mut out),
-            TeamRead::Waiting { .. } => self.apply_waiting(slot, reply, now, &mut out),
+            TeamRead::List { .. } => self.apply_list(slot, after, reply, now, &mut out),
+            TeamRead::Waiting { .. } => self.apply_waiting(slot, after, reply, now, &mut out),
             TeamRead::Status { team } | TeamRead::Queue { team, .. } => {
                 self.apply_team(read, slot, team, reply, now, &mut out)
             }
@@ -535,9 +541,12 @@ impl TeamsModel {
         out
     }
 
+    /// A list page names the cursor it was read from, so the view keeps
+    /// pages by their cursor and never takes a later page for the first.
     fn apply_list(
         &mut self,
         slot: Slot,
+        after: Option<String>,
         reply: Result<Value, TeamError>,
         now: Instant,
         out: &mut Vec<(String, TeamsUpdate)>,
@@ -547,15 +556,21 @@ impl TeamsModel {
         }
         self.settled(slot, now);
         let update = match reply {
-            Ok(reply) => TeamsUpdate::List(Arc::new(view::list(&reply))),
+            Ok(reply) => TeamsUpdate::List(Arc::new(TeamList {
+                after,
+                ..view::list(&reply)
+            })),
             Err(error) => failure(error),
         };
         self.send("list".into(), update, out);
     }
 
+    /// A waiting page names the cursor it was read from: only the first page
+    /// can say that nothing waits.
     fn apply_waiting(
         &mut self,
         slot: Slot,
+        after: Option<String>,
         reply: Result<Value, TeamError>,
         now: Instant,
         out: &mut Vec<(String, TeamsUpdate)>,
@@ -565,7 +580,10 @@ impl TeamsModel {
         }
         self.settled(slot, now);
         let update = match reply {
-            Ok(reply) => TeamsUpdate::Waiting(Arc::new(view::waiting(&reply))),
+            Ok(reply) => TeamsUpdate::Waiting(Arc::new(WaitingView {
+                after,
+                ..view::waiting(&reply)
+            })),
             Err(error) => failure(error),
         };
         self.send("waiting".into(), update, out);
@@ -597,7 +615,10 @@ impl TeamsModel {
             if let Some((_, parts)) = self.parts.as_mut() {
                 match read {
                     TeamRead::Status { .. } => parts.status = Some(reply.clone()),
-                    _ => parts.queue = Some(reply.clone()),
+                    _ => {
+                        parts.queue = Some(reply.clone());
+                        parts.queue_after = read.after().map(str::to_owned);
+                    }
                 }
             }
         }

@@ -23,6 +23,7 @@ pub fn list(reply: &Value) -> TeamList {
         teams,
         truncated: rows.len() > LIST_KEPT,
         next: next_cursor(reply),
+        after: None,
     }
 }
 
@@ -52,5 +53,6 @@ pub fn waiting(reply: &Value) -> WaitingView {
     WaitingView {
         items: rows.iter().take(PAGE).filter_map(waiting_item).collect(),
         next: next_cursor(reply),
+        after: None,
     }
 }

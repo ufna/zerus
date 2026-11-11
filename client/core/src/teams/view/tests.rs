@@ -278,9 +278,14 @@ fn a_stage_without_its_card_stays_a_card() {
     let card = &group(&view, "reported").cards[0];
     assert_eq!(card.node, 7);
     assert_eq!(card.title, "Review");
-    assert!(
-        card.stages.is_empty(),
-        "the stage checks a card this page does not carry"
+    // The stage checks a card this page does not carry: it stays a card of
+    // its own, and its `stages` holds only its own stage facts.
+    assert_eq!(
+        card.stages
+            .iter()
+            .map(|stage| stage.node)
+            .collect::<Vec<_>>(),
+        vec![7]
     );
 }
 
@@ -523,4 +528,55 @@ fn a_list_row_without_a_lead_session_or_without_a_session_id_reads_none() {
         let view = list(&serde_json::json!({"ok": true, "rows": [row], "next": null}));
         assert_eq!(view.teams[0].lead_session, None);
     }
+}
+
+/// Second review, finding 15: a stage whose target is not on the page keeps
+/// its own kind, target and round through the projection; the queue card has
+/// no field for them, so its `stages` holds the stage's own facts.
+#[test]
+fn an_orphan_stage_keeps_its_explicit_pipeline_facts() {
+    let queue = queue_with(serde_json::json!([queue_row(
+        7,
+        serde_json::json!({
+            "kind": "stage", "stage_of": 999, "stage_index": 0, "role": "quality", "state": "in_progress",
+            "assignee": "reviewer", "implementer": "developer", "stage": {"kind": "review", "target": 999, "round": 2},
+        })
+    )]));
+    let view = team(&status_with(serde_json::json!([])), &queue);
+    let own = view
+        .groups
+        .iter()
+        .flat_map(|group| &group.cards)
+        .find(|card| card.node == 7)
+        .unwrap();
+    assert_eq!(own.kind, Some(RowKind::Stage));
+    assert_eq!(own.stages.len(), 1);
+    let stage = &own.stages[0];
+    assert_eq!(
+        (stage.node, stage.kind, stage.target, stage.round),
+        (7, Some(StageKind::Review), Some(999), Some(2))
+    );
+    assert_eq!(
+        (stage.assignee.as_str(), stage.implementer.as_str()),
+        ("reviewer", "developer")
+    );
+    // A stage folded into its card is not duplicated on that card's own list.
+    let folded = queue_with(serde_json::json!([
+        queue_row(1, serde_json::json!({"state": "in_progress"})),
+        queue_row(
+            7,
+            serde_json::json!({"kind": "stage", "stage_of": 1, "stage_index": 0, "role": "quality", "state": "in_progress", "stage": {"kind": "review", "target": 1, "round": 1}})
+        ),
+    ]));
+    let view = team(&status_with(serde_json::json!([])), &folded);
+    let cards: Vec<_> = view.groups.iter().flat_map(|group| &group.cards).collect();
+    assert_eq!(cards.len(), 1);
+    assert_eq!(
+        cards[0]
+            .stages
+            .iter()
+            .map(|stage| stage.node)
+            .collect::<Vec<_>>(),
+        vec![7]
+    );
 }
