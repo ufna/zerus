@@ -889,6 +889,14 @@ binding decisions, base commit, branch, write set). It answers
 `start-deliver`, and the same ID never sends twice. `--recover-only` reads
 the receipt and sends nothing.
 
+Two more commands of the same kind, each run by the service and each taking
+its authority from a stored effect or decision, never from the caller:
+`hgs task team-done REF --json` finishes an accepted task, and
+`hgs task team-stage --json` creates the Zerus task of a stage node that a
+pipeline asked for. A stage's task is an ordinary task with the team key;
+its kind lives on the team's node. Its identity is derived from the effect's
+request ID, so a repeat creates nothing.
+
 **The CLI as the desktop's interface (packages 3, 5 and 12).** The client
 core reads through `hgs team` and follows the shapes package 5 pins in
 `crates/team-plan/fixtures/cli-*.json`: a page is
