@@ -1,3 +1,4 @@
+use super::super::ops::{KeyState, TaskObservation};
 use super::*;
 use rusqlite::params;
 
@@ -189,4 +190,68 @@ pub(crate) fn card(db: &Connection, team: &str, seq: u64) -> Result<Option<Card>
         }
     })
     .transpose()
+}
+
+/// One bounded snapshot per node, independent of the archived plan projection.
+pub(crate) fn observation(
+    db: &Connection,
+    team: &str,
+    node: u32,
+) -> Result<Option<TaskObservation>> {
+    let saved: Option<TaskObservation> = db
+        .query_row(
+            "SELECT data FROM task_observations WHERE team=?1 AND node=?2",
+            params![team, node],
+            |r| sql_json(r, 0),
+        )
+        .optional()
+        .map_err(storage)?;
+    let mut observation = if let Some(saved) = saved {
+        Some(saved)
+    } else {
+        legacy_observation(db, team, node)?
+    };
+    if let Some(o) = observation.as_mut() {
+        o.previous_revision = o.revision.clone();
+    }
+    Ok(observation)
+}
+fn legacy_observation(db: &Connection, team: &str, node: u32) -> Result<Option<TaskObservation>> {
+    let raw: Option<(String,String,bool,String,String)> = db.query_row(
+        "SELECT task_revision,task_stage,task_cancelled,rank,data FROM nodes WHERE team=?1 AND id=?2 UNION ALL SELECT task_revision,task_stage,task_cancelled,rank,data FROM node_archive WHERE team=?1 AND id=?2 LIMIT 1",
+        params![team,node], |r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,sql_json::<Node>(r,4)?.title))).optional().map_err(storage)?;
+    raw.filter(|r| !r.0.is_empty())
+        .map(|(revision, stage, cancelled, rank, title)| {
+            Ok(TaskObservation {
+                previous_revision: revision.clone(),
+                revision,
+                stage: serde_json::from_value(serde_json::Value::String(stage)).map_err(storage)?,
+                cancelled,
+                rank,
+                title,
+                key: KeyState::Ours,
+            })
+        })
+        .transpose()
+}
+pub(crate) fn released(db: &Connection, team: &str, node: u32) -> Result<bool> {
+    Ok(db
+        .query_row(
+            "SELECT released FROM task_observations WHERE team=?1 AND node=?2",
+            params![team, node],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(storage)?
+        .unwrap_or(false))
+}
+pub(crate) fn record_observation(
+    db: &Connection,
+    team: &str,
+    node: u32,
+    o: &TaskObservation,
+    released: bool,
+) -> Result<()> {
+    db.execute("INSERT INTO task_observations(team,node,data,released) VALUES(?1,?2,?3,?4) ON CONFLICT(team,node) DO UPDATE SET data=excluded.data,released=MAX(task_observations.released,excluded.released)",params![team,node,encode(o)?,released]).map_err(storage)?;
+    Ok(())
 }

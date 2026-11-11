@@ -529,3 +529,48 @@ fn card_lookup_is_lazy_and_honors_the_preview_gate() {
     std::fs::remove_file(h.temp.path().join("teams/preview")).unwrap();
     refused(h.store.card(TEAM, 1), code::TEAMS_INACTIVE);
 }
+
+#[test]
+fn observations_upgrade_version_two_and_keep_departures_released_after_reopen() {
+    use ops::tests::service;
+    use ops::{KeyState, TaskStage};
+    let mut h = Harness::new();
+    let node = h.add(&person(), 1);
+    let old = h.store.task_observation(TEAM, node).unwrap();
+    h.store
+        .db
+        .as_ref()
+        .unwrap()
+        .execute_batch("DROP TABLE task_observations;")
+        .unwrap();
+    h.store = Store::open(h.temp.path()).unwrap();
+    assert_eq!(h.store.task_observation(TEAM, node).unwrap(), old);
+    assert_eq!(old.unwrap().key, KeyState::Ours);
+    let mut o = h.observation(node, TaskStage::Todo);
+    o.key = KeyState::Absent;
+    h.run(
+        &service(),
+        Operation::ObserveTask {
+            node,
+            observation: o.clone(),
+        },
+    )
+    .unwrap();
+    let before = h.node(node);
+    h.store = Store::open(h.temp.path()).unwrap();
+    let saved = h.store.task_observation(TEAM, node).unwrap().unwrap();
+    assert_eq!(saved.key, KeyState::Absent);
+    assert_eq!(saved.revision, o.revision);
+    h.observe(node, TaskStage::Todo);
+    assert_eq!(h.node(node), before);
+    assert!(h.store.queue(TEAM, 200, None).unwrap().rows.is_empty());
+    assert_eq!(
+        h.store
+            .db
+            .as_ref()
+            .unwrap()
+            .query_row("PRAGMA user_version", [], |r| r.get::<_, u32>(0))
+            .unwrap(),
+        2
+    );
+}
