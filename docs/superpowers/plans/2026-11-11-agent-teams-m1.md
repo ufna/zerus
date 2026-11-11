@@ -1106,6 +1106,15 @@ an additive `member_sessions`: the bound sessions of its members as
 none is bound. The client core passes it through, and the frontend takes
 membership and the team's status from the same row.
 
+**Switching off the merge delegation takes back what has not merged
+(packages 3 and 8).** The authority to merge lives in the decision, and the
+actor checks only that the exact accept is still Ready at the moment the
+ref is updated. So the store keeps that state true: when a settings change
+switches `merge_accepted` off, every Ready accept that no person decided or
+approved and that has no integration fact yet goes back to awaiting the
+owner in the same transaction, with its integration card. An accept the
+person made, or approved on its card, stays Ready whatever the setting.
+
 **Known limit.** A stage excludes the implementer of the target's current
 round. After a reassignment an earlier implementer could hold a stage of
 the same target where the stage's role equals the implementer's role; the
