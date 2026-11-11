@@ -65,12 +65,12 @@ const fixes = { id: TEAM, project: "example-project", name: "Fixes" };
 const card = (over: Record<string, unknown> = {}) => ({ project: "example-project", text: "Task title", handle: 1, blocked: false, read_only: false, recovery: false, error: "", ...over });
 const row = (uuid: string, over: Record<string, unknown> = {}) => ({ uuid, stage: "todo", writable: true, title: uuid === FIRST ? "First task" : "Second task", ...over });
 const settle = async () => { for (let n = 0; n < 10; n++) await Promise.resolve(); };
-function setup() {
+function setup(project: () => string = () => "example-project") {
   f.setList({ teams: [fixes], truncated: false, next: null });
   f.setView(card());
   const host = document.createElement("div");
   document.body.append(host);
-  dispose = render(() => createComponent(TaskCreate, { project: "example-project", scope: "1 task", backlog: false, accessible: true, children: null }), host);
+  dispose = render(() => createComponent(TaskCreate, { get project() { return project(); }, scope: "1 task", backlog: false, accessible: true, children: null }), host);
   (host.querySelector('[aria-label="New task"]') as HTMLButtonElement).click();
   return host;
 }
@@ -172,10 +172,11 @@ it("an earlier Send's refusal is not shown on a later notice", async () => {
   expect(host.querySelector("[data-not-queued]")?.textContent).toContain("Second not queued");
 });
 
-// Fourth confirmation: the result of a recovery's Send is always told and
-// always names its task. A reply for a notice that was dismissed or replaced
-// touches no notice and shows one notification naming the task by its title
-// and the team; a reply for the current notice is presented as before.
+// Fourth and fifth confirmations: every reply of a recovery's Send shows one
+// notification naming the task by its bounded title and the team, wherever
+// the person is and whatever happened to the notice, and never claims that a
+// rejected send did not happen. The notice is handled only while it is the one
+// the reply was for and still shown.
 async function staleSend(host: HTMLElement, settleWith: (finish: () => void, refuse: (error: unknown) => void) => void) {
   await createNotQueued(host, FIRST, "First not queued");
   f.reads[0].resolve(row(FIRST)); await settle();
@@ -203,7 +204,7 @@ it("a stale refusal shows one notification naming task A with its reason, and B'
   const host = setup();
   const shown = toasts();
   const before = await staleSend(host, (_finish, refuse) => refuse("invalid_state: The team is stopped."));
-  expect(shown()).toEqual(["“First task” was not sent to Fixes: invalid_state: The team is stopped."]);
+  expect(shown()).toEqual(["Result of sending “First task” to Fixes: invalid_state: The team is stopped."]);
   expect(shown().join(" ")).not.toContain("Second");
   expect(host.querySelector("[data-not-queued]")!.textContent).toBe(before);
   expect(host.querySelector("[data-recovery-refusal]")).toBeNull();
@@ -227,17 +228,17 @@ it("a stale reply names a long title cut on a character", async () => {
   expect(text).toMatch(/” was sent to Fixes\.$/u);
 });
 
-it("a current success clears the notice and says Sent to the team, as before", async () => {
+it("a visible current success clears the notice and shows one notification naming the task", async () => {
   const host = setup();
   const shown = toasts();
   await createNotQueued(host, FIRST, "First not queued");
   f.reads[0].resolve(row(FIRST)); await settle();
   button(host, "Send to team")!.click(); await settle();
   expect(host.querySelector("[data-not-queued]")).toBeNull();
-  expect(shown()).toEqual(["Sent to Fixes"]);
+  expect(shown()).toEqual(["“First task” was sent to Fixes."]);
 });
 
-it("a current refusal stays on the notice and shows the team's reason, as before", async () => {
+it("a visible current rejection keeps its reason on the notice, Send available, and one notification naming the task", async () => {
   const host = setup();
   const shown = toasts();
   await createNotQueued(host, FIRST, "First not queued");
@@ -245,7 +246,69 @@ it("a current refusal stays on the notice and shows the team's reason, as before
   f.board.mockRejectedValueOnce("invalid_state: The team is stopped.");
   button(host, "Send to team")!.click(); await settle();
   expect(host.querySelector("[data-recovery-refusal]")?.textContent).toBe("invalid_state: The team is stopped.");
-  expect(shown()).toEqual(["invalid_state: The team is stopped."]);
+  expect(button(host, "Send to team")!.disabled).toBe(false);
+  expect(shown()).toEqual(["Result of sending “First task” to Fixes: invalid_state: The team is stopped."]);
+});
+
+/** Starts Send on a not-queued notice whose task was read; the native write waits. */
+async function startSend(host: HTMLElement) {
+  await createNotQueued(host, FIRST, "First not queued");
+  f.reads[0].resolve(row(FIRST)); await settle();
+  const pending = { resolve: () => {}, reject: (_error: unknown) => {} };
+  f.board.mockImplementationOnce(() => new Promise<void>((resolve, reject) => { pending.resolve = resolve; pending.reject = reject; }));
+  button(host, "Send to team")!.click(); await settle();
+  expect(f.board).toHaveBeenCalledTimes(1);
+  return pending;
+}
+
+for (const kind of ["success", "rejection"] as const) {
+  const settleSend = (pending: Awaited<ReturnType<typeof startSend>>) => kind === "success" ? pending.resolve() : pending.reject("The queue is full.");
+  const told = kind === "success" ? "“First task” was sent to Fixes." : "Result of sending “First task” to Fixes: The queue is full.";
+
+  it(`after the form left its project, a ${kind} names the task in one notification (R5-1)`, async () => {
+    const { createSignal } = await import("solid-js");
+    const [project, setProject] = createSignal("example-project");
+    const host = setup(project);
+    const shown = toasts();
+    const pending = await startSend(host);
+    setProject("other-project"); await settle();
+    expect(host.querySelector("[data-not-queued]")).toBeNull();
+    settleSend(pending); await settle();
+    expect(shown()).toEqual([told]);
+    setProject("example-project"); await settle();
+    expect(host.querySelector("[data-not-queued]"), "the retired notice does not come back").toBeNull();
+  });
+
+  it(`after the form was disposed, a ${kind} names the task in one notification (R5-1)`, async () => {
+    const host = setup();
+    const shown = toasts();
+    const pending = await startSend(host);
+    dispose?.(); dispose = undefined;
+    expect(host.querySelector("[data-not-queued]")).toBeNull();
+    settleSend(pending); await settle();
+    expect(shown()).toEqual([told]);
+  });
+}
+
+it("an unconfirmed write is told as its result, never as a send that did not happen (R5-2)", async () => {
+  const host = setup();
+  const shown = toasts();
+  const unconfirmed = "Task change unconfirmed. Refresh the task before changing it again.";
+  const pending = await startSend(host);
+  pending.reject(unconfirmed); await settle();
+  expect(shown()).toEqual([`Result of sending “First task” to Fixes: ${unconfirmed}`]);
+  expect(host.querySelector("[data-recovery-refusal]")?.textContent).toBe(unconfirmed);
+  expect(host.textContent).not.toMatch(/not sent|was not/u);
+});
+
+it("an unconfirmed write after Dismiss is told the same way (R5-2)", async () => {
+  const host = setup();
+  const shown = toasts();
+  const unconfirmed = "Task change unconfirmed. Refresh the task before changing it again.";
+  const pending = await startSend(host);
+  button(host, "Dismiss")!.click();
+  pending.reject(unconfirmed); await settle();
+  expect(shown()).toEqual([`Result of sending “First task” to Fixes: ${unconfirmed}`]);
 });
 
 it("a board card's Send keeps its own notification", async () => {

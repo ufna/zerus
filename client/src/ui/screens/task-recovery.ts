@@ -18,11 +18,15 @@ import type { Task } from "./tasks-ui";
 // for a notice that was dismissed or replaced touches no notice. One Send is
 // in flight at a time.
 //
-// The recovery owns the presentation of its Send, whose result is always told
-// and always names its task: a reply for the current notice clears it on
-// success or keeps the refusal on it, with the board's own notification; a
-// reply for a notice that was dismissed or replaced shows one notification
-// that names the task by its title and the team, for success and refusal.
+// The recovery owns the presentation of its Send. Every reply, wherever the
+// person is and whatever happened to the notice, shows one notification that
+// names the task by its bounded title and the team: that it was sent, or the
+// result as it came, in words that never claim the send did not happen (an
+// unconfirmed write may have). The notice itself is handled only when it is
+// the one the reply was started for and is still shown: cleared on success,
+// the reason kept on it otherwise, with Send still available; the native
+// fresh-stage and read-only checks decide a repeat. A notice is retired when
+// its form leaves its project or is disposed.
 
 export interface NotQueued { project: string; task: string; team: string; name: string; reason: string }
 
@@ -85,12 +89,9 @@ export function createRecovery(read: (key: string) => Promise<Task> = readSelect
         if (outcome.sent) setNotice(null);
         else setRefusal(outcome.reason ?? "");
         setSending(false);
-        if (outcome.tell) notify(outcome.tell.tone, outcome.tell.text);
-        return outcome;
       }
-      // The notice is gone, the send is not: its result names its task.
       if (outcome.sent) notify("info", tr("“%1” was sent to %2.", title, shown.name));
-      else notify("error", tr("“%1” was not sent to %2: %3", title, shown.name, outcome.reason ?? ""));
+      else notify("error", tr("Result of sending “%1” to %2: %3", title, shown.name, outcome.reason ?? ""));
       return outcome;
     },
   };

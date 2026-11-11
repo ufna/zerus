@@ -19,6 +19,10 @@ export default function TaskCreate(props: { project?: string; scope: string; bac
   /** A card the command line created and the team's queue did not take: the
    * task exists, so the way on is Send to team for that task, never a new card. */
   const recovery = createRecovery();
+  // A notice belongs to its form's project: leaving the project or the form
+  // retires it, and a later reply of its Send is then only told.
+  createEffect(on(() => props.project, () => recovery.dismiss(), { defer: true }));
+  onCleanup(() => recovery.dismiss());
   let field!: HTMLInputElement;
   /** The project's teams on the list's first page, while the preview is on: the card can join one's queue. */
   const teamChoices = createMemo(() => teams.available() === true
