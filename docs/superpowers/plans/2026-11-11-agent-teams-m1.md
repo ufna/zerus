@@ -841,13 +841,23 @@ corrupt or unreadable. The proof changes no process environment, reads no
 session inventory and prints no path. Turning the preview on or off goes
 through it.
 
-Two limits are stated, not hidden. A child that was reparented away from
-its agent, and a registered agent that was started without the markers in
-its environment, are not detected: finding them needs an index of sessions
-by process, which belongs with the verified Person authority
-(`zerus-cg5h.4.11`) that replaces this rule. And the preview is for Linux
-and macOS in this milestone: where the ancestry cannot be evaluated, an
-unmarked command is refused and the preview cannot be turned on.
+The limits are stated, not hidden. The rule guards against role confusion
+and accidents; it is not a boundary against a process that removes its
+markers on purpose. It does not detect a command that does not descend
+through readable processes of the same user to its agent: a child
+reparented away from its agent, a step through a helper that changes
+credentials or is started by a daemon (`sudo` or `su` to the same user,
+`crontab -e`, `at`, `cron`, `ssh` to the same computer), and a registered
+agent that was started without the markers in its environment. Closing
+these needs an index of sessions by process and belongs with the verified
+Person authority (`zerus-cg5h.4.11`) that replaces this rule. Two cases are
+refused instead: a process of this user whose parent is 0, and a command
+outside the initial user namespace.
+
+The preview is for Linux in this milestone. Where the ancestry cannot be
+evaluated, an unmarked command is refused and the preview cannot be turned
+on. macOS is treated that way until the real-process suite has run on a
+Mac; Windows has no evaluation yet.
 
 **How the service reaches a session (packages 8, 10 and 17).** The desktop's
 deferred-send, deferred-answer and creation actors admit only the proof of a
