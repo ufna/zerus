@@ -1202,7 +1202,22 @@ closes the timer's open card in the same transaction. An undecided report
 makes a lead inbox item after `remind_lead_minutes` and an owner card after
 `remind_person_minutes`. `answer_escalate_minutes` belongs to milestone 3.
 
-**After a stop Zerus releases tasks and ends no agent (package 10).** The
+**A cancel decision is carried out by the service (packages 6b and 8).**
+The specification says a lead's Cancel moves the task to cancelled and that
+Stop cancels every unfinished task; the store records both as a pending
+decision of kind cancel, and until 2026-11-12 nothing carried it out. A
+fifth service task command does: `hgs task team-cancel REF --json` reads
+`{schema, team, node}` and answers `{schema, team, node, state, error}`
+with `cancelled` (also when the task is already cancelled), `refused` or
+`cutting_over`. Its only authority is that stored decision for the node's
+current generation; the write is the existing cancel of a task with the
+notice it already sends to the holder, recorded with the lead as the actor.
+The actor runs it for each pending cancel decision, in a live team and
+after a stop, and the observation settles the decision. It ends no agent.
+
+**After a stop Zerus cancels the unfinished tasks, releases them and ends
+no agent (package 10).** For each node the cancel comes first and the
+release after it is settled. The
 service clears the team key of the stopped or archived team's open tasks in
 bounded pages through `team-clear`; an answer is recorded so that the node
 is not visited again, and no answer is tried on a later pass without
