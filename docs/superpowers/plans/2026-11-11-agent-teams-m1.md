@@ -875,11 +875,36 @@ attention data.
 permit the fact is recorded as provenance; the node changes only when it
 still needs a merge and the decision's generation is current.
 
-**Task key (package 6).** Everything under `crates/replica` is one commit of
-its own with its compatibility tests, merged after the repository owner
-confirms the replica change. Sending a task to a team and the three refusals
-work on the home computer from the team store alone; the key adds only what
-another computer needs.
+**No agent drives a team's task (package 6, after its review).** The earlier
+exception for the team's lead is withdrawn: the lead decides through
+`hgs team` and the service acts. On a task of a live team these are refused
+for every agent: `send`, `handoff`, any stage change, `target`, `start` and
+`worker` as a claim, and `message --mode reopen`. An agent may still take its
+own protocol steps on an attempt that was delivered to it (the
+acknowledgement, the report, a worker under that attempt), comment, and add
+text. A person is never refused. The team's own writes come only from two
+commands the service runs, which take their authority from the team store
+and not from the caller: `hgs task team-deliver` and
+`hgs task team-done REF --json`, which moves a task to Done as the team's
+lead only when the store shows the node's current generation accepted with
+authority and, where it needs a merge, its integration fact.
+
+**The key is the marker (package 6).** A task without a `team` key is not a
+team's task, and no team check opens anything for it. A key that names
+another computer refuses agents without opening the store; a key that names
+this computer is checked against the store's live node. A key that does not
+decode never damages the task: it reads as no usable key with an invalid
+mark, and agents are refused as for another computer. Intake writes the key
+with the step that makes the task a team's and removes it when the team
+refuses; a person's retarget away from the team clears it; the service
+clears the keys of a stopped or archived team's open tasks (package 10).
+The package is one unit and merges after the repository owner confirms the
+replica change; everything under `crates/replica` stays a commit of its own.
+
+**Observation belongs to the service (packages 6 and 8).** Ordinary task
+commands do not observe for the team. Intake records the first observation;
+after that the service observes through one function that reads the document
+and records under the project lock.
 
 ## Order
 
