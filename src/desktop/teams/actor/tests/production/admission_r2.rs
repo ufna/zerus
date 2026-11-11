@@ -18,6 +18,7 @@ struct HoldAtDelivery {
     calls: usize,
     mode: &'static str,
     dep: u32,
+    admissions: std::rc::Rc<std::cell::Cell<usize>>,
 }
 impl ports::Ports for HoldAtDelivery {
     fn changes(&mut self, _: &str, _: &str, _: u64) -> ports::Result<zerus_replica::Changes> {
@@ -33,7 +34,7 @@ impl ports::Ports for HoldAtDelivery {
     fn free(&mut self, _: &Team, m: &Member) -> ports::Result<bool> {
         Ok(m.id == "m1")
     }
-    fn deliver(&mut self, t: &Team, n: &Node, m: &Member, id: &str) -> ops::HandoutOutcome {
+    fn deliver(&mut self, t: &Team, n: &Node, m: &Member, id: &str) -> ports::DeliveryResult {
         self.calls += 1;
         if self.mode.starts_with("fleet ") {
             super::fleet::change(&self.native, self.mode);
@@ -87,8 +88,31 @@ impl ports::Ports for HoldAtDelivery {
             );
             r.unwrap();
         }
+        let held = if self.mode == "busy store" && self.calls == 1 {
+            let db =
+                rusqlite::Connection::open(self.native.config.state.join("teams/teams-v1.sqlite3"))
+                    .unwrap();
+            db.execute_batch("BEGIN IMMEDIATE").unwrap();
+            Some(db)
+        } else {
+            None
+        };
+        let count = self.admissions.clone();
+        crate::desktop::original_child::AFTER_FINAL_CHECK
+            .with(|s| *s.borrow_mut() = Some(Box::new(move || count.set(count.get() + 1))));
         submitted(id);
-        ports::Ports::deliver(&mut self.native, t, n, m, id)
+        let started = std::time::Instant::now();
+        let reply = ports::Ports::deliver(&mut self.native, t, n, m, id);
+        let elapsed = started.elapsed();
+        crate::desktop::original_child::AFTER_FINAL_CHECK.with(|s| s.borrow_mut().take());
+        drop(held);
+        if self.mode == "busy store" {
+            assert!(
+                elapsed < std::time::Duration::from_secs(1),
+                "busy admission held the spawn turn for {elapsed:?}"
+            );
+        }
+        reply
     }
 }
 #[test]
@@ -132,11 +156,13 @@ fn review08_r2_hold_between_handout_intent_and_spawn() {
             calls: 0,
             mode,
             dep,
+            admissions: Default::default(),
         };
         a.tick(&mut h.store, &mut p, TEAM, 100, false).unwrap();
         let effects = h.store.effects(TEAM, 200, None).unwrap().rows;
         let n = h.store.node(TEAM, node).unwrap().unwrap();
         assert_eq!(p.calls, 1, "{mode}");
+        assert_eq!(p.admissions.get(), usize::from(mode == "control"), "{mode}");
         assert_eq!(effects.len(), 1, "{mode}");
         if mode == "control" {
             assert_eq!(effects[0].state, "submitted");
@@ -149,5 +175,81 @@ fn review08_r2_hold_between_handout_intent_and_spawn() {
             );
         }
         assert!(n.assignee.as_deref() != Some("m1"), "{mode}");
+    }
+}
+
+#[test]
+fn a_busy_admission_retries_after_restart_without_a_refusal_or_a_second_original() {
+    let mut h = Harness::new();
+    h.bind("m1");
+    let node = h.add(&person(), 1);
+    let mut p = HoldAtDelivery {
+        native: native(&h),
+        calls: 0,
+        mode: "busy store",
+        dep: 0,
+        admissions: Default::default(),
+    };
+    let machine = p.native.machine.clone();
+    let mut a = Runtime::open(h.temp.path(), &machine).unwrap();
+    a.tick(&mut h.store, &mut p, TEAM, 100, false).unwrap();
+    let effect = h.store.effects(TEAM, 1, None).unwrap().rows.remove(0);
+    assert!(
+        effect.outcome.is_none(),
+        "store busy became a durable refusal"
+    );
+    assert_eq!(effect.state, "reserved");
+    assert!(h.node(node).assignee.is_none());
+    drop(a);
+    let mut a = Runtime::open(h.temp.path(), &machine).unwrap();
+    a.tick(&mut h.store, &mut p, TEAM, 101, false).unwrap();
+    assert_eq!(p.calls, 1);
+    assert_eq!(p.admissions.get(), 0);
+    a.tick(&mut h.store, &mut p, TEAM, 60_100, false).unwrap();
+    assert_eq!(p.calls, 2);
+    assert_eq!(p.admissions.get(), 1);
+    let effects = h.store.effects(TEAM, 16, None).unwrap().rows;
+    assert_eq!(effects.len(), 1);
+    assert_eq!(effects[0].request_id, effect.request_id);
+    assert_eq!(effects[0].state, "submitted");
+}
+
+#[test]
+fn a_deferred_original_lost_after_arming_is_never_started_again() {
+    for point in ["retry_armed", "effect", "outcome"] {
+        let mut h = Harness::new();
+        h.bind("m1");
+        h.add(&person(), 1);
+        let mut p = HoldAtDelivery {
+            native: native(&h),
+            calls: 0,
+            mode: "busy store",
+            dep: 0,
+            admissions: Default::default(),
+        };
+        let machine = p.native.machine.clone();
+        let mut a = Runtime::open(h.temp.path(), &machine).unwrap();
+        a.tick(&mut h.store, &mut p, TEAM, 100, false).unwrap();
+        super::super::super::delivery::CRASH.with(|s| s.set(Some(point)));
+        assert!(
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| a.tick(
+                &mut h.store,
+                &mut p,
+                TEAM,
+                60_100,
+                false
+            )))
+            .is_err(),
+            "{point}"
+        );
+        let calls = p.calls;
+        let admissions = p.admissions.get();
+        drop(a);
+        let mut a = Runtime::open(h.temp.path(), &machine).unwrap();
+        a.tick(&mut h.store, &mut p, TEAM, 180_100, false).unwrap();
+        a.tick(&mut h.store, &mut p, TEAM, 360_100, false).unwrap();
+        assert_eq!(p.calls, calls, "{point}");
+        assert_eq!(p.admissions.get(), admissions, "{point}");
+        assert!(admissions <= 1);
     }
 }

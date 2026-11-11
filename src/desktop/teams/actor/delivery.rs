@@ -11,6 +11,8 @@ struct Delivery {
     outcome: Option<HandoutOutcome>,
     receipt: Option<Request>,
     gated: bool,
+    #[serde(default)]
+    not_started: bool,
 }
 impl Runtime {
     pub(super) fn send(
@@ -47,6 +49,7 @@ impl Runtime {
             outcome: None,
             receipt: None,
             gated: false,
+            not_started: false,
         };
         let key = format!("delivery:{id}");
         self.ledger.reserve(
@@ -67,13 +70,51 @@ impl Runtime {
         }
         boundary("intent");
         d.intent = None;
-        d.outcome = Some(ports.deliver(team, node, member, &id));
-        boundary("effect");
-        self.put(&team.id, &key, &d)?;
-        boundary("outcome");
-        self.settle(store, team, &key, d, now)
+        self.invoke_delivery(store, ports, team, &key, d, (node, member), now)
     }
-    pub(super) fn recover(&mut self, store: &mut Store, team: &Team, now: i64) -> Result<()> {
+    #[allow(clippy::too_many_arguments)]
+    fn invoke_delivery(
+        &mut self,
+        store: &mut Store,
+        ports: &mut impl Ports,
+        team: &Team,
+        key: &str,
+        mut d: Delivery,
+        assignment: (&Node, &Member),
+        now: i64,
+    ) -> Result<()> {
+        if d.not_started {
+            // Consume the proof durably before attempting a new original. If
+            // this result is lost, recovery is uncertain and cannot send.
+            d.not_started = false;
+            self.put(&team.id, key, &d)?;
+            boundary("retry_armed");
+        }
+        let result = ports.deliver(team, assignment.0, assignment.1, &d.id);
+        boundary("effect");
+        match result {
+            ports::DeliveryResult::Outcome(outcome) => {
+                d.outcome = Some(outcome);
+                self.put(&team.id, key, &d)?;
+                boundary("outcome");
+                self.settle(store, team, key, d, now)
+            }
+            ports::DeliveryResult::NotStarted { reason } => {
+                d.not_started = true;
+                self.put(&team.id, key, &d)?;
+                boundary("not_started");
+                self.failure(store, team, key, "", &problem(&reason), now)
+            }
+        }
+    }
+    pub(super) fn recover(
+        &mut self,
+        store: &mut Store,
+        ports: &mut impl Ports,
+        team: &Team,
+        now: i64,
+    ) -> Result<()> {
+        let mut budget = 4;
         for e in self
             .open_effects(store, &team.id)?
             .into_iter()
@@ -83,7 +124,7 @@ impl Runtime {
             if self.ledger.get(&team.id, &key)?.is_none() {
                 self.put(&team.id, &key, &Delivery::interrupted(e))?;
             }
-            self.recover_row(store, team, &key, now)?;
+            self.recover_row(store, ports, team, &key, now, &mut budget)?;
         }
         let after = self
             .load::<String>(&team.id, "delivery_cursor")?
@@ -96,17 +137,25 @@ impl Runtime {
         };
         for row in rows {
             if row.key.starts_with("delivery:") {
-                self.recover_row(store, team, &row.key, now)?;
+                self.recover_row(store, ports, team, &row.key, now, &mut budget)?;
             }
         }
         self.put(&team.id, "delivery_cursor", &next)?;
         Ok(())
     }
-    fn recover_row(&mut self, store: &mut Store, team: &Team, key: &str, now: i64) -> Result<()> {
+    fn recover_row(
+        &mut self,
+        store: &mut Store,
+        ports: &mut impl Ports,
+        team: &Team,
+        key: &str,
+        now: i64,
+        budget: &mut u8,
+    ) -> Result<()> {
         if !self.due(store, team, key, "", now)? {
             return Ok(());
         }
-        if let Err(error) = self.recover_delivery(store, team, key, now) {
+        if let Err(error) = self.recover_delivery(store, ports, team, key, now, budget) {
             self.failure(store, team, key, "", &error, now)?;
         }
         Ok(())
@@ -114,9 +163,11 @@ impl Runtime {
     fn recover_delivery(
         &mut self,
         store: &mut Store,
+        ports: &mut impl Ports,
         team: &Team,
         key: &str,
         now: i64,
+        budget: &mut u8,
     ) -> Result<()> {
         let Some(row) = self.ledger.get(&team.id, key)? else {
             return Ok(());
@@ -139,6 +190,19 @@ impl Runtime {
                     return Err(error);
                 }
             }
+        }
+        if d.not_started && d.outcome.is_none() {
+            if *budget == 0 || ports.stopped() || team.status != TeamStatus::Running {
+                return Ok(());
+            }
+            let node = store
+                .node(&team.id, d.node)?
+                .ok_or_else(|| problem("Deferred delivery node disappeared"))?;
+            let member = store
+                .member(&team.id, &d.member)?
+                .ok_or_else(|| problem("Deferred delivery member disappeared"))?;
+            *budget -= 1;
+            return self.invoke_delivery(store, ports, team, key, d, (&node, &member), now);
         }
         if d.outcome.is_none() {
             d.outcome=Some(HandoutOutcome::Uncertain{reason:"The service restarted or lost its original result; this delivery will not be sent again.".into()});
@@ -235,6 +299,7 @@ impl Delivery {
             outcome: None,
             receipt: None,
             gated: false,
+            not_started: false,
         }
     }
 }

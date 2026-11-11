@@ -474,7 +474,7 @@ impl ports::Ports for PauseAtDelivery {
     fn free(&mut self, _: &Team, m: &Member) -> ports::Result<bool> {
         Ok(m.id == "m1")
     }
-    fn deliver(&mut self, t: &Team, n: &Node, m: &Member, id: &str) -> ops::HandoutOutcome {
+    fn deliver(&mut self, t: &Team, n: &Node, m: &Member, id: &str) -> ports::DeliveryResult {
         self.calls += 1;
         let mut store = Store::open(&self.native.config.state).unwrap();
         assert!(store

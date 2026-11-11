@@ -1,4 +1,8 @@
 //! Original local CLI effects; missing part-C readers fail closed.
+//! Occupancy is a scheduling hint read just before admission, outside the
+//! process-wide spawn turn because it starts child readers. A task a person
+//! assigns in the remaining race can reach the member alongside this hand-out.
+//! The exact current fleet row is checked last inside the store admission.
 mod admission;
 use super::*;
 use crate::{
@@ -79,12 +83,14 @@ impl Native {
         id: &str,
         action: &str,
         decision: Option<&crate::teams::store::Decision>,
-    ) -> Ended {
+    ) -> Result<Ended> {
         let Some(task) = node.task.as_ref() else {
-            return Ended::NotStarted;
+            return Ok(Ended::NotStarted);
         };
-        if member.is_some_and(|member| !matches!(self.unoccupied(member), Ok(true))) {
-            return Ended::NotStarted;
+        if let Some(member) = member {
+            if !self.unoccupied(member)? {
+                return Err(problem("The member has another active task"));
+            }
         }
         let args = task_arguments(task, action);
         let input = if let Some(m) = member {
@@ -93,7 +99,8 @@ impl Native {
             json!({"schema":1,"team":team.id,"node":node.id})
         };
         let input = input.to_string();
-        child::run_guarded(
+        let mut retry = None;
+        let ended = child::run_guarded(
             &self.config,
             &args,
             Some(input.as_bytes()),
@@ -101,8 +108,19 @@ impl Native {
             false,
             Instant::now() + Duration::from_secs(30),
             &self.stop,
-            || self.admit(team, node, member, id, decision),
-        )
+            || {
+                self.admit(team, node, member, id, decision)
+                    .inspect_err(|e| {
+                        if e.code == crate::teams::store::actor_reads::ADMISSION_BUSY {
+                            retry = Some(e.clone());
+                        }
+                    })
+            },
+        );
+        if let Some(error) = retry {
+            return Err(error);
+        }
+        Ok(ended)
     }
 }
 impl Ports for Native {
@@ -164,11 +182,19 @@ impl Ports for Native {
     ) -> Result<super::ports::Finish> {
         self.done(team, node, decision, id)
     }
-    fn deliver(&mut self, team: &Team, node: &Node, member: &Member, id: &str) -> HandoutOutcome {
-        delivery_reply(
-            self.command(team, node, Some(member), id, "team-deliver", None),
-            id,
-        )
+    fn deliver(
+        &mut self,
+        team: &Team,
+        node: &Node,
+        member: &Member,
+        id: &str,
+    ) -> ports::DeliveryResult {
+        match self.command(team, node, Some(member), id, "team-deliver", None) {
+            Ok(ended) => delivery_reply(ended, id).into(),
+            Err(error) => ports::DeliveryResult::NotStarted {
+                reason: error.message,
+            },
+        }
     }
 }
 pub(super) fn delivery_reply(ended: Ended, id: &str) -> HandoutOutcome {
@@ -231,7 +257,7 @@ impl Native {
         decision: &crate::teams::store::Decision,
         id: &str,
     ) -> Result<super::ports::Finish> {
-        match self.command(team, node, None, id, "team-done", Some(decision)) {
+        match self.command(team, node, None, id, "team-done", Some(decision))? {
             Ended::Exited { code: 0, output } => decode_finish(&output, &team.id, node.id),
             _ => Err(problem(
                 "The original finishing child did not settle successfully",

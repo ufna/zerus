@@ -100,14 +100,20 @@ impl super::super::ports::Ports for Fake {
         }
         Ok(self.free.contains(&m.id) && !(self.busy_on_recheck && self.free_reads > 2))
     }
-    fn deliver(&mut self, _: &Team, _: &Node, _: &Member, _: &str) -> HandoutOutcome {
+    fn deliver(
+        &mut self,
+        _: &Team,
+        _: &Node,
+        _: &Member,
+        _: &str,
+    ) -> super::super::ports::DeliveryResult {
         self.sends += 1;
         if let Some(path) = self.lock_after_send.take() {
             let db = rusqlite::Connection::open(path).unwrap();
             db.execute_batch("BEGIN IMMEDIATE").unwrap();
             self.held = Some(db);
         }
-        self.reply.clone()
+        self.reply.clone().into()
     }
 }
 fn setup(n: u32) -> (Harness, super::super::Runtime, Fake) {

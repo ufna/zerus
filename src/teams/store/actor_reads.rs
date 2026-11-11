@@ -2,6 +2,7 @@
 use super::*;
 mod admission;
 pub use admission::Admission;
+pub(crate) use admission::BUSY as ADMISSION_BUSY;
 use rusqlite::params;
 
 #[derive(Clone, Debug, PartialEq, Eq)]

@@ -207,7 +207,7 @@ fn production_delivery_and_done_refuse_a_pause_before_the_spawn() {
         } else {
             assert!(matches!(
                 super::super::ports::Ports::deliver(&mut native, &team, &row, &member, &id),
-                HandoutOutcome::Refused { .. }
+                super::super::ports::DeliveryResult::Outcome(HandoutOutcome::Refused { .. })
             ));
         }
     }
@@ -278,7 +278,7 @@ fn production_command_keeps_its_transaction_until_spawn_returns() {
         } else {
             assert!(matches!(
                 super::super::ports::Ports::deliver(&mut native, &team, &row, &member, &id),
-                HandoutOutcome::Submitted { .. }
+                super::super::ports::DeliveryResult::Outcome(HandoutOutcome::Submitted { .. })
             ));
         }
         assert_eq!(checked.get(), 2);

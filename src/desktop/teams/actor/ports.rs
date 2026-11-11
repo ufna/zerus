@@ -51,7 +51,20 @@ pub(in crate::desktop::teams) trait Ports {
         Err(unavailable())
     }
     /// Exactly one original child. A caller cannot reconstruct this invocation.
-    fn deliver(&mut self, team: &Team, node: &Node, member: &Member, id: &str) -> HandoutOutcome;
+    fn deliver(&mut self, team: &Team, node: &Node, member: &Member, id: &str) -> DeliveryResult;
+}
+
+/// NotStarted is positive proof that the original child never began. A lost
+/// result or a possible submission must be an Outcome(Uncertain), never this.
+#[derive(Clone, Debug)]
+pub(in crate::desktop::teams) enum DeliveryResult {
+    Outcome(HandoutOutcome),
+    NotStarted { reason: String },
+}
+impl From<HandoutOutcome> for DeliveryResult {
+    fn from(value: HandoutOutcome) -> Self {
+        Self::Outcome(value)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

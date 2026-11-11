@@ -91,12 +91,12 @@ impl Runtime {
                 return Ok(());
             }
             self.finish(store, ports, &team, now)?;
-            self.recover(store, &team, now)?;
+            self.recover(store, ports, &team, now)?;
             self.reopens(store, ports, &team, now)?;
             self.handouts(store, ports, &team, now)?;
         } else {
             self.recover_merges(store, ports, &team, now)?;
-            self.recover(store, &team, now)?;
+            self.recover(store, ports, &team, now)?;
         }
         self.cleanup_metadata(store, &team, now)
     }

@@ -49,7 +49,13 @@ impl Ports for Work {
     fn free(&mut self, _: &Team, _: &Member) -> Result<bool> {
         Ok(false)
     }
-    fn deliver(&mut self, _: &Team, _: &Node, _: &Member, _: &str) -> HandoutOutcome {
+    fn deliver(
+        &mut self,
+        _: &Team,
+        _: &Node,
+        _: &Member,
+        _: &str,
+    ) -> super::super::ports::DeliveryResult {
         panic!("work fixture must not deliver")
     }
     fn report(&mut self, _: &TaskRef) -> Result<Option<String>> {

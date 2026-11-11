@@ -1,6 +1,7 @@
 //! A read admission owns the store's writer fence only across effect start.
 use super::*;
 pub struct Admission(Store);
+pub(crate) const BUSY: &str = "team_admission_busy";
 impl std::ops::Deref for Admission {
     type Target = Store;
     fn deref(&self) -> &Store {
@@ -19,11 +20,23 @@ impl Store {
     /// its immediate transaction, including on refusal or a failed spawn.
     pub fn admission(self) -> Result<Admission> {
         self.active()?;
-        self.db
+        let db = self
+            .db
             .as_ref()
-            .ok_or_else(|| storage("Admission store is missing"))?
-            .execute_batch("BEGIN IMMEDIATE")
+            .ok_or_else(|| storage("Admission store is missing"))?;
+        let prior: u64 = db
+            .query_row("PRAGMA busy_timeout", [], |r| r.get(0))
             .map_err(storage)?;
+        db.busy_timeout(std::time::Duration::from_millis(100))
+            .map_err(storage)?;
+        let result = db.execute_batch("BEGIN IMMEDIATE");
+        db.busy_timeout(std::time::Duration::from_millis(prior))
+            .map_err(storage)?;
+        result.map_err(|e| {
+            if matches!(e,rusqlite::Error::SqliteFailure(code,_) if matches!(code.code,rusqlite::ErrorCode::DatabaseBusy|rusqlite::ErrorCode::DatabaseLocked)) {
+                Problem::new(BUSY,"The team store is busy; no child started")
+            } else {storage(e)}
+        })?;
         Ok(Admission(self))
     }
 }
