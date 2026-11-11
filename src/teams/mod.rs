@@ -12,7 +12,9 @@ use std::path::{Path, PathBuf};
 use zerus_team_plan::problem::code;
 use zerus_team_plan::Problem;
 
+pub(crate) mod caller;
 pub(crate) mod catalog;
+mod cli;
 pub(crate) mod integrate;
 pub(crate) mod ops;
 pub(crate) mod store;
@@ -37,7 +39,20 @@ pub(crate) fn enabled(state: &Path) -> bool {
 }
 
 pub(crate) fn dispatch(config: &Config, args: &[String], _dry: bool) -> Result<i32> {
-    let (reply, exit) = answer(&config.state, args, from_session());
+    let words: Vec<&str> = args
+        .iter()
+        .map(String::as_str)
+        .filter(|word| *word != "--json")
+        .collect();
+    let (reply, exit) = match words.first().copied() {
+        Some("preview") => preview(
+            &config.state,
+            words.get(1).copied().unwrap_or("status"),
+            from_session(),
+        ),
+        _ if !enabled(&config.state) => inactive(),
+        _ => cli::dispatch(config, args),
+    };
     println!("{reply}");
     Ok(exit)
 }
@@ -54,10 +69,19 @@ fn session_markers(get: impl Fn(&str) -> Option<std::ffi::OsString>) -> bool {
     set("HGS_SESSION") && set("HGS_RUN_ID")
 }
 
+/// The answer of every command but `preview` while the preview is off.
+pub(crate) fn inactive() -> (Value, i32) {
+    refusal(Problem::new(INACTIVE, INACTIVE_MESSAGE))
+}
+
 fn refusal(problem: Problem) -> (Value, i32) {
     (json!({"ok": false, "error": problem}), 1)
 }
 
+/// The preview switch's own entry, and the off answer for every command. The
+/// commands themselves live in [`cli`]; kept here for the preview switch's
+/// tests, which never reach a command.
+#[cfg(test)]
 fn answer(state: &Path, args: &[String], from_session: bool) -> (Value, i32) {
     let words: Vec<&str> = args
         .iter()
