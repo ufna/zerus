@@ -1024,10 +1024,11 @@ a reported task carries the report's text first and then the pipeline's
 reason and findings; for a pipeline without stages it is the report's text
 as before.
 
-**A resumed member keeps its launch and gets a new run (packages 8 and
-17).** A standing resume restores the member's exact session: launch ID,
-native session, machine, agent, account and worktree stay, the run and the
-conversation are new. Package 17 records them from the completed resume
+**A resumed member keeps its launch and conversation and gets a new run
+(packages 8 and 17).** A standing resume restores the member's exact session: launch ID,
+native session, machine, agent, account, worktree and conversation stay, and
+only the run is new: a resume continues the member's conversation, as the
+native session action requires. Package 17 records the run from the completed resume
 receipt and exposes `confirm::resumed_binding(state, team, member, launch)`,
 a bounded read-only fact that grants neither liveness nor authority to
 send. The actor takes a member's current run from that fact when it exists
