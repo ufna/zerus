@@ -1988,12 +1988,15 @@ fn followup_ownership_card_explains_when_it_retries_verify_only() {
 fn worker_fault_health_survives_a_healthy_partial_sweep_and_clears_after_recovery() {
     let mut h = Harness::new();
     let team = h.store.team(ops::tests::TEAM).unwrap().unwrap();
-    // A readable row whose missing plan faults before any effect is called.
-    let broken = super::ledger::Row::new(&team, "lead", EPOCH, State::WorktreeDone);
-    Ledger::open(h.temp.path())
-        .unwrap()
-        .insert(&broken, 1234)
-        .unwrap();
+    // A malformed persisted key fails before a readable row can own it.
+    drop(Ledger::open(h.temp.path()).unwrap());
+    let db =
+        rusqlite::Connection::open(h.temp.path().join("teams/member-launch-v1.sqlite3")).unwrap();
+    db.execute(
+        "INSERT INTO originals(team,member,version,data) VALUES(?1,'@branch',0,'{}')",
+        [&team.id],
+    )
+    .unwrap();
     let mut e = FakeEffects {
         exists: true,
         ..Default::default()
@@ -2016,11 +2019,16 @@ fn worker_fault_health_survives_a_healthy_partial_sweep_and_clears_after_recover
         "launch_worker_fault"
     );
     assert!(e.plans.is_empty());
-    let mut repaired = row(&h, "lead");
-    repaired.state = State::Done;
+    db.execute(
+        "DELETE FROM originals WHERE team=?1 AND member='@branch'",
+        [&team.id],
+    )
+    .unwrap();
+    drop(db);
+    let repaired = super::ledger::Row::new(&team, "lead", EPOCH, State::Done);
     Ledger::open(h.temp.path())
         .unwrap()
-        .save(&mut repaired, 1235)
+        .insert(&repaired, 1235)
         .unwrap();
     // Model the last page of a sweep with a fault on an earlier page.
     faulted = true;
@@ -2044,4 +2052,472 @@ fn worker_fault_health_survives_a_healthy_partial_sweep_and_clears_after_recover
     )
     .unwrap();
     assert_eq!(super::health(h.temp.path()), None);
+}
+
+// Health-narrowing regressions from the independent confirmation review.
+#[test]
+fn review07r2_backoff_is_not_evidence_that_a_fault_recovered() {
+    let mut h = Harness::new();
+    let mut e = FakeEffects {
+        exists: true,
+        worktree_unverified: true,
+        read_error: true,
+        ..Default::default()
+    };
+    let mut r = runtime(&h);
+    until(&mut r, &mut h, &mut e, |h, _| {
+        row_if(h, "lead").is_some_and(|r| r.state == State::WorktreeVerify)
+    });
+    let mut cursor = None;
+    let mut faulted = false;
+    let stop = std::sync::atomic::AtomicBool::new(false);
+    super::worker::pass(
+        &mut r,
+        &mut h.store,
+        &mut e,
+        &mut cursor,
+        &mut faulted,
+        &stop,
+    )
+    .unwrap();
+    let before = super::health(h.temp.path());
+    assert_eq!(
+        before, None,
+        "a row failure belongs to its row, not worker health"
+    );
+    let failed = row(&h, "lead");
+    assert_eq!(failed.failures, 1);
+    assert!(cards(&h).is_empty());
+    super::worker::pass(
+        &mut r,
+        &mut h.store,
+        &mut e,
+        &mut cursor,
+        &mut faulted,
+        &stop,
+    )
+    .unwrap();
+    assert_eq!(
+        row(&h, "lead"),
+        failed,
+        "the read was skipped, not successfully repeated"
+    );
+    eprintln!(
+        "backoff: before={before:?} after={:?}, failure={} retry_at={}",
+        super::health(h.temp.path()),
+        failed.failures,
+        failed.retry_at
+    );
+    assert_eq!(
+        super::health(h.temp.path()),
+        before,
+        "a skipped backed-off check cannot clear a still-present fault"
+    );
+}
+#[test]
+fn review07r2_real_pages_do_not_clear_an_unresolved_earlier_team() {
+    use super::ledger::Row;
+    let mut h = Harness::empty();
+    let mut ledger = Ledger::open(h.temp.path()).unwrap();
+    let first = "00000000-0000-4000-8000-000000000100";
+    for n in 0..17 {
+        let id = format!("00000000-0000-4000-8000-{:012x}", 256 + n);
+        let mut op = ops::tests::create();
+        if let ops::Operation::Create {
+            integration_branch, ..
+        } = &mut op
+        {
+            *integration_branch = format!("review-branch-{n}");
+        }
+        h.run_for(&id, &ops::tests::person(), op).unwrap();
+        let team = h.store.team(&id).unwrap().unwrap();
+        let mut saved = Row::new(
+            &team,
+            "lead",
+            EPOCH,
+            if n == 0 {
+                State::WorktreeVerify
+            } else {
+                State::Done
+            },
+        );
+        if n == 0 {
+            let mut p = plan_fixture();
+            p.team = id.clone();
+            saved.plan = Some(p);
+        }
+        ledger.insert(&saved, 1234).unwrap();
+    }
+    let mut e = FakeEffects {
+        exists: true,
+        read_error: true,
+        ..Default::default()
+    };
+    let mut r = runtime(&h);
+    let mut cursor = None;
+    let mut faulted = false;
+    let stop = std::sync::atomic::AtomicBool::new(false);
+    super::worker::pass(
+        &mut r,
+        &mut h.store,
+        &mut e,
+        &mut cursor,
+        &mut faulted,
+        &stop,
+    )
+    .unwrap();
+    assert!(cursor.is_some());
+    assert!(!faulted, "a row failure is not a sweep failure");
+    let before = super::health(h.temp.path());
+    assert_eq!(
+        before, None,
+        "a row failure belongs to its row, not worker health"
+    );
+    let failed = ledger.get(first, "lead").unwrap().unwrap();
+    super::worker::pass(
+        &mut r,
+        &mut h.store,
+        &mut e,
+        &mut cursor,
+        &mut faulted,
+        &stop,
+    )
+    .unwrap();
+    assert!(cursor.is_none());
+    assert_eq!(
+        super::health(h.temp.path()),
+        before,
+        "last healthy page must preserve the earlier fault"
+    );
+    // The next two real pages include the same team, but its backoff skips
+    // verification. No condition recovered anywhere in this fixture.
+    for _ in 0..2 {
+        super::worker::pass(
+            &mut r,
+            &mut h.store,
+            &mut e,
+            &mut cursor,
+            &mut faulted,
+            &stop,
+        )
+        .unwrap();
+    }
+    assert_eq!(ledger.get(first, "lead").unwrap().unwrap(), failed);
+    eprintln!(
+        "two sweeps: first={before:?} after={:?}",
+        super::health(h.temp.path())
+    );
+    assert_eq!(
+        super::health(h.temp.path()),
+        before,
+        "healthy other teams cannot clear the backed-off fault"
+    );
+}
+#[test]
+fn review07r2_one_free_byte_is_not_notice_capacity_recovery() {
+    let h = Harness::empty();
+    let mut r = runtime(&h);
+    let problem = zerus_team_plan::Problem::new(code::OVER_CAP, "fixture overflow")
+        .with_refs(["launch_notification_outbox"]);
+    r.record_health(&problem, 1234).unwrap();
+    let db =
+        rusqlite::Connection::open(h.temp.path().join("teams/member-launch-v1.sqlite3")).unwrap();
+    db.execute("UPDATE notice_budget SET bytes=67108863 WHERE id=1", [])
+        .unwrap();
+    r.clear_health().unwrap();
+    assert!(
+        super::health(h.temp.path()).is_some(),
+        "one byte cannot admit or update a notification, so overflow is still present"
+    );
+}
+#[test]
+fn review07r2_v3_migration_preserves_every_state_and_is_atomic() {
+    use super::ledger::Row;
+    let h = Harness::new();
+    let team = h.store.team(ops::tests::TEAM).unwrap().unwrap();
+    let mut ledger = Ledger::open(h.temp.path()).unwrap();
+    let states = [
+        State::Retry,
+        State::LaunchUnknown,
+        State::BranchReady,
+        State::BranchIntent,
+        State::BranchDone,
+        State::WorktreeReady,
+        State::WorktreeIntent,
+        State::WorktreeDone,
+        State::WorktreeVerify,
+        State::LaunchReady,
+        State::LaunchIntent,
+        State::Submitted,
+        State::Bound,
+        State::ParentIntent,
+        State::Done,
+        State::Blocked,
+    ];
+    let mut rows: Vec<_> = states
+        .into_iter()
+        .enumerate()
+        .map(|(n, s)| Row::new(&team, &format!("fixture-{n}"), EPOCH, s))
+        .collect();
+    rows.push(Row::new(&team, super::ledger::BUDGET, EPOCH, State::Retry));
+    for row in &rows {
+        ledger.insert(row, 1).unwrap();
+    }
+    drop(ledger);
+    let db =
+        rusqlite::Connection::open(h.temp.path().join("teams/member-launch-v1.sqlite3")).unwrap();
+    let before: String = db
+        .query_row(
+            "SELECT group_concat(data,'|') FROM (SELECT data FROM originals ORDER BY member)",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    db.execute_batch("DROP TABLE launch_health; PRAGMA user_version=3; CREATE TRIGGER preserve_launch_health AFTER INSERT ON originals BEGIN SELECT 1; END;").unwrap();
+    assert_eq!(super::health(h.temp.path()), None);
+    assert!(Ledger::open(h.temp.path()).is_err());
+    let version: u32 = db
+        .query_row("PRAGMA user_version", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(version, 3);
+    let count: u32 = db
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE name='launch_health'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(count, 0);
+    db.execute_batch("DROP TRIGGER preserve_launch_health")
+        .unwrap();
+    let ledger = Ledger::open(h.temp.path()).unwrap();
+    for row in rows {
+        assert_eq!(ledger.get(&row.team, &row.member).unwrap(), Some(row));
+    }
+    let after: String = db
+        .query_row(
+            "SELECT group_concat(data,'|') FROM (SELECT data FROM originals ORDER BY member)",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(after, before);
+    let version: u32 = db
+        .query_row("PRAGMA user_version", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(version, 4);
+    assert_eq!(super::health(h.temp.path()), None);
+}
+#[test]
+fn review07r2_repeated_person_retries_survive_restart_and_never_duplicate_effects() {
+    for verify in [false, true] {
+        let (mut h, mut e, r) = followup_ownership_fault_card(verify);
+        drop(r);
+        for round in 0..3 {
+            let open: Vec<_> = cards(&h)
+                .into_iter()
+                .filter(|c| c.state == "open")
+                .collect();
+            assert_eq!(open.len(), 1);
+            h.run(
+                &ops::tests::person(),
+                ops::Operation::DecideCard {
+                    card: open[0].seq,
+                    decision: "retry".into(),
+                },
+            )
+            .unwrap();
+            let mut r = runtime(&h);
+            for _ in 0..5 {
+                let _ = r.tick(&mut h.store, &mut e, ops::tests::TEAM, 181_234);
+                assert!(cards(&h).iter().filter(|c| c.state == "open").count() <= 1);
+            }
+            assert_eq!(
+                cards(&h).iter().filter(|c| c.state == "open").count(),
+                1,
+                "{verify}/{round}"
+            );
+            assert_eq!(cards(&h).len(), 2 + round);
+            assert_eq!(
+                row(&h, "lead").state,
+                if verify {
+                    State::WorktreeVerify
+                } else {
+                    State::LaunchReady
+                }
+            );
+        }
+        assert_eq!(
+            e.events
+                .iter()
+                .filter(|e| e.as_str() == "worktree:lead")
+                .count(),
+            1
+        );
+        assert!(e.plans.is_empty());
+    }
+}
+#[test]
+fn review07r2_health_read_has_no_logical_writes_or_initialization() {
+    let h = Harness::empty();
+    assert_eq!(super::health(h.temp.path()), None);
+    assert!(!h
+        .temp
+        .path()
+        .join("teams/member-launch-v1.sqlite3")
+        .exists());
+    let mut r = runtime(&h);
+    r.record_health(&invalid("fixture fault"), 1234).unwrap();
+    let db =
+        rusqlite::Connection::open(h.temp.path().join("teams/member-launch-v1.sqlite3")).unwrap();
+    let version: i64 = db
+        .query_row("PRAGMA user_version", [], |r| r.get(0))
+        .unwrap();
+    let before: i64 = db
+        .query_row("PRAGMA data_version", [], |r| r.get(0))
+        .unwrap();
+    for _ in 0..3 {
+        assert_eq!(super::health(h.temp.path()).unwrap().at_ms, 1234);
+    }
+    let after: i64 = db
+        .query_row("PRAGMA data_version", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(before, after);
+    let after_version: i64 = db
+        .query_row("PRAGMA user_version", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(version, after_version);
+    let count: i64 = db
+        .query_row("SELECT COUNT(*) FROM launch_health", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(count, 1);
+}
+
+#[test]
+fn notification_overflow_clears_after_its_notice_reservation_succeeds() {
+    let mut h = Harness::new();
+    drop(Ledger::open(h.temp.path()).unwrap());
+    let db =
+        rusqlite::Connection::open(h.temp.path().join("teams/member-launch-v1.sqlite3")).unwrap();
+    db.execute_batch("UPDATE launch_budget SET rows=16384 WHERE id=1; UPDATE notice_budget SET rows=16384 WHERE id=1;").unwrap();
+    let mut e = FakeEffects {
+        exists: true,
+        ..Default::default()
+    };
+    let mut r = runtime(&h);
+    let mut cursor = None;
+    let mut faulted = false;
+    let stop = std::sync::atomic::AtomicBool::new(false);
+    super::worker::pass(
+        &mut r,
+        &mut h.store,
+        &mut e,
+        &mut cursor,
+        &mut faulted,
+        &stop,
+    )
+    .unwrap();
+    assert_eq!(
+        super::health(h.temp.path()).unwrap().code,
+        "launch_notification_overflow"
+    );
+    db.execute(
+        "UPDATE notice_budget SET rows=(SELECT COUNT(*) FROM budget_alerts) WHERE id=1",
+        [],
+    )
+    .unwrap();
+    super::worker::pass(
+        &mut r,
+        &mut h.store,
+        &mut e,
+        &mut cursor,
+        &mut faulted,
+        &stop,
+    )
+    .unwrap();
+    assert_eq!(cards(&h).len(), 1);
+    assert_eq!(cards(&h)[0].kind, "launch_capacity");
+    let rows: i64 = db
+        .query_row("SELECT rows FROM launch_budget WHERE id=1", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert_eq!(rows, 16384, "only notice capacity recovered");
+    assert_eq!(super::health(h.temp.path()), None);
+}
+
+#[test]
+fn tick_failure_before_a_new_row_is_not_owned_by_the_previous_step() {
+    let mut h = Harness::new();
+    drop(Ledger::open(h.temp.path()).unwrap());
+    let db =
+        rusqlite::Connection::open(h.temp.path().join("teams/member-launch-v1.sqlite3")).unwrap();
+    db.execute(
+        "INSERT INTO originals(team,member,version,data) VALUES(?1,'lead',0,'{}')",
+        [ops::tests::TEAM],
+    )
+    .unwrap();
+    let mut e = FakeEffects {
+        exists: true,
+        ..Default::default()
+    };
+    let mut r = runtime(&h);
+    let mut cursor = None;
+    let mut faulted = false;
+    let stop = std::sync::atomic::AtomicBool::new(false);
+    super::worker::pass(
+        &mut r,
+        &mut h.store,
+        &mut e,
+        &mut cursor,
+        &mut faulted,
+        &stop,
+    )
+    .unwrap();
+    assert_eq!(
+        super::health(h.temp.path()).unwrap().code,
+        "launch_worker_fault"
+    );
+    assert_eq!(
+        row(&h, BRANCH).failures,
+        0,
+        "the completed branch does not own a subsequent unreadable member"
+    );
+    assert!(e.events.is_empty());
+    assert_eq!(e.account_reads, 0);
+}
+
+#[test]
+fn updating_an_existing_capacity_card_is_not_a_new_notice_reservation() {
+    let mut h = Harness::new();
+    drop(Ledger::open(h.temp.path()).unwrap());
+    let db =
+        rusqlite::Connection::open(h.temp.path().join("teams/member-launch-v1.sqlite3")).unwrap();
+    db.execute("UPDATE launch_budget SET rows=16384 WHERE id=1", [])
+        .unwrap();
+    let mut e = FakeEffects {
+        exists: true,
+        ..Default::default()
+    };
+    let mut r = runtime(&h);
+    r.tick(&mut h.store, &mut e, ops::tests::TEAM, 1234)
+        .unwrap();
+    let card = cards(&h)[0].seq;
+    r.record_health(
+        &zerus_team_plan::Problem::new(code::OVER_CAP, "fixture overflow")
+            .with_refs(["launch_notification_outbox"]),
+        1234,
+    )
+    .unwrap();
+    db.execute("UPDATE notice_budget SET bytes=67107840 WHERE id=1", [])
+        .unwrap();
+    // Updating the old row's counter fits; a new notification was never reserved.
+    r.tick(&mut h.store, &mut e, ops::tests::TEAM, 61_234)
+        .unwrap();
+    assert_eq!(cards(&h).len(), 1);
+    assert_eq!(cards(&h)[0].seq, card);
+    assert_eq!(
+        super::health(h.temp.path()).unwrap().code,
+        "launch_notification_overflow"
+    );
 }

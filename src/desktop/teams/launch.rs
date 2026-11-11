@@ -111,6 +111,7 @@ impl Runtime {
                 .get(&team.id, BRANCH)?
                 .is_some_and(|r| r.state == State::BranchIntent && self.owns(&r)));
         }
+        self.selected = None;
         let lead = store
             .member(id, &team.lead)?
             .ok_or_else(|| invalid("Lead member is missing"))?;
@@ -121,6 +122,7 @@ impl Runtime {
         // than a journal, session catalog or a serialized whole-team value.
         let mut cursor = None;
         for _ in 0..2 {
+            self.selected = None;
             let page = store.members(id, 200, cursor.as_ref())?;
             for member in page.rows {
                 if member.id == team.lead {
@@ -152,16 +154,21 @@ impl Runtime {
         };
         self.ledger().write_health(Some(code), now)
     }
+    pub fn row_failure(&self) -> bool {
+        self.selected.is_some()
+    }
     pub fn clear_health(&mut self) -> Result<()> {
-        if let Some(previous) = super::health(&self.state) {
+        self.clear_health_code(super::health::WORKER_FAULT)
+    }
+    pub(super) fn clear_notification_overflow(&mut self) -> Result<()> {
+        self.clear_health_code(super::health::NOTIFICATION_OVERFLOW)
+    }
+    fn clear_health_code(&mut self, code: &str) -> Result<()> {
+        if super::health(&self.state).is_some_and(|previous| previous.code == code) {
             if self.ledger.is_none() {
                 self.ledger = Some(Ledger::open(&self.state)?);
             }
-            if previous.code != super::health::NOTIFICATION_OVERFLOW
-                || self.ledger().notice_available()?
-            {
-                self.ledger().write_health(None, 0)?;
-            }
+            self.ledger().write_health(None, 0)?;
         }
         Ok(())
     }

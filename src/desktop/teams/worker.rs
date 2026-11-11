@@ -201,7 +201,11 @@ pub(super) fn pass(
             ) {
                 Ok(advanced) => advanced,
                 Err(error) => {
-                    record_fault(actor, cycle_fault, &error)?;
+                    if super::ledger::is_notice_budget(&error) {
+                        actor.record_health(&error, chrono::Utc::now().timestamp_millis())?;
+                    } else if !actor.row_failure() {
+                        record_fault(actor, cycle_fault, &error)?;
+                    }
                     false
                 }
             };

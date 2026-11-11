@@ -126,7 +126,9 @@ impl Runtime {
         self.failure(store, &mut row, error, now, false)
     }
     pub(super) fn note_removed(&mut self, team: &Team, member: &Member, now: i64) -> Result<()> {
+        self.selected = None;
         if let Some(mut row) = self.ledger().get(&team.id, &member.id)? {
+            self.selected = Some((row.team.clone(), row.member.clone()));
             if self.owns(&row) {
                 self.admitted = None;
             }

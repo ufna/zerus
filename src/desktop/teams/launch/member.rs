@@ -10,7 +10,7 @@ impl Runtime {
         parent: Option<SessionKey>,
         now: i64,
     ) -> Result<bool> {
-        self.selected = Some((team.id.clone(), member.id.clone()));
+        self.selected = None;
         let existing = self.ledger().get(&team.id, &member.id)?;
         let Some(mut row) = existing else {
             if member.state != MemberState::NotCreated || member.session.is_some() {
@@ -18,6 +18,7 @@ impl Runtime {
             }
             return self.prepare(store, effects, team, member, parent, now);
         };
+        self.selected = Some((team.id.clone(), member.id.clone()));
         if member.state == MemberState::Paused {
             if self.owns(&row) {
                 self.admitted = None;

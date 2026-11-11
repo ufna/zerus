@@ -239,15 +239,6 @@ impl Ledger {
         }
         Ok(())
     }
-    pub fn notice_available(&self) -> Result<bool> {
-        self.0
-            .query_row(
-                "SELECT rows<16384 AND bytes<67108864 FROM notice_budget WHERE id=1",
-                [],
-                |r| r.get(0),
-            )
-            .map_err(storage)
-    }
     pub fn get(&self, team: &str, member: &str) -> Result<Option<Row>> {
         let data: Option<String> = self
             .0
