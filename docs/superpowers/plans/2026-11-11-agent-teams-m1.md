@@ -888,7 +888,7 @@ this computer's own `hgs` run as the actor's one original child:
 | Hand-out and reopen | `hgs task team-deliver` (below) |
 | Doorbell, a return's reason, a brief on resume | `hgs send SESSION --json`, bound to the run and conversation it read |
 | An answer to a member's prompt | `hgs answer SESSION --json`, after the approval journal reserved it |
-| Integration | the functions of `src/teams/integrate.rs` in a child of its own |
+| Integration | the functions of `src/teams/integrate.rs`, called in the actor's worker thread as package 7 calls `create_branch`; their Git commands are the bounded children. No command arm of `hgs` starts a merge |
 
 **Team delivery (package 6, second part).** The attempt writer is reachable
 only through the task CLI, and `start-deliver` is the person's. A new
@@ -1066,7 +1066,7 @@ desktop::teams::Worker::wake, the original child kind and its custody
   `integrate::reported_commit` from the member's worktree, without writing.
   A dirty worktree is named in the report text.
 - *Integration.* For each row of `integration_accepts`: `descends` and
-  `merge` in a child of its own, then `RecordIntegration` or
+  `merge` after one ledger reservation, then `RecordIntegration` or
   `RecordIntegrationConflict` naming the decision. An accepted node that
   needs no merge, or whose fact is recorded, is finished with `team-done`.
 - *Reopens.* An open reopen effect is delivered with `team-deliver` and
