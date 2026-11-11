@@ -1228,6 +1228,19 @@ section, and a writer that still cannot begin is told `store_busy`:
 nothing was written. The actor's own admission waits 100 milliseconds,
 and a busy store is a retry on a later pass, never a recorded refusal.
 
+**What the person confirmed is bound at the create (packages 5 and 13,
+after the desktop's review).** New team shows a template's roster,
+pipelines and delegations, and the person confirms them; a template is
+replaced by its ID, so a create that names only the ID can make a team the
+person never saw. The catalog read gives each template a digest over
+everything a create uses. `hgs team create` accepts `expected_template`,
+the digest that was shown, and refuses with `template_changed` before
+anything is written when the bundle it is about to use has another; and
+`delegations`, all five, which become the team's in place of the
+template's. The desktop always sends both, never creates unbound, and on
+`template_changed` shows the template again for a new confirmation. A
+request without the fields behaves as before, for a person at a terminal.
+
 **A doorbell points at the inbox and carries none of it (package 10).** The
 doorbell says how many items wait and names the command that reads them;
 the text of an item comes from members and is never put into a message of
