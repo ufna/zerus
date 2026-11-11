@@ -14,7 +14,7 @@ impl Runtime {
                 .as_ref()
                 .ok_or_else(|| invalid("Blocked launch has no reason"))?;
             let detail = cut(&problem.message, 2048);
-            let timing = if row.state == State::Retry {
+            let timing = if row.state.waits_on_backoff() {
                 if problem.code == code::NO_ACCOUNT_AVAILABLE && !problem.refs.is_empty() {
                     " Automatic retry follows that account window reset. Choosing Retry checks sooner, on the next service pass (60-second safety interval)."
                 } else {

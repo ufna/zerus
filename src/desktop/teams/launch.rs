@@ -72,8 +72,9 @@ impl Runtime {
         if let Err(error) = &result {
             if super::ledger::is_budget(error) {
                 self.notify_budget(store, id, error.clone(), now)?;
+                return Ok(false);
             } else {
-                let _ = self.record_failure(store, id, error.clone(), now);
+                self.record_failure(store, id, error.clone(), now)?;
             }
         }
         result
@@ -139,6 +140,30 @@ impl Runtime {
             }
         }
         Ok(false)
+    }
+    pub fn record_health(&mut self, problem: &Problem, now: i64) -> Result<()> {
+        if self.ledger.is_none() {
+            self.ledger = Some(Ledger::open(&self.state)?);
+        }
+        let code = if super::ledger::is_notice_budget(problem) {
+            1
+        } else {
+            2
+        };
+        self.ledger().write_health(Some(code), now)
+    }
+    pub fn clear_health(&mut self) -> Result<()> {
+        if let Some(previous) = super::health(&self.state) {
+            if self.ledger.is_none() {
+                self.ledger = Some(Ledger::open(&self.state)?);
+            }
+            if previous.code != super::health::NOTIFICATION_OVERFLOW
+                || self.ledger().notice_available()?
+            {
+                self.ledger().write_health(None, 0)?;
+            }
+        }
+        Ok(())
     }
     pub fn begin_pass(&mut self) {
         self.accounts.clear();

@@ -170,13 +170,7 @@ impl Runtime {
                 return Ok(true);
             }
             Err(p) => {
-                row.failures = row.failures.saturating_add(1);
-                row.retry_at = now.saturating_add(super::retry::backoff(row.failures));
-                row.problem = Some(p);
-                self.save(row, now)?;
-                if row.failures >= 3 {
-                    self.card(store, row, now)?;
-                }
+                self.failure(store, row, p, now, false)?;
                 return Ok(false);
             }
         };

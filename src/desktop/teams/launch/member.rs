@@ -18,30 +18,31 @@ impl Runtime {
             }
             return self.prepare(store, effects, team, member, parent, now);
         };
-        if row.state == State::Retry {
-            if row.problem.is_some() {
-                self.card(store, &mut row, now)?;
+        if member.state == MemberState::Paused {
+            if self.owns(&row) {
+                self.admitted = None;
             }
-            if !self.due(store, &mut row, now)? {
-                return Ok(false);
-            }
-            return self.choose(store, effects, team, member, parent, &mut row, now);
-        }
-        if row.retry_at > now {
             return Ok(false);
         }
         if row.state == State::Blocked {
             self.card(store, &mut row, now)?;
             return Ok(false);
         }
-        if matches!(row.state, State::Done) {
+        if row.state == State::Done {
             return Ok(false);
         }
-        if member.state == MemberState::Paused {
-            if self.owns(&row) {
-                self.admitted = None;
+        if row.state == State::Retry && row.problem.is_some() && !row.retry_seen {
+            self.card(store, &mut row, now)?;
+        }
+        if row.state.waits_on_backoff() {
+            if !self.due(store, &mut row, now)? {
+                return Ok(false);
             }
+        } else if row.retry_at > now {
             return Ok(false);
+        }
+        if row.state == State::Retry {
+            return self.choose(store, effects, team, member, parent, &mut row, now);
         }
         if let Some(plan) = &row.plan {
             if plan.machine != team.home

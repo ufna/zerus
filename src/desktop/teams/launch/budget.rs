@@ -8,7 +8,9 @@ impl Runtime {
         if row.state == State::Done {
             return Ok(true);
         }
-        self.card(store, &mut row, now)?;
+        if !row.retry_seen {
+            self.card(store, &mut row, now)?;
+        }
         self.due(store, &mut row, now)
     }
     pub(super) fn notify_budget(

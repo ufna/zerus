@@ -1503,3 +1503,545 @@ fn missing_submitted_identity_replaces_an_earlier_read_error_card_with_uncertain
     assert_eq!(open[0].kind, "launch_uncertain");
     assert_eq!(all[0].decision.as_deref(), Some("stale"));
 }
+
+// Regression probes from the independent follow-up review.
+fn followup_ownership_fault_card(verify: bool) -> (Harness, FakeEffects, Runtime) {
+    let mut h = Harness::new();
+    let mut e = FakeEffects {
+        exists: true,
+        worktree_unverified: verify,
+        read_error: verify,
+        launch_verification_unavailable: !verify,
+        ..Default::default()
+    };
+    let mut r = runtime(&h);
+    until(&mut r, &mut h, &mut e, |h, _| {
+        row_if(h, "lead").is_some_and(|r| {
+            r.state
+                == if verify {
+                    State::WorktreeVerify
+                } else {
+                    State::LaunchIntent
+                }
+        })
+    });
+    for now in [1234, 61_234, 181_234] {
+        for _ in 0..2 {
+            let _ = r.tick(&mut h.store, &mut e, ops::tests::TEAM, now);
+        }
+    }
+    assert_eq!(cards(&h).len(), 1);
+    assert_eq!(cards(&h)[0].state, "open");
+    (h, e, r)
+}
+#[test]
+fn followup_retry_after_ownership_fault_reopens_one_card() {
+    for verify in [false, true] {
+        let (mut h, mut e, r) = followup_ownership_fault_card(verify);
+        let card = cards(&h)[0].seq;
+        h.run(
+            &ops::tests::person(),
+            ops::Operation::DecideCard {
+                card,
+                decision: "retry".into(),
+            },
+        )
+        .unwrap();
+        drop(r);
+        let mut r = runtime(&h);
+        for now in [181_234, 500_000, 2_000_000, 10_000_000] {
+            for _ in 0..5 {
+                let _ = r.tick(&mut h.store, &mut e, ops::tests::TEAM, now);
+            }
+        }
+        eprintln!(
+            "verify={verify} row={:?} failures={} retry_at={} retry_seen={} cards={:?}",
+            row(&h, "lead").state,
+            row(&h, "lead").failures,
+            row(&h, "lead").retry_at,
+            row(&h, "lead").retry_seen,
+            cards(&h)
+        );
+        assert_eq!(
+            cards(&h).iter().filter(|c| c.state == "open").count(),
+            1,
+            "verify={verify}: repeated failure of the requested retry must be visible"
+        );
+        assert_eq!(cards(&h).len(), 2);
+    }
+}
+#[test]
+fn followup_person_retry_bypasses_ownership_backoff() {
+    for verify in [false, true] {
+        let (mut h, mut e, mut r) = followup_ownership_fault_card(verify);
+        let card = cards(&h)[0].seq;
+        h.run(
+            &ops::tests::person(),
+            ops::Operation::DecideCard {
+                card,
+                decision: "retry".into(),
+            },
+        )
+        .unwrap();
+        let before = row(&h, "lead").failures;
+        for _ in 0..5 {
+            let _ = r.tick(&mut h.store, &mut e, ops::tests::TEAM, 181_234);
+        }
+        assert!(
+            row(&h, "lead").failures > before,
+            "verify={verify}: person retry was ignored until {}",
+            row(&h, "lead").retry_at
+        );
+    }
+}
+#[test]
+fn followup_ownership_card_explains_when_it_retries() {
+    for verify in [false, true] {
+        let (h, _, _) = followup_ownership_fault_card(verify);
+        eprintln!(
+            "verify={verify} retry_at={} text={}",
+            row(&h, "lead").retry_at,
+            cards(&h)[0].text
+        );
+        assert!(
+            cards(&h)[0].text.contains("retry") || cards(&h)[0].text.contains("Retry"),
+            "retryable ownership fault has no timing or retry guidance"
+        );
+    }
+}
+#[test]
+fn followup_stopped_budget_card_is_closed_before_outbox_is_pruned() {
+    let mut h = Harness::new();
+    drop(Ledger::open(h.temp.path()).unwrap());
+    let db =
+        rusqlite::Connection::open(h.temp.path().join("teams/member-launch-v1.sqlite3")).unwrap();
+    db.execute_batch("UPDATE launch_budget SET rows=16384 WHERE id=1")
+        .unwrap();
+    let mut e = FakeEffects {
+        exists: true,
+        ..Default::default()
+    };
+    let mut r = runtime(&h);
+    for _ in 0..20 {
+        let _ = r.tick(&mut h.store, &mut e, ops::tests::TEAM, 1234);
+    }
+    assert_eq!(cards(&h).len(), 1);
+    h.run(&ops::tests::person(), ops::Operation::Stop).unwrap();
+    r.maintain(&h.store).unwrap();
+    assert!(Ledger::open(h.temp.path())
+        .unwrap()
+        .get(ops::tests::TEAM, super::ledger::BUDGET)
+        .unwrap()
+        .is_none());
+    eprintln!("card after stop and prune: {:?}", cards(&h));
+    assert_eq!(
+        cards(&h)[0].decision.as_deref(),
+        Some("stale"),
+        "the service discarded the only owner of its open capacity card"
+    );
+}
+#[test]
+fn followup_full_notification_outbox_is_visible() {
+    let mut h = Harness::new();
+    drop(Ledger::open(h.temp.path()).unwrap());
+    let db =
+        rusqlite::Connection::open(h.temp.path().join("teams/member-launch-v1.sqlite3")).unwrap();
+    db.execute_batch("UPDATE launch_budget SET rows=16384 WHERE id=1; UPDATE notice_budget SET rows=16384 WHERE id=1").unwrap();
+    let mut e = FakeEffects {
+        exists: true,
+        ..Default::default()
+    };
+    let mut r = runtime(&h);
+    let mut cursor = None;
+    let mut faulted = false;
+    let stop = std::sync::atomic::AtomicBool::new(false);
+    super::worker::pass(
+        &mut r,
+        &mut h.store,
+        &mut e,
+        &mut cursor,
+        &mut faulted,
+        &stop,
+    )
+    .unwrap();
+    assert!(e.events.is_empty());
+    assert!(cards(&h).is_empty());
+    let first =
+        super::health(h.temp.path()).expect("a full outbox must remain visible in service health");
+    assert_eq!(first.code, "launch_notification_overflow");
+    assert!(first.at_ms > 0);
+    drop(r);
+    assert_eq!(super::health(h.temp.path()), Some(first));
+    // Both fixed budgets recover. A successful pass clears the health record.
+    db.execute_batch("UPDATE launch_budget SET rows=(SELECT COUNT(*) FROM originals) WHERE id=1; UPDATE notice_budget SET rows=(SELECT COUNT(*) FROM budget_alerts) WHERE id=1").unwrap();
+    drop(db);
+    let mut r = runtime(&h);
+    super::worker::pass(
+        &mut r,
+        &mut h.store,
+        &mut e,
+        &mut cursor,
+        &mut faulted,
+        &stop,
+    )
+    .unwrap();
+    assert_eq!(super::health(h.temp.path()), None);
+}
+
+#[test]
+fn followup_observation_failure_after_deadline_is_not_absence() {
+    let mut h = Harness::new();
+    let mut e = FakeEffects {
+        exists: true,
+        ..Default::default()
+    };
+    let mut r = runtime(&h);
+    until(&mut r, &mut h, &mut e, |_, e| !e.plans.is_empty());
+    e.read_error = true;
+    for now in [1_000_000, 2_000_000, 3_000_000] {
+        r.tick(&mut h.store, &mut e, ops::tests::TEAM, now).unwrap();
+    }
+    assert_eq!(row(&h, "lead").state, State::Submitted);
+    assert_eq!(cards(&h)[0].kind, "launch_blocked");
+    assert_eq!(e.plans.len(), 1);
+    e.read_error = false;
+    r.tick(&mut h.store, &mut e, ops::tests::TEAM, 10_000_000)
+        .unwrap();
+    assert!(h
+        .store
+        .member(ops::tests::TEAM, "lead")
+        .unwrap()
+        .unwrap()
+        .session
+        .is_some());
+}
+#[test]
+fn followup_retry_decision_survives_restart() {
+    let mut h = Harness::new();
+    let mut e = FakeEffects {
+        exists: true,
+        account_error: true,
+        ..Default::default()
+    };
+    let mut r = runtime(&h);
+    advance(&mut r, &mut h, &mut e, 20);
+    let card = cards(&h)[0].seq;
+    h.run(
+        &ops::tests::person(),
+        ops::Operation::DecideCard {
+            card,
+            decision: "retry".into(),
+        },
+    )
+    .unwrap();
+    drop(r);
+    let mut r = runtime(&h);
+    advance(&mut r, &mut h, &mut e, 5);
+    assert_eq!(cards(&h).iter().filter(|c| c.state == "open").count(), 1);
+    assert_eq!(cards(&h).len(), 2);
+}
+#[test]
+fn followup_new_states_obey_pause_remove_and_stop() {
+    for verify in [false, true] {
+        for decision in ["pause", "remove", "stop"] {
+            let mut h = Harness::new();
+            let mut e = FakeEffects {
+                exists: true,
+                worktree_unverified: verify,
+                ..Default::default()
+            };
+            let mut r = runtime(&h);
+            until(&mut r, &mut h, &mut e, |h, _| {
+                row_if(h, "m1").is_some_and(|r| r.state == State::WorktreeIntent)
+            });
+            tick(&mut r, &mut h, &mut e);
+            assert_eq!(
+                row(&h, "m1").state,
+                if verify {
+                    State::WorktreeVerify
+                } else {
+                    State::WorktreeDone
+                }
+            );
+            let op = match decision {
+                "pause" => ops::Operation::SetMemberState {
+                    member: "m1".into(),
+                    state: MemberState::Paused,
+                },
+                "remove" => ops::Operation::ArchiveMember {
+                    member: "m1".into(),
+                },
+                _ => ops::Operation::Stop,
+            };
+            let actor = if decision == "pause" {
+                ops::tests::service()
+            } else {
+                ops::tests::person()
+            };
+            h.run(&actor, op).unwrap();
+            drop(r);
+            let mut r = runtime(&h);
+            advance(&mut r, &mut h, &mut e, 40);
+            assert_eq!(
+                e.events
+                    .iter()
+                    .filter(|e| e.as_str() == "worktree:m1")
+                    .count(),
+                1
+            );
+            assert!(
+                !e.events.contains(&"launch:m1".into()),
+                "{verify}/{decision}"
+            );
+        }
+    }
+}
+#[test]
+fn followup_failed_save_of_new_outcomes_never_replays_effect() {
+    for kind in ["worktree", "launch"] {
+        let mut h = Harness::new();
+        let mut e = LockingEffects {
+            inner: FakeEffects {
+                exists: true,
+                worktree_unverified: kind == "worktree",
+                launch_verification_unavailable: kind == "launch",
+                ..Default::default()
+            },
+            path: h.temp.path().join("teams/member-launch-v1.sqlite3"),
+            lock: None,
+            lock_on: kind,
+            fired: false,
+        };
+        let mut r = runtime(&h);
+        let mut failed = false;
+        for _ in 0..15 {
+            if r.tick(&mut h.store, &mut e, ops::tests::TEAM, 1234)
+                .is_err()
+            {
+                e.lock = None;
+                failed = true;
+                break;
+            }
+        }
+        assert!(failed);
+        drop(r);
+        let mut r = runtime(&h);
+        for _ in 0..20 {
+            r.tick(&mut h.store, &mut e, ops::tests::TEAM, 10_000_000)
+                .unwrap();
+        }
+        assert_eq!(row(&h, "lead").state, State::Blocked);
+        assert_eq!(cards(&h).len(), 1);
+        assert_eq!(cards(&h)[0].kind, "launch_uncertain");
+        assert_eq!(
+            e.inner
+                .events
+                .iter()
+                .filter(|e| e.as_str() == "worktree:lead")
+                .count(),
+            1
+        );
+        assert!(e.inner.plans.is_empty());
+    }
+}
+#[test]
+fn followup_v2_all_states_migrate_unchanged_and_failed_ddl_rolls_back() {
+    use super::ledger::Row;
+    let h = Harness::new();
+    let team = h.store.team(ops::tests::TEAM).unwrap().unwrap();
+    let mut ledger = Ledger::open(h.temp.path()).unwrap();
+    let states = [
+        State::Retry,
+        State::LaunchUnknown,
+        State::BranchReady,
+        State::BranchIntent,
+        State::BranchDone,
+        State::WorktreeReady,
+        State::WorktreeIntent,
+        State::WorktreeDone,
+        State::LaunchReady,
+        State::LaunchIntent,
+        State::Submitted,
+        State::Bound,
+        State::ParentIntent,
+        State::Done,
+        State::Blocked,
+    ];
+    let rows: Vec<_> = states
+        .into_iter()
+        .enumerate()
+        .map(|(n, s)| Row::new(&team, &format!("fixture-{n}"), EPOCH, s))
+        .collect();
+    for row in &rows {
+        ledger.insert(row, 1).unwrap();
+    }
+    drop(ledger);
+    let db =
+        rusqlite::Connection::open(h.temp.path().join("teams/member-launch-v1.sqlite3")).unwrap();
+    db.execute_batch("DROP TABLE budget_alerts; DROP TABLE notice_budget; DROP TABLE launch_health; PRAGMA user_version=2; CREATE TABLE notice_budget (fixture TEXT)").unwrap();
+    assert!(Ledger::open(h.temp.path()).is_err());
+    let version: u32 = db
+        .query_row("PRAGMA user_version", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(version, 2);
+    let alerts: u32 = db
+        .query_row(
+            "SELECT count(*) FROM sqlite_master WHERE name='budget_alerts'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(alerts, 0, "the partial DDL must roll back");
+    db.execute_batch("DROP TABLE notice_budget").unwrap();
+    let ledger = Ledger::open(h.temp.path()).unwrap();
+    for saved in rows {
+        assert_eq!(ledger.get(&saved.team, &saved.member).unwrap(), Some(saved));
+    }
+    let version: u32 = db
+        .query_row("PRAGMA user_version", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(version, super::ledger::SCHEMA);
+}
+
+#[test]
+fn followup_retry_after_ownership_fault_reopens_one_card_verify_only() {
+    {
+        let verify = true;
+        let (mut h, mut e, r) = followup_ownership_fault_card(verify);
+        let card = cards(&h)[0].seq;
+        h.run(
+            &ops::tests::person(),
+            ops::Operation::DecideCard {
+                card,
+                decision: "retry".into(),
+            },
+        )
+        .unwrap();
+        drop(r);
+        let mut r = runtime(&h);
+        for now in [181_234, 500_000, 2_000_000, 10_000_000] {
+            for _ in 0..5 {
+                let _ = r.tick(&mut h.store, &mut e, ops::tests::TEAM, now);
+            }
+        }
+        eprintln!(
+            "verify={verify} row={:?} failures={} retry_at={} retry_seen={} cards={:?}",
+            row(&h, "lead").state,
+            row(&h, "lead").failures,
+            row(&h, "lead").retry_at,
+            row(&h, "lead").retry_seen,
+            cards(&h)
+        );
+        assert_eq!(
+            cards(&h).iter().filter(|c| c.state == "open").count(),
+            1,
+            "verify={verify}: repeated failure of the requested retry must be visible"
+        );
+        assert_eq!(cards(&h).len(), 2);
+    }
+}
+
+#[test]
+fn followup_person_retry_bypasses_ownership_backoff_verify_only() {
+    {
+        let verify = true;
+        let (mut h, mut e, mut r) = followup_ownership_fault_card(verify);
+        let card = cards(&h)[0].seq;
+        h.run(
+            &ops::tests::person(),
+            ops::Operation::DecideCard {
+                card,
+                decision: "retry".into(),
+            },
+        )
+        .unwrap();
+        let before = row(&h, "lead").failures;
+        for _ in 0..5 {
+            let _ = r.tick(&mut h.store, &mut e, ops::tests::TEAM, 181_234);
+        }
+        assert!(
+            row(&h, "lead").failures > before,
+            "verify={verify}: person retry was ignored until {}",
+            row(&h, "lead").retry_at
+        );
+    }
+}
+
+#[test]
+fn followup_ownership_card_explains_when_it_retries_verify_only() {
+    {
+        let verify = true;
+        let (h, _, _) = followup_ownership_fault_card(verify);
+        eprintln!(
+            "verify={verify} retry_at={} text={}",
+            row(&h, "lead").retry_at,
+            cards(&h)[0].text
+        );
+        assert!(
+            cards(&h)[0].text.contains("retry") || cards(&h)[0].text.contains("Retry"),
+            "retryable ownership fault has no timing or retry guidance"
+        );
+    }
+}
+
+#[test]
+fn worker_fault_health_survives_a_healthy_partial_sweep_and_clears_after_recovery() {
+    let mut h = Harness::new();
+    let team = h.store.team(ops::tests::TEAM).unwrap().unwrap();
+    // A readable row whose missing plan faults before any effect is called.
+    let broken = super::ledger::Row::new(&team, "lead", EPOCH, State::WorktreeDone);
+    Ledger::open(h.temp.path())
+        .unwrap()
+        .insert(&broken, 1234)
+        .unwrap();
+    let mut e = FakeEffects {
+        exists: true,
+        ..Default::default()
+    };
+    let mut r = runtime(&h);
+    let mut cursor = None;
+    let mut faulted = false;
+    let stop = std::sync::atomic::AtomicBool::new(false);
+    super::worker::pass(
+        &mut r,
+        &mut h.store,
+        &mut e,
+        &mut cursor,
+        &mut faulted,
+        &stop,
+    )
+    .unwrap();
+    assert_eq!(
+        super::health(h.temp.path()).unwrap().code,
+        "launch_worker_fault"
+    );
+    assert!(e.plans.is_empty());
+    let mut repaired = row(&h, "lead");
+    repaired.state = State::Done;
+    Ledger::open(h.temp.path())
+        .unwrap()
+        .save(&mut repaired, 1235)
+        .unwrap();
+    // Model the last page of a sweep with a fault on an earlier page.
+    faulted = true;
+    super::worker::pass(
+        &mut r,
+        &mut h.store,
+        &mut e,
+        &mut cursor,
+        &mut faulted,
+        &stop,
+    )
+    .unwrap();
+    assert!(super::health(h.temp.path()).is_some());
+    super::worker::pass(
+        &mut r,
+        &mut h.store,
+        &mut e,
+        &mut cursor,
+        &mut faulted,
+        &stop,
+    )
+    .unwrap();
+    assert_eq!(super::health(h.temp.path()), None);
+}

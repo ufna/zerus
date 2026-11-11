@@ -306,10 +306,7 @@ fn ownership_read_failure_defers_binding_and_a_launch_before_any_child_starts() 
     let outcome = f
         .native
         .launch(&f.p, &tree, &uuid::Uuid::new_v4().to_string());
-    assert!(
-        !matches!(outcome, Effect::Refused(_) | Effect::Unknown(_)),
-        "a failed verification is not ownership evidence"
-    );
+    assert!(matches!(outcome, Effect::Deferred(p) if p.code == code::INVALID_STATE));
     std::fs::write(&link, original).unwrap();
     assert!(matches!(f.read().unwrap(), LaunchRead::Session(_)));
 }
@@ -338,4 +335,18 @@ fn native_provider_without_an_account_id_cannot_bind_as_another_profile() {
         };
         assert_eq!(session.account, f.p.account);
     }
+}
+
+#[test]
+fn native_created_worktree_with_unavailable_ownership_defers_only_its_read() {
+    let mut f = Records::new();
+    let line = std::fs::read_to_string(Path::new(&f.p.placement.destination).join(".git")).unwrap();
+    let metadata = Path::new(line.trim().strip_prefix("gitdir: ").unwrap());
+    std::fs::remove_file(metadata.join("commondir")).unwrap();
+    let output = json!({"status":"created","path":f.p.placement.destination,"branch":f.p.placement.branch,"managed_cleanup":true});
+    child::FIXTURE_EXIT
+        .with(|slot| *slot.borrow_mut() = Some(serde_json::to_vec(&output).unwrap()));
+    let outcome = f.native.worktree(&f.p, &uuid::Uuid::new_v4().to_string());
+    assert!(matches!(outcome, Effect::Submitted(None)));
+    assert!(child::FIXTURE_EXIT.with(|slot| slot.borrow().is_none()));
 }

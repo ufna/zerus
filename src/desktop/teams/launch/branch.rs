@@ -17,7 +17,7 @@ impl Runtime {
             return self.reserve_branch(store, effects, team, &mut row, now);
         };
         if row.state == State::Retry {
-            if row.problem.is_some() {
+            if row.problem.is_some() && !row.retry_seen {
                 self.card(store, &mut row, now)?;
             }
             if !self.due(store, &mut row, now)? {
@@ -25,7 +25,7 @@ impl Runtime {
             }
             return self.reserve_branch(store, effects, team, &mut row, now);
         }
-        if row.retry_at > now {
+        if row.state.waits_on_backoff() && !self.due(store, &mut row, now)? {
             return Ok(false);
         }
         if row

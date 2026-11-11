@@ -18,19 +18,21 @@ impl Runtime {
         problem: Problem,
         now: i64,
     ) -> Result<()> {
-        self.admitted = None;
-        // A decided card describes the previous failed attempt. Reserve a new
-        // outbox only when the person's requested retry has actually failed.
-        if row.retry_seen {
-            row.card_id = None;
-            row.card_request = None;
-            row.card_done = false;
-            row.retry_seen = false;
-        }
-        row.problem = Some(bounded_problem(problem));
         row.state = State::Retry;
+        self.failure(store, row, problem, now, true)
+    }
+    pub(super) fn failure(
+        &mut self,
+        store: &mut Store,
+        row: &mut Row,
+        problem: Problem,
+        now: i64,
+        notify: bool,
+    ) -> Result<()> {
+        self.admitted = None;
+        let requested = std::mem::take(&mut row.retry_seen);
+        row.problem = Some(bounded_problem(problem));
         row.failures = row.failures.saturating_add(1);
-        let delay = backoff(row.failures);
         let reset = row
             .problem
             .as_ref()
@@ -39,10 +41,13 @@ impl Runtime {
             .and_then(|s| s.parse::<i64>().ok())
             .map(|s| s.saturating_mul(1000));
         row.retry_at = reset
-            .unwrap_or(now.saturating_add(delay))
+            .unwrap_or(now.saturating_add(backoff(row.failures)))
             .max(now.saturating_add(MINUTE));
         self.save(row, now)?;
-        self.card(store, row, now)
+        if notify || requested || row.failures >= 3 {
+            self.card(store, row, now)?;
+        }
+        Ok(())
     }
     pub(super) fn due(&mut self, store: &Store, row: &mut Row, now: i64) -> Result<bool> {
         if !row.retry_seen {
@@ -51,6 +56,11 @@ impl Runtime {
                     .card(&row.team, id)?
                     .is_some_and(|c| c.decision.as_deref() == Some("retry"))
                 {
+                    // The old card has a durable person decision. Clear its
+                    // outbox once, before any retryable state's next check.
+                    row.card_id = None;
+                    row.card_request = None;
+                    row.card_done = false;
                     row.retry_seen = true;
                     row.retry_at = now;
                     self.save(row, now)?;
@@ -113,14 +123,7 @@ impl Runtime {
         ) {
             return Ok(());
         }
-        row.failures = row.failures.saturating_add(1);
-        row.retry_at = now.saturating_add(backoff(row.failures));
-        row.problem = Some(bounded_problem(error));
-        self.save(&mut row, now)?;
-        if row.failures >= 3 {
-            self.card(store, &mut row, now)?;
-        }
-        Ok(())
+        self.failure(store, &mut row, error, now, false)
     }
     pub(super) fn note_removed(&mut self, team: &Team, member: &Member, now: i64) -> Result<()> {
         if let Some(mut row) = self.ledger().get(&team.id, &member.id)? {

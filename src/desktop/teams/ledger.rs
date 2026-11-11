@@ -9,8 +9,9 @@ use std::{path::Path, time::Duration};
 use zerus_team_plan::{model::Team, problem::code, Problem};
 
 pub(super) const BRANCH: &str = "@branch";
+pub(super) const SCHEMA: u32 = 4;
 pub(super) const BUDGET: &str = "@budget";
-const FILE: &str = "member-launch-v1.sqlite3";
+pub(super) const FILE: &str = "member-launch-v1.sqlite3";
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -31,6 +32,21 @@ pub(super) enum State {
     ParentIntent,
     Done,
     Blocked,
+}
+
+impl State {
+    pub fn waits_on_backoff(&self) -> bool {
+        matches!(
+            self,
+            Self::Retry
+                | Self::BranchReady
+                | Self::WorktreeReady
+                | Self::WorktreeVerify
+                | Self::LaunchReady
+                | Self::Submitted
+                | Self::LaunchUnknown
+        )
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -190,7 +206,7 @@ impl Ledger {
                 tx.execute_batch(include_str!("bounds.sql"))
                     .map_err(storage)?;
             }
-            2 | 3 => (),
+            2..=4 => (),
             _ => return Err(storage("Member launch schema is newer than this Zerus")),
         }
         if version < 3 {
@@ -198,10 +214,39 @@ impl Ledger {
                 .map_err(storage)?;
             tx.execute_batch("PRAGMA user_version=3").map_err(storage)?;
         }
+        if version < 4 {
+            tx.execute_batch(include_str!("health.sql"))
+                .map_err(storage)?;
+            tx.execute_batch("PRAGMA user_version=4").map_err(storage)?;
+        }
         tx.commit().map_err(storage)?;
         db.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;")
             .map_err(storage)?;
         Ok(Self(db))
+    }
+    pub fn write_health(&mut self, code: Option<i64>, now: i64) -> Result<()> {
+        let at = code.map(|_| now.max(0));
+        if self
+            .0
+            .execute(
+                "UPDATE launch_health SET code=?1,at_ms=?2 WHERE id=1",
+                params![code, at],
+            )
+            .map_err(storage)?
+            != 1
+        {
+            return Err(storage("Launch health singleton is missing"));
+        }
+        Ok(())
+    }
+    pub fn notice_available(&self) -> Result<bool> {
+        self.0
+            .query_row(
+                "SELECT rows<16384 AND bytes<67108864 FROM notice_budget WHERE id=1",
+                [],
+                |r| r.get(0),
+            )
+            .map_err(storage)
     }
     pub fn get(&self, team: &str, member: &str) -> Result<Option<Row>> {
         let data: Option<String> = self
@@ -367,11 +412,10 @@ fn table(member: &str) -> &'static str {
     }
 }
 fn ledger_error(error: rusqlite::Error) -> Problem {
-    if matches!(&error,rusqlite::Error::SqliteFailure(_,Some(message)) if message == "member launch budget exceeded")
-    {
-        Problem::new(code::OVER_CAP,"Team member creation is temporarily at capacity. Zerus will collect completed launch records from stopped or archived teams before trying again.").with_refs(["member_launch_ledger"])
-    } else {
-        storage(error)
+    match &error {
+        rusqlite::Error::SqliteFailure(_,Some(message)) if message == "member launch budget exceeded" => Problem::new(code::OVER_CAP,"Team member creation is temporarily at capacity. Zerus will collect completed launch records from stopped or archived teams before trying again.").with_refs(["member_launch_ledger"]),
+        rusqlite::Error::SqliteFailure(_,Some(message)) if message == "launch notification budget exceeded" => Problem::new(code::OVER_CAP,"Team launch notifications are at capacity.").with_refs(["launch_notification_outbox"]),
+        _=>storage(error),
     }
 }
 pub(super) fn is_budget(problem: &Problem) -> bool {
@@ -380,6 +424,13 @@ pub(super) fn is_budget(problem: &Problem) -> bool {
             .refs
             .first()
             .is_some_and(|s| s == "member_launch_ledger")
+}
+pub(super) fn is_notice_budget(problem: &Problem) -> bool {
+    problem.code == code::OVER_CAP
+        && problem
+            .refs
+            .first()
+            .is_some_and(|s| s == "launch_notification_outbox")
 }
 fn encoded(row: &Row) -> Result<String> {
     let data = serde_json::to_string(row).map_err(storage)?;
@@ -437,6 +488,67 @@ mod tests {
         assert_eq!(l.get(TEAM, "lead").unwrap().unwrap(), row);
     }
     #[test]
+    fn health_is_a_fixed_singleton_even_when_both_outboxes_are_full() {
+        let h = Harness::new();
+        let mut ledger = Ledger::open(h.temp.path()).unwrap();
+        ledger.0.execute_batch("UPDATE launch_budget SET rows=16384 WHERE id=1; UPDATE notice_budget SET rows=16384 WHERE id=1;").unwrap();
+        ledger.write_health(Some(1), 7).unwrap();
+        let health = crate::desktop::teams::health(h.temp.path()).unwrap();
+        assert_eq!(health.code, "launch_notification_overflow");
+        assert_eq!(health.at_ms, 7);
+        assert!(ledger
+            .0
+            .execute("INSERT INTO launch_health VALUES(2,1,8)", [])
+            .is_err());
+        assert!(ledger.0.execute("DELETE FROM launch_health", []).is_err());
+        assert!(ledger
+            .0
+            .execute("UPDATE launch_health SET code=3", [])
+            .is_err());
+        assert!(ledger
+            .0
+            .execute("UPDATE launch_health SET code='unbounded text'", [])
+            .is_err());
+        for at in 8..100 {
+            ledger.write_health(Some(2), at).unwrap();
+        }
+        let count: u32 = ledger
+            .0
+            .query_row("SELECT COUNT(*) FROM launch_health", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 1);
+        assert_eq!(
+            crate::desktop::teams::health(h.temp.path()).unwrap().at_ms,
+            99
+        );
+        ledger.write_health(None, 0).unwrap();
+        assert_eq!(crate::desktop::teams::health(h.temp.path()), None);
+    }
+    #[test]
+    fn health_read_is_lazy_and_v3_migration_preserves_pending_work() {
+        let h = Harness::new();
+        assert_eq!(crate::desktop::teams::health(h.temp.path()), None);
+        assert!(!h.temp.path().join("teams").join(FILE).exists());
+        let t = h.store.team(TEAM).unwrap().unwrap();
+        let mut ledger = Ledger::open(h.temp.path()).unwrap();
+        let row = Row::new(&t, "lead", "epoch", State::WorktreeVerify);
+        ledger.insert(&row, 1).unwrap();
+        ledger
+            .0
+            .execute_batch("DROP TABLE launch_health; PRAGMA user_version=3;")
+            .unwrap();
+        assert_eq!(crate::desktop::teams::health(h.temp.path()), None);
+        let version: u32 = ledger
+            .0
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(version, 3, "the health read must not migrate or write");
+        drop(ledger);
+        let ledger = Ledger::open(h.temp.path()).unwrap();
+        assert_eq!(ledger.get(TEAM, "lead").unwrap(), Some(row));
+        assert_eq!(crate::desktop::teams::health(h.temp.path()), None);
+    }
+    #[test]
     fn a_v2_ledger_adds_the_notification_outbox_without_changing_originals() {
         let h = Harness::new();
         let t = h.store.team(TEAM).unwrap().unwrap();
@@ -446,7 +558,7 @@ mod tests {
         ledger
             .0
             .execute_batch(
-                "DROP TABLE budget_alerts; DROP TABLE notice_budget; PRAGMA user_version=2;",
+                "DROP TABLE budget_alerts; DROP TABLE notice_budget; DROP TABLE launch_health; PRAGMA user_version=2;",
             )
             .unwrap();
         drop(ledger);
@@ -459,7 +571,7 @@ mod tests {
             .0
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(version, 3);
+        assert_eq!(version, SCHEMA);
     }
     #[test]
     fn budget_notifications_have_a_separate_bounded_outbox() {
