@@ -28,7 +28,7 @@ pub(crate) fn dispatch(config: &Config, args: &[String]) -> Result<i32> {
             println!("{out}");
             Ok(0)
         }
-        Err(error) if error.message.starts_with(UNCONFIRMED_WRITE) => Err(error),
+        Err(error) if error.code != RULE && error.code != CUTTING_OVER => Err(error),
         Err(error) => {
             println!(
                 "{}",
@@ -40,23 +40,23 @@ pub(crate) fn dispatch(config: &Config, args: &[String]) -> Result<i32> {
 }
 pub(crate) fn execute(config: &Config, args: &[String]) -> Result<Value> {
     if !crate::teams::enabled(&config.state) {
-        return Err(fail("teams_inactive: Agent Teams preview is off."));
+        return Err(rule("teams_inactive: Agent Teams preview is off."));
     }
     arguments(args, false, false)?;
-    let body: Input = serde_json::from_str(&stdin_text("team stage request")?).map_err(fail)?;
+    let body: Input = serde_json::from_str(&stdin_text("team stage request")?).map_err(rule)?;
     if body.schema != 1
         || body.node == 0
         || [&body.id, &body.team]
             .iter()
             .any(|s| !zerus_replica::ids::is_uuid(s))
     {
-        return Err(fail("invalid_request: Invalid team stage request."));
+        return Err(rule("invalid_request: Invalid team stage request."));
     }
     match create(config, &body) {
         Ok(task) => Ok(body.reply("created", "", Some(task))),
-        Err(error) if error.message.starts_with(UNCONFIRMED_WRITE) => Err(error),
+        Err(error) if error.code != RULE && error.code != CUTTING_OVER => Err(error),
         Err(error) => Ok(body.reply(
-            if error.message == BUSY {
+            if error.code == CUTTING_OVER {
                 "cutting_over"
             } else {
                 "refused"
@@ -74,12 +74,12 @@ fn create(config: &Config, body: &Input) -> Result<Value> {
     let team = teams
         .team(&body.team)
         .map_err(problem)?
-        .ok_or_else(|| fail("Team not found."))?;
+        .ok_or_else(|| rule("Team not found."))?;
     if team.home != here {
-        return Err(fail("Team belongs to another computer."));
+        return Err(rule("Team belongs to another computer."));
     }
     if team.status != TeamStatus::Running {
-        return Err(fail("Team is not Running."));
+        return Err(rule("Team is not Running."));
     }
     let effect = teams
         .stage_task_effect(&body.team, body.node, &body.id)
@@ -96,7 +96,7 @@ fn create(config: &Config, body: &Input) -> Result<Value> {
         )
         .map_err(fail)?;
     if effect.is_none() && !recorded {
-        return Err(fail("No recorded stage task effect for this ID."));
+        return Err(rule("No recorded stage task effect for this ID."));
     }
     if !super::super::store_dir(config, &team.project).is_dir() {
         return Err(fail("Task project is unavailable."));
@@ -105,27 +105,27 @@ fn create(config: &Config, body: &Input) -> Result<Value> {
     before_store(config);
     let tasks = super::super::store_until(config, &team.project, deadline)?;
     let mut admitted = tasks.admit_until(deadline).ok_or_else(|| fail(BUSY))?;
-    db.execute_batch("BEGIN IMMEDIATE")
-        .map_err(|_| fail(BUSY))?;
-    // The API took a single snapshot. Every operation increments this revision;
-    // keep the same authority through the task save, without a second reader or
-    // a nested transaction inside stage_task_effect.
-    let revision: u64 = db
-        .query_row(
-            "SELECT revision FROM teams WHERE id=?1",
-            [&body.team],
-            |r| r.get(0),
-        )
-        .map_err(fail)?;
-    if revision != team.revision {
-        return Err(fail(dispatch::CHANGED));
+    db.execute_batch("BEGIN IMMEDIATE").map_err(fail)?;
+    let fresh_team = teams
+        .team(&body.team)
+        .map_err(problem)?
+        .ok_or_else(|| rule("Team not found."))?;
+    if fresh_team.home != here
+        || fresh_team.project != team.project
+        || fresh_team.status != TeamStatus::Running
+    {
+        return Err(rule(dispatch::CHANGED));
     }
+    let team = fresh_team;
+    let effect = teams
+        .stage_task_effect_locked(&body.team, body.node, &body.id)
+        .map_err(problem)?;
     let lead = teams
         .member(&body.team, &team.lead)
         .map_err(problem)?
         .and_then(|m| m.session)
         .filter(|s| s.machine == here && !s.session_id.is_empty())
-        .ok_or_else(|| fail("Lead has no local session binding."))?;
+        .ok_or_else(|| rule("Lead has no local session binding."))?;
     let actor = Actor::Agent(SessionKey {
         machine: lead.machine,
         session_id: lead.session_id,
@@ -142,7 +142,7 @@ fn create(config: &Config, body: &Input) -> Result<Value> {
         let exact:bool=db.query_row("SELECT EXISTS(SELECT 1 FROM node_identity i JOIN stage_tasks s ON s.team=i.team AND s.node=i.id WHERE i.team=?1 AND i.id=?2 AND i.task_project=?3 AND i.task_uuid=?4 AND s.request_id=?4 AND s.state='created')",params![body.team,body.node,team.project,body.id],|r|r.get(0)).map_err(fail)?;
         let node = crate::teams::store::rows::node(db, &body.team, body.node).map_err(problem)?;
         if !existing || !exact || node.as_ref().is_none_or(|n| n.kind != NodeKind::Stage) {
-            return Err(fail("Stage effect is closed without this task identity."));
+            return Err(rule("Stage effect is closed without this task identity."));
         }
         let doc = admitted.load_complete(&body.id).map_err(fail)?;
         marker(&doc, &body.team, &here)?;
@@ -150,13 +150,18 @@ fn create(config: &Config, body: &Input) -> Result<Value> {
     }
     let effect = effect.expect("checked effect");
     check(&effect, body, &team, &here)?;
+    if existing {
+        let doc = admitted.load_complete(&body.id).map_err(fail)?;
+        marker(&doc, &body.team, &here)?;
+        return summary(&doc, &team.project);
+    }
     if admitted
         .project()
         .map_err(fail)?
         .cutover_hold()
         .is_some_and(|h| h.on)
     {
-        return Err(fail(BUSY));
+        return Err(cutting_over());
     }
     let text = format!(
         "{}\n\nPipeline stage for {} ({}/{}).\nRound: {}\nRole: {}",
@@ -217,7 +222,7 @@ fn check(effect: &StageTaskEffect, body: &Input, team: &Team, here: &str) -> Res
         || effect.kind != NodeKind::Stage
         || effect.target.project != team.project
     {
-        return Err(fail("Stage effect binding differs."));
+        return Err(rule("Stage effect binding differs."));
     }
     Ok(())
 }

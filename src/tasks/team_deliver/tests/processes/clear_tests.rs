@@ -46,11 +46,7 @@ fn a_released_stage_is_cleared_once_as_the_lead_without_a_store_write() {
 fn clear_refuses_task_nodes_live_stages_foreign_keys_and_rebound_nodes() {
     for change in [0, 1, 2, 3, 4, 8, 9, 10] {
         let f = match change {
-            0 => {
-                let mut f = Fixture::new();
-                f.h.cancel_fact(f.body.node);
-                f
-            }
+            0 => terminal_clear_tests::active_team_retired_task(),
             1 => {
                 let mut f = stage_tests::fixture();
                 assert_eq!(stage_tests::call(&f)["reply"]["state"], "created");

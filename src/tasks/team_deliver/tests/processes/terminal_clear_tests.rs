@@ -40,8 +40,7 @@ fn retired(stage: Stage, archived: bool) -> Fixture {
     drop(store);
     assert_eq!(f.document().stage().unwrap(), stage);
     f.h.run(&person(), ops::Operation::Stop).unwrap();
-    // These are the store's retirement facts; no task document is cancelled.
-    f.h.cancel_fact(f.body.node);
+    crate::teams::tasks::observe(&f.config.state, &f.task).unwrap();
     if archived {
         f.h.run(&person(), ops::Operation::Archive).unwrap();
     }
@@ -119,7 +118,7 @@ fn stopped_and_archived_task_keys_clear_in_every_stage_without_ending_work() {
 #[test]
 fn a_retired_task_requires_a_stopped_or_archived_team() {
     for status in ["draft", "planning", "running", "paused", "finished"] {
-        let f = retired(Stage::Todo, false);
+        let f = active_team_retired_task();
         f.h.store
             .db
             .as_ref()
@@ -146,7 +145,7 @@ fn a_retired_check_is_not_a_task_or_stage_even_on_a_stopped_team() {
         .as_ref()
         .unwrap()
         .execute(
-            "UPDATE node_archive SET data=json_set(data,'$.kind','check') WHERE team=?1 AND id=?2",
+            "UPDATE nodes SET data=json_set(data,'$.kind','check') WHERE team=?1 AND id=?2",
             params![TEAM, f.body.node],
         )
         .unwrap();
@@ -262,4 +261,17 @@ fn terminal_task_cleanup_rechecks_a_key_changed_after_its_preflight() {
     assert_eq!(f.document().revision(), revision);
     assert_eq!(f.document().view().unwrap(), before);
     assert_eq!(f.sessions(), sessions);
+}
+
+pub(super) fn active_team_retired_task() -> Fixture {
+    let f = Fixture::new();
+    assert_eq!(f.run("submitted", false)["reply"]["state"], "submitted");
+    let store = crate::tasks::store(&f.config, &f.task.project).unwrap();
+    let mut doc = store.load(&f.task.uuid).unwrap();
+    doc.record_cancel("The person cancelled the task", &Actor::Person, now())
+        .unwrap();
+    store.save(&mut doc).unwrap();
+    drop(store);
+    crate::teams::tasks::observe(&f.config.state, &f.task).unwrap();
+    f
 }

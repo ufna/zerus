@@ -17,18 +17,18 @@ impl Input {
 
 pub(crate) fn execute(config: &Config, action: &str, args: &[String]) -> Result<Value> {
     if !crate::teams::enabled(&config.state) {
-        return Err(fail("teams_inactive: Agent Teams preview is off."));
+        return Err(rule("teams_inactive: Agent Teams preview is off."));
     }
     arguments(args, true, false)?;
-    let body: Input = serde_json::from_str(&stdin_text("team service request")?).map_err(fail)?;
+    let body: Input = serde_json::from_str(&stdin_text("team service request")?).map_err(rule)?;
     if body.schema != 1 || !zerus_replica::ids::is_uuid(&body.team) || body.node == 0 {
-        return Err(fail("invalid_request: Invalid team service request."));
+        return Err(rule("invalid_request: Invalid team service request."));
     }
     match write(config, action, args, &body) {
         Ok(state) => Ok(body.reply(state, "")),
-        Err(error) if error.message.starts_with(UNCONFIRMED_WRITE) => Err(error),
+        Err(error) if error.code != RULE && error.code != CUTTING_OVER => Err(error),
         Err(error) => Ok(body.reply(
-            if error.message == BUSY {
+            if error.code == CUTTING_OVER {
                 "cutting_over"
             } else {
                 "refused"
@@ -44,7 +44,7 @@ pub(crate) fn dispatch(config: &Config, action: &str, args: &[String]) -> Result
             println!("{reply}");
             Ok(0)
         }
-        Err(error) if error.message.starts_with(UNCONFIRMED_WRITE) => Err(error),
+        Err(error) if error.code != RULE && error.code != CUTTING_OVER => Err(error),
         Err(error) => {
             println!(
                 "{}",
@@ -59,12 +59,12 @@ fn bound(store: &Store, action: &str, body: &Input, here: &str) -> Result<(Team,
     let team = store
         .team(&body.team)
         .map_err(problem)?
-        .ok_or_else(|| fail("Team not found."))?;
+        .ok_or_else(|| rule("Team not found."))?;
     if team.home != here {
-        return Err(fail("Team belongs to another computer."));
+        return Err(rule("Team belongs to another computer."));
     }
     if action != "team-clear" && team.status != TeamStatus::Running {
-        return Err(fail("Team is not Running."));
+        return Err(rule("Team is not Running."));
     }
     let db = store
         .db
@@ -72,14 +72,14 @@ fn bound(store: &Store, action: &str, body: &Input, here: &str) -> Result<(Team,
         .ok_or_else(|| fail("Team store is unavailable."))?;
     let node = crate::teams::store::rows::node(db, &body.team, body.node)
         .map_err(problem)?
-        .ok_or_else(|| fail("Node not found."))?;
+        .ok_or_else(|| rule("Node not found."))?;
     let task = if let Some(task) = node.task.clone() {
         if task.project != team.project {
-            return Err(fail("Node task belongs to another project."));
+            return Err(rule("Node task belongs to another project."));
         }
         let exact:bool=db.query_row("SELECT EXISTS(SELECT 1 FROM node_identity WHERE team=?1 AND id=?2 AND task_project=?3 AND task_uuid=?4)",params![body.team,body.node,task.project,task.uuid],|r|r.get(0)).map_err(fail)?;
         if !exact {
-            return Err(fail("Node task identity differs."));
+            return Err(rule("Node task identity differs."));
         }
         task
     } else if action == "team-clear" && node.kind == NodeKind::Stage {
@@ -87,14 +87,14 @@ fn bound(store: &Store, action: &str, body: &Input, here: &str) -> Result<(Team,
         let uuid = id
             .filter(|id| zerus_replica::ids::is_uuid(id))
             .ok_or_else(|| {
-                fail("Released stage has no recorded creation identity in this project.")
+                rule("Released stage has no recorded creation identity in this project.")
             })?;
         TaskRef {
             project: team.project.clone(),
             uuid,
         }
     } else {
-        return Err(fail("Node has no task in this project."));
+        return Err(rule("Node has no task in this project."));
     };
     Ok((team, node, task))
 }
@@ -122,18 +122,19 @@ fn authority(
         let clearable_kind = node.kind == NodeKind::Stage
             || (node.kind == NodeKind::Task
                 && matches!(team.status, TeamStatus::Stopped | TeamStatus::Archived));
-        if !clearable_kind || !retired || rebound {
-            return Err(fail(
+        let terminal = matches!(team.status, TeamStatus::Stopped | TeamStatus::Archived);
+        if !clearable_kind || (!terminal && !retired) || rebound {
+            return Err(rule(
                 "Node is not a released stage or a stopped or archived team's retired task.",
             ));
         }
     } else {
         if released {
-            return Err(fail("A released node cannot finish a task."));
+            return Err(rule("A released node cannot finish a task."));
         }
         let authorized:bool=db.query_row("SELECT EXISTS(SELECT 1 FROM decisions d JOIN (SELECT generation,integration_required,integrated FROM nodes WHERE team=?1 AND id=?2 UNION ALL SELECT generation,integration_required,integrated FROM node_archive WHERE team=?1 AND id=?2) n ON n.generation=d.generation WHERE d.team=?1 AND d.node=?2 AND d.kind='accept' AND (d.state='ready' OR (d.state='settled' AND d.stopped_ready=1)) AND (NOT n.integration_required OR ?3='stage' OR (n.integrated AND EXISTS(SELECT 1 FROM integration_facts f WHERE f.team=d.team AND f.node=d.node AND f.decision=d.seq AND f.commit_id IS NOT NULL AND f.conflicts='[]'))))",params![body.team,body.node,if node.kind==NodeKind::Stage{"stage"}else{"task"}],|r|r.get(0)).map_err(fail)?;
         if !authorized {
-            return Err(fail(
+            return Err(rule(
                 "No accepted generation with the required integration authority.",
             ));
         }
@@ -155,35 +156,36 @@ fn write(config: &Config, action: &str, args: &[String], body: &Input) -> Result
     }
     let r = super::super::reference(config, &scoped, &Actor::Person)?;
     if r.project.0 != reference.project {
-        return Err(fail("REF is not this node's task."));
+        return Err(rule("REF is not this node's task."));
     }
     if !super::super::store_dir(config, &reference.project).is_dir() {
         return if action == "team-clear" && r.task == reference.uuid {
             Ok("cleared")
         } else {
-            Err(fail("REF is not this node's task."))
+            Err(rule("REF is not this node's task."))
         };
     }
     let tasks = super::super::store_until(config, &reference.project, deadline)?;
     let mut admitted = tasks.admit_until(deadline).ok_or_else(|| fail(BUSY))?;
     let db = teams.db.as_ref().expect("bound store");
-    db.execute_batch("BEGIN IMMEDIATE")
-        .map_err(|_| fail(BUSY))?;
+    db.execute_batch("BEGIN IMMEDIATE").map_err(fail)?;
     let (team, node, fresh) = bound(&teams, action, body, &here)?;
     if fresh != reference {
-        return Err(fail(dispatch::CHANGED));
+        return Err(rule(dispatch::CHANGED));
     }
     authority(&teams, action, body, &team, &node, &reference)?;
+    #[cfg(test)]
+    locked_test_pause(config, "done");
     if action == "team-clear" && !task_present(config, &reference)? {
         return if r.task == reference.uuid {
             Ok("cleared")
         } else {
-            Err(fail("REF is not this node's task."))
+            Err(rule("REF is not this node's task."))
         };
     }
     let mut doc = admitted.load_complete(&reference.uuid).map_err(fail)?;
     if r.task != reference.uuid && r.task != doc.id() {
-        return Err(fail("REF is not this node's task."));
+        return Err(rule("REF is not this node's task."));
     }
     if action == "team-clear" && doc.team().map_err(fail)?.is_none() && !doc.team_invalid() {
         return Ok("cleared");
@@ -191,22 +193,23 @@ fn write(config: &Config, action: &str, args: &[String], body: &Input) -> Result
     marker(&doc, &body.team, &here)?;
     if action != "team-clear" {
         let current = doc.view().map_err(fail)?;
-        if current.cancelled_at.is_some() || current.execution.as_ref().is_some_and(|e| e.conflict)
-        {
-            return Err(fail("Task execution changed."));
+        if current.cancelled_at.is_some() {
+            return Err(rule(
+                "task_cancelled: The task was cancelled; the team cannot finish it.",
+            ));
+        }
+        if current.execution.as_ref().is_some_and(|e| e.conflict) {
+            return Err(rule("Task execution changed."));
         }
         let expected:Option<String>=db.query_row("SELECT request_id FROM effects WHERE team=?1 AND node=?2 AND generation=(SELECT generation FROM nodes WHERE team=?1 AND id=?2 UNION ALL SELECT generation FROM node_archive WHERE team=?1 AND id=?2 LIMIT 1) ORDER BY seq DESC LIMIT 1",params![body.team,body.node],|r|r.get(0)).optional().map_err(fail)?;
-        if expected
-            .as_ref()
-            .is_some_and(|id| current.execution_id().as_ref() != Some(id))
-        {
-            return Err(fail("Task now belongs to another attempt."));
+        if expected.is_none() || expected.as_ref() != current.execution_id().as_ref() {
+            return Err(rule("Task now belongs to another attempt."));
         }
         if current.stage == Stage::Done {
             return Ok("done");
         }
         if !matches!(current.stage, Stage::Active | Stage::Review) {
-            return Err(fail("Task is no longer active or in review."));
+            return Err(rule("Task is no longer active or in review."));
         }
     }
     if admitted
@@ -215,23 +218,29 @@ fn write(config: &Config, action: &str, args: &[String], body: &Input) -> Result
         .cutover_hold()
         .is_some_and(|h| h.on)
     {
-        return Err(fail(BUSY));
+        return Err(cutting_over());
     }
     let lead = teams
         .member(&body.team, &team.lead)
         .map_err(problem)?
         .and_then(|m| m.session)
         .filter(|s| s.machine == here && !s.session_id.is_empty())
-        .ok_or_else(|| fail("Lead has no local session binding."))?;
+        .ok_or_else(|| rule("Lead has no local session binding."))?;
     let who = Actor::Agent(SessionKey {
         machine: lead.machine,
         session_id: lead.session_id,
         session: String::new(),
     });
     if action == "team-clear" {
-        crate::teams::tasks::clear_named(&mut doc, &team.name, &who).map_err(problem)?;
+        let cause = match team.status {
+            TeamStatus::Stopped => "released because the team stopped",
+            TeamStatus::Archived => "released because the team was archived",
+            _ => "released because the stage ended",
+        };
+        crate::teams::tasks::clear_named(&mut doc, &format!("{} ({cause})", team.name), &who)
+            .map_err(problem)?;
     } else {
-        doc.finish_team_accepted(&who, now()).map_err(fail)?;
+        doc.finish_team_accepted(&who, now()).map_err(replica)?;
     }
     admitted
         .save(&mut doc)

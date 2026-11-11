@@ -97,6 +97,12 @@ fn entry() {
     };
     let config = Config::load().unwrap();
     let mode = std::env::var("HGS_TEAM_DELIVER_MODE").unwrap();
+    if let Some(phase) = mode.strip_prefix("lock-") {
+        std::env::set_var(
+            "HGS_TEST_TEAM_LOCK_AT",
+            if phase == "team-done" { "done" } else { phase },
+        );
+    }
     let result = if mode == "init" {
         crate::swarm::dispatch(&config, &["initialize".into()], false).map(|_| json!({}))
     } else {
@@ -107,7 +113,7 @@ fn entry() {
         }
         if mode == "command" {
             crate::tasks::dispatch(&config, &args, false).map(|exit| json!({"exit":exit}))
-        } else if matches!(mode.as_str(), "agent" | "holder" | "verdict") {
+        } else if matches!(mode.as_str(), "agent" | "holder" | "verdict" | "old-holder") {
             use sha2::{Digest, Sha256};
             let name = std::env::var("HGS_SESSION").unwrap();
             let path = config
@@ -130,12 +136,18 @@ fn entry() {
             stage::execute(&config, &args)
         } else if matches!(
             mode.as_str(),
-            "team-done" | "team-clear" | "crash-team-done" | "crash-team-clear"
+            "team-done" | "team-clear" | "crash-team-done" | "crash-team-clear" | "lock-team-done"
         ) {
             if mode.starts_with("crash-") {
                 std::env::set_var("HGS_TEST_TEAM_COMPLETION_AFTER_SAVE", "1");
             }
-            completion::execute(&config, mode.strip_prefix("crash-").unwrap_or(&mode), &args)
+            completion::execute(
+                &config,
+                mode.strip_prefix("crash-")
+                    .or_else(|| mode.strip_prefix("lock-"))
+                    .unwrap_or(&mode),
+                &args,
+            )
         } else {
             execute(
                 &config,
@@ -308,6 +320,10 @@ impl Fixture {
         if mode == "agent" {
             cmd.env("HGS_SESSION", &self.lead.session)
                 .env("HGS_RUN_ID", "run-lead");
+        }
+        if mode == "old-holder" {
+            cmd.env("HGS_SESSION", "codex/deliver-m1")
+                .env("HGS_RUN_ID", "run-m1");
         }
         if matches!(mode, "holder" | "verdict") {
             cmd.env("HGS_SESSION", "codex/deliver-m3")
@@ -943,3 +959,5 @@ fn service_requests_refuse_unknown_authority_fields_without_writing() {
 mod clear_tests;
 mod stage_tests;
 mod terminal_clear_tests;
+
+mod review_tests;

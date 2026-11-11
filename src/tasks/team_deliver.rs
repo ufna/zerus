@@ -1,4 +1,5 @@
 //! A stored team effect is the permit for one ordinary task attempt.
+//! A pre-reservation refusal has no record; a repeat of its still-open effect may deliver.
 use super::*;
 pub(super) mod completion;
 pub(super) mod stage;
@@ -32,7 +33,7 @@ impl Input {
             || self.member.len() > 256
             || self.member.chars().any(char::is_control)
         {
-            return Err(fail("Invalid team delivery request."));
+            return Err(rule("Invalid team delivery request."));
         }
         Ok(())
     }
@@ -45,6 +46,22 @@ impl Input {
             out["receipt"] = receipt;
         }
         out
+    }
+}
+
+const RULE: i32 = 2;
+const CUTTING_OVER: i32 = 3;
+fn rule(message: impl std::fmt::Display) -> Error {
+    Error::new(RULE, message.to_string())
+}
+fn cutting_over() -> Error {
+    Error::new(CUTTING_OVER, BUSY)
+}
+fn replica(error: zerus_replica::Error) -> Error {
+    if error.kind() == zerus_replica::ErrorKind::Refused {
+        rule(error)
+    } else {
+        fail(error)
     }
 }
 
@@ -68,9 +85,9 @@ fn scope(store: &Store, body: &Input, here: &str) -> Result<(Team, Node, TaskRef
     let team = store
         .team(&body.team)
         .map_err(problem)?
-        .ok_or_else(|| fail("Team not found."))?;
+        .ok_or_else(|| rule("Team not found."))?;
     if team.home != here {
-        return Err(fail("Team belongs to another computer."));
+        return Err(rule("Team belongs to another computer."));
     }
     let db = store.db.as_ref().ok_or_else(|| fail("No team store."))?;
     let effect: Option<(u32, String, String)> = db
@@ -82,22 +99,22 @@ fn scope(store: &Store, body: &Input, here: &str) -> Result<(Team, Node, TaskRef
         .optional()
         .map_err(fail)?;
     let (node, member, kind) =
-        effect.ok_or_else(|| fail("No recorded delivery effect for this ID."))?;
+        effect.ok_or_else(|| rule("No recorded delivery effect for this ID."))?;
     if node != body.node || member != body.member || !matches!(kind.as_str(), "handout" | "reopen")
     {
-        return Err(fail("Delivery effect binding differs."));
+        return Err(rule("Delivery effect binding differs."));
     }
     let node = crate::teams::store::rows::node(db, &body.team, body.node)
         .map_err(problem)?
-        .ok_or_else(|| fail("Node not found."))?;
+        .ok_or_else(|| rule("Node not found."))?;
     let task = node
         .task
         .clone()
-        .ok_or_else(|| fail("Node has no task document."))?;
+        .ok_or_else(|| rule("Node has no task document."))?;
     let exact:bool=db.query_row("SELECT EXISTS(SELECT 1 FROM node_identity WHERE team=?1 AND id=?2 AND task_project=?3 AND task_uuid=?4)",
         params![body.team,body.node,task.project,task.uuid],|r|r.get(0)).map_err(fail)?;
     if !exact || task.project != team.project {
-        return Err(fail("Node task identity differs."));
+        return Err(rule("Node task identity differs."));
     }
     Ok((team, node, task, kind))
 }
@@ -105,50 +122,48 @@ fn scope(store: &Store, body: &Input, here: &str) -> Result<(Team, Node, TaskRef
 fn permit(store: &Store, body: &Input, here: &str) -> Result<Permit> {
     let (team, node, task, kind) = scope(store, body, here)?;
     if team.status != TeamStatus::Running {
-        return Err(fail("Team is not Running."));
+        return Err(rule("Team is not Running."));
     }
     let db = store.db.as_ref().expect("scoped store");
-    let (generation, state): (u32, String) = db
+    let (generation, state, outcome): (u32, String, Option<String>) = db
         .query_row(
-            "SELECT generation,state FROM effects WHERE team=?1 AND request_id=?2",
+            "SELECT generation,state,outcome FROM effects WHERE team=?1 AND request_id=?2",
             params![body.team, body.id],
-            |r| Ok((r.get(0)?, r.get(1)?)),
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
         )
         .map_err(fail)?;
     if Some(generation) != store.generation(&body.team, body.node).map_err(problem)?
-        || !matches!(
-            state.as_str(),
-            "reserved" | "submitted" | "uncertain" | "cutting_over"
-        )
+        || state != "reserved"
+        || outcome.is_some()
     {
-        return Err(fail("Effect is closed or belongs to another generation."));
+        return Err(rule("Effect is closed or belongs to another generation."));
     }
     let member = store
         .member(&body.team, &body.member)
         .map_err(problem)?
-        .ok_or_else(|| fail("Member not found."))?;
+        .ok_or_else(|| rule("Member not found."))?;
     let lead = store
         .member(&body.team, &team.lead)
         .map_err(problem)?
-        .ok_or_else(|| fail("Lead not found."))?;
+        .ok_or_else(|| rule("Lead not found."))?;
     for m in [&member, &lead] {
         if m.state != MemberState::Active
             || m.session
                 .as_ref()
                 .is_none_or(|s| s.machine != here || s.session_id.is_empty())
         {
-            return Err(fail("Member or lead has no active local session binding."));
+            return Err(rule("Member or lead has no active local session binding."));
         }
     }
     if member.id == lead.id {
-        return Err(fail("Lead cannot receive a member hand-out."));
+        return Err(rule("Lead cannot receive a member hand-out."));
     }
     let owns:bool=db.query_row("SELECT EXISTS(SELECT 1 FROM live_tasks WHERE task_project=?1 AND task_uuid=?2 AND team=?3 AND node=?4)",params![task.project,task.uuid,body.team,body.node],|r|r.get(0)).map_err(fail)?;
     if !owns {
-        return Err(fail("Task is not this team's live node."));
+        return Err(rule("Task is not this team's live node."));
     }
     let reason = if kind == "reopen" {
-        db.query_row("SELECT text FROM decisions WHERE team=?1 AND node=?2 AND generation=?3 AND kind IN ('return','reassign') AND state='effect_reserved' ORDER BY seq DESC LIMIT 1",params![body.team,body.node,generation],|r|r.get::<_,String>(0)).optional().map_err(fail)?.ok_or_else(||fail("No matching reopen decision."))?
+        db.query_row("SELECT text FROM decisions WHERE team=?1 AND node=?2 AND generation=?3 AND kind IN ('return','reassign') AND state='effect_reserved' ORDER BY seq DESC LIMIT 1",params![body.team,body.node,generation],|r|r.get::<_,String>(0)).optional().map_err(fail)?.ok_or_else(||rule("No matching reopen decision."))?
     } else {
         String::new()
     };
@@ -167,7 +182,7 @@ fn session(machines: &Machines, member: &Member) -> Result<SessionKey> {
     let bound = member
         .session
         .as_ref()
-        .ok_or_else(|| fail("Session is unbound."))?;
+        .ok_or_else(|| rule("Session is unbound."))?;
     // Labels come from saved metadata only after selection by exact identity.
     let key = SessionKey {
         machine: bound.machine.clone(),
@@ -177,7 +192,21 @@ fn session(machines: &Machines, member: &Member) -> Result<SessionKey> {
     machines
         .resolve(&key)
         .filter(|s| !s.session.is_empty() && !s.session_id.is_empty())
-        .ok_or_else(|| fail("Bound session identity is unavailable."))
+        .ok_or_else(|| rule("Bound session identity is unavailable."))
+}
+
+fn project_policy(settings: &Settings, starts: usize, who: &Actor, to: &SessionKey) -> Result<()> {
+    if let Actor::Agent(own) = who {
+        if !settings.agents_other && own != to {
+            return Err(rule("project_agents_other: This project allows agents to start tasks only in their own session."));
+        }
+        if settings.agent_limit > 0 && starts as i64 >= settings.agent_limit {
+            return Err(rule(
+                "project_agent_limit: The project's hourly agent start limit is reached.",
+            ));
+        }
+    }
+    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -193,34 +222,69 @@ fn request(
 ) -> Result<(Value, SessionKey, Actor)> {
     let to = session(machines, &permit.member)?;
     let who = Actor::Agent(session(machines, &permit.lead)?);
-    let base = if permit.kind == "handout" {
-        send_check(task)?;
+    project_policy(settings, starts, &who, &to)?;
+    let view = task.view().map_err(fail)?;
+    let handover = permit.kind == "reopen" && view.session.as_ref() != Some(&to);
+    let base = if handover {
+        if view.cancelled_at.is_some()
+            || !matches!(view.stage, Stage::Active | Stage::Review | Stage::Done)
+        {
+            return Err(rule(
+                "Task no longer has a delivered execution to hand over.",
+            ));
+        }
+        attempts::render(settings, starts, task, name, &to, true, &who, &body.id)?
+    } else if permit.kind == "handout" {
+        task.check_attempt_send().map_err(replica)?;
         attempts::render(settings, starts, task, name, &to, false, &who, &body.id)?
     } else {
-        settings
-            .check_agent(&who, &to, true, starts)
-            .map_err(fail)?;
         let view = task.view().map_err(fail)?;
         if !matches!(view.stage, Stage::Review | Stage::Done) || view.session.as_ref() != Some(&to)
         {
-            return Err(fail("Reopen no longer names this task's executor."));
+            return Err(rule("Reopen no longer names this task's executor."));
         }
         let dispatch = view
             .execution_id()
-            .ok_or_else(|| fail("Task has no dispatch to reopen."))?;
+            .ok_or_else(|| rule("Task has no dispatch to reopen."))?;
         attempts::reopen_request(name, &view, &body.id, &permit.reason, &[], &to, &dispatch)?
     };
+    let earlier = view
+        .log
+        .iter()
+        .rev()
+        .find(|e| {
+            e.kind == "report"
+                && e.stale.is_none()
+                && view
+                    .session
+                    .as_ref()
+                    .is_some_and(|holder| e.actor == Actor::Agent(holder.clone()))
+                && e.reported_attempt.as_deref()
+                    == view
+                        .execution
+                        .as_ref()
+                        .and_then(|e| e.current.as_ref())
+                        .map(|a| a.id.as_str())
+        })
+        .map_or("", |entry| entry.text.as_str());
     let text = format!(
         "{}{}",
         base["text"]
             .as_str()
-            .ok_or_else(|| fail("Frozen request has no text."))?,
-        context::build(store, &permit.team, &permit.node, &permit.member).map_err(problem)?
+            .ok_or_else(|| rule("Frozen request has no text."))?,
+        context::build_delivery(
+            store,
+            &permit.team,
+            &permit.node,
+            &permit.member,
+            handover.then_some((permit.reason.as_str(), earlier))
+        )
+        .map_err(problem)?
     );
     let files = base["attachments"]
         .as_array()
-        .ok_or_else(|| fail("Frozen request has no attachments."))?;
-    let dispatch = if permit.kind == "reopen" {
+        .ok_or_else(|| rule("Frozen request has no attachments."))?;
+    let dispatch = if permit.kind == "reopen" && !handover {
         task.view()
             .map_err(fail)?
             .execution_id()
@@ -233,7 +297,7 @@ fn request(
     if frozen["expected_run_id"] != base["expected_run_id"]
         || frozen["expected_conversation_id"] != base["expected_conversation_id"]
     {
-        return Err(fail(dispatch::CHANGED));
+        return Err(rule(dispatch::CHANGED));
     }
     Ok((frozen, to, who))
 }
@@ -269,6 +333,7 @@ pub(super) fn dispatch(config: &Config, args: &[String]) -> Result<i32> {
             println!("{reply}");
             Ok(0)
         }
+        Err(error) if error.code != RULE => Err(error),
         Err(error) => {
             println!(
                 "{}",
@@ -281,13 +346,13 @@ pub(super) fn dispatch(config: &Config, args: &[String]) -> Result<i32> {
 
 fn execute(config: &Config, args: &[String], delivery: &dyn Delivery) -> Result<Value> {
     if !crate::teams::enabled(&config.state) {
-        return Err(fail("teams_inactive: Agent Teams preview is off."));
+        return Err(rule("teams_inactive: Agent Teams preview is off."));
     }
     arguments(args, true, true)?;
     let deadline = Instant::now() + attempts::BUDGET;
     let text = stdin_text("team delivery request")?;
     let body: Input = serde_json::from_str(&text).map_err(|error| {
-        fail(format!(
+        rule(format!(
             "{}: {error}",
             if error.to_string().contains("unknown field") {
                 "unknown_field"
@@ -299,30 +364,31 @@ fn execute(config: &Config, args: &[String], delivery: &dyn Delivery) -> Result<
     body.validate()?;
     match run(config, args, &body, delivery, deadline) {
         Ok(reply) => Ok(reply),
-        Err(error) => Ok(body.reply("refused", &error.message, None)),
+        Err(error) if error.code == RULE => Ok(body.reply("refused", &error.message, None)),
+        Err(error) => Err(error),
     }
 }
 
 fn arguments(args: &[String], reference: bool, recover: bool) -> Result<()> {
     let mut at = usize::from(reference);
     if reference && args.first().is_none_or(|s| s.starts_with('-')) {
-        return Err(fail("A task reference is required."));
+        return Err(rule("A task reference is required."));
     }
     let mut seen = std::collections::BTreeSet::new();
     while at < args.len() {
         let key = args[at].as_str();
         if !seen.insert(key) {
-            return Err(fail("Duplicate team service option."));
+            return Err(rule("Duplicate team service option."));
         }
         match key {
             "--json" => at += 1,
             "--recover-only" if recover => at += 1,
             "--project" if reference && at + 1 < args.len() => at += 2,
-            _ => return Err(fail("Unknown team service option.")),
+            _ => return Err(rule("Unknown team service option.")),
         }
     }
     if !seen.contains("--json") {
-        return Err(fail("Team service commands require --json."));
+        return Err(rule("Team service commands require --json."));
     }
     Ok(())
 }
@@ -342,6 +408,7 @@ fn identity(config: &Config) -> Result<String> {
     Ok(identity.node_id)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn recover(
     config: &Config,
     body: &Input,
@@ -349,24 +416,48 @@ fn recover(
     reference: &TaskRef,
     kind: &str,
     home: &str,
+    store: &Store,
 ) -> Result<Value> {
     let attempt = task
         .attempt(&body.id)
         .map_err(fail)?
         .ok_or_else(|| fail("No recorded attempt for this delivery ID."))?;
-    if attempt.origin
-        != if kind == "reopen" {
-            Origin::Reopen
-        } else {
-            Origin::Send
-        }
-        || attempt.executor.machine != home
+    let member = store
+        .member(&body.team, &body.member)
+        .map_err(problem)?
+        .and_then(|m| m.session)
+        .ok_or_else(|| rule("Member has no recorded session."))?;
+    let lead_id = store
+        .team(&body.team)
+        .map_err(problem)?
+        .ok_or_else(|| rule("Team not found."))?
+        .lead;
+    let lead = store
+        .member(&body.team, &lead_id)
+        .map_err(problem)?
+        .and_then(|m| m.session)
+        .ok_or_else(|| rule("Lead has no recorded session."))?;
+    let same = |key: &SessionKey, binding: &zerus_team_plan::model::SessionKey| {
+        key.machine == binding.machine && key.session_id == binding.session_id
+    };
+    if !same(&attempt.executor, &member)
+        || !matches!(&attempt.actor, Actor::Agent(key) if same(key, &lead))
     {
-        return Err(fail("Attempt does not belong to this team effect."));
+        return Err(rule(
+            "Attempt recipient or actor does not belong to this team effect.",
+        ));
+    }
+    if !(if kind == "reopen" {
+        matches!(attempt.origin, Origin::Reopen | Origin::Handoff)
+    } else {
+        attempt.origin == Origin::Send
+    }) || attempt.executor.machine != home
+    {
+        return Err(rule("Attempt does not belong to this team effect."));
     }
     let native = attempt
         .delivery
-        .ok_or_else(|| fail("Attempt has no native delivery binding."))?;
+        .ok_or_else(|| rule("Attempt has no native delivery binding."))?;
     let facts = task
         .attempt_facts(&body.id)
         .map_err(fail)?
@@ -412,7 +503,7 @@ fn run(
     }
     let r = super::reference(config, &scoped, &Actor::Person)?;
     if r.project.0 != reference.project {
-        return Err(fail("REF is not the stored effect's project."));
+        return Err(rule("REF is not the stored effect's project."));
     }
     if !super::store_dir(config, &reference.project).is_dir() {
         return Err(fail("Task store is unavailable."));
@@ -424,11 +515,19 @@ fn run(
         .load_complete(&reference.uuid)
         .map_err(fail)?;
     if r.task != reference.uuid && r.task != task.id() {
-        return Err(fail("REF is not the stored effect's task."));
+        return Err(rule("REF is not the stored effect's task."));
     }
     if task.attempt(&body.id).map_err(fail)?.is_some() {
         drop(tasks);
-        return recover(config, body, &task, &reference, &kind, &team.home);
+        return recover(
+            config,
+            body,
+            &task,
+            &reference,
+            &kind,
+            &team.home,
+            &teams_store,
+        );
     }
     if flag(args, "--recover-only") {
         return Ok(body.reply(
@@ -437,8 +536,6 @@ fn run(
             None,
         ));
     }
-    let permit = permit(&teams_store, body, &here)?;
-    marker(&task, &body.team, &here)?;
     let state: String = teams_store
         .db
         .as_ref()
@@ -449,6 +546,12 @@ fn run(
             |r| r.get(0),
         )
         .map_err(fail)?;
+    if !matches!(
+        state.as_str(),
+        "reserved" | "uncertain" | "submitted" | "cutting_over"
+    ) {
+        return Err(rule("Effect is closed or belongs to another generation."));
+    }
     if state != "reserved" {
         return Ok(body.reply(
             "uncertain",
@@ -456,6 +559,8 @@ fn run(
             None,
         ));
     }
+    let permit = permit(&teams_store, body, &here)?;
+    marker(&task, &body.team, &here)?;
     let machines = machines_for(config, here.clone())?;
     let settings = tasks.project().map_err(fail)?.settings();
     let (frozen, to, who) = request(
@@ -473,6 +578,7 @@ fn run(
     drop(teams_store);
     delivery.before_reserve();
     let detail = std::cell::RefCell::new(String::new());
+    let fatal = std::cell::RefCell::new(None);
     let admitted = attempts::admit(
         config,
         &reference.project,
@@ -486,6 +592,11 @@ fn run(
                 }));
             }
             let result = (|| -> Result<Store> {
+                let settings = admitted.project().map_err(fail)?.settings();
+                let starts =
+                    attempts::admitted_starts(admitted, &who, &settings, deadline).map_err(fail)?;
+                #[cfg(test)]
+                locked_test_pause(config, "count");
                 let store = Store::open(&config.state).map_err(problem)?;
                 // Hold the team's operation lock through the attempt's save.
                 store
@@ -495,9 +606,8 @@ fn run(
                     .execute_batch("BEGIN IMMEDIATE")
                     .map_err(fail)?;
                 let fresh = permit_for_reservation(&store, body, &here, &permit, &bound, task)?;
-                let settings = admitted.project().map_err(fail)?.settings();
-                let starts =
-                    attempts::admitted_starts(admitted, &who, &settings, deadline).map_err(fail)?;
+                #[cfg(test)]
+                locked_test_pause(config, "deliver");
                 let (current, current_to, current_actor) = request(
                     &settings,
                     starts,
@@ -509,7 +619,7 @@ fn run(
                     &store,
                 )?;
                 if current != frozen || current_to != to || current_actor != who {
-                    return Err(fail(dispatch::CHANGED));
+                    return Err(rule(dispatch::CHANGED));
                 }
                 reserve(task, body, &fresh, &to, &who, &frozen)?;
                 Ok(store)
@@ -526,6 +636,13 @@ fn run(
                     Ok(Ok(()))
                 }
                 Err(error) => {
+                    if error.code != RULE {
+                        *fatal.borrow_mut() = Some(error);
+                        return Ok(Err(Closed {
+                            node: None,
+                            reason: "read_failed",
+                        }));
+                    }
                     *detail.borrow_mut() = error.message;
                     Ok(Err(Closed {
                         node: None,
@@ -535,6 +652,9 @@ fn run(
             }
         },
     );
+    if let Some(error) = fatal.into_inner() {
+        return Err(error);
+    }
     match admitted {
         Ok(Admission::Reserved { .. }) => Ok(delivered(
             body,
@@ -544,7 +664,8 @@ fn run(
             let task = super::store(config, &reference.project)?
                 .load(&reference.uuid)
                 .map_err(fail)?;
-            recover(config, body, &task, &reference, &kind, &here)
+            let store = Store::open(&config.state).map_err(problem)?;
+            recover(config, body, &task, &reference, &kind, &here, &store)
         }
         Ok(Admission::Refused(closed)) => {
             let (state, error) = attempts::refusal(&closed, &detail.borrow());
@@ -559,7 +680,7 @@ fn run(
             None,
         )),
         Ok(Admission::Uncertain(error)) => Ok(body.reply("uncertain", &error, None)),
-        Err(error) => Ok(body.reply("uncertain", &error.message, None)),
+        Err(error) => Err(error),
     }
 }
 
@@ -574,14 +695,13 @@ fn permit_for_reservation(
     let fresh = permit(store, body, here)?;
     marker(task, &body.team, here)?;
     let current = task.view().map_err(fail)?;
-    if fresh.team.revision != old.team.revision
-        || fresh.task != old.task
+    if fresh.task != old.task
         || fresh.kind != old.kind
         || current.stage_at != bound.stage_at
         || current.target != bound.target
         || current.session != bound.session
     {
-        return Err(fail(dispatch::CHANGED));
+        return Err(rule(dispatch::CHANGED));
     }
     Ok(fresh)
 }
@@ -594,7 +714,7 @@ fn marker(task: &TaskDoc, team: &str, here: &str) -> Result<()> {
         .is_none_or(|key| key.team != team || key.home != here)
         || task.team_invalid()
     {
-        return Err(fail("Task no longer has this team's exact home marker."));
+        return Err(rule("Task no longer has this team's exact home marker."));
     }
     Ok(())
 }
@@ -603,14 +723,14 @@ fn marker(task: &TaskDoc, team: &str, here: &str) -> Result<()> {
 /// file or unreadable path is present or an error, never an absent task.
 fn task_present(config: &Config, reference: &TaskRef) -> Result<bool> {
     if !zerus_replica::ids::is_uuid(&reference.uuid) {
-        return Err(fail("Invalid task identity."));
+        return Err(rule("Invalid task identity."));
     }
     let directory = super::store_dir(config, &reference.project).join("tasks");
     for suffix in ["loro", "updates"] {
         match std::fs::symlink_metadata(directory.join(format!("{}.{suffix}", reference.uuid))) {
             Ok(_) => return Ok(true),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => return Err(fail(error)),
+            Err(error) => return Err(rule(error)),
         }
     }
     Ok(false)
@@ -624,6 +744,11 @@ fn reserve(
     who: &Actor,
     request: &Value,
 ) -> Result<()> {
+    if permit.kind == "reopen" && task.view().map_err(fail)?.session.as_ref() != Some(to) {
+        task.reserve_team_handover(&body.id, to, attempts::native(to, request), who, now())
+            .map_err(replica)?;
+        return Ok(());
+    }
     let origin = if permit.kind == "reopen" {
         let view = task.view().map_err(fail)?;
         let note = zerus_replica::TaskDelivery {
@@ -639,7 +764,7 @@ fn reserve(
             error: String::new(),
         };
         task.reserve_message(&body.id, &permit.reason, &[], &note, None, (who, now()))
-            .map_err(fail)?;
+            .map_err(replica)?;
         Origin::Reopen
     } else {
         Origin::Send
@@ -652,7 +777,7 @@ fn reserve(
         who,
         now(),
     )
-    .map_err(fail)?;
+    .map_err(replica)?;
     Ok(())
 }
 
@@ -666,3 +791,16 @@ fn delivered(body: &Input, result: attempts::Delivered) -> Value {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+fn locked_test_pause(config: &Config, phase: &str) {
+    if std::env::var("HGS_TEST_TEAM_LOCK_AT").as_deref() != Ok(phase) {
+        return;
+    }
+    std::fs::write(config.state.join(format!("{phase}-ready")), "ready").unwrap();
+    let until = Instant::now() + std::time::Duration::from_secs(8);
+    while !config.state.join(format!("{phase}-release")).exists() && Instant::now() < until {
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    assert!(config.state.join(format!("{phase}-release")).exists());
+}

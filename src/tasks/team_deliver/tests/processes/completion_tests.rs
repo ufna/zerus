@@ -6,6 +6,9 @@ fn call(f: &Fixture, action: &str) -> Value {
     f.finish(child, path)
 }
 pub(super) fn reported(f: &mut Fixture) {
+    reported_text(f, "Ready");
+}
+pub(super) fn reported_text(f: &mut Fixture, text: &str) {
     assert_eq!(f.run("submitted", false)["reply"]["state"], "submitted");
     f.h.run(
         &ops::tests::service(),
@@ -23,7 +26,7 @@ pub(super) fn reported(f: &mut Fixture) {
     let holder = doc.attempt(&f.body.id).unwrap().unwrap().executor;
     doc.report_attempt(
         &f.body.id,
-        "Ready",
+        text,
         zerus_replica::execution::ReportKind::Ready,
         None,
         &Actor::Agent(holder),
@@ -40,13 +43,13 @@ pub(super) fn reported(f: &mut Fixture) {
             node: f.body.node,
             generation,
             member: "m1".into(),
-            text: "Ready".into(),
+            text: text.into(),
             commit: ops::tests::COMMIT.into(),
         },
     )
     .unwrap();
 }
-fn accepted(f: &mut Fixture) {
+pub(super) fn accepted(f: &mut Fixture) {
     reported(f);
     f.h.run(&person(), ops::Operation::Accept { node: f.body.node })
         .unwrap();
@@ -200,59 +203,72 @@ fn an_accept_of_an_older_attempt_cannot_finish_a_persons_new_execution() {
         execution::{NativeRequest, Origin, Receipt, ReportKind},
         Settlement,
     };
-    let mut f = Fixture::new();
-    accepted(&mut f);
-    let store = crate::tasks::store(&f.config, &f.task.project).unwrap();
-    let mut doc = store.load(&f.task.uuid).unwrap();
-    let old = doc.attempt(&f.body.id).unwrap().unwrap();
-    let native = old.delivery.unwrap();
-    let id = uuid::Uuid::new_v4().to_string();
-    doc.set_stage(Stage::Todo, &Actor::Person, now()).unwrap();
-    doc.reserve_attempt(
-        &id,
-        Origin::Send,
-        &old.executor,
-        NativeRequest {
-            machine: native.machine.clone(),
-            name: native.name.clone(),
-            run_id: native.run_id.clone(),
-            conversation_id: native.conversation_id.clone(),
-            digest: native.digest.clone(),
-        },
-        &Actor::Person,
-        now(),
-    )
-    .unwrap();
-    doc.settle_attempt(
-        &id,
-        Settlement::Receipt(&Receipt {
-            request_id: id.clone(),
-            name: native.name,
-            run_id: native.run_id,
-            conversation_id: native.conversation_id.clone(),
-            first_message: native.conversation_id.is_empty(),
-            digest: native.digest,
-            submitted: true,
-        }),
-        &Actor::Person,
-        now(),
-    )
-    .unwrap();
-    doc.report_attempt(
-        &id,
-        "A different result",
-        ReportKind::Ready,
-        None,
-        &Actor::Agent(old.executor),
-        now(),
-    )
-    .unwrap();
-    store.save(&mut doc).unwrap();
-    let revision = doc.revision();
-    drop(store);
-    let out = call(&f, "team-done");
-    assert_eq!(out["reply"]["state"], "refused", "{out}");
-    assert_eq!(f.document().revision(), revision);
+    for missing in [false, true] {
+        let mut f = Fixture::new();
+        accepted(&mut f);
+        let store = crate::tasks::store(&f.config, &f.task.project).unwrap();
+        let mut doc = store.load(&f.task.uuid).unwrap();
+        let old = doc.attempt(&f.body.id).unwrap().unwrap();
+        let native = old.delivery.unwrap();
+        let id = uuid::Uuid::new_v4().to_string();
+        doc.set_stage(Stage::Todo, &Actor::Person, now()).unwrap();
+        doc.reserve_attempt(
+            &id,
+            Origin::Send,
+            &old.executor,
+            NativeRequest {
+                machine: native.machine.clone(),
+                name: native.name.clone(),
+                run_id: native.run_id.clone(),
+                conversation_id: native.conversation_id.clone(),
+                digest: native.digest.clone(),
+            },
+            &Actor::Person,
+            now(),
+        )
+        .unwrap();
+        doc.settle_attempt(
+            &id,
+            Settlement::Receipt(&Receipt {
+                request_id: id.clone(),
+                name: native.name,
+                run_id: native.run_id,
+                conversation_id: native.conversation_id.clone(),
+                first_message: native.conversation_id.is_empty(),
+                digest: native.digest,
+                submitted: true,
+            }),
+            &Actor::Person,
+            now(),
+        )
+        .unwrap();
+        doc.report_attempt(
+            &id,
+            "A different result",
+            ReportKind::Ready,
+            None,
+            &Actor::Agent(old.executor),
+            now(),
+        )
+        .unwrap();
+        store.save(&mut doc).unwrap();
+        let revision = doc.revision();
+        drop(store);
+        if missing {
+            f.h.store
+                .db
+                .as_ref()
+                .unwrap()
+                .execute(
+                    "DELETE FROM effects WHERE team=?1 AND node=?2",
+                    params![TEAM, f.body.node],
+                )
+                .unwrap();
+        }
+        let out = call(&f, "team-done");
+        assert_eq!(out["reply"]["state"], "refused", "{out}");
+        assert_eq!(f.document().revision(), revision);
+    }
 }
 
 #[test]

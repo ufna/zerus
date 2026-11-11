@@ -63,6 +63,19 @@ impl Store {
             (u64::from(r.node), String::new())
         }))
     }
+    /// The service command already holds BEGIN IMMEDIATE through its task save.
+    pub(crate) fn stage_task_effect_locked(
+        &self,
+        team: &str,
+        node: u32,
+        request_id: &str,
+    ) -> Result<Option<StageTaskEffect>> {
+        self.active()?;
+        self.db
+            .as_ref()
+            .map_or(Ok(None), |db| effect(db, team, node, request_id))
+    }
+
     pub fn stage_task_effect(
         &self,
         team: &str,

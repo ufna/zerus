@@ -1,10 +1,14 @@
 use super::*;
 
 pub(super) fn fixture() -> Fixture {
+    fixture_report("Ready")
+}
+
+pub(super) fn fixture_report(report: &str) -> Fixture {
     let mut f = Fixture::new();
     let machine = f.lead.machine.clone();
     f.bind("m3", &machine);
-    completion_tests::reported(&mut f);
+    completion_tests::reported_text(&mut f, report);
     let parent = f.body.node;
     let stage = f
         .h

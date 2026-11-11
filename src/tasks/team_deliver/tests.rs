@@ -105,3 +105,20 @@ fn request_rejects_unknown_fields_and_invalid_identity() {
 
 #[cfg(unix)]
 mod processes;
+
+#[test]
+fn a_member_effect_cannot_deliver_to_the_lead() {
+    let (h, mut body) = setup();
+    body.member = "lead".into();
+    h.store
+        .db
+        .as_ref()
+        .unwrap()
+        .execute(
+            "UPDATE effects SET member='lead' WHERE team=?1 AND request_id=?2",
+            rusqlite::params![TEAM, body.id],
+        )
+        .unwrap();
+    let home = h.store.team(TEAM).unwrap().unwrap().home;
+    assert!(permit(&h.store, &body, &home).is_err());
+}
