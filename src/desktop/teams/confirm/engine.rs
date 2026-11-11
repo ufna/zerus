@@ -118,6 +118,7 @@ fn deliver(p: &mut impl Ports, row: &mut Record) {
         }
         Outcome::Approved(target) => {
             row.state = "approved".into();
+            row.detail = "The exact native receipt confirmed the original request".into();
             row.result = target.map(|s| *s);
         }
         Outcome::Unknown(why) => {

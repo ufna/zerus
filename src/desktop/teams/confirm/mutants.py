@@ -16,7 +16,7 @@ import tempfile
 import time
 
 ROOT = Path(__file__).resolve().parents[4]
-OUT = ROOT / "artifacts/test-results/wp17-spawn"
+OUT = ROOT / "artifacts/test-results/wp17-outcome"
 BASE = "src/desktop/teams/confirm/"
 DELIVERY = "desktop::teams::confirm::native::original::delivery::"
 LEDGER = "desktop::teams::confirm::ledger::"
@@ -75,6 +75,7 @@ def cases():
     yield "waiting_unknown_reclaimed", BASE + "ledger.rs", LEDGER + "tests::a_recorded_nonstart", ("row.state == \"waiting\" && row.plan == *plan", "matches!(row.state.as_str(), \"waiting\" | \"unknown\") && row.plan == *plan")
     yield "waiting_quota_ignored", BASE + "ledger.rs", LEDGER + "tests::a_nonstart_reclaim", ("fresh && plan.kind == Kind::Resume && quota(tx, &plan.binding, now, &plan.key)?", "false")
     yield "waiting_opens_card", BASE + "engine.rs", "desktop::teams::confirm::engine::tests::busy_admission", ("if row.state == \"waiting\" {\n        return Ok(());", "if false {\n        return Ok(());")
+    yield "retry_outcome_detail", BASE + "engine.rs", DELIVERY + "retry::wp17_own_successful_retry_must_not_journal_a_nonstart", ('            row.detail = "The exact native receipt confirmed the original request".into();', "")
 
 
 def mutate(text, edit):
@@ -158,13 +159,14 @@ def main():
         parser.error("Unknown case")
     OUT.mkdir(parents=True, exist_ok=True)
     name = "production-mutants" + ("-" + args.case if args.case else "-spawn" if args.spawn else "") + ".log"
-    with tempfile.TemporaryDirectory(prefix="zerus-confirm-production-") as temporary, (OUT / name).open("w") as log:
+    with tempfile.TemporaryDirectory(prefix="zerus-confirm-build-", dir=ROOT / "target") as build, \
+            tempfile.TemporaryDirectory(prefix="zerus-confirm-production-") as temporary, (OUT / name).open("w") as log:
         source = Path(temporary)
         shutil.copytree(ROOT / "src", source / "src")
         for entry in ROOT.iterdir():
             if entry.name not in ["src", "target", ".git"]:
                 (source / entry.name).symlink_to(entry, target_is_directory=entry.is_dir())
-        binary = source / "full-tests"
+        binary = Path(build) / "full-tests"
         cmd = command(source, binary)
         env = dict(os.environ, CARGO_MANIFEST_DIR=str(ROOT), CARGO_PKG_VERSION="1.58.0")
         if run(cmd, log, env) or run([str(binary), "desktop::teams::", "--test-threads=8"], log, env):
