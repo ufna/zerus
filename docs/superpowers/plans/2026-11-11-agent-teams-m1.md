@@ -925,6 +925,14 @@ of that derived identity already exists), `refused` or `cutting_over`. A
 reply that does not echo its request, an unknown state, a malformed reply
 and a failed child are all treated as no answer.
 
+A fourth command of the same kind clears what a released stage leaves
+behind: `hgs task team-clear REF --json` reads `{schema, team, node}` and
+removes the team key from the task of a stage node that the store holds as
+released for that team on this home, on an exact key match. It answers
+`{schema, team, node, state, error}` with `cleared` (also when the key is
+already absent), `refused` or `cutting_over`, never touches a task node or
+a live stage, and writes nothing to the team store.
+
 **The CLI as the desktop's interface (packages 3, 5 and 12).** The client
 core reads through `hgs team` and follows the shapes package 5 pins in
 `crates/team-plan/fixtures/cli-*.json`: a page is
