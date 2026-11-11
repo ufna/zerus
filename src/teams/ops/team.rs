@@ -186,6 +186,12 @@ pub(super) fn change_settings(ctx: &mut Context<'_>) -> Result<()> {
             )
             .map_err(storage)?;
     }
+    if ctx.team.settings.delegations.merge_accepted
+        && !settings.delegations.merge_accepted
+        && settings.integration == Integration::Branch
+    {
+        delegation::revoke_merges(ctx)?;
+    }
     ctx.db
         .execute(
             "UPDATE teams SET settings=?2 WHERE id=?1",
