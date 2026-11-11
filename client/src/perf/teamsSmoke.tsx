@@ -19,14 +19,21 @@ import { MemberCard } from "../ui/teams/MemberCard";
 import { catalog, teamView, fidelityView } from "../ui/teams/fixtures";
 import type { TeamView } from "../store/teams";
 import { applySkin, skins } from "../skin/runtime";
+import { TeamsSection } from "../ui/screens/settings/Teams";
+import { teams } from "../store/teams";
 
 // Fixture-only views: no store follows, IPC or desktop application. Query:
-// ?skin=zerus-dark|zerus-light|fjord|paper&screen=team|new|states|waiting|send&narrow=1
+// ?skin=zerus-dark|zerus-light|fjord|paper&screen=team|new|states|waiting|send|settings&narrow=1
+// screen=settings&confirm=1 opens the live-team preview-off confirmation.
 // &detail=1 selects the review card; &ready=1 fills the name and checks the
 // synthetic folder. Without screen, the page shows every fixture.
 //   ./node_modules/.bin/vite --port 5181 --strictPort --host 127.0.0.1
 //   http://127.0.0.1:5181/scripts/teams-smoke.html
 const params = new URLSearchParams(location.search);
+if (params.get("screen") === "settings") {
+  void import("../ui/styles/client.css");
+  void import("../ui/styles/settings.css");
+}
 const skin = skins.find((skin) => skin.id === params.get("skin")) ?? skins[0];
 applySkin(skin);
 document.documentElement.dataset.motion = "off";
@@ -92,6 +99,7 @@ function FormPreview() {
 function App() {
   const show = (screen: string) => !params.has("screen") || params.get("screen") === screen;
   onMount(() => {
+    if (params.get("screen") === "settings" && params.has("confirm")) queueMicrotask(() => document.querySelector<HTMLButtonElement>("#set-teams-preview")?.click());
     if (params.has("stages")) queueMicrotask(() => {
       const board = document.querySelector<HTMLElement>(".team-board");
       if (board) board.scrollLeft = board.scrollWidth;
@@ -103,6 +111,14 @@ function App() {
       window.scrollTo(0, 0);
     });
   });
+  if (params.get("screen") === "settings") {
+    // One synthetic discovery page; no probe, follow or native invocation.
+    teams.apply([{ computer: "local", key: "list", kind: "list", payload: { teams: [{ id: teamView.bar.id, project: "example-project", name: "Example team", status: "running", lead: "lead", home: "/workspace/example", revision: 1 }], truncated: false, next: null } }]);
+    return <div class="smoke-board-viewport"><div class="set-page"><div class="set-shell">
+      <nav class="set-nav" aria-label="Settings sections"><h1>Settings</h1><div class="set-nav-item on"><Icon name="users" size={15} /><span>Agent Teams</span></div></nav>
+      <div class="set-scroll"><div class="set-content"><TeamsSection /></div></div>
+    </div></div></div>;
+  }
   if (params.get("screen") === "confirm") return <TeamConfirmation name="teamStopConfirm" title="Stop team?" text="Stop Orbit platform / checkout? Every unfinished task is cancelled." action="Stop team" onCancel={() => { document.body.dataset.confirmResult = "cancel"; }} onConfirm={() => { document.body.dataset.confirmResult = "confirm"; }} />;
   if (["board", "fallback"].includes(params.get("screen") ?? "")) {
     const view = params.get("screen") === "fallback" ? { ...fidelityView, members: fidelityView.members.map(({ model: _model, ...member }) => member), groups: fidelityView.groups.map((group) => ({ ...group, cards: group.cards.map(({ rounds: _rounds, kind: _kind, ...card }) => ({ ...card, stages: card.stages.map(({ kind: _stageKind, round: _round, target: _target, ...stage }) => stage) })) })) } : fidelityView;

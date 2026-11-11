@@ -67,6 +67,12 @@ it("asks before turning it off while a team is live, with Cancel as the default"
   expect(dialog.textContent).toContain("Nothing is deleted");
   const cancel = dialog.querySelector("[data-cancel]") as HTMLButtonElement;
   expect(document.activeElement).toBe(cancel);
+  expect([...dialog.querySelectorAll("button")].map((button) => button.textContent)).toEqual(["Turn off", "Cancel"]);
+  expect(cancel.classList.contains("primary")).toBe(true);
+  const enter = new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true });
+  cancel.dispatchEvent(enter);
+  expect(enter.defaultPrevented).toBe(false);
+  expect(f.preview).not.toHaveBeenCalled();
   (dialog.querySelector(".solid-danger") as HTMLButtonElement).click();
   await wait();
   expect(f.preview).toHaveBeenCalledWith(false);

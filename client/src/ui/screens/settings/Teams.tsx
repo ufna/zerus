@@ -2,6 +2,7 @@ import { Show, createSignal, onCleanup, onMount } from "solid-js";
 import { tr, trNoop } from "../../../i18n";
 import { teams } from "../../../store/teams";
 import { Group, Row, SectionHead, Switch } from "./ui";
+import { Icon } from "../../lib/icons";
 
 // Settings > Agent Teams (preview): one row. Its state comes from the
 // application's own discovery, never from a poll of its own; a change runs the
@@ -33,12 +34,12 @@ function PreviewOffDialog(props: { onCancel: () => void; onConfirm: () => void }
   return (
     <dialog ref={dialog} class="dlg" aria-labelledby="teams-off-title" aria-describedby="teams-off-text"
       onCancel={(event) => { event.preventDefault(); props.onCancel(); }}>
-      <div class="dlg-head"><h2 id="teams-off-title">{trNoop("Turn Agent Teams off?")}</h2></div>
-      <div class="dlg-body"><p id="teams-off-text">{trNoop("Teams on this computer stop being served. Nothing is deleted: their data stays until it is deleted.")}</p></div>
+      <div class="dlg-head"><Icon name="triangle-alert" size={18} class="warn" /><h2 id="teams-off-title">{tr("Turn Agent Teams off?")}</h2></div>
+      <div class="dlg-body"><p id="teams-off-text">{tr("Teams on this computer stop being served. Nothing is deleted: their data stays until it is deleted.")}</p></div>
       <div class="dlg-foot">
         <span class="spacer" />
-        <button type="button" class="btn" data-cancel autofocus onClick={props.onCancel}>{trNoop("Cancel")}</button>
-        <button type="button" class="btn solid-danger primary" onClick={props.onConfirm}>{trNoop("Turn off")}</button>
+        <button type="button" class="btn solid-danger" onClick={props.onConfirm}>{tr("Turn off")}</button>
+        <button type="button" class="btn primary" data-cancel autofocus onClick={props.onCancel}>{tr("Cancel")}</button>
       </div>
     </dialog>
   );
