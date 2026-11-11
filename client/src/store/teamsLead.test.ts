@@ -34,7 +34,7 @@ describe("the reactive lead binding", () => {
     let stop!: () => void;
     createRoot((dispose) => {
       stop = dispose;
-      createEffect(() => seen.push(store.teamOfSession({ machine: MACHINE, sessionId: "00000000-0000-4000-8000-000000000064" }).state));
+      createEffect(() => seen.push(store.teamOfSession({ machine: MACHINE, launchId: "00000000-0000-4000-8000-000000000064" }).state));
     });
     await Promise.resolve();
     expect(seen).toEqual(["unknown"]);
@@ -49,35 +49,35 @@ describe("the reactive lead binding", () => {
     const store = createTeams(transport);
     store.apply([entry("list", "list", list([{ ...summary(null), id: "00000000-0000-4000-8000-00000000aaaa" }], "c1"))]);
     // The lead is not on the first page yet: ask for the next, answer unknown.
-    expect(store.teamOfSession({ machine: MACHINE, sessionId: "00000000-0000-4000-8000-000000000064" })).toEqual({ state: "unknown" });
+    expect(store.teamOfSession({ machine: MACHINE, launchId: "00000000-0000-4000-8000-000000000064" })).toEqual({ state: "unknown" });
     expect(calls.pages).toEqual([["list", "c1"]]);
     // The same page cursor is never asked twice, and the next page finds it.
-    store.teamOfSession({ machine: MACHINE, sessionId: "00000000-0000-4000-8000-000000000064" });
+    store.teamOfSession({ machine: MACHINE, launchId: "00000000-0000-4000-8000-000000000064" });
     expect(calls.pages).toHaveLength(1);
     store.apply([entry("list", "list", list([summary({ machine: MACHINE, session_id: LEAD })], null))]);
-    expect(store.teamOfSession({ machine: MACHINE, sessionId: "00000000-0000-4000-8000-000000000064" })).toEqual({ state: "lead", team: TEAM_ID });
+    expect(store.teamOfSession({ machine: MACHINE, launchId: "00000000-0000-4000-8000-000000000064" })).toEqual({ state: "lead", team: TEAM_ID });
   });
 
   it("answers none only when the list is complete", () => {
     const { transport } = fake();
     const store = createTeams(transport);
     store.apply([entry("list", "list", list([summary(null)]))]);
-    expect(store.teamOfSession({ machine: MACHINE, sessionId: "00000000-0000-4000-8000-0000000000ff" })).toEqual({ state: "none" });
+    expect(store.teamOfSession({ machine: MACHINE, launchId: "00000000-0000-4000-8000-0000000000ff" })).toEqual({ state: "none" });
   });
 
   it("matches the machine and the session together", () => {
     const { transport } = fake();
     const store = createTeams(transport);
     store.apply([entry("list", "list", list([summary({ machine: MACHINE, session_id: LEAD })]))]);
-    expect(store.teamOfSession({ machine: MACHINE, sessionId: "00000000-0000-4000-8000-000000000064" })).toEqual({ state: "lead", team: TEAM_ID });
-    expect(store.teamOfSession({ machine: "00000000-0000-4000-8000-0000000000bb", sessionId: "00000000-0000-4000-8000-000000000064" })).toEqual({ state: "none" });
+    expect(store.teamOfSession({ machine: MACHINE, launchId: "00000000-0000-4000-8000-000000000064" })).toEqual({ state: "lead", team: TEAM_ID });
+    expect(store.teamOfSession({ machine: "00000000-0000-4000-8000-0000000000bb", launchId: "00000000-0000-4000-8000-000000000064" })).toEqual({ state: "none" });
   });
 
   it("keeps no per-session cache: a repeated lookup reads the same list", async () => {
     const { transport } = fake();
     const store = createTeams(transport);
     store.apply([entry("list", "list", list([summary({ machine: MACHINE, session_id: LEAD })]))]);
-    for (let n = 0; n < 128; n++) await store.leadTeamFor(`row-${n}`, { sessionId: "00000000-0000-4000-8000-0000000000ff" });
+    for (let n = 0; n < 128; n++) await store.leadTeamFor(`row-${n}`, { launchId: "00000000-0000-4000-8000-0000000000ff" });
     expect(store.listPages()).toHaveLength(1);
     expect(Object.keys(store.sessionTeams())).toEqual([]);
   });
@@ -153,5 +153,26 @@ describe("the failure reason for the view that asked", () => {
     await store.check(store.unresolved()[0], "team-tab");
     expect(again).toEqual(["a"]);
     expect(store.unresolved()).toEqual([]);
+  });
+});
+
+describe("the launch identity, not the row's session id", () => {
+  const launch = "00000000-0000-4000-8000-000000000064";
+  const otherSession = "00000000-0000-4000-8000-0000000000ff";
+  it("matches only the launch id and not a different session id", () => {
+    const { transport } = fake();
+    const store = createTeams(transport);
+    store.apply([entry("list", "list", list([summary({ machine: MACHINE, session_id: `launch_id:${launch}` })]))]);
+    // A row carries both ids; only the launch one is the team's binding.
+    const row = { machine: MACHINE, sessionId: otherSession, launchId: launch, runId: null };
+    expect(store.teamOfSession(row)).toEqual({ state: "lead", team: TEAM_ID });
+    expect(store.teamOfSession({ ...row, launchId: otherSession })).toEqual({ state: "none" });
+  });
+
+  it("matches nothing when the machine differs, even with the same launch", () => {
+    const { transport } = fake();
+    const store = createTeams(transport);
+    store.apply([entry("list", "list", list([summary({ machine: MACHINE, session_id: `launch_id:${launch}` })]))]);
+    expect(store.teamOfSession({ machine: "00000000-0000-4000-8000-0000000000bb", launchId: launch, runId: null })).toEqual({ state: "none" });
   });
 });

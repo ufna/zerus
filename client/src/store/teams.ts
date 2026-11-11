@@ -128,8 +128,9 @@ export function newRequestId(): string {
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-4${hex.slice(13, 16)}-8${hex.slice(17, 20)}-${hex.slice(20, 32)}`;
 }
 
-/** The session asking for its team, by this machine and its launch or run. */
-export interface SessionIdentity { machine?: string | null; sessionId?: string | null; runId?: string | null }
+/** The session asking for its team, by this machine and its launch or run.
+ * The row's `sessionId` is not this: a team binds the lead's launch id. */
+export interface SessionIdentity { machine?: string | null; launchId?: string | null; runId?: string | null }
 
 /** What the current list says about a session's team; an incomplete list says
  * `unknown`, never `none`. */
@@ -311,7 +312,7 @@ export function createTeams(transport: TeamsTransport = tauriTeams()) {
    * incomplete list. Pages are asked for one at a time up to the cap.
    */
   function teamOfSession(identity: SessionIdentity): TeamOfSession {
-    const ids = [identity.sessionId ? `launch_id:${identity.sessionId}` : "", identity.runId ? `run_id:${identity.runId}` : ""].filter(Boolean);
+    const ids = [identity.launchId ? `launch_id:${identity.launchId}` : "", identity.runId ? `run_id:${identity.runId}` : ""].filter(Boolean);
     if (!ids.length) return { state: "none" };
     const machine = identity.machine ?? "";
     const found = listPages().find((summary) => {
@@ -338,8 +339,10 @@ export function createTeams(transport: TeamsTransport = tauriTeams()) {
   function sessionTeams(): Record<string, string | null> { return {}; }
 
   /** The Team tab's compatibility seam: the lead's team, followed when found. */
-  async function leadTeamFor(_key: string, identity: { sessionId?: string | null; runId?: string | null }): Promise<string | null> {
-    const found = teamOfSession({ sessionId: identity.sessionId, runId: identity.runId });
+  async function leadTeamFor(_key: string, identity: { launchId?: string | null; sessionId?: string | null; runId?: string | null }): Promise<string | null> {
+    // The old Team tab passed its row's `sessionId`; the launch id is the team's
+    // binding, so prefer it and keep the old field as a fallback only.
+    const found = teamOfSession({ launchId: identity.launchId ?? identity.sessionId, runId: identity.runId });
     if (found.state !== "lead" || !found.team) return null;
     if (followed() !== found.team) {
       setFollowed(found.team);

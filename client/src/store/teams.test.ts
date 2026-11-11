@@ -161,15 +161,15 @@ describe("the Teams store", () => {
     const { transport, calls } = fake();
     const teams = createTeams(transport);
     teams.apply([entry("list", "list", list)]);
-    const identity = { sessionId: "00000000-0000-4000-8000-000000000064", runId: null };
+    const identity = { launchId: "00000000-0000-4000-8000-000000000064", runId: null };
     expect(teams.teamOfSession(identity)).toEqual({ state: "lead", team: TEAM_ID });
     expect(await teams.leadTeamFor("row-key", identity)).toBe(TEAM_ID);
     expect(calls.follow).toEqual([{ list: false, waiting: true, team: TEAM_ID }]);
     // Another session is not a lead, and no per-session entry is kept.
     const other = createTeams(transport);
     other.apply([entry("list", "list", list)]);
-    expect(other.teamOfSession({ sessionId: "00000000-0000-4000-8000-00000000ffff", runId: null })).toEqual({ state: "none" });
-    expect(await other.leadTeamFor("other-key", { sessionId: "00000000-0000-4000-8000-00000000ffff", runId: null })).toBeNull();
+    expect(other.teamOfSession({ launchId: "00000000-0000-4000-8000-00000000ffff", runId: null })).toEqual({ state: "none" });
+    expect(await other.leadTeamFor("other-key", { launchId: "00000000-0000-4000-8000-00000000ffff", runId: null })).toBeNull();
     expect(Object.keys(other.sessionTeams())).toEqual([]);
     expect(other.listPages()).toHaveLength(1);
   });
