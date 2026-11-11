@@ -9,6 +9,40 @@ use std::process::{Command, Stdio};
 const MAX_INPUT: u64 = 29 * 1024 * 1024;
 const MAX_RECEIPT: usize = 1024 * 1024;
 
+#[path = "caller_binding.rs"]
+mod caller_binding;
+
+/// Explicit, bounded caller admission. Existing send attribution keeps its
+/// compatibility behavior; Teams and task intake use this strict reader.
+pub(crate) fn caller_record_for(
+    name: &str,
+    run: &str,
+    session: Option<&str>,
+) -> std::result::Result<Option<Value>, &'static str> {
+    caller_binding::record(name, run, session, None)
+}
+
+pub(crate) fn caller_agent_for(
+    name: &str,
+    run: &str,
+    session: Option<&str>,
+    pid: u32,
+    birth: &str,
+) -> std::result::Result<Option<Value>, &'static str> {
+    caller_binding::record(name, run, session, Some((pid, birth)))
+}
+
+pub(crate) fn caller_machine(
+    config: &crate::config::Config,
+) -> std::result::Result<String, &'static str> {
+    caller_binding::machine(config)
+}
+
+#[cfg(test)]
+pub(crate) fn caller_binding_reads() -> usize {
+    caller_binding::reads()
+}
+
 fn machine() -> Option<String> {
     let config = crate::config::Config::load().ok()?;
     crate::swarm::local_node_id(&config).ok()

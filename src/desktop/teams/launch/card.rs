@@ -14,14 +14,23 @@ impl Runtime {
                 .as_ref()
                 .ok_or_else(|| invalid("Blocked launch has no reason"))?;
             let detail = cut(&problem.message, 2048);
-            let timing = if row.state == State::Retry {
-                " Retry checks this precondition on the next service pass, within 60 seconds."
+            let timing = if row.state.waits_on_backoff() {
+                if problem.code == code::NO_ACCOUNT_AVAILABLE && !problem.refs.is_empty() {
+                    " Automatic retry follows that account window reset. Choosing Retry checks sooner, on the next service pass (60-second safety interval)."
+                } else {
+                    " Automatic retry uses a backoff from one to fifteen minutes. Choosing Retry checks sooner, on the next service pass (60-second safety interval)."
+                }
             } else {
                 ""
             };
+            let subject = if row.member == crate::desktop::teams::ledger::BUDGET {
+                "Team member creation".into()
+            } else {
+                format!("Member {}", row.member)
+            };
             let text = format!(
-                "Member {}: {}. {} {}{}",
-                row.member,
+                "{}: {}. {} {}{}",
+                subject,
                 problem.code,
                 detail,
                 problem_refs(problem),
@@ -32,7 +41,9 @@ impl Runtime {
                 team: row.team.clone(),
                 expected_revision: team.revision,
                 operation: Operation::OpenCard {
-                    kind: if problem.code == code::DELIVERY_UNCERTAIN {
+                    kind: if row.member == crate::desktop::teams::ledger::BUDGET {
+                        "launch_capacity"
+                    } else if problem.code == code::DELIVERY_UNCERTAIN {
                         "launch_uncertain"
                     } else {
                         "launch_blocked"
@@ -62,6 +73,9 @@ impl Runtime {
 }
 
 fn problem_refs(problem: &Problem) -> String {
+    if crate::desktop::teams::ledger::is_budget(problem) {
+        return String::new();
+    }
     if problem.code == code::NO_ACCOUNT_AVAILABLE {
         if let Some((seconds, time)) = problem
             .refs

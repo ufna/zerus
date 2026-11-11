@@ -38,6 +38,10 @@ pub(crate) fn adopt_custody() -> Result<(), String> {
         "Teams custody is unavailable",
     )
 }
+#[cfg(test)]
+std::thread_local! {
+    pub(super) static FIXTURE_EXIT: std::cell::RefCell<Option<Vec<u8>>> = const { std::cell::RefCell::new(None) };
+}
 pub(super) fn run(
     config: &Config,
     args: &[String],
@@ -47,6 +51,11 @@ pub(super) fn run(
     deadline: Instant,
     stop: &AtomicBool,
 ) -> Ended {
+    #[cfg(test)]
+    if let Some(output) = FIXTURE_EXIT.with(|slot| slot.borrow_mut().take()) {
+        return Ended::Exited { code: 0, output };
+    }
+
     let Ok(program) = crate::self_exec::current() else {
         return Ended::NotStarted;
     };

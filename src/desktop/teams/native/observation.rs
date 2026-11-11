@@ -33,14 +33,24 @@ pub(super) fn common_dir(source: &Path) -> Result<PathBuf> {
     Ok(common)
 }
 pub(super) fn ownership(config: &Config, p: &Placement) -> Result<Worktree> {
-    if !Path::new(&p.destination).is_dir() {
-        return Err(uncertain("Generated worktree is missing"));
+    match std::fs::metadata(&p.destination) {
+        Ok(m) if m.is_dir() => (),
+        Ok(_) => return Err(uncertain("Generated worktree is not a directory")),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Err(uncertain("Generated worktree is missing"))
+        }
+        Err(_) => {
+            return Err(invalid(
+                "Generated worktree verification is temporarily unavailable",
+            ))
+        }
     }
     let owner = crate::state::team_worktree_ownership(
         &config.state,
         Path::new(&p.git_dir),
         Path::new(&p.destination),
     )
+    .map_err(|_| invalid("Generated worktree verification is temporarily unavailable"))?
     .ok_or_else(|| uncertain("Generated worktree ownership is unconfirmed"))?;
     if owner["branch"] != p.branch {
         return Err(uncertain("Generated worktree branch changed"));
