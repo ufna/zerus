@@ -10,6 +10,7 @@ mod integration;
 mod journal;
 mod members;
 mod queue;
+mod readiness;
 mod talk;
 mod team;
 mod types;
@@ -19,6 +20,8 @@ use super::store::{self, rows, DecisionState, Store};
 pub use apply::apply;
 pub use authority::authority;
 use common::*;
+#[allow(unused_imports)] // The teams actor consumes this read next.
+pub use readiness::{readiness, Readiness};
 use rusqlite::{params, Connection, OptionalExtension};
 use store::{decode, encode, storage};
 pub use types::*;
