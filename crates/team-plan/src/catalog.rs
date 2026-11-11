@@ -139,10 +139,14 @@ pub struct Template {
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Catalog {
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub roles: Vec<Role>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub pipelines: Vec<Pipeline>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub templates: Vec<Template>,
     /// The planning rules given to a lead.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub planning_rules: Vec<String>,
 }
 

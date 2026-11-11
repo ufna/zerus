@@ -17,8 +17,10 @@ const DIR: &str = "teams";
 /// Its presence turns the preview on for this computer.
 const PREVIEW: &str = "preview";
 
-const INACTIVE: &str =
+const INACTIVE_MESSAGE: &str =
     "Agent Teams are off on this computer. Nothing was attempted. A person turns them on with: hgs team preview on";
+/// The stable code every `hgs team` command answers while the preview is off.
+pub(crate) const INACTIVE: &str = code::TEAMS_INACTIVE;
 
 fn preview_file(state: &Path) -> PathBuf {
     state.join(DIR).join(PREVIEW)
@@ -38,7 +40,12 @@ pub(crate) fn dispatch(config: &Config, args: &[String], _dry: bool) -> Result<i
 /// An agent's shell carries both variables; a person's terminal does not.
 /// This is the interim person rule of the specification, not proof.
 fn from_session() -> bool {
-    let set = |name: &str| std::env::var_os(name).is_some_and(|value| !value.is_empty());
+    session_markers(|name| std::env::var_os(name))
+}
+
+/// True when both session variables are present and not empty.
+fn session_markers(get: impl Fn(&str) -> Option<std::ffi::OsString>) -> bool {
+    let set = |name: &str| get(name).is_some_and(|value| !value.is_empty());
     set("HGS_SESSION") && set("HGS_RUN_ID")
 }
 
@@ -60,7 +67,7 @@ fn answer(state: &Path, args: &[String], from_session: bool) -> (Value, i32) {
         );
     }
     if !enabled(state) {
-        return refusal(Problem::new(code::TEAMS_INACTIVE, INACTIVE));
+        return refusal(Problem::new(INACTIVE, INACTIVE_MESSAGE));
     }
     let command = words.first().copied().unwrap_or("");
     refusal(
@@ -148,6 +155,31 @@ mod tests {
 
     fn code_of(reply: &Value) -> &str {
         reply["error"]["code"].as_str().unwrap_or("")
+    }
+
+    #[test]
+    fn a_session_is_known_by_both_variables() {
+        let with = |pairs: &'static [(&'static str, &'static str)]| {
+            session_markers(move |name| {
+                pairs
+                    .iter()
+                    .find(|(key, _)| *key == name)
+                    .map(|(_, value)| (*value).into())
+            })
+        };
+        assert!(with(&[
+            ("HGS_SESSION", "claude/example/tag"),
+            ("HGS_RUN_ID", "run-1")
+        ]));
+        assert!(!with(&[("HGS_SESSION", "claude/example/tag")]));
+        assert!(!with(&[("HGS_RUN_ID", "run-1")]));
+        assert!(!with(&[("HGS_SESSION", ""), ("HGS_RUN_ID", "run-1")]));
+        assert!(!with(&[
+            ("HGS_SESSION", "claude/example/tag"),
+            ("HGS_RUN_ID", "")
+        ]));
+        assert!(!with(&[]));
+        assert_eq!(INACTIVE, "teams_inactive");
     }
 
     #[test]
