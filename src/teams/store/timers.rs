@@ -53,9 +53,25 @@ pub struct Bell {
     pub after: u64,
 }
 
-/// Add the timers' companion tables on open. The terminal-team index is
-/// filled from existing teams once, when it is created, in pages.
+/// Add the timers' companion tables on open. Opening an extended store takes
+/// no write lock; the terminal-team index is created once, under one, and
+/// filled from existing teams in pages.
 pub(super) fn extend(db: &Connection) -> Result<()> {
+    if !exists(db)? {
+        create(db)?;
+    }
+    db.execute_batch(include_str!("timers.sql"))
+        .map_err(storage)
+}
+fn exists(db: &Connection) -> Result<bool> {
+    db.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='key_clear_teams')",
+        [],
+        |r| r.get(0),
+    )
+    .map_err(storage)
+}
+fn create(db: &Connection) -> Result<()> {
     let own = db.is_autocommit();
     db.execute_batch(if own {
         "BEGIN IMMEDIATE;"
@@ -64,15 +80,15 @@ pub(super) fn extend(db: &Connection) -> Result<()> {
     })
     .map_err(storage)?;
     let result = (|| {
-        let fresh: bool = db.query_row("SELECT NOT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='key_clear_teams')",[],|r|r.get(0)).map_err(storage)?;
-        db.execute_batch("CREATE TABLE IF NOT EXISTS key_clear_teams (team TEXT PRIMARY KEY, pending INTEGER NOT NULL);
-            CREATE INDEX IF NOT EXISTS key_clear_pending ON key_clear_teams(team) WHERE pending=1;")
-            .map_err(storage)?;
-        if fresh {
-            backfill(db)?;
+        if exists(db)? {
+            return Ok(());
         }
-        db.execute_batch(include_str!("timers.sql"))
-            .map_err(storage)
+        db.execute_batch(
+            "CREATE TABLE key_clear_teams (team TEXT PRIMARY KEY, pending INTEGER NOT NULL);
+            CREATE INDEX key_clear_pending ON key_clear_teams(team) WHERE pending=1;",
+        )
+        .map_err(storage)?;
+        backfill(db)
     })();
     let end = match (&result, own) {
         (Ok(()), true) => "COMMIT;",

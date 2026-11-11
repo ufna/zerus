@@ -1,0 +1,120 @@
+//! The doorbell's original: `hgs send NAME --json` bound to the exact run
+//! and conversation it was reserved for. Its admission is read inside one
+//! immediate transaction on the team store, held across the spawn only.
+//! Only the CLI's own `submitted` receipt is a submission; a missing receipt
+//! after a refusing exit is certain only for agents that write receipts.
+use super::*;
+use crate::{
+    desktop::original_store::{self, Failure, Roots},
+    teams::store::timers::admit_bell,
+};
+use rusqlite::{Connection, Transaction, TransactionBehavior};
+use sha2::{Digest, Sha256};
+use std::cell::Cell;
+use zerus_client_core::desktop::deferred_send as send;
+
+const CODES: Codes = Codes {
+    unobserved: "team_doorbell_unobserved",
+    unreadable: "team_doorbell_unreadable",
+    signalled: "team_doorbell_signalled",
+    timed_out: "team_doorbell_timed_out",
+    retained: "team_doorbell_retained",
+};
+/// Agents whose `hgs send` writes `input_receipts` before the first byte.
+const RECEIPTED: [&str; 3] = ["claude", "codex", "kimi"];
+
+pub(super) fn deliver(n: &Native<'_>, store: &Store, ring: &Ring) -> Rung {
+    let Some(db) = store.db.as_ref() else {
+        return Rung::NotStarted("The team store is unavailable".into());
+    };
+    let input = serde_json::json!({"request_id":ring.id,"expected_run_id":ring.run,
+        "expected_conversation_id":ring.conversation,"text":ring.text})
+    .to_string()
+    .into_bytes();
+    let Ok(roots) = Roots::open(&n.config.state, "input_receipts") else {
+        return Rung::NotStarted("The receipt store is unavailable".into());
+    };
+    let busy = Cell::new(false);
+    let args = ["send", ring.name.as_str(), "--json"];
+    let ended = n.original(
+        &ring.id,
+        &args,
+        &input,
+        CODES,
+        Duration::from_secs(45),
+        || {
+            let tx = immediate(db)
+                .inspect_err(|e| busy.set(e.kind() == std::io::ErrorKind::WouldBlock))?;
+            admit_bell(&tx, &ring.bell)
+                .map_err(|_| std::io::Error::from(std::io::ErrorKind::PermissionDenied))?;
+            Ok(tx)
+        },
+    );
+    match ended {
+        Ended::NotStarted if busy.get() => {
+            Rung::NotStarted("The team store was busy; nothing started".into())
+        }
+        Ended::NotStarted => {
+            Rung::NotStarted("The doorbell admission refused; nothing started".into())
+        }
+        Ended::Unknown(why) => Rung::Uncertain(why.into()),
+        Ended::Exited { code, output } => receipt(&roots, ring, &input, code, &output),
+    }
+}
+fn receipt(roots: &Roots, ring: &Ring, input: &[u8], code: i32, output: &[u8]) -> Rung {
+    let digest = |bytes: &[u8]| format!("{:x}", Sha256::digest(bytes));
+    let plan = send::Plan {
+        session: ring.name.clone(),
+        request_id: ring.id.clone(),
+        run_id: ring.run.clone(),
+        conversation_id: ring.conversation.clone(),
+        message_sha256: digest(ring.text.as_bytes()),
+        input_sha256: digest(input),
+    };
+    let Ok(id) = uuid::Uuid::parse_str(&ring.id) else {
+        return Rung::Uncertain("The doorbell request ID is invalid".into());
+    };
+    let (bytes, _evidence) = original_store::read(roots, &id, send::RECEIPT_BYTES, &|| {});
+    match bytes {
+        Ok(bytes) => match send::Outcome::from_receipt(&plan, &bytes) {
+            Ok(_) => Rung::Submitted,
+            Err(why) => Rung::Uncertain(why.into()),
+        },
+        Err(Failure::Missing) if code != 0 && RECEIPTED.contains(&ring.agent.as_str()) => {
+            Rung::Refused(refusal(output))
+        }
+        Err(failure) => {
+            Rung::Uncertain(format!("The doorbell receipt is unavailable: {failure:?}"))
+        }
+    }
+}
+fn refusal(output: &[u8]) -> String {
+    let reply: serde_json::Value = serde_json::from_slice(output).unwrap_or_default();
+    let text = reply["error"]
+        .as_str()
+        .or(reply["message"].as_str())
+        .unwrap_or("");
+    let text: String = text.chars().take(512).collect();
+    if text.trim().is_empty() {
+        "The send was refused before any input".into()
+    } else {
+        text
+    }
+}
+/// A busy writer is a certain non-start, never an Unknown.
+fn immediate(db: &Connection) -> std::io::Result<Transaction<'_>> {
+    let prior: u64 = db
+        .query_row("PRAGMA busy_timeout", [], |r| r.get(0))
+        .map_err(std::io::Error::other)?;
+    db.busy_timeout(Duration::from_millis(100))
+        .map_err(std::io::Error::other)?;
+    let result = Transaction::new_unchecked(db, TransactionBehavior::Immediate);
+    db.busy_timeout(Duration::from_millis(prior))
+        .map_err(std::io::Error::other)?;
+    result.map_err(|error| {
+        let busy = matches!(&error, rusqlite::Error::SqliteFailure(e, _)
+            if matches!(e.code, rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked));
+        let kind = if busy { std::io::ErrorKind::WouldBlock } else { std::io::ErrorKind::PermissionDenied };
+        std::io::Error::new(kind, error)
+    })
+}

@@ -240,6 +240,10 @@ impl Ledger {
     pub fn checkout(&self, team: &str, member: &str, launch: &str) -> Result<Option<Checkout>> {
         checkout::lookup(&self.0, team, member, launch)
     }
+    /// The timers keep their doorbell reservations in this private file.
+    pub fn connection(&self) -> &Connection {
+        &self.0
+    }
     pub fn write_health(&mut self, code: Option<i64>, now: i64) -> Result<()> {
         let at = code.map(|_| now.max(0));
         if self
