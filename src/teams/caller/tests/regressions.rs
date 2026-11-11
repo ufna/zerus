@@ -27,6 +27,10 @@ if mode=='intermediate':
     code="import os,sys,subprocess; e=dict(os.environ); [e.pop(k,None) for k in ['HGS_SESSION','HGS_RUN_ID','HGS_SESSION_ID']]; p=subprocess.run([sys.argv[1],'--exact','teams::caller::tests::probe','--nocapture'],env=e,capture_output=True,text=True,timeout=10); print(p.stdout+p.stderr)"
     cmd=[sys.executable,'-c',code,exe]
     child=dict(os.environ)
+if mode in ['id-marked-userns','id-marked-pidns']:
+    prefix=['unshare','--user','--map-current-user']
+    if mode=='id-marked-pidns': prefix+=['--pid','--fork','--mount-proc']
+    cmd=prefix+cmd
 if mode=='setsid':
     result=subprocess.run(cmd,env=child,capture_output=True,text=True,start_new_session=True,timeout=15)
 else:
@@ -819,4 +823,34 @@ fn user_and_pid_namespace_controls_refuse_instead_of_becoming_the_person() {
         assert!(text.contains("NAMESPACE_REFUSAL_CONFIRMED"), "{text}");
         println!("NAMESPACE pid_namespace={pid_namespace} {text}");
     }
+}
+
+#[test]
+fn a_marked_command_in_a_user_only_namespace_is_its_live_agent() {
+    let tree = Tree::start("id-marked-userns", None);
+    tree.record(tree.pid, &tree.born());
+    let text = tree.answer();
+    assert!(
+        text.contains("PROBE session:launch_id:00000000-0000-4000-8000-0000000000c1"),
+        "{text}"
+    );
+    println!("MARKED_USER_NAMESPACE {text}");
+}
+
+#[test]
+fn a_marked_command_in_a_user_and_pid_namespace_uses_marked_refusal() {
+    let tree = Tree::start("id-marked-pidns", None);
+    tree.record(tree.pid, &tree.born());
+    let text = tree.answer();
+    refused(&text);
+    assert!(
+        text.contains("birth") && text.contains("agent"),
+        "marked proof must explain unreadable process identity: {text}"
+    );
+    assert!(
+        !text.contains("requires the initial Linux user namespace"),
+        "the marked path must run its own proof: {text}"
+    );
+    assert!(!text.contains("ordinary terminal"), "{text}");
+    println!("MARKED_USER_PID_NAMESPACE {text}");
 }

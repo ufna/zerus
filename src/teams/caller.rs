@@ -6,8 +6,10 @@
 //! pass through readable same-user processes to its agent is outside this
 //! rule: reparenting, credential-changing helpers and namespaces can sever
 //! that chain. Agents started without session markers are also undetectable.
-//! Parent zero and noninitial Linux user namespaces refuse; other process or
-//! credential boundaries still need the future verified Person authority.
+//! The unmarked walk refuses parent zero and noninitial Linux user namespaces.
+//! A marked sandboxed caller instead proves descent from its claimed agent;
+//! hidden or unreadable owners/births refuse through that marked proof. Other
+//! process boundaries still need the future verified Person authority.
 //! Discovery uses ancestor environments, never a saved-session inventory.
 //! The top is established from process-table owners and parentage, never a
 //! program name. A same-user parent of zero refuses. Only a verified foreign
@@ -78,6 +80,11 @@ pub(crate) fn caller(config: &Config) -> Caller {
             Err(problem) => Caller::Refused(problem),
         };
     }
+    // A user namespace can hide an ancestor from the negative Person proof.
+    // A marked caller has already returned through its positive descent proof.
+    if let Err(problem) = context::unmarked() {
+        return Caller::Refused(problem);
+    }
     match agent_above() {
         Ok(true) => Caller::Refused(Problem::new(code::NOT_ALLOWED,
             "A live agent session runs this command; person-only operations require a caller outside its process tree.")),
@@ -88,7 +95,7 @@ pub(crate) fn caller(config: &Config) -> Caller {
 
 fn not_allowed() -> Problem {
     Problem::new(code::NOT_ALLOWED,
-        "The session markers do not prove a live agent running this command. Run session commands from the agent's own shell with its original launch markers.")
+        "The session markers cannot verify the claimed agent's live process, birth and ancestry. Run session commands from the agent's own shell with its original launch markers.")
 }
 
 fn unreadable() -> Problem {
@@ -98,7 +105,7 @@ fn unreadable() -> Problem {
 
 fn marked_unreadable() -> Problem {
     Problem::new(code::INVALID_STATE,
-        "Cannot verify this session's live process, saved binding or computer identity. Run session commands from the agent's own shell after its saved session state is available.")
+        "Cannot read or verify the claimed agent's process ownership, birth or ancestry, saved binding or computer identity. Run session commands from the agent's own shell after its saved session state is available.")
 }
 
 fn binding_unreadable() -> Problem {

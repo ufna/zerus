@@ -1,4 +1,5 @@
-//! Admission of the process context before any session or person proof.
+//! Platform availability for both callers, and namespace admission only for
+//! the unmarked Person proof.
 use zerus_team_plan::problem::code;
 use zerus_team_plan::Problem;
 
@@ -11,11 +12,11 @@ pub(super) fn available() -> Result<(), Problem> {
         return Err(Problem::new(code::NOT_ALLOWED,
             "The Teams preview is not available on this platform yet: its real-process ancestry proof has not been qualified."));
     }
-    initial_user_namespace()
+    Ok(())
 }
 
 #[cfg(target_os = "linux")]
-fn initial_user_namespace() -> Result<(), Problem> {
+pub(super) fn unmarked() -> Result<(), Problem> {
     use std::os::fd::AsRawFd;
     use std::os::unix::fs::MetadataExt;
     // Linux UAPI linux/nsfs.h: USER_NS_INIT_INO. Compare the actual namespace
@@ -25,7 +26,7 @@ fn initial_user_namespace() -> Result<(), Problem> {
     const NS_GET_NSTYPE: libc::c_ulong = 0xb703;
     let refused = || {
         Problem::new(code::NOT_ALLOWED,
-        "The Teams caller proof requires the initial Linux user namespace; this process context cannot be verified.")
+        "The unmarked Teams caller proof requires the initial Linux user namespace; this process context cannot establish the person.")
     };
     let namespace = std::fs::File::open("/proc/self/ns/user").map_err(|_| refused())?;
     // SAFETY: this nsfs ioctl takes no pointer and does not mutate the process.
@@ -39,6 +40,6 @@ fn initial_user_namespace() -> Result<(), Problem> {
 }
 
 #[cfg(not(target_os = "linux"))]
-fn initial_user_namespace() -> Result<(), Problem> {
+pub(super) fn unmarked() -> Result<(), Problem> {
     Ok(())
 }
