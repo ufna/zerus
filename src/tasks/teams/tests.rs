@@ -36,6 +36,9 @@ fn cli_entry() {
         record["pid"] = json!(std::process::id());
         record["process_start"] =
             json!(crate::platform::process_start_time(std::process::id()).unwrap());
+        if std::env::var_os("HGS_TEAM_START_STALE_ANCESTOR").is_some() {
+            record["state"] = json!("archived");
+        }
         std::fs::write(path, record.to_string()).unwrap();
         let status = Command::new(std::env::current_exe().unwrap())
             .args(["--exact", "tasks::teams::tests::cli_entry", "--nocapture"])
@@ -1414,4 +1417,130 @@ fn an_unmarked_child_cannot_report_as_the_person_on_a_foreign_task_with_preview_
     assert_eq!(out["ok"], false, "{out}");
     assert_eq!(f.document(&task).revision(), before);
     assert_eq!(f.document(&task).stage().unwrap(), Stage::Active);
+}
+
+fn start_recheck_case(phase: &str) {
+    use sha2::{Digest, Sha256};
+    let mut f = Fixture::new();
+    let recipient = f.bind("m1");
+    let ancestor = f.bind("lead");
+    let task = f.add();
+    let reference = format!("example/{}", task["id"].as_str().unwrap());
+    if phase == "start_legacy" {
+        let store =
+            ProjectStore::open(&f.h.temp.path().join("replica"), "example-project").unwrap();
+        let mut project = store.project().unwrap();
+        project
+            .set_cutover_hold(true, &Actor::Person, now())
+            .unwrap();
+        store.save_project(&project).unwrap();
+    }
+    let doc = f.document(&task).view().unwrap();
+    let target =
+        f.h.store
+            .member(TEAM, "m1")
+            .unwrap()
+            .unwrap()
+            .session
+            .unwrap();
+    let id = uuid::Uuid::new_v4().to_string();
+    let prepare = json!({"schema":1,"id":id,"stage_at":doc.stage_at,"target":doc.target,"selection":{"host":"","name":recipient,"session_id":target.session_id,"run_id":"run-m1","conversation_id":""}});
+    let (action, body) = if phase == "start_read" {
+        ("start-plan", prepare)
+    } else {
+        let out = f.run(
+            &["start-plan", &reference, "--json"],
+            &prepare.to_string(),
+            None,
+        );
+        assert_eq!(out["ok"], true, "{out}");
+        ("start-deliver", out["value"]["plan"].clone())
+    };
+    let before = f.document(&task).view().unwrap().log;
+    let native = f.h.temp.path().join("start-native-canary");
+    let recipient_record =
+        f.h.temp
+            .path()
+            .join(format!("{:x}.json", Sha256::digest(recipient.as_bytes())));
+    let recipient_before = std::fs::read(&recipient_record).unwrap();
+    let pause = f.h.temp.path().join("start-recheck-pause");
+    std::fs::create_dir(&pause).unwrap();
+    let (child, reply) = f.spawn(
+        &[action, &reference, "--json"],
+        &body.to_string(),
+        Some(&ancestor),
+        &[
+            ("HGS_TEAM_UNMARKED_CHILD", "1".into()),
+            ("HGS_TEAM_START_STALE_ANCESTOR", "1".into()),
+            ("HGS_TEST_ATTEMPT_PAUSE", pause.as_os_str().to_owned()),
+            ("HGS_TEST_ATTEMPT_PAUSE_AT", phase.into()),
+            (
+                "HGS_TEST_TASK_START_DELIVERY",
+                native.as_os_str().to_owned(),
+            ),
+        ],
+    );
+    let until = std::time::Instant::now() + std::time::Duration::from_secs(6);
+    while !pause.join("ready").exists() && std::time::Instant::now() < until {
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    let ready = pause.join("ready").is_file();
+    if ready {
+        let path =
+            f.h.temp
+                .path()
+                .join(format!("{:x}.json", Sha256::digest(ancestor.as_bytes())));
+        let mut record: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(record["state"], "archived");
+        record["state"] = json!("active");
+        std::fs::write(path, record.to_string()).unwrap();
+    }
+    std::fs::write(pause.join("release"), "continue").unwrap();
+    let output = child.wait_with_output().unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(ready, "{}", String::from_utf8_lossy(&output.stdout));
+    let out: Value = serde_json::from_slice(&std::fs::read(reply).unwrap()).unwrap();
+    let error = if out["ok"] == false {
+        out["error"].as_str()
+    } else {
+        assert_eq!(out["value"]["state"], "refused", "{out}");
+        out["value"]["error"].as_str()
+    };
+    assert_eq!(error, Some("not_allowed: A live agent session runs this command; person-only operations require a caller outside its process tree."), "{out}");
+    let doc = f.document(&task);
+    assert!(
+        doc.attempt(&id).unwrap().is_none(),
+        "a late refusal wrote an attempt: {out}"
+    );
+    assert_eq!(
+        doc.view().unwrap().log,
+        before,
+        "a late refusal wrote history: {out}"
+    );
+    assert!(!native.exists(), "a late refusal reached native submission");
+    assert!(!f
+        .h
+        .temp
+        .path()
+        .join("input_receipts")
+        .join(format!("{id}.json"))
+        .exists());
+    assert_eq!(std::fs::read(recipient_record).unwrap(), recipient_before);
+}
+
+#[test]
+fn start_read_rechecks_a_caller_that_became_refused_after_entry() {
+    start_recheck_case("start_read");
+}
+#[test]
+fn start_managed_rechecks_a_caller_that_became_refused_after_entry() {
+    start_recheck_case("start_managed");
+}
+#[test]
+fn start_legacy_rechecks_a_caller_that_became_refused_after_entry() {
+    start_recheck_case("start_legacy");
 }
