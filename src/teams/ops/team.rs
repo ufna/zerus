@@ -186,10 +186,7 @@ pub(super) fn change_settings(ctx: &mut Context<'_>) -> Result<()> {
             )
             .map_err(storage)?;
     }
-    if ctx.team.settings.delegations.merge_accepted
-        && !settings.delegations.merge_accepted
-        && settings.integration == Integration::Branch
-    {
+    if settings.integration == Integration::Branch && !settings.delegations.merge_accepted {
         delegation::revoke_merges(ctx)?;
     }
     ctx.db

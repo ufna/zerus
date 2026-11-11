@@ -1,4 +1,5 @@
 use super::*;
+mod settings;
 
 fn latest(h: &Harness, node: u32) -> u64 {
     h.store
