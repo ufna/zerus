@@ -88,15 +88,21 @@ pub(super) fn bound_member(
 /// The actor as every reply shows it. A person's reply names the interim rule.
 pub(super) fn view(actor: &Actor) -> Value {
     match actor {
-        Actor::Person { person, origin } => json!({
-            "kind": "person",
-            "person": person,
-            "origin": match origin {
-                PersonOrigin::DesktopUi => "desktop_ui",
-                PersonOrigin::CliInterim => "cli_interim",
-            },
-            "interim": matches!(origin, PersonOrigin::CliInterim),
-        }),
+        Actor::Person { person, origin } => {
+            let mut view = json!({
+                "kind": "person",
+                "person": person,
+                "origin": match origin {
+                    PersonOrigin::DesktopUi => "desktop_ui",
+                    PersonOrigin::CliInterim => "cli_interim",
+                },
+                "interim": matches!(origin, PersonOrigin::CliInterim),
+            });
+            if matches!(origin, PersonOrigin::CliInterim) {
+                view["note"] = json!(crate::teams::caller::INTERIM_NOTE);
+            }
+            view
+        }
         Actor::Session {
             person,
             team,
