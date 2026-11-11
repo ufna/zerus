@@ -851,8 +851,12 @@ credentials or is started by a daemon (`sudo` or `su` to the same user,
 agent that was started without the markers in its environment. Closing
 these needs an index of sessions by process and belongs with the verified
 Person authority (`zerus-cg5h.4.11`) that replaces this rule. Two cases are
-refused instead: a process of this user whose parent is 0, and a command
-outside the initial user namespace.
+refused instead: a process of this user whose parent is 0, and any command,
+marked or not, outside the initial user namespace. The second also covers a
+marked command, because a user namespace can own a mount namespace in which
+the process table can be overmounted, and a forged table let a command pass
+as another live session. The cost is stated: a lead or a member whose shell
+runs in a sandbox with its own user namespace cannot use `hgs team`.
 
 The preview is for Linux in this milestone. Where the ancestry cannot be
 evaluated, an unmarked command is refused and the preview cannot be turned
