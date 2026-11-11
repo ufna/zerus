@@ -28,6 +28,7 @@ pub(super) struct Runtime {
     prune_after: String,
 }
 mod branch;
+mod budget;
 mod card;
 mod effects;
 mod member;
@@ -69,7 +70,12 @@ impl Runtime {
             self.admitted = None;
         }
         if let Err(error) = &result {
-            let _ = self.record_failure(store, id, error.clone(), now);
+            if super::ledger::is_budget(error) {
+                self.notify_budget(store, id, error.clone(), now)?;
+                return Ok(false);
+            } else {
+                self.record_failure(store, id, error.clone(), now)?;
+            }
         }
         result
     }
@@ -94,6 +100,9 @@ impl Runtime {
         if self.ledger.is_none() {
             self.ledger = Some(Ledger::open(&self.state)?);
         }
+        if !self.budget_due(store, &team, now)? {
+            return Ok(false);
+        }
         if team.settings.integration == Integration::Branch
             && !self.branch(store, effects, &team, now)?
         {
@@ -102,6 +111,7 @@ impl Runtime {
                 .get(&team.id, BRANCH)?
                 .is_some_and(|r| r.state == State::BranchIntent && self.owns(&r)));
         }
+        self.selected = None;
         let lead = store
             .member(id, &team.lead)?
             .ok_or_else(|| invalid("Lead member is missing"))?;
@@ -112,6 +122,7 @@ impl Runtime {
         // than a journal, session catalog or a serialized whole-team value.
         let mut cursor = None;
         for _ in 0..2 {
+            self.selected = None;
             let page = store.members(id, 200, cursor.as_ref())?;
             for member in page.rows {
                 if member.id == team.lead {
@@ -131,6 +142,35 @@ impl Runtime {
             }
         }
         Ok(false)
+    }
+    pub fn record_health(&mut self, problem: &Problem, now: i64) -> Result<()> {
+        if self.ledger.is_none() {
+            self.ledger = Some(Ledger::open(&self.state)?);
+        }
+        let code = if super::ledger::is_notice_budget(problem) {
+            1
+        } else {
+            2
+        };
+        self.ledger().write_health(Some(code), now)
+    }
+    pub fn row_failure(&self) -> bool {
+        self.selected.is_some()
+    }
+    pub fn clear_health(&mut self) -> Result<()> {
+        self.clear_health_code(super::health::WORKER_FAULT)
+    }
+    pub(super) fn clear_notification_overflow(&mut self) -> Result<()> {
+        self.clear_health_code(super::health::NOTIFICATION_OVERFLOW)
+    }
+    fn clear_health_code(&mut self, code: &str) -> Result<()> {
+        if super::health(&self.state).is_some_and(|previous| previous.code == code) {
+            if self.ledger.is_none() {
+                self.ledger = Some(Ledger::open(&self.state)?);
+            }
+            self.ledger().write_health(None, 0)?;
+        }
+        Ok(())
     }
     pub fn begin_pass(&mut self) {
         self.accounts.clear();
