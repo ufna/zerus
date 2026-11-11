@@ -16,6 +16,11 @@ impl Runtime {
             Effect::Submitted(Some(tree))
                 if !tree.path.is_empty() && !tree.ownership_nonce.is_empty() =>
             {
+                #[cfg(any(target_os = "linux", target_os = "macos"))]
+                self.ledger
+                    .as_mut()
+                    .ok_or_else(|| invalid("Launch ledger is missing"))?
+                    .record_checkout(plan, &tree)?;
                 row.worktree = Some(tree);
                 row.state = State::WorktreeDone;
             }
@@ -57,6 +62,11 @@ impl Runtime {
             .ok_or_else(|| invalid("Launch plan is missing"))?;
         match effects.verify_worktree(plan) {
             Ok(tree) if !tree.path.is_empty() && !tree.ownership_nonce.is_empty() => {
+                #[cfg(any(target_os = "linux", target_os = "macos"))]
+                self.ledger
+                    .as_mut()
+                    .ok_or_else(|| invalid("Launch ledger is missing"))?
+                    .record_checkout(plan, &tree)?;
                 row.worktree = Some(tree);
                 row.state = State::WorktreeDone;
                 row.retry_at = 0;
@@ -287,3 +297,6 @@ impl Runtime {
         Ok(true)
     }
 }
+#[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
+#[path = "checkout_tests.rs"]
+mod checkout_tests;

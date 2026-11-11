@@ -19,18 +19,29 @@ pub(super) fn called() {
         .unwrap();
     }
 }
-pub(super) fn opaque_ancestors() -> Result<Vec<ancestry::Ancestor>, Problem> {
-    ancestry::walk(
-        3,
-        |pid| {
-            Ok(match pid {
-                3 | 2 => ancestry::Inspection::Own(ancestry::Process {
-                    parent: pid - 1,
-                    birth: Some("fixture-birth".into()),
-                }),
-                _ => ancestry::Inspection::Foreign,
-            })
-        },
-        |_| Err(std::io::ErrorKind::PermissionDenied.into()),
-    )
+pub(super) fn opaque_inspect(pid: u32) -> Result<ancestry::Inspection, Problem> {
+    Ok(match pid {
+        2..=4 => ancestry::Inspection::Own(ancestry::Process {
+            parent: pid - 1,
+            birth: Some("fixture-birth".into()),
+        }),
+        _ => ancestry::Inspection::Foreign,
+    })
+}
+
+pub(super) fn opaque_environment(_: u32) -> std::io::Result<Vec<u8>> {
+    Err(super::withheld())
+}
+
+#[cfg(target_os = "linux")]
+pub(super) fn namespace_input() -> std::io::Result<(tempfile::TempDir, std::os::fd::OwnedFd)> {
+    use std::os::unix::fs::OpenOptionsExt;
+    let root = tempfile::tempdir()?;
+    let link = root.path().join("namespace");
+    std::os::unix::fs::symlink("user:[42]", &link)?;
+    let namespace = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_PATH | libc::O_NOFOLLOW)
+        .open(link)?;
+    Ok((root, namespace.into()))
 }

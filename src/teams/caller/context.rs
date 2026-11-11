@@ -19,16 +19,61 @@
 //!
 //! Any failure refuses, including `ENOSYS` from a kernel without `openat2` or
 //! `EPERM` from a sandbox; there is no fallback to the path, `/proc/1` or
-//! `uid_map`. Other platforms keep their present behaviour.
+//! `uid_map`.
+//!
+//! macOS was qualified by the real-process caller suites on a Mac. It has no
+//! user, mount or PID namespaces, so it has no admission: the walk reads the
+//! kernel's one process table through `proc_pidinfo` and `sysctl`, which no
+//! mount can replace, and the Linux forgery has no counterpart there. The walk
+//! and the record check read a process's birth through the same call,
+//! `platform::process_identity` (`PROC_PIDTBSDINFO`, start seconds and
+//! microseconds).
+//!
+//! macOS withholds the environment of a process whose code-signing status
+//! carries the `restrict` flag from a reader of the same user. On the Mac
+//! that qualified this proof the flag held for every one of 464 withheld
+//! processes and for none of 49 readable ones. The system shells `/bin/zsh`,
+//! `/bin/bash` and `/bin/sh`, `ssh` and `sshd-session` carry it; a shell
+//! installed by Homebrew does not. `KERN_PROCARGS2` still answers, but nothing
+//! follows the arguments. A process whose environment is
+//! really empty still leaves the kernel's own `key=value` strings there, so a
+//! tail with no byte other than NUL is a withheld read and never an empty
+//! environment. The parser also refuses an answer that fills its buffer,
+//! which may be cut, and an argument that begins with a marker name, which
+//! means the split between arguments and environment has shifted. A marker
+//! named twice in one environment is unreadable on every platform. The
+//! caller's own markers come from the process itself, never from this read,
+//! so a release build of `hgs` that macOS hides is still read correctly.
+//!
+//! A withheld environment is unreadable, and the rule for an unreadable
+//! ancestor applies: tolerated at the verified top, refused below it. What
+//! decides is whether a program that hides its environment stands between the
+//! command and the top, not the terminal or the connection as such. The Zerus
+//! window runs `hgs` as its own child with no shell between, and passes when
+//! launchd started it (Dock, Finder, `open`). A lead's or a member's marked
+//! command reads no ancestor's environment and passes below any shell. A
+//! person's command typed into a system shell is refused unless that shell is
+//! itself the top, as when a terminal starts it through the root-owned
+//! `login`; a shell installed outside the system, for example by Homebrew, is
+//! readable and does not refuse. The refusal names the cause and the Zerus
+//! window as the way out, and promises no terminal. The limit is at the top:
+//! an agent whose own environment is withheld and which is itself the top of
+//! the user's tree (started or adopted by launchd) is not detected, like an
+//! agent started without markers. `open`, `osascript` and `launchctl` start a
+//! process under launchd or `login`, a new top without markers, like `cron`,
+//! `at` and ssh to the same computer.
+//!
+//! A macOS sandbox (Seatbelt, the App Sandbox) cannot give a process its own
+//! process table, owner, parent or birth; it can only deny these reads, which
+//! the same rule treats as unreadable. A command adopted by launchd after its
+//! parent exited starts a tree of its own: a marked one is refused, since it
+//! no longer descends from its agent, and an unmarked one is outside this
+//! rule like any reparented command. Other platforms stay unavailable.
 use zerus_team_plan::problem::code;
 use zerus_team_plan::Problem;
 
-// Lift only after the real-process caller suite has passed on a Mac, including
-// matching walk/record births through platform::process_identity.
-const MACOS_ANCESTRY_QUALIFIED: bool = false;
-
 pub(super) fn available() -> Result<(), Problem> {
-    if !(cfg!(target_os = "linux") || cfg!(target_os = "macos") && MACOS_ANCESTRY_QUALIFIED) {
+    if !cfg!(any(target_os = "linux", target_os = "macos")) {
         return Err(Problem::new(code::NOT_ALLOWED,
             "The Teams preview is not available on this platform yet: its real-process ancestry proof has not been qualified."));
     }
@@ -62,7 +107,8 @@ const RESOLVE_NO_XDEV: u64 = 0x01;
 pub(super) fn admitted() -> std::io::Result<()> {
     #[cfg(test)]
     if super::test_sources::selected("namespace") {
-        return require_namespace_text("user:[42]");
+        let (_root, namespace) = super::test_sources::namespace_input()?;
+        return require_initial_namespace(&namespace);
     }
     let proc = open_proc_root()?;
     admit_from(&proc)
@@ -139,13 +185,8 @@ fn open_user_namespace(proc: &std::os::fd::OwnedFd) -> std::io::Result<std::os::
 #[cfg(target_os = "linux")]
 fn require_initial_namespace(namespace: &std::os::fd::OwnedFd) -> std::io::Result<()> {
     use std::os::fd::AsRawFd;
-    require_namespace_text(&link_text(namespace.as_raw_fd())?)
-}
-
-#[cfg(target_os = "linux")]
-fn require_namespace_text(text: &str) -> std::io::Result<()> {
     let expected = format!("user:[{USER_NS_INIT_INO}]");
-    if text != expected {
+    if link_text(namespace.as_raw_fd())? != expected {
         return Err(std::io::Error::other("not the initial user namespace"));
     }
     Ok(())

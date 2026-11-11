@@ -6,6 +6,7 @@ mod dispatch;
 mod fixtures;
 mod guides;
 mod harness;
+mod member_sessions;
 mod reads;
 mod verdict;
 mod writes;

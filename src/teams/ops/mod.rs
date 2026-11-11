@@ -5,6 +5,7 @@ mod apply;
 mod authority;
 mod common;
 mod decisions;
+mod delegation;
 mod handout;
 mod integration;
 mod journal;

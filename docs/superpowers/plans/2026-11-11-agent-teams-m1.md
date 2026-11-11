@@ -878,6 +878,49 @@ evaluated, an unmarked command is refused and the preview cannot be turned
 on. macOS is treated that way until the real-process suite has run on a
 Mac; Windows has no evaluation yet.
 
+The first run on a Mac (2026-11-11, macOS 27.2) found that the system
+withholds the environment of its own binaries, among them the shells and
+`ssh`, from a reader of the same user: the read ends after the arguments
+without an error. Read as an empty environment, a hidden ancestor would
+look unmarked. So on macOS an environment with nothing at all after the
+arguments is unreadable, and the existing rule applies: an unreadable
+ancestor is tolerated only at the verified top and refused below it. A
+person's command therefore passes from the Zerus window, which runs `hgs`
+with no shell between, and is refused below any program whose environment
+the system hides, with a sentence that says so. The third run measured
+which programs those are: the ones whose code signature carries the
+restrict flag (464 of 513 processes; the system's zsh, ssh and its session
+helper among them), while a shell or tmux installed by the person is
+readable. So the rule is about the program above the command, not about
+tmux or ssh as such. The marked path of a lead or a member reads no
+ancestor's environment and is not affected, and the caller's own markers
+come from the process itself, never from the system read. The review of
+the first candidate hardened the parser of the system's answer: a tail
+with no byte other than NUL is withheld, an argument that begins with a
+marker name makes the read unreadable, an answer as large as the buffer is
+unreadable, and a marker named twice is unreadable on every platform. The
+gate was lifted by the third Mac run (65 tests, nine mutants caught) and
+merged on 2026-11-12. Not yet observed on a Mac: the hardened release
+`hgs`, and whether `claude` and `codex` have readable environments; if
+they do not, a person's command below them is refused.
+
+**A caller below a resident agent host is not a person (2026-11-12, from a
+real agent).** A probe from the tool shells of real sessions showed Claude
+and Codex behaving as designed, and a DeepSeek session, which one resident
+host process serves, passing as a person once the three markers were
+removed: the host is not below any agent's process, and its shells even
+carried the markers of the session that had started the host (tracker item
+`zerus-ppd26`). The person path now refuses when an ancestor is a recorded
+live resident agent host, matched by PID and birth from the host's own
+record, never by a program's name; a recorded PID without a verifiable
+birth, an unreadable record or more records than the bound refuse as
+unverifiable. For OpenCode, whose shared service Zerus does not record,
+the PID in OpenCode's own service file is used only to add a refusal. A
+session that a resident host serves cannot be a lead or a member in this
+milestone, because its commands cannot be bound to its own session by
+ancestry: the proof says so plainly, and team creation and member launch
+refuse such an agent kind.
+
 **How the service reaches a session (packages 8, 10 and 17).** The desktop's
 deferred-send, deferred-answer and creation actors admit only the proof of a
 person's gesture. The teams actor does not enter them. Each of its effects is
@@ -930,8 +973,13 @@ behind: `hgs task team-clear REF --json` reads `{schema, team, node}` and
 removes the team key from the task of a stage node that the store holds as
 released for that team on this home, on an exact key match. It answers
 `{schema, team, node, state, error}` with `cleared` (also when the key is
-already absent), `refused` or `cutting_over`, never touches a task node or
-a live stage, and writes nothing to the team store.
+already absent), `refused` or `cutting_over`, never touches a live stage,
+and writes nothing to the team store. It clears the key of a task node only
+when the store holds that node's team as stopped or archived on this home
+(package 10 releases a stopped team's tasks this way): the task keeps its
+stage, executor and attempt and loses only the key. A task node of a team
+that is planning, running or paused is refused; there the person retargets
+the task.
 
 **The CLI as the desktop's interface (packages 3, 5 and 12).** The client
 core reads through `hgs team` and follows the shapes package 5 pins in
@@ -1095,6 +1143,170 @@ negative ancestry read is a certain non-write and a new original may
 start. An integration fact's commit is the commit of the integration
 branch that was verified to contain the work: the new merge commit, or the
 tip that already contained it; never the member's commit.
+
+**Who is a team's session (packages 5 and 14, after their review).** The
+desktop must know which sessions belong to a live team without loading
+each team: Waiting for you lists the requests of members as well as of
+leads, and a parent link proves nothing. A row of `hgs team list` for a
+team that is planning, running or paused carries, besides `lead_session`,
+an additive `member_sessions`: the bound sessions of its members as
+`{member, machine, session_id}`, at most the roster's size, absent when
+none is bound. A removed member's session is not the team's session and is
+left out, although its binding is kept. A roster over its bound, which a
+well-formed store cannot hold, answers without the field and does not
+refuse the page. The client core passes it through, and the frontend takes
+membership and the team's status from the same row.
+
+**Switching off the merge delegation takes back what has not merged
+(packages 3 and 8).** The authority to merge lives in the decision, and the
+actor checks only that the exact accept is still Ready at the moment the
+ref is updated. So the store keeps that state true: whenever a settings
+change leaves the team with a branch to integrate into and without the
+delegation, every Ready accept that no person decided or approved and that
+has no integration fact yet goes back to awaiting the owner in the same
+transaction, with its integration card. The rule is about the state a
+change leaves, not about the switch itself: an accept made while the team
+integrated nothing is Ready because it needed no merge, and a later change
+of the integration setting must not turn it into an authority to merge. An
+accept the person made, or approved on its card, stays Ready whatever the
+setting.
+The actor releases the store right after the ref update, so the switch can
+fall between a merge and its fact, as a restart can. A refusal cannot undo
+a merge: the fact of a merge for an accept that awaits the owner is
+recorded, its integration card is closed as overtaken in the same
+transaction, and the node goes on as after any merge fact; after the person
+rejected that card the fact is late provenance, as after a stop. A conflict
+wrote nothing, so a conflict fact for an accept that awaits the owner, or
+whose card the person rejected, is refused: a fact row would mark the
+accept as integrated, and the merge that follows the person's approval
+could never be recorded. A conflict fact after a stop stays late
+provenance, as before. New writes are still found only among exact Ready
+accepts. The revocation marks each accept it takes back, and a stop or a
+board change that settles the accept keeps the mark, so that the fact of a
+merge written before the revocation is still taken afterwards. The mark is
+also what tells an accept that once had the authority from one that never
+did: an accept made while the delegation was off, and never approved, takes
+no merge fact in any state. A development store written by the heads of
+this branch before the mark existed holds taken-back accepts without it;
+their late merge facts are refused like those of an accept that never had
+the authority.
+
+**What the review of the service task commands settled (package 6b).** A
+team that is stopped or archived retires its nodes by that status:
+`team-clear` asks for no archive row there, for a task node and a stage
+node alike, because a stop leaves live nodes where they are and nothing
+observes them again. Under the project lock and the team transaction a
+command compares the facts its permit rests on (the effect and its state,
+the generation, the member and its binding, the team's status), never the
+team's revision: an unrelated write must not refuse a hand-out or retire a
+stage. A reopen whose member is not the task's executor, which is what a
+reassignment is, is delivered as a hand-over through the same attempt
+writer as a first hand-out. `team-stage` answers `created` by the task's
+identity whatever its text has become. A failure that is not a rule's
+refusal fails the child and is repeated; a refusal by a project limit
+(`agents_other`, `agent_limit`) carries a stable code so that the service
+can open the card the specification asks for (tracker item
+`zerus-63rru.23`). Text that came from a member or a task enters a
+hand-out quoted, under a heading that says whose it is. A cleanup's history
+entry names its cause.
+
+**What an admission reads (package 8, after its confirmation review).**
+The admission of a hand-out asks the store the same question its intent
+asked, through the store's own predicate inside the held transaction: the
+node's hold, its readiness with its dependencies, its state, assignee and
+role, besides the team, the member, the effect and the generation. One
+predicate, two call sites; a Hold or a Route committed between the intent
+and the spawn refuses the delivery. Outside facts are read last in the
+same section when they can be read in the process: the stop flag, the
+Teams switch and the member's fleet row. The task occupancy cannot be,
+because reading it spawns children; it is read as late as possible before
+the admission and is a scheduling hint, not an authority. A held section
+is short: the spawn itself, or the ref update with its own deadline of 5
+seconds, after which the merge is unknown and settled by reading. Writers
+of the command line wait 8 seconds for the store, longer than any held
+section, and a writer that still cannot begin is told `store_busy`:
+nothing was written. The actor's own admission waits 100 milliseconds,
+and a busy store is a retry on a later pass, never a recorded refusal.
+
+**What the person confirmed is bound at the create (packages 5 and 13,
+after the desktop's review).** New team shows a template's roster,
+pipelines and delegations, and the person confirms them; a template is
+replaced by its ID, so a create that names only the ID can make a team the
+person never saw. The catalog read gives each template a digest over
+everything a create uses. `hgs team create` accepts `expected_template`,
+the digest that was shown, and refuses with `template_changed` before
+anything is written when the bundle it is about to use has another; and
+`delegations`, all five, which become the team's in place of the
+template's. The desktop always sends both, never creates unbound, and on
+`template_changed` shows the template again for a new confirmation. A
+request without the fields behaves as before, for a person at a terminal.
+
+**A doorbell points at the inbox and carries none of it (package 10).** The
+doorbell says how many items wait and names the command that reads them;
+the text of an item comes from members and is never put into a message of
+the service. It rings when the team is running, the lead's session is live
+and idle with no pending request, an open item is newer than the mark of
+the last doorbell, and the interval has passed since the last reservation.
+The reservation names the lead's run and conversation and the mark and is
+durable before the send; the send is admitted at its spawn. A refused
+doorbell may ring again after the interval; an uncertain one is never sent
+again for its mark, and a newer item rings a new one. A resumed lead gets a
+new doorbell, never a replay.
+
+**A timer fires once and only while its condition holds (package 10).**
+The store writes a timer's inbox item or owner card in one operation that
+rechecks the condition from stored facts in the same transaction, under a
+uniqueness key of the team, the timer, and the node with its generation or
+the inbox item. Times the store holds are read from it. Times only the
+service saw (a member idle, a lead not working) live in memory, so after a
+restart such a timer may be late and is never early. No timer fires while
+the team is paused or stopped, and the operation that ends a condition
+closes the timer's open card in the same transaction. An undecided report
+makes a lead inbox item after `remind_lead_minutes` and an owner card after
+`remind_person_minutes`. `answer_escalate_minutes` belongs to milestone 3.
+
+**A cancel decision is carried out by the service (packages 6b and 8).**
+The specification says a lead's Cancel moves the task to cancelled and that
+Stop cancels every unfinished task; the store records both as a pending
+decision of kind cancel, and until 2026-11-12 nothing carried it out. A
+fifth service task command does: `hgs task team-cancel REF --json` reads
+`{schema, team, node}` and answers `{schema, team, node, state, error}`
+with `cancelled`, `released`, `refused` or `cutting_over`. Its only
+authority is that stored decision for the node's current generation. It
+does what the task document can already say, because existing commands do
+the work and a cancel exists there only for work that is running: a task
+that is Active with a known delivery is cancelled by the existing writer,
+with the notice it already sends to the holder (`cancelled`, also when the
+task is already cancelled); a task with nothing running (Backlog, To do,
+In review) loses its team key and stays in its stage as an ordinary task
+(`released`); an Active task whose delivery is unknown, and a Done task,
+are refused and nothing is written. No writer is added that would mark a
+task that never ran as cancelled. The actor runs the command for each
+pending cancel decision, in a live team and after a stop, and records the
+outcome with a service-only operation, `RecordCancel {node, decision,
+state, reason}`: `cancelled` and `released` both end the node as
+cancelled in the team, exactly as the observation of a cancelled task
+does; `refused` settles the decision and, in a live team, files one lead
+inbox item. The read is `Store::pending_cancels(team, limit, after)`. It
+ends no agent.
+
+**After a stop Zerus cancels the unfinished tasks, releases them and ends
+no agent (package 10).** For each node the cancel comes first and the
+release after it is settled. The
+service clears the team key of the stopped or archived team's open tasks in
+bounded pages through `team-clear`; an answer is recorded so that the node
+is not visited again, and no answer is tried on a later pass without
+starving the rest of the page. A member launch that completes after the
+stop, the archive or the member's removal is recorded as provenance and
+gets one owner card naming the member and the session; the store never
+treats that session as a live member. The record of a clear is one
+mechanism for both of its users: the same service-only operation and table
+take the answer for a task of a stopped or archived team (package 10's
+page) and for a released stage of a live team (package 8, part C), and a
+bounded read, `Store::released_stages(team, limit, after)`, returns only
+released stage nodes whose clear has no final record, with the task to
+name: the bound task, or the stored creation request ID of a creation that
+was saved and never bound. Neither read walks settled history.
 
 **Known limit.** A stage excludes the implementer of the target's current
 round. After a reassignment an earlier implementer could hold a stage of
