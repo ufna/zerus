@@ -98,8 +98,8 @@ person using Teams. Each is pinned by a test in the package named.
    stage is not handed to it, and the task goes to the lead with the reason
    (packages 2 and 9).
 5. The integration ref moved between computing a merge and updating the ref:
-   nothing is lost and the merge is computed again; a conflicting merge writes
-   nothing (package 11).
+   nothing is lost and the merge is computed again; a conflicting merge
+   changes no ref and no reachable object (package 11).
 
 ## File structure
 
