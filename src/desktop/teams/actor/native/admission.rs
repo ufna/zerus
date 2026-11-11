@@ -55,7 +55,7 @@ impl Native {
         let mut cursor = None;
         for _ in 0..4 {
             let page = store.open_effects(&team.id, 200, cursor.as_ref())?;
-            if page.rows.iter().any(|e| {
+            if let Some(effect) = page.rows.iter().find(|e| {
                 e.request_id == id
                     && e.node == node.id
                     && e.member == member.id
@@ -63,6 +63,9 @@ impl Native {
                     && e.outcome.is_none()
                     && e.state == "reserved"
             }) {
+                if effect.kind == "handout" {
+                    store.handout_admissible(team, node.id, &member.id)?;
+                }
                 return Ok(());
             }
             cursor = page.next;

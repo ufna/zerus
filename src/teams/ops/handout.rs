@@ -20,24 +20,54 @@ pub(super) fn intent(ctx: &mut Context<'_>) -> Result<()> {
     else {
         unreachable!()
     };
-    ctx.undecided(*node)?;
-    let n = ctx.live_node(*node)?;
-    require_ready(ctx, *node)?;
+    handout_admissible(ctx.db, ctx.team, *node, member)?;
+    reserve(ctx, *node, member, effect_request_id, "handout")
+}
+/// The intent's node/member predicate, also read under the spawn admission.
+/// An existing open effect is deliberately not part of this read.
+pub(crate) fn handout_admissible(
+    db: &Connection,
+    team: &Team,
+    node: u32,
+    member: &str,
+) -> Result<()> {
+    let pending: bool = db
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM decisions WHERE team=?1 AND node=?2 AND state<>'settled')",
+            params![team.id, node],
+            |r| r.get(0),
+        )
+        .map_err(storage)?;
+    if pending {
+        return Err(invalid("The previous decision has not settled."));
+    }
+    let live: bool = db
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM nodes WHERE team=?1 AND id=?2)",
+            params![team.id, node],
+            |r| r.get(0),
+        )
+        .map_err(storage)?;
+    if !live {
+        return Err(invalid("Task has left the live plan."));
+    }
+    let n = rows::node(db, &team.id, node)?.ok_or_else(missing)?;
+    require_ready(db, team, node)?;
     if n.state != NodeState::Pending || n.hold || n.assignee.as_ref().is_some_and(|id| id != member)
     {
         return Err(invalid("Task is not ready for a hand-out."));
     }
-    eligible(ctx, &n, member)?;
-    reserve(ctx, *node, member, effect_request_id, "handout")
+    eligible(db, team, &n, member)
 }
-fn eligible(ctx: &Context<'_>, node: &Node, id: &str) -> Result<()> {
-    if ctx.team.status != TeamStatus::Running {
+fn eligible(db: &Connection, team: &Team, node: &Node, id: &str) -> Result<()> {
+    if team.status != TeamStatus::Running {
         return Err(invalid("Team is not running."));
     }
-    let m = ctx.member(id)?;
+    let m = rows::member(db, &team.id, id)?
+        .ok_or_else(|| Problem::new(code::UNKNOWN_MEMBER, "Member does not exist."))?;
     if m.state != MemberState::Active
         || m.session.is_none()
-        || m.id == ctx.team.lead
+        || m.id == team.lead
         || m.role != node.role
         || (node.kind == NodeKind::Stage && node.implementer.as_deref() == Some(id))
     {
@@ -85,7 +115,7 @@ pub(super) fn reopen_intent(ctx: &mut Context<'_>) -> Result<()> {
             "Reopen recipient differs from the decision's holder.",
         ));
     }
-    eligible(ctx, &n, member)?;
+    eligible(ctx.db, ctx.team, &n, member)?;
     let busy:bool=ctx.db.query_row(&format!("SELECT EXISTS(SELECT 1 FROM effects WHERE team=?1 AND member=?2 AND node<>?3 AND state IN {OPEN_EFFECT_STATES})"),params![ctx.team.id,member,node],|r|r.get(0)).map_err(storage)?;
     if busy {
         return Err(invalid("Reopen recipient is busy."));
@@ -263,14 +293,14 @@ pub(super) fn report(ctx: &mut Context<'_>) -> Result<()> {
     pipeline::reported(ctx, &n, body)
 }
 
-fn require_ready(ctx: &Context<'_>, node: u32) -> Result<()> {
-    let Readiness { phases, nodes } = readiness::load(ctx.db, &ctx.team.id)?;
+fn require_ready(db: &Connection, team: &Team, node: u32) -> Result<()> {
+    let Readiness { phases, nodes } = readiness::load(db, &team.id)?;
     let view = zerus_team_plan::ready::PlanView {
         phases: &phases,
         nodes: &nodes,
         members: &[],
-        lead: &ctx.team.lead,
-        integration: ctx.team.settings.integration,
+        lead: &team.lead,
+        integration: team.settings.integration,
     };
     // ready() does not choose members. The service owns the external native
     // free-member proof; eligible() and reserve() retain the local slot checks.

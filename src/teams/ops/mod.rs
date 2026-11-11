@@ -6,6 +6,7 @@ mod authority;
 mod common;
 mod decisions;
 mod handout;
+pub(crate) use handout::handout_admissible;
 mod integration;
 mod journal;
 mod members;
