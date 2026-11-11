@@ -1115,6 +1115,39 @@ approved and that has no integration fact yet goes back to awaiting the
 owner in the same transaction, with its integration card. An accept the
 person made, or approved on its card, stays Ready whatever the setting.
 
+**A doorbell points at the inbox and carries none of it (package 10).** The
+doorbell says how many items wait and names the command that reads them;
+the text of an item comes from members and is never put into a message of
+the service. It rings when the team is running, the lead's session is live
+and idle with no pending request, an open item is newer than the mark of
+the last doorbell, and the interval has passed since the last reservation.
+The reservation names the lead's run and conversation and the mark and is
+durable before the send; the send is admitted at its spawn. A refused
+doorbell may ring again after the interval; an uncertain one is never sent
+again for its mark, and a newer item rings a new one. A resumed lead gets a
+new doorbell, never a replay.
+
+**A timer fires once and only while its condition holds (package 10).**
+The store writes a timer's inbox item or owner card in one operation that
+rechecks the condition from stored facts in the same transaction, under a
+uniqueness key of the team, the timer, and the node with its generation or
+the inbox item. Times the store holds are read from it. Times only the
+service saw (a member idle, a lead not working) live in memory, so after a
+restart such a timer may be late and is never early. No timer fires while
+the team is paused or stopped, and the operation that ends a condition
+closes the timer's open card in the same transaction. An undecided report
+makes a lead inbox item after `remind_lead_minutes` and an owner card after
+`remind_person_minutes`. `answer_escalate_minutes` belongs to milestone 3.
+
+**After a stop Zerus releases tasks and ends no agent (package 10).** The
+service clears the team key of the stopped or archived team's open tasks in
+bounded pages through `team-clear`; an answer is recorded so that the node
+is not visited again, and no answer is tried on a later pass without
+starving the rest of the page. A member launch that completes after the
+stop, the archive or the member's removal is recorded as provenance and
+gets one owner card naming the member and the session; the store never
+treats that session as a live member.
+
 **Known limit.** A stage excludes the implementer of the target's current
 round. After a reassignment an earlier implementer could hold a stage of
 the same target where the stage's role equals the implementer's role; the
