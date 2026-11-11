@@ -32,6 +32,7 @@ mod messages;
 mod history;
 mod index;
 mod teams;
+mod team_deliver;
 
 /// A send that pasted the prompt but could not record it: its outcome is
 /// uncertain, and the phone's receipt says so.
@@ -524,6 +525,9 @@ pub(super) fn agent_starts_since(
 pub fn dispatch(config: &Config, args: &[String], dry: bool) -> Result<i32> {
     if dry {
         return Err(fail("task commands do not support --dry-run"));
+    }
+    if args.first().is_some_and(|action| action == "team-deliver") {
+        return team_deliver::dispatch(config, &args[1..]);
     }
     if args.first().is_some_and(|action| matches!(action.as_str(), "control" | "begin-attempt")) {
         return controls::dispatch(config, args);

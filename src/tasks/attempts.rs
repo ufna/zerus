@@ -324,7 +324,7 @@ pub(super) fn freeze(
 /// The native request for a send or handoff of `task` to `to`, rendered as
 /// the legacy paste renders it (after an agent's pin).
 #[allow(clippy::too_many_arguments)]
-fn render(
+pub(super) fn render(
     settings: &Settings,
     starts: usize,
     task: &TaskDoc,

@@ -23,6 +23,7 @@ use zerus_team_plan::{
 type Result<T> = std::result::Result<T, Problem>;
 
 mod replica_link;
+pub(crate) mod context;
 
 /// The ordinary task command already verified this caller's live run and
 /// process ancestry. Neither an operation nor stdin can construct it.
