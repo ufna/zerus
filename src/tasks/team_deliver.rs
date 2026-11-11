@@ -428,7 +428,10 @@ impl Delivery for Native {
         if let Some(receipt) = FIXTURE_NATIVE_INPUT.with(|slot| {
             slot.borrow().as_ref().map(|input| input(request, to))
         }) {
-            return attempts::Delivered::Submitted(receipt);
+            return match attempts::settle(config, &task.project, &task.uuid, &body.id, &receipt) {
+                Ok(()) => attempts::Delivered::Submitted(receipt),
+                Err(error) => attempts::Delivered::Uncertain(error.message),
+            };
         }
         attempts::deliver(config, &task.project, &task.uuid, &body.id, to, request)
     }
