@@ -25,6 +25,10 @@ pub use attempts::{Settled, Settlement};
 #[path = "task_team_tests.rs"]
 mod team_key_tests;
 
+#[cfg(test)]
+#[path = "task_team_finish_tests.rs"]
+mod team_finish_tests;
+
 #[cfg(not(feature = "test-without-team"))]
 #[path = "task_team.rs"]
 mod team;
