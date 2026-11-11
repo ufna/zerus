@@ -82,15 +82,31 @@ export function waitingKindIcon(kind: string): string {
   }
 }
 
-/** The decisions the card offers. A verdict kind (`integration`,
- * `pipeline_acceptance`) takes exactly approve or reject; every other kind is
- * closed by any non-empty word, so it is an acknowledgement and not a verdict.
- * Package 10 owns the kinds beyond these; its words are added in this table. */
+/** The kinds whose owner acts on the decision `retry`: the launch worker
+ * (package 7) for its three launch cards and the team actor for its blocked
+ * step check again on the next service pass. */
+const RETRY_KINDS = new Set(["launch_blocked", "launch_uncertain", "launch_capacity", "team_actor_blocked"]);
+
+/** The decisions the card's owner accepts, by its kind. The card row does not
+ * say which decisions it accepts, so the view knows them by kind, from the
+ * store and the service:
+ * - integration and pipeline_acceptance: the store takes exactly approve or
+ *   reject;
+ * - the launch cards and team_actor_blocked: the service acts on retry (it
+ *   checks again on the next pass), and any other word closes the card;
+ * - every other kind: the store closes the card on any word and nothing
+ *   reads it, so the one decision is an acknowledgement. */
 export function waitingDecisions(item: Pick<WaitingItem, "kind">): WaitingDecision[] {
   if (item.kind === "integration" || item.kind === "pipeline_acceptance") {
     return [
       { decision: "approve", text: tr("Approve") },
       { decision: "reject", text: tr("Reject"), danger: true },
+    ];
+  }
+  if (RETRY_KINDS.has(item.kind)) {
+    return [
+      { decision: "retry", text: tr("Retry") },
+      { decision: "acknowledged", text: tr("Acknowledge") },
     ];
   }
   return [{ decision: "acknowledged", text: tr("Acknowledge") }];
