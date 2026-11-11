@@ -1005,6 +1005,8 @@ Operation::{HandoutIntent, HandoutOutcome, ReopenIntent, ReopenOutcome,
             ObserveTask, RecordReport, RecordIntegration, RecordIntegrationConflict}
 // package 6
 crate::teams::tasks::observe(state, &TaskRef)
+crate::teams::tasks::report(state, &TaskRef) -> Result<Option<String>>   // 6b: the holder's report text of the current attempt
+zerus_replica::ProjectStore::changes_since(generation, offset) -> Changes
 hgs task team-deliver REF --json   {schema, id, team, node, member}
 hgs task team-done REF --json      {schema, team, node}
 // package 11
@@ -1015,10 +1017,12 @@ desktop::teams::Worker::wake, the original child kind and its custody
 
 **Deliver:**
 
-- *Observe.* One bounded read of the project's task window per team per
-  pass gives the revision of each task; `observe` is called only for a live
-  node whose revision differs from the store's observation, and for every
-  live node on the one-minute pass.
+- *Observe.* The actor keeps its place in each project's change journal
+  (`changes_since`: generation and offset) in its ledger. One read per
+  project per pass names the changed documents; `observe` is called only
+  for a live node whose task is among them, and for every live node, paged,
+  when the journal cannot tell, at the first pass after a start and on the
+  one-minute pass.
 - *Free members.* A member is free when its session is live and idle (not
   working, not `Background`, no pending request), the store holds no open
   effect or attempt for it, and it is not paused. Liveness comes from the
@@ -1046,6 +1050,16 @@ desktop::teams::Worker::wake, the original child kind and its custody
 
 Every effect sits behind a trait; production adapters are this computer's
 own `hgs` as an original child. Functions of about 60 lines or fewer.
+
+The package is assigned in parts. A: the tick, observe, free members,
+hand-out and reopens. B: reports, integration, finish and wake. C, after
+packages 6, 6b, 9 and the CLI are merged: the stage-task step between
+reports and integration (package 9's read of stage nodes that need their
+task, `hgs task team-stage`), the adapters for `observe` and `report`, and
+the two status fields. A refused hand-out is not tried again before that
+task's observation changes or the retry policy of package 7 allows it. A
+merge whose result is unknown is settled by reading (`descends`), never by
+a second write while it is unread.
 
 **Tests:** Review focus 1 and 2; each step at a restart before and after
 its effect; an uncertain delivery makes one inbox item and no second send;
