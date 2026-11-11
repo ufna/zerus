@@ -49,6 +49,8 @@ pub(super) fn write(config: &Config, args: &[String], body: &Input) -> Result<&'
         return Err(rule(dispatch::CHANGED));
     }
     let reason = authority(&teams, body, &team, &node)?;
+    #[cfg(test)]
+    locked_test_pause(config, "cancel");
     let mut doc = admitted.load_complete(&reference.uuid).map_err(fail)?;
     if r.task != reference.uuid && r.task != doc.id() {
         return Err(rule("REF is not this node's task."));

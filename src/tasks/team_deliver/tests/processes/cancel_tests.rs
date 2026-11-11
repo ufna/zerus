@@ -176,11 +176,8 @@ fn cancel_refuses_each_missing_authority_and_unknown_delivery_without_writes() {
                     .unwrap();
             }
             7 => {
-                db.execute(
-                    "UPDATE nodes SET data=json_set(data,'$.task.project','another-project')",
-                    [],
-                )
-                .unwrap();
+                db.execute("UPDATE teams SET project='another-project'", [])
+                    .unwrap();
             }
             8..=10 => {
                 let store = crate::tasks::store(&f.config, &f.task.project).unwrap();
@@ -326,7 +323,7 @@ fn cancellation_rechecks_every_stored_fact_inside_admission() {
         "UPDATE teams SET home='00000000-0000-4000-8000-000000000077'",
         "UPDATE teams SET status='\"planning\"'",
         "UPDATE node_identity SET task_uuid='00000000-0000-4000-8000-000000000077'",
-        "UPDATE nodes SET data=json_set(data,'$.task.project','another-project')",
+        "UPDATE teams SET project='another-project'",
     ] {
         let mut f = Fixture::new();
         stage(&mut f, Stage::Active);
@@ -352,4 +349,143 @@ fn cancellation_rechecks_every_stored_fact_inside_admission() {
         assert_eq!(f.document().revision(), before);
         assert!(!f.config.state.join("cancel-notices").exists());
     }
+}
+
+#[test]
+fn cancellation_needs_this_teams_and_this_nodes_decision_and_exact_reference() {
+    for other_team in [false, true] {
+        let mut f = Fixture::new();
+        let team = if other_team { ops::tests::TEAM_B } else { TEAM };
+        if other_team {
+            let mut create = ops::tests::create();
+            if let ops::Operation::Create {
+                home,
+                integration_branch,
+                ..
+            } = &mut create
+            {
+                *home = f.lead.machine.clone();
+                *integration_branch = "zerus/team/other".into();
+            }
+            f.h.run_for(team, &person(), create).unwrap();
+        }
+        let node =
+            f.h.run_for(
+                team,
+                &person(),
+                ops::Operation::AddTask {
+                    task: ops::tests::task(2),
+                    role: None,
+                    pipeline: None,
+                },
+            )
+            .unwrap()
+            .node
+            .unwrap();
+        f.h.run_for(
+            team,
+            &person(),
+            ops::Operation::Cancel {
+                node,
+                reason: "Cancel only the other task".into(),
+            },
+        )
+        .unwrap();
+        let before = f.document().revision();
+        let out = call(&f, "cancel-command");
+        assert_eq!(out["reply"]["state"], "refused", "{out}");
+        assert_eq!(f.document().revision(), before);
+    }
+    for change in 0..4 {
+        let mut f = Fixture::new();
+        decide(&mut f);
+        let before = f.document().revision();
+        let mut args = vec!["team-cancel".into()];
+        args.extend(f.args(false));
+        let mut body = json!({"schema":1,"team":TEAM,"node":f.body.node});
+        match change {
+            0 => body["team"] = json!(ops::tests::TEAM_B),
+            1 => body["node"] = json!(f.body.node + 1),
+            2 => args[1] = uuid::Uuid::new_v4().to_string(),
+            _ => body["actor"] = json!({"kind":"person"}),
+        }
+        let (child, path) = f.spawn("cancel-command", &args, &body.to_string(), false);
+        let out = f.finish(child, path);
+        assert_eq!(out["reply"]["state"], "refused", "{out}");
+        assert_eq!(f.document().revision(), before);
+        assert!(!f.config.state.join("cancel-notices").exists());
+    }
+}
+#[test]
+fn a_real_stop_refuses_an_active_handover_whose_delivery_is_unknown() {
+    let mut f = Fixture::new();
+    let machine = f.lead.machine.clone();
+    f.bind("m2", &machine);
+    completion_tests::reported(&mut f);
+    f.h.run(
+        &lead(&f),
+        ops::Operation::Reassign {
+            node: f.body.node,
+            member: "m2".into(),
+            reason: "Hand this work to the second member".into(),
+        },
+    )
+    .unwrap();
+    f.body.id = f.h.reopen(f.body.node, "m2");
+    f.body.member = "m2".into();
+    assert_eq!(f.run("uncertain", false)["reply"]["state"], "uncertain");
+    assert_eq!(f.document().stage().unwrap(), Stage::Active);
+    f.h.run(&person(), ops::Operation::Stop).unwrap();
+    let before = f.document().revision();
+    let sessions = f.sessions();
+    let out = call(&f, "cancel-command");
+    assert_eq!(out["reply"]["state"], "refused", "{out}");
+    assert_eq!(f.document().revision(), before);
+    assert_eq!(f.sessions(), sessions);
+    assert!(!f.config.state.join("cancel-notices").exists());
+}
+
+#[test]
+fn cancellation_holds_the_team_transaction_through_the_task_save() {
+    let mut f = Fixture::new();
+    stage(&mut f, Stage::Active);
+    decide(&mut f);
+    let mut args = vec!["team-cancel".into()];
+    args.extend(f.args(false));
+    let body = json!({"schema":1,"team":TEAM,"node":f.body.node}).to_string();
+    let (child, path) = f.spawn("lock-cancel-command", &args, &body, false);
+    let until = Instant::now() + Duration::from_secs(5);
+    while !f.config.state.join("cancel-ready").exists() {
+        assert!(Instant::now() < until);
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    let state = f.config.state.clone();
+    let revision = f.h.store.team(TEAM).unwrap().unwrap().revision;
+    let (started, ready) = std::sync::mpsc::channel();
+    let (sent, received) = std::sync::mpsc::channel();
+    let writer = std::thread::spawn(move || {
+        let mut store = Store::open(&state).unwrap();
+        started.send(()).unwrap();
+        let result = ops::apply(
+            &mut store,
+            &person(),
+            &ops::tests::request(revision, ops::Operation::Stop),
+            now(),
+        );
+        sent.send(result).unwrap();
+    });
+    ready.recv_timeout(Duration::from_secs(3)).unwrap();
+    let premature = received.recv_timeout(Duration::from_millis(200));
+    std::fs::write(f.config.state.join("cancel-release"), "go").unwrap();
+    let out = f.finish(child, path);
+    writer.join().unwrap();
+    let early = premature.is_ok();
+    let result =
+        premature.unwrap_or_else(|_| received.recv_timeout(Duration::from_secs(3)).unwrap());
+    assert!(result.is_ok(), "{result:?}");
+    assert!(
+        !early,
+        "Stop committed before the cancellation released its admission"
+    );
+    assert_eq!(out["reply"]["state"], "cancelled", "{out}");
 }

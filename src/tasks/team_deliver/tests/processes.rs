@@ -100,7 +100,13 @@ fn entry() {
     if let Some(phase) = mode.strip_prefix("lock-") {
         std::env::set_var(
             "HGS_TEST_TEAM_LOCK_AT",
-            if phase == "team-done" { "done" } else { phase },
+            if phase == "team-done" {
+                "done"
+            } else if phase == "cancel-command" {
+                "cancel"
+            } else {
+                phase
+            },
         );
     }
     let result = if mode == "init" {
@@ -113,7 +119,7 @@ fn entry() {
         }
         if matches!(
             mode.as_str(),
-            "command" | "cancel-command" | "crash-cancel-command"
+            "command" | "cancel-command" | "crash-cancel-command" | "lock-cancel-command"
         ) {
             if mode.contains("cancel-command") {
                 std::env::set_var(

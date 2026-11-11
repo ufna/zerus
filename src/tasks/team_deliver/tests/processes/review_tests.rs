@@ -661,6 +661,10 @@ fn a_handover_quotes_the_reason_and_old_report_and_does_not_message_the_old_hold
     )
     .unwrap();
     let text = request["text"].as_str().unwrap();
+    assert!(
+        text.contains("The person reassigned this task. Continue this task."),
+        "{text}"
+    );
     for line in reason.split('\n').chain(report.split('\n')) {
         assert!(text.contains(&format!("\n> {line}")), "{text}");
     }
