@@ -107,6 +107,25 @@ pub enum StageTaskOutcome {
     Uncertain { reason: String },
 }
 
+/// A service timer of package 10; each fires at most once per key.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TimerKind {
+    NoReport,
+    NotStarted,
+    RemindLead,
+    RemindPerson,
+    SilentLead,
+}
+
+/// The final answer of the team-clear child for one task key.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum KeyClearState {
+    Cleared,
+    Refused,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Operation {
@@ -267,6 +286,27 @@ pub enum Operation {
     },
     ChangeSettings {
         settings: Settings,
+    },
+    FireTimer {
+        timer: TimerKind,
+        node: NodeId,
+        generation: u32,
+        #[serde(default)]
+        item: u64,
+        #[serde(default)]
+        since_ms: i64,
+    },
+    RecordKeyClear {
+        node: NodeId,
+        state: KeyClearState,
+        #[serde(default)]
+        reason: String,
+    },
+    RecordLateSession {
+        member: MemberId,
+        launch_id: String,
+        session: SessionKey,
+        name: String,
     },
 }
 

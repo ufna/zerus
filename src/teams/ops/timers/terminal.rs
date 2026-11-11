@@ -1,0 +1,101 @@
+//! What a stop leaves behind: the final answer for each task key the service
+//! cleared or was refused, and the provenance of a member launch that
+//! completed after the stop. Neither makes the session a member again.
+use super::*;
+use store::timers::{settle, KEYED};
+
+pub(in crate::teams::ops) fn key_clear(ctx: &mut Context<'_>) -> Result<()> {
+    let Operation::RecordKeyClear {
+        node,
+        state,
+        reason: why,
+    } = ctx.op
+    else {
+        unreachable!()
+    };
+    if !matches!(ctx.team.status, TeamStatus::Stopped | TeamStatus::Archived) {
+        return Err(invalid(
+            "Task keys are cleared only for a stopped or archived team.",
+        ));
+    }
+    let keyed: bool = ctx
+        .db
+        .query_row(
+            &format!("SELECT EXISTS({KEYED} AND i.id=?2)"),
+            params![ctx.team.id, node],
+            |r| r.get(0),
+        )
+        .map_err(storage)?;
+    if !keyed {
+        return Err(invalid("The task key was released or already recorded."));
+    }
+    match state {
+        KeyClearState::Cleared if !why.is_empty() => {
+            return Err(invalid("A cleared key carries no reason."))
+        }
+        KeyClearState::Cleared => (),
+        KeyClearState::Refused => {
+            reason(why)?;
+            text(why, 4096)?;
+        }
+    }
+    ctx.db
+        .execute(
+            "INSERT INTO key_clears(team,node,state,reason,at_ms) VALUES(?1,?2,?3,?4,?5)",
+            params![
+                ctx.team.id,
+                node,
+                encode(state)?.trim_matches('"'),
+                why,
+                ctx.now
+            ],
+        )
+        .map_err(storage)?;
+    settle(ctx.db, &ctx.team.id)?;
+    ctx.reply.node = Some(*node);
+    Ok(())
+}
+
+pub(in crate::teams::ops) fn late_session(ctx: &mut Context<'_>) -> Result<()> {
+    let Operation::RecordLateSession {
+        member,
+        launch_id,
+        session,
+        name,
+    } = ctx.op
+    else {
+        unreachable!()
+    };
+    let m = ctx.member(member)?;
+    let terminal = matches!(ctx.team.status, TeamStatus::Stopped | TeamStatus::Archived);
+    if !terminal && m.state != MemberState::Removed {
+        return Err(invalid("The member is live; its launch binds normally."));
+    }
+    uuid(launch_id)?;
+    if session.machine != ctx.team.home || session.session_id != format!("launch_id:{launch_id}") {
+        return Err(invalid(
+            "The session must be this launch on the team's home.",
+        ));
+    }
+    reason(name)?;
+    text(name, 256)?;
+    let known: bool = ctx
+        .db
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM late_sessions WHERE team=?1 AND member=?2 AND launch=?3)",
+            params![ctx.team.id, member, launch_id],
+            |r| r.get(0),
+        )
+        .map_err(storage)?;
+    if known {
+        return Err(Problem::new(
+            code::DUPLICATE,
+            "This late session was already recorded.",
+        ));
+    }
+    let body = format!("Member {member} started session {name} after the team stopped or the member was removed. Zerus does not stop it; end that agent if it is not needed.");
+    let card = talk::card(ctx, "late_session", &body, None, None)?;
+    ctx.db.execute("INSERT INTO late_sessions(team,member,launch,machine,session_id,name,card,created_ms) VALUES(?1,?2,?3,?4,?5,?6,?7,?8)",params![ctx.team.id,member,launch_id,session.machine,session.session_id,name,card,ctx.now]).map_err(storage)?;
+    ctx.reply.item = Some(card);
+    Ok(())
+}

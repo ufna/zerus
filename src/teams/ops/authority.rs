@@ -31,7 +31,10 @@ pub fn authority(actor: &Actor, op: &Operation, team: &Team) -> Result<()> {
         | Operation::StageTaskIntent { .. }
         | Operation::StageTaskOutcome { .. }
         | Operation::RecordIntegration { .. }
-        | Operation::RecordIntegrationConflict { .. } => service,
+        | Operation::RecordIntegrationConflict { .. }
+        | Operation::FireTimer { .. }
+        | Operation::RecordKeyClear { .. }
+        | Operation::RecordLateSession { .. } => service,
         Operation::Create { .. }
         | Operation::Stop
         | Operation::Archive

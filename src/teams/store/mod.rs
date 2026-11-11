@@ -13,6 +13,7 @@ mod pages;
 mod records;
 pub(crate) mod rows;
 mod stage;
+pub(crate) mod timers;
 pub use records::*;
 
 use rusqlite::{Connection, OpenFlags, OptionalExtension};
@@ -298,5 +299,6 @@ fn read_indexes(db: &Connection) -> Result<()> {
             .map_err(storage);
     }
     db.execute_batch(include_str!("read-indexes.sql"))
-        .map_err(storage)
+        .map_err(storage)?;
+    timers::extend(db)
 }
