@@ -169,6 +169,14 @@ fn unknown_fields_are_refused() {
     refused::<Pipeline>(r#"{"id":"p","name":"P","implementer":"r","extra":1}"#);
     refused::<Catalog>(r#"{"roles":[],"extra":1}"#);
     refused::<AccountChoice>(r#"{"mode":"named","account":"a","extra":1}"#);
+    refused::<AccountChoice>(r#"{"mode":"freest","colour":"red"}"#);
+    refused::<AccountChoice>(r#"{"mode":"freest","account":"a"}"#);
+    refused::<AccountChoice>(r#"{"mode":"named"}"#);
+    refused::<AccountChoice>(r#"{"account":"a"}"#);
+    refused::<AccountChoice>(r#"{"mode":"named","account":""}"#);
+    refused::<Role>(
+        r#"{"id":"r","name":"R","agent":"claude","account":{"mode":"freest","colour":"red"}}"#,
+    );
     refused::<TaskRef>(r#"{"project":"p","uuid":"u","extra":1}"#);
 }
 
