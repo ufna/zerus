@@ -413,7 +413,7 @@ fn finish_observation(ctx: &Context<'_>, node: u32, cancelled: bool) -> Result<(
     } else if let Some((_, kind, _)) = ctx.pending(node)? {
         let n = ctx.node(node)?;
         if kind == "accept" && (!decisions::needs_merge(ctx, &n) || n.integrated) {
-            ctx.settle(node)?;
+            ctx.settle_override(node)?;
         }
     }
     Ok(())

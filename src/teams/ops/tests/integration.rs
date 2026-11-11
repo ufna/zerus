@@ -224,3 +224,43 @@ fn switching_integration_off_keeps_receipts_and_conflicts_as_provenance_only() {
         refused(h.run(&service(), op), code::INVALID_STATE);
     }
 }
+
+#[test]
+fn done_after_disabling_integration_preserves_the_late_receipt_or_conflict() {
+    for conflict in [false, true] {
+        let mut h = Harness::new();
+        let (node, lead) = h.reported();
+        h.run(&lead, Operation::Accept { node }).unwrap();
+        let decision = h.accept_decision(node);
+        h.settings(|s| s.integration = Integration::None);
+        h.observe(node, TaskStage::Done);
+        let before = h.node(node);
+        let decisions = h.store.decisions(TEAM, 200, None).unwrap().rows;
+        assert_eq!(before.state, NodeState::Accepted);
+        assert!(!before.integrated);
+        assert_eq!(decisions.last().unwrap().state, DecisionState::Settled);
+        let op = if conflict {
+            Operation::RecordIntegrationConflict {
+                node,
+                decision,
+                conflicts: vec!["src/example.rs".into()],
+            }
+        } else {
+            Operation::RecordIntegration {
+                node,
+                decision,
+                commit: COMMIT.into(),
+            }
+        };
+        h.run(&service(), op.clone()).unwrap();
+        let paths = if conflict {
+            vec!["src/example.rs".into()]
+        } else {
+            vec![]
+        };
+        assert_fact(&h, decision, (!conflict).then_some(COMMIT), &paths);
+        assert_eq!(h.node(node), before);
+        assert_eq!(h.store.decisions(TEAM, 200, None).unwrap().rows, decisions);
+        refused(h.run(&service(), op), code::INVALID_STATE);
+    }
+}
