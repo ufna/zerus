@@ -35,16 +35,7 @@ impl Ledger {
         Ok(Self(db))
     }
     pub fn get(&self, key: &str) -> Result<Option<Record>> {
-        let raw: Option<String> = self
-            .0
-            .query_row(
-                "SELECT CAST(substr(CAST(body AS BLOB),1,131073) AS TEXT) FROM standing_effects WHERE key=?1",
-                [key],
-                |r| r.get(0),
-            )
-            .optional()
-            .map_err(err)?;
-        raw.map(|s| decode(&s)).transpose()
+        record(&self.0, key)
     }
     pub fn claim(&mut self, plan: &Plan, epoch: &str, now: i64) -> Result<Claim> {
         let tx = self
@@ -103,9 +94,11 @@ impl Ledger {
         })
     }
     pub fn save(&mut self, row: &Record) -> Result<()> {
-        let mut old = self
-            .get(&row.plan.key)?
-            .ok_or("Standing claim disappeared")?;
+        let tx = self
+            .0
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(err)?;
+        let mut old = record(&tx, &row.plan.key)?.ok_or("Standing claim disappeared")?;
         let expected = old.state.clone();
         if old.original != row.original
             || old.plan != row.plan
@@ -128,10 +121,6 @@ impl Ledger {
             || (old.audit.is_none() && old.plan.kind != Kind::Notice)
             || (old.audit.is_some() && !old.audit_done)
             || (old.state != "approved" && !old.card_done);
-        let tx = self
-            .0
-            .transaction_with_behavior(TransactionBehavior::Immediate)
-            .map_err(err)?;
         tx.execute(
             "UPDATE standing_effects SET pending=?1,body=?2 WHERE key=?3",
             params![pending, encode(&old)?, old.plan.key],
@@ -188,21 +177,22 @@ impl Ledger {
         })
     }
     pub fn card_request(&self, key: &str) -> Result<Option<crate::teams::ops::Request>> {
-        let raw: Option<String> = self
-            .0
-            .query_row(
-                "SELECT request FROM standing_cards WHERE key=?1",
-                [key],
-                |r| r.get(0),
-            )
-            .optional()
-            .map_err(err)?;
-        raw.map(|s| serde_json::from_str(&s).map_err(err))
-            .transpose()
+        let raw:Option<Option<String>>=self.0.query_row(
+            "SELECT CASE WHEN length(CAST(request AS BLOB))<=?2 THEN request END FROM standing_cards WHERE key=?1",
+            params![key,ROW_LIMIT as i64],|r|r.get(0)).optional().map_err(err)?;
+        match raw {
+            None => Ok(None),
+            Some(None) => Err("Standing-card request exceeds 128 KiB".into()),
+            Some(Some(raw)) => serde_json::from_str(&raw).map(Some).map_err(err),
+        }
     }
     pub fn save_card(&self, key: &str, request: Option<&crate::teams::ops::Request>) -> Result<()> {
         if let Some(request) = request {
-            self.0.execute("INSERT INTO standing_cards VALUES(?1,?2) ON CONFLICT(key) DO UPDATE SET request=excluded.request",params![key,serde_json::to_string(request).map_err(err)?]).map_err(err)?;
+            let raw = serde_json::to_string(request).map_err(err)?;
+            if raw.len() > ROW_LIMIT {
+                return Err("Standing-card request exceeds 128 KiB".into());
+            }
+            self.0.execute("INSERT INTO standing_cards VALUES(?1,?2) ON CONFLICT(key) DO UPDATE SET request=excluded.request",params![key,raw]).map_err(err)?;
         } else {
             self.0
                 .execute("DELETE FROM standing_cards WHERE key=?1", [key])
@@ -210,6 +200,17 @@ impl Ledger {
         }
         Ok(())
     }
+}
+fn record(db: &Connection, key: &str) -> Result<Option<Record>> {
+    let raw: Option<String> = db
+            .query_row(
+                "SELECT CAST(substr(CAST(body AS BLOB),1,131073) AS TEXT) FROM standing_effects WHERE key=?1",
+                [key],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(err)?;
+    raw.map(|s| decode(&s)).transpose()
 }
 fn completed(before: &Snapshot, target: &Snapshot) -> Result<()> {
     if target.run.is_empty()
@@ -252,5 +253,9 @@ fn encode_binding(b: &Binding) -> Result<String> {
     serde_json::to_string(b).map_err(err)
 }
 
+#[cfg(test)]
+mod cards;
+#[cfg(test)]
+mod concurrency;
 #[cfg(test)]
 mod tests;
