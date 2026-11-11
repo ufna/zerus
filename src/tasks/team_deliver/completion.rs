@@ -4,10 +4,10 @@ use zerus_team_plan::model::NodeKind;
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct Input {
-    schema: u32,
-    team: String,
-    node: u32,
+pub(super) struct Input {
+    pub(super) schema: u32,
+    pub(super) team: String,
+    pub(super) node: u32,
 }
 impl Input {
     fn reply(&self, state: &str, error: &str) -> Value {
@@ -24,7 +24,12 @@ pub(crate) fn execute(config: &Config, action: &str, args: &[String]) -> Result<
     if body.schema != 1 || !zerus_replica::ids::is_uuid(&body.team) || body.node == 0 {
         return Err(rule("invalid_request: Invalid team service request."));
     }
-    match write(config, action, args, &body) {
+    let result = if action == "team-cancel" {
+        super::cancel::write(config, args, &body)
+    } else {
+        write(config, action, args, &body)
+    };
+    match result {
         Ok(state) => Ok(body.reply(state, "")),
         Err(error) if error.code != RULE && error.code != CUTTING_OVER => Err(error),
         Err(error) => Ok(body.reply(
@@ -55,7 +60,12 @@ pub(crate) fn dispatch(config: &Config, action: &str, args: &[String]) -> Result
     }
 }
 
-fn bound(store: &Store, action: &str, body: &Input, here: &str) -> Result<(Team, Node, TaskRef)> {
+pub(super) fn bound(
+    store: &Store,
+    action: &str,
+    body: &Input,
+    here: &str,
+) -> Result<(Team, Node, TaskRef)> {
     let team = store
         .team(&body.team)
         .map_err(problem)?
@@ -63,7 +73,7 @@ fn bound(store: &Store, action: &str, body: &Input, here: &str) -> Result<(Team,
     if team.home != here {
         return Err(rule("Team belongs to another computer."));
     }
-    if action != "team-clear" && team.status != TeamStatus::Running {
+    if action == "team-done" && team.status != TeamStatus::Running {
         return Err(rule("Team is not Running."));
     }
     let db = store

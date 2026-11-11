@@ -111,7 +111,19 @@ fn entry() {
         if mode == "save-error" {
             std::env::set_var("HGS_TEST_TEAM_DELIVERY_SAVE_ERROR", "1");
         }
-        if mode == "command" {
+        if matches!(
+            mode.as_str(),
+            "command" | "cancel-command" | "crash-cancel-command"
+        ) {
+            if mode.contains("cancel-command") {
+                std::env::set_var(
+                    "HGS_TEST_TASK_CANCEL_NOTICE",
+                    config.state.join("cancel-notices"),
+                );
+            }
+            if mode == "crash-cancel-command" {
+                std::env::set_var("HGS_TEST_TEAM_COMPLETION_AFTER_SAVE", "1");
+            }
             crate::tasks::dispatch(&config, &args, false).map(|exit| json!({"exit":exit}))
         } else if matches!(mode.as_str(), "agent" | "holder" | "verdict" | "old-holder") {
             use sha2::{Digest, Sha256};
@@ -961,3 +973,5 @@ mod stage_tests;
 mod terminal_clear_tests;
 
 mod review_tests;
+
+mod cancel_tests;

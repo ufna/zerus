@@ -1,6 +1,7 @@
 //! A stored team effect is the permit for one ordinary task attempt.
 //! A pre-reservation refusal has no record; a repeat of its still-open effect may deliver.
 use super::*;
+mod cancel;
 pub(super) mod completion;
 pub(super) mod stage;
 use crate::swarm::fence::{Admission, Closed};
