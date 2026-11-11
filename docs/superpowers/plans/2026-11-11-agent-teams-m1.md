@@ -993,6 +993,44 @@ task: `cancel`, `cancel-execution`, `move`, `edit` and `rename`. With the
 preview off, a key that names this computer does not guard, and a key that
 names another computer still refuses agents.
 
+## Decisions during wave 3
+
+Recorded 2026-11-11 after the review of package 9's core.
+
+**A lead accepts only what its pipeline handed over (package 9).** For the
+node's current generation a lead's Accept is refused unless the pipeline's
+run reached the lead. A lead's Return, Reassign or Cancel retires a pending
+stage but never opens the gate for the same attempt: when the reopen cannot
+be delivered, the lead decides again (Return, Reassign, Cancel) or asks the
+person. The person is never refused.
+
+**A stage node is never restored (package 9).** A stage whose creation is
+not wanted, reserved or created is released. A person who moves a finished
+stage's task back on the board changes that task only: the observation is
+recorded and the node stays archived. The service clears the team key of a
+stage task whose node is released, including one created by a late outcome
+for a superseded stage (package 8, part C).
+
+**A round is an attempt of the task (package 9).** Every reopen starts a
+round, whoever caused it: a pipeline's return, a lead's Return or Reassign,
+a person's reopen on the board. A pipeline hands the task to the lead when
+its rounds are used up, so a reassignment brings that moment closer. This
+is kept because one counter also names a stage's target round.
+
+**A report settles the open items of its attempt (package 9).** The
+member's unanswered questions on that node and an uncertain delivery are
+closed by the trusted report, for every pipeline. The lead's inbox item for
+a reported task carries the report's text first and then the pipeline's
+reason and findings; for a pipeline without stages it is the report's text
+as before.
+
+**Known limit.** A stage excludes the implementer of the target's current
+round. After a reassignment an earlier implementer could hold a stage of
+the same target where the stage's role equals the implementer's role; the
+built-in pipelines use a separate reviewing role. Excluding every earlier
+implementer needs a list on the stage node and in the kernel and is a
+tracked follow-up.
+
 ## Addendum: wave 3 (packages 8, 9, 10, 13, 14 and 17)
 
 Written 2026-11-11 against `integrate/teams` with packages 1, 2, 3, 4, 7, 11
