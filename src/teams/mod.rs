@@ -5,6 +5,7 @@
 //! Teams are a preview and are off unless the person turned them on for this
 //! computer. With them off nothing here creates a file, and every `hgs team`
 //! command except `preview` answers `teams_inactive`.
+pub(crate) mod integrate;
 use crate::cli::Result;
 use crate::config::Config;
 use serde_json::{json, Value};
