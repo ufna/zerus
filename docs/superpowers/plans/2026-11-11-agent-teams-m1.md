@@ -1096,6 +1096,16 @@ start. An integration fact's commit is the commit of the integration
 branch that was verified to contain the work: the new merge commit, or the
 tip that already contained it; never the member's commit.
 
+**Who is a team's session (packages 5 and 14, after their review).** The
+desktop must know which sessions belong to a live team without loading
+each team: Waiting for you lists the requests of members as well as of
+leads, and a parent link proves nothing. A row of `hgs team list` for a
+team that is planning, running or paused carries, besides `lead_session`,
+an additive `member_sessions`: the bound sessions of its members as
+`{member, machine, session_id}`, at most the roster's size, absent when
+none is bound. The client core passes it through, and the frontend takes
+membership and the team's status from the same row.
+
 **Known limit.** A stage excludes the implementer of the target's current
 round. After a reassignment an earlier implementer could hold a stage of
 the same target where the stage's role equals the implementer's role; the
