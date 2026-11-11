@@ -291,20 +291,34 @@ fn read_indexes(db: &Connection) -> Result<()> {
     if unique {
         // Only an older unique index needs replacement. Ordinary opens never
         // rebuild it; a savepoint keeps its replacement atomic, also at creation.
-        db.execute_batch("SAVEPOINT replace_read_index")
-            .map_err(storage)?;
+        if let Err(error) = db.execute_batch("SAVEPOINT replace_read_index") {
+            return if conversion_busy(&error) {
+                Ok(())
+            } else {
+                Err(storage(error))
+            };
+        }
         let replaced = db
             .execute_batch("DROP INDEX IF EXISTS integration_card")
-            .and_then(|()| db.execute_batch(include_str!("read-indexes.sql")));
+            .and_then(|()| db.execute_batch(include_str!("read-indexes.sql")))
+            .and_then(|()| db.execute_batch("RELEASE replace_read_index"));
         if let Err(error) = replaced {
             db.execute_batch("ROLLBACK TO replace_read_index; RELEASE replace_read_index")
                 .map_err(storage)?;
+            if conversion_busy(&error) {
+                // This optional index upgrade can wait. No product operation
+                // is replayed; the next open checks the actual index again.
+                return Ok(());
+            }
             return Err(storage(error));
         }
-        return db
-            .execute_batch("RELEASE replace_read_index")
-            .map_err(storage);
+        return Ok(());
     }
     db.execute_batch(include_str!("read-indexes.sql"))
         .map_err(storage)
+}
+
+fn conversion_busy(error: &rusqlite::Error) -> bool {
+    matches!(error, rusqlite::Error::SqliteFailure(e, _) if matches!(e.code,
+        rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked))
 }
