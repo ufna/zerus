@@ -172,6 +172,8 @@ pub struct TeamSummary {
     /// The computer the lead runs on.
     pub home: String,
     pub revision: u64,
+    /// The lead's bound session: how the desktop finds a session's team.
+    pub lead_session: Option<SessionRef>,
 }
 
 impl TeamSummary {
@@ -197,6 +199,16 @@ pub struct TeamList {
 pub struct SessionRef {
     pub machine: String,
     pub session_id: String,
+}
+
+/// The lead's bound session of a list row; absent when the row has none.
+pub(crate) fn lead_session(row: &Value) -> Option<SessionRef> {
+    let found = row.get("lead_session").filter(|lead| lead.is_object())?;
+    let view = SessionRef {
+        machine: name(found, "machine"),
+        session_id: name(found, "session_id"),
+    };
+    (!view.session_id.is_empty()).then_some(view)
 }
 
 pub(crate) fn session(value: &Value) -> Option<SessionRef> {

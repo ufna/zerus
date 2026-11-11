@@ -9,6 +9,7 @@ fn fixture(name: &str) -> Value {
         "queue" => include_str!("../fixtures/cli-queue.json"),
         "cards" => include_str!("../fixtures/cli-cards.json"),
         "waiting" => include_str!("../fixtures/cli-waiting.json"),
+        "list" => include_str!("../fixtures/cli-list.json"),
         other => panic!("no fixture {other}"),
     };
     serde_json::from_str(text).expect("a pinned CLI fixture parses")
@@ -495,4 +496,31 @@ fn the_pinned_replies_still_parse_without_the_additive_fields() {
         .flat_map(|group| &group.cards)
         .all(|card| card.kind.is_none() && card.rounds.is_none()));
     assert!(view.members.iter().all(|member| member.model.is_none()));
+}
+
+#[test]
+fn the_pinned_list_carries_the_lead_session_the_desktop_resolves_with() {
+    let view = list(&fixture("list"));
+    assert_eq!(view.teams.len(), 1);
+    let lead = view.teams[0]
+        .lead_session
+        .as_ref()
+        .expect("the row carries its lead session");
+    assert_eq!(lead.machine, "00000000-0000-4000-8000-0000000000aa");
+    assert_eq!(
+        lead.session_id,
+        "launch_id:00000000-0000-4000-8000-000000000064"
+    );
+}
+
+#[test]
+fn a_list_row_without_a_lead_session_or_without_a_session_id_reads_none() {
+    for row in [
+        serde_json::json!({"id": TEAM, "project": "example-project", "name": "Fixes", "status": "running", "lead": "lead", "home": "aa", "revision": 1}),
+        serde_json::json!({"id": TEAM, "project": "example-project", "name": "Fixes", "status": "running", "lead": "lead", "home": "aa", "revision": 1,
+            "lead_session": {"machine": "aa", "session_id": ""}}),
+    ] {
+        let view = list(&serde_json::json!({"ok": true, "rows": [row], "next": null}));
+        assert_eq!(view.teams[0].lead_session, None);
+    }
 }

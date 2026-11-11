@@ -157,19 +157,20 @@ describe("the Teams store", () => {
     });
   });
 
-  it("resolves the lead session's team from the list and follows it, without probing", async () => {
+  it("derives a session's team from the followed list and follows it, without probing", async () => {
     const { transport, calls } = fake();
     const teams = createTeams(transport);
     teams.apply([entry("list", "list", list)]);
-    expect(await teams.leadTeamFor("row-key", { sessionId: "00000000-0000-4000-8000-000000000064", runId: null })).toBe(TEAM_ID);
+    const identity = { sessionId: "00000000-0000-4000-8000-000000000064", runId: null };
+    expect(teams.teamOfSession(identity)).toEqual({ state: "lead", team: TEAM_ID });
+    expect(await teams.leadTeamFor("row-key", identity)).toBe(TEAM_ID);
     expect(calls.follow).toEqual([{ list: false, waiting: true, team: TEAM_ID }]);
-    expect(teams.sessionTeams()["row-key"]).toBe(TEAM_ID);
-    // Another session reads no team at all: the list's lead session decides.
+    // Another session is not a lead, and no per-session entry is kept.
     const other = createTeams(transport);
     other.apply([entry("list", "list", list)]);
-    const before = transport;
+    expect(other.teamOfSession({ sessionId: "00000000-0000-4000-8000-00000000ffff", runId: null })).toEqual({ state: "none" });
     expect(await other.leadTeamFor("other-key", { sessionId: "00000000-0000-4000-8000-00000000ffff", runId: null })).toBeNull();
-    expect(other.sessionTeams()["other-key"]).toBeNull();
-    expect(before).toBe(transport);
+    expect(Object.keys(other.sessionTeams())).toEqual([]);
+    expect(other.listPages()).toHaveLength(1);
   });
 });

@@ -16,6 +16,7 @@ pub fn list(reply: &Value) -> TeamList {
             lead: name(row, "lead"),
             home: name(row, "home"),
             revision: count(row, "revision"),
+            lead_session: lead_session(row),
         })
         .collect();
     TeamList {
