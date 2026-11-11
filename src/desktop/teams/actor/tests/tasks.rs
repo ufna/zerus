@@ -17,6 +17,7 @@ pub(super) fn wanted() -> (Harness, u32, u32) {
 #[derive(Default)]
 struct Fake {
     calls: Vec<String>,
+    originals: Vec<String>,
     documents: BTreeSet<String>,
     reads: usize,
     lose_first: bool,
@@ -91,8 +92,10 @@ impl Ports for Fake {
         &mut self,
         _: &Team,
         e: &crate::teams::store::StageTaskEffect,
-        _: &str,
+        original: &str,
     ) -> Result<TaskReply> {
+        assert!(uuid::Uuid::parse_str(original).is_ok_and(|id| !id.is_nil()));
+        self.originals.push(original.into());
         self.calls.push(e.request_id.clone());
         self.documents.insert(e.request_id.clone());
         if let Some((state, target)) = self.release.take() {
@@ -171,6 +174,10 @@ fn a_child_lost_after_save_repeats_only_the_recorded_creation_identity() {
     tick(&mut h, &mut a, &mut p, 60_100);
     assert_eq!(p.calls.len(), 2);
     assert_eq!(p.calls[0], p.calls[1]);
+    assert_ne!(
+        p.originals[0], p.originals[1],
+        "a retry continued the old original"
+    );
     assert_eq!(p.documents.len(), 1);
     assert_eq!(h.node(stage).task.as_ref().unwrap().uuid, p.calls[0]);
 }
