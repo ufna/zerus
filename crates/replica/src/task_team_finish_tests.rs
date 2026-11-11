@@ -20,7 +20,7 @@ fn team_finish_history_is_readable_without_the_team_reader() {
 #[cfg(not(feature = "test-without-team"))]
 mod writer {
     use super::*;
-    use crate::execution::{EventKind, NativeRequest, Origin, Phase, Receipt};
+    use crate::execution::{EventKind, NativeRequest, Origin, Phase, Receipt, ReportKind};
     const HOME: &str = "00000000-0000-4000-8000-000000000002";
     fn actor(name: &str) -> Actor {
         Actor::Agent(SessionKey {
@@ -235,5 +235,46 @@ mod writer {
         one.import(&two.snapshot().unwrap()).unwrap();
         assert!(one.view().unwrap().execution.unwrap().conflict);
         refusal(&mut one);
+    }
+    #[test]
+    fn team_finish_refuses_a_review_without_a_ready_attempt_and_a_wrong_actor() {
+        for change in 0..5 {
+            let mut doc = task();
+            let id = sent(&mut doc, true);
+            if change == 1 {
+                doc.begin_attempt(&id, &actor("holder"), 5).unwrap();
+            }
+            if change < 2 {
+                doc.fields().insert("stage", "review").unwrap();
+                doc.doc.commit();
+            }
+            let mut who = actor("lead");
+            if change >= 2 {
+                doc.report_attempt(
+                    &id,
+                    "Actual holder result",
+                    ReportKind::Ready,
+                    None,
+                    &actor("holder"),
+                    6,
+                )
+                .unwrap();
+                if change == 2 {
+                    who = Actor::Person;
+                }
+                if let Actor::Agent(k) = &mut who {
+                    if change == 3 {
+                        k.machine = "foreign".into();
+                    } else {
+                        k.session_id.clear();
+                    }
+                }
+            }
+            let view = doc.view().unwrap();
+            let revision = doc.revision();
+            assert!(doc.finish_team_accepted(&who, 10).is_err(), "{change}");
+            assert_eq!(doc.revision(), revision);
+            assert_eq!(doc.view().unwrap(), view);
+        }
     }
 }

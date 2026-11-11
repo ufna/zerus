@@ -29,6 +29,10 @@ mod team_key_tests;
 #[path = "task_team_finish_tests.rs"]
 mod team_finish_tests;
 
+#[cfg(test)]
+#[path = "task_team_handover_tests.rs"]
+mod team_handover_tests;
+
 #[cfg(not(feature = "test-without-team"))]
 #[path = "task_team.rs"]
 mod team;

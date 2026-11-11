@@ -2962,3 +2962,7 @@ mod tests {
         assert!(refused, "no refused input was merged");
     }
 }
+
+#[cfg(not(feature = "test-without-team"))]
+#[path = "task_team_handover.rs"]
+mod team_handover;
