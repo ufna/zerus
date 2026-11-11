@@ -487,7 +487,11 @@ Their briefs are in the addendum for wave 2 below.
 **Deliver:** event intake (store revision, watch stream), `handouts`, intent
 then the task attempt writer then outcome, doorbells through deferred send,
 one safety check a minute. Effects sit behind traits so tests use fakes.
-Review focus 1 and 2.
+Review focus 1 and 2. The full brief is written when packages 5 and 7 are
+merged; "Decisions during wave 2" already binds it. Carried forward from
+package 7: when the team store's revision changes, the actor calls the
+launch worker's coalesced wake, so a person's decision on a launch card acts
+on the next pass and not only at the one-minute check.
 
 ### Package 9: pipelines
 
