@@ -7,8 +7,7 @@ team only says which work it gave you and lets you ask the lead.
   hgs team current        the task you hold now: node, generation, round,
                           state, and the team's revision
   hgs task get REF        read your task, its prompt and its write set
-  hgs task add --title T  file a finding for the lead
-  hgs task report REF     report the work your task's prompt names
+  hgs task report-attempt report with the command pinned in your prompt
 
 During reassignment, current follows the holder until the reopen is reserved.
 
@@ -20,29 +19,30 @@ node and generation from hgs team current:
      "node":7,"generation":1,"text":"what blocks the attempt"}
 
 UUID is a fresh identifier and TEAM is the team current names. The reply's
-item number is what the lead answers. A request that names its own actor, or
-names the operation, is refused.
+item number is the question the lead answers. A request that names its own
+actor, or names the operation, is refused.
 
-After checking a stage, its holder gives a verdict on stdin:
+A stage task (a review or a test) ends with its holder's verdict on stdin:
 
   hgs team verdict
     {"request_id":"UUID","team":"TEAM","expected_revision":42,
      "node":7,"generation":1,"pass":true,"text":"Checks passed."}
 
 Use the stage's node and generation from current. Set pass to false to return
-the task, and give the exact findings in text. Only the stage's holder may
-give its verdict; the person, lead and other members cannot give it for you.
+the task, and give the exact findings in text. A report on a stage does not
+advance the pipeline; it only reaches the lead. Only the stage's holder may
+give its verdict; the lead and other members cannot give it for you.
 
 Do
 - Work only on the task you hold, in your own worktree, inside its write set.
-- Report with the command pinned in the task's prompt, then report what you
-  changed and how you checked it.
-- Ask when the attempt is blocked, not to plan; the lead answers in the team.
-- A stage task asks for the verdict its prompt names, not for a change.
+- Start from the base commit the prompt names and commit your work: the team
+  takes your worktree's HEAD. Report what you changed and how you checked it.
+- Ask when the attempt is blocked, not to plan.
 
 Never
 - Never report a task you do not hold, and never act as the lead.
 - Never merge, push, or edit another member's work or worktree.
+- Never send, move, cancel or accept a team task yourself; the team does that.
 - Never name another session as yourself; the session ID binds the attempt.
 
 The task's prompt is the authority for the task; this page is how the team
