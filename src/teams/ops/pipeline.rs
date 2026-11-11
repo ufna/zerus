@@ -1,4 +1,5 @@
 //! A round is a task attempt: a return, reassignment or board reopen uses one.
+//! Development reports predating pipeline runs need the person's acceptance.
 use super::*;
 use zerus_team_plan::{
     catalog::Pipeline,
@@ -25,16 +26,16 @@ fn spec<'a>(ctx: &'a Context<'_>, n: &Node) -> Result<&'a Pipeline> {
 }
 pub(super) fn reported(ctx: &mut Context<'_>, n: &Node, body: &str) -> Result<()> {
     ctx.close_inbox(n.id)?;
-    ctx.db.execute("INSERT INTO pipeline_runs(team,node,generation,state) VALUES(?1,?2,?3,'active') ON CONFLICT(team,node) DO UPDATE SET generation=excluded.generation,state='active',stage=NULL",params![ctx.team.id,n.id,ctx.generation(n.id)?]).map_err(storage)?;
-    // Reports on legacy stage nodes remain lead facts. Only Verdict advances
+    // A stage report is only a lead inbox item. Only Verdict advances
     // a pipeline; the observer cannot attest to a reviewer's decision.
     if n.kind == NodeKind::Stage {
-        return to_lead(
+        return report_item(
             ctx,
             n,
             "A stage gives a verdict; it does not report a result.",
         );
     }
+    ctx.db.execute("INSERT INTO pipeline_runs(team,node,generation,state) VALUES(?1,?2,?3,'active') ON CONFLICT(team,node) DO UPDATE SET generation=excluded.generation,state='active',stage=NULL",params![ctx.team.id,n.id,ctx.generation(n.id)?]).map_err(storage)?;
     step(ctx, n, kernel::after_report(n, spec(ctx, n)?), body)
 }
 fn staffed(ctx: &Context<'_>, n: &Node, step: kernel::Step) -> Result<kernel::Step> {
@@ -180,6 +181,11 @@ fn require_holder(ctx: &Context<'_>, n: &Node) -> Result<()> {
     Ok(())
 }
 pub(super) fn to_lead(ctx: &mut Context<'_>, n: &Node, why: &str) -> Result<()> {
+    state(ctx, n.id, "lead", None)?;
+    queue::set_hold(ctx, n.id, false)?;
+    report_item(ctx, n, why)
+}
+fn report_item(ctx: &mut Context<'_>, n: &Node, why: &str) -> Result<()> {
     let mut body = report_text(ctx, n)?;
     if !spec(ctx, n)?.stages.is_empty() {
         body.push('\n');
@@ -190,8 +196,6 @@ pub(super) fn to_lead(ctx: &mut Context<'_>, n: &Node, why: &str) -> Result<()> 
         }
         body.truncate(end);
     }
-    state(ctx, n.id, "lead", None)?;
-    queue::set_hold(ctx, n.id, false)?;
     ctx.reply.item = Some(ctx.inbox(n.id, "report", &body)?);
     Ok(())
 }

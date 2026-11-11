@@ -10,6 +10,8 @@ team only says which work it gave you and lets you ask the lead.
   hgs task add --title T  file a finding for the lead
   hgs task report REF     report the work your task's prompt names
 
+During reassignment, current follows the holder until the reopen is reserved.
+
 Ask takes one JSON request on stdin and prints one JSON reply. Take revision,
 node and generation from hgs team current:
 

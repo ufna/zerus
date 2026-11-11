@@ -10,6 +10,7 @@ pub(super) fn accept(ctx: &mut Context<'_>) -> Result<()> {
     ctx.active()?;
     ctx.undecided(*node)?;
     let n = ctx.live_node(*node)?;
+    stage_end_authority(ctx, &n)?;
     if n.state != NodeState::Reported {
         return Err(invalid("Only a reported task can be accepted."));
     }
@@ -118,10 +119,20 @@ pub(super) fn cancel(ctx: &mut Context<'_>) -> Result<()> {
     };
     ctx.active()?;
     ctx.undecided(*node)?;
-    ctx.live_node(*node)?;
+    let n = ctx.live_node(*node)?;
+    stage_end_authority(ctx, &n)?;
     reason(why)?;
     pipeline::override_task(ctx, *node)?;
     ctx.decision(*node, "cancel", why, DecisionState::Pending)?;
+    Ok(())
+}
+fn stage_end_authority(ctx: &Context<'_>, n: &Node) -> Result<()> {
+    if n.kind == NodeKind::Stage && !is_person(ctx.actor) {
+        return Err(Problem::new(
+            code::NOT_ALLOWED,
+            "The stage needs its holder's verdict; only the person may override it.",
+        ));
+    }
     Ok(())
 }
 pub(super) fn integration(ctx: &mut Context<'_>) -> Result<()> {

@@ -468,7 +468,8 @@ fn integration_discovery_excludes_stage_and_no_branch_accepts() {
         } else {
             h.settings(|s| s.integration = Integration::None);
         }
-        h.run(&lead, Operation::Accept { node }).unwrap();
+        let actor = if stage { person() } else { lead };
+        h.run(&actor, Operation::Accept { node }).unwrap();
         assert!(h
             .store
             .integration_accepts(TEAM, 200, None)

@@ -136,6 +136,12 @@ fn current_follows_a_reassignment_and_never_the_plan_or_a_reservation() {
             reason: "Another implementer takes this round".into(),
         },
     );
+    let (old, exit) = h.cli(&Caller::Session(key(M1_SESSION)), "current", "");
+    assert_eq!(exit, 0);
+    assert_eq!(old["nodes"][0]["id"], node);
+    let (new, exit) = h.cli(&Caller::Session(key(m2)), "current", "");
+    assert_eq!(exit, 0);
+    assert!(new["nodes"].as_array().unwrap().is_empty());
     let id = uid(0x7101);
     h.apply(
         &service(),
@@ -199,4 +205,65 @@ fn current_stops_after_three_pages_even_in_an_oversized_store() {
     let (reply, exit) = h.cli(&Caller::Session(key(M1_SESSION)), "current", "");
     assert_eq!(exit, 0, "{reply}");
     assert_eq!(reply["nodes"].as_array().unwrap().len(), 600);
+}
+
+#[test]
+fn row_kind_uses_the_node_kind_for_a_reviewer_task_and_developer_stage() {
+    use crate::teams::ops::{HandoutOutcome, Operation, TaskStage};
+    let h = Harness::new();
+    let mut team = fixture().team;
+    team.bundle.pipelines[0].implementer = "reviewer".into();
+    team.bundle.pipelines[0].stages[0].role = "developer".into();
+    h.apply(
+        &person(),
+        Operation::Create {
+            project: team.project,
+            name: team.name,
+            goal: team.goal,
+            home: team.home,
+            bundle: Box::new(team.bundle),
+            integration_branch: team.integration_branch,
+            base_commit: team.base_commit,
+        },
+    );
+    h.bind("m3", REVIEWER_SESSION);
+    let node = h.add(1);
+    let id = uid(0x7500);
+    h.apply(
+        &service(),
+        Operation::HandoutIntent {
+            node,
+            member: "m3".into(),
+            effect_request_id: id.clone(),
+        },
+    );
+    h.apply(
+        &service(),
+        Operation::HandoutOutcome {
+            effect_request_id: id,
+            outcome: HandoutOutcome::Submitted {
+                receipt: "Task delivered".into(),
+            },
+        },
+    );
+    h.observe(node, TaskStage::InProgress);
+    h.observe(node, TaskStage::InReview);
+    h.apply(
+        &service(),
+        Operation::RecordReport {
+            node,
+            generation: 1,
+            member: "m3".into(),
+            text: "Task implemented by the reviewer role".into(),
+            commit: COMMIT.into(),
+        },
+    );
+    let (reply, exit) = h.cli(&Caller::Person, &format!("queue --team {TEAM}"), "");
+    assert_eq!(exit, 0, "{reply}");
+    let rows = reply["rows"].as_array().unwrap();
+    let task = rows.iter().find(|r| r["role"] == "reviewer").unwrap();
+    assert_eq!(task["kind"], "task");
+    let stage = rows.iter().find(|r| r["role"] == "developer").unwrap();
+    assert_eq!(stage["kind"], "stage");
+    assert_eq!(stage["stage"]["kind"], "review");
 }

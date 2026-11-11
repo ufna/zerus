@@ -105,7 +105,7 @@ pub(in crate::teams::ops) fn before_observation(
         )
         && observed_reopen(ctx, n.id)?
         && !ctx.reopening(n.id)?;
-    if o.cancelled || o.stage == TaskStage::Done || reopened {
+    if (o.cancelled || o.stage == TaskStage::Done || reopened) && !team_ended_stage(ctx, n, o)? {
         observe_override(ctx, n)?;
     }
     if reopened {
@@ -116,4 +116,24 @@ pub(in crate::teams::ops) fn before_observation(
         ctx.event = Some("person_override");
     }
     Ok(())
+}
+
+fn team_ended_stage(ctx: &Context<'_>, n: &Node, o: &TaskObservation) -> Result<bool> {
+    if n.kind != NodeKind::Stage || (!o.cancelled && o.stage != TaskStage::Done) {
+        return Ok(false);
+    }
+    // A writer-produced end is not a person's override. Inspect only the
+    // latest decision by the node index, including settled decisions: older
+    // development stores allowed the lead to end stages without a verdict.
+    let decision = ctx.db.query_row(
+        "SELECT generation,kind,json_extract(actor,'$.kind')='person' FROM decisions WHERE team=?1 AND node=?2 ORDER BY seq DESC LIMIT 1",
+        params![ctx.team.id, n.id],
+        |r| Ok((r.get::<_, u32>(0)?, r.get::<_, String>(1)?, r.get::<_, bool>(2)?)),
+    ).optional().map_err(storage)?;
+    let Some((generation, kind, person)) = decision else {
+        return Ok(false);
+    };
+    Ok(generation == ctx.generation(n.id)?
+        && kind == if o.cancelled { "cancel" } else { "accept" }
+        && !person)
 }
