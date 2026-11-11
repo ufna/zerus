@@ -45,6 +45,10 @@ pub(super) fn deliver(n: &Native<'_>, store: &Store, ring: &Ring) -> Rung {
         || {
             let tx = immediate(db)
                 .inspect_err(|e| busy.set(e.kind() == std::io::ErrorKind::WouldBlock))?;
+            #[cfg(test)]
+            if let Some(hook) = super::tests::LOCKED.with(|slot| slot.borrow_mut().take()) {
+                hook();
+            }
             admit_bell(&tx, &ring.bell)
                 .map_err(|_| std::io::Error::from(std::io::ErrorKind::PermissionDenied))?;
             Ok(tx)

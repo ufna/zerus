@@ -94,7 +94,9 @@ impl Timers {
         Ok(())
     }
     /// Once per pass: one page of a terminal team's task keys and one page
-    /// of member launches that completed after a stop or a removal.
+    /// of member launches that completed after a stop or a removal. In the
+    /// worst case a pass runs sixteen team-clear children of up to 30
+    /// seconds each and four launch reads of up to 15 seconds each.
     pub fn terminal(
         &mut self,
         store: &mut Store,

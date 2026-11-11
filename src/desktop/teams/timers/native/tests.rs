@@ -6,8 +6,11 @@ use crate::teams::{
     store::timers::Bell,
 };
 use std::{cell::RefCell, os::unix::fs::PermissionsExt, path::PathBuf};
+type Hook = Box<dyn FnOnce()>;
 std::thread_local! {
     pub(super) static PROGRAM: RefCell<Option<PathBuf>> = const { RefCell::new(None) };
+    /// Runs inside the doorbell's admission, once its lock is held.
+    pub(super) static LOCKED: RefCell<Option<Hook>> = const { RefCell::new(None) };
 }
 const STUB: &str = r#"#!/usr/bin/env python3
 import hashlib, json, os, pathlib, sys
@@ -203,4 +206,36 @@ fn the_clear_child_answers_only_with_an_echo_of_its_request() {
             "--json"
         ]
     );
+}
+
+#[test]
+fn a_stop_after_the_lock_is_taken_starts_nothing() {
+    let mut f = Fixture::new();
+    let ring = f.ring("claude");
+    f.mode("submitted");
+    let stop = f.stop.clone();
+    LOCKED.with(|slot| {
+        *slot.borrow_mut() = Some(Box::new(move || stop.store(true, Ordering::Release)))
+    });
+    assert!(matches!(
+        f.native().ring(&f.h.store, &ring),
+        Rung::NotStarted(_)
+    ));
+    assert!(f.args().is_none(), "the stub never ran");
+}
+
+#[test]
+fn the_preview_switched_off_after_the_lock_is_taken_starts_nothing() {
+    let mut f = Fixture::new();
+    let ring = f.ring("claude");
+    f.mode("submitted");
+    let preview = f.config.state.join("teams/preview");
+    LOCKED.with(|slot| {
+        *slot.borrow_mut() = Some(Box::new(move || std::fs::remove_file(preview).unwrap()))
+    });
+    assert!(matches!(
+        f.native().ring(&f.h.store, &ring),
+        Rung::NotStarted(_)
+    ));
+    assert!(f.args().is_none(), "the stub never ran");
 }

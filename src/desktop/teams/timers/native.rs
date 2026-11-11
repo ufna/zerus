@@ -1,6 +1,14 @@
 //! Production effects: this computer's own `hgs` as the one original child,
 //! with a custody lock of its own, no inherited agent identity and a bounded
 //! deadline. A child's exit is never read as a delivery; only its receipt is.
+//!
+//! An effect is admitted at the moment it starts: the stored facts are read
+//! first, inside the doorbell's immediate team-store transaction, and the
+//! service's stop flag and the preview switch are read last, in the same
+//! section; a refusal there starts nothing. The spawn itself has no time
+//! bound of its own, so that transaction is held from the admission until
+//! the spawn returns (measured at 253 ms with a 250 ms delay before exec);
+//! other writers of the team store meet their busy timeout meanwhile.
 mod clear;
 mod ring;
 use super::ports::{Answer, ClearRequest, Effects, Result, Ring, Rung};
@@ -86,11 +94,13 @@ impl Native<'_> {
             &held,
             Instant::now() + deadline,
             |cmd| {
+                let admitted = admit()?;
+                // The external gates last, inside the admitted section.
                 if self.stop.load(Ordering::Acquire) || !crate::teams::enabled(&self.config.state) {
                     return Err(std::io::ErrorKind::Interrupted.into());
                 }
                 configure(cmd, self.config);
-                admit()
+                Ok(admitted)
             },
         );
         if !matches!(ended, Ended::Unknown(_)) {
