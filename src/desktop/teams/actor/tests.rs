@@ -85,6 +85,8 @@ fn actor_ledger_refuses_a_shared_or_linked_directory() {
 #[cfg(unix)]
 mod adapters;
 #[cfg(unix)]
+mod commands;
+#[cfg(unix)]
 mod native_tasks;
 mod tasks;
 mod work;

@@ -1,8 +1,8 @@
 """Run the adapter's compiled argv against the real CLI in private task state.
 
 HGS_TEST_BIN selects this source's normal CLI; HGS_TEST_ACTOR_BINARY selects
-its Rust unit-test executable. Delivery and done gain real-command coverage
-in part C, after those commands are merged.
+its Rust unit-test executable. The explicit command matrix exercises delivery, recovery, finish, stage and
+clear, with only native agent input replaced by the test callback.
 """
 import json
 import os
@@ -34,6 +34,17 @@ class AdapterCommand(Fixture):
         self.assertEqual(value["damaged_total"], 0)
         self.assertEqual(value["tasks"], [])
         print("ACTOR_CLI_ARGV", json.dumps(vectors), flush=True)
+
+    def test_task_command_matrix(self):
+        result = subprocess.run(
+            [os.environ["HGS_TEST_ACTOR_BINARY"],
+             "desktop::teams::actor::tests::commands::entry", "--exact", "--nocapture", "--test-threads=1"],
+            env={**self.env, "HGS_TEST_BIN": str(HGS), "HGS_ACTOR_COMMAND_MODE": "matrix"},
+            text=True, capture_output=True, timeout=90,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("REAL_COMMAND package10 Native::clear => Cleared", result.stderr)
+        print(result.stdout + result.stderr, flush=True)
 
 
 if __name__ == "__main__":
