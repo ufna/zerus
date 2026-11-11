@@ -228,6 +228,7 @@ fn error_codes_are_stable_and_unique() {
             "stale_revision",
             "not_allowed",
             "invalid_state",
+            "storage_failed",
             "unknown_role",
             "unknown_pipeline",
             "unknown_member",
@@ -244,13 +245,13 @@ fn error_codes_are_stable_and_unique() {
         ]
     );
     let mut codes = code::ALL.to_vec();
-    assert_eq!(codes.len(), 18);
+    assert_eq!(codes.len(), 19);
     assert!(codes
         .iter()
         .all(|c| c.chars().all(|ch| ch.is_ascii_lowercase() || ch == '_')));
     codes.sort_unstable();
     codes.dedup();
-    assert_eq!(codes.len(), 18);
+    assert_eq!(codes.len(), 19);
     assert_eq!(code::TEAMS_INACTIVE, "teams_inactive");
     let problem =
         Problem::new(code::NO_ACCOUNT_AVAILABLE, "No account has room").with_refs(["1794358800"]);
@@ -297,5 +298,17 @@ fn an_empty_catalog_writes_no_empty_lists() {
     assert_eq!(
         serde_json::to_value(&rules_only).unwrap(),
         serde_json::json!({"planning_rules": ["One rule."]})
+    );
+}
+
+#[test]
+fn storage_failure_has_a_distinct_pinned_problem_fixture() {
+    let problem: Problem = round_trip(include_str!("../fixtures/problem-storage-failed.json"));
+    assert_eq!(problem.code, "storage_failed");
+    assert!(code::ALL.contains(&problem.code.as_str()));
+    assert_ne!(problem.code, code::INVALID_STATE);
+    assert_eq!(
+        problem.message,
+        "The result is not known; repeat the same request with the same request ID."
     );
 }

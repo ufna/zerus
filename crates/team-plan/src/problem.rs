@@ -1,8 +1,8 @@
-//! One refusal, with a stable code a caller can match on.
+//! One operation problem, with a stable code a caller can match on.
 
 use serde::{Deserialize, Serialize};
 
-/// Why an operation, a validation or a decision was refused.
+/// A logical refusal or a storage failure whose result is not known.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Problem {
@@ -49,6 +49,8 @@ pub mod code {
     pub const STALE_REVISION: &str = "stale_revision";
     pub const NOT_ALLOWED: &str = "not_allowed";
     pub const INVALID_STATE: &str = "invalid_state";
+    /// Storage failed or its result was lost; retry with the same request ID.
+    pub const STORAGE_FAILED: &str = "storage_failed";
     pub const UNKNOWN_ROLE: &str = "unknown_role";
     pub const UNKNOWN_PIPELINE: &str = "unknown_pipeline";
     pub const UNKNOWN_MEMBER: &str = "unknown_member";
@@ -64,12 +66,13 @@ pub mod code {
     pub const DELIVERY_UNCERTAIN: &str = "delivery_uncertain";
 
     /// Every code, for tests that pin the list.
-    pub const ALL: [&str; 18] = [
+    pub const ALL: [&str; 19] = [
         TEAMS_INACTIVE,
         NOT_FOUND,
         STALE_REVISION,
         NOT_ALLOWED,
         INVALID_STATE,
+        STORAGE_FAILED,
         UNKNOWN_ROLE,
         UNKNOWN_PIPELINE,
         UNKNOWN_MEMBER,

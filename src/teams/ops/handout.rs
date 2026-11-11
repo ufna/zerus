@@ -47,6 +47,17 @@ fn eligible(ctx: &Context<'_>, node: &Node, id: &str) -> Result<()> {
 }
 fn reserve(ctx: &mut Context<'_>, node: u32, member: &str, id: &str, kind: &str) -> Result<()> {
     uuid(id)?;
+    let used: bool = ctx
+        .db
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM effects WHERE request_id=?1)",
+            [id],
+            |r| r.get(0),
+        )
+        .map_err(storage)?;
+    if used {
+        return Err(invalid("Effect request ID was already used."));
+    }
     let busy:bool=ctx.db.query_row(&format!("SELECT EXISTS(SELECT 1 FROM effects WHERE team=?1 AND (node=?2 OR member=?3) AND state IN {OPEN_EFFECT_STATES})"),params![ctx.team.id,node,member],|r|r.get(0)).map_err(storage)?;
     if busy {
         return Err(invalid("Node or member has an unresolved effect."));
@@ -240,6 +251,17 @@ pub(super) fn report(ctx: &mut Context<'_>) -> Result<()> {
     let recorded:bool=ctx.db.query_row("SELECT EXISTS(SELECT 1 FROM effects WHERE team=?1 AND node=?2 AND generation=?3 AND state NOT IN ('refused','superseded'))",params![ctx.team.id,node,generation],|r|r.get(0)).map_err(storage)?;
     if !recorded {
         return Err(invalid("No current effect is available to report."));
+    }
+    let reported: bool = ctx
+        .db
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM reports WHERE team=?1 AND node=?2 AND generation=?3)",
+            params![ctx.team.id, node, generation],
+            |r| r.get(0),
+        )
+        .map_err(storage)?;
+    if reported {
+        return Err(invalid("This attempt already has a report."));
     }
     reason(body)?;
     text(commit, 256)?;

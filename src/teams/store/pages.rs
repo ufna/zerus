@@ -93,7 +93,10 @@ impl Store {
         let scope = format!("{team}:phases");
         let c = if let Some(c) = cursor {
             if c.scope != scope {
-                return Err(storage("cursor belongs to another list"));
+                return Err(Problem::new(
+                    code::INVALID_STATE,
+                    "cursor belongs to another list",
+                ));
             }
             c.clone()
         } else {

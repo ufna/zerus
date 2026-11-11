@@ -43,6 +43,11 @@ pub fn apply(store: &mut Store, actor: &Actor, request: &Request, now: i64) -> R
         event: None,
     };
     let result = run(&mut ctx, request, current.is_some());
+    // A storage failure is not a saved decision. Dropping the transaction
+    // rolls back partial work; the same request ID can be processed again.
+    if matches!(&result, Err(problem) if problem.code == code::STORAGE_FAILED) {
+        return result;
+    }
     save(&tx, actor, request, &result)?;
     tx.commit().map_err(storage)?;
     result

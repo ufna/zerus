@@ -651,7 +651,7 @@ fn late_refusal_reports_the_existing_task_and_removes_its_marker() {
     assert_eq!(out["ok"], true, "{out}");
     assert_eq!(out["value"]["task_exists"], true);
     assert_eq!(out["value"]["team"]["queued"], false);
-    assert_eq!(out["value"]["team"]["error"]["code"], "invalid_state");
+    assert_eq!(out["value"]["team"]["error"]["code"], "storage_failed");
     assert!(out["value"]["message"]
         .as_str()
         .unwrap()

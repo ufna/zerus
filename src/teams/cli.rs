@@ -94,7 +94,11 @@ fn too_large() -> Problem {
     )
 }
 
-pub(super) fn refusal(problem: Problem) -> (Value, i32) {
+pub(super) fn refusal(mut problem: Problem) -> (Value, i32) {
+    if problem.code == code::STORAGE_FAILED {
+        problem.message =
+            "The result is not known; repeat the same request with the same request ID.".into();
+    }
     (json!({"ok": false, "error": problem}), 1)
 }
 
@@ -107,10 +111,7 @@ pub(super) fn unknown(command: &str) -> Problem {
 }
 
 pub(super) fn storage(error: impl std::fmt::Display) -> Problem {
-    Problem::new(
-        code::INVALID_STATE,
-        format!("Teams storage is unavailable: {error}"),
-    )
+    crate::teams::store::storage(error)
 }
 
 pub(super) fn not_found_team(team: &str) -> Problem {

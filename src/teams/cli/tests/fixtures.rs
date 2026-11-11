@@ -1,4 +1,4 @@
-//! The seven read replies, pinned as shared fixtures: the desktop's projections
+//! The read replies and an unknown write result, pinned as shared fixtures: the desktop's projections
 //! are built from exactly the JSON a person's `hgs team` prints.
 use super::harness::*;
 use crate::teams::cli::actor::Caller;
@@ -11,12 +11,14 @@ const CARDS: &str = include_str!("../../../../crates/team-plan/fixtures/cli-card
 const JOURNAL: &str = include_str!("../../../../crates/team-plan/fixtures/cli-journal.json");
 const LIST: &str = include_str!("../../../../crates/team-plan/fixtures/cli-list.json");
 const WAITING: &str = include_str!("../../../../crates/team-plan/fixtures/cli-waiting.json");
+const STORAGE_FAILED: &str =
+    include_str!("../../../../crates/team-plan/fixtures/cli-storage-failed.json");
 
 fn lead() -> Caller {
     Caller::Session(key(LEAD_SESSION))
 }
 
-fn replies() -> [(&'static str, Value); 7] {
+fn replies() -> [(&'static str, Value); 8] {
     let harness = seeded();
     let (board, _) = super::verdict::configured_stage(
         zerus_team_plan::catalog::StageKind::Review,
@@ -56,6 +58,10 @@ fn replies() -> [(&'static str, Value); 7] {
         ),
         ("cli-list.json", read(&Caller::Person, "list")),
         ("cli-waiting.json", read(&Caller::Person, "waiting")),
+        (
+            "cli-storage-failed.json",
+            super::storage_failure::failed_write(),
+        ),
     ]
 }
 
@@ -69,6 +75,7 @@ fn the_read_fixtures_are_the_replies_the_cli_prints() {
         ("cli-journal.json", JOURNAL),
         ("cli-list.json", LIST),
         ("cli-waiting.json", WAITING),
+        ("cli-storage-failed.json", STORAGE_FAILED),
     ];
     let replies = replies();
     for ((name, actual), (pinned_name, text)) in replies.iter().zip(pinned) {
@@ -76,15 +83,20 @@ fn the_read_fixtures_are_the_replies_the_cli_prints() {
         let expected: Value =
             serde_json::from_str(text).unwrap_or_else(|error| panic!("{name}: {error}"));
         assert_eq!(actual, &expected, "{name} is not the reply this hgs prints");
-        assert_eq!(actual["ok"], true, "{name}");
-        assert!(actual.get("error").is_none(), "{name}");
+        if *name == "cli-storage-failed.json" {
+            assert_eq!(actual["ok"], false, "{name}");
+            assert_eq!(actual["error"]["code"], "storage_failed", "{name}");
+        } else {
+            assert_eq!(actual["ok"], true, "{name}");
+            assert!(actual.get("error").is_none(), "{name}");
+        }
     }
 }
 
 /// Rewrites the fixtures from the seed. Run with:
 /// `cargo +1.99.1 test --bin hgs teams:: -- --ignored regenerate_fixtures`
 #[test]
-#[ignore = "writes the shared fixtures; run only when a read shape changes on purpose"]
+#[ignore = "writes the shared fixtures; run only when a reply shape changes on purpose"]
 fn regenerate_fixtures() {
     for (name, reply) in replies() {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))

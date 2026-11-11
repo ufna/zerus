@@ -36,7 +36,7 @@ pub struct Store {
 
 pub(crate) fn storage(error: impl std::fmt::Display) -> Problem {
     Problem::new(
-        code::INVALID_STATE,
+        code::STORAGE_FAILED,
         format!("Teams storage is unavailable: {error}"),
     )
 }
@@ -230,12 +230,16 @@ fn initialize(db: &mut Connection) -> Result<()> {
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .map_err(storage)?;
     if version == 1 {
-        return Err(storage(
+        return Err(Problem::new(
+            code::INVALID_STATE,
             "Version-1 Teams store belongs to an unsupported pre-release build.",
         ));
     }
     if version > SCHEMA_VERSION {
-        return Err(storage("store schema is newer than this version of Zerus"));
+        return Err(Problem::new(
+            code::INVALID_STATE,
+            "store schema is newer than this version of Zerus",
+        ));
     }
     if version == SCHEMA_VERSION {
         return schema_extensions(db);
@@ -249,12 +253,13 @@ fn initialize(db: &mut Connection) -> Result<()> {
     let sql = match current {
         0 => Some(include_str!("schema.sql")),
         1 => {
-            return Err(storage(
+            return Err(Problem::new(
+                code::INVALID_STATE,
                 "Version-1 Teams store belongs to an unsupported pre-release build.",
             ))
         }
         SCHEMA_VERSION => None,
-        _ => return Err(storage("store schema changed")),
+        _ => return Err(Problem::new(code::INVALID_STATE, "store schema changed")),
     };
     if let Some(sql) = sql {
         tx.execute_batch(
