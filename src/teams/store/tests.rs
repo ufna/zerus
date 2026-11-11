@@ -1,5 +1,8 @@
 use super::*;
 mod cross;
+mod holder;
+mod member_sessions;
+mod stage;
 
 #[test]
 fn missing_store_is_lazy_and_preview_is_required() {
@@ -288,6 +291,30 @@ fn integration_accepts_page_by_open_node_and_filter_authority_and_recorded_facts
     h.run(&lead, Operation::Accept { node: ready }).unwrap();
     let expected = h.accept_decision(ready);
     h.settings(|s| s.delegations.merge_accepted = false);
+    assert!(h
+        .store
+        .integration_accepts(TEAM, 200, None)
+        .unwrap()
+        .rows
+        .is_empty());
+    let card = h
+        .store
+        .waiting(200, None)
+        .unwrap()
+        .rows
+        .into_iter()
+        .find(|r| r.card.node == Some(ready))
+        .unwrap()
+        .card
+        .seq;
+    h.run(
+        &person(),
+        Operation::DecideCard {
+            card,
+            decision: "approve".into(),
+        },
+    )
+    .unwrap();
     let owner = h.add(&person(), 4);
     h.submit(owner, "m1");
     h.report(owner, "m1");
@@ -466,7 +493,8 @@ fn integration_discovery_excludes_stage_and_no_branch_accepts() {
         } else {
             h.settings(|s| s.integration = Integration::None);
         }
-        h.run(&lead, Operation::Accept { node }).unwrap();
+        let actor = if stage { person() } else { lead };
+        h.run(&actor, Operation::Accept { node }).unwrap();
         assert!(h
             .store
             .integration_accepts(TEAM, 200, None)

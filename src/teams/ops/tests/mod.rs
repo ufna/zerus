@@ -3,11 +3,14 @@ mod apply;
 mod authority;
 mod cards;
 mod decisions;
+mod delegation;
 mod handout;
 mod integration;
 mod members;
 mod observations;
+mod pipeline;
 mod queue;
+mod readiness;
 mod talk;
 mod team;
 
@@ -99,7 +102,13 @@ impl Harness {
     }
     pub fn new() -> Self {
         let mut h = Self::empty();
-        h.run(&person(), create()).unwrap();
+        // These lifecycle tests isolate the store from pipeline progression.
+        // Pipeline tests construct a real staged bundle explicitly.
+        let mut create = create();
+        if let Operation::Create { bundle, .. } = &mut create {
+            bundle.pipelines[0].stages.clear();
+        }
+        h.run(&person(), create).unwrap();
         h
     }
     pub fn run(&mut self, actor: &Actor, op: Operation) -> Result<Reply> {

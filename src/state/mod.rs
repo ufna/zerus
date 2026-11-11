@@ -129,8 +129,16 @@ mod launch_observation;
 pub(crate) use launch_observation::{observe_team_launch, TeamObservation};
 /// The maintained ownership reader; Teams supplies the exact generated path.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
-pub(crate) fn team_worktree_ownership(state: &Path, common: &Path, path: &Path) -> Option<Value> {
+pub(crate) fn team_worktree_ownership(
+    state: &Path,
+    common: &Path,
+    path: &Path,
+) -> std::result::Result<Option<Value>, worktree_lifecycle::OwnershipUnavailable> {
     worktree_lifecycle::owned_in(state, common, path)
+}
+#[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
+pub(crate) fn team_worktree_receipt_path(state: &Path, common: &Path, path: &Path) -> PathBuf {
+    worktree_lifecycle::receipt_path_in(state, common, path)
 }
 pub(crate) mod launch_identity;
 /// Evidence about original launch `launch` under this process's own state

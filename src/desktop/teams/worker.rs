@@ -133,8 +133,14 @@ fn run(
     let Ok(mut actor) = launch::Runtime::open(&config.state, &machine, &epoch) else {
         return;
     };
-    let Ok(mut store) = Store::open(&config.state) else {
-        return;
+    let mut store = match Store::open(&config.state) {
+        Ok(store) => store,
+        Err(error) => {
+            if let Err(fault) = actor.record_health(&error, chrono::Utc::now().timestamp_millis()) {
+                eprintln!("hgs: Teams health write failed: {}", fault.code);
+            }
+            return;
+        }
     };
     let mut native = Native {
         config: config.clone(),
@@ -143,32 +149,28 @@ fn run(
     };
     super::child::prune_custody(&config);
     let mut cursor = None;
+    let mut cycle_fault = false;
+    let mut confirm_cursor = Default::default();
     while !stop.load(Ordering::Acquire) && crate::teams::enabled(&config.state) {
-        actor.begin_pass();
-        if let Ok(page) = page(&mut store, cursor.as_ref()) {
-            for team in &page.rows {
-                let id = &team.id;
-                // Eight transitions per team, plus at most one original's
-                // drain, keep a large roster from monopolizing the pass.
-                for step in 0..12 {
-                    if step >= 8 && !actor.busy() {
-                        break;
-                    }
-                    if stop.load(Ordering::Acquire) {
-                        break;
-                    }
-                    let now = chrono::Utc::now().timestamp_millis();
-                    if !actor
-                        .tick(&mut store, &mut native, id, now)
-                        .unwrap_or(false)
-                    {
-                        break;
-                    }
-                }
-                actor.release();
-            }
-            cursor = page.next;
-            let _ = actor.maintain(&store);
+        if let Err(error) = pass(
+            &mut actor,
+            &mut store,
+            &mut native,
+            &mut cursor,
+            &mut cycle_fault,
+            &stop,
+        ) {
+            eprintln!("hgs: Teams worker fault: {}", error.code);
+        }
+        if let Err(error) = super::confirm::step(
+            &config,
+            &epoch,
+            &native.machine,
+            &mut store,
+            &stop,
+            &mut confirm_cursor,
+        ) {
+            eprintln!("hgs: Teams standing confirmation fault: {error}");
         }
         if receive.recv_timeout(Duration::from_secs(60))
             == Err(mpsc::RecvTimeoutError::Disconnected)
@@ -176,6 +178,74 @@ fn run(
             break;
         }
     }
+}
+pub(super) fn pass(
+    actor: &mut launch::Runtime,
+    store: &mut Store,
+    effects: &mut impl super::ports::Effects,
+    cursor: &mut Option<crate::teams::store::Cursor>,
+    cycle_fault: &mut bool,
+    stop: &AtomicBool,
+) -> super::ports::Result<()> {
+    actor.begin_pass();
+    let page = match page(store, cursor.as_ref()) {
+        Ok(page) => page,
+        Err(error) => {
+            record_fault(actor, cycle_fault, &error)?;
+            return Ok(());
+        }
+    };
+    for team in &page.rows {
+        for step in 0..12 {
+            if step >= 8 && !actor.busy() {
+                break;
+            }
+            if stop.load(Ordering::Acquire) {
+                actor.release();
+                return Ok(());
+            }
+            let advanced = match actor.tick(
+                store,
+                effects,
+                &team.id,
+                chrono::Utc::now().timestamp_millis(),
+            ) {
+                Ok(advanced) => advanced,
+                Err(error) => {
+                    if super::ledger::is_notice_budget(&error) {
+                        actor.record_health(&error, chrono::Utc::now().timestamp_millis())?;
+                    } else if !actor.row_failure() {
+                        record_fault(actor, cycle_fault, &error)?;
+                    }
+                    false
+                }
+            };
+            if !advanced {
+                break;
+            }
+        }
+        actor.release();
+    }
+    *cursor = page.next;
+    if let Err(error) = actor.maintain(store) {
+        record_fault(actor, cycle_fault, &error)?;
+    }
+    if cursor.is_none() {
+        // A healthy page cannot clear a fault from another page in this sweep.
+        if !*cycle_fault {
+            actor.clear_health()?;
+        }
+        *cycle_fault = false;
+    }
+    Ok(())
+}
+fn record_fault(
+    actor: &mut launch::Runtime,
+    cycle_fault: &mut bool,
+    error: &zerus_team_plan::Problem,
+) -> super::ports::Result<()> {
+    *cycle_fault = true;
+    actor.record_health(error, chrono::Utc::now().timestamp_millis())
 }
 fn page(
     store: &mut Store,

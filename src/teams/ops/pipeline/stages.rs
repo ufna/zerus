@@ -1,0 +1,122 @@
+use super::*;
+
+pub(in crate::teams::ops) fn current_stage(
+    ctx: &Context<'_>,
+    stage: u32,
+    target: u32,
+) -> Result<bool> {
+    ctx.db.query_row("SELECT EXISTS(SELECT 1 FROM pipeline_runs p JOIN nodes n ON n.team=p.team AND n.id=p.node JOIN stage_tasks s ON s.team=p.team AND s.node=p.stage WHERE p.team=?1 AND p.node=?2 AND p.stage=?3 AND p.state='active' AND p.generation=n.generation AND s.generation=n.generation AND n.node_state='reported')",params![ctx.team.id,target,stage],|r|r.get(0)).map_err(storage)
+}
+pub(in crate::teams::ops) fn retire_stage(ctx: &Context<'_>, stage: u32) -> Result<()> {
+    ctx.settle_override(stage)?;
+    ctx.close_inbox(stage)?;
+    ctx.db.execute(&format!("UPDATE effects SET state='superseded' WHERE team=?1 AND node=?2 AND state IN {OPEN_EFFECT_STATES}"),params![ctx.team.id,stage]).map_err(storage)?;
+    ctx.db
+        .execute(
+            "DELETE FROM live_tasks WHERE team=?1 AND node=?2",
+            params![ctx.team.id, stage],
+        )
+        .map_err(storage)?;
+    ctx.db
+        .execute(
+            &format!(
+                "INSERT INTO node_archive({0}) SELECT {0} FROM nodes WHERE team=?1 AND id=?2",
+                rows::NODE_COLUMNS
+            ),
+            params![ctx.team.id, stage],
+        )
+        .map_err(storage)?;
+    ctx.db
+        .execute(
+            "DELETE FROM nodes WHERE team=?1 AND id=?2",
+            params![ctx.team.id, stage],
+        )
+        .map_err(storage)?;
+    Ok(())
+}
+pub(super) fn want_stage(
+    ctx: &mut Context<'_>,
+    n: &Node,
+    index: u32,
+    kind: zerus_team_plan::catalog::StageKind,
+    role: &str,
+) -> Result<()> {
+    if ctx.count(true)? >= ctx.team.settings.caps.max_open_tasks {
+        return to_lead(
+            ctx,
+            n,
+            "The stage needs a capacity slot; the admitted task cap is reached.",
+        );
+    }
+    let id: u32 = ctx
+        .db
+        .query_row(
+            "SELECT next_node FROM teams WHERE id=?1",
+            [&ctx.team.id],
+            |r| r.get(0),
+        )
+        .map_err(storage)?;
+    if id == u32::MAX {
+        return Err(over("Node IDs are exhausted."));
+    }
+    let stage = metadata(ctx, n, id, index, kind, role)?;
+    ctx.db
+        .execute(
+            "INSERT INTO node_identity(team,id,task_project,task_uuid) VALUES(?1,?2,?3,'')",
+            params![ctx.team.id, id, ctx.team.project],
+        )
+        .map_err(storage)?;
+    ctx.db.execute("INSERT INTO nodes(team,id,data,rank,admitted,routed,task_revision,task_stage,task_cancelled,integration_required) VALUES(?1,?2,?3,?4,1,1,'','unobserved',0,0)",params![ctx.team.id,id,rows::node_payload(&stage)?,n.rank]).map_err(storage)?;
+    ctx.db.execute("INSERT INTO stage_tasks(team,node,target,generation,created_ms) VALUES(?1,?2,?3,?4,?5)",params![ctx.team.id,id,n.id,ctx.generation(n.id)?,ctx.now]).map_err(storage)?;
+    ctx.db
+        .execute(
+            "UPDATE teams SET next_node=next_node+1 WHERE id=?1",
+            [&ctx.team.id],
+        )
+        .map_err(storage)?;
+    state(ctx, n.id, "active", Some(id))?;
+    queue::set_hold(ctx, n.id, true)?;
+    Ok(())
+}
+
+fn metadata(
+    ctx: &Context<'_>,
+    n: &Node,
+    id: u32,
+    index: u32,
+    kind: zerus_team_plan::catalog::StageKind,
+    role: &str,
+) -> Result<Node> {
+    let label = match kind {
+        zerus_team_plan::catalog::StageKind::Review => "Review",
+        zerus_team_plan::catalog::StageKind::Test => "Test",
+        zerus_team_plan::catalog::StageKind::Land => "Land",
+    };
+    let (report, commit): (String, String) = ctx
+        .db
+        .query_row(
+            "SELECT text,commit_id FROM reports WHERE team=?1 AND node=?2 AND generation=?3",
+            params![ctx.team.id, n.id, ctx.generation(n.id)?],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .map_err(storage)?;
+    let mut stage = n.clone();
+    stage.id = id;
+    stage.task = None;
+    stage.kind = NodeKind::Stage;
+    stage.stage_of = Some(n.id);
+    stage.stage_index = index;
+    stage.title = format!("{label}: {}", n.title);
+    stage.role = role.into();
+    stage.assignee = None;
+    stage.text = format!(
+        "{label} task {} in round {} at commit {commit}. Give a verdict with the findings.\n{}\nImplementer report:\n{report}",
+        n.id, n.round, n.text
+    );
+    stage.deps.clear();
+    stage.writes.clear();
+    stage.hold = false;
+    stage.decided_by = None;
+    stage.integrated = false;
+    Ok(stage)
+}

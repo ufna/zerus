@@ -9,7 +9,9 @@ use std::{path::Path, time::Duration};
 use zerus_team_plan::{model::Team, problem::code, Problem};
 
 pub(super) const BRANCH: &str = "@branch";
-const FILE: &str = "member-launch-v1.sqlite3";
+pub(super) const SCHEMA: u32 = 4;
+pub(super) const BUDGET: &str = "@budget";
+pub(super) const FILE: &str = "member-launch-v1.sqlite3";
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -22,6 +24,7 @@ pub(super) enum State {
     WorktreeReady,
     WorktreeIntent,
     WorktreeDone,
+    WorktreeVerify,
     LaunchReady,
     LaunchIntent,
     Submitted,
@@ -29,6 +32,21 @@ pub(super) enum State {
     ParentIntent,
     Done,
     Blocked,
+}
+
+impl State {
+    pub fn waits_on_backoff(&self) -> bool {
+        matches!(
+            self,
+            Self::Retry
+                | Self::BranchReady
+                | Self::WorktreeReady
+                | Self::WorktreeVerify
+                | Self::LaunchReady
+                | Self::Submitted
+                | Self::LaunchUnknown
+        )
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -119,6 +137,11 @@ impl Row {
     }
 }
 
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[path = "launch/checkout.rs"]
+mod checkout;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub(super) use checkout::Checkout;
 pub(super) struct Ledger(Connection);
 impl Ledger {
     pub fn open(state: &Path) -> Result<Self> {
@@ -188,19 +211,58 @@ impl Ledger {
                 tx.execute_batch(include_str!("bounds.sql"))
                     .map_err(storage)?;
             }
-            2 => (),
+            2..=4 => (),
             _ => return Err(storage("Member launch schema is newer than this Zerus")),
         }
+        if version < 3 {
+            tx.execute_batch(include_str!("notices.sql"))
+                .map_err(storage)?;
+            tx.execute_batch("PRAGMA user_version=3").map_err(storage)?;
+        }
+        if version < 4 {
+            tx.execute_batch(include_str!("health.sql"))
+                .map_err(storage)?;
+            tx.execute_batch("PRAGMA user_version=4").map_err(storage)?;
+        }
+        tx.execute_batch("CREATE TABLE IF NOT EXISTS launch_checkout_objects (
+            team TEXT NOT NULL, member TEXT NOT NULL, launch TEXT NOT NULL,
+            data TEXT NOT NULL CHECK(length(CAST(data AS BLOB))<=16384), PRIMARY KEY(team,member,launch));").map_err(storage)?;
         tx.commit().map_err(storage)?;
         db.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;")
             .map_err(storage)?;
         Ok(Self(db))
     }
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    pub fn record_checkout(&mut self, plan: &Plan, tree: &Worktree) -> Result<bool> {
+        checkout::record(&mut self.0, plan, tree)
+    }
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    pub fn checkout(&self, team: &str, member: &str, launch: &str) -> Result<Option<Checkout>> {
+        checkout::lookup(&self.0, team, member, launch)
+    }
+    pub fn write_health(&mut self, code: Option<i64>, now: i64) -> Result<()> {
+        let at = code.map(|_| now.max(0));
+        if self
+            .0
+            .execute(
+                "UPDATE launch_health SET code=?1,at_ms=?2 WHERE id=1",
+                params![code, at],
+            )
+            .map_err(storage)?
+            != 1
+        {
+            return Err(storage("Launch health singleton is missing"));
+        }
+        Ok(())
+    }
     pub fn get(&self, team: &str, member: &str) -> Result<Option<Row>> {
         let data: Option<String> = self
             .0
             .query_row(
-                "SELECT data FROM originals WHERE team=?1 AND member=?2",
+                &format!(
+                    "SELECT data FROM {} WHERE team=?1 AND member=?2",
+                    table(member)
+                ),
                 params![team, member],
                 |r| r.get(0),
             )
@@ -239,7 +301,7 @@ impl Ledger {
             let mut q = self
                 .0
                 .prepare(
-                    "SELECT team FROM originals WHERE team>?1 GROUP BY team ORDER BY team LIMIT 16",
+                    "SELECT team FROM originals WHERE team>?1 UNION SELECT team FROM budget_alerts WHERE team>?1 ORDER BY team LIMIT 16",
                 )
                 .map_err(storage)?;
             let values = q
@@ -279,8 +341,17 @@ impl Ledger {
                     }
                 }
             }
-            if status == Some(zerus_team_plan::model::TeamStatus::Archived) {
+            if matches!(
+                status,
+                Some(
+                    zerus_team_plan::model::TeamStatus::Stopped
+                        | zerus_team_plan::model::TeamStatus::Archived
+                )
+            ) {
                 self.0.execute("DELETE FROM originals WHERE rowid IN (SELECT rowid FROM originals WHERE team=?1 AND json_extract(data,'$.state') IN ('done','branch_done') LIMIT 202)",[team]).map_err(storage)?;
+                self.0
+                    .execute("DELETE FROM budget_alerts WHERE team=?1", [team])
+                    .map_err(storage)?;
             }
         }
         *after = if teams.len() == 16 {
@@ -298,10 +369,13 @@ impl Ledger {
         let data = encoded(row)?;
         let inserted = tx
             .execute(
-                "INSERT OR IGNORE INTO originals(team,member,version,data) VALUES(?1,?2,0,?3)",
+                &format!(
+                    "INSERT OR IGNORE INTO {}(team,member,version,data) VALUES(?1,?2,0,?3)",
+                    table(&row.member)
+                ),
                 params![row.team, row.member, data],
             )
-            .map_err(storage)?
+            .map_err(ledger_error)?
             == 1;
         if inserted {
             journal(&tx, row, now_ms)?;
@@ -319,10 +393,15 @@ impl Ledger {
             .0
             .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
             .map_err(storage)?;
-        let changed = tx.execute(
-            "UPDATE originals SET version=?3,data=?4 WHERE team=?1 AND member=?2 AND version=?5",
-            params![row.team,row.member,next.version,encoded(&next)?,old],
-        ).map_err(storage)?;
+        let changed = tx
+            .execute(
+                &format!(
+                    "UPDATE {} SET version=?3,data=?4 WHERE team=?1 AND member=?2 AND version=?5",
+                    table(&row.member)
+                ),
+                params![row.team, row.member, next.version, encoded(&next)?, old],
+            )
+            .map_err(ledger_error)?;
         if changed != 1 {
             return Err(storage("Member launch original changed"));
         }
@@ -331,6 +410,34 @@ impl Ledger {
         *row = next;
         Ok(())
     }
+}
+fn table(member: &str) -> &'static str {
+    if member == BUDGET {
+        "budget_alerts"
+    } else {
+        "originals"
+    }
+}
+fn ledger_error(error: rusqlite::Error) -> Problem {
+    match &error {
+        rusqlite::Error::SqliteFailure(_,Some(message)) if message == "member launch budget exceeded" => Problem::new(code::OVER_CAP,"Team member creation is temporarily at capacity. Zerus will collect completed launch records from stopped or archived teams before trying again.").with_refs(["member_launch_ledger"]),
+        rusqlite::Error::SqliteFailure(_,Some(message)) if message == "launch notification budget exceeded" => Problem::new(code::OVER_CAP,"Team launch notifications are at capacity.").with_refs(["launch_notification_outbox"]),
+        _=>storage(error),
+    }
+}
+pub(super) fn is_budget(problem: &Problem) -> bool {
+    problem.code == code::OVER_CAP
+        && problem
+            .refs
+            .first()
+            .is_some_and(|s| s == "member_launch_ledger")
+}
+pub(super) fn is_notice_budget(problem: &Problem) -> bool {
+    problem.code == code::OVER_CAP
+        && problem
+            .refs
+            .first()
+            .is_some_and(|s| s == "launch_notification_outbox")
 }
 fn encoded(row: &Row) -> Result<String> {
     let data = serde_json::to_string(row).map_err(storage)?;
@@ -386,6 +493,134 @@ mod tests {
         let replacement = Row::new(&t, "lead", "another-epoch", State::LaunchReady);
         assert!(!l.insert(&replacement, 2).unwrap());
         assert_eq!(l.get(TEAM, "lead").unwrap().unwrap(), row);
+    }
+    #[test]
+    fn health_is_a_fixed_singleton_even_when_both_outboxes_are_full() {
+        let h = Harness::new();
+        let mut ledger = Ledger::open(h.temp.path()).unwrap();
+        ledger.0.execute_batch("UPDATE launch_budget SET rows=16384 WHERE id=1; UPDATE notice_budget SET rows=16384 WHERE id=1;").unwrap();
+        ledger.write_health(Some(1), 7).unwrap();
+        let health = crate::desktop::teams::health(h.temp.path()).unwrap();
+        assert_eq!(health.code, "launch_notification_overflow");
+        assert_eq!(health.at_ms, 7);
+        assert!(ledger
+            .0
+            .execute("INSERT INTO launch_health VALUES(2,1,8)", [])
+            .is_err());
+        assert!(ledger.0.execute("DELETE FROM launch_health", []).is_err());
+        assert!(ledger
+            .0
+            .execute("UPDATE launch_health SET code=3", [])
+            .is_err());
+        assert!(ledger
+            .0
+            .execute("UPDATE launch_health SET code='unbounded text'", [])
+            .is_err());
+        for at in 8..100 {
+            ledger.write_health(Some(2), at).unwrap();
+        }
+        let count: u32 = ledger
+            .0
+            .query_row("SELECT COUNT(*) FROM launch_health", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 1);
+        assert_eq!(
+            crate::desktop::teams::health(h.temp.path()).unwrap().at_ms,
+            99
+        );
+        ledger.write_health(None, 0).unwrap();
+        assert_eq!(crate::desktop::teams::health(h.temp.path()), None);
+    }
+    #[test]
+    fn health_read_is_lazy_and_v3_migration_preserves_pending_work() {
+        let h = Harness::new();
+        assert_eq!(crate::desktop::teams::health(h.temp.path()), None);
+        assert!(!h.temp.path().join("teams").join(FILE).exists());
+        let t = h.store.team(TEAM).unwrap().unwrap();
+        let mut ledger = Ledger::open(h.temp.path()).unwrap();
+        let row = Row::new(&t, "lead", "epoch", State::WorktreeVerify);
+        ledger.insert(&row, 1).unwrap();
+        ledger
+            .0
+            .execute_batch("DROP TABLE launch_health; PRAGMA user_version=3;")
+            .unwrap();
+        assert_eq!(crate::desktop::teams::health(h.temp.path()), None);
+        let version: u32 = ledger
+            .0
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(version, 3, "the health read must not migrate or write");
+        drop(ledger);
+        let ledger = Ledger::open(h.temp.path()).unwrap();
+        assert_eq!(ledger.get(TEAM, "lead").unwrap(), Some(row));
+        assert_eq!(crate::desktop::teams::health(h.temp.path()), None);
+    }
+    #[test]
+    fn a_v2_ledger_adds_the_notification_outbox_without_changing_originals() {
+        let h = Harness::new();
+        let t = h.store.team(TEAM).unwrap().unwrap();
+        let mut ledger = Ledger::open(h.temp.path()).unwrap();
+        let saved = Row::new(&t, "lead", "epoch", State::WorktreeDone);
+        ledger.insert(&saved, 1).unwrap();
+        ledger
+            .0
+            .execute_batch(
+                "DROP TABLE budget_alerts; DROP TABLE notice_budget; DROP TABLE launch_health; PRAGMA user_version=2;",
+            )
+            .unwrap();
+        drop(ledger);
+        let mut ledger = Ledger::open(h.temp.path()).unwrap();
+        assert_eq!(ledger.get(TEAM, "lead").unwrap(), Some(saved));
+        assert!(ledger
+            .insert(&Row::new(&t, BUDGET, "epoch", State::Retry), 2)
+            .unwrap());
+        let version: u32 = ledger
+            .0
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, SCHEMA);
+    }
+    #[test]
+    fn budget_notifications_have_a_separate_bounded_outbox() {
+        let h = Harness::new();
+        let t = h.store.team(TEAM).unwrap().unwrap();
+        let mut l = Ledger::open(h.temp.path()).unwrap();
+        l.0.execute("UPDATE launch_budget SET rows=16384 WHERE id=1", [])
+            .unwrap();
+        let mut notice = Row::new(&t, BUDGET, "epoch", State::Retry);
+        assert!(l.insert(&notice, 1).unwrap());
+        l.0.execute("UPDATE notice_budget SET bytes=67108864 WHERE id=1", [])
+            .unwrap();
+        notice.problem = Some(Problem::new(code::OVER_CAP, "bounded notification"));
+        assert!(l.save(&mut notice, 2).is_err());
+        assert_eq!(l.get(TEAM, BUDGET).unwrap().unwrap().version, 0);
+        let mut another = Row::new(&t, BUDGET, "epoch", State::Retry);
+        another.team = crate::teams::ops::tests::TEAM_B.into();
+        assert!(l.insert(&another, 3).is_err());
+    }
+    #[test]
+    fn stopped_teams_release_settled_rows_but_preserve_pending_launches() {
+        let mut h = Harness::new();
+        let t = h.store.team(TEAM).unwrap().unwrap();
+        let mut ledger = Ledger::open(h.temp.path()).unwrap();
+        for (member, state) in [
+            ("lead", State::Done),
+            ("@branch", State::BranchDone),
+            ("m1", State::Submitted),
+        ] {
+            ledger
+                .insert(&Row::new(&t, member, "epoch", state), 1)
+                .unwrap();
+        }
+        h.run(
+            &crate::teams::ops::tests::person(),
+            crate::teams::ops::Operation::Stop,
+        )
+        .unwrap();
+        ledger.prune(&h.store, &mut String::new()).unwrap();
+        assert!(ledger.get(TEAM, "lead").unwrap().is_none());
+        assert!(ledger.get(TEAM, "@branch").unwrap().is_none());
+        assert!(ledger.get(TEAM, "m1").unwrap().unwrap().late_after_stop);
     }
     #[test]
     fn ledger_budgets_refuse_growth_and_archived_settled_rows_are_collected() {

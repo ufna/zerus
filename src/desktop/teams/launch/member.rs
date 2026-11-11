@@ -10,7 +10,7 @@ impl Runtime {
         parent: Option<SessionKey>,
         now: i64,
     ) -> Result<bool> {
-        self.selected = Some((team.id.clone(), member.id.clone()));
+        self.selected = None;
         let existing = self.ledger().get(&team.id, &member.id)?;
         let Some(mut row) = existing else {
             if member.state != MemberState::NotCreated || member.session.is_some() {
@@ -18,30 +18,32 @@ impl Runtime {
             }
             return self.prepare(store, effects, team, member, parent, now);
         };
-        if row.state == State::Retry {
-            if row.problem.is_some() {
-                self.card(store, &mut row, now)?;
+        self.selected = Some((team.id.clone(), member.id.clone()));
+        if member.state == MemberState::Paused {
+            if self.owns(&row) {
+                self.admitted = None;
             }
-            if !self.due(store, &mut row, now)? {
-                return Ok(false);
-            }
-            return self.choose(store, effects, team, member, parent, &mut row, now);
-        }
-        if row.retry_at > now {
             return Ok(false);
         }
         if row.state == State::Blocked {
             self.card(store, &mut row, now)?;
             return Ok(false);
         }
-        if matches!(row.state, State::Done) {
+        if row.state == State::Done {
             return Ok(false);
         }
-        if member.state == MemberState::Paused {
-            if self.owns(&row) {
-                self.admitted = None;
+        if row.state == State::Retry && row.problem.is_some() && !row.retry_seen {
+            self.card(store, &mut row, now)?;
+        }
+        if row.state.waits_on_backoff() {
+            if !self.due(store, &mut row, now)? {
+                return Ok(false);
             }
+        } else if row.retry_at > now {
             return Ok(false);
+        }
+        if row.state == State::Retry {
+            return self.choose(store, effects, team, member, parent, &mut row, now);
         }
         if let Some(plan) = &row.plan {
             if plan.machine != team.home
@@ -76,6 +78,7 @@ impl Runtime {
                 Ok(true)
             }
             State::WorktreeIntent => self.worktree(effects, &mut row, now),
+            State::WorktreeVerify => self.verify_worktree(effects, &mut row, now),
             State::WorktreeDone => {
                 row.state = State::LaunchIntent;
                 row.original = uuid::Uuid::new_v4().to_string();
@@ -101,7 +104,7 @@ impl Runtime {
         now: i64,
     ) -> Result<bool> {
         let mut row = Row::new(team, &member.id, &self.epoch, State::Retry);
-        if !self.ledger().insert(&row, now)? {
+        if !self.reserve_row(store, team, &row, now)? {
             return Ok(false);
         }
         self.choose(store, effects, team, member, parent, &mut row, now)

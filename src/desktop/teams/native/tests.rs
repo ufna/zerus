@@ -111,13 +111,13 @@ struct Records {
 }
 impl Records {
     fn new() -> Self {
-        use sha2::{Digest, Sha256};
         use std::os::unix::fs::PermissionsExt;
         let h = crate::teams::ops::tests::Harness::new();
+        let state = h.temp.path().canonicalize().unwrap();
         let mut p = plan_fixture();
-        let source = h.temp.path().join("repository");
+        let source = state.as_path().join("repository");
         std::fs::create_dir(&source).unwrap();
-        let empty = h.temp.path().join("empty-git-config");
+        let empty = state.as_path().join("empty-git-config");
         std::fs::write(&empty, b"").unwrap();
         let git = |args: &[&str]| {
             let mut cmd = std::process::Command::new("git");
@@ -155,7 +155,7 @@ impl Records {
         };
         git(&["init", "-q"]);
         git(&["commit", "--allow-empty", "-qm", "Fixture base"]);
-        let destination = h.temp.path().join(format!("zerus-team-{}", p.launch_id));
+        let destination = state.as_path().join(format!("zerus-team-{}", p.launch_id));
         git(&[
             "worktree",
             "add",
@@ -183,37 +183,32 @@ impl Records {
         p.placement.destination = destination.to_str().unwrap().into();
         let nonce = uuid::Uuid::new_v4().to_string();
         let owner = json!({"version":1,"id":nonce,"common_dir":common,"path":destination,"metadata":metadata,"branch":p.placement.branch,"head":"fixture"});
-        let cache = h.temp.path().join("worktree-cache");
+        let cache = state.as_path().join("worktree-cache");
         std::fs::create_dir(&cache).unwrap();
-        let digest = format!(
-            "{:x}",
-            Sha256::digest(format!("{}\n{}", common.display(), destination.display()).as_bytes())
-        );
         std::fs::write(
-            cache.join(format!("owned-{digest}.json")),
+            crate::state::team_worktree_receipt_path(state.as_path(), &common, &destination),
             owner.to_string(),
         )
         .unwrap();
         std::fs::write(metadata.join("zerus-owner.json"), owner.to_string()).unwrap();
         for dir in ["launches", "sessions"] {
-            let d = h.temp.path().join(dir);
+            let d = state.as_path().join(dir);
             std::fs::create_dir(&d).unwrap();
             std::fs::set_permissions(d, std::fs::Permissions::from_mode(0o700)).unwrap();
         }
         let sid = uuid::Uuid::new_v4().to_string();
         let record = json!({"version":1,"layout":"id","session_id":sid,"launch_id":p.launch_id,"name":"claude/example/renamed","agent":p.agent,"account_id":p.account,"cwd":p.placement.destination,"run_id":uuid::Uuid::new_v4().to_string(),"conversation_id":""});
         let start = json!({"launch_id":p.launch_id,"name":"claude/example/original","session_id":sid,"started_at":1.0});
-        let start_path = h
-            .temp
-            .path()
+        let start_path = state
+            .as_path()
             .join("launches")
             .join(format!("{}.json", p.launch_id));
         std::fs::write(&start_path, start.to_string()).unwrap();
         std::fs::set_permissions(start_path, std::fs::Permissions::from_mode(0o600)).unwrap();
         let config = Config {
             home: String::new(),
-            dir: h.temp.path().join("config"),
-            state: h.temp.path().into(),
+            dir: state.as_path().join("config"),
+            state: state.as_path().into(),
             selves: vec![],
             peers: vec![],
             base_peers: vec![],
@@ -291,4 +286,67 @@ fn native_observation_distinguishes_an_ended_launch_from_missing_evidence() {
     .unwrap();
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).unwrap();
     assert!(matches!(f.read().unwrap(), LaunchRead::Ended { code: 2 }));
+}
+
+#[test]
+fn ownership_read_failure_defers_binding_and_a_launch_before_any_child_starts() {
+    let mut f = Records::new();
+    let metadata =
+        std::fs::read_to_string(Path::new(&f.p.placement.destination).join(".git")).unwrap();
+    let metadata = Path::new(metadata.trim().strip_prefix("gitdir: ").unwrap());
+    // Both receipts and the checkout still match; only Git's verification fails.
+    let link = metadata.join("commondir");
+    let original = std::fs::read(&link).unwrap();
+    std::fs::remove_file(&link).unwrap();
+    assert_eq!(f.read().unwrap_err().code, code::INVALID_STATE);
+    let tree = Worktree {
+        path: f.p.placement.destination.clone(),
+        ownership_nonce: "fixture".into(),
+    };
+    let outcome = f
+        .native
+        .launch(&f.p, &tree, &uuid::Uuid::new_v4().to_string());
+    assert!(matches!(outcome, Effect::Deferred(p) if p.code == code::INVALID_STATE));
+    std::fs::write(&link, original).unwrap();
+    assert!(matches!(f.read().unwrap(), LaunchRead::Session(_)));
+}
+
+#[test]
+fn native_provider_without_an_account_id_cannot_bind_as_another_profile() {
+    use std::os::unix::fs::PermissionsExt;
+    for agent in ["dsh", "opencode"] {
+        let mut f = Records::new();
+        f.p.agent = agent.into();
+        f.p.account = format!("another-{agent}");
+        f.record["agent"] = json!(agent);
+        f.record["name"] = json!(format!("{agent}/example/member"));
+        f.record.as_object_mut().unwrap().remove("account_id");
+        let folder = f.h.temp.path().join(agent).join("sessions");
+        std::fs::create_dir_all(&folder).unwrap();
+        std::fs::set_permissions(&folder, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let path = folder.join(format!("{}.json", f.record["session_id"].as_str().unwrap()));
+        std::fs::write(&path, f.record.to_string()).unwrap();
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        std::fs::write(f.h.temp.path().join("launches").join(format!("{}.json",f.p.launch_id)), json!({"launch_id":f.p.launch_id,"name":format!("{agent}/example/original"),"session_id":f.record["session_id"],"started_at":1.0}).to_string()).unwrap();
+        assert_eq!(f.read().unwrap_err().code, code::DELIVERY_UNCERTAIN);
+        f.p.account = format!("native-{agent}");
+        let LaunchRead::Session(session) = f.read().unwrap() else {
+            panic!("native account was hidden")
+        };
+        assert_eq!(session.account, f.p.account);
+    }
+}
+
+#[test]
+fn native_created_worktree_with_unavailable_ownership_defers_only_its_read() {
+    let mut f = Records::new();
+    let line = std::fs::read_to_string(Path::new(&f.p.placement.destination).join(".git")).unwrap();
+    let metadata = Path::new(line.trim().strip_prefix("gitdir: ").unwrap());
+    std::fs::remove_file(metadata.join("commondir")).unwrap();
+    let output = json!({"status":"created","path":f.p.placement.destination,"branch":f.p.placement.branch,"managed_cleanup":true});
+    child::FIXTURE_EXIT
+        .with(|slot| *slot.borrow_mut() = Some(serde_json::to_vec(&output).unwrap()));
+    let outcome = f.native.worktree(&f.p, &uuid::Uuid::new_v4().to_string());
+    assert!(matches!(outcome, Effect::Submitted(None)));
+    assert!(child::FIXTURE_EXIT.with(|slot| slot.borrow().is_none()));
 }

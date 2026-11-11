@@ -10,12 +10,29 @@ pub(super) fn accept(ctx: &mut Context<'_>) -> Result<()> {
     ctx.active()?;
     ctx.undecided(*node)?;
     let n = ctx.live_node(*node)?;
+    stage_end_authority(ctx, &n)?;
     if n.state != NodeState::Reported {
         return Err(invalid("Only a reported task can be accepted."));
     }
-    let owner = needs_merge(ctx, &n) && !ctx.team.settings.delegations.merge_accepted;
+    pipeline::before_decision(ctx, *node)?;
+    let decider = if is_person(ctx.actor) {
+        Decider::Person
+    } else {
+        Decider::Lead
+    };
+    accept_result(ctx, &n, decider, false)
+}
+pub(super) fn accept_result(
+    ctx: &mut Context<'_>,
+    n: &Node,
+    decider: Decider,
+    owner_approved: bool,
+) -> Result<()> {
+    let node = n.id;
+    let owner =
+        !owner_approved && needs_merge(ctx, n) && !ctx.team.settings.delegations.merge_accepted;
     let seq = ctx.decision(
-        *node,
+        node,
         "accept",
         "",
         if owner {
@@ -24,11 +41,6 @@ pub(super) fn accept(ctx: &mut Context<'_>) -> Result<()> {
             DecisionState::Ready
         },
     )?;
-    let decider = if is_person(ctx.actor) {
-        Decider::Person
-    } else {
-        Decider::Lead
-    };
     ctx.db
         .execute(
             "UPDATE nodes SET decided_by=?3 WHERE team=?1 AND id=?2",
@@ -40,7 +52,7 @@ pub(super) fn accept(ctx: &mut Context<'_>) -> Result<()> {
             ctx,
             "integration",
             "Approve integration of the accepted result.",
-            Some(*node),
+            Some(node),
             Some(seq),
         )?);
     }
@@ -59,6 +71,7 @@ pub(super) fn return_task(ctx: &mut Context<'_>) -> Result<()> {
             "Only a reported task with a holder can be returned.",
         ));
     }
+    pipeline::override_task(ctx, *node)?;
     ctx.decision(*node, "return", why, DecisionState::Pending)?;
     Ok(())
 }
@@ -84,6 +97,7 @@ pub(super) fn reassign(ctx: &mut Context<'_>) -> Result<()> {
     {
         return Err(invalid("Replacement member cannot take this task."));
     }
+    pipeline::override_task(ctx, *node)?;
     n.assignee = Some(member.clone());
     ctx.db
         .execute(
@@ -105,9 +119,20 @@ pub(super) fn cancel(ctx: &mut Context<'_>) -> Result<()> {
     };
     ctx.active()?;
     ctx.undecided(*node)?;
-    ctx.live_node(*node)?;
+    let n = ctx.live_node(*node)?;
+    stage_end_authority(ctx, &n)?;
     reason(why)?;
+    pipeline::override_task(ctx, *node)?;
     ctx.decision(*node, "cancel", why, DecisionState::Pending)?;
+    Ok(())
+}
+fn stage_end_authority(ctx: &Context<'_>, n: &Node) -> Result<()> {
+    if n.kind == NodeKind::Stage && !is_person(ctx.actor) {
+        return Err(Problem::new(
+            code::NOT_ALLOWED,
+            "The stage needs its holder's verdict; only the person may override it.",
+        ));
+    }
     Ok(())
 }
 pub(super) fn integration(ctx: &mut Context<'_>) -> Result<()> {
@@ -120,7 +145,7 @@ pub(super) fn integration(ctx: &mut Context<'_>) -> Result<()> {
         unreachable!()
     };
     let n = ctx.node(*node)?;
-    let permit = integration::permit(ctx, *node, *decision)?;
+    let permit = integration::permit(ctx, *node, *decision, integration::FactKind::Merge)?;
     if !matches!(commit.len(), 40 | 64)
         || !commit
             .bytes()
@@ -131,9 +156,14 @@ pub(super) fn integration(ctx: &mut Context<'_>) -> Result<()> {
         ));
     }
     integration::record(ctx, &permit, *node, Some(commit), &[])?;
+    integration::complete_merge(ctx, &permit)?;
     // The fact belongs to the accepted generation. A person's restore starts
     // a new round whose completion must not inherit this older merge.
-    if !needs_merge(ctx, &n) || n.integrated || permit.generation != ctx.generation(*node)? {
+    if permit.provenance_only
+        || !needs_merge(ctx, &n)
+        || n.integrated
+        || permit.generation != ctx.generation(*node)?
+    {
         return Ok(());
     }
     let table = ctx.node_table(*node)?;
@@ -169,7 +199,7 @@ pub(super) fn conflict(ctx: &mut Context<'_>) -> Result<()> {
         unreachable!()
     };
     let n = ctx.node(*node)?;
-    let permit = integration::permit(ctx, *node, *decision)?;
+    let permit = integration::permit(ctx, *node, *decision, integration::FactKind::Conflict)?;
     if conflicts.is_empty() || conflicts.len() > 200 {
         return Err(invalid(
             "No unresolved integration conflict can be recorded.",

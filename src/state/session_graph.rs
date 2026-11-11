@@ -6,7 +6,11 @@ mod model;
 mod sends;
 
 pub(super) use sends::target_receipt;
-pub(crate) use sends::{caller_record, forward_send, send_origin};
+#[cfg(test)]
+pub(crate) use sends::caller_binding_reads;
+pub(crate) use sends::{
+    caller_agent_for, caller_machine, caller_record, caller_record_for, forward_send, send_origin,
+};
 
 use super::*;
 use anyhow::{ensure, Result as GraphResult};

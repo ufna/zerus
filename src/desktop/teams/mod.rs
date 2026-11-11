@@ -6,8 +6,17 @@
 mod child;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub(crate) use child::adopt_custody;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+mod confirm;
+mod health;
 mod launch;
 mod ledger;
+pub(crate) use health::Health;
+/// Last launch-worker fault, read without creating a launch ledger.
+pub(crate) fn health(state: &std::path::Path) -> Option<Health> {
+    health::read(state)
+}
+
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 mod native;
 mod ports;
