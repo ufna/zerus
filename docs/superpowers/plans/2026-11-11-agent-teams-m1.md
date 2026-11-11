@@ -1125,9 +1125,12 @@ a merge: the fact of a merge for an accept that awaits the owner is
 recorded, its integration card is closed as overtaken in the same
 transaction, and the node goes on as after any merge fact; after the person
 rejected that card the fact is late provenance, as after a stop. A conflict
-wrote nothing, so a conflict fact for an accept that is not Ready is
-refused, and the merge is tried again if the person approves. New writes
-are still found only among exact Ready accepts.
+wrote nothing, so a conflict fact for an accept that awaits the owner, or
+whose card the person rejected, is refused: a fact row would mark the
+accept as integrated, and the merge that follows the person's approval
+could never be recorded. A conflict fact after a stop stays late
+provenance, as before. New writes are still found only among exact Ready
+accepts.
 
 **A doorbell points at the inbox and carries none of it (package 10).** The
 doorbell says how many items wait and names the command that reads them;
