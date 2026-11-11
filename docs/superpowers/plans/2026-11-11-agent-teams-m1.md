@@ -98,8 +98,8 @@ person using Teams. Each is pinned by a test in the package named.
    stage is not handed to it, and the task goes to the lead with the reason
    (packages 2 and 9).
 5. The integration ref moved between computing a merge and updating the ref:
-   nothing is lost and the merge is computed again; a conflicting merge writes
-   nothing (package 11).
+   nothing is lost and the merge is computed again; a conflicting merge
+   changes no ref and no reachable object (package 11).
 
 ## File structure
 
@@ -299,6 +299,7 @@ pub struct MemberView { pub id: MemberId, pub role: String, pub state: MemberSta
 pub struct PlanView<'a> {
     pub phases: &'a [Phase], pub nodes: &'a [Node],
     pub members: &'a [MemberView], pub lead: &'a str,
+    pub integration: Integration,
 }
 pub struct Handout { pub node: NodeId, pub member: MemberId }
 pub fn ready(view: &PlanView) -> Vec<NodeId>;
@@ -331,7 +332,11 @@ and not paused, or it is a queue node that is admitted; no earlier phase is
 `AwaitingAcceptance`; a barrier phase has no undecided node in an earlier
 phase; every hard dependency is `Accepted` and `integrated`; every soft
 dependency is at least `InProgress`; a cancelled dependency releases; no node
-that is `InProgress` or `Reported` has an overlapping write set.
+that is `InProgress` or `Reported` has an overlapping write set. In a team
+with no integration branch a hard dependency needs only `Accepted`:
+`PlanView` carries the team's `integration` mode. A stage node is never a
+dependency. A node whose phase or dependency is missing from the view is not
+ready, so the store supplies the rows of archived dependencies.
 
 Hand-out (`handouts`): order is stage nodes first, then plan nodes by most
 transitive dependants and then by ID, then queue nodes by `rank`. A member
@@ -346,7 +351,9 @@ signed-in accounts of the agent; drop any with a window at 100 percent or
 more; headroom is 100 minus the highest `used_percent`; highest headroom
 wins, then the lower `taken` count, then the lower ID. Accounts with no
 windows are used only when no account with windows qualifies. Nothing left
-gives `no_account_available` with the earliest `resets_at` in `refs`.
+gives `no_account_available`; its `refs` hold the earliest time an account
+becomes usable again: for each account the latest reset among its full
+windows, then the earliest of those across accounts.
 
 Operation envelope, used by the CLI and by client core: a request is a JSON
 object `{"request_id": "<uuid>", "team": "<id>", "expected_revision": <n>,
@@ -412,8 +419,9 @@ dependants of a chain; each readiness condition, one test per condition, each
 failing when the condition is removed; Review focus 2 and 4; hand-out order
 (stage before plan before queue, rank order inside the queue); `pick_account`
 for each rule in Contracts, including a tie and nothing available;
-`after_report` and `after_verdict` for each built-in pipeline, three returns
-and then `ToLead`.
+`after_report` and `after_verdict` for each built-in pipeline; with three
+rounds, a return in round 1 or 2 goes to the implementer and the return in
+round 3 goes to the lead.
 
 ### Package 3: team store and operations
 
@@ -567,6 +575,75 @@ real-agent coverage; 16 guide, reference and credit; 17 standing
 confirmations (folder trust for a team worktree, resume of an exited member).
 Their briefs are written into the addendum when packages 3, 7 and 8 are
 merged, because their interfaces are those packages' results.
+
+## Decisions after the first reviews
+
+Recorded 2026-11-11 from the independent reviews of packages 2, 3, 4 and 11.
+Packages 5 to 17 follow them.
+
+**Who records what.** Facts are recorded only by the Service actor: task
+observations, hand-out and reopen intents and outcomes, a member's session
+binding, a report, an integration receipt. A person, a lead or a member cannot
+record them, and a request never carries a task observation. The Service actor
+is built only by trusted code that read the task document or performed the
+effect itself; the CLI never accepts it from input.
+
+**A lead decides, the service acts.** Accept, Return, Reassign and Cancel
+record a decision. While a decision of a node is not settled, another decision
+of that node is refused.
+
+**Accept and integration.** Accept carries no receipt. In a team with an
+integration branch, a non-stage node is Done only after the service merged it
+and recorded the commit. The delegation `merge_accepted` says who triggers the
+merge: the lead's Accept when it is on, the person's approval of an owner card
+when it is off. A conflict is recorded by the service as a return with the
+conflict list. With no integration branch, and for a stage node, there is no
+merge and no receipt.
+
+**Return.** The reopen message is an effect: an intent for the new generation
+before it is sent, an outcome after, never retried when uncertain. A report of
+the new generation is accepted once that effect is recorded.
+
+**Hand-out.** Only the service records a hand-out, and only for a node the
+kernel says is ready. The effect row holds the current holder. A node's
+`assignee` is the plan's and changes only by Route and Reassign. For a task
+node `implementer` is set when its hand-out is submitted; a refusal leaves
+neither. For a stage node `implementer` is the member who implemented the task
+it checks, copied when the stage is created and never changed by the stage's
+own hand-out. The teams actor passes `free: false` for every member with an
+open hand-out, because a stage's holder is only on its effect row. A
+dependency that names a stage node never releases.
+
+**Queue.** Only the person and the lead route a task by naming a role or a
+pipeline while sending; from anyone else the values are a suggestion. Only
+admitted nodes count toward `max_open_tasks`; unadmitted ones are bounded at
+100 per team. A task has at most one live node: a cancelled node, and every
+node of an archived or stopped team, releases it.
+
+**Pauses.** A team the person paused is not resumed by the lead, as with a
+member the person stopped.
+
+**Integration (package 11).** No hook runs during an integration call: one
+defined by the repository makes integration unavailable, the person's own are
+switched off for these calls. A merge driver defined by the repository makes
+integration unavailable on the merge paths; the person's own driver and signer
+are honoured. A commit the branch already contains is a no-op. A conflict
+changes no ref and no reachable object.
+
+**Catalog (package 4).** A seat counts only with a positive count. Duplicate
+IDs are checked inside each catalog before catalogs are merged. A template's
+default pipeline is required. Every role's pipeline must exist, seated or not.
+
+**Kernel (package 2).** A stage verdict counts only when the stage node's role
+equals the pipeline's stage at its index, and a stage is ready only in its
+target's round. A node ID that appears twice is ambiguous everywhere: nothing
+that depends on it or checks it is ready. Write sets are relative to the
+repository and are compared without regard to case; an absolute path, and a
+parent component after a pattern, cover the whole repository. Operations
+refuse an absolute path in a write set at input.
+
+**Shape.** One function per operation of about 60 lines or fewer; no file that
+is one long match.
 
 ## Order
 
