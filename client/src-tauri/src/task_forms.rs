@@ -374,21 +374,24 @@ fn destination(slot: &mut Slot, team: Option<String>) -> Result<(), String> {
 /// line answers `task_exists: true` with `team.queued: false` and the team's
 /// structured error (package 6's late refusal). The task exists, so the card
 /// is done and its identity kept; the answer carries the team's reason so the
-/// person can send that task to the team instead of creating another. A reply
-/// that does not say this team queued it is not a confirmation either.
+/// person can send that task to the team instead of creating another. Only
+/// `queued: true` together with an `id` string equal to the chosen team
+/// confirms the queue; any other team object, or none, keeps the notice, with
+/// the command line's reason when it gave one.
 fn not_queued(reply: &serde_json::Map<String, Value>, task: &str, team: &str) -> Option<Value> {
     let answer = reply.get("team").filter(|answer| answer.is_object());
     let queued = answer.is_some_and(|answer| {
-        answer["queued"].as_bool() == Some(true)
-            && answer["id"].as_str().is_none_or(|id| id == team)
+        answer.get("queued").and_then(Value::as_bool) == Some(true)
+            && answer.get("id").and_then(Value::as_str) == Some(team)
     });
     if queued {
         return None;
     }
-    let reason = answer
-        .and_then(|answer| answer["error"]["message"].as_str())
-        .or_else(|| reply.get("message").and_then(Value::as_str))
-        .filter(|reason| !reason.trim().is_empty())
+    fn given(reason: Option<&str>) -> Option<&str> {
+        reason.filter(|reason| !reason.trim().is_empty())
+    }
+    let reason = given(answer.and_then(|answer| answer["error"]["message"].as_str()))
+        .or_else(|| given(reply.get("message").and_then(Value::as_str)))
         .unwrap_or("The team did not confirm that it queued the task.");
     let code = answer
         .and_then(|answer| answer["error"]["code"].as_str())
@@ -1121,6 +1124,104 @@ mod tests {
         assert_eq!(plain.not_queued, None);
         drop(store);
         drop(root);
+    }
+    /// Third confirmation, finding 1: only `queued: true` with an `id` string
+    /// equal to the chosen team confirms the queue. Every other shape keeps
+    /// the notice, with the command line's reason when it gave one.
+    #[test]
+    fn only_the_chosen_teams_queued_receipt_confirms_the_queue() {
+        const TEAM: &str = "33333333-3333-4333-8333-333333333333";
+        const OTHER: &str = "44444444-4444-4444-8444-444444444444";
+        const TASK: &str = "55555555-5555-4555-8555-555555555555";
+        const GENERIC: &str = "The team did not confirm that it queued the task.";
+        let task = json!({"uuid": TASK, "project": "example"});
+        let cases: Vec<(&str, Value, Option<&str>)> = vec![
+            (
+                "confirmed",
+                json!({"task": task, "team": {"id": TEAM, "queued": true}}),
+                None,
+            ),
+            (
+                "confirmed beside a message",
+                json!({"task": task, "team": {"id": TEAM, "queued": true, "observation_pending": true}, "message": "Task was queued; its first observation is pending."}),
+                None,
+            ),
+            (
+                "no id",
+                json!({"task": task, "team": {"queued": true}}),
+                Some(GENERIC),
+            ),
+            (
+                "a numeric id",
+                json!({"task": task, "team": {"queued": true, "id": 27}}),
+                Some(GENERIC),
+            ),
+            (
+                "a null id",
+                json!({"task": task, "team": {"queued": true, "id": null}}),
+                Some(GENERIC),
+            ),
+            (
+                "another team",
+                json!({"task": task, "team": {"queued": true, "id": OTHER}}),
+                Some(GENERIC),
+            ),
+            (
+                "queued as text",
+                json!({"task": task, "team": {"queued": "true", "id": TEAM}}),
+                Some(GENERIC),
+            ),
+            (
+                "queued missing",
+                json!({"task": task, "team": {"id": TEAM}}),
+                Some(GENERIC),
+            ),
+            (
+                "refused with a reason",
+                json!({"task": task, "team": {"id": TEAM, "queued": false, "error": {"code": "invalid_state", "message": "The team is stopped."}}, "message": "Task example/7 exists and was not queued."}),
+                Some("The team is stopped."),
+            ),
+            (
+                "a blank error falls back to the message",
+                json!({"task": task, "team": {"id": TEAM, "queued": false, "error": {"message": "  "}}, "message": "Task example/7 exists and was not queued."}),
+                Some("Task example/7 exists and was not queued."),
+            ),
+            (
+                "another team with the command line's message",
+                json!({"task": task, "team": {"queued": true, "id": OTHER}, "message": "Queued elsewhere."}),
+                Some("Queued elsewhere."),
+            ),
+            (
+                "a team that is not an object",
+                json!({"task": task, "team": "queued", "message": "Odd reply."}),
+                Some("Odd reply."),
+            ),
+            (
+                "a null team",
+                json!({"task": task, "team": null}),
+                Some(GENERIC),
+            ),
+            ("no team at all", json!({"task": task}), Some(GENERIC)),
+        ];
+        for (label, reply, reason) in cases {
+            let notice = not_queued(reply.as_object().unwrap(), TASK, TEAM);
+            match reason {
+                None => assert_eq!(notice, None, "{label}"),
+                Some(reason) => {
+                    let notice = notice
+                        .unwrap_or_else(|| panic!("{label}: the queue was taken as confirmed"));
+                    assert_eq!(
+                        (
+                            notice["task"].as_str(),
+                            notice["team"].as_str(),
+                            notice["reason"].as_str()
+                        ),
+                        (Some(TASK), Some(TEAM), Some(reason)),
+                        "{label}"
+                    );
+                }
+            }
+        }
     }
     #[test]
     fn malformed_reserved_identity_and_foreign_receipts_keep_the_draft() {
