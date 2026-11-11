@@ -475,3 +475,57 @@ fn integration_discovery_excludes_stage_and_no_branch_accepts() {
             .is_empty());
     }
 }
+
+#[test]
+fn card_lookup_is_scoped_and_reads_the_persons_decision_by_primary_key() {
+    let mut h = Harness::new();
+    let card = h
+        .run(
+            &person(),
+            Operation::OpenCard {
+                kind: "proposal".into(),
+                text: "Wait for a person".into(),
+                node: None,
+            },
+        )
+        .unwrap()
+        .item
+        .unwrap();
+    let before = h.store.cards(TEAM, 1, None).unwrap().rows.pop().unwrap();
+    assert_eq!(h.store.card(TEAM, card).unwrap(), Some(before));
+    h.run(
+        &person(),
+        Operation::DecideCard {
+            card,
+            decision: "Wait until tomorrow".into(),
+        },
+    )
+    .unwrap();
+    let c = h.store.card(TEAM, card).unwrap().unwrap();
+    assert_eq!(c.decision.as_deref(), Some("Wait until tomorrow"));
+    assert_eq!(c.decided_actor.unwrap()["kind"], "person");
+    assert!(h.store.card(TEAM, 9_999_999).unwrap().is_none());
+    refused(h.store.card(ops::tests::TEAM_B, card), code::INVALID_STATE);
+    let db = h.store.db.as_ref().unwrap();
+    let mut s = db
+        .prepare(&format!("EXPLAIN QUERY PLAN {}", rows::CARD_BY_SEQ_SQL))
+        .unwrap();
+    let plan = s
+        .query_map([card], |r| r.get::<_, String>(3))
+        .unwrap()
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .unwrap();
+    assert!(
+        plan.iter().any(|r| r.contains("USING INTEGER PRIMARY KEY")),
+        "{plan:?}"
+    );
+}
+
+#[test]
+fn card_lookup_is_lazy_and_honors_the_preview_gate() {
+    let h = Harness::empty();
+    assert!(h.store.card(TEAM, 1).unwrap().is_none());
+    assert!(!h.temp.path().join("teams/teams-v1.sqlite3").exists());
+    std::fs::remove_file(h.temp.path().join("teams/preview")).unwrap();
+    refused(h.store.card(TEAM, 1), code::TEAMS_INACTIVE);
+}
