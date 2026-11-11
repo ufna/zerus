@@ -496,6 +496,64 @@ fn the_holder_of_a_legacy_dispatch_can_acknowledge_and_report_but_cannot_drive_t
 }
 
 #[test]
+fn service_releases_a_live_node_when_the_replicated_key_is_absent_or_other() {
+    for mode in ["absent", "other_team", "other_home", "invalid", "ours"] {
+        let h = Harness::new();
+        let reference = document(&h);
+        let node = send(
+            &caller(&h, &TaskActor::Person),
+            &reference,
+            TEAM,
+            None,
+            None,
+        )
+        .unwrap()
+        .node
+        .unwrap();
+        {
+            let store =
+                ProjectStore::open(&h.temp.path().join("replica"), &reference.project).unwrap();
+            let mut doc = store.load(&reference.uuid).unwrap();
+            let key = zerus_replica::TaskTeam {
+                team: if mode == "other_team" {
+                    uuid::Uuid::new_v4().to_string()
+                } else {
+                    TEAM.into()
+                },
+                home: if mode == "other_home" {
+                    uuid::Uuid::new_v4().to_string()
+                } else {
+                    fixture().team.home
+                },
+            };
+            if mode == "invalid" {
+                doc.set_raw_team_for_test("not JSON");
+            } else {
+                doc.set_team((mode != "absent").then_some(&key), &TaskActor::Person, 5)
+                    .unwrap();
+            }
+            store.save(&mut doc).unwrap();
+        }
+        let before = task(&h, &reference).revision();
+        observe(h.temp.path(), &reference).unwrap();
+        let expected = match mode {
+            "absent" => ops::KeyState::Absent,
+            "ours" => ops::KeyState::Ours,
+            _ => ops::KeyState::Other,
+        };
+        let observation = h.store.task_observation(TEAM, node).unwrap().unwrap();
+        assert_eq!(observation.key, expected, "{mode}");
+        assert_eq!(observation.revision, before);
+        assert_eq!(task(&h, &reference).revision(), before);
+        assert_eq!(
+            h.store.queue(TEAM, 200, None).unwrap().rows.is_empty(),
+            mode != "ours",
+            "{mode}"
+        );
+    }
+}
+
+#[test]
 fn foreign_home_is_guarded_when_this_computers_store_has_no_team() {
     let h = Harness::empty();
     let reference = document(&h);

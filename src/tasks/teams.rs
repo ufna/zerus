@@ -173,8 +173,8 @@ pub(super) fn guard(
     )
     .map_err(problem)
 }
-pub(super) fn clear(config: &Config, task: &mut TaskDoc, who: &Actor) -> Result<()> {
-    bridge::clear(&config.state, task, who).map_err(problem)
+pub(super) fn clear(config: &Config, here: &str, task: &mut TaskDoc, who: &Actor) -> Result<()> {
+    bridge::retarget(&config.state, here, task, who).map_err(problem)
 }
 #[cfg(test)]
 mod tests;

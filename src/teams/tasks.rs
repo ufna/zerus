@@ -49,9 +49,15 @@ fn load(store: &ProjectStore, uuid: &str) -> Result<TaskDoc> {
         .load_complete(uuid)
         .map_err(storage)
 }
-fn observation(document: &TaskDoc) -> Result<TaskObservation> {
+fn observation(document: &TaskDoc, team: &str, home: &str) -> Result<TaskObservation> {
     let view = document.view().map_err(storage)?;
+    let key = match document.team().map_err(storage)? {
+        Some(key) if key.team == team && key.home == home => ops::KeyState::Ours,
+        None if !document.team_invalid() => ops::KeyState::Absent,
+        _ => ops::KeyState::Other,
+    };
     Ok(TaskObservation {
+        key,
         revision: document.revision(),
         previous_revision: String::new(),
         stage: match view.stage {
@@ -67,21 +73,26 @@ fn observation(document: &TaskDoc) -> Result<TaskObservation> {
     })
 }
 fn record(store: &mut Store, team: &str, node: u32, document: &TaskDoc) -> Result<()> {
-    let mut observation = observation(document)?;
+    let header = header::read(store, team)?.ok_or_else(|| storage("Observed team disappeared."))?;
+    let mut observation = observation(document, team, &header.home)?;
     observation.previous_revision = store
         .task_observation(team, node)?
         .map_or(String::new(), |o| o.revision);
-    if observation.previous_revision == observation.revision {
+    if matches!(observation.key, ops::KeyState::Ours)
+        && observation.previous_revision == observation.revision
+    {
         return Ok(());
     }
-    let req = request(store, team, Operation::ObserveTask { node, observation })?;
-    let owner = header::read(store, team)?
-        .ok_or_else(|| storage("Observed team disappeared."))?
-        .owner;
+    let req = Request {
+        request_id: uuid::Uuid::new_v4().to_string(),
+        team: team.into(),
+        expected_revision: header.revision,
+        operation: Operation::ObserveTask { node, observation },
+    };
     ops::apply(
         store,
         &Actor::Service {
-            person: owner,
+            person: header.owner,
             team: team.into(),
         },
         &req,
@@ -112,13 +123,9 @@ pub(crate) fn observe(state: &Path, task: &TaskRef) -> Result<()> {
     let document = load(&tasks, &task.uuid)?;
     #[cfg(test)]
     observe_pause();
-    let Some(link) = document.team().map_err(storage)? else {
-        return Ok(());
-    };
     let mut store = Store::open(state)?;
-    let found=store.db.as_ref().map_or(Ok(None),|db|db.query_row("SELECT id FROM node_identity WHERE team=?1 AND task_project=?2 AND task_uuid=?3 ORDER BY id DESC LIMIT 1",params![link.team,task.project,task.uuid],|r|r.get::<_,u32>(0)).optional().map_err(storage))?;
-    if let Some(node) = found {
-        record(&mut store, &link.team, node, &document)?;
+    if let Some((team, node)) = binding(&store, task)? {
+        record(&mut store, &team, node, &document)?;
     }
     Ok(())
 }
@@ -136,6 +143,35 @@ fn observe_pause() {
     while !path.join("release").exists() && std::time::Instant::now() < until {
         std::thread::sleep(std::time::Duration::from_millis(2));
     }
+}
+
+/// Called by retarget while its task command retains the project lock. A
+/// refused release leaves this in-memory edit unsaved, including its key.
+pub(crate) fn retarget(
+    state: &Path,
+    here: &str,
+    document: &mut TaskDoc,
+    actor: &TaskActor,
+) -> Result<()> {
+    let marked = document.team().map_err(storage)?.is_some() || document.team_invalid();
+    clear(state, document, actor)?;
+    if marked && super::enabled(state) {
+        let mut store = Store::open(state)?;
+        let reference = TaskRef {
+            project: document.view().map_err(storage)?.project,
+            uuid: document.uuid().into(),
+        };
+        if let Some((team, node)) = binding(&store, &reference)? {
+            // A replaced or malformed key cannot hide this computer's live
+            // binding. The stored team's home decides who releases it.
+            let header = header::read(&store, &team)?
+                .ok_or_else(|| storage("Retargeted team disappeared."))?;
+            if header.home == here {
+                record(&mut store, &team, node, document)?;
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Package 10 clears the marker only if this exact team still owns it.

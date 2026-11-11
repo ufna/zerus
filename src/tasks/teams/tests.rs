@@ -905,6 +905,67 @@ fn reopen_legacy_reload_rechecks_a_new_team_marker() {
 }
 
 #[test]
+fn retarget_releases_the_live_node_before_an_agent_can_claim_the_keyless_task() {
+    for mode in ["ours", "other_team", "other_home", "invalid"] {
+        let mut f = Fixture::new();
+        let member = f.bind("m1");
+        let task = f.add();
+        if mode != "ours" {
+            let store =
+                ProjectStore::open(&f.h.temp.path().join("replica"), "example-project").unwrap();
+            let mut doc = store.load(task["uuid"].as_str().unwrap()).unwrap();
+            if mode == "invalid" {
+                doc.set_raw_team_for_test("not JSON");
+            } else {
+                doc.set_team(
+                    Some(&zerus_replica::TaskTeam {
+                        team: if mode == "other_team" {
+                            uuid::Uuid::new_v4().to_string()
+                        } else {
+                            TEAM.into()
+                        },
+                        home: if mode == "other_home" {
+                            uuid::Uuid::new_v4().to_string()
+                        } else {
+                            f.machine.clone()
+                        },
+                    }),
+                    &Actor::Person,
+                    now(),
+                )
+                .unwrap();
+            }
+            store.save(&mut doc).unwrap();
+        }
+        let reference = format!("example/{}", task["id"].as_str().unwrap());
+        let out = f.run(&["target", &reference, "any", "--json"], "", None);
+        assert_eq!(out["ok"], true, "{mode}: {out}");
+        assert!(f.document(&task).team().unwrap().is_none());
+        assert!(
+            f.h.store.queue(TEAM, 200, None).unwrap().rows.is_empty(),
+            "{mode}: live node survived retarget"
+        );
+        let out = f.run(&["start", &reference, "--json"], "", Some(&member));
+        assert_eq!(out["ok"], true, "{mode}: {out}");
+        assert_eq!(f.document(&task).stage().unwrap(), Stage::Active);
+    }
+}
+
+#[test]
+fn refused_node_release_leaves_the_key_and_retarget_unchanged() {
+    let f = Fixture::new();
+    let task = f.add();
+    let before = f.document(&task).revision();
+    f.h.store.db.as_ref().unwrap().execute_batch("CREATE TRIGGER reject_override BEFORE DELETE ON live_tasks BEGIN SELECT RAISE(ABORT,'fixture release refusal'); END").unwrap();
+    let reference = format!("example/{}", task["id"].as_str().unwrap());
+    let out = f.run(&["target", &reference, "any", "--json"], "", None);
+    assert_eq!(out["ok"], false, "{out}");
+    assert_eq!(f.document(&task).revision(), before);
+    assert_eq!(f.document(&task).team().unwrap().unwrap().team, TEAM);
+    assert_eq!(f.h.store.queue(TEAM, 200, None).unwrap().rows.len(), 1);
+}
+
+#[test]
 fn observation_keeps_the_project_lock_from_load_through_record() {
     let f = Fixture::new();
     let task = f.add();
@@ -1030,4 +1091,36 @@ fn home_marked_tasks_follow_ordinary_commands_while_the_preview_is_off() {
         assert_eq!(f.document(&task).team().unwrap().unwrap().team, TEAM);
     }
     assert_eq!(f.document(&task).stage().unwrap(), Stage::Backlog);
+}
+
+#[test]
+fn a_task_reenters_as_a_new_node_after_a_persons_retarget() {
+    let f = Fixture::new();
+    let task = f.add();
+    let old = f.h.store.queue(TEAM, 200, None).unwrap().rows[0].id;
+    let reference = format!("example/{}", task["id"].as_str().unwrap());
+    let out = f.run(&["target", &reference, "any", "--json"], "", None);
+    assert_eq!(out["ok"], true, "{out}");
+    assert!(f.h.store.queue(TEAM, 200, None).unwrap().rows.is_empty());
+    assert_eq!(
+        f.h.store.task_observation(TEAM, old).unwrap().unwrap().key,
+        ops::KeyState::Absent
+    );
+    let out = f.run(&["target", &reference, "team", TEAM, "--json"], "", None);
+    assert_eq!(out["value"]["team"]["queued"], true, "{out}");
+    let new = f.h.store.queue(TEAM, 200, None).unwrap().rows[0].id;
+    assert_ne!(old, new);
+    assert_eq!(
+        f.h.store.task_observation(TEAM, new).unwrap().unwrap().key,
+        ops::KeyState::Ours
+    );
+    crate::teams::tasks::observe(
+        f.h.temp.path(),
+        &zerus_team_plan::model::TaskRef {
+            project: "example-project".into(),
+            uuid: task["uuid"].as_str().unwrap().into(),
+        },
+    )
+    .unwrap();
+    assert_eq!(f.h.store.queue(TEAM, 200, None).unwrap().rows[0].id, new);
 }

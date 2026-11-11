@@ -1299,7 +1299,7 @@ fn change_guarded(config: &Config, action: &str, args: &[String], wait: Option<s
                 Target::Session(machines.target(machines.node(option(args, "--host")?)?, value, args)? )
             };
             task.set_target(&target, &who, now()).map_err(fail)?;
-            teams::clear(config, &mut task, &who)?;
+            teams::clear(config, here, &mut task, &who)?;
         }
         "send" | "handoff" => {
             let (session, pin) = session.expect("a send has its session");
