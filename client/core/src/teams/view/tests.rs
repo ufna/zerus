@@ -1,15 +1,18 @@
 use super::*;
 
-/// The pinned CLI replies of package 5, copied beside this module so the
-/// branch's tests run before package 5 merges; they are the same bytes as
-/// `crates/team-plan/fixtures/cli-*.json` at its `fa46dcc08`.
+/// The pinned CLI replies of package 5. The list reply is the command line's
+/// own `crates/team-plan/fixtures/cli-list.json`, regenerated with
+/// `member_sessions`. The others are copies beside this module, the same
+/// bytes as `crates/team-plan/fixtures/cli-*.json` at its `fa46dcc08`: they
+/// keep the shape without the later additive fields, which the core still
+/// reads.
 fn fixture(name: &str) -> Value {
     let text = match name {
         "status" => include_str!("../fixtures/cli-status.json"),
         "queue" => include_str!("../fixtures/cli-queue.json"),
         "cards" => include_str!("../fixtures/cli-cards.json"),
         "waiting" => include_str!("../fixtures/cli-waiting.json"),
-        "list" => include_str!("../fixtures/cli-list.json"),
+        "list" => include_str!("../../../../../crates/team-plan/fixtures/cli-list.json"),
         other => panic!("no fixture {other}"),
     };
     serde_json::from_str(text).expect("a pinned CLI fixture parses")
@@ -583,37 +586,53 @@ fn an_orphan_stage_keeps_its_explicit_pipeline_facts() {
 
 /// Second confirmation, finding 3 (plan on integrate/teams, "Who is a team's
 /// session"): a live team's list row carries `member_sessions`, which the
-/// core passes through beside `lead_session`. The row below has the agreed
-/// shape; the pinned `cli-list.json` follows when the command line change is
-/// merged. A row without the field keeps its serialized form.
+/// core passes through beside `lead_session`, as the command line's own
+/// `crates/team-plan/fixtures/cli-list.json` pins it (the lead among them).
+/// An entry without a machine or a session is left out, a row without the
+/// field keeps its serialized form, and the entries are bounded.
 #[test]
 fn a_list_row_passes_its_member_sessions_through() {
-    let reply = serde_json::json!({"ok": true, "next": null, "rows": [{
-        "id": TEAM, "project": "example-project", "name": "Fixes", "status": "running", "lead": "lead",
-        "home": "00000000-0000-4000-8000-0000000000aa", "revision": 16,
-        "lead_session": {"machine": "00000000-0000-4000-8000-0000000000aa", "session_id": "launch_id:00000000-0000-4000-8000-000000000064"},
-        "member_sessions": [
-            {"member": "m1", "machine": "00000000-0000-4000-8000-0000000000aa", "session_id": "launch_id:00000000-0000-4000-8000-000000000031"},
-            {"member": "m2", "machine": "", "session_id": "launch_id:00000000-0000-4000-8000-000000000032"},
-            {"member": "m3"},
-        ],
-    }]});
-    let list = list(&reply);
-    let members = list.teams[0].member_sessions.as_ref().unwrap();
+    let pinned = list(&fixture("list"));
+    let members = pinned.teams[0]
+        .member_sessions
+        .as_ref()
+        .expect("the pinned live row carries its member sessions");
     assert_eq!(
         members,
-        &vec![MemberSession {
-            member: "m1".into(),
-            machine: "00000000-0000-4000-8000-0000000000aa".into(),
-            session_id: "launch_id:00000000-0000-4000-8000-000000000031".into(),
-        }],
+        &vec![
+            MemberSession {
+                member: "lead".into(),
+                machine: "00000000-0000-4000-8000-0000000000aa".into(),
+                session_id: "launch_id:00000000-0000-4000-8000-000000000064".into(),
+            },
+            MemberSession {
+                member: "m1".into(),
+                machine: "00000000-0000-4000-8000-0000000000aa".into(),
+                session_id: "launch_id:00000000-0000-4000-8000-000000000031".into(),
+            },
+        ]
+    );
+    let serialized = serde_json::to_value(&pinned).unwrap();
+    assert_eq!(serialized["teams"][0]["member_sessions"][1]["member"], "m1");
+    let mut partial = fixture("list");
+    let entries = partial["rows"][0]["member_sessions"]
+        .as_array_mut()
+        .expect("the pinned row's member sessions are a list");
+    entries.push(serde_json::json!({"member": "m2", "machine": "", "session_id": "launch_id:00000000-0000-4000-8000-000000000032"}));
+    entries.push(serde_json::json!({"member": "m3"}));
+    assert_eq!(
+        list(&partial).teams[0].member_sessions.as_ref(),
+        Some(members),
         "an entry without a machine or a session is left out"
     );
-    let serialized = serde_json::to_value(&list).unwrap();
-    assert_eq!(serialized["teams"][0]["member_sessions"][0]["member"], "m1");
-    let pinned = super::list(&fixture("list"));
-    assert_eq!(pinned.teams[0].member_sessions, None);
-    assert!(serde_json::to_value(&pinned).unwrap()["teams"][0]
+    let mut without = fixture("list");
+    without["rows"][0]
+        .as_object_mut()
+        .expect("the pinned row is an object")
+        .remove("member_sessions");
+    let bare = list(&without);
+    assert_eq!(bare.teams[0].member_sessions, None);
+    assert!(serde_json::to_value(&bare).unwrap()["teams"][0]
         .get("member_sessions")
         .is_none());
     let many: Vec<_> = (0..MEMBERS_KEPT + 10)
