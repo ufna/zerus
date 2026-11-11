@@ -278,7 +278,7 @@ fn catalog_shape(reply: &Value) -> Result<Value, String> {
             || template
                 .get("id")
                 .and_then(Value::as_str)
-                .map_or(true, str::is_empty)
+                .is_none_or(str::is_empty)
     }) {
         return Err("The catalog has a template without an id.".into());
     }

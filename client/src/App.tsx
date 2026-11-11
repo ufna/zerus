@@ -141,7 +141,7 @@ export function App(props: { mode: () => BridgeMode | "starting" }) {
     void teams.probe();
     // Discovery and visibility belong to the application: a hidden window
     // pauses every Teams read, whether or not a Team tab was ever opened.
-    const onVisibility = () => void teams.hidden(document.hidden);
+    const onVisibility = () => { void teams.hidden(document.hidden).catch(() => {}); };
     document.addEventListener("visibilitychange", onVisibility);
     onVisibility();
     const off = [installShortcutRouter(), ...commands.map(([id, run]) => onCommand(id, run)), installWindowCommands(),

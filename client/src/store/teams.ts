@@ -266,14 +266,18 @@ export function createTeams(transport: TeamsTransport = tauriTeams()) {
   /** The application asks once at start (App's mount); it never polls by itself. */
   async function probe() { await recheck(); }
 
-  /** Window visibility belongs to the application, not to a mounted tab. */
+  /** Window visibility belongs to the application, not to a mounted tab. A
+   * platform that cannot take the call leaves the availability answer to say
+   * whether Teams exist, and never raises from a visibility change. */
   async function hidden(hiddenNow: boolean) {
     setVisible(!hiddenNow);
-    if (hiddenNow) { hiddenAt = Date.now(); await transport.hidden(true); return; }
-    const was = hiddenAt;
-    hiddenAt = undefined;
-    await transport.hidden(false);
-    if (was !== undefined && Date.now() - was >= HIDDEN_RECHECK_MS) await recheck();
+    try {
+      if (hiddenNow) { hiddenAt = Date.now(); await transport.hidden(true); return; }
+      const was = hiddenAt;
+      hiddenAt = undefined;
+      await transport.hidden(false);
+      if (was !== undefined && Date.now() - was >= HIDDEN_RECHECK_MS) await recheck();
+    } catch { /* a synthetic or failed helper: the reads stay as they are */ }
   }
 
   async function openTeam(id: string) {
