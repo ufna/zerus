@@ -7,9 +7,10 @@
 //!   admitted;
 //! - no planned phase before its own awaits acceptance;
 //! - in a barrier phase, no planned phase before it has an undecided node;
-//! - every hard dependency is Accepted and integrated, every soft one at
-//!   least In progress, and a cancelled one releases; a dependency missing
-//!   from the view holds;
+//! - every hard dependency is Accepted and, in a team with an integration
+//!   branch, integrated; every soft one is at least In progress; a cancelled
+//!   one releases; a dependency missing from the view, or one that names a
+//!   stage, holds;
 //! - it is in no dependency cycle among the nodes that are not cancelled;
 //! - no node In progress or Reported has a write set that overlaps its own;
 //! - a stage checks a node that is Reported;
@@ -26,7 +27,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::graph;
 use crate::model::{
-    DepKind, MemberId, MemberState, Node, NodeId, NodeKind, NodeState, Phase, PhaseKind, PhaseState,
+    DepKind, Integration, MemberId, MemberState, Node, NodeId, NodeKind, NodeState, Phase,
+    PhaseKind, PhaseState,
 };
 use crate::overlap::overlaps;
 
@@ -50,6 +52,9 @@ pub struct PlanView<'a> {
     pub members: &'a [MemberView],
     /// The lead's member ID. The lead never takes a task.
     pub lead: &'a str,
+    /// The team's integration mode: whether accepted work is merged into an
+    /// integration branch before a hard dependency on it releases.
+    pub integration: Integration,
 }
 
 /// One task for one member.
@@ -382,9 +387,15 @@ impl<'a> Index<'a> {
         let Some(dep) = self.nodes.get(&id) else {
             return false;
         };
+        // A stage is never a dependency; naming one holds, like a missing node.
+        if dep.kind == NodeKind::Stage {
+            return false;
+        }
         match (dep.state, kind) {
             (NodeState::Cancelled, _) => true,
-            (NodeState::Accepted, DepKind::Hard) => dep.integrated,
+            (NodeState::Accepted, DepKind::Hard) => {
+                self.view.integration == Integration::None || dep.integrated
+            }
             (_, DepKind::Hard) => false,
             (state, DepKind::Soft) => matches!(
                 state,
@@ -596,23 +607,83 @@ mod tests {
     }
 
     #[test]
-    fn a_hard_dependency_must_be_accepted_and_merged() {
+    fn a_hard_dependency_must_be_accepted() {
+        for integration in [Integration::Branch, Integration::None] {
+            let mut plan = Plan::new(vec![
+                node(1, json!({"state": "accepted", "integrated": true})),
+                node(2, json!({"deps": [{"node": 1}]})),
+            ]);
+            plan.integration = integration;
+            assert!(is_ready(&plan, 2), "{integration:?}");
+            for state in [
+                NodeState::Draft,
+                NodeState::Waiting,
+                NodeState::Pending,
+                NodeState::InProgress,
+                NodeState::Reported,
+            ] {
+                plan.node(1).state = state;
+                assert!(!is_ready(&plan, 2), "{integration:?} {state:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn with_an_integration_branch_a_hard_dependency_must_also_be_merged() {
         let mut plan = Plan::new(vec![
             node(1, json!({"state": "accepted", "integrated": true})),
             node(2, json!({"deps": [{"node": 1}]})),
         ]);
+        assert_eq!(plan.integration, Integration::Branch);
         assert!(is_ready(&plan, 2));
         plan.node(1).integrated = false;
         assert!(!is_ready(&plan, 2), "accepted but not merged");
-        plan.node(1).integrated = true;
-        for state in [
-            NodeState::Pending,
-            NodeState::InProgress,
-            NodeState::Reported,
-        ] {
-            plan.node(1).state = state;
-            assert!(!is_ready(&plan, 2), "{state:?}");
+    }
+
+    #[test]
+    fn without_an_integration_branch_an_accepted_dependency_releases() {
+        // Nothing is merged in such a team, so nothing is recorded as merged.
+        let mut plan = Plan::new(vec![
+            node(1, json!({"state": "accepted"})),
+            node(2, json!({"deps": [{"node": 1}]})),
+        ]);
+        assert!(!is_ready(&plan, 2), "a branch team waits for the merge");
+        plan.integration = Integration::None;
+        assert!(is_ready(&plan, 2));
+    }
+
+    #[test]
+    fn a_stage_is_never_a_dependency() {
+        // A dependency that names a stage holds, like one missing from the
+        // view, whatever the stage's state and the team's integration.
+        let mut plan = Plan::new(vec![
+            node(1, json!({"state": "reported", "implementer": "m1"})),
+            stage(3, 1, "m1"),
+            node(4, json!({"deps": [{"node": 3}]})),
+            node(5, json!({"deps": [{"node": 3, "kind": "soft"}]})),
+        ]);
+        let cases = [
+            (NodeState::Accepted, true),
+            (NodeState::Accepted, false),
+            (NodeState::InProgress, false),
+            (NodeState::Reported, false),
+            (NodeState::Cancelled, false),
+        ];
+        for integration in [Integration::Branch, Integration::None] {
+            plan.integration = integration;
+            for (state, integrated) in cases {
+                plan.node(3).state = state;
+                plan.node(3).integrated = integrated;
+                let found = ready(&plan.view());
+                assert!(
+                    !found.contains(&4) && !found.contains(&5),
+                    "{integration:?} {state:?} {integrated}"
+                );
+            }
         }
+        // The same dependency on a task releases.
+        plan.node(3).kind = crate::model::NodeKind::Task;
+        assert!(is_ready(&plan, 4) && is_ready(&plan, 5));
     }
 
     #[test]
@@ -906,6 +977,7 @@ mod tests {
             nodes: &team.nodes,
             members: &members,
             lead: &team.team.lead,
+            integration: team.team.settings.integration,
         };
         // 5 reviews 2; 4 is next in the queue; 6 is not admitted; m2 holds 3.
         assert_eq!(ready(&view), vec![5, 4]);

@@ -4,7 +4,7 @@
 use serde_json::{json, Value};
 
 use crate::catalog::{Catalog, Pipeline};
-use crate::model::{MemberState, Node, NodeId, Phase, LEAD, QUEUE_PHASE};
+use crate::model::{Integration, MemberState, Node, NodeId, Phase, LEAD, QUEUE_PHASE};
 use crate::ready::{MemberView, PlanView};
 
 /// Applies `fields` over `base` and parses the result.
@@ -58,6 +58,7 @@ pub struct Plan {
     pub phases: Vec<Phase>,
     pub nodes: Vec<Node>,
     pub members: Vec<MemberView>,
+    pub integration: Integration,
 }
 
 impl Plan {
@@ -73,6 +74,7 @@ impl Plan {
                 member("m2", "developer"),
                 member("m3", "reviewer"),
             ],
+            integration: Integration::Branch,
         }
     }
 
@@ -82,6 +84,7 @@ impl Plan {
             nodes: &self.nodes,
             members: &self.members,
             lead: LEAD,
+            integration: self.integration,
         }
     }
 
