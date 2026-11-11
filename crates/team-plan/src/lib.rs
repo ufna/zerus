@@ -14,6 +14,7 @@ pub mod catalog;
 pub mod graph;
 pub mod model;
 pub mod overlap;
+pub mod pipeline;
 pub mod problem;
 pub mod ready;
 #[cfg(test)]

@@ -3,6 +3,7 @@
 
 use serde_json::{json, Value};
 
+use crate::catalog::{Catalog, Pipeline};
 use crate::model::{MemberState, Node, NodeId, Phase, LEAD, QUEUE_PHASE};
 use crate::ready::{MemberView, PlanView};
 
@@ -104,4 +105,15 @@ impl Plan {
             .find(|member| member.id == id)
             .expect("a member")
     }
+}
+
+/// A built-in pipeline by ID, as the shared fixture defines it.
+pub fn builtin_pipeline(id: &str) -> Pipeline {
+    let catalog: Catalog =
+        serde_json::from_str(include_str!("../fixtures/catalog-builtin.json")).expect("catalog");
+    catalog
+        .pipelines
+        .into_iter()
+        .find(|pipeline| pipeline.id == id)
+        .expect("a built-in pipeline")
 }

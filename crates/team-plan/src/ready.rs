@@ -91,12 +91,13 @@ pub fn handouts(view: &PlanView) -> Vec<Handout> {
         if claimed.iter().any(|writes| overlaps(&node.writes, writes)) {
             continue;
         }
+        let work = index.work(node);
         let taker = view.members.iter().find(|member| {
             member.state == MemberState::Active
                 && member.free
                 && !busy.contains(member.id.as_str())
                 && !given.contains(member.id.as_str())
-                && index.may_take(member, node)
+                && index.staffing.may_take(member, &work)
         });
         if let Some(member) = taker {
             given.insert(&member.id);
@@ -118,17 +119,81 @@ pub fn unstaffed(view: &PlanView) -> Vec<Unstaffed> {
     index
         .ready()
         .into_iter()
-        .filter(|node| {
-            !view
-                .members
-                .iter()
-                .any(|member| member.state != MemberState::Removed && index.may_take(member, node))
-        })
-        .map(|node| Unstaffed {
-            node: node.id,
-            reason: index.why_unstaffed(node),
+        .filter_map(|node| {
+            let reason = index.staffing.gap(&index.work(node))?;
+            Some(Unstaffed {
+                node: node.id,
+                reason,
+            })
         })
         .collect()
+}
+
+/// A piece of work as staffing sees it.
+pub(crate) struct Work<'a> {
+    pub role: &'a str,
+    pub assignee: Option<&'a str>,
+    /// Members who implemented what a stage checks; they never take it.
+    pub implementers: Vec<&'a str>,
+}
+
+/// Which members may ever take a piece of work, whatever their load.
+pub(crate) struct Staffing<'a> {
+    pub view: PlanView<'a>,
+}
+
+impl Staffing<'_> {
+    /// Whether `member` may take `work`, whatever its state and load.
+    pub(crate) fn may_take(&self, member: &MemberView, work: &Work) -> bool {
+        member.id != self.view.lead
+            && !member.role.is_empty()
+            && member.role == work.role
+            && work.assignee.is_none_or(|assignee| assignee == member.id)
+            && !work.implementers.contains(&member.id.as_str())
+    }
+
+    /// Why no member who is not removed could ever take `work`, or `None`
+    /// when one could. A busy, paused or not yet created member could.
+    pub(crate) fn gap(&self, work: &Work) -> Option<String> {
+        let members = self.view.members.iter();
+        let mut able = members.filter(|member| member.state != MemberState::Removed);
+        if able.any(|member| self.may_take(member, work)) {
+            return None;
+        }
+        let role = work.role;
+        if role.is_empty() {
+            return Some("The task names no role.".to_owned());
+        }
+        let of_role: Vec<&str> = self
+            .view
+            .members
+            .iter()
+            .filter(|member| {
+                member.state != MemberState::Removed
+                    && member.id != self.view.lead
+                    && member.role == role
+            })
+            .map(|member| member.id.as_str())
+            .collect();
+        if of_role.is_empty() {
+            return Some(format!("No member of the team has the role {role}."));
+        }
+        const RULE: &str = "a stage is never handed to the member who implemented the task";
+        Some(match work.assignee {
+            Some(assignee) if !of_role.contains(&assignee) => {
+                format!("The assignee {assignee} is not a member with the role {role}.")
+            }
+            Some(assignee) => format!("The assignee {assignee} implemented the task, and {RULE}."),
+            None if of_role.len() == 1 => format!(
+                "{} implemented the task and is the only member with the role {role}, and {RULE}.",
+                of_role[0]
+            ),
+            None => format!(
+                "{} implemented the task and are the only members with the role {role}, and {RULE}.",
+                of_role.join(" and ")
+            ),
+        })
+    }
 }
 
 /// Members holding a node In progress: its assignee, and the implementer of
@@ -161,6 +226,7 @@ fn position(phase: &Phase) -> (u32, u32) {
 /// The lookups one decision needs, built once per call.
 struct Index<'a> {
     view: PlanView<'a>,
+    staffing: Staffing<'a>,
     nodes: BTreeMap<NodeId, &'a Node>,
     phases: BTreeMap<u32, &'a Phase>,
     cycles: BTreeSet<NodeId>,
@@ -214,6 +280,7 @@ impl<'a> Index<'a> {
             .collect();
         Self {
             view: *view,
+            staffing: Staffing { view: *view },
             nodes,
             phases,
             cycles,
@@ -332,61 +399,19 @@ impl<'a> Index<'a> {
                 .is_some_and(|target| target.state == NodeState::Reported)
     }
 
-    /// Whether `member` may ever take `node`, whatever its state and load.
-    fn may_take(&self, member: &MemberView, node: &Node) -> bool {
-        member.id != self.view.lead
-            && !member.role.is_empty()
-            && member.role == node.role
-            && node
-                .assignee
-                .as_ref()
-                .is_none_or(|assignee| *assignee == member.id)
-            && !self.implemented(node, &member.id)
-    }
-
-    /// Whether `member` implemented the node a stage checks.
-    fn implemented(&self, node: &Node, member: &str) -> bool {
-        if node.kind != NodeKind::Stage {
-            return false;
+    /// The node as staffing sees it. A stage never goes to the member who
+    /// implemented the node it checks, by its own record or the node's.
+    fn work(&self, node: &'a Node) -> Work<'a> {
+        let mut implementers = Vec::new();
+        if node.kind == NodeKind::Stage {
+            implementers.extend(node.implementer.as_deref());
+            let target = node.stage_of.and_then(|id| self.nodes.get(&id));
+            implementers.extend(target.and_then(|target| target.implementer.as_deref()));
         }
-        let target = node.stage_of.and_then(|id| self.nodes.get(&id));
-        node.implementer.as_deref() == Some(member)
-            || target.and_then(|target| target.implementer.as_deref()) == Some(member)
-    }
-
-    fn why_unstaffed(&self, node: &Node) -> String {
-        let role = &node.role;
-        if role.is_empty() {
-            return "The task names no role.".to_owned();
-        }
-        let of_role: Vec<&str> = self
-            .view
-            .members
-            .iter()
-            .filter(|member| {
-                member.state != MemberState::Removed
-                    && member.id != self.view.lead
-                    && member.role == *role
-            })
-            .map(|member| member.id.as_str())
-            .collect();
-        if of_role.is_empty() {
-            return format!("No member of the team has the role {role}.");
-        }
-        const RULE: &str = "a stage is never handed to the member who implemented the task";
-        match &node.assignee {
-            Some(assignee) if !of_role.contains(&assignee.as_str()) => {
-                format!("The assignee {assignee} is not a member with the role {role}.")
-            }
-            Some(assignee) => format!("The assignee {assignee} implemented the task, and {RULE}."),
-            None if of_role.len() == 1 => format!(
-                "{} implemented the task and is the only member with the role {role}, and {RULE}.",
-                of_role[0]
-            ),
-            None => format!(
-                "{} implemented the task and are the only members with the role {role}, and {RULE}.",
-                of_role.join(" and ")
-            ),
+        Work {
+            role: &node.role,
+            assignee: node.assignee.as_deref(),
+            implementers,
         }
     }
 }
@@ -803,7 +828,11 @@ mod tests {
             "m3 implemented the task and is the only member with the role reviewer, \
              and a stage is never handed to the member who implemented the task."
         );
-        // The stage's own record may lack the implementer; the task names it.
+        // Either record naming the implementer is enough.
+        plan.node(1).implementer = None;
+        assert!(given(&plan).is_empty());
+        assert_eq!(unstaffed(&plan.view()).len(), 1);
+        plan.node(1).implementer = Some("m3".into());
         plan.node(2).implementer = None;
         assert!(given(&plan).is_empty());
         assert_eq!(unstaffed(&plan.view()).len(), 1);
