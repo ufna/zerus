@@ -306,15 +306,25 @@ pub(super) fn observe(ctx: &mut Context<'_>) -> Result<()> {
     };
     let mut n = ctx.node(*node)?;
     let table = ctx.node_table(*node)?;
-    let stage = validate_observation(ctx, *node, &n, o)?;
+    let (stage, was_terminal) = validate_observation(ctx, *node, o)?;
+    let released = rows::released(ctx.db, &ctx.team.id, *node)?;
+    let left = o.key != KeyState::Ours;
+    if left || released {
+        let release = left && !released && table == "nodes";
+        rows::record_observation(ctx.db, &ctx.team.id, *node, o, release)?;
+        if release {
+            leave_team(ctx, *node)?;
+        }
+        return Ok(());
+    }
     let active = matches!(ctx.team.status, TeamStatus::Running | TeamStatus::Paused);
     if !active && table == "nodes" {
         archive_inactive(ctx, *node)?;
     }
-    if table == "node_archive" && !o.cancelled && o.stage != TaskStage::Done {
+    if (table == "node_archive" || was_terminal) && !o.cancelled && o.stage != TaskStage::Done {
         if active {
             restore(ctx, *node, &mut n)?;
-        } else if matches!(n.state, NodeState::Accepted | NodeState::Cancelled) {
+        } else if was_terminal {
             ctx.event = Some("person_override");
         }
     }
@@ -324,34 +334,46 @@ pub(super) fn observe(ctx: &mut Context<'_>) -> Result<()> {
     if o.cancelled || o.stage == TaskStage::Done {
         finish_observation(ctx, *node, o.cancelled)?;
     }
-    Ok(())
+    rows::record_observation(ctx.db, &ctx.team.id, *node, o, false)
 }
 fn validate_observation(
     ctx: &Context<'_>,
     node: u32,
-    n: &Node,
     o: &TaskObservation,
-) -> Result<String> {
+) -> Result<(String, bool)> {
     reason(&o.revision)?;
     text(&o.revision, 256)?;
     text(&o.previous_revision, 256)?;
     text(&o.rank, 256)?;
     text(&o.title, 1024)?;
-    let table = ctx.node_table(node)?;
-    let old:(String,String,bool,String)=ctx.db.query_row(&format!("SELECT task_revision,task_stage,task_cancelled,rank FROM {table} WHERE team=?1 AND id=?2"),params![ctx.team.id,node],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).map_err(storage)?;
+    let old = rows::observation(ctx.db, &ctx.team.id, node)?;
     let stage = encode(&o.stage)?.trim_matches('"').to_owned();
-    if (old.0 != o.revision && old.0 != o.previous_revision)
-        || (old.0 == o.revision
-            && (old.1 != stage || old.2 != o.cancelled || old.3 != o.rank || n.title != o.title))
-    {
+    if let Some(old) = &old {
+        let same = old.stage == o.stage
+            && old.cancelled == o.cancelled
+            && old.rank == o.rank
+            && old.title == o.title
+            && old.key == o.key;
+        if (old.revision != o.revision && old.revision != o.previous_revision)
+            || (old.revision == o.revision && !same)
+        {
+            return Err(stale());
+        }
+    } else if !o.previous_revision.is_empty() {
         return Err(stale());
     }
-    Ok(stage)
+    Ok((
+        stage,
+        old.is_some_and(|old| old.stage == TaskStage::Done || old.cancelled),
+    ))
 }
 
 fn restore(ctx: &mut Context<'_>, node: u32, n: &mut Node) -> Result<()> {
     ctx.active()?;
-    check_capacity(ctx, n.admitted)?;
+    let archived = ctx.node_table(node)? == "node_archive";
+    if archived {
+        check_capacity(ctx, n.admitted)?;
+    }
     let task = n.task.as_ref().ok_or_else(missing)?;
     let binding: Option<(String, u32)> = ctx
         .db
@@ -369,6 +391,16 @@ fn restore(ctx: &mut Context<'_>, node: u32, n: &mut Node) -> Result<()> {
         return Err(invalid("Task is now owned by another live node."));
     }
     ctx.db.execute("INSERT OR IGNORE INTO live_tasks(task_project,task_uuid,team,node) VALUES(?1,?2,?3,?4)",params![task.project,task.uuid,ctx.team.id,node]).map_err(storage)?;
+    if archived {
+        restore_row(ctx, node)?;
+    }
+    ctx.settle_override(node)?;
+    ctx.advance(node, n)?;
+    ctx.db.execute("UPDATE nodes SET requested=NULL,decided_by=NULL,integrated=0,integration_commit=NULL,hold=0 WHERE team=?1 AND id=?2",params![ctx.team.id,node]).map_err(storage)?;
+    ctx.event = Some("person_override");
+    Ok(())
+}
+fn restore_row(ctx: &Context<'_>, node: u32) -> Result<()> {
     ctx.db
         .execute(
             &format!(
@@ -384,10 +416,6 @@ fn restore(ctx: &mut Context<'_>, node: u32, n: &mut Node) -> Result<()> {
             params![ctx.team.id, node],
         )
         .map_err(storage)?;
-    ctx.settle(node)?;
-    ctx.advance(node, n)?;
-    ctx.db.execute("UPDATE nodes SET requested=NULL,decided_by=NULL,integrated=0,integration_commit=NULL,hold=0 WHERE team=?1 AND id=?2",params![ctx.team.id,node]).map_err(storage)?;
-    ctx.event = Some("person_override");
     Ok(())
 }
 fn finish_observation(ctx: &Context<'_>, node: u32, cancelled: bool) -> Result<()> {
@@ -400,11 +428,11 @@ fn finish_observation(ctx: &Context<'_>, node: u32, cancelled: bool) -> Result<(
                 params![ctx.team.id, node],
             )
             .map_err(storage)?;
-        ctx.settle(node)?;
+        ctx.settle_override(node)?;
     } else if let Some((_, kind, _)) = ctx.pending(node)? {
         let n = ctx.node(node)?;
         if kind == "accept" && (!decisions::needs_merge(ctx, &n) || n.integrated) {
-            ctx.settle(node)?;
+            ctx.settle_override(node)?;
         }
     }
     Ok(())
@@ -426,5 +454,26 @@ fn archive_inactive(ctx: &Context<'_>, node: u32) -> Result<()> {
             params![ctx.team.id, node],
         )
         .map_err(storage)?;
+    Ok(())
+}
+
+fn leave_team(ctx: &mut Context<'_>, node: u32) -> Result<()> {
+    ctx.settle_override(node)?;
+    ctx.close_inbox(node)?;
+    ctx.db.execute(&format!("UPDATE effects SET state='superseded' WHERE team=?1 AND node=?2 AND state IN {OPEN_EFFECT_STATES}"),params![ctx.team.id,node]).map_err(storage)?;
+    ctx.db
+        .execute(
+            "DELETE FROM live_tasks WHERE team=?1 AND node=?2",
+            params![ctx.team.id, node],
+        )
+        .map_err(storage)?;
+    ctx.db
+        .execute(
+            "UPDATE nodes SET hold=1 WHERE team=?1 AND id=?2",
+            params![ctx.team.id, node],
+        )
+        .map_err(storage)?;
+    archive_inactive(ctx, node)?;
+    ctx.event = Some("person_override");
     Ok(())
 }

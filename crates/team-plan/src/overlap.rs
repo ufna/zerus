@@ -8,7 +8,7 @@
 /// Whether any path of `a` contains, equals or lies inside any path of `b`.
 /// An empty write set overlaps nothing.
 pub fn overlaps(a: &[String], b: &[String]) -> bool {
-    let b: Vec<Vec<String>> = b.iter().map(|path| components(path)).collect();
+    let b: Vec<Vec<&str>> = b.iter().map(|path| components(path)).collect();
     a.iter()
         .map(|path| components(path))
         .any(|a| b.iter().any(|b| contains(&a, b)))
@@ -20,8 +20,23 @@ pub fn paths_overlap(a: &str, b: &str) -> bool {
     contains(&components(a), &components(b))
 }
 
-fn contains(a: &[String], b: &[String]) -> bool {
-    a.starts_with(b) || b.starts_with(a)
+/// Whether the shorter path is a prefix of the longer one, part by part.
+fn contains(a: &[&str], b: &[&str]) -> bool {
+    a.iter().zip(b).all(|(a, b)| same_part(a, b))
+}
+
+/// Whether two parts may name one file or folder. ASCII parts compare
+/// without regard to case, as on a case-insensitive checkout. Case and
+/// normalization rules for other characters differ between file systems
+/// (NTFS maps both sigmas to one capital; some file systems treat composed
+/// and decomposed letters as one), so a part with a non-ASCII character
+/// matches any part in its place: unknown counts as the same.
+fn same_part(a: &str, b: &str) -> bool {
+    if a.is_ascii() && b.is_ascii() {
+        a.eq_ignore_ascii_case(b)
+    } else {
+        true
+    }
 }
 
 /// A path as the folders it lies in, read so that no spelling hides an
@@ -30,9 +45,8 @@ fn contains(a: &[String], b: &[String]) -> bool {
 /// no parts. Otherwise `/` and `\` both separate, `.` and empty parts drop
 /// out, `..` steps back, and a path that leaves the repository is the whole
 /// repository. A pattern counts as the folder it starts in, unless a `..`
-/// follows it, which could lead anywhere. Parts compare without regard to
-/// case, as on a case-insensitive checkout.
-fn components(path: &str) -> Vec<String> {
+/// follows it, which could lead anywhere. Parts compare by [`same_part`].
+fn components(path: &str) -> Vec<&str> {
     if absolute(path) {
         return Vec::new();
     }
@@ -48,7 +62,7 @@ fn components(path: &str) -> Vec<String> {
             }
             _ if pattern => {}
             _ if part.contains(['*', '?', '[', '{']) => pattern = true,
-            _ => parts.push(part.to_lowercase()),
+            _ => parts.push(part),
         }
     }
     parts
@@ -144,6 +158,36 @@ mod tests {
             &set(&["docs/README.MD"])
         ));
         assert!(!paths_overlap("src/API.rs", "src/apis.rs"));
+    }
+
+    #[test]
+    fn a_non_ascii_part_matches_any_part_in_its_place() {
+        // Capital sigma lowercases to U+03C3, final sigma stays U+03C2;
+        // NTFS maps both to the capital, so they name one file there.
+        assert!(paths_overlap("src/\u{3a3}.rs", "src/\u{3c2}.rs"));
+        // A composed and a decomposed accented letter.
+        assert!(paths_overlap("docs/caf\u{e9}.md", "docs/cafe\u{301}.md"));
+        // Two different Cyrillic names in one folder.
+        assert!(paths_overlap(
+            "docs/\u{43f}\u{440}\u{438}\u{432}\u{435}\u{442}.md",
+            "docs/\u{43c}\u{438}\u{440}.md"
+        ));
+        // A non-ASCII name and an ASCII sibling.
+        assert!(paths_overlap("src/\u{e4}.rs", "src/a.rs"));
+        assert!(overlaps(&set(&["src/a.rs"]), &set(&["src/\u{e4}.rs"])));
+        // Byte-equal non-ASCII names are one name.
+        assert!(paths_overlap(
+            "docs/\u{e9}t\u{e9}.md",
+            "docs/\u{e9}t\u{e9}.md"
+        ));
+    }
+
+    #[test]
+    fn non_ascii_names_in_different_folders_do_not_overlap() {
+        assert!(!paths_overlap("src/\u{e4}.rs", "docs/\u{f6}.md"));
+        // Parts after an unknown one are still compared.
+        assert!(!paths_overlap("\u{3a3}/a.rs", "\u{3c3}/b.rs"));
+        assert!(paths_overlap("\u{3a3}/a.rs", "\u{3c3}/A.RS"));
     }
 
     #[test]

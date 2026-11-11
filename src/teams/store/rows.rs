@@ -1,3 +1,4 @@
+use super::super::ops::{KeyState, TaskObservation};
 use super::*;
 use rusqlite::params;
 
@@ -102,7 +103,8 @@ pub(crate) fn archive_decided(db: &Connection, team: &str, actor: &str) -> Resul
         return Err(storage("Live node count exceeds its bound."));
     }
     for node in ids {
-        settle_decisions(db, team, Some(node), actor, false)?;
+        // A settings change can make an in-flight accepted task terminal.
+        settle_decisions(db, team, Some(node), actor, true)?;
     }
     db.execute(
         "UPDATE nodes SET requested=NULL WHERE team=?1 AND node_state IN ('accepted','cancelled')",
@@ -123,10 +125,23 @@ pub(crate) fn settle_decisions(
     team: &str,
     node: Option<u32>,
     actor: &str,
-    by_stop: bool,
+    preserve_ready: bool,
 ) -> Result<()> {
-    db.execute(&format!("UPDATE decisions SET stopped_ready=(?4 AND kind='accept' AND state=?5),state=?2 WHERE team=?1 AND state<>'{}' AND (?3 IS NULL OR node=?3)",DecisionState::Settled.as_str()),params![team,DecisionState::Settled,node,by_stop,DecisionState::Ready]).map_err(storage)?;
-    db.execute("UPDATE cards SET state='closed',decision='stale',decided_actor=?3 WHERE team=?1 AND kind='integration' AND state='open' AND (?2 IS NULL OR node=?2)",params![team,node,actor]).map_err(storage)?;
+    // Terminal settlement cannot revoke a merge that was already authorized.
+    // The original stopped_ready column retains that provenance for late facts.
+    db.execute(&format!("UPDATE decisions SET stopped_ready=(?4 AND kind='accept' AND state=?5),state=?2 WHERE team=?1 AND state<>'{}' AND (?3 IS NULL OR node=?3)",DecisionState::Settled.as_str()),params![team,DecisionState::Settled,node,preserve_ready,DecisionState::Ready]).map_err(storage)?;
+    close_cards(db, team, node, actor)?;
+    Ok(())
+}
+/// A node's settlement expires its integration cards; team settlement expires
+/// every open card, including proposals without a node.
+pub(crate) fn close_cards(
+    db: &Connection,
+    team: &str,
+    node: Option<u32>,
+    actor: &str,
+) -> Result<()> {
+    db.execute("UPDATE cards SET state='closed',decision='stale',decided_actor=?3 WHERE team=?1 AND state='open' AND (?2 IS NULL OR (kind='integration' AND node=?2))",params![team,node,actor]).map_err(storage)?;
     Ok(())
 }
 pub(crate) fn archived_leaf(db: &Connection, team: &str, id: u32) -> Result<Option<Node>> {
@@ -137,4 +152,106 @@ pub(crate) fn archived_leaf(db: &Connection, team: &str, id: u32) -> Result<Opti
     )
     .optional()
     .map_err(storage)
+}
+
+pub(crate) fn card_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<Card> {
+    Ok(Card {
+        seq: r.get(0)?,
+        kind: r.get(1)?,
+        node: r.get(2)?,
+        actor: sql_json(r, 3)?,
+        text: r.get(4)?,
+        state: r.get(5)?,
+        decision: r.get(6)?,
+        decided_actor: r
+            .get::<_, Option<String>>(7)?
+            .map(|s| serde_json::from_str(&s))
+            .transpose()
+            .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?,
+        created_ms: r.get(8)?,
+    })
+}
+
+/// A single indexed lookup; scope is checked before returning any card data.
+pub(crate) const CARD_BY_SEQ_SQL: &str = "SELECT seq,kind,node,actor,text,state,decision,decided_actor,created_ms,team FROM cards WHERE seq=?1";
+pub(crate) fn card(db: &Connection, team: &str, seq: u64) -> Result<Option<Card>> {
+    let row: Option<(String, Card)> = db
+        .query_row(CARD_BY_SEQ_SQL, [seq], |r| Ok((r.get(9)?, card_row(r)?)))
+        .optional()
+        .map_err(storage)?;
+    row.map(|(owner, card)| {
+        if owner != team {
+            Err(Problem::new(
+                code::INVALID_STATE,
+                "Card belongs to a different team.",
+            ))
+        } else {
+            Ok(card)
+        }
+    })
+    .transpose()
+}
+
+/// One bounded snapshot per node, independent of the archived plan projection.
+pub(crate) fn observation(
+    db: &Connection,
+    team: &str,
+    node: u32,
+) -> Result<Option<TaskObservation>> {
+    let saved: Option<TaskObservation> = db
+        .query_row(
+            "SELECT data FROM task_observations WHERE team=?1 AND node=?2",
+            params![team, node],
+            |r| sql_json(r, 0),
+        )
+        .optional()
+        .map_err(storage)?;
+    let mut observation = if let Some(saved) = saved {
+        Some(saved)
+    } else {
+        legacy_observation(db, team, node)?
+    };
+    if let Some(o) = observation.as_mut() {
+        o.previous_revision = o.revision.clone();
+    }
+    Ok(observation)
+}
+fn legacy_observation(db: &Connection, team: &str, node: u32) -> Result<Option<TaskObservation>> {
+    let raw: Option<(String,String,bool,String,String)> = db.query_row(
+        "SELECT task_revision,task_stage,task_cancelled,rank,data FROM nodes WHERE team=?1 AND id=?2 UNION ALL SELECT task_revision,task_stage,task_cancelled,rank,data FROM node_archive WHERE team=?1 AND id=?2 LIMIT 1",
+        params![team,node], |r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,sql_json::<Node>(r,4)?.title))).optional().map_err(storage)?;
+    raw.filter(|r| !r.0.is_empty())
+        .map(|(revision, stage, cancelled, rank, title)| {
+            Ok(TaskObservation {
+                previous_revision: revision.clone(),
+                revision,
+                stage: serde_json::from_value(serde_json::Value::String(stage)).map_err(storage)?,
+                cancelled,
+                rank,
+                title,
+                key: KeyState::Ours,
+            })
+        })
+        .transpose()
+}
+pub(crate) fn released(db: &Connection, team: &str, node: u32) -> Result<bool> {
+    Ok(db
+        .query_row(
+            "SELECT released FROM task_observations WHERE team=?1 AND node=?2",
+            params![team, node],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(storage)?
+        .unwrap_or(false))
+}
+pub(crate) fn record_observation(
+    db: &Connection,
+    team: &str,
+    node: u32,
+    o: &TaskObservation,
+    released: bool,
+) -> Result<()> {
+    db.execute("INSERT INTO task_observations(team,node,data,released) VALUES(?1,?2,?3,?4) ON CONFLICT(team,node) DO UPDATE SET data=excluded.data,released=MAX(task_observations.released,excluded.released)",params![team,node,encode(o)?,released]).map_err(storage)?;
+    Ok(())
 }

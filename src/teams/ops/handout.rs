@@ -283,7 +283,7 @@ fn require_ready(ctx: &Context<'_>, node: u32) -> Result<()> {
     }
     Ok(())
 }
-fn kernel_nodes(ctx: &Context<'_>) -> Result<Vec<Node>> {
+pub(super) fn kernel_nodes(ctx: &Context<'_>) -> Result<Vec<Node>> {
     let mut map = std::collections::BTreeMap::new();
     let mut pending = Vec::new();
     let mut bytes = 0usize;
@@ -358,7 +358,7 @@ fn add_kernel_node(
 pub(super) fn has_attempt(ctx: &Context<'_>, node: u32) -> Result<bool> {
     ctx.db
         .query_row(
-            "SELECT EXISTS(SELECT 1 FROM effects WHERE team=?1 AND node=?2 AND generation<=?3)",
+            "SELECT EXISTS(SELECT 1 FROM effects WHERE team=?1 AND node=?2 AND generation<=?3 AND state<>'refused')",
             params![ctx.team.id, node, ctx.generation(node)?],
             |r| r.get(0),
         )

@@ -4,6 +4,7 @@
 #[cfg(test)]
 mod tests;
 
+mod cross;
 mod decision_state;
 pub use decision_state::DecisionState;
 mod pages;
@@ -120,6 +121,12 @@ impl Store {
             .map_err(storage)
         })
     }
+    pub fn card(&self, team: &str, seq: u64) -> Result<Option<Card>> {
+        self.active()?;
+        self.db
+            .as_ref()
+            .map_or(Ok(None), |db| rows::card(db, team, seq))
+    }
     pub fn member(&self, team: &str, id: &str) -> Result<Option<Member>> {
         self.active()?;
         self.db
@@ -141,12 +148,9 @@ impl Store {
         id: NodeId,
     ) -> Result<Option<super::ops::TaskObservation>> {
         self.active()?;
-        self.db.as_ref().map_or(Ok(None),|db| {
-            let raw: Option<(String,String,bool,String,String)> = db.query_row(
-                "SELECT task_revision,task_stage,task_cancelled,rank,data FROM nodes WHERE team=?1 AND id=?2 UNION ALL SELECT task_revision,task_stage,task_cancelled,rank,data FROM node_archive WHERE team=?1 AND id=?2 LIMIT 1",
-                rusqlite::params![team,id], |r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,sql_json::<Node>(r,4)?.title))).optional().map_err(storage)?;
-            raw.filter(|r| !r.0.is_empty()).map(|(revision,stage,cancelled,rank,title)|Ok(super::ops::TaskObservation{previous_revision:revision.clone(),revision,stage:serde_json::from_value(serde_json::Value::String(stage)).map_err(storage)?,cancelled,rank,title})).transpose()
-        })
+        self.db
+            .as_ref()
+            .map_or(Ok(None), |db| rows::observation(db, team, id))
     }
     pub fn integration_fact(&self, team: &str, node: NodeId) -> Result<Option<IntegrationFact>> {
         self.active()?;
@@ -231,7 +235,7 @@ fn initialize(db: &mut Connection) -> Result<()> {
         return Err(storage("store schema is newer than this version of Zerus"));
     }
     if version == SCHEMA_VERSION {
-        return Ok(());
+        return schema_extensions(db);
     }
     let tx = db
         .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
@@ -257,5 +261,15 @@ fn initialize(db: &mut Connection) -> Result<()> {
         )
         .map_err(storage)?;
     }
+    schema_extensions(&tx)?;
     tx.commit().map_err(storage)
+}
+
+// Add empty companion storage and missing read indexes on first creation
+// and when a version-2 store from before these seams is opened.
+fn schema_extensions(db: &Connection) -> Result<()> {
+    db.execute_batch(include_str!("observation-schema.sql"))
+        .map_err(storage)?;
+    db.execute_batch(include_str!("read-indexes.sql"))
+        .map_err(storage)
 }

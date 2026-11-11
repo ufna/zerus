@@ -223,3 +223,74 @@ fn a_retained_stale_integration_card_can_be_dismissed_after_stop() {
     assert_eq!(last.kind, "cancel");
     assert_eq!(last.state, DecisionState::Pending);
 }
+
+#[test]
+fn stop_closes_every_open_card_as_stale_and_preserves_decided_cards() {
+    let mut h = Harness::new();
+    let node = h.add(&person(), 1);
+    let decided = ordinary_cards(&mut h, node);
+    h.run(&person(), Operation::Stop).unwrap();
+    assert_stale_cards(&h, decided);
+}
+
+#[test]
+fn archive_closes_every_open_card_even_without_a_prior_stop() {
+    let mut h = Harness::new();
+    let node = h.add(&person(), 1);
+    let decided = ordinary_cards(&mut h, node);
+    // A finished team can be archived without Stop having closed its cards.
+    h.store
+        .db
+        .as_ref()
+        .unwrap()
+        .execute(
+            "UPDATE teams SET status=?2 WHERE id=?1",
+            params![TEAM, encode(&TeamStatus::Finished).unwrap()],
+        )
+        .unwrap();
+    h.run(&person(), Operation::Archive).unwrap();
+    assert_stale_cards(&h, decided);
+}
+fn ordinary_cards(h: &mut Harness, node: u32) -> u64 {
+    let mut decided = 0;
+    for target in [None, Some(node), None] {
+        let card = h
+            .run(
+                &person(),
+                Operation::OpenCard {
+                    kind: "proposal".into(),
+                    text: "Proposed team change".into(),
+                    node: target,
+                },
+            )
+            .unwrap()
+            .item
+            .unwrap();
+        decided = card;
+    }
+    h.run(
+        &person(),
+        Operation::DecideCard {
+            card: decided,
+            decision: "Keep the roster".into(),
+        },
+    )
+    .unwrap();
+    decided
+}
+fn assert_stale_cards(h: &Harness, decided: u64) {
+    let cards = h.store.cards(TEAM, 200, None).unwrap().rows;
+    assert_eq!(cards.len(), 3);
+    for card in cards {
+        assert_eq!(card.state, "closed");
+        assert_eq!(
+            card.decision.as_deref(),
+            Some(if card.seq == decided {
+                "Keep the roster"
+            } else {
+                "stale"
+            })
+        );
+        assert_eq!(card.decided_actor.unwrap()["kind"], "person");
+    }
+}

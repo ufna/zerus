@@ -241,6 +241,7 @@ fn service_handout_requires_kernel_ready_and_reads_archived_dependencies() {
     h.run(
         &service(),
         Operation::RecordIntegration {
+            decision: h.accept_decision(dep),
             node: dep,
             commit: COMMIT.into(),
         },
@@ -409,4 +410,119 @@ fn reopen_requires_an_older_effect_even_for_a_retained_pending_reassignment() {
     );
     assert!(h.store.effects(TEAM, 200, None).unwrap().rows.is_empty());
     assert_eq!(h.store.generation(TEAM, node).unwrap(), Some(1));
+}
+
+#[test]
+fn readiness_view_contains_only_live_nodes_and_their_archived_direct_leaves() {
+    let mut h = Harness::new();
+    h.settings(|s| s.integration = Integration::None);
+    let mut previous = None;
+    for id in 1..=3 {
+        let node = h.add(&person(), id);
+        let mut op = route(node);
+        if let (Some(parent), Operation::Route { deps, .. }) = (previous, &mut op) {
+            deps.push(Dep {
+                node: parent,
+                kind: DepKind::Hard,
+            });
+        }
+        h.run(&person(), op).unwrap();
+        h.observe(node, TaskStage::Done);
+        previous = Some(node);
+    }
+    let live = h.add(&person(), 4);
+    let mut op = route(live);
+    if let Operation::Route { deps, .. } = &mut op {
+        deps.push(Dep {
+            node: previous.unwrap(),
+            kind: DepKind::Hard,
+        });
+    }
+    h.run(&person(), op.clone()).unwrap();
+    let team = h.store.team(TEAM).unwrap().unwrap();
+    let actor = service();
+    let ctx = Context {
+        db: h.store.db.as_ref().unwrap(),
+        actor: &actor,
+        team: &team,
+        op: &op,
+        now: 1234,
+        reply: Reply {
+            ok: true,
+            revision: 0,
+            node: None,
+            item: None,
+        },
+        event: None,
+    };
+    let nodes = super::super::handout::kernel_nodes(&ctx).unwrap();
+    assert_eq!(nodes.iter().map(|n| n.id).collect::<Vec<_>>(), vec![3, 4]);
+    assert!(nodes[0].deps.is_empty());
+    assert_eq!(
+        nodes[1].deps,
+        vec![Dep {
+            node: 3,
+            kind: DepKind::Hard
+        }]
+    );
+}
+
+#[test]
+fn a_refused_handout_cannot_be_reopened_to_bypass_a_new_dependency() {
+    let mut h = Harness::new();
+    let lead = h.bind("lead");
+    h.bind("m1");
+    let dependency = h.add(&person(), 1);
+    let node = h.add(&person(), 2);
+    let effect = h.intent(node, "m1");
+    h.outcome(
+        &effect,
+        HandoutOutcome::Refused {
+            reason: "Writer refused delivery".into(),
+        },
+    );
+    let mut op = route(node);
+    if let Operation::Route { deps, .. } = &mut op {
+        deps.push(Dep {
+            node: dependency,
+            kind: DepKind::Hard,
+        });
+    }
+    h.run(&lead, op).unwrap();
+    refused(
+        h.run(
+            &service(),
+            Operation::HandoutIntent {
+                node,
+                member: "m1".into(),
+                effect_request_id: uuid::Uuid::new_v4().to_string(),
+            },
+        ),
+        code::INVALID_STATE,
+    );
+    h.run(
+        &lead,
+        Operation::Reassign {
+            node,
+            member: "m1".into(),
+            reason: "Plan assignment after refusal".into(),
+        },
+    )
+    .unwrap();
+    refused(
+        h.run(
+            &service(),
+            Operation::ReopenIntent {
+                node,
+                member: "m1".into(),
+                effect_request_id: uuid::Uuid::new_v4().to_string(),
+            },
+        ),
+        code::INVALID_STATE,
+    );
+    assert_eq!(h.store.generation(TEAM, node).unwrap(), Some(1));
+    assert_eq!(h.store.effects(TEAM, 200, None).unwrap().rows.len(), 1);
+    assert!(!h.node(node).hold);
+    h.cancel_fact(dependency);
+    h.intent(node, "m1");
 }
