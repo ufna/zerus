@@ -275,6 +275,47 @@ fn slow_replacement_keeps_draining_on_actor_turns_without_a_client_retry() {
     assert!(location.lock().is_ok());
 }
 
+/// A replacement of the background waits for the Teams worker's own thread.
+/// While that thread runs, the runtime is not drained and no replacement is
+/// permitted, even after every other component has drained.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[test]
+fn a_replacement_waits_until_the_teams_worker_thread_has_drained() {
+    let _serial = preparation::TEST_SERIAL
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    let mut f = Fixture::new();
+    let state = f.location.root.parent().unwrap().to_owned();
+    platform::private_dir(&state.join("teams")).unwrap();
+    std::fs::write(state.join("teams/preview"), "on").unwrap();
+    let mut hold = crate::desktop::teams::WorkerEntryHold::install(&state);
+    f.runtime
+        .teams
+        .fixture_machine("00000000-0000-4000-8000-0000000000bc");
+    f.runtime.teams.poll();
+    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        assert!(
+            hold.entered(Duration::from_secs(10)),
+            "the Teams thread is paused at its run entry"
+        );
+        assert!(f
+            .runtime
+            .drain(&mut f.store, Duration::from_secs(2))
+            .is_err());
+        assert!(!f.runtime.drained());
+        assert!(!replacement_permitted(true, f.runtime.drained(), &f.location, &f.store).unwrap());
+    }));
+    // Released on every exit; the drain then joins the original thread.
+    hold.release();
+    let drained = f.runtime.drain(&mut f.store, Duration::from_secs(5));
+    if let Err(panic) = outcome {
+        std::panic::resume_unwind(panic);
+    }
+    drained.unwrap();
+    assert!(f.runtime.drained());
+    assert!(replacement_permitted(true, f.runtime.drained(), &f.location, &f.store).unwrap());
+}
+
 #[test]
 fn a_cache_stop_database_error_still_stops_every_other_component() {
     let _serial = preparation::TEST_SERIAL
