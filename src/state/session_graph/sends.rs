@@ -13,13 +13,29 @@ const MAX_RECEIPT: usize = 1024 * 1024;
 mod caller_binding;
 #[path = "caller_hosts.rs"]
 mod caller_hosts;
-pub(crate) use caller_hosts::Hosts;
+pub(crate) use caller_hosts::{Hosts, Unread};
 #[cfg(test)]
 pub(crate) use caller_hosts::{Named, Registered};
 
 /// The resident agent hosts this computer records, for the person path.
-pub(crate) fn caller_hosts() -> std::result::Result<Hosts, &'static str> {
+pub(crate) fn caller_hosts() -> std::result::Result<Hosts, Unread> {
     caller_hosts::hosts()
+}
+
+/// This boot's identity as the host's own writer reads it, for the tests'
+/// host records.
+#[cfg(all(test, unix))]
+pub(crate) fn written_boot() -> Option<String> {
+    caller_hosts::written_boot()
+}
+
+/// What one host folder names under `boot`, for the tests of the record rules.
+#[cfg(all(test, unix))]
+pub(crate) fn caller_host_folder(
+    folder: &Path,
+    boot: Option<&str>,
+) -> std::result::Result<Vec<Named>, &'static str> {
+    caller_hosts::named_in(folder, boot)
 }
 
 /// The backend of a session a resident host serves, when a marked claim
