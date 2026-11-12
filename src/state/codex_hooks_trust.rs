@@ -80,7 +80,7 @@ fn eligible(record: &Value) -> bool {
 
 /// The card this producer writes for `record` at `screen`, its startup panel:
 /// the route the readers of these cards test with (zerus-63rru.73).
-#[cfg(test)]
+#[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
 pub(super) fn produced(record: &Value, screen: &str) -> Option<Value> {
     card(record, &parse(screen)?)
 }

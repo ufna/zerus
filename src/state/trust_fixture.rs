@@ -43,9 +43,13 @@ pub(crate) fn startup_card(agent: &str) -> Value {
     .unwrap_or_else(|| panic!("{agent}'s producer wrote no startup card"))
 }
 
+// The next three serve the Teams confirmation tests, which build only where
+// the confirmation runs (Linux and macOS).
+
 /// The agent's own question to the person, as the AskUserQuestion hook's
 /// producer writes it (`questions::from_hook`), in a run whose conversation
 /// is `conversation` (zerus-63rru.73).
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 pub(crate) fn ordinary_question(agent: &str, conversation: &str) -> Value {
     let mut record = record(agent);
     record["conversation_id"] = json!(conversation);
@@ -57,6 +61,7 @@ pub(crate) fn ordinary_question(agent: &str, conversation: &str) -> Value {
 
 /// A tool permission prompt, as Claude's approval producer writes it for a
 /// terminal it cannot read (`claude_approval::build_request`).
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 pub(crate) fn permission_prompt(conversation: &str) -> Value {
     let mut record = record("claude");
     record["conversation_id"] = json!(conversation);
@@ -69,6 +74,7 @@ pub(crate) fn permission_prompt(conversation: &str) -> Value {
 
 /// Codex's startup prompt to trust its hooks, as its producer writes it at
 /// its committed screen: a trust prompt, but not a folder-trust one.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 pub(crate) fn hooks_trust_prompt() -> Value {
     codex_hooks_trust::produced(
         &record("codex"),

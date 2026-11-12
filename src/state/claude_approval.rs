@@ -341,7 +341,7 @@ fn warning_text(panel:&Panel)->String {
 /// The approval card this producer writes for `request` on a terminal it
 /// cannot read: the route the readers of these cards test with
 /// (zerus-63rru.73).
-#[cfg(test)]
+#[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
 pub(super) fn produced_request(record: &Value, request: &Value) -> Option<Value> {
     build_request(record, None, request, &json!(1793000002.0), "").map(|(card, _)| card)
 }
