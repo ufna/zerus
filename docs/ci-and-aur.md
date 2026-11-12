@@ -1420,6 +1420,12 @@ Further classes repeat the same bring-up with one of the team's delegations on:
   launch and conversation, it gets its brief once, and the audit records `team_resume`. A member
   the person terminates is refused with a card and no audit row, and no run of its
   launch is live.
+- **A Claude Code member that exits before any message**
+  (`NativeTeamsResumeUnworkedClaude`, `resume_exited`, selected). It has no persisted
+  conversation, so the service's restore is refused before launch. Nothing of its
+  launch starts, and the person's card carries the command's own reason ("persisted
+  conversation is missing or empty"). The person's own Restore of that archive is
+  recorded beside it.
 
 Written and waiting: `WAITING` in the module lists these, and the contract does not
 select them until their fixes land.
@@ -1427,7 +1433,6 @@ select them until their fixes land.
 | Case | Waits for |
 |---|---|
 | Claude Code folder trust by the standing confirmation (`NativeTeamsTrustClaude`, two members pinned to one account): the service answers each member's startup folder trust with one audit grant, and a prompt that is not a startup prompt stays the person's. What Claude Code 2.1.322 records is pinned as observed: the account holds exactly the main checkout as trusted and no worktree key, and the later worktree on the same account still shows its card | `zerus-63rru.60` (the audit reservation compares the real card's null conversation with an empty string) |
-| A Claude Code member that exits before any message (`NativeTeamsResumeUnworkedClaude`): nothing starts, and the card carries the command's own reason | `zerus-63rru.62` (the restore is refused before launch with "persisted conversation is missing or empty", but the card does not say so) |
 | Codex resume of an exited member (`NativeTeamsResumeCodex`) | `zerus-63rru.54` (the resumed member never gets its brief) and `zerus-63rru.56` (three states read as an exit) |
 
 #### Isolation
@@ -1527,8 +1532,7 @@ the Teams caller proof refuses a person command below a live agent.
 - **Timers past their first firing:** they are agent-independent and stay with the
   package fakes.
 - **The waiting cases:** Claude Code folder trust by the standing confirmation
-  (`zerus-63rru.60`), the refused restore of a member that never worked
-  (`zerus-63rru.62`) and the Codex resume (`zerus-63rru.54` and `zerus-63rru.56`).
+  (`zerus-63rru.60`) and the Codex resume (`zerus-63rru.54` and `zerus-63rru.56`).
   The cases exist and are not selected.
 
 ## Automatic nightly publication

@@ -6,12 +6,11 @@ name: Agent Teams real agents
 # a keyless loopback model. A green run covers member launch and identity, delivery
 # into a free member and its own shell, the lead's doorbell, the cancel notice, team
 # stop and Terminate; for Codex also the refused repository-scope folder trust that
-# the person then answers, and for Claude Code the resume of an exited member. Written
-# and waiting: Claude Code folder trust by the standing confirmation for
-# zerus-63rru.60, the refused restore of a member that never worked for
-# zerus-63rru.62, and the Codex resume for zerus-63rru.54 and zerus-63rru.56. This
-# workflow is not part of the Dev gate or Nightly: a red run is visible and holds
-# nothing back.
+# the person then answers, and for Claude Code the resume of an exited member and the
+# refused restore of a member that never worked. Written and waiting: Claude Code
+# folder trust by the standing confirmation for zerus-63rru.60, and the Codex resume
+# for zerus-63rru.54 and zerus-63rru.56. This workflow is not part of the Dev gate or
+# Nightly: a red run is visible and holds nothing back.
 on:
   pull_request:
     branches: [main]

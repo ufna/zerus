@@ -57,8 +57,6 @@ WAITING = {
     'NativeTeamsTrustClaude': 'zerus-63rru.60 (src/approval_log/team.rs:58 compares the real card\'s null '
                               'conversation with an empty string, so the audit reservation fails before delivery; '
                               'run tc12)',
-    'NativeTeamsResumeUnworkedClaude': 'zerus-63rru.62 (a member that exits before any message is refused at the '
-                                       'restore, and the card does not carry the command\'s reason; run tc15)',
     'NativeTeamsResumeCodex': 'zerus-63rru.54 (a resumed Codex member never gets its brief: the observe call is refused) '
                               'and zerus-63rru.56 (three states read as an exit)',
 }
@@ -973,7 +971,7 @@ class NativeTeamsResumeClaude(ResumeContract, unittest.TestCase):
 
 @unittest.skipUnless(os.environ.get('HGS_CLAUDE_TEST_BIN') and fixture.HGS, 'Set HGS_TEST_BIN and HGS_CLAUDE_TEST_BIN')
 class NativeTeamsResumeUnworkedClaude(UnworkedResumeContract, unittest.TestCase):
-    """Waiting (WAITING): not selected by the teams contract until zerus-63rru.62."""
+    """Selected since zerus-63rru.62: the card of the refused restore carries the command's reason."""
     agent = 'claude'
     variable = 'HGS_CLAUDE_TEST_BIN'
 

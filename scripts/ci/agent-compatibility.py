@@ -95,15 +95,16 @@ HINT_METHODS = ('test_lifecycle', 'test_lost_mark', 'test_pre_feature_first_resu
 # one agent kind in a private root and a private desktop service, latest release only.
 # Kimi's class runs in the hosted Kimi workflow; DeepSeek and OpenCode cannot be team
 # members in this milestone. Its waits carry their own bounds; this is the row's bound.
-TEAMS_CLASSES = {'claude': ['test_teams_native.NativeTeamsClaude', 'test_teams_native.NativeTeamsResumeClaude'],
+TEAMS_CLASSES = {'claude': ['test_teams_native.NativeTeamsClaude', 'test_teams_native.NativeTeamsResumeClaude',
+                            'test_teams_native.NativeTeamsResumeUnworkedClaude'],
                  'codex': ['test_teams_native.NativeTeamsCodex', 'test_teams_native.NativeTeamsTrustCodex']}
 TEAMS_TIMEOUT = 2400
 TEAMS_COVERAGE = ('team member launch and identity, delivery into a free member and its own shell, the lead '
                   'doorbell, the cancel notice, team stop and Terminate; for Codex the refused repository-scope '
-                  'folder trust answered by the person; for Claude Code the resume of an exited member. Claude Code '
-                  'folder trust by the standing confirmation waits for zerus-63rru.60; the refused restore of a '
-                  'member that never worked for zerus-63rru.62; the Codex resume for zerus-63rru.54 and '
-                  'zerus-63rru.56')
+                  'folder trust answered by the person; for Claude Code the resume of an exited member and the '
+                  'refused restore of a member that never worked, with the command\'s reason on its card. Claude '
+                  'Code folder trust by the standing confirmation waits for zerus-63rru.60; the Codex resume for '
+                  'zerus-63rru.54 and zerus-63rru.56')
 HINT_CLASSES = {
     'claude': ('NativeClaudeHint', 'NativeWindowsClaudeHint'),
     'codex': ('NativeCodexHint', 'NativeWindowsCodexHint'),
