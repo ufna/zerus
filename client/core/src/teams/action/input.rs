@@ -96,6 +96,8 @@ impl TeamAction {
                 home,
                 integration_branch,
                 base_commit,
+                expected_template,
+                delegations,
                 ..
             } => json!({
                 "project": project,
@@ -104,6 +106,8 @@ impl TeamAction {
                 "home": home,
                 "integration_branch": integration_branch,
                 "base_commit": base_commit,
+                "expected_template": expected_template,
+                "delegations": delegations,
             }),
             Self::Pause | Self::Resume | Self::Stop | Self::Archive => json!({}),
             Self::PauseMember { member }
@@ -258,11 +262,16 @@ fn check_create(action: &TeamAction) -> Result<(), String> {
         integration_branch,
         base_commit,
         integration,
+        expected_template,
+        ..
     } = action
     else {
         return Err("Not a create.".into());
     };
     word(template, "template")?;
+    // The digest is opaque: the catalog read gave it and it is sent back as
+    // it came; a create never goes without one.
+    word(expected_template, "template digest")?;
     plain(project, "A project", 256)?;
     if project.trim().is_empty() {
         return Err("Name the project.".into());

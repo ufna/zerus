@@ -23,6 +23,20 @@ pub struct Confirmation {
     pub action: String,
 }
 
+/// A create's permissions as the person confirmed them: every one of the
+/// contract's five, each a boolean. Unlike the contract's `Delegations`, a
+/// missing field is never filled in with its default, so a call that names
+/// fewer cannot grant more than was shown; an unknown field is refused.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CreateDelegations {
+    pub accept_results: bool,
+    pub answer_members: bool,
+    pub confirm_trust: bool,
+    pub resume_exited: bool,
+    pub merge_accepted: bool,
+}
+
 /// One team action, as the webview asks for it (`{"kind": "...", ...}`).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -43,6 +57,14 @@ pub enum TeamAction {
         /// when it is a branch.
         #[serde(default)]
         integration: Integration,
+        /// The digest of the template the form showed, as the catalog read
+        /// gave it (opaque; never computed here). The command line refuses
+        /// the create with `template_changed` when the template it resolves
+        /// is no longer that one.
+        expected_template: String,
+        /// The five permissions exactly as the form shows them; they become
+        /// the team's in place of the template's.
+        delegations: CreateDelegations,
     },
     /// Pauses a team: it hands nothing out until resumed.
     Pause,
