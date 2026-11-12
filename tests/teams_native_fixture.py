@@ -710,11 +710,20 @@ class TeamFixture:
         self.wait('desktop service running', lambda: self.hgs('desktop', 'status', '--json', ok=False).returncode == 0
                   and json.loads(self.hgs('desktop', 'status', '--json', ok=False).stdout).get('running'), BOUND['service'])
 
+    @staticmethod
+    def listed(reply, key, what):
+        """The list `key` of a CLI reply. A reply without it is an error of the reader,
+        never an empty list, so a check that nothing is there cannot pass on a renamed key."""
+        value = reply.get(key) if isinstance(reply, dict) else None
+        if not isinstance(value, list):
+            raise AssertionError(f'{what} reply has no {key} list: {json.dumps(reply)[:300]}')
+        return value
+
     def status(self):
         return self.json('team', 'status', '--team', self.team, '--json')
 
     def members(self):
-        return {m['id']: m for m in self.status().get('members') or []}
+        return {m['id']: m for m in self.listed(self.status(), 'members', 'team status')}
 
     def rows(self):
         found = []
@@ -896,6 +905,20 @@ class TeamFixture:
             records[str(path)] = {key: bool((value or {}).get('hasTrustDialogAccepted')) for key, value in projects.items()}
         return records
 
+    def codex_trust_records(self):
+        """Read-only, private root only: where Codex keeps its folder trust. Every
+        config.toml in the root, with its [projects] keys and their trust_level only."""
+        import tomllib
+        records = {}
+        for path in sorted(self.root.rglob('config.toml'))[:20]:
+            try:
+                projects = tomllib.loads(path.read_text()).get('projects') or {}
+            except (OSError, ValueError) as error:
+                records[str(path)] = repr(error)
+                continue
+            records[str(path)] = {key: (value or {}).get('trust_level') for key, value in projects.items()}
+        return records
+
     def agent_home(self, member_id):
         """The account home a member runs in: a managed account, or the native one in HOME."""
         account = self.members()[member_id].get('account')
@@ -904,7 +927,23 @@ class TeamFixture:
         return Path(self.env['HGS_CONFIG_DIR']) / 'accounts' / account
 
     def cards(self):
-        return self.json('team', 'cards', '--team', self.team, '--limit', '50', '--json').get('rows') or []
+        return self.listed(self.json('team', 'cards', '--team', self.team, '--limit', '50', '--json'), 'rows', 'team cards')
+
+    def pending(self, member_id):
+        """The member's pending questions; a view without that list fails the reader."""
+        return self.listed(self.inspect(member_id), 'pending_questions', 'inspect')
+
+    def live_runs(self, launch, control):
+        """The live sessions of one launch in `hgs ls`. Every listed session must say its
+        runtime state, and the launch `control` (one known to be live) must be found live by
+        the same reading: a positive control for "nothing of this launch is live"."""
+        rows = [row for row in self.rows() if row.get('launch_id') in (launch, control)]
+        for row in rows:
+            if not isinstance(row.get('runtime_state'), str):
+                raise AssertionError(f'a listed session lacks its runtime state: {json.dumps(row)[:300]}')
+        if not [row for row in rows if row['launch_id'] == control and row['runtime_state'] == 'live']:
+            raise AssertionError(f'the control launch {control} is not found live in hgs ls')
+        return [row['name'] for row in rows if row['launch_id'] == launch and row['runtime_state'] == 'live']
 
     # ---- person actions --------------------------------------------------------
     def send(self, member_id, text):
@@ -935,7 +974,7 @@ class TeamFixture:
         return task['ref'], task['uuid']
 
     def node_of(self, uuid_):
-        rows = self.json('team', 'queue', '--team', self.team, '--limit', '200', '--json').get('rows') or []
+        rows = self.listed(self.json('team', 'queue', '--team', self.team, '--limit', '200', '--json'), 'rows', 'team queue')
         return next((r for r in rows if (r.get('task') or {}).get('uuid') == uuid_), None)
 
     def requests_with(self, predicate):
@@ -946,7 +985,11 @@ class TeamFixture:
         """The native agent's PID and kernel start time from its session record."""
         record = self.record(member_id)
         pid = record.get('pid')
-        return pid, self.start_ticks(pid)
+        ticks = self.start_ticks(pid)
+        if ticks is None:
+            # A process that is already gone has no identity to compare later.
+            raise AssertionError(f'{member_id} process {pid} is not running when its identity is taken')
+        return pid, ticks
 
     @staticmethod
     def start_ticks(pid):
@@ -957,15 +1000,23 @@ class TeamFixture:
             return None
 
     def record(self, member_id):
+        """The one live session record of the member's current run (an archive of the same
+        run is not it); none or several fail the reader."""
         run = self.inspect(member_id).get('run_id')
+        if not run:
+            raise AssertionError(f'{member_id} has no current run')
+        found = []
         for path in Path(self.env['HGS_STATE_DIR']).rglob('*.json'):
             try:
                 data = json.loads(path.read_text())
             except (OSError, ValueError):
                 continue
-            if isinstance(data, dict) and data.get('run_id') == run and data.get('pid'):
-                return data
-        raise AssertionError(f'no session record for {member_id} run {run}')
+            if isinstance(data, dict) and data.get('run_id') == run and data.get('pid') and data.get('state') != 'archived':
+                found.append((path, data))
+        if len(found) != 1:
+            raise AssertionError(f'{len(found)} live session records for {member_id} run {run}: '
+                                 + ', '.join(str(path) for path, _ in found[:5]))
+        return found[0][1]
 
     # ---- teardown --------------------------------------------------------------
     def owned_left(self):
@@ -1182,12 +1233,14 @@ class TeamFixture:
             self.evidence.write('diagnose-observation.json', self.observation())
         except Exception as error:
             self.evidence.write('diagnose-observation.json', str(error)[:500])
-        if self.agent == 'claude':
+        if self.agent in ('claude', 'codex'):
+            name = self.agent + '-trust-records.json'
             try:
                 worktrees = {member_id: (session.get('member') or {}).get('worktree') for member_id, session in self.sessions.items()}
-                self.evidence.write('claude-trust-records.json', dict(worktrees=worktrees, records=self.claude_trust_records()))
+                records = self.claude_trust_records() if self.agent == 'claude' else self.codex_trust_records()
+                self.evidence.write(name, dict(worktrees=worktrees, records=records))
             except Exception as error:
-                self.evidence.write('claude-trust-records.json', str(error)[:500])
+                self.evidence.write(name, str(error)[:500])
         for member_id, session in list(self.sessions.items()):
             try:
                 view = self.inspect(member_id)

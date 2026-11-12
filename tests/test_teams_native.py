@@ -349,7 +349,7 @@ class TrustContract(ClassFixture):
                 self.assertLessEqual(len(seen), 1, 'the startup trust card appeared at most once')
                 if seen:
                     self.assertEqual(seen[0].get('question_id'), card.get('question_id'), 'the card seen is the card granted')
-                pending = [q for q in fx.inspect(member_id).get('pending_questions') or [] if q.get('source') == self.trust_source]
+                pending = [q for q in fx.pending(member_id) if q.get('source') == self.trust_source]
                 self.assertFalse(pending, 'no second startup trust card for the member')
                 self.assert_agent_trusted(member_id)
         refusals = [c for c in fx.cards() if 'needs your attention' in c.get('text', '')]
@@ -537,7 +537,7 @@ class ResumeContract(ClassFixture):
         self.assertFalse(rows, 'no resume was reserved for the terminated run')
         # The positive control: the same reader still finds the first resume and its brief.
         journal_is(self, self.resume_journal(), 'the journal still holds only the first resume and its brief')
-        live = [r for r in fx.rows() if r.get('launch_id') == launch and r.get('runtime_state') == 'live']
+        live = fx.live_runs(launch, control=fx.sessions['lead']['launch'])
         self.assertFalse(live, 'no session of the member launch runs again')
 
 
@@ -563,8 +563,7 @@ class UnworkedResumeContract(ClassFixture):
         cards = fx.wait('the service told the person about m1', lambda: [c for c in fx.cards() if c.get('seq', 0) > last
                         and 'Member m1 needs your attention' in c.get('text', '')], fixture.BOUND['doorbell'], 3)
         fx.evidence.write('unworked-cards.json', cards)
-        live = [r.get('name') for r in fx.rows()
-                if r.get('launch_id') == before.get('launch_id') and r.get('runtime_state') == 'live']
+        live = fx.live_runs(before.get('launch_id'), control=fx.sessions['lead']['launch'])
         seen = fx.observation()
         fx.evidence.write('observation-at-refusal.json', seen)
         archives = (seen.get('m1') or {}).get('archives') or []
@@ -775,6 +774,48 @@ class TeamsFixtureDiagnostics(unittest.TestCase):
                 reader = SimpleNamespace(env={'HGS_STATE_DIR': str(state)}, JOURNAL_BOUND=5)
                 with self.assertRaisesRegex(AssertionError, 'shape the reader does not know'):
                     fixture.TeamFixture.journal(reader)
+
+    def test_readers_refuse_a_reply_without_the_keys_a_check_relies_on(self):
+        from types import SimpleNamespace
+        listed = fixture.TeamFixture.listed
+        self.assertEqual(listed({'rows': []}, 'rows', 'team cards'), [])
+        for reply in ({}, {'rows': None}, {'rows': {}}, {'items': []}, []):
+            with self.subTest(reply=reply), self.assertRaisesRegex(AssertionError, 'reply has no rows list'):
+                listed(reply, 'rows', 'team cards')
+
+        def reader(rows):
+            return SimpleNamespace(rows=lambda: rows)
+        live = fixture.TeamFixture.live_runs
+        control = dict(name='lead', launch_id='C', runtime_state='live', run_id='r0')
+        self.assertEqual(live(reader([control, dict(name='m1', launch_id='L', runtime_state='stopped', run_id='r1')]), 'L', 'C'), [])
+        self.assertEqual(live(reader([control, dict(name='m1', launch_id='L', runtime_state='live', run_id='r1')]), 'L', 'C'), ['m1'])
+        with self.assertRaisesRegex(AssertionError, 'lacks its runtime state'):
+            live(reader([control, dict(name='m1', launch_id='L', state='live', run_id='r1')]), 'L', 'C')
+        with self.assertRaisesRegex(AssertionError, 'control launch C is not found live'):
+            live(reader([dict(control, runtime_state='stopped')]), 'L', 'C')
+        with self.assertRaisesRegex(AssertionError, 'control launch C is not found live'):
+            live(reader([dict(name='lead', launchId='C', runtime_state='live', run_id='r0')]), 'L', 'C')
+        gone = SimpleNamespace(record=lambda member: dict(pid=2 ** 22 + 12345), start_ticks=fixture.TeamFixture.start_ticks)
+        with self.assertRaisesRegex(AssertionError, 'not running when its identity is taken'):
+            fixture.TeamFixture.process(gone, 'm1')
+
+    def test_the_session_record_is_the_one_live_record_of_the_run(self):
+        from types import SimpleNamespace
+        with tempfile.TemporaryDirectory() as base:
+            state = Path(base)
+            (state / 'sessions').mkdir()
+            (state / 'archives').mkdir()
+            (state / 'sessions/a.json').write_text(json.dumps(dict(run_id='r', pid=11, name='m1')))
+            (state / 'archives/b.json').write_text(json.dumps(dict(run_id='r', pid=11, state='archived')))
+            (state / 'sessions/receipt.json').write_text(json.dumps(dict(run_id='r', status='completed')))
+            reader = SimpleNamespace(env={'HGS_STATE_DIR': str(state)}, inspect=lambda member: {'run_id': 'r'})
+            self.assertEqual(fixture.TeamFixture.record(reader, 'm1')['name'], 'm1')
+            (state / 'sessions/c.json').write_text(json.dumps(dict(run_id='r', pid=12)))
+            with self.assertRaisesRegex(AssertionError, '2 live session records'):
+                fixture.TeamFixture.record(reader, 'm1')
+            reader.inspect = lambda member: {}
+            with self.assertRaisesRegex(AssertionError, 'has no current run'):
+                fixture.TeamFixture.record(reader, 'm1')
 
     def test_folder_watch_times_a_folder_that_goes_and_comes_back(self):
         with tempfile.TemporaryDirectory() as base:
