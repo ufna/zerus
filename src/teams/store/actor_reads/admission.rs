@@ -78,6 +78,43 @@ mod tests {
         assert!(guard.handout_admissible(&team, node, "m1").is_err());
     }
     #[test]
+    fn an_unsettled_decision_refuses_even_an_unheld_ready_projection() {
+        let mut h = Harness::new();
+        h.bind("m1");
+        let node = h.add(&person(), 1);
+        h.run(
+            &person(),
+            crate::teams::ops::Operation::Cancel {
+                node,
+                reason: "Cancel this task".into(),
+            },
+        )
+        .unwrap();
+        // Isolate the decision predicate from the hold that also protects
+        // ordinary cancellation. The ready projection carries no decisions.
+        h.store
+            .db
+            .as_ref()
+            .unwrap()
+            .execute(
+                "UPDATE nodes SET hold=0 WHERE team=?1 AND id=?2",
+                params![TEAM, node],
+            )
+            .unwrap();
+        let r = crate::teams::ops::readiness(&h.store, TEAM).unwrap();
+        let team = h.store.team(TEAM).unwrap().unwrap();
+        let view = zerus_team_plan::ready::PlanView {
+            phases: &r.phases,
+            nodes: &r.nodes,
+            members: &[],
+            lead: &team.lead,
+            integration: team.settings.integration,
+        };
+        assert!(zerus_team_plan::ready::ready(&view).contains(&node));
+        let guard = Store::open(h.temp.path()).unwrap().admission().unwrap();
+        assert!(guard.handout_admissible(&team, node, "m1").is_err());
+    }
+    #[test]
     fn admission_keeps_facts_and_excludes_writers_until_dropped() {
         let mut h = Harness::new();
         h.add(&person(), 1);

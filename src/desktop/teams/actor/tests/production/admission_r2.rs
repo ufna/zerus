@@ -21,6 +21,40 @@ struct HoldAtDelivery {
     admissions: std::rc::Rc<std::cell::Cell<usize>>,
 }
 impl HoldAtDelivery {
+    fn apply_change(&self, t: &Team, n: &Node) {
+        if self.mode == "state" {
+            let mut store = Store::open(&self.native.config.state).unwrap();
+            let old = store.task_observation(&t.id, n.id).unwrap().unwrap();
+            super::super::super::write(
+                &mut store,
+                &t.id,
+                Operation::ObserveTask {
+                    node: n.id,
+                    observation: ops::TaskObservation {
+                        revision: "after-intent".into(),
+                        previous_revision: old.revision.clone(),
+                        stage: ops::TaskStage::InProgress,
+                        ..old
+                    },
+                },
+                100,
+            )
+            .unwrap();
+        }
+        let operation = self.change(n);
+        if let Some(operation) = operation {
+            let mut store = Store::open(&self.native.config.state).unwrap();
+            let current = store.team(&t.id).unwrap().unwrap();
+            let r = ops::apply(
+                &mut store,
+                &person(),
+                &crate::teams::ops::tests::request(current.revision, operation),
+                100,
+            );
+            r.unwrap();
+        }
+    }
+
     fn change(&self, n: &Node) -> Option<Operation> {
         match self.mode {
             "hold" => Some(Operation::Hold { node: n.id }),
@@ -81,18 +115,7 @@ impl ports::Ports for HoldAtDelivery {
         if self.mode.starts_with("fleet ") {
             super::fleet::change(&self.native, self.mode);
         }
-        let operation = self.change(n);
-        if let Some(operation) = operation {
-            let mut store = Store::open(&self.native.config.state).unwrap();
-            let current = store.team(&t.id).unwrap().unwrap();
-            let r = ops::apply(
-                &mut store,
-                &person(),
-                &crate::teams::ops::tests::request(current.revision, operation),
-                100,
-            );
-            r.unwrap();
-        }
+        self.apply_change(t, n);
         let held = if self.mode == "busy store" && self.calls == 1 {
             let db =
                 rusqlite::Connection::open(self.native.config.state.join("teams/teams-v1.sqlite3"))
@@ -137,50 +160,57 @@ fn review08_r2_hold_between_handout_intent_and_spawn() {
         "fleet epoch",
         "fleet run",
     ] {
-        let mut h = Harness::empty();
-        let mut create = crate::teams::ops::tests::create();
-        if let Operation::Create { bundle, .. } = &mut create {
-            bundle.pipelines[0].stages.clear();
-            let mut reviewer = bundle.pipelines[0].clone();
-            reviewer.id = "reviewer-work".into();
-            reviewer.implementer = "reviewer".into();
-            bundle.pipelines.push(reviewer);
-        }
-        h.run(&person(), create).unwrap();
-        h.bind("m1");
-        h.bind("m2");
-        h.bind("lead");
-        let node = h.add(&person(), 1);
-        let dep = h.add(&person(), 2);
-        // Only node 1 is offered: node 2 is held from the start.
-        h.run(&person(), Operation::Hold { node: dep }).unwrap();
-        let machine = h.store.team(TEAM).unwrap().unwrap().home;
-        let mut a = Runtime::open(h.temp.path(), &machine).unwrap();
-        let mut p = HoldAtDelivery {
-            native: native(&h),
-            calls: 0,
-            mode,
-            dep,
-            admissions: Default::default(),
-        };
-        a.tick(&mut h.store, &mut p, TEAM, 100, false).unwrap();
-        let effects = h.store.effects(TEAM, 200, None).unwrap().rows;
-        let n = h.store.node(TEAM, node).unwrap().unwrap();
-        assert_eq!(p.calls, 1, "{mode}");
-        assert_eq!(p.admissions.get(), usize::from(mode == "control"), "{mode}");
-        assert_eq!(effects.len(), 1, "{mode}");
-        if mode == "control" {
-            assert_eq!(effects[0].state, "submitted");
-        } else {
-            assert_eq!(
-                effects[0].outcome.as_ref().unwrap()["status"],
-                "refused",
-                "{mode}: {:?}",
-                effects[0]
-            );
-        }
-        assert!(n.assignee.as_deref() != Some("m1"), "{mode}");
+        window(mode);
     }
+}
+#[test]
+fn a_task_observed_active_after_intent_prevents_the_spawn() {
+    window("state");
+}
+fn window(mode: &'static str) {
+    let mut h = Harness::empty();
+    let mut create = crate::teams::ops::tests::create();
+    if let Operation::Create { bundle, .. } = &mut create {
+        bundle.pipelines[0].stages.clear();
+        let mut reviewer = bundle.pipelines[0].clone();
+        reviewer.id = "reviewer-work".into();
+        reviewer.implementer = "reviewer".into();
+        bundle.pipelines.push(reviewer);
+    }
+    h.run(&person(), create).unwrap();
+    h.bind("m1");
+    h.bind("m2");
+    h.bind("lead");
+    let node = h.add(&person(), 1);
+    let dep = h.add(&person(), 2);
+    // Only node 1 is offered: node 2 is held from the start.
+    h.run(&person(), Operation::Hold { node: dep }).unwrap();
+    let machine = h.store.team(TEAM).unwrap().unwrap().home;
+    let mut a = Runtime::open(h.temp.path(), &machine).unwrap();
+    let mut p = HoldAtDelivery {
+        native: native(&h),
+        calls: 0,
+        mode,
+        dep,
+        admissions: Default::default(),
+    };
+    a.tick(&mut h.store, &mut p, TEAM, 100, false).unwrap();
+    let effects = h.store.effects(TEAM, 200, None).unwrap().rows;
+    let n = h.store.node(TEAM, node).unwrap().unwrap();
+    assert_eq!(p.calls, 1, "{mode}");
+    assert_eq!(p.admissions.get(), usize::from(mode == "control"), "{mode}");
+    assert_eq!(effects.len(), 1, "{mode}");
+    if mode == "control" {
+        assert_eq!(effects[0].state, "submitted");
+    } else {
+        assert_eq!(
+            effects[0].outcome.as_ref().unwrap()["status"],
+            "refused",
+            "{mode}: {:?}",
+            effects[0]
+        );
+    }
+    assert!(n.assignee.as_deref() != Some("m1"), "{mode}");
 }
 
 #[test]
