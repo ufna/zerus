@@ -2,6 +2,7 @@
 //! caller chosen by the test instead of by the environment.
 mod board;
 mod catalog;
+mod create_binding;
 mod dispatch;
 mod fixtures;
 mod guides;

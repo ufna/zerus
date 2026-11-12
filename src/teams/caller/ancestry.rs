@@ -1,7 +1,10 @@
 //! Bounded process-table walk. An unreadable environment is tolerated only at
 //! the verified top of this user's tree, whose parent is foreign. Parent zero
-//! refuses, including a same-user process at a PID namespace boundary.
-use super::{claim, environment, unreadable};
+//! refuses, including a same-user process at a PID namespace boundary. An
+//! environment that macOS withholds is unreadable; below the top its refusal
+//! tells the person where their commands run. The caller's own environment
+//! comes from the process itself; the system's read starts at its parent.
+use super::{claim, environment, is_withheld, own_environment, unreadable, withheld_below_top};
 use zerus_team_plan::Problem;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -26,7 +29,30 @@ pub(super) enum Inspection {
 }
 
 pub(super) fn ancestors() -> Result<Vec<Ancestor>, Problem> {
-    walk(std::process::id(), inspect, environment)
+    from_caller(std::process::id(), inspect, own_environment, environment)
+}
+
+/// The walk from the caller `me`. Its own markers come from `own`, the
+/// process itself, and never from `read`, the system's read of it: a signed
+/// release build of `hgs` may be a program whose environment macOS withholds,
+/// and the caller is usually below the top, where a withheld read refuses.
+fn from_caller(
+    me: u32,
+    inspect: impl FnMut(u32) -> Result<Inspection, Problem>,
+    own: impl Fn() -> Vec<u8>,
+    mut read: impl FnMut(u32) -> std::io::Result<Vec<u8>>,
+) -> Result<Vec<Ancestor>, Problem> {
+    walk(
+        me,
+        inspect,
+        |pid| {
+            if pid == me {
+                Ok(own())
+            } else {
+                read(pid)
+            }
+        },
+    )
 }
 
 /// A replacement, unknown parent, loop or cap is never a successful end.
@@ -55,6 +81,7 @@ pub(super) fn walk(
                 claim(&bytes)?
             }
             Err(_) if top => None,
+            Err(error) if is_withheld(&error) => return Err(withheld_below_top()),
             Err(_) => return Err(unreadable()),
         };
         if !top && identity.birth.is_none() {

@@ -886,11 +886,40 @@ look unmarked. So on macOS an environment with nothing at all after the
 arguments is unreadable, and the existing rule applies: an unreadable
 ancestor is tolerated only at the verified top and refused below it. A
 person's command therefore passes from the Zerus window, which runs `hgs`
-with no shell between, and from a login terminal, and is refused from
-tmux, ssh and a terminal inside another application, with a sentence that
-says so. The marked path of a lead or a member reads no ancestor's
-environment and is not affected. The gate is lifted only by a Mac run of
-that candidate.
+with no shell between, and is refused below any program whose environment
+the system hides, with a sentence that says so. The third run measured
+which programs those are: the ones whose code signature carries the
+restrict flag (464 of 513 processes; the system's zsh, ssh and its session
+helper among them), while a shell or tmux installed by the person is
+readable. So the rule is about the program above the command, not about
+tmux or ssh as such. The marked path of a lead or a member reads no
+ancestor's environment and is not affected, and the caller's own markers
+come from the process itself, never from the system read. The review of
+the first candidate hardened the parser of the system's answer: a tail
+with no byte other than NUL is withheld, an argument that begins with a
+marker name makes the read unreadable, an answer as large as the buffer is
+unreadable, and a marker named twice is unreadable on every platform. The
+gate was lifted by the third Mac run (65 tests, nine mutants caught) and
+merged on 2026-11-12. Not yet observed on a Mac: the hardened release
+`hgs`, and whether `claude` and `codex` have readable environments; if
+they do not, a person's command below them is refused.
+
+**A caller below a resident agent host is not a person (2026-11-12, from a
+real agent).** A probe from the tool shells of real sessions showed Claude
+and Codex behaving as designed, and a DeepSeek session, which one resident
+host process serves, passing as a person once the three markers were
+removed: the host is not below any agent's process, and its shells even
+carried the markers of the session that had started the host (tracker item
+`zerus-ppd26`). The person path now refuses when an ancestor is a recorded
+live resident agent host, matched by PID and birth from the host's own
+record, never by a program's name; a recorded PID without a verifiable
+birth, an unreadable record or more records than the bound refuse as
+unverifiable. For OpenCode, whose shared service Zerus does not record,
+the PID in OpenCode's own service file is used only to add a refusal. A
+session that a resident host serves cannot be a lead or a member in this
+milestone, because its commands cannot be bound to its own session by
+ancestry: the proof says so plainly, and team creation and member launch
+refuse such an agent kind.
 
 **How the service reaches a session (packages 8, 10 and 17).** The desktop's
 deferred-send, deferred-answer and creation actors admit only the proof of a
@@ -917,6 +946,9 @@ binding decisions, base commit, branch, write set). It answers
 `{state: submitted|refused|uncertain|cutting_over}` in the form of
 `start-deliver`, and the same ID never sends twice. `--recover-only` reads
 the receipt and sends nothing.
+Like `start-deliver`, its reply carries `error` only when there is one;
+a reader takes a missing `error` for `submitted` alone. The four commands
+below always carry the field.
 
 Two more commands of the same kind, each run by the service and each taking
 its authority from a stored effect or decision, never from the caller:
@@ -1157,7 +1189,10 @@ board change that settles the accept keeps the mark, so that the fact of a
 merge written before the revocation is still taken afterwards. The mark is
 also what tells an accept that once had the authority from one that never
 did: an accept made while the delegation was off, and never approved, takes
-no merge fact in any state.
+no merge fact in any state. A development store written by the heads of
+this branch before the mark existed holds taken-back accepts without it;
+their late merge facts are refused like those of an accept that never had
+the authority.
 
 **What the review of the service task commands settled (package 6b).** A
 team that is stopped or archived retires its nodes by that status:
@@ -1178,6 +1213,37 @@ can open the card the specification asks for (tracker item
 hand-out quoted, under a heading that says whose it is. A cleanup's history
 entry names its cause.
 
+**What an admission reads (package 8, after its confirmation review).**
+The admission of a hand-out asks the store the same question its intent
+asked, through the store's own predicate inside the held transaction: the
+node's hold, its readiness with its dependencies, its state, assignee and
+role, besides the team, the member, the effect and the generation. One
+predicate, two call sites; a Hold or a Route committed between the intent
+and the spawn refuses the delivery. Outside facts are read last in the
+same section when they can be read in the process: the stop flag, the
+Teams switch and the member's fleet row. The task occupancy cannot be,
+because reading it spawns children; it is read as late as possible before
+the admission and is a scheduling hint, not an authority. A held section
+is short: the spawn itself, or the ref update with its own deadline of 5
+seconds, after which the merge is unknown and settled by reading. Writers
+of the command line wait 8 seconds for the store, longer than any held
+section, and a writer that still cannot begin is told `store_busy`:
+nothing was written. The actor's own admission waits 100 milliseconds,
+and a busy store is a retry on a later pass, never a recorded refusal.
+
+**What the person confirmed is bound at the create (packages 5 and 13,
+after the desktop's review).** New team shows a template's roster,
+pipelines and delegations, and the person confirms them; a template is
+replaced by its ID, so a create that names only the ID can make a team the
+person never saw. The catalog read gives each template a digest over
+everything a create uses. `hgs team create` accepts `expected_template`,
+the digest that was shown, and refuses with `template_changed` before
+anything is written when the bundle it is about to use has another; and
+`delegations`, all five, which become the team's in place of the
+template's. The desktop always sends both, never creates unbound, and on
+`template_changed` shows the template again for a new confirmation. A
+request without the fields behaves as before, for a person at a terminal.
+
 **A doorbell points at the inbox and carries none of it (package 10).** The
 doorbell says how many items wait and names the command that reads them;
 the text of an item comes from members and is never put into a message of
@@ -1189,6 +1255,39 @@ durable before the send; the send is admitted at its spawn. A refused
 doorbell may ring again after the interval; an uncertain one is never sent
 again for its mark, and a newer item rings a new one. A resumed lead gets a
 new doorbell, never a replay.
+
+**A lead's answer reaches its member through the member's own read and a
+doorbell (package 10, follow-up).** A reply stays on its inbox item.
+`hgs team current` shows, on each node the member holds, the member's own
+questions of the current attempt with their state and the lead's answer:
+newest first, at most ten, with a flag when there are more. A question of
+an earlier attempt is not shown; a Return's reason carries what the next
+attempt must know. A reply to a question of the current attempt marks the
+member. The member's doorbell says how many answers wait and names
+`hgs team current`; it never carries the text of a question or of an
+answer. It follows the lead's doorbell rules: the team is running, the
+member's session is live and idle with no pending request, the mark is
+newer than the last doorbell's, the interval has passed, the reservation
+names the member's run and conversation and the mark and is durable before
+the send, the send is admitted at its spawn, a refused doorbell may ring
+again after the interval and an uncertain one is never sent again for its
+mark. At the admission the member must still hold that attempt: after an
+accept, a return, a reassignment, a cancel or a stop the mark is dropped
+and nothing is sent. The member's guide page says where an answer appears.
+No other path carries a lead's text to a member outside a hand-out and a
+Return.
+
+**A card says which decisions it takes, and a row carries what a view needs
+to foresee a refusal (store contract, follow-up).** `OpenCard` takes an
+optional `decisions` list of at most four short tokens; the store keeps it
+and returns it on the card's row, and a card opened without it takes
+`acknowledged` alone. An integration card and a pipeline acceptance card
+return their fixed pairs. `DecideCard` refuses a decision the card does not
+list. Every opener states the decisions something reads: a decision that
+nothing acts on is not listed, so a view never offers it. A queue row
+carries the attempt's holder and the kind of a pending decision, and a
+member row carries whether the person stopped it; all three are additive
+fields of the pinned replies.
 
 **A timer fires once and only while its condition holds (package 10).**
 The store writes a timer's inbox item or owner card in one operation that
@@ -1244,6 +1343,52 @@ bounded read, `Store::released_stages(team, limit, after)`, returns only
 released stage nodes whose clear has no final record, with the task to
 name: the bound task, or the stored creation request ID of a creation that
 was saved and never bound. Neither read walks settled history.
+
+**The store follows the task's attempts (packages 6 and 10, after the
+confirmation of package 10).** The service reads only the newest state of a
+task, so two observations can skip what happened between them: a task that
+was cancelled, moved back and sent again looks active before and after, and
+an answer about the earlier execution can arrive after the later one was
+observed. The task document numbers its attempts. An observation carries
+`attempt`, the highest generation any attempt of the task claims (0 without
+one), and `attempt_id`, the ID of its current attempt (empty without one);
+the store keeps both with the observation. An attempt the team hands out
+has its effect's request ID as its ID, so the store knows its own. The
+identity is the pair: an attempt that never started still claims a
+generation, so the current attempt can change while the highest generation
+stays (measured on two replicas of one task, 2026-11-12). When an
+observation shows an active task whose current attempt is not the stored
+one and is not an effect of that node, a person started a new execution,
+whether or not the number grew, and the store does at once what the two
+observations it missed would have done in turn: the end of the earlier
+attempt, then the person's restore. Pending decisions of the node are
+settled, the node moves to its next generation and the event is
+`person_override`. A node that is already finished takes the restore it
+takes today. A task whose attempts conflict has no current attempt; the
+store keeps what it observed and decides nothing from it.
+
+A cancel acts on one attempt. `team-cancel` compares, under its locks, the
+document's highest generation and current attempt with the pair the store
+holds for the node. When they differ, the store has not observed what the
+document now holds: the command writes nothing and answers `stale`, and
+the service observes the task before it asks again. Its reply names what
+it acted on in `attempt` and `attempt_id`, `RecordCancel` carries both, and
+the store applies a cancelled answer only while the node's stored pair is
+still that one; otherwise the operation is refused and writes nothing. An
+answer about an earlier attempt therefore never ends a node whose task runs
+again, and both orders of the answer and the observation leave the same
+state. No service command finishes, reopens or cancels a task whose current
+attempt is not the one the store observed.
+
+**Known limit: the key of a task that was closed before the stop.** After a
+stop the service clears the team key of the tasks that were open at the
+stop and of released stages. A task accepted or cancelled earlier keeps its
+key. On the team's home computer that key guards nothing once the team is
+stopped or archived. On another computer the task guard cannot read the
+team's status and refuses first, so an agent there cannot send, start, move
+or edit such a task until a person clears the key; a person is never
+stopped by it. Clearing every closed task of a long-lived team is a walk of
+its whole archive and is a tracked follow-up, not part of milestone 1.
 
 **Known limit.** A stage excludes the implementer of the target's current
 round. After a reassignment an earlier implementer could hold a stage of

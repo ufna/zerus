@@ -11,6 +11,31 @@ const MAX_RECEIPT: usize = 1024 * 1024;
 
 #[path = "caller_binding.rs"]
 mod caller_binding;
+#[path = "caller_hosts.rs"]
+mod caller_hosts;
+pub(crate) use caller_hosts::Hosts;
+#[cfg(test)]
+pub(crate) use caller_hosts::{Named, Registered};
+
+/// The resident agent hosts this computer records, for the person path.
+pub(crate) fn caller_hosts() -> std::result::Result<Hosts, &'static str> {
+    caller_hosts::hosts()
+}
+
+/// The backend of a session a resident host serves, when a marked claim
+/// names one by its exact route; `None` for every other claim.
+pub(crate) fn caller_hosted_backend(
+    name: &str,
+    run: &str,
+    session: Option<&str>,
+) -> Option<String> {
+    caller_hosts::hosted_backend(name, run, session)
+}
+
+#[cfg(test)]
+pub(crate) fn caller_host_reads() -> usize {
+    caller_hosts::reads()
+}
 
 /// Explicit, bounded caller admission. Existing send attribution keeps its
 /// compatibility behavior; Teams and task intake use this strict reader.

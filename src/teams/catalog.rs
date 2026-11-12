@@ -5,6 +5,9 @@
 //! save or import.
 #![cfg_attr(not(test), allow(dead_code))] // The `hgs team` CLI in package 5 is the caller.
 
+mod digest;
+pub(crate) use digest::template_digest;
+
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 

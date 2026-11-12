@@ -293,10 +293,8 @@ mod tests {
             assert!(unchanged_record(&current, &raw).is_err(), "{key}");
         }
     }
-    #[test]
-    fn original_custody_is_private_unique_and_not_reconstructed() {
-        let temp = tempfile::tempdir().unwrap();
-        let config = Config {
+    fn config(temp: &tempfile::TempDir) -> Config {
+        Config {
             home: String::new(),
             dir: temp.path().join("config"),
             state: temp.path().join("state"),
@@ -307,7 +305,29 @@ mod tests {
             machines: Default::default(),
             tab: false,
             tab_colors: String::new(),
-        };
+        }
+    }
+    /// Prune until the file is gone, within a bound. A child that another
+    /// test thread forked while this lock existed holds a close-on-exec
+    /// duplicate of it until that child execs, and pruning rightly keeps a
+    /// held file for that moment.
+    fn pruned_within(config: &Config, path: &std::path::Path, bound: Duration) -> bool {
+        let deadline = Instant::now() + bound;
+        loop {
+            super::super::super::super::child::prune_custody(config);
+            if !path.exists() {
+                return true;
+            }
+            if Instant::now() >= deadline {
+                return false;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+    #[test]
+    fn original_custody_is_private_unique_and_not_reconstructed() {
+        let temp = tempfile::tempdir().unwrap();
+        let config = config(&temp);
         let id = uuid::Uuid::new_v4().to_string();
         let (held, path, identity) = custody(&config, &id).unwrap();
         assert!(crate::platform::verify_private(&path, crate::platform::Private::File).unwrap());
@@ -315,8 +335,58 @@ mod tests {
         super::super::super::super::child::prune_custody(&config);
         assert!(path.exists());
         drop(held);
+        assert!(pruned_within(&config, &path, Duration::from_secs(30)));
+        remove(&path, identity);
+    }
+    /// The deterministic fork window: a child forked before its exec keeps
+    /// the dropped lock held, so its file stays; after the exec it is pruned.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_child_forked_before_its_exec_keeps_released_custody_until_it_execs() {
+        use std::os::{
+            fd::{AsRawFd, FromRawFd, OwnedFd},
+            unix::process::CommandExt,
+        };
+        let pipe = || {
+            let mut fds = [-1; 2];
+            assert_eq!(unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) }, 0);
+            unsafe { (OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1])) }
+        };
+        let temp = tempfile::tempdir().unwrap();
+        let config = config(&temp);
+        let id = uuid::Uuid::new_v4().to_string();
+        let (held, path, identity) = custody(&config, &id).unwrap();
+        let ((ready_read, ready_write), (release_read, release_write)) = (pipe(), pipe());
+        let (ready, release) = (ready_write.as_raw_fd(), release_read.as_raw_fd());
+        let forked = std::thread::spawn(move || {
+            let mut command = std::process::Command::new("/bin/true");
+            // SAFETY: only async-signal-safe write and read run after fork.
+            unsafe {
+                command.pre_exec(move || {
+                    let byte = 0u8;
+                    libc::write(ready, (&byte as *const u8).cast(), 1);
+                    let mut byte = 0u8;
+                    libc::read(release, (&mut byte as *mut u8).cast(), 1);
+                    Ok(())
+                });
+            }
+            command.spawn().unwrap().wait().unwrap();
+            drop((ready_write, release_read));
+        });
+        let mut byte = 0u8;
+        assert_eq!(
+            unsafe { libc::read(ready_read.as_raw_fd(), (&mut byte as *mut u8).cast(), 1) },
+            1
+        );
+        drop(held);
         super::super::super::super::child::prune_custody(&config);
-        assert!(!path.exists());
+        assert!(path.exists(), "the forked child still holds the lock");
+        assert_eq!(
+            unsafe { libc::write(release_write.as_raw_fd(), (&byte as *const u8).cast(), 1) },
+            1
+        );
+        forked.join().unwrap();
+        assert!(pruned_within(&config, &path, Duration::from_secs(30)));
         remove(&path, identity);
     }
 }

@@ -103,6 +103,29 @@ impl Store {
             Err(Problem::new(code::TEAMS_INACTIVE, "Teams preview is off."))
         }
     }
+    /// The original create request, by receipt identity, for catalog-independent replay.
+    pub fn creation_request(&self, id: &str) -> Result<Option<super::ops::Request>> {
+        self.active()?;
+        self.db.as_ref().map_or(Ok(None), |db| {
+            let content: Option<String> = db
+                .query_row("SELECT content FROM requests WHERE id=?1", [id], |r| {
+                    r.get(0)
+                })
+                .optional()
+                .map_err(storage)?;
+            content
+                .map(|text| {
+                    if text.len() > 262_144 {
+                        return Err(Problem::new(
+                            code::OVER_CAP,
+                            "The saved request exceeds its bound.",
+                        ));
+                    }
+                    decode(&text)
+                })
+                .transpose()
+        })
+    }
     pub fn team(&self, id: &str) -> Result<Option<Team>> {
         self.active()?;
         self.db.as_ref().map_or(Ok(None), |db| rows::team(db, id))

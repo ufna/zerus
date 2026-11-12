@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 pub struct Problem {
     /// One of the constants in [`code`]. Callers match on it; never on `message`.
     pub code: String,
-    /// One sentence for a person.
+    /// A short explanation for a person.
     pub message: String,
     /// What the problem is about: IDs, field names, a reset time.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -47,6 +47,7 @@ pub mod code {
     pub const TEAMS_INACTIVE: &str = "teams_inactive";
     pub const NOT_FOUND: &str = "not_found";
     pub const STALE_REVISION: &str = "stale_revision";
+    pub const TEMPLATE_CHANGED: &str = "template_changed";
     pub const NOT_ALLOWED: &str = "not_allowed";
     pub const INVALID_STATE: &str = "invalid_state";
     pub const UNKNOWN_ROLE: &str = "unknown_role";
@@ -64,10 +65,11 @@ pub mod code {
     pub const DELIVERY_UNCERTAIN: &str = "delivery_uncertain";
 
     /// Every code, for tests that pin the list.
-    pub const ALL: [&str; 18] = [
+    pub const ALL: [&str; 19] = [
         TEAMS_INACTIVE,
         NOT_FOUND,
         STALE_REVISION,
+        TEMPLATE_CHANGED,
         NOT_ALLOWED,
         INVALID_STATE,
         UNKNOWN_ROLE,
