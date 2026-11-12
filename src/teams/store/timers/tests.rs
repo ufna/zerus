@@ -108,7 +108,10 @@ fn every_timer_read_searches_an_index() {
         ("QUEUE_PAGE", queue.as_str()),
         ("NODES_BY_STATE_PAGE", live.as_str()),
         ("ARCHIVE_BY_STATE_PAGE", archived.as_str()),
-        ("UNSTAFFED_OPEN_ITEMS", crate::teams::store::unstaffed::OPEN_ITEMS),
+        (
+            "UNSTAFFED_TOLD_ITEMS",
+            crate::teams::store::unstaffed::TOLD_ITEMS,
+        ),
         ("OPEN_EFFECT_NODES", effect_nodes.as_str()),
         ("MEMBER_PAGE", crate::teams::store::pages::MEMBER_PAGE_SQL),
         ("NEWEST", sql::NEWEST),

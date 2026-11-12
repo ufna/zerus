@@ -70,7 +70,34 @@ fn tick(h: &mut Harness, a: &mut Runtime, p: &mut Fake, now: i64) {
     a.tick(&mut h.store, p, TEAM, now, false).unwrap();
 }
 fn open_items(h: &Harness) -> Vec<u32> {
-    h.store.open_unstaffed(TEAM).unwrap().into_iter().collect()
+    let rows = h.store.inbox(TEAM, 200, None).unwrap().rows;
+    rows.into_iter()
+        .filter(|i| i.state == "open" && i.kind.starts_with("unstaffed:"))
+        .map(|i| i.node)
+        .collect()
+}
+fn items(h: &Harness) -> usize {
+    let rows = h.store.inbox(TEAM, 200, None).unwrap().rows;
+    rows.iter()
+        .filter(|i| i.kind.starts_with("unstaffed:"))
+        .count()
+}
+/// The lead closing its open unstaffed items. No operation closes one for
+/// the lead yet; every closer but the reconcile leaves the reply empty, as
+/// this does.
+fn closed_by_lead(h: &Harness) {
+    h.store
+        .db
+        .as_ref()
+        .unwrap()
+        .execute(
+            "UPDATE inbox SET state='closed' WHERE team=?1 AND state='open' AND kind LIKE 'unstaffed:%'",
+            [TEAM],
+        )
+        .unwrap();
+}
+fn revision(h: &Harness) -> u64 {
+    h.store.team(TEAM).unwrap().unwrap().revision
 }
 /// What a pass may not change when it has nothing to tell: the revision, the
 /// journal, the inbox and the cards.
@@ -173,4 +200,52 @@ fn a_paused_or_stopped_team_gets_no_unstaffed_pass() {
         tick(&mut h, &mut a, &mut p, 100);
         assert!(open_items(&h).is_empty());
     }
+}
+
+/// Review 45, P2-1 (the reviewer's actor reproducer): closing the item
+/// between passes, three times, while the node stays unstaffed. The episode
+/// stands: no pass tells it again and no revision moves.
+#[test]
+fn a_closed_item_is_not_recreated_without_a_set_transition() {
+    let (mut h, mut a, mut p, node) = stranded();
+    tick(&mut h, &mut a, &mut p, 100);
+    assert_eq!(open_items(&h), vec![node]);
+    for pass in 0..3 {
+        closed_by_lead(&h);
+        let before = revision(&h);
+        tick(&mut h, &mut a, &mut p, 200 + pass * 60_000);
+        assert!(open_items(&h).is_empty(), "pass {pass}: recreated");
+        assert_eq!(revision(&h), before, "pass {pass}");
+    }
+    assert_eq!(items(&h), 1);
+}
+
+/// The lead closes its item on each of a hundred passes: one item in all,
+/// and no revision moves after the first pass.
+#[test]
+fn a_lead_closing_its_item_a_hundred_times_is_told_once() {
+    let (mut h, mut a, mut p, node) = stranded();
+    tick(&mut h, &mut a, &mut p, 100);
+    assert_eq!(open_items(&h), vec![node]);
+    let first = revision(&h);
+    for pass in 0..100 {
+        closed_by_lead(&h);
+        tick(&mut h, &mut a, &mut p, 200 + pass * 60_000);
+    }
+    assert_eq!(items(&h), 1);
+    assert_eq!(revision(&h), first);
+    assert!(a.ledger.get(TEAM, "unstaffed").unwrap().is_none());
+    assert!(a.ledger.get(TEAM, "gate:unstaffed").unwrap().is_none());
+    let refusals: u32 = h
+        .store
+        .db
+        .as_ref()
+        .unwrap()
+        .query_row(
+            "SELECT count(*) FROM requests WHERE team=?1 AND json_extract(result,'$.Refused.code')='unstaffed_unchanged'",
+            [TEAM],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(refusals, 0, "the service never asked again");
 }

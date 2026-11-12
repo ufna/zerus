@@ -20,7 +20,7 @@ mod team;
 mod timers;
 mod types;
 mod unstaffed;
-pub use unstaffed::unstaffed_of;
+pub use unstaffed::{unstaffed_changes, unstaffed_of, unstaffed_stages};
 mod validation;
 use super::store::{self, rows, DecisionState, Store};
 #[allow(unused_imports)]

@@ -1,17 +1,21 @@
 //! A ready node that no member can take (zerus-63rru.45). The plan kernel
-//! names these nodes (`ready::unstaffed`); the lead is told once per node and
-//! the item goes when a member can take the node again.
+//! names these nodes (`ready::unstaffed`); the lead is told once per
+//! episode, which is a node, its generation and the kernel's reason.
 //!
 //! The service's hand-out pass compares the kernel's set, over its uncooled
-//! readiness view, with the lead's open items, and asks for
-//! `ReconcileUnstaffed` only when the two differ. The store never takes the
-//! service's list: it recomputes the set from its own readiness view, members
-//! and open effects through [`unstaffed_of`], the same function, and in one
-//! operation tells the lead of each new node and closes the items of the
-//! nodes that left the set. An unstaffed stage is retired and its parent
-//! handed to the lead with the kernel's reason, as at the stage's creation.
+//! readiness view, with the told items through [`unstaffed_changes`], and
+//! asks for `ReconcileUnstaffed` only when that finds a change. The store
+//! never takes the service's list: it recomputes the set from its own
+//! readiness view, members and open effects through [`unstaffed_of`] and
+//! applies the changes of the same function in one operation. An episode
+//! ends when its node leaves the set or its reason or generation changes,
+//! and only the reconcile ends it: it closes the item with a reply that says
+//! why (see `store::unstaffed`). The lead closing its item ends nothing and
+//! is not told again. An unstaffed stage is retired and its parent handed to
+//! the lead with the kernel's reason, as at the stage's creation.
 use super::*;
 use std::collections::{BTreeMap, BTreeSet};
+use store::unstaffed::Told;
 use zerus_team_plan::ready::{self, MemberView, PlanView, Unstaffed};
 
 /// The prefix of an unstaffed item's kind. The item's kind is
@@ -19,6 +23,77 @@ use zerus_team_plan::ready::{self, MemberView, PlanView, Unstaffed};
 /// keys an item by team, kind, node and generation, so the nodes of one
 /// reconcile never share an item.
 pub const UNSTAFFED_KIND: &str = "unstaffed:";
+const LEFT: &str =
+    "The service ended this item: a member can take the task again, or it is no longer ready.";
+const REPLACED: &str = "The service ended this item: the task's reason or attempt changed, and a newer item states it.";
+
+/// What a reconcile would write: the episodes it ends (an item and why),
+/// the nodes it tells (with the item's text), and the stages it retires.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct UnstaffedChanges {
+    pub end: Vec<(u64, &'static str)>,
+    pub tell: Vec<(u32, String)>,
+    pub stages: Vec<(u32, String)>,
+}
+impl UnstaffedChanges {
+    pub fn is_empty(&self) -> bool {
+        self.end.is_empty() && self.tell.is_empty() && self.stages.is_empty()
+    }
+}
+fn text(node: u32, reason: &str) -> String {
+    format!(
+        "Task {node} is ready, but no member can take it: {reason} Route it to another role, reassign or cancel it."
+    )
+}
+/// The one comparison of the kernel's set with the told episodes, for the
+/// store's reconcile and the service's pass alike. A told item stands while
+/// it is its node's newest, the node is in the set, and its generation and
+/// text are the node's now; every other told item is ended. A node of the
+/// set without a standing item is told. Whether the item is open does not
+/// matter: the lead closing it ends nothing.
+pub fn unstaffed_changes(
+    now: &[Unstaffed],
+    stages: &BTreeSet<u32>,
+    told: &[Told],
+) -> UnstaffedChanges {
+    let wanted: BTreeMap<u32, String> = now
+        .iter()
+        .filter(|u| !stages.contains(&u.node))
+        .map(|u| (u.node, text(u.node, &u.reason)))
+        .collect();
+    let mut newest: BTreeMap<u32, &Told> = BTreeMap::new();
+    for t in told {
+        let entry = newest.entry(t.node).or_insert(t);
+        if t.seq > entry.seq {
+            *entry = t;
+        }
+    }
+    let stands = |t: &Told| {
+        newest.get(&t.node).is_some_and(|n| n.seq == t.seq)
+            && wanted.get(&t.node) == Some(&t.text)
+            && t.current == Some(t.generation)
+    };
+    let mut changes = UnstaffedChanges::default();
+    for t in told.iter().filter(|t| !stands(t)) {
+        let why = if wanted.contains_key(&t.node) {
+            REPLACED
+        } else {
+            LEFT
+        };
+        changes.end.push((t.seq, why));
+    }
+    for (node, text) in &wanted {
+        if !newest.get(node).is_some_and(|t| stands(t)) {
+            changes.tell.push((*node, text.clone()));
+        }
+    }
+    changes.stages = now
+        .iter()
+        .filter(|u| stages.contains(&u.node))
+        .map(|u| (u.node, u.reason.clone()))
+        .collect();
+    changes
+}
 
 /// The ready nodes that no member can take, by the kernel's rule, without
 /// the nodes that have an open effect: such a node is in somebody's hands or
@@ -69,59 +144,45 @@ pub(super) fn reconcile(ctx: &mut Context<'_>) -> Result<()> {
             "More than 500 unstaffed nodes: the reconcile fails closed.",
         ));
     }
-    let open = store::unstaffed::open_items(ctx.db, &ctx.team.id)?;
-    let stages: BTreeSet<u32> = readiness
-        .nodes
-        .iter()
-        .filter(|n| n.kind == NodeKind::Stage)
-        .map(|n| n.id)
-        .collect();
-    let wanted: BTreeMap<u32, &str> = now
-        .iter()
-        .filter(|u| !stages.contains(&u.node))
-        .map(|u| (u.node, u.reason.as_str()))
-        .collect();
-    let told: BTreeSet<u32> = open.iter().map(|(_, node)| *node).collect();
-    let mut changed = false;
-    // A node that left the set: a member can take it again, it is no longer
-    // ready, or it left the plan.
-    for (seq, node) in &open {
-        if !wanted.contains_key(node) {
-            ctx.db
-                .execute(
-                    "UPDATE inbox SET state='closed' WHERE team=?1 AND seq=?2",
-                    params![ctx.team.id, seq],
-                )
-                .map_err(storage)?;
-            changed = true;
-        }
+    let told = store::unstaffed::told(ctx.db, &ctx.team.id)?;
+    let changes = unstaffed_changes(&now, &unstaffed_stages(&readiness), &told);
+    if changes.is_empty() {
+        return Err(Problem::new(
+            code::UNSTAFFED_UNCHANGED,
+            "The lead's items already show every unstaffed node; nothing was written.",
+        ));
+    }
+    // The reconcile's own close: the reply marks the episode as ended.
+    for (seq, why) in &changes.end {
+        ctx.db
+            .execute(
+                "UPDATE inbox SET state='closed',reply=?3,reply_actor=?4 WHERE team=?1 AND seq=?2",
+                params![ctx.team.id, seq, why, encode(ctx.actor)?],
+            )
+            .map_err(storage)?;
     }
     let revision = ctx
         .team
         .revision
         .checked_add(1)
         .ok_or_else(|| over("Revision is exhausted."))?;
-    for (node, reason) in &wanted {
-        if told.contains(node) {
-            continue;
-        }
-        let text = format!(
-            "Task {node} is ready, but no member can take it: {reason} Route it to another role, reassign or cancel it."
-        );
-        ctx.inbox(*node, &format!("{UNSTAFFED_KIND}{revision}"), &text)?;
-        changed = true;
+    for (node, text) in &changes.tell {
+        ctx.inbox(*node, &format!("{UNSTAFFED_KIND}{revision}"), text)?;
     }
-    for u in now.iter().filter(|u| stages.contains(&u.node)) {
-        stage_to_lead(ctx, u.node, &u.reason)?;
-        changed = true;
-    }
-    if !changed {
-        return Err(Problem::new(
-            code::UNSTAFFED_UNCHANGED,
-            "The lead's items already show every unstaffed node; nothing was written.",
-        ));
+    for (stage, reason) in &changes.stages {
+        stage_to_lead(ctx, *stage, reason)?;
     }
     Ok(())
+}
+
+/// The stage nodes of a readiness view, which are retired, never told.
+pub fn unstaffed_stages(readiness: &Readiness) -> BTreeSet<u32> {
+    readiness
+        .nodes
+        .iter()
+        .filter(|n| n.kind == NodeKind::Stage)
+        .map(|n| n.id)
+        .collect()
 }
 
 /// An unstaffed stage goes the way a stage nobody could take goes at its

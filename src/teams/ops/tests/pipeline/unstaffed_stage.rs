@@ -184,3 +184,32 @@ fn the_pipelines_hold_on_the_parent_ends_with_its_retired_stage() {
     );
     assert_eq!(report_items(&h, parent).len(), 1);
 }
+
+/// A stage's parent, handed to the lead when its stage was retired: the lead
+/// closing that item changes nothing, and a hundred reconciles write nothing.
+#[test]
+fn the_lead_closing_a_retired_stages_parent_item_is_not_told_again() {
+    let (mut h, parent, _) = wanted();
+    created_stage(&mut h, parent);
+    remove(&mut h, "m3");
+    reconcile(&mut h).unwrap();
+    assert_eq!(report_items(&h, parent).len(), 1);
+    h.store
+        .db
+        .as_ref()
+        .unwrap()
+        .execute(
+            "UPDATE inbox SET state='closed' WHERE team=?1 AND node=?2 AND state='open'",
+            rusqlite::params![TEAM, parent],
+        )
+        .unwrap();
+    let revision = h.store.team(TEAM).unwrap().unwrap().revision;
+    let inbox = h.store.inbox(TEAM, 200, None).unwrap().rows;
+    for _ in 0..100 {
+        let e = reconcile(&mut h).unwrap_err();
+        assert_eq!(e.code, code::UNSTAFFED_UNCHANGED);
+    }
+    assert_eq!(h.store.team(TEAM).unwrap().unwrap().revision, revision);
+    assert_eq!(h.store.inbox(TEAM, 200, None).unwrap().rows, inbox);
+    assert_eq!(unstaffed_items(&h), 0);
+}

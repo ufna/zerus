@@ -148,11 +148,12 @@ impl Runtime {
         Ok(())
     }
     /// zerus-63rru.45: the kernel's unstaffed set over the uncooled view,
-    /// compared with the lead's open items; the store reconciles only when
-    /// they differ and recomputes the set itself. The request is kept in the
-    /// ledger before it is applied, so a restart replays it by its request ID
-    /// and gets its saved reply. A race (`unstaffed_unchanged`, or a revision
-    /// that moved) is settled, never a gate failure or a card.
+    /// compared with the told episodes by the store's own function; the
+    /// store reconciles only when that finds a change and recomputes the
+    /// set itself. The request is kept in the ledger before it is applied,
+    /// so a restart replays it by its request ID and gets its saved reply. A
+    /// race (`unstaffed_unchanged`, or a revision that moved) is settled,
+    /// never a gate failure or a card.
     fn unstaffed(
         &mut self,
         store: &mut Store,
@@ -167,17 +168,19 @@ impl Runtime {
         }
         let open: BTreeSet<u32> = effects.iter().map(|e| e.node).collect();
         #[allow(unused_mut)]
-        let mut set: BTreeSet<u32> = ops::unstaffed_of(team, raw, members, &open)
-            .into_iter()
-            .map(|u| u.node)
-            .collect();
+        let mut set = ops::unstaffed_of(team, raw, members, &open);
         #[cfg(test)]
         STALE_VIEW.with(|stale| {
             if let Some(node) = stale.get() {
-                set.insert(node);
+                set.push(zerus_team_plan::ready::Unstaffed {
+                    node,
+                    reason: "A stale view.".into(),
+                });
             }
         });
-        if set == store.open_unstaffed(&team.id)? || !self.due(store, team, UNSTAFFED, "", now)? {
+        let told = store.told_unstaffed(&team.id)?;
+        let changes = ops::unstaffed_changes(&set, &ops::unstaffed_stages(raw), &told);
+        if changes.is_empty() || !self.due(store, team, UNSTAFFED, "", now)? {
             return Ok(());
         }
         let (_, request) = request(store, &team.id, Operation::ReconcileUnstaffed)?;

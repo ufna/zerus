@@ -21,6 +21,38 @@ fn open(h: &Harness) -> Vec<(u32, String, String)> {
         .map(|i| (i.node, i.kind, i.text))
         .collect()
 }
+/// The items the reconcile ended, `(node, reply)`.
+fn ended(h: &Harness) -> Vec<(u32, String)> {
+    h.store
+        .inbox(TEAM, 200, None)
+        .unwrap()
+        .rows
+        .into_iter()
+        .filter(|i| i.kind.starts_with("unstaffed:") && i.reply.is_some())
+        .map(|i| (i.node, i.reply.unwrap()))
+        .collect()
+}
+/// Every unstaffed item, ended or not.
+fn all(h: &Harness) -> usize {
+    let rows = h.store.inbox(TEAM, 200, None).unwrap().rows;
+    rows.iter()
+        .filter(|i| i.kind.starts_with("unstaffed:"))
+        .count()
+}
+/// The lead closing its open unstaffed items. No operation closes one for
+/// the lead yet; every closer but the reconcile leaves the reply empty, as
+/// this does.
+fn closed_by_lead(h: &Harness) {
+    h.store
+        .db
+        .as_ref()
+        .unwrap()
+        .execute(
+            "UPDATE inbox SET state='closed' WHERE team=?1 AND state='open' AND kind LIKE 'unstaffed:%'",
+            [TEAM],
+        )
+        .unwrap();
+}
 fn row(h: &Harness, node: u32) -> Option<String> {
     h.store
         .queue_rows(TEAM, 200, None)
@@ -183,8 +215,11 @@ fn a_node_fixed_by_route_reassign_hold_or_leaving_closes_its_item() {
             }
         }
         if fix == "leave" {
-            // The node's end already closed its items.
+            // The node's end already closed its item; only the reconcile
+            // ends the episode, once.
             assert!(open(&h).is_empty(), "{fix}");
+            reconcile(&mut h).unwrap();
+            assert_eq!(ended(&h).len(), 1, "{fix}");
             unchanged(&mut h);
         } else {
             reconcile(&mut h).unwrap();
@@ -273,7 +308,7 @@ fn only_the_service_reconciles_a_running_team() {
 }
 
 /// One removal strands 500 ready nodes: one reconcile, 500 items. A 501st
-/// open item makes the next reconcile fail closed with a named refusal, not
+/// told item makes the next reconcile fail closed with a named refusal, not
 /// a silent cut, and the service's read fails the same way.
 #[test]
 fn a_removal_that_strands_500_nodes_is_one_reconcile_and_the_bound_fails_closed() {
@@ -285,11 +320,14 @@ fn a_removal_that_strands_500_nodes_is_one_reconcile_and_the_bound_fails_closed(
     removed(&mut h, "m1");
     removed(&mut h, "m2");
     reconcile(&mut h).unwrap();
-    assert_eq!(h.store.open_unstaffed(TEAM).unwrap().len(), 500);
-    assert_eq!(
-        h.store.open_unstaffed(TEAM).unwrap(),
-        nodes.iter().copied().collect()
-    );
+    let told: Vec<u32> = h
+        .store
+        .told_unstaffed(TEAM)
+        .unwrap()
+        .into_iter()
+        .map(|t| t.node)
+        .collect();
+    assert_eq!(told, nodes);
     let db = h.store.db.as_ref().unwrap();
     db.execute(
         "INSERT INTO inbox(team,kind,node,generation,actor,text,created_ms) VALUES(?1,'unstaffed:999999',9999,1,'{}','A forged 501st item',0)",
@@ -300,18 +338,19 @@ fn a_removal_that_strands_500_nodes_is_one_reconcile_and_the_bound_fails_closed(
     let e = reconcile(&mut h).unwrap_err();
     assert_eq!(e.code, code::OVER_CAP);
     assert!(
-        e.message.contains("More than 500 open unstaffed items"),
+        e.message.contains("More than 500 told unstaffed items"),
         "{e:?}"
     );
     assert_eq!(snapshot(&h), before);
-    let e = h.store.open_unstaffed(TEAM).unwrap_err();
+    let e = h.store.told_unstaffed(TEAM).unwrap_err();
     assert_eq!(e.code, code::OVER_CAP);
 }
 
 /// The plans and costs of the new reads at 1,000 and 10,000 settled items:
-/// the open items and the queue page's `unstaffed` read the partial index
-/// `inbox_unstaffed`, scan no table, and execute the same number of virtual
-/// machine steps whatever the closed history. `--nocapture` prints them.
+/// the told items read the partial index `inbox_unstaffed_told` and the
+/// queue page's `unstaffed` the partial index `inbox_unstaffed`; they scan no
+/// table, sort nothing, and execute the same number of virtual machine steps
+/// whatever the ended history. `--nocapture` prints them.
 #[test]
 fn the_unstaffed_reads_cost_the_same_at_1000_and_10000_settled_items() {
     use rusqlite::StatementStatus;
@@ -352,20 +391,20 @@ fn the_unstaffed_reads_cost_the_same_at_1000_and_10000_settled_items() {
     let settle = |from: usize, to: usize| {
         for i in from..to {
             db.execute(
-                "INSERT INTO inbox(team,kind,node,generation,actor,text,state,created_ms) VALUES(?1,?2,?3,1,'{}','A settled episode','closed',0),(?1,?4,?3,1,'{}','A settled report','closed',0)",
+                "INSERT INTO inbox(team,kind,node,generation,actor,text,state,reply,reply_actor,created_ms) VALUES(?1,?2,?3,1,'{}','A settled episode','closed','Ended by the reconcile','{}',0),(?1,?4,?3,1,'{}','A settled report','closed',NULL,NULL,0)",
                 params![TEAM, format!("unstaffed:settled-{i}"), a, format!("report:settled-{i}")],
             )
             .unwrap();
         }
     };
-    let open_items = crate::teams::store::unstaffed::OPEN_ITEMS;
+    let told_items = crate::teams::store::unstaffed::TOLD_ITEMS;
     let mut costs = Vec::new();
     for (from, to) in [(0, 1_000), (1_000, 10_000)] {
         settle(from, to);
-        let items = run(open_items, false);
+        let items = run(told_items, false);
         let rows = run(&page, true);
         println!(
-            "UNSTAFFED-COST settled={to}: open items rows={} vm_steps={} fullscan_steps={}; queue page rows={} vm_steps={} fullscan_steps={}",
+            "UNSTAFFED-COST settled={to}: told items rows={} vm_steps={} fullscan_steps={}; queue page rows={} vm_steps={} fullscan_steps={}",
             items.0, items.1, items.2, rows.0, rows.1, rows.2
         );
         assert_eq!(items.0, 2);
@@ -374,12 +413,19 @@ fn the_unstaffed_reads_cost_the_same_at_1000_and_10000_settled_items() {
         costs.push((items.1, rows.1));
     }
     assert_eq!(costs[0], costs[1], "the cost does not grow with history");
-    for (name, sql) in [("OPEN_ITEMS", open_items), ("QUEUE_PAGE", page.as_str())] {
+    for (name, sql, index) in [
+        ("TOLD_ITEMS", told_items, "inbox_unstaffed_told"),
+        ("QUEUE_PAGE", page.as_str(), "inbox_unstaffed"),
+    ] {
         let p = plan(sql);
         println!("UNSTAFFED-PLAN {name}:\n  {}", p.join("\n  "));
         assert!(
-            p.iter().any(|l| l.contains("inbox_unstaffed")),
-            "{name} reads the partial index: {p:?}"
+            p.iter().any(|l| l.contains(index)),
+            "{name} reads the partial index {index}: {p:?}"
+        );
+        assert!(
+            !p.iter().any(|l| l.contains("TEMP B-TREE")),
+            "{name} sorts nothing: {p:?}"
         );
         assert!(
             !p.iter()
@@ -387,4 +433,166 @@ fn the_unstaffed_reads_cost_the_same_at_1000_and_10000_settled_items() {
             "{name} scans no inbox: {p:?}"
         );
     }
+}
+
+/// Review 45, P2-2 (the reviewer's store reproducer): the gap changes while
+/// the node stays unstaffed. The reconcile replaces the item once: it ends
+/// the old one and tells the current reason.
+#[test]
+fn an_open_item_is_replaced_once_when_the_kernels_reason_changes() {
+    let mut h = Harness::new();
+    let (node, _) = stranded_assignee(&mut h);
+    reconcile(&mut h).unwrap();
+    assert!(open(&h)[0].2.contains("The assignee m2"));
+    removed(&mut h, "m1");
+    reconcile(&mut h).unwrap();
+    let current = open(&h);
+    assert_eq!(current.len(), 1);
+    assert_eq!(current[0].0, node);
+    assert!(
+        current[0]
+            .2
+            .contains("No member of the team has the role developer."),
+        "the item kept the earlier reason: {}",
+        current[0].2
+    );
+    assert_eq!(ended(&h).len(), 1);
+    assert!(ended(&h)[0].1.contains("reason or attempt changed"));
+    assert_eq!(all(&h), 2);
+    unchanged(&mut h);
+}
+
+/// The reason changes twice: two replacements, one open item each time.
+/// The assignee m2 is removed; then the last developer; then the node's
+/// role becomes one nobody has (written directly: every built-in pipeline is
+/// implemented by developers, so no Route reaches another role).
+#[test]
+fn a_reason_that_changes_twice_replaces_the_item_twice() {
+    let mut h = Harness::new();
+    let (node, _) = stranded_assignee(&mut h);
+    reconcile(&mut h).unwrap();
+    assert!(open(&h)[0].2.contains("The assignee m2 is not a member"));
+    removed(&mut h, "m1");
+    reconcile(&mut h).unwrap();
+    let first = open(&h);
+    assert_eq!(first.len(), 1);
+    assert!(first[0]
+        .2
+        .contains("No member of the team has the role developer."));
+    unchanged(&mut h);
+    let mut n = h.node(node);
+    n.role = "tester".into();
+    h.store
+        .db
+        .as_ref()
+        .unwrap()
+        .execute(
+            "UPDATE nodes SET data=?3 WHERE team=?1 AND id=?2",
+            params![TEAM, node, rows::node_payload(&n).unwrap()],
+        )
+        .unwrap();
+    reconcile(&mut h).unwrap();
+    let second = open(&h);
+    assert_eq!(second.len(), 1);
+    assert_eq!(second[0].0, node);
+    assert!(
+        second[0]
+            .2
+            .contains("No member of the team has the role tester."),
+        "{}",
+        second[0].2
+    );
+    assert_eq!(all(&h), 3);
+    assert_eq!(ended(&h).len(), 2);
+    let after = snapshot(&h);
+    for _ in 0..100 {
+        unchanged(&mut h);
+    }
+    assert_eq!(snapshot(&h), after);
+}
+
+/// Review 45, P2-1 at the store: an item the lead closed still stands for
+/// its episode. A hundred reconciles tell nothing and move no revision.
+#[test]
+fn an_item_the_lead_closed_is_not_told_again_while_its_episode_lasts() {
+    let mut h = Harness::new();
+    let (node, _) = stranded_assignee(&mut h);
+    reconcile(&mut h).unwrap();
+    for _ in 0..100 {
+        closed_by_lead(&h);
+        let before = snapshot(&h);
+        unchanged(&mut h);
+        assert_eq!(snapshot(&h), before);
+    }
+    assert!(open(&h).is_empty());
+    assert_eq!(all(&h), 1);
+    assert!(ended(&h).is_empty());
+    let told = h.store.told_unstaffed(TEAM).unwrap();
+    assert_eq!(told.iter().map(|t| t.node).collect::<Vec<_>>(), [node]);
+}
+
+/// A node that leaves the set ends its episode, whether its item was open
+/// or the lead had closed it; its return is a new episode, told once.
+#[test]
+fn a_node_that_leaves_and_returns_is_a_new_episode_told_once() {
+    for lead_closed in [false, true] {
+        let mut h = Harness::new();
+        let (node, lead) = stranded_assignee(&mut h);
+        reconcile(&mut h).unwrap();
+        if lead_closed {
+            closed_by_lead(&h);
+        }
+        h.run(&lead, Operation::Hold { node }).unwrap();
+        reconcile(&mut h).unwrap();
+        assert!(open(&h).is_empty(), "lead_closed={lead_closed}");
+        assert_eq!(ended(&h).len(), 1, "lead_closed={lead_closed}");
+        assert!(ended(&h)[0].1.contains("a member can take the task again"));
+        unchanged(&mut h);
+        h.run(&lead, Operation::Release { node }).unwrap();
+        reconcile(&mut h).unwrap();
+        let again = open(&h);
+        assert_eq!(again.len(), 1, "lead_closed={lead_closed}");
+        assert_eq!(again[0].0, node);
+        assert!(again[0].2.contains("The assignee m2"));
+        assert_eq!(all(&h), 2, "lead_closed={lead_closed}");
+        unchanged(&mut h);
+    }
+}
+
+/// The told episodes are one comparison for the store and the service: a
+/// told item that is not its node's newest, or whose generation moved, is
+/// ended, and its node is told anew.
+#[test]
+fn the_comparison_ends_an_older_item_and_a_moved_generation() {
+    use crate::teams::store::unstaffed::Told;
+    use zerus_team_plan::ready::Unstaffed;
+    let now = [Unstaffed {
+        node: 1,
+        reason: "No member of the team has the role developer.".into(),
+    }];
+    let text = "Task 1 is ready, but no member can take it: No member of the team has the role developer. Route it to another role, reassign or cancel it.";
+    let told = |seq, generation, current| Told {
+        seq,
+        node: 1,
+        generation,
+        current,
+        text: text.into(),
+    };
+    let none = std::collections::BTreeSet::new();
+    let standing = crate::teams::ops::unstaffed_changes(&now, &none, &[told(7, 1, Some(1))]);
+    assert!(standing.is_empty());
+    let older = crate::teams::ops::unstaffed_changes(
+        &now,
+        &none,
+        &[told(5, 1, Some(1)), told(7, 1, Some(1))],
+    );
+    assert_eq!(older.end.iter().map(|e| e.0).collect::<Vec<_>>(), [5]);
+    assert!(older.tell.is_empty());
+    let moved = crate::teams::ops::unstaffed_changes(&now, &none, &[told(7, 1, Some(2))]);
+    assert_eq!(moved.end.iter().map(|e| e.0).collect::<Vec<_>>(), [7]);
+    assert_eq!(moved.tell.len(), 1);
+    let stage: std::collections::BTreeSet<u32> = [1].into();
+    let retired = crate::teams::ops::unstaffed_changes(&now, &stage, &[]);
+    assert!(retired.tell.is_empty());
+    assert_eq!(retired.stages.len(), 1);
 }
