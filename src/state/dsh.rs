@@ -448,7 +448,7 @@ pub(super) fn snapshot(name: &str) -> Result<Value> {
 
 /// The listing projection of `record` from a host's `list` answer, for the
 /// fleet-row fixtures of the Teams actor's tests (zerus-63rru.51).
-#[cfg(test)]
+#[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
 pub(super) fn listed_for_fixture(record: &Value, list: &Value) -> Value {
     snapshot_from(record, list)
 }

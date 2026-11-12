@@ -37,7 +37,8 @@ mod goals;
 mod hooks;
 pub(crate) mod hook_health;
 mod input;
-#[cfg(test)]
+// Its only callers are the Teams actor's tests, which run on Linux and macOS.
+#[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
 pub(crate) mod listing_fixture;
 pub(crate) use input::task_refusal;
 pub(crate) use input::{Lookup as ReceiptLookup, Submission};
