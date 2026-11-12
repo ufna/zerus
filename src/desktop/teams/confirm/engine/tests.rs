@@ -382,13 +382,11 @@ fn a_paused_session_plans_nothing_and_keeps_its_resume() {
     assert_eq!(f.resumes, 1);
 }
 
+/// A folder-trust prompt the policy refuses, and every inactive team, keep
+/// their one notice card for the person and are never answered.
 #[test]
-fn all_manual_prompts_and_inactive_teams_make_one_card_without_an_answer() {
+fn a_refused_trust_prompt_and_inactive_teams_make_one_card_without_an_answer() {
     for field in [
-        "ordinary",
-        "permission",
-        "sign_in",
-        "hooks",
         "two",
         "folder",
         "team_paused",
@@ -398,10 +396,6 @@ fn all_manual_prompts_and_inactive_teams_make_one_card_without_an_answer() {
     ] {
         let mut f = Fake::new();
         match field {
-            "ordinary" => f.snapshot.questions[0]["source"] = json!("ordinary_question"),
-            "permission" => f.snapshot.questions[0]["source"] = json!("claude_tool_approval"),
-            "sign_in" => f.snapshot.questions[0]["source"] = json!("sign_in"),
-            "hooks" => f.snapshot.questions[0]["source"] = json!("codex_hooks_trust"),
             "two" => f.snapshot.questions.push(f.snapshot.questions[0].clone()),
             "folder" => {
                 f.snapshot.questions[0]["questions"][0]["body"] =
@@ -544,20 +538,22 @@ fn revoked_resume_delegation_or_changed_target_withholds_the_brief() {
             "run" => |f| f.snapshot.run.push('x'),
             "conversation" => |f| f.snapshot.conversation.push('x'),
             "paused" => |f| f.snapshot.paused = true,
+            // The agent's own question, as its producer writes it: it
+            // withholds the brief and is the person's; it plans no notice of
+            // its own (zerus-63rru.73).
             _ => |f| {
                 f.snapshot
                     .questions
-                    .push(json!({"source":"ordinary_question"}))
+                    .push(crate::state::trust_fixture::ordinary_question(
+                        "claude",
+                        "conversation-1",
+                    ))
             },
         });
         f.run("epoch-2", 200).unwrap();
         f.run("epoch-3", 300).unwrap();
         assert_eq!(f.briefs, 0, "{field}");
-        assert_eq!(
-            f.durable.borrow().cards.len(),
-            if field == "questions" { 2 } else { 1 },
-            "{field}"
-        );
+        assert_eq!(f.durable.borrow().cards.len(), 1, "{field}");
     }
 }
 
@@ -669,4 +665,193 @@ fn a_revocation_while_waiting_finishes_the_reservation_without_delivery() {
     p.run("epoch-3", 300).unwrap();
     assert_eq!(p.answers, 0);
     assert_eq!(p.durable.borrow().cards.len(), 1);
+}
+
+// zerus-63rru.73: only a folder-trust prompt of the member's own agent is a
+// candidate; every other pending question is the person's and plans nothing.
+
+const CONVERSATION: &str = "conversation-1";
+
+/// The member at its startup folder-trust prompt, as `agent`'s producer
+/// writes it (`state::trust_fixture`), in a run with no conversation yet.
+fn at_startup(f: &mut Fake, agent: &str) {
+    let card = crate::state::trust_fixture::startup_card(agent);
+    let folder = crate::state::trust_fixture::FOLDER;
+    f.binding.agent = agent.into();
+    f.binding.folder = folder.into();
+    f.binding.run = card["run_id"].as_str().unwrap().into();
+    f.binding.conversation = String::new();
+    f.facts.member.agent = agent.into();
+    f.facts.member.worktree = folder.into();
+    f.facts.binding = f.binding.clone();
+    f.owner.folder = folder.into();
+    f.snapshot.agent = agent.into();
+    f.snapshot.folder = folder.into();
+    f.snapshot.run = f.binding.run.clone();
+    f.snapshot.conversation = String::new();
+    f.snapshot.questions = vec![card];
+}
+
+/// The same run once its conversation started, with `questions` pending.
+fn asking(f: &mut Fake, questions: Vec<Value>) {
+    f.snapshot.conversation = CONVERSATION.into();
+    f.snapshot.questions = questions;
+}
+
+/// Nothing was planned: no row, no card, no audit reservation, no answer.
+fn nothing(f: &Fake, what: &str) {
+    let db = f.durable.borrow();
+    assert!(db.rows.is_empty(), "{what}: a row was claimed");
+    assert!(db.cards.is_empty(), "{what}: a card was opened");
+    assert!(db.audits.is_empty(), "{what}: an audit was reserved");
+    assert_eq!(f.answers, 0, "{what}");
+}
+
+fn others(agent: &str) -> Vec<(&'static str, Value)> {
+    use crate::state::trust_fixture as produced;
+    vec![
+        (
+            "the agent's own question",
+            produced::ordinary_question(agent, CONVERSATION),
+        ),
+        (
+            "a permission prompt",
+            produced::permission_prompt(CONVERSATION),
+        ),
+        ("Codex's hooks-trust prompt", produced::hooks_trust_prompt()),
+    ]
+}
+
+#[test]
+fn a_question_that_is_not_a_folder_trust_prompt_plans_nothing() {
+    for agent in ["claude", "codex", "kimi"] {
+        for (what, question) in others(agent) {
+            let mut f = Fake::new();
+            at_startup(&mut f, agent);
+            asking(&mut f, vec![question]);
+            f.run("epoch-1", 100).unwrap();
+            f.run("epoch-2", 200).unwrap();
+            nothing(&f, &format!("{agent}: {what}"));
+        }
+    }
+}
+
+#[test]
+fn a_startup_trust_prompt_is_answered_as_before_and_a_later_question_plans_nothing() {
+    for agent in ["claude", "codex", "kimi"] {
+        let mut f = Fake::new();
+        at_startup(&mut f, agent);
+        f.run("epoch-1", 100).unwrap();
+        assert_eq!(f.answers, 1, "{agent}: the startup prompt is answered");
+        let before = (
+            f.durable.borrow().rows.len(),
+            f.durable.borrow().cards.len(),
+            f.durable.borrow().audits.clone(),
+        );
+        // After the grant, in the same run: the agent asks the person.
+        for (what, question) in others(agent) {
+            asking(&mut f, vec![question]);
+            f.run("epoch-1", 200).unwrap();
+            f.run("epoch-2", 300).unwrap();
+            let after = (
+                f.durable.borrow().rows.len(),
+                f.durable.borrow().cards.len(),
+                f.durable.borrow().audits.clone(),
+            );
+            assert_eq!(after, before, "{agent}: {what} after the grant");
+            assert_eq!(f.answers, 1, "{agent}: {what}");
+        }
+    }
+}
+
+#[test]
+fn a_trust_prompt_beside_another_question_goes_to_the_person_and_two_others_plan_nothing() {
+    // The trust prompt is the candidate; the policy wants it alone.
+    let mut f = Fake::new();
+    at_startup(&mut f, "claude");
+    let ordinary = crate::state::trust_fixture::ordinary_question("claude", "");
+    f.snapshot.questions.push(ordinary);
+    f.run("epoch-1", 100).unwrap();
+    f.run("epoch-2", 200).unwrap();
+    assert_eq!(f.answers, 0);
+    assert_eq!(f.durable.borrow().cards.len(), 1);
+    // Two questions, neither a folder-trust prompt.
+    let mut f = Fake::new();
+    at_startup(&mut f, "claude");
+    asking(
+        &mut f,
+        others("claude").into_iter().map(|(_, q)| q).collect(),
+    );
+    f.run("epoch-1", 100).unwrap();
+    nothing(&f, "two other questions");
+}
+
+#[test]
+fn with_the_delegation_off_a_trust_prompt_keeps_its_notice_and_another_question_plans_nothing() {
+    let mut f = Fake::new();
+    f.facts.team.settings.delegations.confirm_trust = false;
+    at_startup(&mut f, "claude");
+    f.run("epoch-1", 100).unwrap();
+    assert_eq!(f.answers, 0);
+    assert_eq!(f.durable.borrow().cards.len(), 1);
+    let mut f = Fake::new();
+    f.facts.team.settings.delegations.confirm_trust = false;
+    at_startup(&mut f, "claude");
+    asking(
+        &mut f,
+        vec![crate::state::trust_fixture::ordinary_question(
+            "claude",
+            CONVERSATION,
+        )],
+    );
+    f.run("epoch-1", 100).unwrap();
+    nothing(&f, "delegation off");
+}
+
+/// A team that already holds a notice row keyed "trust" for a run, claimed
+/// before this change for an ordinary question, meets the new code on its
+/// next pass: the row is settled history. Another question plans nothing
+/// and adds no card; the row and its card stay as they were.
+#[test]
+fn an_earlier_trust_notice_row_for_an_ordinary_question_stays_history() {
+    let mut f = Fake::new();
+    at_startup(&mut f, "claude");
+    asking(
+        &mut f,
+        vec![crate::state::trust_fixture::ordinary_question(
+            "claude",
+            CONVERSATION,
+        )],
+    );
+    // The row the earlier code made, by its own path: a Trust plan for that
+    // question, refused by the policy, settled with its notice card.
+    let question = f.snapshot.questions[0].clone();
+    let plan = candidate(&f.binding, &f.snapshot, Kind::Trust, question);
+    execute(&mut f, plan, "epoch-0", 50).unwrap();
+    let rows = f.durable.borrow().rows.clone();
+    let cards = f.durable.borrow().cards.clone();
+    assert_eq!((rows.len(), cards.len()), (1, 1));
+    assert!(rows.values().all(|row| row.state == "cancelled"));
+    f.run("epoch-1", 100).unwrap();
+    f.run("epoch-2", 200).unwrap();
+    assert_eq!(f.durable.borrow().rows, rows);
+    assert_eq!(f.durable.borrow().cards, cards);
+    assert_eq!(f.answers, 0);
+}
+
+/// An exited member that still shows a pending question that is not a
+/// folder-trust prompt plans nothing: neither a trust notice nor a resume
+/// (which a pending question holds back anyway).
+#[test]
+fn an_exited_member_with_another_question_plans_nothing() {
+    let mut f = Fake::new();
+    f.exited(1);
+    f.snapshot.questions = vec![crate::state::trust_fixture::ordinary_question(
+        "claude",
+        "conversation-1",
+    )];
+    f.run("epoch-1", 100).unwrap();
+    f.run("epoch-2", 200).unwrap();
+    assert_eq!(f.resumes, 0);
+    nothing(&f, "an exited member's other question");
 }

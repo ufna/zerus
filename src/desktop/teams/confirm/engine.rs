@@ -46,14 +46,17 @@ pub(super) fn step(p: &mut impl Ports, b: &Binding, epoch: &str, now: i64) -> Re
     if snapshot.paused {
         return Ok(());
     }
-    let kind = if !snapshot.questions.is_empty() {
-        Kind::Trust
+    let (kind, question) = if let Some(prompt) = policy::trust_candidate(b, &snapshot) {
+        (Kind::Trust, prompt.clone())
+    } else if !snapshot.questions.is_empty() {
+        // Another pending question is the person's (zerus-63rru.73): no row,
+        // no card and no audit reservation here.
+        return Ok(());
     } else if snapshot.ended {
-        Kind::Resume
+        (Kind::Resume, Value::Null)
     } else {
         return Ok(());
     };
-    let question = snapshot.questions.first().cloned().unwrap_or(Value::Null);
     let plan = candidate(b, &snapshot, kind, question);
     execute(p, plan, epoch, now)
 }

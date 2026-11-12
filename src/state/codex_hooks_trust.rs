@@ -95,6 +95,13 @@ fn card(record: &Value, panel: &Panel) -> Option<Value> {
                 "description":DESCRIPTIONS[i]})).collect::<Vec<_>>()}]}))
 }
 
+/// The card this producer writes for `record` at `screen`, its startup panel:
+/// the route the readers of these cards test with (zerus-63rru.73).
+#[cfg(test)]
+pub(super) fn produced(record: &Value, screen: &str) -> Option<Value> {
+    card(record, &parse(screen)?)
+}
+
 fn snapshot(record: &Value, screen: &str) -> Option<(Value, usize)> {
     let panel = parse(screen)?;
     Some((card(record, &panel)?["question_hash"].clone(), panel.selected))

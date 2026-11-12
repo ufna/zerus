@@ -1463,3 +1463,11 @@ pub(super) fn reconcile(record:Value)->Value {
         assert_ne!(snapshot(&read,OUTSIDE).unwrap().0,snapshot(&other,OUTSIDE).unwrap().0);
     }
 }
+
+/// The approval card this producer writes for `request` on a terminal it
+/// cannot read: the route the readers of these cards test with
+/// (zerus-63rru.73).
+#[cfg(test)]
+pub(super) fn produced_request(record: &Value, request: &Value) -> Option<Value> {
+    build_request(record, None, request, &json!(1793000002.0), "").map(|(card, _)| card)
+}

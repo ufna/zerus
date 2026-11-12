@@ -42,3 +42,37 @@ pub(crate) fn startup_card(agent: &str) -> Value {
     }
     .unwrap_or_else(|| panic!("{agent}'s producer wrote no startup card"))
 }
+
+/// The agent's own question to the person, as the AskUserQuestion hook's
+/// producer writes it (`questions::from_hook`), in a run whose conversation
+/// is `conversation` (zerus-63rru.73).
+pub(crate) fn ordinary_question(agent: &str, conversation: &str) -> Value {
+    let mut record = record(agent);
+    record["conversation_id"] = json!(conversation);
+    let event = json!({"hook_event_name":"PreToolUse","tool_name":"AskUserQuestion",
+        "tool_use_id":"toolu_fixture","tool_input":{"questions":[{"question":"Which branch should I use?",
+        "header":"Branch","options":[{"label":"main"},{"label":"develop"}]}]}});
+    questions::from_hook(&record, &event).expect("the hook's producer wrote no question")
+}
+
+/// A tool permission prompt, as Claude's approval producer writes it for a
+/// terminal it cannot read (`claude_approval::build_request`).
+pub(crate) fn permission_prompt(conversation: &str) -> Value {
+    let mut record = record("claude");
+    record["conversation_id"] = json!(conversation);
+    claude_approval::produced_request(
+        &record,
+        &json!({"tool_name":"Bash","tool_input":{"command":"ls"},"agent_id":""}),
+    )
+    .expect("the approval producer wrote no card")
+}
+
+/// Codex's startup prompt to trust its hooks, as its producer writes it at
+/// its committed screen: a trust prompt, but not a folder-trust one.
+pub(crate) fn hooks_trust_prompt() -> Value {
+    codex_hooks_trust::produced(
+        &record("codex"),
+        include_str!("../../tests/fixtures/codex-hooks-trust.txt"),
+    )
+    .expect("the hooks-trust producer wrote no card")
+}
