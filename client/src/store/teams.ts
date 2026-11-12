@@ -104,6 +104,13 @@ export interface TeamCatalogTemplate {
    * back so the command line refuses a template that changed since it was
    * shown. Absent from an older command line: nothing can be bound. */
   digest?: string | null;
+  /** Permissions in the template's delegations that this version does not
+   * know: kept by the core's catalog read as a fact of the row, never dropped;
+   * Create stays blocked while there are any. */
+  unknown_permissions?: string[];
+  /** Other fields of what the template shows for confirmation (its settings,
+   * roster, lead, the pipelines it uses) that this version does not know. */
+  unknown_fields?: string[];
 }
 export interface TeamCatalog { roles: TeamCatalogRole[]; pipelines: TeamCatalogPipeline[]; templates: TeamCatalogTemplate[]; planning_rules: string[] }
 export interface TeamProjectFacts { git: boolean; head: string; branch: string; reason: string }

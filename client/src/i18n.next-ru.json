@@ -1382,6 +1382,7 @@
   "This task could not be read.": "Не удалось прочитать задачу.",
   "This text may already have been delivered": "Возможно, этот текст уже был доставлен",
   "This turn is no longer working": "Этот ход больше не выполняется",
+  "This version cannot show everything the template sets. Update Zerus to create a team.": "Эта версия не может показать всё, что задаёт шаблон. Обновите Zerus, чтобы создать команду.",
   "This version does not know every permission of the template. Update Zerus to create a team.": "Эта версия не знает всех разрешений шаблона. Обновите Zerus, чтобы создать команду.",
   "Tokens changed": "Изменено токенов",
   "Too many read actions are pending. Wait for the background service and try again.": "Слишком много ожидающих отметок о прочтении. Дождитесь фоновой службы и повторите попытку.",

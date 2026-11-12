@@ -44,7 +44,7 @@ fn lead(lead: &LeadSpec) -> Value {
     })
 }
 
-fn template(template: &Template, digest: Option<String>) -> Value {
+fn template(template: &Template, digest: Option<String>, unknown: Unknown) -> Value {
     let roster: Vec<Value> = template
         .roster
         .iter()
@@ -53,8 +53,57 @@ fn template(template: &Template, digest: Option<String>) -> Value {
     json!({
         "id": template.id, "name": template.name, "description": template.description, "lead": lead(&template.lead),
         "roster": roster, "default_pipeline": template.default_pipeline, "settings": value(&template.settings),
-        "digest": digest,
+        "digest": digest, "unknown_permissions": unknown.permissions, "unknown_fields": unknown.fields,
     })
+}
+
+/// What a template row asks the person to confirm and this version does not
+/// know (the plan: such a field is never dropped, and Create stays blocked):
+/// the names of unknown permissions in its delegations, and the paths of
+/// other unknown fields in the template's own row (its settings, roster seats
+/// and lead) or in a pipeline it uses (with its stages), as New team shows
+/// them. Unknown fields of roles and of the catalog itself are not shown for
+/// confirmation and are ignored like any other reply's.
+#[derive(Default)]
+struct Unknown {
+    permissions: Vec<String>,
+    fields: Vec<String>,
+}
+
+fn unknown_confirmed(catalog: &Catalog, index: usize, dropped: &[String]) -> Unknown {
+    let own = format!("templates/{index}/");
+    let delegations = format!("{own}settings/delegations/");
+    let chosen = &catalog.templates[index];
+    // The pipelines New team shows for this template (NewTeam.tsx pipelineLines).
+    let mut used: Vec<&str> = vec![chosen.default_pipeline.as_str()];
+    for seat in chosen.roster.iter().filter(|seat| seat.count > 0) {
+        if let Some(role) = catalog.roles.iter().find(|role| role.id == seat.role) {
+            used.push(role.pipeline.as_str());
+        }
+    }
+    let mut unknown = Unknown::default();
+    for path in dropped {
+        if let Some(rest) = path.strip_prefix(&delegations) {
+            let name = rest.split('/').next().unwrap_or(rest).to_owned();
+            if !unknown.permissions.contains(&name) {
+                unknown.permissions.push(name);
+            }
+        } else if let Some(rest) = path.strip_prefix(&own) {
+            unknown.fields.push(rest.to_owned());
+        } else {
+            for (at, pipeline) in catalog.pipelines.iter().enumerate() {
+                if !used.contains(&pipeline.id.as_str()) {
+                    continue;
+                }
+                if let Some(rest) = path.strip_prefix(&format!("pipelines/{at}/")) {
+                    unknown
+                        .fields
+                        .push(format!("pipelines/{}/{rest}", pipeline.id));
+                }
+            }
+        }
+    }
+    unknown
 }
 
 /// The longest digest kept; the command line's is 64 hex characters.
@@ -97,8 +146,10 @@ pub fn form_catalog(reply: &Value) -> Result<Value, String> {
     let digests = take_digests(&mut raw);
     // Read as the command line's own type, ignoring at every level what this
     // version does not know: a field the store adds later never refuses the
-    // catalog of an installed client (the type stays strict for save and import).
-    let catalog: Catalog = super::tolerant::read(raw)
+    // catalog of an installed client (the type stays strict for save and
+    // import). What a template asks the person to confirm is kept as a fact of
+    // its row instead (unknown_confirmed).
+    let (catalog, dropped): (Catalog, Vec<String>) = super::tolerant::read_noting(raw)
         .map_err(|error| format!("The catalog answer is not a catalog: {error}."))?;
     if catalog
         .templates
@@ -113,7 +164,13 @@ pub fn form_catalog(reply: &Value) -> Result<Value, String> {
         .templates
         .iter()
         .enumerate()
-        .map(|(index, entry)| template(entry, digests.get(index).cloned().flatten()))
+        .map(|(index, entry)| {
+            template(
+                entry,
+                digests.get(index).cloned().flatten(),
+                unknown_confirmed(&catalog, index, &dropped),
+            )
+        })
         .collect();
     Ok(json!({
         "ok": true,
@@ -179,6 +236,108 @@ mod tests {
             "bugfix",
             "6d15fdbdd92ac4d5c5bc53f0bd6da7871c0dbf1842f4d4f25bf94aebc95bbb9d"
         )));
+    }
+
+    /// The review's B1: a permission in a template's delegations that this
+    /// version does not know is never dropped. The row keeps it as a fact
+    /// (`unknown_permissions`) beside its digest, so the form blocks Create.
+    /// The form's catalog for that reply is the shared fixture the frontend's
+    /// test feeds to the rendered dialog.
+    #[test]
+    fn an_unknown_permission_is_kept_on_its_row() {
+        let mut reply = shown();
+        let bugfix = reply["catalog"]["templates"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .find(|row| row["id"] == "bugfix")
+            .unwrap();
+        bugfix["settings"]["delegations"]["future_power"] = json!(true);
+        let form = form_catalog(&reply).unwrap();
+        let fixture: Value = serde_json::from_str(include_str!(
+            "fixtures/form-catalog-unknown-permission.json"
+        ))
+        .unwrap();
+        assert_eq!(form, fixture);
+        for row in form["catalog"]["templates"].as_array().unwrap() {
+            let expected = if row["id"] == "bugfix" {
+                json!(["future_power"])
+            } else {
+                json!([])
+            };
+            assert_eq!(row["unknown_permissions"], expected, "{}", row["id"]);
+            assert_eq!(row["unknown_fields"], json!([]));
+            assert!(row["digest"].is_string());
+        }
+    }
+
+    /// The rest of what New team shows for confirmation: an unknown field in
+    /// the template's own row (settings, roster seats, lead, the row itself)
+    /// or in a pipeline it uses (with its stages) is kept as a path on the
+    /// rows that show it; one in a role or in the catalog itself is ignored.
+    #[test]
+    fn unknown_fields_of_what_a_template_shows_are_kept_and_others_ignored() {
+        let mut reply = shown();
+        let catalog = &mut reply["catalog"];
+        catalog["added_later"] = json!(true);
+        catalog["roles"][0]["added_later"] = json!(true);
+        let templates = catalog["templates"].as_array_mut().unwrap();
+        let bugfix = templates
+            .iter_mut()
+            .find(|row| row["id"] == "bugfix")
+            .unwrap();
+        bugfix["added_later"] = json!(true);
+        bugfix["settings"]["auto_land"] = json!(true);
+        bugfix["settings"]["caps"]["max_wall_hours"] = json!(4);
+        bugfix["roster"][0]["account_pool"] = json!("night");
+        bugfix["lead"]["schedule"] = json!("weekdays");
+        let pipelines = catalog["pipelines"].as_array_mut().unwrap();
+        let code = pipelines
+            .iter_mut()
+            .find(|row| row["id"] == "code")
+            .unwrap();
+        code["auto_accept_after"] = json!(3);
+        code["stages"][0]["parallel"] = json!(true);
+        let form = form_catalog(&reply).expect("unknown fields are read");
+        let row = |id: &str| {
+            form["catalog"]["templates"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|row| row["id"] == id)
+                .unwrap()
+                .clone()
+        };
+        let bugfix = row("bugfix");
+        assert_eq!(bugfix["unknown_permissions"], json!([]));
+        let mut fields: Vec<String> =
+            serde_json::from_value(bugfix["unknown_fields"].clone()).unwrap();
+        fields.sort();
+        assert_eq!(
+            fields,
+            [
+                "added_later",
+                "lead/schedule",
+                "roster/0/account_pool",
+                "settings/auto_land",
+                "settings/caps/max_wall_hours"
+            ]
+        );
+        // The code pipeline is shown by the templates that use it.
+        for id in ["feature-delivery", "small"] {
+            let shown: Vec<String> =
+                serde_json::from_value(row(id)["unknown_fields"].clone()).unwrap();
+            let uses_code = row(id)["default_pipeline"] == "code";
+            let expected: Vec<String> = if uses_code {
+                vec![
+                    "pipelines/code/auto_accept_after".into(),
+                    "pipelines/code/stages/0/parallel".into(),
+                ]
+            } else {
+                Vec::new()
+            };
+            assert_eq!(shown, expected, "{id}");
+        }
     }
 
     #[test]

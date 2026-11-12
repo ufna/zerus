@@ -193,7 +193,11 @@ export function NewTeam(props: NewTeamProps): JSX.Element {
   const createWhy = createMemo(() => {
     if (!template()) return tr("Choose a template.");
     if (!template()!.digest) return tr("This hgs cannot confirm the template you see. Update hgs to create a team.");
-    if (!sent()) return tr("This version does not know every permission of the template. Update Zerus to create a team.");
+    // What the person is asked to confirm and this version does not know is a
+    // fact of the row (the core keeps it): nothing is created from a template
+    // this window cannot show whole.
+    if (template()!.unknown_permissions?.length || !sent()) return tr("This version does not know every permission of the template. Update Zerus to create a team.");
+    if (template()!.unknown_fields?.length) return tr("This version cannot show everything the template sets. Update Zerus to create a team.");
     if (!name().trim()) return tr("Name the team.");
     if (!project().trim()) return tr("Name the project.");
     if (!checkedFolder()?.git) return tr("Check the project folder: it must be a Git folder.");

@@ -9,35 +9,82 @@
 //! installed. Everything else is still refused: a missing field, a value of
 //! the wrong type, an unknown enum variant. Maps keep all their entries (their
 //! keys are data, not field names).
+//!
+//! One kind of unknown field is never dropped silently: a field of what the
+//! person is asked to confirm. [`read_noting`] also gives the path of every
+//! field it left out (`templates/0/settings/delegations/future_power`), so the
+//! reader can keep that fact on the row it shows.
 use serde::de::{
     self, DeserializeOwned, DeserializeSeed, EnumAccess, MapAccess, SeqAccess, VariantAccess,
     Visitor,
 };
 use serde::forward_to_deserialize_any;
 use serde_json::{Error, Value};
+use std::cell::RefCell;
+use std::rc::Rc;
 
 /// `T` from a reply, ignoring the fields `T` does not declare at any level.
 pub fn read<T: DeserializeOwned>(value: Value) -> Result<T, Error> {
-    T::deserialize(Tolerant(value))
+    read_noting(value).map(|(read, _)| read)
 }
 
-struct Tolerant(Value);
+/// `T` from a reply as [`read`] gives it, and the path of every field it left
+/// out, segments joined by `/` (a list's item by its index), in reading order.
+pub fn read_noting<T: DeserializeOwned>(value: Value) -> Result<(T, Vec<String>), Error> {
+    let dropped = Rc::new(RefCell::new(Vec::new()));
+    let read = T::deserialize(Tolerant {
+        value,
+        path: String::new(),
+        dropped: dropped.clone(),
+    })?;
+    let paths = dropped.borrow().clone();
+    Ok((read, paths))
+}
+
+type Dropped = Rc<RefCell<Vec<String>>>;
+
+fn join(path: &str, segment: &str) -> String {
+    if path.is_empty() {
+        segment.to_owned()
+    } else {
+        format!("{path}/{segment}")
+    }
+}
+
+struct Tolerant {
+    value: Value,
+    path: String,
+    dropped: Dropped,
+}
 
 impl<'de> de::Deserializer<'de> for Tolerant {
     type Error = Error;
 
     fn deserialize_any<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Error> {
-        match self.0 {
-            Value::Array(items) => visitor.visit_seq(Items(items.into_iter())),
-            Value::Object(map) => visitor.visit_map(Entries::new(map.into_iter().collect())),
+        match self.value {
+            Value::Array(items) => visitor.visit_seq(Items {
+                items: items.into_iter(),
+                index: 0,
+                path: self.path,
+                dropped: self.dropped,
+            }),
+            Value::Object(map) => visitor.visit_map(Entries::new(
+                map.into_iter().collect(),
+                self.path,
+                self.dropped,
+            )),
             other => de::Deserializer::deserialize_any(other, visitor),
         }
     }
 
     fn deserialize_option<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Error> {
-        match self.0 {
+        match self.value {
             Value::Null => visitor.visit_none(),
-            other => visitor.visit_some(Tolerant(other)),
+            other => visitor.visit_some(Tolerant {
+                value: other,
+                path: self.path,
+                dropped: self.dropped,
+            }),
         }
     }
 
@@ -55,13 +102,24 @@ impl<'de> de::Deserializer<'de> for Tolerant {
         fields: &'static [&'static str],
         visitor: V,
     ) -> Result<V::Value, Error> {
-        match self.0 {
-            Value::Object(map) => visitor.visit_map(Entries::new(
-                map.into_iter()
-                    .filter(|(key, _)| fields.contains(&key.as_str()))
-                    .collect(),
-            )),
-            other => Tolerant(other).deserialize_any(visitor),
+        match self.value {
+            Value::Object(map) => {
+                let mut kept = Vec::with_capacity(map.len());
+                for (key, value) in map {
+                    if fields.contains(&key.as_str()) {
+                        kept.push((key, value));
+                    } else {
+                        self.dropped.borrow_mut().push(join(&self.path, &key));
+                    }
+                }
+                visitor.visit_map(Entries::new(kept, self.path, self.dropped))
+            }
+            other => Tolerant {
+                value: other,
+                path: self.path,
+                dropped: self.dropped,
+            }
+            .deserialize_any(visitor),
         }
     }
 
@@ -71,16 +129,20 @@ impl<'de> de::Deserializer<'de> for Tolerant {
         variants: &'static [&'static str],
         visitor: V,
     ) -> Result<V::Value, Error> {
-        match self.0 {
+        match self.value {
             Value::String(variant) => visitor.visit_enum(Variant {
                 name: variant,
                 content: None,
+                path: self.path,
+                dropped: self.dropped,
             }),
             Value::Object(map) if map.len() == 1 => {
                 let (variant, content) = map.into_iter().next().expect("one entry");
                 visitor.visit_enum(Variant {
+                    path: join(&self.path, &variant),
                     name: variant,
                     content: Some(content),
+                    dropped: self.dropped,
                 })
             }
             other => de::Deserializer::deserialize_enum(other, name, variants, visitor),
@@ -93,7 +155,12 @@ impl<'de> de::Deserializer<'de> for Tolerant {
     }
 }
 
-struct Items(std::vec::IntoIter<Value>);
+struct Items {
+    items: std::vec::IntoIter<Value>,
+    index: usize,
+    path: String,
+    dropped: Dropped,
+}
 
 impl<'de> SeqAccess<'de> for Items {
     type Error = Error;
@@ -102,27 +169,38 @@ impl<'de> SeqAccess<'de> for Items {
         &mut self,
         seed: T,
     ) -> Result<Option<T::Value>, Error> {
-        self.0
-            .next()
-            .map(|item| seed.deserialize(Tolerant(item)))
-            .transpose()
+        let Some(item) = self.items.next() else {
+            return Ok(None);
+        };
+        let path = join(&self.path, &self.index.to_string());
+        self.index += 1;
+        seed.deserialize(Tolerant {
+            value: item,
+            path,
+            dropped: self.dropped.clone(),
+        })
+        .map(Some)
     }
 
     fn size_hint(&self) -> Option<usize> {
-        Some(self.0.len())
+        Some(self.items.len())
     }
 }
 
 struct Entries {
     entries: std::vec::IntoIter<(String, Value)>,
-    value: Option<Value>,
+    value: Option<(String, Value)>,
+    path: String,
+    dropped: Dropped,
 }
 
 impl Entries {
-    fn new(entries: Vec<(String, Value)>) -> Self {
+    fn new(entries: Vec<(String, Value)>, path: String, dropped: Dropped) -> Self {
         Self {
             entries: entries.into_iter(),
             value: None,
+            path,
+            dropped,
         }
     }
 }
@@ -136,7 +214,7 @@ impl<'de> MapAccess<'de> for Entries {
     ) -> Result<Option<K::Value>, Error> {
         match self.entries.next() {
             Some((key, value)) => {
-                self.value = Some(value);
+                self.value = Some((key.clone(), value));
                 seed.deserialize(Value::String(key)).map(Some)
             }
             None => Ok(None),
@@ -144,11 +222,15 @@ impl<'de> MapAccess<'de> for Entries {
     }
 
     fn next_value_seed<V: DeserializeSeed<'de>>(&mut self, seed: V) -> Result<V::Value, Error> {
-        let value = self
+        let (key, value) = self
             .value
             .take()
             .ok_or_else(|| de::Error::custom("a value without its key"))?;
-        seed.deserialize(Tolerant(value))
+        seed.deserialize(Tolerant {
+            value,
+            path: join(&self.path, &key),
+            dropped: self.dropped.clone(),
+        })
     }
 
     fn size_hint(&self) -> Option<usize> {
@@ -159,6 +241,8 @@ impl<'de> MapAccess<'de> for Entries {
 struct Variant {
     name: String,
     content: Option<Value>,
+    path: String,
+    dropped: Dropped,
 }
 
 impl<'de> EnumAccess<'de> for Variant {
@@ -167,32 +251,55 @@ impl<'de> EnumAccess<'de> for Variant {
 
     fn variant_seed<V: DeserializeSeed<'de>>(self, seed: V) -> Result<(V::Value, Content), Error> {
         let variant = seed.deserialize(Value::String(self.name))?;
-        Ok((variant, Content(self.content)))
+        Ok((
+            variant,
+            Content {
+                content: self.content,
+                path: self.path,
+                dropped: self.dropped,
+            },
+        ))
     }
 }
 
-struct Content(Option<Value>);
+struct Content {
+    content: Option<Value>,
+    path: String,
+    dropped: Dropped,
+}
+
+impl Content {
+    fn tolerant(self, value: Value) -> Tolerant {
+        Tolerant {
+            value,
+            path: self.path,
+            dropped: self.dropped,
+        }
+    }
+}
 
 impl<'de> VariantAccess<'de> for Content {
     type Error = Error;
 
     fn unit_variant(self) -> Result<(), Error> {
-        match self.0 {
+        match self.content {
             None | Some(Value::Null) => Ok(()),
             Some(_) => Err(de::Error::custom("a unit variant carries no content")),
         }
     }
 
     fn newtype_variant_seed<T: DeserializeSeed<'de>>(self, seed: T) -> Result<T::Value, Error> {
-        match self.0 {
-            Some(value) => seed.deserialize(Tolerant(value)),
+        match self.content.clone() {
+            Some(value) => seed.deserialize(self.tolerant(value)),
             None => Err(de::Error::custom("a newtype variant needs its content")),
         }
     }
 
     fn tuple_variant<V: Visitor<'de>>(self, _len: usize, visitor: V) -> Result<V::Value, Error> {
-        match self.0 {
-            Some(Value::Array(items)) => visitor.visit_seq(Items(items.into_iter())),
+        match self.content.clone() {
+            Some(value @ Value::Array(_)) => {
+                de::Deserializer::deserialize_any(self.tolerant(value), visitor)
+            }
             _ => Err(de::Error::custom("a tuple variant needs a list")),
         }
     }
@@ -202,9 +309,9 @@ impl<'de> VariantAccess<'de> for Content {
         fields: &'static [&'static str],
         visitor: V,
     ) -> Result<V::Value, Error> {
-        match self.0 {
+        match self.content.clone() {
             Some(value) => {
-                de::Deserializer::deserialize_struct(Tolerant(value), "", fields, visitor)
+                de::Deserializer::deserialize_struct(self.tolerant(value), "", fields, visitor)
             }
             None => Err(de::Error::custom("a struct variant needs its fields")),
         }
@@ -295,15 +402,57 @@ mod tests {
         assert_eq!(view(&second), view(&first), "{name}");
     }
 
+    /// The catalog ignores unknown fields at every level, except in what a
+    /// template asks the person to confirm (the plan's correction): those are
+    /// kept as facts of its row (catalog::tests pins their paths), and the rest
+    /// of the catalog is read as without them.
     #[test]
     fn the_catalog_ignores_unknown_fields_at_every_level() {
         let original = fixture("catalog");
         let (later, added) = with_unknown_everywhere(&original);
-        assert!(added > 30, "catalog, its templates, roster seats, settings, delegations, roles, pipelines and stages: {added}");
+        assert!(
+            added > 30,
+            "catalog, its templates, roster seats, settings, delegations, roles, pipelines and stages: {added}"
+        );
         let read =
             form_catalog(&later).expect("a catalog with fields this version does not know is read");
-        assert_eq!(read, form_catalog(&original).unwrap());
-        assert!(read["catalog"]["templates"][0]["digest"].is_string());
+        let without_facts = |form: &Value| {
+            let mut form = form.clone();
+            for row in form["catalog"]["templates"].as_array_mut().unwrap() {
+                let row = row.as_object_mut().unwrap();
+                row.remove("unknown_permissions");
+                row.remove("unknown_fields");
+            }
+            form
+        };
+        let first = form_catalog(&original).unwrap();
+        assert_eq!(without_facts(&read), without_facts(&first));
+        for row in read["catalog"]["templates"].as_array().unwrap() {
+            assert!(row["digest"].is_string());
+            assert_eq!(
+                row["unknown_permissions"],
+                json!(["added_later"]),
+                "{}",
+                row["id"]
+            );
+            let fields = row["unknown_fields"].as_array().unwrap();
+            assert!(
+                fields.contains(&json!("settings/added_later"))
+                    && fields.contains(&json!("roster/0/added_later"))
+            );
+            assert!(
+                fields
+                    .iter()
+                    .all(|path| !path.as_str().unwrap().starts_with("roles/")),
+                "a role's unknown field is not shown for confirmation"
+            );
+        }
+        for row in first["catalog"]["templates"].as_array().unwrap() {
+            assert_eq!(
+                (&row["unknown_permissions"], &row["unknown_fields"]),
+                (&json!([]), &json!([]))
+            );
+        }
     }
 
     #[test]

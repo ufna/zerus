@@ -11,6 +11,7 @@ import { createComponent } from "solid-js";
 import { render } from "solid-js/web";
 import type { TeamCall, TeamCatalog } from "../../store/teams";
 import type { NewTeamInput } from "./NewTeam";
+import unknownPermission from "../../../core/src/teams/fixtures/form-catalog-unknown-permission.json";
 
 const FIVE = ["accept_results", "answer_members", "confirm_trust", "resume_exited", "merge_accepted"] as const;
 type Five = Record<(typeof FIVE)[number], boolean>;
@@ -184,6 +185,35 @@ it("a changed template is shown as it is now: choices stay only where their perm
   expect(f.acts).toHaveLength(1);
   expect(f.grants).toEqual([]);
   expect(host.querySelector("[data-new-team-error]"), "the refusal's own words are not shown as an error").toBeNull();
+});
+
+it("a permission this version does not know keeps Create blocked and sends nothing (the review's B1, taken over)", async () => {
+  // The core's form catalog for the store's catalog with future_power under
+  // bugfix's delegations (client/core teams::catalog::tests pins this file).
+  f.catalog = structuredClone(unknownPermission.catalog) as unknown as TeamCatalog;
+  const host = await open();
+  host.querySelector<HTMLInputElement>('[data-template="bugfix"] input')!.click();
+  await settle();
+  expect(Object.keys(shown(host)).sort(), "the five known permissions are shown").toEqual([...FIVE].sort());
+  expect(button(host, "Create team").disabled).toBe(true);
+  expect(host.querySelector("[data-create-blocker]")!.textContent).toContain("This version does not know every permission of the template. Update Zerus to create a team.");
+  button(host, "Create team").click();
+  await settle();
+  expect(f.acts).toEqual([]);
+  // Another template of the same catalog, without unknown permissions, can be created.
+  host.querySelector<HTMLInputElement>('[data-template="small"] input')!.click();
+  await settle();
+  expect(button(host, "Create team").disabled).toBe(false);
+});
+
+it("an unknown field in what a template shows keeps Create blocked with its own reason", async () => {
+  f.catalog.templates[0].unknown_fields = ["settings/auto_land"];
+  const host = await open();
+  expect(button(host, "Create team").disabled).toBe(true);
+  expect(host.querySelector("[data-create-blocker]")!.textContent).toContain("This version cannot show everything the template sets. Update Zerus to create a team.");
+  button(host, "Create team").click();
+  await settle();
+  expect(f.acts).toEqual([]);
 });
 
 it("a catalog without digests, from an older command line, disables Create and sends nothing", async () => {
