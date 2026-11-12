@@ -80,6 +80,17 @@ pub(crate) fn set_explicit_hold(
     .map_err(storage)?;
     Ok(())
 }
+/// Ends every hand-back of a team: the stop's Cancel is each node's next
+/// decision, and takes the hold over while it is pending. An explicit hold
+/// stays.
+pub(crate) fn end_hand_backs(db: &Connection, team: &str) -> Result<()> {
+    db.execute(
+        "UPDATE nodes SET hand_back=0 WHERE team=?1 AND hand_back",
+        [team],
+    )
+    .map_err(storage)?;
+    Ok(())
+}
 /// Whether a node is held for the team's next step.
 pub(crate) fn handed_back(db: &Connection, team: &str, node: u32) -> Result<bool> {
     db.query_row(
@@ -232,6 +243,19 @@ pub(crate) fn hand_back(
 ) -> Result<u64> {
     settle_decisions(db, team, Some(node), actor, false)?;
     set_hand_back(db, team, node, true)?;
+    hand_back_item(db, team, node, actor, kind, text, now)
+}
+/// The lead's inbox item of a hand-back, of the cause's own kind, in the
+/// node's current generation.
+pub(crate) fn hand_back_item(
+    db: &Connection,
+    team: &str,
+    node: u32,
+    actor: &str,
+    kind: &str,
+    text: &str,
+    now: i64,
+) -> Result<u64> {
     let generation: u32 = db
         .query_row(
             "SELECT generation FROM nodes WHERE team=?1 AND id=?2 UNION ALL SELECT generation FROM node_archive WHERE team=?1 AND id=?2 LIMIT 1",

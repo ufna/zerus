@@ -126,6 +126,10 @@ pub(super) fn stop(ctx: &mut Context<'_>) -> Result<()> {
             [&ctx.team.id],
         )
         .map_err(storage)?;
+    // The stop's Cancel is each node's next decision: it ends a hand-back's
+    // hold (holding the node itself while it waits for its answer); an
+    // explicit hold stays.
+    rows::end_hand_backs(ctx.db, &ctx.team.id)?;
     ctx.db
         .execute("DELETE FROM live_tasks WHERE team=?1", [&ctx.team.id])
         .map_err(storage)?;

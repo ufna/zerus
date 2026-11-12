@@ -391,8 +391,9 @@ pub(super) fn in_hands(ctx: &Context<'_>, node: u32) -> Result<bool> {
 /// - a Return whose holder reads nobody is handed back to the lead, as a
 ///   refused reopen is (settled, the node held, one item for the lead);
 /// - a Return or a Reassign whose task is in nobody's hands any more is
-///   settled and its hold released, and the ordinary hand-out follows the
-///   node's assignee.
+///   settled, and the decision's hold ends with it; the ordinary hand-out
+///   then follows the node's assignee unless an explicit hold remains, which
+///   only its owner's Release ends.
 ///
 /// A decision whose reopen is reserved has started and waits for its
 /// outcome.
