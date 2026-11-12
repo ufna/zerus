@@ -139,3 +139,42 @@ fn stale_finish_observes_and_waits_without_a_refusal_hold_or_card() {
     assert_eq!(p.finishes, 2);
     assert!(h.store.cards(TEAM, 16, None).unwrap().rows.is_empty());
 }
+
+#[test]
+fn a_new_epoch_waits_for_the_store_busy_margin_before_settling_a_negative() {
+    let mut h = Harness::new();
+    let (node, lead) = h.reported();
+    h.run(&lead, Operation::Accept { node }).unwrap();
+    let mut a = actor(&h);
+    let mut p = Work {
+        start_ms: Some(100),
+        contains: Some(false),
+        merge_reply: Some(MergeResult::Unknown {
+            reason: "lost result".into(),
+        }),
+        ..Default::default()
+    };
+    run(&mut h, &mut a, &mut p, 100);
+    let key = format!("merge:{}", h.accept_decision(node));
+    let gate = format!("gate:integration:{node}");
+    drop(a);
+    let mut a = actor(&h);
+    // Remove only the fixture's retry gate to exercise the clock at each
+    // boundary directly. A backoff must not hide an early non-write claim.
+    for now in [30_100, 38_099] {
+        if let Some(row) = a.ledger.get(TEAM, &gate).unwrap() {
+            a.ledger.remove(&row).unwrap();
+        }
+        run(&mut h, &mut a, &mut p, now);
+        assert!(
+            a.ledger.get(TEAM, &key).unwrap().is_some(),
+            "settled early at {now}"
+        );
+        assert_eq!(p.merges, 1);
+    }
+    if let Some(row) = a.ledger.get(TEAM, &gate).unwrap() {
+        a.ledger.remove(&row).unwrap();
+    }
+    run(&mut h, &mut a, &mut p, 38_100);
+    assert_eq!(p.merges, 2, "a settled negative may grant a new original");
+}
