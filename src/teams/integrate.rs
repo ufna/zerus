@@ -2573,4 +2573,20 @@ mod tests {
         assert!(message.contains(" forged line"), "{message}");
         assert!(message.len() <= "Git refused integration: ".len() + 1024);
     }
+
+    /// A name with a right-to-left override, as Git echoes it: the override
+    /// is gone from the failure's sentence (zerus-63rru.59).
+    #[test]
+    fn gits_words_lose_a_bidirectional_override() {
+        let f = Fixture::new();
+        let git = Git::repo(&f.repo).unwrap();
+        let output = git
+            .run(&["cat-file", "-t", "invoice_\u{202E}fdp.exe"])
+            .unwrap();
+        assert!(!output.status.success());
+        assert!(String::from_utf8_lossy(&output.stderr).contains("\u{202E}"));
+        let message = success(output).unwrap_err().message;
+        assert!(!message.contains("\u{202E}"), "{message:?}");
+        assert!(message.contains("invoice_fdp.exe"), "{message}");
+    }
 }

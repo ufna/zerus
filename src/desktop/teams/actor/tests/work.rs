@@ -243,6 +243,25 @@ fn a_reports_control_characters_are_removed_and_its_lines_and_tabs_kept() {
         );
     }
 }
+/// A report that ends inside a right-to-left override would reorder the line
+/// the service appends after it; the override is removed (zerus-63rru.59).
+#[test]
+fn a_report_cannot_reorder_the_line_the_service_adds_after_it() {
+    let mut h = Harness::new();
+    h.bind("m1");
+    let node = h.add(&person(), 1);
+    h.submit(node, "m1");
+    h.observe(node, TaskStage::InReview);
+    let mut a = actor(&h);
+    let mut p = Work {
+        text: Some("All done\u{202E}".into()),
+        dirty: true,
+        ..Default::default()
+    };
+    run(&mut h, &mut a, &mut p, 100);
+    let report = h.store.report(TEAM, node, 1).unwrap().unwrap();
+    assert_eq!(report.text, "All done\nWorktree has uncommitted changes.");
+}
 #[test]
 fn integration_records_the_exact_decision_before_finishing() {
     let mut h = Harness::new();
