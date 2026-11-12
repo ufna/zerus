@@ -106,6 +106,21 @@ pub(super) fn parse_view(
         .clone();
     let live = v["runtime_state"] == "live" && v["process_state"] == "running";
     let ended = archive.is_some() || v["process_state"] == "exited";
+    // An archive's own inspection that lists its allowed actions without
+    // `restore` does not offer one (zerus-63rru.62); its reason goes with it.
+    let restore_refusal = archive.as_ref().and_then(|_| {
+        let allowed = v["allowed_actions"].as_array()?;
+        (!allowed.iter().any(|action| action == "restore")).then(|| {
+            let why = crate::desktop::teams::reason_text(
+                v["action_reasons"]["restore"].as_str().unwrap_or(""),
+            );
+            if why.is_empty() {
+                "the archive's inspection does not offer a restore".into()
+            } else {
+                why
+            }
+        })
+    });
     let s = Snapshot {
         machine: machine.into(),
         launch: text(raw, "launch_id"),
@@ -131,6 +146,7 @@ pub(super) fn parse_view(
         ])),
         archive,
         receipt_at: None,
+        restore_refusal,
         questions,
     };
     super::super::policy::session(b, &s)?;
@@ -351,6 +367,53 @@ mod tests {
     fn an_unreadable_question_index_is_unknown_never_an_exit() {
         isolated("desktop::teams::confirm::native::observation::tests::index_fixture");
     }
+    /// zerus-63rru.62: a member that exited cleanly, with supervisor
+    /// evidence, whose archive keeps no launch recipe. The state's own
+    /// inspection of that archive leaves `restore` out of `allowed_actions`
+    /// and says why; the policy plans no restore, and its refusal carries
+    /// that reason.
+    #[test]
+    fn an_archive_whose_inspection_offers_no_restore_plans_none() {
+        isolated("desktop::teams::confirm::native::observation::tests::no_restore_fixture");
+    }
+
+    #[test]
+    #[ignore = "run by its isolated wrapper"]
+    fn no_restore_fixture() {
+        let (config, _, _) = store_env();
+        let (b, _, record) = real_codex(|record| {
+            // A member that has worked: its transcript exists and begins with
+            // Codex's session header, so its question index can be read.
+            let transcript = std::path::Path::new(record["transcript"].as_str().unwrap());
+            std::fs::create_dir_all(transcript.parent().unwrap()).unwrap();
+            let header = json!({"type":"session_meta","payload":{"id":record["conversation_id"]}});
+            std::fs::write(transcript, format!("{header}\n")).unwrap();
+            record["completion_source"] = json!("supervisor");
+            record["completion_reason"] = json!("clean_exit");
+            record["exit_code"] = json!(0);
+            record["exited_at"] = json!(1000.0);
+        });
+        crate::state::archive_for_test(&record).unwrap();
+        let roots = Roots::open(&config.state, "question_receipts").unwrap();
+        let name = record["name"].as_str().unwrap();
+        let (id, raw) = archive(&config.state, &roots, &b, name).unwrap();
+        let view = crate::state::archive_inspection_for_test(name, &id).unwrap();
+        let allowed = view["allowed_actions"].as_array().unwrap();
+        assert!(!allowed.iter().any(|action| action == "restore"), "{view}");
+        let reason = view["action_reasons"]["restore"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let s = parse_view(&b.machine, &b, &view, &raw, Some(id)).unwrap();
+        let refusal = crate::desktop::teams::confirm::policy::resume(&s);
+        eprintln!("the inspection's reason: {reason}; the policy: {refusal:?}");
+        assert!(
+            refusal.as_ref().is_err_and(|why| why.contains(&reason)
+                && why.ends_with(crate::desktop::teams::confirm::policy::SEAT)),
+            "{refusal:?}"
+        );
+    }
+
     #[test]
     fn an_archive_is_found_by_run_as_soon_as_it_is_written() {
         isolated("desktop::teams::confirm::native::observation::tests::archive_fixture");

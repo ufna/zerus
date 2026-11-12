@@ -107,9 +107,13 @@ fn resume(row: &Record, input: &[u8], bytes: &[u8]) -> Outcome {
         return Outcome::Unknown("The original lifecycle receipt is invalid".into());
     };
     if v["status"] == "failed" {
-        return Outcome::Refused(
-            "The exact native lifecycle request was refused before launch".into(),
-        );
+        // The observation protocol leaves the command's error out; the receipt
+        // it has just matched to this exact request carries it.
+        let receipt: Value = serde_json::from_slice(bytes).unwrap_or_default();
+        return Outcome::Refused(refused_before_launch(
+            p,
+            receipt["error"].as_str().unwrap_or(""),
+        ));
     }
     let t = &v["result_target"];
     if v["status"] != "completed"
@@ -137,6 +141,28 @@ fn resume(row: &Record, input: &[u8], bytes: &[u8]) -> Outcome {
     target.questions.clear();
     target.exit_identity.clear();
     Outcome::Approved(Some(Box::new(target)))
+}
+
+/// The owner card's reason when the native resume or restore of an exited
+/// member was refused before launch (zerus-63rru.62): the command's own
+/// reason from its receipt, bounded and cleaned as the doorbell's refusal is,
+/// and what the person can do.
+fn refused_before_launch(p: &Plan, error: &str) -> String {
+    let action = if p.snapshot.archive.is_some() {
+        "restore"
+    } else {
+        "resume"
+    };
+    let reason = crate::desktop::teams::reason_text(error);
+    let reason = if reason.is_empty() {
+        "the command gave no reason".into()
+    } else {
+        reason
+    };
+    format!(
+        "The {action} of its exited session was refused before launch: {reason}. {}",
+        super::super::policy::SEAT
+    )
 }
 
 #[cfg(test)]

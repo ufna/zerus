@@ -8,6 +8,24 @@ mod child;
 pub(crate) use child::adopt_custody;
 mod actor;
 pub(crate) use actor::presence;
+
+/// A command's own reason as a card or a team record shows it: control
+/// characters as spaces, whitespace collapsed, at most 512 characters
+/// (zerus-63rru.57, .62). Empty when the command gave none.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub(in crate::desktop::teams) fn reason_text(raw: &str) -> String {
+    let spaced: String = raw
+        .chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect();
+    spaced
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .chars()
+        .take(512)
+        .collect()
+}
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 mod confirm;
 mod health;
