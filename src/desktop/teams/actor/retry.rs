@@ -180,6 +180,7 @@ impl Runtime {
                         &team.id,
                         Operation::OpenCard {
                             kind: "team_actor_blocked".into(),
+                            decisions: Some(vec!["retry".into(), "acknowledged".into()]),
                             node: key
                                 .strip_prefix("held:")
                                 .and_then(|s| s.rsplit(':').next())

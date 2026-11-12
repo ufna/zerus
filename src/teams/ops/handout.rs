@@ -8,8 +8,19 @@ pub(super) struct Effect {
     pub state: String,
     pub outcome: Option<String>,
 }
+/// Who holds the node's attempt, by the store's one rule (the attempt
+/// holder that the queue row shows): a hand-out that was only reserved, or
+/// was refused or superseded, holds nothing.
 pub(super) fn holder(ctx: &Context<'_>, node: u32) -> Result<Option<String>> {
-    ctx.db.query_row("SELECT member FROM effects WHERE team=?1 AND node=?2 AND generation=?3 ORDER BY seq DESC LIMIT 1",params![ctx.team.id,node,ctx.generation(node)?],|r|r.get(0)).optional().map_err(storage)
+    Ok(crate::teams::store::holder_of(ctx.db, &ctx.team.id, node)?.map(|h| h.member))
+}
+/// The member the newest effect of the current generation went to, unless
+/// that effect is known refused or superseded (the store's `NOT_RECEIVED`).
+/// A member's own report or question proves the delivery and may arrive
+/// before the hand-out's outcome is recorded, so it is admitted against
+/// this, not against the holder: the two differ in a reserved effect alone.
+pub(super) fn recipient(ctx: &Context<'_>, node: u32) -> Result<Option<String>> {
+    ctx.db.query_row(&format!("SELECT CASE WHEN state IN {} THEN NULL ELSE member END FROM (SELECT member,state FROM effects WHERE team=?1 AND node=?2 AND generation=?3 ORDER BY seq DESC LIMIT 1)",crate::teams::store::NOT_RECEIVED),params![ctx.team.id,node,ctx.generation(node)?],|r|r.get::<_,Option<String>>(0)).optional().map(Option::flatten).map_err(storage)
 }
 pub(super) fn intent(ctx: &mut Context<'_>) -> Result<()> {
     let Operation::HandoutIntent {
@@ -273,13 +284,13 @@ pub(super) fn report(ctx: &mut Context<'_>) -> Result<()> {
     let mut n = ctx.live_node(*node)?;
     if n.state != NodeState::Reported
         || *generation != ctx.generation(*node)?
-        || holder(ctx, *node)?.as_deref() != Some(member)
+        || recipient(ctx, *node)?.as_deref() != Some(member)
     {
         return Err(invalid(
             "Report does not belong to the current reviewed attempt's holder.",
         ));
     }
-    let recorded:bool=ctx.db.query_row("SELECT EXISTS(SELECT 1 FROM effects WHERE team=?1 AND node=?2 AND generation=?3 AND state NOT IN ('refused','superseded'))",params![ctx.team.id,node,generation],|r|r.get(0)).map_err(storage)?;
+    let recorded:bool=ctx.db.query_row(&format!("SELECT EXISTS(SELECT 1 FROM effects WHERE team=?1 AND node=?2 AND generation=?3 AND state NOT IN {})",crate::teams::store::NOT_RECEIVED),params![ctx.team.id,node,generation],|r|r.get(0)).map_err(storage)?;
     if !recorded {
         return Err(invalid("No current effect is available to report."));
     }

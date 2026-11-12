@@ -1519,8 +1519,22 @@ bring. A visit of a stopped or archived team ends only with a recorded
 outcome: a saved refusal of a cancel's record there is recorded once as a
 refused outcome, with what the command answered and what the store said,
 and is never replayed; in a live team that holds for a visit that did not
-change. And for one pending decision the number of cancel commands the
-service starts is bounded, whatever the rules say. Once
+change. A saved refusal that only says "ask again", a stale revision, is
+not a refusal by a rule: the request's ID is spent and nothing was
+decided, so the same record is made again under a new ID; taking it for a
+rule's refusal recorded a true answer as refused after one lost write
+(the delta review, the same day). And a live team's cancel that keeps
+answering stale although its observation changes nothing is given up
+after three such answers, as a refused outcome that reaches the lead. The
+count is of answers that teach nothing new, not of attempts: an answer
+that says "ask again" for a reason that ends by itself (a project's
+cutover hold), a command that provably did not start, and an answer whose
+observation failed are retried with a backoff and a card while they last,
+and never become a refusal by repetition; the first version counted
+attempts and gave up on a stopped team's task seven minutes into a
+cutover, clearing its key while it still ran. A row that has halted is
+its own state: its siblings and the other teams are served in the same
+pass. Once
 the store has observed a task cancelled, the team has let it go. Giving
 such a task back to a team is not possible yet: a task keeps its cancelled
 mark when it is moved back to To do, until it is sent, started or reopened,
@@ -1599,6 +1613,30 @@ observed running (the service was down for the whole of a person's run) is
 neither finished nor merged, and an accepted node takes no Cancel; the
 person's own move on the board (closing, cancelling or starting the task
 again) resolves it.
+
+**A decision that has not started can be replaced (after the review of
+the actor).** The rule that a node takes one unsettled decision at a time
+protects a decision the service is carrying out. It also locked a node
+whenever the service could not start one: a Return to a member that the
+person then stopped or removed, a Return to a member busy elsewhere for
+hours, a reopen held by a conflict of the task's executions. Four findings
+of 2026-11-12 were this one lock. A lead or the person may therefore give
+a node a new Return, Reassign or Cancel while its earlier Return or
+Reassign is still pending and nothing of it has started, that is, no
+reopen has been reserved for it; the earlier decision is settled as
+superseded in the same operation and the journal says so. The member's
+own earlier hand-out may still be open then, its report not yet recorded:
+that is not the decision's start. A decision that has started is not
+replaced: the new one is refused as before until the outcome is recorded.
+A Return that replaces a Reassign makes its own target the node's
+assignee, so that the superseded Reassign leaves nothing behind. A Return
+or a Reassign aimed at a member that was already removed is refused when
+it is decided. An acceptance is not replaced in
+this milestone. And removing a member settles the Returns and Reassigns
+aimed at it that have not started and hands their nodes back to the lead
+with one inbox item each, as a reopen that could not be delivered does. A
+member that is stopped or busy keeps them: that wait is intended, and the
+lead can now decide otherwise.
 
 **A reader of a reply ignores what it does not know.** The contract's types
 refuse unknown fields, and that stays the rule for what a person or a

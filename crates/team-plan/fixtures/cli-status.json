@@ -36,6 +36,7 @@
       "agent": "claude",
       "id": "lead",
       "ownership_nonce": "nonce-lead",
+      "person_stopped": false,
       "role": "lead",
       "session": {
         "machine": "00000000-0000-4000-8000-0000000000aa",
@@ -49,6 +50,7 @@
       "agent": "claude",
       "id": "m1",
       "ownership_nonce": "nonce-m1",
+      "person_stopped": false,
       "role": "developer",
       "session": {
         "machine": "00000000-0000-4000-8000-0000000000aa",
@@ -60,6 +62,7 @@
     {
       "agent": "claude",
       "id": "m2",
+      "person_stopped": false,
       "role": "developer"
     },
     {
@@ -68,6 +71,7 @@
       "id": "m3",
       "model": "example-model",
       "ownership_nonce": "nonce-m3",
+      "person_stopped": false,
       "role": "reviewer",
       "session": {
         "machine": "00000000-0000-4000-8000-0000000000aa",

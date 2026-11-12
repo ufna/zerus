@@ -17,6 +17,7 @@ pub(super) fn revoke_merges(ctx: &Context<'_>) -> Result<()> {
             "Approve integration of the accepted result.",
             Some(node),
             Some(seq),
+            &["approve", "reject"],
         )?;
     }
     Ok(())

@@ -2,12 +2,44 @@ use super::*;
 
 impl Runtime {
     pub(super) fn card(&mut self, store: &mut Store, row: &mut Row, now: i64) -> Result<()> {
-        if row.card_done {
-            return Ok(());
-        }
-        let team = store
+        let mut team = store
             .team(&row.team)?
             .ok_or_else(|| invalid("Team disappeared"))?;
+        if row.card_done {
+            // The kept card stands while the row's present state keeps it
+            // (`kept::stands`): open with the list the row gives now, the
+            // person's dismissal from that list, or a Retry the row reads.
+            // Otherwise the current card opens; an open one is closed first,
+            // and a list never changes in place.
+            let kept = match row.card_id {
+                Some(id) => store.card(&row.team, id)?,
+                None => None,
+            };
+            let Some(kept) = kept else {
+                return Ok(());
+            };
+            if super::super::kept::stands(&kept, &decisions(row), reads(row)) {
+                return Ok(());
+            }
+            if kept.state == "open" {
+                apply(
+                    store,
+                    &team,
+                    Operation::CloseCard {
+                        card: kept.seq,
+                        reason: "The launch's state changed what this card can take.".into(),
+                    },
+                    now,
+                )?;
+            }
+            row.card_id = None;
+            row.card_request = None;
+            row.card_done = false;
+            self.save(row, now)?;
+            team = store
+                .team(&row.team)?
+                .ok_or_else(|| invalid("Team disappeared"))?;
+        }
         if row.card_request.is_none() {
             let problem = row
                 .problem
@@ -51,6 +83,7 @@ impl Runtime {
                     .into(),
                     text: cut(&text, 3072).into(),
                     node: None,
+                    decisions: Some(decisions(row)),
                 },
             });
             self.save(row, now)?;
@@ -70,6 +103,34 @@ impl Runtime {
         }
         self.save(row, now)
     }
+}
+
+/// The decisions a launch card lists. Retry, which the budget row reads on
+/// every pass and a member row while it waits on backoff, comes first, as the
+/// card's primary decision; acknowledged follows and only closes the card,
+/// which then stays closed while the row stays and its automatic backoff goes
+/// on. Otherwise nothing reads a decision, and the card takes acknowledged
+/// alone.
+fn decisions(row: &Row) -> Vec<String> {
+    if retry_read(row) {
+        vec!["retry".to_owned(), "acknowledged".to_owned()]
+    } else {
+        vec!["acknowledged".to_owned()]
+    }
+}
+
+/// The decisions the row reads now: Retry on the budget row and while a
+/// member row waits on backoff (`due`), none otherwise.
+fn reads(row: &Row) -> &'static [&'static str] {
+    if retry_read(row) {
+        &["retry"]
+    } else {
+        &[]
+    }
+}
+
+fn retry_read(row: &Row) -> bool {
+    row.member == crate::desktop::teams::ledger::BUDGET || row.state.waits_on_backoff()
 }
 
 fn problem_refs(problem: &Problem) -> String {

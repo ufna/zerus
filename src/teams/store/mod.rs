@@ -10,6 +10,7 @@ mod guards;
 pub(crate) use guards::Guard;
 mod decision_state;
 mod holder;
+pub(crate) use holder::{holder_of, NOT_RECEIVED};
 mod member_sessions;
 pub use decision_state::DecisionState;
 mod pages;

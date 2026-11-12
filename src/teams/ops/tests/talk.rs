@@ -71,6 +71,7 @@ fn owner_card_records_proposer_and_person_decision_and_refuses_a_second_decision
                 kind: "proposal".into(),
                 text: "Add a member?".into(),
                 node: None,
+                decisions: None,
             },
         )
         .unwrap()
@@ -80,7 +81,7 @@ fn owner_card_records_proposer_and_person_decision_and_refuses_a_second_decision
         &person(),
         Operation::DecideCard {
             card,
-            decision: "Keep the roster".into(),
+            decision: "acknowledged".into(),
         },
     )
     .unwrap();
@@ -165,6 +166,7 @@ fn a_person_cannot_make_a_hand_made_integration_card() {
                 kind: "integration".into(),
                 text: "Approve a fabricated integration".into(),
                 node: Some(node),
+                decisions: None,
             },
         ),
         code::INVALID_STATE,
@@ -261,6 +263,7 @@ fn ordinary_cards(h: &mut Harness, node: u32) -> u64 {
                     kind: "proposal".into(),
                     text: "Proposed team change".into(),
                     node: target,
+                    decisions: None,
                 },
             )
             .unwrap()
@@ -272,7 +275,7 @@ fn ordinary_cards(h: &mut Harness, node: u32) -> u64 {
         &person(),
         Operation::DecideCard {
             card: decided,
-            decision: "Keep the roster".into(),
+            decision: "acknowledged".into(),
         },
     )
     .unwrap();
@@ -286,7 +289,7 @@ fn assert_stale_cards(h: &Harness, decided: u64) {
         assert_eq!(
             card.decision.as_deref(),
             Some(if card.seq == decided {
-                "Keep the roster"
+                "acknowledged"
             } else {
                 "stale"
             })
