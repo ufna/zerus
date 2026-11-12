@@ -1609,10 +1609,15 @@ hours, a reopen held by a conflict of the task's executions. Four findings
 of 2026-11-12 were this one lock. A lead or the person may therefore give
 a node a new Return, Reassign or Cancel while its earlier Return or
 Reassign is still pending and nothing of it has started, that is, no
-effect of the node's current generation is open; the earlier decision is
-settled as superseded in the same operation and the journal says so. A
-decision that has started is not replaced: the new one is refused as
-before until the outcome is recorded. An acceptance is not replaced in
+reopen has been reserved for it; the earlier decision is settled as
+superseded in the same operation and the journal says so. The member's
+own earlier hand-out may still be open then, its report not yet recorded:
+that is not the decision's start. A decision that has started is not
+replaced: the new one is refused as before until the outcome is recorded.
+A Return that replaces a Reassign makes its own target the node's
+assignee, so that the superseded Reassign leaves nothing behind. A Return
+or a Reassign aimed at a member that was already removed is refused when
+it is decided. An acceptance is not replaced in
 this milestone. And removing a member settles the Returns and Reassigns
 aimed at it that have not started and hands their nodes back to the lead
 with one inbox item each, as a reopen that could not be delivered does. A
