@@ -40,6 +40,7 @@ pub mod model;
 pub mod poller;
 pub mod read;
 mod refusal;
+pub mod tolerant;
 pub mod view;
 
 pub use action::{Confirmation, TeamAction, TeamCall, TeamOutcome};

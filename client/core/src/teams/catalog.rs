@@ -2,10 +2,12 @@
 //!
 //! `hgs team catalog show --json` answers `{"ok": true, "catalog": ...}` with
 //! the catalog serialized by `zerus_team_plan::catalog::Catalog`, which leaves
-//! out empty and default fields. The reply is read into that same type, so a
-//! malformed entry (a template without a roster or settings, a role without an
-//! agent, a stage of an unknown kind) refuses the whole catalog before the form
-//! sees it, and is then given back with every field the form reads present.
+//! out empty and default fields. The reply is read into that same type through
+//! the tolerant reader, so a malformed entry (a template without a roster or
+//! settings, a role without an agent, a stage of an unknown kind) refuses the
+//! whole catalog before the form sees it, a field this version does not know is
+//! ignored at every level, and the catalog is given back with every field the
+//! form reads present.
 //! Each template keeps the `digest` that `catalog show` adds beside the
 //! catalog type, so the form can bind a create to the template it showed.
 use serde::Serialize;
@@ -93,7 +95,10 @@ pub fn form_catalog(reply: &Value) -> Result<Value, String> {
         .ok_or("The catalog answer has no catalog.")?;
     let mut raw = raw.clone();
     let digests = take_digests(&mut raw);
-    let catalog: Catalog = serde_json::from_value(raw)
+    // Read as the command line's own type, ignoring at every level what this
+    // version does not know: a field the store adds later never refuses the
+    // catalog of an installed client (the type stays strict for save and import).
+    let catalog: Catalog = super::tolerant::read(raw)
         .map_err(|error| format!("The catalog answer is not a catalog: {error}."))?;
     if catalog
         .templates
@@ -258,7 +263,9 @@ mod tests {
             json!({"pipelines": [{"id": "p", "name": "P", "implementer": "r", "stages": [{"kind": "deploy", "role": "r"}]}]})
         ));
         assert!(refused(json!({"roles": "not a list"})));
-        assert!(refused(json!({"templates": [], "unknown": true})));
+        // A field this version does not know is not malformed: it is ignored
+        // (teams::tolerant).
+        assert!(!refused(json!({"templates": [], "unknown": true})));
     }
 
     #[test]
