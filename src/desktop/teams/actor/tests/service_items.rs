@@ -55,49 +55,138 @@ fn the_terminal_pages_fault_is_a_service_wide_item_until_it_succeeds() {
     assert!(items(&h, TEAM, 60_100).is_empty());
 }
 
-/// A stopped team's finished key sweep that left keys without a final
-/// answer is its item, counting such sweeps; a sweep that leaves none
-/// clears it.
+/// A stopped team's key sweep, run by the timers engine through the actor's
+/// terminal entry with the production ports: each sweep that leaves the key
+/// without a final answer (the team-clear child says the task is cutting
+/// over) is the team's item, counting such sweeps; the sweep that clears it
+/// ends the item. Only the children's output is replaced.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
-#[test]
-fn a_stop_cleanup_that_keeps_failing_is_a_service_item_until_a_sweep_leaves_none() {
-    use crate::desktop::teams::timers::Finished;
-    let h = Harness::new();
-    let mut a = runtime(&h);
-    for now in [100, 200] {
-        a.auxiliary.push_finished(Finished {
-            team: TEAM.into(),
-            unanswered: 2,
-            last: Some((3, "No answer\nfrom the child".into())),
-        });
-        a.sweep_items(now).unwrap();
+mod sweep {
+    use super::super::super::{
+        cancel::{Answer, Fact, Pending},
+        native::Native,
+        ports::{DeliveryResult, Ports},
+        Runtime,
+    };
+    use super::*;
+    use crate::teams::ops::{Operation, TaskStage};
+    use std::os::unix::fs::PermissionsExt;
+
+    struct Adapter {
+        native: Native,
     }
-    let read = service_items(h.temp.path(), TEAM, Some(true), 200)
-        .unwrap()
-        .items;
-    assert_eq!(read.len(), 1);
-    let item = &read[0];
-    assert_eq!(
-        (
-            item.kind.as_str(),
-            item.subject.as_str(),
-            item.node,
-            item.failures
-        ),
-        ("key_clear", "", Some(3), 2)
-    );
-    assert_eq!(
-        item.reason,
-        "2 task keys got no final answer on the last sweep; the last: No answer from the child"
-    );
-    assert_eq!(item.next_ms, Some(200 + 900_000));
-    a.auxiliary.push_finished(Finished {
-        team: TEAM.into(),
-        unanswered: 0,
-        last: None,
-    });
-    a.sweep_items(300).unwrap();
-    assert!(items(&h, TEAM, 300).is_empty());
+    impl Ports for Adapter {
+        fn changes(&mut self, _: &str, _: &str, _: u64) -> Result<zerus_replica::Changes> {
+            Ok(zerus_replica::Changes {
+                generation: "journal".into(),
+                offset: 0,
+                documents: Some(Default::default()),
+            })
+        }
+        fn observe(&mut self, _: &mut Store, _: &TaskRef) -> Result<()> {
+            Ok(())
+        }
+        fn free(&mut self, _: &Team, _: &Member) -> Result<bool> {
+            Ok(false)
+        }
+        fn deliver(&mut self, _: &Team, _: &Node, _: &Member, _: &str) -> DeliveryResult {
+            panic!("No hand-out")
+        }
+        fn cancels(&mut self, store: &Store, team: &str, after: u32) -> Result<Vec<Pending>> {
+            Native::pending_cancels(store, team, after)
+        }
+        fn cancel(&mut self, team: &Team, pending: &Pending, original: &str) -> Result<Answer> {
+            crate::desktop::teams::child::FIXTURE_EXIT.with(|s| {
+                *s.borrow_mut() = Some(
+                    json!({"schema":1,"team":team.id,"node":pending.node,"state":"released","error":"","attempt":pending.attempt,"attempt_id":pending.attempt_id})
+                        .to_string()
+                        .into_bytes(),
+                )
+            });
+            self.native.run_cancel(team, pending, original)
+        }
+        fn record_cancel(
+            &mut self,
+            store: &mut Store,
+            team: &Team,
+            fact: &Fact,
+            now: i64,
+        ) -> Result<()> {
+            Native::save_cancel(store, team, fact, now)
+        }
+        fn terminal_timers(
+            &mut self,
+            state: &mut super::super::super::auxiliary::State,
+            store: &mut Store,
+            now: i64,
+        ) -> Result<()> {
+            self.native.terminal_timers(state, store, now)
+        }
+    }
+
+    /// The team-clear child: a script that answers `state` for `node`.
+    fn clear_child(h: &Harness, node: u32, state: &str) -> std::path::PathBuf {
+        let path = h.temp.path().join("team-clear-child");
+        let reply = json!({"schema":1,"team":TEAM,"node":node,"state":state,"error":""});
+        std::fs::write(
+            &path,
+            format!("#!/bin/sh\ncat >/dev/null\nprintf '%s' '{reply}'\n"),
+        )
+        .unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
+        path
+    }
+
+    #[test]
+    fn a_stopped_teams_sweep_that_leaves_its_key_is_an_item_until_a_sweep_clears_it() {
+        let mut h = Harness::new();
+        let node = h.add(&person(), 1);
+        h.observe(node, TaskStage::Todo);
+        h.run(&person(), Operation::Stop).unwrap();
+        let native = super::super::production::native(&h);
+        let mut a = Runtime::open(h.temp.path(), &native.machine).unwrap();
+        let mut p = Adapter { native };
+        let mut pass = |h: &mut Harness, a: &mut Runtime, state: &str, now: i64| {
+            let child = clear_child(h, node, state);
+            crate::desktop::teams::timers::Native::fixture_program(&child, || {
+                a.page(&mut h.store, &mut p, &[], now, false).unwrap()
+            });
+        };
+        let first = 100;
+        pass(&mut h, &mut a, "cutting_over", first);
+        assert!(h.store.pending_cancels(TEAM, 16, 0).unwrap().is_empty());
+        assert_eq!(
+            h.store.keyed_tasks(TEAM, 0, 16).unwrap()[0].node,
+            node,
+            "the key waits for a final answer"
+        );
+        let second = first + 3_600_000;
+        pass(&mut h, &mut a, "cutting_over", second);
+        let read = service_items(h.temp.path(), TEAM, Some(true), second)
+            .unwrap()
+            .items;
+        assert_eq!(read.len(), 1, "{read:?}");
+        let item = &read[0];
+        assert_eq!(
+            (
+                item.kind.as_str(),
+                item.subject.as_str(),
+                item.node,
+                item.failures,
+                item.since_ms,
+                item.last_ms
+            ),
+            ("key_clear", "", Some(node), 2, first, second)
+        );
+        assert_eq!(
+            item.reason,
+            "1 task keys got no final answer on the last sweep; the last: The task's project is being moved; the key is cleared on a later sweep."
+        );
+        assert_eq!(item.next_ms, Some(second + 900_000));
+        pass(&mut h, &mut a, "cleared", second + 3_600_000);
+        assert!(h.store.keyed_tasks(TEAM, 0, 16).unwrap().is_empty());
+        assert!(items(&h, TEAM, second + 3_600_000).is_empty());
+    }
 }
 
 /// The cleanup pass removes, a page of 64 at a time, every item whose
@@ -153,18 +242,13 @@ fn the_cleanup_pass_removes_items_whose_rows_are_gone_within_its_bound() {
 }
 
 /// When a terminal team's rows are reclaimed, its items go with them; the
-/// service-wide ones and another team's stay.
+/// service-wide ones and another team's stay. The team is stopped with no
+/// work left (no node, so no cancel and no key), which is what lets the
+/// cleanup pass reclaim it.
 #[test]
 fn a_reclaimed_teams_items_go_with_its_rows() {
-    let h = Harness::new();
-    h.store
-        .db
-        .as_ref()
-        .unwrap()
-        .execute(
-            "UPDATE teams SET status=?2 WHERE id=?1",
-            rusqlite::params![TEAM, serde_json::to_string(&TeamStatus::Finished).unwrap()],
-        )
+    let mut h = Harness::new();
+    h.run(&person(), crate::teams::ops::Operation::Stop)
         .unwrap();
     let mut a = runtime(&h);
     a.ledger.reserve(TEAM, "cancel:7", json!({})).unwrap();

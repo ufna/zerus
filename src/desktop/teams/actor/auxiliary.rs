@@ -75,10 +75,6 @@ impl State {
     pub fn finished_sweeps(&mut self) -> Vec<timers::Finished> {
         self.engine.finished_sweeps()
     }
-    #[cfg(test)]
-    pub fn push_finished(&mut self, finished: timers::Finished) {
-        self.engine.push_finished(finished);
-    }
 }
 struct SessionRows<'a>(&'a Native);
 impl timers::Sessions for SessionRows<'_> {

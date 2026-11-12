@@ -33,6 +33,9 @@ pub(crate) fn test_actor_ledger(state: &std::path::Path) -> rusqlite::Connection
 }
 #[cfg(test)]
 pub(crate) use items::{put as put_service_item, Failure as ServiceFailure};
+/// The actor's real failing passes, for other components' tests.
+#[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
+pub(crate) use actor::failing_service_passes;
 mod kept;
 mod launch;
 mod ledger;

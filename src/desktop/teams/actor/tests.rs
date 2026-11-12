@@ -140,6 +140,9 @@ mod terminal_pruning;
 mod service_items;
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
+pub(super) mod producers;
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 mod cancel_recovery;
 
 mod retry_cards;

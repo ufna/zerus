@@ -40,10 +40,6 @@ impl Sweep {
     pub(super) fn take_finished(&mut self) -> Vec<Finished> {
         std::mem::take(&mut self.finished)
     }
-    #[cfg(test)]
-    pub(super) fn push_finished(&mut self, finished: Finished) {
-        self.finished.push(finished);
-    }
     fn miss(&mut self, node: u32, why: &str) {
         self.unanswered = self.unanswered.saturating_add(1);
         self.last = Some((node, why.into()));

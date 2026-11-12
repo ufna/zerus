@@ -34,7 +34,7 @@
       "accepted": 0,
       "cancelled": 0,
       "in_progress": 0,
-      "pending": 1,
+      "pending": 2,
       "reported": 1,
       "waiting": 0
     }
@@ -102,10 +102,10 @@
     "items": [
       {
         "current": false,
-        "failures": 5,
+        "failures": 3,
         "kind": "terminal_page",
-        "last_ms": 1700000000000,
-        "next_ms": 1700000900000,
+        "last_ms": 1700007200000,
+        "next_ms": 1700007440000,
         "node": null,
         "reason": "The terminal page failed: store busy",
         "scope": "service",
@@ -116,13 +116,13 @@
         "current": false,
         "failures": 3,
         "kind": "cancel_retry",
-        "last_ms": 1700000000000,
-        "next_ms": 1700000240000,
-        "node": 1,
-        "reason": "The cancel command failed:[31m storage busy",
+        "last_ms": 1700007200000,
+        "next_ms": 1700007440000,
+        "node": 3,
+        "reason": "The project moves:[31m storage busy",
         "scope": "team",
         "since_ms": 1700000000000,
-        "subject": "7"
+        "subject": "3"
       }
     ],
     "more": 0,
@@ -138,7 +138,7 @@
     "name": "Fixes",
     "owner": "local",
     "project": "example-project",
-    "revision": 21,
+    "revision": 23,
     "settings": {
       "caps": {
         "max_members": 6,

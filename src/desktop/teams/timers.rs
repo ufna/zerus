@@ -144,11 +144,6 @@ impl Timers {
     pub fn finished_sweeps(&mut self) -> Vec<Finished> {
         self.keys.take_finished()
     }
-    /// A finished sweep as the key sweep reports it, for the actor's tests.
-    #[cfg(test)]
-    pub fn push_finished(&mut self, finished: Finished) {
-        self.keys.push_finished(finished);
-    }
 }
 /// The roster within the caps' bound, read in pages.
 fn roster(store: &Store, team: &Team) -> Result<Vec<Member>> {

@@ -25,9 +25,10 @@ fn lead() -> Caller {
     Caller::Session(key(LEAD_SESSION))
 }
 
-fn replies() -> [(&'static str, Value); 12] {
+/// Each fixture's reply. The stopped team's status carries the items the
+/// service's own passes wrote, which it runs only on Linux and macOS.
+fn replies() -> Vec<(&'static str, Value)> {
     let harness = seeded();
-    let stopped = super::status_items::stopped_with_conditions();
     let (board, _) = super::verdict::configured_stage(
         zerus_team_plan::catalog::StageKind::Review,
         3,
@@ -43,16 +44,13 @@ fn replies() -> [(&'static str, Value); 12] {
         assert_eq!(exit, 0, "{line}: {reply}");
         reply
     };
-    [
+    // Only Linux and macOS add the stopped team's reply below.
+    #[cfg_attr(not(any(target_os = "linux", target_os = "macos")), allow(unused_mut))]
+    let mut replies = vec![
         (
             "cli-status.json",
             board_read(&Caller::Person, &format!("status --team {TEAM}")),
         ),
-        ("cli-status-stopped.json", {
-            let (reply, exit) = stopped.cli(&Caller::Person, &format!("status --team {TEAM}"), "");
-            assert_eq!(exit, 0, "{reply}");
-            reply
-        }),
         (
             "cli-queue.json",
             board_read(&lead(), &format!("queue --team {TEAM}")),
@@ -84,7 +82,18 @@ fn replies() -> [(&'static str, Value); 12] {
             "cli-current.json",
             read(&Caller::Session(key(M1_SESSION)), "current"),
         ),
-    ]
+    ];
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    replies.insert(
+        1,
+        ("cli-status-stopped.json", {
+            let stopped = super::status_items::stopped_with_conditions();
+            let (reply, exit) = stopped.cli(&Caller::Person, &format!("status --team {TEAM}"), "");
+            assert_eq!(exit, 0, "{reply}");
+            reply
+        }),
+    );
+    replies
 }
 
 #[test]
@@ -104,8 +113,22 @@ fn the_read_fixtures_are_the_replies_the_cli_prints() {
         ("cli-current.json", CURRENT),
     ];
     let replies = replies();
-    for ((name, actual), (pinned_name, text)) in replies.iter().zip(pinned) {
-        assert_eq!(*name, pinned_name);
+    let produced: Vec<&str> = replies.iter().map(|(name, _)| *name).collect();
+    let expected_names: Vec<&str> = pinned
+        .iter()
+        .map(|(name, _)| *name)
+        .filter(|name| {
+            cfg!(any(target_os = "linux", target_os = "macos"))
+                || *name != "cli-status-stopped.json"
+        })
+        .collect();
+    assert_eq!(produced, expected_names);
+    for (name, actual) in &replies {
+        let text = pinned
+            .iter()
+            .find(|(pinned_name, _)| pinned_name == name)
+            .map(|(_, text)| *text)
+            .unwrap();
         let expected: Value =
             serde_json::from_str(text).unwrap_or_else(|error| panic!("{name}: {error}"));
         assert_eq!(actual, &expected, "{name} is not the reply this hgs prints");

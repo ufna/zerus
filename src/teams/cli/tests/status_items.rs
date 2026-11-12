@@ -13,13 +13,19 @@ fn status(harness: &Harness) -> Value {
 
 /// The seeded team stopped, with what a stopped team shows: one cancel the
 /// task command refused, two key clears it refused (the second newer), and
-/// two service items in the actor ledger, one of the team and one of the
-/// whole service, the team's with a reason that needs making safe.
+/// two service items the service's own passes wrote. A third task's cancel
+/// got no final answer on three passes (its child said the task's project
+/// is cutting over, with a reason that needs making safe), and the terminal
+/// page failed on each: one item of the team and one of the whole service.
+/// The service runs these passes only on Linux and macOS.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 pub(super) fn stopped_with_conditions() -> Harness {
     let harness = seeded();
+    harness.add(3);
     harness.apply(&person(), Operation::Stop);
     let store = harness.store();
-    let cancels = store.pending_cancels(TEAM, 200, 0).unwrap();
+    let mut cancels = store.pending_cancels(TEAM, 200, 0).unwrap();
+    let waiting = cancels.pop().expect("the third task's cancel");
     for (i, row) in cancels.iter().enumerate() {
         let refused = i == 0;
         harness.apply(
@@ -49,7 +55,11 @@ pub(super) fn stopped_with_conditions() -> Harness {
         .iter()
         .map(|k| k.node)
         .collect();
-    assert_eq!(keyed.len(), 2, "both keys wait for their clear");
+    assert_eq!(keyed.len(), 2, "both answered keys wait for their clear");
+    assert!(
+        !keyed.contains(&waiting.node),
+        "its key waits for the cancel"
+    );
     for (i, node) in keyed.iter().enumerate() {
         harness.apply_at(
             &service(),
@@ -61,40 +71,38 @@ pub(super) fn stopped_with_conditions() -> Harness {
             NOW + i as i64,
         );
     }
-    let db = crate::desktop::teams::test_actor_ledger(harness.state());
-    for failure in [
-        crate::desktop::teams::ServiceFailure {
-            team: TEAM,
-            kind: "cancel_retry",
-            subject: "7",
-            node: Some(1),
-            reason: "The cancel command\nfailed:\u{1b}[31m storage busy\u{202e}",
-            failures: 3,
-            now: NOW,
-            next_ms: Some(NOW + 240_000),
-        },
-        crate::desktop::teams::ServiceFailure {
-            team: "",
-            kind: "terminal_page",
-            subject: "",
-            node: None,
-            reason: "The terminal page failed: store busy",
-            failures: 5,
-            now: NOW,
-            next_ms: Some(NOW + 900_000),
-        },
-    ] {
-        crate::desktop::teams::put_service_item(&db, &failure).unwrap();
-    }
+    let last = crate::desktop::teams::failing_service_passes(
+        harness.state(),
+        TEAM,
+        "The project\nmoves:\u{1b}[31m storage busy\u{202e}",
+        "The terminal page failed: store busy",
+        3,
+        NOW,
+    );
+    assert_eq!(last, LAST);
+    assert_eq!(
+        harness.store().pending_cancels(TEAM, 200, 0).unwrap(),
+        [waiting],
+        "the cancel still waits"
+    );
     harness
 }
+/// The last of the three service passes, an hour apart from `NOW`.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+const LAST: i64 = NOW + 2 * 3_600_000;
 
 /// A stopped team shows its service items (current only while the service
 /// runs; here its state is unknown), its key refusals newest first and its
 /// refused cancels, each a page with the count of the rest.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 #[test]
 fn a_stopped_teams_status_names_its_service_items_and_refusals() {
     let harness = stopped_with_conditions();
+    let waiting = harness
+        .store()
+        .pending_cancels(TEAM, 1, 0)
+        .unwrap()
+        .remove(0);
     let reply = status(&harness);
     assert_eq!(reply["service_running"], Value::Null);
     assert_eq!(
@@ -102,11 +110,11 @@ fn a_stopped_teams_status_names_its_service_items_and_refusals() {
         json!({
             "items": [
                 {"scope": "service", "kind": "terminal_page", "subject": "", "node": null,
-                 "reason": "The terminal page failed: store busy", "failures": 5,
-                 "since_ms": NOW, "last_ms": NOW, "next_ms": NOW + 900_000, "current": false},
-                {"scope": "team", "kind": "cancel_retry", "subject": "7", "node": 1,
-                 "reason": "The cancel command failed:[31m storage busy", "failures": 3,
-                 "since_ms": NOW, "last_ms": NOW, "next_ms": NOW + 240_000, "current": false},
+                 "reason": "The terminal page failed: store busy", "failures": 3,
+                 "since_ms": NOW, "last_ms": LAST, "next_ms": LAST + 240_000, "current": false},
+                {"scope": "team", "kind": "cancel_retry", "subject": waiting.decision.to_string(),
+                 "node": waiting.node, "reason": "The project moves:[31m storage busy", "failures": 3,
+                 "since_ms": NOW, "last_ms": LAST, "next_ms": LAST + 240_000, "current": false},
             ],
             "more": 0,
             "unlisted": false,

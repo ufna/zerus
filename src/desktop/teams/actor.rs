@@ -27,6 +27,8 @@ mod schedule;
 mod tasks;
 #[cfg(test)]
 mod tests;
+#[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
+pub(crate) use tests::producers::failing_service_passes;
 /// The actor ledger of a state directory, created as the service creates
 /// it, and a plain connection to it for a test's own writes.
 #[cfg(test)]
