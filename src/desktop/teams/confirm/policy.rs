@@ -84,6 +84,18 @@ pub(super) fn ownership(b: &Binding, o: &Ownership) -> Result<(), String> {
     )
 }
 
+/// A native identity the CLI writes on a pending question: a string, or null
+/// when the session has none yet. A startup card copies its record's absent
+/// conversation as null, while the snapshot keeps it as an empty string; the
+/// two are the same identity. A missing key or another type is none at all.
+fn native_identity<'a>(q: &'a Value, key: &str) -> Option<&'a str> {
+    match q.get(key)? {
+        Value::Null => Some(""),
+        Value::String(text) => Some(text),
+        _ => None,
+    }
+}
+
 pub(super) fn trust(b: &Binding, s: &Snapshot) -> Result<Value, String> {
     session(b, s)?;
     need(
@@ -97,7 +109,8 @@ pub(super) fn trust(b: &Binding, s: &Snapshot) -> Result<Value, String> {
     let q = &s.questions[0];
     need(q["can_answer"] == true, "The prompt cannot be answered")?;
     need(
-        q["run_id"] == s.run && q["conversation_id"] == s.conversation,
+        q["run_id"] == s.run
+            && native_identity(q, "conversation_id") == Some(s.conversation.as_str()),
         "The prompt identity changed",
     )?;
     need(
