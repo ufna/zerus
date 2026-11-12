@@ -1296,6 +1296,23 @@ carries the attempt's holder and the kind of a pending decision, and a
 member row carries whether the person stopped it; all three are additive
 fields of the pinned replies.
 
+What the review of the card decisions added (2026-11-12). A card's list
+is true for as long as the card is open: its opener keeps an open card
+only while the list it would give now equals the card's own, and
+otherwise closes that card and opens the current one in the same step; an
+open card's list is never changed in place. The case that showed it: a
+launch waiting on its backoff opened a card with retry, the launch then
+failed for good, and the kept card went on offering a Retry that nothing
+read. The holder a row shows is the holder the store's own decisions use,
+one definition: a hand-out that was only reserved, or was refused or
+superseded, gives nobody to return to, and a Return there is refused,
+with Reassign and Cancel still open to the lead. And an optional field
+that is added to a stored operation is left out when it is absent, so
+that a request saved before the field existed replays byte for byte: the
+list's field was first written as null, and a card request saved by an
+earlier build was then answered as a different request instead of with
+its saved reply.
+
 **A timer fires once and only while its condition holds (package 10).**
 The store writes a timer's inbox item or owner card in one operation that
 rechecks the condition from stored facts in the same transaction, under a
@@ -1480,7 +1497,30 @@ archived team no observation follows either, so `team-cancel` never
 answers `stale` there: it acts when the document's current attempt is the
 one the store last observed or is the node's own effect that was delivered
 and not yet observed, and otherwise it refuses with a reason that begins
-`attempt_changed:`, because a person took the task after the stop. Once
+`attempt_changed:`, because a person took the task after the stop. The
+store takes the answer by the same rule, or the two disagree for ever: in
+a stopped or archived team a cancelled or a released answer is recorded
+when its pair is the newest observation's, or when it names an effect of
+that node's current generation, a hand-out or a reopen, with a number not
+below the observed one. After a stop a cancelled answer is not held
+back by a conflict of the newest observation either: the command answers
+cancelled for a conflicting document only when that document is already
+cancelled, and refuses one that is not; a task's end does not depend on
+who executed it; and nothing observes again. The first version compared
+with the observation alone and kept the conflict gate. A team stopped
+between a hand-out and the observation of its start kept its cancel
+pending for ever, the service replayed the refused record every fifteen
+minutes and the cleanup never reached the task's key; and a conflicted
+task that the person cancelled around a stop got a new cancel command on
+every pass, because the service took the conflict for a visit that an
+observation would settle (the review of the actor, 2026-11-12). The
+service has its own exits as well, for any refusal a later rule may
+bring. A visit of a stopped or archived team ends only with a recorded
+outcome: a saved refusal of a cancel's record there is recorded once as a
+refused outcome, with what the command answered and what the store said,
+and is never replayed; in a live team that holds for a visit that did not
+change. And for one pending decision the number of cancel commands the
+service starts is bounded, whatever the rules say. Once
 the store has observed a task cancelled, the team has let it go. Giving
 such a task back to a team is not possible yet: a task keeps its cancelled
 mark when it is moved back to To do, until it is sent, started or reopened,
@@ -1531,9 +1571,21 @@ store, and the store owns the answer through two reads of one shape.
 `reviewed_task_current(team, node, generation)` is true while the
 generation is current and the newest observation has the key ours, the
 stage In review, no cancellation, no conflict of attempts, and as its
-current attempt the execution the node took in; the finishing step and a
-reopen use it. `accepted_task_current` is true in the same cases and also
-when that observation shows the task Done, and a new merge uses it. With
+current attempt the execution the node took in; the finishing step uses
+it. `accepted_task_current` is true in the same cases and also when that
+observation shows the task Done, and a new merge uses it. A reopen and a
+hand-over ask a third, `own_task_current`: the same without the stage, and
+true also while the task has no current attempt. The stage is the
+command's business there, because the command hands over a task that
+runs, is In review or is Done and reopens one that is In review or Done,
+and its refusal is recorded and seen. The first version sent reopens
+through the In-review read: a lead's Reassign of a running task, which is
+delivered as a hand-over, was then never carried out, and its pending
+decision refused every other decision of that node (the review of the
+actor, 2026-11-12). A step that a read holds back is not a success: when
+the read stays false for several passes the step's row fails with a
+sentence that names the node and what the newest observation shows, and
+recovers when the read turns true. With
 integration by branch the finishing step waits for the merge, so an
 ordinary merge finds the task In review; but a task that a person closed on
 the board after the accept is observed Done before its merge, its node
