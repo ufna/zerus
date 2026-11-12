@@ -614,6 +614,15 @@ pub fn dispatch(args: Vec<String>) -> Result<i32> {
     dispatch_at(args, Instant::now())
 }
 
+/// The start of the one stderr line `hgs` writes for a refused command.
+pub(crate) const ERROR_PREFIX: &str = "hgs: ";
+/// The line `hgs` writes on stderr, in one piece and last, when a command is
+/// refused (main.rs); nothing about the refusal goes to stdout. A reader of a
+/// child's refusal parses this line (zerus-63rru.57).
+pub(crate) fn error_line(message: &str) -> String {
+    format!("{ERROR_PREFIX}{message}\n")
+}
+
 pub(crate) fn dispatch_at(args: Vec<String>, entered: Instant) -> Result<i32> {
     if let Some(result) = observe_gate(&args) {
         return result;
