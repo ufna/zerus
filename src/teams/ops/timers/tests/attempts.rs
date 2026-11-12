@@ -70,3 +70,47 @@ fn an_older_store_gains_the_attempt_columns_through_the_transition() {
     h.store = Store::open(h.temp.path()).unwrap();
     assert_eq!(stored(&h, node), (0, String::new()));
 }
+
+#[test]
+fn a_pending_cancel_names_the_attempt_the_store_holds() {
+    let mut h = Harness::new();
+    let lead = h.bind("lead");
+    let node = h.add(&person(), 1);
+    let mut o = h.observation(node, TaskStage::Todo);
+    o.attempt = 2;
+    o.attempt_id = "00000000-0000-4000-8000-00000000aaaa".into();
+    h.run(
+        &service(),
+        Operation::ObserveTask {
+            node,
+            observation: o.clone(),
+        },
+    )
+    .unwrap();
+    h.run(
+        &lead,
+        Operation::Cancel {
+            node,
+            reason: "Superseded".into(),
+        },
+    )
+    .unwrap();
+    let row = h.store.pending_cancels(TEAM, 1, 0).unwrap().remove(0);
+    assert_eq!((row.attempt, row.attempt_id), (2, o.attempt_id));
+    let decoded: Operation = serde_json::from_str(
+        r#"{"op":"record_cancel","node":1,"decision":2,"state":"cancelled","attempt":2}"#,
+    )
+    .unwrap();
+    assert!(
+        matches!(decoded, Operation::RecordCancel { attempt: 2, ref attempt_id, .. } if attempt_id.is_empty())
+    );
+    let long = Operation::RecordCancel {
+        node,
+        decision: row.decision,
+        state: CancelState::Cancelled,
+        reason: String::new(),
+        attempt: 2,
+        attempt_id: "a".repeat(257),
+    };
+    refused(h.run(&service(), long), code::OVER_CAP);
+}

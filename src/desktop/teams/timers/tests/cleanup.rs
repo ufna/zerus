@@ -100,6 +100,7 @@ fn settle_cancels(h: &mut Harness) {
                 state: crate::teams::ops::CancelState::Cancelled,
                 reason: String::new(),
                 attempt: 0,
+                attempt_id: String::new(),
             };
             h.run(&service(), op).unwrap();
         }

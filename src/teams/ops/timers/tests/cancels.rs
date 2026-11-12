@@ -10,6 +10,7 @@ fn record(node: u32, decision: u64, state: CancelState, reason: &str) -> Operati
         state,
         reason: reason.into(),
         attempt: 0,
+        attempt_id: String::new(),
     }
 }
 fn pending(h: &Harness) -> Vec<PendingCancel> {
