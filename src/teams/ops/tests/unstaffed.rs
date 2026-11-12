@@ -347,10 +347,9 @@ fn a_removal_that_strands_500_nodes_is_one_reconcile_and_the_bound_fails_closed(
 }
 
 /// The plans and costs of the new reads at 1,000 and 10,000 settled items:
-/// the told items read the partial index `inbox_unstaffed_told` and the
-/// queue page's `unstaffed` the partial index `inbox_unstaffed`; they scan no
-/// table, sort nothing, and execute the same number of virtual machine steps
-/// whatever the ended history. `--nocapture` prints them.
+/// the told items and the queue page's `unstaffed` read the partial index
+/// `inbox_unstaffed_told`; they scan no table, sort nothing, and execute the
+/// same number of virtual machine steps whatever the ended history. `--nocapture` prints them.
 #[test]
 fn the_unstaffed_reads_cost_the_same_at_1000_and_10000_settled_items() {
     use rusqlite::StatementStatus;
@@ -415,7 +414,7 @@ fn the_unstaffed_reads_cost_the_same_at_1000_and_10000_settled_items() {
     assert_eq!(costs[0], costs[1], "the cost does not grow with history");
     for (name, sql, index) in [
         ("TOLD_ITEMS", told_items, "inbox_unstaffed_told"),
-        ("QUEUE_PAGE", page.as_str(), "inbox_unstaffed"),
+        ("QUEUE_PAGE", page.as_str(), "inbox_unstaffed_told"),
     ] {
         let p = plan(sql);
         println!("UNSTAFFED-PLAN {name}:\n  {}", p.join("\n  "));
@@ -595,4 +594,77 @@ fn the_comparison_ends_an_older_item_and_a_moved_generation() {
     let retired = crate::teams::ops::unstaffed_changes(&now, &stage, &[]);
     assert!(retired.tell.is_empty());
     assert_eq!(retired.stages.len(), 1);
+}
+
+/// The row's `unstaffed` is the node's current episode: shown while the item
+/// is open, still shown after the lead closed it, the new sentence after a
+/// replacement, and blank once the reconcile ended the episode.
+#[test]
+fn the_row_shows_the_current_episode_whether_or_not_the_lead_closed_its_item() {
+    let mut h = Harness::new();
+    let (node, lead) = stranded_assignee(&mut h);
+    assert_eq!(row(&h, node), None, "not told yet");
+    reconcile(&mut h).unwrap();
+    let first = open(&h)[0].2.clone();
+    assert_eq!(row(&h, node).as_deref(), Some(first.as_str()), "item open");
+    closed_by_lead(&h);
+    assert!(open(&h).is_empty());
+    assert_eq!(
+        row(&h, node).as_deref(),
+        Some(first.as_str()),
+        "item closed by the lead"
+    );
+    removed(&mut h, "m1");
+    reconcile(&mut h).unwrap();
+    let second = open(&h)[0].2.clone();
+    assert_ne!(second, first);
+    assert_eq!(row(&h, node).as_deref(), Some(second.as_str()), "replaced");
+    h.run(&lead, Operation::Hold { node }).unwrap();
+    assert_eq!(
+        row(&h, node).as_deref(),
+        Some(second.as_str()),
+        "until the reconcile"
+    );
+    reconcile(&mut h).unwrap();
+    assert_eq!(row(&h, node), None, "the episode ended");
+}
+
+/// A Reply cannot forge the reconcile's mark: Reply answers questions only,
+/// so a lead's or a person's Reply to an unstaffed item, open or closed by
+/// the lead, is refused and writes nothing, and the episode stands.
+#[test]
+fn a_reply_to_an_unstaffed_item_is_refused_and_leaves_the_episode() {
+    let mut h = Harness::new();
+    let (_, lead) = stranded_assignee(&mut h);
+    reconcile(&mut h).unwrap();
+    let item = h
+        .store
+        .inbox(TEAM, 200, None)
+        .unwrap()
+        .rows
+        .into_iter()
+        .find(|i| i.kind.starts_with("unstaffed:"))
+        .unwrap()
+        .seq;
+    for lead_closed in [false, true] {
+        if lead_closed {
+            closed_by_lead(&h);
+        }
+        for actor in [lead.clone(), person()] {
+            let before = snapshot(&h);
+            let e = h
+                .run(
+                    &actor,
+                    Operation::Reply {
+                        item,
+                        text: "Done, this needs nothing.".into(),
+                    },
+                )
+                .unwrap_err();
+            assert_eq!(e.code, code::INVALID_STATE, "{e:?}");
+            assert_eq!(snapshot(&h), before, "lead_closed={lead_closed}");
+        }
+        assert!(ended(&h).is_empty());
+        unchanged(&mut h);
+    }
 }

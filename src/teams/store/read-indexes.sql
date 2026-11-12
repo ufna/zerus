@@ -6,7 +6,5 @@ CREATE INDEX IF NOT EXISTS integration_approved ON cards(team,decision_seq)
  WHERE kind='integration' AND state='closed' AND decision='approve';
 CREATE INDEX IF NOT EXISTS integration_card ON cards(decision_seq)
  WHERE kind='integration';
-CREATE INDEX IF NOT EXISTS inbox_unstaffed ON inbox(team,node)
- WHERE state='open' AND kind LIKE 'unstaffed:%';
 CREATE INDEX IF NOT EXISTS inbox_unstaffed_told ON inbox(team,node,seq)
  WHERE kind LIKE 'unstaffed:%' AND reply IS NULL;

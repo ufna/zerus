@@ -6,7 +6,11 @@
 //! reply of an unstaffed item, so an item closed by anyone else (the lead,
 //! or a step that closes a node's items) still stands for its episode.
 //! The told items are read through the partial index `inbox_unstaffed_told`,
-//! so their cost does not grow with the team's ended history.
+//! so their cost does not grow with the team's ended history. A queue or
+//! board row's `unstaffed` is a fact about its node, not about the lead's
+//! inbox: the sentence of the node's current episode, through the same
+//! index, whether or not the lead closed its item, blank once the reconcile
+//! ended the episode.
 use super::*;
 use std::collections::BTreeSet;
 
