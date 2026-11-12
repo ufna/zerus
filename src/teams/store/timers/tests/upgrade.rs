@@ -511,3 +511,150 @@ fn the_current_mark_opens_without_a_write() {
     assert_eq!(transitions(), transitions_before);
     assert_eq!((schema(&h), content(&h)), (before, rows));
 }
+
+/// A Return as an earlier layout admitted it while the hand-out was only
+/// reserved, when the holder was the newest effect whatever its state. It is
+/// decided through the operation with the effect read as delivered, then the
+/// effect is written back to reserved; with `stranded` false it stays
+/// delivered and the narrowed holder still reads its member.
+fn old_return(h: &mut Harness, stranded: bool) -> (u32, u64, Actor) {
+    let lead = h.bind("lead");
+    h.bind("m1");
+    h.bind("m2");
+    let node = h.add(&person(), 1);
+    let id = h.intent(node, "m1");
+    h.observe(node, crate::teams::ops::TaskStage::InReview);
+    let effect = |h: &Harness, state: &str| {
+        db(h)
+            .execute(
+                "UPDATE effects SET state=?2 WHERE request_id=?1",
+                params![id, state],
+            )
+            .unwrap();
+    };
+    effect(h, "submitted");
+    h.run(
+        &lead,
+        Operation::Return {
+            node,
+            reason: "Fix the edge case".into(),
+        },
+    )
+    .unwrap();
+    if stranded {
+        effect(h, "reserved");
+    }
+    let seq = h
+        .store
+        .decisions(TEAM, 200, None)
+        .unwrap()
+        .rows
+        .last()
+        .unwrap()
+        .seq;
+    (node, seq, lead)
+}
+fn to_layout_9(h: &Harness) {
+    db(h)
+        .execute_batch(
+            "ALTER TABLE cards DROP COLUMN decisions; UPDATE timers_extension SET version=9;",
+        )
+        .unwrap();
+}
+fn handed_back(h: &Harness) -> Vec<String> {
+    h.store
+        .inbox(TEAM, 200, None)
+        .unwrap()
+        .rows
+        .into_iter()
+        .map(|i| i.kind)
+        .filter(|k| k.starts_with("return_without_holder:"))
+        .collect()
+}
+fn revision(h: &Harness) -> u64 {
+    h.store.team(TEAM).unwrap().unwrap().revision
+}
+
+/// The step to layout 10 hands back a Return that the narrowed holder
+/// leaves with nobody to go to: settled, its node held, one item for the
+/// lead, the team's revision moved, nothing left for the reopen page, and
+/// the lead may decide again. Run again (the mark set back to 9), the step
+/// finds nothing and writes nothing.
+#[test]
+fn the_step_to_layout_10_hands_a_return_without_holder_back_to_the_lead_once() {
+    let mut h = Harness::new();
+    let (node, seq, lead) = old_return(&mut h, true);
+    assert!(h.store.attempt_holder(TEAM, node).unwrap().is_none());
+    to_layout_9(&h);
+    let before = (transitions(), revision(&h));
+    reopen(&mut h);
+    assert_eq!(transitions(), before.0 + 1);
+    assert_eq!(marker(&h), Some(EXTENSION));
+    let decision = h.store.decisions(TEAM, 200, None).unwrap().rows;
+    assert_eq!(decision.last().unwrap().seq, seq);
+    assert_eq!(decision.last().unwrap().state, DecisionState::Settled);
+    assert!(h.node(node).hold, "held, as a refused reopen holds it");
+    assert_eq!(handed_back(&h), [format!("return_without_holder:{seq}")]);
+    assert_eq!(revision(&h), before.1 + 1);
+    assert!(h
+        .store
+        .pending_reopens(TEAM, 200, None)
+        .unwrap()
+        .rows
+        .is_empty());
+    // The step run again finds nothing and writes nothing.
+    db(&h)
+        .execute_batch("UPDATE timers_extension SET version=9;")
+        .unwrap();
+    let again = (transitions(), revision(&h));
+    reopen(&mut h);
+    assert_eq!(transitions(), again.0 + 1);
+    assert_eq!(handed_back(&h).len(), 1, "one item, once");
+    assert_eq!(revision(&h), again.1);
+    // The lead decides again.
+    h.run(
+        &lead,
+        Operation::Reassign {
+            node,
+            member: "m2".into(),
+            reason: "Give it to the second member".into(),
+        },
+    )
+    .unwrap();
+}
+
+/// A Return whose holder the narrowed rule still reads, and a Return whose
+/// reopen is already reserved (it has started; its outcome settles it), are
+/// left as they are by the step.
+#[test]
+fn the_step_to_layout_10_leaves_a_held_or_started_return_alone() {
+    for case in ["held", "started"] {
+        let mut h = Harness::new();
+        let (node, seq, _) = old_return(&mut h, false);
+        if case == "started" {
+            h.reopen(node, "m1");
+            assert!(h.store.attempt_holder(TEAM, node).unwrap().is_none());
+        }
+        let state = |h: &Harness| {
+            h.store
+                .decisions(TEAM, 200, None)
+                .unwrap()
+                .rows
+                .into_iter()
+                .find(|d| d.seq == seq)
+                .unwrap()
+                .state
+        };
+        let before = (state(&h), revision(&h), h.node(node).hold);
+        to_layout_9(&h);
+        reopen(&mut h);
+        assert_eq!(marker(&h), Some(EXTENSION));
+        assert_eq!(
+            (state(&h), revision(&h), h.node(node).hold),
+            before,
+            "{case}"
+        );
+        assert_ne!(state(&h), DecisionState::Settled, "{case}");
+        assert!(handed_back(&h).is_empty(), "{case}");
+    }
+}

@@ -35,7 +35,8 @@ fn answers(db: &Connection) -> Result<()> {
         .map_err(storage)
 }
 /// Layout 9 to 10: a card keeps the decisions its opener listed; a row
-/// without a list answers by the rule of its kind.
+/// without a list answers by the rule of its kind. The attempt holder
+/// narrows in the same layout, so the Returns it strands are handed back.
 fn card_decisions(db: &Connection) -> Result<()> {
     let present: bool = db
         .query_row(
@@ -46,6 +47,99 @@ fn card_decisions(db: &Connection) -> Result<()> {
         .map_err(storage)?;
     if !present {
         db.execute_batch("ALTER TABLE cards ADD COLUMN decisions TEXT")
+            .map_err(storage)?;
+    }
+    unheld_returns(db)
+}
+/// Earlier layouts admitted a Return while its hand-out was only reserved.
+/// Under the narrowed attempt holder ([`holder_of`]) such a Return has
+/// nobody to go to, and nothing would ever carry it out. Each unstarted one
+/// (pending, no reopen reserved) of a live team whose node's holder reads
+/// nobody is handed back to the lead once, as a refused reopen is: the
+/// decision settles, the node is held, and the lead gets one inbox item of
+/// its own kind; the team's revision moves. Pages of 200 live teams, and per
+/// team pages of 200 unsettled decisions through their partial index.
+fn unheld_returns(db: &Connection) -> Result<()> {
+    let teams = format!(
+        "SELECT id FROM teams WHERE id>?1 AND status NOT IN {TERMINAL} ORDER BY id LIMIT 200"
+    );
+    let mut after = String::new();
+    loop {
+        let ids = column::<String>(db, &teams, params![after])?;
+        for team in &ids {
+            unheld_returns_of(db, team)?;
+        }
+        match ids.last() {
+            Some(last) if ids.len() == 200 => after = last.clone(),
+            _ => return Ok(()),
+        }
+    }
+}
+fn unheld_returns_of(db: &Connection, team: &str) -> Result<()> {
+    let pending = format!(
+        "SELECT d.seq,d.node,n.generation FROM decisions d INDEXED BY decision_pending JOIN nodes n ON n.team=d.team AND n.id=d.node WHERE d.team=?1 AND d.state<>'{}' AND d.node>?2 AND d.kind='return' AND d.state='{}' ORDER BY d.node LIMIT 200",
+        DecisionState::Settled.as_str(),
+        DecisionState::Pending.as_str()
+    );
+    let Some(owner) = db
+        .query_row("SELECT owner FROM teams WHERE id=?1", [team], |r| {
+            r.get::<_, String>(0)
+        })
+        .optional()
+        .map_err(storage)?
+    else {
+        return Ok(());
+    };
+    let actor = encode(&crate::teams::ops::Actor::Service {
+        person: owner,
+        team: team.into(),
+    })?;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis() as i64);
+    let mut after = 0u32;
+    let mut moved = false;
+    loop {
+        let rows = db
+            .prepare(&pending)
+            .and_then(|mut s| {
+                s.query_map(params![team, after], |r| {
+                    Ok((
+                        r.get::<_, u64>(0)?,
+                        r.get::<_, u32>(1)?,
+                        r.get::<_, u32>(2)?,
+                    ))
+                })?
+                .collect::<std::result::Result<Vec<_>, _>>()
+            })
+            .map_err(storage)?;
+        for (seq, node, generation) in &rows {
+            if holder_of(db, team, *node)?.is_some() {
+                continue;
+            }
+            rows::settle_decisions(db, team, Some(*node), &actor, false)?;
+            db.execute(
+                "UPDATE nodes SET hold=1 WHERE team=?1 AND id=?2",
+                params![team, node],
+            )
+            .map_err(storage)?;
+            let text = format!(
+                "The return of task {node} had nobody to go to: no member holds its attempt (its hand-out was only reserved, refused or superseded). The task is held; decide again."
+            );
+            db.execute(
+                "INSERT INTO inbox(team,kind,node,generation,actor,text,created_ms) VALUES(?1,?2,?3,?4,?5,?6,?7)",
+                params![team, format!("return_without_holder:{seq}"), node, generation, actor, text, now],
+            )
+            .map_err(storage)?;
+            moved = true;
+        }
+        match rows.last() {
+            Some((_, node, _)) if rows.len() == 200 => after = *node,
+            _ => break,
+        }
+    }
+    if moved {
+        db.execute("UPDATE teams SET revision=revision+1 WHERE id=?1", [team])
             .map_err(storage)?;
     }
     Ok(())
