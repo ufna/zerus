@@ -656,20 +656,24 @@ impl Git {
             ));
         }
         let mut command = self.command(args);
+        #[cfg(all(test, unix))]
+        let cancelled = tests::driver_clock::timed_out;
+        #[cfg(not(all(test, unix)))]
+        let cancelled = || false;
         #[cfg(unix)]
         let result = match turn {
             Some(turn) => crate::platform::run_bounded_in_turn(
                 &mut command,
                 [8 * 1024 * 1024, 64 * 1024],
                 deadline,
-                &|| false,
+                &cancelled,
                 turn,
             ),
             None => crate::platform::run_bounded(
                 &mut command,
                 [8 * 1024 * 1024, 64 * 1024],
                 deadline,
-                &|| false,
+                &cancelled,
             ),
         };
         #[cfg(not(unix))]
@@ -677,7 +681,7 @@ impl Git {
             &mut command,
             [8 * 1024 * 1024, 64 * 1024],
             deadline,
-            &|| false,
+            &cancelled,
         );
         let (status, stdout, stderr) = result.map_err(|error| {
             // Spawn proves non-start. Stopped is opaque: on Unix it also
@@ -944,6 +948,9 @@ mod tests {
             .unwrap_or_else(|| PathBuf::from("git"))
     }
     thread_local! { static CONFIG: RefCell<Option<Config>> = const { RefCell::new(None) }; }
+
+    #[cfg(unix)]
+    pub(super) mod driver_clock;
 
     struct ConfigGuard(Option<Config>);
 
@@ -1940,30 +1947,36 @@ mod tests {
         let cwd = f.root.path().join("driver-cwd");
         let primary_temps = f.root.path().join("primary-temps");
         let own_temps = f.root.path().join("driver-temps");
+        let ready = f.root.path().join("driver-ready");
         let driver = f.root.path().join("driver");
         let finish = if timeout {
             "exec sleep 5\n"
         } else {
             "cat \"$3\" > \"$2\"\n"
         };
-        executable(&driver, &format!("#!/bin/sh\npwd -P > '{}'\nfor file in '{}'/.merge_file_*; do\n if [ -e \"$file\" ]; then printf found >> '{}'; fi\ndone\nfor file in .merge_file_*; do\n if [ -e \"$file\" ]; then printf found >> '{}'; fi\ndone\nprintf temporary > driver-output\n{finish}", cwd.display(), f.main.display(), primary_temps.display(), own_temps.display()));
+        executable(&driver, &format!("#!/bin/sh\npwd -P > '{}'\nfor file in '{}'/.merge_file_*; do\n if [ -e \"$file\" ]; then printf found >> '{}'; fi\ndone\nfor file in .merge_file_*; do\n if [ -e \"$file\" ]; then printf found >> '{}'; fi\ndone\nprintf temporary > driver-output\nprintf ready > '{}'\n{finish}", cwd.display(), f.main.display(), primary_temps.display(), own_temps.display(), ready.display()));
         f.personal(
             &f.config.global,
             "merge.personal.driver",
             &format!("'{}' %O %A %B", driver.display()),
         );
         let before = (f.refs(), snapshot(&f.main));
-        let mut git = Git::repo(&f.repo).unwrap();
-        if timeout {
-            git.deadline = Instant::now() + Duration::from_secs(1);
-        }
+        let git = Git::repo(&f.repo).unwrap();
+        // Startup keeps Git's normal outer bound; this test's stop clock
+        // starts only after the driver has written all its evidence.
+        let clock = timeout.then(|| driver_clock::Clock::arm(ready));
         let result = merge_git(&git, "integrate/team", &member, "Accept", || {}, || Ok(()));
         if timeout {
+            assert!(
+                clock.as_ref().unwrap().expired(),
+                "the driver must start and time out"
+            );
             assert_eq!(result.unwrap_err().code, "integration_unavailable");
             assert_eq!(f.refs(), before.0);
         } else {
             assert!(matches!(result.unwrap(), Merge::Merged { .. }));
         }
+        drop(clock);
         let actual = PathBuf::from(fs::read_to_string(cwd).unwrap().trim_end());
         assert_ne!(actual, f.main.canonicalize().unwrap());
         assert!(
@@ -2428,6 +2441,19 @@ mod tests {
         );
     }
     #[cfg(unix)]
+    struct TimedAdmission<'a>(
+        Option<crate::teams::store::actor_reads::Admission>,
+        Instant,
+        &'a Cell<Option<Duration>>,
+    );
+    #[cfg(unix)]
+    impl Drop for TimedAdmission<'_> {
+        fn drop(&mut self) {
+            drop(self.0.take());
+            self.2.set(Some(self.1.elapsed()));
+        }
+    }
+    #[cfg(unix)]
     #[test]
     fn an_admitted_ref_update_releases_the_store_within_its_five_second_budget() {
         let f = Fixture::new();
@@ -2445,13 +2471,14 @@ mod tests {
                 seen.set(true);
             }))
         });
-        let started = Instant::now();
+        let held = Cell::new(None);
         let result = with_fixture_git(&f, "hung-ref", || {
             merge_admitted(&f.repo, "teams/held", &incoming, "Admitted fixture", || {
-                crate::teams::store::Store::open(h.temp.path())?.admission()
+                let guard = crate::teams::store::Store::open(h.temp.path())?.admission()?;
+                Ok(TimedAdmission(Some(guard), Instant::now(), &held))
             })
         });
-        let elapsed = started.elapsed();
+        let elapsed = held.get().expect("the admission was taken and released");
         assert!(mark.get());
         assert_eq!(result.unwrap_err().code, code::DELIVERY_UNCERTAIN);
         let db = rusqlite::Connection::open(h.temp.path().join("teams/teams-v1.sqlite3")).unwrap();
