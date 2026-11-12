@@ -403,10 +403,12 @@ fn unavailable(message: impl Into<String>) -> Problem {
     Problem::new(code::INTEGRATION_UNAVAILABLE, message)
 }
 
+/// Git's own words, which can quote a branch, a path or a hook's output:
+/// cleaned to one bounded line before they reach any card (zerus-63rru.59).
 fn git_failure(output: &Output) -> Problem {
     unavailable(format!(
         "Git refused integration: {}",
-        String::from_utf8_lossy(&output.stderr).trim()
+        super::clean::sentence(&String::from_utf8_lossy(&output.stderr), 1024)
     ))
 }
 
@@ -2546,5 +2548,29 @@ mod tests {
             elapsed < Duration::from_secs(8),
             "the store remained held for {elapsed:?}"
         );
+    }
+
+    /// Git's error output quotes what it was given: a name with terminal
+    /// control sequences and a line break reaches the message as one clean,
+    /// bounded line (zerus-63rru.59).
+    #[test]
+    fn gits_own_words_reach_a_failure_as_one_clean_line() {
+        let f = Fixture::new();
+        let git = Git::repo(&f.repo).unwrap();
+        let hostile = format!("nope\u{1b}[31m\u{7}\nforged line{}", "x".repeat(3000));
+        let output = git.run(&["cat-file", "-t", &hostile]).unwrap();
+        assert!(!output.status.success());
+        // Git turns the name's escape and bell into "?" but keeps its line
+        // break: the message would carry a second line.
+        let raw = String::from_utf8_lossy(&output.stderr);
+        assert!(raw.contains("\nforged line"), "{raw:?}");
+        let message = success(output).unwrap_err().message;
+        assert!(
+            message.starts_with("Git refused integration: "),
+            "{message}"
+        );
+        assert!(!message.chars().any(char::is_control), "{message:?}");
+        assert!(message.contains(" forged line"), "{message}");
+        assert!(message.len() <= "Git refused integration: ".len() + 1024);
     }
 }

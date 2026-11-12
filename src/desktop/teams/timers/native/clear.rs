@@ -57,14 +57,12 @@ pub(super) fn answer(request: &ClearRequest, output: &[u8]) -> Answer {
     }
     match reply["state"].as_str() {
         Some("cleared") => Answer::Cleared,
-        Some("refused") => Answer::Refused(
-            reply["error"]
-                .as_str()
-                .unwrap_or("")
-                .chars()
-                .take(4096)
-                .collect(),
-        ),
+        // The command's own sentence, cleaned where it is taken, as the
+        // actor's clear refusal is (zerus-63rru.59).
+        Some("refused") => Answer::Refused(crate::teams::clean::sentence(
+            reply["error"].as_str().unwrap_or(""),
+            512,
+        )),
         Some("cutting_over") => Answer::CuttingOver,
         _ => Answer::None("The reply's state is unknown".into()),
     }

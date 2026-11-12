@@ -79,6 +79,16 @@ fn blank_or_control_git_paths_are_quoted_in_the_conflict_fact() {
             vec![serde_json::to_string(path).unwrap()]
         );
     }
+    // Line and paragraph separators end a line in a person's view too, and
+    // a terminal's escape and bell act on it: each is shown escaped
+    // (zerus-63rru.59).
+    for (path, shown) in [
+        ("ls\u{2028}forged", r#""ls\u2028forged""#),
+        ("ps\u{2029}forged", r#""ps\u2029forged""#),
+        ("esc\u{1b}[31mred\u{7}", r#""esc\u001b[31mred\u0007""#),
+    ] {
+        assert_eq!(actor_conflict(path), vec![shown.to_owned()], "{path:?}");
+    }
 }
 fn actor_conflict(name: &str) -> Vec<String> {
     let git = Git::with_name(name);
