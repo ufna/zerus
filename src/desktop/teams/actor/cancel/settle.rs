@@ -17,7 +17,15 @@ impl Runtime {
                     .is_some_and(|t| matches!(t.status, TeamStatus::Running | TeamStatus::Paused))
                 && !self.cancel_visit_current(store, p, t, row)?
             {
-                return self.cancel_done(store, t, key, now);
+                return self.changed_cancel_visit(
+                    store,
+                    p,
+                    t,
+                    key,
+                    row,
+                    "The cancel observation changed before the refused outcome was recorded.",
+                    now,
+                );
             }
             self.reserve_cancel_fact(store, t, row)?;
             self.put(&t.id, key, row)?;

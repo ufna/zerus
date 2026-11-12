@@ -544,3 +544,39 @@ fn the_decision_budget_survives_successful_visits_that_leave_the_decision_pendin
         assert_eq!(p.facts.iter().filter(|f| f.refused).count(), 1);
     }
 }
+
+#[test]
+fn a_changed_snapshot_before_the_exit_keeps_the_same_decisions_child_budget() {
+    let (mut h, mut a, mut p) = setup();
+    p.reply = Some(TaskReply::CuttingOver {
+        reason: "No answer".into(),
+    });
+    for pass in 0..3 {
+        a.tick(&mut h.store, &mut p, TEAM, 100 + pass * 900_000, false)
+            .unwrap();
+    }
+    assert_eq!(p.calls.len(), 3);
+    super::super::cancel::CRASH.with(|s| s.set(Some("refusal_exit")));
+    assert!(
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| a.tick(
+            &mut h.store,
+            &mut p,
+            TEAM,
+            2_700_100,
+            false
+        )))
+        .is_err()
+    );
+    p.pending[0].attempt += 1;
+    p.pending[0].attempt_id = "new-observation".into();
+    let machine = a.machine.clone();
+    drop(a);
+    let mut a = super::super::Runtime::open(h.temp.path(), &machine).unwrap();
+    for pass in 4..100 {
+        a.tick(&mut h.store, &mut p, TEAM, 100 + pass * 900_000, false)
+            .unwrap();
+    }
+    assert_eq!(p.calls.len(), 3);
+    assert!(p.pending.is_empty());
+    assert_eq!(p.facts.iter().filter(|f| f.refused).count(), 1);
+}

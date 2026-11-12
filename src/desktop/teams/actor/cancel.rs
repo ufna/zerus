@@ -209,7 +209,7 @@ impl Runtime {
         budget: &mut u8,
     ) -> Result<()> {
         if row.halted {
-            if self.cancel_visit_current(store, p, t, row)? {
+            if self.cancel_still_pending(store, p, t, row)? {
                 return Err(problem(&row.reason));
             }
             return self.cancel_done(store, t, key, now);

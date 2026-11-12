@@ -190,6 +190,16 @@ fn a_second_proved_refusal_ends_the_visit_durably_without_replaying_either_reque
     assert!(runtime.ledger.terminal_retry().unwrap().is_some());
     drop(runtime);
     let mut runtime = Runtime::open(h.temp.path(), &p.native.machine).unwrap();
+    h.store
+        .db
+        .as_ref()
+        .unwrap()
+        .execute("UPDATE task_observations SET data=json_set(data,'$.attempt_conflict',json('true')),attempt_conflict=1", [])
+        .unwrap();
+    assert_eq!(
+        Native::pending_cancels(&h.store, TEAM, 0).unwrap()[0].attempt_conflict,
+        Some(true)
+    );
     passes(&mut h, &mut runtime, &mut p);
     assert_eq!(p.facts.len(), 2);
     assert_eq!(p.children, 1);
