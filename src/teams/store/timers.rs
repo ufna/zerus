@@ -316,8 +316,15 @@ fn refuse(text: &str) -> Problem {
 
 mod answers;
 pub(crate) use answers::admit_answer;
-pub use answers::{AnswerBell, AnswerMark, Questions};
+// The member's doorbell step, built on Linux and macOS only, names the mark.
+#[cfg_attr(
+    not(any(target_os = "linux", target_os = "macos")),
+    allow(unused_imports)
+)]
+pub use answers::AnswerMark;
+pub use answers::{AnswerBell, Questions};
 mod cancels;
+mod reviewed;
 mod schema;
 #[allow(unused_imports)] // The actor's cancel step (package 8) reads this.
 pub use cancels::PendingCancel;

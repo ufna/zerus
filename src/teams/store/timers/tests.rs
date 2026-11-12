@@ -130,6 +130,8 @@ fn every_timer_read_searches_an_index() {
         ("ANSWER_MARK", super::answers::sql::MARK),
         ("ANSWER_HOLDER", super::answers::sql::HOLDER),
         ("WAITING", sql::WAITING),
+        ("REVIEWED", super::reviewed::sql::REVIEWED),
+        ("ACCEPTED", super::reviewed::sql::ACCEPTED),
     ] {
         let plan = explain(db(&h), sql);
         println!("{name}:\n  {}", plan.join("\n  "));

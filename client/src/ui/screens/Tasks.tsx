@@ -13,7 +13,8 @@ import { now, selected, setMenu } from "../../store/ui";
 import { RECENT_DONE, STAGES, STAGE_ICON, STAGE_LABEL, stageLabel, TASK_PAGE, assignmentLabel, boardRows, boardTask, belongsTo, keepsSessionFilter, executorRef, sessionIdentity, taskPageOffset, type Stage, type Task } from "./tasks-ui";
 import { openTaskAssignment, assigningTask, canAssign, draggedTask, setDraggedTask, taskDragStart, readTaskDrag, TASK_MIME, assign, taskAssignmentAt } from "../../store/taskAssignment";
 import { POINTER_DRAG, pointerDrag } from "../lib/pointerDrag";
-import { ACTION_ICON, ACTION_LABEL, actionLabel, actOnTask, boardActions, canDrag, primaryAction, reorderGap, stageDropAction, writingTask } from "../../store/taskBoard";
+import { ACTION_ICON, ACTION_LABEL, actionLabel, actOnTask, boardActions, canDrag, primaryAction, reorderGap, sendToTeam, stageDropAction, writingTask } from "../../store/taskBoard";
+import { teams } from "../../store/teams";
 import { taskProject as project, projectSessions as sessions, findTaskSession as find, projectTasks as rows, sessionTaskRows } from "../../store/taskContext";
 import "../styles/tasks.css";
 import { tr, trNoop } from "../../i18n";
@@ -152,10 +153,18 @@ export function TasksPanel() {
     if (!e.dataTransfer?.types.includes(TASK_MIME) || writingTask() || !stageDropAction(drag(), filter)) return false;
     e.preventDefault(); e.stopPropagation(); e.dataTransfer.dropEffect = "move"; endDrag(); return true;
   };
+  /** The teams of this project that a card in Backlog or To do can join. */
+  const teamChoices = (projectId: string) => teams.available() === true
+    ? (teams.list()?.teams ?? []).filter((team) => team.project === projectId).slice(0, 8)
+    : [];
   const menu = (e: MouseEvent | KeyboardEvent, t: Task) => { e.preventDefault(); e.stopPropagation(); const anchor = e.currentTarget as HTMLElement, el = anchor.getBoundingClientRect(), projectId = project()!.id; setMenu({ x: el.left, y: el.bottom, items: [
     { label: tr("Task details"), icon: "file-text", action: () => openTask(projectId, t.uuid) },
     { label: tr("Rename…"), icon: "pencil", disabled: !t.writable || !!writingTask(), action: () => requestTaskRename(projectId, t.uuid) },
     ...boardActions(t.stage).map((action) => ({ label: actionLabel(action), icon: ACTION_ICON[action], disabled: !t.writable || !!writingTask(), action: () => void actOnTask(projectId, t, { kind: action }) })),
+    ...(["todo", "backlog"].includes(t.stage) ? teamChoices(projectId).map((team) => ({
+      label: tr("Send to team: %1", team.name), icon: "users", disabled: !t.writable || !!writingTask(),
+      action: () => void sendToTeam(projectId, t, team.id, team.name),
+    })) : []),
     ...(["todo", "backlog"].includes(t.stage) && supportsTaskStart(t) ? [{ label: tr("Start task"), icon: "play", disabled: !!taskStartBlocker(projectId, t) || !!writingTask(), hint: taskStartBlocker(projectId, t), action: () => void startTask(projectId, t) }] : []),
     ...(t.stage === "active" ? [{ label: tr("Cancel task…"), icon: "x", danger: true, disabled: !canCancel(t) || !!writingTask(), action: () => requestTaskCancellation(projectId, t, anchor) }] : []),
     { label: tr("Assign to session…"), icon: "user-round-cog", disabled: !canAssign(t, projectId) || !!assigningTask(), action: () => { if (project()?.id === projectId) openTaskAssignment(projectId, t, anchor); } },

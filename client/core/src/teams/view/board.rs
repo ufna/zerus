@@ -40,6 +40,7 @@ fn member_cards(status: &Value) -> Vec<MemberCard> {
             state: or_default(member, "state", "not_created"),
             lead: member.get("id").and_then(Value::as_str) == Some(lead.as_str()),
             session: session(member),
+            model: optional_name(member, "model"),
         })
         .collect()
 }
@@ -47,6 +48,10 @@ fn member_cards(status: &Value) -> Vec<MemberCard> {
 /// A stage row: who does the stage (`assignee`) and who implemented the task
 /// it checks (`implementer`, the plan's binding decision).
 fn stage_card(node: &Value) -> StageCard {
+    // A stage row names its kind, its target and that target's round in its own
+    // `stage` object; an older command line omits the object, and a kind the
+    // core does not know is kept out as absent rather than refused.
+    let stage = node.get("stage").filter(|stage| stage.is_object());
     StageCard {
         node: count(node, "id"),
         index: count(node, "stage_index"),
@@ -54,6 +59,9 @@ fn stage_card(node: &Value) -> StageCard {
         state: or_default(node, "state", "draft"),
         assignee: name(node, "assignee"),
         implementer: name(node, "implementer"),
+        kind: stage.and_then(stage_kind),
+        target: stage.and_then(|stage| optional_count(stage, "target")),
+        round: stage.and_then(|stage| optional_count(stage, "round")),
     }
 }
 
@@ -75,6 +83,8 @@ fn card(node: &Value) -> QueueCard {
         implementer: name(node, "implementer"),
         rank: name(node, "rank"),
         round: count(node, "round"),
+        kind: row_kind(node),
+        rounds: optional_count(node, "rounds"),
         held: flag(node, "hold"),
         admitted: flag(node, "admitted"),
         integrated: flag(node, "integrated"),
@@ -86,7 +96,9 @@ fn card(node: &Value) -> QueueCard {
 /// Folds the stage rows into the card they check, keeping every group in
 /// [`GROUPS`]' order and the rest by state name. A stage whose target is
 /// outside the page stays a card of its own, so its work is not lost; its
-/// target's card may come with a later page.
+/// target's card may come with a later page. That card's `stages` holds its
+/// own stage facts (kind, target, round), which the queue card has no field
+/// for.
 fn fold_stages(nodes: &[Value]) -> (Vec<QueueCard>, bool) {
     let mut cards: Vec<QueueCard> = Vec::new();
     let mut stages: Vec<(u64, StageCard, QueueCard)> = Vec::new();
@@ -104,9 +116,10 @@ fn fold_stages(nodes: &[Value]) -> (Vec<QueueCard>, bool) {
         }
         cards.push(card(node));
     }
-    for (target, stage, own_card) in stages {
+    for (target, stage, mut own_card) in stages {
         let Some(card) = cards.iter_mut().find(|card| card.node == target) else {
             if cards.len() < PAGE {
+                own_card.stages.push(stage);
                 cards.push(own_card);
             } else {
                 dropped = true;
@@ -181,5 +194,6 @@ pub fn team(status: &Value, queue: &Value) -> TeamView {
         truncated,
         next: next_cursor(queue),
         revision,
+        after: None,
     }
 }
