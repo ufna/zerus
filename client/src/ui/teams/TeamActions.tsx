@@ -31,16 +31,20 @@ export function TaskActions(props: {
   onAction: (kind: string) => void;
   onReason: (button: TaskButton) => void;
 }) {
+  // A task with no action has no row: neither its divider nor an empty line.
+  const buttons = () => taskButtons(props.card, props.teamStatus);
   return (
-    <span class="team-finding-actions" data-task-actions>
-      <For each={taskButtons(props.card, props.teamStatus)}>
-        {(button) => (
-          <button type="button" class="btn small" classList={{ danger: button.danger, primary: button.id === "accept" }}
-            disabled={props.busy} data-task-action={button.id}
-            onClick={() => (button.reason ? props.onReason(button) : props.onAction(button.id))}>{button.text}</button>
-        )}
-      </For>
-    </span>
+    <Show when={buttons().length}>
+      <span class="team-finding-actions" data-task-actions>
+        <For each={buttons()}>
+          {(button) => (
+            <button type="button" class="btn small" classList={{ danger: button.danger, primary: button.id === "accept" }}
+              disabled={props.busy} data-task-action={button.id}
+              onClick={() => (button.reason ? props.onReason(button) : props.onAction(button.id))}>{button.text}</button>
+          )}
+        </For>
+      </span>
+    </Show>
   );
 }
 

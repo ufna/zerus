@@ -64,6 +64,18 @@ it("a selected card shows its facts and decisions, sending by node", () => {
   expect(actions.at(-1)).toEqual(["accept", { node: 2 }]);
 });
 
+it("a task with no action shows neither the actions' divider nor an empty row", () => {
+  const cancelled = { ...teamView.groups[2].cards[0], node: 9, title: "Cancelled task", state: "cancelled", decided_by: "person" };
+  const view = { ...teamView, groups: teamView.groups.map((group) => group.state === "cancelled" ? { ...group, cards: [cancelled] } : group) };
+  const { host } = setup({ view });
+  (host.querySelector('.team-task-card[data-node="9"]') as HTMLButtonElement).click();
+  expect(host.querySelector("[data-team-detail]")?.textContent).toContain("Cancelled task");
+  expect(host.querySelector("[data-team-detail] [data-task-actions]")).toBeNull();
+  // A task with actions keeps its row.
+  (host.querySelector('.team-task-card[data-node="1"]') as HTMLButtonElement).click();
+  expect(host.querySelector("[data-team-detail] [data-task-actions]")?.children.length).toBeGreaterThan(0);
+});
+
 it("asks for a reason before a return", () => {
   const { host, actions } = setup();
   (host.querySelector('[data-group="submitted"] .team-task-card') as HTMLButtonElement).click();
