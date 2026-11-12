@@ -105,7 +105,7 @@ TEAMS_COVERAGE = ('team member launch and identity, delivery into a free member 
                   'Codex the refused repository-scope folder trust answered by the person; for Claude Code the '
                   'refused restore of a member that never worked, with the command\'s reason on its card. Claude '
                   'Code folder trust by the standing confirmation waits for the owner\'s decision zerus-63rru.66 '
-                  'and for zerus-63rru.73, and so does an ordinary question after no startup card')
+                  'and for zerus-63rru.73, and so does an ordinary question after no startup card; a member shell in a private PID namespace for zerus-63rru.76')
 HINT_CLASSES = {
     'claude': ('NativeClaudeHint', 'NativeWindowsClaudeHint'),
     'codex': ('NativeCodexHint', 'NativeWindowsCodexHint'),

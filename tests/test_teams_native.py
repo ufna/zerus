@@ -53,6 +53,9 @@ import teams_native_fixture as fixture
 # TeamsWaitingList keeps this list, the selection, the workflow header, the row's
 # coverage and the docs naming the same fixes.
 WAITING = {
+    'waiting_6_a_member_shell_in_a_private_pid_namespace': 'zerus-63rru.76 (the caller proof cannot see the agent\'s '
+                                                           'recorded process from a private PID namespace; a named '
+                                                           'refusal comes with the other stream\'s next sync to main)',
     # Whole classes the teams contract does not select yet.
     'NativeTeamsTrustClaude': 'zerus-63rru.66 (the owner decides whether the standing confirmation may answer a '
                               'card whose recorded trust is the main checkout; runs tc20, tc21, tp1 to tp3) and '
@@ -336,6 +339,17 @@ class TeamsContract(ClassFixture):
         task = fx.json('task', 'get', ref, '--json')
         task = task.get('task') or task
         self.assertTrue(task.get('cancelled_at'), 'the task is cancelled')
+
+    # 6 (waiting) --------------------------------------------------------------
+    def waiting_6_a_member_shell_in_a_private_pid_namespace(self):
+        """Written down, not built (zerus-63rru.76). A member whose agent runs its shell
+        commands inside a private PID namespace (the agent's own sandbox, when a person
+        turned one on with a private process namespace) is handed a task. Expected, once
+        the other stream's helper is synced: the member's own report-attempt and every team
+        command in its shell are refused with the refusal that names the separate process
+        namespace and its remedy; no report is recorded for the node; and the lead is told
+        (its inbox holds the refusal, with one doorbell)."""
+        raise unittest.SkipTest('waits for zerus-63rru.76; not built')
 
     # 5 -----------------------------------------------------------------------
     def test_5_stop_and_terminate(self):

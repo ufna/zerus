@@ -9,7 +9,8 @@ name: Agent Teams real agents
 # repository-scope folder trust that the person then answers, and for Claude Code the
 # refused restore of a member that never worked. Written and waiting: Claude Code
 # folder trust by the standing confirmation, for the owner's decision zerus-63rru.66 and
-# for zerus-63rru.73, and an ordinary question after no startup card, for zerus-63rru.73.
+# for zerus-63rru.73; an ordinary question after no startup card, for zerus-63rru.73;
+# and a member shell in a private PID namespace, for zerus-63rru.76.
 # This workflow is not part of the Dev gate or Nightly: a red run is visible and holds
 # nothing back.
 on:

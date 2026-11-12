@@ -1443,6 +1443,7 @@ select them until their fixes land.
 |---|---|
 | Claude Code folder trust by the standing confirmation (`NativeTeamsTrustClaude`, two members pinned to one account): the service answers each member's startup folder trust with one audit grant. What Claude Code 2.1.322 records is pinned as observed: the account holds exactly the main checkout as trusted and no worktree key, and the later worktree on the same account still shows its card. Then each member asks an ordinary question: it stays pending for the person, with no card and no grant, and its member is not free while it is open | `zerus-63rru.66` (the owner's decision on the scope Claude Code records) and `zerus-63rru.73` (an ordinary question is taken as a trust candidate today) |
 | An ordinary question after no startup card (`NativeTeamsQuestionAfterTrustClaude`): the person has trusted the main checkout on both Claude accounts first; the question plans nothing, no card and no grant | `zerus-63rru.73` (today it opens one notice card) |
+| A member whose agent runs its shell in a private PID namespace (`waiting_6_a_member_shell_in_a_private_pid_namespace`, written down, not built): its report and team commands are refused with the refusal that names the separate process namespace and its remedy, no report is recorded, and the lead is told | `zerus-63rru.76` (the caller proof cannot see the agent's recorded process; the named refusal comes with the other stream's next sync to main) |
 
 #### Isolation
 
@@ -1546,7 +1547,8 @@ the Teams caller proof refuses a person command below a live agent.
 - **The waiting cases:** Claude Code folder trust by the standing confirmation, for
   the owner's decision `zerus-63rru.66` and for `zerus-63rru.73`, and an ordinary
   question after no startup card, for `zerus-63rru.73`. The cases exist and are not
-  selected.
+  selected. A member shell in a private PID namespace (`zerus-63rru.76`) is written
+  down as a waiting case and not yet built.
 
 ## Automatic nightly publication
 
