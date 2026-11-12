@@ -90,10 +90,10 @@ fn every_action_names_its_operation() {
             },
             "create",
         ),
-        (TeamAction::Pause, "pause"),
-        (TeamAction::Resume, "resume"),
-        (TeamAction::Stop, "stop"),
-        (TeamAction::Archive, "archive"),
+        (TeamAction::Pause {}, "pause"),
+        (TeamAction::Resume {}, "resume"),
+        (TeamAction::Stop {}, "stop"),
+        (TeamAction::Archive {}, "archive"),
         (
             TeamAction::PauseMember {
                 member: "m1".into(),
@@ -215,7 +215,7 @@ fn every_action_names_its_operation() {
         assert!(action.check().is_ok(), "{op}: {:?}", action.check());
     }
     assert!(
-        TeamAction::Pause.names_team(),
+        TeamAction::Pause {}.names_team(),
         "a team action names its team"
     );
     assert!(
@@ -281,8 +281,8 @@ fn one_intent_keeps_its_request_id() {
 #[test]
 fn a_person_confirms_a_destructive_action_first() {
     for action in [
-        TeamAction::Stop,
-        TeamAction::Archive,
+        TeamAction::Stop {},
+        TeamAction::Archive {},
         TeamAction::StopMember {
             member: "m1".into(),
         },
@@ -305,7 +305,7 @@ fn a_person_confirms_a_destructive_action_first() {
         confirmed.confirmed = true;
         assert!(prepare(&confirmed).is_ok(), "{action:?} runs confirmed");
     }
-    assert!(prepare(&a_call(TEAM, 42, TeamAction::Pause)).is_ok());
+    assert!(prepare(&a_call(TEAM, 42, TeamAction::Pause {})).is_ok());
 }
 
 #[test]
@@ -515,7 +515,7 @@ fn an_outcome_of_each_kind() {
     assert!(matches!(start_failed, TeamOutcome::Failed { .. }));
     assert!(start_failed.repeatable_by_desktop());
 
-    let confirmed = prepare(&a_call(TEAM, 42, TeamAction::Stop)).unwrap_err();
+    let confirmed = prepare(&a_call(TEAM, 42, TeamAction::Stop {})).unwrap_err();
     assert!(matches!(confirmed, TeamOutcome::Confirm { .. }));
     assert_eq!(confirmed.request_id(), None);
     assert!(confirmed.repeatable_by_desktop());
@@ -611,12 +611,12 @@ fn an_uncertain_call_is_never_repeated_by_the_desktop() {
 fn a_pending_intent_reports_pending() {
     let mut intents = Intents::default();
     assert_eq!(
-        intents.admit(&a_call(TEAM, 42, TeamAction::Pause)),
+        intents.admit(&a_call(TEAM, 42, TeamAction::Pause {})),
         Admission::Send
     );
     let again = intents.attempt(
         Path::new("/nonexistent"),
-        &a_call(TEAM, 42, TeamAction::Pause),
+        &a_call(TEAM, 42, TeamAction::Pause {}),
     );
     assert_eq!(
         again,
@@ -821,7 +821,7 @@ fn a_storage_failure_is_uncertain_with_the_same_request_id() {
     );
     // A storage failure without a sentence still says what to do.
     let bare = classify(
-        &a_call(TEAM, 42, TeamAction::Pause),
+        &a_call(TEAM, 42, TeamAction::Pause {}),
         Exit::Code {
             code: 1,
             stdout: br#"{"ok":false,"error":{"code":"storage_failed"}}"#.to_vec(),
@@ -1207,5 +1207,77 @@ fn a_problems_detail_stays_out_of_the_sentence() {
             assert_eq!((shown.as_str(), code.as_str()), ("No.", "invalid_state"));
         }
         other => panic!("{other:?}"),
+    }
+}
+
+/// The review's B2: what is sent is strict at every level, the action inside
+/// the call included. Its probe: a Create with a field this version does not
+/// know is refused, never prepared without it; a variant without fields
+/// refuses one too.
+#[test]
+fn an_unknown_field_in_an_action_is_refused_never_left_out() {
+    let probe = json!({
+        "team": "00000000-0000-4000-8000-00000000c0de", "team_name": "Review",
+        "request_id": "11111111-1111-4111-8111-111111111111",
+        "action": {
+            "kind": "create", "template": "bugfix", "expected_template": DIGEST,
+            "delegations": {"accept_results": true, "answer_members": true, "confirm_trust": true, "resume_exited": true, "merge_accepted": false},
+            "project": "example-project", "name": "Review", "goal": "", "home": "00000000-0000-4000-8000-0000000000aa",
+            "integration": "branch", "integration_branch": "zerus/team/review",
+            "base_commit": "0123456789abcdef0123456789abcdef01234567",
+            "future_precondition": "must not be silently lost",
+        },
+    });
+    assert!(serde_json::from_value::<TeamCall>(probe.clone()).is_err());
+    let mut known = probe.clone();
+    known["action"]
+        .as_object_mut()
+        .unwrap()
+        .remove("future_precondition");
+    let call: TeamCall = serde_json::from_value(known).expect("the same create without it is read");
+    assert!(prepare(&call).is_ok());
+    for action in [
+        json!({"kind": "pause", "added_later": true}),
+        json!({"kind": "decide", "card": 3, "decision": "approve", "added_later": true}),
+        json!({"kind": "cancel", "node": 2, "reason": "Not needed.", "added_later": true}),
+    ] {
+        assert!(
+            serde_json::from_value::<TeamAction>(action.clone()).is_err(),
+            "{action}"
+        );
+    }
+}
+
+#[test]
+fn every_action_the_view_sends_is_still_read() {
+    assert_eq!(
+        serde_json::from_value::<TeamAction>(json!({"kind": "pause"})).unwrap(),
+        TeamAction::Pause {}
+    );
+    for action in [
+        create(None, Integration::Branch).action,
+        TeamAction::Pause {},
+        TeamAction::StopMember {
+            member: "m1".into(),
+        },
+        TeamAction::Decide {
+            card: 3,
+            decision: "approve".into(),
+        },
+        TeamAction::Return {
+            node: 2,
+            reason: "Again.".into(),
+        },
+        TeamAction::Route {
+            node: 2,
+            role: "developer".into(),
+            pipeline: "reviewed".into(),
+            deps: Vec::new(),
+            writes: Vec::new(),
+            assignee: None,
+        },
+    ] {
+        let sent = serde_json::to_value(&action).unwrap();
+        assert_eq!(serde_json::from_value::<TeamAction>(sent).unwrap(), action);
     }
 }

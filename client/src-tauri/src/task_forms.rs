@@ -529,7 +529,10 @@ fn submitted(
     slot.error.clear();
     Ok((true, created))
 }
+/// The New task form's submit, as the webview sends it: strict, so a field
+/// this version does not know is refused, never left out of what is sent.
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Submit {
     kind: Kind,
     handle: u64,
@@ -1227,6 +1230,18 @@ mod tests {
                 }
             }
         }
+    }
+    /// The review's B2 on the sending side: the New task form's submit (which
+    /// carries the team for `task add --team`) refuses a field this version
+    /// does not know; the webview's own shape is read.
+    #[test]
+    fn a_submit_with_an_unknown_field_is_refused() {
+        let sent = json!({"kind": "new_card", "handle": 1, "rev": 2, "recover": false, "backlog": false,
+            "target": null, "catalog_key": null, "session_id": null, "team": "33333333-3333-4333-8333-333333333333"});
+        assert!(serde_json::from_value::<Submit>(sent.clone()).is_ok());
+        let mut later = sent;
+        later["queue_position"] = json!("top");
+        assert!(serde_json::from_value::<Submit>(later).is_err());
     }
     /// zerus-63rru.19: a storage failure of the team store keeps its code on
     /// the notice, so the form does not call the queue's answer a refusal.

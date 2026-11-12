@@ -38,8 +38,10 @@ pub struct CreateDelegations {
 }
 
 /// One team action, as the webview asks for it (`{"kind": "...", ...}`).
+/// Strict like the call around it: a field this version does not know is
+/// refused, never left out of the request that is prepared.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum TeamAction {
     /// Creates a team from a catalog template; the CLI resolves the bundle,
     /// and `team` is the new team's id.
@@ -67,13 +69,15 @@ pub enum TeamAction {
         delegations: CreateDelegations,
     },
     /// Pauses a team: it hands nothing out until resumed.
-    Pause,
+    // A variant with no fields is written `{}` so that, like every other
+    // variant, it refuses a field this version does not know.
+    Pause {},
     /// Resumes a team the person paused.
-    Resume,
+    Resume {},
     /// Cancels every open task and hands nothing out again.
-    Stop,
+    Stop {},
     /// Hides a done or stopped team, keeping its history.
-    Archive,
+    Archive {},
     PauseMember {
         member: String,
     },

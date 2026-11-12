@@ -58,10 +58,10 @@ impl TeamAction {
     pub fn op(&self) -> &'static str {
         match self {
             Self::Create { .. } => "create",
-            Self::Pause => "pause",
-            Self::Resume => "resume",
-            Self::Stop => "stop",
-            Self::Archive => "archive",
+            Self::Pause {} => "pause",
+            Self::Resume {} => "resume",
+            Self::Stop {} => "stop",
+            Self::Archive {} => "archive",
             Self::PauseMember { .. } => "pause-member",
             Self::ResumeMember { .. } => "resume-member",
             Self::StopMember { .. } => "stop-member",
@@ -109,7 +109,7 @@ impl TeamAction {
                 "expected_template": expected_template,
                 "delegations": delegations,
             }),
-            Self::Pause | Self::Resume | Self::Stop | Self::Archive => json!({}),
+            Self::Pause {} | Self::Resume {} | Self::Stop {} | Self::Archive {} => json!({}),
             Self::PauseMember { member }
             | Self::ResumeMember { member }
             | Self::StopMember { member }
@@ -157,9 +157,11 @@ impl TeamAction {
     pub fn check(&self) -> Result<(), String> {
         match self {
             Self::Create { .. } => check_create(self),
-            Self::Pause | Self::Resume | Self::Stop | Self::Archive | Self::Settings { .. } => {
-                Ok(())
-            }
+            Self::Pause {}
+            | Self::Resume {}
+            | Self::Stop {}
+            | Self::Archive {}
+            | Self::Settings { .. } => Ok(()),
             Self::PauseMember { member }
             | Self::ResumeMember { member }
             | Self::StopMember { member }
@@ -213,7 +215,7 @@ impl TeamAction {
             action: action.to_owned(),
         };
         match self {
-            Self::Stop => Some(ask(
+            Self::Stop {} => Some(ask(
                 "teamStopConfirm",
                 "Stop team?",
                 format!(
@@ -221,7 +223,7 @@ impl TeamAction {
                 ),
                 "Stop team",
             )),
-            Self::Archive => Some(ask(
+            Self::Archive {} => Some(ask(
                 "teamArchiveConfirm",
                 "Archive team?",
                 format!(
