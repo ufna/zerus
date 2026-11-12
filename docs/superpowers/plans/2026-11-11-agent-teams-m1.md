@@ -1507,7 +1507,18 @@ store while its task ran again, created the cancel, released the binding,
 and the archiving step then settled that cancel with the rest, so the
 service never asked for the task to be cancelled and the cleanup passed it
 without an answer (the same confirmation). A node with a pending cancel
-stays where the cancel step finds it.
+stays where the cancel step finds it. One merged path does not follow this
+yet: when a lead's Return, Reassign or Cancel of a parent retires its stage,
+the retirement settles every decision of the stage, a person's pending
+Cancel of it included, and the stage's task only loses its key, so work
+that runs is released and not cancelled (found by the delta confirmation of
+2026-11-12, tracked). The rule it will follow: a retirement leaves a pending
+cancel pending; a stage that is retired while its task runs gets the
+service's own cancel, as a stop gives a node, and is archived and cleared
+after the answer; a stage with nothing running is released as today. And a
+kept node can wait for a lead's earlier Cancel as well as for a stop's: a
+node that is Reported with its task Done before the merge takes a Cancel,
+and is kept as accepted when the integration is then switched off.
 
 **The service carries out an acceptance only while the newest observation
 agrees with it (packages 8 and 10).** The rule above keeps an accepted node
