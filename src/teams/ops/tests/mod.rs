@@ -176,6 +176,8 @@ impl Harness {
             cancelled: false,
             rank: format!("a{node:08}"),
             title: format!("Task {node}"),
+            attempt: 0,
+            attempt_id: String::new(),
         }
     }
     pub fn observe(&mut self, node: u32, stage: TaskStage) {

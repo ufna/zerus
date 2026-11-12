@@ -13,6 +13,7 @@ mod pages;
 mod records;
 pub(crate) mod rows;
 mod stage;
+pub(crate) mod timers;
 pub use records::*;
 
 use rusqlite::{Connection, OpenFlags, OptionalExtension};
@@ -275,7 +276,8 @@ fn schema_extensions(db: &Connection) -> Result<()> {
         .map_err(storage)?;
     db.execute_batch(include_str!("observation-schema.sql"))
         .map_err(storage)?;
-    read_indexes(db)
+    read_indexes(db)?;
+    timers::extend(db)
 }
 
 fn read_indexes(db: &Connection) -> Result<()> {
