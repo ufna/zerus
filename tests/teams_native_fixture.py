@@ -39,6 +39,9 @@ import uuid
 import model_api_fixture as api
 
 HGS = os.environ.get('HGS_TEST_BIN', '')
+# Set by a runner that keeps custody of private roots (scripts/ci/kimi-native.py
+# --teams): called with the case name and the root as soon as the root exists.
+ROOT_CREATED = None
 REAL_TMUX = shutil.which('tmux') or '/usr/bin/tmux'
 SYSTEM_PATH = '/usr/local/bin:/usr/bin:/bin' if sys.platform != 'darwin' else '/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin'
 FIXTURE_KEY = 'fixture-key'
@@ -395,6 +398,8 @@ class TeamFixture:
         self.agent, self.native, self.case = agent, Path(native).resolve(), case
         base = os.environ.get('TMPDIR') or tempfile.gettempdir()
         self.root = Path(tempfile.mkdtemp(prefix='hgs-teams-native-', dir=base)).resolve()
+        if ROOT_CREATED is not None:
+            ROOT_CREATED(case, self.root)
         folder = os.environ.get('ZERUS_TEAMS_EVIDENCE') or str(self.root / 'evidence')
         self.evidence = Evidence(Path(folder) / case)
         self.waits = []

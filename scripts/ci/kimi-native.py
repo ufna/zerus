@@ -244,10 +244,18 @@ def checked_pins(platform_id):
 
 
 def checked_teams_methods():
+    """What will run: NativeTeamsKimi's test methods all come from TeamsContract, its
+    base, and equal the reviewed list; either class missing is an explicit refusal."""
     tree = ast.parse((ROOT / 'tests' / 'test_teams_native.py').read_text())
     classes = {item.name: item for item in tree.body if isinstance(item, ast.ClassDef)}
-    if 'NativeTeamsKimi' not in classes:
-        raise ValueError('the Kimi Teams class is missing')
+    for name in ('TeamsContract', 'NativeTeamsKimi'):
+        if name not in classes:
+            raise ValueError('the Teams class ' + name + ' is missing')
+    kimi = classes['NativeTeamsKimi']
+    if 'TeamsContract' not in [base.id for base in kimi.bases if isinstance(base, ast.Name)]:
+        raise ValueError('NativeTeamsKimi must take its cases from TeamsContract')
+    if any(isinstance(item, ast.FunctionDef) and item.name.startswith('test_') for item in kimi.body):
+        raise ValueError('Teams method inventory needs an explicit review')
     found = ['test_teams_native.NativeTeamsKimi.' + item.name for item in classes['TeamsContract'].body
              if isinstance(item, ast.FunctionDef) and item.name.startswith('test_')]
     if found != list(TEAMS_METHODS):
@@ -342,10 +350,25 @@ def record_roots(case, destination):
             os.fsync(stream.fileno())
 
 
+def teams_custody(custody_path):
+    """The Teams fixture's early custody: its private root is recorded the moment it
+    exists, so a child killed during setup or in a step still names it."""
+    class Declared:
+        def __init__(self, case, root):
+            self.case, self.root = case, root
+
+        def id(self):
+            return 'test_teams_native.' + self.case
+
+    return lambda case, root: record_roots(Declared(case, root), custody_path)
+
+
 def suite_child(result_path, custody_path, teams=False):
     import unittest
     sys.path.insert(0, str(ROOT / 'tests'))
     if teams:
+        import teams_native_fixture
+        teams_native_fixture.ROOT_CREATED = teams_custody(custody_path)
         return run_child(result_path, custody_path, TEAMS_METHODS, unittest)
     import test_kimi_native as guard
     import test_kimi_questions_native as questions
@@ -509,6 +532,9 @@ def main():
         checked_methods()
     methods = TEAMS_METHODS if args.teams else METHODS
     platform_id = target()
+    if args.teams and not platform_id.startswith('linux-'):
+        # Before any release is staged or the reservation is spent.
+        raise ValueError('the Teams preview exists only on Linux in this milestone; --teams needs a Linux runner')
     out = args.output.resolve()
     out.parent.mkdir(parents=True, exist_ok=True)
     out.mkdir(mode=0o700)
