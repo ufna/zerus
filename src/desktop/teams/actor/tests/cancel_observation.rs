@@ -199,7 +199,8 @@ fn live_cancelled_is_observed_in_the_same_visit_and_never_recorded_as_a_second_e
 }
 #[test]
 fn a_stop_after_the_cancel_answer_uses_the_terminal_fact_instead_of_observation() {
-    let (mut h, mut native, _, pending) = fixture();
+    let (mut h, native, _, pending) = fixture();
+    let mut native = CountObservation { native, reads: 0 };
     let team = h.store.team(TEAM).unwrap().unwrap();
     let state = h.temp.path().to_owned();
     crate::desktop::original_child::AFTER_SPAWN
@@ -218,6 +219,10 @@ fn a_stop_after_the_cancel_answer_uses_the_terminal_fact_instead_of_observation(
             .cancels(&mut h.store, &mut native, &fresh, 101)
             .unwrap();
     }
+    assert_eq!(
+        native.reads, 0,
+        "Stop must prevent even a no-op task observation"
+    );
     assert!(h.store.pending_cancels(TEAM, 16, 0).unwrap().is_empty());
     assert!(
         !h.store
@@ -228,4 +233,57 @@ fn a_stop_after_the_cancel_answer_uses_the_terminal_fact_instead_of_observation(
         "a terminal team must not be observed after the answer"
     );
     assert_eq!(outcomes(&h, pending.node), 1);
+}
+
+/// Count the real observer, preserving the production command, reader and
+/// saved-fact adapters. A terminal no-op still counts as an unwanted call.
+struct CountObservation {
+    native: Native,
+    reads: usize,
+}
+impl super::super::ports::Ports for CountObservation {
+    fn changes(&mut self, _: &str, _: &str, _: u64) -> Result<zerus_replica::Changes> {
+        unreachable!()
+    }
+    fn observe(&mut self, store: &mut Store, task: &TaskRef) -> Result<()> {
+        self.reads += 1;
+        super::super::ports::Ports::observe(&mut self.native, store, task)
+    }
+    fn free(&mut self, _: &Team, _: &Member) -> Result<bool> {
+        unreachable!()
+    }
+    fn deliver(
+        &mut self,
+        _: &Team,
+        _: &Node,
+        _: &Member,
+        _: &str,
+    ) -> super::super::ports::DeliveryResult {
+        unreachable!()
+    }
+    fn cancels(
+        &mut self,
+        store: &Store,
+        team: &str,
+        after: u32,
+    ) -> Result<Vec<super::super::cancel::Pending>> {
+        Native::pending_cancels(store, team, after)
+    }
+    fn cancel(
+        &mut self,
+        team: &Team,
+        pending: &super::super::cancel::Pending,
+        original: &str,
+    ) -> Result<super::super::cancel::Answer> {
+        self.native.run_cancel(team, pending, original)
+    }
+    fn record_cancel(
+        &mut self,
+        store: &mut Store,
+        team: &Team,
+        fact: &super::super::cancel::Fact,
+        now: i64,
+    ) -> Result<()> {
+        Native::save_cancel(store, team, fact, now)
+    }
 }
