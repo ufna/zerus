@@ -107,6 +107,7 @@ impl Runtime {
         boundary("after");
         match reply {
             Ok(Finish::Done) => self.cooldown(store, team, &key, stamp, now.saturating_add(60_000)),
+            Ok(Finish::Stale) => self.defer_finish(store, ports, team, target, now),
             Ok(Finish::Refused(reason)) => {
                 self.put(
                     &team.id,
@@ -124,6 +125,27 @@ impl Runtime {
             }
             Err(error) => self.failure(store, team, &key, stamp, &error, now),
         }
+    }
+    fn defer_finish(
+        &mut self,
+        store: &mut Store,
+        ports: &mut impl Ports,
+        team: &Team,
+        target: (&Node, &crate::teams::store::Decision),
+        now: i64,
+    ) -> Result<()> {
+        let (n, d) = target;
+        let task = n
+            .task
+            .as_ref()
+            .ok_or_else(|| problem("Stale finish has no task"))?;
+        ports.observe(store, task)?;
+        let observed = store
+            .task_observation(&team.id, n.id)?
+            .ok_or_else(|| problem("Stale finish observation disappeared"))?;
+        let fresh = serde_json::to_string(&(d.seq, d.generation, &observed.revision))
+            .map_err(crate::teams::store::storage)?;
+        self.defer(store, team, &format!("finish:{}", n.id), &fresh, now)
     }
     fn finish_cleanup(&mut self, store: &mut Store, team: &Team, now: i64) -> Result<()> {
         for row in self.ledger.page(&team.id, "finish_hold:")? {

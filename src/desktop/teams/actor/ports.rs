@@ -119,12 +119,17 @@ pub(in crate::desktop::teams) trait Ports {
     fn deliver(&mut self, team: &Team, node: &Node, member: &Member, id: &str) -> DeliveryResult;
 }
 
-/// NotStarted is positive proof that the original child never began. A lost
-/// result or a possible submission must be an Outcome(Uncertain), never this.
+/// Only a positive non-write permits another admission. NotStarted means
+/// no original CLI child ran; Stale is its explicit non-write answer.
+/// A lost result or possible submission is always Outcome(Uncertain).
 #[derive(Clone, Debug)]
 pub(in crate::desktop::teams) enum DeliveryResult {
+    /// The task writer proved it wrote nothing because observation is behind.
+    Stale,
     Outcome(HandoutOutcome),
-    NotStarted { reason: String },
+    NotStarted {
+        reason: String,
+    },
 }
 impl From<HandoutOutcome> for DeliveryResult {
     fn from(value: HandoutOutcome) -> Self {
@@ -145,6 +150,7 @@ pub(in crate::desktop::teams) enum TaskReply {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(in crate::desktop::teams) enum Finish {
     Done,
+    Stale,
     Refused(String),
     CuttingOver(String),
 }

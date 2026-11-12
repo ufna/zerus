@@ -230,12 +230,22 @@ impl Ports for Native {
         id: &str,
     ) -> ports::DeliveryResult {
         match self.command(team, node, Some(member), id, "team-deliver", None) {
-            Ok(ended) => delivery_reply(ended, id).into(),
+            Ok(ended) => delivery_result(ended, id),
             Err(error) => ports::DeliveryResult::NotStarted {
                 reason: error.message,
             },
         }
     }
+}
+pub(super) fn delivery_result(ended: Ended, id: &str) -> ports::DeliveryResult {
+    if let Ended::Exited { code: 0, output } = &ended {
+        if serde_json::from_slice::<Value>(output).is_ok_and(|v| {
+            v["schema"] == 1 && v["id"] == id && v["state"] == "stale" && v["error"].is_string()
+        }) {
+            return ports::DeliveryResult::Stale;
+        }
+    }
+    delivery_reply(ended, id).into()
 }
 pub(super) fn delivery_reply(ended: Ended, id: &str) -> HandoutOutcome {
     match ended {
@@ -318,6 +328,7 @@ pub(super) fn decode_finish(raw: &[u8], team: &str, node: u32) -> Result<super::
         .ok_or_else(|| problem("Finishing reply has no error field"))?;
     Ok(match v["state"].as_str() {
         Some("done") => Finish::Done,
+        Some("stale") => Finish::Stale,
         Some("refused") => Finish::Refused(cut(reason, 2048)),
         Some("cutting_over") => Finish::CuttingOver(cut(reason, 2048)),
         _ => return Err(problem("Unknown finishing reply state")),

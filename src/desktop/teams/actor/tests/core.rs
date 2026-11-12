@@ -7,6 +7,7 @@ struct Fake {
     sends: usize,
     free: BTreeSet<String>,
     reply: HandoutOutcome,
+    stale: bool,
     driven: bool,
     busy_on_recheck: bool,
     free_reads: usize,
@@ -26,6 +27,7 @@ impl Fake {
             reply: HandoutOutcome::Submitted {
                 receipt: "submitted".into(),
             },
+            stale: false,
             driven: false,
             busy_on_recheck: false,
             free_reads: 0,
@@ -113,7 +115,11 @@ impl super::super::ports::Ports for Fake {
             db.execute_batch("BEGIN IMMEDIATE").unwrap();
             self.held = Some(db);
         }
-        self.reply.clone().into()
+        if self.stale {
+            super::super::ports::DeliveryResult::Stale
+        } else {
+            self.reply.clone().into()
+        }
     }
 }
 fn setup(n: u32) -> (Harness, super::super::Runtime, Fake) {
@@ -711,4 +717,39 @@ fn a_reopen_waits_while_its_holder_is_busy_outside_the_team() {
     p.free.clear();
     tick(&mut h, &mut a, &mut p, 101, false);
     assert_eq!(p.sends, 1, "a busy holder was sent the reopen");
+}
+
+#[test]
+fn stale_delivery_observes_then_backs_off_across_restart_without_a_refusal_or_card() {
+    let (mut h, mut a, mut p) = setup(1);
+    p.stale = true;
+    tick(&mut h, &mut a, &mut p, 100, false);
+    let reads = p.reads;
+    assert_eq!(p.sends, 1);
+    assert!(h.store.effects(TEAM, 16, None).unwrap().rows[0]
+        .outcome
+        .is_none());
+    assert!(h.store.cards(TEAM, 16, None).unwrap().rows.is_empty());
+    let machine = a.machine.clone();
+    drop(a);
+    let mut a = super::super::Runtime::open(h.temp.path(), &machine).unwrap();
+    tick(&mut h, &mut a, &mut p, 101, false);
+    assert_eq!(p.sends, 1);
+    let after_epoch_observation = p.reads;
+    assert!(after_epoch_observation >= reads);
+    tick(&mut h, &mut a, &mut p, 60_100, false);
+    assert_eq!(p.sends, 2);
+    assert!(
+        p.reads > after_epoch_observation,
+        "stale answer did not observe its task"
+    );
+    tick(&mut h, &mut a, &mut p, 120_100, false);
+    assert_eq!(
+        p.sends, 2,
+        "the second stale answer did not increase its backoff"
+    );
+    assert!(h.store.cards(TEAM, 16, None).unwrap().rows.is_empty());
+    assert!(h.store.effects(TEAM, 16, None).unwrap().rows[0]
+        .outcome
+        .is_none());
 }

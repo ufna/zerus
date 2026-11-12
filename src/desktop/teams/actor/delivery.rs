@@ -94,6 +94,9 @@ impl Runtime {
         let result = ports.deliver(team, assignment.0, assignment.1, &d.id);
         boundary("effect");
         match result {
+            ports::DeliveryResult::Stale => {
+                self.defer_delivery(store, ports, team, (key, assignment.0), d, now)
+            }
             ports::DeliveryResult::Outcome(outcome) => {
                 d.outcome = Some(outcome);
                 self.put(&team.id, key, &d)?;
@@ -107,6 +110,27 @@ impl Runtime {
                 self.failure(store, team, key, "", &problem(&reason), now)
             }
         }
+    }
+    fn defer_delivery(
+        &mut self,
+        store: &mut Store,
+        ports: &mut impl Ports,
+        team: &Team,
+        target: (&str, &Node),
+        mut d: Delivery,
+        now: i64,
+    ) -> Result<()> {
+        // The CLI ran, but proved no delivery started. Persist that proof
+        // before observing; an uncertain original never gets it.
+        let (key, node) = target;
+        d.not_started = true;
+        self.put(&team.id, key, &d)?;
+        let task = node
+            .task
+            .as_ref()
+            .ok_or_else(|| problem("Stale delivery has no task"))?;
+        ports.observe(store, task)?;
+        self.defer(store, team, key, "", now)
     }
     pub(super) fn recover(
         &mut self,

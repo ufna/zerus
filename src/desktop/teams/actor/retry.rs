@@ -4,6 +4,8 @@ use serde::{Deserialize, Serialize};
 struct Gate {
     revision: String,
     failures: u32,
+    #[serde(default)]
+    deferrals: u32,
     at: i64,
     card: Option<u64>,
     notice: Option<Request>,
@@ -82,6 +84,34 @@ impl Runtime {
                 &Gate {
                     revision: revision.into(),
                     at,
+                    ..Default::default()
+                },
+            )?;
+            Ok(())
+        })
+    }
+    /// A stale task is an answer, not a fault. Observe before calling this;
+    /// keep the normal bounded backoff without an error count or a new card.
+    pub(super) fn defer(
+        &mut self,
+        store: &mut Store,
+        team: &Team,
+        key: &str,
+        revision: &str,
+        now: i64,
+    ) -> Result<()> {
+        self.for_row(|a| {
+            let deferrals = a
+                .load::<Gate>(&team.id, &format!("gate:{key}"))?
+                .map_or(1, |g| g.deferrals.saturating_add(1));
+            a.recover_gate(store, team, key, now)?;
+            a.put(
+                &team.id,
+                &format!("gate:{key}"),
+                &Gate {
+                    revision: revision.into(),
+                    deferrals,
+                    at: now.saturating_add(delay(deferrals)),
                     ..Default::default()
                 },
             )?;

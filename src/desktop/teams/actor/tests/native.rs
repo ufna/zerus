@@ -298,3 +298,41 @@ fn the_real_delivery_success_envelope_may_omit_the_error_field() {
         ));
     }
 }
+
+#[test]
+fn literal_stale_replies_are_positive_nonwrites_only_for_the_exact_successful_child() {
+    use super::super::ports::{DeliveryResult, Finish};
+    use crate::desktop::teams::child::Ended;
+    let raw = br#"{"schema":1,"id":"effect","state":"stale","error":"Observe first"}"#.to_vec();
+    assert!(matches!(
+        delivery_result(
+            Ended::Exited {
+                code: 0,
+                output: raw.clone()
+            },
+            "effect"
+        ),
+        DeliveryResult::Stale
+    ));
+    for (code, id) in [(1, "effect"), (0, "other")] {
+        assert!(matches!(
+            delivery_result(
+                Ended::Exited {
+                    code,
+                    output: raw.clone()
+                },
+                id
+            ),
+            DeliveryResult::Outcome(HandoutOutcome::Uncertain { .. })
+        ));
+    }
+    assert_eq!(
+        decode_finish(
+            br#"{"schema":1,"team":"team","node":1,"state":"stale","error":"Observe first"}"#,
+            "team",
+            1
+        )
+        .unwrap(),
+        Finish::Stale
+    );
+}

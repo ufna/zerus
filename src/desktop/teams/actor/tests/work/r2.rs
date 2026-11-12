@@ -110,3 +110,32 @@ fn old_or_zero_unread_merge_clocks_start_a_new_conservative_bound() {
         assert_eq!(row.data["reserved_ms"], 100_000, "legacy={legacy}");
     }
 }
+
+#[test]
+fn stale_finish_observes_and_waits_without_a_refusal_hold_or_card() {
+    let mut h = Harness::new();
+    let (node, lead) = h.reported();
+    h.run(&lead, Operation::Accept { node }).unwrap();
+    let mut a = actor(&h);
+    let mut p = Work {
+        finish_reply: Some(Finish::Stale),
+        ..Default::default()
+    };
+    run(&mut h, &mut a, &mut p, 100);
+    assert_eq!(p.finishes, 1);
+    let observations = p.phase.iter().filter(|s| **s == "observe").count();
+    assert!(observations >= 2, "stale finish did not observe its task");
+    assert!(a
+        .ledger
+        .get(TEAM, &format!("finish_hold:{node}"))
+        .unwrap()
+        .is_none());
+    assert!(h.store.cards(TEAM, 16, None).unwrap().rows.is_empty());
+    run(&mut h, &mut a, &mut p, 101);
+    assert_eq!(p.finishes, 1);
+    run(&mut h, &mut a, &mut p, 60_100);
+    assert_eq!(p.finishes, 2);
+    run(&mut h, &mut a, &mut p, 120_100);
+    assert_eq!(p.finishes, 2);
+    assert!(h.store.cards(TEAM, 16, None).unwrap().rows.is_empty());
+}
