@@ -1841,6 +1841,25 @@ member bound before the handle existed gets it on its first verified free
 check, from the launch ledger, a completed resume or the evidence while it
 lasts.
 
+**A member a ready task needs and that cannot be read gets one card.** A
+member whose state could not be read (its session record gone or changed, a
+count never reported, a fault) was never free, and nobody was told: a ready
+task waited behind it without a word (2026-11-12). The reader gives one of
+three answers, `Free`, `Busy` or `Unreadable` with its fact. A count names
+the member unreadable only when the member is live, ready and idle, every
+known count is zero and this one is unknown; a working member with an
+unknown count is busy, and so is a member with no row. Whether anybody
+needs the member is the kernel's own selection run once more, with the
+unreadable members counted as free and placed after every known member and
+with tasks already handed out held, so the card never names a task another
+member is taking. The row uses the held steps' period: silent for the
+period, then one card with the sentence alone and the decisions Retry and
+Acknowledged; a changed fact or task replaces the card only when it has
+stood for the period. The row ends on the first pass in which nobody needs
+the member: no ready task, a paused team, the member readable again,
+another member taking the task, the member stopped or archived. A team's
+Stop closes the card in the Stop itself.
+
 **Known limit: the key of a task that was closed before the stop.** After a
 stop the service clears the team key of the tasks that were open at the
 stop and of released stages. A task accepted or cancelled earlier keeps its
