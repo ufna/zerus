@@ -255,6 +255,9 @@ fn cancel_refuses_a_document_older_than_the_observed_attempt() {
     let old = bytes(&f);
     person_send(&f, false);
     crate::teams::tasks::observe(&f.config.state, &f.task).unwrap();
+    // Observing the person's execution supersedes the earlier decision.
+    // Stop supplies a real Pending cancel for the newly observed generation.
+    f.h.run(&person(), ops::Operation::Stop).unwrap();
     restore_files(&f, &old);
     let out = call(&f, "team-cancel");
     assert_eq!(out["reply"]["state"], "refused", "{out}");
@@ -333,7 +336,7 @@ fn handout_is_stale_for_a_new_unobserved_rejected_attempt_then_delivers_after_ob
     let f = Fixture::new();
     let mut doc = f.document();
     doc.floor().unwrap();
-    let id = reserve(&mut doc, &recipient(&f, "m1"), Origin::Send, false);
+    reserve(&mut doc, &recipient(&f, "m1"), Origin::Send, false);
     save(&f, &mut doc);
     let before = bytes(&f);
     let out = f.run("submitted", false);
@@ -345,7 +348,8 @@ fn handout_is_stale_for_a_new_unobserved_rejected_attempt_then_delivers_after_ob
             .task_observation(TEAM, f.body.node)
             .unwrap()
             .unwrap();
-    assert_eq!((observed.attempt, observed.attempt_id), (1, id));
+    assert_eq!((observed.attempt, observed.attempt_id), (1, String::new()));
+    assert!(!observed.attempt_conflict);
     assert_eq!(f.run("submitted", false)["reply"]["state"], "submitted");
     assert_eq!(f.count(), 1);
 }
@@ -562,3 +566,5 @@ fn cancel_is_stale_when_a_rejected_handoff_raises_highest_but_not_current() {
     let out = call(&f, "team-cancel");
     stale(&f, &out, &before);
 }
+
+mod conflict;

@@ -47,10 +47,11 @@ fn reserve(
     }
     id
 }
-fn check(doc: &TaskDoc, number: u64, id: &str) {
+fn check(doc: &TaskDoc, number: u64, id: &str, conflict: bool) {
     let o = observation(doc, TEAM, "00000000-0000-4000-8000-0000000000aa").unwrap();
     assert_eq!(o.attempt, number, "{:?}", doc.view().unwrap().stage);
     assert_eq!(o.attempt_id, id);
+    assert_eq!(o.attempt_conflict, conflict);
     assert_eq!(o.revision, doc.revision());
 }
 #[test]
@@ -58,10 +59,10 @@ fn observation_tracks_attempt_identity_in_every_stage_and_keeps_the_highest_clai
     let h = Harness::new();
     let reference = document(&h);
     let mut doc = task(&h, &reference);
-    check(&doc, 0, "");
+    check(&doc, 0, "", false);
     doc.set_stage(Stage::Backlog, &TaskActor::Person, 2)
         .unwrap();
-    check(&doc, 0, "");
+    check(&doc, 0, "", false);
     doc.set_stage(Stage::Todo, &TaskActor::Person, 3).unwrap();
     doc.floor().unwrap();
     let holder = zerus_replica::SessionKey {
@@ -71,11 +72,11 @@ fn observation_tracks_attempt_identity_in_every_stage_and_keeps_the_highest_clai
     };
     let baseline = doc.snapshot().unwrap();
     let id = reserve(&mut doc, &holder, Origin::Send, true);
-    check(&doc, 1, &id);
+    check(&doc, 1, &id, false);
     let active = doc.snapshot().unwrap();
     doc.begin_attempt(&id, &TaskActor::Agent(holder.clone()), 12)
         .unwrap();
-    check(&doc, 1, &id);
+    check(&doc, 1, &id, false);
     doc.report_attempt(
         &id,
         "The actual holder result",
@@ -85,29 +86,29 @@ fn observation_tracks_attempt_identity_in_every_stage_and_keeps_the_highest_clai
         13,
     )
     .unwrap();
-    check(&doc, 1, &id);
+    check(&doc, 1, &id, false);
     doc.set_stage(Stage::Done, &TaskActor::Person, 14).unwrap();
-    check(&doc, 1, &id);
+    check(&doc, 1, &id, false);
     doc.set_stage(Stage::Todo, &TaskActor::Person, 15).unwrap();
-    check(&doc, 1, &id);
+    check(&doc, 1, &id, false);
     let mut cancelled = TaskDoc::from_bytes(&active).unwrap();
     cancelled
         .record_cancel("Cancelled by the person", &TaskActor::Person, 12)
         .unwrap();
-    check(&cancelled, 1, &id);
+    check(&cancelled, 1, &id, false);
     cancelled
         .set_stage(Stage::Todo, &TaskActor::Person, 13)
         .unwrap();
-    check(&cancelled, 1, &id);
+    check(&cancelled, 1, &id, false);
     cancelled
         .set_stage(Stage::Backlog, &TaskActor::Person, 14)
         .unwrap();
-    check(&cancelled, 1, &id);
+    check(&cancelled, 1, &id, false);
     let mut legacy = task(&h, &reference);
     legacy
         .record_send(&holder, "legacy-receipt", &TaskActor::Person, 4)
         .unwrap();
-    check(&legacy, 0, "");
+    check(&legacy, 0, "", false);
     let mut rejected = TaskDoc::from_bytes(&active).unwrap();
     let mut other = holder.clone();
     other.session = "codex/replacement".into();
@@ -116,7 +117,10 @@ fn observation_tracks_attempt_identity_in_every_stage_and_keeps_the_highest_clai
     let e = rejected.view().unwrap().execution.unwrap();
     assert_eq!(e.highest, 2);
     assert_eq!(e.current.unwrap().generation, 1);
-    check(&rejected, 2, &id);
+    check(&rejected, 2, &id, false);
+    let mut refused = TaskDoc::from_bytes(&baseline).unwrap();
+    reserve(&mut refused, &holder, Origin::Send, false);
+    check(&refused, 1, "", false);
     let mut a = TaskDoc::from_bytes(&baseline).unwrap();
     let mut b = TaskDoc::from_bytes(&baseline).unwrap();
     reserve(&mut a, &holder, Origin::Send, true);
@@ -125,5 +129,5 @@ fn observation_tracks_attempt_identity_in_every_stage_and_keeps_the_highest_clai
     let e = a.view().unwrap().execution.unwrap();
     assert_eq!(e.highest, 1);
     assert!(e.conflict);
-    check(&a, 1, "");
+    check(&a, 1, "", true);
 }
