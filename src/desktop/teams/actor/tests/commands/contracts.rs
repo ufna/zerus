@@ -69,12 +69,10 @@ fn reserve_stage(f: &mut Fixture) -> crate::teams::store::StageTaskEffect {
         },
     )
     .unwrap();
-    let effect =
-        f.h.store
-            .stage_task_effect(TEAM, node, &id)
-            .unwrap()
-            .unwrap();
-    effect
+    f.h.store
+        .stage_task_effect(TEAM, node, &id)
+        .unwrap()
+        .unwrap()
 }
 fn created_stage(f: &mut Fixture) -> (u32, TaskRef) {
     let effect = reserve_stage(f);
