@@ -25,6 +25,13 @@ mod schedule;
 mod tasks;
 #[cfg(test)]
 mod tests;
+/// The actor ledger of a state directory, created as the service creates
+/// it, and a plain connection to it for a test's own writes.
+#[cfg(test)]
+pub(in crate::desktop::teams) fn test_ledger(state: &std::path::Path) -> rusqlite::Connection {
+    drop(ledger::Ledger::open(state).unwrap());
+    rusqlite::Connection::open(state.join("teams/actor-v1.sqlite3")).unwrap()
+}
 use crate::teams::{
     ops::{self, Actor, Operation, Request},
     store::{Store, TeamRow},

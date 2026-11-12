@@ -5,6 +5,8 @@ use crate::teams::cli::actor::Caller;
 use serde_json::Value;
 
 const STATUS: &str = include_str!("../../../../crates/team-plan/fixtures/cli-status.json");
+const STATUS_STOPPED: &str =
+    include_str!("../../../../crates/team-plan/fixtures/cli-status-stopped.json");
 const QUEUE: &str = include_str!("../../../../crates/team-plan/fixtures/cli-queue.json");
 const INBOX: &str = include_str!("../../../../crates/team-plan/fixtures/cli-inbox.json");
 const CARDS: &str = include_str!("../../../../crates/team-plan/fixtures/cli-cards.json");
@@ -23,8 +25,9 @@ fn lead() -> Caller {
     Caller::Session(key(LEAD_SESSION))
 }
 
-fn replies() -> [(&'static str, Value); 11] {
+fn replies() -> [(&'static str, Value); 12] {
     let harness = seeded();
+    let stopped = super::status_items::stopped_with_conditions();
     let (board, _) = super::verdict::configured_stage(
         zerus_team_plan::catalog::StageKind::Review,
         3,
@@ -45,6 +48,11 @@ fn replies() -> [(&'static str, Value); 11] {
             "cli-status.json",
             board_read(&Caller::Person, &format!("status --team {TEAM}")),
         ),
+        ("cli-status-stopped.json", {
+            let (reply, exit) = stopped.cli(&Caller::Person, &format!("status --team {TEAM}"), "");
+            assert_eq!(exit, 0, "{reply}");
+            reply
+        }),
         (
             "cli-queue.json",
             board_read(&lead(), &format!("queue --team {TEAM}")),
@@ -83,6 +91,7 @@ fn replies() -> [(&'static str, Value); 11] {
 fn the_read_fixtures_are_the_replies_the_cli_prints() {
     let pinned = [
         ("cli-status.json", STATUS),
+        ("cli-status-stopped.json", STATUS_STOPPED),
         ("cli-queue.json", QUEUE),
         ("cli-inbox.json", INBOX),
         ("cli-cards.json", CARDS),

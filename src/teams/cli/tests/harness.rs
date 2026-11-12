@@ -127,6 +127,13 @@ impl Harness {
         self.apply_for(TEAM, actor, operation)
     }
 
+    /// One operation on the first team at `now`.
+    pub fn apply_at(&self, actor: &Actor, operation: Operation, now: i64) -> Reply {
+        let request = self.request_for(TEAM, operation);
+        let mut store = self.store();
+        ops::apply(&mut store, actor, &request, now).expect("the seed operation succeeds")
+    }
+
     /// One operation on `team`.
     pub fn apply_for(&self, team: &str, actor: &Actor, operation: Operation) -> Reply {
         let request = self.request_for(team, operation);

@@ -53,6 +53,8 @@ impl Ledger {
         }
         db.execute_batch(include_str!("ledger.sql"))
             .map_err(storage)?;
+        db.execute_batch(super::super::items::SCHEMA)
+            .map_err(storage)?;
         Ok(Self(db))
     }
     pub fn get(&self, team: &str, key: &str) -> Result<Option<Row>> {

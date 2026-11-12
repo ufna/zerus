@@ -22,11 +22,11 @@ use std::time::Duration;
 /// written only by unmerged development builds of this package.
 pub(crate) const BASE: u32 = 8;
 /// The current layout: the base and the steps after it.
-pub(crate) const EXTENSION: u32 = 10;
+pub(crate) const EXTENSION: u32 = 11;
 /// Each layout that reached the integration branch, with the step that
 /// brings a store marked with it to the next; the steps run in order up to
 /// the current layout, after the base for a store from before the extension.
-const STEPS: &[(u32, Step)] = &[(8, answers), (9, card_decisions)];
+const STEPS: &[(u32, Step)] = &[(8, answers), (9, card_decisions), (10, key_refusal_order)];
 /// One step from a merged layout to the next, inside the transition.
 type Step = fn(&Connection) -> Result<()>;
 /// Layout 8 to 9: the lead's answers reach their members.
@@ -50,6 +50,12 @@ fn card_decisions(db: &Connection) -> Result<()> {
             .map_err(storage)?;
     }
     unheld_returns(db)
+}
+/// Layout 10 to 11: a team's key refusals are read newest first, for the
+/// team's status, through their own partial index.
+fn key_refusal_order(db: &Connection) -> Result<()> {
+    db.execute_batch("CREATE INDEX IF NOT EXISTS key_refusals_newest ON key_clears(team,at_ms,node) WHERE state='refused';")
+        .map_err(storage)
 }
 /// Earlier layouts admitted a Return while its hand-out was only reserved.
 /// Under the narrowed attempt holder ([`holder_of`]) such a Return has
