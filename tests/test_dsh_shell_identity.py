@@ -41,8 +41,14 @@ import json, os, subprocess, sys, time
 cfg = json.load(open(sys.argv[1]))
 time.sleep(cfg.get('sleep', 0))
 out = {'env': dict(os.environ), 'runs': {}}
-for name, argv, stdin in cfg.get('runs', []):
-    r = subprocess.run(argv, input=stdin, text=True, capture_output=True, timeout=60)
+for name, argv, stdin, *changes in cfg.get('runs', []):
+    env = dict(os.environ)
+    for key, value in (changes[0] if changes else {}).items():
+        if value is None:
+            env.pop(key, None)
+        else:
+            env[key] = value
+    r = subprocess.run(argv, input=stdin, text=True, capture_output=True, timeout=60, env=env)
     out['runs'][name] = {'code': r.returncode, 'stdout': r.stdout[-4000:], 'stderr': r.stderr[-4000:]}
 with open(cfg['out'] + '.tmp', 'w') as f:
     json.dump(out, f)
@@ -329,16 +335,72 @@ class HostStartedByHgs(Hosted, unittest.TestCase):
                     self.assertOwnMarkers(followup['env'], rerun)
                     self.assertEqual(followup['env']['DSH_SESSION_ID'], result['env']['DSH_SESSION_ID'])
 
+    def test_a_hosted_call_acts_as_its_own_session_and_no_other(self):
+        # zerus-ppd26 Part B: the host's per-call token under the host's
+        # ancestry proves the session; another session's markers, a forged or
+        # an ended call's token prove nothing.
+        own, other = self.launch(), self.launch()
+        ref = self.task()
+        hgs = str(HGS)
+        send = {'request_id': str(uuid.uuid4()), 'expected_run_id': other['run_id'],
+                'expected_conversation_id': other['conversation_id'], 'text': 'from a hosted call'}
+        result = self.shell(own, runs=[
+            ('start', [hgs, 'task', 'start', ref], None),
+            ('report', [hgs, 'task', 'report', ref], 'reported from the hosted call'),
+            ('self', [hgs, 'self', '--json'], None),
+            ('send', [hgs, 'send', other['name'], '--json'], json.dumps(send)),
+            ('impersonate', [hgs, 'task', 'comment', ref], 'as the other session',
+             {'HGS_SESSION': other['name'], 'HGS_RUN_ID': other['run_id'], 'HGS_SESSION_ID': other['session_id']}),
+            ('forged', [hgs, 'task', 'comment', ref], 'with a forged token', {'HGS_DSH_CALL_TOKEN': '0' * 64}),
+            ('tokenless', [hgs, 'task', 'comment', ref], 'without a token', {'HGS_DSH_CALL_TOKEN': None}),
+        ])
+        runs = result['runs']
+        token = result['env']['HGS_DSH_CALL_TOKEN']
+        self.assertRegex(token, '^[0-9a-f]{64}$')
+        for name in ('start', 'report', 'self', 'send'):
+            self.assertEqual(runs[name]['code'], 0, (name, runs[name]))
+        identity = json.loads(runs['self']['stdout'])
+        self.assertEqual((identity['identity_source'], identity['session_id']), ('hosted_call', own['session_id']))
+        self.assertIn('One DeepSeek host process serves every session of its agent home', identity['proof_limit'])
+        for name in ('impersonate', 'forged', 'tokenless'):
+            self.assertNotEqual(runs[name]['code'], 0, (name, runs[name]))
+            self.assertIn('never acts as the person', runs[name]['stderr'], (name, runs[name]))
+        log = json.loads(self.call('task', 'get', ref, '--history-limit', '20').stdout)['task']['log']
+        acted = [entry for entry in log if entry['kind'] != 'created']
+        self.assertTrue(acted)
+        for entry in acted:
+            self.assertEqual(entry['actor'].get('session'), own['name'], entry)
+        self.assertNotIn('comment', [entry['kind'] for entry in log])
+        import sqlite3
+        rows = sqlite3.connect(f"file:{self.state / 'graph/sends.sqlite3'}?mode=ro", uri=True).execute(
+            'SELECT payload FROM sends').fetchall()
+        sources = [json.loads(row[0])['source'] for row in rows
+                   if json.loads(row[0])['request_id'] == send['request_id']]
+        self.assertEqual([source['name'] for source in sources], [own['name']])
+        # The first call has ended, so its token now proves nothing.
+        stale = self.shell(own, runs=[('stale', [hgs, 'task', 'comment', ref], 'with an ended call token',
+                                       {'HGS_DSH_CALL_TOKEN': token})])['runs']['stale']
+        self.assertNotEqual(stale['code'], 0, stale)
+        self.assertIn('never acts as the person', stale['stderr'])
+
     def test_without_an_identity_a_hosted_call_is_never_the_person(self):
         session = self.launch()
         identity = self.host_dir / 'shells' / (session['conversation_id'] + '.json')
         self.assertTrue(identity.exists())
         ref = self.task()
-        # With its identity, main cannot prove a hosted session yet (Part B):
-        # still never the person.
+        # With its identity the call is proven as its own session (Part B):
+        # an agent, refused person-only start plans, acting as itself.
         result = self.shell(session, runs=self.person_actions(ref))
         self.assertOwnMarkers(result['env'], session)
-        self.assertNeverThePerson(result['runs'], ref)
+        runs = result['runs']
+        self.assertNotEqual(runs['start_plan']['code'], 0)
+        self.assertIn("task start plans are for the person's explicit desktop Start", runs['start_plan']['stderr'])
+        for name in ('add', 'comment'):
+            self.assertEqual(runs[name]['code'], 0, (name, runs[name]))
+        log = json.loads(self.call('task', 'get', ref, '--history-limit', '20').stdout)['task']['log']
+        comments = [entry for entry in log if entry['kind'] == 'comment']
+        self.assertEqual([entry['actor'].get('session') for entry in comments], [session['name']])
+        ref = self.task()
         for damage in ('missing', 'invalid'):
             with self.subTest(damage):
                 if damage == 'missing':
@@ -366,7 +428,7 @@ class DirectlyStarted(Hosted):
                 # The same bridge without the per-call environment, like a host
                 # an older hgs started: no wrapper, no capability in its ping.
                 source = bridge.read_text()
-                for old, new in (("        shellIdentity: callEnvironmentInstalled(),\n", ''),
+                for old, new in (("        shellIdentity: callEnvironmentInstalled(), callTokens: callEnvironmentInstalled(),\n", ''),
                                  ('  function callEnvironmentInstalled() {\n',
                                   '  function callEnvironmentInstalled() { return false;\n')):
                     assert source.count(old) == 1, old
@@ -439,6 +501,15 @@ class HostOfAnOlderHgs(DirectlyStarted, unittest.TestCase):
         start = result['runs']['start']
         self.assertNotEqual(start['code'], 0)
         self.assertIn('names the agent session claude/test/launcher, but that run is not live', start['stderr'])
+        # A host without per-call tokens proves no hosted call, even with that
+        # session's own markers and a token-shaped value.
+        claimed = {'HGS_AGENT': 'dsh', 'HGS_SESSION': self.session['name'], 'HGS_RUN_ID': self.session['run_id'],
+                   'HGS_SESSION_ID': self.session['session_id'], 'HGS_DSH_CALL_TOKEN': 'a' * 64}
+        runs = self.shell(self.session, runs=[('self', [str(HGS), 'self', '--json'], None, claimed),
+                                              ('comment', [str(HGS), 'task', 'comment', ref], 'old host', claimed)])['runs']
+        self.assertNotEqual(json.loads(runs['self']['stdout'] or '{}').get('identity_source'), 'hosted_call')
+        self.assertNotEqual(runs['comment']['code'], 0)
+        self.assertIn('never acts as the person', runs['comment']['stderr'])
 
 
 if __name__ == '__main__':

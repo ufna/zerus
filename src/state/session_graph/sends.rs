@@ -13,6 +13,9 @@ const MAX_RECEIPT: usize = 1024 * 1024;
 mod caller_binding;
 #[path = "caller_hosts.rs"]
 mod caller_hosts;
+#[path = "caller_hosted.rs"]
+mod caller_hosted;
+pub(crate) use caller_hosted::{hosted_caller, HOSTED_LIMIT};
 pub(crate) use caller_hosts::{Hosts, Unread};
 #[cfg(test)]
 pub(crate) use caller_hosts::{Named, Registered};
@@ -112,6 +115,16 @@ fn owned_record() -> Option<Value> {
 fn token_record() -> Option<Value> {
     let name = nonempty_env("HGS_SESSION")?;
     let run = nonempty_env("HGS_RUN_ID")?;
+    // A hosted DeepSeek tool call has no agent process of its own; its host's
+    // per-call token proves the conversation (zerus-ppd26 Part B).
+    if matches!(
+        crate::state::provider_binding::Provider::named(&name),
+        Some(crate::state::provider_binding::Provider::DeepSeek)
+    ) {
+        return hosted_caller(&name, &run, nonempty_env("HGS_SESSION_ID").as_deref())
+            .ok()
+            .flatten();
+    }
     let record = read_run(&name, &run).ok()??;
     if !process_alive(&record) || record["state"] == "archived" {
         return None;

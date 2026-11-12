@@ -8,7 +8,7 @@ import net from 'node:net';
 import fs from 'node:fs/promises';
 import { closeSync, constants, fstatSync, openSync, readSync } from 'node:fs';
 import { join } from 'node:path';
-import { createHash, randomUUID } from 'node:crypto';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { isDeepStrictEqual } from 'node:util';
 
@@ -63,6 +63,40 @@ export function readIdentity(dir, sessionId) {
     const read = readSync(fd, buffer, 0, buffer.length, 0);
     return read > IDENTITY_BYTES ? undefined : parseIdentity(buffer.subarray(0, read).toString('utf8'), sessionId);
   } catch { return undefined; } finally { if (fd !== undefined) closeSync(fd); }
+}
+
+// zerus-ppd26 Part B. Process ancestry cannot tell hosted agents apart, so
+// each tool call's processes also carry a fresh random token of 256 bits. The
+// host keeps token -> the calling top-level conversation while the call runs
+// and, for its background or promoted jobs, until each job settles; hgs asks
+// the host for it over the private socket to prove which conversation's call
+// started a command. The table is bounded; an evicted token is unknown.
+export const CALL_TOKEN = 'HGS_DSH_CALL_TOKEN';
+const CALL_TOKENS = 4096;
+export function callTokens(limit = CALL_TOKENS) {
+  const live = new Map(), jobs = new Map();
+  const release = token => { const entry = live.get(token); if (entry && !entry.open && entry.jobs.size === 0) live.delete(token); };
+  return {
+    open(conversation) {
+      const token = randomBytes(32).toString('hex');
+      live.set(token, { conversation, open: true, jobs: new Set() });
+      while (live.size > limit) live.delete(live.keys().next().value);
+      return token;
+    },
+    close(token) { const entry = live.get(token); if (entry) { entry.open = false; release(token); } },
+    job(token, id) { const entry = live.get(token); if (entry) { entry.jobs.add(id); jobs.set(id, token); } },
+    settled(id) {
+      const token = jobs.get(id);
+      jobs.delete(id);
+      if (token === undefined) return;
+      live.get(token)?.jobs.delete(id);
+      release(token);
+    },
+    conversation(token) {
+      return typeof token === 'string' && /^[0-9a-f]{64}$/.test(token) ? live.get(token)?.conversation : undefined;
+    },
+    get size() { return live.size; },
+  };
 }
 
 // Adds the current call's entries to each process the service starts while
@@ -228,7 +262,7 @@ export function apply(ctx, config) {
   const owned = new Map(), opening = new Map(), questions = new Map();
   const generation = randomUUID();
   const shellContext = new AsyncLocalStorage(), shellCalls = new Map(), jobCalls = new Map();
-  const callContext = new AsyncLocalStorage();
+  const callContext = new AsyncLocalStorage(), tokens = callTokens();
   const identities = typeof config.shellIdentities === 'string' && config.shellIdentities ? config.shellIdentities : null;
   let spawns = null, spawnService = null;
   // A reloaded subprocess service is wrapped again before the next call.
@@ -244,6 +278,10 @@ export function apply(ctx, config) {
   ctx.on('dispose', () => spawns?.restore());
   const jobRegistry = ctx.get('jobs');
   if (jobRegistry) ctx.on('dispose',jobRegistry.events.subscribe({owners:'scope'},event => {
+    // A job a tool call registers keeps that call's token until it settles.
+    const token = callContext.getStore()?.[CALL_TOKEN];
+    if (event.type === 'registered' && token) tokens.job(token, event.job.id);
+    if (event.type === 'settled' || event.type === 'removed') tokens.settled(event.job.id);
     const call = shellContext.getStore();
     if (event.type === 'registered' && event.job.kind === 'bash' && call?.owner === event.job.owner) {
       call.jobId=event.job.id;jobCalls.set(event.job.id,call);
@@ -252,10 +290,13 @@ export function apply(ctx, config) {
   }));
   // Every tool call, whatever the tool or agent: its processes carry
   // HGS_AGENT=dsh and the calling top-level session's markers or none.
-  ctx.on('tools/execute', (exec, next) => {
+  ctx.on('tools/execute', async (exec, next) => {
     callEnvironmentInstalled();
-    const env = callEnvironment(readIdentity(identities, identitySession(exec.agent)));
-    return callContext.run(env, () => observeShell(exec, next));
+    const session = identitySession(exec.agent);
+    const token = session === undefined ? undefined : tokens.open(session);
+    const env = Object.freeze({ ...callEnvironment(readIdentity(identities, session)), [CALL_TOKEN]: token });
+    try { return await callContext.run(env, () => observeShell(exec, next)); }
+    finally { if (token) tokens.close(token); }
   });
   function observeShell(exec, next) {
     if (exec.name !== 'bash' || !exec.agent?.session?.id) return next();
@@ -621,7 +662,7 @@ export function apply(ctx, config) {
     const p = request.params ?? {};
     switch (request.method) {
       case 'ping': return { protocol: 1, version: '0.2.1-rc.2', generation, accountPermissions: true, sessionActions: true,
-        shellIdentity: callEnvironmentInstalled(),
+        shellIdentity: callEnvironmentInstalled(), callTokens: callEnvironmentInstalled(),
         nativeOperations: ['fork', 'history-search', 'schedules'], schedule: Boolean(scheduleService()) };
       case 'list': {
         const list = await api.list({}, new AbortController().signal);
@@ -845,6 +886,11 @@ export function apply(ctx, config) {
           seen.add(answer.id);
         }
         q.settle({ answers: p.answers }); return { accepted: true };
+      }
+      // Which conversation's live tool call holds this token; nothing else.
+      case 'call-token': {
+        const conversation = tokens.conversation(p.token);
+        return conversation === undefined ? { known: false } : { known: true, conversation };
       }
       default: throw new Error('Unsupported HGS native request');
     }

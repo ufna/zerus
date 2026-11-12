@@ -87,12 +87,53 @@ pub(crate) fn account_ui_url(home: &Path) -> Result<String> {
         .ok_or_else(|| "Native DeepSeek UI is unavailable.".into())
 }
 fn host_dir(record: &Value) -> PathBuf {
-    root().join("dsh/hosts").join(
-        &format!(
-            "{:x}",
-            Sha256::digest(string(record, "agent_home").as_bytes())
-        )[..16],
-    )
+    root()
+        .join("dsh/hosts")
+        .join(host_key(string(record, "agent_home")))
+}
+/// The name of the host folder of one agent home, the same for every reader.
+pub(crate) fn host_key(agent_home: &str) -> String {
+    format!("{:x}", Sha256::digest(agent_home.as_bytes()))[..16].to_owned()
+}
+/// The conversation whose live tool call holds `token`, asked of the host of
+/// `agent_home` within `within` in all (zerus-ppd26 Part B). An adapter that
+/// does not advertise call tokens, no answer in time, a malformed reply or an
+/// unknown token is an error, never an answer.
+#[cfg(unix)]
+pub(crate) fn call_token_conversation(
+    agent_home: &str,
+    token: &str,
+    within: Duration,
+) -> std::result::Result<String, &'static str> {
+    const NO_ANSWER: &str = "The DeepSeek host did not confirm this tool call in time.";
+    const OLDER: &str =
+        "The running DeepSeek host predates per-call tokens; its tool calls cannot be proven.";
+    const UNKNOWN: &str = "The DeepSeek host knows no live tool call with this token.";
+    let deadline = Instant::now() + within;
+    let remaining = || {
+        deadline
+            .checked_duration_since(Instant::now())
+            .filter(|left| !left.is_zero())
+            .ok_or(NO_ANSWER)
+    };
+    let socket = root()
+        .join("dsh/hosts")
+        .join(host_key(agent_home))
+        .join("host.sock");
+    let ping = rpc_at(&socket, "ping", json!({}), remaining()?).map_err(|_| NO_ANSWER)?;
+    if ping["protocol"] != 1 || ping["callTokens"] != true {
+        return Err(OLDER);
+    }
+    let answer = rpc_at(&socket, "call-token", json!({"token":token}), remaining()?)
+        .map_err(|_| NO_ANSWER)?;
+    if answer["known"] != true {
+        return Err(UNKNOWN);
+    }
+    answer["conversation"]
+        .as_str()
+        .filter(|conversation| !conversation.is_empty())
+        .map(str::to_owned)
+        .ok_or(UNKNOWN)
 }
 /// The native host listens on a Unix socket; DeepSeek is a Phase 2 non-goal on
 /// Windows, so nothing there starts or reaches a host.

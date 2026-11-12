@@ -209,7 +209,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { AsyncLocalStorage } from 'node:async_hooks';
-const { callEnvironment, parseIdentity, identitySession, readIdentity, wrapSpawns } = await import(process.argv[2]);
+const { callEnvironment, parseIdentity, identitySession, readIdentity, wrapSpawns, callTokens, CALL_TOKEN } = await import(process.argv[2]);
 const conversation = 'session-91250d76-ca68-48b6-87f8-3a0e4400c314';
 const file = { version: 1, conversation, session: 'dsh/project/a', run: 'run-1',
                session_id: '6a4c5887-557a-4f31-b1c8-ad0a94c3c705', account: 'native-dsh' };
@@ -301,6 +301,34 @@ const again = wrapSpawns(fresh, () => env);
 again.restore();
 assert.equal(fresh.spawn, original);
 assert.equal(wrapSpawns({}, () => env).installed, false);
+""")
+
+    def test_a_call_token_names_its_conversation_while_the_call_or_its_jobs_live(self):
+        self.run_js("""
+assert.equal(CALL_TOKEN, 'HGS_DSH_CALL_TOKEN');
+const tokens = callTokens(3);
+const call = tokens.open(conversation);
+assert.match(call, /^[0-9a-f]{64}$/);
+assert.notEqual(tokens.open(conversation), call, 'every call has its own token');
+assert.equal(tokens.conversation(call), conversation);
+// A job the call started keeps the token after the call returns, until it settles.
+tokens.job(call, 'job-1');
+tokens.close(call);
+assert.equal(tokens.conversation(call), conversation);
+tokens.settled('job-1');
+assert.equal(tokens.conversation(call), undefined);
+// Without a job, the token ends with its call; a settled job of another call is no release.
+const plain = tokens.open(conversation);
+tokens.settled('job-1');
+assert.equal(tokens.conversation(plain), conversation);
+tokens.close(plain);
+assert.equal(tokens.conversation(plain), undefined);
+for (const bad of [undefined, '', 'X'.repeat(64), call.toUpperCase(), call + '0', 7]) assert.equal(tokens.conversation(bad), undefined);
+// Bounded: the oldest live token is dropped and is then unknown.
+const first = tokens.open('session-00000000-0000-4000-8000-000000000001');
+for (let n = 0; n < 3; n++) tokens.open(conversation);
+assert.equal(tokens.conversation(first), undefined);
+assert.equal(tokens.size, 3);
 """)
 
 

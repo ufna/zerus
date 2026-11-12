@@ -4378,8 +4378,9 @@ Run inside a session (`HGS_SESSION` and
 for that session, and the project settings can keep agents to their own
 session or limit how many tasks they start per hour. `settings --set` reads a
 JSON object and changes only the fields it names. A DeepSeek host's tool call
-(`HGS_AGENT=dsh`) never acts as the person; while its session cannot be proven,
-`hgs task` refuses it (see Session markers of hosted tool calls).
+(`HGS_AGENT=dsh`) never acts as the person: it acts as its hosted session when
+the hosted caller proof holds, and `hgs task` refuses it otherwise (see Session
+markers of hosted tool calls).
 
 The desktop cancellation dialog uses `hgs task cancel-execution REF --project P --json`,
 with schema 1 JSON on stdin: `dispatch_id`, `stage_at`, executor `machine` and `session_id`,
@@ -5434,15 +5435,35 @@ sets these per call.
 
 A hosted tool call is never the person. `hgs task` and the desktop's
 agent-descended refusal treat `HGS_AGENT=dsh` without a session they can prove
-as an agent, and refuse person actions plainly. Until a hosted session can be
-proven, its `hgs task` commands are refused and its sends are unattributed.
+as an agent, and refuse person actions plainly.
+
+Each call's processes also carry `HGS_DSH_CALL_TOKEN`, a fresh random token of
+256 bits. The host keeps it, naming the calling top-level conversation, while
+the call runs and, for a background or promoted job the call starts, until that
+job settles; the table is bounded and an evicted token is unknown. A command
+then acts as its hosted session for `hgs task` and for the source of `hgs send`
+when the hosted caller proof holds:
+
+1. the binding its `HGS_SESSION`, `HGS_RUN_ID` and `HGS_SESSION_ID` name, read
+   by its exact route, is that DeepSeek session's;
+2. the binding's agent home selects the host folder, whose record of this boot
+   names a process and its birth;
+3. that process, with that birth, is an ancestor of the command;
+4. the command's `DSH_HOME` is the binding's agent home;
+5. the host, asked over its private socket within 2 seconds, holds the token
+   for the binding's conversation.
+
+An older host that does not advertise call tokens, no answer, an unknown token
+or another conversation refuses; so do another session's markers with a call's
+own token, a made-up token and the token of a call that has ended. `hgs self`
+reports such a proof as `identity_source` `hosted_call`, with its limit.
 
 The limit: one process serves all hosted sessions, so process ancestry proves
 only that a command runs under the host serving a session, not which hosted
-agent ran it. The markers are claims that the host sets per call, which ends
-accidental attribution to another session; an agent that deliberately sets
-another hosted session's markers, or edits the same-user identity file, is not
-detected by them.
+agent ran it; the per-call token proves which conversation's call started it.
+A same-user process that reads another tool call's environment can copy its
+token: that is deliberate instrumentation and outside this proof, as is an agent
+that edits the same-user identity file.
 
 A host an older Zerus started keeps the markers it inherited and its adapter
 until it exits on its own; it is never restarted or reloaded for this. Its
