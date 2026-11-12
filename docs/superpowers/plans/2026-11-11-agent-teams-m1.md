@@ -1296,6 +1296,23 @@ carries the attempt's holder and the kind of a pending decision, and a
 member row carries whether the person stopped it; all three are additive
 fields of the pinned replies.
 
+What the review of the card decisions added (2026-11-12). A card's list
+is true for as long as the card is open: its opener keeps an open card
+only while the list it would give now equals the card's own, and
+otherwise closes that card and opens the current one in the same step; an
+open card's list is never changed in place. The case that showed it: a
+launch waiting on its backoff opened a card with retry, the launch then
+failed for good, and the kept card went on offering a Retry that nothing
+read. The holder a row shows is the holder the store's own decisions use,
+one definition: a hand-out that was only reserved, or was refused or
+superseded, gives nobody to return to, and a Return there is refused,
+with Reassign and Cancel still open to the lead. And an optional field
+that is added to a stored operation is left out when it is absent, so
+that a request saved before the field existed replays byte for byte: the
+list's field was first written as null, and a card request saved by an
+earlier build was then answered as a different request instead of with
+its saved reply.
+
 **A timer fires once and only while its condition holds (package 10).**
 The store writes a timer's inbox item or owner card in one operation that
 rechecks the condition from stored facts in the same transaction, under a
@@ -1480,7 +1497,23 @@ archived team no observation follows either, so `team-cancel` never
 answers `stale` there: it acts when the document's current attempt is the
 one the store last observed or is the node's own effect that was delivered
 and not yet observed, and otherwise it refuses with a reason that begins
-`attempt_changed:`, because a person took the task after the stop. Once
+`attempt_changed:`, because a person took the task after the stop. The
+store takes the answer by the same rule, or the two disagree for ever: in
+a stopped or archived team a cancelled or a released answer is recorded
+when its pair is the newest observation's, or when it names an effect of
+that node's current generation, a hand-out or a reopen, with a number not
+below the observed one. The gate that holds a cancelled answer back while
+the newest observation is a conflict applies to the first case only,
+because nothing observes again after a stop and the command has read the
+document itself under its locks. The first version compared with the
+observation alone: a team stopped between a hand-out and the observation
+of its start kept its cancel pending for ever, the service replayed the
+refused record every fifteen minutes and the cleanup never reached the
+task's key (the review of the actor, 2026-11-12). The service has its own
+exit as well, for any refusal a later rule may bring: a saved refusal of a
+cancel's record for a visit that did not change is recorded once as a
+refused outcome, with what the command answered and what the store said,
+and is never replayed. Once
 the store has observed a task cancelled, the team has let it go. Giving
 such a task back to a team is not possible yet: a task keeps its cancelled
 mark when it is moved back to To do, until it is sent, started or reopened,
