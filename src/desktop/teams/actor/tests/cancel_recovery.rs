@@ -39,7 +39,7 @@ impl Ports for Recovery {
     }
     fn cancel(&mut self, team: &Team, pending: &Pending, original: &str) -> Result<Answer> {
         self.calls.push((team.id.clone(), pending.node));
-        let pair = if pending.node == 1 {
+        let pair = if team.id == TEAM && pending.node == 1 {
             self.pair.clone()
         } else {
             Attempt {
@@ -72,7 +72,7 @@ impl Ports for Recovery {
             store.db.as_ref().unwrap().execute_batch("CREATE TRIGGER lose_cancel_receipt BEFORE INSERT ON requests BEGIN SELECT RAISE(ABORT,'fixture lost receipt'); END").unwrap();
         }
         let mut attempted = fact.clone();
-        if self.reject_exit && fact.pending.node == 1 && fact.refused {
+        if self.reject_exit && team.id == TEAM && fact.pending.node == 1 && fact.refused {
             attempted.reason.clear();
         }
         let result = Native::save_cancel(store, team, &attempted, now);
@@ -246,5 +246,108 @@ fn a_lost_original_cancel_fact_replays_stale_then_records_the_answer_with_a_fres
 fn a_lost_exit_fact_replays_stale_without_becoming_a_second_rule_refusal() {
     for status in ["stopped", "archived", "live"] {
         check_stale(status, true);
+    }
+}
+
+fn stop_other_team(h: &mut Harness) -> u32 {
+    let mut op = create();
+    if let Operation::Create {
+        integration_branch, ..
+    } = &mut op
+    {
+        *integration_branch = "teams/other-team".into();
+    }
+    h.run_for(TEAM_B, &person(), op).unwrap();
+    let node = h
+        .run_for(
+            TEAM_B,
+            &person(),
+            Operation::AddTask {
+                task: task(5),
+                role: None,
+                pipeline: None,
+            },
+        )
+        .unwrap()
+        .node
+        .unwrap();
+    let mut o = h.observation(2, TaskStage::Todo);
+    o.previous_revision = String::new();
+    let service = crate::teams::ops::Actor::Service {
+        person: "local".into(),
+        team: TEAM_B.into(),
+    };
+    h.run_for(
+        TEAM_B,
+        &service,
+        Operation::ObserveTask {
+            node,
+            observation: o,
+        },
+    )
+    .unwrap();
+    h.run_for(TEAM_B, &person(), Operation::Stop).unwrap();
+    node
+}
+#[test]
+fn a_halted_cancel_keeps_its_own_backoff_without_delaying_siblings_or_another_team() {
+    let (mut h, mut a, mut p) = case("stopped", true);
+    p.loss = None;
+    p.only = None;
+    p.reject_exit = true;
+    a.page(&mut h.store, &mut p, &[], 100, false).unwrap();
+    assert_eq!(p.calls, vec![(TEAM.into(), 1), (TEAM.into(), 2)]);
+    assert!(p.cleared.contains(&(TEAM.into(), 2)));
+    assert!(a.ledger.terminal_retry().unwrap().is_none());
+    let other = stop_other_team(&mut h);
+    for minute in 1..240 {
+        a.page(&mut h.store, &mut p, &[], 100 + minute * 60_000, false)
+            .unwrap();
+        if minute == 1 {
+            assert!(p.calls.contains(&(TEAM_B.into(), other)));
+            assert!(p.cleared.contains(&(TEAM_B.into(), other)));
+        }
+    }
+    assert_eq!(p.calls.len(), 3);
+    assert!(a.ledger.terminal_retry().unwrap().is_none());
+    assert_eq!(h.store.pending_cancels(TEAM, 16, 0).unwrap().len(), 1);
+}
+#[test]
+fn many_halted_cancel_rows_do_not_spend_the_page_budget_before_a_later_node() {
+    let mut h = Harness::new();
+    for n in 1..=13 {
+        h.add(&person(), n);
+    }
+    h.run(&person(), Operation::Stop).unwrap();
+    let native = super::production::native(&h);
+    let mut a = Runtime::open(h.temp.path(), &native.machine).unwrap();
+    for pending in Native::pending_cancels(&h.store, TEAM, 0)
+        .unwrap()
+        .into_iter()
+        .take(12)
+    {
+        a.ledger.reserve(TEAM, &format!("cancel:{}", pending.decision), json!({
+            "pending": pending, "reply": null, "fact": null, "halted": true,
+            "refusal_exit":true,"failures":1,"next_ms":0,"reason":"The outcome was refused twice."
+        })).unwrap();
+    }
+    let mut p = Recovery {
+        native,
+        live: false,
+        pair: Attempt::default(),
+        loss: None,
+        only: None,
+        calls: vec![],
+        facts: vec![],
+        reject_exit: false,
+        cleared: vec![],
+    };
+    a.page(&mut h.store, &mut p, &[], 100, false).unwrap();
+    assert_eq!(p.calls, vec![(TEAM.into(), 13)]);
+    assert_eq!(p.cleared, vec![(TEAM.into(), 13)]);
+    assert!(a.ledger.terminal_retry().unwrap().is_none());
+    for row in a.ledger.prefix_page(TEAM, "cancel:", "").unwrap() {
+        assert!(row.data["next_ms"].as_i64().unwrap() > 100);
+        assert_eq!(row.data["halted"], true);
     }
 }

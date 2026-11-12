@@ -187,7 +187,7 @@ fn a_second_proved_refusal_ends_the_visit_durably_without_replaying_either_reque
     let key = format!("cancel:{}", p.facts[0].pending.decision);
     let row = runtime.ledger.get(TEAM, &key).unwrap().unwrap();
     assert_eq!(row.data["halted"], true);
-    assert!(runtime.ledger.terminal_retry().unwrap().is_some());
+    assert!(runtime.ledger.terminal_retry().unwrap().is_none());
     drop(runtime);
     let mut runtime = Runtime::open(h.temp.path(), &p.native.machine).unwrap();
     h.store

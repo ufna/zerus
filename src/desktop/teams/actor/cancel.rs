@@ -191,9 +191,9 @@ impl Runtime {
                 } else {
                     self.failure(store, t, key, "", &error, now)?;
                 }
-            } else if row.halted {
-                return self.for_row(|_| Err(error));
             }
+            // A terminal halt owns this row's durable failure and backoff.
+            // It is not a page fault: siblings and other teams still run.
         }
         Ok(())
     }
