@@ -301,3 +301,45 @@ fn the_production_merge_clock_uses_wall_time_instead_of_the_page_clock() {
         "{value} is a stale page clock"
     );
 }
+
+#[test]
+fn a_bad_terminal_delivery_row_does_not_stop_the_next_teams_settlement() {
+    let mut h = Harness::new();
+    h.bind("m1");
+    h.add(&person(), 1);
+    let machine = h.store.team(TEAM).unwrap().unwrap().home;
+    let mut a = Runtime::open(h.temp.path(), &machine).unwrap();
+    let mut p = w(&h, vec![1], none());
+    a.tick(&mut h.store, &mut p, TEAM, 100, false).unwrap();
+    h.run(&person(), Operation::Stop).unwrap();
+    // TEAM_B sorts before TEAM. Its malformed row is a fixture fault, not
+    // evidence that any original ran or that the next team's work may stop.
+    h.run_for(TEAM_B, &person(), create()).unwrap();
+    h.run_for(
+        TEAM_B,
+        &person(),
+        Operation::AddTask {
+            task: task(2),
+            role: None,
+            pipeline: None,
+        },
+    )
+    .unwrap();
+    h.run_for(TEAM_B, &person(), Operation::Stop).unwrap();
+    a.ledger
+        .reserve(TEAM_B, "delivery:malformed", serde_json::json!({}))
+        .unwrap();
+    assert_eq!(h.store.keyed_teams("", 16).unwrap(), [TEAM_B, TEAM]);
+    assert!(a.terminal_cancels(&mut h.store, &mut p, 101).is_err());
+    assert_eq!(p.calls, 1);
+    assert!(h
+        .store
+        .open_effects(TEAM, 200, None)
+        .unwrap()
+        .rows
+        .is_empty());
+    assert_eq!(
+        h.store.effects(TEAM, 200, None).unwrap().rows[0].state,
+        "refused"
+    );
+}

@@ -128,8 +128,13 @@ impl Runtime {
             if t.home != self.machine {
                 continue;
             }
-            if !self.terminal_deliveries(store, &t, now)? {
-                continue;
+            match self.terminal_deliveries(store, &t, now) {
+                Ok(true) => (),
+                Ok(false) => continue,
+                Err(error) => {
+                    fault = Some(error);
+                    continue;
+                }
             }
             if let Err(error) = self.cancels(store, p, &t, now) {
                 fault = Some(error);
