@@ -816,9 +816,7 @@ fn serve(config: &Config, location: Location, background_mode: bool) -> Result<(
                 drop(handoff);
                 if background::replacement_permitted(
                     background_mode,
-                    background
-                        .as_ref()
-                        .is_some_and(background::Runtime::drained),
+                    background.as_ref(),
                     &location,
                     &store,
                 )? {
