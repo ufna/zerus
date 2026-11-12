@@ -128,6 +128,9 @@ impl Runtime {
             if t.home != self.machine {
                 continue;
             }
+            if !self.terminal_deliveries(store, &t, now)? {
+                continue;
+            }
             if let Err(error) = self.cancels(store, p, &t, now) {
                 fault = Some(error);
             }

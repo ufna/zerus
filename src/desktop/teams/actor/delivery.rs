@@ -288,7 +288,9 @@ impl Runtime {
         match ops::apply(store, &actor, d.receipt.as_ref().expect("reserved"), now) {
             Ok(_) => {
                 boundary("recorded");
-                self.recovered(store, team, key, now)?;
+                if matches!(team.status, TeamStatus::Running | TeamStatus::Paused) {
+                    self.recovered(store, team, key, now)?;
+                }
                 if let Some(row) = self.ledger.get(&team.id, key)? {
                     self.ledger.remove(&row)?;
                 }
@@ -300,6 +302,44 @@ impl Runtime {
             Err(e) => return Err(e),
         }
         Ok(())
+    }
+    /// Settle only durable proof that no child started, before terminal
+    /// cancellation. Unknown originals remain evidence and are never retried.
+    pub(super) fn terminal_deliveries(
+        &mut self,
+        store: &mut Store,
+        team: &Team,
+        now: i64,
+    ) -> Result<bool> {
+        if !matches!(team.status, TeamStatus::Stopped | TeamStatus::Archived) {
+            return Ok(true);
+        }
+        let after = self
+            .load::<String>(&team.id, "terminal_delivery_cursor")?
+            .unwrap_or_default();
+        let rows = self.ledger.prefix_page(&team.id, "delivery:", &after)?;
+        let next = if rows.len() == 200 {
+            rows.last().unwrap().key.clone()
+        } else {
+            String::new()
+        };
+        for row in rows {
+            let mut d: Delivery =
+                serde_json::from_value(row.data).map_err(crate::teams::store::storage)?;
+            if !d.not_started {
+                continue;
+            }
+            if d.outcome.is_none() {
+                d.outcome = Some(HandoutOutcome::Refused {
+                    reason: "Delivery did not start before the team ended".into(),
+                });
+                d.gated = true;
+                self.put(&team.id, &row.key, &d)?;
+            }
+            self.settle(store, team, &row.key, d, now)?;
+        }
+        self.put(&team.id, "terminal_delivery_cursor", &next)?;
+        Ok(next.is_empty())
     }
     pub(super) fn open_effects(&self, store: &Store, team: &str) -> Result<Vec<EffectIntent>> {
         let mut out = Vec::new();

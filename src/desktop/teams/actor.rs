@@ -81,9 +81,11 @@ impl Runtime {
         let Some(team) = store.team(id)? else {
             return Ok(());
         };
-        if team.home != self.machine
-            || !matches!(team.status, TeamStatus::Running | TeamStatus::Paused)
-        {
+        if team.home != self.machine {
+            return Ok(());
+        }
+        if !matches!(team.status, TeamStatus::Running | TeamStatus::Paused) {
+            self.terminal_deliveries(store, &team, now)?;
             return Ok(());
         }
         self.observe(store, ports, &team, now, safety)?;
