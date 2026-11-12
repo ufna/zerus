@@ -166,6 +166,16 @@ impl Fixture {
         let reply = self.call(&args, &request, true);
         assert_eq!(reply["schema"], 1);
         assert_eq!(reply["id"], id);
+        assert_eq!(reply["team"], team.id);
+        assert_eq!(reply["node"], node.id);
+        assert_eq!(reply["member"], member.id);
+        assert!(
+            matches!(
+                super::super::native::decode_delivery(&serde_json::to_vec(&reply).unwrap(), id),
+                crate::teams::ops::HandoutOutcome::Submitted { .. }
+            ),
+            "{reply}"
+        );
         reply
     }
     fn inputs(&self) -> usize {

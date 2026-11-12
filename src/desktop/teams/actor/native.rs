@@ -270,8 +270,10 @@ pub(super) fn decode_delivery(raw: &[u8], id: &str) -> HandoutOutcome {
     if v["schema"].as_u64() != Some(1) {
         return bad();
     }
-    let Some(error) = v["error"].as_str() else {
-        return bad();
+    let error = match v.get("error") {
+        Some(Value::String(error)) => error.as_str(),
+        None if v["state"] == "submitted" => "",
+        _ => return bad(),
     };
     let reason = cut(
         if error.trim().is_empty() {

@@ -284,3 +284,17 @@ fn production_command_keeps_its_transaction_until_spawn_returns() {
         assert_eq!(checked.get(), 2);
     }
 }
+
+#[test]
+fn the_real_delivery_success_envelope_may_omit_the_error_field() {
+    assert!(matches!(decode_delivery(
+        br#"{"schema":1,"id":"effect","team":"team","node":1,"member":"m1","state":"submitted"}"#,
+        "effect"), HandoutOutcome::Submitted { .. }));
+    for state in ["refused", "uncertain", "cutting_over"] {
+        let raw = serde_json::json!({"schema":1,"id":"effect","state":state}).to_string();
+        assert!(matches!(
+            decode_delivery(raw.as_bytes(), "effect"),
+            HandoutOutcome::Uncertain { .. }
+        ));
+    }
+}
