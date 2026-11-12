@@ -134,7 +134,45 @@ pub(super) fn archive(ctx: &mut Context<'_>) -> Result<()> {
         return Err(invalid("The member cannot be removed."));
     }
     m.state = MemberState::Removed;
-    save(ctx, &m)
+    save(ctx, &m)?;
+    hand_back(ctx, member)
+}
+/// Removal settles the Returns and Reassigns aimed at the member that have
+/// not started and hands each node back to the lead as a reopen that could
+/// not be delivered does: the decision settled, the node held, and one inbox
+/// item. A stopped or busy member keeps them; that wait is intended.
+fn hand_back(ctx: &mut Context<'_>, member: &str) -> Result<()> {
+    for (seq, node, kind) in reopen_decisions(ctx)? {
+        if ctx.unstarted(node)?.map(|(s, _)| s) != Some(seq)
+            || handout::reopen_target(ctx, node, &kind)?.as_deref() != Some(member)
+        {
+            continue;
+        }
+        ctx.settle(node)?;
+        queue::set_hold(ctx, node, true)?;
+        let body = format!(
+            "Member {member} was removed before the {kind} of task {node} started; the decision is settled and the task waits for a new one."
+        );
+        ctx.inbox(node, &format!("member_removed:{seq}"), &body)?;
+    }
+    Ok(())
+}
+/// The team's unsettled Returns and Reassigns, from the partial index of
+/// open decisions and within its bound.
+fn reopen_decisions(ctx: &Context<'_>) -> Result<Vec<(u64, u32, String)>> {
+    let mut s = ctx.db.prepare("SELECT seq,node,kind FROM decisions INDEXED BY decision_pending WHERE team=?1 AND state<>'settled' AND kind IN ('return','reassign') ORDER BY node LIMIT ?2").map_err(storage)?;
+    let rows = s
+        .query_map(
+            params![ctx.team.id, delegation::MAX_OPEN_DECISIONS + 1],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .map_err(storage)?
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(storage)?;
+    if rows.len() > delegation::MAX_OPEN_DECISIONS {
+        return Err(over("Too many open decisions to settle for the member."));
+    }
+    Ok(rows)
 }
 fn save(ctx: &Context<'_>, m: &Member) -> Result<()> {
     ctx.db

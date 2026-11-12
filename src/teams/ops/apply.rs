@@ -41,6 +41,7 @@ pub fn apply(store: &mut Store, actor: &Actor, request: &Request, now: i64) -> R
             item: None,
         },
         event: None,
+        superseded: None,
     };
     let result = run(&mut ctx, request, current.is_some());
     // A storage failure is not a saved decision. Dropping the transaction

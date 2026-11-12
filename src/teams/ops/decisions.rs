@@ -63,15 +63,33 @@ pub(super) fn return_task(ctx: &mut Context<'_>) -> Result<()> {
         unreachable!()
     };
     ctx.active()?;
-    ctx.undecided(*node)?;
-    let n = ctx.live_node(*node)?;
+    let earlier = ctx.supersede(*node)?;
+    let mut n = ctx.live_node(*node)?;
     reason(why)?;
-    if n.state != NodeState::Reported || handout::holder(ctx, *node)?.is_none() {
+    let holder = handout::holder(ctx, *node)?;
+    let Some(holder) = holder.filter(|_| n.state == NodeState::Reported) else {
         return Err(invalid(
             "Only a reported task with a holder can be returned.",
         ));
+    };
+    // A Return to a removed holder could never be carried out.
+    if ctx.member(&holder)?.state == MemberState::Removed {
+        return Err(invalid(
+            "The task's holder was removed from the team; reassign or cancel the task instead.",
+        ));
     }
     pipeline::override_task(ctx, *node)?;
+    // A superseded Reassign did not happen: the work goes back to its holder,
+    // who is also the member a later hand-out of the node follows.
+    if earlier.is_some_and(|(_, kind)| kind == "reassign") {
+        n.assignee = Some(holder);
+        ctx.db
+            .execute(
+                "UPDATE nodes SET data=?3 WHERE team=?1 AND id=?2",
+                params![ctx.team.id, node, rows::node_payload(&n)?],
+            )
+            .map_err(storage)?;
+    }
     ctx.decision(*node, "return", why, DecisionState::Pending)?;
     Ok(())
 }
@@ -85,7 +103,7 @@ pub(super) fn reassign(ctx: &mut Context<'_>) -> Result<()> {
         unreachable!()
     };
     ctx.active()?;
-    ctx.undecided(*node)?;
+    ctx.supersede(*node)?;
     let mut n = ctx.live_node(*node)?;
     let m = ctx.member(member)?;
     reason(why)?;
@@ -118,7 +136,7 @@ pub(super) fn cancel(ctx: &mut Context<'_>) -> Result<()> {
         unreachable!()
     };
     ctx.active()?;
-    ctx.undecided(*node)?;
+    ctx.supersede(*node)?;
     let n = ctx.live_node(*node)?;
     stage_end_authority(ctx, &n)?;
     reason(why)?;

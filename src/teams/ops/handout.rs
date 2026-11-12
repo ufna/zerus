@@ -11,6 +11,15 @@ pub(super) struct Effect {
 pub(super) fn holder(ctx: &Context<'_>, node: u32) -> Result<Option<String>> {
     ctx.db.query_row("SELECT member FROM effects WHERE team=?1 AND node=?2 AND generation=?3 ORDER BY seq DESC LIMIT 1",params![ctx.team.id,node,ctx.generation(node)?],|r|r.get(0)).optional().map_err(storage)
 }
+/// The member a Return or Reassign reopens the node for: a Reassign's
+/// assignee, a Return's holder.
+pub(super) fn reopen_target(ctx: &Context<'_>, node: u32, kind: &str) -> Result<Option<String>> {
+    if kind == "reassign" {
+        Ok(ctx.node(node)?.assignee)
+    } else {
+        holder(ctx, node)
+    }
+}
 pub(super) fn intent(ctx: &mut Context<'_>) -> Result<()> {
     let Operation::HandoutIntent {
         node,
@@ -116,11 +125,7 @@ pub(super) fn reopen_intent(ctx: &mut Context<'_>) -> Result<()> {
     if !matches!(kind.as_str(), "return" | "reassign") || state != DecisionState::Pending {
         return Err(invalid("Reopen was already reserved or is not requested."));
     }
-    let target = if kind == "reassign" {
-        n.assignee.clone()
-    } else {
-        holder(ctx, *node)?
-    };
+    let target = reopen_target(ctx, *node, &kind)?;
     if target.as_deref() != Some(member) {
         return Err(invalid(
             "Reopen recipient differs from the decision's holder.",

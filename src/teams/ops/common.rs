@@ -9,6 +9,9 @@ pub(super) struct Context<'a> {
     pub now: i64,
     pub reply: Reply,
     pub event: Option<&'static str>,
+    /// The earlier decision this operation's decision replaced, for the
+    /// journal.
+    pub superseded: Option<u64>,
 }
 impl Context<'_> {
     pub fn node(&self, id: u32) -> Result<Node> {
@@ -74,6 +77,32 @@ impl Context<'_> {
         } else {
             Ok(())
         }
+    }
+    /// The node's Return or Reassign that has not started: unsettled, and no
+    /// reopen was reserved for it (`reopening`, the reopen intent's mark).
+    pub fn unstarted(&self, node: u32) -> Result<Option<(u64, String)>> {
+        let Some((seq, kind, _)) = self.pending(node)? else {
+            return Ok(None);
+        };
+        if !matches!(kind.as_str(), "return" | "reassign") || self.reopening(node)? {
+            return Ok(None);
+        }
+        Ok(Some((seq, kind)))
+    }
+    /// The one-unsettled-decision rule for a lead's or the person's Return,
+    /// Reassign or Cancel. An earlier Return or Reassign that has not started
+    /// is settled as superseded in this operation and named in its journal
+    /// entry; any other unsettled decision refuses the new one as before.
+    pub fn supersede(&mut self, node: u32) -> Result<Option<(u64, String)>> {
+        if self.pending(node)?.is_none() {
+            return Ok(None);
+        }
+        let earlier = self
+            .unstarted(node)?
+            .ok_or_else(|| invalid("The previous decision has not settled."))?;
+        self.settle(node)?;
+        self.superseded = Some(earlier.0);
+        Ok(Some(earlier))
     }
     pub fn settle(&self, node: u32) -> Result<()> {
         self.settle_node(node, false)
