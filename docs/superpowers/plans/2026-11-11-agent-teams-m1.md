@@ -1636,7 +1636,19 @@ this milestone. And removing a member settles the Returns and Reassigns
 aimed at it that have not started and hands their nodes back to the lead
 with one inbox item each, as a reopen that could not be delivered does. A
 member that is stopped or busy keeps them: that wait is intended, and the
-lead can now decide otherwise.
+lead can now decide otherwise. The same holds for the Returns the store
+writes itself, after an integration conflict or a stage's failed verdict:
+when their holder was already removed the fact or the verdict is recorded
+and the node goes to the lead instead. And a Return that has not started
+and whose holder reads as nobody is handed back in the operation that
+makes it so; the service is never asked, because it makes no reopen for a
+task without a member. There are three such operations: a member's
+removal, which finds its Returns by the newest effect's member whatever
+that effect's state (a reading used only to hand back, never to deliver);
+an outcome recorded as refused that leaves nobody holding the task; and,
+once, the upgrade to the layout in which only a delivered hand-out gives a
+holder, for a Return that an earlier build admitted while the hand-out was
+only reserved.
 
 **A reader of a reply ignores what it does not know.** The contract's types
 refuse unknown fields, and that stays the rule for what a person or a
