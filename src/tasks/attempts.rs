@@ -365,7 +365,15 @@ pub(super) fn render(
     let (mut prompt, attachments) =
         super::dispatch_content(settings, &view, project_name, subagent)?;
     super::controls::pin_dispatch(&mut prompt, project_name, &view.id, id);
-    crate::state::prepare_task_reply(to, "", id, &prompt, &attachments).map_err(refused)
+    crate::state::prepare_task_reply(
+        to,
+        "",
+        id,
+        &prompt,
+        &attachments,
+        crate::state::Continuation::SameRun,
+    )
+    .map_err(refused)
 }
 
 /// A `task send` or `task handoff` through the attempt admission. `Some`
@@ -592,6 +600,7 @@ pub(super) fn reopen_request(
         dispatch,
         None,
         prepare_failed,
+        crate::state::Continuation::SameRun,
     )
 }
 
@@ -614,6 +623,7 @@ pub(super) fn reopen_request_from(
     dispatch: &str,
     notice: Option<&str>,
     refused: fn(String) -> Error,
+    continuation: crate::state::Continuation,
 ) -> Result<Value> {
     let mut prompt = super::messages::prompt_from(
         project_name,
@@ -630,7 +640,8 @@ pub(super) fn reopen_request_from(
         .map(serde_json::to_value)
         .collect::<std::result::Result<Vec<_>, _>>()
         .map_err(fail)?;
-    crate::state::prepare_task_reply(to, dispatch, id, &prompt, &attachments).map_err(refused)
+    crate::state::prepare_task_reply(to, dispatch, id, &prompt, &attachments, continuation)
+        .map_err(refused)
 }
 
 /// A fresh reopen through the attempt admission (desktop-u's (b)). In the

@@ -1004,9 +1004,17 @@ pub(crate) fn submit_task_message(session: &zerus_replica::SessionKey, text: &st
     input::submit_task(session, text, attachments)
 }
 
-pub(crate) fn prepare_task_reply(session: &zerus_replica::SessionKey, dispatch: &str, id: &str, text: &str, attachments: &[Value]) -> Result<Value> {
+pub(crate) use input::{Continuation, CONVERSATION_GONE};
+pub(crate) fn prepare_task_reply(
+    session: &zerus_replica::SessionKey,
+    dispatch: &str,
+    id: &str,
+    text: &str,
+    attachments: &[Value],
+    continuation: Continuation,
+) -> Result<Value> {
     local_sessions()?;
-    input::task_reply(session, dispatch, id, text, attachments)
+    input::task_reply(session, dispatch, id, text, attachments, continuation)
 }
 pub(crate) fn submit_task_reply(name: &str, request: &Value) -> Result<Value> {
     input::submit(name, request.to_string().as_bytes(), None)
