@@ -306,7 +306,9 @@ pub enum Operation {
         node: Option<NodeId>,
         /// The decisions the card takes: at most four short tokens of
         /// lower-case ASCII and underscores. Without it, acknowledged alone.
-        #[serde(default)]
+        /// Left out when absent, so that a request saved before the list
+        /// existed replays byte for byte.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         decisions: Option<Vec<String>>,
     },
     CloseCard {

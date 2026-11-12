@@ -594,3 +594,50 @@ fn return_follows_the_holder_the_row_shows() {
         }
     }
 }
+
+/// Finding 3 of the cards review: an OpenCard saved before the decisions
+/// list existed replays to its saved reply. The absent list is left out of
+/// the request's bytes; a given list is kept.
+#[test]
+fn an_open_card_saved_before_the_list_replays_to_its_saved_reply() {
+    let mut h = Harness::new();
+    let rev = h.store.team(TEAM).unwrap().unwrap().revision;
+    let plain = request(
+        rev,
+        Operation::OpenCard {
+            kind: "standing_confirmation".into(),
+            text: "Example card".into(),
+            node: None,
+            decisions: None,
+        },
+    );
+    let first = crate::teams::ops::apply(&mut h.store, &service(), &plain, 1234).unwrap();
+    // The request as a build before the list wrote it.
+    let old = format!(
+        r#"{{"request_id":"{}","team":"{}","expected_revision":{},"op":"open_card","kind":"standing_confirmation","text":"Example card","node":null}}"#,
+        plain.request_id, TEAM, rev
+    );
+    let db = h.store.db.as_ref().unwrap();
+    let saved: String = db
+        .query_row(
+            "SELECT content FROM requests WHERE id=?1",
+            [&plain.request_id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(saved, old, "no list, no key");
+    let again = crate::teams::ops::apply(&mut h.store, &service(), &plain, 1234).unwrap();
+    assert_eq!(again, first, "the saved reply");
+    let listed = request(
+        h.store.team(TEAM).unwrap().unwrap().revision,
+        Operation::OpenCard {
+            kind: "standing_confirmation".into(),
+            text: "Example card".into(),
+            node: None,
+            decisions: Some(vec!["retry".into()]),
+        },
+    );
+    let first = crate::teams::ops::apply(&mut h.store, &service(), &listed, 1234).unwrap();
+    let again = crate::teams::ops::apply(&mut h.store, &service(), &listed, 1234).unwrap();
+    assert_eq!(again, first);
+}
