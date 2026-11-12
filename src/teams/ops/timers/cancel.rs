@@ -11,6 +11,7 @@ pub(in crate::teams::ops) fn record_cancel(ctx: &mut Context<'_>) -> Result<()> 
         decision,
         state,
         reason: why,
+        attempt: _,
     } = ctx.op
     else {
         unreachable!()

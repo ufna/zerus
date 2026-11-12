@@ -141,6 +141,7 @@ fn stop(h: &mut Harness) {
         decision: first.decision,
         state: CancelState::Cancelled,
         reason: String::new(),
+        attempt: 0,
     };
     h.run(&service(), op).unwrap();
 }

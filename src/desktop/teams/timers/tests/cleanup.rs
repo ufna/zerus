@@ -99,6 +99,7 @@ fn settle_cancels(h: &mut Harness) {
                 decision: row.decision,
                 state: crate::teams::ops::CancelState::Cancelled,
                 reason: String::new(),
+                attempt: 0,
             };
             h.run(&service(), op).unwrap();
         }

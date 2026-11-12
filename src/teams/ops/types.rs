@@ -78,6 +78,13 @@ pub struct TaskObservation {
     pub rank: String,
     #[serde(default)]
     pub title: String,
+    /// The highest generation any attempt of the task claims; 0 without one.
+    #[serde(default)]
+    pub attempt: u64,
+    /// The ID of the task's current attempt; empty without one. An attempt
+    /// the team hands out has its effect's request ID. At most 256 bytes.
+    #[serde(default)]
+    pub attempt_id: String,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -322,6 +329,9 @@ pub enum Operation {
         state: CancelState,
         #[serde(default)]
         reason: String,
+        /// The task attempt the team-cancel child acted on.
+        #[serde(default)]
+        attempt: u64,
     },
 }
 

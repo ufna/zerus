@@ -1,5 +1,6 @@
 use super::*;
 use crate::teams::ops::tests::*;
+mod attempts;
 mod cancels;
 mod cards;
 mod stages;

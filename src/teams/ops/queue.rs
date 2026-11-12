@@ -367,6 +367,7 @@ fn validate_observation(
     text(&o.previous_revision, 256)?;
     text(&o.rank, 256)?;
     text(&o.title, 1024)?;
+    text(&o.attempt_id, 256)?;
     let old = rows::observation(ctx.db, &ctx.team.id, node)?;
     let stage = encode(&o.stage)?.trim_matches('"').to_owned();
     if let Some(old) = &old {

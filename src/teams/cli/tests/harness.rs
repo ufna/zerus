@@ -283,6 +283,8 @@ impl Harness {
             cancelled: false,
             rank: format!("a{node:02}"),
             title: format!("Task {node}"),
+            attempt: 0,
+            attempt_id: String::new(),
         };
         self.apply(&service(), Operation::ObserveTask { node, observation });
     }

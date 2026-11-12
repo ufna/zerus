@@ -70,6 +70,9 @@ fn observation(document: &TaskDoc, team: &str, home: &str) -> Result<TaskObserva
         cancelled: view.cancelled_at.is_some(),
         rank: view.rank,
         title: view.title,
+        // The task side fills these from the document's attempts (6b).
+        attempt: 0,
+        attempt_id: String::new(),
     })
 }
 fn record(store: &mut Store, team: &str, node: u32, document: &TaskDoc) -> Result<()> {

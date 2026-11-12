@@ -15,7 +15,7 @@ use super::*;
 use std::time::Duration;
 
 /// Raised whenever this package's layout changes.
-pub(crate) const EXTENSION: u32 = 3;
+pub(crate) const EXTENSION: u32 = 4;
 
 #[cfg(test)]
 type Hook = Box<dyn FnOnce() -> Result<()>>;
@@ -93,6 +93,7 @@ fn transition(db: &Connection) -> Result<()> {
     // after this transaction is seen by them, and none can commit inside it.
     db.execute_batch(include_str!("../timers.sql"))
         .map_err(storage)?;
+    observed_attempts(db)?;
     migrate_outbox(db)?;
     backfill_teams(db)?;
     backfill_released(db)?;
@@ -127,6 +128,28 @@ fn backfill_teams(db: &Connection) -> Result<()> {
             _ => return Ok(()),
         }
     }
+}
+/// A task observation keeps the attempt it shows beside its data: columns of
+/// package 6's table, in its definition for a new store and added here to a
+/// table an older store already has.
+fn observed_attempts(db: &Connection) -> Result<()> {
+    for (column, kind) in [
+        ("attempt", "INTEGER NOT NULL DEFAULT 0"),
+        ("attempt_id", "TEXT NOT NULL DEFAULT ''"),
+    ] {
+        let present: bool = db
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM pragma_table_info('task_observations') WHERE name=?1)",
+                [column],
+                |r| r.get(0),
+            )
+            .map_err(storage)?;
+        if !present {
+            let sql = format!("ALTER TABLE task_observations ADD COLUMN {column} {kind}");
+            db.execute_batch(&sql).map_err(storage)?;
+        }
+    }
+    Ok(())
 }
 /// Version 1 kept released stages in an outbox; they move to the frontier.
 fn migrate_outbox(db: &Connection) -> Result<()> {
