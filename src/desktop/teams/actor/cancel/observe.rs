@@ -26,7 +26,7 @@ impl Runtime {
         p: &mut impl Ports,
         team: &Team,
         key: &str,
-        row: &Entry,
+        row: &mut Entry,
         now: i64,
     ) -> Result<bool> {
         let Some(task) = row.pending.task.as_ref() else {
@@ -41,7 +41,19 @@ impl Runtime {
         boundary("before_observe");
         p.observe(store, task)?;
         boundary("observed");
-        self.cancel_done(store, &fresh, key, now)?;
+        if self.cancel_still_pending(store, p, &fresh, row)? {
+            self.changed_cancel_visit(
+                store,
+                p,
+                &fresh,
+                key,
+                row,
+                "The ordinary observation left the same cancel decision pending.",
+                now,
+            )?;
+        } else {
+            self.cancel_done(store, &fresh, key, now)?;
+        }
         Ok(true)
     }
 }

@@ -24,7 +24,7 @@ impl Runtime {
             match p.cancel_fact_outcome(store, t, row.fact.as_ref().unwrap(), now) {
                 Ok(FactOutcome::Recorded) => {
                     boundary("recorded");
-                    return self.cancel_done(store, t, key, now);
+                    return self.recorded_cancel(store, p, t, key, row, now);
                 }
                 Ok(FactOutcome::Changed { reason }) => {
                     return self.changed_cancel_visit(store, p, t, key, row, &reason, now);
@@ -44,6 +44,41 @@ impl Runtime {
             }
         }
         Ok(())
+    }
+    #[allow(clippy::too_many_arguments)]
+    fn recorded_cancel(
+        &mut self,
+        store: &mut Store,
+        p: &mut impl Ports,
+        t: &Team,
+        key: &str,
+        row: &mut Entry,
+        now: i64,
+    ) -> Result<()> {
+        if !self.cancel_still_pending(store, p, t, row)? {
+            return self.cancel_done(store, t, key, now);
+        }
+        let reason = "The recorded cancel outcome left the same decision pending.";
+        if row.refusal_exit {
+            self.cancel_refused_exit(store, t, key, row, reason)?;
+            return Err(problem(&row.reason));
+        }
+        self.changed_cancel_visit(store, p, t, key, row, reason, now)
+    }
+    pub(super) fn cancel_still_pending(
+        &self,
+        store: &Store,
+        p: &mut impl Ports,
+        t: &Team,
+        row: &Entry,
+    ) -> Result<bool> {
+        Ok(p.cancels(store, &t.id, row.pending.node.saturating_sub(1))?
+            .first()
+            .is_some_and(|f| {
+                f.node == row.pending.node
+                    && f.decision == row.pending.decision
+                    && f.generation == row.pending.generation
+            }))
     }
     fn reserve_cancel_fact(&self, store: &Store, t: &Team, row: &mut Entry) -> Result<()> {
         if row.fact.is_some() {
@@ -118,7 +153,7 @@ impl Runtime {
             == Some(&row.pending))
     }
     #[allow(clippy::too_many_arguments)]
-    fn changed_cancel_visit(
+    pub(super) fn changed_cancel_visit(
         &mut self,
         store: &mut Store,
         p: &mut impl Ports,
@@ -134,7 +169,7 @@ impl Runtime {
         if !self.refresh_cancel(store, p, t, key, row, now)? {
             return Ok(());
         }
-        if row.children >= 3 {
+        if row.children >= 3 || row.pending.task.is_none() {
             row.reply = answered;
             return self.cancel_refused_exit(store, t, key, row, reason);
         }

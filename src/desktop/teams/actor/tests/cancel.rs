@@ -16,6 +16,8 @@ struct Fake {
     missing_pair: bool,
     keep_once: bool,
     always_changed: bool,
+    keep_observed: bool,
+    keep_recorded: bool,
     answered_cancelled: bool,
     fail_observe: bool,
 }
@@ -32,7 +34,7 @@ impl Ports for Fake {
         if self.fail_observe {
             return Err(super::super::problem("fixture observation unavailable"));
         }
-        if self.answered_cancelled {
+        if self.answered_cancelled && !self.keep_observed {
             self.pending.clear();
         }
         if self.move_pair {
@@ -92,7 +94,7 @@ impl Ports for Fake {
             return Ok(super::super::cancel::FactOutcome::Changed {
                 reason: "The observed execution changed".into(),
             });
-        } else {
+        } else if !self.keep_recorded || f.refused {
             self.pending.retain(|p| p.decision != f.pending.decision);
         }
         Ok(super::super::cancel::FactOutcome::Recorded)
@@ -515,4 +517,30 @@ fn a_cancel_pass_spends_at_most_four_effects_and_resumes_the_rest() {
     a.cancels(&mut h.store, &mut p, &h_team(), 102).unwrap();
     assert_eq!(p.calls, (1..=9).collect::<Vec<_>>());
     assert!(p.pending.is_empty());
+}
+
+#[test]
+fn the_decision_budget_survives_successful_visits_that_leave_the_decision_pending() {
+    for observed in [false, true] {
+        let (mut h, mut a, mut p) = setup();
+        p.reply = Some(if observed {
+            TaskReply::Cancelled
+        } else {
+            TaskReply::Released
+        });
+        p.keep_observed = observed;
+        p.keep_recorded = !observed;
+        for pass in 0..100 {
+            let machine = a.machine.clone();
+            if pass > 0 {
+                drop(a);
+                a = super::super::Runtime::open(h.temp.path(), &machine).unwrap();
+            }
+            a.tick(&mut h.store, &mut p, TEAM, 100 + pass * 900_000, false)
+                .unwrap();
+        }
+        assert_eq!(p.calls.len(), 3, "observed={observed}");
+        assert!(p.pending.is_empty());
+        assert_eq!(p.facts.iter().filter(|f| f.refused).count(), 1);
+    }
 }
