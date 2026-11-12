@@ -285,7 +285,7 @@ impl Runtime {
                 return Err(problem("Cancel returned no attempt evidence"));
             }
             TaskReply::Cancelled | TaskReply::Released | TaskReply::Refused { .. } => (),
-            TaskReply::CuttingOver { reason } => return Err(problem(reason)),
+            TaskReply::CuttingOver { reason } => return Err(problem(&reason::spoken(reason))),
             _ => return Err(problem("Cancel answered another command")),
         }
         row.stale_before = matches!(answer.reply, TaskReply::Stale).then_some(before);

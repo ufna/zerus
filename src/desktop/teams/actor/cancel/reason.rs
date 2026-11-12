@@ -28,18 +28,22 @@ fn answered(row: &Entry) -> String {
     } else {
         &row.sentence
     };
-    // The command's own words: its control characters are removed here,
-    // and whitespace is normalized below.
-    let own: String = own
-        .chars()
-        .filter(|c| !c.is_control() || c.is_whitespace())
-        .collect();
-    let own = sentence(&own, 512);
+    let own = spoken(own);
     if own.is_empty() {
         format!("The cancel command answered {state}.")
     } else {
         format!("The cancel command answered {state}: {own}.")
     }
+}
+/// A sentence taken from the command's answer: its control characters are
+/// removed, whitespace is normalized and it is cut to 512 bytes. Every place
+/// that takes the command's own words uses this.
+pub(super) fn spoken(text: &str) -> String {
+    let text: String = text
+        .chars()
+        .filter(|c| !c.is_control() || c.is_whitespace())
+        .collect();
+    sentence(&text, 512)
 }
 fn sentence(text: &str, limit: usize) -> String {
     cut(text, limit)
