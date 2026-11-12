@@ -1376,10 +1376,7 @@ part of the Dev gate or of Nightly: a red run is visible and holds nothing back.
   or a scripted shell step for a delivered task prompt or a typed `ZT-RUN <step>`.
   No account and no model quota are used, and only fixture keys exist in the root.
 
-It runs these steps in order. Steps 2 to 4 are written against the real agents but wait for
-`zerus-63rru.51` (the teams actor reads fleet-row keys that the rows do not carry, so no
-member is ever free): they stay in the module as `waiting_*` methods listed in `WAITING`,
-and the contract does not select them until the fix lands.
+It runs these steps in order:
 
 1. **Launch and identity.** The launch binds by launch ID, and the session record
    carries the store's ownership nonce and worktree. The native process is the
@@ -1395,8 +1392,8 @@ and the contract does not select them until the fix lands.
    of the item's text, and its own shell reads the inbox as the lead.
 4. **The cancel notice.** The lead cancels a delivered task from its shell, and the
    member gets the existing notice once.
-5. **Stop and Terminate.** The step adds a task first, so the stop has an unfinished
-   node. The person's team stop ends no agent, while the service cancels the stopped
+5. **Stop and Terminate.** Unless a task is still unfinished, the step adds one, so
+   the stop has an unfinished node. The person's team stop ends no agent, while the service cancels the stopped
    team's nodes. Terminate ends the member's process and
    archives its run.
 
@@ -1429,7 +1426,6 @@ select them until their fixes land.
 
 | Case | Waits for |
 |---|---|
-| Steps 2 to 4, every agent | `zerus-63rru.51` |
 | Claude Code folder trust by the standing confirmation (`NativeTeamsTrustClaude`, two members pinned to one account): the service answers each member's startup folder trust with one audit grant, and a prompt that is not a startup prompt stays the person's. What Claude Code 2.1.322 records is pinned as observed: the account holds exactly the main checkout as trusted and no worktree key, and the later worktree on the same account still shows its card | `zerus-63rru.60` (the audit reservation compares the real card's null conversation with an empty string) |
 | A Claude Code member that exits before any message (`NativeTeamsResumeUnworkedClaude`): nothing starts, and the card carries the command's own reason | `zerus-63rru.62` (the restore is refused before launch with "persisted conversation is missing or empty", but the card does not say so) |
 | Codex resume of an exited member (`NativeTeamsResumeCodex`) | `zerus-63rru.54` (the resumed member never gets its brief) and `zerus-63rru.56` (three states read as an exit) |
@@ -1530,8 +1526,7 @@ the Teams caller proof refuses a person command below a live agent.
   fakes.
 - **Timers past their first firing:** they are agent-independent and stay with the
   package fakes.
-- **The waiting cases:** delivery, the member's shell, the doorbell and the cancel
-  notice (`zerus-63rru.51`), Claude Code folder trust by the standing confirmation
+- **The waiting cases:** Claude Code folder trust by the standing confirmation
   (`zerus-63rru.60`), the refused restore of a member that never worked
   (`zerus-63rru.62`) and the Codex resume (`zerus-63rru.54` and `zerus-63rru.56`).
   The cases exist and are not selected.

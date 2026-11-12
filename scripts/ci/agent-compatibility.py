@@ -98,11 +98,12 @@ HINT_METHODS = ('test_lifecycle', 'test_lost_mark', 'test_pre_feature_first_resu
 TEAMS_CLASSES = {'claude': ['test_teams_native.NativeTeamsClaude', 'test_teams_native.NativeTeamsResumeClaude'],
                  'codex': ['test_teams_native.NativeTeamsCodex', 'test_teams_native.NativeTeamsTrustCodex']}
 TEAMS_TIMEOUT = 2400
-TEAMS_COVERAGE = ('team member launch and identity, team stop and Terminate; for Codex the refused repository-scope '
+TEAMS_COVERAGE = ('team member launch and identity, delivery into a free member and its own shell, the lead '
+                  'doorbell, the cancel notice, team stop and Terminate; for Codex the refused repository-scope '
                   'folder trust answered by the person; for Claude Code the resume of an exited member. Claude Code '
                   'folder trust by the standing confirmation waits for zerus-63rru.60; the refused restore of a '
                   'member that never worked for zerus-63rru.62; the Codex resume for zerus-63rru.54 and '
-                  'zerus-63rru.56; delivery, the member shell, the doorbell and the cancel notice for zerus-63rru.51')
+                  'zerus-63rru.56')
 HINT_CLASSES = {
     'claude': ('NativeClaudeHint', 'NativeWindowsClaudeHint'),
     'codex': ('NativeCodexHint', 'NativeWindowsCodexHint'),

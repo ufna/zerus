@@ -21,8 +21,7 @@ the Teams service touches a real session, in order:
 5. stop and terminate: a person's team stop ends no agent; a person's Terminate ends
    the member's process and archives its run.
 
-Steps 2 to 4 wait for zerus-63rru.51 (WAITING): they are kept as waiting_* methods
-that the contract does not select. Further classes turn one of the team's delegations
+Further classes turn one of the team's delegations
 on: folder trust by the standing confirmation (Codex selected; Claude Code waits for
 zerus-63rru.60) and the resume of an exited member (Claude Code selected; Codex waits
 for zerus-63rru.54 and zerus-63rru.56).
@@ -54,9 +53,6 @@ import teams_native_fixture as fixture
 # TeamsWaitingList keeps this list, the selection, the workflow header, the row's
 # coverage and the docs naming the same fixes.
 WAITING = {
-    'waiting_2_delivery_and_member_shell': 'zerus-63rru.51 (no member is free: availability reads subagents_active)',
-    'waiting_3_lead_doorbell': 'zerus-63rru.51 (the doorbell needs an idle lead and a report)',
-    'waiting_4_cancel_notice': 'zerus-63rru.51 (a delivered task to cancel needs a hand-out)',
     # Whole classes the teams contract does not select yet.
     'NativeTeamsTrustClaude': 'zerus-63rru.60 (src/approval_log/team.rs:58 compares the real card\'s null '
                               'conversation with an empty string, so the audit reservation fails before delivery; '
@@ -186,7 +182,7 @@ class TeamsContract(ClassFixture):
                          'the member is linked to its lead (manual link written after binding)')
 
     # 2 -----------------------------------------------------------------------
-    def waiting_2_delivery_and_member_shell(self):
+    def test_2_delivery_and_member_shell(self):
         fx = self.fx
         out = fx.root / 'out'
         fx.script('delivered', (
@@ -232,7 +228,7 @@ class TeamsContract(ClassFixture):
         type(self).first = dict(ref=ref, uuid=task_uuid, node=node['id'])
 
     # 3 -----------------------------------------------------------------------
-    def waiting_3_lead_doorbell(self):
+    def test_3_lead_doorbell(self):
         fx = self.fx
         bell = re.compile(r'(1 item waits|\d+ items wait) in your team inbox\. Read them with: hgs team inbox --team '
                           + re.escape(fx.team))
@@ -253,7 +249,7 @@ class TeamsContract(ClassFixture):
         self.assertTrue(any(row.get('kind') == 'report' and row.get('node') == self.first['node'] for row in inbox['rows']))
 
     # 4 -----------------------------------------------------------------------
-    def waiting_4_cancel_notice(self):
+    def test_4_cancel_notice(self):
         fx = self.fx
         out = fx.root / 'out'
         (out / 'begin-only').write_text('the member acknowledges and keeps working\n')
@@ -288,8 +284,9 @@ class TeamsContract(ClassFixture):
     def test_5_stop_and_terminate(self):
         fx = self.fx
         rows = fx.json('team', 'queue', '--team', fx.team, '--limit', '200', '--json').get('rows') or []
-        if not rows:
-            # The stop must have an unfinished node to cancel.
+        if not any(row.get('state') in ('waiting', 'pending', 'in_progress') for row in rows):
+            # The stop must have an unfinished node to cancel; the earlier steps' tasks are
+            # reported and cancelled, and a free member may take this one at once.
             _, task_uuid = fx.add_task('Fixture task for the stop', 'Fixture task: unfinished when the team stops.')
             fx.wait('task node in the queue', lambda: fx.node_of(task_uuid), fixture.BOUND['handout'], 2)
         before = {m: fx.process(m) for m in ('lead', 'm1')}

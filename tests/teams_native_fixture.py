@@ -784,9 +784,9 @@ class TeamFixture:
         return view
 
     def answer_startup(self, member_id):
-        """The person answers each startup card of this member until it is ready. Claude
-        and Kimi folder trust and Codex's hooks review go through `hgs answer`; Codex's
-        Folder access is only answerable in Terminal (zerus-63rru.49), where the person
+        """The person answers each startup card of this member until it is ready: through
+        `hgs answer` when the card can be answered there (Claude and Kimi folder trust,
+        Codex's Folder access and hooks review), otherwise in Terminal, where the person
         presses Enter on its highlighted first choice."""
         name = self.sessions[member_id]['name']
         answered = []

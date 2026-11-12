@@ -52,6 +52,9 @@ METHODS = (
 # api.kimi.com); everything after the choice is the real Kimi image.
 TEAMS_METHODS = (
     'test_teams_native.NativeTeamsKimi.test_1_launch_and_identity',
+    'test_teams_native.NativeTeamsKimi.test_2_delivery_and_member_shell',
+    'test_teams_native.NativeTeamsKimi.test_3_lead_doorbell',
+    'test_teams_native.NativeTeamsKimi.test_4_cancel_notice',
     'test_teams_native.NativeTeamsKimi.test_5_stop_and_terminate',
 )
 TEAMS_CASE_SECONDS = 2400
