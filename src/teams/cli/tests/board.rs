@@ -217,6 +217,8 @@ fn row_kind_uses_the_node_kind_for_a_reviewer_task_and_developer_stage() {
     h.apply(
         &person(),
         Operation::Create {
+            expected_template: None,
+            delegations: None,
             project: team.project,
             name: team.name,
             goal: team.goal,

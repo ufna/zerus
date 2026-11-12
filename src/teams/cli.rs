@@ -8,6 +8,7 @@ mod actor;
 mod board;
 mod catalog_cmd;
 mod commands;
+mod create;
 mod input;
 mod reads;
 #[cfg(test)]
