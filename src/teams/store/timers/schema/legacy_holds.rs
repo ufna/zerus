@@ -13,7 +13,8 @@
 //!   the row's references;
 //! - a refused cancel, an integration conflict or a failing verdict whose
 //!   holder was removed, and a pipeline waiting on the person, by the item
-//!   or card the operation's saved reply names.
+//!   or card named in the saved reply of the kind of operation that files
+//!   it (a verdict only on a stage of the node).
 //!
 //! Never placed among those records, so the person's whatever the rows say:
 //! a removed member's item, a pipeline active on a stage, and the step to
@@ -38,9 +39,9 @@ struct Held {
     /// A hand-back of a kind that cannot be placed, or an ambiguous link.
     unplaceable: bool,
     /// The hand-backs of its current generation, and those found in order.
-    /// An item filed for a decision names it (`cancel_refused:<decision>`,
-    /// `conflict_holder_removed:<decision>`); its operation must carry it.
-    traces: BTreeMap<String, Option<u64>>,
+    /// Each with the kind of operation that files it: only that
+    /// operation's saved reply places it.
+    traces: BTreeMap<String, &'static str>,
     placed: BTreeSet<String>,
     last: Option<(u64, Event)>,
 }
@@ -110,18 +111,20 @@ fn team_owners(db: &Connection, team: &str) -> Result<()> {
             held.insert(node, h);
         }
     }
-    // Each trace's key, to the node it belongs to and the decision its
-    // operation must carry.
-    let mut links: BTreeMap<String, Vec<(u32, Option<u64>)>> = BTreeMap::new();
+    // Each trace's key, to the node it belongs to and the operation that
+    // files it.
+    let mut links: BTreeMap<String, Vec<(u32, &'static str)>> = BTreeMap::new();
     for (node, h) in &held {
-        for (key, decision) in &h.traces {
-            links
-                .entry(key.clone())
-                .or_default()
-                .push((*node, *decision));
+        for (key, op) in &h.traces {
+            links.entry(key.clone()).or_default().push((*node, *op));
         }
     }
-    let replies = links.keys().any(|k| !k.starts_with("effect:"));
+    let filers: BTreeSet<&str> = links
+        .values()
+        .flatten()
+        .map(|(_, op)| *op)
+        .filter(|op| *op != "reopen_outcome")
+        .collect();
     let mut statement = db
         .prepare("SELECT seq,kind,actor,request_id,refs FROM journal WHERE team=?1 ORDER BY seq DESC LIMIT ?2")
         .map_err(storage)?;
@@ -163,21 +166,22 @@ fn team_owners(db: &Connection, team: &str) -> Result<()> {
                     place(&mut held, &links, key, seq);
                 }
             }
-            _ if replies => {
+            filer if filers.contains(filer) => {
                 let Some(saved) = saved(db, &request)? else {
                     continue;
                 };
                 let Some(item) = saved.item else {
                     continue;
                 };
-                // Items and cards are numbered apart: a number is a node's
-                // trace only from an operation on that node (or on its
-                // stage) that carries the trace's decision.
+                // A reply names an item, card, effect or other row by its
+                // number alone. The trace's own kind of operation says which:
+                // a refused cancel or a conflict files its item, a verdict its
+                // item or card, and a verdict must be on a stage of the node.
                 let mut found: BTreeMap<u32, Vec<String>> = BTreeMap::new();
                 for key in [format!("inbox:{item}"), format!("card:{item}")] {
-                    for (node, decision) in links.get(&key).into_iter().flatten() {
-                        if saved.names(db, team, *node)?
-                            && decision.is_none_or(|d| saved.decision == Some(d))
+                    for (node, op) in links.get(&key).into_iter().flatten() {
+                        if *op == filer
+                            && (filer != "verdict" || saved.on_stage_of(db, team, *node)?)
                         {
                             found.entry(*node).or_default().push(key.clone());
                         }
@@ -247,21 +251,28 @@ fn traces(db: &Connection, team: &str, node: u32, generation: u32, h: &mut Held)
         params![team, node, generation],
     )?;
     for (seq, kind) in items {
-        let decision = ["cancel_refused:", "conflict_holder_removed:"]
-            .iter()
-            .find_map(|prefix| kind.strip_prefix(prefix)?.parse::<u64>().ok());
-        h.traces.insert(format!("inbox:{seq}"), decision);
+        let op = if kind.starts_with("cancel_refused:") {
+            "record_cancel"
+        } else if kind.starts_with("conflict_holder_removed:") {
+            "record_integration_conflict"
+        } else {
+            "verdict"
+        };
+        h.traces.insert(format!("inbox:{seq}"), op);
     }
     h.traces
-        .extend(cards.into_iter().map(|s| (format!("card:{s}"), None)));
-    h.traces
-        .extend(effects.into_iter().map(|id| (format!("effect:{id}"), None)));
+        .extend(cards.into_iter().map(|s| (format!("card:{s}"), "verdict")));
+    h.traces.extend(
+        effects
+            .into_iter()
+            .map(|id| (format!("effect:{id}"), "reopen_outcome")),
+    );
     Ok(())
 }
 
 fn place(
     held: &mut BTreeMap<u32, Held>,
-    links: &BTreeMap<String, Vec<(u32, Option<u64>)>>,
+    links: &BTreeMap<String, Vec<(u32, &'static str)>>,
     key: &str,
     seq: u64,
 ) {
@@ -284,22 +295,18 @@ fn owner(actor: &str) -> Option<&'static str> {
     }
 }
 
-/// What a saved request names: the item or card its reply filed, and the
-/// node and decision its operation names.
+/// What a saved request names: the row its reply filed, by number, and the
+/// node its operation names.
 struct Saved {
     item: Option<u64>,
     node: Option<u64>,
-    decision: Option<u64>,
 }
 impl Saved {
-    /// The operation is on the node, or on a stage of it.
-    fn names(&self, db: &Connection, team: &str, node: u32) -> Result<bool> {
+    /// The operation is on a stage of the node.
+    fn on_stage_of(&self, db: &Connection, team: &str, node: u32) -> Result<bool> {
         let Some(named) = self.node else {
             return Ok(false);
         };
-        if named == u64::from(node) {
-            return Ok(true);
-        }
         let target: Option<u32> = db
             .query_row(
                 "SELECT target FROM stage_tasks WHERE team=?1 AND node=?2",
@@ -326,7 +333,6 @@ fn saved(db: &Connection, request: &str) -> Result<Option<Saved>> {
         Saved {
             item: result["Success"]["item"].as_u64(),
             node: content["node"].as_u64(),
-            decision: content["decision"].as_u64(),
         }
     }))
 }

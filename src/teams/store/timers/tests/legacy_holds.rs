@@ -444,3 +444,28 @@ fn a_release_last_leaves_the_hold_the_persons() {
         assert_eq!(stored(&h, 1), person_hold(), "layout {}", dump.layout);
     }
 }
+
+/// A verdict counts only on a stage of the node: the same real store, with
+/// the verdict's saved request naming another node (as a verdict on another
+/// parent's stage whose reply names the same number would), leaves the
+/// card unplaced and the hold the person's.
+#[test]
+fn a_verdict_places_only_the_card_of_its_stages_parent() {
+    for dump in [
+        dump!(8, "pipeline_person"),
+        dump!(9, "pipeline_person"),
+        dump!(10, "pipeline_person"),
+    ] {
+        let mut sql = dump.sql.to_owned();
+        let verdict = "\"op\":\"verdict\",\"node\":2,";
+        assert_eq!(sql.matches(verdict).count(), 1, "layout {}", dump.layout);
+        sql = sql.replace(verdict, "\"op\":\"verdict\",\"node\":99,");
+        let moved = Dump {
+            layout: dump.layout,
+            case: dump.case,
+            sql: Box::leak(sql.into_boxed_str()),
+        };
+        let h = legacy(&moved, Clock::Kept, None);
+        assert_eq!(stored(&h, 1), person_hold(), "layout {}", dump.layout);
+    }
+}
