@@ -54,6 +54,11 @@ WAITING = {
     'waiting_2_delivery_and_member_shell': 'zerus-63rru.51 (no member is free: availability reads subagents_active)',
     'waiting_3_lead_doorbell': 'zerus-63rru.51 (the doorbell needs an idle lead and a report)',
     'waiting_4_cancel_notice': 'zerus-63rru.51 (a delivered task to cancel needs a hand-out)',
+    # Whole classes the teams contract does not select yet.
+    'NativeTeamsTrustClaude': 'zerus-63rru.48, its audit half (src/approval_log/team.rs:58 compares the real card\'s '
+                              'null conversation with an empty string; run tc12)',
+    'NativeTeamsResumeCodex': 'zerus-63rru.54 (a resumed Codex member never gets its brief: the observe call is refused) '
+                              'and zerus-63rru.56 (three states read as an exit)',
 }
 
 
@@ -386,6 +391,65 @@ class CodexTrustContract(ClassFixture):
         fx.evidence.write('codex-trust-cards.json', fx.cards())
 
 
+class ResumeContract(ClassFixture):
+    """Delegation resume_exited on (folder trust stays the person's): a member whose
+    agent exits by itself is resumed with its brief, in the same launch and conversation
+    and a new run; a member the person terminated is not resumed."""
+    delegations = {'resume_exited': True}
+    exit_keys = ('/exit', 'Enter')
+
+    def brief_text(self):
+        return (f'You are a member of team {self.fx.team} in role zt-dev. '
+                'Read `hgs team current` for your current team and work.')
+
+    def test_1_a_member_that_exits_by_itself_is_resumed_with_its_brief(self):
+        fx = self.fx
+        # A resume continues a conversation; Codex starts one only at its first message.
+        if not fx.inspect('m1').get('conversation_id'):
+            fx.send('m1', 'Fixture first message.')
+            fx.wait('m1 conversation started by its first message', lambda: fx.inspect('m1').get('conversation_id'),
+                    fixture.BOUND['turn'], 2)
+        before = fx.inspect('m1')
+        pid, _ = fx.process('m1')
+        target = '=' + fx.sessions['m1']['name'] + ':'
+        for key in self.exit_keys:
+            subprocess.run(['tmux', 'send-keys', '-t', target, key], env=fx.env, check=True)
+        fx.wait('m1 agent exited by itself', lambda: fx.start_ticks(pid) is None or None, fixture.BOUND['exit'], 1)
+        resumed = fx.wait('the service resumed m1 in a new run', lambda: (lambda v: v if v.get('run_id') not in (None, before['run_id'])
+                          and v.get('runtime_state') == 'live' else None)(fx.inspect('m1')), fixture.BOUND['doorbell'], 3)
+        fx.evidence.write('resumed-view.json', {k: resumed.get(k) for k in ('run_id', 'conversation_id', 'launch_id', 'activity')})
+        self.assertEqual(resumed.get('launch_id'), before.get('launch_id'), 'the same launch')
+        self.assertEqual(resumed.get('conversation_id'), before.get('conversation_id'), 'the same conversation')
+        brief = self.brief_text()
+        seen = fx.wait('the brief reached the resumed member', lambda: fx.requests_with(lambda r: r.get('prompt') == brief),
+                       fixture.BOUND['turn'], 2)
+        latest = fx.requests_with(lambda r: brief in r['users'])[-1]
+        self.assertEqual(latest['users'].count(brief), 1, 'the brief arrives once')
+        rows = [r for r in fx.audit_rows(fx.sessions['m1']['name']) if json.loads(r['question']).get('source') == 'team_resume']
+        fx.evidence.write('resume-audit.json', rows)
+        self.assertTrue(rows, 'the resume is audited')
+        self.assertFalse([r for r in rows if r['status'] in ('prepared', 'cancelled', 'unknown')], rows)
+        type(self).resumed_run = resumed['run_id']
+
+    def test_2_a_member_the_person_terminates_is_not_resumed(self):
+        fx = self.fx
+        view = fx.inspect('m1')
+        pid, _ = fx.process('m1')
+        launch = view.get('launch_id')
+        last = max([c.get('seq', 0) for c in fx.cards()] or [0])
+        fx.hgs('terminate', fx.sessions['m1']['name'], '--expected-run-id', view['run_id'], timeout=120)
+        fx.wait('m1 process exited after Terminate', lambda: fx.start_ticks(pid) is None or None, fixture.BOUND['exit'], 1)
+        refused = fx.wait('the service refused to resume the terminated member, with a card for the person',
+                          lambda: [c for c in fx.cards() if c.get('seq', 0) > last
+                                   and 'Member m1 needs your attention' in c.get('text', '')], fixture.BOUND['doorbell'], 3)
+        fx.evidence.write('terminate-refusal.json', refused)
+        rows = [r for r in fx.audit_rows(fx.sessions['m1']['name'])
+                if json.loads(r['question']).get('source') == 'team_resume' and view['run_id'] in r['question']]
+        self.assertFalse(rows, 'no resume was reserved for the terminated run')
+        live = [r for r in fx.rows() if r.get('launch_id') == launch and r.get('runtime_state') == 'live']
+        self.assertFalse(live, 'no session of the member launch runs again')
+
+
 class TeamsFixtureIsolation(unittest.TestCase):
     """The fixture's own isolation, without an agent: the tmux wrapper judges resolved
     paths, and the preflight refuses the runner's account name in a child's environment."""
@@ -488,6 +552,20 @@ class NativeTeamsClaude(TeamsContract, unittest.TestCase):
 class NativeTeamsTrustClaude(ClaudeTrust, TrustContract, unittest.TestCase):
     agent = 'claude'
     variable = 'HGS_CLAUDE_TEST_BIN'
+
+
+@unittest.skipUnless(os.environ.get('HGS_CLAUDE_TEST_BIN') and fixture.HGS, 'Set HGS_TEST_BIN and HGS_CLAUDE_TEST_BIN')
+class NativeTeamsResumeClaude(ResumeContract, unittest.TestCase):
+    agent = 'claude'
+    variable = 'HGS_CLAUDE_TEST_BIN'
+
+
+@unittest.skipUnless(os.environ.get('HGS_CODEX_TEST_BIN') and fixture.HGS, 'Set HGS_TEST_BIN and HGS_CODEX_TEST_BIN')
+class NativeTeamsResumeCodex(ResumeContract, unittest.TestCase):
+    """Waiting (WAITING): not selected by the teams contract until zerus-63rru.54 and .56."""
+    agent = 'codex'
+    variable = 'HGS_CODEX_TEST_BIN'
+    exit_keys = ('/quit', 'Enter')
 
 
 @unittest.skipUnless(os.environ.get('HGS_CODEX_TEST_BIN') and fixture.HGS, 'Set HGS_TEST_BIN and HGS_CODEX_TEST_BIN')
