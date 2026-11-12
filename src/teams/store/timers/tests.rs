@@ -100,7 +100,14 @@ fn the_doorbell_admission_reads_the_team_the_binding_and_a_new_item() {
 #[test]
 fn every_timer_read_searches_an_index() {
     let h = Harness::new();
+    let queue = crate::teams::store::pages::node_page_sql("nodes", false);
+    let live = crate::teams::store::pages::node_page_sql("nodes", true);
+    let archived = crate::teams::store::pages::node_page_sql("node_archive", true);
     for (name, sql) in [
+        ("QUEUE_PAGE", queue.as_str()),
+        ("NODES_BY_STATE_PAGE", live.as_str()),
+        ("ARCHIVE_BY_STATE_PAGE", archived.as_str()),
+        ("MEMBER_PAGE", crate::teams::store::pages::MEMBER_PAGE_SQL),
         ("NEWEST", sql::NEWEST),
         ("OPEN", sql::OPEN),
         ("OLDEST", sql::OLDEST),

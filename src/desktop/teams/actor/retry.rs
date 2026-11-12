@@ -147,6 +147,8 @@ impl Runtime {
                         Operation::OpenCard {
                             kind: "team_actor_blocked".into(),
                             node: None,
+                            // Read by the gate's due check.
+                            decisions: Some(vec!["retry".into()]),
                             text: format!(
                                 "{}: {}. {}",
                                 cut(key, 200),

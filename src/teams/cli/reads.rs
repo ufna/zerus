@@ -29,7 +29,7 @@ pub(super) fn status(config: &Config, caller: &Caller, args: &[String]) -> Resul
             object.remove("bundle");
         }
     }
-    let members = store.members(&team, crate::teams::store::MAX_PAGE, None)?;
+    let members = store.member_rows(&team, crate::teams::store::MAX_PAGE, None)?;
     Ok(json!({
         "ok": true,
         "actor": actor::view(&identity.actor),
@@ -63,7 +63,7 @@ pub(super) fn list(
             page(
                 &identity,
                 &team,
-                super::board::queue(&pinned, store.queue(&team, limit, cursor)?)?,
+                super::board::queue(&pinned, store.queue_rows(&team, limit, cursor)?)?,
             )
         }
         "inbox" => page(&identity, &team, store.inbox(&team, limit, cursor)?),

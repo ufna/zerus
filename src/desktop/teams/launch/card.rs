@@ -51,6 +51,11 @@ impl Runtime {
                     .into(),
                     text: cut(&text, 3072).into(),
                     node: None,
+                    // Retry is read by the budget row on every pass and by a
+                    // member row while it waits on backoff; nothing else is.
+                    decisions: (row.member == crate::desktop::teams::ledger::BUDGET
+                        || row.state.waits_on_backoff())
+                    .then(|| vec!["retry".to_owned()]),
                 },
             });
             self.save(row, now)?;

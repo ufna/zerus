@@ -304,6 +304,10 @@ pub enum Operation {
         text: String,
         #[serde(default)]
         node: Option<NodeId>,
+        /// The decisions the card takes: at most four short tokens of
+        /// lower-case ASCII and underscores. Without it, acknowledged alone.
+        #[serde(default)]
+        decisions: Option<Vec<String>>,
     },
     CloseCard {
         card: u64,

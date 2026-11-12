@@ -269,6 +269,24 @@ fn a_store_marked_before_the_answers_gains_them_on_the_next_open() {
     assert_eq!(marker(&h), Some(EXTENSION));
 }
 
+/// A store marked by the answers' layout (version 9) gains the cards'
+/// decisions column in one step; its cards answer by their kind.
+#[test]
+fn a_store_marked_before_the_card_decisions_gains_their_column() {
+    let mut h = stopped();
+    let full = schema(&h);
+    db(&h)
+        .execute_batch(
+            "ALTER TABLE cards DROP COLUMN decisions; UPDATE timers_extension SET version=9;",
+        )
+        .unwrap();
+    let before = transitions();
+    reopen(&mut h);
+    assert_eq!(transitions(), before + 1);
+    assert_eq!(schema(&h), full, "the column, as a new store has it");
+    assert_eq!(marker(&h), Some(EXTENSION));
+}
+
 #[test]
 fn a_marker_newer_than_this_program_refuses_the_open_and_writes_nothing() {
     let h = stopped();

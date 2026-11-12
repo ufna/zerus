@@ -366,6 +366,7 @@ fn retry_decision_runs_the_row_early_and_its_next_failure_opens_one_new_card() {
     }
     let cards = h.store.cards(TEAM, 200, None).unwrap().rows;
     assert_eq!(cards.len(), 1);
+    assert_eq!(cards[0].decisions, ["retry"], "the decision the gate reads");
     let first = cards[0].seq;
     h.run(
         &person(),

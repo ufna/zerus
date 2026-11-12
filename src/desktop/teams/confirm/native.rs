@@ -160,6 +160,8 @@ impl Native<'_> {
                         row.detail.chars().take(2048).collect::<String>()
                     ),
                     node: None,
+                    // Nothing reads its decision: acknowledged alone.
+                    decisions: None,
                 },
             };
             self.ledger.save_card(&row.plan.key, Some(&request))?;

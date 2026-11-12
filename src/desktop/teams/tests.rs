@@ -258,6 +258,7 @@ fn unknown_launch_opens_exactly_one_card_and_never_relaunches_after_restart() {
     assert_eq!(e.events, ["branch", "worktree:lead", "launch:lead"]);
     assert_eq!(cards(&h).len(), 1);
     assert_eq!(cards(&h)[0].kind, "launch_uncertain");
+    offered_as_read(&cards(&h)[0]);
 }
 #[test]
 fn restart_at_every_durable_transition_never_continues_an_original() {
@@ -1070,6 +1071,7 @@ fn observation_read_errors_do_not_turn_a_running_launch_into_uncertainty() {
     assert_eq!(row(&h, "lead").state, State::Submitted);
     assert_eq!(cards(&h).len(), 1);
     assert_eq!(cards(&h)[0].kind, "launch_blocked");
+    offered_as_read(&cards(&h)[0]);
     e.read_error = false;
     r.tick(&mut h.store, &mut e, ops::tests::TEAM, 500_000)
         .unwrap();
@@ -1323,6 +1325,7 @@ fn a_submitted_launch_with_missing_identity_expires_once_without_relaunching() {
     assert_eq!(row(&h, "lead").state, State::Blocked);
     assert_eq!(cards(&h).len(), 1);
     assert_eq!(cards(&h)[0].kind, "launch_uncertain");
+    offered_as_read(&cards(&h)[0]);
     assert_eq!(e.plans.len(), 1);
 }
 #[test]
@@ -1403,6 +1406,7 @@ fn ownership_verification_before_a_launch_backs_off_and_recovers_without_a_refus
     }
     assert_eq!(cards(&h).len(), 1);
     assert_eq!(cards(&h)[0].kind, "launch_blocked");
+    offered_as_read(&cards(&h)[0]);
     assert!(!e.events.iter().any(|e| e.starts_with("launch:")));
     e.launch_verification_unavailable = false;
     for _ in 0..4 {
@@ -1457,6 +1461,7 @@ fn a_budget_card_survives_its_reserved_outbox_and_closes_when_capacity_recovers(
     }
     assert_eq!(cards(&h).len(), 1);
     assert_eq!(cards(&h)[0].kind, "launch_capacity");
+    offered_as_read(&cards(&h)[0]);
     assert!(cards(&h)[0].text.starts_with("Team member creation:"));
     assert!(!cards(&h)[0].text.contains("@budget"));
     assert!(!cards(&h)[0].text.contains("member_launch_ledger"));
@@ -1491,6 +1496,7 @@ fn missing_submitted_identity_replaces_an_earlier_read_error_card_with_uncertain
         r.tick(&mut h.store, &mut e, ops::tests::TEAM, now).unwrap();
     }
     assert_eq!(cards(&h)[0].kind, "launch_blocked");
+    offered_as_read(&cards(&h)[0]);
     e.read_error = false;
     e.sessions.clear();
     for _ in 0..3 {
@@ -1501,6 +1507,7 @@ fn missing_submitted_identity_replaces_an_earlier_read_error_card_with_uncertain
     let open: Vec<_> = all.iter().filter(|c| c.state == "open").collect();
     assert_eq!(open.len(), 1);
     assert_eq!(open[0].kind, "launch_uncertain");
+    offered_as_read(open[0]);
     assert_eq!(all[0].decision.as_deref(), Some("stale"));
 }
 
@@ -1704,6 +1711,7 @@ fn followup_observation_failure_after_deadline_is_not_absence() {
     }
     assert_eq!(row(&h, "lead").state, State::Submitted);
     assert_eq!(cards(&h)[0].kind, "launch_blocked");
+    offered_as_read(&cards(&h)[0]);
     assert_eq!(e.plans.len(), 1);
     e.read_error = false;
     r.tick(&mut h.store, &mut e, ops::tests::TEAM, 10_000_000)
@@ -1834,6 +1842,7 @@ fn followup_failed_save_of_new_outcomes_never_replays_effect() {
         assert_eq!(row(&h, "lead").state, State::Blocked);
         assert_eq!(cards(&h).len(), 1);
         assert_eq!(cards(&h)[0].kind, "launch_uncertain");
+        offered_as_read(&cards(&h)[0]);
         assert_eq!(
             e.inner
                 .events
@@ -2442,6 +2451,7 @@ fn notification_overflow_clears_after_its_notice_reservation_succeeds() {
     .unwrap();
     assert_eq!(cards(&h).len(), 1);
     assert_eq!(cards(&h)[0].kind, "launch_capacity");
+    offered_as_read(&cards(&h)[0]);
     let rows: i64 = db
         .query_row("SELECT rows FROM launch_budget WHERE id=1", [], |r| {
             r.get(0)
@@ -2526,4 +2536,13 @@ fn updating_an_existing_capacity_card_is_not_a_new_notice_reservation() {
         super::health(h.temp.path()).unwrap().code,
         "launch_notification_overflow"
     );
+}
+
+/// A launch card lists retry exactly when something reads it: the budget
+/// row on every pass, a member row while it waits on backoff, which is when
+/// its text offers Retry. Any other launch card takes acknowledged alone.
+fn offered_as_read(card: &crate::teams::store::Card) {
+    let read = card.kind == "launch_capacity" || card.text.contains("Choosing Retry");
+    let expected: &[&str] = if read { &["retry"] } else { &["acknowledged"] };
+    assert_eq!(card.decisions, expected, "{}: {}", card.kind, card.text);
 }

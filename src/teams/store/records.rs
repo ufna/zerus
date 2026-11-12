@@ -33,6 +33,21 @@ pub struct Page<T> {
     pub rows: Vec<T>,
     pub next: Option<Cursor>,
 }
+/// A queue row with what a view needs to foresee a refusal: the member
+/// holding the attempt (none when no one does) and the kind of a pending
+/// decision (none when nothing is pending).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct QueueRow {
+    pub node: zerus_team_plan::model::Node,
+    pub holder: Option<String>,
+    pub pending: Option<String>,
+}
+/// A member row with whether the person stopped the member.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MemberRow {
+    pub member: zerus_team_plan::model::Member,
+    pub person_stopped: bool,
+}
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -60,6 +75,11 @@ pub struct Card {
     pub decision: Option<String>,
     pub decided_actor: Option<Value>,
     pub created_ms: i64,
+    /// The decisions the card takes: those its opener listed, or for a card
+    /// opened without a list (and every row from before lists existed) the
+    /// rule of its kind.
+    #[serde(default)]
+    pub decisions: Vec<String>,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

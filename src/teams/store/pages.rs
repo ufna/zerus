@@ -1,6 +1,30 @@
 use super::*;
 use rusqlite::params;
 
+pub(crate) const MEMBER_PAGE_SQL: &str = "SELECT data,person_stopped FROM members WHERE team=?1 AND rowid<=?2 AND id>?3 ORDER BY id LIMIT ?4";
+/// A live row's holder, as package 9's attempt holder reads it (the newest
+/// effect of the current generation, unless reserved, refused or
+/// superseded), and the kind of its one unsettled decision: two point
+/// searches per row in the page's own query. An archived row has no holder.
+/// The node page's one query: the rows of one state in id order, or the
+/// whole queue in rank order, with each row's facts.
+pub(crate) fn node_page_sql(table: &str, filtered: bool) -> String {
+    let facts = row_facts(table);
+    if filtered {
+        format!("SELECT {},{facts} FROM {table} WHERE team=?1 AND node_state=?5 AND id>?2 AND id<=?3 ORDER BY id LIMIT ?4",rows::NODE_SELECT)
+    } else {
+        format!("SELECT {},{facts} FROM nodes WHERE team=?1 AND id<=?3 AND (rank>?5 OR (rank=?5 AND id>?2)) ORDER BY rank,id LIMIT ?4",rows::NODE_SELECT)
+    }
+}
+fn row_facts(table: &str) -> String {
+    let holder = if table == "nodes" {
+        "(SELECT CASE WHEN e.state IN ('reserved','refused','superseded') THEN NULL ELSE e.member END FROM effects e WHERE e.team=nodes.team AND e.node=nodes.id AND e.generation=nodes.generation ORDER BY e.seq DESC LIMIT 1)".to_owned()
+    } else {
+        "NULL".to_owned()
+    };
+    format!("{holder},(SELECT d.kind FROM decisions d WHERE d.team={table}.team AND d.node={table}.id AND d.state<>'settled')")
+}
+
 fn start(
     db: Option<&Connection>,
     scope: String,
@@ -62,6 +86,20 @@ pub(super) fn finish<T>(
 }
 impl Store {
     pub fn members(&self, team: &str, limit: u32, cursor: Option<&Cursor>) -> Result<Page<Member>> {
+        let page = self.member_rows(team, limit, cursor)?;
+        Ok(Page {
+            rows: page.rows.into_iter().map(|r| r.member).collect(),
+            next: page.next,
+        })
+    }
+    /// The members page with whether the person stopped each, read in the
+    /// page's own query.
+    pub fn member_rows(
+        &self,
+        team: &str,
+        limit: u32,
+        cursor: Option<&Cursor>,
+    ) -> Result<Page<MemberRow>> {
         self.active()?;
         let c = start(
             self.db.as_ref(),
@@ -73,14 +111,19 @@ impl Store {
         )?;
         let mut rows = Vec::new();
         if let Some(db) = &self.db {
-            let mut s=db.prepare("SELECT data FROM members WHERE team=?1 AND rowid<=?2 AND id>?3 ORDER BY id LIMIT ?4").map_err(storage)?;
+            let mut s = db.prepare(MEMBER_PAGE_SQL).map_err(storage)?;
             rows = s
-                .query_map(params![team, c.ceiling, c.rank, limit], |r| sql_json(r, 0))
+                .query_map(params![team, c.ceiling, c.rank, limit], |r| {
+                    Ok(MemberRow {
+                        member: sql_json(r, 0)?,
+                        person_stopped: r.get(1)?,
+                    })
+                })
                 .map_err(storage)?
-                .collect::<std::result::Result<Vec<Member>, _>>()
+                .collect::<std::result::Result<Vec<MemberRow>, _>>()
                 .map_err(storage)?;
         }
-        Ok(finish(rows, c, limit, |r| (0, r.id.clone())))
+        Ok(finish(rows, c, limit, |r| (0, r.member.id.clone())))
     }
     pub fn phases(&self, team: &str, limit: u32, cursor: Option<&Cursor>) -> Result<Page<Phase>> {
         self.active()?;
@@ -135,6 +178,16 @@ impl Store {
     pub fn queue(&self, team: &str, limit: u32, cursor: Option<&Cursor>) -> Result<Page<Node>> {
         self.node_page(team, None, limit, cursor)
     }
+    /// The queue page with each row's holder and pending decision, read in
+    /// the page's own query.
+    pub fn queue_rows(
+        &self,
+        team: &str,
+        limit: u32,
+        cursor: Option<&Cursor>,
+    ) -> Result<Page<QueueRow>> {
+        self.node_rows_with(team, None, limit, cursor, || {})
+    }
     pub fn nodes_by_state(
         &self,
         team: &str,
@@ -161,6 +214,20 @@ impl Store {
         cursor: Option<&Cursor>,
         after_rows: impl FnOnce(),
     ) -> Result<Page<Node>> {
+        let page = self.node_rows_with(team, state, limit, cursor, after_rows)?;
+        Ok(Page {
+            rows: page.rows.into_iter().map(|r| r.node).collect(),
+            next: page.next,
+        })
+    }
+    fn node_rows_with(
+        &self,
+        team: &str,
+        state: Option<NodeState>,
+        limit: u32,
+        cursor: Option<&Cursor>,
+        after_rows: impl FnOnce(),
+    ) -> Result<Page<QueueRow>> {
         self.active()?;
         let filter = state
             .map(|s| encode(&s))
@@ -169,8 +236,8 @@ impl Store {
         let scope = format!("{team}:nodes:{filter:?}");
         let Some(db) = &self.db else {
             let c = start(None, scope, "nodes", team, limit, cursor)?;
-            return Ok(finish(Vec::new(), c, limit, |n: &Node| {
-                (u64::from(n.id), n.rank.clone())
+            return Ok(finish(Vec::new(), c, limit, |n: &QueueRow| {
+                (u64::from(n.node.id), n.node.rank.clone())
             }));
         };
         // The high-water mark, node rows and every dependency row share the
@@ -182,11 +249,7 @@ impl Store {
         } else {
             "nodes"
         };
-        let sql = if filter.is_some() {
-            format!("SELECT {} FROM {table} WHERE team=?1 AND node_state=?5 AND id>?2 AND id<=?3 ORDER BY id LIMIT ?4",rows::NODE_SELECT)
-        } else {
-            format!("SELECT {} FROM nodes WHERE team=?1 AND id<=?3 AND (rank>?5 OR (rank=?5 AND id>?2)) ORDER BY rank,id LIMIT ?4",rows::NODE_SELECT)
-        };
+        let sql = node_page_sql(table, filter.is_some());
         let mut nodes = {
             let mut statement = tx.prepare(&sql).map_err(storage)?;
             let mapped = statement
@@ -198,7 +261,13 @@ impl Store {
                         limit,
                         filter.as_deref().unwrap_or(&c.rank)
                     ],
-                    rows::node_row,
+                    |r| {
+                        Ok(QueueRow {
+                            node: rows::node_row(r)?,
+                            holder: r.get(7)?,
+                            pending: r.get(8)?,
+                        })
+                    },
                 )
                 .map_err(storage)?;
             mapped
@@ -207,14 +276,14 @@ impl Store {
         };
         after_rows();
         for n in &mut nodes {
-            n.deps = rows::deps(&tx, team, n.id)?;
+            n.node.deps = rows::deps(&tx, team, n.node.id)?;
         }
         tx.commit().map_err(storage)?;
         Ok(finish(nodes, c, limit, |n| {
             (
-                u64::from(n.id),
+                u64::from(n.node.id),
                 if state.is_none() {
-                    n.rank.clone()
+                    n.node.rank.clone()
                 } else {
                     String::new()
                 },
@@ -260,7 +329,7 @@ impl Store {
             limit,
             cursor,
             rows::card_row,
-            "seq,kind,node,actor,text,state,decision,decided_actor,created_ms",
+            "seq,kind,node,actor,text,state,decision,decided_actor,created_ms,decisions",
         )
     }
     pub fn journal(

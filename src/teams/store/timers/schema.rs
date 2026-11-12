@@ -22,17 +22,33 @@ use std::time::Duration;
 /// written only by unmerged development builds of this package.
 pub(crate) const BASE: u32 = 8;
 /// The current layout: the base and the steps after it.
-pub(crate) const EXTENSION: u32 = 9;
+pub(crate) const EXTENSION: u32 = 10;
 /// Each layout that reached the integration branch, with the step that
 /// brings a store marked with it to the next; the steps run in order up to
 /// the current layout, after the base for a store from before the extension.
-const STEPS: &[(u32, Step)] = &[(8, answers)];
+const STEPS: &[(u32, Step)] = &[(8, answers), (9, card_decisions)];
 /// One step from a merged layout to the next, inside the transition.
 type Step = fn(&Connection) -> Result<()>;
 /// Layout 8 to 9: the lead's answers reach their members.
 fn answers(db: &Connection) -> Result<()> {
     db.execute_batch(include_str!("../answers.sql"))
         .map_err(storage)
+}
+/// Layout 9 to 10: a card keeps the decisions its opener listed; a row
+/// without a list answers by the rule of its kind.
+fn card_decisions(db: &Connection) -> Result<()> {
+    let present: bool = db
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM pragma_table_info('cards') WHERE name='decisions')",
+            [],
+            |r| r.get(0),
+        )
+        .map_err(storage)?;
+    if !present {
+        db.execute_batch("ALTER TABLE cards ADD COLUMN decisions TEXT")
+            .map_err(storage)?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
