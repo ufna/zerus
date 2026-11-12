@@ -145,3 +145,9 @@ mod real_rows;
 mod retry_cards;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub(in crate::desktop::teams) mod rows;
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+mod cleanup_bound;
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+mod cancel_progress;

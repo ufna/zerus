@@ -1751,6 +1751,45 @@ the version it owns, the entry version or the version its own notice
 replay wrote; if another writer has moved the row it removes nothing and
 does not fail the pass (the actor's cards delta, 2026-11-12).
 
+**A test row of another component's value comes from that component.** Two
+defects of 2026-11-12 passed their reviews and every mutant because the
+tests read hand-written values the product never writes: the standing
+folder-trust confirmation compared a card's conversation with an empty
+string where a real Claude startup card carries null, and the service's
+availability and presence read the fleet row keys `subagents_active` and
+`state`, while a live terminal row carries `subagent_active_count` and no
+`state` at all, so with a real service no member was ever free. A mutant
+shows that a test notices a change of the code, never that its fixture is
+what another component writes. The rule for everything the Teams service
+reads from elsewhere (fleet rows, inspect views, task and launch
+observations, DeepSeek records): a test's value is built by the real
+producer, or from a fixture shared with it, through one helper that changes
+named keys only; a guard test fails when a seeded value carries a key the
+producer does not write, and when a reader's key list names one no producer
+has. A reviewer traces each such key to the line that writes it and builds
+its probes from what that line writes. Unknown stays unknown: a null or
+missing count is not zero.
+
+**A hosted DeepSeek tool call proves its own session; a DeepSeek seat waits
+until it can be reached.** One DeepSeek host process serves every session of
+its agent home, so process ancestry reaches only the host. The hosted caller
+proof (`state::session_graph::caller_hosted`, zerus-ppd26 Part B, merged
+2026-11-12) ties a tool call to its session through the host's per-call
+token. For Teams: a `dsh/` claim takes that proof only; its refusal refuses
+the team command with the proof's own sentence, an archived binding
+refuses, and nothing falls back to another proof or to the person. A child
+agent's command is its top-level session's, as an in-process subagent's is
+elsewhere; a fork is its own session. A host started before the proof
+existed has no tokens and proves nothing until its next own start; no host
+is restarted or reloaded for it. Whether the host of an agent home can
+prove its calls is asked at the member launch in the desktop, before the
+worktree and again before the session is bound, and not at team creation:
+the command line may see another agent home. The roster keeps refusing a
+DeepSeek seat until the service can reach such a member: the task delivery's
+final input is a terminal path with no DeepSeek route, and a hosted run's
+end writes no end record. OpenCode and platforms without the proof stay
+refused as before.
+
 **Known limit: the key of a task that was closed before the stop.** After a
 stop the service clears the team key of the tasks that were open at the
 stop and of released stages. A task accepted or cancelled earlier keeps its

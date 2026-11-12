@@ -180,6 +180,10 @@ mod worktree_maintenance;
 pub(crate) fn account_models(provider: &str, home: &std::path::Path) -> serde_json::Value {
     effort::account_models(provider, home)
 }
+/// The DeepSeek account's model catalog from its resident host, read only.
+pub(crate) fn dsh_account_models(home: &std::path::Path) -> serde_json::Value {
+    dsh::account_models(home)
+}
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub(crate) fn remember_picker_caller_machine(config:&crate::config::Config,expected:&str) {
@@ -832,7 +836,7 @@ pub(crate) fn resolve_reference(reference: &crate::session_reference::Reference)
     Ok(string(first, "name").to_owned())
 }
 
-/// Effort resolves metadata before its keeper; ordinary reference resolution
+/// Effort and Settings resolve metadata before their keeper; ordinary reference resolution
 /// acquires Root and refreshes presentation data, so it is not this lane.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub(crate) fn resolve_effort_reference(
@@ -1404,7 +1408,7 @@ pub(crate) fn task_bindings_in(root: &Path) -> Result<Vec<Value>> {
 pub fn dispatch(args: &[String]) -> Result<i32> {
     // Fixed self-image owner, before any provider lookup or local writer. Its
     // inherited endpoint/frame are synchronization and cancellation only; the
-    // dormant Effort/Settings operation remains explicitly unadmitted.
+    // fixed Effort/Settings operation preserves its original native authority.
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     if args.first().map(String::as_str)==Some("native-picker-custodian-v1") {
         if args.len()!=1 {return Err("Unexpected picker custodian arguments".into());}
@@ -1535,16 +1539,18 @@ pub fn dispatch(args: &[String]) -> Result<i32> {
         "inspect" => {
             let name = args
                 .first()
-                .ok_or("usage: hgs inspect <session> [--archive ID] [--after cursor] [--skip-processes] [--read-observation]")?;
+                .ok_or("usage: hgs inspect <session> [--archive ID] [--after cursor] [--skip-processes] [--read-observation] [--current-read]")?;
             let mut after = 0;
             let mut archive_id = None;
             let mut agent_id = None;
             let mut include_processes = true;
             let mut read_observation = false;
+            let mut current_read = false;
             let mut index = 1;
             while index < args.len() {
                 if args[index] == "--skip-processes" { include_processes = false; index += 1; continue; }
                 if args[index] == "--read-observation" { read_observation = true; index += 1; continue; }
+                if args[index] == "--current-read" { current_read = true; index += 1; continue; }
                 let value = args.get(index + 1).ok_or("missing inspect option value")?;
                 match args[index].as_str() {
                     "--after" => {
@@ -1564,7 +1570,7 @@ pub fn dispatch(args: &[String]) -> Result<i32> {
             let mut output = if let Some(id) = agent_id {
                 subagents::inspection(name, id, archive_id)?
             } else {
-                journal::inspection(name, after, archive_id, include_processes)?
+                journal::inspection_with(name, after, archive_id, include_processes, current_read)?
             };
             if read_observation && archive_id.is_none() && agent_id.is_none() {
                 read_marks::observation::enrich(&mut output);
