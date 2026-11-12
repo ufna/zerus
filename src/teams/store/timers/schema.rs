@@ -15,7 +15,7 @@ use super::*;
 use std::time::Duration;
 
 /// Raised whenever this package's layout changes.
-pub(crate) const EXTENSION: u32 = 8;
+pub(crate) const EXTENSION: u32 = 9;
 
 #[cfg(test)]
 type Hook = Box<dyn FnOnce() -> Result<()>>;

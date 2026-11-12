@@ -40,6 +40,7 @@ fn a_reopened_store_keeps_its_timer_triggers_under_their_versioned_names() {
     assert_eq!(
         names,
         [
+            "answer_mark_drop_v1",
             "key_clear_cancel_settled_v1",
             "key_clear_stage_archived_v2",
             "key_clear_stage_settled_v2",
@@ -117,6 +118,10 @@ fn every_timer_read_searches_an_index() {
         ("CANCEL_REFUSALS_REST", super::cancels::sql::REFUSED_REST),
         ("CANCEL_REFUSALS_AFTER", super::cancels::sql::REFUSED_AFTER),
         ("RELEASED_STAGES", sql::RELEASED_STAGES),
+        ("QUESTIONS", super::answers::sql::QUESTIONS),
+        ("ANSWER_MARKS", super::answers::sql::MARKS),
+        ("ANSWER_MARK", super::answers::sql::MARK),
+        ("ANSWER_HOLDER", super::answers::sql::HOLDER),
         ("WAITING", sql::WAITING),
     ] {
         let plan = explain(db(&h), sql);

@@ -17,12 +17,13 @@ const STORAGE_FAILED: &str =
 const CATALOG: &str = include_str!("../../../../crates/team-plan/fixtures/cli-catalog.json");
 const CHANGED: &str =
     include_str!("../../../../crates/team-plan/fixtures/cli-template-changed.json");
+const CURRENT: &str = include_str!("../../../../crates/team-plan/fixtures/cli-current.json");
 
 fn lead() -> Caller {
     Caller::Session(key(LEAD_SESSION))
 }
 
-fn replies() -> [(&'static str, Value); 10] {
+fn replies() -> [(&'static str, Value); 11] {
     let harness = seeded();
     let (board, _) = super::verdict::configured_stage(
         zerus_team_plan::catalog::StageKind::Review,
@@ -71,6 +72,10 @@ fn replies() -> [(&'static str, Value); 10] {
             "cli-template-changed.json",
             super::create_binding::changed_refusal_fixture(),
         ),
+        (
+            "cli-current.json",
+            read(&Caller::Session(key(M1_SESSION)), "current"),
+        ),
     ]
 }
 
@@ -87,6 +92,7 @@ fn the_read_fixtures_are_the_replies_the_cli_prints() {
         ("cli-storage-failed.json", STORAGE_FAILED),
         ("cli-catalog.json", CATALOG),
         ("cli-template-changed.json", CHANGED),
+        ("cli-current.json", CURRENT),
     ];
     let replies = replies();
     for ((name, actual), (pinned_name, text)) in replies.iter().zip(pinned) {

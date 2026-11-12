@@ -3,9 +3,11 @@
 //! under a key that fires once. Times only the service saw arrive as
 //! `since_ms`; the store checks their arithmetic, never their truth.
 use super::*;
+mod answers;
 mod attempts;
 mod cancel;
 mod terminal;
+pub(super) use answers::mark_answer;
 pub(super) use attempts::{conflict, person_attempt, remember, take_over};
 pub(super) use cancel::record_cancel;
 pub(super) use terminal::{key_clear, late_session};

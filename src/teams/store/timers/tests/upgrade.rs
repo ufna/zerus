@@ -297,6 +297,27 @@ fn a_store_whose_older_read_index_is_replaced_is_extended_too() {
     assert_eq!(marker(&h), Some(EXTENSION));
 }
 
+/// A store marked by the layout before the lead's answers (version 8) runs
+/// the transition again and gains their table, index and trigger.
+#[test]
+fn a_store_marked_before_the_answers_gains_them_on_the_next_open() {
+    let mut h = stopped();
+    let full = names(&h);
+    db(&h)
+        .execute_batch(
+            "DROP TRIGGER answer_mark_drop_v1; DROP INDEX inbox_questions; DROP TABLE answer_marks;",
+        )
+        .unwrap();
+    db(&h)
+        .execute("UPDATE timers_extension SET version=8", [])
+        .unwrap();
+    let before = transitions();
+    reopen(&mut h);
+    assert_eq!(transitions(), before + 1);
+    assert_eq!(names(&h), full);
+    assert_eq!(marker(&h), Some(EXTENSION));
+}
+
 #[test]
 fn a_marker_newer_than_this_program_refuses_the_open_and_writes_nothing() {
     let h = stopped();
