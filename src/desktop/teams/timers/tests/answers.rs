@@ -205,6 +205,45 @@ fn a_busy_or_unknown_member_gets_no_doorbell() {
     }
 }
 
+/// A later observation of the task, written by another writer: from the
+/// newest one stored, with the given changes.
+fn later(
+    store: &mut Store,
+    node: u32,
+    change: impl FnOnce(&mut crate::teams::ops::TaskObservation),
+) {
+    let old = store.task_observation(TEAM, node).unwrap().unwrap();
+    let mut o = old.clone();
+    o.previous_revision = old.revision.clone();
+    o.revision = format!("{}-later", old.revision);
+    change(&mut o);
+    let rev = store.team(TEAM).unwrap().unwrap().revision;
+    crate::teams::ops::apply(
+        store,
+        &service(),
+        &request(
+            rev,
+            Operation::ObserveTask {
+                node,
+                observation: o,
+            },
+        ),
+        T0,
+    )
+    .unwrap();
+}
+fn person_attempt(o: &mut crate::teams::ops::TaskObservation) {
+    o.stage = crate::teams::ops::TaskStage::InProgress;
+    o.attempt += 1;
+    o.attempt_id = "00000000-0000-4000-8000-00000000bbbb".into();
+}
+fn board_cancel(o: &mut crate::teams::ops::TaskObservation) {
+    o.cancelled = true;
+}
+fn key_left(o: &mut crate::teams::ops::TaskObservation) {
+    o.key = crate::teams::ops::KeyState::Absent;
+}
+
 /// A task moved to Done on the board ends its attempt without a decision:
 /// its mark is dropped and nothing rings.
 #[test]
@@ -215,4 +254,61 @@ fn a_task_done_on_the_board_rings_nothing() {
     a.w.answers(T0);
     assert!(a.w.effects.rang.is_empty());
     assert!(a.states().is_empty());
+}
+
+/// Between the reservation and the spawn: a person's execution taken over,
+/// the task cancelled on the board, or its key gone. None starts the send.
+/// The key's departure drops no mark: the admission's holder check alone
+/// refuses it.
+#[test]
+fn an_attempt_taken_over_cancelled_or_left_before_the_spawn_starts_nothing() {
+    let changes: [fn(&mut crate::teams::ops::TaskObservation); 3] =
+        [person_attempt, board_cancel, key_left];
+    for change in changes {
+        let mut a = asked();
+        a.answer();
+        let (path, node) = (a.w.h.temp.path().to_owned(), a.node);
+        a.w.effects.before_spawn = Some(Box::new(move || {
+            let mut store = Store::open(&path).unwrap();
+            later(&mut store, node, change);
+        }));
+        a.w.answers(T0);
+        assert!(a.w.effects.rang.is_empty());
+        assert_eq!(a.w.effects.refusals, 1);
+        assert_eq!(a.states(), ["not_started"]);
+    }
+}
+
+/// A mark whose attempt the member no longer holds (the task's key left
+/// the team, which drops no mark) reserves nothing: the pass's own holder
+/// check.
+#[test]
+fn a_mark_whose_attempt_is_no_longer_held_reserves_nothing() {
+    let mut a = asked();
+    a.answer();
+    let node = a.node;
+    later(&mut a.w.h.store, node, key_left);
+    assert_eq!(a.w.h.store.answer_marks(TEAM, "", 10).unwrap().len(), 1);
+    a.w.answers(T0);
+    assert!(a.w.effects.rang.is_empty());
+    assert!(a.states().is_empty(), "no reservation");
+}
+
+/// A marked member who is not active (paused by the person) gets no
+/// doorbell: the pass's member filter.
+#[test]
+fn a_paused_member_gets_no_doorbell() {
+    let mut a = asked();
+    a.answer();
+    a.w.h
+        .run(
+            &person(),
+            Operation::PauseMember {
+                member: "m1".into(),
+            },
+        )
+        .unwrap();
+    a.w.answers(T0);
+    assert!(a.w.effects.rang.is_empty());
+    assert!(a.states().is_empty(), "no reservation");
 }

@@ -298,3 +298,28 @@ fn an_attempt_that_ends_without_a_decision_drops_its_mark() {
         assert!(marks(&h).is_empty(), "{end}");
     }
 }
+
+/// A lead's Cancel or Reassign leaves the member's question open; a reply
+/// to it while that decision is pending marks nobody.
+#[test]
+fn a_reply_while_a_cancel_or_reassign_is_pending_marks_nobody() {
+    let decisions: [fn(u32) -> Operation; 2] = [
+        |node| Operation::Cancel {
+            node,
+            reason: "Superseded".into(),
+        },
+        |node| Operation::Reassign {
+            node,
+            member: "m2".into(),
+            reason: "Fresh eyes".into(),
+        },
+    ];
+    for decide in decisions {
+        let (mut h, lead, m1, node) = holding();
+        h.bind("m2");
+        let item = ask(&mut h, &m1, node, "Which width?");
+        h.run(&lead, decide(node)).unwrap();
+        reply(&mut h, &lead, item, "Too late.");
+        assert!(marks(&h).is_empty());
+    }
+}
