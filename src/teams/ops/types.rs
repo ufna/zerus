@@ -78,6 +78,17 @@ pub struct TaskObservation {
     pub rank: String,
     #[serde(default)]
     pub title: String,
+    /// The highest generation any attempt of the task claims; 0 without one.
+    #[serde(default)]
+    pub attempt: u64,
+    /// The ID of the task's current attempt; empty without one. An attempt
+    /// the team hands out has its effect's request ID. At most 256 bytes.
+    #[serde(default)]
+    pub attempt_id: String,
+    /// Two attempts claim the highest generation; the ID is then empty. An
+    /// empty ID without this flag is an ordinary pair: no current attempt.
+    #[serde(default)]
+    pub attempt_conflict: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -105,6 +116,39 @@ pub enum StageTaskOutcome {
     Created { task: TaskRef },
     Refused { reason: String },
     Uncertain { reason: String },
+}
+
+/// A service timer of package 10; each fires at most once per key.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TimerKind {
+    NoReport,
+    NotStarted,
+    RemindLead,
+    RemindPerson,
+    SilentLead,
+}
+
+/// The final answer of the team-clear child for one task key.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum KeyClearState {
+    Cleared,
+    Refused,
+}
+
+/// The service's record of a cancel decision it carried out.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CancelState {
+    /// The task was cancelled under that attempt. In a live team a bound
+    /// task's end is recorded by its observation, so there this answer is
+    /// refused; it ends a node without a task and settles after a stop.
+    Cancelled,
+    Refused,
+    /// The key was already gone from the task: in every team state the
+    /// answer is recorded and the node's binding goes with it.
+    Released,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -271,6 +315,40 @@ pub enum Operation {
     },
     ChangeSettings {
         settings: Settings,
+    },
+    FireTimer {
+        timer: TimerKind,
+        node: NodeId,
+        generation: u32,
+        #[serde(default)]
+        item: u64,
+        #[serde(default)]
+        since_ms: i64,
+    },
+    RecordKeyClear {
+        node: NodeId,
+        state: KeyClearState,
+        #[serde(default)]
+        reason: String,
+    },
+    RecordLateSession {
+        member: MemberId,
+        launch_id: String,
+        session: SessionKey,
+        name: String,
+    },
+    RecordCancel {
+        node: NodeId,
+        decision: u64,
+        state: CancelState,
+        #[serde(default)]
+        reason: String,
+        /// The task attempt the team-cancel child acted on: its generation
+        /// and its ID (at most 256 bytes).
+        #[serde(default)]
+        attempt: u64,
+        #[serde(default)]
+        attempt_id: String,
     },
 }
 

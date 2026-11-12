@@ -16,9 +16,10 @@ mod pages;
 mod records;
 pub(crate) mod rows;
 mod stage;
+pub(crate) mod timers;
 pub use records::*;
 
-use rusqlite::{Connection, OpenFlags, OptionalExtension};
+use rusqlite::{params, Connection, OpenFlags, OptionalExtension};
 use serde::{de::DeserializeOwned, Serialize};
 use std::{
     path::{Path, PathBuf},
@@ -301,45 +302,134 @@ fn initialize(db: &mut Connection) -> Result<()> {
 }
 
 // Add empty companion storage and missing read indexes on first creation
-// and when a version-2 store from before these seams is opened.
+// and when a version-2 store from before these seams is opened. Every write
+// here reads the timers mark again under the lock it writes with, so that
+// nothing is written over a store a newer program marked after the first,
+// unlocked fence; an ordinary open finds every object and takes no lock.
 fn schema_extensions(db: &Connection) -> Result<()> {
-    db.execute_batch(include_str!("pipeline-schema.sql"))
-        .map_err(storage)?;
-    db.execute_batch(include_str!("observation-schema.sql"))
-        .map_err(storage)?;
-    read_indexes(db)
+    timers::fence(db)?;
+    #[cfg(test)]
+    timers::after_fence()?;
+    common_schema(db)?;
+    read_indexes(db)?;
+    timers::extend(db)
+}
+
+/// The common batches: only `CREATE ... IF NOT EXISTS` statements.
+const COMMON_SCHEMA: [&str; 3] = [
+    include_str!("pipeline-schema.sql"),
+    include_str!("observation-schema.sql"),
+    include_str!("read-indexes.sql"),
+];
+
+/// The objects a batch of `CREATE ... IF NOT EXISTS` statements creates.
+fn created(sql: &str) -> Vec<(&'static str, &str)> {
+    let words: Vec<&str> = sql.split_whitespace().collect();
+    let mut found = Vec::new();
+    for (at, word) in words.iter().enumerate() {
+        if !word.eq_ignore_ascii_case("CREATE") {
+            continue;
+        }
+        let mut rest = &words[at + 1..];
+        if rest
+            .first()
+            .is_some_and(|w| w.eq_ignore_ascii_case("UNIQUE"))
+        {
+            rest = &rest[1..];
+        }
+        let kind = match rest.first().map(|w| w.to_ascii_uppercase()).as_deref() {
+            Some("TABLE") => "table",
+            Some("INDEX") => "index",
+            Some("TRIGGER") => "trigger",
+            _ => continue,
+        };
+        if let [_, guard_if, guard_not, guard_exists, name, ..] = rest {
+            if guard_if.eq_ignore_ascii_case("IF")
+                && guard_not.eq_ignore_ascii_case("NOT")
+                && guard_exists.eq_ignore_ascii_case("EXISTS")
+            {
+                found.push((kind, name.trim_end_matches('(')));
+            }
+        }
+    }
+    found
+}
+
+/// The batches write only on a store that lacks one of their objects; then
+/// they run under the write lock, after the mark is read again under it.
+fn common_schema(db: &Connection) -> Result<()> {
+    let mut complete = true;
+    for (kind, name) in COMMON_SCHEMA.iter().flat_map(|sql| created(sql)) {
+        complete &= db
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type=?1 AND name=?2)",
+                params![kind, name],
+                |r| r.get::<_, bool>(0),
+            )
+            .map_err(storage)?;
+    }
+    if complete {
+        return Ok(());
+    }
+    let own = db.is_autocommit();
+    db.execute_batch(if own {
+        "BEGIN IMMEDIATE;"
+    } else {
+        "SAVEPOINT common_schema;"
+    })
+    .map_err(begin_error)?;
+    let result = timers::fence(db).and_then(|()| {
+        COMMON_SCHEMA
+            .iter()
+            .try_for_each(|sql| db.execute_batch(sql).map_err(storage))
+    });
+    let end = match (&result, own) {
+        (Ok(()), true) => "COMMIT;",
+        (Ok(()), false) => "RELEASE common_schema;",
+        (Err(_), true) => "ROLLBACK;",
+        (Err(_), false) => "ROLLBACK TO common_schema; RELEASE common_schema;",
+    };
+    db.execute_batch(end).map_err(storage)?;
+    result
 }
 
 fn read_indexes(db: &Connection) -> Result<()> {
     let unique: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM pragma_index_list('cards') WHERE name='integration_card' AND \"unique\"=1)", [], |r| r.get(0)).map_err(storage)?;
-    if unique {
-        // Only an older unique index needs replacement. Ordinary opens never
-        // rebuild it; a savepoint keeps its replacement atomic, also at creation.
-        if let Err(error) = db.execute_batch("SAVEPOINT replace_read_index") {
-            return if is_busy(&error) {
-                Ok(())
-            } else {
-                Err(storage(error))
-            };
-        }
-        let replaced = db
-            .execute_batch("DROP INDEX IF EXISTS integration_card")
-            .and_then(|()| db.execute_batch(include_str!("read-indexes.sql")))
-            .and_then(|()| db.execute_batch("RELEASE replace_read_index"));
-        if let Err(error) = replaced {
-            db.execute_batch("ROLLBACK TO replace_read_index; RELEASE replace_read_index")
-                .map_err(storage)?;
-            if is_busy(&error) {
-                // This optional index upgrade can wait. No product operation
-                // is replayed; the next open checks the actual index again.
-                return Ok(());
-            }
-            return Err(storage(error));
-        }
+    if !unique {
         return Ok(());
     }
-    db.execute_batch(include_str!("read-indexes.sql"))
-        .map_err(storage)
+    // Only an older unique index needs replacement. Ordinary opens never
+    // rebuild it; a savepoint keeps its replacement atomic, also at creation.
+    if let Err(error) = db.execute_batch("SAVEPOINT replace_read_index") {
+        return if is_busy(&error) {
+            Ok(())
+        } else {
+            Err(storage(error))
+        };
+    }
+    // The mark again, inside the savepoint and before its first write. The
+    // drop takes the write lock on this read's snapshot or fails as busy, so
+    // a mark committed after this read can never be written over.
+    if let Err(problem) = timers::fence(db) {
+        db.execute_batch("ROLLBACK TO replace_read_index; RELEASE replace_read_index")
+            .map_err(storage)?;
+        return Err(problem);
+    }
+    let replaced = db
+        .execute_batch("DROP INDEX IF EXISTS integration_card")
+        .and_then(|()| db.execute_batch(include_str!("read-indexes.sql")))
+        .and_then(|()| db.execute_batch("RELEASE replace_read_index"));
+    if let Err(error) = replaced {
+        db.execute_batch("ROLLBACK TO replace_read_index; RELEASE replace_read_index")
+            .map_err(storage)?;
+        if is_busy(&error) {
+            // This optional index upgrade can wait. No product operation
+            // is replayed; the next open checks the actual index again.
+            return Ok(());
+        }
+        return Err(storage(error));
+    }
+    Ok(())
 }
 
 pub(crate) fn is_busy(error: &rusqlite::Error) -> bool {

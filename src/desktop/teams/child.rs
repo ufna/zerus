@@ -170,7 +170,10 @@ fn configure<T>(
     Ok(guard)
 }
 
-fn custody(config: &Config, id: &str) -> Option<(Arc<InheritedLock>, PathBuf, (u64, u64))> {
+pub(super) fn custody(
+    config: &Config,
+    id: &str,
+) -> Option<(Arc<InheritedLock>, PathBuf, (u64, u64))> {
     if !uuid::Uuid::parse_str(id).is_ok_and(|u| !u.is_nil() && u.to_string() == id) {
         return None;
     }
@@ -231,7 +234,7 @@ pub(super) fn admission(
     Ok(())
 }
 
-fn remove_custody(path: &Path, identity: (u64, u64)) {
+pub(super) fn remove_custody(path: &Path, identity: (u64, u64)) {
     if std::fs::symlink_metadata(path).is_ok_and(|m| m.is_file() && (m.dev(), m.ino()) == identity)
     {
         let _ = std::fs::remove_file(path);

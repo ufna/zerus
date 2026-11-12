@@ -22,6 +22,8 @@ pub(crate) fn health(state: &std::path::Path) -> Option<Health> {
 mod native;
 mod ports;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
+mod timers;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 mod worker;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub(super) use worker::Worker;

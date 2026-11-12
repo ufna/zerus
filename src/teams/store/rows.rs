@@ -89,9 +89,22 @@ pub(crate) fn node_payload(node: &Node) -> Result<String> {
     encode(&value)
 }
 
+/// A decided node, accepted or cancelled, leaves the live queue. One whose
+/// task is bound leaves it only when the newest observation agrees: the
+/// task has ended (cancelled or Done) and its attempts do not conflict.
+/// Otherwise what was decided stays recorded on the node, and the next
+/// observation decides; the service observes only the live queue. A node
+/// whose cancel is still pending stays where the cancel step finds it, in
+/// a live and in a stopped team: that cancel is settled by its own answer
+/// or by an observation, never by this archive.
+const LEAVES: &str = "team=?1 AND node_state IN ('accepted','cancelled') AND (NOT EXISTS(SELECT 1 FROM live_tasks l WHERE l.team=nodes.team AND l.node=nodes.id) OR EXISTS(SELECT 1 FROM task_observations o WHERE o.team=nodes.team AND o.node=nodes.id AND NOT o.attempt_conflict AND (json_extract(o.data,'$.cancelled') OR json_extract(o.data,'$.stage')='done'))) AND NOT EXISTS(SELECT 1 FROM decisions d WHERE d.team=nodes.team AND d.node=nodes.id AND d.state<>'settled' AND d.kind='cancel')";
 pub(crate) fn archive_decided(db: &Connection, team: &str, actor: &str) -> Result<()> {
     let ids = {
-        let mut statement=db.prepare("SELECT id FROM nodes WHERE team=?1 AND node_state IN ('accepted','cancelled') ORDER BY id LIMIT 601").map_err(storage)?;
+        let mut statement = db
+            .prepare(&format!(
+                "SELECT id FROM nodes WHERE {LEAVES} ORDER BY id LIMIT 601"
+            ))
+            .map_err(storage)?;
         let mapped = statement
             .query_map([team], |r| r.get::<_, u32>(0))
             .map_err(storage)?;
@@ -107,16 +120,19 @@ pub(crate) fn archive_decided(db: &Connection, team: &str, actor: &str) -> Resul
         settle_decisions(db, team, Some(node), actor, true)?;
     }
     db.execute(
-        "UPDATE nodes SET requested=NULL WHERE team=?1 AND node_state IN ('accepted','cancelled')",
+        &format!("UPDATE nodes SET requested=NULL WHERE {LEAVES}"),
         [team],
     )
     .map_err(storage)?;
-    db.execute(&format!("INSERT INTO node_archive({NODE_COLUMNS}) SELECT {NODE_COLUMNS} FROM nodes WHERE team=?1 AND node_state IN ('accepted','cancelled')"),[team]).map_err(storage)?;
     db.execute(
-        "DELETE FROM nodes WHERE team=?1 AND node_state IN ('accepted','cancelled')",
+        &format!(
+            "INSERT INTO node_archive({NODE_COLUMNS}) SELECT {NODE_COLUMNS} FROM nodes WHERE {LEAVES}"
+        ),
         [team],
     )
     .map_err(storage)?;
+    db.execute(&format!("DELETE FROM nodes WHERE {LEAVES}"), [team])
+        .map_err(storage)?;
     Ok(())
 }
 
@@ -231,6 +247,9 @@ fn legacy_observation(db: &Connection, team: &str, node: u32) -> Result<Option<T
                 rank,
                 title,
                 key: KeyState::Ours,
+                attempt: 0,
+                attempt_id: String::new(),
+                attempt_conflict: false,
             })
         })
         .transpose()
@@ -253,6 +272,9 @@ pub(crate) fn record_observation(
     o: &TaskObservation,
     released: bool,
 ) -> Result<()> {
-    db.execute("INSERT INTO task_observations(team,node,data,released) VALUES(?1,?2,?3,?4) ON CONFLICT(team,node) DO UPDATE SET data=excluded.data,released=MAX(task_observations.released,excluded.released)",params![team,node,encode(o)?,released]).map_err(storage)?;
+    // The newest observation's attempt pair as it came, a conflict's empty ID
+    // included. The attempt the node runs under is remembered apart, only
+    // when the node takes an execution in (ops::timers::remember).
+    db.execute("INSERT INTO task_observations(team,node,data,released,attempt,attempt_id,attempt_conflict) VALUES(?1,?2,?3,?4,?5,?6,?7) ON CONFLICT(team,node) DO UPDATE SET data=excluded.data,released=MAX(task_observations.released,excluded.released),attempt=excluded.attempt,attempt_id=excluded.attempt_id,attempt_conflict=excluded.attempt_conflict",params![team,node,encode(o)?,released,o.attempt,o.attempt_id,o.attempt_conflict]).map_err(storage)?;
     Ok(())
 }
