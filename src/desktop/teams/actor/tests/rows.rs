@@ -67,15 +67,77 @@ pub(in crate::desktop::teams) fn paths(value: &Value) -> std::collections::BTree
     out
 }
 
-/// The DeepSeek host's `list` answer for one idle, available session.
-fn deepseek_list(conversation: &str) -> Value {
+/// The keys a DeepSeek host's `list` answer and its rows may carry here,
+/// pinned in one place (zerus-63rru.61). A list row carries the keys the
+/// contract tests of `src/state/dsh.rs` build list rows with (its
+/// `child_summaries` test and its `"list"` stubs), and `projections`, which
+/// the bridge's list handler passes through from the host and reads itself
+/// (`src/dsh/bridge.mjs`, case 'list') and which alone names a session's
+/// children (`projections.values.subagentCatalog`, read by `dsh.rs`). It
+/// never carries `jobs` or `shellCalls`: only `inspect` answers with them.
+///
+/// Follow-up zerus-yj7ef (pull request 2161): the bridge's own list answer,
+/// captured and guarded as `tests/fixtures/dsh-bridge-list-row.json`, whose
+/// rows carry `listJobs`. Once it reaches this branch through a main sync,
+/// [`deepseek_list`] returns that file's rows and these pins compare with it.
+pub(in crate::desktop::teams) const DEEPSEEK_LIST_KEYS: [&str; 2] = ["generation", "items"];
+pub(in crate::desktop::teams) const DEEPSEEK_ROW_KEYS: [&str; 6] = [
+    "sessionId",
+    "parentSessionId",
+    "origin",
+    "running",
+    "agentAvailable",
+    "projections",
+];
+pub(in crate::desktop::teams) const DEEPSEEK_CATALOG_KEYS: [&str; 3] = ["id", "label", "mode"];
+
+/// The DeepSeek host's `list` answer for one idle, available session: the
+/// seam the captured bridge answer replaces (see [`DEEPSEEK_ROW_KEYS`]).
+pub(in crate::desktop::teams) fn deepseek_list(conversation: &str) -> Value {
     json!({"generation":"generation-1","items":[{"sessionId":conversation,"agentAvailable":true,
-        "running":false,"updatedAt":1793000001000.0,"jobs":[],"shellCalls":[],
-        "projections":{"values":{"turnOutline":[],"subagentCatalog":[]}}}]})
+        "running":false}]})
+}
+
+/// Every key of a list answer is a pinned one.
+pub(in crate::desktop::teams) fn assert_pinned_list(list: &Value) {
+    let keys = |v: &Value| -> Vec<String> {
+        v.as_object()
+            .map(|m| m.keys().cloned().collect())
+            .unwrap_or_default()
+    };
+    for key in keys(list) {
+        assert!(DEEPSEEK_LIST_KEYS.contains(&key.as_str()), "list key {key}");
+    }
+    for row in list["items"].as_array().unwrap() {
+        for key in keys(row) {
+            assert!(
+                DEEPSEEK_ROW_KEYS.contains(&key.as_str()),
+                "list row key {key}"
+            );
+        }
+        if let Some(values) = row.get("projections") {
+            assert_eq!(keys(values), ["values"], "projections");
+            for key in keys(&values["values"]) {
+                assert_eq!(key, "subagentCatalog", "projections.values key");
+            }
+            for child in values["values"]["subagentCatalog"]
+                .as_array()
+                .into_iter()
+                .flatten()
+            {
+                for key in keys(child) {
+                    assert!(
+                        DEEPSEEK_CATALOG_KEYS.contains(&key.as_str()),
+                        "catalog key {key}"
+                    );
+                }
+            }
+        }
+    }
 }
 
 /// One idle live session of `kind`, as its saved binding records it.
-fn record(kind: &str, root: &str) -> Value {
+pub(in crate::desktop::teams) fn record(kind: &str, root: &str) -> Value {
     let name = format!("{kind}/example/member");
     if kind == "dsh" {
         return json!({"backend":"dsh","name":name,"agent":"dsh","agent_home":format!("{root}/.dsh"),
@@ -239,4 +301,13 @@ fn the_readers_key_list_names_every_key_it_reads() {
             }
         }
     }
+}
+
+/// The fixture's DeepSeek list answer carries only pinned keys: none the
+/// bridge's list handler does not pass (zerus-63rru.61).
+#[test]
+fn the_deepseek_list_answer_carries_only_the_pinned_keys() {
+    assert_pinned_list(&deepseek_list(
+        "session-00000000-0000-4000-8000-0000000000d5",
+    ));
 }

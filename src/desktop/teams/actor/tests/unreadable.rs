@@ -128,7 +128,36 @@ fn needed(task: u32, fact: &str) -> String {
 /// anything known that keeps it busy makes it busy.
 #[test]
 fn the_reader_names_an_unknown_count_only_of_an_otherwise_free_member() {
-    for kind in KINDS {
+    // A DeepSeek host's list answer names no jobs (only inspect does), so a
+    // listed DeepSeek row's background is unknown today and is named
+    // (zerus-63rru.61). The bridge's captured list answer with listJobs
+    // (zerus-yj7ef, pull request 2161) is what will give it a free row.
+    let dsh = Facts::of(&seed_row("dsh", &[]));
+    assert!(!dsh.free());
+    assert_eq!(dsh.unknown(), Some(Fact::Background));
+    // A reported count that cannot be settled is named apart from a count
+    // never reported; one with a working child is busy, not unreadable.
+    for kind in ["claude", "codex", "kimi"] {
+        let unsettled = [
+            ("subagent_source", json!("hook_profiles")),
+            ("subagent_counts_complete", json!(false)),
+        ];
+        let facts = Facts::of(&seed_row(kind, &unsettled));
+        assert!(!facts.free(), "{kind}");
+        assert_eq!(facts.unknown(), Some(Fact::ChildrenUnsettled), "{kind}");
+        let working = [
+            unsettled[0].clone(),
+            unsettled[1].clone(),
+            ("subagent_active_count", json!(1)),
+        ];
+        assert_eq!(
+            Facts::of(&seed_row(kind, &working)).unknown(),
+            None,
+            "{kind}"
+        );
+    }
+    for kind in KINDS.iter().filter(|kind| **kind != "dsh") {
+        let kind = *kind;
         let facts = Facts::of(&seed_row(kind, &[]));
         assert!(facts.free() && facts.unknown().is_none(), "{kind}");
         for (path, fact) in [
@@ -542,6 +571,7 @@ fn each_fact_reads_its_sentence_on_the_card() {
     let last = "This seat cannot be bound again; archive the member.";
     let cases = [
         (Fact::Children, "its session has reported no subagent count; its hooks have sent no event yet. Wait for its first hook event. If its hooks never report, stop or archive the member.".to_owned()),
+        (Fact::ChildrenUnsettled, "the state of some of its subagents cannot be settled. If this lasts, stop or archive the member.".to_owned()),
         (Fact::Questions, "its question index cannot be read. If this lasts, stop or archive the member.".to_owned()),
         (Fact::Background, "its background work cannot be verified from the process table. If this lasts, stop or archive the member.".to_owned()),
         (Fact::NoHandle, format!("it was bound before session handles, and nothing names its session now. {last}")),

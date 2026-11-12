@@ -330,9 +330,16 @@ mod tests {
     #[test]
     fn idle_is_required_and_unknown_or_pending_or_background_is_not_free() {
         assert!(idle(&row()));
-        for kind in KINDS {
+        for kind in KINDS.iter().filter(|kind| **kind != "dsh") {
             assert!(idle(&seed_row(kind, &[])), "the producer's idle {kind} row");
         }
+        // A DeepSeek host's list answer names no jobs (only inspect does), so
+        // the listed row's job count is unknown and the member is never free
+        // (zerus-63rru.61). With the bridge's listJobs (zerus-yj7ef), an idle
+        // row whose job summary is complete and empty is free.
+        let dsh = seed_row("dsh", &[]);
+        assert!(dsh["process_work"]["count"].is_null());
+        assert!(!idle(&dsh));
         for (path, value) in [
             ("activity", json!("busy")),
             ("phase", json!("approval")),

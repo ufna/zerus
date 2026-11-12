@@ -170,6 +170,9 @@ pub(in crate::desktop::teams) enum Fact {
     Background,
     /// `subagent_active_count`: no hook event has reported it yet.
     Children,
+    /// `subagent_active_count` was reported, but the state of some subagent
+    /// that may be running now cannot be settled (zerus-63rru.61).
+    ChildrenUnsettled,
     /// `optional_questions.count`: the question index could not be read.
     Questions,
     /// Bound before session handles, with no source left that names it.
