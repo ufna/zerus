@@ -27,9 +27,15 @@ class CatalogRefresh(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory(prefix="hgs-catalog-refresh-")
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name).resolve()
-        self.repo, self.state, self.bin = (self.root / n for n in ("repo", "state", "bin"))
-        for name in ("repo", "state", "bin", "home", "config"):
+        self.repo, self.state = (self.root / n for n in ("repo", "state"))
+        for name in ("repo", "state", "home", "config"):
             (self.root / name).mkdir(mode=0o700)
+        # hgs searches $HOME/.local/bin, /opt/homebrew/bin and /usr/local/bin
+        # before the caller's PATH (platform::prepared_path), so on a Mac with
+        # Homebrew Git a wrapper found only through PATH is never run. The
+        # private HOME's own bin folder comes first on every platform.
+        self.bin = self.root / "home" / ".local" / "bin"
+        self.bin.mkdir(parents=True, mode=0o700)
         self.env = {k: v for k, v in os.environ.items()
                     if not k.startswith(("HGS_", "GIT_")) and k not in ("TMUX", "TMUX_PANE")}
         self.env.update(HOME=str(self.root / "home"), HGS_STATE_DIR=str(self.state),
@@ -122,6 +128,7 @@ sys.stdout.buffer.write(r.stdout);sys.stderr.buffer.write(r.stderr);sys.exit(r.r
     def publish(self, change=lambda value: None, before=None, **extra):
         """A synthetic cache publisher holds the actual private repository lock."""
         self.assertEqual(self.read("warm")["state"], "ok")
+        self.assertTrue(self.events("warm", "list"), "hgs did not run the fixture Git")
         self.trace.write_text("")
         cache = self.cache("repo")
         previous = json.loads(cache.read_text())
@@ -141,6 +148,10 @@ sys.stdout.buffer.write(r.stdout);sys.stderr.buffer.write(r.stderr);sys.exit(r.r
             temporary.write_text(json.dumps(current))
             temporary.replace(cache)
         return self.finish(job)
+
+    def test_hgs_runs_the_fixture_git_ahead_of_package_manager_git(self):
+        self.assertEqual(self.read("selected")["state"], "ok")
+        self.assertEqual(len(self.events("selected", "list")), 1, "hgs did not run the fixture Git")
 
     def test_two_standalone_refreshes_and_one_contended_pair(self):
         delayed = {"CATALOG_LIST_DELAY": "1.65"}
@@ -209,10 +220,28 @@ sys.stdout.buffer.write(r.stdout);sys.stderr.buffer.write(r.stderr);sys.exit(r.r
         self.assertIn("Repository changed", value["detail"])
         self.assertEqual(self.events("waiting", "list"), [])
 
+    def expired_refresh(self, **extra):
+        """A forced refresh staged while its cache lock is held elsewhere.
+
+        The fixture publishes while the reader is expected to be waiting on
+        the lock. A loaded machine can deschedule the reader between its
+        common query and that attempt: it then loads the publication itself
+        or finds the lock already free, takes the valid non-coalesced path
+        and lists, so the expired selected query is never issued. Repeat
+        within a bound until the reader actually coalesced (a second common
+        query); a coalesced attempt that reports success still fails below.
+        """
+        for _ in range(12):
+            value, elapsed = self.publish(**extra)
+            if len(self.events("waiting", "common")) >= 2:
+                return value, elapsed
+        self.fail("the fixture never staged a coalesced refresh: "
+                  + json.dumps(self.trace.read_text().splitlines()[-20:]))
+
     def test_expired_selected_queries_are_not_hidden_as_success(self):
         for action in ("common", "root", "branch"):
             with self.subTest(action=action):
-                value, elapsed = self.publish(CATALOG_EXPIRE=action)
+                value, elapsed = self.expired_refresh(CATALOG_EXPIRE=action)
                 self.assertEqual(value["state"], "timeout", value)
                 self.assertEqual(self.events("waiting", "list"), [])
                 self.assertLess(elapsed, 3.7)
