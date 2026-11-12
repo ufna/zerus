@@ -22,6 +22,10 @@ pub(in crate::desktop::teams) struct Fact {
     pub revision: u64,
     pub pending: Pending,
     pub refused: bool,
+    // Missing on older facts: preserve their already reserved cancelled
+    // operation and request ID, even when that old build folded a release.
+    #[serde(default)]
+    pub released: bool,
     pub reason: String,
     #[serde(default)]
     pub attempt: u64,
@@ -300,6 +304,7 @@ impl Runtime {
                     .as_ref()
                     .map_or_else(String::new, |a| a.id.clone()),
                 refused: matches!(row.reply, Some(TaskReply::Refused { .. })),
+                released: matches!(row.reply, Some(TaskReply::Released)),
                 reason: match &row.reply {
                     Some(TaskReply::Refused { reason }) => cut(reason, 2048),
                     _ => String::new(),

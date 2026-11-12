@@ -261,6 +261,21 @@ fn a_lost_committed_cancel_fact_reply_replays_its_original_request_after_restart
     let row = runtime.ledger.get(TEAM, &key).unwrap().unwrap();
     let id = row.data["fact"]["request_id"].as_str().unwrap().to_owned();
     assert!(!h.store.request_refused(TEAM, &id).unwrap());
+    let saved: bool = h
+        .store
+        .db
+        .as_ref()
+        .unwrap()
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM requests WHERE id=?1)",
+            [&id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(
+        saved,
+        "the unknown reply must retain the committed original request ID"
+    );
     drop(runtime);
     let mut runtime = Runtime::open(h.temp.path(), &p.native.machine).unwrap();
     runtime

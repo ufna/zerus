@@ -92,6 +92,7 @@ fn a_cancel_fact_settles_a_saved_refusal_only_when_the_exact_decision_has_gone()
         revision: t.revision,
         pending: p.clone(),
         refused: true,
+        released: false,
         reason: "".into(),
         attempt: p.attempt,
         attempt_id: p.attempt_id.clone(),
@@ -120,6 +121,7 @@ fn cancel_fact_storage_failure_is_never_read_as_a_saved_refusal() {
         revision: t.revision,
         pending: p.clone(),
         refused: false,
+        released: false,
         reason: "".into(),
         attempt: p.attempt,
         attempt_id: p.attempt_id.clone(),
@@ -143,6 +145,7 @@ fn a_missing_saved_refusal_never_settles_a_cancel_even_after_the_decision_moved(
         revision: t.revision,
         pending: p,
         refused: false,
+        released: false,
         reason: String::new(),
         attempt: 0,
         attempt_id: String::new(),
@@ -185,15 +188,17 @@ fn a_cancel_fact_records_the_reply_pair_even_when_it_differs_from_the_pending_sn
         revision: t.revision,
         pending,
         refused: false,
+        released: false,
         reason: String::new(),
         attempt: 7,
         attempt_id: "reply-attempt".into(),
     };
     Native::save_cancel(&mut h.store, &t, &fact, 100).unwrap();
-    assert_eq!(h.node(node).state, NodeState::Cancelled);
     assert!(Native::pending_cancels(&h.store, TEAM, 0)
         .unwrap()
         .is_empty());
+    h.cancel_fact(node);
+    assert_eq!(h.node(node).state, NodeState::Cancelled);
 }
 #[test]
 fn production_cancel_replies_require_the_actual_attempt_pair_and_the_exact_echo() {
@@ -312,6 +317,7 @@ fn a_saved_cancel_fact_refusal_for_a_conflict_ends_the_visit_even_at_the_same_pa
         revision: team.revision,
         pending: pending.clone(),
         refused: false,
+        released: false,
         reason: String::new(),
         attempt: 1,
         attempt_id: String::new(),
@@ -323,4 +329,51 @@ fn a_saved_cancel_fact_refusal_for_a_conflict_ends_the_visit_even_at_the_same_pa
         Native::pending_cancels(&h.store, TEAM, 0).unwrap(),
         vec![pending]
     );
+}
+
+fn task_bound(h: &Harness, node: u32) -> bool {
+    h.store
+        .db
+        .as_ref()
+        .unwrap()
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM live_tasks WHERE team=?1 AND node=?2)",
+            rusqlite::params![TEAM, node],
+            |row| row.get(0),
+        )
+        .unwrap()
+}
+#[test]
+fn a_released_answer_unbinds_now_while_cancelled_waits_for_its_ordinary_observation() {
+    for released in [false, true] {
+        let (mut h, pending) = cancelling();
+        let node = pending.node;
+        assert!(task_bound(&h, node));
+        let team = h.store.team(TEAM).unwrap().unwrap();
+        let fact = Fact {
+            request_id: uuid::Uuid::new_v4().to_string(),
+            revision: team.revision,
+            attempt: pending.attempt,
+            attempt_id: pending.attempt_id.clone(),
+            pending,
+            refused: false,
+            released,
+            reason: String::new(),
+        };
+        Native::save_cancel(&mut h.store, &team, &fact, 100).unwrap();
+        assert_eq!(task_bound(&h, node), !released);
+        if !released {
+            assert!(
+                h.store
+                    .queue(TEAM, 200, None)
+                    .unwrap()
+                    .rows
+                    .iter()
+                    .any(|row| row.id == node && row.task.is_some()),
+                "the actor's ordinary observation page must still select this task"
+            );
+            h.cancel_fact(node);
+            assert!(!task_bound(&h, node));
+        }
+    }
 }

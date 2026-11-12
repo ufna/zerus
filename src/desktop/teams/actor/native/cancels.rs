@@ -88,6 +88,8 @@ impl Native {
                 decision: fact.pending.decision,
                 state: if fact.refused {
                     CancelState::Refused
+                } else if fact.released {
+                    CancelState::Released
                 } else {
                     CancelState::Cancelled
                 },

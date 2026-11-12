@@ -116,14 +116,16 @@ fn setup() -> (Harness, super::super::Runtime, Fake) {
     )
 }
 #[test]
-fn the_tick_consumes_cancels_and_maps_released_to_a_cancelled_fact() {
+fn the_tick_consumes_cancels_and_keeps_their_distinct_final_state() {
     for reply in [TaskReply::Cancelled, TaskReply::Released] {
         let (mut h, mut a, mut p) = setup();
+        let released = reply == TaskReply::Released;
         p.reply = Some(reply);
         a.tick(&mut h.store, &mut p, TEAM, 100, false).unwrap();
         assert_eq!(p.calls, vec![1]);
         assert_eq!(p.facts.len(), 1);
         assert!(!p.facts[0].refused);
+        assert_eq!(p.facts[0].released, released);
         a.tick(&mut h.store, &mut p, TEAM, 101, false).unwrap();
         assert_eq!(p.calls.len(), 1);
     }
@@ -316,4 +318,29 @@ fn a_legacy_saved_cancel_without_a_pair_is_observed_and_deferred_after_restart()
     a.cancels(&mut h.store, &mut p, &h_team(), 60_100).unwrap();
     assert_eq!(p.calls.len(), 1);
     assert_eq!(p.facts.len(), 1);
+}
+
+#[test]
+fn a_legacy_reserved_fact_keeps_its_original_cancelled_operation_and_request() {
+    let (mut h, mut a, mut p) = setup();
+    let key = format!("cancel:{}", p.pending[0].decision);
+    let id = uuid::Uuid::new_v4().to_string();
+    let revision = h.store.team(TEAM).unwrap().unwrap().revision;
+    a.put(
+        TEAM,
+        &key,
+        &json!({"pending":p.pending[0],"reply":"Released",
+        "attempt":{"number":0,"id":""},"fact":{"request_id":id,"revision":revision,
+        "pending":p.pending[0],"refused":false,"reason":"","attempt":0,"attempt_id":""},
+        "failures":0,"next_ms":0,"reason":""}),
+    )
+    .unwrap();
+    a.cancels(&mut h.store, &mut p, &h_team(), 100).unwrap();
+    assert!(p.calls.is_empty());
+    assert_eq!(p.facts.len(), 1);
+    assert_eq!(p.facts[0].request_id, id);
+    assert!(
+        !p.facts[0].released,
+        "a reserved legacy operation cannot change under its saved request ID"
+    );
 }
