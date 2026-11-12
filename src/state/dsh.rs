@@ -257,7 +257,7 @@ fn search_rpc(_: &Value, _: Value) -> Result<Value> {
     Err(UNSUPPORTED.into())
 }
 #[cfg(not(unix))]
-fn rpc_within(_: &Value, _: &str, _: Value, _: Duration) -> Result<Value> {
+fn rpc_within(_: &Value, _: &str, _: Value, _: std::time::Duration) -> Result<Value> {
     Err(UNSUPPORTED.into())
 }
 #[cfg(not(unix))]
