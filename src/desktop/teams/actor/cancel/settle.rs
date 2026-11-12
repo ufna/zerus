@@ -147,6 +147,7 @@ impl Runtime {
         row: &mut Entry,
         now: i64,
     ) -> Result<()> {
+        row.stale_before = None;
         row.reply = Some(TaskReply::Refused {
             reason: reason::stalled(row),
         });
@@ -180,6 +181,7 @@ impl Runtime {
         now: i64,
     ) -> Result<()> {
         row.reply = None;
+        row.stale_before = None;
         row.fact = None;
         row.refusal_exit = false;
         if !self.refresh_cancel(store, p, t, key, row, now)? {

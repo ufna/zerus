@@ -56,3 +56,23 @@ impl Runtime {
         Ok(true)
     }
 }
+
+impl Runtime {
+    /// Keep a fixed-size fingerprint, not another copy of document text.
+    pub(super) fn cancel_observation(
+        &self,
+        store: &Store,
+        team: &Team,
+        node: u32,
+    ) -> Result<Option<String>> {
+        use sha2::{Digest, Sha256};
+        store
+            .task_observation(&team.id, node)?
+            .map(|o| {
+                serde_json::to_vec(&o)
+                    .map(|bytes| format!("{:x}", Sha256::digest(bytes)))
+                    .map_err(crate::teams::store::storage)
+            })
+            .transpose()
+    }
+}

@@ -616,3 +616,87 @@ fn a_cached_stale_answer_counts_once_across_restarts_before_and_after_its_durabl
         assert!(p.facts[0].refused);
     }
 }
+
+#[test]
+fn progress_observed_before_a_crash_is_not_lost_when_the_cached_stale_answer_resumes() {
+    let (mut h, mut a, mut p) = setup();
+    p.reply = Some(TaskReply::Stale);
+    for now in [100, 60_100] {
+        a.cancels(&mut h.store, &mut p, &h_team(), now).unwrap();
+    }
+    p.move_pair = true;
+    super::super::cancel::CRASH.with(|s| s.set(Some("before_stale_count_save")));
+    assert!(
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| a.cancels(
+            &mut h.store,
+            &mut p,
+            &h_team(),
+            180_100
+        )))
+        .is_err()
+    );
+    p.move_pair = false;
+    let machine = a.machine.clone();
+    drop(a);
+    let mut a = super::super::Runtime::open(h.temp.path(), &machine).unwrap();
+    a.cancels(&mut h.store, &mut p, &h_team(), 180_101).unwrap();
+    assert!(p.facts.is_empty(), "the observation already made progress");
+    assert!(!p.pending.is_empty());
+    let row = a.ledger.prefix_page(TEAM, "cancel:", "").unwrap().remove(0);
+    assert_eq!(row.data["unchanged_answers"], 0);
+    p.reply = Some(TaskReply::Released);
+    a.cancels(&mut h.store, &mut p, &h_team(), 420_101).unwrap();
+    assert!(p.pending.is_empty());
+    assert_eq!(p.facts.len(), 1);
+    assert!(!p.facts[0].refused);
+}
+
+#[test]
+fn a_cached_stale_baseline_stays_small_with_the_largest_observed_title() {
+    let (mut h, mut a, mut p) = setup();
+    let mut observation = h.observation(1, crate::teams::ops::TaskStage::Todo);
+    observation.title = "\\".repeat(1024);
+    h.run(
+        &service(),
+        crate::teams::ops::Operation::ObserveTask {
+            node: 1,
+            observation,
+        },
+    )
+    .unwrap();
+    p.reply = Some(TaskReply::Stale);
+    p.fail_observe = true;
+    a.cancels(&mut h.store, &mut p, &h_team(), 100).unwrap();
+    let row = a.ledger.prefix_page(TEAM, "cancel:", "").unwrap().remove(0);
+    assert_eq!(
+        row.data["stale_before"]["observation"]
+            .as_str()
+            .unwrap()
+            .len(),
+        64
+    );
+    assert!(serde_json::to_vec(&row.data).unwrap().len() < 2048);
+}
+
+#[test]
+fn a_new_observation_is_progress_for_a_cached_stale_answer_even_when_the_pair_matches() {
+    let (mut h, mut a, mut p) = setup();
+    p.reply = Some(TaskReply::Stale);
+    for now in [100, 60_100] {
+        a.cancels(&mut h.store, &mut p, &h_team(), now).unwrap();
+    }
+    p.fail_observe = true;
+    a.cancels(&mut h.store, &mut p, &h_team(), 180_100).unwrap();
+    h.observe(1, crate::teams::ops::TaskStage::InProgress);
+    p.fail_observe = false;
+    a.cancels(&mut h.store, &mut p, &h_team(), 240_100).unwrap();
+    assert!(p.facts.is_empty(), "the store learned the current stage");
+    assert_eq!(p.calls.len(), 3);
+    let row = a.ledger.prefix_page(TEAM, "cancel:", "").unwrap().remove(0);
+    assert_eq!(row.data["unchanged_answers"], 0);
+    p.reply = Some(TaskReply::Released);
+    a.cancels(&mut h.store, &mut p, &h_team(), 480_100).unwrap();
+    assert!(p.pending.is_empty());
+    assert_eq!(p.facts.len(), 1);
+    assert!(!p.facts[0].refused);
+}

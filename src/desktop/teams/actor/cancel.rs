@@ -38,12 +38,19 @@ pub(in crate::desktop::teams) struct Fact {
     #[serde(default)]
     pub attempt_id: String,
 }
+#[derive(Clone, Serialize, Deserialize)]
+struct ObservationBefore {
+    pending: Pending,
+    observation: Option<String>,
+}
 #[derive(Serialize, Deserialize)]
 struct Entry {
     pending: Pending,
     reply: Option<TaskReply>,
     #[serde(default)]
     sentence: String,
+    #[serde(default)]
+    stale_before: Option<ObservationBefore>,
     #[serde(default)]
     attempt: Option<Attempt>,
     #[serde(default)]
@@ -109,6 +116,7 @@ impl Runtime {
                 pending,
                 reply: None,
                 sentence: String::new(),
+                stale_before: None,
                 attempt: None,
                 deferrals: 0,
                 fact: None,
@@ -265,6 +273,10 @@ impl Runtime {
             return Ok(());
         }
         *budget -= 1;
+        let before = ObservationBefore {
+            pending: row.pending.clone(),
+            observation: self.cancel_observation(store, t, row.pending.node)?,
+        };
         let answer = self.cancel_command(p, t, row)?;
         boundary("effect");
         match &answer.reply {
@@ -276,6 +288,7 @@ impl Runtime {
             TaskReply::CuttingOver { reason } => return Err(problem(reason)),
             _ => return Err(problem("Cancel answered another command")),
         }
+        row.stale_before = matches!(answer.reply, TaskReply::Stale).then_some(before);
         row.sentence = cut(&answer.sentence, 1024);
         row.reply = Some(answer.reply);
         row.attempt = answer.attempt;
@@ -333,19 +346,29 @@ impl Runtime {
             .ok_or_else(|| problem("Cancel team disappeared"))?;
         if !matches!(team.status, TeamStatus::Running | TeamStatus::Paused) {
             row.reply = None;
+            row.stale_before = None;
             self.put(&t.id, key, row)?;
             return Err(problem("A terminal cancel returned no current answer"));
         }
-        let before = store.task_observation(&t.id, row.pending.node)?;
-        let pending = row.pending.clone();
+        if row.stale_before.is_none() {
+            // Legacy cached answers have no durable proof of their baseline.
+            row.unchanged_answers = 0;
+            row.stale_before = Some(ObservationBefore {
+                pending: row.pending.clone(),
+                observation: self.cancel_observation(store, t, row.pending.node)?,
+            });
+            self.put(&t.id, key, row)?;
+        }
+        let before = row.stale_before.as_ref().expect("saved baseline").clone();
         if let Some(task) = &row.pending.task {
             p.observe(store, task)?;
         }
         if !self.refresh_cancel(store, p, t, key, row, now)? {
             return Ok(());
         }
-        let unchanged =
-            before == store.task_observation(&t.id, row.pending.node)? && pending == row.pending;
+        let unchanged = before.observation
+            == self.cancel_observation(store, t, row.pending.node)?
+            && before.pending == row.pending;
         row.unchanged_answers = if unchanged && matches!(row.reply, Some(TaskReply::Stale)) {
             row.unchanged_answers.saturating_add(1)
         } else {
@@ -356,6 +379,7 @@ impl Runtime {
             return self.stale_cancel_exit(store, p, t, key, row, now);
         }
         row.reply = None;
+        row.stale_before = None;
         row.fact = None;
         row.deferrals = row.deferrals.saturating_add(1);
         row.next_ms = now.saturating_add(retry::delay(row.deferrals));
