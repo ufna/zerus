@@ -273,6 +273,27 @@ class TeamsContract:
         self.assertTrue(any(a.get('run_id') == view['run_id'] for a in archives), 'Terminate archived the run')
 
 
+class TeamsFixtureProducers(unittest.TestCase):
+    """Values another component writes come from that component (plan, 2026-11-12):
+    the Kimi inspection stand-in carries only what src/accounts/kimi-read.mjs writes."""
+
+    def test_kimi_inspection_stand_in_is_a_value_the_producer_writes(self):
+        producer = (Path(__file__).resolve().parents[1] / 'src/accounts/kimi-read.mjs').read_text()
+        base = re.search(r"const output = (\{.*?\});", producer)[1]
+        self.assertEqual(base, "{identity:{},windows:[],source:'Kimi Code',status:'unavailable'}")
+        self.assertEqual(fixture.KIMI_PRODUCER_BASE, dict(identity={}, windows=[], source='Kimi Code', status='unavailable'))
+        identity = re.search(r"output\.identity=\{(.*?)\};", producer)[1]
+        written = set(re.findall(r"(\w+):", identity))
+        value = fixture.kimi_inspection()
+        self.assertEqual(set(value), set(fixture.KIMI_PRODUCER_BASE), 'no key the producer does not write')
+        self.assertEqual(set(value['identity']), written)
+        self.assertIn("auth_method:'Kimi Code'", identity)
+        self.assertEqual(value['identity']['auth_method'], 'Kimi Code')
+        # The producer sets status ok only when it has windows; with none it stays unavailable.
+        self.assertIn("if(output.windows.length)output.status='ok';", producer)
+        self.assertEqual((value['windows'], value['status']), ([], 'unavailable'))
+
+
 @unittest.skipUnless(os.environ.get('HGS_CLAUDE_TEST_BIN') and fixture.HGS, 'Set HGS_TEST_BIN and HGS_CLAUDE_TEST_BIN')
 class NativeTeamsClaude(TeamsContract, unittest.TestCase):
     agent = 'claude'

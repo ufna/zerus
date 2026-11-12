@@ -99,13 +99,25 @@ exit 97
 '''
 
 # The hosted Kimi workflow only: `hgs account inspect` signs a Kimi account in only
-# through api.kimi.com. With an expiring token hgs runs `node` with its bundled refresh
-# module; this stand-in answers that one call as a signed-in account. Account choice for
-# Kimi is therefore not evidence here; everything after it is (zerus-63rru follow-up).
+# through api.kimi.com. With an expiring token hgs runs `node` with its bundled module
+# src/accounts/kimi-read.mjs, the producer of this value; this stand-in answers that
+# one call. Its value is built by kimi_inspection() from the producer's own starting
+# object, changing named keys only to what the producer writes for a signed-in profile
+# with no usage windows; a guard test compares both with kimi-read.mjs. Account choice
+# for Kimi is therefore not evidence here; everything after it is.
+KIMI_PRODUCER_BASE = {'identity': {}, 'windows': [], 'source': 'Kimi Code', 'status': 'unavailable'}
+
+
+def kimi_inspection():
+    value = json.loads(json.dumps(KIMI_PRODUCER_BASE))
+    value['identity'] = {'name': 'Fixture', 'email': '', 'plan': '', 'auth_method': 'Kimi Code'}
+    return value
+
+
 KIMI_NODE = r'''#!/bin/bash
 printf '%s\tnode %s\n' "$(date +%s.%N)" "${1:-}" >> @ROOT@/log/kimi-inspection-stand-in.log
 if [[ "${1:-}" == "--input-type=module" && "${2:-}" == "-e" && -n "${KIMI_CODE_HOME:-}" ]]; then
-  printf '%s\n' '{"identity":{"name":"Fixture","email":"","plan":"","auth_method":"Kimi Code"},"windows":[],"source":"Kimi Code","status":"ok"}'
+  printf '%s\n' @VALUE@
   exit 0
 fi
 exit 97
@@ -407,7 +419,7 @@ class TeamFixture:
             path.chmod(0o755)
         if self.agent == 'kimi':
             path = r / 'bin/node'
-            path.write_text(KIMI_NODE.replace('@ROOT@', shlex.quote(str(r))))
+            path.write_text(KIMI_NODE.replace('@ROOT@', shlex.quote(str(r))).replace('@VALUE@', shlex.quote(json.dumps(kimi_inspection()))))
             path.chmod(0o755)
         for log in ('tmux-calls.log', 'refused-calls.log'):
             (r / 'log' / log).touch()

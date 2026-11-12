@@ -1446,7 +1446,11 @@ Each class checks its own isolation and fails rather than skipping:
 
 Kimi signs an account in only through `api.kimi.com`. The Kimi class therefore puts
 an expiring fixture token in the account home and a logged `node` stand-in on `PATH`
-for the one call `hgs account inspect` makes to refresh it. Kimi's account choice is
+for the one call `hgs account inspect` makes to refresh it. The stand-in prints a
+value its producer, `src/accounts/kimi-read.mjs`, writes: a signed-in profile with no
+usage windows, built from the producer's starting object by changing named keys
+only. `TeamsFixtureProducers` compares it with that file, so a key the producer does
+not write fails. Kimi's account choice is
 not evidence here (a loopback inspection seam is a follow-up for the accounts owner); everything after it
 is the real Kimi image. `kimi-native.py --teams` runs only on a disposable
 GitHub-hosted runner. It runs the class in a child of its own under a 2400-second
