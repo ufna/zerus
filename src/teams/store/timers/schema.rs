@@ -16,6 +16,8 @@
 //! meanwhile waits for it, up to a minute, instead of the usual two seconds.
 use super::*;
 use std::time::Duration;
+mod legacy_holds;
+use legacy_holds::legacy_owners;
 
 /// The layout the whole transition builds before any step: the first that
 /// reached the integration branch, with the timers. Every lower value was
@@ -59,19 +61,20 @@ fn card_decisions(db: &Connection) -> Result<()> {
 /// Layout 10 to 11: a hold has an owner (the plan, "A hold has an owner").
 /// An explicit hold keeps its owner beside its flag, a hand-back has a flag
 /// of its own, and a pending decision's hold is read from the decision and
-/// never stored. Each held node of an earlier layout is classified, never
-/// guessed one way:
+/// never stored. A held node of an earlier layout belongs to whatever set its
+/// hold last, as the store itself recorded it in order; where the store has
+/// no exact record, the hold is the person's ([`legacy_owners`]):
 /// - with an unsettled decision: the hold was the decision's, and the stored
 ///   flag goes;
-/// - with the trace of a hand-back in its current generation: an item of a
-///   hand-back's kind for the lead, a reopen that was refused or not
-///   delivered, or its pipeline's own step (the person's acceptance, a stage
-///   in review): a hand-back, which the lead's next decision or Release ends;
-/// - any other: its setter was not recorded, and it becomes the person's,
-///   which only the person's Release ends; the lead's Release is refused
-///   with a sentence that says so.
+/// - otherwise the last of its recorded events decides: an explicit Hold
+///   makes the hold explicit, owned by its actor (the person or the lead); a
+///   hand-back of its current generation makes it a hand-back, which the
+///   lead's next decision or Release ends;
+/// - a Release last, nothing recorded, or a hand-back that cannot be placed
+///   among the records: the person's, which only the person's Release ends;
+///   the lead's Release is refused with a sentence that says so.
 ///
-/// Each table is walked once per statement.
+/// The step reads no clock: only sequence numbers order the events.
 fn hold_owners(db: &Connection) -> Result<()> {
     for table in ["nodes", "node_archive"] {
         for (column, definition) in [
@@ -93,10 +96,14 @@ fn hold_owners(db: &Connection) -> Result<()> {
             }
         }
         db.execute_batch(&format!(
-            "UPDATE {table} SET hold=0 WHERE hold AND hold_owner IS NULL AND EXISTS(SELECT 1 FROM decisions d WHERE d.team={table}.team AND d.node={table}.id AND d.state<>'settled');
-             UPDATE {table} SET hold=0,hand_back=1 WHERE hold AND hold_owner IS NULL AND ({});
-             UPDATE {table} SET hold_owner='person' WHERE hold AND hold_owner IS NULL;",
-            handed_back(table)
+            "UPDATE {table} SET hold=0 WHERE hold AND hold_owner IS NULL AND EXISTS(SELECT 1 FROM decisions d WHERE d.team={table}.team AND d.node={table}.id AND d.state<>'settled');"
+        ))
+        .map_err(storage)?;
+    }
+    legacy_owners(db)?;
+    for table in ["nodes", "node_archive"] {
+        db.execute_batch(&format!(
+            "UPDATE {table} SET hold_owner='person' WHERE hold AND hold_owner IS NULL;"
         ))
         .map_err(storage)?;
     }
@@ -107,18 +114,6 @@ fn hold_owners(db: &Connection) -> Result<()> {
 fn key_refusal_order(db: &Connection) -> Result<()> {
     db.execute_batch("CREATE INDEX IF NOT EXISTS key_refusals_newest ON key_clears(team,at_ms,node) WHERE state='refused';")
         .map_err(storage)
-}
-/// The trace a hand-back leaves in a node's current generation, for the
-/// step to layout 11: an item of a hand-back's kind for the lead (filed by
-/// `rows::hand_back`'s callers and by a refused cancel), a reopen whose
-/// outcome was refused or not delivered, or its pipeline waiting on its own
-/// step.
-fn handed_back(t: &str) -> String {
-    format!(
-        "EXISTS(SELECT 1 FROM inbox i WHERE i.team={t}.team AND i.node={t}.id AND i.generation={t}.generation AND (i.kind LIKE 'return_without_holder:%' OR i.kind LIKE 'member_removed:%' OR i.kind LIKE 'conflict_holder_removed:%' OR i.kind LIKE 'verdict_holder_removed:%' OR i.kind LIKE 'cancel_refused:%'))
-         OR EXISTS(SELECT 1 FROM effects e WHERE e.team={t}.team AND e.node={t}.id AND e.generation={t}.generation AND e.kind='reopen' AND e.state IN ('refused','uncertain','cutting_over'))
-         OR EXISTS(SELECT 1 FROM pipeline_runs p WHERE p.team={t}.team AND p.node={t}.id AND p.generation={t}.generation AND (p.state='person' OR (p.state='active' AND p.stage IS NOT NULL)))"
-    )
 }
 /// The hand-back of a Return without a holder as layout 10 records it: the
 /// decision settled, the node's one hold flag set, and the lead's item. The
