@@ -17,6 +17,20 @@ fn a_call(team: &str, revision: u64, action: TeamAction) -> TeamCall {
     }
 }
 
+/// The bugfix template's digest in `crates/team-plan/fixtures/cli-catalog.json`.
+const DIGEST: &str = "6d15fdbdd92ac4d5c5bc53f0bd6da7871c0dbf1842f4d4f25bf94aebc95bbb9d";
+
+/// The permissions a form shows, merge_accepted switched off.
+fn shown() -> CreateDelegations {
+    CreateDelegations {
+        accept_results: true,
+        answer_members: true,
+        confirm_trust: true,
+        resume_exited: true,
+        merge_accepted: false,
+    }
+}
+
 fn create(revision: Option<u64>, integration: Integration) -> TeamCall {
     TeamCall {
         team: "00000000-0000-4000-8000-00000000cafe".into(),
@@ -38,6 +52,8 @@ fn create(revision: Option<u64>, integration: Integration) -> TeamCall {
                 String::new()
             },
             integration,
+            expected_template: DIGEST.into(),
+            delegations: shown(),
         },
         expected_revision: revision,
         confirmed: false,
@@ -69,13 +85,15 @@ fn every_action_names_its_operation() {
                 integration_branch: "zerus/team/fixes".into(),
                 base_commit: "0123456789abcdef0123456789abcdef01234567".into(),
                 integration: Integration::Branch,
+                expected_template: DIGEST.into(),
+                delegations: shown(),
             },
             "create",
         ),
-        (TeamAction::Pause, "pause"),
-        (TeamAction::Resume, "resume"),
-        (TeamAction::Stop, "stop"),
-        (TeamAction::Archive, "archive"),
+        (TeamAction::Pause {}, "pause"),
+        (TeamAction::Resume {}, "resume"),
+        (TeamAction::Stop {}, "stop"),
+        (TeamAction::Archive {}, "archive"),
         (
             TeamAction::PauseMember {
                 member: "m1".into(),
@@ -197,7 +215,7 @@ fn every_action_names_its_operation() {
         assert!(action.check().is_ok(), "{op}: {:?}", action.check());
     }
     assert!(
-        TeamAction::Pause.names_team(),
+        TeamAction::Pause {}.names_team(),
         "a team action names its team"
     );
     assert!(
@@ -210,6 +228,8 @@ fn every_action_names_its_operation() {
             integration_branch: String::new(),
             base_commit: String::new(),
             integration: Integration::None,
+            expected_template: DIGEST.into(),
+            delegations: shown(),
         }
         .names_team(),
         "a create names the team it makes, not one it changes"
@@ -261,8 +281,8 @@ fn one_intent_keeps_its_request_id() {
 #[test]
 fn a_person_confirms_a_destructive_action_first() {
     for action in [
-        TeamAction::Stop,
-        TeamAction::Archive,
+        TeamAction::Stop {},
+        TeamAction::Archive {},
         TeamAction::StopMember {
             member: "m1".into(),
         },
@@ -285,7 +305,7 @@ fn a_person_confirms_a_destructive_action_first() {
         confirmed.confirmed = true;
         assert!(prepare(&confirmed).is_ok(), "{action:?} runs confirmed");
     }
-    assert!(prepare(&a_call(TEAM, 42, TeamAction::Pause)).is_ok());
+    assert!(prepare(&a_call(TEAM, 42, TeamAction::Pause {})).is_ok());
 }
 
 #[test]
@@ -495,7 +515,7 @@ fn an_outcome_of_each_kind() {
     assert!(matches!(start_failed, TeamOutcome::Failed { .. }));
     assert!(start_failed.repeatable_by_desktop());
 
-    let confirmed = prepare(&a_call(TEAM, 42, TeamAction::Stop)).unwrap_err();
+    let confirmed = prepare(&a_call(TEAM, 42, TeamAction::Stop {})).unwrap_err();
     assert!(matches!(confirmed, TeamOutcome::Confirm { .. }));
     assert_eq!(confirmed.request_id(), None);
     assert!(confirmed.repeatable_by_desktop());
@@ -591,12 +611,12 @@ fn an_uncertain_call_is_never_repeated_by_the_desktop() {
 fn a_pending_intent_reports_pending() {
     let mut intents = Intents::default();
     assert_eq!(
-        intents.admit(&a_call(TEAM, 42, TeamAction::Pause)),
+        intents.admit(&a_call(TEAM, 42, TeamAction::Pause {})),
         Admission::Send
     );
     let again = intents.attempt(
         Path::new("/nonexistent"),
-        &a_call(TEAM, 42, TeamAction::Pause),
+        &a_call(TEAM, 42, TeamAction::Pause {}),
     );
     assert_eq!(
         again,
@@ -725,4 +745,638 @@ fn an_effect_then_an_unreadable_exit_is_uncertain_and_sent_once() {
     )
     .unwrap();
     assert_eq!(stdin["request_id"], ID, "the same intent keeps its id");
+}
+
+/// The store's storage failure, as `hgs team` prints it (with the problem's
+/// optional detail), and the problem itself: `crates/team-plan/fixtures`.
+const CLI_STORAGE_FAILED: &str =
+    include_str!("../../../../../crates/team-plan/fixtures/cli-storage-failed.json");
+const PROBLEM_STORAGE_FAILED: &str =
+    include_str!("../../../../../crates/team-plan/fixtures/problem-storage-failed.json");
+const PROBLEM_STORE_BUSY: &str =
+    include_str!("../../../../../crates/team-plan/fixtures/problem-store-busy.json");
+const STORAGE_SENTENCE: &str =
+    "The result is not known; repeat the same request with the same request ID.";
+
+#[test]
+fn the_storage_fixtures_are_one_problem() {
+    let cli: Value = serde_json::from_str(CLI_STORAGE_FAILED).unwrap();
+    let problem: Value = serde_json::from_str(PROBLEM_STORAGE_FAILED).unwrap();
+    assert_eq!(cli["ok"], false);
+    // The printed problem carries its optional detail; the rest is the problem.
+    let mut error = cli["error"].clone();
+    assert!(error.as_object_mut().unwrap().remove("detail").is_some());
+    assert_eq!(error, problem);
+    assert_eq!(problem["code"], super::wire::STORAGE_FAILED);
+    assert_eq!(problem["message"], STORAGE_SENTENCE);
+}
+
+/// Owner decision of 2026-11-12 (zerus-63rru.19): a storage failure is not a
+/// refusal. Its result is not known, so the call is uncertain with its own
+/// request id and the store's sentence, and only Check (the same id) or
+/// Dismiss leave it; a real refusal still fails definitely.
+#[test]
+fn a_storage_failure_is_uncertain_with_the_same_request_id() {
+    for action in [
+        TeamAction::Accept { node: 7 },
+        TeamAction::Decide {
+            card: 3,
+            decision: "approve".into(),
+        },
+    ] {
+        let call = a_call(TEAM, 42, action);
+        for code in [1, 0] {
+            let outcome = classify(
+                &call,
+                Exit::Code {
+                    code,
+                    stdout: CLI_STORAGE_FAILED.as_bytes().to_vec(),
+                    stderr: String::new(),
+                },
+            );
+            assert_eq!(
+                outcome,
+                TeamOutcome::Uncertain {
+                    detail: STORAGE_SENTENCE.into(),
+                    request_id: ID.into(),
+                },
+                "exit {code}"
+            );
+            assert!(!outcome.repeatable_by_desktop());
+        }
+    }
+    let create = create(None, Integration::None);
+    let outcome = classify(
+        &create,
+        Exit::Code {
+            code: 1,
+            stdout: CLI_STORAGE_FAILED.as_bytes().to_vec(),
+            stderr: String::new(),
+        },
+    );
+    assert_eq!(outcome.request_id(), Some(ID));
+    assert!(
+        matches!(outcome, TeamOutcome::Uncertain { .. }),
+        "a New team create too"
+    );
+    // A storage failure without a sentence still says what to do.
+    let bare = classify(
+        &a_call(TEAM, 42, TeamAction::Pause {}),
+        Exit::Code {
+            code: 1,
+            stdout: br#"{"ok":false,"error":{"code":"storage_failed"}}"#.to_vec(),
+            stderr: String::new(),
+        },
+    );
+    assert!(matches!(&bare, TeamOutcome::Uncertain { detail, .. } if !detail.is_empty()));
+    // A rule's refusal is still a definite one.
+    let refused = classify(
+        &a_call(TEAM, 42, TeamAction::Accept { node: 7 }),
+        Exit::Code {
+            code: 1,
+            stdout: br#"{"ok":false,"error":{"code":"invalid_state","message":"The node is not reported."}}"#.to_vec(),
+            stderr: String::new(),
+        },
+    );
+    assert_eq!(
+        refused,
+        TeamOutcome::Failed {
+            detail: "The node is not reported.".into(),
+            code: "invalid_state".into(),
+            request_id: ID.into(),
+        }
+    );
+    assert!(refused.repeatable_by_desktop());
+}
+
+#[test]
+fn check_after_a_storage_failure_sends_the_same_request_id() {
+    let call = a_call(TEAM, 42, TeamAction::Accept { node: 7 });
+    let mut intents = Intents::default();
+    assert_eq!(intents.admit(&call), Admission::Send);
+    let outcome = intents.settle(
+        &call,
+        classify(
+            &call,
+            Exit::Code {
+                code: 1,
+                stdout: CLI_STORAGE_FAILED.as_bytes().to_vec(),
+                stderr: String::new(),
+            },
+        ),
+    );
+    assert_eq!(outcome.request_id(), Some(ID));
+    assert_eq!(intents.state(ID), Some(IntentState::Uncertain));
+    // The same call again is not a fresh send: it answers its recorded outcome.
+    assert!(matches!(
+        intents.admit(&call),
+        Admission::Recorded(TeamOutcome::Uncertain { .. })
+    ));
+    // Check sends the same request id and content once more.
+    assert_eq!(intents.admit_again(&call), Admission::Send);
+    assert_eq!(intents.state(ID), Some(IntentState::Pending));
+    let (invocation, request_id) = prepare(&call).unwrap();
+    assert_eq!(request_id, ID);
+    assert_eq!(invocation.request_id.as_deref(), Some(ID));
+    assert_eq!(stdin_of(&invocation)["request_id"], ID);
+    // A refusal settles and is never checked again.
+    let refused_call = TeamCall {
+        request_id: "22222222-2222-4333-8444-555555555555".into(),
+        ..a_call(TEAM, 42, TeamAction::Accept { node: 8 })
+    };
+    assert_eq!(intents.admit(&refused_call), Admission::Send);
+    intents.settle(
+        &refused_call,
+        classify(
+            &refused_call,
+            Exit::Code {
+                code: 1,
+                stdout: br#"{"ok":false,"error":{"code":"invalid_state","message":"No."}}"#
+                    .to_vec(),
+                stderr: String::new(),
+            },
+        ),
+    );
+    assert_ne!(
+        intents.state("22222222-2222-4333-8444-555555555555"),
+        Some(IntentState::Uncertain)
+    );
+}
+
+// The create binding (zerus-63rru.30): what the person confirmed is bound at
+// the create. The call carries the digest of the template the form showed and
+// the five permissions as the form shows them; the command line refuses a
+// changed template with template_changed before anything is written.
+
+/// `crates/team-plan/fixtures/cli-template-changed.json` and its problem.
+const CLI_TEMPLATE_CHANGED: &str =
+    include_str!("../../../../../crates/team-plan/fixtures/cli-template-changed.json");
+const PROBLEM_TEMPLATE_CHANGED: &str =
+    include_str!("../../../../../crates/team-plan/fixtures/problem-template-changed.json");
+
+#[test]
+fn a_create_carries_the_shown_templates_digest_and_its_five_permissions() {
+    let (invocation, _) = prepare(&create(None, Integration::Branch)).unwrap();
+    assert_eq!(
+        invocation.args,
+        ["team", "create", "--template", "bugfix", "--json"]
+    );
+    let input = stdin_of(&invocation);
+    assert_eq!(input["expected_template"], DIGEST);
+    assert_eq!(
+        input["delegations"],
+        json!({"accept_results": true, "answer_members": true, "confirm_trust": true, "resume_exited": true, "merge_accepted": false})
+    );
+}
+
+#[test]
+fn a_create_names_all_five_permissions_and_a_digest_or_it_is_not_read() {
+    let call = |action: Value| {
+        serde_json::from_value::<TeamCall>(json!({
+            "team": "00000000-0000-4000-8000-00000000cafe", "team_name": "", "request_id": ID,
+            "action": action,
+        }))
+    };
+    let mut action = serde_json::to_value(&create(None, Integration::Branch).action).unwrap();
+    assert!(call(action.clone()).is_ok());
+    // The contract's own Delegations fills a missing field with its default
+    // (true); the create's never does.
+    let mut fewer = action.clone();
+    fewer["delegations"]
+        .as_object_mut()
+        .unwrap()
+        .remove("merge_accepted");
+    assert!(call(fewer).is_err(), "four permissions are not read");
+    let mut unknown = action.clone();
+    unknown["delegations"]["future_power"] = json!(true);
+    assert!(call(unknown).is_err(), "an unknown permission is not read");
+    let mut text = action.clone();
+    text["delegations"]["merge_accepted"] = json!("false");
+    assert!(call(text).is_err(), "a permission is a boolean");
+    let mut unbound = action.clone();
+    unbound.as_object_mut().unwrap().remove("expected_template");
+    assert!(
+        call(unbound).is_err(),
+        "a create without a digest is not read"
+    );
+    action["expected_template"] = json!("");
+    let blank = call(action).unwrap();
+    assert_eq!(blank.action.check(), Err("Not a template digest.".into()));
+    assert!(matches!(
+        prepare(&TeamCall {
+            expected_revision: None,
+            ..blank
+        }),
+        Err(TeamOutcome::Failed { .. })
+    ));
+    // The five are the contract's five.
+    let contract: Vec<String> =
+        serde_json::to_value(zerus_team_plan::model::Delegations::default())
+            .unwrap()
+            .as_object()
+            .unwrap()
+            .keys()
+            .cloned()
+            .collect();
+    let ours: Vec<String> = serde_json::to_value(shown())
+        .unwrap()
+        .as_object()
+        .unwrap()
+        .keys()
+        .cloned()
+        .collect();
+    assert_eq!(
+        ours.iter().collect::<std::collections::BTreeSet<_>>(),
+        contract.iter().collect()
+    );
+}
+
+#[test]
+fn check_after_a_storage_failure_sends_the_same_create_byte_for_byte() {
+    let call = create(None, Integration::Branch);
+    let (first, _) = prepare(&call).unwrap();
+    let mut intents = Intents::default();
+    assert_eq!(intents.admit(&call), Admission::Send);
+    intents.settle(
+        &call,
+        classify(
+            &call,
+            Exit::Code {
+                code: 1,
+                stdout: CLI_STORAGE_FAILED.as_bytes().to_vec(),
+                stderr: String::new(),
+            },
+        ),
+    );
+    assert_eq!(intents.state(ID), Some(IntentState::Uncertain));
+    // The same id with other permissions or another digest is not this call.
+    for other in [
+        TeamCall {
+            action: match call.action.clone() {
+                TeamAction::Create {
+                    template,
+                    project,
+                    name,
+                    goal,
+                    home,
+                    integration_branch,
+                    base_commit,
+                    integration,
+                    expected_template,
+                    ..
+                } => TeamAction::Create {
+                    template,
+                    project,
+                    name,
+                    goal,
+                    home,
+                    integration_branch,
+                    base_commit,
+                    integration,
+                    expected_template,
+                    delegations: CreateDelegations {
+                        merge_accepted: true,
+                        ..shown()
+                    },
+                },
+                _ => unreachable!(),
+            },
+            ..call.clone()
+        },
+        TeamCall {
+            action: match call.action.clone() {
+                TeamAction::Create {
+                    template,
+                    project,
+                    name,
+                    goal,
+                    home,
+                    integration_branch,
+                    base_commit,
+                    integration,
+                    delegations,
+                    ..
+                } => TeamAction::Create {
+                    template,
+                    project,
+                    name,
+                    goal,
+                    home,
+                    integration_branch,
+                    base_commit,
+                    integration,
+                    expected_template:
+                        "a13f8ce303eeec0f3a1eeae443bc1a1594696e48c365e18d5099afec353e722a".into(),
+                    delegations,
+                },
+                _ => unreachable!(),
+            },
+            ..call.clone()
+        },
+    ] {
+        assert!(
+            matches!(intents.admit_again(&other), Admission::Refused(TeamOutcome::Failed { ref code, .. }) if code == "duplicate"),
+            "another binding under the same id is refused"
+        );
+        assert_eq!(intents.state(ID), Some(IntentState::Uncertain));
+    }
+    assert_eq!(intents.admit_again(&call), Admission::Send);
+    let (again, request_id) = prepare(&call).unwrap();
+    assert_eq!(request_id, ID);
+    assert_eq!(again.args, first.args);
+    assert_eq!(
+        again.stdin, first.stdin,
+        "Check sends the create's bytes as they were"
+    );
+    let input = stdin_of(&again);
+    assert_eq!(input["request_id"], ID);
+    assert_eq!(input["expected_template"], DIGEST);
+    assert_eq!(input["delegations"]["merge_accepted"], false);
+}
+
+#[test]
+fn a_changed_template_is_a_refusal_the_intent_settles_never_uncertain() {
+    let problem: Value = serde_json::from_str(PROBLEM_TEMPLATE_CHANGED).unwrap();
+    let reply: Value = serde_json::from_str(CLI_TEMPLATE_CHANGED).unwrap();
+    assert_eq!(reply["error"], problem, "the two fixtures are one problem");
+    for code in [1, 0] {
+        let call = create(None, Integration::Branch);
+        let mut intents = Intents::default();
+        assert_eq!(intents.admit(&call), Admission::Send);
+        let outcome = intents.settle(
+            &call,
+            classify(
+                &call,
+                Exit::Code {
+                    code,
+                    stdout: CLI_TEMPLATE_CHANGED.as_bytes().to_vec(),
+                    stderr: String::new(),
+                },
+            ),
+        );
+        assert_eq!(
+            outcome,
+            TeamOutcome::Failed {
+                detail: "The template changed since it was shown. Review it again.".into(),
+                code: "template_changed".into(),
+                request_id: ID.into(),
+            },
+            "exit {code}"
+        );
+        assert_eq!(intents.state(ID), Some(IntentState::Failed));
+        // Check cannot send a settled refusal again; it answers the refusal.
+        assert!(matches!(
+            intents.admit_again(&call),
+            Admission::Recorded(TeamOutcome::Failed { .. })
+        ));
+    }
+}
+
+/// The store's busy refusal (zerus-63rru.30's store codes): nothing was
+/// written, so it is a refusal like any other code, never an unknown result;
+/// the action may simply be sent again (a new intent), and Check has nothing to
+/// check. Its sentence is the store's, without the code.
+#[test]
+fn a_busy_store_is_a_refusal_nothing_was_written() {
+    let problem: Value = serde_json::from_str(PROBLEM_STORE_BUSY).unwrap();
+    assert_eq!(problem["code"], zerus_team_plan::problem::code::STORE_BUSY);
+    let stdout = json!({"ok": false, "error": problem})
+        .to_string()
+        .into_bytes();
+    let call = a_call(TEAM, 42, TeamAction::Accept { node: 7 });
+    let mut intents = Intents::default();
+    assert_eq!(intents.admit(&call), Admission::Send);
+    let outcome = intents.settle(
+        &call,
+        classify(
+            &call,
+            Exit::Code {
+                code: 1,
+                stdout,
+                stderr: String::new(),
+            },
+        ),
+    );
+    assert_eq!(
+        outcome,
+        TeamOutcome::Failed {
+            detail: "The team store is busy. Nothing was written; try again.".into(),
+            code: "store_busy".into(),
+            request_id: ID.into(),
+        }
+    );
+    assert_eq!(intents.state(ID), Some(IntentState::Failed));
+    let again = TeamCall {
+        request_id: "22222222-2222-4333-8444-555555555555".into(),
+        ..call
+    };
+    assert_eq!(
+        intents.admit(&again),
+        Admission::Send,
+        "the same action is sent again"
+    );
+}
+
+/// A problem may carry a detail (`cli-storage-failed.json` does). A person does
+/// not need it in the sentence: the outcome keeps the store's message only,
+/// whether the code is uncertain or a refusal.
+#[test]
+fn a_problems_detail_stays_out_of_the_sentence() {
+    let cli: Value = serde_json::from_str(CLI_STORAGE_FAILED).unwrap();
+    let detail = cli["error"]["detail"].as_str().unwrap().to_owned();
+    let call = a_call(TEAM, 42, TeamAction::Accept { node: 7 });
+    let exit = |stdout: Vec<u8>| Exit::Code {
+        code: 1,
+        stdout,
+        stderr: String::new(),
+    };
+    match classify(&call, exit(CLI_STORAGE_FAILED.as_bytes().to_vec())) {
+        TeamOutcome::Uncertain { detail: shown, .. } => {
+            assert_eq!(shown, STORAGE_SENTENCE);
+            assert!(!shown.contains(&detail));
+        }
+        other => panic!("{other:?}"),
+    }
+    let refused = json!({"ok": false, "error": {"code": "invalid_state", "message": "No.", "detail": detail}});
+    match classify(&call, exit(refused.to_string().into_bytes())) {
+        TeamOutcome::Failed {
+            detail: shown,
+            code,
+            ..
+        } => {
+            assert_eq!((shown.as_str(), code.as_str()), ("No.", "invalid_state"));
+        }
+        other => panic!("{other:?}"),
+    }
+}
+
+/// The review's B2: what is sent is strict at every level, the action inside
+/// the call included. Its probe: a Create with a field this version does not
+/// know is refused, never prepared without it; a variant without fields
+/// refuses one too.
+#[test]
+fn an_unknown_field_in_an_action_is_refused_never_left_out() {
+    let probe = json!({
+        "team": "00000000-0000-4000-8000-00000000c0de", "team_name": "Review",
+        "request_id": "11111111-1111-4111-8111-111111111111",
+        "action": {
+            "kind": "create", "template": "bugfix", "expected_template": DIGEST,
+            "delegations": {"accept_results": true, "answer_members": true, "confirm_trust": true, "resume_exited": true, "merge_accepted": false},
+            "project": "example-project", "name": "Review", "goal": "", "home": "00000000-0000-4000-8000-0000000000aa",
+            "integration": "branch", "integration_branch": "zerus/team/review",
+            "base_commit": "0123456789abcdef0123456789abcdef01234567",
+            "future_precondition": "must not be silently lost",
+        },
+    });
+    assert!(serde_json::from_value::<TeamCall>(probe.clone()).is_err());
+    let mut known = probe.clone();
+    known["action"]
+        .as_object_mut()
+        .unwrap()
+        .remove("future_precondition");
+    let call: TeamCall = serde_json::from_value(known).expect("the same create without it is read");
+    assert!(prepare(&call).is_ok());
+    for action in [
+        json!({"kind": "pause", "added_later": true}),
+        json!({"kind": "decide", "card": 3, "decision": "approve", "added_later": true}),
+        json!({"kind": "cancel", "node": 2, "reason": "Not needed.", "added_later": true}),
+    ] {
+        assert!(
+            serde_json::from_value::<TeamAction>(action.clone()).is_err(),
+            "{action}"
+        );
+    }
+}
+
+#[test]
+fn every_action_the_view_sends_is_still_read() {
+    assert_eq!(
+        serde_json::from_value::<TeamAction>(json!({"kind": "pause"})).unwrap(),
+        TeamAction::Pause {}
+    );
+    for action in [
+        create(None, Integration::Branch).action,
+        TeamAction::Pause {},
+        TeamAction::StopMember {
+            member: "m1".into(),
+        },
+        TeamAction::Decide {
+            card: 3,
+            decision: "approve".into(),
+        },
+        TeamAction::Return {
+            node: 2,
+            reason: "Again.".into(),
+        },
+        TeamAction::Route {
+            node: 2,
+            role: "developer".into(),
+            pipeline: "reviewed".into(),
+            deps: Vec::new(),
+            writes: Vec::new(),
+            assignee: None,
+        },
+    ] {
+        let sent = serde_json::to_value(&action).unwrap();
+        assert_eq!(serde_json::from_value::<TeamAction>(sent).unwrap(), action);
+    }
+}
+
+/// Every kind the core reads, as the webview must write it
+/// (`fixtures/action-kinds.json`, which the Team tab's test also reads). The
+/// match below names every variant, so a new one cannot be left out.
+#[test]
+fn the_action_kinds_are_the_shared_list() {
+    fn sample(action: &TeamAction) -> &'static str {
+        match action {
+            TeamAction::Create { .. }
+            | TeamAction::Pause {}
+            | TeamAction::Resume {}
+            | TeamAction::Stop {}
+            | TeamAction::Archive {}
+            | TeamAction::PauseMember { .. }
+            | TeamAction::ResumeMember { .. }
+            | TeamAction::StopMember { .. }
+            | TeamAction::ArchiveMember { .. }
+            | TeamAction::Settings { .. }
+            | TeamAction::Decide { .. }
+            | TeamAction::Admit { .. }
+            | TeamAction::Route { .. }
+            | TeamAction::Accept { .. }
+            | TeamAction::Return { .. }
+            | TeamAction::Reassign { .. }
+            | TeamAction::Hold { .. }
+            | TeamAction::Release { .. }
+            | TeamAction::Cancel { .. }
+            | TeamAction::Reply { .. }
+            | TeamAction::Ask { .. } => "",
+        }
+    }
+    let member = || "m1".to_owned();
+    let samples = vec![
+        create(None, Integration::Branch).action,
+        TeamAction::Pause {},
+        TeamAction::Resume {},
+        TeamAction::Stop {},
+        TeamAction::Archive {},
+        TeamAction::PauseMember { member: member() },
+        TeamAction::ResumeMember { member: member() },
+        TeamAction::StopMember { member: member() },
+        TeamAction::ArchiveMember { member: member() },
+        TeamAction::Settings {
+            settings: Default::default(),
+        },
+        TeamAction::Decide {
+            card: 1,
+            decision: "approve".into(),
+        },
+        TeamAction::Admit { node: 1 },
+        TeamAction::Route {
+            node: 1,
+            role: "r".into(),
+            pipeline: "p".into(),
+            deps: Vec::new(),
+            writes: Vec::new(),
+            assignee: None,
+        },
+        TeamAction::Accept { node: 1 },
+        TeamAction::Return {
+            node: 1,
+            reason: "r".into(),
+        },
+        TeamAction::Reassign {
+            node: 1,
+            member: member(),
+            reason: String::new(),
+        },
+        TeamAction::Hold { node: 1 },
+        TeamAction::Release { node: 1 },
+        TeamAction::Cancel {
+            node: 1,
+            reason: String::new(),
+        },
+        TeamAction::Reply {
+            item: 1,
+            text: "t".into(),
+        },
+        TeamAction::Ask {
+            node: 1,
+            generation: 1,
+            text: "t".into(),
+        },
+    ];
+    let mut kinds: Vec<String> = samples
+        .iter()
+        .map(|action| {
+            sample(action);
+            serde_json::to_value(action).unwrap()["kind"]
+                .as_str()
+                .unwrap()
+                .to_owned()
+        })
+        .collect();
+    kinds.sort();
+    let shared: Vec<String> =
+        serde_json::from_str(include_str!("../fixtures/action-kinds.json")).unwrap();
+    assert_eq!(kinds, shared);
 }

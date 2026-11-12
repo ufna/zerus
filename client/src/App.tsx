@@ -32,6 +32,7 @@ import { openUpdates } from "./store/desk";
 import { SessionUsageStrip } from "./ui/components/SessionUsageStrip";
 import type { BridgeMode } from "./bridge";
 import { installUiLanguage, tr, uiLanguage } from "./i18n";
+import { teams } from "./store/teams";
 import { lazyView } from "./ui/lazy-view";
 import { LazyBoundary } from "./ui/lazy-boundary";
 const ParentDialogs = lazyView(() => import("./ui/sessions/ParentDialogs"), (m) => m.ParentDialogs);
@@ -60,6 +61,10 @@ const TaskCancelDialog = lazy(() => import("./ui/screens/TaskCancelDialog"));
 const GoToDialog = lazy(() => import("./ui/sessions/GoToDialog").then((m) => ({ default: m.GoToDialog })));
 const ShortcutHelpDialog = lazy(() => import("./ui/sessions/ShortcutHelpDialog").then((m) => ({ default: m.ShortcutHelpDialog })));
 const PerfHost = lazy(() => import("./ui/PerfHost").then((m) => ({ default: m.PerfHost })));
+// New team loads the first time it opens; its catalog read happens then.
+const NewTeamDialog = lazy(() => import("./ui/teams/NewTeam").then((m) => ({ default: m.NewTeamDialog })));
+// Waiting for you loads the first time its rail entry opens.
+const WaitingScreen = lazy(() => import("./ui/screens/Waiting").then((m) => ({ default: m.WaitingScreen })));
 
 function LoginItemButton() {
   return (
@@ -125,12 +130,22 @@ export function App(props: { mode: () => BridgeMode | "starting" }) {
     ["help.shortcuts", openShortcutHelp],
     // session.new (Shortcuts.cpp:29, 58): New session from every page.
     ["session.new", newSessionFromShortcut],
+    // Teams are a preview: the dialog opens only when the core says they exist.
+    ["team.new", () => { if (teams.available() === true) void teams.openNewTeam(); }],
     ["zoom.in", () => zoomBy(0.1)],
     ["zoom.out", () => zoomBy(-0.1)],
     ["zoom.reset", () => zoom(1)],
   ];
   onMount(() => {
-    const off = [installShortcutRouter(), ...commands.map(([id, run]) => onCommand(id, run)), installWindowCommands()];
+    // One read answers whether Teams are on for this computer; the entry points show only then.
+    void teams.probe();
+    // Discovery and visibility belong to the application: a hidden window
+    // pauses every Teams read, whether or not a Team tab was ever opened.
+    const onVisibility = () => { void teams.hidden(document.hidden).catch(() => {}); };
+    document.addEventListener("visibilitychange", onVisibility);
+    onVisibility();
+    const off = [installShortcutRouter(), ...commands.map(([id, run]) => onCommand(id, run)), installWindowCommands(),
+      () => document.removeEventListener("visibilitychange", onVisibility)];
     onCleanup(() => off.forEach((undo) => undo()));
   });
   return (
@@ -148,6 +163,7 @@ export function App(props: { mode: () => BridgeMode | "starting" }) {
           <Match when={page() === "machines"}><MachinesScreen /></Match>
           <Match when={page() === "accounts"}><Suspense><AccountsScreen /></Suspense></Match>
           <Match when={page() === "projects"}><Suspense><ProjectsScreen /></Suspense></Match>
+          <Match when={page() === "waiting"}><Suspense><WaitingScreen /></Suspense></Match>
           <Match when={page() === "settings"}><Suspense><SettingsScreen /></Suspense></Match>
         </Switch>
       </main>
@@ -165,6 +181,7 @@ export function App(props: { mode: () => BridgeMode | "starting" }) {
       <Show when={goToOrigin()}><Suspense><GoToDialog /></Suspense></Show>
       <Show when={shortcutHelpOrigin()}><Suspense><ShortcutHelpDialog /></Suspense></Show>
       <Show when={newSessionOpened()}><Suspense><NewSessionDialog /></Suspense></Show>
+      <Show when={teams.newTeamOpen()}><Suspense><NewTeamDialog /></Suspense></Show>
       <OrganizationDialogs />
       <LazyBoundary floating><ParentDialogs /></LazyBoundary>
       <Suspense><PerfHost /></Suspense>

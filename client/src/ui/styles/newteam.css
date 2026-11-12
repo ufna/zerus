@@ -1,0 +1,58 @@
+/* The fork's New team form, trimmed to the M1 template, settings and folder.
+   Controls and notices use the client's shared classes and skin tokens. */
+@layer components {
+  dialog.newteam-page-dialog { width: min(760px, calc(100vw - 48px)); overflow: hidden; }
+  .newteam-page { display: flex; flex-direction: column; min-height: 0; width: 100%; }
+  .nt-page-head { display: flex; align-items: center; gap: 10px; padding: 16px 20px 12px; border-bottom: 1px solid var(--z-color-divider); }
+  .nt-page-head > svg { color: var(--z-color-accent); flex: none; }
+  .nt-page-head h1 { font-size: var(--fs-lg); font-weight: 600; }
+  .nt-page-head .icon-btn { margin-left: auto; }
+  .nt-body { flex: 1; min-height: 0; min-width: 0; overflow: auto; display: flex; flex-direction: column; gap: 16px; padding: 16px 20px 0; font-size: var(--fs-sm); }
+  .nt-section { display: flex; flex-direction: column; gap: 12px; }
+  .nt-section + .nt-section { padding-top: 16px; border-top: 1px solid var(--z-color-divider); }
+  .nt-section h2, .nt-templates > b { font-size: var(--fs-sm); font-weight: 600; color: var(--z-color-text); }
+  .nt-field { display: flex; flex-direction: column; gap: 6px; min-width: 0; color: var(--z-color-label); }
+  .nt-field > .field { width: 100%; }
+  .nt-pair { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 12px; }
+  .nt-inline { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; min-width: 0; }
+  .nt-inline > .field { flex: 1 1 220px; min-width: 0; }
+  .nt-hint { color: var(--z-color-muted); font-size: var(--fs-xs); line-height: 1.5; }
+  .nt-templates { margin: 0; padding: 0; border: 0; min-width: 0; display: flex; flex-direction: column; gap: 8px; }
+  .nt-templates legend { margin-bottom: 8px; padding: 0; font-weight: 600; }
+  .nt-permissions { margin: 10px 0 0; padding: 0; border: 0; min-width: 0; display: flex; flex-direction: column; gap: 6px; }
+  .nt-permissions legend { margin-bottom: 4px; padding: 0; font-weight: 600; }
+  .nt-template-list { display: flex; flex-direction: column; gap: 6px; max-height: 210px; overflow: auto; padding: 2px; margin: -2px; }
+  .nt-template-row { display: flex; align-items: center; gap: 10px; min-height: 54px; padding: 10px 12px; text-align: left; border: 1px solid var(--z-color-card-border); border-radius: var(--z-radius-lg); background: var(--z-color-card); color: var(--z-color-text); }
+  .nt-template-row:hover { background: var(--z-color-card-hover); }
+  .nt-template-row.on { border-color: var(--z-color-card-selected-border); background: var(--z-color-card-selected); }
+  .nt-template-row input { margin: 0; flex: none; width: 14px; height: 14px; accent-color: var(--z-color-accent); }
+  .nt-template-copy { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+  .nt-template-name { font-weight: 600; font-size: var(--fs-sm); }
+  .nt-template-summary { padding: 12px; display: flex; flex-direction: column; gap: 14px; }
+  .nt-template-summary .nt-field > b { color: var(--z-color-text-2); font-weight: 600; }
+  .nt-list { display: flex; flex-direction: column; gap: 4px; color: var(--z-color-text-2); list-style: none; }
+  .nt-list li { overflow-wrap: anywhere; }
+  .nt-caps { display: grid; grid-template-columns: 130px minmax(0, 1fr); gap: 6px 12px; margin: 0; color: var(--z-color-text-2); }
+  .nt-caps dt { color: var(--z-color-muted); }
+  .nt-caps dd { margin: 0; overflow-wrap: anywhere; }
+  .nt-ok { font-size: var(--fs-xs); color: var(--z-color-status-ready); }
+  .nt-foot-bad { color: var(--z-color-danger); font-size: var(--fs-xs); }
+  .nt-intro-guide { display: flex; flex-direction: column; gap: 8px; font-size: var(--fs-xs); color: var(--z-color-muted); }
+  .nt-intro-guide h3 { font-size: var(--fs-sm); color: var(--z-color-text-2); }
+  .nt-intro-guide ol, .nt-howto-steps { display: flex; flex-direction: column; gap: 6px; margin: 0; padding-left: 20px; list-style: decimal; line-height: 1.5; }
+  .nt-howto { display: flex; flex-direction: column; gap: 8px; }
+  .nt-howto-toggle { align-self: flex-start; }
+  .nt-howto-steps { font-size: var(--fs-xs); color: var(--z-color-muted); }
+  .nt-foot { position: sticky; bottom: 0; z-index: 1; display: flex; flex-direction: column; gap: 10px; flex: none; padding: 12px 0 16px; border-top: 1px solid var(--z-color-divider); background: var(--z-color-surface); }
+  .nt-foot-row { display: flex; align-items: center; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
+  .nt-foot-row > .nt-hint { flex: 1 1 100%; }
+  .nt-foot-row > .btn { height: auto; min-height: var(--control-h); white-space: normal; }
+  .nt-foot-row > .nt-save { margin-right: auto; }
+  .nt-blocker { align-items: center; }
+  @media (max-width: 600px) {
+    .nt-pair { grid-template-columns: minmax(0, 1fr); }
+    .nt-caps { grid-template-columns: 110px minmax(0, 1fr); }
+    .nt-body { padding-left: 14px; padding-right: 14px; }
+    .nt-page-head { padding-left: 14px; padding-right: 14px; }
+  }
+}

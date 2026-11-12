@@ -1,13 +1,18 @@
 use super::*;
 
-/// The pinned CLI replies of package 5, copied beside this module so the
-/// branch's tests run before package 5 merges; they are the same bytes as
-/// `crates/team-plan/fixtures/cli-*.json` at its `fa46dcc08`.
+/// The pinned CLI replies of package 5. The list reply is the command line's
+/// own `crates/team-plan/fixtures/cli-list.json`, regenerated with
+/// `member_sessions`. The others are copies beside this module, the same
+/// bytes as `crates/team-plan/fixtures/cli-*.json` at its `fa46dcc08`: they
+/// keep the shape without the later additive fields, which the core still
+/// reads.
 fn fixture(name: &str) -> Value {
     let text = match name {
         "status" => include_str!("../fixtures/cli-status.json"),
         "queue" => include_str!("../fixtures/cli-queue.json"),
         "cards" => include_str!("../fixtures/cli-cards.json"),
+        "waiting" => include_str!("../fixtures/cli-waiting.json"),
+        "list" => include_str!("../../../../../crates/team-plan/fixtures/cli-list.json"),
         other => panic!("no fixture {other}"),
     };
     serde_json::from_str(text).expect("a pinned CLI fixture parses")
@@ -276,9 +281,14 @@ fn a_stage_without_its_card_stays_a_card() {
     let card = &group(&view, "reported").cards[0];
     assert_eq!(card.node, 7);
     assert_eq!(card.title, "Review");
-    assert!(
-        card.stages.is_empty(),
-        "the stage checks a card this page does not carry"
+    // The stage checks a card this page does not carry: it stays a card of
+    // its own, and its `stages` holds only its own stage facts.
+    assert_eq!(
+        card.stages
+            .iter()
+            .map(|stage| stage.node)
+            .collect::<Vec<_>>(),
+        vec![7]
     );
 }
 
@@ -356,4 +366,282 @@ fn waiting_keeps_one_page() {
     }));
     assert_eq!(view.items.len(), PAGE);
     assert_eq!(view.next.as_deref(), Some("t1.bmV4dA"));
+}
+
+#[test]
+fn the_pinned_waiting_reply_projects_the_open_owner_card() {
+    let view = waiting(&fixture("waiting"));
+    assert_eq!(view.next, None);
+    assert_eq!(view.items.len(), 1);
+    let item = &view.items[0];
+    assert_eq!(item.id, "00000000-0000-4000-8000-00000000beef:1");
+    assert_eq!(item.team, TEAM);
+    assert_eq!(item.card, 1);
+    assert_eq!(item.kind, "note");
+    assert_eq!(item.node, None);
+    assert_eq!(item.text, "Tell the team the release moved to Monday.");
+    assert_eq!(item.state, "open");
+    assert_eq!(item.by, "local");
+    assert_eq!(item.created_ms, 1_700_000_000_000);
+}
+
+/// One hand-written queue row in the shape package 9 will publish with the
+/// additive fields; until it regenerates `cli-queue.json` this keeps the
+/// client core's parsing tested against the contract.
+fn queue_row(id: u64, extra: Value) -> Value {
+    let mut row =
+        serde_json::json!({"id": id, "state": "pending", "role": "developer", "rank": "a01"});
+    if let (Some(row), Some(extra)) = (row.as_object_mut(), extra.as_object()) {
+        for (key, value) in extra {
+            row.insert(key.clone(), value.clone());
+        }
+    }
+    row
+}
+
+fn status_with(members: Value) -> Value {
+    serde_json::json!({
+        "ok": true,
+        "team": {"id": TEAM, "project": "example-project", "name": "Fixes", "status": "running", "lead": "lead", "revision": 16},
+        "members": members,
+        "counts": {"members": {}, "nodes": {}, "inbox": {"open": 0}, "cards": {"open": 0}}
+    })
+}
+
+fn queue_with(rows: Value) -> Value {
+    serde_json::json!({"ok": true, "rows": rows})
+}
+
+#[test]
+fn a_stage_row_carries_its_kind_its_target_and_the_target_round() {
+    let queue = queue_with(serde_json::json!([
+        queue_row(
+            1,
+            serde_json::json!({"kind": "task", "rounds": 3, "title": "Task 1"})
+        ),
+        queue_row(
+            7,
+            serde_json::json!({"kind": "stage", "stage_of": 1, "stage_index": 0, "state": "pending",
+            "stage": {"kind": "review", "target": 1, "round": 2}})
+        ),
+        queue_row(
+            8,
+            serde_json::json!({"kind": "stage", "stage_of": 1, "stage_index": 1, "state": "waiting",
+            "stage": {"kind": "land", "target": 1, "round": 2}})
+        ),
+    ]));
+    let status = status_with(serde_json::json!([
+        {"id": "lead", "role": "lead", "agent": "claude", "state": "active", "model": "sonnet-5"}
+    ]));
+    let view = team(&status, &queue);
+    let card = &view
+        .groups
+        .iter()
+        .find(|group| group.state == "pending")
+        .expect("the pending group carries the card")
+        .cards[0];
+    assert_eq!(card.kind, Some(RowKind::Task));
+    assert_eq!(card.rounds, Some(3));
+    assert_eq!(card.stages.len(), 2);
+    assert_eq!(card.stages[0].kind, Some(StageKind::Review));
+    assert_eq!(card.stages[0].target, Some(1));
+    assert_eq!(card.stages[0].round, Some(2));
+    assert_eq!(card.stages[1].kind, Some(StageKind::Land));
+    assert_eq!(card.stages[1].target, Some(1));
+    assert_eq!(view.members[0].model.as_deref(), Some("sonnet-5"));
+}
+
+#[test]
+fn an_unknown_stage_kind_is_absent_and_never_an_error() {
+    let queue = queue_with(serde_json::json!([
+        queue_row(1, serde_json::json!({"title": "Task 1"})),
+        queue_row(
+            7,
+            serde_json::json!({"kind": "stage", "stage_of": 1, "stage_index": 0,
+            "stage": {"kind": "deploy", "target": 1, "round": 4}})
+        ),
+    ]));
+    let view = team(&status_with(serde_json::json!([])), &queue);
+    let stage = &view
+        .groups
+        .iter()
+        .flat_map(|group| &group.cards)
+        .next()
+        .unwrap()
+        .stages[0];
+    assert_eq!(stage.kind, None, "an unknown kind is kept out as absent");
+    assert_eq!(stage.target, Some(1), "its target and round still parse");
+    assert_eq!(stage.round, Some(4));
+}
+
+#[test]
+fn the_additive_fields_are_absent_without_an_error_in_an_older_reply() {
+    let queue = queue_with(serde_json::json!([queue_row(
+        1,
+        serde_json::json!({"title": "Task 1"})
+    )]));
+    let status = status_with(
+        serde_json::json!([{"id": "lead", "role": "lead", "agent": "claude", "state": "active"}]),
+    );
+    let view = team(&status, &queue);
+    let card = &view
+        .groups
+        .iter()
+        .find(|group| group.state == "pending")
+        .expect("the pending group carries the card")
+        .cards[0];
+    assert_eq!(card.kind, None);
+    assert_eq!(card.rounds, None);
+    assert_eq!(view.members[0].model, None);
+}
+
+#[test]
+fn the_pinned_replies_still_parse_without_the_additive_fields() {
+    let view = team(&fixture("status"), &fixture("queue"));
+    assert!(view
+        .groups
+        .iter()
+        .flat_map(|group| &group.cards)
+        .all(|card| card.kind.is_none() && card.rounds.is_none()));
+    assert!(view.members.iter().all(|member| member.model.is_none()));
+}
+
+#[test]
+fn the_pinned_list_carries_the_lead_session_the_desktop_resolves_with() {
+    let view = list(&fixture("list"));
+    assert_eq!(view.teams.len(), 1);
+    let lead = view.teams[0]
+        .lead_session
+        .as_ref()
+        .expect("the row carries its lead session");
+    assert_eq!(lead.machine, "00000000-0000-4000-8000-0000000000aa");
+    assert_eq!(
+        lead.session_id,
+        "launch_id:00000000-0000-4000-8000-000000000064"
+    );
+}
+
+#[test]
+fn a_list_row_without_a_lead_session_or_without_a_session_id_reads_none() {
+    for row in [
+        serde_json::json!({"id": TEAM, "project": "example-project", "name": "Fixes", "status": "running", "lead": "lead", "home": "aa", "revision": 1}),
+        serde_json::json!({"id": TEAM, "project": "example-project", "name": "Fixes", "status": "running", "lead": "lead", "home": "aa", "revision": 1,
+            "lead_session": {"machine": "aa", "session_id": ""}}),
+    ] {
+        let view = list(&serde_json::json!({"ok": true, "rows": [row], "next": null}));
+        assert_eq!(view.teams[0].lead_session, None);
+    }
+}
+
+/// Second review, finding 15: a stage whose target is not on the page keeps
+/// its own kind, target and round through the projection; the queue card has
+/// no field for them, so its `stages` holds the stage's own facts.
+#[test]
+fn an_orphan_stage_keeps_its_explicit_pipeline_facts() {
+    let queue = queue_with(serde_json::json!([queue_row(
+        7,
+        serde_json::json!({
+            "kind": "stage", "stage_of": 999, "stage_index": 0, "role": "quality", "state": "in_progress",
+            "assignee": "reviewer", "implementer": "developer", "stage": {"kind": "review", "target": 999, "round": 2},
+        })
+    )]));
+    let view = team(&status_with(serde_json::json!([])), &queue);
+    let own = view
+        .groups
+        .iter()
+        .flat_map(|group| &group.cards)
+        .find(|card| card.node == 7)
+        .unwrap();
+    assert_eq!(own.kind, Some(RowKind::Stage));
+    assert_eq!(own.stages.len(), 1);
+    let stage = &own.stages[0];
+    assert_eq!(
+        (stage.node, stage.kind, stage.target, stage.round),
+        (7, Some(StageKind::Review), Some(999), Some(2))
+    );
+    assert_eq!(
+        (stage.assignee.as_str(), stage.implementer.as_str()),
+        ("reviewer", "developer")
+    );
+    // A stage folded into its card is not duplicated on that card's own list.
+    let folded = queue_with(serde_json::json!([
+        queue_row(1, serde_json::json!({"state": "in_progress"})),
+        queue_row(
+            7,
+            serde_json::json!({"kind": "stage", "stage_of": 1, "stage_index": 0, "role": "quality", "state": "in_progress", "stage": {"kind": "review", "target": 1, "round": 1}})
+        ),
+    ]));
+    let view = team(&status_with(serde_json::json!([])), &folded);
+    let cards: Vec<_> = view.groups.iter().flat_map(|group| &group.cards).collect();
+    assert_eq!(cards.len(), 1);
+    assert_eq!(
+        cards[0]
+            .stages
+            .iter()
+            .map(|stage| stage.node)
+            .collect::<Vec<_>>(),
+        vec![7]
+    );
+}
+
+/// Second confirmation, finding 3 (plan on integrate/teams, "Who is a team's
+/// session"): a live team's list row carries `member_sessions`, which the
+/// core passes through beside `lead_session`, as the command line's own
+/// `crates/team-plan/fixtures/cli-list.json` pins it (the lead among them).
+/// An entry without a machine or a session is left out, a row without the
+/// field keeps its serialized form, and the entries are bounded.
+#[test]
+fn a_list_row_passes_its_member_sessions_through() {
+    let pinned = list(&fixture("list"));
+    let members = pinned.teams[0]
+        .member_sessions
+        .as_ref()
+        .expect("the pinned live row carries its member sessions");
+    assert_eq!(
+        members,
+        &vec![
+            MemberSession {
+                member: "lead".into(),
+                machine: "00000000-0000-4000-8000-0000000000aa".into(),
+                session_id: "launch_id:00000000-0000-4000-8000-000000000064".into(),
+            },
+            MemberSession {
+                member: "m1".into(),
+                machine: "00000000-0000-4000-8000-0000000000aa".into(),
+                session_id: "launch_id:00000000-0000-4000-8000-000000000031".into(),
+            },
+        ]
+    );
+    let serialized = serde_json::to_value(&pinned).unwrap();
+    assert_eq!(serialized["teams"][0]["member_sessions"][1]["member"], "m1");
+    let mut partial = fixture("list");
+    let entries = partial["rows"][0]["member_sessions"]
+        .as_array_mut()
+        .expect("the pinned row's member sessions are a list");
+    entries.push(serde_json::json!({"member": "m2", "machine": "", "session_id": "launch_id:00000000-0000-4000-8000-000000000032"}));
+    entries.push(serde_json::json!({"member": "m3"}));
+    assert_eq!(
+        list(&partial).teams[0].member_sessions.as_ref(),
+        Some(members),
+        "an entry without a machine or a session is left out"
+    );
+    let mut without = fixture("list");
+    without["rows"][0]
+        .as_object_mut()
+        .expect("the pinned row is an object")
+        .remove("member_sessions");
+    let bare = list(&without);
+    assert_eq!(bare.teams[0].member_sessions, None);
+    assert!(serde_json::to_value(&bare).unwrap()["teams"][0]
+        .get("member_sessions")
+        .is_none());
+    let many: Vec<_> = (0..MEMBERS_KEPT + 10)
+        .map(|n| serde_json::json!({"member": format!("m{n}"), "machine": "a", "session_id": format!("launch_id:{n}")}))
+        .collect();
+    let bounded =
+        super::list(&serde_json::json!({"rows": [{"id": TEAM, "member_sessions": many}]}));
+    assert_eq!(
+        bounded.teams[0].member_sessions.as_ref().unwrap().len(),
+        MEMBERS_KEPT
+    );
 }

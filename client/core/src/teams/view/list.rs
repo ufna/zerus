@@ -16,12 +16,15 @@ pub fn list(reply: &Value) -> TeamList {
             lead: name(row, "lead"),
             home: name(row, "home"),
             revision: count(row, "revision"),
+            lead_session: lead_session(row),
+            member_sessions: member_sessions(row),
         })
         .collect();
     TeamList {
         teams,
         truncated: rows.len() > LIST_KEPT,
         next: next_cursor(reply),
+        after: None,
     }
 }
 
@@ -51,5 +54,6 @@ pub fn waiting(reply: &Value) -> WaitingView {
     WaitingView {
         items: rows.iter().take(PAGE).filter_map(waiting_item).collect(),
         next: next_cursor(reply),
+        after: None,
     }
 }
