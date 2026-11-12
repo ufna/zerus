@@ -96,7 +96,7 @@ HINT_METHODS = ('test_lifecycle', 'test_lost_mark', 'test_pre_feature_first_resu
 # Kimi's class runs in the hosted Kimi workflow; DeepSeek and OpenCode cannot be team
 # members in this milestone. Its waits carry their own bounds; this is the row's bound.
 TEAMS_CLASSES = {'claude': ['test_teams_native.NativeTeamsClaude', 'test_teams_native.NativeTeamsTrustClaude'],
-                 'codex': ['test_teams_native.NativeTeamsCodex']}
+                 'codex': ['test_teams_native.NativeTeamsCodex', 'test_teams_native.NativeTeamsTrustCodex']}
 TEAMS_TIMEOUT = 2400
 TEAMS_COVERAGE = ('team member launch and identity, team stop and Terminate, and for Claude Code the standing '
                   'folder-trust confirmation; delivery, the member shell caller proof, the lead doorbell and the cancel '
