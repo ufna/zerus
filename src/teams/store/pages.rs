@@ -11,9 +11,9 @@ pub(crate) const MEMBER_PAGE_SQL: &str = "SELECT data,person_stopped FROM member
 pub(crate) fn node_page_sql(table: &str, filtered: bool) -> String {
     let facts = row_facts(table);
     if filtered {
-        format!("SELECT {},{facts} FROM {table} WHERE team=?1 AND node_state=?5 AND id>?2 AND id<=?3 ORDER BY id LIMIT ?4",rows::NODE_SELECT)
+        format!("SELECT {},{facts} FROM {table} WHERE team=?1 AND node_state=?5 AND id>?2 AND id<=?3 ORDER BY id LIMIT ?4",rows::node_select(table))
     } else {
-        format!("SELECT {},{facts} FROM nodes WHERE team=?1 AND id<=?3 AND (rank>?5 OR (rank=?5 AND id>?2)) ORDER BY rank,id LIMIT ?4",rows::NODE_SELECT)
+        format!("SELECT {},{facts} FROM nodes WHERE team=?1 AND id<=?3 AND (rank>?5 OR (rank=?5 AND id>?2)) ORDER BY rank,id LIMIT ?4",rows::node_select("nodes"))
     }
 }
 fn row_facts(table: &str) -> String {

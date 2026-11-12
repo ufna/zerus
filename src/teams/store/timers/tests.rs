@@ -1,4 +1,5 @@
 use super::*;
+mod legacy_holds;
 mod upgrade;
 mod work;
 use crate::teams::ops::{tests::*, Actor, Operation};

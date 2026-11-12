@@ -10,7 +10,7 @@ mod guards;
 pub(crate) use guards::Guard;
 mod decision_state;
 mod holder;
-pub(crate) use holder::{hand_back_return, holder_of, NOT_RECEIVED};
+pub(crate) use holder::{hand_back_return, holder_of, return_without_holder, NOT_RECEIVED};
 mod member_sessions;
 pub use decision_state::DecisionState;
 pub(crate) mod pages;

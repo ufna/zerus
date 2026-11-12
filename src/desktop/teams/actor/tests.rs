@@ -142,3 +142,6 @@ mod cancel_recovery;
 
 mod retry_cards;
 mod unstaffed;
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+mod retired_stage;
