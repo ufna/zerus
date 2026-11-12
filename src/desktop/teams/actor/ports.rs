@@ -32,7 +32,7 @@ pub(in crate::desktop::teams) trait Ports {
     ) -> Result<()> {
         Err(unavailable())
     }
-    #[cfg(unix)]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     fn team_timers(
         &mut self,
         _state: &mut super::auxiliary::State,
@@ -42,7 +42,7 @@ pub(in crate::desktop::teams) trait Ports {
     ) -> Result<()> {
         Ok(())
     }
-    #[cfg(unix)]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     fn terminal_timers(
         &mut self,
         _state: &mut super::auxiliary::State,

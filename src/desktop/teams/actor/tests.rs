@@ -28,7 +28,7 @@ fn actor_ledger_rejects_large_rows_and_unprivate_files() {
     assert!(ledger
         .reserve("team", "huge", json!("x".repeat(16385)))
         .is_err());
-    #[cfg(unix)]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     {
         use std::os::unix::fs::PermissionsExt;
         drop(ledger);
@@ -46,7 +46,7 @@ use crate::teams::{ops::tests::*, store::Store};
 use zerus_team_plan::model::*;
 mod cancel;
 mod core;
-#[cfg(unix)]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 mod native;
 #[test]
 fn disabled_actor_does_not_create_any_store() {
@@ -67,7 +67,7 @@ fn newer_actor_ledger_is_refused_without_relabeling_it() {
         2
     );
 }
-#[cfg(unix)]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 #[test]
 fn actor_ledger_refuses_a_shared_or_linked_directory() {
     use std::os::unix::fs::{symlink, PermissionsExt};
@@ -83,16 +83,16 @@ fn actor_ledger_refuses_a_shared_or_linked_directory() {
     assert!(Ledger::open(temp.path()).is_err());
     assert!(!other.path().join("actor-v1.sqlite3").exists());
 }
-#[cfg(unix)]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 mod adapters;
-#[cfg(unix)]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 mod commands;
-#[cfg(unix)]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 mod native_tasks;
 mod tasks;
 mod work;
 
-#[cfg(unix)]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 mod production;
 
 #[test]

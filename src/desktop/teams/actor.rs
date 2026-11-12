@@ -1,9 +1,9 @@
 //! Bounded team work, separate from member creation. A durable delivery row
 //! never grants permission to send: only this tick owns its original call.
 #![allow(dead_code)] // Parts A/B are wired into the worker in this package.
-#[cfg(unix)]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 mod auxiliary;
-#[cfg(unix)]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 mod availability;
 mod cancel;
 mod delivery;
@@ -11,9 +11,9 @@ mod finish;
 mod integration;
 mod ledger;
 mod maintenance;
-#[cfg(unix)]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 pub(super) mod native;
-#[cfg(unix)]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 mod native_work;
 mod observe;
 mod ports;
@@ -42,7 +42,7 @@ pub(super) struct Runtime {
     row_failure: bool,
     hints: BTreeMap<String, observe::Hint>,
     cancel_after: String,
-    #[cfg(unix)]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     auxiliary: auxiliary::State,
 }
 impl Runtime {
@@ -59,7 +59,7 @@ impl Runtime {
             row_failure: false,
             hints: BTreeMap::new(),
             cancel_after: String::new(),
-            #[cfg(unix)]
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
             auxiliary: auxiliary::State::new(state, &epoch),
         })
     }
@@ -113,7 +113,7 @@ impl Runtime {
             self.recover(store, ports, &team, now)?;
         }
         self.cleanup_metadata(store, &team, now)?;
-        #[cfg(unix)]
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
         self.team_entry(store, ports, &team, now)?;
         Ok(())
     }
@@ -138,7 +138,7 @@ impl Runtime {
                 }
             }
         }
-        #[cfg(unix)]
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
         if let Err(error) = self.terminal_entry(store, ports, now) {
             fault = Some(error);
         }

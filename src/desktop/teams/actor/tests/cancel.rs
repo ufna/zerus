@@ -31,7 +31,7 @@ impl Ports for Fake {
         _: &Node,
         _: &Member,
         _: &str,
-    ) -> crate::teams::ops::HandoutOutcome {
+    ) -> super::super::ports::DeliveryResult {
         panic!("No delivery")
     }
     fn cancels(&mut self, _: &Store, _: &str, after: u32) -> Result<Vec<Pending>> {
@@ -52,7 +52,7 @@ impl Ports for Fake {
         self.pending.retain(|p| p.decision != f.pending.decision);
         Ok(())
     }
-    #[cfg(unix)]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     fn terminal_timers(
         &mut self,
         _: &mut super::super::auxiliary::State,

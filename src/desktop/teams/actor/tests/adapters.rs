@@ -155,7 +155,7 @@ impl Ports for ResumeAtView {
         _: &Node,
         _: &Member,
         _: &str,
-    ) -> crate::teams::ops::HandoutOutcome {
+    ) -> super::super::ports::DeliveryResult {
         panic!("busy resumed member must not be sent a task")
     }
 }
@@ -165,17 +165,22 @@ fn fleet_runs(native: &super::super::native::Native, launch: &str) {
     crate::platform::private_dir(&native.config.dir).unwrap();
     crate::platform::private_dir(&native.config.state.join("desktop")).unwrap();
     let path = native.config.state.join("desktop/state.sqlite3");
-    crate::sqlite_file::create(&path).unwrap();
+    let existed = path.exists();
+    if !existed {
+        crate::sqlite_file::create(&path).unwrap();
+    }
     let db = rusqlite::Connection::open(path).unwrap();
-    zerus_desktop_catalog::migrate(&db).unwrap();
+    if !existed {
+        zerus_desktop_catalog::migrate(&db).unwrap();
+    }
     db.execute(
         "UPDATE desktop_catalog_owner SET epoch=?1 WHERE id=1",
         [&native.epoch],
     )
     .unwrap();
-    db.execute("INSERT INTO desktop_catalog_sources(computer,epoch,incarnation,generation,stream,seq,visible,complete,active,hello) VALUES('',?1,1,1,'stream',1,1,1,1,?2)",rusqlite::params![native.epoch,json!({"machine_id":native.machine}).to_string()]).unwrap();
+    db.execute("INSERT OR REPLACE INTO desktop_catalog_sources(computer,epoch,incarnation,generation,stream,seq,visible,complete,active,hello) VALUES('',?1,1,1,'stream',1,1,1,1,?2)",rusqlite::params![native.epoch,json!({"machine_id":native.machine}).to_string()]).unwrap();
     db.execute(
-        "INSERT INTO desktop_catalog_generations(id,computer) VALUES(1,'')",
+        "INSERT OR REPLACE INTO desktop_catalog_generations(id,computer) VALUES(1,'')",
         [],
     )
     .unwrap();

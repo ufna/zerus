@@ -187,7 +187,7 @@ fn connection(path: &Path) -> Result<Connection> {
             return Err(storage("Actor ledger is not private"));
         }
     }
-    #[cfg(unix)]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     let identity = {
         crate::sqlite_file::create(path).map_err(storage)?;
         crate::sqlite_file::private(path).map_err(storage)?
@@ -197,7 +197,7 @@ fn connection(path: &Path) -> Result<Connection> {
         OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NOFOLLOW,
     )
     .map_err(storage)?;
-    #[cfg(unix)]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     crate::sqlite_file::bind_private(&db, path, identity).map_err(storage)?;
     Ok(db)
 }

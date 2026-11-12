@@ -31,7 +31,7 @@ struct Fake {
     lose_clear: bool,
 }
 impl Ports for Fake {
-    #[cfg(unix)]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     fn team_timers(
         &mut self,
         _: &mut super::super::auxiliary::State,
@@ -46,7 +46,7 @@ impl Ports for Fake {
             Ok(())
         }
     }
-    #[cfg(unix)]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     fn terminal_timers(
         &mut self,
         _: &mut super::super::auxiliary::State,
@@ -85,7 +85,7 @@ impl Ports for Fake {
         _: &Node,
         _: &Member,
         _: &str,
-    ) -> crate::teams::ops::HandoutOutcome {
+    ) -> super::super::ports::DeliveryResult {
         panic!("no native deliveries in this fixture")
     }
     fn stage(
@@ -253,7 +253,7 @@ fn a_released_stage_is_cleared_once_and_the_store_removes_it_from_the_outbox() {
     assert_eq!(p.clears, vec![stage]);
 }
 
-#[cfg(unix)]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 #[test]
 fn the_tick_calls_each_live_team_entry_and_one_terminal_entry_per_pass() {
     let mut h = Harness::new();
@@ -274,7 +274,7 @@ fn the_tick_calls_each_live_team_entry_and_one_terminal_entry_per_pass() {
     assert!(p.timer_teams.contains(&TEAM.into()) && p.timer_teams.contains(&TEAM_B.into()));
     assert_eq!(p.terminals, 1);
 }
-#[cfg(unix)]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 #[test]
 fn timer_entry_faults_back_off_as_rows_and_do_not_set_sweep_health() {
     let mut h = Harness::new();
