@@ -9,6 +9,7 @@ fn card(text: String) -> Request {
             kind: "standing_confirmation".into(),
             text,
             node: None,
+            decisions: None,
         },
     }
 }

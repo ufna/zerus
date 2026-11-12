@@ -35,6 +35,7 @@ fn lead_ops() -> Vec<Operation> {
             kind: "proposal".into(),
             text: "Example".into(),
             node: None,
+            decisions: None,
         },
     ]
 }

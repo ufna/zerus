@@ -335,6 +335,7 @@ pub(super) fn seeded() -> Harness {
             kind: "note".into(),
             text: "Tell the team the release moved to Monday.".into(),
             node: None,
+            decisions: None,
         },
     );
     let asked = harness.apply(

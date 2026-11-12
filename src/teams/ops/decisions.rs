@@ -54,6 +54,7 @@ pub(super) fn accept_result(
             "Approve integration of the accepted result.",
             Some(node),
             Some(seq),
+            &["approve", "reject"],
         )?);
     }
     Ok(())

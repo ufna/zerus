@@ -516,6 +516,7 @@ fn card_lookup_is_scoped_and_reads_the_persons_decision_by_primary_key() {
                 kind: "proposal".into(),
                 text: "Wait for a person".into(),
                 node: None,
+                decisions: None,
             },
         )
         .unwrap()
@@ -527,12 +528,12 @@ fn card_lookup_is_scoped_and_reads_the_persons_decision_by_primary_key() {
         &person(),
         Operation::DecideCard {
             card,
-            decision: "Wait until tomorrow".into(),
+            decision: "acknowledged".into(),
         },
     )
     .unwrap();
     let c = h.store.card(TEAM, card).unwrap().unwrap();
-    assert_eq!(c.decision.as_deref(), Some("Wait until tomorrow"));
+    assert_eq!(c.decision.as_deref(), Some("acknowledged"));
     assert_eq!(c.decided_actor.unwrap()["kind"], "person");
     assert!(h.store.card(TEAM, 9_999_999).unwrap().is_none());
     refused(h.store.card(ops::tests::TEAM_B, card), code::INVALID_STATE);
