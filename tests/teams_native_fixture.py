@@ -439,6 +439,32 @@ class Census(threading.Thread):
         return summary
 
 
+class FolderWatch(threading.Thread):
+    """Whether one folder exists, sampled every 0.2 s until finished: when it was first
+    seen gone and when it came back."""
+
+    def __init__(self, path):
+        super().__init__(daemon=True)
+        self.path, self.stopping = Path(path), threading.Event()
+        self.result = dict(path=str(path), started=time.time(), samples=0, gone_at=None, back_at=None)
+
+    def run(self):
+        while not self.stopping.is_set():
+            exists = self.path.is_dir()
+            self.result['samples'] += 1
+            if not exists and self.result['gone_at'] is None:
+                self.result['gone_at'] = time.time()
+            if exists and self.result['gone_at'] is not None and self.result['back_at'] is None:
+                self.result['back_at'] = time.time()
+            self.stopping.wait(0.2)
+
+    def finish(self):
+        self.stopping.set()
+        self.join(2)
+        self.result['finished'] = time.time()
+        return self.result
+
+
 class TeamFixture:
     """One private root, one private service, one team (lead and member m1) of one agent."""
 
@@ -843,6 +869,18 @@ class TeamFixture:
             raise AssertionError('send: ' + json.dumps(reply)[:600])
         return reply
 
+    def worked(self, member_id, text):
+        """The person sends one message and the member answers it: the model sees the
+        message and the member's turn ends (a Stop event after it) with a conversation,
+        which the agent has then persisted."""
+        last = max([event.get('seq', 0) for event in self.inspect(member_id).get('events') or []] or [0])
+        self.send(member_id, text)
+        self.wait(f'{member_id} model received the person\'s message',
+                  lambda: self.requests_with(lambda r: r.get('prompt') == text), BOUND['turn'], 1)
+        return self.wait(f'{member_id} answered the person\'s message', lambda: (lambda v: v if v.get('conversation_id') and any(
+            event.get('type') == 'Stop' and event.get('seq', 0) > last for event in v.get('events') or []) else None)(
+            self.inspect(member_id)), BOUND['turn'], 2)
+
     def add_task(self, title, text):
         reply = self.json('task', 'add', '--project', 'teams-fixture', '--team', self.team, '--title', title, '--json',
                           stdin=text)
@@ -922,7 +960,7 @@ class TeamFixture:
     RECORD_FIELDS = ('archive_id', 'name', 'agent', 'cwd', 'run_id', 'session_id', 'launch_id', 'conversation_id',
                      'account_id', 'state', 'conversation_state', 'completion_source', 'completion_reason', 'exited_at',
                      'exit_code', 'termination_signal', 'session_end', 'error', 'expected_id', 'paused', 'pausing',
-                     'terminating')
+                     'terminating', 'launch_dir', 'worktree_cleanup')
 
     def observation(self):
         """Read-only, through the private state only: what the service's observation of a
@@ -986,7 +1024,64 @@ class TeamFixture:
                 entry['view'] = read('inspect', session['name'], '--archive', archive_id, '--after', after,
                                      '--skip-processes')
                 item['archives'].append(entry)
+            item['worktree_maintenance'] = self.maintenance(worktree)
         return out
+
+    def maintenance(self, worktree):
+        """Read-only, private state only: the worktree lifecycle's own records of one
+        member checkout: its policy, its queue rows, its last sweep result and the
+        ownership receipt that names the checkout."""
+        import sqlite3
+        state = Path(self.env['HGS_STATE_DIR'])
+        folder = state / 'worktree-maintenance'
+        out = dict(policy_file=None, checkouts=[], removals=[], last_result=None, owned_receipts=[])
+
+        def small(path, limit=64 << 10):
+            if path.is_file() and not path.is_symlink() and path.stat().st_size <= limit:
+                try:
+                    return json.loads(path.read_text())
+                except ValueError:
+                    return path.read_text()[:2000]
+            return None
+        out['policy_file'] = small(folder / 'policy.json')
+        out['last_result'] = small(folder / 'last-result.json')
+        queue = folder / 'queue.sqlite3'
+        if worktree and queue.is_file() and not queue.is_symlink():
+            db = sqlite3.connect(f'file:{queue}?mode=ro', uri=True, timeout=1)
+            try:
+                for table in ('checkouts', 'removals'):
+                    cursor = db.execute(f'SELECT * FROM {table} WHERE path=? LIMIT 5', (worktree,))
+                    columns = [c[0] for c in cursor.description]
+                    out[table] = [dict(zip(columns, row)) for row in cursor]
+            finally:
+                db.close()
+        cache = state / 'worktree-cache'
+        if worktree and cache.is_dir() and not cache.is_symlink():
+            for path in sorted(cache.glob('owned-*.json'))[:50]:
+                value = small(path, 16 << 10)
+                if value is not None and worktree in json.dumps(value):
+                    out['owned_receipts'].append(dict(file=path.name, value=value))
+        return out
+
+    def person_restore(self, member_id, archive):
+        """The person's own Restore of one archive: the request the desktop sends through
+        `hgs session-action`, with a new request ID, and the member's view after it."""
+        name = self.sessions[member_id]['name']
+        request = dict(request_id=str(uuid.uuid4()), action='restore', expected_run_id=archive['run'],
+                       expected_conversation_id=archive['conversation'], archive_id=archive['id'])
+        run = self.hgs('session-action', name, '--json', stdin=json.dumps(request), ok=False, timeout=120)
+        try:
+            receipt = json.loads(run.stdout)
+        except ValueError:
+            receipt = run.stdout[:2000]
+        time.sleep(5)
+        view = self.hgs('inspect', name, ok=False, timeout=60)
+        try:
+            after = {key: json.loads(view.stdout).get(key) for key in ('tracked', 'run_id', 'conversation_id',
+                                                                      'runtime_state', 'process_state', 'state')}
+        except ValueError:
+            after = view.stdout[:500]
+        return dict(request=request, exit=run.returncode, receipt=receipt, stderr=run.stderr[-1000:], view_after=after)
 
     def fleet_rows(self):
         """Read-only: the private service's fleet rows of this team's runs, the fields the

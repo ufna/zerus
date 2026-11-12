@@ -8,7 +8,8 @@ name: Agent Teams real agents
 # person then answers, and for Claude Code the resume of an exited member. Written and
 # waiting: delivery, the member's shell, the lead's doorbell and the cancel notice for
 # zerus-63rru.51, Claude Code folder trust by the standing confirmation for
-# zerus-63rru.60, and the Codex resume for zerus-63rru.54 and zerus-63rru.56. This
+# zerus-63rru.60, the refused restore of a member that never worked for
+# zerus-63rru.62, and the Codex resume for zerus-63rru.54 and zerus-63rru.56. This
 # workflow is not part of the Dev gate or Nightly: a red run is visible and holds
 # nothing back.
 on:

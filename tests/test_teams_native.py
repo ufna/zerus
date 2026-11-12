@@ -41,6 +41,7 @@ import shutil
 import socket
 import subprocess
 import tempfile
+import time
 import unittest
 from unittest import mock
 import uuid
@@ -60,6 +61,8 @@ WAITING = {
     'NativeTeamsTrustClaude': 'zerus-63rru.60 (src/approval_log/team.rs:58 compares the real card\'s null '
                               'conversation with an empty string, so the audit reservation fails before delivery; '
                               'run tc12)',
+    'NativeTeamsResumeUnworkedClaude': 'zerus-63rru.62 (a member that exits before any message is refused at the '
+                                       'restore, and the card does not carry the command\'s reason; run tc15)',
     'NativeTeamsResumeCodex': 'zerus-63rru.54 (a resumed Codex member never gets its brief: the observe call is refused) '
                               'and zerus-63rru.56 (three states read as an exit)',
 }
@@ -410,9 +413,10 @@ class CodexTrustContract(ClassFixture):
 
 
 class ResumeContract(ClassFixture):
-    """Delegation resume_exited on (folder trust stays the person's): a member whose
-    agent exits by itself is resumed with its brief, in the same launch and conversation
-    and a new run; a member the person terminated is not resumed."""
+    """Delegation resume_exited on (folder trust stays the person's): a member that has
+    worked (the person's message and its answer) and whose agent then exits by itself is
+    resumed with its brief, in the same launch and conversation and a new run; a member
+    the person terminated is not resumed."""
     delegations = {'resume_exited': True}
     exit_keys = ('/exit', 'Enter')
 
@@ -422,19 +426,26 @@ class ResumeContract(ClassFixture):
 
     def test_1_a_member_that_exits_by_itself_is_resumed_with_its_brief(self):
         fx = self.fx
-        # A resume continues a conversation; Codex starts one only at its first message.
-        if not fx.inspect('m1').get('conversation_id'):
-            fx.send('m1', 'Fixture first message.')
-            fx.wait('m1 conversation started by its first message', lambda: fx.inspect('m1').get('conversation_id'),
-                    fixture.BOUND['turn'], 2)
+        # A resume continues a persisted conversation: the member works once first (Codex
+        # also starts its conversation at this message).
+        fx.worked('m1', 'Fixture message before the exit.')
         before = fx.inspect('m1')
         pid, _ = fx.process('m1')
         target = '=' + fx.sessions['m1']['name'] + ':'
+        # Evidence for a refused resume: whether the member's folder exists over time.
+        watch = fixture.FolderWatch(fx.members()['m1']['worktree'])
+        watch.start()
         for key in self.exit_keys:
             subprocess.run(['tmux', 'send-keys', '-t', target, key], env=fx.env, check=True)
-        fx.wait('m1 agent exited by itself', lambda: fx.start_ticks(pid) is None or None, fixture.BOUND['exit'], 1)
-        resumed = fx.wait('the service resumed m1 in a new run', lambda: (lambda v: v if v.get('run_id') not in (None, before['run_id'])
-                          and v.get('runtime_state') == 'live' else None)(fx.inspect('m1')), fixture.BOUND['doorbell'], 3)
+        try:
+            fx.wait('m1 agent exited by itself', lambda: fx.start_ticks(pid) is None or None, fixture.BOUND['exit'], 1)
+            resumed = fx.wait('the service resumed m1 in a new run', lambda: (lambda v: v if v.get('run_id') not in (None, before['run_id'])
+                              and v.get('runtime_state') == 'live' else None)(fx.inspect('m1')), fixture.BOUND['doorbell'], 3)
+        except AssertionError:
+            fx.evidence.write('m1-folder-watch.json', watch.finish())
+            self.diagnose_refused_resume()
+            raise
+        fx.evidence.write('m1-folder-watch.json', watch.finish())
         fx.evidence.write('resumed-view.json', {k: resumed.get(k) for k in ('run_id', 'conversation_id', 'launch_id', 'activity')})
         self.assertEqual(resumed.get('launch_id'), before.get('launch_id'), 'the same launch')
         self.assertEqual(resumed.get('conversation_id'), before.get('conversation_id'), 'the same conversation')
@@ -448,6 +459,20 @@ class ResumeContract(ClassFixture):
         self.assertTrue(rows, 'the resume is audited')
         self.assertFalse([r for r in rows if r['status'] in ('prepared', 'cancelled', 'unknown')], rows)
         type(self).resumed_run = resumed['run_id']
+
+    def diagnose_refused_resume(self):
+        """A refused resume: what the service reads at that moment, then the person's own
+        Restore of the member's archive, which tells a fault of Teams from a refused
+        Restore."""
+        fx = self.fx
+        try:
+            seen = fx.observation()
+            fx.evidence.write('observation-at-refusal.json', seen)
+            archives = (seen.get('m1') or {}).get('archives') or []
+            if archives:
+                fx.evidence.write('person-restore.json', fx.person_restore('m1', archives[-1]))
+        except Exception as error:
+            fx.evidence.write('person-restore.json', dict(error=str(error)[:500]))
 
     def test_2_a_member_the_person_terminates_is_not_resumed(self):
         fx = self.fx
@@ -466,6 +491,39 @@ class ResumeContract(ClassFixture):
         self.assertFalse(rows, 'no resume was reserved for the terminated run')
         live = [r for r in fx.rows() if r.get('launch_id') == launch and r.get('runtime_state') == 'live']
         self.assertFalse(live, 'no session of the member launch runs again')
+
+
+class UnworkedResumeContract(ClassFixture):
+    """Delegation resume_exited on: a member that exits before any message (launched and
+    closed before its first hand-out) has no persisted conversation, so its restore is
+    refused before launch. What zerus-63rru.62's fix makes true: nothing starts, and the
+    person's card carries the command's own reason. The person's own Restore of that
+    archive is recorded beside it."""
+    delegations = {'resume_exited': True}
+    exit_keys = ('/exit', 'Enter')
+    reason = 'persisted conversation is missing or empty'
+
+    def test_1_a_member_that_never_worked_is_not_restored_and_the_card_says_why(self):
+        fx = self.fx
+        before = fx.inspect('m1')
+        pid, _ = fx.process('m1')
+        last = max([c.get('seq', 0) for c in fx.cards()] or [0])
+        target = '=' + fx.sessions['m1']['name'] + ':'
+        for key in self.exit_keys:
+            subprocess.run(['tmux', 'send-keys', '-t', target, key], env=fx.env, check=True)
+        fx.wait('m1 agent exited by itself', lambda: fx.start_ticks(pid) is None or None, fixture.BOUND['exit'], 1)
+        cards = fx.wait('the service told the person about m1', lambda: [c for c in fx.cards() if c.get('seq', 0) > last
+                        and 'Member m1 needs your attention' in c.get('text', '')], fixture.BOUND['doorbell'], 3)
+        fx.evidence.write('unworked-cards.json', cards)
+        live = [r.get('name') for r in fx.rows()
+                if r.get('launch_id') == before.get('launch_id') and r.get('runtime_state') == 'live']
+        seen = fx.observation()
+        fx.evidence.write('observation-at-refusal.json', seen)
+        archives = (seen.get('m1') or {}).get('archives') or []
+        if archives:
+            fx.evidence.write('person-restore.json', fx.person_restore('m1', archives[-1]))
+        self.assertFalse(live, 'nothing of the member launch started')
+        self.assertTrue(any(self.reason in c.get('text', '') for c in cards), "the card carries the command's own reason")
 
 
 class TeamsFixtureIsolation(unittest.TestCase):
@@ -612,6 +670,57 @@ class TeamsCodexPanel(unittest.TestCase):
             self.assertFalse(fixture.hosted_runner(env), env)
 
 
+class TeamsFixtureDiagnostics(unittest.TestCase):
+    """The read-only evidence of a refused resume, on a synthetic private state."""
+
+    def test_folder_watch_times_a_folder_that_goes_and_comes_back(self):
+        with tempfile.TemporaryDirectory() as base:
+            folder = Path(base) / 'member'
+            folder.mkdir()
+            watch = fixture.FolderWatch(folder)
+            watch.start()
+            time.sleep(0.5)
+            folder.rmdir()
+            time.sleep(0.5)
+            folder.mkdir()
+            time.sleep(0.5)
+            result = watch.finish()
+        self.assertIsNotNone(result['gone_at'])
+        self.assertIsNotNone(result['back_at'])
+        self.assertLess(result['started'], result['gone_at'])
+        self.assertLess(result['gone_at'], result['back_at'])
+        self.assertGreater(result['samples'], 3)
+
+    def test_maintenance_reads_only_the_rows_and_receipts_of_that_checkout(self):
+        import sqlite3
+        from types import SimpleNamespace
+        with tempfile.TemporaryDirectory() as base:
+            state = Path(base) / 'state'
+            (state / 'worktree-maintenance').mkdir(parents=True)
+            (state / 'worktree-cache').mkdir()
+            member, other = '/tmp/example/work/zerus-team-1', '/tmp/example/work/zerus-team-2'
+            db = sqlite3.connect(state / 'worktree-maintenance/queue.sqlite3')
+            db.execute('CREATE TABLE checkouts (path TEXT PRIMARY KEY, common_dir TEXT, owner TEXT, next_check REAL, '
+                       'status TEXT, detail TEXT)')
+            db.execute('CREATE TABLE removals (path TEXT PRIMARY KEY, common_dir TEXT, branch TEXT, head TEXT, '
+                       'fingerprint TEXT, request_id TEXT, reserved_at REAL, status TEXT, detail TEXT)')
+            for path in (member, other):
+                db.execute('INSERT INTO checkouts VALUES (?, ?, ?, 0, ?, ?)', (path, '/tmp/example/.git', '{}', 'pending', ''))
+            db.execute('INSERT INTO removals VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)',
+                       (other, '/tmp/example/.git', 'b', 'h', 'f', 'r', 'pending', ''))
+            db.commit()
+            db.close()
+            (state / 'worktree-maintenance/policy.json').write_text('{"enabled": true}')
+            (state / 'worktree-cache/owned-a.json').write_text(json.dumps({'path': member}))
+            (state / 'worktree-cache/owned-b.json').write_text(json.dumps({'path': other}))
+            out = fixture.TeamFixture.maintenance(SimpleNamespace(env={'HGS_STATE_DIR': str(state)}), member)
+        self.assertEqual([row['path'] for row in out['checkouts']], [member])
+        self.assertEqual(out['removals'], [])
+        self.assertEqual(out['policy_file'], {'enabled': True})
+        self.assertIsNone(out['last_result'])
+        self.assertEqual([r['file'] for r in out['owned_receipts']], ['owned-a.json'])
+
+
 class TeamsFixtureProducers(unittest.TestCase):
     """Values another component writes come from that component (plan, 2026-11-12):
     the Kimi inspection stand-in carries only what src/accounts/kimi-read.mjs writes."""
@@ -647,6 +756,13 @@ class NativeTeamsTrustClaude(ClaudeTrust, TrustContract, unittest.TestCase):
 
 @unittest.skipUnless(os.environ.get('HGS_CLAUDE_TEST_BIN') and fixture.HGS, 'Set HGS_TEST_BIN and HGS_CLAUDE_TEST_BIN')
 class NativeTeamsResumeClaude(ResumeContract, unittest.TestCase):
+    agent = 'claude'
+    variable = 'HGS_CLAUDE_TEST_BIN'
+
+
+@unittest.skipUnless(os.environ.get('HGS_CLAUDE_TEST_BIN') and fixture.HGS, 'Set HGS_TEST_BIN and HGS_CLAUDE_TEST_BIN')
+class NativeTeamsResumeUnworkedClaude(UnworkedResumeContract, unittest.TestCase):
+    """Waiting (WAITING): not selected by the teams contract until zerus-63rru.62."""
     agent = 'claude'
     variable = 'HGS_CLAUDE_TEST_BIN'
 

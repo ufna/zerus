@@ -1417,9 +1417,10 @@ Further classes repeat the same bring-up with one of the team's delegations on:
   columns fills one row): a hosted runner, whose root in `/tmp` is short, must show
   the one-row panel and a local run the wrapped one.
 - **Resume of an exited Claude Code member** (`NativeTeamsResumeClaude`,
-  `resume_exited`, selected; the person answers folder trust). A member whose agent
-  exits by itself (`/exit`) is resumed by the service in a new run of the same launch
-  and conversation, gets its brief once, and the audit records `team_resume`. A member
+  `resume_exited`, selected; the person answers folder trust). The member works once
+  (the person's message and its answer), so its conversation is persisted. When its
+  agent then exits by itself (`/exit`), the service resumes it in a new run of the same
+  launch and conversation, it gets its brief once, and the audit records `team_resume`. A member
   the person terminates is refused with a card and no audit row, and no run of its
   launch is live.
 
@@ -1430,6 +1431,7 @@ select them until their fixes land.
 |---|---|
 | Steps 2 to 4, every agent | `zerus-63rru.51` |
 | Claude Code folder trust by the standing confirmation (`NativeTeamsTrustClaude`): the service answers the startup folder trust with an audit grant, and a prompt that is not a startup prompt stays the person's | `zerus-63rru.60` (the audit reservation compares the real card's null conversation with an empty string) |
+| A Claude Code member that exits before any message (`NativeTeamsResumeUnworkedClaude`): nothing starts, and the card carries the command's own reason | `zerus-63rru.62` (the restore is refused before launch with "persisted conversation is missing or empty", but the card does not say so) |
 | Codex resume of an exited member (`NativeTeamsResumeCodex`) | `zerus-63rru.54` (the resumed member never gets its brief) and `zerus-63rru.56` (three states read as an exit) |
 
 #### Isolation
@@ -1530,7 +1532,8 @@ the Teams caller proof refuses a person command below a live agent.
   package fakes.
 - **The waiting cases:** delivery, the member's shell, the doorbell and the cancel
   notice (`zerus-63rru.51`), Claude Code folder trust by the standing confirmation
-  (`zerus-63rru.60`) and the Codex resume (`zerus-63rru.54` and `zerus-63rru.56`).
+  (`zerus-63rru.60`), the refused restore of a member that never worked
+  (`zerus-63rru.62`) and the Codex resume (`zerus-63rru.54` and `zerus-63rru.56`).
   The cases exist and are not selected.
 
 ## Automatic nightly publication
