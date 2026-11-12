@@ -61,6 +61,9 @@ export interface WaitingItem {
   state: string;
   by: string;
   created_ms: number;
+  /** The decisions the card takes, in order, as the core read them; absent
+   * from an older core: acknowledged alone. */
+  decisions?: string[];
 }
 
 /** The open owner cards of every team, oldest first, one bounded page. */
