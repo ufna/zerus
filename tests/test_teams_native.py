@@ -78,12 +78,14 @@ class ClassFixture:
     delegations = None
     service_answers = ()
     after_refusal = None
+    count = 1
+    pinned = None
 
     @classmethod
     def setUpClass(cls):
         cls.fx = fixture.TeamFixture(cls.agent, os.environ[cls.variable], cls.__name__,
                                      delegations=cls.delegations, service_answers=cls.service_answers,
-                                     after_refusal=cls.after_refusal)
+                                     after_refusal=cls.after_refusal, count=cls.count, pinned=cls.pinned)
         try:
             cls.fx.bring_up()
         except BaseException:
@@ -328,7 +330,7 @@ class TrustContract(ClassFixture):
         fx = self.fx
         answered = [json.loads(line) for line in (fx.evidence.folder / 'person-answers.jsonl').read_text().splitlines()] \
             if (fx.evidence.folder / 'person-answers.jsonl').is_file() else []
-        for member_id in ('lead', 'm1'):
+        for member_id in self.member_ids():
             with self.subTest(member=member_id):
                 self.assertFalse([a for a in answered if a['member'] == member_id and a['source'] == self.trust_source],
                                  'the person did not answer it')
@@ -357,8 +359,11 @@ class TrustContract(ClassFixture):
         self.assertFalse(refusals, 'no member card was left for the person')
         journal_is(self, self.startup_grants(), 'the journal holds exactly the two startup grants')
 
+    def member_ids(self):
+        return ('lead',) + tuple(f'm{number}' for number in range(1, self.count + 1))
+
     def startup_grants(self):
-        return [(member, self.trust_source, ('team_folder_trust',), 'approved') for member in ('lead', 'm1')]
+        return sorted((member, self.trust_source, ('team_folder_trust',), 'approved') for member in self.member_ids())
 
     def test_2_a_prompt_that_is_not_a_startup_prompt_stays_the_persons(self):
         fx = self.fx
@@ -384,8 +389,32 @@ class TrustContract(ClassFixture):
 
 
 class ClaudeTrust:
+    """Claude Code 2.1.322 records a folder-trust answer in a linked worktree as trust for
+    the repository's main checkout, on the member's account, and none for the worktree;
+    a second worktree on the same account still shows its card (zerus-63rru.66: the same
+    record a person's own answer leaves). Pinned as observed, so a release that stores it
+    elsewhere or stops asking fails here. Two members share one account for that."""
     trust_source = 'claude_folder_trust'
     service_answers = ('claude_folder_trust',)
+    count = 2
+    pinned = 'zt-claude'
+
+    def test_3_a_second_worktree_on_the_same_account_still_asked(self):
+        fx = self.fx
+        launches = {}
+        for row in fx.listed(fx.json('team', 'journal', '--team', fx.team, '--limit', '200', '--json'), 'rows', 'team journal'):
+            if row.get('kind') == 'set_member_session':
+                member = next((ref[len('member:'):] for ref in row.get('refs') or [] if ref.startswith('member:')), None)
+                launches.setdefault(member, row['at_ms'])
+        shared = sorted((launches[m], m) for m in self.member_ids() if fx.members()[m].get('account') == self.pinned)
+        fx.evidence.write('shared-account-launches.json', dict(launches=launches, shared=shared))
+        self.assertEqual(len(shared), 2, 'two members on the pinned account')
+        (_, first), (later_at, later) = shared
+        first_grant = [r for r in fx.audit_rows(fx.sessions[first]['name']) if r['source'] == self.trust_source]
+        self.assertEqual(len(first_grant), 1)
+        self.assertGreater(later_at, first_grant[0]['at'], 'the later member launched after the first grant on its account')
+        later_grant = [r for r in fx.audit_rows(fx.sessions[later]['name']) if r['source'] == self.trust_source]
+        self.assertEqual(len(later_grant), 1, 'the later worktree on the same account still showed its own card')
 
     def assert_agent_trusted(self, member_id):
         fx = self.fx
@@ -394,10 +423,10 @@ class ClaudeTrust:
         # must be no wider than the card's folder).
         records = fx.claude_trust_records()
         fx.evidence.write(f'claude-trust-records-{member_id}.json', dict(home=str(home), records=records))
-        worktree = fx.members()[member_id]['worktree']
         mine = records.get(str(home / '.claude.json'))
         self.assertIsInstance(mine, dict, "the member account's own .claude.json is readable")
-        self.assertTrue(mine.get(worktree), 'Claude recorded the trust for exactly the member worktree')
+        main = str((fx.root / 'work/proj').resolve())
+        self.assertEqual(mine, {main: True}, "the account holds exactly the main checkout as trusted, no worktree key")
 
 
 class CodexTrustContract(ClassFixture):
@@ -816,6 +845,30 @@ class TeamsFixtureDiagnostics(unittest.TestCase):
             reader.inspect = lambda member: {}
             with self.assertRaisesRegex(AssertionError, 'has no current run'):
                 fixture.TeamFixture.record(reader, 'm1')
+
+    def test_account_snapshots_name_what_changed_without_content(self):
+        from types import SimpleNamespace
+        with tempfile.TemporaryDirectory() as base:
+            home = Path(base)
+            (home / '.claude.json').write_text(json.dumps({'projects': {}, 'numStartups': 1}))
+            (home / 'keep.txt').write_text('same')
+            (home / 'gone.txt').write_text('x')
+            before = fixture.TeamFixture.account_snapshot(SimpleNamespace(), home)
+            time.sleep(0.01)
+            (home / '.claude.json').write_text(json.dumps({'projects': {'/tmp/example/work/proj': {
+                'hasTrustDialogAccepted': True, 'allowedTools': []}}, 'numStartups': 2, 'secretish': 'value'}))
+            (home / 'gone.txt').unlink()
+            (home / 'new.txt').write_text('y')
+            after = fixture.TeamFixture.account_snapshot(SimpleNamespace(), home)
+        diff = fixture.TeamFixture.snapshot_diff(before, after)
+        self.assertEqual((diff['added'], diff['removed']), (['new.txt'], ['gone.txt']))
+        change = diff['changed']['.claude.json']
+        self.assertEqual((change['keys_added'], change['keys_changed']), (['secretish'], ['numStartups', 'projects']))
+        self.assertEqual(change['projects_added'], ['/tmp/example/work/proj'])
+        self.assertEqual(change['project_keys'], {'/tmp/example/work/proj': dict(
+            added=['allowedTools', 'hasTrustDialogAccepted'], removed=[], changed=[])})
+        self.assertNotIn('keep.txt', diff['changed'])
+        self.assertNotIn('value', json.dumps(after), 'names and hashes only, no content')
 
     def test_folder_watch_times_a_folder_that_goes_and_comes_back(self):
         with tempfile.TemporaryDirectory() as base:

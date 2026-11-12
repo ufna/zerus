@@ -1430,7 +1430,7 @@ select them until their fixes land.
 | Case | Waits for |
 |---|---|
 | Steps 2 to 4, every agent | `zerus-63rru.51` |
-| Claude Code folder trust by the standing confirmation (`NativeTeamsTrustClaude`): the service answers the startup folder trust with an audit grant, and a prompt that is not a startup prompt stays the person's | `zerus-63rru.60` (the audit reservation compares the real card's null conversation with an empty string) |
+| Claude Code folder trust by the standing confirmation (`NativeTeamsTrustClaude`, two members pinned to one account): the service answers each member's startup folder trust with one audit grant, and a prompt that is not a startup prompt stays the person's. What Claude Code 2.1.322 records is pinned as observed: the account holds exactly the main checkout as trusted and no worktree key, and the later worktree on the same account still shows its card | `zerus-63rru.60` (the audit reservation compares the real card's null conversation with an empty string) |
 | A Claude Code member that exits before any message (`NativeTeamsResumeUnworkedClaude`): nothing starts, and the card carries the command's own reason | `zerus-63rru.62` (the restore is refused before launch with "persisted conversation is missing or empty", but the card does not say so) |
 | Codex resume of an exited member (`NativeTeamsResumeCodex`) | `zerus-63rru.54` (the resumed member never gets its brief) and `zerus-63rru.56` (three states read as an exit) |
 

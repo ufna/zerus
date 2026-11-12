@@ -471,7 +471,7 @@ class TeamFixture:
     DELEGATIONS_OFF = {'accept_results': False, 'answer_members': False, 'confirm_trust': False,
                        'merge_accepted': False, 'resume_exited': False}
 
-    def __init__(self, agent, native, case, delegations=None, service_answers=(), after_refusal=None):
+    def __init__(self, agent, native, case, delegations=None, service_answers=(), after_refusal=None, count=1, pinned=None):
         self.agent, self.native, self.case = agent, Path(native).resolve(), case
         # Card sources the person answers only once the service has refused them with a
         # card naming the member and containing the given text.
@@ -480,6 +480,9 @@ class TeamFixture:
         # standing confirmation (it must answer them, or the bring-up fails).
         self.delegations = dict(self.DELEGATIONS_OFF, **(delegations or {}))
         self.service_answers = tuple(service_answers)
+        # The role's member count, and the account its members are pinned to (none: the
+        # service picks the freest).
+        self.count, self.pinned = count, pinned
         self.cards_seen = {}
         self.panes = {}
         base = os.environ.get('TMPDIR') or tempfile.gettempdir()
@@ -683,8 +686,10 @@ class TeamFixture:
             role.update(model='claude-sonnet-4-6', effort='high')
         elif self.agent == 'codex':
             role.update(model='gpt-6.1-sol', effort='high')
+        if self.pinned:
+            role['account'] = {'mode': 'named', 'account': self.pinned}
         return {'template': {'id': 'zt-' + self.agent, 'name': 'Teams fixture ' + self.agent, 'description': 'One member.',
-                             'lead': {'agent': self.agent}, 'roster': [{'role': 'zt-dev', 'count': 1}],
+                             'lead': {'agent': self.agent}, 'roster': [{'role': 'zt-dev', 'count': self.count}],
                              'default_pipeline': 'zt-direct', 'settings': {}},
                 'roles': [role], 'pipelines': [{'id': 'zt-direct', 'name': 'Direct', 'implementer': 'zt-dev'}]}
 
@@ -757,7 +762,7 @@ class TeamFixture:
         self.accounts()
         self.create_team()
         self.start_service()
-        bound = self.wait('lead and member bound by launch ID', lambda: (lambda m: m if len(m) == 2 and all(
+        bound = self.wait('lead and members bound by launch ID', lambda: (lambda m: m if len(m) == 1 + self.count and all(
             (x.get('session') or {}).get('session_id') for x in m.values()) else None)(self.members()), BOUND['bound'], 3)
         for member_id, member in bound.items():
             self.sessions[member_id] = self.wait(f'{member_id} session listed', lambda m=member: self.session_of(m),
@@ -904,6 +909,65 @@ class TeamFixture:
                 continue
             records[str(path)] = {key: bool((value or {}).get('hasTrustDialogAccepted')) for key, value in projects.items()}
         return records
+
+    def account_snapshot(self, home, limit=2000):
+        """Read-only, private root only: every file under one account folder with its size
+        and change time; for a JSON object, its top-level keys with a short hash of each
+        value, and for .claude.json its project keys. Names and hashes only, no content."""
+        import hashlib
+        home = Path(home)
+        out = {}
+        for path in sorted(home.rglob('*'))[:limit]:
+            if path.is_symlink() or not path.is_file():
+                continue
+            info = path.stat()
+            entry = dict(size=info.st_size, mtime_ns=info.st_mtime_ns)
+            if path.suffix == '.json' and info.st_size <= 1 << 20:
+                try:
+                    value = json.loads(path.read_text())
+                except (OSError, ValueError):
+                    value = None
+                if isinstance(value, dict):
+                    entry['keys'] = {key: hashlib.sha256(json.dumps(item, sort_keys=True).encode()).hexdigest()[:12]
+                                     for key, item in value.items()}
+                    if isinstance(value.get('projects'), dict):
+                        entry['projects'] = sorted(value['projects'])
+                        # Each project entry's own keys, names and value hashes only.
+                        entry['project_entries'] = {
+                            project: {key: hashlib.sha256(json.dumps(item, sort_keys=True).encode()).hexdigest()[:12]
+                                      for key, item in (fields or {}).items()} if isinstance(fields, dict) else {}
+                            for project, fields in value['projects'].items()}
+            out[str(path.relative_to(home))] = entry
+        return out
+
+    @staticmethod
+    def snapshot_diff(before, after):
+        """Files added, removed and changed between two account snapshots; for a changed
+        JSON object, the names of the keys added, removed or changed, and its project keys
+        added or removed."""
+        changed = {}
+        for name in sorted(set(before) & set(after)):
+            old, new = before[name], after[name]
+            if (old['size'], old['mtime_ns']) == (new['size'], new['mtime_ns']):
+                continue
+            change = dict(size=[old['size'], new['size']])
+            if 'keys' in old or 'keys' in new:
+                a, b = old.get('keys', {}), new.get('keys', {})
+                change['keys_added'] = sorted(set(b) - set(a))
+                change['keys_removed'] = sorted(set(a) - set(b))
+                change['keys_changed'] = sorted(k for k in set(a) & set(b) if a[k] != b[k])
+            if 'projects' in old or 'projects' in new:
+                change['projects_added'] = sorted(set(new.get('projects', [])) - set(old.get('projects', [])))
+                change['projects_removed'] = sorted(set(old.get('projects', [])) - set(new.get('projects', [])))
+                a, b = old.get('project_entries', {}), new.get('project_entries', {})
+                change['project_keys'] = {
+                    project: dict(added=sorted(set(b.get(project, {})) - set(a.get(project, {}))),
+                                  removed=sorted(set(a.get(project, {})) - set(b.get(project, {}))),
+                                  changed=sorted(k for k in set(a.get(project, {})) & set(b.get(project, {}))
+                                                 if a[project][k] != b[project][k]))
+                    for project in sorted(set(a) | set(b)) if a.get(project) != b.get(project)}
+            changed[name] = change
+        return dict(added=sorted(set(after) - set(before)), removed=sorted(set(before) - set(after)), changed=changed)
 
     def codex_trust_records(self):
         """Read-only, private root only: where Codex keeps its folder trust. Every
