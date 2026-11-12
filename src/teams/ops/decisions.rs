@@ -106,7 +106,10 @@ pub(super) fn reassign(ctx: &mut Context<'_>) -> Result<()> {
             params![ctx.team.id, node, rows::node_payload(&n)?],
         )
         .map_err(storage)?;
-    let state = if handout::has_attempt(ctx, *node)? {
+    // The hand-over route while the task may be in somebody's hands, a
+    // person's taken-over run included; otherwise the ordinary hand-out
+    // follows the new assignee.
+    let state = if handout::in_hands(ctx, *node)? {
         DecisionState::Pending
     } else {
         DecisionState::Settled

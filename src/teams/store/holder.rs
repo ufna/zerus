@@ -31,6 +31,36 @@ pub(crate) fn holder_of(db: &Connection, team: &str, node: u32) -> Result<Option
     }))
 }
 
+/// Hands a Return that has nobody to go to back to the lead, as a refused
+/// reopen is handed back: the decision settles, the node is held, and the
+/// lead gets one inbox item of its own kind, `return_without_holder:<seq>`.
+/// Used where a Return loses its holder: the step to layout 10 for Returns
+/// an earlier layout admitted, and a refused outcome. Returns the item.
+pub(crate) fn hand_back_return(
+    db: &Connection,
+    team: &str,
+    node: u32,
+    seq: u64,
+    actor: &str,
+    now: i64,
+) -> Result<u64> {
+    rows::settle_decisions(db, team, Some(node), actor, false)?;
+    db.execute(
+        "UPDATE nodes SET hold=1 WHERE team=?1 AND id=?2",
+        rusqlite::params![team, node],
+    )
+    .map_err(storage)?;
+    let text = format!(
+        "The return of task {node} had nobody to go to: no member holds its attempt (its hand-out was only reserved, refused or superseded). The task is held; decide again."
+    );
+    db.execute(
+        "INSERT INTO inbox(team,kind,node,generation,actor,text,created_ms) SELECT ?1,?2,?3,generation,?4,?5,?6 FROM nodes WHERE team=?1 AND id=?3",
+        rusqlite::params![team, format!("return_without_holder:{seq}"), node, actor, text, now],
+    )
+    .map_err(storage)?;
+    Ok(db.last_insert_rowid() as u64)
+}
+
 impl Store {
     /// The attempt holder of a live node: [`holder_of`].
     pub fn attempt_holder(&self, team: &str, node: u32) -> Result<Option<AttemptHolder>> {

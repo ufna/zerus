@@ -372,7 +372,11 @@ pub(super) fn observe(ctx: &mut Context<'_>) -> Result<()> {
         o,
         n.kind == NodeKind::Stage && (o.cancelled || o.stage == TaskStage::Done),
     )?;
-    timers::remember(ctx, *node, o)
+    timers::remember(ctx, *node, o)?;
+    // A task back in To do without a reopen of its generation (a person's
+    // run has no pipeline run to reopen), or a settled conflict: a waiting
+    // Return or Reassign that lost its reason is settled here.
+    handout::settle_without_reason(ctx, *node)
 }
 /// Whether the node's own projection shows its task ended, cancelled or done.
 fn node_ended(ctx: &Context<'_>, table: &str, node: u32) -> Result<bool> {
