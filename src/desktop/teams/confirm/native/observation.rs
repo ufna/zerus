@@ -9,36 +9,10 @@ fn text(v: &Value, key: &str) -> String {
 impl Native<'_> {
     pub fn snapshot(&mut self, b: &Binding) -> Result<Snapshot> {
         let (_, name) = self.binding(&b.team, &b.member)?;
-        let observed = self.current(b, &name);
-        match observed {
-            Ok((snapshot, raw)) => {
-                self.capture = Some((snapshot.clone(), raw));
-                Ok(snapshot)
-            }
-            Err(_) => {
-                self.capture = None;
-                Ok(Snapshot {
-                    machine: self.machine.into(),
-                    launch: b.launch.clone(),
-                    session: b.session.clone(),
-                    name,
-                    run: b.run.clone(),
-                    conversation: b.conversation.clone(),
-                    agent: b.agent.clone(),
-                    account: b.account.clone(),
-                    folder: b.folder.clone(),
-                    live: false,
-                    ready: false,
-                    paused: false,
-                    ended: true,
-                    self_exit: false,
-                    exit_identity: String::new(),
-                    archive: None,
-                    receipt_at: None,
-                    questions: Vec::new(),
-                })
-            }
-        }
+        self.capture = None;
+        let (snapshot, raw) = observed(&name, self.current(b, &name))?;
+        self.capture = Some((snapshot.clone(), raw));
+        Ok(snapshot)
     }
     fn current(&self, b: &Binding, name: &str) -> Result<(Snapshot, Value)> {
         let roots =
@@ -95,6 +69,16 @@ impl Native<'_> {
         }
         Ok((s, raw))
     }
+}
+/// A member's state as read, or unknown. A read that fails or is incomplete
+/// (a session record or archive that cannot be read yet, a question index that
+/// cannot be read) is never an exit (zerus-63rru.56): nothing is planned, so
+/// nothing is resumed or claimed and the run keeps its one resume, and the
+/// scan reports why.
+pub(super) fn observed(name: &str, read: Result<(Snapshot, Value)>) -> Result<(Snapshot, Value)> {
+    read.map_err(|why| {
+        format!("Whether member session {name} ended is unknown ({why}); nothing was resumed")
+    })
 }
 pub(super) fn parse_view(
     machine: &str,
@@ -309,6 +293,136 @@ mod tests {
         let mut guarded = vec!["--expect-machine".to_owned(), b.machine.clone()];
         guarded.extend(spawned);
         assert!(gate(guarded).is_err());
+    }
+
+    /// The private store of an isolated fixture: its configuration, team
+    /// store and stop flag, at the state root the state component writes.
+    fn store_env() -> (Config, crate::teams::store::Store, Arc<AtomicBool>) {
+        let state = std::path::PathBuf::from(std::env::var("HGS_STATE_DIR").unwrap());
+        let config = Config {
+            home: String::new(),
+            dir: std::path::PathBuf::from(std::env::var("HGS_CONFIG_DIR").unwrap()),
+            state: state.clone(),
+            selves: vec![],
+            peers: vec![],
+            base_peers: vec![],
+            peers_from_environment: false,
+            machines: Default::default(),
+            tab: false,
+            tab_colors: String::new(),
+        };
+        crate::platform::private_dir(&state.join("teams")).unwrap();
+        std::fs::write(state.join("teams/preview"), "on").unwrap();
+        let store = crate::teams::store::Store::open(&state).unwrap();
+        (config, store, Arc::new(AtomicBool::new(false)))
+    }
+
+    /// A Codex member's session record, saved by the state's own writer, and
+    /// the real `hgs inspect` reply for it (zerus-63rru.56): everything the
+    /// confirmation reads comes from those producers. Its transcript is not
+    /// written yet, as at a session's start, so the question index cannot be
+    /// read. The binding is the one the record proves.
+    fn real_codex(edit: impl FnOnce(&mut Value)) -> (Binding, Value, Value) {
+        let state = std::env::var("HGS_STATE_DIR").unwrap();
+        let conversation = uuid::Uuid::new_v4().to_string();
+        let mut record = json!({"name":"codex/example/member","agent":"codex","version":1,
+            "run_id":uuid::Uuid::new_v4().to_string(),"conversation_id":conversation,
+            "launch_id":uuid::Uuid::new_v4().to_string(),"account_id":"account-1",
+            "cwd":state,"worktree_owner":{"id":"owner-1"},"created":1.0,
+            "transcript":format!("{state}/transcripts/rollout-{conversation}.jsonl")});
+        edit(&mut record);
+        let view = crate::state::inspection_for_test(&mut record).unwrap();
+        let (sample, _, _) = crate::desktop::teams::confirm::policy::tests::sample();
+        let b = Binding {
+            agent: "codex".into(),
+            account: "account-1".into(),
+            launch: record["launch_id"].as_str().unwrap().into(),
+            session: view["session_id"].as_str().unwrap_or_default().into(),
+            run: record["run_id"].as_str().unwrap().into(),
+            conversation: String::new(),
+            folder: state,
+            nonce: "owner-1".into(),
+            ..sample
+        };
+        (b, view, record)
+    }
+
+    #[test]
+    fn an_unreadable_question_index_is_unknown_never_an_exit() {
+        isolated("desktop::teams::confirm::native::observation::tests::index_fixture");
+    }
+    #[test]
+    fn an_archive_is_found_by_run_as_soon_as_it_is_written() {
+        isolated("desktop::teams::confirm::native::observation::tests::archive_fixture");
+    }
+    #[test]
+    fn a_persons_pause_reads_as_paused_not_as_an_exit_to_resume() {
+        isolated("desktop::teams::confirm::native::observation::tests::pause_fixture");
+    }
+
+    #[test]
+    #[ignore = "run by its isolated wrapper"]
+    fn index_fixture() {
+        let (config, mut store, stop) = store_env();
+        let (b, view, _) = real_codex(|_| ());
+        // The producer itself reports the unreadable index.
+        assert!(view["pending_questions_error"].is_string(), "{view}");
+        let native = Native::new(&config, &b.machine, &stop, &mut store).unwrap();
+        let name = view["name"].as_str().unwrap();
+        crate::desktop::teams::child::FIXTURE_EXIT
+            .with(|slot| *slot.borrow_mut() = Some(serde_json::to_vec(&view).unwrap()));
+        let read = native.current(&b, name);
+        assert_eq!(
+            read.as_ref().err().map(String::as_str),
+            Some("The fresh member inspection is incomplete or changed"),
+            "{read:?}"
+        );
+        let unknown = observed(name, read).unwrap_err();
+        assert!(
+            unknown.contains("is unknown") && unknown.contains("nothing was resumed"),
+            "{unknown}"
+        );
+        // The same reply without the producer's error is read as the member.
+        let mut readable = view.clone();
+        readable
+            .as_object_mut()
+            .unwrap()
+            .remove("pending_questions_error");
+        crate::desktop::teams::child::FIXTURE_EXIT
+            .with(|slot| *slot.borrow_mut() = Some(serde_json::to_vec(&readable).unwrap()));
+        let snapshot = observed(name, native.current(&b, name)).unwrap().0;
+        assert!(!snapshot.ended, "{snapshot:?}");
+    }
+
+    #[test]
+    #[ignore = "run by its isolated wrapper"]
+    fn archive_fixture() {
+        let (config, _, _) = store_env();
+        let (b, _, record) = real_codex(|_| ());
+        let id = crate::state::archive_for_test(&record).unwrap();
+        let roots = Roots::open(&config.state, "question_receipts").unwrap();
+        let (found, raw) = archive(&config.state, &roots, &b, "codex/example/member").unwrap();
+        assert_eq!(
+            (found.as_str(), &raw["state"]),
+            (id.as_str(), &json!("archived"))
+        );
+    }
+
+    #[test]
+    #[ignore = "run by its isolated wrapper"]
+    fn pause_fixture() {
+        let (b, _, mut record) = real_codex(|record| {
+            // A finished run of this test's own process: started, not running.
+            record["pid"] = json!(u32::MAX - 1);
+            record["process_start"] = json!("1");
+        });
+        crate::state::pause_for_test(&mut record).unwrap();
+        let mut view = crate::state::inspection_for_test(&mut record).unwrap();
+        view.as_object_mut()
+            .unwrap()
+            .remove("pending_questions_error");
+        let s = parse_view(&b.machine, &b, &view, &record, None).unwrap();
+        assert_eq!((s.paused, s.ended, s.live), (true, true, false), "{view}");
     }
 
     #[test]
