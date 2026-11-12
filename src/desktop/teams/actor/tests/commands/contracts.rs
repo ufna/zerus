@@ -4,6 +4,8 @@ pub(super) fn run() {
     delivery();
     finish();
     creation_and_clear();
+    cancel::run();
+    handover();
 }
 fn delivery() {
     let mut f = Fixture::new();
@@ -42,11 +44,9 @@ fn finish() {
         },
     )
     .unwrap();
-    let team = f.h.store.team(TEAM).unwrap().unwrap();
-    let node = f.h.node(f.node);
-    let request = task_request(&team, &node, None, "unused");
+    let (args, request) = f.finish_vector();
     for _ in 0..2 {
-        let reply = f.call(&task_arguments(&f.task, "team-done"), &request, false);
+        let reply = f.call(&args, &request, false);
         assert_eq!(
             reply,
             json!({"schema":1,"team":TEAM,"node":f.node,"state":"done","error":""})
@@ -58,7 +58,7 @@ fn finish() {
         Stage::Done
     );
 }
-fn created_stage(f: &mut Fixture) -> (u32, TaskRef) {
+fn reserve_stage(f: &mut Fixture) -> crate::teams::store::StageTaskEffect {
     let node = f.h.store.stage_tasks(TEAM, 1, None).unwrap().rows[0].node;
     let id = uuid::Uuid::new_v4().to_string();
     f.h.run(
@@ -74,22 +74,31 @@ fn created_stage(f: &mut Fixture) -> (u32, TaskRef) {
             .stage_task_effect(TEAM, node, &id)
             .unwrap()
             .unwrap();
-    let request = stage_request(&effect);
-    let crashed = f.process(
-        &stage_arguments(),
-        &request.to_string(),
-        Some("stage-crash"),
-    );
+    effect
+}
+fn created_stage(f: &mut Fixture) -> (u32, TaskRef) {
+    let effect = reserve_stage(f);
+    let node = effect.node;
+    let id = effect.request_id.clone();
+    let (args, request) = f.stage_vector(&effect);
+    let crashed = f.process(&args, &request.to_string(), Some("stage-crash"));
     assert_eq!(crashed.status.code(), Some(78));
     let task = TaskRef {
         project: f.task.project.clone(),
         uuid: id.clone(),
     };
+    {
+        let tasks = ProjectStore::open(&f.config.state.join("replica"), &task.project).unwrap();
+        let mut doc = tasks.load(&id).unwrap();
+        doc.set_title("Person renamed this stage", &TaskActor::Person, 2)
+            .unwrap();
+        tasks.save(&mut doc).unwrap();
+    }
     let before = {
         let tasks = ProjectStore::open(&f.config.state.join("replica"), &task.project).unwrap();
         tasks.load(&id).unwrap().revision()
     };
-    let reply = f.call(&stage_arguments(), &request, false);
+    let reply = f.call(&args, &request, false);
     assert_eq!(reply["state"], "created");
     assert_eq!(reply["id"], id);
     assert_eq!(reply["team"], TEAM);
@@ -123,7 +132,7 @@ fn creation_and_clear() {
     f.reported();
     let (node, task) = created_stage(&mut f);
     let team = f.h.store.team(TEAM).unwrap().unwrap();
-    let request = clear_request(&team, node);
+    let (args, request) = f.clear_vector(node, &task);
     {
         use crate::desktop::teams::timers::{Answer, ClearRequest, Effects, Native};
         let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -146,7 +155,7 @@ fn creation_and_clear() {
         eprintln!("REAL_COMMAND package10 Native::clear => {answer:?}");
     }
     for _ in 0..2 {
-        let reply = f.call(&task_arguments(&task, "team-clear"), &request, false);
+        let reply = f.call(&args, &request, false);
         assert_eq!(
             reply,
             json!({"schema":1,"team":TEAM,"node":node,"state":"cleared","error":""})
@@ -154,4 +163,38 @@ fn creation_and_clear() {
     }
     let tasks = ProjectStore::open(&f.config.state.join("replica"), &task.project).unwrap();
     assert!(tasks.load(&task.uuid).unwrap().team().unwrap().is_none());
+}
+
+mod cancel;
+fn handover() {
+    let mut f = Fixture::new();
+    f.submitted();
+    f.reported();
+    f.h.run(
+        &person(),
+        Operation::Reassign {
+            node: f.node,
+            member: "m2".into(),
+            reason: "New holder".into(),
+        },
+    )
+    .unwrap();
+    let id = f.h.reopen(f.node, "m2");
+    assert_eq!(f.delivery(&id, "m2", false)["state"], "submitted");
+    assert_eq!(f.inputs(), 2);
+    let tasks = ProjectStore::open(&f.config.state.join("replica"), &f.task.project).unwrap();
+    let current = tasks
+        .load(&f.task.uuid)
+        .unwrap()
+        .view()
+        .unwrap()
+        .execution
+        .unwrap()
+        .current
+        .unwrap();
+    assert_eq!(current.executor.unwrap().session, "codex/command-m2");
+    assert!(matches!(
+        current.origin,
+        zerus_replica::execution::Origin::Handoff
+    ));
 }

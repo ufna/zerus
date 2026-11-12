@@ -1,8 +1,5 @@
 //! An explicit subprocess contract harness. A normal test pass leaves this
 //! entry idle; cli.py invokes the matrix against this source's built CLI.
-use super::super::native::{
-    clear_request, stage_arguments, stage_request, task_arguments, task_request,
-};
 use super::*;
 use crate::config::Config;
 use serde_json::Value;
@@ -15,6 +12,7 @@ use std::{
 use zerus_replica::{Actor as TaskActor, Position, ProjectStore, SessionKey, Stage, Target};
 mod contracts;
 mod setup;
+mod vectors;
 
 #[test]
 fn entry() {
@@ -158,8 +156,7 @@ impl Fixture {
         let team = self.h.store.team(TEAM).unwrap().unwrap();
         let node = self.h.node(self.node);
         let member = self.h.store.member(TEAM, member).unwrap().unwrap();
-        let request = task_request(&team, &node, Some(&member), id);
-        let mut args = task_arguments(&self.task, "team-deliver");
+        let (mut args, request) = self.delivery_vector(id, &member.id);
         if recover {
             args.push("--recover-only".into());
         }
