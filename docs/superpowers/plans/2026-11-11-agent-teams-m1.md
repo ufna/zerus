@@ -1407,6 +1407,24 @@ again, and both orders of the answer and the observation leave the same
 state. No service command finishes, reopens or cancels a task whose current
 attempt is not the one the store observed.
 
+A cancel also never reaches an execution that the store has not judged. The
+store judges an execution at the first observation that shows the task
+running under it: its node's own effect is taken in, a person's is taken
+over and the older cancel is settled with it. A send that is reserved,
+observed while the task waits and delivered afterwards keeps all three
+fields, so the comparison alone let an older cancel end a person's run
+(the review of the task side, 2026-11-12). In a running or paused team
+`team-cancel` therefore answers `stale` also when the document runs and the
+newest observation did not yet show it running; the observation that
+follows decides, and the team's own hand-out whose start was not yet
+observed costs one more round. In a stopped or archived team, where no
+observation follows, an equal attempt is accepted only when the document
+does not run or the observation already showed it running; a running
+document whose start was not observed is acted on only as the node's own
+delivered effect and is otherwise refused with `attempt_changed:`. The
+command reads the observed stage and nothing else of the store's memory:
+the rule for a person's execution stays in the store.
+
 **Only a layout that reached the integration branch is upgraded.** The
 store's extension marks its layout, and during the reviews of package 10
 that mark moved through six values, each with its own step and its own
@@ -1421,7 +1439,12 @@ development build could have written is refused with a sentence that says
 so, and nothing is written; a newer mark is refused as before. A store
 from before the extension holds no attempt of any task, so its first
 observation is judged against no attempt, as for a task that never
-recorded one.
+recorded one. The observer writes that observation also when the task did
+not change: it skips a task only when the stored revision and the stored
+three fields all equal the document's. Skipping by the revision alone left
+a task that nobody touched after the extension without its attempt for
+ever, and every command for it answered `stale` on every pass (the review
+of the task side, 2026-11-12).
 
 **In a live team a task's end is recorded by its observation alone.** An
 answer and an observation are two reports of one fact, and every rule that
@@ -1481,6 +1504,34 @@ and the archiving step then settled that cancel with the rest, so the
 service never asked for the task to be cancelled and the cleanup passed it
 without an answer (the same confirmation). A node with a pending cancel
 stays where the cancel step finds it.
+
+**The service carries out an acceptance only while the newest observation
+agrees with it (packages 8 and 10).** The rule above keeps an accepted node
+in the queue while its task runs again or its attempts conflict, and the
+node's acceptance is still pending there. The actor looked at the stored
+stage only and sent a finish request for such a task (the confirmation of
+2026-11-12). Before it finishes a task, starts a merge or reopens, at
+scheduling and again in the admission of the effect, the actor asks the
+store, and the store owns the answer through two reads of one shape.
+`reviewed_task_current(team, node, generation)` is true while the
+generation is current and the newest observation has the key ours, the
+stage In review, no cancellation, no conflict of attempts, and as its
+current attempt the execution the node took in; the finishing step and a
+reopen use it. `accepted_task_current` is true in the same cases and also
+when that observation shows the task Done, and a new merge uses it. With
+integration by branch the finishing step waits for the merge, so an
+ordinary merge finds the task In review; but a task that a person closed on
+the board after the accept is observed Done before its merge, its node
+waits in the queue for that merge, and a question that knew In review only
+would never merge it. The end of a task does not depend on who executed
+it, so Done agrees under any attempt, and the conflict flag counts on Done
+as it does for leaving the queue. The settlement of a merge that already
+ran does not ask: its receipt is a fact. Known limit: an accepted task
+that comes back In review under another execution without ever being
+observed running (the service was down for the whole of a person's run) is
+neither finished nor merged, and an accepted node takes no Cancel; the
+person's own move on the board (closing, cancelling or starting the task
+again) resolves it.
 
 **A reader of a reply ignores what it does not know.** The contract's types
 refuse unknown fields, and that stays the rule for what a person or a
