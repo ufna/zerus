@@ -85,7 +85,7 @@ it("offers only the M1 operations and sends them by member id", () => {
   expect(buttons.map((button) => button.textContent)).toEqual(["Pause", "Stop", "Remove"]);
   expect(buttons.filter((button) => button.classList.contains("danger"))).toHaveLength(2);
   buttons[0].click();
-  expect(onAction).toHaveBeenCalledWith("pause-member", "m1");
+  expect(onAction).toHaveBeenCalledWith("pause_member", "m1");
 });
 
 it("offers resume only to a paused member", () => {
@@ -100,7 +100,7 @@ it("keeps lead Pause/Stop and offers no Remove, which the store refuses for the 
   (host.querySelector('[aria-label="Member actions"]') as HTMLButtonElement).click();
   const buttons = [...host.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')].filter((button) => button.textContent !== "Member details");
   expect(buttons.map((button) => button.textContent)).toEqual(["Pause", "Stop"]);
-  buttons[1].click(); expect(onAction).toHaveBeenCalledWith("stop-member", "m1");
+  buttons[1].click(); expect(onAction).toHaveBeenCalledWith("stop_member", "m1");
 });
 
 // Second confirmation: a member who is not active shows its state chip alone;

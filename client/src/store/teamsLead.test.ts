@@ -86,7 +86,7 @@ describe("the failure reason for the view that asked", () => {
   it("names the view, reads its own reason and clears only its own", async () => {
     const { transport } = fake({ outcome: "failed", detail: "The member cannot be removed.", code: "invalid_state", request_id: "r1" });
     const store = createTeams(transport);
-    const call = { team: TEAM_ID, expected_revision: 16, request_id: "r1", action: { kind: "archive-member", member: "lead" } };
+    const call = { team: TEAM_ID, expected_revision: 16, request_id: "r1", action: { kind: "archive_member", member: "lead" } };
     const outcome = await store.run(call, "team-tab");
     expect(outcome.outcome).toBe("failed");
     expect(store.failureFor("team-tab")?.message).toBe("The member cannot be removed.");

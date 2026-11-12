@@ -1281,3 +1281,102 @@ fn every_action_the_view_sends_is_still_read() {
         assert_eq!(serde_json::from_value::<TeamAction>(sent).unwrap(), action);
     }
 }
+
+/// Every kind the core reads, as the webview must write it
+/// (`fixtures/action-kinds.json`, which the Team tab's test also reads). The
+/// match below names every variant, so a new one cannot be left out.
+#[test]
+fn the_action_kinds_are_the_shared_list() {
+    fn sample(action: &TeamAction) -> &'static str {
+        match action {
+            TeamAction::Create { .. }
+            | TeamAction::Pause {}
+            | TeamAction::Resume {}
+            | TeamAction::Stop {}
+            | TeamAction::Archive {}
+            | TeamAction::PauseMember { .. }
+            | TeamAction::ResumeMember { .. }
+            | TeamAction::StopMember { .. }
+            | TeamAction::ArchiveMember { .. }
+            | TeamAction::Settings { .. }
+            | TeamAction::Decide { .. }
+            | TeamAction::Admit { .. }
+            | TeamAction::Route { .. }
+            | TeamAction::Accept { .. }
+            | TeamAction::Return { .. }
+            | TeamAction::Reassign { .. }
+            | TeamAction::Hold { .. }
+            | TeamAction::Release { .. }
+            | TeamAction::Cancel { .. }
+            | TeamAction::Reply { .. }
+            | TeamAction::Ask { .. } => "",
+        }
+    }
+    let member = || "m1".to_owned();
+    let samples = vec![
+        create(None, Integration::Branch).action,
+        TeamAction::Pause {},
+        TeamAction::Resume {},
+        TeamAction::Stop {},
+        TeamAction::Archive {},
+        TeamAction::PauseMember { member: member() },
+        TeamAction::ResumeMember { member: member() },
+        TeamAction::StopMember { member: member() },
+        TeamAction::ArchiveMember { member: member() },
+        TeamAction::Settings {
+            settings: Default::default(),
+        },
+        TeamAction::Decide {
+            card: 1,
+            decision: "approve".into(),
+        },
+        TeamAction::Admit { node: 1 },
+        TeamAction::Route {
+            node: 1,
+            role: "r".into(),
+            pipeline: "p".into(),
+            deps: Vec::new(),
+            writes: Vec::new(),
+            assignee: None,
+        },
+        TeamAction::Accept { node: 1 },
+        TeamAction::Return {
+            node: 1,
+            reason: "r".into(),
+        },
+        TeamAction::Reassign {
+            node: 1,
+            member: member(),
+            reason: String::new(),
+        },
+        TeamAction::Hold { node: 1 },
+        TeamAction::Release { node: 1 },
+        TeamAction::Cancel {
+            node: 1,
+            reason: String::new(),
+        },
+        TeamAction::Reply {
+            item: 1,
+            text: "t".into(),
+        },
+        TeamAction::Ask {
+            node: 1,
+            generation: 1,
+            text: "t".into(),
+        },
+    ];
+    let mut kinds: Vec<String> = samples
+        .iter()
+        .map(|action| {
+            sample(action);
+            serde_json::to_value(action).unwrap()["kind"]
+                .as_str()
+                .unwrap()
+                .to_owned()
+        })
+        .collect();
+    kinds.sort();
+    let shared: Vec<String> =
+        serde_json::from_str(include_str!("../fixtures/action-kinds.json")).unwrap();
+    assert_eq!(kinds, shared);
+}

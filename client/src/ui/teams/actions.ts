@@ -71,15 +71,17 @@ export function taskButtons(card: TaskView, teamStatus: string): TaskButton[] {
 /** A member's operations, by the team's status and the member's state: pause
  * an active member; resume a paused one that has a session; stop an active or
  * paused one; remove any member that is not removed and is not the lead. */
+/** A member's operations; each id is the action's kind as the core reads it
+ * (client/core teams/fixtures/action-kinds.json). */
 export function memberActions(member: MemberView, teamStatus: string): { id: string; text: string; danger?: boolean; disabled?: boolean; reason?: string }[] {
   if (!activeTeam(teamStatus)) return [];
   const active = member.state === "active";
   const paused = member.state === "paused";
   return [
-    ...(active ? [{ id: "pause-member", text: tr("Pause") }] : []),
-    ...(paused && member.session ? [{ id: "resume-member", text: tr("Resume") }] : []),
-    ...(active || paused ? [{ id: "stop-member", text: tr("Stop"), danger: true }] : []),
-    ...(member.state !== "removed" && !member.lead ? [{ id: "archive-member", text: tr("Remove"), danger: true }] : []),
+    ...(active ? [{ id: "pause_member", text: tr("Pause") }] : []),
+    ...(paused && member.session ? [{ id: "resume_member", text: tr("Resume") }] : []),
+    ...(active || paused ? [{ id: "stop_member", text: tr("Stop"), danger: true }] : []),
+    ...(member.state !== "removed" && !member.lead ? [{ id: "archive_member", text: tr("Remove"), danger: true }] : []),
   ];
 }
 

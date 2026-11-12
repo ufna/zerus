@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { barActions, memberActions, taskButtons } from "./actions";
 import { teamView } from "./fixtures";
+import actionKinds from "../../../core/src/teams/fixtures/action-kinds.json";
 import type { MemberView, TaskView, TeamView } from "./types";
 
 // Each action is offered only in the states where the store accepts it
@@ -65,12 +66,27 @@ describe("the actions the Team tab offers", () => {
     for (const team of TEAM_STATES) for (const state of MEMBER_STATES) for (const session of [false, true]) for (const lead of [false, true]) {
       const value = member({ state, lead, session: session ? teamView.members[1].session : null });
       const expected = !ACTIVE.has(team) ? [] : [
-        ...(state === "active" ? ["pause-member"] : []),
-        ...(state === "paused" && session ? ["resume-member"] : []),
-        ...(state === "active" || state === "paused" ? ["stop-member"] : []),
-        ...(state !== "removed" && !lead ? ["archive-member"] : []),
+        ...(state === "active" ? ["pause_member"] : []),
+        ...(state === "paused" && session ? ["resume_member"] : []),
+        ...(state === "active" || state === "paused" ? ["stop_member"] : []),
+        ...(state !== "removed" && !lead ? ["archive_member"] : []),
       ];
       expect(memberActions(value, team).map((action) => action.id), JSON.stringify({ team, state, session, lead })).toEqual(expected);
     }
   });
+});
+
+it("every action the Team tab offers is a kind the core reads (fixtures/action-kinds.json)", () => {
+  const offered = new Set<string>();
+  for (const status of TEAM_STATES) {
+    for (const action of barActions({ ...teamView, bar: { ...teamView.bar, status } } as TeamView)) offered.add(action.id);
+    for (const state of TASK_STATES) for (const held of [false, true]) for (const admitted of [false, true]) {
+      for (const button of taskButtons(card({ state, held, admitted, implementer: "m1" }), status)) offered.add(button.id);
+    }
+    for (const state of MEMBER_STATES) for (const lead of [false, true]) {
+      for (const action of memberActions({ ...teamView.members[1], state, lead } as MemberView, status)) offered.add(action.id);
+    }
+  }
+  expect(offered.size).toBeGreaterThan(10);
+  for (const kind of offered) expect(actionKinds, kind).toContain(kind);
 });
