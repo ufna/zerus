@@ -145,6 +145,20 @@ fn handed() -> (Harness, Actor, u32, String) {
     seen(&mut h, node, TaskStage::InProgress, 1, &id).unwrap();
     (h, lead, node, id)
 }
+/// Two attempts claim generation `attempt`: no current attempt, the flag.
+fn conflicted(h: &mut Harness, node: u32, stage: TaskStage, attempt: u64) -> Result<Reply> {
+    let mut o = h.observation(node, stage);
+    o.attempt = attempt;
+    o.attempt_id = String::new();
+    o.attempt_conflict = true;
+    h.run(
+        &service(),
+        Operation::ObserveTask {
+            node,
+            observation: o,
+        },
+    )
+}
 fn cancel(node: u32, decision: u64, attempt: u64, id: &str) -> Operation {
     Operation::RecordCancel {
         node,
@@ -483,7 +497,7 @@ fn pair(h: &Harness, node: u32) -> (u64, String) {
 #[test]
 fn a_conflict_is_recorded_as_it_came_and_decides_nothing() {
     let (mut h, _, node, _) = handed();
-    seen(&mut h, node, TaskStage::InProgress, 2, "").unwrap();
+    conflicted(&mut h, node, TaskStage::InProgress, 2).unwrap();
     assert_eq!(
         pair(&h, node),
         (2, String::new()),
@@ -510,7 +524,7 @@ fn the_reviewers_conflict_blocks_a_late_cancel_and_the_next_answer_is_a_refusal(
         .unwrap()
         .remove(0)
         .decision;
-    seen(&mut h, node, TaskStage::InProgress, 2, "").unwrap();
+    conflicted(&mut h, node, TaskStage::InProgress, 2).unwrap();
     let row = h.store.pending_cancels(TEAM, 1, 0).unwrap().remove(0);
     assert_eq!(
         (row.attempt, row.attempt_id.as_str()),
@@ -560,18 +574,18 @@ fn the_reviewers_conflict_blocks_a_late_cancel_and_the_next_answer_is_a_refusal(
 fn a_conflict_that_settles_decides_as_any_observation() {
     // Back on A, the attempt the node runs under: nothing.
     let (mut h, _, node, a) = handed();
-    seen(&mut h, node, TaskStage::InProgress, 2, "").unwrap();
+    conflicted(&mut h, node, TaskStage::InProgress, 2).unwrap();
     seen(&mut h, node, TaskStage::InProgress, 2, &a).unwrap();
     assert_eq!(
         (h.store.generation(TEAM, node).unwrap(), pair(&h, node)),
         (Some(1), (2, a.clone()))
     );
     // On another attempt: a person's execution.
-    seen(&mut h, node, TaskStage::InProgress, 3, "").unwrap();
+    conflicted(&mut h, node, TaskStage::InProgress, 3).unwrap();
     seen(&mut h, node, TaskStage::InProgress, 3, PERSON).unwrap();
     assert_eq!(h.store.generation(TEAM, node).unwrap(), Some(2));
     // Back on the person's attempt after another conflict: no second override.
-    seen(&mut h, node, TaskStage::InProgress, 4, "").unwrap();
+    conflicted(&mut h, node, TaskStage::InProgress, 4).unwrap();
     seen(&mut h, node, TaskStage::InProgress, 4, PERSON).unwrap();
     assert_eq!(
         h.store.generation(TEAM, node).unwrap(),
@@ -579,7 +593,7 @@ fn a_conflict_that_settles_decides_as_any_observation() {
         "the remembered attempt"
     );
     // On the node's own effect: the team's own.
-    seen(&mut h, node, TaskStage::InProgress, 5, "").unwrap();
+    conflicted(&mut h, node, TaskStage::InProgress, 5).unwrap();
     seen(&mut h, node, TaskStage::InProgress, 5, &a).unwrap();
     assert_eq!(h.store.generation(TEAM, node).unwrap(), Some(2));
 }
@@ -589,7 +603,7 @@ fn a_conflict_on_a_node_with_a_pending_accept_decides_nothing() {
     let (mut h, lead, node, _) = handed();
     h.report(node, "m1");
     h.run(&lead, Operation::Accept { node }).unwrap();
-    seen(&mut h, node, TaskStage::InProgress, 2, "").unwrap();
+    conflicted(&mut h, node, TaskStage::InProgress, 2).unwrap();
     assert_eq!(h.store.generation(TEAM, node).unwrap(), Some(1));
     assert!(h
         .store
@@ -664,4 +678,151 @@ fn the_conflict_flag_defaults_to_false_and_is_kept_with_the_observation() {
             .unwrap()
             .attempt_conflict
     );
+}
+
+/// A refused first hand-out leaves (1, empty) with no conflict: an ordinary
+/// pair, applied like any other.
+fn refused_hand_out() -> (Harness, Actor, u32) {
+    let mut h = Harness::new();
+    let lead = h.bind("lead");
+    h.bind("m1");
+    let node = h.add(&person(), 1);
+    let id = h.intent(node, "m1");
+    h.outcome(
+        &id,
+        HandoutOutcome::Refused {
+            reason: "Not delivered".into(),
+        },
+    );
+    seen(&mut h, node, TaskStage::Todo, 1, "").unwrap();
+    (h, lead, node)
+}
+
+#[test]
+fn an_empty_id_without_the_flag_is_an_ordinary_pair_and_is_applied() {
+    let (mut h, lead, node) = refused_hand_out();
+    let mut o = h.observation(node, TaskStage::Todo);
+    o.title = "Renamed".into();
+    h.run(
+        &service(),
+        Operation::ObserveTask {
+            node,
+            observation: o,
+        },
+    )
+    .unwrap();
+    assert_eq!(h.node(node).title, "Renamed", "a title change is applied");
+    seen(&mut h, node, TaskStage::Backlog, 1, "").unwrap();
+    assert_eq!(
+        h.node(node).state,
+        NodeState::Waiting,
+        "a stage change is applied"
+    );
+    seen(&mut h, node, TaskStage::Todo, 1, "").unwrap();
+    h.run(
+        &lead,
+        Operation::Cancel {
+            node,
+            reason: "Superseded".into(),
+        },
+    )
+    .unwrap();
+    let row = h.store.pending_cancels(TEAM, 1, 0).unwrap().remove(0);
+    assert_eq!((row.attempt, row.attempt_id.as_str()), (1, ""));
+    h.run(&service(), cancel(node, row.decision, 1, ""))
+        .unwrap();
+    assert_eq!(
+        h.node(node).state,
+        NodeState::Cancelled,
+        "a released answer with that pair ends the node"
+    );
+    let (mut h, _, node) = refused_hand_out();
+    let mut o = h.observation(node, TaskStage::Todo);
+    o.cancelled = true;
+    h.run(
+        &service(),
+        Operation::ObserveTask {
+            node,
+            observation: o,
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        h.node(node).state,
+        NodeState::Cancelled,
+        "a person's cancel is applied"
+    );
+}
+
+#[test]
+fn a_pair_with_an_empty_id_is_never_confused_with_a_conflict() {
+    for flagged in [false, true] {
+        let (mut h, lead, node, _) = handed();
+        h.run(
+            &lead,
+            Operation::Cancel {
+                node,
+                reason: "Superseded".into(),
+            },
+        )
+        .unwrap();
+        let decision = h
+            .store
+            .pending_cancels(TEAM, 1, 0)
+            .unwrap()
+            .remove(0)
+            .decision;
+        if flagged {
+            conflicted(&mut h, node, TaskStage::InProgress, 2).unwrap();
+        } else {
+            seen(&mut h, node, TaskStage::InProgress, 2, "").unwrap();
+        }
+        let result = h.run(&service(), cancel(node, decision, 2, ""));
+        assert_eq!(result.is_ok(), !flagged, "flagged: {flagged}");
+    }
+}
+
+#[test]
+fn an_ended_task_ends_its_node_whoever_executed_it() {
+    for stage in [TaskStage::Todo, TaskStage::Done] {
+        let mut ends = Vec::new();
+        for flagged in [false, true] {
+            let (mut h, lead, node, _) = handed();
+            h.run(
+                &lead,
+                Operation::Cancel {
+                    node,
+                    reason: "Superseded".into(),
+                },
+            )
+            .unwrap();
+            let mut o = h.observation(node, stage);
+            o.cancelled = stage == TaskStage::Todo;
+            o.attempt = 2;
+            o.attempt_conflict = flagged;
+            h.run(
+                &service(),
+                Operation::ObserveTask {
+                    node,
+                    observation: o,
+                },
+            )
+            .unwrap();
+            let pending = h.store.pending_cancels(TEAM, 200, 0).unwrap().len();
+            ends.push((
+                h.node(node).state,
+                h.store.generation(TEAM, node).unwrap(),
+                pending,
+                bound(&h, node),
+            ));
+        }
+        assert_eq!(ends[0], ends[1], "{stage:?}: as today");
+        if stage == TaskStage::Todo {
+            assert_eq!(
+                (ends[1].0, ends[1].2),
+                (NodeState::Cancelled, 0),
+                "the pending cancel settles"
+            );
+        }
+    }
 }

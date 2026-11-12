@@ -327,7 +327,8 @@ pub(super) fn observe(ctx: &mut Context<'_>) -> Result<()> {
         }
         return Ok(());
     }
-    // A conflict of attempts decides nothing: it is recorded as it came.
+    // A conflict of attempts of a task that runs or waits decides nothing: it
+    // is recorded as it came. An ended task's conflict is applied below.
     if timers::conflict(o) {
         return rows::record_observation(ctx.db, &ctx.team.id, *node, o, false);
     }
