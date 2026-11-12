@@ -1331,7 +1331,11 @@ state, reason}`: `cancelled` and `released` both end the node as
 cancelled in the team, exactly as the observation of a cancelled task
 does; `refused` settles the decision and, in a live team, files one lead
 inbox item. The read is `Store::pending_cancels(team, limit, after)`. It
-ends no agent.
+ends no agent. Two later paragraphs of this section change this one: the
+command also answers `stale` ("A cancel acts on one attempt"), and in a
+live team a `cancelled` answer writes nothing to the store, because the
+task's observation ends the node ("In a live team a task's end is recorded
+by its observation alone").
 
 **After a stop Zerus cancels the unfinished tasks, releases them and ends
 no agent (package 10).** For each node the cancel comes first and the
@@ -1503,7 +1507,18 @@ store while its task ran again, created the cancel, released the binding,
 and the archiving step then settled that cancel with the rest, so the
 service never asked for the task to be cancelled and the cleanup passed it
 without an answer (the same confirmation). A node with a pending cancel
-stays where the cancel step finds it.
+stays where the cancel step finds it. One merged path does not follow this
+yet: when a lead's Return, Reassign or Cancel of a parent retires its stage,
+the retirement settles every decision of the stage, a person's pending
+Cancel of it included, and the stage's task only loses its key, so work
+that runs is released and not cancelled (found by the delta confirmation of
+2026-11-12, tracked). The rule it will follow: a retirement leaves a pending
+cancel pending; a stage that is retired while its task runs gets the
+service's own cancel, as a stop gives a node, and is archived and cleared
+after the answer; a stage with nothing running is released as today. And a
+kept node can wait for a lead's earlier Cancel as well as for a stop's: a
+node that is Reported with its task Done before the merge takes a Cancel,
+and is kept as accepted when the integration is then switched off.
 
 **The service carries out an acceptance only while the newest observation
 agrees with it (packages 8 and 10).** The rule above keeps an accepted node
@@ -1731,7 +1746,8 @@ card operations it needs in `src/teams/ops/`.
 - Pause and resume: a paused team hands out nothing; a paused member takes
   nothing; a team paused by the person is not resumed by the lead.
 - Stop and archive: the keys of the team's open tasks are cleared in
-  bounded pages through `clear_team_key`; a launch that completes after a
+  bounded pages through the service command `team-clear` (this brief first
+  called it `clear_team_key`); a launch that completes after a
   stop is recorded as provenance (tracker item `zerus-63rru.11`).
 
 **Tests:** each timer firing once and not after its condition passed; the
