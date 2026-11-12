@@ -1571,9 +1571,21 @@ store, and the store owns the answer through two reads of one shape.
 `reviewed_task_current(team, node, generation)` is true while the
 generation is current and the newest observation has the key ours, the
 stage In review, no cancellation, no conflict of attempts, and as its
-current attempt the execution the node took in; the finishing step and a
-reopen use it. `accepted_task_current` is true in the same cases and also
-when that observation shows the task Done, and a new merge uses it. With
+current attempt the execution the node took in; the finishing step uses
+it. `accepted_task_current` is true in the same cases and also when that
+observation shows the task Done, and a new merge uses it. A reopen and a
+hand-over ask a third, `own_task_current`: the same without the stage, and
+true also while the task has no current attempt. The stage is the
+command's business there, because the command hands over a task that
+runs, is In review or is Done and reopens one that is In review or Done,
+and its refusal is recorded and seen. The first version sent reopens
+through the In-review read: a lead's Reassign of a running task, which is
+delivered as a hand-over, was then never carried out, and its pending
+decision refused every other decision of that node (the review of the
+actor, 2026-11-12). A step that a read holds back is not a success: when
+the read stays false for several passes the step's row fails with a
+sentence that names the node and what the newest observation shows, and
+recovers when the read turns true. With
 integration by branch the finishing step waits for the merge, so an
 ordinary merge finds the task In review; but a task that a person closed on
 the board after the accept is observed Done before its merge, its node
