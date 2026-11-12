@@ -18,25 +18,32 @@ impl Runtime {
             String::new()
         };
         let merging = self.ledger.merge_pending(&team.id)?;
-        let reopens = self.metadata_reopens(store, team, &rows)?;
+        let (reopens, complete) = self.metadata_reopens(store, team, &rows, now)?;
         for row in rows {
-            self.cleanup_gate(store, team, &row, &reopens, merging, now)?;
+            // Without the whole pending set the rows that read it stay.
+            if complete || !reads_reopens(&row.key) {
+                self.cleanup_gate(store, team, &row, &reopens, merging, now)?;
+            }
         }
         self.put(&team.id, "metadata_cursor", &next)?;
         Ok(())
     }
+    /// The pending reopens that the page's rows read, and whether the read
+    /// is whole. Its page bound is a row failure of this cleanup, with the
+    /// usual backoff: the rows that read the set stay, the pass goes on.
     fn metadata_reopens(
-        &self,
-        store: &Store,
+        &mut self,
+        store: &mut Store,
         team: &Team,
         rows: &[Row],
-    ) -> Result<std::collections::BTreeSet<u64>> {
+        now: i64,
+    ) -> Result<(std::collections::BTreeSet<u64>, bool)> {
         let mut pending = std::collections::BTreeSet::new();
-        if !rows
-            .iter()
-            .any(|r| r.key.starts_with("gate:reopen:") || r.key.starts_with("gate:held:reopen:"))
-        {
-            return Ok(pending);
+        if !rows.iter().any(|r| reads_reopens(&r.key)) {
+            return Ok((pending, true));
+        }
+        if !self.due(store, team, REOPEN_BOUND, "", now)? {
+            return Ok((pending, false));
         }
         let mut cursor = None;
         for _ in 0..4 {
@@ -44,10 +51,13 @@ impl Runtime {
             pending.extend(page.rows.into_iter().map(|d| d.seq));
             cursor = page.next;
             if cursor.is_none() {
-                return Ok(pending);
+                self.recovered(store, team, REOPEN_BOUND, now)?;
+                return Ok((pending, true));
             }
         }
-        Err(problem("Reopen cleanup page bound exceeded"))
+        let error = problem("Reopen cleanup page bound exceeded");
+        self.failure(store, team, REOPEN_BOUND, "", &error, now)?;
+        Ok((pending, false))
     }
     fn cleanup_gate(
         &mut self,
@@ -102,6 +112,11 @@ impl Runtime {
         }
         Ok(())
     }
+}
+
+const REOPEN_BOUND: &str = "cleanup:reopens";
+fn reads_reopens(key: &str) -> bool {
+    key.starts_with("gate:reopen:") || key.starts_with("gate:held:reopen:")
 }
 
 impl Runtime {
