@@ -128,6 +128,8 @@ impl Harness {
     }
 
     /// One operation on the first team at `now`.
+    /// Only the stopped status fixture uses it, made where the service runs.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     pub fn apply_at(&self, actor: &Actor, operation: Operation, now: i64) -> Reply {
         let request = self.request_for(TEAM, operation);
         let mut store = self.store();

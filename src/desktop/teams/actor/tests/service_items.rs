@@ -223,7 +223,7 @@ fn the_cleanup_pass_removes_items_whose_rows_are_gone_within_its_bound() {
     assert_eq!(count(&h), 104);
     a.maintain(&h.store).unwrap();
     let after_one = count(&h);
-    assert!(after_one < 104 && after_one >= 104 - 64, "{after_one}");
+    assert!((104 - 64..104).contains(&after_one), "{after_one}");
     for _ in 0..2 {
         a.maintain(&h.store).unwrap();
     }
