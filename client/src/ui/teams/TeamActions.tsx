@@ -55,7 +55,8 @@ export function MemberActions(props: { member: MemberView; teamStatus: string; b
           onClick={(event) => {
             const trigger = event.currentTarget, box = trigger.getBoundingClientRect(), memberId = props.member.id;
             items = [
-              ...(props.onDetails ? [{ label: tr("Member details"), icon: "info", checked: props.detailsOpen, action: () => { trigger.focus(); props.onDetails?.(); } }] : []),
+              // An item like its neighbours, with its icon; it says Hide while the details are open.
+              ...(props.onDetails ? [{ label: props.detailsOpen ? tr("Hide member details") : tr("Member details"), icon: "info", action: () => { trigger.focus(); props.onDetails?.(); } }] : []),
               ...memberActions(props.member, props.teamStatus).map((action) => ({
               label: action.text, icon: action.id.startsWith("pause") ? "pause" : action.id.startsWith("resume") ? "play" : action.id.startsWith("stop") ? "square" : "trash",
               danger: action.danger, disabled: props.busy || action.disabled, hint: action.reason,

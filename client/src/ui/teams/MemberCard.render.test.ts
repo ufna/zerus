@@ -8,6 +8,7 @@ import { render } from "solid-js/web";
 import { MenuLayer } from "../components/Overlays";
 import { setMenu } from "../../store/ui";
 import { MemberCard } from "./MemberCard";
+import { resolveIcon } from "../lib/icons";
 import type { MemberView } from "./types";
 
 let dispose: (() => void) | undefined;
@@ -25,10 +26,26 @@ function setup(value: MemberView, onAction = vi.fn()) {
   dispose = render(() => [createComponent(MemberCard, { teamStatus: "running", member: value, busy: false, onAction }), createComponent(MenuLayer, {})], host);
   const openDetails = () => {
     (host.querySelector('[aria-label="Member actions"]') as HTMLButtonElement).click();
-    ([...host.querySelectorAll<HTMLButtonElement>('[role="menuitemcheckbox"]')].find((button) => button.textContent === "Member details"))!.click();
+    ([...host.querySelectorAll<HTMLButtonElement>(".menu-item")].find((button) => button.textContent === "Member details"))!.click();
   };
   return { host, onAction, openDetails };
 }
+
+it("gives Member details an icon like its neighbours, and says Hide once the details are open", () => {
+  const { host, openDetails } = setup(member());
+  (host.querySelector('[aria-label="Member actions"]') as HTMLButtonElement).click();
+  const items = [...host.querySelectorAll<HTMLButtonElement>(".menu-item")];
+  const details = items.find((button) => button.textContent === "Member details")!;
+  expect(details.getAttribute("role")).toBe("menuitem");
+  const info = document.createElement("div");
+  info.innerHTML = `<svg>${resolveIcon("info").html}</svg>`;
+  expect(details.querySelector("svg")!.innerHTML, "the info glyph, not an empty check slot").toBe(info.querySelector("svg")!.innerHTML);
+  for (const item of items) expect(item.querySelector("svg")!.innerHTML, item.textContent!).not.toBe("");
+  (host.querySelector('[aria-label="Member actions"]') as HTMLButtonElement).click();
+  openDetails();
+  (host.querySelector('[aria-label="Member actions"]') as HTMLButtonElement).click();
+  expect([...host.querySelectorAll(".menu-item")].map((button) => button.textContent)).toContain("Hide member details");
+});
 
 it("keeps a linked session as a plain localized fact without a technical keyboard stop (review 13)", () => {
   const { host, openDetails } = setup(member());
@@ -64,7 +81,7 @@ it("shows a not-created member without a session", () => {
 it("offers only the M1 operations and sends them by member id", () => {
   const { host, onAction } = setup(member());
   (host.querySelector('[aria-label="Member actions"]') as HTMLButtonElement).click();
-  const buttons = [...host.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')];
+  const buttons = [...host.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')].filter((button) => button.textContent !== "Member details");
   expect(buttons.map((button) => button.textContent)).toEqual(["Pause", "Stop", "Remove"]);
   expect(buttons.filter((button) => button.classList.contains("danger"))).toHaveLength(2);
   buttons[0].click();
@@ -74,14 +91,14 @@ it("offers only the M1 operations and sends them by member id", () => {
 it("offers resume only to a paused member", () => {
   const { host } = setup(member({ state: "paused" }));
   (host.querySelector('[aria-label="Member actions"]') as HTMLButtonElement).click();
-  const buttons = [...host.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')];
+  const buttons = [...host.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')].filter((button) => button.textContent !== "Member details");
   expect(buttons.map((button) => button.textContent)).toEqual(["Resume", "Stop", "Remove"]);
 });
 
 it("keeps lead Pause/Stop and offers no Remove, which the store refuses for the lead", () => {
   const { host, onAction } = setup(member({ lead: true }));
   (host.querySelector('[aria-label="Member actions"]') as HTMLButtonElement).click();
-  const buttons = [...host.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')];
+  const buttons = [...host.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')].filter((button) => button.textContent !== "Member details");
   expect(buttons.map((button) => button.textContent)).toEqual(["Pause", "Stop"]);
   buttons[1].click(); expect(onAction).toHaveBeenCalledWith("stop-member", "m1");
 });
