@@ -5441,11 +5441,17 @@ Each call's processes also carry `HGS_DSH_CALL_TOKEN`, a fresh random token of
 256 bits. The host keeps it, naming the calling top-level conversation, while
 the call runs and, for a background or promoted job the call starts, until that
 job settles; the table is bounded and an evicted token is unknown. Each
-conversation holds at most 512 live tokens, so one conversation's calls and jobs
-push out only its own oldest. Everything the host's private socket serves, such
-as a running job's output that printed its environment, shows a live token as
-`[hidden call token]`. What the host's own web UI shows is outside this:
-reaching it takes the sign-in address in the host's private log. A command
+conversation holds at most 512 live tokens and makes room only from its own
+oldest, so a full table never evicts another conversation's live token: a call
+that finds it full of other conversations' tokens gets none and stays unproven.
+Everything the host's private socket serves, such as a running job's output that
+printed its environment or an error that echoes a request, shows a live token as
+`[hidden call token]`, wherever it stands in the text and however often. That
+hides a live token printed whole: a call can always disclose its own token split
+or encoded, which no redaction catches. A job's output is served as its last
+32 KiB, so a token cut at that window's start shows only its final characters.
+What the host's own web UI shows is outside this: reaching it takes the sign-in
+address in the host's private log. A command
 then acts as its hosted session for `hgs task` and for the source of `hgs send`
 when the hosted caller proof holds:
 

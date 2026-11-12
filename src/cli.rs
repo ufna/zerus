@@ -1735,6 +1735,22 @@ fn hosted_forwarding_refusal(
     })
 }
 
+/// The launch and fork options that take a value, which the parent scan
+/// skips. A test reads `LaunchOptions::parse` and the fork parser and fails
+/// when either gains a value option this list lacks (zerus-ppd26.13).
+const LAUNCH_VALUE_OPTIONS: &[&str] = &[
+    "-n",
+    "--model",
+    "--effort",
+    "--account",
+    "--parent-link",
+    "--launch-id",
+    "--archive",
+    "--expected-run-id",
+    "--expected-conversation-id",
+    "--session-id",
+];
+
 /// Whether a launch's own options name its parent: `--parent` followed by a
 /// claim with its session, run and conversation IDs (zerus-ppd26.10). The
 /// scan follows the launch and fork option grammars, so the value of another
@@ -1754,16 +1770,7 @@ fn names_parent(args: &[String]) -> bool {
                     })
                 })
             }
-            "-n"
-            | "--model"
-            | "--effort"
-            | "--account"
-            | "--parent-link"
-            | "--launch-id"
-            | "--archive"
-            | "--expected-run-id"
-            | "--expected-conversation-id"
-            | "--session-id" => i += 1,
+            option if LAUNCH_VALUE_OPTIONS.contains(&option) => i += 1,
             "-c" | "--resume" | "--continue"
                 if args
                     .get(i + 1)

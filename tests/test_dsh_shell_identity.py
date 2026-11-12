@@ -409,6 +409,14 @@ class HostStartedByHgs(Hosted, unittest.TestCase):
         self.assertIsNotNone(output)
         self.assertIn('HGS_DSH_CALL_TOKEN=[hidden call token]', output['output'])
         self.assertNotIn(token, json.dumps(output))
+        # A reply and an error that echo a request carry no live token either
+        # (zerus-ppd26.13, OWN1): the native error names the session it was given.
+        echoed = self.rpc('session-action', {'sessionId': token, 'action': 'pause', 'generation': 'other'})
+        self.assertEqual(echoed['sessionId'], '[hidden call token]')
+        with self.assertRaises(RuntimeError) as refused:
+            self.rpc('workspace', {'sessionId': token})
+        self.assertIn('[hidden call token]', str(refused.exception))
+        self.assertNotIn(token, str(refused.exception))
         self.rpc('job-stop', {'generation': generation, 'sessionId': session['conversation_id'],
                               'jobId': jobs[0]['id'], 'owner': jobs[0]['owner']})
 
