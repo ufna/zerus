@@ -1451,7 +1451,27 @@ shapes are strict on the way in. Found on 2026-11-12: the catalog reply
 gained a digest in each template row, and the merged client core, which
 read those rows through the strict template type, refused the whole
 catalog. A merge that changes a reply runs the client core's tests against
-the new fixtures.
+the new fixtures. One kind of unknown field is never dropped: a field of
+what the person is asked to confirm. A permission in a template's
+delegations that the client does not know is kept as a fact of that row,
+and Create stays blocked with its reason; a tolerant read that removed it
+made the form show five permissions and allow a create (the desktop's
+review, 2026-11-12). And what the client sends is strict at every level,
+the action inside a call included: an unknown field in a request is
+refused, never silently left out.
+
+**A failed intake leaves the task's team key as it found it.** Sending a
+task to a team writes the key into the task and then asks the store to
+queue it. When the store's answer is certain that nothing was written, a
+refusal or `store_busy`, the intake puts the key back to what it was
+before the call: absent for a first send, the same team for a repeat of a
+task that is already queued. When the result is not known,
+`storage_failed`, the key stays: the store may hold the node, and a repeat
+finds it by the task's identity. The intake never clears a key it did not
+set. Clearing it on every error made a failed repeat look like a person
+taking the task out of the team: the observer released the node, and the
+next send queued the task a second time (the desktop's review,
+2026-11-12).
 
 **Known limit: the key of a task that was closed before the stop.** After a
 stop the service clears the team key of the tasks that were open at the
