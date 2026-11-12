@@ -33,8 +33,8 @@ export function WaitingCard(props: {
       <p class="waiting-text">{props.item.text}</p>
       <div class="waiting-decisions">
         <For each={waitingDecisions(props.item)}>
-          {(choice) => (
-            <button type="button" class="btn small" classList={{ danger: choice.danger, primary: !choice.danger }}
+          {(choice, index) => (
+            <button type="button" class="btn small" classList={{ danger: choice.danger, primary: index() === 0 && !choice.danger }}
               disabled={props.busy} data-decision={choice.decision}
               onClick={() => props.onDecide(props.item, choice.decision)}>{choice.text}</button>
           )}

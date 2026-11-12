@@ -66,6 +66,18 @@ it("offers the verdict kinds approve and reject, and every other kind an acknowl
   expect(host.querySelector(`[data-waiting="${TEAM_A}:4"] [data-decision="acknowledged"]`)?.textContent).toBe("Acknowledge");
 });
 
+it("marks only a card's first decision as the primary one, as the client's other notices do", () => {
+  // The visual pass: Retry and Acknowledge drew as two primary buttons side
+  // by side; Check and Dismiss of an uncertain action draw one primary.
+  const retry = item({ id: `${TEAM_A}:5`, card: 5, kind: "team_actor_blocked", text: "The service could not finish a step." });
+  const { host } = setup({ view: { items: [...view.items, retry], next: null } });
+  const looks = (id: string) => [...host.querySelectorAll<HTMLButtonElement>(`[data-waiting="${id}"] button[data-decision]`)]
+    .map((button) => [button.getAttribute("data-decision"), button.classList.contains("primary"), button.classList.contains("danger")]);
+  expect(looks(`${TEAM_A}:5`)).toEqual([["retry", true, false], ["acknowledged", false, false]]);
+  expect(looks(`${TEAM_B}:2`)).toEqual([["approve", true, false], ["reject", false, true]]);
+  expect(looks(`${TEAM_A}:1`)).toEqual([["acknowledged", true, false]]);
+});
+
 it("gives a card that names a node an Open task action, and no other card", () => {
   const { host, opened } = setup();
   const open = (id: string) => host.querySelector(`[data-waiting="${id}"] [data-open-task]`);
