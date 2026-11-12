@@ -886,11 +886,40 @@ look unmarked. So on macOS an environment with nothing at all after the
 arguments is unreadable, and the existing rule applies: an unreadable
 ancestor is tolerated only at the verified top and refused below it. A
 person's command therefore passes from the Zerus window, which runs `hgs`
-with no shell between, and from a login terminal, and is refused from
-tmux, ssh and a terminal inside another application, with a sentence that
-says so. The marked path of a lead or a member reads no ancestor's
-environment and is not affected. The gate is lifted only by a Mac run of
-that candidate.
+with no shell between, and is refused below any program whose environment
+the system hides, with a sentence that says so. The third run measured
+which programs those are: the ones whose code signature carries the
+restrict flag (464 of 513 processes; the system's zsh, ssh and its session
+helper among them), while a shell or tmux installed by the person is
+readable. So the rule is about the program above the command, not about
+tmux or ssh as such. The marked path of a lead or a member reads no
+ancestor's environment and is not affected, and the caller's own markers
+come from the process itself, never from the system read. The review of
+the first candidate hardened the parser of the system's answer: a tail
+with no byte other than NUL is withheld, an argument that begins with a
+marker name makes the read unreadable, an answer as large as the buffer is
+unreadable, and a marker named twice is unreadable on every platform. The
+gate was lifted by the third Mac run (65 tests, nine mutants caught) and
+merged on 2026-11-12. Not yet observed on a Mac: the hardened release
+`hgs`, and whether `claude` and `codex` have readable environments; if
+they do not, a person's command below them is refused.
+
+**A caller below a resident agent host is not a person (2026-11-12, from a
+real agent).** A probe from the tool shells of real sessions showed Claude
+and Codex behaving as designed, and a DeepSeek session, which one resident
+host process serves, passing as a person once the three markers were
+removed: the host is not below any agent's process, and its shells even
+carried the markers of the session that had started the host (tracker item
+`zerus-ppd26`). The person path now refuses when an ancestor is a recorded
+live resident agent host, matched by PID and birth from the host's own
+record, never by a program's name; a recorded PID without a verifiable
+birth, an unreadable record or more records than the bound refuse as
+unverifiable. For OpenCode, whose shared service Zerus does not record,
+the PID in OpenCode's own service file is used only to add a refusal. A
+session that a resident host serves cannot be a lead or a member in this
+milestone, because its commands cannot be bound to its own session by
+ancestry: the proof says so plainly, and team creation and member launch
+refuse such an agent kind.
 
 **How the service reaches a session (packages 8, 10 and 17).** The desktop's
 deferred-send, deferred-answer and creation actors admit only the proof of a
@@ -917,6 +946,9 @@ binding decisions, base commit, branch, write set). It answers
 `{state: submitted|refused|uncertain|cutting_over}` in the form of
 `start-deliver`, and the same ID never sends twice. `--recover-only` reads
 the receipt and sends nothing.
+Like `start-deliver`, its reply carries `error` only when there is one;
+a reader takes a missing `error` for `submitted` alone. The four commands
+below always carry the field.
 
 Two more commands of the same kind, each run by the service and each taking
 its authority from a stored effect or decision, never from the caller:
@@ -1157,7 +1189,10 @@ board change that settles the accept keeps the mark, so that the fact of a
 merge written before the revocation is still taken afterwards. The mark is
 also what tells an accept that once had the authority from one that never
 did: an accept made while the delegation was off, and never approved, takes
-no merge fact in any state.
+no merge fact in any state. A development store written by the heads of
+this branch before the mark existed holds taken-back accepts without it;
+their late merge facts are refused like those of an accept that never had
+the authority.
 
 **What the review of the service task commands settled (package 6b).** A
 team that is stopped or archived retires its nodes by that status:
@@ -1178,6 +1213,44 @@ can open the card the specification asks for (tracker item
 hand-out quoted, under a heading that says whose it is. A cleanup's history
 entry names its cause.
 
+**What an admission reads (package 8, after its confirmation review).**
+The admission of a hand-out asks the store the same question its intent
+asked, through the store's own predicate inside the held transaction: the
+node's hold, its readiness with its dependencies, its state, assignee and
+role, besides the team, the member, the effect and the generation. One
+predicate, two call sites; a Hold or a Route committed between the intent
+and the spawn refuses the delivery. Outside facts are read last in the
+same section when they can be read in the process: the stop flag, the
+Teams switch and the member's fleet row. The task occupancy cannot be,
+because reading it spawns children; it is read as late as possible before
+the admission and is a scheduling hint, not an authority. The window in
+which a person's own send can still reach the member beside the hand-out
+is therefore wider than that one read (named by the confirmation of
+2026-11-12): the wait for the process-wide spawn turn, the admission's own
+reads, the delivery command's time before its send, and the fact that the
+fleet row is a snapshot, since the admission fences the team's store and
+not the member's session. The team does not own a member's session against
+the person; a message that arrives beside a hand-out is the person's. A held section
+is short: the spawn itself, or the ref update with its own deadline of 5
+seconds, after which the merge is unknown and settled by reading. Writers
+of the command line wait 8 seconds for the store, longer than any held
+section, and a writer that still cannot begin is told `store_busy`:
+nothing was written. The actor's own admission waits 100 milliseconds,
+and a busy store is a retry on a later pass, never a recorded refusal.
+
+**What the person confirmed is bound at the create (packages 5 and 13,
+after the desktop's review).** New team shows a template's roster,
+pipelines and delegations, and the person confirms them; a template is
+replaced by its ID, so a create that names only the ID can make a team the
+person never saw. The catalog read gives each template a digest over
+everything a create uses. `hgs team create` accepts `expected_template`,
+the digest that was shown, and refuses with `template_changed` before
+anything is written when the bundle it is about to use has another; and
+`delegations`, all five, which become the team's in place of the
+template's. The desktop always sends both, never creates unbound, and on
+`template_changed` shows the template again for a new confirmation. A
+request without the fields behaves as before, for a person at a terminal.
+
 **A doorbell points at the inbox and carries none of it (package 10).** The
 doorbell says how many items wait and names the command that reads them;
 the text of an item comes from members and is never put into a message of
@@ -1189,6 +1262,39 @@ durable before the send; the send is admitted at its spawn. A refused
 doorbell may ring again after the interval; an uncertain one is never sent
 again for its mark, and a newer item rings a new one. A resumed lead gets a
 new doorbell, never a replay.
+
+**A lead's answer reaches its member through the member's own read and a
+doorbell (package 10, follow-up).** A reply stays on its inbox item.
+`hgs team current` shows, on each node the member holds, the member's own
+questions of the current attempt with their state and the lead's answer:
+newest first, at most ten, with a flag when there are more. A question of
+an earlier attempt is not shown; a Return's reason carries what the next
+attempt must know. A reply to a question of the current attempt marks the
+member. The member's doorbell says how many answers wait and names
+`hgs team current`; it never carries the text of a question or of an
+answer. It follows the lead's doorbell rules: the team is running, the
+member's session is live and idle with no pending request, the mark is
+newer than the last doorbell's, the interval has passed, the reservation
+names the member's run and conversation and the mark and is durable before
+the send, the send is admitted at its spawn, a refused doorbell may ring
+again after the interval and an uncertain one is never sent again for its
+mark. At the admission the member must still hold that attempt: after an
+accept, a return, a reassignment, a cancel or a stop the mark is dropped
+and nothing is sent. The member's guide page says where an answer appears.
+No other path carries a lead's text to a member outside a hand-out and a
+Return.
+
+**A card says which decisions it takes, and a row carries what a view needs
+to foresee a refusal (store contract, follow-up).** `OpenCard` takes an
+optional `decisions` list of at most four short tokens; the store keeps it
+and returns it on the card's row, and a card opened without it takes
+`acknowledged` alone. An integration card and a pipeline acceptance card
+return their fixed pairs. `DecideCard` refuses a decision the card does not
+list. Every opener states the decisions something reads: a decision that
+nothing acts on is not listed, so a view never offers it. A queue row
+carries the attempt's holder and the kind of a pending decision, and a
+member row carries whether the person stopped it; all three are additive
+fields of the pinned replies.
 
 **A timer fires once and only while its condition holds (package 10).**
 The store writes a timer's inbox item or owner card in one operation that
@@ -1202,7 +1308,34 @@ closes the timer's open card in the same transaction. An undecided report
 makes a lead inbox item after `remind_lead_minutes` and an owner card after
 `remind_person_minutes`. `answer_escalate_minutes` belongs to milestone 3.
 
-**After a stop Zerus releases tasks and ends no agent (package 10).** The
+**A cancel decision is carried out by the service (packages 6b and 8).**
+The specification says a lead's Cancel moves the task to cancelled and that
+Stop cancels every unfinished task; the store records both as a pending
+decision of kind cancel, and until 2026-11-12 nothing carried it out. A
+fifth service task command does: `hgs task team-cancel REF --json` reads
+`{schema, team, node}` and answers `{schema, team, node, state, error}`
+with `cancelled`, `released`, `refused` or `cutting_over`. Its only
+authority is that stored decision for the node's current generation. It
+does what the task document can already say, because existing commands do
+the work and a cancel exists there only for work that is running: a task
+that is Active with a known delivery is cancelled by the existing writer,
+with the notice it already sends to the holder (`cancelled`, also when the
+task is already cancelled); a task with nothing running (Backlog, To do,
+In review) loses its team key and stays in its stage as an ordinary task
+(`released`); an Active task whose delivery is unknown, and a Done task,
+are refused and nothing is written. No writer is added that would mark a
+task that never ran as cancelled. The actor runs the command for each
+pending cancel decision, in a live team and after a stop, and records the
+outcome with a service-only operation, `RecordCancel {node, decision,
+state, reason}`: `cancelled` and `released` both end the node as
+cancelled in the team, exactly as the observation of a cancelled task
+does; `refused` settles the decision and, in a live team, files one lead
+inbox item. The read is `Store::pending_cancels(team, limit, after)`. It
+ends no agent.
+
+**After a stop Zerus cancels the unfinished tasks, releases them and ends
+no agent (package 10).** For each node the cancel comes first and the
+release after it is settled. The
 service clears the team key of the stopped or archived team's open tasks in
 bounded pages through `team-clear`; an answer is recorded so that the node
 is not visited again, and no answer is tried on a later pass without
@@ -1217,6 +1350,231 @@ bounded read, `Store::released_stages(team, limit, after)`, returns only
 released stage nodes whose clear has no final record, with the task to
 name: the bound task, or the stored creation request ID of a creation that
 was saved and never bound. Neither read walks settled history.
+
+**The store follows the task's attempts (packages 6 and 10, after the
+confirmation of package 10).** The service reads only the newest state of a
+task, so two observations can skip what happened between them: a task that
+was cancelled, moved back and sent again looks active before and after, and
+an answer about the earlier execution can arrive after the later one was
+observed. The task document numbers its attempts. An observation carries
+`attempt`, the highest generation any attempt of the task claims (0 without
+one), `attempt_id`, the ID of its current attempt (empty without one), and
+`attempt_conflict`, whether two attempts claim the highest generation; the
+store keeps all three with the observation. An empty ID alone is not a
+conflict: a task whose only attempt was never admitted has a number and no
+current attempt, and that is an ordinary pair. An attempt the team hands out
+has its effect's request ID as its ID, so the store knows its own. The
+identity is the pair: an attempt that never started still claims a
+generation, so the current attempt can change while the highest generation
+stays (measured on two replicas of one task, 2026-11-12). When an
+observation shows an active task whose current attempt is not the stored
+one and is not an effect of that node, a person started a new execution,
+whether or not the number grew, and the store does at once what the two
+observations it missed would have done in turn: the end of the earlier
+attempt, then the person's restore. Pending decisions of the node are
+settled, the node moves to its next generation and the event is
+`person_override`. A node that is already finished takes the restore it
+takes today. A task whose attempts conflict has no current attempt. The
+store records that observation as it came, with its flag, and while the
+newest observation is a conflict no answer about an attempt is applied; a
+kept earlier pair would let a late answer about that attempt through
+(measured, 2026-11-12). A conflict of a task that still runs or waits
+decides nothing else: nothing of the node changes until an observation
+without the flag arrives. A task that has ended, cancelled or Done, is
+applied as today whether or not its attempts conflict, because its end does
+not depend on who executed it. The store remembers the attempt its node
+runs under, for one purpose: when an observation shows a running task, the
+same attempt changes nothing, the node's own effect is the team's, and any
+other is a person's new execution. That memory changes only when the node
+takes an execution in: its own effect is observed, a person's attempt is
+taken over, or the upgrade seeds it from what was stored. An attempt that
+is merely observed while the task does not run, a send that is reserved
+and not yet delivered, is not remembered, so that it is still judged when
+it starts; remembering it early let an old cancel decision reach the
+person's execution (measured, 2026-11-12).
+
+A cancel acts on one attempt. `team-cancel` compares, under its locks, the
+document's highest generation, current attempt and conflict flag with what
+the store's newest observation of the node holds. When they differ, the store has not observed what the
+document now holds: the command writes nothing and answers `stale`, and
+the service observes the task before it asks again. Its reply names what
+it acted on in `attempt` and `attempt_id`, `RecordCancel` carries both, and
+the store applies a cancelled answer only while the newest observation
+of the node's task still shows that pair; otherwise the operation is
+refused and writes nothing. An
+answer about an earlier attempt therefore never ends a node whose task runs
+again, and both orders of the answer and the observation leave the same
+state. No service command finishes, reopens or cancels a task whose current
+attempt is not the one the store observed.
+
+A cancel also never reaches an execution that the store has not judged. The
+store judges an execution at the first observation that shows the task
+running under it: its node's own effect is taken in, a person's is taken
+over and the older cancel is settled with it. A send that is reserved,
+observed while the task waits and delivered afterwards keeps all three
+fields, so the comparison alone let an older cancel end a person's run
+(the review of the task side, 2026-11-12). In a running or paused team
+`team-cancel` therefore answers `stale` also when the document runs and the
+newest observation did not yet show it running; the observation that
+follows decides, and the team's own hand-out whose start was not yet
+observed costs one more round. In a stopped or archived team, where no
+observation follows, an equal attempt is accepted only when the document
+does not run or the observation already showed it running; a running
+document whose start was not observed is acted on only as the node's own
+delivered effect and is otherwise refused with `attempt_changed:`. The
+command reads the observed stage and nothing else of the store's memory:
+the rule for a person's execution stays in the store.
+
+**Only a layout that reached the integration branch is upgraded.** The
+store's extension marks its layout, and during the reviews of package 10
+that mark moved through six values, each with its own step and its own
+seeding rule for what the step before had stored. None of those layouts
+was ever merged or installed; the steps between them exist only for the
+implementers' own test stores, and every round found one more combination
+of them that the seed got wrong. The merged extension therefore knows two
+stores: one from before the extension, which it extends in one
+transaction to the current layout, and one at a layout that was on the
+integration branch, which it steps forward. A mark that only an unmerged
+development build could have written is refused with a sentence that says
+so, and nothing is written; a newer mark is refused as before. A store
+from before the extension holds no attempt of any task, so its first
+observation is judged against no attempt, as for a task that never
+recorded one. The observer writes that observation also when the task did
+not change: it skips a task only when the stored revision and the stored
+three fields all equal the document's. Skipping by the revision alone left
+a task that nobody touched after the extension without its attempt for
+ever, and every command for it answered `stale` on every pass (the review
+of the task side, 2026-11-12).
+
+**In a live team a task's end is recorded by its observation alone.** An
+answer and an observation are two reports of one fact, and every rule that
+let both write it produced an order in which they disagreed. The first
+version let a `cancelled` answer end the node; the second kept the task
+bound after the answer so that a later observation could still restore it.
+Both failed on the service's real paths, found by end-to-end tests on
+2026-11-12: the observer finds a task's node through the live binding
+only, and the service's pass observes the nodes of the live queue only, so
+an ended node was never looked at again. The rule now has one writer. In a
+running or paused team a `cancelled` answer of `team-cancel` writes nothing
+to the store: the service observes that task at once, and the observation
+ends the node and settles the decision, or, when a person has started the
+task again, takes the new execution over. A `stale` answer leads to the
+same observation. Until an observation has settled it the decision stays
+pending, so an interrupted visit is simply repeated: the command answers
+`cancelled` again for a task that is already cancelled and writes nothing.
+The store refuses `RecordCancel` with `cancelled` for a node of a live
+team whose task is bound. It takes that answer where no observation can
+follow: for a node without a task, and in a stopped or archived team,
+whose bindings are gone. `released` and `refused` are recorded as answers
+in every state, because no observation says them: a released task has
+lost its key, and its binding is released with the record. A release is
+recorded also while the newest observation is a conflict of attempts: it
+says that the key is gone, not who executed an attempt, so only its pair
+must equal the newest observation's, and the conflict gate is the
+cancelled answer's alone. In a stopped or
+archived team no observation follows either, so `team-cancel` never
+answers `stale` there: it acts when the document's current attempt is the
+one the store last observed or is the node's own effect that was delivered
+and not yet observed, and otherwise it refuses with a reason that begins
+`attempt_changed:`, because a person took the task after the stop. Once
+the store has observed a task cancelled, the team has let it go. Giving
+such a task back to a team is not possible yet: a task keeps its cancelled
+mark when it is moved back to To do, until it is sent, started or reopened,
+and the intake refuses a cancelled task so that a duplicate cannot pass a
+cancellation. That is a known limit with a tracked follow-up.
+
+**A node with a bound task leaves the live queue only on an observation
+that agrees.** The service's pass observes the nodes of the live queue, so
+a node that is archived while its task is bound and not ended is lost to
+it. Every writer that archives a node therefore asks the newest
+observation first: the task has ended, cancelled or Done, and its attempts
+do not conflict. A fact that arrives when the observation does not agree
+is still recorded, because it happened, and the node stays in the queue
+for the next observation to decide. The case that showed it (the
+confirmation of 2026-11-12): a merge recorded for an accepted task after a
+person had started it again with conflicting attempts archived the node as
+accepted while the task was active. And a recorded answer that ends a
+pipeline's stage does for the pipeline what the observation of that end
+does: the parent returns to the lead, whether the stage had no task and
+was recorded as cancelled, or was released. And a cancel that is still
+pending is settled by its own answer or by an observation, never by the
+archiving of its node: a stop that found a kept node, accepted in the
+store while its task ran again, created the cancel, released the binding,
+and the archiving step then settled that cancel with the rest, so the
+service never asked for the task to be cancelled and the cleanup passed it
+without an answer (the same confirmation). A node with a pending cancel
+stays where the cancel step finds it.
+
+**The service carries out an acceptance only while the newest observation
+agrees with it (packages 8 and 10).** The rule above keeps an accepted node
+in the queue while its task runs again or its attempts conflict, and the
+node's acceptance is still pending there. The actor looked at the stored
+stage only and sent a finish request for such a task (the confirmation of
+2026-11-12). Before it finishes a task, starts a merge or reopens, at
+scheduling and again in the admission of the effect, the actor asks the
+store, and the store owns the answer through two reads of one shape.
+`reviewed_task_current(team, node, generation)` is true while the
+generation is current and the newest observation has the key ours, the
+stage In review, no cancellation, no conflict of attempts, and as its
+current attempt the execution the node took in; the finishing step and a
+reopen use it. `accepted_task_current` is true in the same cases and also
+when that observation shows the task Done, and a new merge uses it. With
+integration by branch the finishing step waits for the merge, so an
+ordinary merge finds the task In review; but a task that a person closed on
+the board after the accept is observed Done before its merge, its node
+waits in the queue for that merge, and a question that knew In review only
+would never merge it. The end of a task does not depend on who executed
+it, so Done agrees under any attempt, and the conflict flag counts on Done
+as it does for leaving the queue. The settlement of a merge that already
+ran does not ask: its receipt is a fact. Known limit: an accepted task
+that comes back In review under another execution without ever being
+observed running (the service was down for the whole of a person's run) is
+neither finished nor merged, and an accepted node takes no Cancel; the
+person's own move on the board (closing, cancelling or starting the task
+again) resolves it.
+
+**A reader of a reply ignores what it does not know.** The contract's types
+refuse unknown fields, and that stays the rule for what a person or a
+program sends: a request, a saved template, an imported catalog. A reply
+is different: reads gain fields, and a client built before a field existed
+must still read the rest. The client core therefore reads every Teams
+reply through types of its own or through a pass that keeps the fields it
+knows, the catalog and its template rows included, although the same
+shapes are strict on the way in. Found on 2026-11-12: the catalog reply
+gained a digest in each template row, and the merged client core, which
+read those rows through the strict template type, refused the whole
+catalog. A merge that changes a reply runs the client core's tests against
+the new fixtures. One kind of unknown field is never dropped: a field of
+what the person is asked to confirm. A permission in a template's
+delegations that the client does not know is kept as a fact of that row,
+and Create stays blocked with its reason; a tolerant read that removed it
+made the form show five permissions and allow a create (the desktop's
+review, 2026-11-12). And what the client sends is strict at every level,
+the action inside a call included: an unknown field in a request is
+refused, never silently left out.
+
+**A failed intake leaves the task's team key as it found it.** Sending a
+task to a team writes the key into the task and then asks the store to
+queue it. When the store's answer is certain that nothing was written, a
+refusal or `store_busy`, the intake puts the key back to what it was
+before the call: absent for a first send, the same team for a repeat of a
+task that is already queued. When the result is not known,
+`storage_failed`, the key stays: the store may hold the node, and a repeat
+finds it by the task's identity. The intake never clears a key it did not
+set. Clearing it on every error made a failed repeat look like a person
+taking the task out of the team: the observer released the node, and the
+next send queued the task a second time (the desktop's review,
+2026-11-12).
+
+**Known limit: the key of a task that was closed before the stop.** After a
+stop the service clears the team key of the tasks that were open at the
+stop and of released stages. A task accepted or cancelled earlier keeps its
+key. On the team's home computer that key guards nothing once the team is
+stopped or archived. On another computer the task guard cannot read the
+team's status and refuses first, so an agent there cannot send, start, move
+or edit such a task until a person clears the key; a person is never
+stopped by it. Clearing every closed task of a long-lived team is a walk of
+its whole archive and is a tracked follow-up, not part of milestone 1.
 
 **Known limit.** A stage excludes the implementer of the target's current
 round. After a reassignment an earlier implementer could hold a stage of

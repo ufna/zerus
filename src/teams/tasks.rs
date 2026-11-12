@@ -2,7 +2,7 @@
 //! Project locks precede team operations; no code here performs a session effect.
 use super::{
     ops,
-    store::{storage, Store},
+    store::{storage, Guard, Store},
 };
 use ops::{Actor, Operation, Request, TaskObservation, TaskStage};
 use rusqlite::{params, OptionalExtension};
@@ -14,11 +14,17 @@ use zerus_replica::{Actor as TaskActor, ProjectStore, Stage, TaskDoc};
 use zerus_team_plan::{model::TaskRef, problem::code, Problem};
 
 type Result<T> = std::result::Result<T, Problem>;
+mod creation;
 mod header;
 mod intake;
 mod policy;
 pub(crate) use intake::{preflight, send};
-pub(crate) use policy::{clear, guard};
+pub(crate) use policy::{clear, clear_named, guard, guarded};
+
+pub(crate) mod context;
+mod report;
+#[allow(unused_imports)] // Consumed by the service package.
+pub(crate) use report::report;
 
 /// Native caller proof is resolved by the task command before entering here.
 pub(crate) struct Caller<'a> {
@@ -73,7 +79,7 @@ fn observation(document: &TaskDoc, team: &str, home: &str) -> Result<TaskObserva
     })
 }
 fn record(store: &mut Store, team: &str, node: u32, document: &TaskDoc) -> Result<()> {
-    let header = header::read(store, team)?.ok_or_else(|| storage("Observed team disappeared."))?;
+    let header = header::read(store, team)?.ok_or_else(|| Guard::ObservedTeam.problem())?;
     let mut observation = observation(document, team, &header.home)?;
     observation.previous_revision = store
         .task_observation(team, node)?
@@ -164,8 +170,8 @@ pub(crate) fn retarget(
         if let Some((team, node)) = binding(&store, &reference)? {
             // A replaced or malformed key cannot hide this computer's live
             // binding. The stored team's home decides who releases it.
-            let header = header::read(&store, &team)?
-                .ok_or_else(|| storage("Retargeted team disappeared."))?;
+            let header =
+                header::read(&store, &team)?.ok_or_else(|| Guard::RetargetedTeam.problem())?;
             if header.home == here {
                 record(&mut store, &team, node, document)?;
             }

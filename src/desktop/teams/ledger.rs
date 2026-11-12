@@ -2,7 +2,10 @@
 //! and compare-and-swap transitions prevent a second service writer acquiring
 //! an existing original. Reading one key never scans a team's journal.
 use super::ports::{ObservedSession, Placement, Plan, Result, Worktree};
-use crate::teams::{ops::Request, store::storage};
+use crate::teams::{
+    ops::Request,
+    store::{storage, Guard},
+};
 use rusqlite::{params, Connection, OpenFlags, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use std::{path::Path, time::Duration};
@@ -152,7 +155,7 @@ impl Ledger {
         if !crate::platform::verify_private(&dir, crate::platform::Private::Directory)
             .map_err(storage)?
         {
-            return Err(storage("Teams directory is not private"));
+            return Err(Guard::LaunchDirectory.problem());
         }
         let path = dir.join(FILE);
         for suffix in ["", "-wal", "-shm", "-journal"] {
@@ -162,7 +165,8 @@ impl Ledger {
             ) {
                 Ok(true) => (),
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => (),
-                _ => return Err(storage("Member launch ledger is not private")),
+                Ok(false) => return Err(Guard::LaunchPrivacy.problem()),
+                Err(error) => return Err(storage(error)),
             }
         }
         #[cfg(unix)]
@@ -182,7 +186,7 @@ impl Ledger {
             .open(&path)
             .map_err(storage)?;
             if !crate::platform::verify_private_file(&file).map_err(storage)? {
-                return Err(storage("Member launch ledger is not private"));
+                return Err(Guard::LaunchPrivacy.problem());
             }
         }
         let mut db = Connection::open_with_flags(
@@ -212,7 +216,7 @@ impl Ledger {
                     .map_err(storage)?;
             }
             2..=4 => (),
-            _ => return Err(storage("Member launch schema is newer than this Zerus")),
+            _ => return Err(Guard::LaunchSchema.problem()),
         }
         if version < 3 {
             tx.execute_batch(include_str!("notices.sql"))
@@ -251,7 +255,7 @@ impl Ledger {
             .map_err(storage)?
             != 1
         {
-            return Err(storage("Launch health singleton is missing"));
+            return Err(Guard::LaunchHealth.problem());
         }
         Ok(())
     }
@@ -275,7 +279,7 @@ impl Ledger {
             .as_ref()
             .is_some_and(|r| r.team != team || r.member != member)
         {
-            return Err(storage("Member launch key changed"));
+            return Err(Guard::LaunchKey.problem());
         }
         Ok(row)
     }
@@ -388,7 +392,7 @@ impl Ledger {
         let mut next = row.clone();
         next.version = old
             .checked_add(1)
-            .ok_or_else(|| storage("Launch revision overflow"))?;
+            .ok_or_else(|| Guard::LaunchRevision.problem())?;
         let tx = self
             .0
             .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
@@ -403,7 +407,7 @@ impl Ledger {
             )
             .map_err(ledger_error)?;
         if changed != 1 {
-            return Err(storage("Member launch original changed"));
+            return Err(Guard::LaunchOriginal.problem());
         }
         journal(&tx, &next, now_ms)?;
         tx.commit().map_err(storage)?;
@@ -442,7 +446,7 @@ pub(super) fn is_notice_budget(problem: &Problem) -> bool {
 fn encoded(row: &Row) -> Result<String> {
     let data = serde_json::to_string(row).map_err(storage)?;
     if data.len() > 262_144 {
-        return Err(storage("Member launch record exceeds its bound"));
+        return Err(Guard::LaunchRecord.problem());
     }
     Ok(data)
 }

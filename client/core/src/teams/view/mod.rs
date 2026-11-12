@@ -85,6 +85,59 @@ pub(crate) fn count(value: &Value, key: &str) -> u64 {
         .unwrap_or(0)
 }
 
+/// A string field that may be absent: empty and missing both mean no value.
+pub(crate) fn optional_name(value: &Value, key: &str) -> Option<String> {
+    value
+        .get(key)
+        .and_then(Value::as_str)
+        .map(|found| cut(found, NAME_CHARS))
+        .filter(|found| !found.is_empty())
+}
+
+/// A numeric field that may be absent.
+pub(crate) fn optional_count(value: &Value, key: &str) -> Option<u64> {
+    value.get(key).and_then(|found| {
+        found
+            .as_u64()
+            .or_else(|| found.as_f64().map(|n| n.max(0.0) as u64))
+    })
+}
+
+/// A queue row's own kind: `task` or `stage`; absent means a task.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RowKind {
+    Task,
+    Stage,
+}
+
+pub(crate) fn row_kind(value: &Value) -> Option<RowKind> {
+    match value.get("kind").and_then(Value::as_str) {
+        Some("task") => Some(RowKind::Task),
+        Some("stage") => Some(RowKind::Stage),
+        _ => None,
+    }
+}
+
+/// A stage's kind: `review`, `test` or `land`. Any other word is kept out as
+/// absent, never an error.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StageKind {
+    Review,
+    Test,
+    Land,
+}
+
+pub(crate) fn stage_kind(value: &Value) -> Option<StageKind> {
+    match value.get("kind").and_then(Value::as_str) {
+        Some("review") => Some(StageKind::Review),
+        Some("test") => Some(StageKind::Test),
+        Some("land") => Some(StageKind::Land),
+        _ => None,
+    }
+}
+
 pub(crate) fn flag(value: &Value, key: &str) -> bool {
     value.get(key).and_then(Value::as_bool).unwrap_or(false)
 }
@@ -119,6 +172,22 @@ pub struct TeamSummary {
     /// The computer the lead runs on.
     pub home: String,
     pub revision: u64,
+    /// The lead's bound session: how the desktop finds a session's team.
+    pub lead_session: Option<SessionRef>,
+    /// The bound sessions of a planning, running or paused team's members,
+    /// at most [`MEMBERS_KEPT`]; absent when the row names none, as an older
+    /// command line's row does, so the serialized summary is unchanged then.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub member_sessions: Option<Vec<MemberSession>>,
+}
+
+/// One member's bound session on a live team's list row: how Waiting for you
+/// knows a member's session without loading the team.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
+pub struct MemberSession {
+    pub member: String,
+    pub machine: String,
+    pub session_id: String,
 }
 
 impl TeamSummary {
@@ -134,6 +203,10 @@ pub struct TeamList {
     pub truncated: bool,
     /// The cursor of the next page, when the reply names one.
     pub next: Option<String>,
+    /// The cursor this page was read from; absent for the first page, so a
+    /// view can keep pages by their cursor and tell a later page apart.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub after: Option<String>,
 }
 
 // --------------------------------------------------------------- one team
@@ -144,6 +217,39 @@ pub struct TeamList {
 pub struct SessionRef {
     pub machine: String,
     pub session_id: String,
+}
+
+/// The lead's bound session of a list row; absent when the row has none.
+pub(crate) fn lead_session(row: &Value) -> Option<SessionRef> {
+    let found = row.get("lead_session").filter(|lead| lead.is_object())?;
+    let view = SessionRef {
+        machine: name(found, "machine"),
+        session_id: name(found, "session_id"),
+    };
+    (!view.session_id.is_empty()).then_some(view)
+}
+
+/// A list row's `member_sessions`: entries that name a member, a machine and a
+/// session, at most [`MEMBERS_KEPT`]; none when the row has no such array.
+pub(crate) fn member_sessions(row: &Value) -> Option<Vec<MemberSession>> {
+    let found = row.get("member_sessions")?.as_array()?;
+    Some(
+        found
+            .iter()
+            .filter_map(|entry| {
+                let session = MemberSession {
+                    member: name(entry, "member"),
+                    machine: name(entry, "machine"),
+                    session_id: name(entry, "session_id"),
+                };
+                (!session.member.is_empty()
+                    && !session.machine.is_empty()
+                    && !session.session_id.is_empty())
+                .then_some(session)
+            })
+            .take(MEMBERS_KEPT)
+            .collect(),
+    )
 }
 
 pub(crate) fn session(value: &Value) -> Option<SessionRef> {
@@ -166,6 +272,8 @@ pub struct MemberCard {
     pub state: String,
     pub lead: bool,
     pub session: Option<SessionRef>,
+    /// The model its role names, when it names one.
+    pub model: Option<String>,
 }
 
 /// The member counts of `team status`'s `counts.members`.
@@ -215,6 +323,13 @@ pub struct StageCard {
     /// The member who implemented the task the stage checks (the plan's
     /// binding decision). Never the stage's own worker.
     pub implementer: String,
+    /// `review`, `test` or `land`; absent when the row has no `stage` object or
+    /// names another kind.
+    pub kind: Option<StageKind>,
+    /// The node this stage checks.
+    pub target: Option<u64>,
+    /// The target's round this stage checks.
+    pub round: Option<u64>,
 }
 
 /// The task a card stands for: the replicated task, never the node alone.
@@ -248,6 +363,10 @@ pub struct QueueCard {
     /// The task's board rank: the queue's order.
     pub rank: String,
     pub round: u64,
+    /// The queue row's own kind; absent means a task.
+    pub kind: Option<RowKind>,
+    /// The pinned pipeline's rounds, when the row names them.
+    pub rounds: Option<u64>,
     pub held: bool,
     pub admitted: bool,
     pub integrated: bool,
@@ -288,6 +407,9 @@ pub struct TeamView {
     /// The cursor of the queue's next page, when the reply names one.
     pub next: Option<String>,
     pub revision: u64,
+    /// The queue page's cursor; absent for the first page.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub after: Option<String>,
 }
 
 // ----------------------------------------------------------------- waiting
@@ -317,6 +439,10 @@ pub struct WaitingView {
     pub items: Vec<WaitingItem>,
     /// The cursor of the next page, when the reply names one.
     pub next: Option<String>,
+    /// The cursor this page was read from; absent for the first page, which
+    /// alone can say that nothing waits.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub after: Option<String>,
 }
 
 #[cfg(test)]

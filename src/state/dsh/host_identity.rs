@@ -58,7 +58,7 @@ fn canonical_uuid(value: &str) -> bool {
 
 // The same bounded native boot sources used by worktree process discovery.
 #[cfg(target_os = "linux")]
-fn boot() -> Result<String> {
+pub(in crate::state) fn boot() -> Result<String> {
     let mut value = String::new();
     fs::File::open("/proc/sys/kernel/random/boot_id")
         .map_err(|_| UNVERIFIABLE)?
@@ -75,7 +75,7 @@ fn boot() -> Result<String> {
     Ok(id.to_string())
 }
 #[cfg(target_os = "macos")]
-fn boot() -> Result<String> {
+pub(in crate::state) fn boot() -> Result<String> {
     let mut bytes = [0u8; 129];
     let mut size = bytes.len();
     if unsafe {
@@ -99,7 +99,7 @@ fn boot() -> Result<String> {
     Ok(id.to_string())
 }
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-fn boot() -> Result<String> {
+pub(in crate::state) fn boot() -> Result<String> {
     Err(UNVERIFIABLE.into())
 }
 

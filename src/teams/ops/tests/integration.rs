@@ -1,4 +1,5 @@
 use super::*;
+mod owner_window;
 const NEW_COMMIT: &str = "1123456789abcdef0123456789abcdef01234567";
 
 #[test]
@@ -67,7 +68,7 @@ fn an_old_accepts_late_conflict_never_returns_the_new_round_in_either_order() {
 }
 
 #[test]
-fn unrelated_unknown_non_accept_and_unapproved_decisions_cannot_authorize_a_fact() {
+fn unrelated_unknown_and_non_accept_decisions_cannot_authorize_a_fact() {
     let mut h = Harness::new();
     let (node, lead) = h.reported();
     h.run(&lead, Operation::Accept { node }).unwrap();
@@ -94,16 +95,9 @@ fn unrelated_unknown_non_accept_and_unapproved_decisions_cannot_authorize_a_fact
         .last()
         .unwrap()
         .seq;
-    let unapproved = h.add(&person(), 4);
-    h.submit(unapproved, "m1");
-    h.report(unapproved, "m1");
-    h.settings(|s| s.delegations.merge_accepted = false);
-    h.run(&lead, Operation::Accept { node: unapproved })
-        .unwrap();
     for (target, decision) in [
         (node, other_accept),
         (cancelled, not_accept),
-        (unapproved, h.accept_decision(unapproved)),
         (node, 9_999_999),
     ] {
         for op in [

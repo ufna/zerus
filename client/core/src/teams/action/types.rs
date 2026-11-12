@@ -23,9 +23,25 @@ pub struct Confirmation {
     pub action: String,
 }
 
+/// A create's permissions as the person confirmed them: every one of the
+/// contract's five, each a boolean. Unlike the contract's `Delegations`, a
+/// missing field is never filled in with its default, so a call that names
+/// fewer cannot grant more than was shown; an unknown field is refused.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CreateDelegations {
+    pub accept_results: bool,
+    pub answer_members: bool,
+    pub confirm_trust: bool,
+    pub resume_exited: bool,
+    pub merge_accepted: bool,
+}
+
 /// One team action, as the webview asks for it (`{"kind": "...", ...}`).
+/// Strict like the call around it: a field this version does not know is
+/// refused, never left out of the request that is prepared.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum TeamAction {
     /// Creates a team from a catalog template; the CLI resolves the bundle,
     /// and `team` is the new team's id.
@@ -43,15 +59,25 @@ pub enum TeamAction {
         /// when it is a branch.
         #[serde(default)]
         integration: Integration,
+        /// The digest of the template the form showed, as the catalog read
+        /// gave it (opaque; never computed here). The command line refuses
+        /// the create with `template_changed` when the template it resolves
+        /// is no longer that one.
+        expected_template: String,
+        /// The five permissions exactly as the form shows them; they become
+        /// the team's in place of the template's.
+        delegations: CreateDelegations,
     },
     /// Pauses a team: it hands nothing out until resumed.
-    Pause,
+    // A variant with no fields is written `{}` so that, like every other
+    // variant, it refuses a field this version does not know.
+    Pause {},
     /// Resumes a team the person paused.
-    Resume,
+    Resume {},
     /// Cancels every open task and hands nothing out again.
-    Stop,
+    Stop {},
     /// Hides a done or stopped team, keeping its history.
-    Archive,
+    Archive {},
     PauseMember {
         member: String,
     },

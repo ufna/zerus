@@ -1,0 +1,205 @@
+//! Bounded team work, separate from member creation. A durable delivery row
+//! never grants permission to send: only this tick owns its original call.
+#![allow(dead_code)] // Parts A/B are wired into the worker in this package.
+#[cfg(unix)]
+mod availability;
+mod delivery;
+mod finish;
+mod integration;
+mod ledger;
+mod maintenance;
+#[cfg(unix)]
+pub(super) mod native;
+#[cfg(unix)]
+mod native_work;
+mod observe;
+mod ports;
+mod reports;
+mod retry;
+mod schedule;
+#[cfg(test)]
+mod tests;
+use crate::teams::{
+    ops::{self, Actor, Operation, Request},
+    store::{Store, TeamRow},
+};
+use ledger::{Ledger, Row};
+use ports::{Ports, Result};
+use std::{collections::BTreeMap, path::Path};
+use zerus_team_plan::{model::*, problem::code, Problem};
+
+pub(super) struct Runtime {
+    ledger: Ledger,
+    machine: String,
+    epoch: String,
+    maintenance: Option<crate::teams::store::Cursor>,
+    row_failure: bool,
+    hints: BTreeMap<String, observe::Hint>,
+}
+impl Runtime {
+    pub fn open(state: &Path, machine: &str) -> Result<Self> {
+        if !crate::teams::enabled(state) {
+            return Err(Problem::new(code::TEAMS_INACTIVE, "Teams preview is off"));
+        }
+        Ok(Self {
+            ledger: Ledger::open(state)?,
+            machine: machine.into(),
+            epoch: uuid::Uuid::new_v4().to_string(),
+            maintenance: None,
+            row_failure: false,
+            hints: BTreeMap::new(),
+        })
+    }
+    pub fn begin_pass(&mut self) {
+        self.hints.clear();
+    }
+    pub fn tick(
+        &mut self,
+        store: &mut Store,
+        ports: &mut impl Ports,
+        id: &str,
+        now: i64,
+        safety: bool,
+    ) -> Result<()> {
+        self.row_failure = false;
+        if ports.stopped() {
+            return Ok(());
+        }
+        let Some(team) = store.team(id)? else {
+            return Ok(());
+        };
+        if team.home != self.machine
+            || !matches!(team.status, TeamStatus::Running | TeamStatus::Paused)
+        {
+            return Ok(());
+        }
+        self.observe(store, ports, &team, now, safety)?;
+        if ports.stopped() {
+            return Ok(());
+        }
+        self.reports(store, ports, &team, now)?;
+        if ports.stopped() {
+            return Ok(());
+        }
+        // Part C stages tasks here, after reports and before integration.
+        if store
+            .team(id)?
+            .is_some_and(|t| t.status == TeamStatus::Running)
+        {
+            self.integrations(store, ports, &team, now)?;
+            if ports.stopped() {
+                return Ok(());
+            }
+            self.finish(store, ports, &team, now)?;
+            self.recover(store, ports, &team, now)?;
+            self.reopens(store, ports, &team, now)?;
+            self.handouts(store, ports, &team, now)?;
+        } else {
+            self.recover_merges(store, ports, &team, now)?;
+            self.recover(store, ports, &team, now)?;
+        }
+        self.cleanup_metadata(store, &team, now)
+    }
+
+    pub fn page(
+        &mut self,
+        store: &mut Store,
+        ports: &mut impl Ports,
+        teams: &[TeamRow],
+        now: i64,
+        safety: bool,
+    ) -> Result<()> {
+        self.prepare(teams)?;
+        let mut fault = None;
+        for team in teams {
+            if ports.stopped() {
+                return Ok(());
+            }
+            if let Err(error) = self.tick(store, ports, &team.id, now, safety) {
+                if !self.row_failure || error.code == ledger::CAPACITY {
+                    fault = Some(error);
+                }
+            }
+        }
+        if let Err(error) = self.maintain(store) {
+            fault = Some(error);
+        }
+        fault.map_or(Ok(()), Err)
+    }
+    fn for_row<T>(&mut self, apply: impl FnOnce(&mut Self) -> Result<T>) -> Result<T> {
+        self.row_failure = true;
+        let result = apply(self);
+        if result.is_ok() {
+            self.row_failure = false;
+        }
+        result
+    }
+    pub fn maintain(&mut self, store: &Store) -> Result<()> {
+        let page = store.teams(16, self.maintenance.as_ref())?;
+        for team in page.rows {
+            if !matches!(
+                team.status,
+                TeamStatus::Stopped | TeamStatus::Archived | TeamStatus::Finished
+            ) {
+                continue;
+            }
+            for row in self.ledger.page(&team.id, "delivery;")? {
+                // Unresolved receipts remain evidence for stop/restart work.
+                if !row.key.starts_with("delivery:") && !row.key.starts_with("merge:") {
+                    self.ledger.remove(&row)?;
+                }
+            }
+        }
+        self.maintenance = page.next;
+        Ok(())
+    }
+    fn put<T: serde::Serialize>(&mut self, team: &str, key: &str, value: &T) -> Result<Row> {
+        let data = serde_json::to_value(value).map_err(crate::teams::store::storage)?;
+        if let Some(mut row) = self.ledger.get(team, key)? {
+            if row.data != data {
+                row.data = data;
+                self.ledger.save(&mut row)?;
+            }
+            Ok(row)
+        } else {
+            self.ledger.reserve(team, key, data)
+        }
+    }
+    fn load<T: serde::de::DeserializeOwned>(&self, team: &str, key: &str) -> Result<Option<T>> {
+        self.ledger
+            .get(team, key)?
+            .map(|r| serde_json::from_value(r.data).map_err(crate::teams::store::storage))
+            .transpose()
+    }
+}
+fn request(store: &Store, team: &str, operation: Operation) -> Result<(Actor, Request)> {
+    let t = store
+        .team(team)?
+        .ok_or_else(|| problem("Team disappeared"))?;
+    Ok((
+        Actor::Service {
+            person: t.owner,
+            team: team.into(),
+        },
+        Request {
+            request_id: uuid::Uuid::new_v4().to_string(),
+            team: team.into(),
+            expected_revision: t.revision,
+            operation,
+        },
+    ))
+}
+fn write(store: &mut Store, team: &str, op: Operation, now: i64) -> Result<ops::Reply> {
+    let (actor, request) = request(store, team, op)?;
+    ops::apply(store, &actor, &request, now)
+}
+fn problem(text: &str) -> Problem {
+    Problem::new(code::INVALID_STATE, text)
+}
+fn cut(s: &str, max: usize) -> String {
+    let mut end = max.min(s.len());
+    while !s.is_char_boundary(end) {
+        end -= 1
+    }
+    s[..end].into()
+}
