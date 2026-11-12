@@ -33,44 +33,48 @@ impl ports::Ports for Handover {
         result
     }
 }
+fn prepared(mode: &str) -> (Harness, u32, Actor) {
+    let mut h = Harness::new();
+    let lead = h.bind("lead");
+    h.bind("m1");
+    h.bind("m2");
+    let node = h.add(&person(), 1);
+    if mode == "empty" {
+        h.intent(node, "m1");
+        h.observe(node, ops::TaskStage::InProgress);
+    } else {
+        h.submit(node, "m1");
+    }
+    if matches!(mode, "review" | "done" | "return done") {
+        h.report(node, "m1");
+    }
+    if mode.contains("done") {
+        h.observe(node, ops::TaskStage::Done);
+    }
+    let op = if mode == "return done" {
+        Operation::Return {
+            node,
+            reason: "Revise the closed result".into(),
+        }
+    } else {
+        Operation::Reassign {
+            node,
+            member: "m2".into(),
+            reason: "Hand the current task over".into(),
+        }
+    };
+    h.run(&lead, op).unwrap();
+    let generation = h.store.generation(TEAM, node).unwrap().unwrap();
+    assert!(
+        h.store.own_task_current(TEAM, node, generation).unwrap(),
+        "{mode}"
+    );
+    (h, node, lead)
+}
 #[test]
 fn reassign_and_return_use_the_owned_execution_at_every_supported_task_stage() {
     for mode in ["running", "review", "done", "return done", "empty"] {
-        let mut h = Harness::new();
-        let lead = h.bind("lead");
-        h.bind("m1");
-        h.bind("m2");
-        let node = h.add(&person(), 1);
-        if mode == "empty" {
-            h.intent(node, "m1");
-            h.observe(node, ops::TaskStage::InProgress);
-        } else {
-            h.submit(node, "m1");
-        }
-        if matches!(mode, "review" | "done" | "return done") {
-            h.report(node, "m1");
-        }
-        if mode.contains("done") {
-            h.observe(node, ops::TaskStage::Done);
-        }
-        let op = if mode == "return done" {
-            Operation::Return {
-                node,
-                reason: "Revise the closed result".into(),
-            }
-        } else {
-            Operation::Reassign {
-                node,
-                member: "m2".into(),
-                reason: "Hand the current task over".into(),
-            }
-        };
-        h.run(&lead, op).unwrap();
-        let generation = h.store.generation(TEAM, node).unwrap().unwrap();
-        assert!(
-            h.store.own_task_current(TEAM, node, generation).unwrap(),
-            "{mode}"
-        );
+        let (mut h, node, lead) = prepared(mode);
         let native = native(&h);
         let machine = native.machine.clone();
         let mut p = Handover {
@@ -85,6 +89,24 @@ fn reassign_and_return_use_the_owned_execution_at_every_supported_task_stage() {
                 .unwrap();
         }
         assert_eq!(p.calls, 1, "{mode}");
+        let effect = h
+            .store
+            .effects(TEAM, 200, None)
+            .unwrap()
+            .rows
+            .into_iter()
+            .find(|e| e.kind == "reopen")
+            .unwrap();
+        assert_eq!(
+            effect.state,
+            if mode == "empty" {
+                "refused"
+            } else {
+                "submitted"
+            },
+            "{mode}"
+        );
+
         let decision = h
             .store
             .decisions(TEAM, 200, None)

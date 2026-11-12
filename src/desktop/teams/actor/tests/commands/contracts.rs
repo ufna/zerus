@@ -6,6 +6,7 @@ pub(super) fn run() {
     creation_and_clear();
     cancel::run();
     handover();
+    empty_execution_handover();
     refusals::run();
 }
 fn delivery() {
@@ -199,3 +200,42 @@ fn handover() {
 }
 
 mod refusals;
+
+fn empty_execution_handover() {
+    let mut f = Fixture::new();
+    crate::teams::tasks::observe(&f.config.state, &f.task).unwrap();
+    f.h.run(
+        &person(),
+        Operation::Reassign {
+            node: f.node,
+            member: "m2".into(),
+            reason: "A member must take over".into(),
+        },
+    )
+    .unwrap();
+    let generation = f.h.store.generation(TEAM, f.node).unwrap().unwrap();
+    assert!(f
+        .h
+        .store
+        .own_task_current(TEAM, f.node, generation)
+        .unwrap());
+    let id = f.h.reopen(f.node, "m2");
+    let (args, input) = f.delivery_vector(&id, "m2");
+    let reply = f.call(&args, &input, true);
+    let outcome =
+        super::super::super::native::decode_delivery(&reply.to_string().into_bytes(), &id);
+    assert!(
+        matches!(outcome, crate::teams::ops::HandoutOutcome::Refused { .. }),
+        "{reply}"
+    );
+    f.h.reopen_outcome(&id, outcome);
+    assert_eq!(f.inputs(), 0);
+    f.h.run(
+        &person(),
+        Operation::Cancel {
+            node: f.node,
+            reason: "The decision settled".into(),
+        },
+    )
+    .unwrap();
+}
