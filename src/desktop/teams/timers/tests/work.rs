@@ -1,5 +1,6 @@
 //! The service ledger's reads with ten times more settled history, by
-//! SQLite's progress handler: doorbells of earlier runs and finished launches.
+//! SQLite's progress handler: doorbells of earlier runs, a member binding's
+//! doorbells of earlier attempts, and finished launches.
 use super::*;
 use std::sync::{
     atomic::{AtomicU64, Ordering},
@@ -11,6 +12,9 @@ fn history(w: &World, n: u32) {
     let ids = "WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<?2)";
     db.execute(&format!("{ids} INSERT INTO timer_doorbells(id,team,member,machine,session,run,conversation,after,mark,count,at_ms,epoch,state) SELECT printf('00000000-0000-4000-8000-%012x',x),?1,'lead','machine','launch_id:example',printf('run-old-%d',x%50),'conversation-lead',x,x+1,1,?3+x,'epoch-0','submitted' FROM n"), rusqlite::params![TEAM, n, T0 + 26 * 60 * MINUTE]).unwrap();
     let row = r#"{"team":"T","member":"M","epoch":"e","person":"local","version":0,"original":"o","observed":null,"parent_result":null,"state":"done","plan":null,"branch":null,"worktree":null,"problem":null,"card_request":null,"card_done":true}"#;
+    db.execute(&format!("{ids} INSERT INTO timer_answer_bells(id,team,member,machine,session,run,conversation,node,generation,mark,replies,at_ms,epoch,state) SELECT printf('00000000-0000-4000-9000-%012x',x),?1,'m1','machine','launch_id:example',printf('run-old-%d',x%50),'conversation-m1',x,1,x,1,?3+x,'epoch-0','submitted' FROM n"), rusqlite::params![TEAM, n, T0 + 26 * 60 * MINUTE]).unwrap();
+    // The measured binding's own doorbells of earlier attempts, within the day.
+    db.execute(&format!("{ids} INSERT INTO timer_answer_bells(id,team,member,machine,session,run,conversation,node,generation,mark,replies,at_ms,epoch,state) SELECT printf('00000000-0000-4000-a000-%012x',x),?1,'m1','machine','launch_id:example','run-1','conversation-m1',20000+x,1,x,1,?3+x,'epoch-0','submitted' FROM n"), rusqlite::params![TEAM, n, T0 + 26 * 60 * MINUTE]).unwrap();
     db.execute(&format!("{ids} INSERT INTO originals(team,member,version,data) SELECT ?1,printf('x%06d',x),0,?3 FROM n"), rusqlite::params![TEAM, n, row]).unwrap();
 }
 fn steps(w: &World, read: impl FnOnce(&rusqlite::Connection)) -> u64 {
@@ -33,7 +37,35 @@ fn steps(w: &World, read: impl FnOnce(&rusqlite::Connection)) -> u64 {
 fn no_ledger_read_of_a_pass_grows_with_settled_history() {
     use super::super::ledger::sql;
     let now = T0 + 30 * 60 * MINUTE;
-    let reads: [(&str, &str, Vec<rusqlite::types::Value>); 5] = [
+    use super::super::ledger::answers::sql as answer;
+    let member = |run: &str| -> Vec<rusqlite::types::Value> {
+        vec![
+            TEAM.to_string().into(),
+            "m1".to_string().into(),
+            run.to_string().into(),
+            "conversation-m1".to_string().into(),
+        ]
+    };
+    let mut counted = member("run-1");
+    counted.extend([3.into(), 1.into()]);
+    let reads: [(&str, &str, Vec<rusqlite::types::Value>); 10] = [
+        ("ANSWER MARK", answer::MARK, member("run-1")),
+        ("ANSWER COUNTED", answer::COUNTED, counted),
+        (
+            "ANSWER LAST",
+            answer::LAST,
+            vec![TEAM.to_string().into(), "m1".to_string().into()],
+        ),
+        (
+            "ANSWER INTERRUPTED",
+            answer::INTERRUPTED,
+            vec![TEAM.to_string().into()],
+        ),
+        (
+            "ANSWER PRUNE",
+            answer::PRUNE,
+            vec![TEAM.to_string().into(), (now - 24 * 60 * MINUTE).into()],
+        ),
         (
             "MARK",
             sql::MARK,

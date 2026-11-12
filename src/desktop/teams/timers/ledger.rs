@@ -20,6 +20,17 @@ const SCHEMA: &str = "CREATE TABLE IF NOT EXISTS timer_doorbells (
  CREATE INDEX IF NOT EXISTS timer_late_launch ON originals(team,member)
   WHERE json_extract(data,'$.late_after_stop')=1
   AND json_extract(data,'$.state') IN ('launch_intent','submitted','launch_unknown');";
+pub(super) mod answers;
+/// The ledger state and a bounded detail of a doorbell's outcome.
+fn outcome(rung: &Rung) -> (&'static str, String) {
+    let (state, detail) = match rung {
+        Rung::Submitted => ("submitted", ""),
+        Rung::Refused(why) => ("refused", why.as_str()),
+        Rung::NotStarted(why) => ("not_started", why.as_str()),
+        Rung::Uncertain(why) => ("uncertain", why.as_str()),
+    };
+    (state, detail.chars().take(1024).collect())
+}
 pub(super) mod sql {
     /// The mark of a binding: what its last doorbell that may have rung counted.
     pub const MARK: &str = "SELECT COALESCE(MAX(mark),0) FROM timer_doorbells WHERE team=?1 AND run=?2 AND conversation=?3 AND state IN ('reserved','submitted','uncertain')";
@@ -51,6 +62,10 @@ impl Ledger {
         launches
             .connection()
             .execute_batch(SCHEMA)
+            .map_err(storage)?;
+        launches
+            .connection()
+            .execute_batch(answers::SCHEMA)
             .map_err(storage)?;
         Ok(Self { launches })
     }
@@ -92,13 +107,7 @@ impl Ledger {
         Ok(Some(Reserved { id, after: mark }))
     }
     pub(super) fn settle(&self, id: &str, rung: &Rung) -> Result<()> {
-        let (state, detail) = match rung {
-            Rung::Submitted => ("submitted", ""),
-            Rung::Refused(why) => ("refused", why.as_str()),
-            Rung::NotStarted(why) => ("not_started", why.as_str()),
-            Rung::Uncertain(why) => ("uncertain", why.as_str()),
-        };
-        let detail: String = detail.chars().take(1024).collect();
+        let (state, detail) = outcome(rung);
         self.db()
             .execute(
                 "UPDATE timer_doorbells SET state=?2,detail=?3 WHERE id=?1 AND state='reserved'",

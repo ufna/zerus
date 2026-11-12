@@ -47,7 +47,7 @@ pub(super) fn reply(ctx: &mut Context<'_>) -> Result<()> {
     if changed != 1 {
         return Err(invalid("Question is missing or already answered."));
     }
-    Ok(())
+    timers::mark_answer(ctx, *item)
 }
 pub(super) fn open_card(ctx: &mut Context<'_>) -> Result<()> {
     let Operation::OpenCard { kind, text, node } = ctx.op else {

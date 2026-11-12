@@ -24,6 +24,7 @@ fn history(db: &Connection, n: u32) {
         format!("{ids} INSERT INTO key_clears SELECT ?1,x,'cleared','',1 FROM n"),
         "INSERT INTO cancel_outcomes SELECT seq,team,node,1,'cancelled','',1 FROM decisions WHERE team=?1 AND node>=10000 AND ?2>0".into(),
         format!("{ids} INSERT INTO requests SELECT printf('00000000-0000-4000-a000-%012x',x),?1,'{{}}','{{}}','{{\"Success\":{{}}}}' FROM n"),
+        format!("{ids} INSERT INTO inbox(team,kind,node,generation,actor,text,state,reply,created_ms) SELECT ?1,printf('question:%d',x),x,1,'{{\"kind\":\"session\",\"member\":\"m2\"}}','Old question','closed','Old answer',1 FROM n"),
     ] {
         db.execute(&sql, params![TEAM, n]).unwrap();
     }
@@ -44,6 +45,7 @@ fn generations(db: &Connection, node: u32, n: u32) {
         format!("{gens} INSERT INTO inbox(team,kind,node,generation,actor,text,state,created_ms) SELECT ?1,'report',?2,x,'{{}}','Old','closed',1 FROM g"),
         format!("{gens} INSERT INTO timer_firings SELECT ?1,'remind_lead',?2,x,x,'inbox',0,x,1 FROM g"),
         format!("{gens} INSERT INTO cancel_outcomes SELECT 1000000+x,?1,?2,x,'refused','Old refusal',1 FROM g"),
+        format!("{gens} INSERT INTO inbox(team,kind,node,generation,actor,text,state,reply,created_ms) SELECT ?1,printf('question:g%d',x),?2,x,'{{\"kind\":\"session\",\"member\":\"m1\"}}','Old question','closed','Old answer',1 FROM g"),
     ] {
         db.execute(&sql, params![TEAM, node, n]).unwrap();
     }
@@ -63,6 +65,33 @@ fn store(n: u32) -> Harness {
     h.report(reported, "m1");
     let running = h.add(&person(), 3);
     h.submit(running, "m2");
+    let session = h
+        .store
+        .member(TEAM, "m2")
+        .unwrap()
+        .unwrap()
+        .session
+        .unwrap();
+    let m2 = crate::teams::ops::Actor::Session {
+        person: "local".into(),
+        team: TEAM.into(),
+        member: "m2".into(),
+        session,
+    };
+    let ask = Operation::Ask {
+        node: running,
+        generation: 1,
+        text: "Which width?".into(),
+    };
+    let item = h.run(&m2, ask).unwrap().item.unwrap();
+    h.run(
+        &person(),
+        Operation::Reply {
+            item,
+            text: "The old one.".into(),
+        },
+    )
+    .unwrap();
     history(db(&h), n);
     generations(db(&h), reported, n);
     h
@@ -82,7 +111,7 @@ fn steps(h: &Harness, read: impl FnOnce(&Harness)) -> u64 {
     count.load(Ordering::Relaxed)
 }
 type Read = (&'static str, fn(&Harness));
-const LIVE: [Read; 8] = [
+const LIVE: [Read; 12] = [
     ("inbox_view", |h| {
         let _ = h.store.inbox_view(TEAM).unwrap();
     }),
@@ -107,6 +136,41 @@ const LIVE: [Read; 8] = [
     ("saved_refusal", |h| {
         let id = "00000000-0000-4000-a000-000000002710";
         let _ = h.store.saved_refusal(TEAM, id).unwrap();
+    }),
+    ("questions", |h| {
+        let shown = h.store.questions(TEAM, 3, 1, "m2").unwrap();
+        assert_eq!(shown.rows.len(), 1);
+    }),
+    ("questions of a node with settled generations", |h| {
+        let current = h.store.generation(TEAM, 2).unwrap().unwrap();
+        assert!(h
+            .store
+            .questions(TEAM, 2, current, "m1")
+            .unwrap()
+            .rows
+            .is_empty());
+    }),
+    ("answer_marks", |h| {
+        assert_eq!(h.store.answer_marks(TEAM, "", 200).unwrap().len(), 1);
+    }),
+    ("admit_answer", |h| {
+        let mark = h.store.answer_marks(TEAM, "", 1).unwrap().remove(0);
+        let session = h
+            .store
+            .member(TEAM, "m2")
+            .unwrap()
+            .unwrap()
+            .session
+            .unwrap();
+        let bell = super::super::AnswerBell {
+            team: TEAM.into(),
+            member: "m2".into(),
+            session,
+            node: 3,
+            generation: 1,
+            mark: mark.revision,
+        };
+        super::super::admit_answer(db(h), &bell).unwrap();
     }),
 ];
 const TERMINAL: [Read; 8] = [

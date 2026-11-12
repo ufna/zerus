@@ -271,6 +271,21 @@ fn attempt(r: &rusqlite::Row<'_>) -> rusqlite::Result<Attempt> {
     })
 }
 
+/// What a doorbell's admission reads at its spawn: the lead's inbox, or a
+/// member's answers.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Gate {
+    Lead(Bell),
+    Answer(AnswerBell),
+}
+/// The admission of either doorbell, inside the transaction held across its
+/// spawn.
+pub(crate) fn admit(db: &Connection, gate: &Gate) -> Result<()> {
+    match gate {
+        Gate::Lead(bell) => admit_bell(db, bell),
+        Gate::Answer(bell) => admit_answer(db, bell),
+    }
+}
 /// The doorbell's admission, read inside the immediate transaction held
 /// across its spawn: the team still running, the lead's binding still the one
 /// reserved, and an item beyond the previous mark still open.
@@ -299,6 +314,9 @@ fn refuse(text: &str) -> Problem {
     Problem::new(code::INVALID_STATE, text)
 }
 
+mod answers;
+pub(crate) use answers::admit_answer;
+pub use answers::{AnswerBell, AnswerMark, Questions};
 mod cancels;
 mod reviewed;
 mod schema;

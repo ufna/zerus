@@ -238,7 +238,8 @@ fn held(store: &Store, team: &str, member: &str) -> Result<Vec<Value>, Problem> 
         for node in rows.drain(..) {
             if let Some(holder) = store.attempt_holder(team, node.id)? {
                 if holder.member == member {
-                    found.push(held_view(node, holder.generation)?);
+                    let questions = store.questions(team, node.id, holder.generation, member)?;
+                    found.push(held_view(node, holder.generation, questions)?);
                 }
             }
         }
@@ -250,11 +251,18 @@ fn held(store: &Store, team: &str, member: &str) -> Result<Vec<Value>, Problem> 
 }
 
 /// A held node with the attempt generation `ask` and a verdict need. The node
-/// itself does not store it; the store keeps it beside the row.
-fn held_view(node: Node, generation: u32) -> Result<Value, Problem> {
+/// itself does not store it; the store keeps it beside the row. The member's
+/// own questions of this attempt follow, newest first, with the lead's answer.
+fn held_view(
+    node: Node,
+    generation: u32,
+    questions: crate::teams::store::timers::Questions,
+) -> Result<Value, Problem> {
     let mut value = serde_json::to_value(&node).map_err(storage)?;
     if let Some(object) = value.as_object_mut() {
         object.insert("generation".into(), json!(generation));
+        object.insert("questions".into(), json!(questions.rows));
+        object.insert("questions_more".into(), json!(questions.more));
     }
     Ok(value)
 }

@@ -214,13 +214,18 @@ fn the_doorbell_text_names_a_bounded_count_and_the_command() {
 #[test]
 fn every_ledger_read_searches_an_index() {
     let w = World::new();
-    use super::super::ledger::sql;
+    use super::super::ledger::{answers::sql as answer, sql};
     for (name, sql) in [
         ("MARK", sql::MARK),
         ("LAST", sql::LAST),
         ("INTERRUPTED", sql::INTERRUPTED),
         ("PRUNE", sql::PRUNE),
         ("LATE", sql::LATE),
+        ("ANSWER MARK", answer::MARK),
+        ("ANSWER COUNTED", answer::COUNTED),
+        ("ANSWER LAST", answer::LAST),
+        ("ANSWER INTERRUPTED", answer::INTERRUPTED),
+        ("ANSWER PRUNE", answer::PRUNE),
     ] {
         let db = w.ledger.connection();
         let mut s = db.prepare(&format!("EXPLAIN QUERY PLAN {sql}")).unwrap();
