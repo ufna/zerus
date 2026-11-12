@@ -1407,6 +1407,22 @@ again, and both orders of the answer and the observation leave the same
 state. No service command finishes, reopens or cancels a task whose current
 attempt is not the one the store observed.
 
+**Only a layout that reached the integration branch is upgraded.** The
+store's extension marks its layout, and during the reviews of package 10
+that mark moved through six values, each with its own step and its own
+seeding rule for what the step before had stored. None of those layouts
+was ever merged or installed; the steps between them exist only for the
+implementers' own test stores, and every round found one more combination
+of them that the seed got wrong. The merged extension therefore knows two
+stores: one from before the extension, which it extends in one
+transaction to the current layout, and one at a layout that was on the
+integration branch, which it steps forward. A mark that only an unmerged
+development build could have written is refused with a sentence that says
+so, and nothing is written; a newer mark is refused as before. A store
+from before the extension holds no attempt of any task, so its first
+observation is judged against no attempt, as for a task that never
+recorded one.
+
 **In a live team a task's end is recorded by its observation alone.** An
 answer and an observation are two reports of one fact, and every rule that
 let both write it produced an order in which they disagreed. The first
