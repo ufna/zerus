@@ -1430,6 +1430,14 @@ Each class checks its own isolation and fails rather than skipping:
   (exit 0 on SIGTERM) and ends the private tmux server. It then requires that no
   process refers to the root by its working folder, executable or environment.
   Otherwise the root is kept and the class fails.
+- **A killed run.** A run killed after a session started (the row's bound, a
+  cancelled job) runs no teardown. What remains is the evidence written as it goes:
+  the calls, waits, census, model requests, account inspection, preflight, and the
+  tmux and shim logs, which the wrappers write straight into the uploaded evidence
+  folder. There is no archive of the private root. The hosted Kimi runner records the
+  root in its custody file as soon as it exists, but its retention refuses the
+  sockets a killed session leaves behind, which is that campaign's reviewed rule. The
+  Claude Code and Codex job uploads only the evidence folder.
 - **Network census.** Once a second, a census lists the TCP and UDP peers of the
   class's own processes: the descendants of the test process and of the private
   tmux server. Any peer that is neither loopback nor an address of an allow-listed

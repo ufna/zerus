@@ -362,8 +362,11 @@ class KimiNativeCI(unittest.TestCase):
                 mock.patch.object(fixture, 'ROOT_CREATED', ci.teams_custody(custody)):
             fx = fixture.TeamFixture('kimi', native, 'NativeTeamsKimi')
             fx.build()
-            (fx.root / 'log/tmux-calls.log').write_text('1.0\tprivate\tnew-session\n')
-        # The child is killed here: no stopTest and no teardown ran.
+        # The child is killed here: no stopTest and no teardown ran. The wrappers log
+        # straight into the uploaded evidence folder, so their logs need no archive.
+        for log in ('tmux-calls.log', 'refused-calls.log'):
+            self.assertTrue((runtime / 'evidence/NativeTeamsKimi' / log).is_file(), log)
+        self.assertIn(str(runtime / 'evidence/NativeTeamsKimi'), (fx.root / 'bin/tmux').read_text())
         row = json.loads(custody.read_text().splitlines()[0])
         self.assertEqual((row['path'], row['case'], row['inode']),
                          (str(fx.root), 'test_teams_native.NativeTeamsKimi', fx.root.stat().st_ino))
@@ -371,7 +374,7 @@ class KimiNativeCI(unittest.TestCase):
         ci.retain([custody], runtime, archive)
         with tarfile.open(archive) as retained:
             names = retained.getnames()
-        self.assertTrue(any(name.endswith(fx.root.name + '/log/tmux-calls.log') for name in names), names[:20])
+        self.assertTrue(any(name.endswith(fx.root.name + '/bin/tmux') for name in names), names[:20])
         # The Teams child itself installs that hook before any case runs.
         with mock.patch.object(fixture, 'ROOT_CREATED', None), \
                 mock.patch.object(ci, 'run_child', return_value=0) as child:

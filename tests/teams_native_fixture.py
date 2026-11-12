@@ -86,7 +86,7 @@ elif [[ -n "${TMUX:-}" ]]; then inside "${TMUX%%,*}" && verdict=private
 elif [[ -n "${TMUX_TMPDIR:-}" && -d "$TMUX_TMPDIR" ]] && inside "$TMUX_TMPDIR"; then verdict=private
 elif (( version_only == 1 && n == 1 )); then verdict=version
 fi
-printf '%s\t%s\t%s\n' "$(date +%s.%N)" "$verdict" "${1:-}" >> "$ROOT/log/tmux-calls.log"
+printf '%s\t%s\t%s\n' "$(date +%s.%N)" "$verdict" "${1:-}" >> @LOGS@/tmux-calls.log
 if [[ $verdict == refused ]]; then
   echo "Teams fixture: refused a tmux call that names no server inside the private root" >&2
   exit 1
@@ -96,7 +96,7 @@ exec "$REAL" "$@"
 
 REFUSE = r'''#!/bin/bash
 # Teams fixture: no other computer, no new unit, no hgs from PATH.
-printf '%s\t%s\n' "$(date +%s.%N)" "$(basename -- "$0")" >> @ROOT@/log/refused-calls.log
+printf '%s\t%s\n' "$(date +%s.%N)" "$(basename -- "$0")" >> @LOGS@/refused-calls.log
 echo "Teams fixture: $(basename -- "$0") is refused in this private root" >&2
 exit 97
 '''
@@ -118,7 +118,7 @@ def kimi_inspection():
 
 
 KIMI_NODE = r'''#!/bin/bash
-printf '%s\tnode %s\n' "$(date +%s.%N)" "${1:-}" >> @ROOT@/log/kimi-inspection-stand-in.log
+printf '%s\tnode %s\n' "$(date +%s.%N)" "${1:-}" >> @LOGS@/kimi-inspection-stand-in.log
 if [[ "${1:-}" == "--input-type=module" && "${2:-}" == "-e" && -n "${KIMI_CODE_HOME:-}" ]]; then
   printf '%s\n' @VALUE@
   exit 0
@@ -420,14 +420,18 @@ class TeamFixture:
         os.chmod(r / 'tmux', 0o700)
         for name, text in (('tmux', TMUX_WRAPPER), ('ssh', REFUSE), ('scp', REFUSE), ('systemd-run', REFUSE), ('hgs', REFUSE)):
             path = r / 'bin' / name
-            path.write_text(text.replace('@ROOT@', shlex.quote(str(r))).replace('@REAL@', shlex.quote(REAL_TMUX)))
+            path.write_text(text.replace('@ROOT@', shlex.quote(str(r))).replace('@REAL@', shlex.quote(REAL_TMUX))
+                            .replace('@LOGS@', shlex.quote(str(self.evidence.folder))))
             path.chmod(0o755)
         if self.agent == 'kimi':
             path = r / 'bin/node'
-            path.write_text(KIMI_NODE.replace('@ROOT@', shlex.quote(str(r))).replace('@VALUE@', shlex.quote(json.dumps(kimi_inspection()))))
+            path.write_text(KIMI_NODE.replace('@LOGS@', shlex.quote(str(self.evidence.folder)))
+                            .replace('@VALUE@', shlex.quote(json.dumps(kimi_inspection()))))
             path.chmod(0o755)
+        # The wrappers log straight into the evidence folder, so their logs survive a
+        # run that is killed; nothing copies them at the end.
         for log in ('tmux-calls.log', 'refused-calls.log'):
-            (r / 'log' / log).touch()
+            (self.evidence.folder / log).touch()
         (r / 'home/.local/bin' / self.agent).symlink_to(self.native)
         home = r / 'home'
         self.env = {
@@ -870,10 +874,8 @@ class TeamFixture:
             left = None
             problems.append('owned processes left: ' + ','.join(map(str, self.owned_left()[:20])))
         census = self.census.finish() if self.census else {}
-        for name in ('tmux-calls.log', 'refused-calls.log'):
-            shutil.copy(self.root / 'log' / name, self.evidence.folder / name)
-        calls = [l.split('\t') for l in (self.root / 'log/tmux-calls.log').read_text().splitlines()]
-        refused = (self.root / 'log/refused-calls.log').read_text().splitlines()
+        calls = [l.split('\t') for l in (self.evidence.folder / 'tmux-calls.log').read_text().splitlines()]
+        refused = (self.evidence.folder / 'refused-calls.log').read_text().splitlines()
         self.evidence.write('isolation.json', dict(tmux_calls=len(calls), tmux_refused=sum(c[1] == 'refused' for c in calls if len(c) > 1),
                                                     shim_calls=len(refused), census=census, problems=problems))
         if any(len(c) > 1 and c[1] == 'refused' for c in calls):
