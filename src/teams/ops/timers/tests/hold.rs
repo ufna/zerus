@@ -393,8 +393,10 @@ fn release_ends_only_the_holds_its_actor_owns() {
 }
 
 /// A person's own override ends a hand-back's hold but never an explicit
-/// one: a person's run taken over, and a person's Back to To do that reopens
-/// a reviewed task (its pending Return settled by the override).
+/// one: a person's run taken over; a person's Back to To do of a reviewed
+/// task with a pending Return (the Return is settled without its reason);
+/// and a person's Back to To do that reopens a reviewed task with nothing
+/// pending, through the pipeline's reopen.
 #[test]
 fn a_persons_override_keeps_an_explicit_hold() {
     for owner in [Owner::Person, Owner::Lead, Owner::None] {
@@ -408,6 +410,16 @@ fn a_persons_override_keeps_an_explicit_hold() {
         return_task(&mut h, &lead, node);
         h.observe(node, TaskStage::Todo);
         assert_eq!(decision(&h, node), DecisionState::Settled, "{owner:?}");
+        assert_eq!(held(&h, node), explicit(owner), "{owner:?}: back in To do");
+        let (mut h, lead, node) = reported();
+        hold(&mut h, &lead, node, owner);
+        let generation = h.store.generation(TEAM, node).unwrap().unwrap();
+        h.observe(node, TaskStage::Todo);
+        assert_eq!(
+            h.store.generation(TEAM, node).unwrap(),
+            Some(generation + 1),
+            "{owner:?}: the pipeline's reopen"
+        );
         assert_eq!(held(&h, node), explicit(owner), "{owner:?}: reopened");
     }
 }
