@@ -300,6 +300,7 @@ fn refuse(text: &str) -> Problem {
 }
 
 mod cancels;
+mod reviewed;
 mod schema;
 #[allow(unused_imports)] // The actor's cancel step (package 8) reads this.
 pub use cancels::PendingCancel;
