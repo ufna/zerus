@@ -1,5 +1,6 @@
 mod card;
 mod held;
+mod unreadable;
 use super::*;
 use serde::{Deserialize, Serialize};
 #[derive(Default, Serialize, Deserialize)]

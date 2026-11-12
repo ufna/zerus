@@ -152,4 +152,9 @@ pub(in crate::desktop::teams) mod rows;
 mod cleanup_bound;
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
+mod unreadable;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+mod unreadable_handles;
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 mod cancel_progress;

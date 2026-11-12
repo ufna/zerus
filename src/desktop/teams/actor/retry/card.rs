@@ -131,7 +131,9 @@ fn operation(key: &str, error: &Problem) -> Operation {
             .and_then(|s| s.rsplit(':').next())
             .and_then(|s| s.parse().ok()),
         decisions: Some(decisions()),
-        text: if key.starts_with("held:") {
+        // A held step's or an unreadable member's sentence carries its own
+        // timing; neither row's key is shown.
+        text: if key.starts_with("held:") || key.starts_with("unreadable:") {
             cut(&error.message, 3000)
         } else {
             format!(

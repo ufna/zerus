@@ -118,6 +118,8 @@ impl Runtime {
         } else {
             self.recover_merges(store, ports, &team, now)?;
             self.recover(store, ports, &team, now)?;
+            // A paused team hands nothing out, so it needs no member now.
+            self.unreadable_members(store, &team, &schedule::Needs::default(), now)?;
         }
         self.cleanup_metadata(store, &team, now)?;
         #[cfg(any(target_os = "linux", target_os = "macos"))]
