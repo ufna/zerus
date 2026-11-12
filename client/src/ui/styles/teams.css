@@ -111,6 +111,7 @@
   .team-facts dd { margin: 0; overflow-wrap: anywhere; }
   .team-block { display: block; }
   .team-finding-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+  .team-action-why { flex-basis: 100%; font-size: 12px; overflow-wrap: anywhere; }
   .team-task-detail > .team-finding-actions { display: flex; padding-top: 12px; border-top: 1px solid var(--z-color-divider); }
   .team-reason { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-top: 10px; }
   .team-reason input { flex: 1 1 200px; }

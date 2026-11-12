@@ -9,15 +9,16 @@ import { AccountMarkCircle, AgentBadge, AgentTile } from "../sessions/SessionCar
 import { accountAppearance, accountMark } from "../../store/accountMarks";
 import { settings } from "../../store/settings";
 import { ResizeHandle } from "../sessions/SessionList";
-import type { Account } from "../../types";
+import type { Account, LocalUsage, ModelUsage, Spend } from "../../types";
 import { agentKind, catalog } from "../../store/catalog";
 import { machineCards } from "../../store/machines";
 import { accountMachine, accountsPage, loadAccounts, requestedProfile, setAccountMachine, setRequestedProfile } from "../../store/accounts";
 import { connectionOf, osOf } from "../../store/overview";
 import { useNow } from "../../store/latest";
 import { sessionsWidth, setPage } from "../../store/ui";
-import { clock, providerName, rateLimitNotice, stateText, windowsAt } from "../lib/usage";
+import { balanceCompact, balanceKind, balanceLow, balanceTitle, clock, providerName, rateLimitNotice, stateText, windowsAt } from "../lib/usage";
 import { UsageMeters } from "../components/UsageMeter";
+import { compactCount, exactCount, localUsageGroups, localUsageNotes, spendNotes, spendRows } from "../lib/deepseek-usage";
 import { accountManagement } from "../../store/accountManagement";
 import { accountSetup } from "../../store/accountSetup";
 import {accountDistribution} from "../../store/accountDistribution";
@@ -73,10 +74,12 @@ function AccountRow(props: { a: Account; now: number; selected: boolean }) {
         <span class="grow" />
         <span class="acct-perm" classList={{ bypass: props.a.members.length > 0 && props.a.members.every((m) => m.permission === "bypass") }}>{trText(props.a.permission)}</span>
       </span>
-      {/* The detail's usage windows in the Overview card's compact meters; the reset shows from 90%. */}
-      <Show when={props.a.usage.windows.length}>
-        <span class="acct-row-usage"><UsageMeters windows={windowsAt(props.a.usage.windows, props.now)} compact resetFrom={90} /></span>
+      {/* The detail's usage windows in the Overview card's compact meters; the reset shows from 90%.
+          An account without windows but with a balance (a DeepSeek API key) shows the balance there instead. */}
+      <Show when={props.a.usage.windows.length || balanceCompact(props.a.usage)}>
+        <span class="acct-row-usage"><UsageMeters windows={windowsAt(props.a.usage.windows, props.now)} compact resetFrom={90} summary={balanceCompact(props.a.usage)} summaryTitle={balanceTitle(props.a.usage)} /></span>
       </Show>
+      <Show when={balanceLow(props.a.usage)}><span class="acct-balance-low">{tr("Balance too low for API calls")}</span></Show>
       <Show when={rateLimitNotice(props.a.usage, props.now)}><span class="dim">{rateLimitNotice(props.a.usage, props.now)}</span></Show>
     </button>
   );
@@ -119,9 +122,71 @@ function UsagePanel(props: { a: Account }) {
           </div>
         );
       }}</For>
-      <For each={u().balances}>{(b) => <p>{`${b.kind}: ${b.balance} ${b.currency}`}</p>}</For>
+      <Show when={balanceLow(u())}><Status kind="warn">{tr("DeepSeek reports the balance is too low for API calls.")}</Status></Show>
+      <For each={u().balances}>{(b) => (
+        <div class="row acct-balance" classList={{ total: b.kind === "Total" }}>
+          <span>{balanceKind(b.kind)}</span>
+          <span class="grow" />
+          <span class="tabular">{`${b.balance} ${b.currency}`}</span>
+        </div>
+      )}</For>
+      <Show when={u().spend}>{(spend) => <SpendSection spend={spend()} />}</Show>
+      <Show when={u().local_usage}>{(usage) => <LocalUsageSection usage={usage()} />}</Show>
       <Show when={creditsText(u().credits)}>{(text) => <p>{text()}</p>}</Show>
     </section>
+  );
+}
+
+/** Account-wide spend from the DeepSeek balance readings. */
+function SpendSection(props: { spend: Spend }) {
+  return (
+    <div class="acct-spend">
+      <h4>{tr("Spending")}</h4>
+      <For each={spendRows(props.spend)}>{(row) => (
+        <div class="row acct-balance"><span>{row.label}</span><span class="grow" /><span class="tabular" title={row.title}>{row.value}</span></div>
+      )}</For>
+      <For each={spendNotes(props.spend)}>{(note) => <p class="muted acct-note">{note}</p>}</For>
+    </div>
+  );
+}
+
+function UsageRows(props: { rows: ModelUsage[] }) {
+  const cell = (n: number) => <td class="tabular" title={exactCount(n)}>{compactCount(n)}</td>;
+  return <For each={props.rows}>{(m) => <tr><th scope="row" class="ell" title={m.model}>{m.model}</th>{cell(m.requests)}{cell(m.cache_hit)}{cell(m.cache_miss)}{cell(m.output)}</tr>}</For>;
+}
+
+/** Requests and tokens of this computer's DeepSeek sessions, from their local logs. */
+function LocalUsageSection(props: { usage: LocalUsage }) {
+  const groups = createMemo(() => localUsageGroups(props.usage));
+  const head = (first: string) => (
+    <thead><tr><th scope="col">{first}</th><th scope="col">{tr("Requests")}</th><th scope="col">{tr("Cache read")}</th><th scope="col">{tr("Uncached input")}</th><th scope="col">{tr("Output")}</th></tr></thead>
+  );
+  return (
+    <div class="acct-local">
+      <h4>{tr("This computer's DeepSeek sessions")}</h4>
+      <p class="muted acct-note">{tr("Requests and tokens from session logs on this computer. Other computers and tools are not included.")}</p>
+      <For each={localUsageNotes(props.usage)}>{(note) => <p class="muted acct-note">{note}</p>}</For>
+      <Show when={groups().month.length} fallback={<p class="muted acct-note">{tr("No requests on this computer this month.")}</p>}>
+        <table class="acct-usage-table">
+          {head(tr("Model"))}
+          <tbody>
+            <tr class="group"><th scope="colgroup" colSpan={5}>{tr("Today")}</th></tr>
+            <Show when={groups().today.length} fallback={<tr><td colSpan={5} class="muted">{tr("No requests today.")}</td></tr>}>
+              <UsageRows rows={groups().today} />
+            </Show>
+            <tr class="group"><th scope="colgroup" colSpan={5}>{tr("This month")}</th></tr>
+            <UsageRows rows={groups().month} />
+          </tbody>
+        </table>
+        <details class="acct-days">
+          <summary>{tr("By day")}</summary>
+          <table class="acct-usage-table">
+            {head(tr("Day"))}
+            <tbody><UsageRows rows={groups().days} /></tbody>
+          </table>
+        </details>
+      </Show>
+    </div>
   );
 }
 

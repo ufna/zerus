@@ -86,6 +86,48 @@ pub(crate) fn count(value: &Value, key: &str) -> u64 {
 }
 
 /// A string field that may be absent: empty and missing both mean no value.
+/// The most decisions a card lists: the store's bound.
+pub(crate) const DECISIONS_KEPT: usize = 4;
+/// The longest decision token kept.
+const DECISION_CHARS: usize = 32;
+
+/// A card's decisions as its row lists them, in order: short lowercase
+/// tokens, each once, at most [`DECISIONS_KEPT`]. An entry of another shape is
+/// ignored, never an error; a token this version has no words for is kept
+/// here and left out by the view. A row without the list (an older hgs) takes
+/// `acknowledged` alone, as the store does for a card opened without one.
+pub(crate) fn decisions(row: &Value) -> Vec<String> {
+    let Some(list) = row.get("decisions").and_then(Value::as_array) else {
+        return vec!["acknowledged".to_owned()];
+    };
+    let token = |text: &str| {
+        text.len() <= DECISION_CHARS
+            && text.starts_with(|c: char| c.is_ascii_lowercase())
+            && text
+                .chars()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+    };
+    let mut kept: Vec<String> = Vec::new();
+    for entry in list.iter().filter_map(Value::as_str) {
+        if kept.len() == DECISIONS_KEPT {
+            break;
+        }
+        if token(entry) && !kept.iter().any(|known| known == entry) {
+            kept.push(entry.to_owned());
+        }
+    }
+    kept
+}
+
+/// Who holds a queue row's attempt: absent when the row has no `holder`,
+/// null when it names nobody.
+pub(crate) fn holder(row: &Value) -> Option<Option<String>> {
+    match row.get("holder")? {
+        Value::String(member) if !member.is_empty() => Some(Some(member.clone())),
+        _ => Some(None),
+    }
+}
+
 pub(crate) fn optional_name(value: &Value, key: &str) -> Option<String> {
     value
         .get(key)
@@ -274,6 +316,9 @@ pub struct MemberCard {
     pub session: Option<SessionRef>,
     /// The model its role names, when it names one.
     pub model: Option<String>,
+    /// The person stopped it: the store refuses a second Stop (absent on an
+    /// older hgs's row: false).
+    pub person_stopped: bool,
 }
 
 /// The member counts of `team status`'s `counts.members`.
@@ -372,6 +417,20 @@ pub struct QueueCard {
     pub integrated: bool,
     pub decided_by: String,
     pub stages: Vec<StageCard>,
+    /// Who holds the task's attempt, the holder the store's decisions use:
+    /// absent when the row does not say (an older hgs), null when nobody does
+    /// (the store then refuses a Return).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub holder: Option<Option<String>>,
+    /// The kind of the task's decision that has not settled, when there is
+    /// one: the store refuses accept, return, release and cancel meanwhile,
+    /// unless the pending decision can still be replaced.
+    pub pending_decision: Option<String>,
+    /// The pending decision has not started and a new Return, Reassign or
+    /// Cancel replaces it (zerus-63rru.43, computed by the store with the
+    /// operation's own predicate); false when nothing is pending, and when an
+    /// older hgs does not say.
+    pub pending_replaceable: bool,
 }
 
 /// One group of the board: its state and its cards.
@@ -431,6 +490,8 @@ pub struct WaitingItem {
     /// The person the card is for, from the record's actor.
     pub by: String,
     pub created_ms: i64,
+    /// The decisions the card takes, in the row's order (see [`decisions`]).
+    pub decisions: Vec<String>,
 }
 
 /// `hgs team waiting`: the open owner cards of every team, oldest first.
