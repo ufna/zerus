@@ -209,5 +209,6 @@ fn dispatch(ctx: &mut Context<'_>) -> Result<()> {
         Operation::RecordLateSession { .. } => timers::late_session(ctx),
         Operation::RecordCancel { .. } => timers::record_cancel(ctx),
         Operation::ReconcileUnstaffed => unstaffed::reconcile(ctx),
+        Operation::EndStaleUnstaffed => unstaffed::end_stale(ctx),
     }
 }

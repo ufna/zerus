@@ -363,6 +363,13 @@ pub enum Operation {
     /// lead, as at the stage's creation. A call that finds nothing to change is
     /// refused with `unstaffed_unchanged`.
     ReconcileUnstaffed,
+    /// The service saw unended unstaffed items older than their node's
+    /// newest one: stale items an earlier layout left, which stand for no
+    /// episode. It ends at most a page of them, oldest first, in its own
+    /// operation, before the reconcile judges the cap on the current
+    /// episodes. A call that finds none is refused with
+    /// `unstaffed_unchanged`.
+    EndStaleUnstaffed,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]

@@ -668,3 +668,102 @@ fn a_reply_to_an_unstaffed_item_is_refused_and_leaves_the_episode() {
         unchanged(&mut h);
     }
 }
+
+/// The unended unstaffed items of the team, counted in the store itself:
+/// the inbox page shows only its first 200 rows.
+fn unended(h: &Harness) -> usize {
+    h.store
+        .db
+        .as_ref()
+        .unwrap()
+        .query_row(
+            "SELECT count(*) FROM inbox WHERE team=?1 AND kind LIKE 'unstaffed:%' AND reply IS NULL",
+            [TEAM],
+            |r| r.get(0),
+        )
+        .unwrap()
+}
+fn open_count(h: &Harness) -> usize {
+    h.store
+        .db
+        .as_ref()
+        .unwrap()
+        .query_row(
+            "SELECT count(*) FROM inbox WHERE team=?1 AND kind LIKE 'unstaffed:%' AND state='open'",
+            [TEAM],
+            |r| r.get(0),
+        )
+        .unwrap()
+}
+/// The delta review's legacy store: `episodes` Hold, reconcile, Release
+/// rounds of one stranded node through this head's own operations, then
+/// every item's reply removed by SQL. That is the layout the earlier head
+/// dd1176fe1 left (each item closed, reply-less); this head cannot leave it
+/// itself, because its reconcile ends every episode with a reply.
+pub(super) fn legacy(h: &mut Harness, episodes: usize) -> u32 {
+    let (node, _) = stranded_assignee(h);
+    for episode in 0..episodes {
+        if episode != 0 {
+            h.run(&person(), Operation::Release { node }).unwrap();
+        }
+        reconcile(h).unwrap();
+        h.run(&person(), Operation::Hold { node }).unwrap();
+        reconcile(h).unwrap();
+    }
+    let stripped = h
+        .store
+        .db
+        .as_ref()
+        .unwrap()
+        .execute(
+            "UPDATE inbox SET state='closed',reply=NULL,reply_actor=NULL WHERE team=?1 AND kind LIKE 'unstaffed:%'",
+            [TEAM],
+        )
+        .unwrap();
+    assert_eq!(stripped, episodes);
+    node
+}
+
+/// More than 500 stale items never wedge the reconcile: the cap counts the
+/// current episodes, one per node; the stale items are ended a page at a
+/// time in their own operation; the node's current episode is then the
+/// reconcile's, and a return of the node is told once.
+#[test]
+fn stale_items_are_ended_a_page_at_a_time_and_the_lead_is_told_once() {
+    let mut h = Harness::new();
+    let node = legacy(&mut h, 501);
+    assert_eq!(unended(&h), 501);
+    // 500 stale items and one current episode: the cap judges one.
+    let told = h.store.told_unstaffed(TEAM).unwrap();
+    assert_eq!(told.len(), 1);
+    assert!(h.store.stale_unstaffed(TEAM).unwrap());
+    refused(
+        h.run(&person(), Operation::EndStaleUnstaffed),
+        code::NOT_ALLOWED,
+    );
+    for page in [200, 200, 100] {
+        let before = (unended(&h), revision(&h));
+        h.run(&service(), Operation::EndStaleUnstaffed).unwrap();
+        assert_eq!(before.0 - unended(&h), page);
+        assert_eq!(revision(&h), before.1 + 1);
+    }
+    assert!(!h.store.stale_unstaffed(TEAM).unwrap());
+    let e = h.run(&service(), Operation::EndStaleUnstaffed).unwrap_err();
+    assert_eq!(e.code, code::UNSTAFFED_UNCHANGED, "{e:?}");
+    assert_eq!(h.store.told_unstaffed(TEAM).unwrap(), told);
+    // The node is held: the reconcile ends its current episode.
+    reconcile(&mut h).unwrap();
+    assert_eq!(unended(&h), 0);
+    unchanged(&mut h);
+    // Its return is a new episode, told once.
+    h.run(&person(), Operation::Release { node }).unwrap();
+    reconcile(&mut h).unwrap();
+    assert_eq!((unended(&h), open_count(&h)), (1, 1));
+    unchanged(&mut h);
+    // A paused team ends nothing.
+    h.run(&person(), Operation::Pause).unwrap();
+    refused(
+        h.run(&service(), Operation::EndStaleUnstaffed),
+        code::INVALID_STATE,
+    );
+}

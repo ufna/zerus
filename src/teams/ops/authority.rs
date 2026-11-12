@@ -36,7 +36,8 @@ pub fn authority(actor: &Actor, op: &Operation, team: &Team) -> Result<()> {
         | Operation::RecordKeyClear { .. }
         | Operation::RecordLateSession { .. }
         | Operation::RecordCancel { .. }
-        | Operation::ReconcileUnstaffed => service,
+        | Operation::ReconcileUnstaffed
+        | Operation::EndStaleUnstaffed => service,
         Operation::Create { .. }
         | Operation::Stop
         | Operation::Archive

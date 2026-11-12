@@ -249,3 +249,76 @@ fn a_lead_closing_its_item_a_hundred_times_is_told_once() {
         .unwrap();
     assert_eq!(refusals, 0, "the service never asked again");
 }
+
+/// The unended unstaffed items, counted in the store itself.
+fn unended(h: &Harness) -> usize {
+    h.store
+        .db
+        .as_ref()
+        .unwrap()
+        .query_row(
+            "SELECT count(*) FROM inbox WHERE team=?1 AND kind LIKE 'unstaffed:%' AND reply IS NULL",
+            [TEAM],
+            |r| r.get(0),
+        )
+        .unwrap()
+}
+
+/// The delta review's legacy store through the real actor: 501 closed
+/// reply-less items of one held node (made by this head's operations and
+/// then stripped of their replies by SQL, the layout the earlier head left).
+/// Each pass ends a page of the stale items in their own operation and the
+/// reconcile, judged on the current episode only, ends the held node's
+/// episode; nothing fails and no card opens. Released, the node is told
+/// once.
+#[test]
+fn a_legacy_store_is_cleaned_a_page_per_pass_and_the_lead_is_told_once() {
+    let (mut h, mut a, mut p, node) = stranded();
+    for episode in 0..501 {
+        if episode != 0 {
+            h.run(&person(), Operation::Release { node }).unwrap();
+        }
+        h.run(&service(), Operation::ReconcileUnstaffed).unwrap();
+        h.run(&person(), Operation::Hold { node }).unwrap();
+        h.run(&service(), Operation::ReconcileUnstaffed).unwrap();
+    }
+    let stripped = h
+        .store
+        .db
+        .as_ref()
+        .unwrap()
+        .execute(
+            "UPDATE inbox SET state='closed',reply=NULL,reply_actor=NULL WHERE team=?1 AND kind LIKE 'unstaffed:%'",
+            [TEAM],
+        )
+        .unwrap();
+    assert_eq!(stripped, 501);
+    // A page of 200 stale items, then the held node's current episode.
+    let mut left = Vec::new();
+    for minute in 0..4 {
+        tick(&mut h, &mut a, &mut p, 1_000 + minute * 60_000);
+        left.push(unended(&h));
+    }
+    assert_eq!(left, [300, 99, 0, 0]);
+    assert!(h.store.cards(TEAM, 200, None).unwrap().rows.is_empty());
+    for key in ["gate:unstaffed", "gate:unstaffed_stale"] {
+        assert!(a.ledger.get(TEAM, key).unwrap().is_none(), "{key}");
+    }
+    h.run(&person(), Operation::Release { node }).unwrap();
+    for minute in 4..8 {
+        tick(&mut h, &mut a, &mut p, 1_000 + minute * 60_000);
+    }
+    assert_eq!(unended(&h), 1);
+    let open: Vec<u32> = {
+        let db = h.store.db.as_ref().unwrap();
+        let mut s = db
+            .prepare(
+                "SELECT node FROM inbox WHERE team=?1 AND kind LIKE 'unstaffed:%' AND state='open'",
+            )
+            .unwrap();
+        let rows = s.query_map([TEAM], |r| r.get(0)).unwrap();
+        rows.collect::<rusqlite::Result<_>>().unwrap()
+    };
+    assert_eq!(open, [node], "told once");
+    assert_eq!(p.sends, 0);
+}

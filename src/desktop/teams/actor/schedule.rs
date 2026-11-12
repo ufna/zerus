@@ -178,6 +178,12 @@ impl Runtime {
                 });
             }
         });
+        // Stale items (older unended items of a node, left by an earlier
+        // layout) are ended a page per pass in their own operation, before
+        // the cap is judged on the current episodes.
+        if store.stale_unstaffed(&team.id)? && self.due(store, team, UNSTAFFED_STALE, "", now)? {
+            self.end_stale_unstaffed(store, team, now)?;
+        }
         let told = store.told_unstaffed(&team.id)?;
         let changes = ops::unstaffed_changes(&set, &ops::unstaffed_stages(raw), &told);
         if changes.is_empty() || !self.due(store, team, UNSTAFFED, "", now)? {
@@ -186,6 +192,22 @@ impl Runtime {
         let (_, request) = request(store, &team.id, Operation::ReconcileUnstaffed)?;
         self.put(&team.id, UNSTAFFED, &request)?;
         self.apply_unstaffed(store, team, request, now)
+    }
+    /// One page of stale items ended. A lost result costs nothing: an ended
+    /// item is never ended again, and the next pass asks with a new request.
+    fn end_stale_unstaffed(&mut self, store: &mut Store, team: &Team, now: i64) -> Result<()> {
+        let actor = Actor::Service {
+            person: team.owner.clone(),
+            team: team.id.clone(),
+        };
+        let (_, request) = request(store, &team.id, Operation::EndStaleUnstaffed)?;
+        match ops::apply(store, &actor, &request, now) {
+            Ok(_) => self.recovered(store, team, UNSTAFFED_STALE, now),
+            Err(e) if e.code == code::UNSTAFFED_UNCHANGED || e.code == code::STALE_REVISION => {
+                Ok(())
+            }
+            Err(e) => self.failure(store, team, UNSTAFFED_STALE, "", &e, now),
+        }
     }
     fn apply_unstaffed(
         &mut self,
@@ -337,6 +359,7 @@ impl Runtime {
 
 /// The ledger key of the service's reconcile of unstaffed nodes.
 const UNSTAFFED: &str = "unstaffed";
+const UNSTAFFED_STALE: &str = "unstaffed_stale";
 #[cfg(test)]
 thread_local! {
     /// A test's stale view: the service believes this node is unstaffed.

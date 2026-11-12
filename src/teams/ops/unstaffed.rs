@@ -26,6 +26,7 @@ pub const UNSTAFFED_KIND: &str = "unstaffed:";
 const LEFT: &str =
     "The service ended this item: a member can take the task again, or it is no longer ready.";
 const REPLACED: &str = "The service ended this item: the task's reason or attempt changed, and a newer item states it.";
+const STALE: &str = "The service ended this item: a newer item of the same task stands for it.";
 
 /// What a reconcile would write: the episodes it ends (an item and why),
 /// the nodes it tells (with the item's text), and the stages it retires.
@@ -171,6 +172,33 @@ pub(super) fn reconcile(ctx: &mut Context<'_>) -> Result<()> {
     }
     for (stage, reason) in &changes.stages {
         stage_to_lead(ctx, *stage, reason)?;
+    }
+    Ok(())
+}
+
+/// Ends a page of stale items, oldest first: unended items older than their
+/// node's newest one, which stand for no episode. Its own operation, so that
+/// its writes are kept whatever the reconcile that follows answers.
+pub(super) fn end_stale(ctx: &mut Context<'_>) -> Result<()> {
+    if ctx.team.status != TeamStatus::Running {
+        return Err(invalid(
+            "Only a running team's unstaffed nodes are reconciled.",
+        ));
+    }
+    let stale = store::unstaffed::stale(ctx.db, &ctx.team.id, store::unstaffed::STALE_PAGE)?;
+    if stale.is_empty() {
+        return Err(Problem::new(
+            code::UNSTAFFED_UNCHANGED,
+            "No stale unstaffed item waits to be ended; nothing was written.",
+        ));
+    }
+    for seq in stale {
+        ctx.db
+            .execute(
+                "UPDATE inbox SET state='closed',reply=?3,reply_actor=?4 WHERE team=?1 AND seq=?2",
+                params![ctx.team.id, seq, STALE, encode(ctx.actor)?],
+            )
+            .map_err(storage)?;
     }
     Ok(())
 }
