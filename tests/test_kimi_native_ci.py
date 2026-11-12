@@ -265,6 +265,18 @@ class KimiNativeCI(unittest.TestCase):
         self.assertEqual(len(ci.METHODS),15)
         self.assertEqual(ci.METHODS[-1],'test_kimi_native.NativeKimi.test_id_effort_preserves_raw_request_identity_and_shared_defaults')
 
+    def test_teams_mode_has_its_own_reviewed_inventory_and_outcome(self):
+        self.assertEqual(ci.checked_teams_methods(), ci.TEAMS_METHODS)
+        self.assertEqual(len(ci.TEAMS_METHODS), 2)
+        self.assertTrue(all(m.startswith('test_teams_native.NativeTeamsKimi.test_') for m in ci.TEAMS_METHODS))
+        self.assertFalse(set(ci.TEAMS_METHODS) & set(ci.METHODS), 'the original inventory is unchanged')
+        good = dict(tests=len(ci.TEAMS_METHODS), started=list(ci.TEAMS_METHODS), completed=list(ci.TEAMS_METHODS),
+                    failures=0, errors=0, skipped=0, expected_failures=0, unexpected_successes=0)
+        self.assertTrue(ci.outcome(good, 0, ci.TEAMS_METHODS))
+        self.assertFalse(ci.outcome(good, 0), 'a Teams result never passes as the original cases')
+        self.assertFalse(ci.outcome(dict(good, skipped=1), 0, ci.TEAMS_METHODS), 'a skip is no evidence')
+        self.assertIn('all 2 exact cases', ci.failure_summary(dict(good, failures=1), ci.TEAMS_METHODS))
+
     def test_the_only_redirect_is_one_exact_302_to_the_cdn(self):
         source = 'https://code.kimi.com/kimi-code/binaries/2.2.0/manifest.json'
         target = source.replace('code.kimi.com', 'cdn.kimi.com')

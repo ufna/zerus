@@ -45,6 +45,15 @@ METHODS = (
     'test_kimi_questions_native.NativeKimiQuestions.test_short_question_foreign_other_is_preserved_without_submission',
     'test_kimi_native.NativeKimi.test_id_effort_preserves_raw_request_identity_and_shared_defaults',
 )
+# The Agent Teams class (package 15) runs as its own child with its own bound, selected
+# with --teams: one team of Kimi sessions launched by a private desktop service. Its
+# account choice uses a recorded inspection stand-in (Kimi signs in only through
+# api.kimi.com); everything after the choice is the real Kimi image.
+TEAMS_METHODS = (
+    'test_teams_native.NativeTeamsKimi.test_1_launch_and_identity',
+    'test_teams_native.NativeTeamsKimi.test_5_stop_and_terminate',
+)
+TEAMS_CASE_SECONDS = 2400
 LOG_LIMIT = 64 * 1024**2
 IMAGE_LIMIT = 256 * 1024**2
 CASE_SECONDS = 900
@@ -233,6 +242,18 @@ def checked_pins(platform_id):
     return pins
 
 
+def checked_teams_methods():
+    tree = ast.parse((ROOT / 'tests' / 'test_teams_native.py').read_text())
+    classes = {item.name: item for item in tree.body if isinstance(item, ast.ClassDef)}
+    if 'NativeTeamsKimi' not in classes:
+        raise ValueError('the Kimi Teams class is missing')
+    found = ['test_teams_native.NativeTeamsKimi.' + item.name for item in classes['TeamsContract'].body
+             if isinstance(item, ast.FunctionDef) and item.name.startswith('test_')]
+    if found != list(TEAMS_METHODS):
+        raise ValueError('Teams method inventory needs an explicit review')
+    return TEAMS_METHODS
+
+
 def checked_methods():
     found = []
     for filename, classes in (('test_kimi_native', ('NativeKimi',)),
@@ -262,7 +283,9 @@ def hosted_paths(args, env):
         raise ValueError('the checkout is not the declared workspace')
     if any(not path.resolve().is_relative_to(temporary) for path in (args.hgs, args.tmux)):
         raise ValueError('hgs and tmux must be private runner-temporary builds')
-    if getattr(args,'effort_seed_receipt',None) is None or not args.effort_seed_receipt.resolve().is_relative_to(temporary):
+    # The Teams class takes no Effort seed (--teams refuses one); the original cases require it.
+    if not getattr(args, 'teams', False) and (getattr(args,'effort_seed_receipt',None) is None
+                                              or not args.effort_seed_receipt.resolve().is_relative_to(temporary)):
         raise ValueError('private Effort seed receipt must stay in runner temporary builds')
     if not args.output.resolve().is_relative_to(workspace / 'artifacts' / 'test-results'):
         raise ValueError('results must stay in the checkout artifact directory')
@@ -306,7 +329,7 @@ def record_roots(case, destination):
             continue
         if path.is_file():
             path = path.parent
-        if not path.name.startswith(('hgs-pause-', 'hgs-kimi-image-', 'hgs-kimi-native-')):
+        if not path.name.startswith(('hgs-pause-', 'hgs-kimi-image-', 'hgs-kimi-native-', 'hgs-teams-native-')):
             raise ValueError('fixture root is not a declared private temporary root')
         info = path.lstat()
         if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
@@ -318,9 +341,11 @@ def record_roots(case, destination):
             os.fsync(stream.fileno())
 
 
-def suite_child(result_path, custody_path):
+def suite_child(result_path, custody_path, teams=False):
     import unittest
     sys.path.insert(0, str(ROOT / 'tests'))
+    if teams:
+        return run_child(result_path, custody_path, TEAMS_METHODS, unittest)
     import test_kimi_native as guard
     import test_kimi_questions_native as questions
 
@@ -334,6 +359,10 @@ def suite_child(result_path, custody_path):
     # unchanged. Record early assignments too, so a setup timeout keeps roots.
     for cls in (guard.NativeKimi, questions.NativeKimi):
         cls.__setattr__ = observe(cls.__setattr__)
+    return run_child(result_path, custody_path, METHODS, unittest)
+
+
+def run_child(result_path, custody_path, methods, unittest):
     started, completed = [], []
 
     class Result(unittest.TextTestResult):
@@ -346,7 +375,7 @@ def suite_child(result_path, custody_path):
             completed.append(case.id())
             super().stopTest(case)
 
-    suite = unittest.defaultTestLoader.loadTestsFromNames(METHODS)
+    suite = unittest.defaultTestLoader.loadTestsFromNames(methods)
     result = unittest.TextTestRunner(verbosity=2, failfast=True, resultclass=Result).run(suite)
     value = dict(tests=result.testsRun, started=started, completed=completed,
                  failures=len(result.failures), errors=len(result.errors), skipped=len(result.skipped),
@@ -355,22 +384,22 @@ def suite_child(result_path, custody_path):
                  error_cases=[case.id() for case, _ in result.errors],
                  skipped_cases=[case.id() for case, _ in result.skipped])
     write(result_path, value)
-    return 0 if outcome(value, 0) else 1
+    return 0 if outcome(value, 0, methods) else 1
 
 
-def outcome(result, code):
-    return (code == 0 and type(result.get('tests')) is int and result['tests'] == len(METHODS) and result.get('started') == list(METHODS)
-            and result.get('completed') == list(METHODS)
+def outcome(result, code, methods=METHODS):
+    return (code == 0 and type(result.get('tests')) is int and result['tests'] == len(methods) and result.get('started') == list(methods)
+            and result.get('completed') == list(methods)
             and all(type(result.get(key)) is int and result[key] == 0 for key in
                     ('failures', 'errors', 'skipped', 'expected_failures', 'unexpected_successes')))
 
 
-def failure_summary(result):
+def failure_summary(result, methods=METHODS):
     details = {key: result.get(key) for key in ('tests', 'failures', 'errors', 'skipped')}
     for key in ('failed_cases', 'error_cases', 'skipped_cases'):
         details[key] = result.get(key, [])
     return ('native result did not qualify all %d exact cases without skips/errors: %s'
-            % (len(METHODS), json.dumps(details, sort_keys=True)))
+            % (len(methods), json.dumps(details, sort_keys=True)))
 
 
 def await_child(child, log, seconds=CASE_SECONDS):
@@ -461,15 +490,23 @@ def main():
     parser.add_argument('--tmux', required=True, type=Path)
     parser.add_argument('--effort-seed-receipt', type=Path)
     parser.add_argument('--output', required=True, type=Path)
+    parser.add_argument('--teams', action='store_true', help='Run only the Agent Teams Kimi class, in its own child')
     args = parser.parse_args()
     hosted_paths(args, os.environ)
-    effort_seed=seed_input(args)
+    if args.teams and args.effort_seed_receipt is not None:
+        raise ValueError('the Teams class takes no Effort seed')
+    effort_seed = None if args.teams else seed_input(args)
     os.umask(0o077)
     if not re.fullmatch('[0-9a-f]{40}', args.source_sha):
         raise ValueError('an exact source SHA is required')
     if subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=ROOT, text=True).strip() != args.source_sha:
         raise ValueError('source changed')
-    checked_methods()
+    # Validate the reviewed inventory, then use the fixed list itself.
+    if args.teams:
+        checked_teams_methods()
+    else:
+        checked_methods()
+    methods = TEAMS_METHODS if args.teams else METHODS
     platform_id = target()
     out = args.output.resolve()
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -486,11 +523,12 @@ def main():
     hgs = args.hgs.resolve(strict=True)
     hgs.chmod(0o500)
     env = environment(runtime, helpers, hgs)
-    env.update(seed_helper().environment(effort_seed))
+    if effort_seed is not None:
+        env.update(seed_helper().environment(effort_seed))
     source, hgs_sha = source_map(), digest(hgs)
     tools = {str(path): digest(path) for path in (Path(sys.executable).resolve(), args.tmux.resolve(), Path('/usr/bin/cc'))}
-    write(evidence / 'plan.json', dict(source_sha=args.source_sha, platform=platform_id, methods=METHODS,
-          native_cases=len(METHODS), mac_shim_compiles=len(METHODS) if platform_id == 'darwin-arm64' else 0,
+    write(evidence / 'plan.json', dict(source_sha=args.source_sha, platform=platform_id, methods=methods,
+          native_cases=len(methods), mac_shim_compiles=len(methods) if platform_id == 'darwin-arm64' and not args.teams else 0,
           hgs_sha256=hgs_sha, tools=tools, environment=env, runtime=str(runtime), no_retries=True))
     write(evidence / 'effort-seed.json',effort_seed)
     write(evidence / 'source-before.json', source)
@@ -499,9 +537,9 @@ def main():
         release, image, record_path = stage_latest(images, evidence, platform_id)
         version = release['version']
         selected_seals = {str(path): digest(path) for path in (image, record_path, images / 'manifest.json')}
-        write(evidence / 'reservation.json', dict(state='SPENT', versions=[version], native_cases=len(METHODS),
+        write(evidence / 'reservation.json', dict(state='SPENT', versions=[version], native_cases=len(methods),
               selected_release=release, time=time.time()))
-        if source_map() != source or digest(hgs) != hgs_sha or seed_input(args)!=effort_seed:
+        if source_map() != source or digest(hgs) != hgs_sha or (effort_seed is not None and seed_input(args)!=effort_seed):
             raise ValueError('source or hgs changed before native execution')
         case_evidence = evidence / ('native-' + version)
         case_evidence.mkdir(mode=0o700)
@@ -511,18 +549,21 @@ def main():
                           HGS_KIMI_GUARD=str(image),
                           ZERUS_KIMI_GUARD=str(image),
                           HGS_KIMI_EVIDENCE_DIR=str(case_evidence))
-        argv = [sys.executable, '-s', '-B', str(Path(__file__).resolve()), '--suite-child', str(result), str(owned)]
+        if args.teams:
+            native_env.update(ZERUS_TEAMS_KIMI_HOSTED='1', ZERUS_TEAMS_EVIDENCE=str(case_evidence / 'teams'))
+        argv = [sys.executable, '-s', '-B', str(Path(__file__).resolve()), '--teams-child' if args.teams else '--suite-child',
+                str(result), str(owned)]
         write(evidence / (version + '-command.json'), dict(argv=argv, environment=native_env))
         log = evidence / (version + '.log')
         with log.open('xb') as stream:
             child = subprocess.Popen(argv, env=native_env, cwd=ROOT, stdin=subprocess.DEVNULL,
                                      stdout=stream, stderr=stream, start_new_session=True)
-            code = await_child(child, log)
+            code = await_child(child, log, TEAMS_CASE_SECONDS if args.teams else CASE_SECONDS)
         value = strict(result.read_bytes())
-        if not outcome(value, code):
-            raise ValueError(failure_summary(value))
+        if not outcome(value, code, methods):
+            raise ValueError(failure_summary(value, methods))
         records.append(value)
-        if (source_map() != source or digest(hgs) != hgs_sha or seed_input(args)!=effort_seed
+        if (source_map() != source or digest(hgs) != hgs_sha or (effort_seed is not None and seed_input(args)!=effort_seed)
                 or any(digest(path) != sha for path, sha in tools.items())):
             raise ValueError('source/binary/tool post-seal changed')
         if any(digest(path) != sha for path, sha in selected_seals.items()):
@@ -537,12 +578,12 @@ def main():
         raise
     finally:
         write(evidence / 'receipt.json', dict(source=args.source_sha, platform=platform_id, outcome='PASS' if success else 'FAIL',
-              completed_versions=len(records), native_cases=len(METHODS) if success else None, images_retained=str(images), runtime_retained=str(runtime),
+              completed_versions=len(records), native_cases=len(methods) if success else None, images_retained=str(images), runtime_retained=str(runtime),
               owner_install=False, historical_np50_authority=False))
     return 0
 
 
 if __name__ == '__main__':
-    if len(sys.argv) == 4 and sys.argv[1] == '--suite-child':
-        raise SystemExit(suite_child(Path(sys.argv[2]), Path(sys.argv[3])))
+    if len(sys.argv) == 4 and sys.argv[1] in ('--suite-child', '--teams-child'):
+        raise SystemExit(suite_child(Path(sys.argv[2]), Path(sys.argv[3]), teams=sys.argv[1] == '--teams-child'))
     raise SystemExit(main())
