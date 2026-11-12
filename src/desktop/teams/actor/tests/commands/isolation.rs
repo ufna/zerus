@@ -40,3 +40,51 @@ assert str(root) in result.stderr, result.stderr
         String::from_utf8_lossy(&result.stderr)
     );
 }
+
+pub(super) fn delivery(args: &[String], mode: Option<&str>) {
+    if args.first().is_some_and(|s| s == "task") && args.get(1).is_some_and(|s| s == "team-deliver")
+    {
+        assert_eq!(
+            mode,
+            Some("native"),
+            "fixture delivery requires the test-only native input bridge"
+        );
+    }
+}
+pub(super) fn environment(command: &Process, root: &std::path::Path) {
+    let socket = command
+        .get_envs()
+        .find(|(key, _)| *key == "TMUX_TMPDIR")
+        .and_then(|(_, v)| v);
+    assert_eq!(
+        socket,
+        Some(root.as_os_str()),
+        "unisolated tmux fixture child"
+    );
+    assert!(root.is_dir());
+    assert_eq!(
+        std::fs::metadata(root).unwrap().permissions().mode() & 0o777,
+        0o700
+    );
+}
+#[test]
+fn fixture_rejects_missing_socket_isolation_and_non_native_delivery_before_spawn() {
+    let root = tempfile::tempdir().unwrap();
+    let mut cmd = Process::new("unused-fixture-program");
+    cmd.env_clear();
+    assert!(
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| environment(
+            &cmd,
+            root.path()
+        )))
+        .is_err()
+    );
+    let args = vec![
+        "task".into(),
+        "team-deliver".into(),
+        "example/task".into(),
+        "--json".into(),
+    ];
+    assert!(std::panic::catch_unwind(|| delivery(&args, None)).is_err());
+    delivery(&args, Some("native"));
+}

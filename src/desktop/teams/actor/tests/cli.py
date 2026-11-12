@@ -27,12 +27,23 @@ class AdapterCommand(unittest.TestCase):
                         HGS_STATE_DIR=str(root / "state"), HGS_SELF="fixture")
         catalog = {"projects": [{"id": "project-1", "name": "example", "color": "#123456",
                                   "folders": [], "sessions": []}]}
-        initialized = subprocess.run([str(HGS), "swarm", "initialize"], input=json.dumps(catalog),
+        initialized = self.run_child([str(HGS), "swarm", "initialize"], input=json.dumps(catalog),
                                      env=self.env, text=True, capture_output=True, timeout=30)
         self.assertEqual(initialized.returncode, 0, initialized.stderr)
 
+    def run_child(self, argv, **kwargs):
+        env = kwargs.setdefault("env", self.env)
+        root = Path(self.env["HOME"]) / "tmux"
+        self.assertEqual(env.get("TMUX_TMPDIR"), str(root))
+        self.assertTrue(root.is_dir())
+        self.assertEqual(root.stat().st_mode & 0o777, 0o700)
+        self.assertNotIn("TMUX", env)
+        self.assertNotEqual(argv[1:3], ["task", "team-deliver"],
+                            "Delivery must use the compiled native-input fixture")
+        return subprocess.run(argv, **kwargs)
+
     def test_child_tmux_directory_is_private_and_exists(self):
-        result = subprocess.run(
+        result = self.run_child(
             [sys.executable, "-c", "import json,os,pathlib; p=pathlib.Path(os.environ['TMUX_TMPDIR']); "
              "print(json.dumps([str(p), p.is_dir(), p.stat().st_mode & 0o777, 'TMUX' in os.environ]))"],
             env=self.env, text=True, capture_output=True, timeout=5,
@@ -46,7 +57,7 @@ class AdapterCommand(unittest.TestCase):
 
     def test_exact_occupancy_arguments(self):
         runner = os.environ["HGS_TEST_ACTOR_BINARY"]
-        reply = subprocess.run(
+        reply = self.run_child(
             [runner, "desktop::teams::actor::tests::native::adapter_argument_vectors_use_the_shared_builders",
              "--exact", "--nocapture", "--test-threads=1"],
             env=self.env, text=True, capture_output=True, timeout=30, check=True,
@@ -54,7 +65,7 @@ class AdapterCommand(unittest.TestCase):
         marker = "TEAM_ACTOR_ARGUMENTS="
         start = reply.stdout.index(marker) + len(marker)
         vectors, _ = json.JSONDecoder().raw_decode(reply.stdout[start:])
-        result = subprocess.run([str(HGS), *vectors["occupancy"]], env=self.env,
+        result = self.run_child([str(HGS), *vectors["occupancy"]], env=self.env,
                                 text=True, capture_output=True, timeout=30)
         self.assertEqual(result.returncode, 0, result.stderr)
         value = json.loads(result.stdout)
@@ -63,7 +74,7 @@ class AdapterCommand(unittest.TestCase):
         print("ACTOR_CLI_ARGV", json.dumps(vectors), flush=True)
 
     def test_task_command_matrix(self):
-        result = subprocess.run(
+        result = self.run_child(
             [os.environ["HGS_TEST_ACTOR_BINARY"],
              "desktop::teams::actor::tests::commands::entry", "--exact", "--nocapture", "--test-threads=1"],
             env={**self.env, "HGS_TEST_BIN": str(HGS), "HGS_ACTOR_COMMAND_MODE": "matrix"},

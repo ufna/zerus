@@ -69,6 +69,7 @@ struct Fixture {
 }
 impl Fixture {
     fn process(&self, args: &[String], input: &str, mode: Option<&str>) -> std::process::Output {
+        isolation::delivery(args, mode);
         let mut cmd = if let Some(mode) = mode {
             let mut c = Process::new(std::env::current_exe().unwrap());
             c.args([
@@ -106,6 +107,7 @@ impl Fixture {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
+        isolation::environment(&cmd, &tmux);
         let mut child = cmd.spawn().unwrap();
         child
             .stdin
