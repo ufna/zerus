@@ -179,7 +179,7 @@ impl Runtime {
         }
         Ok(())
     }
-    fn advance_command(
+    pub(super) fn advance_command(
         &mut self,
         store: &mut Store,
         ports: &mut impl Ports,

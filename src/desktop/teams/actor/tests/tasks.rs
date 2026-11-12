@@ -493,3 +493,4 @@ fn a_healthy_answer_step_does_not_reclassify_a_failed_team_card_as_sweep_health(
 }
 
 mod receipts;
+mod vanished;
