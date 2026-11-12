@@ -8,6 +8,10 @@ import { createComponent } from "solid-js";
 import { render } from "solid-js/web";
 import { TeamWorkspace } from "./TeamTab";
 import { teamView } from "./fixtures";
+import type { TeamView } from "./types";
+// The client core's board view of zerus-63rru.43's six cases (client/core
+// teams::view::tests pins this file from its own reading of the rows).
+import fromCore from "../../../core/src/teams/fixtures/board-pending.json";
 
 let dispose: (() => void) | undefined;
 afterEach(() => { dispose?.(); dispose = undefined; document.body.replaceChildren(); });
@@ -74,6 +78,36 @@ it("a task with no action shows neither the actions' divider nor an empty row", 
   // A task with actions keeps its row.
   (host.querySelector('.team-task-card[data-node="1"]') as HTMLButtonElement).click();
   expect(host.querySelector("[data-team-detail] [data-task-actions]")?.children.length).toBeGreaterThan(0);
+});
+
+it("a task whose decision has not settled shows its blocked actions with the reason, and a refusal that comes anyway", () => {
+  const pending = { ...teamView.groups[4].cards[0], node: 2, holder: "m1", pending_decision: "accept" };
+  const view = { ...teamView, groups: teamView.groups.map((group) => group.state === "reported" ? { ...group, cards: [pending] } : group) };
+  const { host } = setup({ view, actionFailure: "The previous decision has not settled." });
+  (host.querySelector('.team-task-card[data-node="2"]') as HTMLButtonElement).click();
+  const looks = [...host.querySelectorAll<HTMLButtonElement>("[data-team-detail] [data-task-action]")].map((button) => [button.dataset.taskAction, button.disabled]);
+  expect(looks).toEqual([["accept", true], ["return", true], ["hold", false], ["cancel", true]]);
+  expect(host.querySelector("[data-team-detail] [data-task-action='accept']")?.getAttribute("title")).toBe("The task's previous decision has not settled yet.");
+  expect(host.querySelector("[data-team-detail] [data-action-why]")?.textContent).toBe("The task's previous decision has not settled yet.");
+  expect(host.querySelector("[data-team-action-failure]")?.textContent, "the store's refusal is still shown").toContain("The previous decision has not settled.");
+});
+
+it("each pending case of the core's board view offers what the store takes (zerus-63rru.43)", () => {
+  const { host } = setup({ view: fromCore as TeamView });
+  const shown = (node: number) => {
+    (host.querySelector(`.team-task-card[data-node="${node}"]`) as HTMLButtonElement).click();
+    return {
+      buttons: Object.fromEntries([...host.querySelectorAll<HTMLButtonElement>("[data-team-detail] [data-task-action]")].map((button) => [button.dataset.taskAction, !button.disabled])),
+      lines: [...host.querySelectorAll("[data-team-detail] [data-action-why], [data-team-detail] [data-action-note]")].map((line) => line.textContent),
+    };
+  };
+  const waiting = "The task's previous decision has not settled yet.";
+  expect(shown(1)).toEqual({ buttons: { accept: false, return: true, hold: true, cancel: true }, lines: [waiting, "A new decision here replaces the pending return."] });
+  expect(shown(2)).toEqual({ buttons: { accept: false, return: false, hold: true, cancel: false }, lines: [waiting] });
+  expect(shown(3), "an acceptance is never replaced").toEqual({ buttons: { accept: false, return: false, hold: true, cancel: false }, lines: [waiting] });
+  expect(shown(4)).toEqual({ buttons: { release: false, cancel: true }, lines: [waiting, "A new decision here replaces the pending reassignment."] });
+  expect(shown(5), "a row from an older hgs").toEqual({ buttons: { accept: false, return: false, hold: true, cancel: false }, lines: [waiting] });
+  expect(shown(6)).toEqual({ buttons: { accept: false, return: true, hold: true, cancel: true }, lines: [waiting, "A new decision here replaces the pending decision (route)."] });
 });
 
 it("asks for a reason before a return", () => {

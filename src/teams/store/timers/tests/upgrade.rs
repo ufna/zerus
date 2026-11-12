@@ -287,6 +287,22 @@ fn a_store_marked_before_the_card_decisions_gains_their_column() {
     assert_eq!(marker(&h), Some(EXTENSION));
 }
 
+/// A store marked by the hold owners' layout (version 11) gains the index
+/// that reads its key refusals newest first in one step.
+#[test]
+fn a_store_marked_before_the_key_refusal_order_gains_its_index() {
+    let mut h = stopped();
+    let full = schema(&h);
+    db(&h)
+        .execute_batch("DROP INDEX key_refusals_newest; UPDATE timers_extension SET version=11;")
+        .unwrap();
+    let before = transitions();
+    reopen(&mut h);
+    assert_eq!(transitions(), before + 1);
+    assert_eq!(schema(&h), full, "the index, as a new store has it");
+    assert_eq!(marker(&h), Some(EXTENSION));
+}
+
 #[test]
 fn a_marker_newer_than_this_program_refuses_the_open_and_writes_nothing() {
     let h = stopped();

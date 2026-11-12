@@ -65,14 +65,30 @@ impl Runtime {
         team: &Team,
         node: u32,
     ) -> Result<Option<String>> {
-        use sha2::{Digest, Sha256};
         store
             .task_observation(&team.id, node)?
-            .map(|o| {
-                serde_json::to_vec(&o)
-                    .map(|bytes| format!("{:x}", Sha256::digest(bytes)))
-                    .map_err(crate::teams::store::storage)
-            })
+            .as_ref()
+            .map(Self::cancel_progress)
             .transpose()
+    }
+    /// What the command's stale check reads: the key, the stage, the cancel
+    /// mark and the attempt triple. The pending pair is compared beside it.
+    /// A move of anything else (the revision, the title, the rank) is no
+    /// progress of the cancel.
+    pub(in crate::desktop::teams::actor) fn cancel_progress(
+        o: &ops::TaskObservation,
+    ) -> Result<String> {
+        use sha2::{Digest, Sha256};
+        let read = (
+            o.key,
+            o.stage,
+            o.cancelled,
+            o.attempt,
+            &o.attempt_id,
+            o.attempt_conflict,
+        );
+        serde_json::to_vec(&read)
+            .map(|bytes| format!("{:x}", Sha256::digest(bytes)))
+            .map_err(crate::teams::store::storage)
     }
 }

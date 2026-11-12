@@ -18,25 +18,32 @@ impl Runtime {
             String::new()
         };
         let merging = self.ledger.merge_pending(&team.id)?;
-        let reopens = self.metadata_reopens(store, team, &rows)?;
+        let (reopens, complete) = self.metadata_reopens(store, team, &rows, now)?;
         for row in rows {
-            self.cleanup_gate(store, team, &row, &reopens, merging, now)?;
+            // Without the whole pending set the rows that read it stay.
+            if complete || !reads_reopens(&row.key) {
+                self.cleanup_gate(store, team, &row, &reopens, merging, now)?;
+            }
         }
         self.put(&team.id, "metadata_cursor", &next)?;
         Ok(())
     }
+    /// The pending reopens that the page's rows read, and whether the read
+    /// is whole. Its page bound is a row failure of this cleanup, with the
+    /// usual backoff: the rows that read the set stay, the pass goes on.
     fn metadata_reopens(
-        &self,
-        store: &Store,
+        &mut self,
+        store: &mut Store,
         team: &Team,
         rows: &[Row],
-    ) -> Result<std::collections::BTreeSet<u64>> {
+        now: i64,
+    ) -> Result<(std::collections::BTreeSet<u64>, bool)> {
         let mut pending = std::collections::BTreeSet::new();
-        if !rows
-            .iter()
-            .any(|r| r.key.starts_with("gate:reopen:") || r.key.starts_with("gate:held:reopen:"))
-        {
-            return Ok(pending);
+        if !rows.iter().any(|r| reads_reopens(&r.key)) {
+            return Ok((pending, true));
+        }
+        if !self.due(store, team, REOPEN_BOUND, "", now)? {
+            return Ok((pending, false));
         }
         let mut cursor = None;
         for _ in 0..4 {
@@ -44,10 +51,13 @@ impl Runtime {
             pending.extend(page.rows.into_iter().map(|d| d.seq));
             cursor = page.next;
             if cursor.is_none() {
-                return Ok(pending);
+                self.recovered(store, team, REOPEN_BOUND, now)?;
+                return Ok((pending, true));
             }
         }
-        Err(problem("Reopen cleanup page bound exceeded"))
+        let error = problem("Reopen cleanup page bound exceeded");
+        self.failure(store, team, REOPEN_BOUND, "", &error, now)?;
+        Ok((pending, false))
     }
     fn cleanup_gate(
         &mut self,
@@ -104,6 +114,11 @@ impl Runtime {
     }
 }
 
+const REOPEN_BOUND: &str = "cleanup:reopens";
+fn reads_reopens(key: &str) -> bool {
+    key.starts_with("gate:reopen:") || key.starts_with("gate:held:reopen:")
+}
+
 impl Runtime {
     pub(super) fn prune_terminal_rows(&mut self, store: &Store) -> Result<bool> {
         let (id, after) = self
@@ -146,8 +161,52 @@ impl Runtime {
             self.maintenance_team = Some((id, rows.last().unwrap().key.clone()));
             Ok(false)
         } else {
+            // The team's rows are reclaimed: its service items go with them.
+            self.ledger.clear_team_items(&id)?;
             self.maintenance_team = None;
             Ok(true)
         }
     }
 }
+
+/// Service items checked in one pass, against the rows they mirror.
+const ITEM_PAGE: u32 = 64;
+impl Runtime {
+    /// One page of the service items, in key order: an item whose mirrored
+    /// row is gone is removed, so a writer that missed its clear leaves no
+    /// item that reads "as of" for ever. The cursor wraps; every item is
+    /// checked within `rows / 64` passes.
+    pub(super) fn prune_items(&mut self, store: &Store) -> Result<()> {
+        let keys = self.ledger.item_page(&self.items_after, ITEM_PAGE)?;
+        self.items_after = if keys.len() == ITEM_PAGE as usize {
+            keys.last().expect("full page").clone()
+        } else {
+            Default::default()
+        };
+        for key in keys {
+            if !self.item_mirrored(store, &key)? {
+                self.ledger.clear_item(&key.team, &key.kind, &key.subject)?;
+            }
+        }
+        Ok(())
+    }
+    /// Whether the row an item mirrors is still there: the cancel row of its
+    /// decision, the terminal page's retry record, a key of its team that
+    /// still waits for a final record, or, for the full table's marker, a
+    /// table without room. An unknown kind is kept.
+    fn item_mirrored(&self, store: &Store, key: &items::Key) -> Result<bool> {
+        Ok(match key.kind.as_str() {
+            CANCEL_RETRY | CANCEL_HALTED => self
+                .ledger
+                .has_row(&key.team, &format!("cancel:{}", key.subject))?,
+            TERMINAL_PAGE => self.ledger.terminal_retry()?.is_some(),
+            KEY_CLEAR => !store.keyed_tasks(&key.team, 0, 1)?.is_empty(),
+            items::UNLISTED => !self.ledger.item_room()?,
+            _ => true,
+        })
+    }
+}
+use super::super::items::{
+    self,
+    kind::{CANCEL_HALTED, CANCEL_RETRY, KEY_CLEAR, TERMINAL_PAGE},
+};

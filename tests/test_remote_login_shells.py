@@ -264,6 +264,76 @@ class RemoteLoginShells(unittest.TestCase):
                         self.assertEqual(argv[:2], ['--expect-machine', '33333333-3333-4333-8333-333333333333'], argv)
                     self.assertEqual(argv[-len(call[1:]):], call[1:], argv)
 
+    def test_an_unproven_hosted_call_forwards_nothing_as_nobody(self):
+        # zerus-ppd26 Part B: a resident DeepSeek host's tool call (HGS_AGENT=dsh)
+        # without its hosted proof is never the person, and a peer cannot see
+        # who calls. Every command a session reference or --expect-machine
+        # forwards with a machine, every send and every launch without --parent
+        # is refused before ssh runs; the person, and a launch with --parent,
+        # go on. The commands are read from the source tables.
+        import re
+        source = (ROOT / 'src/cli.rs').read_text()
+        def table(name):
+            found = re.search(r'const ' + name + r': &\[&str\] = &\[(.*?)\];', source, re.S)
+            return re.findall(r'"([a-z_-]+)"', found.group(1))
+        session_commands, launches = table('SESSION_COMMANDS'), table('LAUNCH_COMMANDS')
+        self.assertIn('send', session_commands)
+        self.assertIn('fork', launches)
+        machine = '33333333-3333-4333-8333-333333333333'
+        reference = (f'zerus://session?machine={machine}&host=peer&name=codex%2Fp%2Fa&conversation=c&run=r')
+        (self.peer / '.local/bin/hgs').write_text(PEER_HGS.replace(
+            "'hooks-health-v1'", "'hooks-health-v1' 'Desktop creation ABI: guarded-create-v1' '  lifecycle-receipt-status-v1'"
+            " '  session-id-selector-v1' '  session-reference-selector-v1' '  session-keep-warm-v1'"
+            " '  claimed-parent-v1' '  launch-parent-v1'"))
+        hosted = dict(HGS_AGENT='dsh')
+        person = {}
+        parent = '{"session_id":"s","run_id":"r","conversation_id":"c"}'
+        calls = []
+        for command in session_commands:
+            extra = ['--json'] if command in ('send', 'session-action-status') else []
+            calls.append(('reference', [command, reference, *extra]))
+            calls.append(('guarded', ['@peer', '--expect-machine', machine, command, 'codex/p/a', *extra]))
+        for command in launches:
+            target = 'codex/p/a' if command == 'fork' else '/tmp'
+            calls.append(('launch', ['@peer', command, target]))
+        sent = self.root / 'ssh-args.json'
+
+        def run(call, extra):
+            sent.unlink(missing_ok=True)
+            for name in ('argv.json', 'stdin'):
+                (self.peer / name).unlink(missing_ok=True)
+            env = {k: v for k, v in self.env.items()}
+            env.update(extra, REMOTE_LOGIN_SHELL='/bin/sh')
+            return subprocess.run([str(HGS), *call], input='{}', text=True, capture_output=True, timeout=30, env=env)
+
+        refusals = ('cannot prove its session', "Open another computer's native UI by name")
+        for route, call in calls:
+            with self.subTest(route=route, call=call[:2] if route != 'guarded' else call[3:5], caller='hosted'):
+                refused = run(call, hosted)
+                self.assertEqual(refused.returncode, 1, refused.stdout + refused.stderr)
+                self.assertTrue(any(text in refused.stderr for text in refusals), refused.stderr)
+                self.assertFalse(sent.exists(), 'ssh must not run')
+                self.assertFalse((self.peer / 'argv.json').exists())
+        forwarded = 0
+        for route, call in calls:
+            with self.subTest(route=route, call=call[:2] if route != 'guarded' else call[3:5], caller='person'):
+                result = run(call, person)
+                self.assertNotIn('cannot prove its session', result.stderr)
+                if (self.peer / 'argv.json').exists():
+                    forwarded += 1
+        # Most of them really reach the peer for the person; none for the call.
+        self.assertGreater(forwarded, len(calls) // 2)
+        for command in launches:
+            target = 'codex/p/a' if command == 'fork' else '/tmp'
+            for route, call in (('launch', ['@peer', command, target, '--parent', parent]),
+                                ('reference', [command, reference, '--parent', parent]) if command == 'fork' else (None, None)):
+                if route is None:
+                    continue
+                with self.subTest(route=route, call=command, caller='hosted with --parent'):
+                    result = run(call, hosted)
+                    self.assertNotIn('cannot prove its session', result.stderr)
+                    self.assertTrue(sent.exists(), result.stdout + result.stderr)
+
     def test_a_reference_takes_exactly_one_verified_hop(self):
         # #1376 review: a reference reaches its computer through one SSH hop the
         # peer verifies; a guarded call never forwards a reference again.

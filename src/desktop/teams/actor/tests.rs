@@ -137,6 +137,11 @@ mod cancel_refusal;
 
 mod terminal_pruning;
 
+mod service_items;
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub(super) mod producers;
+
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 mod cancel_recovery;
 
@@ -145,3 +150,9 @@ mod unstaffed;
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 mod retired_stage;
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+mod cleanup_bound;
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+mod cancel_progress;

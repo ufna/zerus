@@ -30,14 +30,27 @@ pub(super) fn status(config: &Config, caller: &Caller, args: &[String]) -> Resul
         }
     }
     let members = store.member_rows(&team, crate::teams::store::MAX_PAGE, None)?;
+    let running = crate::desktop::teams::presence(config);
+    // A stopped or archived team takes no cards: its service conditions and
+    // refused cancels are shown here. A live team's cancels refused have the
+    // lead's inbox item, and its failing work its cards.
+    let terminal = matches!(row.status, TeamStatus::Stopped | TeamStatus::Archived);
+    let cancel_refusals = if terminal {
+        Some(store.cancel_refusal_page(&team)?)
+    } else {
+        None
+    };
     Ok(json!({
         "ok": true,
         "actor": actor::view(&identity.actor),
         "team": view,
         "members": super::board::members(&row,members.rows)?,
         "counts": counts(&store, &team)?,
-        "service_running": crate::desktop::teams::presence(config),
+        "service_running": running,
         "health": crate::desktop::teams::health(&config.state),
+        "service_items": crate::desktop::teams::service_items(&config.state, &team, running, input::now_ms()),
+        "key_refusals": store.key_refusal_page(&team)?,
+        "cancel_refusals": cancel_refusals,
     }))
 }
 

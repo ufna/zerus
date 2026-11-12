@@ -24,11 +24,16 @@ use legacy_holds::legacy_owners;
 /// written only by unmerged development builds of this package.
 pub(crate) const BASE: u32 = 8;
 /// The current layout: the base and the steps after it.
-pub(crate) const EXTENSION: u32 = 11;
+pub(crate) const EXTENSION: u32 = 12;
 /// Each layout that reached the integration branch, with the step that
 /// brings a store marked with it to the next; the steps run in order up to
 /// the current layout, after the base for a store from before the extension.
-const STEPS: &[(u32, Step)] = &[(8, answers), (9, card_decisions), (10, hold_owners)];
+const STEPS: &[(u32, Step)] = &[
+    (8, answers),
+    (9, card_decisions),
+    (10, hold_owners),
+    (11, key_refusal_order),
+];
 /// One step from a merged layout to the next, inside the transition.
 type Step = fn(&Connection) -> Result<()>;
 /// Layout 8 to 9: the lead's answers reach their members.
@@ -104,7 +109,12 @@ fn hold_owners(db: &Connection) -> Result<()> {
     }
     Ok(())
 }
-
+/// Layout 11 to 12: a team's key refusals are read newest first, for the
+/// team's status, through their own partial index.
+fn key_refusal_order(db: &Connection) -> Result<()> {
+    db.execute_batch("CREATE INDEX IF NOT EXISTS key_refusals_newest ON key_clears(team,at_ms,node) WHERE state='refused';")
+        .map_err(storage)
+}
 /// The hand-back of a Return without a holder as layout 10 records it: the
 /// decision settled, the node's one hold flag set, and the lead's item. The
 /// step to layout 11 then reads that flag with its item as a hand-back. The
