@@ -82,34 +82,26 @@ export function waitingKindIcon(kind: string): string {
   }
 }
 
-/** The kinds whose owner acts on the decision `retry`: the launch worker
- * (package 7) for its three launch cards and the team actor for its blocked
- * step check again on the next service pass. */
-const RETRY_KINDS = new Set(["launch_blocked", "launch_uncertain", "launch_capacity", "team_actor_blocked"]);
+/** The words of the decisions this version can offer, by the card list's
+ * token: the store's approve and reject, the services' retry and the
+ * acknowledgement every other card takes. */
+const DECISION_WORDS: Record<string, { text: () => string; danger?: boolean }> = {
+  approve: { text: () => tr("Approve") },
+  reject: { text: () => tr("Reject"), danger: true },
+  retry: { text: () => tr("Retry") },
+  acknowledged: { text: () => tr("Acknowledge") },
+};
 
-/** The decisions the card's owner accepts, by its kind. The card row does not
- * say which decisions it accepts, so the view knows them by kind, from the
- * store and the service:
- * - integration and pipeline_acceptance: the store takes exactly approve or
- *   reject;
- * - the launch cards and team_actor_blocked: the service acts on retry (it
- *   checks again on the next pass), and any other word closes the card;
- * - every other kind: the store closes the card on any word and nothing
- *   reads it, so the one decision is an acknowledgement. */
-export function waitingDecisions(item: Pick<WaitingItem, "kind">): WaitingDecision[] {
-  if (item.kind === "integration" || item.kind === "pipeline_acceptance") {
-    return [
-      { decision: "approve", text: tr("Approve") },
-      { decision: "reject", text: tr("Reject"), danger: true },
-    ];
-  }
-  if (RETRY_KINDS.has(item.kind)) {
-    return [
-      { decision: "retry", text: tr("Retry") },
-      { decision: "acknowledged", text: tr("Acknowledge") },
-    ];
-  }
-  return [{ decision: "acknowledged", text: tr("Acknowledge") }];
+/** The decisions a card takes: its row's list, in the list's order, and
+ * nothing else (zerus-63rru.29: every opener states the decisions something
+ * reads, and the store refuses one the card does not list). No decision comes
+ * from the card's kind; a token this version has no words for is not offered;
+ * a row without a list (an older hgs) takes acknowledged alone. */
+export function waitingDecisions(item: Pick<WaitingItem, "kind" | "decisions">): WaitingDecision[] {
+  return (item.decisions ?? ["acknowledged"]).flatMap((token) => {
+    const words = Object.hasOwn(DECISION_WORDS, token) ? DECISION_WORDS[token] : undefined;
+    return words ? [{ decision: token, text: words.text(), ...(words.danger ? { danger: true } : {}) }] : [];
+  });
 }
 
 /** The card's age in words, from its creation time. */
