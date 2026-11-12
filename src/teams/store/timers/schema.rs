@@ -26,12 +26,23 @@ thread_local! {
         const { std::cell::RefCell::new(None) };
     /// Transitions completed on this thread.
     pub(crate) static TRANSITIONS: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+    /// Runs on the open path right after the first, unlocked fence.
+    pub(crate) static AFTER_FENCE: std::cell::RefCell<Option<Hook>> =
+        const { std::cell::RefCell::new(None) };
+}
+#[cfg(test)]
+pub(in crate::teams::store) fn after_fence() -> Result<()> {
+    match AFTER_FENCE.with(|slot| slot.borrow_mut().take()) {
+        Some(hook) => hook(),
+        None => Ok(()),
+    }
 }
 
 /// Read first and read only, before any statement of the store's schema
 /// extensions that can write: a store marked by a newer program is refused
-/// and nothing is written to it. The transition reads the mark again inside
-/// its own transaction.
+/// and nothing is written to it. Every write of the open path reads the mark
+/// again under the lock it writes with: the common batches, the read index
+/// conversion and the transition.
 pub(in crate::teams::store) fn fence(db: &Connection) -> Result<()> {
     marked(db).map(|_| ())
 }

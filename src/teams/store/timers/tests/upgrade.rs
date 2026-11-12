@@ -1,7 +1,7 @@
 //! The transition that adds this package to a store: one immediate
 //! transaction, a marker written last, rerun whole when the marker is absent.
 use super::*;
-use crate::teams::store::timers::schema::{BEFORE_MARK, EXTENSION, TRANSITIONS};
+use crate::teams::store::timers::schema::{AFTER_FENCE, BEFORE_MARK, EXTENSION, TRANSITIONS};
 use std::sync::{Arc, Barrier, Mutex};
 
 /// Every object timers.sql creates, so that a store can be returned to its
@@ -319,9 +319,12 @@ fn a_marker_newer_than_this_program_refuses_the_open_and_writes_nothing() {
     assert_eq!(names(&h), full);
 }
 
+type Schema = Vec<(String, String, Option<String>)>;
 /// Every schema object's definition, to compare a store byte for byte.
-fn schema(h: &Harness) -> Vec<(String, String, Option<String>)> {
-    let db = db(h);
+fn schema(h: &Harness) -> Schema {
+    schema_of(db(h))
+}
+fn schema_of(db: &Connection) -> Schema {
     let mut s = db
         .prepare("SELECT type,name,sql FROM sqlite_master ORDER BY type,name")
         .unwrap();
@@ -370,4 +373,86 @@ fn an_older_store_with_the_older_index_still_upgrades() {
     reopen(&mut h);
     assert_eq!(schema(&h), full);
     assert_eq!(marker(&h), Some(EXTENSION));
+}
+
+/// Another program's commit right after this open's first, unlocked fence;
+/// the schema it leaves is returned through the cell.
+fn after_the_fence(h: &Harness, sql: String) -> std::rc::Rc<std::cell::RefCell<Schema>> {
+    let file = h.temp.path().join("teams/teams-v1.sqlite3");
+    let left = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    let seen = left.clone();
+    AFTER_FENCE.with(|slot| {
+        *slot.borrow_mut() = Some(Box::new(move || {
+            let other = Connection::open(file).unwrap();
+            other.execute_batch(&sql).unwrap();
+            *seen.borrow_mut() = schema_of(&other);
+            Ok(())
+        }))
+    });
+    left
+}
+fn refused_as_newer(h: &Harness) {
+    let refused = Store::open(h.temp.path()).unwrap_err();
+    assert!(
+        refused
+            .message
+            .contains("store schema is newer than this version of Zerus"),
+        "{}",
+        refused.message
+    );
+}
+
+/// The reviewer's interleaving: a newer program commits its mark and its own
+/// unique index between this open's first fence and the index conversion.
+#[test]
+fn a_mark_committed_after_the_first_fence_stops_the_index_conversion() {
+    let h = stopped();
+    let left = after_the_fence(
+        &h,
+        format!(
+            "BEGIN IMMEDIATE; UPDATE timers_extension SET version={}; DROP INDEX integration_card; CREATE UNIQUE INDEX integration_card ON cards(decision_seq); COMMIT;",
+            EXTENSION + 1
+        ),
+    );
+    refused_as_newer(&h);
+    assert!(!left.borrow().is_empty(), "the other program committed");
+    assert_eq!(schema(&h), *left.borrow(), "byte for byte what it left");
+}
+
+/// The same race before the common batches: a newer program that removed
+/// objects they would create again.
+#[test]
+fn a_mark_committed_after_the_first_fence_stops_the_common_batches() {
+    let h = stopped();
+    let left = after_the_fence(
+        &h,
+        format!(
+            "BEGIN IMMEDIATE; UPDATE timers_extension SET version={}; DROP TABLE verdicts; DROP INDEX teams_live; COMMIT;",
+            EXTENSION + 1
+        ),
+    );
+    refused_as_newer(&h);
+    assert!(!left.borrow().is_empty(), "the other program committed");
+    assert_eq!(schema(&h), *left.borrow(), "byte for byte what it left");
+}
+
+#[test]
+fn a_common_object_a_store_lacks_is_created_under_the_lock() {
+    let mut h = stopped();
+    let full = schema(&h);
+    db(&h)
+        .execute_batch("DROP TABLE verdicts; DROP INDEX teams_live;")
+        .unwrap();
+    reopen(&mut h);
+    assert_eq!(schema(&h), full);
+}
+
+/// The open looks only for the objects of `CREATE ... IF NOT EXISTS`
+/// statements: every statement of the common batches must be one.
+#[test]
+fn every_statement_of_the_common_batches_is_seen_by_the_presence_check() {
+    for sql in crate::teams::store::COMMON_SCHEMA {
+        let statements = sql.matches(';').count();
+        assert_eq!(crate::teams::store::created(sql).len(), statements, "{sql}");
+    }
 }
