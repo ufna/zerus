@@ -2546,10 +2546,15 @@ fn updating_an_existing_capacity_card_is_not_a_new_notice_reservation() {
 
 /// A launch card lists retry exactly when something reads it: the budget
 /// row on every pass, a member row while it waits on backoff, which is when
-/// its text offers Retry. Any other launch card takes acknowledged alone.
+/// its text offers Retry. Retry comes first and acknowledged follows. Any
+/// other launch card takes acknowledged alone.
 fn offered_as_read(card: &crate::teams::store::Card) {
     let read = card.kind == "launch_capacity" || card.text.contains("Choosing Retry");
-    let expected: &[&str] = if read { &["retry"] } else { &["acknowledged"] };
+    let expected: &[&str] = if read {
+        &["retry", "acknowledged"]
+    } else {
+        &["acknowledged"]
+    };
     assert_eq!(card.decisions, expected, "{}: {}", card.kind, card.text);
 }
 
@@ -2587,7 +2592,7 @@ fn a_launch_card_is_replaced_when_its_row_stops_reading_retry() {
             .unwrap()
             .unwrap()
             .decisions,
-        ["retry"]
+        ["retry", "acknowledged"]
     );
     e.read_error = false;
     e.verify_uncertain = true;
@@ -2625,4 +2630,226 @@ fn a_launch_card_is_replaced_when_its_row_stops_reading_retry() {
     r.tick(&mut h.store, &mut e, ops::tests::TEAM, now + 2)
         .unwrap();
     assert_eq!(cards(&h).len(), 2, "kept while it lists what is read");
+}
+
+/// Decides a card as the person.
+fn decide(h: &mut Harness, card: u64, decision: &str) {
+    h.run(
+        &ops::tests::person(),
+        ops::Operation::DecideCard {
+            card,
+            decision: decision.into(),
+        },
+    )
+    .unwrap();
+}
+
+/// The budget card lists retry, then acknowledged. Acknowledged closes it:
+/// the row keeps the closed card, so no card opens again while the row
+/// stays, and its automatic backoff goes on. After capacity recovers, a later
+/// shortage opens a new card whose Retry is read as before.
+#[test]
+fn an_acknowledged_budget_card_stays_closed_while_its_row_backs_off() {
+    let mut h = Harness::new();
+    let team = h.store.team(ops::tests::TEAM).unwrap().unwrap();
+    let mut ledger = Ledger::open(h.temp.path()).unwrap();
+    let mut alert = super::ledger::Row::new(&team, super::ledger::BUDGET, EPOCH, State::Retry);
+    alert.problem = Some(
+        zerus_team_plan::Problem::new(
+            code::OVER_CAP,
+            "Team member creation is temporarily at capacity.",
+        )
+        .with_refs(["member_launch_ledger"]),
+    );
+    ledger.insert(&alert, 1234).unwrap();
+    drop(ledger);
+    let db =
+        rusqlite::Connection::open(h.temp.path().join("teams/member-launch-v1.sqlite3")).unwrap();
+    db.execute("UPDATE launch_budget SET rows=16384 WHERE id=1", [])
+        .unwrap();
+    let mut e = FakeEffects {
+        exists: true,
+        ..Default::default()
+    };
+    let mut r = runtime(&h);
+    for _ in 0..5 {
+        let _ = r.tick(&mut h.store, &mut e, ops::tests::TEAM, 1234);
+    }
+    assert_eq!(cards(&h).len(), 1);
+    let first = cards(&h)[0].clone();
+    assert_eq!(first.kind, "launch_capacity");
+    assert_eq!(first.decisions, ["retry", "acknowledged"]);
+    decide(&mut h, first.seq, "acknowledged");
+    let budget = |h: &Harness| row(h, super::ledger::BUDGET);
+    let before = budget(&h);
+    for _ in 0..3 {
+        let _ = r.tick(&mut h.store, &mut e, ops::tests::TEAM, before.retry_at - 1);
+    }
+    assert_eq!(
+        budget(&h).failures,
+        before.failures,
+        "acknowledged is not a retry"
+    );
+    for _ in 0..3 {
+        let _ = r.tick(&mut h.store, &mut e, ops::tests::TEAM, before.retry_at);
+    }
+    assert!(budget(&h).failures > before.failures, "the backoff's check");
+    let after = budget(&h);
+    assert!(after.retry_at > before.retry_at);
+    for _ in 0..3 {
+        let _ = r.tick(&mut h.store, &mut e, ops::tests::TEAM, after.retry_at);
+    }
+    assert!(budget(&h).failures > after.failures, "the next check");
+    assert_eq!(
+        cards(&h).len(),
+        1,
+        "no card opens again while the row stays"
+    );
+    assert_eq!(
+        (
+            cards(&h)[0].state.as_str(),
+            cards(&h)[0].decision.as_deref()
+        ),
+        ("closed", Some("acknowledged"))
+    );
+    // Capacity recovers: the lead's row is reserved and the budget row ends,
+    // leaving the acknowledged card as it was.
+    drop(r);
+    db.execute(
+        "UPDATE launch_budget SET rows=(SELECT COUNT(*) FROM originals) WHERE id=1",
+        [],
+    )
+    .unwrap();
+    let now = budget(&h).retry_at;
+    let mut r = runtime(&h);
+    for _ in 0..100 {
+        if row_if(&h, "lead").is_some() {
+            break;
+        }
+        r.tick(&mut h.store, &mut e, ops::tests::TEAM, now).unwrap();
+    }
+    assert!(row_if(&h, "lead").is_some());
+    assert_eq!(budget(&h).state, State::Done);
+    assert_eq!(cards(&h).len(), 1);
+    assert_eq!(cards(&h)[0].decision.as_deref(), Some("acknowledged"));
+    for _ in 0..100 {
+        if row(&h, "lead").state == State::Bound {
+            break;
+        }
+        r.tick(&mut h.store, &mut e, ops::tests::TEAM, now).unwrap();
+    }
+    assert_eq!(row(&h, "lead").state, State::Bound);
+    // A later shortage, at the next member's reservation, opens a new card,
+    // and its Retry is read as before: the row runs before its backoff.
+    db.execute("UPDATE launch_budget SET rows=16384 WHERE id=1", [])
+        .unwrap();
+    for _ in 0..100 {
+        if cards(&h).len() == 2 {
+            break;
+        }
+        let _ = r.tick(&mut h.store, &mut e, ops::tests::TEAM, now);
+    }
+    assert_eq!(cards(&h).len(), 2, "a later shortage opens a new card");
+    let second = cards(&h).into_iter().find(|c| c.state == "open").unwrap();
+    assert_eq!(second.decisions, ["retry", "acknowledged"]);
+    decide(&mut h, second.seq, "retry");
+    let before = budget(&h);
+    assert!(before.retry_at > now);
+    // Passes before the row's backoff ends.
+    for _ in 0..3 {
+        let _ = r.tick(&mut h.store, &mut e, ops::tests::TEAM, now);
+    }
+    assert!(
+        budget(&h).failures > before.failures,
+        "the retry runs the row early"
+    );
+}
+
+/// A member row's card while it waits on backoff lists retry, then
+/// acknowledged. Acknowledged closes it: the row keeps the closed card, so
+/// no card opens again while the row stays, and its automatic backoff goes
+/// on. After the row moves on, a later backoff opens a new card whose Retry
+/// is read as before.
+#[test]
+fn an_acknowledged_backoff_card_stays_closed_while_its_row_backs_off() {
+    let mut h = Harness::new();
+    let mut e = FakeEffects {
+        exists: true,
+        account_error: true,
+        ..Default::default()
+    };
+    let mut r = runtime(&h);
+    advance(&mut r, &mut h, &mut e, 20);
+    assert_eq!(cards(&h).len(), 1);
+    let first = cards(&h)[0].clone();
+    assert_eq!(first.kind, "launch_blocked");
+    assert_eq!(row(&h, "lead").state, State::Retry);
+    assert_eq!(first.decisions, ["retry", "acknowledged"]);
+    offered_as_read(&first);
+    decide(&mut h, first.seq, "acknowledged");
+    let before = row(&h, "lead");
+    for _ in 0..3 {
+        r.begin_pass();
+        r.tick(&mut h.store, &mut e, ops::tests::TEAM, before.retry_at - 1)
+            .unwrap();
+    }
+    assert_eq!(
+        row(&h, "lead").failures,
+        before.failures,
+        "acknowledged is not a retry"
+    );
+    r.begin_pass();
+    r.tick(&mut h.store, &mut e, ops::tests::TEAM, before.retry_at)
+        .unwrap();
+    let after = row(&h, "lead");
+    assert!(after.failures > before.failures, "the backoff's check");
+    r.begin_pass();
+    r.tick(&mut h.store, &mut e, ops::tests::TEAM, after.retry_at)
+        .unwrap();
+    assert!(row(&h, "lead").failures > after.failures, "the next check");
+    assert_eq!(
+        cards(&h).len(),
+        1,
+        "no card opens again while the row stays"
+    );
+    assert_eq!(
+        (
+            cards(&h)[0].state.as_str(),
+            cards(&h)[0].decision.as_deref()
+        ),
+        ("closed", Some("acknowledged"))
+    );
+    // The account recovers and the row moves on, leaving the acknowledged
+    // card as it was; the launch's ownership read then backs off.
+    e.account_error = false;
+    e.launch_verification_unavailable = true;
+    let mut now = row(&h, "lead").retry_at;
+    for _ in 0..100 {
+        if cards(&h).len() == 2 {
+            break;
+        }
+        r.begin_pass();
+        let _ = r.tick(&mut h.store, &mut e, ops::tests::TEAM, now);
+        if cards(&h).len() == 2 {
+            break;
+        }
+        now = now.max(row(&h, "lead").retry_at);
+    }
+    assert_eq!(cards(&h)[0].decision.as_deref(), Some("acknowledged"));
+    assert_eq!(cards(&h).len(), 2, "a later backoff opens a new card");
+    let second = cards(&h).into_iter().find(|c| c.state == "open").unwrap();
+    assert_eq!(second.decisions, ["retry", "acknowledged"]);
+    offered_as_read(&second);
+    decide(&mut h, second.seq, "retry");
+    let before = row(&h, "lead");
+    assert!(before.retry_at > now);
+    // Passes before the row's backoff ends.
+    for _ in 0..3 {
+        r.begin_pass();
+        let _ = r.tick(&mut h.store, &mut e, ops::tests::TEAM, now);
+    }
+    assert!(
+        row(&h, "lead").failures > before.failures,
+        "the retry runs the row early"
+    );
 }

@@ -147,8 +147,11 @@ impl Runtime {
                         Operation::OpenCard {
                             kind: "team_actor_blocked".into(),
                             node: None,
-                            // Read by the gate's due check.
-                            decisions: Some(vec!["retry".into()]),
+                            // Retry is read by the gate's due check.
+                            // Acknowledged only closes the card: the gate
+                            // keeps its id, so no card opens again while the
+                            // gate stays, and the automatic checks go on.
+                            decisions: Some(vec!["retry".into(), "acknowledged".into()]),
                             text: format!(
                                 "{}: {}. {}",
                                 cut(key, 200),

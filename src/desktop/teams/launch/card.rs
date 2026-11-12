@@ -101,12 +101,15 @@ impl Runtime {
     }
 }
 
-/// The decisions a launch card lists: retry, which the budget row reads on
-/// every pass and a member row while it waits on backoff; otherwise nothing
-/// reads a decision, and the card takes acknowledged alone.
+/// The decisions a launch card lists. Retry, which the budget row reads on
+/// every pass and a member row while it waits on backoff, comes first, as the
+/// card's primary decision; acknowledged follows and only closes the card,
+/// which then stays closed while the row stays and its automatic backoff goes
+/// on. Otherwise nothing reads a decision, and the card takes acknowledged
+/// alone.
 fn decisions(row: &Row) -> Vec<String> {
     if row.member == crate::desktop::teams::ledger::BUDGET || row.state.waits_on_backoff() {
-        vec!["retry".to_owned()]
+        vec!["retry".to_owned(), "acknowledged".to_owned()]
     } else {
         vec!["acknowledged".to_owned()]
     }

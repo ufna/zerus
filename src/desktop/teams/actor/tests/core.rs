@@ -366,7 +366,11 @@ fn retry_decision_runs_the_row_early_and_its_next_failure_opens_one_new_card() {
     }
     let cards = h.store.cards(TEAM, 200, None).unwrap().rows;
     assert_eq!(cards.len(), 1);
-    assert_eq!(cards[0].decisions, ["retry"], "the decision the gate reads");
+    assert_eq!(
+        cards[0].decisions,
+        ["retry", "acknowledged"],
+        "the decision the gate reads, then the one that only closes the card"
+    );
     let first = cards[0].seq;
     h.run(
         &person(),
@@ -389,6 +393,74 @@ fn retry_decision_runs_the_row_early_and_its_next_failure_opens_one_new_card() {
         .rows
         .iter()
         .all(|c| c.state != "open"));
+}
+/// The gate's card lists retry, then acknowledged. Acknowledged closes it:
+/// the gate keeps the closed card, so no card opens again while the gate
+/// stays, and the automatic checks go on by their backoff. After the gate
+/// recovers, a later failure opens a new card whose Retry is read as before.
+#[test]
+fn an_acknowledged_gate_card_stays_closed_while_the_gate_backs_off() {
+    let (mut h, mut a, mut p) = setup(1);
+    p.free.clear();
+    p.failed_task = Some(h.node(1).task.unwrap().uuid);
+    for now in [100, 60_100, 180_100] {
+        tick(&mut h, &mut a, &mut p, now, false);
+    }
+    let cards = h.store.cards(TEAM, 200, None).unwrap().rows;
+    assert_eq!(cards.len(), 1);
+    let first = cards[0].seq;
+    h.run(
+        &person(),
+        Operation::DecideCard {
+            card: first,
+            decision: "acknowledged".into(),
+        },
+    )
+    .unwrap();
+    let card = h.store.card(TEAM, first).unwrap().unwrap();
+    assert_eq!(
+        (card.state.as_str(), card.decision.as_deref()),
+        ("closed", Some("acknowledged"))
+    );
+    // Not run early: the third failure backs off four minutes.
+    let reads = p.reads;
+    tick(&mut h, &mut a, &mut p, 180_101, false);
+    tick(&mut h, &mut a, &mut p, 420_099, false);
+    assert_eq!(p.reads, reads, "acknowledged is not a retry");
+    // The automatic checks go on, and no card opens again.
+    tick(&mut h, &mut a, &mut p, 420_100, false);
+    assert_eq!(p.reads, reads + 1, "the backoff's check");
+    tick(&mut h, &mut a, &mut p, 900_100, false);
+    assert_eq!(p.reads, reads + 2, "the next check");
+    let cards = h.store.cards(TEAM, 200, None).unwrap().rows;
+    assert_eq!(cards.len(), 1, "no card opens again while the gate stays");
+    assert_eq!(cards[0].decision.as_deref(), Some("acknowledged"));
+    // The gate recovers; the acknowledged card stays as it was.
+    p.failed_task = None;
+    tick(&mut h, &mut a, &mut p, 1_800_100, false);
+    let cards = h.store.cards(TEAM, 200, None).unwrap().rows;
+    assert_eq!(cards.len(), 1);
+    assert_eq!(cards[0].decision.as_deref(), Some("acknowledged"));
+    // A later failure opens a new card, and its Retry is read as before.
+    p.failed_task = Some(h.node(1).task.unwrap().uuid);
+    for now in [1_800_101, 1_860_101, 1_980_101] {
+        p.documents.insert(h.node(1).task.unwrap().uuid);
+        tick(&mut h, &mut a, &mut p, now, false);
+    }
+    let cards = h.store.cards(TEAM, 200, None).unwrap().rows;
+    assert_eq!(cards.len(), 2, "a later failure opens a new card");
+    let second = cards.iter().find(|c| c.state == "open").unwrap().seq;
+    h.run(
+        &person(),
+        Operation::DecideCard {
+            card: second,
+            decision: "retry".into(),
+        },
+    )
+    .unwrap();
+    let reads = p.reads;
+    tick(&mut h, &mut a, &mut p, 1_980_102, false);
+    assert_eq!(p.reads, reads + 1, "the retry runs the row early");
 }
 #[test]
 fn an_uncertain_reopen_is_not_sent_twice_and_stays_in_its_new_generation() {
