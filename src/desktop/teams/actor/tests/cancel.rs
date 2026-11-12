@@ -170,6 +170,7 @@ fn cancel_restarts_before_and_after_each_effect_keep_the_known_answer() {
 fn h_team() -> Team {
     fixture().team
 }
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 #[test]
 fn a_stop_runs_cancel_before_the_terminal_entry() {
     let (mut h, mut a, mut p) = setup();

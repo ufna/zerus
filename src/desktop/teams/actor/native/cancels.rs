@@ -64,6 +64,15 @@ impl Native {
         }
         Ok(store)
     }
+    fn cancel_visit_changed(store: &Store, team: &str, pending: &Pending) -> Result<bool> {
+        Ok(
+            Self::pending_cancels(store, team, pending.node.saturating_sub(1))?.first()
+                != Some(pending)
+                || store
+                    .task_observation(team, pending.node)?
+                    .is_some_and(|observation| observation.attempt_conflict),
+        )
+    }
     pub(in crate::desktop::teams::actor) fn save_cancel(
         store: &mut Store,
         team: &Team,
@@ -100,16 +109,7 @@ impl Native {
                 // that refused fact also ends this visit rather than replaying
                 // its permanent refusal after the conflict has settled.
                 if store.request_refused(&team.id, &request.request_id)?
-                    && (Self::pending_cancels(
-                        store,
-                        &team.id,
-                        fact.pending.node.saturating_sub(1),
-                    )?
-                    .first()
-                        != Some(&fact.pending)
-                        || store
-                            .task_observation(&team.id, fact.pending.node)?
-                            .is_some_and(|observation| observation.attempt_conflict))
+                    && Self::cancel_visit_changed(store, &team.id, &fact.pending)?
                 {
                     Ok(())
                 } else {
