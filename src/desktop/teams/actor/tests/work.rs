@@ -7,6 +7,9 @@ use crate::teams::{
 #[derive(Default)]
 struct Work {
     text: Option<String>,
+    fail_observe: bool,
+    allow_delivery: bool,
+    deliveries: u32,
     start_ms: Option<i64>,
     clock_check: Option<std::path::PathBuf>,
     dirty: bool,
@@ -49,10 +52,13 @@ impl Ports for Work {
     }
     fn observe(&mut self, _: &mut Store, _: &TaskRef) -> Result<()> {
         self.phase.push("observe");
+        if self.fail_observe {
+            return Err(super::super::problem("Fixture task observation failed"));
+        }
         Ok(())
     }
     fn free(&mut self, _: &Team, _: &Member) -> Result<bool> {
-        Ok(false)
+        Ok(self.allow_delivery)
     }
     fn deliver(
         &mut self,
@@ -61,7 +67,12 @@ impl Ports for Work {
         _: &Member,
         _: &str,
     ) -> super::super::ports::DeliveryResult {
-        panic!("work fixture must not deliver")
+        assert!(self.allow_delivery, "work fixture must not deliver");
+        self.deliveries += 1;
+        HandoutOutcome::Submitted {
+            receipt: "fixture hand-over".into(),
+        }
+        .into()
     }
     fn report(&mut self, _: &TaskRef) -> Result<Option<String>> {
         self.phase.push("report");
@@ -1102,3 +1113,11 @@ fn a_failed_conflict_fact_write_keeps_its_known_outcome_until_the_store_recovers
 }
 
 mod r2;
+
+mod r3;
+
+mod reviewed;
+
+mod finish_backoff;
+
+mod held;

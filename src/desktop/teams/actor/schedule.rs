@@ -205,6 +205,16 @@ impl Runtime {
         d: &crate::teams::store::Decision,
         now: i64,
     ) -> Result<()> {
+        let ready = store.own_task_current(&team.id, d.node, d.generation)?;
+        if !self.held_step(
+            store,
+            team,
+            ("reopen", d.node, d.generation, d.seq, d.kind.as_str()),
+            ready,
+            now,
+        )? {
+            return Ok(());
+        }
         let Some(node) = store.node(&team.id, d.node)? else {
             return Ok(());
         };

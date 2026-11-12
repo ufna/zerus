@@ -22,6 +22,15 @@ pub(super) fn holder(ctx: &Context<'_>, node: u32) -> Result<Option<String>> {
 pub(super) fn recipient(ctx: &Context<'_>, node: u32) -> Result<Option<String>> {
     ctx.db.query_row(&format!("SELECT CASE WHEN state IN {} THEN NULL ELSE member END FROM (SELECT member,state FROM effects WHERE team=?1 AND node=?2 AND generation=?3 ORDER BY seq DESC LIMIT 1)",crate::teams::store::NOT_RECEIVED),params![ctx.team.id,node,ctx.generation(node)?],|r|r.get::<_,Option<String>>(0)).optional().map(Option::flatten).map_err(storage)
 }
+/// The member a Return or Reassign reopens the node for: a Reassign's
+/// assignee, a Return's holder.
+pub(super) fn reopen_target(ctx: &Context<'_>, node: u32, kind: &str) -> Result<Option<String>> {
+    if kind == "reassign" {
+        Ok(ctx.node(node)?.assignee)
+    } else {
+        holder(ctx, node)
+    }
+}
 pub(super) fn intent(ctx: &mut Context<'_>) -> Result<()> {
     let Operation::HandoutIntent {
         node,
@@ -129,11 +138,7 @@ pub(super) fn reopen_intent(ctx: &mut Context<'_>) -> Result<()> {
     if !matches!(kind.as_str(), "return" | "reassign") || state != DecisionState::Pending {
         return Err(invalid("Reopen was already reserved or is not requested."));
     }
-    let target = if kind == "reassign" {
-        n.assignee.clone()
-    } else {
-        holder(ctx, *node)?
-    };
+    let target = reopen_target(ctx, *node, &kind)?;
     if target.as_deref() != Some(member) {
         return Err(invalid(
             "Reopen recipient differs from the decision's holder.",
@@ -225,7 +230,11 @@ fn record_outcome(
     }
     if kind == "reopen" && ctx.reopening(e.node)? {
         ctx.settle(e.node)?;
-        queue::set_hold(ctx, e.node, state != "submitted")?;
+        // A reopen that was not delivered hands the node back to the lead;
+        // a delivered one ends the decision's hold with the decision.
+        if state != "submitted" {
+            queue::hand_back(ctx, e.node, true)?;
+        }
         if state == "submitted" {
             ctx.close_inbox(e.node)?;
         }
@@ -329,7 +338,6 @@ pub(super) fn report(ctx: &mut Context<'_>) -> Result<()> {
     ctx.db.execute(&format!("UPDATE effects SET state='reported' WHERE team=?1 AND node=?2 AND generation=?3 AND state IN {OPEN_EFFECT_STATES}"),params![ctx.team.id,node,generation]).map_err(storage)?;
     if ctx.reopening(*node)? {
         ctx.settle(*node)?;
-        queue::set_hold(ctx, *node, false)?;
     }
     pipeline::reported(ctx, &n, body)
 }
@@ -404,12 +412,8 @@ pub(super) fn settle_without_reason(ctx: &mut Context<'_>, node: u32) -> Result<
                 ctx.now,
             )?);
         }
-        "return" | "reassign" if !in_hands(ctx, node)? => {
-            // The pending decision held the node; its end releases it, as a
-            // delivered reopen's does.
-            ctx.settle(node)?;
-            queue::set_hold(ctx, node, false)?;
-        }
+        // The decision's hold ends with it; an explicit hold stays.
+        "return" | "reassign" if !in_hands(ctx, node)? => ctx.settle(node)?,
         _ => (),
     }
     Ok(())

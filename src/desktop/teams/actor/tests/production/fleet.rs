@@ -90,6 +90,7 @@ pub(super) fn change(n: &native::Native, mode: &str) {
                 "fleet pending" => ("$.optional_questions.count", json!(1)),
                 "fleet background" => ("$.process_work.count", json!(1)),
                 "fleet run" => ("$.run_id", json!("other-run")),
+                "fleet launch" => ("$.launch_id", json!("another-launch")),
                 _ => panic!("unknown fleet mutation"),
             };
             db.execute(

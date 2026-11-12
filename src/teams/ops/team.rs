@@ -122,7 +122,7 @@ pub(super) fn stop(ctx: &mut Context<'_>) -> Result<()> {
     ctx.db.execute("INSERT INTO decisions(team,node,generation,actor,kind,text,state) SELECT team,id,generation,?2,'cancel','Team stopped',?3 FROM nodes WHERE team=?1",params![ctx.team.id,encode(ctx.actor)?,DecisionState::Pending]).map_err(storage)?;
     ctx.db
         .execute(
-            "UPDATE nodes SET requested='cancel',hold=1 WHERE team=?1",
+            "UPDATE nodes SET requested='cancel' WHERE team=?1",
             [&ctx.team.id],
         )
         .map_err(storage)?;

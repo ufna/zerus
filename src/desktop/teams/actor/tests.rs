@@ -28,7 +28,7 @@ fn actor_ledger_rejects_large_rows_and_unprivate_files() {
     assert!(ledger
         .reserve("team", "huge", json!("x".repeat(16385)))
         .is_err());
-    #[cfg(unix)]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     {
         use std::os::unix::fs::PermissionsExt;
         drop(ledger);
@@ -44,8 +44,9 @@ fn actor_ledger_rejects_large_rows_and_unprivate_files() {
 use super::ports::Result;
 use crate::teams::{ops::tests::*, store::Store};
 use zerus_team_plan::model::*;
+mod cancel;
 mod core;
-#[cfg(unix)]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 mod native;
 #[test]
 fn disabled_actor_does_not_create_any_store() {
@@ -66,7 +67,7 @@ fn newer_actor_ledger_is_refused_without_relabeling_it() {
         2
     );
 }
-#[cfg(unix)]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 #[test]
 fn actor_ledger_refuses_a_shared_or_linked_directory() {
     use std::os::unix::fs::{symlink, PermissionsExt};
@@ -82,7 +83,61 @@ fn actor_ledger_refuses_a_shared_or_linked_directory() {
     assert!(Ledger::open(temp.path()).is_err());
     assert!(!other.path().join("actor-v1.sqlite3").exists());
 }
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+mod adapters;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+mod commands;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+mod native_tasks;
+mod tasks;
 mod work;
 
-#[cfg(unix)]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 mod production;
+
+#[test]
+fn the_terminal_retry_is_a_single_bounded_row_even_when_the_actor_budget_is_full() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut ledger = Ledger::open(temp.path()).unwrap();
+    let db = rusqlite::Connection::open(temp.path().join("teams/actor-v1.sqlite3")).unwrap();
+    db.execute("UPDATE actor_budget SET rows=8192 WHERE id=1", [])
+        .unwrap();
+    let mut now = 100;
+    for expected in [60_000, 120_000, 240_000, 480_000, 900_000, 900_000] {
+        ledger.terminal_failed(now, &"界".repeat(2000)).unwrap();
+        let row = ledger.terminal_retry().unwrap().unwrap();
+        assert_eq!(row.next_ms - now, expected);
+        assert!(row.reason.len() <= 2048);
+        now = row.next_ms;
+    }
+    let count: u32 = db
+        .query_row("SELECT count(*) FROM actor_terminal_retry", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert_eq!(count, 1);
+    assert_eq!(ledger.terminal_retry().unwrap().unwrap().failures, 6);
+    ledger.terminal_succeeded().unwrap();
+    assert!(ledger.terminal_retry().unwrap().is_none());
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+mod native_cancels;
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+mod native_cancel_tick;
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+mod cancel_observation;
+
+mod deferred;
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+mod cancel_refusal;
+
+mod terminal_pruning;
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+mod cancel_recovery;
+
+mod retry_cards;

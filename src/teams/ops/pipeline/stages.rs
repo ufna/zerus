@@ -118,7 +118,7 @@ pub(super) fn want_stage(
         )
         .map_err(storage)?;
     state(ctx, n.id, "active", Some(id))?;
-    queue::set_hold(ctx, n.id, true)?;
+    queue::hand_back(ctx, n.id, true)?;
     Ok(())
 }
 

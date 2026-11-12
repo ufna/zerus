@@ -9,6 +9,9 @@ pub(super) struct Context<'a> {
     pub now: i64,
     pub reply: Reply,
     pub event: Option<&'static str>,
+    /// The earlier decision this operation's decision replaced, for the
+    /// journal.
+    pub superseded: Option<u64>,
 }
 impl Context<'_> {
     pub fn node(&self, id: u32) -> Result<Node> {
@@ -75,6 +78,31 @@ impl Context<'_> {
             Ok(())
         }
     }
+    /// The node's Return or Reassign that has not started: unsettled, and no
+    /// reopen was reserved for it (the reopen intent moves it from Pending to
+    /// EffectReserved, which `reopening` reads). The rule is
+    /// `DecisionState::replaceable`, which the queue row shows as well.
+    pub fn unstarted(&self, node: u32) -> Result<Option<(u64, String)>> {
+        let Some((seq, kind, state)) = self.pending(node)? else {
+            return Ok(None);
+        };
+        Ok(state.replaceable(&kind).then_some((seq, kind)))
+    }
+    /// The one-unsettled-decision rule for a lead's or the person's Return,
+    /// Reassign or Cancel. An earlier Return or Reassign that has not started
+    /// is settled as superseded in this operation and named in its journal
+    /// entry; any other unsettled decision refuses the new one as before.
+    pub fn supersede(&mut self, node: u32) -> Result<Option<(u64, String)>> {
+        if self.pending(node)?.is_none() {
+            return Ok(None);
+        }
+        let earlier = self
+            .unstarted(node)?
+            .ok_or_else(|| invalid("The previous decision has not settled."))?;
+        self.settle(node)?;
+        self.superseded = Some(earlier.0);
+        Ok(Some(earlier))
+    }
     pub fn settle(&self, node: u32) -> Result<()> {
         self.settle_node(node, false)
     }
@@ -139,11 +167,16 @@ impl Context<'_> {
         if state != DecisionState::Settled {
             self.db
                 .execute(
-                    "UPDATE nodes SET requested=?3,hold=1 WHERE team=?1 AND id=?2",
+                    "UPDATE nodes SET requested=?3 WHERE team=?1 AND id=?2",
                     params![self.team.id, node, kind],
                 )
                 .map_err(storage)?;
         }
+        // A pending decision's hold is the decision's, read from it and never
+        // stored. A hand-back's hold belongs to this next decision, which
+        // takes it over (pending) or ends it (settled at once). An explicit
+        // hold stays.
+        rows::set_hand_back(self.db, &self.team.id, node, false)?;
         Ok(seq)
     }
     pub fn inbox(&self, node: u32, kind: &str, text: &str) -> Result<u64> {

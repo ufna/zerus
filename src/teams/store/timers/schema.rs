@@ -22,11 +22,11 @@ use std::time::Duration;
 /// written only by unmerged development builds of this package.
 pub(crate) const BASE: u32 = 8;
 /// The current layout: the base and the steps after it.
-pub(crate) const EXTENSION: u32 = 10;
+pub(crate) const EXTENSION: u32 = 11;
 /// Each layout that reached the integration branch, with the step that
 /// brings a store marked with it to the next; the steps run in order up to
 /// the current layout, after the base for a store from before the extension.
-const STEPS: &[(u32, Step)] = &[(8, answers), (9, card_decisions)];
+const STEPS: &[(u32, Step)] = &[(8, answers), (9, card_decisions), (10, hold_owners)];
 /// One step from a merged layout to the next, inside the transition.
 type Step = fn(&Connection) -> Result<()>;
 /// Layout 8 to 9: the lead's answers reach their members.
@@ -50,6 +50,43 @@ fn card_decisions(db: &Connection) -> Result<()> {
             .map_err(storage)?;
     }
     unheld_returns(db)
+}
+/// Layout 10 to 11: a hold has an owner (the plan, "A hold has an owner").
+/// An explicit hold keeps its owner beside its flag, a hand-back has a flag
+/// of its own, and a pending decision's hold is read from the decision and
+/// never stored. A held node of an earlier layout with an unsettled
+/// decision: the hold was the decision's, so the stored flag goes. Any
+/// other: its setter was not recorded, and it becomes the person's, which
+/// nothing but the person's Release ends; a hold that was a hand-back then
+/// waits for the person instead of the lead's next decision. Each table is
+/// walked once by one statement.
+fn hold_owners(db: &Connection) -> Result<()> {
+    for table in ["nodes", "node_archive"] {
+        for (column, definition) in [
+            ("hold_owner", "TEXT"),
+            ("hand_back", "INTEGER NOT NULL DEFAULT 0"),
+        ] {
+            let present: bool = db
+                .query_row(
+                    &format!("SELECT EXISTS(SELECT 1 FROM pragma_table_info('{table}') WHERE name='{column}')"),
+                    [],
+                    |r| r.get(0),
+                )
+                .map_err(storage)?;
+            if !present {
+                db.execute_batch(&format!(
+                    "ALTER TABLE {table} ADD COLUMN {column} {definition}"
+                ))
+                .map_err(storage)?;
+            }
+        }
+        db.execute_batch(&format!(
+            "UPDATE {table} SET hold=0 WHERE hold AND hold_owner IS NULL AND EXISTS(SELECT 1 FROM decisions d WHERE d.team={table}.team AND d.node={table}.id AND d.state<>'settled');
+             UPDATE {table} SET hold_owner='person' WHERE hold AND hold_owner IS NULL;"
+        ))
+        .map_err(storage)?;
+    }
+    Ok(())
 }
 /// Earlier layouts admitted a Return while its hand-out was only reserved.
 /// Under the narrowed attempt holder ([`holder_of`]) such a Return has

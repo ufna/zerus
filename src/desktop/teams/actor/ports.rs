@@ -7,6 +7,88 @@ pub(in crate::desktop::teams) trait Ports {
         fallback
     }
 
+    fn cancels(
+        &mut self,
+        _store: &Store,
+        _team: &str,
+        _after: u32,
+    ) -> Result<Vec<super::cancel::Pending>> {
+        Ok(vec![])
+    }
+    fn cancel(
+        &mut self,
+        _team: &Team,
+        _pending: &super::cancel::Pending,
+        _original: &str,
+    ) -> Result<super::cancel::Answer> {
+        Err(unavailable())
+    }
+    fn record_cancel(
+        &mut self,
+        _store: &mut Store,
+        _team: &Team,
+        _fact: &super::cancel::Fact,
+        _now: i64,
+    ) -> Result<()> {
+        Err(unavailable())
+    }
+    fn cancel_fact_outcome(
+        &mut self,
+        store: &mut Store,
+        team: &Team,
+        fact: &super::cancel::Fact,
+        now: i64,
+    ) -> Result<super::cancel::FactOutcome> {
+        match self.record_cancel(store, team, fact, now) {
+            Ok(()) => Ok(super::cancel::FactOutcome::Recorded),
+            Err(error) => super::cancel::settle::classify(store, self, team, fact, error),
+        }
+    }
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn team_timers(
+        &mut self,
+        _state: &mut super::auxiliary::State,
+        _store: &mut Store,
+        _team: &Team,
+        _now: i64,
+    ) -> Result<()> {
+        Ok(())
+    }
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn answer_timers(
+        &mut self,
+        _state: &mut super::auxiliary::State,
+        _store: &mut Store,
+        _team: &Team,
+        _now: i64,
+    ) -> Result<()> {
+        Ok(())
+    }
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn terminal_timers(
+        &mut self,
+        _state: &mut super::auxiliary::State,
+        _store: &mut Store,
+        _now: i64,
+    ) -> Result<()> {
+        Ok(())
+    }
+    fn stage(
+        &mut self,
+        _team: &Team,
+        _effect: &crate::teams::store::StageTaskEffect,
+        _original: &str,
+    ) -> Result<TaskReply> {
+        Err(unavailable())
+    }
+    fn clear_stage(
+        &mut self,
+        _team: &Team,
+        _keyed: &crate::teams::store::timers::KeyedTask,
+        _original: &str,
+    ) -> Result<TaskReply> {
+        Err(unavailable())
+    }
     fn stopped(&self) -> bool {
         false
     }
@@ -59,12 +141,17 @@ pub(in crate::desktop::teams) trait Ports {
     fn deliver(&mut self, team: &Team, node: &Node, member: &Member, id: &str) -> DeliveryResult;
 }
 
-/// NotStarted is positive proof that the original child never began. A lost
-/// result or a possible submission must be an Outcome(Uncertain), never this.
+/// Only a positive non-write permits another admission. NotStarted means
+/// no original CLI child ran; Stale is its explicit non-write answer.
+/// A lost result or possible submission is always Outcome(Uncertain).
 #[derive(Clone, Debug)]
 pub(in crate::desktop::teams) enum DeliveryResult {
+    /// The task writer proved it wrote nothing because observation is behind.
+    Stale,
     Outcome(HandoutOutcome),
-    NotStarted { reason: String },
+    NotStarted {
+        reason: String,
+    },
 }
 impl From<HandoutOutcome> for DeliveryResult {
     fn from(value: HandoutOutcome) -> Self {
@@ -72,9 +159,21 @@ impl From<HandoutOutcome> for DeliveryResult {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub(in crate::desktop::teams) enum TaskReply {
+    Stale,
+    Cancelled,
+    Released,
+    Created,
+    Cleared,
+    Refused { reason: String },
+    CuttingOver { reason: String },
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(in crate::desktop::teams) enum Finish {
     Done,
+    Stale,
     Refused(String),
     CuttingOver(String),
 }

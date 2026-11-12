@@ -7,14 +7,14 @@
 use super::*;
 use zerus_team_plan::ready::{MemberView, PlanView};
 
-fn team(h: &mut Harness) -> (Actor, u32) {
+pub(super) fn team(h: &mut Harness) -> (Actor, u32) {
     let lead = h.bind("lead");
     h.bind("m1");
     h.bind("m2");
     let node = h.add(&person(), 1);
     (lead, node)
 }
-fn reassign(h: &mut Harness, lead: &Actor, node: u32) -> DecisionState {
+pub(super) fn reassign(h: &mut Harness, lead: &Actor, node: u32) -> DecisionState {
     h.run(
         lead,
         Operation::Reassign {
@@ -26,7 +26,7 @@ fn reassign(h: &mut Harness, lead: &Actor, node: u32) -> DecisionState {
     .unwrap();
     decision(h, node)
 }
-fn decision(h: &Harness, node: u32) -> DecisionState {
+pub(super) fn decision(h: &Harness, node: u32) -> DecisionState {
     h.store
         .decisions(TEAM, 200, None)
         .unwrap()
@@ -36,7 +36,7 @@ fn decision(h: &Harness, node: u32) -> DecisionState {
         .unwrap()
         .state
 }
-fn reopens(h: &Harness) -> Vec<u32> {
+pub(super) fn reopens(h: &Harness) -> Vec<u32> {
     h.store
         .pending_reopens(TEAM, 200, None)
         .unwrap()
@@ -47,7 +47,7 @@ fn reopens(h: &Harness) -> Vec<u32> {
 }
 /// The hand-out page as the actor reads it, every member free: the members
 /// it hands this node to.
-fn handouts(h: &Harness, node: u32) -> Vec<String> {
+pub(super) fn handouts(h: &Harness, node: u32) -> Vec<String> {
     let team = h.store.team(TEAM).unwrap().unwrap();
     let r = crate::teams::ops::readiness(&h.store, TEAM).unwrap();
     let members: Vec<_> = h
@@ -79,7 +79,7 @@ fn handouts(h: &Harness, node: u32) -> Vec<String> {
 }
 /// The ordinary hand-out follows the new assignee: the page gives the node
 /// to m2 once, and the intent for m2 is admitted.
-fn handed_out_to_m2(h: &mut Harness, node: u32) {
+pub(super) fn handed_out_to_m2(h: &mut Harness, node: u32) {
     assert!(
         !h.node(node).hold,
         "the waiting decision's hold is released"
@@ -90,7 +90,7 @@ fn handed_out_to_m2(h: &mut Harness, node: u32) {
 }
 /// A person's execution of the node, taken in by the observation: no team
 /// effect exists for it.
-fn person_run(h: &mut Harness, node: u32) {
+pub(super) fn person_run(h: &mut Harness, node: u32) {
     let mut o = h.observation(node, TaskStage::InProgress);
     o.attempt = 1;
     o.attempt_id = "person-run-1".into();

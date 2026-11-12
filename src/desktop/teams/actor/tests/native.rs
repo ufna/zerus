@@ -107,16 +107,18 @@ fn delivery_requires_the_echoed_id_and_version_and_never_accepts_a_failed_child(
             HandoutOutcome::Uncertain { .. }
         ));
     }
-    assert!(matches!(
-        delivery_reply(
-            Ended::Exited {
-                code: 1,
-                output: br#"{"schema":1,"id":"effect","state":"submitted","error":""}"#.to_vec()
-            },
-            "effect"
-        ),
-        HandoutOutcome::Uncertain { .. }
-    ));
+    for state in ["submitted", "refused", "uncertain", "cutting_over", "stale"] {
+        let output = serde_json::json!({"schema":1,"id":"effect","state":state,"error":"Reason"})
+            .to_string()
+            .into_bytes();
+        assert!(
+            matches!(
+                delivery_reply(Ended::Exited { code: 1, output }, "effect"),
+                HandoutOutcome::Uncertain { .. }
+            ),
+            "{state}"
+        );
+    }
 }
 
 #[test]
@@ -282,5 +284,71 @@ fn production_command_keeps_its_transaction_until_spawn_returns() {
             ));
         }
         assert_eq!(checked.get(), 2);
+    }
+}
+
+#[test]
+fn the_real_delivery_success_envelope_may_omit_the_error_field() {
+    assert!(matches!(decode_delivery(
+        br#"{"schema":1,"id":"effect","team":"team","node":1,"member":"m1","state":"submitted"}"#,
+        "effect"), HandoutOutcome::Submitted { .. }));
+    for state in ["refused", "uncertain", "cutting_over"] {
+        let raw = serde_json::json!({"schema":1,"id":"effect","state":state}).to_string();
+        assert!(matches!(
+            decode_delivery(raw.as_bytes(), "effect"),
+            HandoutOutcome::Uncertain { .. }
+        ));
+    }
+}
+
+#[test]
+fn literal_stale_replies_are_positive_nonwrites_only_for_the_exact_successful_child() {
+    use super::super::ports::{DeliveryResult, Finish};
+    use crate::desktop::teams::child::Ended;
+    let raw = br#"{"schema":1,"id":"effect","state":"stale","error":"Observe first"}"#.to_vec();
+    assert!(matches!(
+        delivery_result(
+            Ended::Exited {
+                code: 0,
+                output: raw.clone()
+            },
+            "effect"
+        ),
+        DeliveryResult::Stale
+    ));
+    for (code, id) in [(1, "effect"), (0, "other")] {
+        assert!(matches!(
+            delivery_result(
+                Ended::Exited {
+                    code,
+                    output: raw.clone()
+                },
+                id
+            ),
+            DeliveryResult::Outcome(HandoutOutcome::Uncertain { .. })
+        ));
+    }
+    assert_eq!(
+        decode_finish(
+            br#"{"schema":1,"team":"team","node":1,"state":"stale","error":"Observe first"}"#,
+            "team",
+            1
+        )
+        .unwrap(),
+        Finish::Stale
+    );
+}
+
+#[test]
+fn project_limit_refusals_keep_the_task_commands_stable_reason_unchanged() {
+    for reason in [
+        "project_agents_other: This project allows agents to start tasks only in their own session.",
+        "project_agent_limit: The project's hourly agent start limit is reached.",
+    ] {
+        let raw = serde_json::json!({"schema":1,"id":"effect","state":"refused","error":reason}).to_string();
+        match decode_delivery(raw.as_bytes(), "effect") {
+            HandoutOutcome::Refused {reason: actual} => assert_eq!(actual, reason),
+            outcome => panic!("rule refusal was lost: {outcome:?}"),
+        }
     }
 }

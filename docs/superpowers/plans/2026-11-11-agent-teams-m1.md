@@ -1636,7 +1636,19 @@ this milestone. And removing a member settles the Returns and Reassigns
 aimed at it that have not started and hands their nodes back to the lead
 with one inbox item each, as a reopen that could not be delivered does. A
 member that is stopped or busy keeps them: that wait is intended, and the
-lead can now decide otherwise.
+lead can now decide otherwise. The same holds for the Returns the store
+writes itself, after an integration conflict or a stage's failed verdict:
+when their holder was already removed the fact or the verdict is recorded
+and the node goes to the lead instead. And a Return that has not started
+and whose holder reads as nobody is handed back in the operation that
+makes it so; the service is never asked, because it makes no reopen for a
+task without a member. There are three such operations: a member's
+removal, which finds its Returns by the newest effect's member whatever
+that effect's state (a reading used only to hand back, never to deliver);
+an outcome recorded as refused that leaves nobody holding the task; and,
+once, the upgrade to the layout in which only a delivered hand-out gives a
+holder, for a Return that an earlier build admitted while the hand-out was
+only reserved.
 
 **A reader of a reply ignores what it does not know.** The contract's types
 refuse unknown fields, and that stays the rule for what a person or a
@@ -1670,6 +1682,74 @@ set. Clearing it on every error made a failed repeat look like a person
 taking the task out of the team: the observer released the node, and the
 next send queued the task a second time (the desktop's review,
 2026-11-12).
+
+**A row says whether its pending decision can be replaced.** The queue and
+board rows carry `pending_decision`, and a view that disabled every
+decision while it is set would lock the person out of the very way out the
+replacement rule gives. The row therefore also carries
+`pending_replaceable`, always written and false when nothing is pending,
+computed by the rule the operations use (`DecisionState::replaceable`: a
+Return or a Reassign that is still pending, never an acceptance, never a
+decision whose reopen is reserved). A view keeps Return and Cancel offered
+when it is true, says that the new decision replaces the pending one, and
+reads an absent field as false (2026-11-12, with the desktop's card lists).
+
+**A hold has an owner.** `nodes.hold` was one flag written by an explicit
+Hold, by a pending Return or Reassign and by a hand-back to the lead, and
+cleared by whichever of them ended next. Two reviews of 2026-11-12 found
+the same fault from two sides: a Reassign's later settlement released a
+hold the person had set before it, and a replacing Reassign that settled at
+once kept the hold of the decision it superseded. The rule: an explicit
+hold belongs to who set it and ends only by an explicit Release, a person's
+hold only by the person's; no decision, settlement, outcome or hand-back
+clears it. A pending decision's hold belongs to that decision and ends with
+it, however it ends: delivered, settled without its reason, or superseded
+by a decision that settles at once; a replacing decision that stays pending
+takes the hold over. A hand-back's hold belongs to the lead's next
+decision, which takes it over or ends it. A node under an explicit hold
+still takes decisions and stays held when they end. One function answers
+whether a node is held and one place writes each kind.
+
+**Status shows what the service keeps retrying where no card can.** A
+stopped or archived team takes no cards, so a cancel that keeps failing
+there, a halted row, the terminal page's fault at its retry cap and a stop
+cleanup that cannot finish were visible only as the service's own rows.
+`hgs team status` lists them as `service_items`: one item per failing
+subject, written and cleared in the transaction of the row it mirrors,
+with its reason, failure count and times; a page of 20 and a capped count.
+Items exist for stopped and archived teams and for service-wide conditions
+only: a live team's rows have their cards and nothing is shown twice. An
+item is current only while the service runs and is not overdue; otherwise
+it reads as of its last try. The service's cleanup pass removes an item
+whose row is gone. A reason is bounded at 512 bytes and has its control
+characters removed where it is written. Key refusals are listed for the
+team's life; cancel refusals only while the team is stopped or archived,
+because in a live team the lead has the inbox item.
+
+**A ready task that no member can take goes to the lead.** The plan
+kernel names such nodes (`ready::unstaffed`: no member who is not removed
+could take it; a busy, paused or not yet created member still counts), and
+nothing read it: a task whose assignee was removed, or whose role nobody
+has, waited in To do and nobody was told. The service's hand-out step
+compares the kernel's set over the uncooled readiness view with the
+store's open items and calls one store operation only when they differ;
+the store recomputes the set itself and opens and closes the items in one
+transaction. One item per node, to the lead, quoting the kernel's reason;
+it closes when the node leaves the set and is told again once if it
+returns. A pass with nothing changed writes nothing, and a race between
+the two answers with its own code that counts as no failure. No card: the
+`silent_lead` timer is the path to the person. A stage that loses its
+reviewers takes the path a stage takes at its creation: it is retired and
+its parent goes to the lead with the kernel's reason. Nothing in stopped,
+archived or paused teams.
+
+**A recovery removes only the row it owns.** The service's gate recovery
+closed its card and then removed whichever ledger row was current, so a
+second runtime that had failed the same check in between lost its fresh
+row and its card was tracked by nothing. A recovery removes the row only at
+the version it owns, the entry version or the version its own notice
+replay wrote; if another writer has moved the row it removes nothing and
+does not fail the pass (the actor's cards delta, 2026-11-12).
 
 **Known limit: the key of a task that was closed before the stop.** After a
 stop the service clears the team key of the tasks that were open at the

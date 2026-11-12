@@ -103,6 +103,16 @@ impl Runtime {
         now: i64,
         budget: &mut u8,
     ) -> Result<()> {
+        let ready = store.accepted_task_current(&team.id, d.node, d.generation)?;
+        if !self.held_step(
+            store,
+            team,
+            ("merge", d.node, d.generation, d.seq, "accept"),
+            ready,
+            now,
+        )? {
+            return Ok(());
+        }
         let Some(report) = store.report(&team.id, d.node, d.generation)? else {
             return Ok(());
         };
@@ -204,7 +214,10 @@ impl Runtime {
                     row.padding.clear();
                     self.put(&team.id,key,&row)?;
                 },
-                Ok(None) if row.epoch!=self.epoch && now>=row.reserved_ms.saturating_add(30_000)=>{
+                // The reservation precedes Store::open (up to 8 seconds)
+                // and Git's 30-second deadline. Include both before a later
+                // worker may interpret a negative read as a settled non-write.
+                Ok(None) if row.epoch!=self.epoch && now>=row.reserved_ms.saturating_add(38_000)=>{
                     return self.merge_settled(store,team,key,&gate,now);
                 },
                 _=>return self.force_failure(store,team,&gate,&stamp,&problem("Integration is unread; only this acceptance waits. Recovery reads ancestry. A later worker may start a new original only after the Git deadline and a known negative read."),now),

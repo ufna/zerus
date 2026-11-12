@@ -7,11 +7,13 @@ struct Fake {
     sends: usize,
     free: BTreeSet<String>,
     reply: HandoutOutcome,
+    stale: bool,
     driven: bool,
     busy_on_recheck: bool,
     free_reads: usize,
     documents: BTreeSet<String>,
     failed_task: Option<String>,
+    fail_observation_after_send: bool,
     lock_after_send: Option<std::path::PathBuf>,
     held: Option<rusqlite::Connection>,
     pause_on_recheck: Option<std::path::PathBuf>,
@@ -26,11 +28,13 @@ impl Fake {
             reply: HandoutOutcome::Submitted {
                 receipt: "submitted".into(),
             },
+            stale: false,
             driven: false,
             busy_on_recheck: false,
             free_reads: 0,
             documents: BTreeSet::new(),
             failed_task: None,
+            fail_observation_after_send: false,
             lock_after_send: None,
             held: None,
             pause_on_recheck: None,
@@ -103,17 +107,24 @@ impl super::super::ports::Ports for Fake {
     fn deliver(
         &mut self,
         _: &Team,
-        _: &Node,
+        node: &Node,
         _: &Member,
         _: &str,
     ) -> super::super::ports::DeliveryResult {
         self.sends += 1;
+        if self.fail_observation_after_send {
+            self.failed_task = node.task.as_ref().map(|t| t.uuid.clone());
+        }
         if let Some(path) = self.lock_after_send.take() {
             let db = rusqlite::Connection::open(path).unwrap();
             db.execute_batch("BEGIN IMMEDIATE").unwrap();
             self.held = Some(db);
         }
-        self.reply.clone().into()
+        if self.stale {
+            super::super::ports::DeliveryResult::Stale
+        } else {
+            self.reply.clone().into()
+        }
     }
 }
 fn setup(n: u32) -> (Harness, super::super::Runtime, Fake) {
@@ -784,4 +795,129 @@ fn a_reopen_waits_while_its_holder_is_busy_outside_the_team() {
     p.free.clear();
     tick(&mut h, &mut a, &mut p, 101, false);
     assert_eq!(p.sends, 1, "a busy holder was sent the reopen");
+}
+
+#[test]
+fn stale_delivery_observes_then_backs_off_across_restart_without_a_refusal_or_card() {
+    let (mut h, mut a, mut p) = setup(1);
+    p.stale = true;
+    tick(&mut h, &mut a, &mut p, 100, false);
+    let reads = p.reads;
+    assert_eq!(p.sends, 1);
+    assert!(h.store.effects(TEAM, 16, None).unwrap().rows[0]
+        .outcome
+        .is_none());
+    assert!(h.store.cards(TEAM, 16, None).unwrap().rows.is_empty());
+    let machine = a.machine.clone();
+    drop(a);
+    let mut a = super::super::Runtime::open(h.temp.path(), &machine).unwrap();
+    tick(&mut h, &mut a, &mut p, 101, false);
+    assert_eq!(p.sends, 1);
+    let after_epoch_observation = p.reads;
+    assert!(after_epoch_observation >= reads);
+    tick(&mut h, &mut a, &mut p, 60_100, false);
+    assert_eq!(p.sends, 2);
+    assert!(
+        p.reads > after_epoch_observation,
+        "stale answer did not observe its task"
+    );
+    tick(&mut h, &mut a, &mut p, 120_100, false);
+    assert_eq!(
+        p.sends, 2,
+        "the second stale answer did not increase its backoff"
+    );
+    assert!(h.store.cards(TEAM, 16, None).unwrap().rows.is_empty());
+    assert!(h.store.effects(TEAM, 16, None).unwrap().rows[0]
+        .outcome
+        .is_none());
+}
+
+#[test]
+fn a_failed_observation_after_stale_delivery_still_keeps_the_delivery_backoff() {
+    let (mut h, mut a, mut p) = setup(1);
+    p.stale = true;
+    p.fail_observation_after_send = true;
+    tick(&mut h, &mut a, &mut p, 100, false);
+    assert_eq!(p.sends, 1);
+    assert!(h.store.effects(TEAM, 16, None).unwrap().rows[0]
+        .outcome
+        .is_none());
+    tick(&mut h, &mut a, &mut p, 101, false);
+    assert_eq!(
+        p.sends, 1,
+        "failed observation bypassed the delivery's backoff"
+    );
+    p.failed_task = None;
+    p.fail_observation_after_send = false;
+    tick(&mut h, &mut a, &mut p, 60_100, false);
+    assert_eq!(p.sends, 2);
+}
+
+#[test]
+fn person_override_closing_an_interrupted_effect_never_resends_or_binds_the_old_outcome() {
+    for point in ["effect", "outcome"] {
+        let (mut h, mut a, mut p) = setup(1);
+        super::super::delivery::CRASH.with(|s| s.set(Some(point)));
+        assert!(
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| tick(
+                &mut h, &mut a, &mut p, 100, false
+            )))
+            .is_err()
+        );
+        assert_eq!(p.sends, 1);
+        let mut observation = h.observation(1, TaskStage::InProgress);
+        observation.attempt = 2;
+        observation.attempt_id = "person-started-elsewhere".into();
+        h.run(
+            &service(),
+            Operation::ObserveTask {
+                node: 1,
+                observation,
+            },
+        )
+        .unwrap();
+        assert_eq!(h.store.generation(TEAM, 1).unwrap(), Some(2));
+        assert!(h
+            .store
+            .open_effects(TEAM, 200, None)
+            .unwrap()
+            .rows
+            .is_empty());
+        let home = a.machine.clone();
+        drop(a);
+        let mut a = super::super::Runtime::open(h.temp.path(), &home).unwrap();
+        let team = h.store.team(TEAM).unwrap().unwrap();
+        for now in [101, 60_100] {
+            a.recover(&mut h.store, &mut p, &team, now).unwrap();
+        }
+        assert_eq!(p.sends, 1);
+        assert_eq!(h.store.generation(TEAM, 1).unwrap(), Some(2));
+        assert!(h.node(1).assignee.is_none());
+        assert!(!a
+            .ledger
+            .page(TEAM, "")
+            .unwrap()
+            .iter()
+            .any(|r| r.key.starts_with("delivery:")));
+    }
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[test]
+fn a_terminal_settle_error_after_the_live_page_is_a_row_fault_not_sweep_health() {
+    let (mut h, mut a, mut p) = setup(1);
+    p.stale = true;
+    tick(&mut h, &mut a, &mut p, 100, false);
+    let page = h.store.live_teams(16, None).unwrap().rows;
+    assert!(
+        a.ledger.prefix_page(TEAM, "delivery:", "").unwrap()[0].data["not_started"]
+            .as_bool()
+            .unwrap()
+    );
+    h.run(&person(), Operation::Stop).unwrap();
+    h.store.db.as_ref().unwrap().execute_batch("CREATE TRIGGER fail_settle BEFORE INSERT ON requests BEGIN SELECT RAISE(ABORT,'fixture settle storage failed'); END;").unwrap();
+    a.page(&mut h.store, &mut p, &page, 101, false).unwrap();
+    assert_eq!(p.sends, 1);
+    assert!(a.ledger.terminal_retry().unwrap().is_some());
+    assert!(crate::desktop::teams::health(h.temp.path()).is_none());
 }
