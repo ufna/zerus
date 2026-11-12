@@ -219,7 +219,11 @@ fn reserve(
     for key in ["question_id", "question_hash", "run_id"] {
         string(question, key, 1024)?;
     }
-    if !empty_conversation || question["conversation_id"] != "" {
+    // One reading of the question's conversation (zerus-63rru.60). A team
+    // startup card has none yet, null or "" alike; every other reservation,
+    // the ordinary admission's always, needs a conversation string.
+    let conversation = crate::state::native_identity(question, "conversation_id");
+    if !(empty_conversation && conversation == Some("")) {
         string(question, "conversation_id", 1024)?;
     }
     let hash = string(question, "question_hash", 64)?;
@@ -232,7 +236,10 @@ fn reserve(
             json!([
                 provider,
                 question["run_id"],
-                question["conversation_id"],
+                // The normalized identity: a startup card's null and "" are
+                // one reservation. A string, which every other reservation
+                // has, is itself, so those identities are unchanged.
+                conversation.unwrap_or(""),
                 question["question_id"],
                 hash
             ])

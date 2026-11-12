@@ -55,7 +55,9 @@ fn folder_answers(payload: &Value) -> Option<Value> {
     if q["source"] != source
         || q["answer_transport"] != transport
         || q["can_answer"] != true
-        || q["conversation_id"] != ""
+        // A startup card has no conversation yet: the producers copy the
+        // record's null, which is the same identity as "" (zerus-63rru.60).
+        || crate::state::native_identity(q, "conversation_id") != Some("")
     {
         return None;
     }
@@ -93,9 +95,8 @@ mod tests {
     fn team_kinds_are_distinct_and_ordinary_admission_stays_closed() {
         let dir = tempfile::tempdir().unwrap();
         let mut db = open(&dir.path().join("audit")).unwrap();
-        let q = json!({"source":"claude_folder_trust","answer_transport":"claude_tui","can_answer":true,
-            "question_id":"trust-1","question_hash":"a".repeat(64),"run_id":"run-1","conversation_id":"",
-            "questions":[{"id":"trust","question":"Trust this folder?","options":[{"id":"trust_0","label":"No, exit"},{"id":"trust_1","label":"Yes, I trust this folder"}]}]});
+        // The card Claude's producer writes for a new run (zerus-63rru.60).
+        let q = crate::state::trust_fixture::startup_card("claude");
         let mut p = json!({"host":"machine-1","session":"claude/example/member","provider":"claude","question":q});
         assert_eq!(begin(&mut db, &p).unwrap()["eligible"], false);
         let trust = begin_team(&mut db, &p, TeamKind::FolderTrust).unwrap();
@@ -128,6 +129,113 @@ mod tests {
         p["question"] = q;
         assert_eq!(
             begin_team(&mut db, &p, TeamKind::FolderTrust).unwrap()["fresh"],
+            false
+        );
+    }
+
+    fn payload(agent: &str, q: &Value) -> Value {
+        json!({"host":"machine-1","session":format!("{agent}/example/member"),"provider":agent,"question":q})
+    }
+
+    /// The startup card each producer writes is the shape this audit reads
+    /// (zerus-63rru.60): a changed shape fails here before a real member is
+    /// refused. The conversation is null, as every producer copies it.
+    #[test]
+    fn each_producers_startup_card_is_the_shape_the_audit_reads() {
+        for (agent, option) in [
+            ("claude", "trust_1"),
+            ("codex", "trust_0"),
+            ("kimi", "trust_0"),
+        ] {
+            let q = crate::state::trust_fixture::startup_card(agent);
+            assert!(q["conversation_id"].is_null(), "{agent}");
+            let mut keys: Vec<&String> = q.as_object().unwrap().keys().collect();
+            keys.sort();
+            assert_eq!(
+                keys,
+                [
+                    "agent_id",
+                    "answer_transport",
+                    "answer_unavailable_reason",
+                    "can_answer",
+                    "conversation_id",
+                    "created_at",
+                    "question_hash",
+                    "question_id",
+                    "questions",
+                    "run_id",
+                    "source",
+                    "tool_call_id"
+                ],
+                "{agent}"
+            );
+            assert_eq!(
+                folder_answers(&payload(agent, &q)),
+                Some(json!([{"question_id":"trust","selected_option_ids":[option],"text":""}])),
+                "{agent}"
+            );
+        }
+    }
+
+    /// One question, one reservation: a startup card's null and "" are one
+    /// identity. The row keeps the card as it was seen.
+    #[test]
+    fn a_startup_card_is_reserved_once_and_saved_as_it_was_seen() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut db = open(&dir.path().join("audit")).unwrap();
+        for agent in ["claude", "codex", "kimi"] {
+            let q = crate::state::trust_fixture::startup_card(agent);
+            assert_eq!(
+                begin(&mut db, &payload(agent, &q)).unwrap()["eligible"],
+                false
+            );
+            let first = begin_team(&mut db, &payload(agent, &q), TeamKind::FolderTrust).unwrap();
+            assert_eq!(
+                (first["eligible"].clone(), first["fresh"].clone()),
+                (json!(true), json!(true)),
+                "{agent}"
+            );
+            let mut empty = q.clone();
+            empty["conversation_id"] = json!("");
+            let second =
+                begin_team(&mut db, &payload(agent, &empty), TeamKind::FolderTrust).unwrap();
+            assert_eq!(second["fresh"], false, "{agent}");
+            assert_eq!(second["id"], first["id"], "{agent}");
+            let saved: String = db
+                .query_row(
+                    "SELECT question FROM attempts WHERE id=?1",
+                    [first["id"].as_i64().unwrap()],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            let saved: Value = serde_json::from_str(&saved).unwrap();
+            assert_eq!(
+                saved["question"], q,
+                "{agent}: the row keeps the card as seen"
+            );
+            assert!(saved["question"]["conversation_id"].is_null(), "{agent}");
+        }
+    }
+
+    /// Another conversation, or one of another type, is no startup card.
+    #[test]
+    fn a_card_with_a_conversation_or_a_bad_identity_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut db = open(&dir.path().join("audit")).unwrap();
+        for conversation in [json!("conversation-1"), json!(7), json!({})] {
+            let mut q = crate::state::trust_fixture::startup_card("claude");
+            q["conversation_id"] = conversation.clone();
+            assert_eq!(
+                begin_team(&mut db, &payload("claude", &q), TeamKind::FolderTrust).unwrap()
+                    ["eligible"],
+                false,
+                "{conversation}"
+            );
+        }
+        let mut q = crate::state::trust_fixture::startup_card("claude");
+        q.as_object_mut().unwrap().remove("conversation_id");
+        assert_eq!(
+            begin_team(&mut db, &payload("claude", &q), TeamKind::FolderTrust).unwrap()["eligible"],
             false
         );
     }

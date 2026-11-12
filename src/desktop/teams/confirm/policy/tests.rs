@@ -375,3 +375,24 @@ fn only_an_absent_conversation_matches_a_startup_snapshot() {
     s.conversation = b.conversation.clone();
     assert!(trust(&b, &s).is_err());
 }
+
+/// zerus-63rru.60: each producer's startup card, its conversation null as the
+/// producers copy it, is the snapshot's startup prompt (the snapshot reads
+/// the same record's null as "").
+#[test]
+fn each_producers_startup_card_is_eligible() {
+    for agent in ["claude", "codex", "kimi"] {
+        let (mut b, _, mut s) = sample();
+        let card = crate::state::trust_fixture::startup_card(agent);
+        assert!(card["conversation_id"].is_null(), "{agent}");
+        b.agent = agent.into();
+        b.folder = crate::state::trust_fixture::FOLDER.into();
+        b.run = card["run_id"].as_str().unwrap().into();
+        s.agent = b.agent.clone();
+        s.folder = b.folder.clone();
+        s.run = b.run.clone();
+        s.conversation = String::new();
+        s.questions = vec![card.clone()];
+        assert_eq!(trust(&b, &s), Ok(card), "{agent}");
+    }
+}
