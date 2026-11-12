@@ -1394,6 +1394,22 @@ again, and both orders of the answer and the observation leave the same
 state. No service command finishes, reopens or cancels a task whose current
 attempt is not the one the store observed.
 
+**An answer does not release a task; its observation does.** The service
+finds a task's node through the live binding and records nothing for a
+task that has none. A recorded cancel used to delete the binding, so the
+service went blind to that task: a person who then moved it back and sent
+it again was never observed, and the node stayed cancelled while its task
+ran, although the opposite order restored it (found by the end-to-end
+witness on 2026-11-12; tests at the store's port had applied the
+observation to the node directly). `RecordCancel` with `cancelled`
+therefore settles the decision and ends the node's attempt and keeps the
+binding. The next observation decides: a cancelled task releases the
+binding as any cancel does, a task that runs again restores the finished
+node. The command's `released` answer is its own state of `RecordCancel`:
+the key is already gone from the task, and the binding is released at
+once. Once the store has observed a task cancelled, the team has let it
+go; a person who wants it back sends it to the team again.
+
 **A reader of a reply ignores what it does not know.** The contract's types
 refuse unknown fields, and that stays the rule for what a person or a
 program sends: a request, a saved template, an imported catalog. A reply
