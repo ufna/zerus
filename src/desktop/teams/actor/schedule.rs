@@ -205,7 +205,7 @@ impl Runtime {
         d: &crate::teams::store::Decision,
         now: i64,
     ) -> Result<()> {
-        if !store.reviewed_task_current(&team.id, d.node, d.generation)? {
+        if !store.own_task_current(&team.id, d.node, d.generation)? {
             return Ok(());
         }
         let Some(node) = store.node(&team.id, d.node)? else {
