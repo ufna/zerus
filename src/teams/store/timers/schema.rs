@@ -54,12 +54,19 @@ fn card_decisions(db: &Connection) -> Result<()> {
 /// Layout 10 to 11: a hold has an owner (the plan, "A hold has an owner").
 /// An explicit hold keeps its owner beside its flag, a hand-back has a flag
 /// of its own, and a pending decision's hold is read from the decision and
-/// never stored. A held node of an earlier layout with an unsettled
-/// decision: the hold was the decision's, so the stored flag goes. Any
-/// other: its setter was not recorded, and it becomes the person's, which
-/// nothing but the person's Release ends; a hold that was a hand-back then
-/// waits for the person instead of the lead's next decision. Each table is
-/// walked once by one statement.
+/// never stored. Each held node of an earlier layout is classified, never
+/// guessed one way:
+/// - with an unsettled decision: the hold was the decision's, and the stored
+///   flag goes;
+/// - with the trace of a hand-back in its current generation: an item of a
+///   hand-back's kind for the lead, a reopen that was refused or not
+///   delivered, or its pipeline's own step (the person's acceptance, a stage
+///   in review): a hand-back, which the lead's next decision or Release ends;
+/// - any other: its setter was not recorded, and it becomes the person's,
+///   which only the person's Release ends; the lead's Release is refused
+///   with a sentence that says so.
+///
+/// Each table is walked once per statement.
 fn hold_owners(db: &Connection) -> Result<()> {
     for table in ["nodes", "node_archive"] {
         for (column, definition) in [
@@ -82,10 +89,46 @@ fn hold_owners(db: &Connection) -> Result<()> {
         }
         db.execute_batch(&format!(
             "UPDATE {table} SET hold=0 WHERE hold AND hold_owner IS NULL AND EXISTS(SELECT 1 FROM decisions d WHERE d.team={table}.team AND d.node={table}.id AND d.state<>'settled');
-             UPDATE {table} SET hold_owner='person' WHERE hold AND hold_owner IS NULL;"
+             UPDATE {table} SET hold=0,hand_back=1 WHERE hold AND hold_owner IS NULL AND ({});
+             UPDATE {table} SET hold_owner='person' WHERE hold AND hold_owner IS NULL;",
+            handed_back(table)
         ))
         .map_err(storage)?;
     }
+    Ok(())
+}
+/// The trace a hand-back leaves in a node's current generation, for the
+/// step to layout 11: an item of a hand-back's kind for the lead (filed by
+/// `rows::hand_back`'s callers and by a refused cancel), a reopen whose
+/// outcome was refused or not delivered, or its pipeline waiting on its own
+/// step.
+fn handed_back(t: &str) -> String {
+    format!(
+        "EXISTS(SELECT 1 FROM inbox i WHERE i.team={t}.team AND i.node={t}.id AND i.generation={t}.generation AND (i.kind LIKE 'return_without_holder:%' OR i.kind LIKE 'member_removed:%' OR i.kind LIKE 'conflict_holder_removed:%' OR i.kind LIKE 'verdict_holder_removed:%' OR i.kind LIKE 'cancel_refused:%'))
+         OR EXISTS(SELECT 1 FROM effects e WHERE e.team={t}.team AND e.node={t}.id AND e.generation={t}.generation AND e.kind='reopen' AND e.state IN ('refused','uncertain','cutting_over'))
+         OR EXISTS(SELECT 1 FROM pipeline_runs p WHERE p.team={t}.team AND p.node={t}.id AND p.generation={t}.generation AND (p.state='person' OR (p.state='active' AND p.stage IS NOT NULL)))"
+    )
+}
+/// The hand-back of a Return without a holder as layout 10 records it: the
+/// decision settled, the node's one hold flag set, and the lead's item. The
+/// step to layout 11 then reads that flag with its item as a hand-back. The
+/// current writer (`rows::hand_back`) writes a column this layout lacks.
+fn hand_back_at_layout_10(
+    db: &Connection,
+    team: &str,
+    node: u32,
+    seq: u64,
+    actor: &str,
+    now: i64,
+) -> Result<()> {
+    rows::settle_decisions(db, team, Some(node), actor, false)?;
+    db.execute(
+        "UPDATE nodes SET hold=1 WHERE team=?1 AND id=?2",
+        params![team, node],
+    )
+    .map_err(storage)?;
+    let (kind, text) = return_without_holder(node, seq);
+    rows::hand_back_item(db, team, node, actor, &kind, &text, now)?;
     Ok(())
 }
 /// Earlier layouts admitted a Return while its hand-out was only reserved.
@@ -150,7 +193,7 @@ fn unheld_returns_of(db: &Connection, team: &str) -> Result<()> {
             if holder_of(db, team, *node)?.is_some() {
                 continue;
             }
-            hand_back_return(db, team, *node, *seq, &actor, now)?;
+            hand_back_at_layout_10(db, team, *node, *seq, &actor, now)?;
             moved = true;
         }
         match rows.last() {

@@ -301,7 +301,7 @@ pub(super) fn release(ctx: &mut Context<'_>) -> Result<()> {
     if owner.as_deref() == Some("person") && !is_person(ctx.actor) {
         return Err(Problem::new(
             code::NOT_ALLOWED,
-            "The person held this task; only the person releases that hold.",
+            "The person holds this task, and only the person releases that hold; a hold kept from before holds had owners counts as the person's unless it was a hand-back to the lead.",
         ));
     }
     rows::set_explicit_hold(ctx.db, &ctx.team.id, *node, None)?;
