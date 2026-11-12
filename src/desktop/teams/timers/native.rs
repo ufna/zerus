@@ -55,6 +55,21 @@ impl Effects for Native<'_> {
     }
 }
 impl Native<'_> {
+    #[cfg(test)]
+    pub(in crate::desktop::teams) fn fixture_program<T>(
+        path: &std::path::Path,
+        run: impl FnOnce() -> T,
+    ) -> T {
+        struct Restore(Option<std::path::PathBuf>);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                tests::PROGRAM.with(|slot| *slot.borrow_mut() = self.0.take());
+            }
+        }
+        let _restore = Restore(tests::PROGRAM.with(|slot| slot.replace(Some(path.into()))));
+        run()
+    }
+
     /// Run one original with its own custody. `admit` runs right before the
     /// spawn and may hold a value, such as a store transaction, across it.
     fn original<T>(

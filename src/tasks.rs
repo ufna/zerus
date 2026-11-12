@@ -33,6 +33,9 @@ mod history;
 mod index;
 mod teams;
 mod team_deliver;
+#[cfg(test)]
+#[allow(unused_imports)] // The Teams actor's isolated CLI fixture supplies native input.
+pub(crate) use team_deliver::FIXTURE_NATIVE_INPUT;
 
 /// A send that pasted the prompt but could not record it: its outcome is
 /// uncertain, and the phone's receipt says so.
