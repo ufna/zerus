@@ -20,6 +20,8 @@ pub(in crate::state) mod host_identity;
 mod shell_identity;
 #[cfg(all(test, unix))]
 pub(super) use host_identity::record_running_for_test;
+#[cfg(all(test, unix))]
+pub(crate) use host_identity::record_this_boot_for_test;
 
 #[cfg(unix)]
 // Resident bridge identity is independent of the installed harness release.
@@ -111,7 +113,6 @@ pub(crate) fn call_token_conversation(
     host: (u32, &str),
     within: Duration,
 ) -> std::result::Result<String, &'static str> {
-    use std::io::Read;
     const NO_ANSWER: &str = "The DeepSeek host did not confirm this tool call in time.";
     const OLDER: &str =
         "The running DeepSeek host predates per-call tokens; its tool calls cannot be proven.";
@@ -119,62 +120,13 @@ pub(crate) fn call_token_conversation(
     const OTHER_PEER: &str =
         "The DeepSeek host socket is not served by the host this command runs under.";
     let deadline = Instant::now() + within;
-    let remaining = || {
-        deadline
-            .checked_duration_since(Instant::now())
-            .filter(|left| !left.is_zero())
-            .ok_or(NO_ANSWER)
-    };
-    let socket = root()
-        .join("dsh/hosts")
-        .join(host_key(agent_home))
-        .join("host.sock");
-    let ask = |method: &str, params: Value| -> std::result::Result<Value, &'static str> {
-        let mut stream =
-            crate::platform::connect_unix(&socket, remaining()?).map_err(|_| NO_ANSWER)?;
-        let peer = host_peer(&stream).ok_or(OTHER_PEER)?;
-        if peer != host.0
-            || crate::platform::process_identity(peer).is_none_or(|process| process.birth != host.1)
-        {
-            return Err(OTHER_PEER);
-        }
-        let request = format!("{}\n", json!({"method":method,"params":params}));
-        let mut written = 0;
-        while written < request.len() {
-            stream
-                .set_write_timeout(Some(remaining()?))
-                .map_err(|_| NO_ANSWER)?;
-            match stream.write(&request.as_bytes()[written..]) {
-                Ok(0) => return Err(NO_ANSWER),
-                Ok(count) => written += count,
-                Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
-                Err(_) => return Err(NO_ANSWER),
+    let ask = |method: &str, params: Value| {
+        host_request(agent_home, host, deadline, method, params).map_err(|unanswered| {
+            match unanswered {
+                Unanswered::NoAnswer => NO_ANSWER,
+                Unanswered::OtherPeer => OTHER_PEER,
             }
-        }
-        let mut response = Vec::new();
-        let mut chunk = [0u8; 4096];
-        let line = loop {
-            stream
-                .set_read_timeout(Some(remaining()?))
-                .map_err(|_| NO_ANSWER)?;
-            match stream.read(&mut chunk) {
-                Ok(0) => return Err(NO_ANSWER),
-                Ok(count) => response.extend_from_slice(&chunk[..count]),
-                Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
-                Err(_) => return Err(NO_ANSWER),
-            }
-            if let Some(end) = response.iter().position(|byte| *byte == b'\n') {
-                break &response[..end];
-            }
-            if response.len() > 64 * 1024 {
-                return Err(NO_ANSWER);
-            }
-        };
-        let reply: Value = serde_json::from_slice(line).map_err(|_| NO_ANSWER)?;
-        if reply["ok"] != true {
-            return Err(NO_ANSWER);
-        }
-        Ok(reply["value"].clone())
+        })
     };
     let ping = ask("ping", json!({}))?;
     if ping["protocol"] != 1 || ping["callTokens"] != true {
@@ -190,6 +142,107 @@ pub(crate) fn call_token_conversation(
         .map(str::to_owned)
         .ok_or(UNKNOWN)
 }
+/// Why one request to a recorded host has no answer.
+#[cfg(unix)]
+enum Unanswered {
+    /// No connection, write, read or well-formed `ok` reply within the deadline.
+    NoAnswer,
+    /// The socket's peer is not the recorded host process with its birth.
+    OtherPeer,
+}
+
+/// One request to the host of `agent_home`, answered only through a socket
+/// whose peer credentials name `host`, the recorded process and birth (the
+/// exchange of zerus-ppd26 Part B). `deadline` bounds every connect, write and
+/// read together, so a peer that answers a byte at a time cannot hold the
+/// caller longer; an answer is one line of at most 64 KiB.
+#[cfg(unix)]
+fn host_request(
+    agent_home: &str,
+    host: (u32, &str),
+    deadline: Instant,
+    method: &str,
+    params: Value,
+) -> std::result::Result<Value, Unanswered> {
+    use std::io::Read;
+    let remaining = || {
+        deadline
+            .checked_duration_since(Instant::now())
+            .filter(|left| !left.is_zero())
+            .ok_or(Unanswered::NoAnswer)
+    };
+    let socket = root()
+        .join("dsh/hosts")
+        .join(host_key(agent_home))
+        .join("host.sock");
+    let mut stream =
+        crate::platform::connect_unix(&socket, remaining()?).map_err(|_| Unanswered::NoAnswer)?;
+    let peer = host_peer(&stream).ok_or(Unanswered::OtherPeer)?;
+    if peer != host.0
+        || crate::platform::process_identity(peer).is_none_or(|process| process.birth != host.1)
+    {
+        return Err(Unanswered::OtherPeer);
+    }
+    let request = format!("{}\n", json!({"method":method,"params":params}));
+    let mut written = 0;
+    while written < request.len() {
+        stream
+            .set_write_timeout(Some(remaining()?))
+            .map_err(|_| Unanswered::NoAnswer)?;
+        match stream.write(&request.as_bytes()[written..]) {
+            Ok(0) => return Err(Unanswered::NoAnswer),
+            Ok(count) => written += count,
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+            Err(_) => return Err(Unanswered::NoAnswer),
+        }
+    }
+    let mut response = Vec::new();
+    let mut chunk = [0u8; 4096];
+    let line = loop {
+        stream
+            .set_read_timeout(Some(remaining()?))
+            .map_err(|_| Unanswered::NoAnswer)?;
+        match stream.read(&mut chunk) {
+            Ok(0) => return Err(Unanswered::NoAnswer),
+            Ok(count) => response.extend_from_slice(&chunk[..count]),
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+            Err(_) => return Err(Unanswered::NoAnswer),
+        }
+        if let Some(end) = response.iter().position(|byte| *byte == b'\n') {
+            break &response[..end];
+        }
+        if response.len() > 64 * 1024 {
+            return Err(Unanswered::NoAnswer);
+        }
+    };
+    let reply: Value = serde_json::from_slice(line).map_err(|_| Unanswered::NoAnswer)?;
+    if reply["ok"] != true {
+        return Err(Unanswered::NoAnswer);
+    }
+    Ok(reply["value"].clone())
+}
+
+/// Whether the host of `agent_home`, the recorded process and birth `host`,
+/// advertises per-call tokens (zerus-63rru.28): its `ping` answers protocol 1
+/// with `callTokens` true, through the same peer-checked exchange as
+/// [`call_token_conversation`] and within one deadline of `within`. Nothing
+/// else advertises the capability: the host record holds none and the adapter
+/// version did not change with it.
+#[cfg(unix)]
+pub(crate) fn host_advertises_call_tokens(
+    agent_home: &str,
+    host: (u32, &str),
+    within: Duration,
+) -> std::result::Result<bool, &'static str> {
+    let ping = host_request(agent_home, host, Instant::now() + within, "ping", json!({})).map_err(
+        |unanswered| match unanswered {
+            Unanswered::NoAnswer => "The DeepSeek host did not answer in time.",
+            Unanswered::OtherPeer => "The DeepSeek host socket is not served by the recorded host.",
+        },
+    )?;
+    Ok(ping["protocol"] == 1 && ping["callTokens"] == true)
+}
+
 /// The process serving a connected host socket, as the kernel recorded it,
 /// and only when it runs as this user.
 #[cfg(target_os = "linux")]
@@ -712,6 +765,33 @@ fn apply_account_defaults_with(
     }
 }
 
+/// The binding a new session starts with, before its host creates it.
+fn new_binding(name: &str, cwd: &Path, launch_id: Option<&str>) -> Value {
+    json!({"backend":"dsh","name":name,"agent":"dsh","agent_home":native_home(),"cwd":cwd,
+        "conversation_id":format!("session-{}",uuid::Uuid::new_v4()),"run_id":uuid::Uuid::new_v4().to_string(),
+        "created":now(),"launch_id":launch_id,"paused":false})
+}
+
+/// A new session's binding exactly as `launch` builds and saves it, with no
+/// host started or asked: the Teams caller proof's tests take their binding
+/// from this component (zerus-63rru.28).
+#[cfg(all(test, unix))]
+pub(crate) fn launched_binding_for_test(
+    name: &str,
+    cwd: &Path,
+    launch_id: Option<&str>,
+) -> Result<Value> {
+    let mut record = new_binding(name, cwd, launch_id);
+    save(&mut record)?;
+    Ok(record)
+}
+
+/// Saves a binding through this component's own `save`, for the same tests.
+#[cfg(all(test, unix))]
+pub(crate) fn save_binding_for_test(record: &mut Value) -> Result<()> {
+    save(record)
+}
+
 pub(crate) fn launch(
     name: &str,
     cwd: &str,
@@ -742,9 +822,7 @@ pub(crate) fn launch(
     // existing name above resumes it with its own stored selection.
     let config = crate::config::Config::load().map_err(|e| e.message)?;
     let defaults = crate::accounts::launch_selection(&config, "dsh").map_err(|e| e.message)?;
-    let mut record = json!({"backend":"dsh","name":name,"agent":"dsh","agent_home":native_home(),"cwd":cwd,
-        "conversation_id":format!("session-{}",uuid::Uuid::new_v4()),"run_id":uuid::Uuid::new_v4().to_string(),
-        "created":now(),"launch_id":launch_id,"paused":false});
+    let mut record = new_binding(name, &cwd, launch_id);
     if let Some(parent) = parent { record["parent"] = parent; }
     ensure_host(&record)?;
     let (generation, mode) = create_session(&mut record)?;

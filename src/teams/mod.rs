@@ -15,6 +15,11 @@ use zerus_team_plan::Problem;
 pub(crate) mod caller;
 pub(crate) mod catalog;
 mod cli;
+// The member launch's host check (zerus-63rru.28) uses this once a DeepSeek
+// seat is accepted; until then only its tests do.
+#[cfg(unix)]
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) mod hosted;
 pub(crate) mod integrate;
 pub(crate) mod ops;
 pub(crate) mod store;
@@ -103,7 +108,7 @@ fn preview(state: &Path, action: &str, proof: impl FnOnce() -> caller::Caller) -
     let shown = |state: &Path| {
         json!({
             "ok": true, "preview": if enabled(state) { "on" } else { "off" },
-            "note": caller::INTERIM_NOTE,
+            "note": caller::limits(),
         })
     };
     // Status is public and does not read caller state. Mutating either way
@@ -232,6 +237,26 @@ mod tests {
             (Some("off"), 0),
             "off twice is still off"
         );
+    }
+
+    /// One text states every limit of the caller proofs: the interim
+    /// ancestry rule, the hosted DeepSeek proof with its child agents and
+    /// forks, and that proof's own limit (zerus-63rru.28).
+    #[test]
+    fn the_preview_states_every_limit_of_the_caller_proofs() {
+        let state = State::new("limits");
+        let (reply, exit) = answer(&state.0, &words("preview status"), false);
+        assert_eq!(exit, 0);
+        let note = reply["note"].as_str().unwrap();
+        assert_eq!(note, caller::limits());
+        for part in [
+            caller::INTERIM_NOTE,
+            "A DeepSeek child agent's command is proven as its top-level session",
+            "a DeepSeek fork is its own session",
+            crate::state::session_graph::HOSTED_LIMIT,
+        ] {
+            assert!(note.contains(part), "{part}");
+        }
     }
 
     #[test]

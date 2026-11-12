@@ -7,6 +7,8 @@ mod dispatch;
 mod fixtures;
 mod guides;
 mod harness;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+mod hosted;
 mod member_sessions;
 mod reads;
 mod storage_failure;

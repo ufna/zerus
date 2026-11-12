@@ -865,9 +865,11 @@ fn an_ancestor_registered_as_the_opencode_service_is_refused() {
     person(&malformed.answer());
 }
 
-/// A marked caller whose binding says a resident host serves its session
-/// cannot be a lead or a member: refused with the sentence that says so. A
-/// binding whose run differs is not that session and refuses as unverified.
+/// A marked caller whose binding says OpenCode's shared service serves its
+/// session cannot be a lead or a member: refused with the sentence that says
+/// so. A marked DeepSeek claim takes the hosted proof only (zerus-63rru.28):
+/// this tree carries no per-call token, so it is refused in that proof's
+/// words, whatever its binding says, and the ancestry proof reads nothing.
 #[test]
 fn a_marked_session_served_by_a_resident_host_is_refused_plainly() {
     for (mode, backend, conversation) in [
@@ -893,8 +895,13 @@ fn a_marked_session_served_by_a_resident_host_is_refused_plainly() {
         .unwrap();
         let text = tree.answer();
         refused(&text);
-        let plain = text.contains("served by a resident agent host");
-        assert_eq!(plain, mode != "hosted-dsh-run", "{mode}: {text}");
+        let plain = text.contains("served by OpenCode's shared service");
+        assert_eq!(plain, backend == "opencode", "{mode}: {text}");
+        let hosted = text.contains("This command carries no DeepSeek per-call token");
+        assert_eq!(hosted, backend == "dsh", "{mode}: {text}");
+        if backend == "dsh" {
+            assert!(text.lines().any(|line| line == "READS 0"), "{mode}: {text}");
+        }
     }
 }
 

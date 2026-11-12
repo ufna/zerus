@@ -64,10 +64,24 @@
 //! record whose birth differs is not that host, and a record from another boot
 //! names no process of this one. A missing state folder records no host. A
 //! recorded ID without a birth, an unreadable or corrupt host record and more
-//! host folders than the bound refuse. A marked caller whose
-//! binding says a resident host serves its session is refused plainly: such a
+//! host folders than the bound refuse.
+//!
+//! A marked DeepSeek claim (`dsh/...`) is proven by the hosted caller proof
+//! and by nothing else (zerus-63rru.28): the host's per-call token names the
+//! conversation whose tool call runs this command, the host's socket peer is
+//! the recorded host and the host is an ancestor (`session_graph::
+//! hosted_caller`). A proven claim is that session's key, `launch_id:` or
+//! `run_id:` like any other agent's; a refusal carries the proof's own
+//! sentence; an archived binding refuses; the ancestry proof is never tried
+//! after it. A DeepSeek child agent's command is proven as its top-level
+//! session and acts with that session's standing, as an in-process Claude or
+//! Codex subagent does; a DeepSeek fork is its own session. Only a host that
+//! advertises per-call tokens can prove anything; a host started before them
+//! is never restarted or reloaded for it. A marked caller whose binding says
+//! OpenCode's shared service serves its session is refused plainly: such a
 //! session cannot be a team lead or member in this milestone, and
 //! `host_served_agent` lets team creation and member launch refuse it too.
+//! [`limits`] is the one text that states every limit of these proofs.
 //!
 //! With a session-ID hint, ids/<ID>.json selects one verified record.
 //! Without an index entry, fixed ID-layout and legacy-label paths are both
@@ -81,6 +95,8 @@
 //! index entries at 4 KiB. No process environment is changed.
 mod ancestry;
 mod context;
+#[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
+pub(crate) mod hosted_fixture;
 #[cfg(test)]
 mod test_sources;
 use ancestry::ancestors;
@@ -92,6 +108,20 @@ use zerus_team_plan::problem::code;
 use zerus_team_plan::Problem;
 
 pub(crate) const INTERIM_NOTE: &str = "This interim rule does not detect commands whose ancestry does not pass through readable processes of the same user to their agent, for example after reparenting or credential-changing helpers, nor a caller that replaces or instruments hgs itself or writes the team store directly. Agents started without session markers are also not detected. A command in a sandbox with its own user namespace is refused, so team commands must run outside such a sandbox.";
+
+/// What the hosted DeepSeek proof adds to the interim rule, between it and
+/// the proof's own limit.
+const HOSTED_NOTE: &str = "A DeepSeek session's command is proven by its host's per-call token instead of by ancestry, and only under a host that advertises those tokens; a host started before them is never restarted for it. A DeepSeek child agent's command is proven as its top-level session and acts with that session's standing, as an in-process Claude or Codex subagent does; a DeepSeek fork is its own session.";
+
+/// The limits of this milestone's caller proofs as one text: the interim
+/// ancestry rule's, then the hosted DeepSeek proof's. The preview reply and a
+/// person's actor view state it.
+pub(crate) fn limits() -> String {
+    format!(
+        "{INTERIM_NOTE} {HOSTED_NOTE} {}",
+        crate::state::session_graph::HOSTED_LIMIT
+    )
+}
 
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum Caller {
@@ -136,6 +166,9 @@ pub(crate) fn caller(config: &Config) -> Caller {
             },
             None => None,
         };
+        if crate::state::session_graph::hosted_claim(name) {
+            return hosted_session(config, name, run, id);
+        }
         let hosted = crate::state::session_graph::caller_hosted_backend(name, run, id);
         if hosted.as_deref().is_some_and(host_served_agent) {
             return Caller::Refused(host_served());
@@ -152,18 +185,33 @@ pub(crate) fn caller(config: &Config) -> Caller {
     }
 }
 
+/// A DeepSeek claim's caller: the hosted proof's session, or its refusal in
+/// the proof's own words. Nothing falls back to the ancestry proof.
+fn hosted_session(config: &Config, name: &str, run: &str, session: Option<&str>) -> Caller {
+    match crate::state::session_graph::hosted_caller(name, run, session) {
+        Ok(Some(record)) => match session_key(config, &record) {
+            Ok(key) => Caller::Session(key),
+            Err(problem) => Caller::Refused(problem),
+        },
+        Ok(None) => Caller::Refused(not_allowed()),
+        Err(reason) => Caller::Refused(Problem::new(code::NOT_ALLOWED, reason)),
+    }
+}
+
 /// Whether sessions of this agent kind are served by a resident agent host
 /// (DeepSeek's host, OpenCode's shared service) rather than by an agent
-/// process of their own. Such a session cannot be a team lead or a member in
-/// this milestone: its commands cannot be bound to its own session by process
-/// ancestry. Creating a team with such a member and launching one call this.
+/// process of their own, and so cannot hold a team seat in this milestone.
+/// OpenCode's commands cannot be bound to their own session at all. A
+/// DeepSeek session's commands are proven by its host's per-call token, but a
+/// DeepSeek seat waits until the service can deliver to a hosted session.
+/// Creating a team with such a member and launching one call this.
 pub(crate) fn host_served_agent(agent: &str) -> bool {
     matches!(agent, "dsh" | "opencode")
 }
 
 fn host_served() -> Problem {
     Problem::new(code::NOT_ALLOWED,
-        "This session is served by a resident agent host (DeepSeek or OpenCode); in this milestone such a session cannot be a team lead or member, because its commands cannot be bound to its own session by process ancestry.")
+        "This session is served by OpenCode's shared service; in this milestone such a session cannot be a team lead or member, because its commands cannot be bound to its own session by process ancestry.")
 }
 
 fn inside_agent() -> Problem {
