@@ -27,6 +27,7 @@ type Change = Box<dyn FnMut(usize, &native::Native, &Team, &Node) -> String>;
 struct W {
     native: native::Native,
     calls: usize,
+    free_member: &'static str,
     admissions: Rc<Cell<usize>>,
     busy_on: Vec<usize>,
     change: Change,
@@ -44,7 +45,7 @@ impl ports::Ports for W {
         Ok(())
     }
     fn free(&mut self, _: &Team, m: &Member) -> ports::Result<bool> {
-        Ok(m.id == "m1")
+        Ok(m.id == self.free_member)
     }
     fn deliver(&mut self, t: &Team, n: &Node, m: &Member, id: &str) -> ports::DeliveryResult {
         self.calls += 1;
@@ -82,6 +83,7 @@ fn w(h: &Harness, busy_on: Vec<usize>, change: Change) -> W {
     W {
         native: native(h),
         calls: 0,
+        free_member: "m1",
         admissions: Default::default(),
         busy_on,
         change,
@@ -137,4 +139,58 @@ fn a_busy_not_started_delivery_is_refused_before_terminal_cancellation() {
         a.tick(&mut h.store, &mut p, TEAM, 60_100, false).unwrap();
         assert_eq!(p.calls, 1);
     }
+}
+
+#[test]
+fn unknown_occupancy_releases_its_member_after_five_proven_nonstarts() {
+    let mut h = Harness::new();
+    h.bind("m1");
+    h.bind("m2");
+    let node = h.add(&person(), 1);
+    let machine = h.store.team(TEAM).unwrap().unwrap().home;
+    let mut a = Runtime::open(h.temp.path(), &machine).unwrap();
+    let mut p = w(&h, vec![], none());
+    native::TEST_INVENTORY.with(|s| {
+        *s.borrow_mut() = Some(serde_json::json!({
+            "node_id":machine,"organization":{"projects":[{"id":"project-1"}]}
+        }))
+    });
+    let mut at = Vec::new();
+    for now in (100..=900_100).step_by(60_000) {
+        let before = p.calls;
+        a.tick(&mut h.store, &mut p, TEAM, now, false).unwrap();
+        if p.calls != before {
+            at.push(now);
+        }
+    }
+    native::TEST_INVENTORY.with(|s| *s.borrow_mut() = None);
+    assert_eq!(at, [100, 60_100, 180_100, 420_100, 900_100]);
+    assert_eq!(p.calls, 5);
+    assert!(
+        p.log.iter().all(|line| line.contains("NotStarted")),
+        "the actual delivery command bypassed occupancy: {:?}",
+        p.log
+    );
+    assert!(h
+        .store
+        .open_effects(TEAM, 200, None)
+        .unwrap()
+        .rows
+        .is_empty());
+    assert_eq!(
+        h.store.effects(TEAM, 200, None).unwrap().rows[0].state,
+        "refused"
+    );
+    assert!(h.node(node).assignee.is_none());
+    p.free_member = "m2";
+    a.tick(&mut h.store, &mut p, TEAM, 960_100, false).unwrap();
+    let effects = h.store.effects(TEAM, 200, None).unwrap().rows;
+    assert_eq!(effects.len(), 2);
+    assert_eq!(effects[1].member, "m2");
+    assert_eq!(effects[1].state, "submitted");
+    assert_eq!(
+        p.admissions.get(),
+        6,
+        "five occupancy readers and one delivery"
+    );
 }

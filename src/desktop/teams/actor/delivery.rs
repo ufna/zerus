@@ -13,6 +13,8 @@ struct Delivery {
     gated: bool,
     #[serde(default)]
     not_started: bool,
+    #[serde(default)]
+    nonstarts: u32,
 }
 impl Runtime {
     pub(super) fn send(
@@ -50,6 +52,7 @@ impl Runtime {
             receipt: None,
             gated: false,
             not_started: false,
+            nonstarts: 0,
         };
         let key = format!("delivery:{id}");
         self.ledger.reserve(
@@ -105,9 +108,22 @@ impl Runtime {
             }
             ports::DeliveryResult::NotStarted { reason } => {
                 d.not_started = true;
+                d.nonstarts = d.nonstarts.saturating_add(1);
+                if d.nonstarts >= 5 {
+                    // Five non-starts reach the retry table's fifteen-minute
+                    // tier (0, 1, 3, 7, 15 minutes). Free the reservation so
+                    // the kernel can choose another member on a later pass.
+                    d.outcome = Some(HandoutOutcome::Refused {
+                        reason: reason.clone(),
+                    });
+                }
                 self.put(&team.id, key, &d)?;
                 boundary("not_started");
-                self.failure(store, team, key, "", &problem(&reason), now)
+                if d.outcome.is_some() {
+                    self.settle(store, team, key, d, now)
+                } else {
+                    self.failure(store, team, key, "", &problem(&reason), now)
+                }
             }
         }
     }
@@ -367,6 +383,7 @@ impl Delivery {
             receipt: None,
             gated: false,
             not_started: false,
+            nonstarts: 0,
         }
     }
 }
