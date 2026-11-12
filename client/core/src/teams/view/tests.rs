@@ -1,4 +1,5 @@
 use super::*;
+use serde_json::json;
 
 /// The pinned CLI replies of package 5. The list reply is the command line's
 /// own `crates/team-plan/fixtures/cli-list.json`, regenerated with
@@ -644,4 +645,141 @@ fn a_list_row_passes_its_member_sessions_through() {
         bounded.teams[0].member_sessions.as_ref().unwrap().len(),
         MEMBERS_KEPT
     );
+}
+
+/// The store's current replies (`crates/team-plan/fixtures`), which carry the
+/// card lists and the row fields of zerus-63rru.29.
+fn current(name: &str) -> Value {
+    serde_json::from_str(match name {
+        "status" => include_str!("../../../../../crates/team-plan/fixtures/cli-status.json"),
+        "queue" => include_str!("../../../../../crates/team-plan/fixtures/cli-queue.json"),
+        "waiting" => include_str!("../../../../../crates/team-plan/fixtures/cli-waiting.json"),
+        "cards" => include_str!("../../../../../crates/team-plan/fixtures/cli-cards.json"),
+        other => panic!("no fixture {other}"),
+    })
+    .unwrap()
+}
+
+/// zerus-63rru.29: a card's list, a queue row's holder and pending decision
+/// and a member's person_stopped reach the views as the store sends them.
+#[test]
+fn the_card_lists_and_row_fields_reach_the_views() {
+    let mut queue = current("queue");
+    queue["rows"][1]["pending_decision"] = json!("accept");
+    queue["rows"][1]["holder"] = Value::Null;
+    let mut status = current("status");
+    status["members"][1]["person_stopped"] = json!(true);
+    let view = team(&status, &queue);
+    let card = view
+        .groups
+        .iter()
+        .flat_map(|group| &group.cards)
+        .find(|card| card.node == 1)
+        .unwrap();
+    assert_eq!(card.holder, Some(Some("m1".into())));
+    assert_eq!(card.pending_decision, None);
+    let serialized = serde_json::to_value(card).unwrap();
+    assert_eq!(serialized["holder"], "m1");
+    assert_eq!(serialized["pending_decision"], Value::Null);
+    // The stage row of the pinned queue folds into task 1; on its own page it is a card.
+    let stage = team(&status, &json!({"rows": [queue["rows"][1].clone()]}));
+    let stage = stage
+        .groups
+        .iter()
+        .flat_map(|group| &group.cards)
+        .next()
+        .unwrap();
+    assert_eq!(stage.holder, Some(None), "null is nobody");
+    assert_eq!(serde_json::to_value(stage).unwrap()["holder"], Value::Null);
+    assert_eq!(stage.pending_decision.as_deref(), Some("accept"));
+    let members: Vec<(String, bool)> = view
+        .members
+        .iter()
+        .map(|member| (member.id.clone(), member.person_stopped))
+        .collect();
+    assert_eq!(members[1], ("m1".into(), true));
+    assert!(members
+        .iter()
+        .filter(|(id, _)| id != "m1")
+        .all(|(_, stopped)| !stopped));
+    let waiting = waiting(&current("waiting"));
+    assert_eq!(waiting.items[0].decisions, ["acknowledged"]);
+    assert_eq!(
+        serde_json::to_value(&waiting).unwrap()["items"][0]["decisions"],
+        json!(["acknowledged"])
+    );
+}
+
+/// A row from an older hgs (the copies at fa46dcc08) has none of the fields:
+/// the holder is unknown (left out, not "nobody"), no decision is pending,
+/// nobody was stopped, and a card takes acknowledged alone.
+#[test]
+fn an_older_row_reads_without_the_new_fields() {
+    let view = team(&fixture("status"), &fixture("queue"));
+    for card in view.groups.iter().flat_map(|group| &group.cards) {
+        assert_eq!(card.holder, None);
+        assert!(serde_json::to_value(card).unwrap().get("holder").is_none());
+        assert_eq!(card.pending_decision, None);
+    }
+    assert!(view.members.iter().all(|member| !member.person_stopped));
+    assert_eq!(
+        waiting(&fixture("waiting")).items[0].decisions,
+        ["acknowledged"]
+    );
+}
+
+/// The list is read tolerantly: an entry of another shape, an uppercase or
+/// overlong token and a repeat are ignored, never an error; at most four are
+/// kept in order; a list that is not a list reads as acknowledged alone.
+#[test]
+fn a_cards_list_is_read_tolerantly() {
+    let row =
+        |decisions: Value| json!({"team": TEAM, "seq": 1, "kind": "note", "decisions": decisions});
+    let read = |decisions: Value| {
+        waiting(&json!({"rows": [row(decisions)]})).items[0]
+            .decisions
+            .clone()
+    };
+    assert_eq!(
+        read(json!([
+            7,
+            "Retry",
+            "retry",
+            "x".repeat(33),
+            "retry",
+            "approve",
+            "reject",
+            "snooze",
+            "acknowledged"
+        ])),
+        ["retry", "approve", "reject", "snooze"]
+    );
+    assert_eq!(read(json!("retry")), ["acknowledged"]);
+    assert_eq!(read(Value::Null), ["acknowledged"]);
+    assert_eq!(read(json!([])), Vec::<String>::new());
+}
+
+/// The waiting view of one card of each shape the view must offer by its list
+/// alone, pinned as `fixtures/waiting-decisions.json`, which the frontend's test
+/// renders: a retry-only card, a blocked launch with acknowledged alone, the
+/// store's integration pair, the actor's gate and held cards (retry, then
+/// acknowledged, from teams/wp08c-cards), a card with a token this version has
+/// no words for, a note, and a row from an older hgs without a list.
+#[test]
+fn the_waiting_decisions_fixture_is_the_cores_view() {
+    let rows = json!([
+        {"team": TEAM, "seq": 1, "kind": "launch_capacity", "text": "Team member creation: no_account_available.", "state": "open", "created_ms": 1, "decisions": ["retry"]},
+        {"team": TEAM, "seq": 2, "kind": "launch_blocked", "text": "Member m2: worktree_unavailable.", "state": "open", "created_ms": 2, "decisions": ["acknowledged"]},
+        {"team": TEAM, "seq": 3, "kind": "integration", "node": 2, "text": "Approve integration of the accepted result.", "state": "open", "created_ms": 3, "decisions": ["approve", "reject"]},
+        {"team": TEAM, "seq": 4, "kind": "team_actor_blocked", "text": "gate:integrate:2: The integration branch moved outside the team.", "state": "open", "created_ms": 4, "decisions": ["retry", "acknowledged"]},
+        {"team": TEAM, "seq": 5, "kind": "team_actor_blocked", "node": 3, "text": "Task 3: the held decision return waits for its observation.", "state": "open", "created_ms": 5, "decisions": ["retry", "acknowledged"]},
+        {"team": TEAM, "seq": 6, "kind": "note", "text": "A card with a decision this version does not know.", "state": "open", "created_ms": 6, "decisions": ["snooze", "acknowledged"]},
+        {"team": TEAM, "seq": 7, "kind": "note", "text": "Tell the team the release moved to Monday.", "state": "open", "created_ms": 7, "decisions": ["acknowledged"]},
+        {"team": TEAM, "seq": 8, "kind": "report_waiting", "node": 3, "text": "The report on task 3 has waited 45 minutes for the lead's decision.", "state": "open", "created_ms": 8},
+    ]);
+    let view =
+        waiting(&json!({"ok": true, "actor": {"kind": "person"}, "rows": rows, "next": null}));
+    let fixture: Value =
+        serde_json::from_str(include_str!("../fixtures/waiting-decisions.json")).unwrap();
+    assert_eq!(serde_json::to_value(&view).unwrap(), fixture);
 }

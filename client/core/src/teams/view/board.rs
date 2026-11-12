@@ -41,6 +41,7 @@ fn member_cards(status: &Value) -> Vec<MemberCard> {
             lead: member.get("id").and_then(Value::as_str) == Some(lead.as_str()),
             session: session(member),
             model: optional_name(member, "model"),
+            person_stopped: flag(member, "person_stopped"),
         })
         .collect()
 }
@@ -90,6 +91,8 @@ fn card(node: &Value) -> QueueCard {
         integrated: flag(node, "integrated"),
         decided_by: name(node, "decided_by"),
         stages: Vec::new(),
+        holder: holder(node),
+        pending_decision: optional_name(node, "pending_decision"),
     }
 }
 
