@@ -170,7 +170,10 @@ fn configure<T>(
     Ok(guard)
 }
 
-pub(super) fn custody(config: &Config, id: &str) -> Option<(Arc<InheritedLock>, PathBuf, (u64, u64))> {
+pub(super) fn custody(
+    config: &Config,
+    id: &str,
+) -> Option<(Arc<InheritedLock>, PathBuf, (u64, u64))> {
     if !uuid::Uuid::parse_str(id).is_ok_and(|u| !u.is_nil() && u.to_string() == id) {
         return None;
     }

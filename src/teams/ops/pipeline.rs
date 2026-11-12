@@ -11,7 +11,7 @@ mod overrides;
 mod stages;
 pub(super) use overrides::{
     before_decision, before_observation, decide_card, observe_override, override_task,
-    released_stage,
+    released_stage, task_ended,
 };
 use stages::want_stage;
 pub(super) use stages::{current_stage, retire_stage};

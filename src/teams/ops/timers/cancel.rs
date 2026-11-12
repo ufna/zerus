@@ -35,12 +35,14 @@ pub(in crate::teams::ops) fn record_cancel(ctx: &mut Context<'_>) -> Result<()> 
     // A cancel acts on one attempt: an answer about another one never ends a
     // node whose task runs again. A refusal is not bound to an attempt.
     // The newest observation's pair, compared by equality, an empty ID
-    // included; while that observation is a conflict no cancelled answer is
-    // applied, whatever its pair.
+    // included. While that observation is a conflict no cancelled answer is
+    // applied, whatever its pair; a release reports that the key is gone,
+    // not who executed an attempt, so the conflict does not hold it back.
     let held = super::attempts::stored(ctx, node)?;
     let conflict = super::attempts::in_conflict(ctx, node)?;
     let ends = matches!(state, CancelState::Cancelled | CancelState::Released);
-    if ends && (conflict || held != (*attempt, attempt_id.clone())) {
+    let gated = *state == CancelState::Cancelled && conflict;
+    if ends && (gated || held != (*attempt, attempt_id.clone())) {
         return Err(invalid(
             "The cancel acted on another attempt than the one the store holds.",
         ));
@@ -110,8 +112,12 @@ fn bound(ctx: &Context<'_>, node: u32) -> Result<bool> {
         )
         .map_err(storage)
 }
-/// What a cancelled observation does to the node, without its task revision.
-fn cancelled(ctx: &Context<'_>, node: u32) -> Result<()> {
+/// What a cancelled observation does to the node, without its task
+/// revision: first what the end does to the node's pipeline, through the
+/// observation path's own function, then the end of the node.
+fn cancelled(ctx: &mut Context<'_>, node: u32) -> Result<()> {
+    let n = ctx.node(node)?;
+    pipeline::task_ended(ctx, &n, true)?;
     let table = ctx.node_table(node)?;
     ctx.db
         .execute(

@@ -1,9 +1,12 @@
-//! This package's additions to a store, as one transition: the tables,
-//! indexes and triggers first, then the backfills, then a completion marker,
-//! all inside one immediate transaction. A store without the marker,
-//! including one that an earlier, partial extension left, runs the whole
-//! transition again; every step is idempotent. Opening a marked store reads
-//! one row and takes no write lock.
+//! This package's additions to a store. The extension knows two stores:
+//! one from before it (no mark), which it extends to the current layout in
+//! one immediate transaction (the tables, indexes and triggers first, then
+//! the backfills, then the mark), and one at a layout that reached the
+//! integration branch, which it steps forward to the current one. A mark
+//! that only an unmerged development build could have written is refused
+//! with a sentence that says so, and nothing is written; a newer mark is
+//! refused as a newer schema is. Opening a store at the current layout
+//! reads one row and takes no write lock.
 //!
 //! The one-time cost: the backfills walk the teams once and every archived
 //! node once, in pages of 200 keys, under the write lock; memory stays one
@@ -14,8 +17,16 @@
 use super::*;
 use std::time::Duration;
 
-/// Raised whenever this package's layout changes.
+/// The current layout, and the first that reaches the integration branch.
+/// Every lower value was written only by unmerged development builds of
+/// this package; a later layout steps from this one.
 pub(crate) const EXTENSION: u32 = 8;
+/// Each earlier layout that reached the integration branch, with the step
+/// that brings a store marked with it forward; the steps run in order up to
+/// the current layout. None yet.
+const STEPS: &[(u32, Step)] = &[];
+/// One step from a merged layout to the next, inside the transition.
+type Step = fn(&Connection) -> Result<()>;
 
 #[cfg(test)]
 type Hook = Box<dyn FnOnce() -> Result<()>>;
@@ -39,15 +50,16 @@ pub(in crate::teams::store) fn after_fence() -> Result<()> {
 }
 
 /// Read first and read only, before any statement of the store's schema
-/// extensions that can write: a store marked by a newer program is refused
-/// and nothing is written to it. Every write of the open path reads the mark
-/// again under the lock it writes with: the common batches, the read index
-/// conversion and the transition.
+/// extensions that can write: a store marked by a newer program or by an
+/// unmerged development build is refused and nothing is written to it.
+/// Every write of the open path reads the mark again under the lock it
+/// writes with: the common batches, the read index conversion and the
+/// transition.
 pub(in crate::teams::store) fn fence(db: &Connection) -> Result<()> {
     marked(db).map(|_| ())
 }
 pub(in crate::teams::store) fn extend(db: &Connection) -> Result<()> {
-    if marked(db)? {
+    if marked(db)? == Mark::Current {
         return Ok(());
     }
     let own = db.is_autocommit();
@@ -63,7 +75,10 @@ pub(in crate::teams::store) fn extend(db: &Connection) -> Result<()> {
         "SAVEPOINT timers;"
     });
     let result = begun.map_err(storage).and_then(|()| {
-        let result = marked(db).and_then(|done| if done { Ok(()) } else { transition(db) });
+        let result = marked(db).and_then(|mark| match mark {
+            Mark::Current => Ok(()),
+            mark => transition(db, mark),
+        });
         let end = match (&result, own) {
             (Ok(()), true) => "COMMIT;",
             (Ok(()), false) => "RELEASE timers;",
@@ -79,17 +94,32 @@ pub(in crate::teams::store) fn extend(db: &Connection) -> Result<()> {
     }
     result
 }
-/// Whether the completion marker holds this layout's version. A marker newer
-/// than this program's is a store written by a newer program: the open is
-/// refused as for a newer schema, and nothing is written.
-fn marked(db: &Connection) -> Result<bool> {
+/// What the completion marker says about a store.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Mark {
+    /// A store from before the extension.
+    Absent,
+    /// An earlier layout that reached the integration branch.
+    Merged(u32),
+    Current,
+}
+/// The store's mark. A newer one is a store written by a newer program and
+/// is refused as a newer schema is; any other value was written only by an
+/// unmerged development build and is refused too. Nothing is written.
+fn marked(db: &Connection) -> Result<Mark> {
     match version(db)? {
+        None => Ok(Mark::Absent),
+        Some(EXTENSION) => Ok(Mark::Current),
         // The same refusal as a newer core schema's.
         Some(v) if v > EXTENSION => Err(Problem::new(
             code::INVALID_STATE,
             "store schema is newer than this version of Zerus",
         )),
-        v => Ok(v == Some(EXTENSION)),
+        Some(v) if STEPS.iter().any(|(from, _)| *from == v) => Ok(Mark::Merged(v)),
+        Some(_) => Err(Problem::new(
+            code::INVALID_STATE,
+            "store schema was written by an unmerged development build of Zerus, and this version does not open it",
+        )),
     }
 }
 /// The layout version the completion marker holds, if any.
@@ -110,19 +140,26 @@ fn version(db: &Connection) -> Result<Option<u32>> {
     .optional()
     .map_err(storage)
 }
-fn transition(db: &Connection) -> Result<()> {
-    let from = version(db)?;
-    // Triggers exist before any backfill reads, so a write that commits
-    // after this transaction is seen by them, and none can commit inside it.
-    db.execute_batch(include_str!("../timers.sql"))
-        .map_err(storage)?;
-    released_outcomes(db)?;
-    observed_attempts(db)?;
-    remembered_attempts(db, from)?;
-    migrate_outbox(db)?;
-    backfill_teams(db)?;
-    backfill_released(db)?;
-    backfill_stopped(db)?;
+fn transition(db: &Connection, mark: Mark) -> Result<()> {
+    match mark {
+        Mark::Absent => {
+            // Triggers exist before any backfill reads, so a write that
+            // commits after this transaction is seen by them, and none can
+            // commit inside it.
+            db.execute_batch(include_str!("../timers.sql"))
+                .map_err(storage)?;
+            observed_attempts(db)?;
+            backfill_teams(db)?;
+            backfill_released(db)?;
+            backfill_stopped(db)?;
+        }
+        Mark::Merged(from) => {
+            for (_, step) in STEPS.iter().filter(|(layout, _)| *layout >= from) {
+                step(db)?;
+            }
+        }
+        Mark::Current => return Ok(()),
+    }
     #[cfg(test)]
     if let Some(hook) = BEFORE_MARK.with(|slot| slot.borrow_mut().take()) {
         hook()?;
@@ -156,7 +193,9 @@ fn backfill_teams(db: &Connection) -> Result<()> {
 }
 /// A task observation keeps the attempt it shows beside its data: columns of
 /// package 6's table, in its definition for a new store and added here to a
-/// table an older store already has.
+/// table a store from before the extension already has. Such a store holds
+/// no attempt of any task, so its first observation of a pair is judged
+/// against no attempt, as for a task that never recorded one.
 fn observed_attempts(db: &Connection) -> Result<()> {
     for (column, kind) in [
         ("attempt", "INTEGER NOT NULL DEFAULT 0"),
@@ -175,68 +214,6 @@ fn observed_attempts(db: &Connection) -> Result<()> {
             let sql = format!("ALTER TABLE task_observations ADD COLUMN {column} {kind}");
             db.execute_batch(&sql).map_err(storage)?;
         }
-    }
-    Ok(())
-}
-/// The attempt a node runs under is remembered only when the node took it
-/// in: its own effect, or a person's execution the store took over, which a
-/// stored observation of a running task shows under the rules that wrote
-/// it. Layout 4 kept no memory and is seeded so; layouts 5 and 6 remembered
-/// every observed attempt and are corrected the same way, so that an
-/// attempt merely observed while the task did not run is judged when it
-/// starts. A store from before the attempt columns has nothing to seed from,
-/// and a later layout keeps what its rules wrote. One statement, once.
-fn remembered_attempts(db: &Connection, from: Option<u32>) -> Result<()> {
-    if matches!(from, Some(4..=6)) {
-        db.execute(TAKEN_IN, []).map_err(storage)?;
-    }
-    Ok(())
-}
-const TAKEN_IN: &str = "UPDATE task_observations SET last_attempt_id=CASE WHEN (json_extract(data,'$.stage')='in_progress' AND NOT json_extract(data,'$.cancelled')) OR EXISTS(SELECT 1 FROM effects e WHERE e.request_id=task_observations.attempt_id AND e.team=task_observations.team AND e.node=task_observations.node) THEN attempt_id ELSE '' END WHERE attempt_id<>''";
-/// Before layout 8 a cancel outcome was cancelled or refused; the table is
-/// rebuilt once with its current definition, which also takes released.
-/// Its rows move as they are; no trigger or view reads it.
-fn released_outcomes(db: &Connection) -> Result<()> {
-    let sql: Option<String> = db
-        .query_row(
-            "SELECT sql FROM sqlite_master WHERE type='table' AND name='cancel_outcomes'",
-            [],
-            |r| r.get(0),
-        )
-        .optional()
-        .map_err(storage)?;
-    if sql.is_none_or(|sql| sql.contains("'released'")) {
-        return Ok(());
-    }
-    db.execute_batch(
-        "DROP INDEX IF EXISTS cancel_refusals;
-         ALTER TABLE cancel_outcomes RENAME TO cancel_outcomes_v1;",
-    )
-    .map_err(storage)?;
-    db.execute_batch(include_str!("../timers.sql"))
-        .map_err(storage)?;
-    db.execute_batch(
-        "INSERT INTO cancel_outcomes(decision,team,node,generation,state,reason,at_ms)
-          SELECT decision,team,node,generation,state,reason,at_ms FROM cancel_outcomes_v1;
-         DROP TABLE cancel_outcomes_v1;",
-    )
-    .map_err(storage)
-}
-/// Version 1 kept released stages in an outbox; they move to the frontier.
-fn migrate_outbox(db: &Connection) -> Result<()> {
-    let old: bool = db
-        .query_row(
-            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='key_clear_outbox')",
-            [],
-            |r| r.get(0),
-        )
-        .map_err(storage)?;
-    if old {
-        db.execute_batch(
-            "INSERT OR IGNORE INTO key_clear_work(team,node,kind) SELECT team,node,'stage' FROM key_clear_outbox;
-             DROP TABLE key_clear_outbox;",
-        )
-        .map_err(storage)?;
     }
     Ok(())
 }

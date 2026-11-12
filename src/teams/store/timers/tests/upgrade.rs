@@ -117,44 +117,25 @@ fn a_stop_committed_while_the_transition_runs_waits_for_it_and_is_captured() {
     assert_eq!(h.store.pending_cancels(TEAM, 200, 0).unwrap().len(), 1);
 }
 
+/// A store without the mark is a store from before the extension, however
+/// many of the extension's objects it already holds: the whole transition
+/// runs, every step idempotent.
 #[test]
-fn every_partial_extension_completes_on_the_next_open() {
-    let partial = [
-        "CREATE TABLE key_clear_teams (team TEXT PRIMARY KEY, pending INTEGER NOT NULL);",
-        "CREATE TABLE key_clear_teams (team TEXT PRIMARY KEY, pending INTEGER NOT NULL); CREATE TABLE key_clear_outbox (team TEXT NOT NULL, node INTEGER NOT NULL, PRIMARY KEY(team,node));",
-        "",
-    ];
-    for step in partial {
+fn a_store_without_the_mark_runs_the_whole_transition() {
+    for sql in [
+        "DROP TABLE timers_extension;",
+        "DELETE FROM timers_extension;",
+    ] {
         let mut h = stopped();
-        let full = names(&h);
-        if step.is_empty() {
-            db(&h)
-                .execute_batch("DROP TABLE timers_extension;")
-                .unwrap();
-        } else {
-            strip(&h);
-            db(&h).execute_batch(step).unwrap();
-        }
+        let full = schema(&h);
+        db(&h).execute_batch(sql).unwrap();
+        let before = transitions();
         reopen(&mut h);
-        assert_eq!(names(&h), full, "{step}");
+        assert_eq!(transitions(), before + 1, "{sql}");
+        assert_eq!(schema(&h), full, "{sql}");
         assert_eq!(marker(&h), Some(EXTENSION));
-        assert_eq!(
-            h.store.keyed_teams("", 10).unwrap(),
-            vec![TEAM.to_owned()],
-            "{step}"
-        );
+        assert_eq!(h.store.keyed_teams("", 10).unwrap(), vec![TEAM.to_owned()]);
     }
-    let mut h = stopped();
-    db(&h)
-        .execute("UPDATE timers_extension SET version=0", [])
-        .unwrap();
-    let before = transitions();
-    reopen(&mut h);
-    assert_eq!(
-        (transitions(), marker(&h)),
-        (before + 1, Some(EXTENSION)),
-        "an older marker reruns"
-    );
 }
 
 #[test]
@@ -244,40 +225,6 @@ fn the_transition_walks_each_archived_node_once() {
     assert!(
         costs[1] <= costs[0] * 2,
         "the walk is linear in the archive: {costs:?}"
-    );
-}
-
-#[test]
-fn a_version_one_outbox_moves_into_the_frontier() {
-    let mut h = Harness::new();
-    let node = h.add(&person(), 1);
-    strip(&h);
-    db(&h)
-        .execute_batch(
-            "CREATE TABLE key_clear_outbox (team TEXT NOT NULL, node INTEGER NOT NULL, PRIMARY KEY(team,node));
-             CREATE TRIGGER key_clear_stage_settled_v1 AFTER UPDATE OF state ON stage_tasks BEGIN
-              INSERT OR IGNORE INTO key_clear_outbox(team,node) VALUES(NEW.team,NEW.node); END;",
-        )
-        .unwrap();
-    db(&h)
-        .execute(
-            "INSERT INTO key_clear_outbox VALUES(?1,?2)",
-            params![TEAM, node],
-        )
-        .unwrap();
-    reopen(&mut h);
-    let stages: Vec<u32> = h
-        .store
-        .released_stages(TEAM, 200, 0)
-        .unwrap()
-        .iter()
-        .map(|k| k.node)
-        .collect();
-    assert_eq!(stages, [node]);
-    let left = names(&h);
-    assert!(
-        !left.contains(&"key_clear_outbox".to_owned())
-            && !left.contains(&"key_clear_stage_settled_v1".to_owned())
     );
 }
 
@@ -457,56 +404,67 @@ fn every_statement_of_the_common_batches_is_seen_by_the_presence_check() {
     }
 }
 
-/// Layout 7 took only cancelled and refused outcomes. The transition
-/// rebuilds the table once with its current definition and keeps its rows,
-/// so that a released answer can be recorded.
+/// Every table's rows, to compare a store's content byte for byte.
+fn content(h: &Harness) -> Vec<String> {
+    let db = db(h);
+    let tables: Vec<String> = column(
+        db,
+        "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name",
+        [],
+    )
+    .unwrap();
+    let mut rows = Vec::new();
+    for table in tables {
+        let mut s = db
+            .prepare(&format!("SELECT * FROM \"{table}\" ORDER BY rowid"))
+            .unwrap();
+        let n = s.column_count();
+        let mut q = s.query([]).unwrap();
+        while let Some(r) = q.next().unwrap() {
+            let values: Vec<String> = (0..n)
+                .map(|i| format!("{:?}", r.get_ref(i).unwrap()))
+                .collect();
+            rows.push(format!("{table}: {}", values.join(", ")));
+        }
+    }
+    rows
+}
+
+/// Every lower mark was written only by an unmerged development build of
+/// this package: the open is refused with a sentence that says so, and the
+/// store is left as it was.
 #[test]
-fn a_store_before_released_outcomes_keeps_its_rows_and_takes_released() {
+fn every_development_mark_is_refused_and_writes_nothing() {
+    for mark in 0..EXTENSION {
+        let h = stopped();
+        db(&h)
+            .execute("UPDATE timers_extension SET version=?1", [mark])
+            .unwrap();
+        let (before, rows) = (schema(&h), content(&h));
+        let refused = Store::open(h.temp.path()).unwrap_err();
+        assert_eq!(refused.code, code::INVALID_STATE, "{mark}");
+        assert!(
+            refused.message.contains("unmerged development build"),
+            "{mark}: {}",
+            refused.message
+        );
+        assert_eq!(schema(&h), before, "{mark}");
+        assert_eq!(content(&h), rows, "{mark}");
+    }
+}
+
+/// A store at the current layout opens without a write: no transition, and
+/// its schema and rows as they were, while another connection holds the
+/// write lock.
+#[test]
+fn the_current_mark_opens_without_a_write() {
     let mut h = stopped();
-    let full = schema(&h);
-    db(&h)
-        .execute_batch(
-            "DROP TABLE cancel_outcomes;
-             CREATE TABLE cancel_outcomes (
-              decision INTEGER PRIMARY KEY, team TEXT NOT NULL, node INTEGER NOT NULL, generation INTEGER NOT NULL,
-              state TEXT NOT NULL CHECK(state IN ('cancelled','refused')), reason TEXT NOT NULL, at_ms INTEGER NOT NULL
-             );
-             CREATE INDEX cancel_refusals ON cancel_outcomes(team,node) WHERE state='refused';
-             UPDATE timers_extension SET version=7;",
-        )
-        .unwrap();
-    db(&h)
-        .execute(
-            "INSERT INTO cancel_outcomes VALUES(900,?1,1,1,'cancelled','',1),(901,?1,2,1,'refused','Delivery unknown',2)",
-            [TEAM],
-        )
-        .unwrap();
+    let (before, rows) = (schema(&h), content(&h));
+    let raw = rusqlite::Connection::open(h.temp.path().join("teams/teams-v1.sqlite3")).unwrap();
+    raw.execute_batch("BEGIN IMMEDIATE;").unwrap();
+    let transitions_before = transitions();
     reopen(&mut h);
-    assert_eq!(schema(&h), full, "the current definition, byte for byte");
-    let kept: Vec<(u64, String, String)> = {
-        let mut s = db(&h)
-            .prepare("SELECT decision,state,reason FROM cancel_outcomes ORDER BY decision")
-            .unwrap();
-        let rows = s
-            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
-            .unwrap();
-        rows.collect::<rusqlite::Result<Vec<_>>>().unwrap()
-    };
-    assert_eq!(
-        kept,
-        vec![
-            (900, "cancelled".to_owned(), String::new()),
-            (901, "refused".to_owned(), "Delivery unknown".to_owned())
-        ]
-    );
-    db(&h)
-        .execute(
-            "INSERT INTO cancel_outcomes VALUES(902,?1,3,1,'released','',3)",
-            [TEAM],
-        )
-        .unwrap();
-    assert_eq!(
-        h.store.cancel_refusals(TEAM, (0, 0), 10).unwrap(),
-        vec![(2, 901, "Delivery unknown".to_owned())]
-    );
+    raw.execute_batch("ROLLBACK;").unwrap();
+    assert_eq!(transitions(), transitions_before);
+    assert_eq!((schema(&h), content(&h)), (before, rows));
 }
