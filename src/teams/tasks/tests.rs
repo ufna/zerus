@@ -608,6 +608,8 @@ fn a_legacy_direct_claim_does_not_gain_a_delivered_holders_exception() {
     }
 }
 
+mod attempts;
+pub(super) mod intake_errors;
 fn person_session() -> zerus_replica::SessionKey {
     zerus_replica::SessionKey {
         machine: fixture().team.home,
@@ -702,4 +704,3 @@ fn a_cancelled_task_is_ended_by_its_observation() {
     assert!(h.store.pending_cancels(TEAM, 200, 0).unwrap().is_empty());
     assert_eq!(binding(&h.store, &reference).unwrap(), None);
 }
-mod attempts;

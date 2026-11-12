@@ -69,8 +69,8 @@ fn replica(error: zerus_replica::Error) -> Error {
 
 const UNCONFIRMED_WRITE: &str = "Unconfirmed team task write:";
 
-/// Every writer rechecks this pair under project admission and the team
-/// transaction. The returned pair is also the cancellation's reply fact.
+/// Every writer rechecks the number, current ID and conflict flag under project
+/// admission and the team transaction. Only the pair is a cancellation reply fact.
 fn observed_attempt(
     store: &Store,
     team: &str,
@@ -81,7 +81,10 @@ fn observed_attempt(
     let observed = store
         .task_observation(team, node)
         .map_err(problem)?
-        .map_or_else(|| (0, String::new()), |o| (o.attempt, o.attempt_id));
+        .map_or_else(
+            || (0, String::new(), false),
+            |o| (o.attempt, o.attempt_id, o.attempt_conflict),
+        );
     if current.0 < observed.0 {
         return Err(rule(format!(
             "Task document attempt {} ({}) is older than the team's observed attempt {} ({}).",
@@ -89,9 +92,9 @@ fn observed_attempt(
         )));
     }
     if current != observed {
-        return Err(Error::new(STALE,format!("Task document attempt {} ({}) differs from the team's observed attempt {} ({}); observe the task before trying again.",current.0,current.1,observed.0,observed.1)));
+        return Err(Error::new(STALE,format!("Task document attempt {} ({}, conflict={}) differs from the team's observed attempt {} ({}, conflict={}); observe the task before trying again.",current.0,current.1,current.2,observed.0,observed.1,observed.2)));
     }
-    Ok(current)
+    Ok((current.0, current.1))
 }
 
 struct Permit {
@@ -298,6 +301,11 @@ fn request(
         return Err(rule("Reopen no longer names this task's executor."));
     }
     observed_attempt(store, &body.team, body.node, &view)?;
+    if view.execution.as_ref().is_some_and(|e| e.conflict) {
+        return Err(rule(
+            "Task execution is conflicting; the person must settle it.",
+        ));
+    }
     let base = if handover {
         attempts::render(settings, starts, task, name, &to, true, &who, &body.id)?
     } else if permit.kind == "handout" {

@@ -56,20 +56,23 @@ fn load(store: &ProjectStore, uuid: &str) -> Result<TaskDoc> {
         .map_err(storage)
 }
 /// The document retains the highest claim across stage changes. A conflicted
-/// projection has no current identity that the team can safely act on.
-pub(crate) fn attempt(view: &zerus_replica::TaskView) -> (u64, String) {
+/// projection has no current identity that the team can safely act on. A
+/// never-admitted candidate is retained for display, but is no current execution.
+pub(crate) fn attempt(view: &zerus_replica::TaskView) -> (u64, String, bool) {
     let highest = view.execution.as_ref().map_or(0, |e| e.highest);
+    let conflict = view.execution.as_ref().is_some_and(|e| e.conflict);
     let id = view
         .execution
         .as_ref()
         .filter(|e| !e.conflict)
         .and_then(|e| e.current.as_ref())
+        .filter(|current| current.phase != zerus_replica::execution::Phase::NotStarted)
         .map_or_else(String::new, |current| current.id.clone());
-    (highest, id)
+    (highest, id, conflict)
 }
 fn observation(document: &TaskDoc, team: &str, home: &str) -> Result<TaskObservation> {
     let view = document.view().map_err(storage)?;
-    let (attempt, attempt_id) = attempt(&view);
+    let (attempt, attempt_id, attempt_conflict) = attempt(&view);
     let key = match document.team().map_err(storage)? {
         Some(key) if key.team == team && key.home == home => ops::KeyState::Ours,
         None if !document.team_invalid() => ops::KeyState::Absent,
@@ -91,7 +94,7 @@ fn observation(document: &TaskDoc, team: &str, home: &str) -> Result<TaskObserva
         title: view.title,
         attempt,
         attempt_id,
-        attempt_conflict: view.execution.as_ref().is_some_and(|execution| execution.conflict),
+        attempt_conflict,
     })
 }
 fn record(store: &mut Store, team: &str, node: u32, document: &TaskDoc) -> Result<()> {
