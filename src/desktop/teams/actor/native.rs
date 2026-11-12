@@ -286,9 +286,15 @@ pub(super) fn delivery_result(ended: Ended, id: &str) -> ports::DeliveryResult {
                     // The task command reserved and sent nothing, for a cause
                     // that may pass (zerus-63rru.58): retry the same delivery.
                     (Some("not_started"), Some(reason)) => {
+                        // Cleaned as the other delivery sentences are.
+                        let said = super::cancel::reason::spoken(&cut(reason, 2048));
                         return ports::DeliveryResult::NotStarted {
-                            reason: cut(reason, 2048),
-                        }
+                            reason: if said.is_empty() {
+                                "The task writer did not start delivery".to_owned()
+                            } else {
+                                said
+                            },
+                        };
                     }
                     _ => {}
                 }

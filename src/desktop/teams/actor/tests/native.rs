@@ -511,3 +511,43 @@ fn a_delivery_commands_sentence_is_recorded_without_control_characters() {
         );
     }
 }
+
+/// A non-start's sentence is cleaned as the other delivery sentences are:
+/// decoded by the production deliver, recorded as the actor records it after
+/// five non-starts (a refusal), read back from the store (zerus-63rru.58).
+#[test]
+fn a_non_starts_sentence_is_recorded_without_control_characters() {
+    use super::*;
+    let mut h = Harness::new();
+    h.bind("m1");
+    let node = h.add(&person(), 1);
+    let id = h.intent(node, "m1");
+    let team = h.store.team(TEAM).unwrap().unwrap();
+    let row = h.store.node(TEAM, node).unwrap().unwrap();
+    let member = h.store.member(TEAM, "m1").unwrap().unwrap();
+    let mut native = super::production::native(&h);
+    let reply = serde_json::json!({"schema":1,"id":id,"state":"not_started","error":super::hostile_sentence()});
+    crate::desktop::teams::child::FIXTURE_EXIT
+        .with(|s| *s.borrow_mut() = Some(reply.to_string().into_bytes()));
+    let super::super::ports::DeliveryResult::NotStarted { reason } =
+        super::super::ports::Ports::deliver(&mut native, &team, &row, &member, &id)
+    else {
+        panic!("no non-start")
+    };
+    super::assert_clean(std::slice::from_ref(&reason), "not_started");
+    h.outcome(&id, HandoutOutcome::Refused { reason });
+    let recorded = h
+        .store
+        .effects(TEAM, 200, None)
+        .unwrap()
+        .rows
+        .into_iter()
+        .find(|e| e.request_id == id)
+        .and_then(|e| e.outcome)
+        .map(|v| serde_json::from_value::<HandoutOutcome>(v).unwrap())
+        .expect("the recorded outcome");
+    let HandoutOutcome::Refused { reason } = recorded else {
+        panic!("{recorded:?}")
+    };
+    super::assert_clean(&[reason], "not_started recorded");
+}
