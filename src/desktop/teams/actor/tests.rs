@@ -180,4 +180,7 @@ pub(in crate::desktop::teams) mod rows;
 mod cleanup_bound;
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
+mod handed;
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 mod cancel_progress;

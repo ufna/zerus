@@ -76,7 +76,7 @@ impl Runtime {
         team: &Team,
         now: i64,
     ) -> Result<()> {
-        let r = self.cooled_readiness(store, team, now)?;
+        let mut r = self.cooled_readiness(store, team, now)?;
         let initial = PlanView {
             phases: &r.phases,
             nodes: &r.nodes,
@@ -84,10 +84,27 @@ impl Runtime {
             lead: &team.lead,
             integration: team.settings.integration,
         };
-        if ready::ready(&initial).is_empty() {
+        let ready = ready::ready(&initial);
+        if ready.is_empty() {
             return Ok(());
         }
         let effects = self.open_effects(store, &team.id)?;
+        // A task already handed out stays ready in the kernel's view until
+        // its observation moves, and the store refuses a second intent for
+        // it (zerus-63rru.71). Held here like a cooling task, it takes no
+        // free member from a task that waits, and its refusal is never
+        // counted as a hand-out that failed.
+        let mut handed = std::collections::BTreeSet::new();
+        for id in ready {
+            if effects.iter().any(|e| e.node == id) || self.ledger.pending_node(&team.id, id)? {
+                handed.insert(id);
+            }
+        }
+        for n in &mut r.nodes {
+            if handed.contains(&n.id) {
+                n.hold = true;
+            }
+        }
         let mut members = Vec::new();
         for m in self.members(store, &team.id)? {
             let free = m.id != team.lead
