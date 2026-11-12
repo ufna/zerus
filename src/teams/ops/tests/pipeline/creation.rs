@@ -1,6 +1,42 @@
 use super::*;
 
 #[test]
+fn a_stage_creation_identity_cannot_be_reserved_for_another_stage() {
+    let (mut h, _, stage) = wanted();
+    let id = uuid::Uuid::new_v4().to_string();
+    h.run(&service(), creation(stage, &id)).unwrap();
+    let parent = h.add(&person(), 2);
+    h.submit(parent, "m1");
+    h.report(parent, "m1");
+    let second = stages(&h, parent)[0].id;
+    refused(
+        h.run(&service(), creation(second, &id)),
+        code::INVALID_STATE,
+    );
+    assert_eq!(
+        h.store
+            .stage_tasks(TEAM, 200, None)
+            .unwrap()
+            .rows
+            .iter()
+            .filter(|r| r.state == "reserved")
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn a_stage_cannot_claim_a_task_already_bound_to_a_live_node() {
+    let (mut h, _, stage) = wanted();
+    let id = uuid::Uuid::new_v4().to_string();
+    h.run(&service(), creation(stage, &id)).unwrap();
+    refused(h.run(&service(), created(&id, 1)), code::INVALID_STATE);
+    assert!(h.node(stage).task.is_none());
+    h.run(&service(), created(&id, 77)).unwrap();
+    assert_eq!(h.node(stage).task, Some(task(77)));
+}
+
+#[test]
 fn a_report_wants_a_stage_without_a_task_or_a_handout() {
     let mut h = pipeline_harness("reviewed");
     h.bind("m1");

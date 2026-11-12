@@ -140,9 +140,7 @@ fn listed_team(store: &Store, row: TeamRow) -> Result<Value, Problem> {
                 machine: member.machine.clone(),
                 session_id: member.session_id.clone(),
             }),
-        None => store
-            .member(&row.id, &row.lead)?
-            .and_then(|member| member.session),
+        None => store.member_session(&row.id, &row.lead)?,
     };
     let mut value = serde_json::to_value(&row).map_err(storage)?;
     if let Some(object) = value.as_object_mut() {

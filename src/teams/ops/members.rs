@@ -33,6 +33,17 @@ pub(super) fn set_session(ctx: &mut Context<'_>) -> Result<()> {
     text(account, 256)?;
     text(worktree, 4096)?;
     text(ownership_nonce, 256)?;
+    let bound: bool = ctx
+        .db
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM members WHERE machine=?1 AND session_id=?2)",
+            params![session.machine, session.session_id],
+            |r| r.get(0),
+        )
+        .map_err(storage)?;
+    if bound {
+        return Err(invalid("Session is already bound to a member."));
+    }
     m.session = Some(session.clone());
     m.account = account.clone();
     m.worktree = worktree.clone();

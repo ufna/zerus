@@ -21,6 +21,17 @@ pub(super) fn intent(ctx: &mut Context<'_>) -> Result<()> {
             "Stage creation is not wanted by the current pipeline round.",
         ));
     }
+    let used: bool = ctx
+        .db
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM stage_tasks WHERE request_id=?1)",
+            [effect_request_id],
+            |r| r.get(0),
+        )
+        .map_err(storage)?;
+    if used {
+        return Err(invalid("Stage creation request ID was already used."));
+    }
     ctx.db
         .execute(
             "UPDATE stage_tasks SET request_id=?3,state='reserved' WHERE team=?1 AND node=?2",
@@ -72,6 +83,17 @@ pub(super) fn outcome(ctx: &mut Context<'_>) -> Result<()> {
 }
 fn bind(ctx: &Context<'_>, node: u32, task: &TaskRef) -> Result<()> {
     let mut n = ctx.live_node(node)?;
+    let bound: bool = ctx
+        .db
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM live_tasks WHERE task_project=?1 AND task_uuid=?2)",
+            params![task.project, task.uuid],
+            |r| r.get(0),
+        )
+        .map_err(storage)?;
+    if bound {
+        return Err(invalid("Task already belongs to a live team node."));
+    }
     n.task = Some(task.clone());
     ctx.db
         .execute(

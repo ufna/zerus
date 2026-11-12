@@ -5,6 +5,8 @@
 mod tests;
 
 mod cross;
+mod guards;
+pub(crate) use guards::Guard;
 mod decision_state;
 mod holder;
 mod member_sessions;
@@ -36,7 +38,7 @@ pub struct Store {
 
 pub(crate) fn storage(error: impl std::fmt::Display) -> Problem {
     Problem::new(
-        code::INVALID_STATE,
+        code::STORAGE_FAILED,
         format!("Teams storage is unavailable: {error}"),
     )
 }
@@ -196,18 +198,19 @@ impl Store {
 fn connect(path: &Path, create: bool) -> Result<Connection> {
     let dir = path
         .parent()
-        .ok_or_else(|| storage("missing store directory"))?;
+        .ok_or_else(|| Guard::MissingDirectory.problem())?;
     if !crate::platform::verify_private(dir, crate::platform::Private::Directory)
         .map_err(storage)?
     {
-        return Err(storage("store directory is not private"));
+        return Err(Guard::DirectoryPrivacy.problem());
     }
     for suffix in ["", "-wal", "-shm", "-journal"] {
         let leaf = dir.join(format!("teams-v1.sqlite3{suffix}"));
         match crate::platform::verify_private(&leaf, crate::platform::Private::File) {
             Ok(true) => (),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => (),
-            _ => return Err(storage("store file is not private")),
+            Ok(false) => return Err(Guard::FilePrivacy.problem()),
+            Err(error) => return Err(storage(error)),
         }
     }
     #[cfg(unix)]
@@ -229,7 +232,7 @@ fn connect(path: &Path, create: bool) -> Result<Connection> {
         .open(path)
         .map_err(storage)?;
         if !crate::platform::verify_private_file(&file).map_err(storage)? {
-            return Err(storage("store file is not private"));
+            return Err(Guard::FilePrivacy.problem());
         }
     }
     let mut db = Connection::open_with_flags(
@@ -241,7 +244,7 @@ fn connect(path: &Path, create: bool) -> Result<Connection> {
     .map_err(storage)?;
     #[cfg(unix)]
     crate::sqlite_file::bind_private(&db, path, identity).map_err(storage)?;
-    db.busy_timeout(Duration::from_secs(2)).map_err(storage)?;
+    db.busy_timeout(Duration::from_secs(8)).map_err(storage)?;
     initialize(&mut db)?;
     db.execute_batch("PRAGMA foreign_keys=ON; PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;")
         .map_err(storage)?;
@@ -253,31 +256,36 @@ fn initialize(db: &mut Connection) -> Result<()> {
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .map_err(storage)?;
     if version == 1 {
-        return Err(storage(
+        return Err(Problem::new(
+            code::INVALID_STATE,
             "Version-1 Teams store belongs to an unsupported pre-release build.",
         ));
     }
     if version > SCHEMA_VERSION {
-        return Err(storage("store schema is newer than this version of Zerus"));
+        return Err(Problem::new(
+            code::INVALID_STATE,
+            "store schema is newer than this version of Zerus",
+        ));
     }
     if version == SCHEMA_VERSION {
         return schema_extensions(db);
     }
     let tx = db
         .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
-        .map_err(storage)?;
+        .map_err(begin_error)?;
     let current: u32 = tx
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .map_err(storage)?;
     let sql = match current {
         0 => Some(include_str!("schema.sql")),
         1 => {
-            return Err(storage(
+            return Err(Problem::new(
+                code::INVALID_STATE,
                 "Version-1 Teams store belongs to an unsupported pre-release build.",
             ))
         }
         SCHEMA_VERSION => None,
-        _ => return Err(storage("store schema changed")),
+        _ => return Err(Problem::new(code::INVALID_STATE, "store schema changed")),
     };
     if let Some(sql) = sql {
         tx.execute_batch(
@@ -306,20 +314,46 @@ fn read_indexes(db: &Connection) -> Result<()> {
     if unique {
         // Only an older unique index needs replacement. Ordinary opens never
         // rebuild it; a savepoint keeps its replacement atomic, also at creation.
-        db.execute_batch("SAVEPOINT replace_read_index")
-            .map_err(storage)?;
+        if let Err(error) = db.execute_batch("SAVEPOINT replace_read_index") {
+            return if is_busy(&error) {
+                Ok(())
+            } else {
+                Err(storage(error))
+            };
+        }
         let replaced = db
             .execute_batch("DROP INDEX IF EXISTS integration_card")
-            .and_then(|()| db.execute_batch(include_str!("read-indexes.sql")));
+            .and_then(|()| db.execute_batch(include_str!("read-indexes.sql")))
+            .and_then(|()| db.execute_batch("RELEASE replace_read_index"));
         if let Err(error) = replaced {
             db.execute_batch("ROLLBACK TO replace_read_index; RELEASE replace_read_index")
                 .map_err(storage)?;
+            if is_busy(&error) {
+                // This optional index upgrade can wait. No product operation
+                // is replayed; the next open checks the actual index again.
+                return Ok(());
+            }
             return Err(storage(error));
         }
-        return db
-            .execute_batch("RELEASE replace_read_index")
-            .map_err(storage);
+        return Ok(());
     }
     db.execute_batch(include_str!("read-indexes.sql"))
         .map_err(storage)
+}
+
+pub(crate) fn is_busy(error: &rusqlite::Error) -> bool {
+    matches!(error, rusqlite::Error::SqliteFailure(e, _) if matches!(e.code,
+        rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked))
+}
+
+/// A failed BEGIN IMMEDIATE has done no write and saved no request receipt.
+pub(crate) fn begin_error(error: rusqlite::Error) -> Problem {
+    if is_busy(&error) {
+        Problem::new(
+            code::STORE_BUSY,
+            "The team store is busy. Nothing was written; try again.",
+        )
+    } else {
+        storage(error)
+    }
 }

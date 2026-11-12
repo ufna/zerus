@@ -1351,8 +1351,11 @@ was cancelled, moved back and sent again looks active before and after, and
 an answer about the earlier execution can arrive after the later one was
 observed. The task document numbers its attempts. An observation carries
 `attempt`, the highest generation any attempt of the task claims (0 without
-one), and `attempt_id`, the ID of its current attempt (empty without one);
-the store keeps both with the observation. An attempt the team hands out
+one), `attempt_id`, the ID of its current attempt (empty without one), and
+`attempt_conflict`, whether two attempts claim the highest generation; the
+store keeps all three with the observation. An empty ID alone is not a
+conflict: a task whose only attempt was never admitted has a number and no
+current attempt, and that is an ordinary pair. An attempt the team hands out
 has its effect's request ID as its ID, so the store knows its own. The
 identity is the pair: an attempt that never started still claims a
 generation, so the current attempt can change while the highest generation
@@ -1364,21 +1367,45 @@ observations it missed would have done in turn: the end of the earlier
 attempt, then the person's restore. Pending decisions of the node are
 settled, the node moves to its next generation and the event is
 `person_override`. A node that is already finished takes the restore it
-takes today. A task whose attempts conflict has no current attempt; the
-store keeps what it observed and decides nothing from it.
+takes today. A task whose attempts conflict has no current attempt. The
+store records that observation as it came, with its flag, and while the
+newest observation is a conflict no answer about an attempt is applied; a
+kept earlier pair would let a late answer about that attempt through
+(measured, 2026-11-12). A conflict of a task that still runs or waits
+decides nothing else: nothing of the node changes until an observation
+without the flag arrives. A task that has ended, cancelled or Done, is
+applied as today whether or not its attempts conflict, because its end does
+not depend on who executed it. The store remembers the last current attempt
+it saw for one purpose: when a current attempt appears again, the same one
+changes nothing, the node's own effect is the team's, and any other is a
+person's new execution.
 
 A cancel acts on one attempt. `team-cancel` compares, under its locks, the
-document's highest generation and current attempt with the pair the store
-holds for the node. When they differ, the store has not observed what the
+document's highest generation, current attempt and conflict flag with what
+the store's newest observation of the node holds. When they differ, the store has not observed what the
 document now holds: the command writes nothing and answers `stale`, and
 the service observes the task before it asks again. Its reply names what
 it acted on in `attempt` and `attempt_id`, `RecordCancel` carries both, and
-the store applies a cancelled answer only while the node's stored pair is
-still that one; otherwise the operation is refused and writes nothing. An
+the store applies a cancelled answer only while the newest observation
+of the node's task still shows that pair; otherwise the operation is
+refused and writes nothing. An
 answer about an earlier attempt therefore never ends a node whose task runs
 again, and both orders of the answer and the observation leave the same
 state. No service command finishes, reopens or cancels a task whose current
 attempt is not the one the store observed.
+
+**A reader of a reply ignores what it does not know.** The contract's types
+refuse unknown fields, and that stays the rule for what a person or a
+program sends: a request, a saved template, an imported catalog. A reply
+is different: reads gain fields, and a client built before a field existed
+must still read the rest. The client core therefore reads every Teams
+reply through types of its own or through a pass that keeps the fields it
+knows, the catalog and its template rows included, although the same
+shapes are strict on the way in. Found on 2026-11-12: the catalog reply
+gained a digest in each template row, and the merged client core, which
+read those rows through the strict template type, refused the whole
+catalog. A merge that changes a reply runs the client core's tests against
+the new fixtures.
 
 **Known limit: the key of a task that was closed before the stop.** After a
 stop the service clears the team key of the tasks that were open at the
