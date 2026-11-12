@@ -90,18 +90,15 @@ mod tests {
             },
         )
         .unwrap();
-        // Isolate the decision predicate from the hold that also protects
-        // ordinary cancellation. The ready projection carries no decisions.
-        h.store
-            .db
-            .as_ref()
-            .unwrap()
-            .execute(
-                "UPDATE nodes SET hold=0 WHERE team=?1 AND id=?2",
-                params![TEAM, node],
-            )
-            .unwrap();
-        let r = crate::teams::ops::readiness(&h.store, TEAM).unwrap();
+        // The decision's hold is read from the decision in every node read
+        // (the plan, "A hold has an owner"), so the current projection shows
+        // the node held. Isolate the decision predicate from that hold: the
+        // projection is taken as a pass that read it before the Cancel saw
+        // it, unheld.
+        let mut r = crate::teams::ops::readiness(&h.store, TEAM).unwrap();
+        let projected = r.nodes.iter_mut().find(|n| n.id == node).unwrap();
+        assert!(projected.hold, "the pending decision holds the node");
+        projected.hold = false;
         let team = h.store.team(TEAM).unwrap().unwrap();
         let view = zerus_team_plan::ready::PlanView {
             phases: &r.phases,

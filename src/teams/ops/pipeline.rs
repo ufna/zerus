@@ -98,7 +98,7 @@ fn step(ctx: &mut Context<'_>, n: &Node, next: kernel::Step, findings: &str) -> 
         }
         kernel::Step::ToPerson => {
             state(ctx, n.id, "person", None)?;
-            queue::set_hold(ctx, n.id, true)?;
+            queue::hand_back(ctx, n.id, true)?;
             ctx.reply.item = Some(talk::card(
                 ctx,
                 "pipeline_acceptance",
@@ -194,7 +194,7 @@ fn require_holder(ctx: &Context<'_>, n: &Node) -> Result<()> {
 }
 pub(super) fn to_lead(ctx: &mut Context<'_>, n: &Node, why: &str) -> Result<()> {
     state(ctx, n.id, "lead", None)?;
-    queue::set_hold(ctx, n.id, false)?;
+    queue::hand_back(ctx, n.id, false)?;
     report_item(ctx, n, why)
 }
 fn report_item(ctx: &mut Context<'_>, n: &Node, why: &str) -> Result<()> {

@@ -18,7 +18,7 @@ pub(crate) fn member(db: &Connection, team: &str, id: &str) -> Result<Option<Mem
     .optional()
     .map_err(storage)
 }
-pub(crate) const NODE_COLUMNS: &str = "team,id,data,rank,admitted,routed,hold,task_revision,task_stage,task_cancelled,generation,decided_by,integrated,integration_commit,requested,integration_required";
+pub(crate) const NODE_COLUMNS: &str = "team,id,data,rank,admitted,routed,hold,hold_owner,hand_back,task_revision,task_stage,task_cancelled,generation,decided_by,integrated,integration_commit,requested,integration_required";
 
 pub(crate) fn node_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<Node> {
     let mut node: Node = sql_json(r, 0)?;
@@ -38,7 +38,69 @@ pub(crate) fn node_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<Node> {
     node.integrated = r.get(6)?;
     Ok(node)
 }
-pub(crate) const NODE_SELECT: &str = "data,rank,admitted,hold,node_state,decided_by,integrated";
+/// The node columns every node read takes, from `table` (`nodes` or
+/// `node_archive`), its hold given by [`held`].
+pub(crate) fn node_select(table: &str) -> String {
+    format!(
+        "{table}.data,{table}.rank,{table}.admitted,{},{table}.node_state,{table}.decided_by,{table}.integrated",
+        held(table)
+    )
+}
+/// Whether a node of `table` is held: the one answer readiness, the rows and
+/// every operation take (the plan, "A hold has an owner"). A node is held by
+/// an explicit hold (`hold`, owned by the person or the lead in
+/// `hold_owner`), by a hand-back to the team's next step (`hand_back`), or
+/// by an unsettled decision of its own, whose hold is the decision's and is
+/// never stored: it ends with the decision, however the decision ends.
+pub(crate) fn held(table: &str) -> String {
+    format!("({table}.hold OR {table}.hand_back OR EXISTS(SELECT 1 FROM decisions d WHERE d.team={table}.team AND d.node={table}.id AND d.state<>'settled'))")
+}
+/// Who set a node's explicit hold: `person`, `lead`, or nobody.
+pub(crate) fn hold_owner(db: &Connection, team: &str, node: u32) -> Result<Option<String>> {
+    db.query_row(
+        "SELECT hold_owner FROM nodes WHERE team=?1 AND id=?2 AND hold",
+        params![team, node],
+        |r| r.get(0),
+    )
+    .optional()
+    .map_err(storage)
+    .map(Option::flatten)
+}
+/// The one writer of an explicit hold: set with its owner, or released.
+pub(crate) fn set_explicit_hold(
+    db: &Connection,
+    team: &str,
+    node: u32,
+    owner: Option<&str>,
+) -> Result<()> {
+    db.execute(
+        "UPDATE nodes SET hold=?3 IS NOT NULL,hold_owner=?3 WHERE team=?1 AND id=?2",
+        params![team, node, owner],
+    )
+    .map_err(storage)?;
+    Ok(())
+}
+/// Whether a node is held for the team's next step.
+pub(crate) fn handed_back(db: &Connection, team: &str, node: u32) -> Result<bool> {
+    db.query_row(
+        "SELECT EXISTS(SELECT 1 FROM nodes WHERE team=?1 AND id=?2 AND hand_back)",
+        params![team, node],
+        |r| r.get(0),
+    )
+    .map_err(storage)
+}
+/// The one writer of a hand-back's hold: a node held for the team's next
+/// step, the lead's decision after a hand-back or a pipeline's own step (a
+/// stage in review, the person's acceptance). That next decision takes it
+/// over or ends it; an explicit hold is never touched here.
+pub(crate) fn set_hand_back(db: &Connection, team: &str, node: u32, value: bool) -> Result<()> {
+    db.execute(
+        "UPDATE nodes SET hand_back=?3 WHERE team=?1 AND id=?2",
+        params![team, node, value],
+    )
+    .map_err(storage)?;
+    Ok(())
+}
 
 pub(crate) fn deps(db: &Connection, team: &str, id: u32) -> Result<Vec<Dep>> {
     let mut statement=db.prepare("SELECT dependency,kind FROM dependencies WHERE team=?1 AND node=?2 ORDER BY dependency LIMIT 201").map_err(storage)?;
@@ -58,7 +120,11 @@ pub(crate) fn deps(db: &Connection, team: &str, id: u32) -> Result<Vec<Dep>> {
     Ok(deps)
 }
 pub(crate) fn node(db: &Connection, team: &str, id: u32) -> Result<Option<Node>> {
-    let sql=format!("SELECT {NODE_SELECT} FROM nodes WHERE team=?1 AND id=?2 UNION ALL SELECT {NODE_SELECT} FROM node_archive WHERE team=?1 AND id=?2 LIMIT 1");
+    let sql = format!(
+        "SELECT {} FROM nodes WHERE team=?1 AND id=?2 UNION ALL SELECT {} FROM node_archive WHERE team=?1 AND id=?2 LIMIT 1",
+        node_select("nodes"),
+        node_select("node_archive")
+    );
     let mut node = db
         .query_row(&sql, params![team, id], node_row)
         .optional()
@@ -165,11 +231,7 @@ pub(crate) fn hand_back(
     now: i64,
 ) -> Result<u64> {
     settle_decisions(db, team, Some(node), actor, false)?;
-    db.execute(
-        "UPDATE nodes SET hold=1 WHERE team=?1 AND id=?2",
-        params![team, node],
-    )
-    .map_err(storage)?;
+    set_hand_back(db, team, node, true)?;
     let generation: u32 = db
         .query_row(
             "SELECT generation FROM nodes WHERE team=?1 AND id=?2 UNION ALL SELECT generation FROM node_archive WHERE team=?1 AND id=?2 LIMIT 1",
@@ -197,7 +259,10 @@ pub(crate) fn close_cards(
 }
 pub(crate) fn archived_leaf(db: &Connection, team: &str, id: u32) -> Result<Option<Node>> {
     db.query_row(
-        &format!("SELECT {NODE_SELECT} FROM node_archive WHERE team=?1 AND id=?2"),
+        &format!(
+            "SELECT {} FROM node_archive WHERE team=?1 AND id=?2",
+            node_select("node_archive")
+        ),
         params![team, id],
         node_row,
     )

@@ -230,7 +230,11 @@ fn record_outcome(
     }
     if kind == "reopen" && ctx.reopening(e.node)? {
         ctx.settle(e.node)?;
-        queue::set_hold(ctx, e.node, state != "submitted")?;
+        // A reopen that was not delivered hands the node back to the lead;
+        // a delivered one ends the decision's hold with the decision.
+        if state != "submitted" {
+            queue::hand_back(ctx, e.node, true)?;
+        }
         if state == "submitted" {
             ctx.close_inbox(e.node)?;
         }
@@ -334,7 +338,6 @@ pub(super) fn report(ctx: &mut Context<'_>) -> Result<()> {
     ctx.db.execute(&format!("UPDATE effects SET state='reported' WHERE team=?1 AND node=?2 AND generation=?3 AND state IN {OPEN_EFFECT_STATES}"),params![ctx.team.id,node,generation]).map_err(storage)?;
     if ctx.reopening(*node)? {
         ctx.settle(*node)?;
-        queue::set_hold(ctx, *node, false)?;
     }
     pipeline::reported(ctx, &n, body)
 }
@@ -409,12 +412,8 @@ pub(super) fn settle_without_reason(ctx: &mut Context<'_>, node: u32) -> Result<
                 ctx.now,
             )?);
         }
-        "return" | "reassign" if !in_hands(ctx, node)? => {
-            // The pending decision held the node; its end releases it, as a
-            // delivered reopen's does.
-            ctx.settle(node)?;
-            queue::set_hold(ctx, node, false)?;
-        }
+        // The decision's hold ends with it; an explicit hold stays.
+        "return" | "reassign" if !in_hands(ctx, node)? => ctx.settle(node)?,
         _ => (),
     }
     Ok(())

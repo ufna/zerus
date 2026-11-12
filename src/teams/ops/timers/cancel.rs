@@ -73,7 +73,9 @@ pub(in crate::teams::ops) fn record_cancel(ctx: &mut Context<'_>) -> Result<()> 
         // released task: the node ends and its binding goes with the record.
         (CancelState::Cancelled | CancelState::Released, true) => cancelled(ctx, node)?,
         (CancelState::Refused, true) => {
+            // The refused cancel hands the node back to the lead, held.
             ctx.settle(node)?;
+            queue::hand_back(ctx, node, true)?;
             let body = format!("The cancel of task {node} was refused: {why}");
             ctx.reply.item = Some(ctx.inbox(node, &format!("cancel_refused:{decision}"), &body)?);
         }
