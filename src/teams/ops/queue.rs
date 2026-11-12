@@ -327,7 +327,16 @@ pub(super) fn observe(ctx: &mut Context<'_>) -> Result<()> {
         }
         return Ok(());
     }
+    // A conflict of attempts decides nothing: it is recorded as it came.
+    if timers::conflict(o) {
+        return rows::record_observation(ctx.db, &ctx.team.id, *node, o, false);
+    }
     let active = matches!(ctx.team.status, TeamStatus::Running | TeamStatus::Paused);
+    // A finished node takes today's restore below; a live one a person sent
+    // again between two observations ends its attempt and is restored here.
+    if active && table == "nodes" && !was_terminal && timers::person_attempt(ctx, *node, o)? {
+        timers::take_over(ctx, *node, &mut n)?;
+    }
     pipeline::before_observation(ctx, &mut n, o, table == "nodes" && !was_terminal)?;
     if !active && table == "nodes" {
         archive_inactive(ctx, *node)?;
@@ -378,6 +387,7 @@ fn validate_observation(
             && old.key == o.key;
         if (old.revision != o.revision && old.revision != o.previous_revision)
             || (old.revision == o.revision && !same)
+            || o.attempt < old.attempt
         {
             return Err(stale());
         }

@@ -43,6 +43,7 @@ fn generations(db: &Connection, node: u32, n: u32) {
         format!("{gens} INSERT INTO effects(team,node,member,generation,request_id,actor,kind,state,created_ms) SELECT ?1,?2,'m1',x,printf('00000000-0000-4000-b000-%012x',x),'{{}}','reopen','reported',1 FROM g"),
         format!("{gens} INSERT INTO inbox(team,kind,node,generation,actor,text,state,created_ms) SELECT ?1,'report',?2,x,'{{}}','Old','closed',1 FROM g"),
         format!("{gens} INSERT INTO timer_firings SELECT ?1,'remind_lead',?2,x,x,'inbox',0,x,1 FROM g"),
+        format!("{gens} INSERT INTO cancel_outcomes SELECT 1000000+x,?1,?2,x,'refused','Old refusal',1 FROM g"),
     ] {
         db.execute(&sql, params![TEAM, node, n]).unwrap();
     }
@@ -108,7 +109,7 @@ const LIVE: [Read; 8] = [
         let _ = h.store.saved_refusal(TEAM, id).unwrap();
     }),
 ];
-const TERMINAL: [Read; 7] = [
+const TERMINAL: [Read; 8] = [
     ("keyed_teams", |h| {
         let _ = h.store.keyed_teams("", 1).unwrap();
     }),
@@ -129,6 +130,13 @@ const TERMINAL: [Read; 7] = [
     }),
     ("cancel_refusals", |h| {
         let _ = h.store.cancel_refusals(TEAM, (0, 0), 16).unwrap();
+    }),
+    ("cancel_refusals after a node's refused history", |h| {
+        let last: u64 = db(h)
+            .query_row("SELECT MAX(decision) FROM cancel_outcomes WHERE team=?1 AND node=2 AND state='refused'", [TEAM], |r| r.get(0))
+            .unwrap();
+        let page = h.store.cancel_refusals(TEAM, (2, last - 1), 1).unwrap();
+        assert_eq!(page.len(), 1, "the newest refusal of the node");
     }),
 ];
 /// Stop the team; one node's cancel settles and waits in the frontier, the

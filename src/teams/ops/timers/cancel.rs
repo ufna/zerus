@@ -11,7 +11,7 @@ pub(in crate::teams::ops) fn record_cancel(ctx: &mut Context<'_>) -> Result<()> 
         decision,
         state,
         reason: why,
-        attempt: _,
+        attempt,
         attempt_id,
     } = ctx.op
     else {
@@ -20,6 +20,17 @@ pub(in crate::teams::ops) fn record_cancel(ctx: &mut Context<'_>) -> Result<()> 
     let (node, decision) = (*node, *decision);
     text(attempt_id, 256)?;
     pending(ctx, node, decision)?;
+    // A cancel acts on one attempt: an answer about another one never ends a
+    // node whose task runs again. A refusal is not bound to an attempt.
+    // The newest observation's pair; a conflict (a number with no current
+    // attempt) matches no answer about an attempt.
+    let held = super::attempts::stored(ctx, node)?;
+    let conflict = held.0 > 0 && held.1.is_empty(); // see attempts::conflict
+    if *state == CancelState::Cancelled && (conflict || held != (*attempt, attempt_id.clone())) {
+        return Err(invalid(
+            "The cancel acted on another attempt than the one the store holds.",
+        ));
+    }
     match state {
         CancelState::Cancelled if !why.is_empty() => {
             return Err(invalid("A cancelled task carries no reason."))

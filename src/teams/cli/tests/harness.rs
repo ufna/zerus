@@ -285,6 +285,7 @@ impl Harness {
             title: format!("Task {node}"),
             attempt: 0,
             attempt_id: String::new(),
+            attempt_conflict: false,
         };
         self.apply(&service(), Operation::ObserveTask { node, observation });
     }

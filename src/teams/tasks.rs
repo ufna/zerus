@@ -91,6 +91,7 @@ fn observation(document: &TaskDoc, team: &str, home: &str) -> Result<TaskObserva
         title: view.title,
         attempt,
         attempt_id,
+        attempt_conflict: false,
     })
 }
 fn record(store: &mut Store, team: &str, node: u32, document: &TaskDoc) -> Result<()> {

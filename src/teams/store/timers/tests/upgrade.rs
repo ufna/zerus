@@ -318,3 +318,56 @@ fn a_marker_newer_than_this_program_refuses_the_open_and_writes_nothing() {
     assert_eq!(marker(&h), Some(EXTENSION + 1), "no lowered mark");
     assert_eq!(names(&h), full);
 }
+
+/// Every schema object's definition, to compare a store byte for byte.
+fn schema(h: &Harness) -> Vec<(String, String, Option<String>)> {
+    let db = db(h);
+    let mut s = db
+        .prepare("SELECT type,name,sql FROM sqlite_master ORDER BY type,name")
+        .unwrap();
+    let rows = s
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+        .unwrap();
+    rows.collect::<rusqlite::Result<Vec<_>>>().unwrap()
+}
+fn older_card_index(h: &Harness) {
+    db(h).execute_batch("DROP INDEX integration_card; CREATE UNIQUE INDEX integration_card ON cards(decision_seq);").unwrap();
+}
+
+#[test]
+fn a_store_marked_by_a_newer_program_is_refused_before_any_schema_write() {
+    let h = stopped();
+    db(&h)
+        .execute("UPDATE timers_extension SET version=?1", [EXTENSION + 1])
+        .unwrap();
+    older_card_index(&h);
+    db(&h)
+        .execute_batch("DROP TABLE verdicts; DROP INDEX teams_live;")
+        .unwrap();
+    let before = schema(&h);
+    let refused = Store::open(h.temp.path()).unwrap_err();
+    assert!(
+        refused
+            .message
+            .contains("store schema is newer than this version of Zerus"),
+        "{}",
+        refused.message
+    );
+    assert_eq!(
+        schema(&h),
+        before,
+        "the index, the schema batches and the mark are untouched"
+    );
+    assert_eq!(marker(&h), Some(EXTENSION + 1));
+}
+
+#[test]
+fn an_older_store_with_the_older_index_still_upgrades() {
+    let mut h = stopped();
+    let full = schema(&h);
+    strip(&h);
+    older_card_index(&h);
+    reopen(&mut h);
+    assert_eq!(schema(&h), full);
+    assert_eq!(marker(&h), Some(EXTENSION));
+}

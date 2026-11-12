@@ -85,6 +85,10 @@ pub struct TaskObservation {
     /// the team hands out has its effect's request ID. At most 256 bytes.
     #[serde(default)]
     pub attempt_id: String,
+    /// Two attempts claim the highest generation; the ID is then empty. An
+    /// empty ID without this flag is an ordinary pair: no current attempt.
+    #[serde(default)]
+    pub attempt_conflict: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]

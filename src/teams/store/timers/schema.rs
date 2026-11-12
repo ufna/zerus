@@ -15,7 +15,7 @@ use super::*;
 use std::time::Duration;
 
 /// Raised whenever this package's layout changes.
-pub(crate) const EXTENSION: u32 = 4;
+pub(crate) const EXTENSION: u32 = 6;
 
 #[cfg(test)]
 type Hook = Box<dyn FnOnce() -> Result<()>>;
@@ -28,6 +28,13 @@ thread_local! {
     pub(crate) static TRANSITIONS: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
 }
 
+/// Read first and read only, before any statement of the store's schema
+/// extensions that can write: a store marked by a newer program is refused
+/// and nothing is written to it. The transition reads the mark again inside
+/// its own transaction.
+pub(in crate::teams::store) fn fence(db: &Connection) -> Result<()> {
+    marked(db).map(|_| ())
+}
 pub(in crate::teams::store) fn extend(db: &Connection) -> Result<()> {
     if marked(db)? {
         return Ok(());
@@ -136,6 +143,8 @@ fn observed_attempts(db: &Connection) -> Result<()> {
     for (column, kind) in [
         ("attempt", "INTEGER NOT NULL DEFAULT 0"),
         ("attempt_id", "TEXT NOT NULL DEFAULT ''"),
+        ("last_attempt_id", "TEXT NOT NULL DEFAULT ''"),
+        ("attempt_conflict", "INTEGER NOT NULL DEFAULT 0"),
     ] {
         let present: bool = db
             .query_row(
