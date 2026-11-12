@@ -207,7 +207,20 @@ pub(super) fn send(
     Ok(out)
 }
 pub(super) fn annotate(mut out: Value) -> Value {
-    if out["team"]["queued"] == false {
+    if out["team"]["queued"] != true
+        && out["team"]["error"]["code"] == zerus_team_plan::problem::code::STORAGE_FAILED
+    {
+        let message = format!(
+            "Task {} exists; whether it was queued is unknown (storage_failed): {} Retry sending this same task to the team.",
+            out["task"]["ref"].as_str().unwrap_or(""),
+            out["team"]["error"]["message"].as_str().unwrap_or("The result is unknown.")
+        );
+        out["team"]["queued"] = Value::Null;
+        if out.get("answer").is_some() {
+            out["answer"] = json!(message);
+        }
+        out["message"] = json!(message);
+    } else if out["team"]["queued"] == false {
         let message = format!(
             "Task {} exists and was not queued ({}): {}",
             out["task"]["ref"].as_str().unwrap_or(""),

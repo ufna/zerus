@@ -650,7 +650,7 @@ fn preflight_capacity_and_routing_fail_before_creating_a_task() {
 }
 
 #[test]
-fn late_refusal_reports_the_existing_task_and_removes_its_marker() {
+fn unknown_intake_keeps_the_existing_task_and_its_prepared_marker() {
     let f = Fixture::new();
     f.h.store.db.as_ref().unwrap().execute_batch("CREATE TRIGGER reject_team_intake BEFORE INSERT ON live_tasks BEGIN SELECT RAISE(ABORT,'fixture team refusal'); END").unwrap();
     let out = f.run(
@@ -660,14 +660,114 @@ fn late_refusal_reports_the_existing_task_and_removes_its_marker() {
     );
     assert_eq!(out["ok"], true, "{out}");
     assert_eq!(out["value"]["task_exists"], true);
-    assert_eq!(out["value"]["team"]["queued"], false);
+    assert!(out["value"]["team"]["queued"].is_null());
     assert_eq!(out["value"]["team"]["error"]["code"], "storage_failed");
     assert!(out["value"]["message"]
         .as_str()
         .unwrap()
-        .contains("exists and was not queued"));
-    assert_eq!(f.document(&out["value"]["task"]).team().unwrap(), None);
+        .contains("unknown"));
+    assert!(!out["value"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("not queued"));
+    assert_eq!(
+        f.document(&out["value"]["task"])
+            .team()
+            .unwrap()
+            .unwrap()
+            .team,
+        TEAM
+    );
     assert!(f.h.store.queue(TEAM, 200, None).unwrap().rows.is_empty());
+}
+
+#[test]
+fn storage_failure_annotation_is_unknown_with_or_without_an_agent_answer() {
+    for answer in [false, true] {
+        let mut out = json!({"task_exists":true,"task":{"ref":"example/T-example"},"team":{"queued":false,"error":{"code":"storage_failed","message":"The result was lost."}}});
+        if answer {
+            out["answer"] = json!("Initial answer");
+        }
+        let out = super::annotate(out);
+        assert!(out["team"]["queued"].is_null());
+        let message = out["message"].as_str().unwrap();
+        assert!(message.contains("unknown") && message.contains("same task"));
+        assert!(!message.contains("not queued"));
+        if answer {
+            assert_eq!(out["answer"], out["message"]);
+        } else {
+            assert!(out.get("answer").is_none());
+        }
+    }
+}
+
+#[test]
+fn definite_refusal_and_pending_observation_keep_their_distinct_answers() {
+    for code in ["store_busy", "invalid_state"] {
+        let out = super::annotate(
+            json!({"task":{"ref":"example/T-example"},"team":{"queued":false,"error":{"code":code,"message":"Try later."}},"answer":"Initial answer"}),
+        );
+        assert_eq!(out["team"]["queued"], false);
+        assert!(out["message"].as_str().unwrap().contains("not queued"));
+        assert_eq!(out["answer"], out["message"]);
+    }
+    let out = super::annotate(
+        json!({"team":{"queued":true,"observation_pending":true},"answer":"Task queued."}),
+    );
+    assert_eq!(out["team"]["queued"], true);
+    assert_eq!(out["answer"], "Task queued. Observation is pending.");
+}
+
+#[test]
+fn a_cli_unknown_repeat_keeps_one_node_through_the_production_observer() {
+    let f = Fixture::new();
+    let first = f.run(
+        &["add", "--project", "example", "--team", TEAM, "--json"],
+        "Queue once",
+        None,
+    );
+    assert_eq!(first["value"]["team"]["queued"], true, "{first}");
+    let reference = first["value"]["task"]["ref"].as_str().unwrap();
+    f.h.store.db.as_ref().unwrap().execute_batch("CREATE TRIGGER intake_reply_failure BEFORE INSERT ON requests BEGIN SELECT RAISE(ABORT,'private receipt failure'); END;").unwrap();
+    let failed = f.run(&["target", reference, "team", TEAM, "--json"], "", None);
+    f.h.store
+        .db
+        .as_ref()
+        .unwrap()
+        .execute_batch("DROP TRIGGER intake_reply_failure")
+        .unwrap();
+    assert_eq!(failed["ok"], true, "{failed}");
+    assert!(failed["value"]["team"]["queued"].is_null());
+    assert_eq!(failed["value"]["team"]["error"]["code"], "storage_failed");
+    assert!(failed["value"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("unknown"));
+    let doc = f.document(&first["value"]["task"]);
+    assert_eq!(doc.team().unwrap().unwrap().team, TEAM);
+    let task = zerus_team_plan::model::TaskRef {
+        project: doc.view().unwrap().project,
+        uuid: doc.uuid().into(),
+    };
+    crate::teams::tasks::observe(f.h.temp.path(), &task).unwrap();
+    let repeated = f.run(&["target", reference, "team", TEAM, "--json"], "", None);
+    assert_eq!(repeated["value"]["team"]["queued"], true, "{repeated}");
+    assert_eq!(
+        repeated["value"]["team"]["node"],
+        first["value"]["team"]["node"]
+    );
+    let identities: u32 =
+        f.h.store
+            .db
+            .as_ref()
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM node_identity WHERE team=?1",
+                [TEAM],
+                |row| row.get(0),
+            )
+            .unwrap();
+    assert_eq!(identities, 1);
 }
 
 #[test]

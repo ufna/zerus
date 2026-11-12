@@ -55,8 +55,24 @@ fn load(store: &ProjectStore, uuid: &str) -> Result<TaskDoc> {
         .load_complete(uuid)
         .map_err(storage)
 }
+/// The document retains the highest claim across stage changes. A conflicted
+/// projection has no current identity that the team can safely act on. A
+/// never-admitted candidate is retained for display, but is no current execution.
+pub(crate) fn attempt(view: &zerus_replica::TaskView) -> (u64, String, bool) {
+    let highest = view.execution.as_ref().map_or(0, |e| e.highest);
+    let conflict = view.execution.as_ref().is_some_and(|e| e.conflict);
+    let id = view
+        .execution
+        .as_ref()
+        .filter(|e| !e.conflict)
+        .and_then(|e| e.current.as_ref())
+        .filter(|current| current.phase != zerus_replica::execution::Phase::NotStarted)
+        .map_or_else(String::new, |current| current.id.clone());
+    (highest, id, conflict)
+}
 fn observation(document: &TaskDoc, team: &str, home: &str) -> Result<TaskObservation> {
     let view = document.view().map_err(storage)?;
+    let (attempt, attempt_id, attempt_conflict) = attempt(&view);
     let key = match document.team().map_err(storage)? {
         Some(key) if key.team == team && key.home == home => ops::KeyState::Ours,
         None if !document.team_invalid() => ops::KeyState::Absent,
@@ -76,20 +92,25 @@ fn observation(document: &TaskDoc, team: &str, home: &str) -> Result<TaskObserva
         cancelled: view.cancelled_at.is_some(),
         rank: view.rank,
         title: view.title,
-        // The task side fills these from the document's attempts (6b).
-        attempt: 0,
-        attempt_id: String::new(),
-        attempt_conflict: false,
+        attempt,
+        attempt_id,
+        attempt_conflict,
     })
 }
 fn record(store: &mut Store, team: &str, node: u32, document: &TaskDoc) -> Result<()> {
     let header = header::read(store, team)?.ok_or_else(|| Guard::ObservedTeam.problem())?;
     let mut observation = observation(document, team, &header.home)?;
-    observation.previous_revision = store
-        .task_observation(team, node)?
-        .map_or(String::new(), |o| o.revision);
+    let previous = store.task_observation(team, node)?;
+    observation.previous_revision = previous
+        .as_ref()
+        .map_or(String::new(), |o| o.revision.clone());
     if matches!(observation.key, ops::KeyState::Ours)
         && observation.previous_revision == observation.revision
+        && previous.as_ref().is_some_and(|old| {
+            old.attempt == observation.attempt
+                && old.attempt_id == observation.attempt_id
+                && old.attempt_conflict == observation.attempt_conflict
+        })
     {
         return Ok(());
     }
