@@ -11,6 +11,7 @@ use std::{
 };
 use zerus_replica::{Actor as TaskActor, Position, ProjectStore, SessionKey, Stage, Target};
 mod contracts;
+mod isolation;
 mod setup;
 mod vectors;
 
@@ -92,10 +93,13 @@ impl Fixture {
             .get_envs()
             .filter_map(|(k, v)| v.map(|v| (k.to_owned(), v.to_owned())))
             .collect();
+        let tmux = std::path::Path::new(&self.config.home).join("tmux");
+        crate::platform::private_dir(&tmux).unwrap();
         cmd.env_clear()
             .envs(mode_values)
             .env("PATH", std::env::var_os("PATH").unwrap_or_default())
             .env("HOME", &self.config.home)
+            .env("TMUX_TMPDIR", &tmux)
             .env("HGS_CONFIG_DIR", &self.config.dir)
             .env("HGS_STATE_DIR", &self.config.state)
             .env("HGS_SELF", "fixture")
