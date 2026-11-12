@@ -174,6 +174,14 @@ pub enum Operation {
         worktree: String,
         ownership_nonce: String,
     },
+    /// A launch-bound member's durable handle: the session ID of the record
+    /// its binding verified (zerus-63rru.53). Written once, by the service.
+    SetMemberHandle {
+        member: String,
+        session_id: String,
+        #[serde(default)]
+        label_hint: String,
+    },
     SetMemberState {
         member: String,
         state: MemberState,

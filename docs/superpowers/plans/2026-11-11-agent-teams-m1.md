@@ -1818,6 +1818,29 @@ tests' rows come from the listing's own steps through test-only seams; one
 guard compares the committed fixture's key paths with them and another
 fails when the reader names a key no producer writes.
 
+**A member is found by its session, not by its launch's evidence.** A
+member is bound to the launch that started it, and every later read of the
+member (is it free, which run is current, who is its parent) went through
+that launch's start file, which the product removes when the launch is
+confirmed finished and after seven days at the latest. A member whose start
+file was gone could not be read and was never handed a task (found by
+tracing the producer, 2026-11-12). The store keeps a durable handle beside
+the binding: the session's own ID, written once by the service when the
+binding is verified, in a companion table that an older build ignores, so
+the layout does not move. Every later read resolves the session's current
+record through the handle with bounded point reads and requires that
+record to carry the bound launch and the member's agent and folder. What
+does not resolve is named and never free: `Gone` (archived, forgotten, or
+rewritten without its ID), `Changed` (the record carries another launch),
+`StartedFresh`, `Unavailable` (a fault or a bound) and `NoHandle`. A fresh
+start ends the binding: it does not carry the launch's identity to the new
+conversation, because that identity is also the task executor's key and
+carrying it would change what a fresh start means for every task; that is
+the owner's decision and is not taken here. One session is one member's. A
+member bound before the handle existed gets it on its first verified free
+check, from the launch ledger, a completed resume or the evidence while it
+lasts.
+
 **Known limit: the key of a task that was closed before the stop.** After a
 stop the service clears the team key of the tasks that were open at the
 stop and of released stages. A task accepted or cancelled earlier keeps its

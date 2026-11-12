@@ -129,7 +129,12 @@ mod git_status;
 pub(crate) mod repositories;
 mod launch_observation;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
-pub(crate) use launch_observation::{observe_team_launch, TeamObservation};
+pub(crate) use launch_observation::{
+    observe_team_launch, observe_team_session, TeamObservation, TeamRecord, TeamSession,
+};
+pub(crate) use questions::native_identity;
+#[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
+pub(crate) use questions::read_answer_request;
 /// The maintained ownership reader; Teams supplies the exact generated path.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub(crate) fn team_worktree_ownership(
@@ -1819,3 +1824,6 @@ mod control_console_tests {
         );
     }
 }
+
+#[cfg(test)]
+pub(crate) mod trust_fixture;

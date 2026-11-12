@@ -228,7 +228,7 @@ impl Ports for Native {
             return Ok(false);
         };
         if session.machine != self.machine
-            || !super::availability::free(&self.config, &self.epoch, &team.id, m)?
+            || !super::availability::free(&self.config, &self.epoch, &team.id, m, true)?
         {
             return Ok(false);
         }

@@ -26,6 +26,7 @@ pub fn authority(actor: &Actor, op: &Operation, team: &Team) -> Result<()> {
         | Operation::ReopenIntent { .. }
         | Operation::ReopenOutcome { .. }
         | Operation::SetMemberSession { .. }
+        | Operation::SetMemberHandle { .. }
         | Operation::SetMemberState { .. }
         | Operation::RecordReport { .. }
         | Operation::StageTaskIntent { .. }

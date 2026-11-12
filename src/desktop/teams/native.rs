@@ -258,18 +258,25 @@ impl Effects for Native {
             return "unsupported_agent".into();
         }
         let result = (|| -> Result<String> {
-            let current =
-                match observation::session(self, plan, Instant::now() + Duration::from_secs(3))? {
-                    LaunchRead::Session(s) => *s,
-                    _ => return Ok("identity_pending".into()),
-                };
+            // Both sessions through their durable handles (zerus-63rru.53):
+            // a lead whose first run ended, or launched over a week ago, has
+            // no launch evidence left but still links.
+            let store = crate::teams::store::Store::open(&self.config.state)?;
+            let current = match observation::member_session(
+                self,
+                &store,
+                plan,
+                Instant::now() + Duration::from_secs(3),
+            )? {
+                LaunchRead::Session(s) => *s,
+                _ => return Ok("identity_pending".into()),
+            };
             if current.run_id.is_empty()
                 || current.conversation_id.is_empty()
                 || current.session_id.is_empty()
             {
                 return Ok("identity_pending".into());
             }
-            let store = crate::teams::store::Store::open(&self.config.state)?;
             let team = store
                 .team(&plan.team)?
                 .ok_or_else(|| invalid("Team disappeared"))?;
@@ -283,8 +290,9 @@ impl Effects for Native {
                 .get(&plan.team, &team.lead)?
                 .and_then(|r| r.plan)
                 .ok_or_else(|| invalid("Lead original unavailable"))?;
-            let lead = match observation::session(
+            let lead = match observation::member_session(
                 self,
+                &store,
                 &lead_plan,
                 Instant::now() + Duration::from_secs(3),
             )? {

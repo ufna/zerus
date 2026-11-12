@@ -37,7 +37,13 @@ impl Native {
             )?;
         }
         if let Some(member) = member {
-            if !super::super::availability::free(&self.config, &self.epoch, &team.id, member)? {
+            if !super::super::availability::free(
+                &self.config,
+                &self.epoch,
+                &team.id,
+                member,
+                false,
+            )? {
                 return Err(problem(
                     "Member is no longer live and idle in the exact current run",
                 ));

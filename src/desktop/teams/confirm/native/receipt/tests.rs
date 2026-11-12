@@ -167,3 +167,28 @@ fn a_missing_or_replaced_original_store_never_finishes_as_approved() {
     crate::platform::private_dir(&state).unwrap();
     assert!(matches!(observe(&roots, &row, &input), Outcome::Unknown(_)));
 }
+
+/// zerus-63rru.60: the delivery request takes the conversation from the
+/// snapshot, never from the card, and the answer command's own request
+/// reader accepts it for a startup card. The card's null would be refused.
+#[test]
+fn a_startup_cards_request_names_the_snapshots_conversation() {
+    let (mut b, _, mut s) = sample();
+    let card = crate::state::trust_fixture::startup_card("claude");
+    assert!(card["conversation_id"].is_null());
+    b.run = card["run_id"].as_str().unwrap().into();
+    s.run = b.run.clone();
+    s.conversation = String::new();
+    s.questions = vec![card.clone()];
+    let mut row = row(Kind::Trust);
+    row.plan = engine::candidate(&b, &s, Kind::Trust, card.clone());
+    let (args, input, folder) = invocation(&row).unwrap();
+    assert_eq!((args[0].as_str(), folder), ("answer", "question_receipts"));
+    let (run, conversation, question) = crate::state::read_answer_request(&input).unwrap();
+    assert_eq!(run, s.run);
+    assert_eq!(conversation, "");
+    assert_eq!(question, card["question_id"].as_str().unwrap());
+    let mut request: Value = serde_json::from_slice(&input).unwrap();
+    request["expected_conversation_id"] = card["conversation_id"].clone();
+    assert!(crate::state::read_answer_request(request.to_string().as_bytes()).is_err());
+}

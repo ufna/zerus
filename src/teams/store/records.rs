@@ -15,6 +15,17 @@ pub struct MemberSession {
     pub session_id: String,
 }
 
+/// A launch-bound member's durable handle (zerus-63rru.53): the session ID
+/// of the record its binding verified, the launch it was bound to and the
+/// session's name at binding, a route for when the ID index misses.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MemberHandle {
+    pub machine: String,
+    pub session_id: String,
+    pub launch: String,
+    pub label_hint: String,
+}
+
 /// Snapshot high-water mark excludes additions while the person turns pages.
 /// The scope binds the cursor to the team, list and filter that issued it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

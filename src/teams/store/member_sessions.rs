@@ -6,6 +6,8 @@ pub(super) const MEMBER_SESSIONS_SQL: &str =
     "SELECT id,machine,session_id,state FROM members WHERE team=?1 ORDER BY id LIMIT ?2";
 pub(super) const MEMBER_SESSION_SQL: &str =
     "SELECT machine,session_id FROM members WHERE team=?1 AND id=?2";
+pub(super) const MEMBER_HANDLE_SQL: &str =
+    "SELECT machine,session_id,launch,label_hint FROM member_handles WHERE team=?1 AND member=?2";
 
 impl Store {
     /// Binding metadata by primary key; a malformed member record cannot hide it.
@@ -26,6 +28,25 @@ impl Store {
                 machine,
                 session_id,
             }))
+    }
+
+    /// A member's durable handle by primary key (zerus-63rru.53); none for a
+    /// member bound by run, or bound before handles and not yet backfilled.
+    pub fn member_handle(&self, team: &str, member: &str) -> Result<Option<MemberHandle>> {
+        self.active()?;
+        let Some(db) = &self.db else {
+            return Ok(None);
+        };
+        db.query_row(MEMBER_HANDLE_SQL, rusqlite::params![team, member], |r| {
+            Ok(MemberHandle {
+                machine: r.get(0)?,
+                session_id: r.get(1)?,
+                launch: r.get(2)?,
+                label_hint: r.get(3)?,
+            })
+        })
+        .optional()
+        .map_err(storage)
     }
 
     /// One primary-key range read, including unbound rows in the bound so a

@@ -2987,3 +2987,26 @@ fn a_persons_dismissal_of_the_blocked_card_lasts() {
         Some("acknowledged")
     );
 }
+
+/// zerus-63rru.53: binding records each member's durable handle, the session
+/// ID the launch's observation verified, with its name as the label hint.
+#[test]
+fn binding_records_the_members_durable_handle() {
+    let mut h = Harness::new();
+    let mut e = FakeEffects::default();
+    let mut r = runtime(&h);
+    until(&mut r, &mut h, &mut e, |h, _| {
+        row_if(h, "m1").is_some_and(|r| r.state == State::ParentIntent)
+    });
+    for member in ["lead", "m1"] {
+        let observed = row(&h, member).observed.unwrap();
+        let handle = h
+            .store
+            .member_handle(ops::tests::TEAM, member)
+            .unwrap()
+            .unwrap_or_else(|| panic!("{member} has no handle"));
+        assert_eq!(handle.session_id, observed.session_id, "{member}");
+        assert_eq!(handle.label_hint, observed.name, "{member}");
+        assert_eq!(handle.launch, observed.launch_id, "{member}");
+    }
+}
