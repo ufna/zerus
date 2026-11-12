@@ -15,7 +15,7 @@ use super::*;
 use std::time::Duration;
 
 /// Raised whenever this package's layout changes.
-pub(crate) const EXTENSION: u32 = 7;
+pub(crate) const EXTENSION: u32 = 8;
 
 #[cfg(test)]
 type Hook = Box<dyn FnOnce() -> Result<()>>;
@@ -116,6 +116,7 @@ fn transition(db: &Connection) -> Result<()> {
     // after this transaction is seen by them, and none can commit inside it.
     db.execute_batch(include_str!("../timers.sql"))
         .map_err(storage)?;
+    released_outcomes(db)?;
     observed_attempts(db)?;
     remembered_attempts(db, from)?;
     migrate_outbox(db)?;
@@ -192,6 +193,35 @@ fn remembered_attempts(db: &Connection, from: Option<u32>) -> Result<()> {
     Ok(())
 }
 const TAKEN_IN: &str = "UPDATE task_observations SET last_attempt_id=CASE WHEN (json_extract(data,'$.stage')='in_progress' AND NOT json_extract(data,'$.cancelled')) OR EXISTS(SELECT 1 FROM effects e WHERE e.request_id=task_observations.attempt_id AND e.team=task_observations.team AND e.node=task_observations.node) THEN attempt_id ELSE '' END WHERE attempt_id<>''";
+/// Before layout 8 a cancel outcome was cancelled or refused; the table is
+/// rebuilt once with its current definition, which also takes released.
+/// Its rows move as they are; no trigger or view reads it.
+fn released_outcomes(db: &Connection) -> Result<()> {
+    let sql: Option<String> = db
+        .query_row(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='cancel_outcomes'",
+            [],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(storage)?;
+    if sql.is_none_or(|sql| sql.contains("'released'")) {
+        return Ok(());
+    }
+    db.execute_batch(
+        "DROP INDEX IF EXISTS cancel_refusals;
+         ALTER TABLE cancel_outcomes RENAME TO cancel_outcomes_v1;",
+    )
+    .map_err(storage)?;
+    db.execute_batch(include_str!("../timers.sql"))
+        .map_err(storage)?;
+    db.execute_batch(
+        "INSERT INTO cancel_outcomes(decision,team,node,generation,state,reason,at_ms)
+          SELECT decision,team,node,generation,state,reason,at_ms FROM cancel_outcomes_v1;
+         DROP TABLE cancel_outcomes_v1;",
+    )
+    .map_err(storage)
+}
 /// Version 1 kept released stages in an outbox; they move to the frontier.
 fn migrate_outbox(db: &Connection) -> Result<()> {
     let old: bool = db

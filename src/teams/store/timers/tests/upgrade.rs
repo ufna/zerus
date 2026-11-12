@@ -456,3 +456,57 @@ fn every_statement_of_the_common_batches_is_seen_by_the_presence_check() {
         assert_eq!(crate::teams::store::created(sql).len(), statements, "{sql}");
     }
 }
+
+/// Layout 7 took only cancelled and refused outcomes. The transition
+/// rebuilds the table once with its current definition and keeps its rows,
+/// so that a released answer can be recorded.
+#[test]
+fn a_store_before_released_outcomes_keeps_its_rows_and_takes_released() {
+    let mut h = stopped();
+    let full = schema(&h);
+    db(&h)
+        .execute_batch(
+            "DROP TABLE cancel_outcomes;
+             CREATE TABLE cancel_outcomes (
+              decision INTEGER PRIMARY KEY, team TEXT NOT NULL, node INTEGER NOT NULL, generation INTEGER NOT NULL,
+              state TEXT NOT NULL CHECK(state IN ('cancelled','refused')), reason TEXT NOT NULL, at_ms INTEGER NOT NULL
+             );
+             CREATE INDEX cancel_refusals ON cancel_outcomes(team,node) WHERE state='refused';
+             UPDATE timers_extension SET version=7;",
+        )
+        .unwrap();
+    db(&h)
+        .execute(
+            "INSERT INTO cancel_outcomes VALUES(900,?1,1,1,'cancelled','',1),(901,?1,2,1,'refused','Delivery unknown',2)",
+            [TEAM],
+        )
+        .unwrap();
+    reopen(&mut h);
+    assert_eq!(schema(&h), full, "the current definition, byte for byte");
+    let kept: Vec<(u64, String, String)> = {
+        let mut s = db(&h)
+            .prepare("SELECT decision,state,reason FROM cancel_outcomes ORDER BY decision")
+            .unwrap();
+        let rows = s
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .unwrap();
+        rows.collect::<rusqlite::Result<Vec<_>>>().unwrap()
+    };
+    assert_eq!(
+        kept,
+        vec![
+            (900, "cancelled".to_owned(), String::new()),
+            (901, "refused".to_owned(), "Delivery unknown".to_owned())
+        ]
+    );
+    db(&h)
+        .execute(
+            "INSERT INTO cancel_outcomes VALUES(902,?1,3,1,'released','',3)",
+            [TEAM],
+        )
+        .unwrap();
+    assert_eq!(
+        h.store.cancel_refusals(TEAM, (0, 0), 10).unwrap(),
+        vec![(2, 901, "Delivery unknown".to_owned())]
+    );
+}

@@ -141,8 +141,14 @@ pub enum KeyClearState {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CancelState {
+    /// The task was cancelled under that attempt. In a live team a bound
+    /// task's end is recorded by its observation, so there this answer is
+    /// refused; it ends a node without a task and settles after a stop.
     Cancelled,
     Refused,
+    /// The key was already gone from the task: in every team state the
+    /// answer is recorded and the node's binding goes with it.
+    Released,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

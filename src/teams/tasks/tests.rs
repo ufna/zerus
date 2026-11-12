@@ -607,3 +607,98 @@ fn a_legacy_direct_claim_does_not_gain_a_delivered_holders_exception() {
         assert!(guard(&caller(&h, &member), &doc, action).is_err());
     }
 }
+
+fn person_session() -> zerus_replica::SessionKey {
+    zerus_replica::SessionKey {
+        machine: fixture().team.home,
+        session: "codex/example".into(),
+        session_id: "run_id:example".into(),
+    }
+}
+fn edit(h: &Harness, reference: &TaskRef, change: impl FnOnce(&mut TaskDoc)) {
+    let store = ProjectStore::open(&h.temp.path().join("replica"), &reference.project).unwrap();
+    let mut doc = store.load(&reference.uuid).unwrap();
+    change(&mut doc);
+    store.save(&mut doc).unwrap();
+}
+
+/// The shape end to end, through the service's own observer: the command
+/// answers cancelled; that answer is refused for the bound live node and
+/// writes nothing; the service observes the task, and the observation of the
+/// cancelled task ends the node and settles the decision. Until then the
+/// cancelled task is still bound and cannot be sent to the team again.
+#[test]
+fn a_cancelled_task_is_ended_by_its_observation() {
+    let mut h = Harness::new();
+    let lead = h.bind("lead");
+    let reference = document(&h);
+    let node = send(
+        &caller(&h, &TaskActor::Person),
+        &reference,
+        TEAM,
+        None,
+        None,
+    )
+    .unwrap()
+    .node
+    .unwrap();
+    edit(&h, &reference, |doc| {
+        doc.record_send(&person_session(), "request-1", &TaskActor::Person, 2)
+            .unwrap()
+    });
+    observe(h.temp.path(), &reference).unwrap();
+    h.run(
+        &lead,
+        ops::Operation::Cancel {
+            node,
+            reason: "Superseded".into(),
+        },
+    )
+    .unwrap();
+    let decision = h
+        .store
+        .pending_cancels(TEAM, 1, 0)
+        .unwrap()
+        .remove(0)
+        .decision;
+    // The command's work on the task, then its answer.
+    edit(&h, &reference, |doc| {
+        doc.record_cancel("Superseded", &TaskActor::Person, 3)
+            .unwrap()
+    });
+    let answer = h.run(
+        &ops::tests::service(),
+        ops::Operation::RecordCancel {
+            node,
+            decision,
+            state: ops::CancelState::Cancelled,
+            reason: String::new(),
+            attempt: 0,
+            attempt_id: String::new(),
+        },
+    );
+    assert_eq!(answer.unwrap_err().code, code::INVALID_STATE);
+    assert_eq!(h.store.pending_cancels(TEAM, 200, 0).unwrap().len(), 1);
+    assert_eq!(h.node(node).state, NodeState::InProgress);
+    assert_eq!(
+        binding(&h.store, &reference).unwrap(),
+        Some((TEAM.to_owned(), node))
+    );
+    let again = send(
+        &caller(&h, &TaskActor::Person),
+        &reference,
+        TEAM,
+        None,
+        None,
+    );
+    assert_eq!(again.unwrap_err().code, code::INVALID_STATE);
+    assert_eq!(
+        task(&h, &reference).team().unwrap().unwrap().team,
+        TEAM,
+        "the refused send leaves the key"
+    );
+    observe(h.temp.path(), &reference).unwrap();
+    assert_eq!(h.node(node).state, NodeState::Cancelled);
+    assert!(h.store.pending_cancels(TEAM, 200, 0).unwrap().is_empty());
+    assert_eq!(binding(&h.store, &reference).unwrap(), None);
+}
