@@ -1400,21 +1400,35 @@ again, and both orders of the answer and the observation leave the same
 state. No service command finishes, reopens or cancels a task whose current
 attempt is not the one the store observed.
 
-**An answer does not release a task; its observation does.** The service
-finds a task's node through the live binding and records nothing for a
-task that has none. A recorded cancel used to delete the binding, so the
-service went blind to that task: a person who then moved it back and sent
-it again was never observed, and the node stayed cancelled while its task
-ran, although the opposite order restored it (found by the end-to-end
-witness on 2026-11-12; tests at the store's port had applied the
-observation to the node directly). `RecordCancel` with `cancelled`
-therefore settles the decision and ends the node's attempt and keeps the
-binding. The next observation decides: a cancelled task releases the
-binding as any cancel does, a task that runs again restores the finished
-node. The command's `released` answer is its own state of `RecordCancel`:
-the key is already gone from the task, and the binding is released at
-once. Once the store has observed a task cancelled, the team has let it
-go; a person who wants it back sends it to the team again.
+**In a live team a task's end is recorded by its observation alone.** An
+answer and an observation are two reports of one fact, and every rule that
+let both write it produced an order in which they disagreed. The first
+version let a `cancelled` answer end the node; the second kept the task
+bound after the answer so that a later observation could still restore it.
+Both failed on the service's real paths, found by end-to-end tests on
+2026-11-12: the observer finds a task's node through the live binding
+only, and the service's pass observes the nodes of the live queue only, so
+an ended node was never looked at again. The rule now has one writer. In a
+running or paused team a `cancelled` answer of `team-cancel` writes nothing
+to the store: the service observes that task at once, and the observation
+ends the node and settles the decision, or, when a person has started the
+task again, takes the new execution over. A `stale` answer leads to the
+same observation. Until an observation has settled it the decision stays
+pending, so an interrupted visit is simply repeated: the command answers
+`cancelled` again for a task that is already cancelled and writes nothing.
+The store refuses `RecordCancel` with `cancelled` for a node of a live
+team whose task is bound. It takes that answer where no observation can
+follow: for a node without a task, and in a stopped or archived team,
+whose bindings are gone. `released` and `refused` are recorded as answers
+in every state, because no observation says them: a released task has
+lost its key, and its binding is released with the record. In a stopped or
+archived team no observation follows either, so `team-cancel` never
+answers `stale` there: it acts when the document's current attempt is the
+one the store last observed or is the node's own effect that was delivered
+and not yet observed, and otherwise it refuses with a reason that begins
+`attempt_changed:`, because a person took the task after the stop. Once
+the store has observed a task cancelled, the team has let it go; a person
+who wants it back sends it to the team again.
 
 **A reader of a reply ignores what it does not know.** The contract's types
 refuse unknown fields, and that stays the rule for what a person or a
