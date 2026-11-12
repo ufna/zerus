@@ -183,9 +183,16 @@ mod sweep {
             "1 task keys got no final answer on the last sweep; the last: The task's project is being moved; the key is cleared on a later sweep."
         );
         assert_eq!(item.next_ms, Some(second + 900_000));
-        pass(&mut h, &mut a, "cleared", second + 3_600_000);
+        // The terminal entry alone, without the cleanup pass that would also
+        // remove the item of a team with no key left: only the sweep that
+        // leaves none clears it here.
+        let third = second + 3_600_000;
+        let child = clear_child(&h, node, "cleared");
+        crate::desktop::teams::timers::Native::fixture_program(&child, || {
+            a.terminal_entry(&mut h.store, &mut p, third).unwrap()
+        });
         assert!(h.store.keyed_tasks(TEAM, 0, 16).unwrap().is_empty());
-        assert!(items(&h, TEAM, second + 3_600_000).is_empty());
+        assert!(items(&h, TEAM, third).is_empty());
     }
 }
 
