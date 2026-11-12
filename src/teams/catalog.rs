@@ -5,7 +5,9 @@
 //! save or import.
 #![cfg_attr(not(test), allow(dead_code))] // The `hgs team` CLI in package 5 is the caller.
 
+mod digest;
 mod roster;
+pub(crate) use digest::template_digest;
 pub(crate) use roster::validate_roster;
 
 use std::io::{self, Write};

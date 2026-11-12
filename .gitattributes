@@ -14,6 +14,8 @@ tests/fixtures/*.txt -text -whitespace
 tests/fixtures/*.patch -text -whitespace
 # SessionStart serialization has a byte-exact UTF-8/LF contract on every host.
 tests/fixtures/session-start-context.json -text
+# Template digests pin the canonical UTF-8/LF encoding on every host.
+crates/team-plan/fixtures/template-create-canonical.json -text
 src/state/data/*.txt -text -whitespace
 
 # Keep vendored libvterm byte-for-byte identical to the documented upstream.

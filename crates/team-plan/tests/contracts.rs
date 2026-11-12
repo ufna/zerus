@@ -226,6 +226,7 @@ fn error_codes_are_stable_and_unique() {
             "teams_inactive",
             "not_found",
             "stale_revision",
+            "template_changed",
             "not_allowed",
             "invalid_state",
             "store_busy",
@@ -246,13 +247,13 @@ fn error_codes_are_stable_and_unique() {
         ]
     );
     let mut codes = code::ALL.to_vec();
-    assert_eq!(codes.len(), 20);
+    assert_eq!(codes.len(), 21);
     assert!(codes
         .iter()
         .all(|c| c.chars().all(|ch| ch.is_ascii_lowercase() || ch == '_')));
     codes.sort_unstable();
     codes.dedup();
-    assert_eq!(codes.len(), 20);
+    assert_eq!(codes.len(), 21);
     assert_eq!(code::TEAMS_INACTIVE, "teams_inactive");
     let problem =
         Problem::new(code::NO_ACCOUNT_AVAILABLE, "No account has room").with_refs(["1794358800"]);
@@ -337,5 +338,15 @@ fn busy_before_begin_is_a_distinct_pinned_refusal() {
     assert_eq!(
         p.message,
         "The team store is busy. Nothing was written; try again."
+    );
+}
+
+#[test]
+fn a_changed_template_has_a_pinned_refusal() {
+    let problem: Problem = round_trip(include_str!("../fixtures/problem-template-changed.json"));
+    assert_eq!(problem.code, code::TEMPLATE_CHANGED);
+    assert_eq!(
+        problem.message,
+        "The template changed since it was shown. Review it again."
     );
 }

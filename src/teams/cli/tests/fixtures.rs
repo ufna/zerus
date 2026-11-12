@@ -1,5 +1,5 @@
-//! The read replies and an unknown write result, pinned as shared fixtures: the desktop's projections
-//! are built from exactly the JSON a person's `hgs team` prints.
+//! Read replies, a template refusal and an unknown write result, pinned as shared
+//! fixtures from exactly the JSON a person's `hgs team` prints.
 use super::harness::*;
 use crate::teams::cli::actor::Caller;
 use serde_json::Value;
@@ -14,11 +14,15 @@ const WAITING: &str = include_str!("../../../../crates/team-plan/fixtures/cli-wa
 const STORAGE_FAILED: &str =
     include_str!("../../../../crates/team-plan/fixtures/cli-storage-failed.json");
 
+const CATALOG: &str = include_str!("../../../../crates/team-plan/fixtures/cli-catalog.json");
+const CHANGED: &str =
+    include_str!("../../../../crates/team-plan/fixtures/cli-template-changed.json");
+
 fn lead() -> Caller {
     Caller::Session(key(LEAD_SESSION))
 }
 
-fn replies() -> [(&'static str, Value); 8] {
+fn replies() -> [(&'static str, Value); 10] {
     let harness = seeded();
     let (board, _) = super::verdict::configured_stage(
         zerus_team_plan::catalog::StageKind::Review,
@@ -62,6 +66,11 @@ fn replies() -> [(&'static str, Value); 8] {
             "cli-storage-failed.json",
             super::storage_failure::failed_write(),
         ),
+        ("cli-catalog.json", read(&Caller::Person, "catalog show")),
+        (
+            "cli-template-changed.json",
+            super::create_binding::changed_refusal_fixture(),
+        ),
     ]
 }
 
@@ -76,6 +85,8 @@ fn the_read_fixtures_are_the_replies_the_cli_prints() {
         ("cli-list.json", LIST),
         ("cli-waiting.json", WAITING),
         ("cli-storage-failed.json", STORAGE_FAILED),
+        ("cli-catalog.json", CATALOG),
+        ("cli-template-changed.json", CHANGED),
     ];
     let replies = replies();
     for ((name, actual), (pinned_name, text)) in replies.iter().zip(pinned) {
@@ -86,6 +97,9 @@ fn the_read_fixtures_are_the_replies_the_cli_prints() {
         if *name == "cli-storage-failed.json" {
             assert_eq!(actual["ok"], false, "{name}");
             assert_eq!(actual["error"]["code"], "storage_failed", "{name}");
+        } else if *name == "cli-template-changed.json" {
+            assert_eq!(actual["ok"], false, "{name}");
+            assert_eq!(actual["error"]["code"], "template_changed", "{name}");
         } else {
             assert_eq!(actual["ok"], true, "{name}");
             assert!(actual.get("error").is_none(), "{name}");

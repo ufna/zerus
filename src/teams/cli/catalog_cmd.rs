@@ -40,7 +40,7 @@ pub(super) fn run(
         .split_first()
         .ok_or_else(|| input::usage(format!("{group} needs a command")))?;
     match (group, command.as_str()) {
-        ("catalog", "show") => catalog_of(&actor, &catalog::load(&config.dir)?),
+        ("catalog", "show") => catalog_show(&actor, &catalog::load(&config.dir)?),
         ("catalog", "export") => catalog_of(&actor, &catalog::person(&config.dir)?),
         ("catalog", "import") => import_catalog(&actor, config, provided),
         ("template", "list") => templates(&actor, config, rest),
@@ -51,6 +51,20 @@ pub(super) fn run(
         ("template", "remove") => remove(&actor, config, rest),
         _ => Err(super::unknown(&format!("{group} {command}"))),
     }
+}
+
+fn catalog_show(actor: &Value, catalog: &Catalog) -> Result<Value, Problem> {
+    let mut view = serde_json::to_value(catalog).map_err(storage)?;
+    if let Some(templates) = view.get_mut("templates").and_then(Value::as_array_mut) {
+        for row in templates {
+            let id = row["id"].as_str().expect("template ID");
+            let bundle = zerus_team_plan::bundle(catalog, id)?;
+            row.as_object_mut()
+                .expect("template object")
+                .insert("digest".into(), json!(catalog::template_digest(&bundle)?));
+        }
+    }
+    reply(actor, json!({"catalog":view}))
 }
 
 fn catalog_of(actor: &Value, catalog: &Catalog) -> Result<Value, Problem> {
