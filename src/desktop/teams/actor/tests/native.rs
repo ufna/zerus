@@ -107,16 +107,18 @@ fn delivery_requires_the_echoed_id_and_version_and_never_accepts_a_failed_child(
             HandoutOutcome::Uncertain { .. }
         ));
     }
-    assert!(matches!(
-        delivery_reply(
-            Ended::Exited {
-                code: 1,
-                output: br#"{"schema":1,"id":"effect","state":"submitted","error":""}"#.to_vec()
-            },
-            "effect"
-        ),
-        HandoutOutcome::Uncertain { .. }
-    ));
+    for state in ["submitted", "refused", "uncertain", "cutting_over", "stale"] {
+        let output = serde_json::json!({"schema":1,"id":"effect","state":state,"error":"Reason"})
+            .to_string()
+            .into_bytes();
+        assert!(
+            matches!(
+                delivery_reply(Ended::Exited { code: 1, output }, "effect"),
+                HandoutOutcome::Uncertain { .. }
+            ),
+            "{state}"
+        );
+    }
 }
 
 #[test]

@@ -8,6 +8,7 @@ pub(super) fn run() {
         released(stage);
     }
     already_cancelled();
+    refused_done();
     stale();
 }
 fn decide(f: &mut Fixture) {
@@ -146,4 +147,26 @@ fn stale() {
     crate::teams::tasks::observe(&f.config.state, &f.task).unwrap();
     check(&f, &args, &input, "released");
     assert_eq!(f.inputs(), 0);
+}
+
+fn refused_done() {
+    let mut f = Fixture::new();
+    f.submitted();
+    f.reported();
+    let tasks = ProjectStore::open(&f.config.state.join("replica"), &f.task.project).unwrap();
+    let mut doc = tasks.load(&f.task.uuid).unwrap();
+    doc.set_stage(Stage::Done, &TaskActor::Person, 7).unwrap();
+    tasks.save(&mut doc).unwrap();
+    let revision = doc.revision();
+    drop(tasks);
+    decide(&mut f);
+    let (args, input) = f.cancel_vector();
+    for _ in 0..2 {
+        let value = check(&f, &args, &input, "refused");
+        assert!(value.get("attempt").is_none());
+        assert!(value.get("attempt_id").is_none());
+    }
+    let tasks = ProjectStore::open(&f.config.state.join("replica"), &f.task.project).unwrap();
+    assert_eq!(tasks.load(&f.task.uuid).unwrap().revision(), revision);
+    assert_eq!(f.inputs(), 1);
 }

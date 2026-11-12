@@ -281,13 +281,12 @@ pub(super) fn delivery_result(ended: Ended, id: &str) -> ports::DeliveryResult {
 pub(super) fn delivery_reply(ended: Ended, id: &str) -> HandoutOutcome {
     match ended {
         Ended::Exited { code, output } => {
-            let reply = decode_delivery(&output, id);
-            if code != 0 && matches!(reply, HandoutOutcome::Submitted { .. }) {
+            if code != 0 {
                 HandoutOutcome::Uncertain {
-                    reason: "A failed child cannot confirm delivery".into(),
+                    reason: "A failed child cannot confirm a delivery result".into(),
                 }
             } else {
-                reply
+                decode_delivery(&output, id)
             }
         }
         Ended::NotStarted => HandoutOutcome::Refused {
