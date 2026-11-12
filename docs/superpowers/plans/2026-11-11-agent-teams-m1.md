@@ -1456,6 +1456,21 @@ mark when it is moved back to To do, until it is sent, started or reopened,
 and the intake refuses a cancelled task so that a duplicate cannot pass a
 cancellation. That is a known limit with a tracked follow-up.
 
+**A node with a bound task leaves the live queue only on an observation
+that agrees.** The service's pass observes the nodes of the live queue, so
+a node that is archived while its task is bound and not ended is lost to
+it. Every writer that archives a node therefore asks the newest
+observation first: the task has ended, cancelled or Done, and its attempts
+do not conflict. A fact that arrives when the observation does not agree
+is still recorded, because it happened, and the node stays in the queue
+for the next observation to decide. The case that showed it (the
+confirmation of 2026-11-12): a merge recorded for an accepted task after a
+person had started it again with conflicting attempts archived the node as
+accepted while the task was active. And a recorded answer that ends a
+pipeline's stage does for the pipeline what the observation of that end
+does: the parent returns to the lead, whether the stage had no task and
+was recorded as cancelled, or was released.
+
 **A reader of a reply ignores what it does not know.** The contract's types
 refuse unknown fields, and that stays the rule for what a person or a
 program sends: a request, a saved template, an imported catalog. A reply
