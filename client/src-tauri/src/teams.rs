@@ -358,6 +358,9 @@ fn decode_team_reply(code: i32, stdout: &[u8], stderr: &[u8]) -> Result<Value, S
 }
 
 #[cfg(test)]
+mod real_create;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
