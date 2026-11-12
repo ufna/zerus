@@ -315,7 +315,13 @@ fn a_halted_stopped_cancel_is_its_own_service_item_until_its_row_ends() {
             [decision],
         )
         .unwrap();
-    passes(&mut h, &mut runtime, &mut p);
+    // The cancel step alone, without the cleanup pass that would also
+    // remove an orphaned item: only the row's own end clears it here.
+    for pass in 0..20 {
+        runtime
+            .terminal_cancels(&mut h.store, &mut p, 100 + pass * 900_000)
+            .unwrap();
+    }
     assert!(runtime.ledger.get(TEAM, &key).unwrap().is_none());
     assert!(
         crate::desktop::teams::service_items(h.temp.path(), TEAM, Some(true), 100)
