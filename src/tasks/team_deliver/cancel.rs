@@ -20,7 +20,11 @@ fn authority(store: &Store, body: &Input, team: &Team, node: &Node) -> Result<St
         .ok_or_else(||rule("No Pending cancel decision for this generation."))
 }
 
-pub(super) fn write(config: &Config, args: &[String], body: &Input) -> Result<&'static str> {
+pub(super) fn write(
+    config: &Config,
+    args: &[String],
+    body: &Input,
+) -> Result<(&'static str, u64, String)> {
     let deadline = Instant::now() + attempts::BUDGET;
     let here = identity(config)?;
     let teams = Store::open(&config.state).map_err(problem)?;
@@ -56,19 +60,27 @@ pub(super) fn write(config: &Config, args: &[String], body: &Input) -> Result<&'
         return Err(rule("REF is not this node's task."));
     }
     let view = doc.view().map_err(fail)?;
+    let absent = doc.team().map_err(fail)?.is_none() && !doc.team_invalid();
+    if !absent || view.stage == Stage::Active {
+        marker(&doc, &body.team, &here)?;
+    }
+    let (attempt, attempt_id) = observed_attempt(&teams, &body.team, body.node, &view)?;
     if view.stage == Stage::Done {
         return Err(rule("A Done task cannot be cancelled or released."));
     }
-    if doc.team().map_err(fail)?.is_none() && !doc.team_invalid() && view.stage != Stage::Active {
-        return Ok(if view.cancelled_at.is_some() {
-            "cancelled"
-        } else {
-            "released"
-        });
+    if absent && view.stage != Stage::Active {
+        return Ok((
+            if view.cancelled_at.is_some() {
+                "cancelled"
+            } else {
+                "released"
+            },
+            attempt,
+            attempt_id,
+        ));
     }
-    marker(&doc, &body.team, &here)?;
     if view.cancelled_at.is_some() {
-        return Ok("cancelled");
+        return Ok(("cancelled", attempt, attempt_id));
     }
     if view
         .execution
@@ -151,5 +163,9 @@ pub(super) fn write(config: &Config, args: &[String], body: &Input) -> Result<&'
     if std::env::var_os("HGS_TEST_TEAM_COMPLETION_AFTER_SAVE").is_some() {
         std::process::exit(79);
     }
-    Ok(if active { "cancelled" } else { "released" })
+    Ok((
+        if active { "cancelled" } else { "released" },
+        attempt,
+        attempt_id,
+    ))
 }

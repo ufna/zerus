@@ -37,6 +37,8 @@ fn stage(f: &mut Fixture, stage: Stage) {
         doc.begin_attempt(&f.body.id, &Actor::Agent(holder), now())
             .unwrap();
         store.save(&mut doc).unwrap();
+        drop(store);
+        crate::teams::tasks::observe(&f.config.state, &f.task).unwrap();
     } else if matches!(stage, Stage::Review | Stage::Done) {
         completion_tests::reported(f);
         if stage == Stage::Done {
@@ -135,6 +137,7 @@ fn cancel_refuses_each_missing_authority_and_unknown_delivery_without_writes() {
         let mut f = Fixture::new();
         if change == 11 {
             assert_eq!(f.run("uncertain", false)["reply"]["state"], "uncertain");
+            crate::teams::tasks::observe(&f.config.state, &f.task).unwrap();
         } else {
             stage(&mut f, Stage::Active);
         }
@@ -435,6 +438,7 @@ fn a_real_stop_refuses_an_active_handover_whose_delivery_is_unknown() {
     f.body.member = "m2".into();
     assert_eq!(f.run("uncertain", false)["reply"]["state"], "uncertain");
     assert_eq!(f.document().stage().unwrap(), Stage::Active);
+    crate::teams::tasks::observe(&f.config.state, &f.task).unwrap();
     f.h.run(&person(), ops::Operation::Stop).unwrap();
     let before = f.document().revision();
     let sessions = f.sessions();
