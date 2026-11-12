@@ -2,12 +2,40 @@ use super::*;
 
 impl Runtime {
     pub(super) fn card(&mut self, store: &mut Store, row: &mut Row, now: i64) -> Result<()> {
-        if row.card_done {
-            return Ok(());
-        }
-        let team = store
+        let mut team = store
             .team(&row.team)?
             .ok_or_else(|| invalid("Team disappeared"))?;
+        if row.card_done {
+            // An open card is kept only while it lists what something would
+            // read now: when the row's state has changed that, the card is
+            // closed and the current one opened. A list never changes in place.
+            let replaced = match row.card_id {
+                Some(id) => store
+                    .card(&row.team, id)?
+                    .is_some_and(|c| c.state == "open" && c.decisions != decisions(row)),
+                None => false,
+            };
+            if !replaced {
+                return Ok(());
+            }
+            let card = row.card_id.expect("read above");
+            apply(
+                store,
+                &team,
+                Operation::CloseCard {
+                    card,
+                    reason: "The launch's state changed what this card can take.".into(),
+                },
+                now,
+            )?;
+            row.card_id = None;
+            row.card_request = None;
+            row.card_done = false;
+            self.save(row, now)?;
+            team = store
+                .team(&row.team)?
+                .ok_or_else(|| invalid("Team disappeared"))?;
+        }
         if row.card_request.is_none() {
             let problem = row
                 .problem
@@ -51,11 +79,7 @@ impl Runtime {
                     .into(),
                     text: cut(&text, 3072).into(),
                     node: None,
-                    // Retry is read by the budget row on every pass and by a
-                    // member row while it waits on backoff; nothing else is.
-                    decisions: (row.member == crate::desktop::teams::ledger::BUDGET
-                        || row.state.waits_on_backoff())
-                    .then(|| vec!["retry".to_owned()]),
+                    decisions: Some(decisions(row)),
                 },
             });
             self.save(row, now)?;
@@ -74,6 +98,17 @@ impl Runtime {
             Err(p) => return Err(p),
         }
         self.save(row, now)
+    }
+}
+
+/// The decisions a launch card lists: retry, which the budget row reads on
+/// every pass and a member row while it waits on backoff; otherwise nothing
+/// reads a decision, and the card takes acknowledged alone.
+fn decisions(row: &Row) -> Vec<String> {
+    if row.member == crate::desktop::teams::ledger::BUDGET || row.state.waits_on_backoff() {
+        vec!["retry".to_owned()]
+    } else {
+        vec!["acknowledged".to_owned()]
     }
 }
 

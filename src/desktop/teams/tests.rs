@@ -30,6 +30,8 @@ struct FakeEffects {
     read_error: bool,
     parent_pending: bool,
     worktree_unverified: bool,
+    /// Verification fails for good: the row is Blocked.
+    verify_uncertain: bool,
     launch_verification_unavailable: bool,
 }
 impl Default for FakeEffects {
@@ -50,6 +52,7 @@ impl Default for FakeEffects {
             read_error: false,
             parent_pending: false,
             worktree_unverified: false,
+            verify_uncertain: false,
             launch_verification_unavailable: false,
         }
     }
@@ -106,6 +109,9 @@ impl Effects for FakeEffects {
     fn verify_worktree(&mut self, plan: &Plan) -> Result<Worktree> {
         if self.read_error {
             return Err(invalid("Ownership read unavailable"));
+        }
+        if self.verify_uncertain {
+            return Err(uncertain("Worktree ownership changed"));
         }
         Ok(Worktree {
             path: plan.placement.destination.clone(),
@@ -2545,4 +2551,78 @@ fn offered_as_read(card: &crate::teams::store::Card) {
     let read = card.kind == "launch_capacity" || card.text.contains("Choosing Retry");
     let expected: &[&str] = if read { &["retry"] } else { &["acknowledged"] };
     assert_eq!(card.decisions, expected, "{}: {}", card.kind, card.text);
+}
+
+/// Finding 1 of the cards review, the reviewer's sequence: a launch_blocked
+/// card opened while worktree verification waits on backoff lists retry;
+/// verification then fails for good and the row is Blocked. The next pass
+/// closes that card and opens the current one, which lists acknowledged; a
+/// Retry on the closed card is refused.
+#[test]
+fn a_launch_card_is_replaced_when_its_row_stops_reading_retry() {
+    let mut h = Harness::new();
+    let mut e = FakeEffects {
+        worktree_unverified: true,
+        ..Default::default()
+    };
+    let mut r = runtime(&h);
+    for _ in 0..30 {
+        tick(&mut r, &mut h, &mut e);
+        if row_if(&h, "lead").is_some_and(|x| x.state == State::WorktreeVerify) {
+            break;
+        }
+    }
+    assert_eq!(row(&h, "lead").state, State::WorktreeVerify);
+    e.read_error = true;
+    for _ in 0..3 {
+        let old = row(&h, "lead");
+        let now = old.retry_at.max(1234) + 1;
+        assert!(r.tick(&mut h.store, &mut e, ops::tests::TEAM, now).is_err());
+    }
+    let old = row(&h, "lead");
+    let first = old.card_id.unwrap();
+    assert_eq!(
+        h.store
+            .card(ops::tests::TEAM, first)
+            .unwrap()
+            .unwrap()
+            .decisions,
+        ["retry"]
+    );
+    e.read_error = false;
+    e.verify_uncertain = true;
+    let now = old.retry_at + 1;
+    r.tick(&mut h.store, &mut e, ops::tests::TEAM, now).unwrap();
+    assert_eq!(row(&h, "lead").state, State::Blocked);
+    r.tick(&mut h.store, &mut e, ops::tests::TEAM, now + 1)
+        .unwrap();
+    let closed = h.store.card(ops::tests::TEAM, first).unwrap().unwrap();
+    assert_eq!(
+        (closed.state.as_str(), closed.decision.as_deref()),
+        ("closed", Some("stale")),
+        "the card that offered retry is closed"
+    );
+    let open: Vec<_> = cards(&h)
+        .into_iter()
+        .filter(|c| c.state == "open")
+        .collect();
+    assert_eq!(open.len(), 1, "one current card");
+    assert_eq!(open[0].decisions, ["acknowledged"]);
+    offered_as_read(&open[0]);
+    assert_eq!(row(&h, "lead").card_id, Some(open[0].seq));
+    assert_eq!(
+        h.run(
+            &ops::tests::person(),
+            ops::Operation::DecideCard {
+                card: first,
+                decision: "retry".into(),
+            },
+        )
+        .unwrap_err()
+        .code,
+        code::INVALID_STATE
+    );
+    r.tick(&mut h.store, &mut e, ops::tests::TEAM, now + 2)
+        .unwrap();
+    assert_eq!(cards(&h).len(), 2, "kept while it lists what is read");
 }
