@@ -1223,7 +1223,14 @@ and the spawn refuses the delivery. Outside facts are read last in the
 same section when they can be read in the process: the stop flag, the
 Teams switch and the member's fleet row. The task occupancy cannot be,
 because reading it spawns children; it is read as late as possible before
-the admission and is a scheduling hint, not an authority. A held section
+the admission and is a scheduling hint, not an authority. The window in
+which a person's own send can still reach the member beside the hand-out
+is therefore wider than that one read (named by the confirmation of
+2026-11-12): the wait for the process-wide spawn turn, the admission's own
+reads, the delivery command's time before its send, and the fact that the
+fleet row is a snapshot, since the admission fences the team's store and
+not the member's session. The team does not own a member's session against
+the person; a message that arrives beside a hand-out is the person's. A held section
 is short: the spawn itself, or the ref update with its own deadline of 5
 seconds, after which the merge is unknown and settled by reading. Writers
 of the command line wait 8 seconds for the store, longer than any held
