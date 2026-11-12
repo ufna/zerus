@@ -27,7 +27,11 @@ export interface TeamList {
   /** The cursor this page was read from; absent or null is the first page. */
   after?: string | null;
 }
-export interface TeamMember { id: string; role: string; agent: string; account: string; state: string; lead: boolean; session: TeamSession | null; model?: string | null }
+export interface TeamMember {
+  id: string; role: string; agent: string; account: string; state: string; lead: boolean; session: TeamSession | null; model?: string | null;
+  /** The person stopped this member (the store refuses a second Stop). */
+  person_stopped?: boolean;
+}
 export interface TeamMemberCounts { total: number; not_created: number; active: number; paused: number; removed: number }
 export interface TeamNodeCounts { waiting: number; pending: number; in_progress: number; reported: number; accepted: number; cancelled: number }
 export interface TeamCounts { members: TeamMemberCounts; nodes: TeamNodeCounts; inbox: number; cards: number }
@@ -38,6 +42,11 @@ export interface TeamCard {
   assignee: string; implementer: string; rank: string; round: number; held: boolean; admitted: boolean;
   integrated: boolean; decided_by: string; stages: TeamStage[];
   kind?: "task" | "stage" | null; rounds?: number | null;
+  /** Who holds the attempt (the holder the store's decisions use): null when
+   * nobody does, absent when an older hgs does not say. */
+  holder?: string | null;
+  /** The kind of the decision that has not settled, when one is pending. */
+  pending_decision?: string | null;
 }
 export interface TeamGroup { state: string; cards: TeamCard[] }
 export interface TeamBar {

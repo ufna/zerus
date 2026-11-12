@@ -51,28 +51,44 @@ export interface TaskButton {
   danger?: boolean;
   /** The button asks for a reason before it sends. */
   reason?: boolean;
+  /** Why the store would refuse it now: the button is disabled and says so. */
+  blocked?: string;
 }
+
+/** The decisions the store refuses while a previous one has not settled
+ * (ops common.rs undecided: accept, return, reassign, cancel, route,
+ * release). */
+const WAIT_FOR_DECISION = new Set<TaskButton["id"]>(["accept", "return", "release", "cancel"]);
 
 /** A card's decisions, by the team's status and the card's state: admit a
  * task not admitted yet; accept a reported one; return a reported one that
- * has a holder (the row's implementer, who reported it); hold one not held
- * and release one held; cancel any live one. */
+ * has a holder; hold one not held and release one held; cancel any live one.
+ * What the row says about the store's other conditions disables and explains
+ * a decision before it is sent (zerus-63rru.29): a pending decision blocks
+ * the decisions that wait for it, and a holder of nobody blocks Return. A row
+ * from an older hgs without a holder keeps the implementer, who reported it. */
 export function taskButtons(card: TaskView, teamStatus: string): TaskButton[] {
   if (!activeTeam(teamStatus) || !liveTask(card.state)) return [];
   const buttons: TaskButton[] = [];
+  const holder = card.holder === undefined ? card.implementer || null : card.holder;
   if (!card.admitted) buttons.push({ id: "admit", text: tr("Admit") });
   if (card.state === "reported") buttons.push({ id: "accept", text: tr("Accept") });
-  if (card.state === "reported" && card.implementer) buttons.push({ id: "return", text: tr("Return"), reason: true });
+  if (card.state === "reported" && (holder || card.holder === null)) {
+    buttons.push({ id: "return", text: tr("Return"), reason: true,
+      ...(holder ? {} : { blocked: tr("Nobody holds this task's attempt, so there is nobody to return it to.") }) });
+  }
   buttons.push(card.held ? { id: "release", text: tr("Release") } : { id: "hold", text: tr("Hold") });
   buttons.push({ id: "cancel", text: tr("Cancel task"), danger: true, reason: true });
-  return buttons;
+  if (!card.pending_decision) return buttons;
+  const waiting = tr("The task's previous decision has not settled yet.");
+  return buttons.map((button) => WAIT_FOR_DECISION.has(button.id) ? { ...button, blocked: waiting } : button);
 }
 
 /** A member's operations, by the team's status and the member's state: pause
  * an active member; resume a paused one that has a session; stop an active or
- * paused one; remove any member that is not removed and is not the lead. */
-/** A member's operations; each id is the action's kind as the core reads it
- * (client/core teams/fixtures/action-kinds.json). */
+ * paused one the person has not stopped (the store refuses a second Stop);
+ * remove any member that is not removed and is not the lead. Each id is the
+ * action's kind as the core reads it (client/core teams/fixtures/action-kinds.json). */
 export function memberActions(member: MemberView, teamStatus: string): { id: string; text: string; danger?: boolean; disabled?: boolean; reason?: string }[] {
   if (!activeTeam(teamStatus)) return [];
   const active = member.state === "active";
@@ -80,7 +96,8 @@ export function memberActions(member: MemberView, teamStatus: string): { id: str
   return [
     ...(active ? [{ id: "pause_member", text: tr("Pause") }] : []),
     ...(paused && member.session ? [{ id: "resume_member", text: tr("Resume") }] : []),
-    ...(active || paused ? [{ id: "stop_member", text: tr("Stop"), danger: true }] : []),
+    ...(active || paused ? [{ id: "stop_member", text: tr("Stop"), danger: true,
+      ...(member.person_stopped ? { disabled: true, reason: tr("You stopped this member. Resume it to let it work again.") } : {}) }] : []),
     ...(member.state !== "removed" && !member.lead ? [{ id: "archive_member", text: tr("Remove"), danger: true }] : []),
   ];
 }

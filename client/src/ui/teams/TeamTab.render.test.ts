@@ -76,6 +76,18 @@ it("a task with no action shows neither the actions' divider nor an empty row", 
   expect(host.querySelector("[data-team-detail] [data-task-actions]")?.children.length).toBeGreaterThan(0);
 });
 
+it("a task whose decision has not settled shows its blocked actions with the reason, and a refusal that comes anyway", () => {
+  const pending = { ...teamView.groups[4].cards[0], node: 2, holder: "m1", pending_decision: "accept" };
+  const view = { ...teamView, groups: teamView.groups.map((group) => group.state === "reported" ? { ...group, cards: [pending] } : group) };
+  const { host } = setup({ view, actionFailure: "The previous decision has not settled." });
+  (host.querySelector('.team-task-card[data-node="2"]') as HTMLButtonElement).click();
+  const looks = [...host.querySelectorAll<HTMLButtonElement>("[data-team-detail] [data-task-action]")].map((button) => [button.dataset.taskAction, button.disabled]);
+  expect(looks).toEqual([["accept", true], ["return", true], ["hold", false], ["cancel", true]]);
+  expect(host.querySelector("[data-team-detail] [data-task-action='accept']")?.getAttribute("title")).toBe("The task's previous decision has not settled yet.");
+  expect(host.querySelector("[data-team-detail] [data-action-why]")?.textContent).toBe("The task's previous decision has not settled yet.");
+  expect(host.querySelector("[data-team-action-failure]")?.textContent, "the store's refusal is still shown").toContain("The previous decision has not settled.");
+});
+
 it("asks for a reason before a return", () => {
   const { host, actions } = setup();
   (host.querySelector('[data-group="submitted"] .team-task-card') as HTMLButtonElement).click();
