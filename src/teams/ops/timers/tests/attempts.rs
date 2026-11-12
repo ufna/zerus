@@ -1039,3 +1039,90 @@ fn a_conflict_on_a_finished_node_then_a_running_task_takes_todays_restore() {
     assert_eq!(last_event(&h), "person_override");
     assert_eq!(h.node(node).state, NodeState::InProgress);
 }
+
+fn in_queue(h: &Harness, node: u32) -> bool {
+    h.store
+        .queue(TEAM, 200, None)
+        .unwrap()
+        .rows
+        .iter()
+        .any(|n| n.id == node)
+}
+
+/// Finding 15: the team's attempt reported and was accepted, the Done
+/// observation left the node waiting for its merge, then the task showed
+/// conflicting attempts. A late merge for that accept is recorded, and the
+/// node stays in the live queue: the service observes only the live queue,
+/// and the next observation decides.
+#[test]
+fn a_late_merge_under_a_conflict_keeps_the_node_for_the_next_observation() {
+    for next in ["done", "person", "own"] {
+        let (mut h, lead, node, id) = handed();
+        h.report(node, "m1");
+        h.run(&lead, Operation::Accept { node }).unwrap();
+        h.observe(node, TaskStage::Done);
+        assert_eq!(h.node(node).state, NodeState::Reported);
+        conflicted(&mut h, node, TaskStage::InProgress, 2).unwrap();
+        let decision = h.accept_decision(node);
+        h.run(
+            &service(),
+            Operation::RecordIntegration {
+                decision,
+                node,
+                commit: COMMIT.into(),
+            },
+        )
+        .unwrap();
+        let merged = h.node(node);
+        assert!(merged.integrated, "{next}: the merge is recorded");
+        assert_eq!(merged.state, NodeState::Accepted, "{next}");
+        assert!(in_queue(&h, node), "{next}: still in the live queue");
+        assert!(bound(&h, node), "{next}");
+        match next {
+            "done" => {
+                seen(&mut h, node, TaskStage::Done, 2, &id).unwrap();
+                assert!(!in_queue(&h, node), "Done again: it leaves the queue");
+                assert_eq!(h.node(node).state, NodeState::Accepted);
+                assert_eq!(h.store.generation(TEAM, node).unwrap(), Some(1));
+            }
+            "person" | "own" => {
+                let attempt = if next == "person" {
+                    PERSON
+                } else {
+                    id.as_str()
+                };
+                seen(&mut h, node, TaskStage::InProgress, 2, attempt).unwrap();
+                assert_eq!(h.store.generation(TEAM, node).unwrap(), Some(2), "{next}");
+                assert_eq!(last_event(&h), "person_override", "{next}");
+                assert!(in_queue(&h, node), "{next}");
+                assert!(!h.node(node).integrated, "{next}: a new attempt");
+                assert_eq!(h.node(node).state, NodeState::InProgress, "{next}");
+            }
+            _ => unreachable!(),
+        }
+    }
+}
+
+/// The same with a conflict of a task that is Done: the end is applied, but
+/// the attempts conflict, so the newest observation does not agree yet.
+#[test]
+fn a_merge_under_a_conflict_of_a_done_task_keeps_the_node() {
+    let (mut h, lead, node, id) = handed();
+    h.report(node, "m1");
+    h.run(&lead, Operation::Accept { node }).unwrap();
+    conflicted(&mut h, node, TaskStage::Done, 2).unwrap();
+    let decision = h.accept_decision(node);
+    h.run(
+        &service(),
+        Operation::RecordIntegration {
+            decision,
+            node,
+            commit: COMMIT.into(),
+        },
+    )
+    .unwrap();
+    assert_eq!(h.node(node).state, NodeState::Accepted);
+    assert!(in_queue(&h, node), "the attempts still conflict");
+    seen(&mut h, node, TaskStage::Done, 2, &id).unwrap();
+    assert!(!in_queue(&h, node), "the observation agrees");
+}
