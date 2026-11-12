@@ -9,36 +9,10 @@ fn text(v: &Value, key: &str) -> String {
 impl Native<'_> {
     pub fn snapshot(&mut self, b: &Binding) -> Result<Snapshot> {
         let (_, name) = self.binding(&b.team, &b.member)?;
-        let observed = self.current(b, &name);
-        match observed {
-            Ok((snapshot, raw)) => {
-                self.capture = Some((snapshot.clone(), raw));
-                Ok(snapshot)
-            }
-            Err(_) => {
-                self.capture = None;
-                Ok(Snapshot {
-                    machine: self.machine.into(),
-                    launch: b.launch.clone(),
-                    session: b.session.clone(),
-                    name,
-                    run: b.run.clone(),
-                    conversation: b.conversation.clone(),
-                    agent: b.agent.clone(),
-                    account: b.account.clone(),
-                    folder: b.folder.clone(),
-                    live: false,
-                    ready: false,
-                    paused: false,
-                    ended: true,
-                    self_exit: false,
-                    exit_identity: String::new(),
-                    archive: None,
-                    receipt_at: None,
-                    questions: Vec::new(),
-                })
-            }
-        }
+        self.capture = None;
+        let (snapshot, raw) = observed(&name, self.current(b, &name))?;
+        self.capture = Some((snapshot.clone(), raw));
+        Ok(snapshot)
     }
     fn current(&self, b: &Binding, name: &str) -> Result<(Snapshot, Value)> {
         let roots =
@@ -90,19 +64,21 @@ impl Native<'_> {
                 json!({"expected_run_id":s.run,"expected_conversation_id":s.conversation})
                     .to_string();
             s.ready = self
-                .read(
-                    vec![
-                        "send".into(),
-                        s.name.clone(),
-                        "--observe".into(),
-                        "--json".into(),
-                    ],
-                    Some(request.as_bytes()),
-                )
+                .observe_send(&s.name, request.as_bytes())
                 .is_ok_and(|v| v["ready"] == true);
         }
         Ok((s, raw))
     }
+}
+/// A member's state as read, or unknown. A read that fails or is incomplete
+/// (a session record or archive that cannot be read yet, a question index that
+/// cannot be read) is never an exit (zerus-63rru.56): nothing is planned, so
+/// nothing is resumed or claimed and the run keeps its one resume, and the
+/// scan reports why.
+pub(super) fn observed(name: &str, read: Result<(Snapshot, Value)>) -> Result<(Snapshot, Value)> {
+    read.map_err(|why| {
+        format!("Whether member session {name} ended is unknown ({why}); nothing was resumed")
+    })
 }
 pub(super) fn parse_view(
     machine: &str,
@@ -240,6 +216,215 @@ mod tests {
         view["pending_questions"] = json!(s.questions);
         (b, view, raw)
     }
+    /// Runs one ignored fixture alone in a child of this test binary with a
+    /// private state root and configuration and no session markers.
+    fn isolated(test: &str) {
+        let temp = tempfile::tempdir().unwrap();
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", test, "--ignored", "--test-threads=1"])
+            .env("HGS_STATE_DIR", temp.path().join("state"))
+            .env("HGS_CONFIG_DIR", temp.path().join("config"))
+            .env_remove("HGS_SESSION")
+            .env_remove("HGS_SESSION_ID")
+            .env_remove("HGS_RUN_ID")
+            .output()
+            .unwrap();
+        let text = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            output.status.success() && text.contains("1 passed"),
+            "{text}{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    /// A resumed Codex member's readiness is asked with an argv the CLI's own
+    /// observe gate admits (zerus-63rru.54): the argv the service spawns runs
+    /// through `cli::dispatch_at`, and must not be that gate's refusal.
+    #[test]
+    fn a_resumed_codex_members_observation_passes_the_clis_own_gate() {
+        isolated("desktop::teams::confirm::native::observation::tests::observation_gate_fixture");
+    }
+
+    #[test]
+    #[ignore = "run by its isolated wrapper"]
+    fn observation_gate_fixture() {
+        let state = std::path::PathBuf::from(std::env::var("HGS_STATE_DIR").unwrap());
+        let config = Config {
+            home: String::new(),
+            dir: std::path::PathBuf::from(std::env::var("HGS_CONFIG_DIR").unwrap()),
+            state: state.clone(),
+            selves: vec![],
+            peers: vec![],
+            base_peers: vec![],
+            peers_from_environment: false,
+            machines: Default::default(),
+            tab: false,
+            tab_colors: String::new(),
+        };
+        crate::platform::private_dir(&state.join("teams")).unwrap();
+        std::fs::write(state.join("teams/preview"), "on").unwrap();
+        let mut store = crate::teams::store::Store::open(&state).unwrap();
+        let stop = Arc::new(AtomicBool::new(false));
+        let (mut b, mut view, mut raw) = native_fixture();
+        b.agent = "codex".into();
+        b.conversation = "conversation-1".into();
+        for v in [&mut view, &mut raw] {
+            v["agent"] = json!("codex");
+            v["name"] = json!("codex/example/member");
+            v["conversation_id"] = json!("conversation-1");
+        }
+        view["pending_questions"] = json!([]);
+        let native = Native::new(&config, &b.machine, &stop, &mut store).unwrap();
+        crate::desktop::teams::child::FIXTURE_EXIT
+            .with(|slot| *slot.borrow_mut() = Some(br#"{"ready":true}"#.to_vec()));
+        let (s, _) = native.read_view(&b, &view, raw, None).unwrap();
+        assert!(s.ready);
+        let spawned = crate::desktop::teams::child::FIXTURE_ARGS
+            .with(|slot| slot.borrow_mut().pop())
+            .expect("the observation child");
+        let gate = |argv: Vec<String>| match crate::cli::dispatch_at(argv, Instant::now()) {
+            Err(error) if error.code == 2 && error.message.contains("--observe takes exactly") => {
+                Err(error.message)
+            }
+            _ => Ok(()),
+        };
+        assert_eq!(gate(spawned.clone()), Ok(()), "{spawned:?}");
+        // The machine guard in front of the same words is what the gate refused.
+        let mut guarded = vec!["--expect-machine".to_owned(), b.machine.clone()];
+        guarded.extend(spawned);
+        assert!(gate(guarded).is_err());
+    }
+
+    /// The private store of an isolated fixture: its configuration, team
+    /// store and stop flag, at the state root the state component writes.
+    fn store_env() -> (Config, crate::teams::store::Store, Arc<AtomicBool>) {
+        let state = std::path::PathBuf::from(std::env::var("HGS_STATE_DIR").unwrap());
+        let config = Config {
+            home: String::new(),
+            dir: std::path::PathBuf::from(std::env::var("HGS_CONFIG_DIR").unwrap()),
+            state: state.clone(),
+            selves: vec![],
+            peers: vec![],
+            base_peers: vec![],
+            peers_from_environment: false,
+            machines: Default::default(),
+            tab: false,
+            tab_colors: String::new(),
+        };
+        crate::platform::private_dir(&state.join("teams")).unwrap();
+        std::fs::write(state.join("teams/preview"), "on").unwrap();
+        let store = crate::teams::store::Store::open(&state).unwrap();
+        (config, store, Arc::new(AtomicBool::new(false)))
+    }
+
+    /// A Codex member's session record, saved by the state's own writer, and
+    /// the real `hgs inspect` reply for it (zerus-63rru.56): everything the
+    /// confirmation reads comes from those producers. Its transcript is not
+    /// written yet, as at a session's start, so the question index cannot be
+    /// read. The binding is the one the record proves.
+    fn real_codex(edit: impl FnOnce(&mut Value)) -> (Binding, Value, Value) {
+        let state = std::env::var("HGS_STATE_DIR").unwrap();
+        let conversation = uuid::Uuid::new_v4().to_string();
+        let mut record = json!({"name":"codex/example/member","agent":"codex","version":1,
+            "run_id":uuid::Uuid::new_v4().to_string(),"conversation_id":conversation,
+            "launch_id":uuid::Uuid::new_v4().to_string(),"account_id":"account-1",
+            "cwd":state,"worktree_owner":{"id":"owner-1"},"created":1.0,
+            "transcript":format!("{state}/transcripts/rollout-{conversation}.jsonl")});
+        edit(&mut record);
+        let view = crate::state::inspection_for_test(&mut record).unwrap();
+        let (sample, _, _) = crate::desktop::teams::confirm::policy::tests::sample();
+        let b = Binding {
+            agent: "codex".into(),
+            account: "account-1".into(),
+            launch: record["launch_id"].as_str().unwrap().into(),
+            session: view["session_id"].as_str().unwrap_or_default().into(),
+            run: record["run_id"].as_str().unwrap().into(),
+            conversation: String::new(),
+            folder: state,
+            nonce: "owner-1".into(),
+            ..sample
+        };
+        (b, view, record)
+    }
+
+    #[test]
+    fn an_unreadable_question_index_is_unknown_never_an_exit() {
+        isolated("desktop::teams::confirm::native::observation::tests::index_fixture");
+    }
+    #[test]
+    fn an_archive_is_found_by_run_as_soon_as_it_is_written() {
+        isolated("desktop::teams::confirm::native::observation::tests::archive_fixture");
+    }
+    #[test]
+    fn a_persons_pause_reads_as_paused_not_as_an_exit_to_resume() {
+        isolated("desktop::teams::confirm::native::observation::tests::pause_fixture");
+    }
+
+    #[test]
+    #[ignore = "run by its isolated wrapper"]
+    fn index_fixture() {
+        let (config, mut store, stop) = store_env();
+        let (b, view, _) = real_codex(|_| ());
+        // The producer itself reports the unreadable index.
+        assert!(view["pending_questions_error"].is_string(), "{view}");
+        let native = Native::new(&config, &b.machine, &stop, &mut store).unwrap();
+        let name = view["name"].as_str().unwrap();
+        crate::desktop::teams::child::FIXTURE_EXIT
+            .with(|slot| *slot.borrow_mut() = Some(serde_json::to_vec(&view).unwrap()));
+        let read = native.current(&b, name);
+        assert_eq!(
+            read.as_ref().err().map(String::as_str),
+            Some("The fresh member inspection is incomplete or changed"),
+            "{read:?}"
+        );
+        let unknown = observed(name, read).unwrap_err();
+        assert!(
+            unknown.contains("is unknown") && unknown.contains("nothing was resumed"),
+            "{unknown}"
+        );
+        // The same reply without the producer's error is read as the member.
+        let mut readable = view.clone();
+        readable
+            .as_object_mut()
+            .unwrap()
+            .remove("pending_questions_error");
+        crate::desktop::teams::child::FIXTURE_EXIT
+            .with(|slot| *slot.borrow_mut() = Some(serde_json::to_vec(&readable).unwrap()));
+        let snapshot = observed(name, native.current(&b, name)).unwrap().0;
+        assert!(!snapshot.ended, "{snapshot:?}");
+    }
+
+    #[test]
+    #[ignore = "run by its isolated wrapper"]
+    fn archive_fixture() {
+        let (config, _, _) = store_env();
+        let (b, _, record) = real_codex(|_| ());
+        let id = crate::state::archive_for_test(&record).unwrap();
+        let roots = Roots::open(&config.state, "question_receipts").unwrap();
+        let (found, raw) = archive(&config.state, &roots, &b, "codex/example/member").unwrap();
+        assert_eq!(
+            (found.as_str(), &raw["state"]),
+            (id.as_str(), &json!("archived"))
+        );
+    }
+
+    #[test]
+    #[ignore = "run by its isolated wrapper"]
+    fn pause_fixture() {
+        let (b, _, mut record) = real_codex(|record| {
+            // A finished run of this test's own process: started, not running.
+            record["pid"] = json!(u32::MAX - 1);
+            record["process_start"] = json!("1");
+        });
+        crate::state::pause_for_test(&mut record).unwrap();
+        let mut view = crate::state::inspection_for_test(&mut record).unwrap();
+        view.as_object_mut()
+            .unwrap()
+            .remove("pending_questions_error");
+        let s = parse_view(&b.machine, &b, &view, &record, None).unwrap();
+        assert_eq!((s.paused, s.ended, s.live), (true, true, false), "{view}");
+    }
+
     #[test]
     fn native_read_requires_the_bound_launch_run_session_agent_account_folder_and_owner() {
         let (b, v, raw) = native_fixture();
@@ -287,6 +472,24 @@ mod tests {
         let mut bound = b.clone();
         bound.conversation = "conversation-1".into();
         assert!(parse_view(&b.machine, &bound, &v, &raw, None).is_err());
+    }
+    /// The real startup shape end to end: inspect and the record both carry
+    /// a null conversation, and so does the card. The grant takes it.
+    #[test]
+    fn a_real_startup_view_with_null_conversations_reaches_the_trust_grant() {
+        let (b, s) = crate::desktop::teams::confirm::policy::tests::real_card();
+        let raw = json!({"name":s.name,"run_id":b.run,"conversation_id":null,"session_id":b.session,"launch_id":b.launch,"agent":b.agent,"account_id":b.account,"cwd":b.folder,"worktree_owner":{"id":b.nonce}});
+        let mut view = raw.clone();
+        view["tracked"] = json!(true);
+        view["runtime_state"] = json!("live");
+        view["process_state"] = json!("running");
+        view["pending_questions"] = json!(s.questions);
+        let parsed = parse_view(&b.machine, &b, &view, &raw, None).unwrap();
+        assert_eq!(parsed.conversation, "");
+        assert_eq!(
+            super::super::super::policy::trust(&b, &parsed).unwrap(),
+            s.questions[0]
+        );
     }
     #[test]
     fn clean_supervisor_archive_and_explicit_crashes_are_eligible_but_ambiguous_exits_are_manual() {

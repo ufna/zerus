@@ -37,13 +37,28 @@ impl Runtime {
         {
             return Ok(true);
         }
-        if kept.is_some_and(|c| c.state == "open") {
+        let open = kept.is_some_and(|c| c.state == "open");
+        let reason = "The service card's current decisions changed.";
+        self.replace_gate_card(store, team, (row, g), open.then_some(reason), now)
+    }
+    /// Closes the kept card when `close` names a reason, then forgets it
+    /// under the owned row version so that the opener opens the current one.
+    pub(super) fn replace_gate_card(
+        &mut self,
+        store: &mut Store,
+        team: &Team,
+        gate: (&mut Row, &mut Gate),
+        close: Option<&str>,
+        now: i64,
+    ) -> Result<bool> {
+        let (row, g) = gate;
+        if let (Some(card), Some(reason)) = (g.card, close) {
             write(
                 store,
                 &team.id,
                 Operation::CloseCard {
-                    card: id,
-                    reason: "The service card's current decisions changed.".into(),
+                    card,
+                    reason: reason.into(),
                 },
                 now,
             )?;

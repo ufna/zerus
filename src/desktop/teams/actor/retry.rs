@@ -13,6 +13,9 @@ struct Gate {
     notice: Option<Request>,
     #[serde(default)]
     event: Option<String>,
+    /// Held steps only: the hold's age and its newest reason.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    hold: Option<held::Hold>,
 }
 impl Runtime {
     pub(super) fn due(

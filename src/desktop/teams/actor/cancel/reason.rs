@@ -28,12 +28,29 @@ fn answered(row: &Entry) -> String {
     } else {
         &row.sentence
     };
-    let own = sentence(own, 512);
+    let own = spoken(own);
+    let own = own.trim_end_matches('.');
     if own.is_empty() {
         format!("The cancel command answered {state}.")
     } else {
         format!("The cancel command answered {state}: {own}.")
     }
+}
+/// A sentence taken from a task command's answer (cancel, finish, stage,
+/// clear or delivery): its control characters are removed, whitespace is
+/// normalized and it is cut to 512 bytes; its words are otherwise kept, so a
+/// command's stable reason is recorded unchanged. Every place that takes a
+/// command's own words into an outcome, a recorded reason, a row's error or
+/// a card uses this, whichever step carries it.
+pub(in crate::desktop::teams::actor) fn spoken(text: &str) -> String {
+    let text: String = text
+        .chars()
+        .filter(|c| !c.is_control() || c.is_whitespace())
+        .collect();
+    cut(&text, 512)
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 fn sentence(text: &str, limit: usize) -> String {
     cut(text, limit)

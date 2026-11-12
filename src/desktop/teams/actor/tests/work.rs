@@ -1121,3 +1121,29 @@ mod reviewed;
 mod finish_backoff;
 
 mod held;
+
+/// A finish command's own sentence, refused or cutting over, reaches the
+/// retry card cleaned, whichever step carries it.
+#[test]
+fn a_finish_commands_sentence_reaches_its_card_clean() {
+    for refused in [false, true] {
+        let mut h = Harness::new();
+        h.settings(|s| s.integration = Integration::None);
+        let (node, lead) = h.reported();
+        h.run(&lead, Operation::Accept { node }).unwrap();
+        let mut a = actor(&h);
+        let sentence = super::hostile_sentence();
+        let mut p = Work {
+            finish_reply: Some(if refused {
+                Finish::Refused(sentence)
+            } else {
+                Finish::CuttingOver(sentence)
+            }),
+            ..Default::default()
+        };
+        for now in [100, 60_100, 180_100, 420_100] {
+            run(&mut h, &mut a, &mut p, now);
+        }
+        super::assert_clean(&super::blocked_cards(&h), &format!("refused={refused}"));
+    }
+}

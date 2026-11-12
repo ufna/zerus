@@ -185,7 +185,17 @@ fn fleet_runs(native: &super::super::native::Native, launch: &str) {
     )
     .unwrap();
     for (run, activity) in [("old-run", "idle"), ("new-run", "busy")] {
-        let row=json!({"name":"codex/resumed","agent":"codex","cmd":"codex","state":"running","process_state":"running","activity":activity,"phase":"idle","run_id":run,"launch_id":launch,"conversation_id":"conversation","conversation_state":"active","process_work":{"count":0},"subagents_active":0,"optional_questions":{"count":0}}).to_string();
+        let row = super::rows::seed_row(
+            "codex",
+            &[
+                ("name", json!("codex/resumed")),
+                ("activity", json!(activity)),
+                ("run_id", json!(run)),
+                ("launch_id", json!(launch)),
+                ("conversation_id", json!("conversation")),
+            ],
+        )
+        .to_string();
         db.execute(
             "INSERT INTO desktop_catalog_rows(generation,key,json,bytes) VALUES(1,?1,?2,?3)",
             rusqlite::params![format!("run:{run}"), row, row.len()],

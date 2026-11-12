@@ -37,6 +37,9 @@ mod goals;
 mod hooks;
 pub(crate) mod hook_health;
 mod input;
+// Its only callers are the Teams actor's tests, which run on Linux and macOS.
+#[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
+pub(crate) mod listing_fixture;
 pub(crate) use input::task_refusal;
 pub(crate) use input::{Lookup as ReceiptLookup, Submission};
 // The session resume actor's readiness rule (zerus-5wmh.66.4.9), on its
@@ -1052,6 +1055,29 @@ impl Unresolved {
     fn ambiguous((text, value): (String, Value)) -> Self {
         Self { text, value: Some(value), code: session_id::AMBIGUOUS }
     }
+}
+
+/// The real `hgs inspect` reply for `record`, after this component's own
+/// writer saved it: the Teams confirmation's tests read inspections from here
+/// (zerus-63rru.56).
+#[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
+pub(crate) fn inspection_for_test(record: &mut Value) -> Result<Value> {
+    storage::write(record)?;
+    journal::inspection(string(record, "name"), 0, None, false)
+}
+/// `record` as a completed pause leaves it, saved by this component.
+#[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
+pub(crate) fn pause_for_test(record: &mut Value) -> Result<()> {
+    let _guard = lock(None)?;
+    lifecycle::mark_paused(record);
+    storage::write(record)
+}
+/// Archives `record` through this component's own archive, as an exit's
+/// archive does, and returns the archive ID.
+#[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
+pub(crate) fn archive_for_test(record: &Value) -> Result<String> {
+    let _guard = lock(None)?;
+    archive::save(record)
 }
 
 /// zerus-ucck P3a: a label a command names without a selection, resolved

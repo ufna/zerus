@@ -32,9 +32,13 @@ if sys.argv[3] == 'send':
         p.write_text(json.dumps(receipt))
         p.chmod(0o600)
         print(json.dumps(receipt))
-    elif mode == 'refuse':
-        print(json.dumps({'ok': False, 'error': 'The expected run changed'}))
+    elif mode == 'capture':
+        (root / 'stub-stdin').write_bytes(raw)
         sys.exit(1)
+    elif mode == 'replay':
+        sys.stderr.buffer.write((root / 'stub-stderr').read_bytes())
+        sys.stderr.flush()
+        sys.exit(int((root / 'stub-code').read_text()))
 else:
     q = json.loads(raw)
     reply = dict(q)
@@ -82,11 +86,22 @@ impl Fixture {
         Some(serde_json::from_slice(&raw).unwrap())
     }
     fn native(&self) -> Native<'_> {
+        self.native_on("00000000-0000-4000-8000-0000000000aa")
+    }
+    fn native_on<'m>(&'m self, machine: &'m str) -> Native<'m> {
         Native {
             config: &self.config,
-            machine: "00000000-0000-4000-8000-0000000000aa",
+            machine,
             stop: &self.stop,
         }
+    }
+    /// The stub refuses as the real CLI does: the error line main writes on
+    /// stderr, nothing on stdout, and the error's exit code.
+    fn refuse(&self, code: i32, message: &str) {
+        let root = self.h.temp.path();
+        std::fs::write(root.join("stub-stderr"), crate::cli::error_line(message)).unwrap();
+        std::fs::write(root.join("stub-code"), code.to_string()).unwrap();
+        self.mode("replay");
     }
     fn ring(&mut self, agent: &str) -> Ring {
         let (_, lead) = self.h.reported();
@@ -171,7 +186,7 @@ fn a_doorbell_is_submitted_only_by_its_own_receipt() {
 fn a_refusing_exit_without_a_receipt_is_refused_only_for_receipted_agents() {
     let mut f = Fixture::new();
     let ring = f.ring("claude");
-    f.mode("refuse");
+    f.refuse(1, "The expected run changed");
     assert_eq!(
         f.native().ring(&f.h.store, &ring),
         Rung::Refused("The expected run changed".into())
@@ -300,4 +315,123 @@ fn an_answer_doorbell_is_admitted_by_its_member_and_stopped_by_the_flag() {
         Rung::NotStarted(_)
     ));
     assert!(f.args().is_none(), "the stub never ran");
+}
+
+/// Runs one ignored fixture of this module in its own process, with a private
+/// state and configuration under `temp`, `stdin` as its input and its output
+/// uncaptured; returns its stdout.
+fn isolated(temp: &std::path::Path, fixture: &str, stdin: &[u8]) -> String {
+    use std::io::Write;
+    let mut child = Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            &format!("desktop::teams::timers::native::tests::{fixture}"),
+        ])
+        .args(["--ignored", "--test-threads=1", "--nocapture"])
+        .env("HGS_STATE_DIR", temp.join("state"))
+        .env("HGS_CONFIG_DIR", temp.join("config"))
+        .env_remove("HGS_SESSION")
+        .env_remove("HGS_SESSION_ID")
+        .env_remove("HGS_RUN_ID")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    child.stdin.take().unwrap().write_all(stdin).unwrap();
+    let output = child.wait_with_output().unwrap();
+    let text = String::from_utf8_lossy(&output.stdout).into_owned();
+    assert!(
+        output.status.success() && text.contains("1 passed"),
+        "{text}{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    text
+}
+
+/// A refused doorbell keeps the CLI's own reason (zerus-63rru.57). The argv
+/// and input the doorbell spawns, with this computer's real machine identity,
+/// run through the real `cli::dispatch_at` in an isolated child: it refuses
+/// with an error and writes nothing on stdout. Replayed as main writes it, that
+/// refusal is what the doorbell reports.
+#[test]
+fn a_refused_doorbell_keeps_the_clis_own_reason() {
+    let temp = tempfile::tempdir().unwrap();
+    isolated(temp.path(), "doorbell_capture_fixture", b"");
+    let stdin = std::fs::read(temp.path().join("stdin")).unwrap();
+    let printed = isolated(temp.path(), "send_refusal_fixture", &stdin);
+    let (_, rest) = printed.split_once("<<<send\n").expect(&printed);
+    let (stdout, _) = rest.split_once("send>>>").expect(&printed);
+    assert_eq!(stdout, "", "a refused send writes nothing on stdout");
+    let refusal: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(temp.path().join("refusal.json")).unwrap()).unwrap();
+    let message = refusal["message"].as_str().unwrap();
+    let code = i32::try_from(refusal["code"].as_i64().unwrap()).unwrap();
+    assert_ne!(code, 0);
+    assert_ne!(
+        message, "Mobile target identity changed; refresh computers",
+        "the guard admitted this computer; the send itself refused"
+    );
+    eprintln!("the real CLI's refusal: exit {code}, {message:?}");
+    let mut f = Fixture::new();
+    let ring = f.ring("claude");
+    f.refuse(code, message);
+    assert_eq!(
+        f.native().ring(&f.h.store, &ring),
+        Rung::Refused(message.into())
+    );
+}
+
+#[test]
+#[ignore = "run by its isolated wrapper"]
+fn doorbell_capture_fixture() {
+    let state = PathBuf::from(std::env::var("HGS_STATE_DIR").unwrap());
+    let capture = state.parent().unwrap();
+    let config = Config::load().unwrap();
+    let machine = crate::swarm::local_node_id(&config).unwrap();
+    let mut f = Fixture::new();
+    let ring = f.ring("claude");
+    f.mode("capture");
+    let rung = f.native_on(&machine).ring(&f.h.store, &ring);
+    assert!(matches!(rung, Rung::Refused(_)), "{rung:?}");
+    let argv = f.args().unwrap();
+    assert_eq!(argv[..2], ["--expect-machine".to_owned(), machine]);
+    std::fs::write(
+        capture.join("argv.json"),
+        serde_json::to_vec(&argv).unwrap(),
+    )
+    .unwrap();
+    std::fs::copy(f.h.temp.path().join("stub-stdin"), capture.join("stdin")).unwrap();
+}
+
+#[test]
+#[ignore = "run by its isolated wrapper"]
+fn send_refusal_fixture() {
+    let state = PathBuf::from(std::env::var("HGS_STATE_DIR").unwrap());
+    let capture = state.parent().unwrap();
+    let argv: Vec<String> =
+        serde_json::from_slice(&std::fs::read(capture.join("argv.json")).unwrap()).unwrap();
+    println!("<<<send");
+    let result = crate::cli::dispatch_at(argv, Instant::now());
+    println!("send>>>");
+    let error = result.expect_err("the send refuses");
+    let refusal = serde_json::json!({"code": error.code, "message": error.message});
+    std::fs::write(capture.join("refusal.json"), refusal.to_string()).unwrap();
+}
+
+/// A warning the CLI writes before its refusal, here the configuration's own
+/// hint diagnostic, starts the same way; the reason is the last line.
+#[test]
+fn a_refusal_after_a_warning_keeps_the_last_line() {
+    let mut f = Fixture::new();
+    let ring = f.ring("claude");
+    f.refuse(1, "The expected run changed");
+    let stderr = f.h.temp.path().join("stub-stderr");
+    let line = std::fs::read_to_string(&stderr).unwrap();
+    let warning = format!("{}\n", crate::config::HINT_POLICY_DIAGNOSTIC);
+    std::fs::write(&stderr, warning + &line).unwrap();
+    assert_eq!(
+        f.native().ring(&f.h.store, &ring),
+        Rung::Refused("The expected run changed".into())
+    );
 }
