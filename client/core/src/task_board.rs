@@ -301,9 +301,10 @@ mod team_tests {
     /// as it came; it adds no words of its own that the task was not queued.
     #[test]
     fn a_storage_failure_of_the_team_store_gives_the_stores_sentence() {
-        let problem: Value =
-            serde_json::from_str(include_str!("teams/fixtures/problem-storage-failed.json"))
-                .unwrap();
+        let problem: Value = serde_json::from_str(include_str!(
+            "../../../crates/team-plan/fixtures/problem-storage-failed.json"
+        ))
+        .unwrap();
         let mut calls = 0;
         let error = apply(
             "example",

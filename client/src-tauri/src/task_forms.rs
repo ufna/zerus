@@ -1235,10 +1235,41 @@ mod tests {
         const TEAM: &str = "33333333-3333-4333-8333-333333333333";
         const TASK: &str = "55555555-5555-4555-8555-555555555555";
         let problem: Value = serde_json::from_str(include_str!(
-            "../../core/src/teams/fixtures/problem-storage-failed.json"
+            "../../../crates/team-plan/fixtures/problem-storage-failed.json"
         ))
         .unwrap();
         let reply = json!({"task": {"uuid": TASK, "project": "example"}, "task_exists": true, "team": {"id": TEAM, "queued": false, "error": problem}});
+        let notice = not_queued(reply.as_object().unwrap(), TASK, TEAM).unwrap();
+        assert_eq!(notice["code"], "storage_failed");
+        assert_eq!(
+            notice["reason"],
+            "The result is not known; repeat the same request with the same request ID."
+        );
+    }
+    /// The store's busy refusal on the queue: nothing was written, so the
+    /// notice keeps the refusal's code (the form calls it not queued and offers
+    /// Send to team again); a problem's detail is not the notice's reason.
+    #[test]
+    fn a_busy_store_keeps_its_code_and_a_detail_stays_out_of_the_reason() {
+        const TEAM: &str = "33333333-3333-4333-8333-333333333333";
+        const TASK: &str = "55555555-5555-4555-8555-555555555555";
+        let mut busy: Value = serde_json::from_str(include_str!(
+            "../../../crates/team-plan/fixtures/problem-store-busy.json"
+        ))
+        .unwrap();
+        busy["detail"] = json!("lock held by another writer");
+        let reply = json!({"task": {"uuid": TASK, "project": "example"}, "task_exists": true, "team": {"id": TEAM, "queued": false, "error": busy}});
+        let notice = not_queued(reply.as_object().unwrap(), TASK, TEAM).unwrap();
+        assert_eq!(notice["code"], "store_busy");
+        assert_eq!(
+            notice["reason"],
+            "The team store is busy. Nothing was written; try again."
+        );
+        let printed: Value = serde_json::from_str(include_str!(
+            "../../../crates/team-plan/fixtures/cli-storage-failed.json"
+        ))
+        .unwrap();
+        let reply = json!({"task": {"uuid": TASK, "project": "example"}, "task_exists": true, "team": {"id": TEAM, "queued": false, "error": printed["error"]}});
         let notice = not_queued(reply.as_object().unwrap(), TASK, TEAM).unwrap();
         assert_eq!(notice["code"], "storage_failed");
         assert_eq!(

@@ -104,10 +104,10 @@ fn complete_receipt(call: &TeamCall, receipt: &Value) -> bool {
 const READ_FIRST: &str = "Read the team before sending it again.";
 
 /// The team store's code for a write whose storage failed or whose result was
-/// lost (`zerus_team_plan::problem::code::STORAGE_FAILED` from `8583e5254`
-/// on): nothing proves that the write did not happen, and the store processes
-/// the same request id when it is repeated.
-pub const STORAGE_FAILED: &str = "storage_failed";
+/// lost: nothing proves that the write did not happen, and the store processes
+/// the same request id when it is repeated. (`store_busy`, by contrast, says
+/// nothing was written: it is a refusal like any other code.)
+pub const STORAGE_FAILED: &str = zerus_team_plan::problem::code::STORAGE_FAILED;
 
 /// A valid coded answer: a refusal is `failed`; a storage failure is
 /// `uncertain`, keeping the call's request id and the store's own sentence,

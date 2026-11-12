@@ -206,6 +206,7 @@ it.each([
   ["a storage failure", "storage_failed", "The result is not known; repeat the same request with the same request ID.", UNKNOWN],
   ["no answer from the queue", "", "The team did not confirm that it queued the task.", UNKNOWN],
   ["a refusal", "invalid_state", "The team is stopped.", "The task was created, but Fixes did not queue it: The team is stopped."],
+  ["a busy store (nothing was written)", "store_busy", "The team store is busy. Nothing was written; try again.", "The task was created, but Fixes did not queue it: The team store is busy. Nothing was written; try again."],
 ])("a card whose queue gave %s is told by the code", async (_label, code, reason, told) => {
   f.setList({ teams: [fixes], truncated: false, next: null });
   f.setView(card("example-project"));

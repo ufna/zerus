@@ -376,6 +376,29 @@ mod tests {
         assert!(error.contains("permission_denied"), "{error}");
     }
 
+    /// The store's codes on a person-only read or save (the catalog, a template
+    /// save): a busy store and a storage failure keep their code and the store's
+    /// sentence; a problem's detail is not part of it.
+    #[test]
+    fn a_busy_store_and_a_problems_detail_on_a_read() {
+        let busy: Value = serde_json::from_str(include_str!(
+            "../../../crates/team-plan/fixtures/problem-store-busy.json"
+        ))
+        .unwrap();
+        let mut error = busy.clone();
+        error["detail"] = json!("lock held by another writer");
+        let reply = json!({"ok": false, "error": error});
+        assert_eq!(
+            decode_team_reply(1, reply.to_string().as_bytes(), b"").unwrap_err(),
+            "store_busy: The team store is busy. Nothing was written; try again."
+        );
+        let storage = include_str!("../../../crates/team-plan/fixtures/cli-storage-failed.json");
+        assert_eq!(
+            decode_team_reply(1, storage.as_bytes(), b"").unwrap_err(),
+            "storage_failed: The result is not known; repeat the same request with the same request ID."
+        );
+    }
+
     #[test]
     fn a_nonzero_exit_without_a_reply_keeps_stderr_or_a_generic_reason() {
         assert_eq!(

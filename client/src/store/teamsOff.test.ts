@@ -139,3 +139,12 @@ describe("a storage failure (zerus-63rru.19)", () => {
     expect((await store.preview(false)).outcome, "a rule's refusal stays a refusal").toBe("failed");
   });
 });
+describe("a busy store (the store's codes)", () => {
+  it("refuses the preview switch: nothing was written, never an unknown result", async () => {
+    const { transport } = fake();
+    transport.preview = async () => { throw "store_busy: The team store is busy. Nothing was written; try again."; };
+    const store = createTeams(transport);
+    await store.probe();
+    expect(await store.preview(false)).toEqual({ outcome: "failed", detail: "store_busy: The team store is busy. Nothing was written; try again." });
+  });
+});

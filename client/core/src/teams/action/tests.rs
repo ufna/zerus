@@ -747,12 +747,14 @@ fn an_effect_then_an_unreadable_exit_is_uncertain_and_sent_once() {
     assert_eq!(stdin["request_id"], ID, "the same intent keeps its id");
 }
 
-/// The store's storage failure, as `hgs team` prints it: the two JSON files are
-/// copies of `crates/team-plan/fixtures/cli-storage-failed.json` and
-/// `problem-storage-failed.json` from commit 8583e5254 ("Distinguish Teams
-/// storage failures from saved refusals"), kept here by content.
-const CLI_STORAGE_FAILED: &str = include_str!("../fixtures/cli-storage-failed.json");
-const PROBLEM_STORAGE_FAILED: &str = include_str!("../fixtures/problem-storage-failed.json");
+/// The store's storage failure, as `hgs team` prints it (with the problem's
+/// optional detail), and the problem itself: `crates/team-plan/fixtures`.
+const CLI_STORAGE_FAILED: &str =
+    include_str!("../../../../../crates/team-plan/fixtures/cli-storage-failed.json");
+const PROBLEM_STORAGE_FAILED: &str =
+    include_str!("../../../../../crates/team-plan/fixtures/problem-storage-failed.json");
+const PROBLEM_STORE_BUSY: &str =
+    include_str!("../../../../../crates/team-plan/fixtures/problem-store-busy.json");
 const STORAGE_SENTENCE: &str =
     "The result is not known; repeat the same request with the same request ID.";
 
@@ -761,7 +763,10 @@ fn the_storage_fixtures_are_one_problem() {
     let cli: Value = serde_json::from_str(CLI_STORAGE_FAILED).unwrap();
     let problem: Value = serde_json::from_str(PROBLEM_STORAGE_FAILED).unwrap();
     assert_eq!(cli["ok"], false);
-    assert_eq!(cli["error"], problem);
+    // The printed problem carries its optional detail; the rest is the problem.
+    let mut error = cli["error"].clone();
+    assert!(error.as_object_mut().unwrap().remove("detail").is_some());
+    assert_eq!(error, problem);
     assert_eq!(problem["code"], super::wire::STORAGE_FAILED);
     assert_eq!(problem["message"], STORAGE_SENTENCE);
 }
@@ -1124,5 +1129,83 @@ fn a_changed_template_is_a_refusal_the_intent_settles_never_uncertain() {
             intents.admit_again(&call),
             Admission::Recorded(TeamOutcome::Failed { .. })
         ));
+    }
+}
+
+/// The store's busy refusal (zerus-63rru.30's store codes): nothing was
+/// written, so it is a refusal like any other code, never an unknown result;
+/// the action may simply be sent again (a new intent), and Check has nothing to
+/// check. Its sentence is the store's, without the code.
+#[test]
+fn a_busy_store_is_a_refusal_nothing_was_written() {
+    let problem: Value = serde_json::from_str(PROBLEM_STORE_BUSY).unwrap();
+    assert_eq!(problem["code"], zerus_team_plan::problem::code::STORE_BUSY);
+    let stdout = json!({"ok": false, "error": problem})
+        .to_string()
+        .into_bytes();
+    let call = a_call(TEAM, 42, TeamAction::Accept { node: 7 });
+    let mut intents = Intents::default();
+    assert_eq!(intents.admit(&call), Admission::Send);
+    let outcome = intents.settle(
+        &call,
+        classify(
+            &call,
+            Exit::Code {
+                code: 1,
+                stdout,
+                stderr: String::new(),
+            },
+        ),
+    );
+    assert_eq!(
+        outcome,
+        TeamOutcome::Failed {
+            detail: "The team store is busy. Nothing was written; try again.".into(),
+            code: "store_busy".into(),
+            request_id: ID.into(),
+        }
+    );
+    assert_eq!(intents.state(ID), Some(IntentState::Failed));
+    let again = TeamCall {
+        request_id: "22222222-2222-4333-8444-555555555555".into(),
+        ..call
+    };
+    assert_eq!(
+        intents.admit(&again),
+        Admission::Send,
+        "the same action is sent again"
+    );
+}
+
+/// A problem may carry a detail (`cli-storage-failed.json` does). A person does
+/// not need it in the sentence: the outcome keeps the store's message only,
+/// whether the code is uncertain or a refusal.
+#[test]
+fn a_problems_detail_stays_out_of_the_sentence() {
+    let cli: Value = serde_json::from_str(CLI_STORAGE_FAILED).unwrap();
+    let detail = cli["error"]["detail"].as_str().unwrap().to_owned();
+    let call = a_call(TEAM, 42, TeamAction::Accept { node: 7 });
+    let exit = |stdout: Vec<u8>| Exit::Code {
+        code: 1,
+        stdout,
+        stderr: String::new(),
+    };
+    match classify(&call, exit(CLI_STORAGE_FAILED.as_bytes().to_vec())) {
+        TeamOutcome::Uncertain { detail: shown, .. } => {
+            assert_eq!(shown, STORAGE_SENTENCE);
+            assert!(!shown.contains(&detail));
+        }
+        other => panic!("{other:?}"),
+    }
+    let refused = json!({"ok": false, "error": {"code": "invalid_state", "message": "No.", "detail": detail}});
+    match classify(&call, exit(refused.to_string().into_bytes())) {
+        TeamOutcome::Failed {
+            detail: shown,
+            code,
+            ..
+        } => {
+            assert_eq!((shown.as_str(), code.as_str()), ("No.", "invalid_state"));
+        }
+        other => panic!("{other:?}"),
     }
 }

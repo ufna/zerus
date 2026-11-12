@@ -222,8 +222,7 @@ mod tests {
 
     const TEAM: &str = "00000000-0000-4000-8000-00000000beef";
 
-    /// The command line's pinned replies (`crates/team-plan/fixtures`), and the
-    /// storage problem the core keeps a copy of.
+    /// The command line's pinned replies (`crates/team-plan/fixtures`).
     fn fixture(name: &str) -> Value {
         serde_json::from_str(match name {
             "catalog" => include_str!("../../../../crates/team-plan/fixtures/cli-catalog.json"),
@@ -235,7 +234,9 @@ mod tests {
             "template-changed" => {
                 include_str!("../../../../crates/team-plan/fixtures/cli-template-changed.json")
             }
-            "storage-failed" => include_str!("fixtures/cli-storage-failed.json"),
+            "storage-failed" => {
+                include_str!("../../../../crates/team-plan/fixtures/cli-storage-failed.json")
+            }
             other => panic!("no fixture {other}"),
         })
         .unwrap()

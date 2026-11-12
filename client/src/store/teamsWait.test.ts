@@ -146,3 +146,18 @@ describe("a storage failure of a decision (zerus-63rru.19)", () => {
     expect(calls.acts).toHaveLength(1);
   });
 });
+describe("a busy store refusing a decision (the store's codes)", () => {
+  it("is a failure with the store's sentence, leaves nothing unresolved, and the decision may be sent again", async () => {
+    const { transport, outcomes, calls } = fake();
+    const teams = createTeams(transport);
+    const sentence = "The team store is busy. Nothing was written; try again.";
+    outcomes.push({ outcome: "failed", detail: sentence, code: "store_busy", request_id: "x" });
+    expect((await decideOn(teams, "approve"))?.outcome).toBe("failed");
+    expect(teams.unresolved(), "never an unknown result").toEqual([]);
+    expect(teams.failureFor("waiting")?.message).toBe(sentence);
+    outcomes.push({ outcome: "done", receipt: { ok: true }, request_id: "y" });
+    expect((await decideOn(teams, "approve"))?.outcome).toBe("done");
+    expect(calls.acts).toHaveLength(2);
+    expect(calls.acts[1].request_id, "sent again as a new intent").not.toBe(calls.acts[0].request_id);
+  });
+});
