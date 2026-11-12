@@ -180,6 +180,7 @@ impl Harness {
             title: format!("Task {node}"),
             attempt,
             attempt_id,
+            attempt_conflict: false,
         }
     }
     pub fn observe(&mut self, node: u32, stage: TaskStage) {

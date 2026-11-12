@@ -73,6 +73,7 @@ fn observation(document: &TaskDoc, team: &str, home: &str) -> Result<TaskObserva
         // The task side fills these from the document's attempts (6b).
         attempt: 0,
         attempt_id: String::new(),
+        attempt_conflict: false,
     })
 }
 fn record(store: &mut Store, team: &str, node: u32, document: &TaskDoc) -> Result<()> {

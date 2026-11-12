@@ -629,3 +629,39 @@ fn the_legacy_pair_takes_only_a_default_cancel() {
     h.run(&service(), cancel(node, decision, 0, "")).unwrap();
     assert_eq!(h.node(node).state, NodeState::Cancelled);
 }
+
+#[test]
+fn the_conflict_flag_defaults_to_false_and_is_kept_with_the_observation() {
+    let old = r#"{"revision":"token-1","stage":"todo","rank":"a1","attempt":2}"#;
+    let o: TaskObservation = serde_json::from_str(old).unwrap();
+    assert!(!o.attempt_conflict);
+    let mut h = Harness::new();
+    let node = h.enqueue(&person(), 1);
+    let mut o = h.observation(node, TaskStage::Todo);
+    o.attempt = 2;
+    o.attempt_conflict = true;
+    h.run(
+        &service(),
+        Operation::ObserveTask {
+            node,
+            observation: o,
+        },
+    )
+    .unwrap();
+    let db = h.store.db.as_ref().unwrap();
+    let kept: bool = db
+        .query_row(
+            "SELECT attempt_conflict FROM task_observations WHERE team=?1 AND node=?2",
+            rusqlite::params![TEAM, node],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(kept);
+    assert!(
+        h.store
+            .task_observation(TEAM, node)
+            .unwrap()
+            .unwrap()
+            .attempt_conflict
+    );
+}
