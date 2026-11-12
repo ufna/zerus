@@ -6,28 +6,32 @@ impl Runtime {
             .team(&row.team)?
             .ok_or_else(|| invalid("Team disappeared"))?;
         if row.card_done {
-            // An open card is kept only while it lists what something would
-            // read now: when the row's state has changed that, the card is
-            // closed and the current one opened. A list never changes in place.
-            let replaced = match row.card_id {
-                Some(id) => store
-                    .card(&row.team, id)?
-                    .is_some_and(|c| c.state == "open" && c.decisions != decisions(row)),
-                None => false,
+            // The kept card stands while the row's present state keeps it
+            // (`kept::stands`): open with the list the row gives now, the
+            // person's dismissal from that list, or a Retry the row reads.
+            // Otherwise the current card opens; an open one is closed first,
+            // and a list never changes in place.
+            let kept = match row.card_id {
+                Some(id) => store.card(&row.team, id)?,
+                None => None,
             };
-            if !replaced {
+            let Some(kept) = kept else {
+                return Ok(());
+            };
+            if super::super::kept::stands(&kept, &decisions(row), reads(row)) {
                 return Ok(());
             }
-            let card = row.card_id.expect("read above");
-            apply(
-                store,
-                &team,
-                Operation::CloseCard {
-                    card,
-                    reason: "The launch's state changed what this card can take.".into(),
-                },
-                now,
-            )?;
+            if kept.state == "open" {
+                apply(
+                    store,
+                    &team,
+                    Operation::CloseCard {
+                        card: kept.seq,
+                        reason: "The launch's state changed what this card can take.".into(),
+                    },
+                    now,
+                )?;
+            }
             row.card_id = None;
             row.card_request = None;
             row.card_done = false;
@@ -108,11 +112,25 @@ impl Runtime {
 /// on. Otherwise nothing reads a decision, and the card takes acknowledged
 /// alone.
 fn decisions(row: &Row) -> Vec<String> {
-    if row.member == crate::desktop::teams::ledger::BUDGET || row.state.waits_on_backoff() {
+    if retry_read(row) {
         vec!["retry".to_owned(), "acknowledged".to_owned()]
     } else {
         vec!["acknowledged".to_owned()]
     }
+}
+
+/// The decisions the row reads now: Retry on the budget row and while a
+/// member row waits on backoff (`due`), none otherwise.
+fn reads(row: &Row) -> &'static [&'static str] {
+    if retry_read(row) {
+        &["retry"]
+    } else {
+        &[]
+    }
+}
+
+fn retry_read(row: &Row) -> bool {
+    row.member == crate::desktop::teams::ledger::BUDGET || row.state.waits_on_backoff()
 }
 
 fn problem_refs(problem: &Problem) -> String {

@@ -2563,8 +2563,11 @@ fn offered_as_read(card: &crate::teams::store::Card) {
 /// verification then fails for good and the row is Blocked. The next pass
 /// closes that card and opens the current one, which lists acknowledged; a
 /// Retry on the closed card is refused.
-#[test]
-fn a_launch_card_is_replaced_when_its_row_stops_reading_retry() {
+/// The reviewer's sequence up to the replacement: a launch_blocked card
+/// opened while worktree verification waits on backoff lists retry, then
+/// verification fails for good and the row is Blocked. The pass that would
+/// replace the card has not run. Returns the old card and the time.
+fn blocked_behind_a_retry_card() -> (Harness, FakeEffects, Runtime, u64, i64) {
     let mut h = Harness::new();
     let mut e = FakeEffects {
         worktree_unverified: true,
@@ -2599,6 +2602,14 @@ fn a_launch_card_is_replaced_when_its_row_stops_reading_retry() {
     let now = old.retry_at + 1;
     r.tick(&mut h.store, &mut e, ops::tests::TEAM, now).unwrap();
     assert_eq!(row(&h, "lead").state, State::Blocked);
+    assert_eq!(row(&h, "lead").card_id, Some(first));
+    assert_eq!(cards(&h).len(), 1);
+    (h, e, r, first, now)
+}
+
+#[test]
+fn a_launch_card_is_replaced_when_its_row_stops_reading_retry() {
+    let (mut h, mut e, mut r, first, now) = blocked_behind_a_retry_card();
     r.tick(&mut h.store, &mut e, ops::tests::TEAM, now + 1)
         .unwrap();
     let closed = h.store.card(ops::tests::TEAM, first).unwrap().unwrap();
@@ -2851,5 +2862,128 @@ fn an_acknowledged_backoff_card_stays_closed_while_its_row_backs_off() {
     assert!(
         row(&h, "lead").failures > before.failures,
         "the retry runs the row early"
+    );
+}
+
+/// The one current card of the lead's row: open, listing acknowledged, and
+/// named by the row, with the old card closed beside it.
+fn the_blocked_card_is_current(h: &Harness, why: &str) {
+    let open: Vec<_> = cards(h).into_iter().filter(|c| c.state == "open").collect();
+    assert_eq!(open.len(), 1, "{why}: one current card");
+    assert_eq!(open[0].decisions, ["acknowledged"], "{why}");
+    assert_eq!(cards(h).len(), 2, "{why}: the old card and the current one");
+    let lead = row(h, "lead");
+    assert_eq!(lead.card_id, Some(open[0].seq), "{why}");
+    assert!(lead.card_done, "{why}");
+    assert_eq!(lead.state, State::Blocked, "{why}");
+}
+
+/// Finding 4 of the cards review, first sequence, and every other durable
+/// step of the replacement: a restart after the old card's CloseCard
+/// committed (the row still names it), after the row's reset was saved,
+/// after the new request was saved, and after it was applied. Each state is
+/// written as that step leaves it, then a new runtime runs two passes: the
+/// current card opens exactly once.
+#[test]
+fn a_restart_at_each_durable_step_of_a_card_replacement_opens_the_current_card_once() {
+    for step in 1..=4 {
+        let (mut h, mut e, r, first, now) = blocked_behind_a_retry_card();
+        drop(r);
+        h.run(
+            &ops::tests::service(),
+            ops::Operation::CloseCard {
+                card: first,
+                reason: "The launch's state changed what this card can take.".into(),
+            },
+        )
+        .unwrap();
+        if step >= 2 {
+            let mut ledger = Ledger::open(h.temp.path()).unwrap();
+            let mut lead = ledger.get(ops::tests::TEAM, "lead").unwrap().unwrap();
+            lead.card_id = None;
+            lead.card_request = None;
+            lead.card_done = false;
+            if step >= 3 {
+                let team = h.store.team(ops::tests::TEAM).unwrap().unwrap();
+                lead.card_request = Some(ops::Request {
+                    request_id: uuid::Uuid::new_v4().to_string(),
+                    team: ops::tests::TEAM.into(),
+                    expected_revision: team.revision,
+                    operation: ops::Operation::OpenCard {
+                        kind: "launch_uncertain".into(),
+                        text: "Member lead: delivery_uncertain. Worktree ownership changed".into(),
+                        node: None,
+                        decisions: Some(vec!["acknowledged".into()]),
+                    },
+                });
+            }
+            ledger.save(&mut lead, now).unwrap();
+            if step == 4 {
+                ops::apply(
+                    &mut h.store,
+                    &ops::tests::service(),
+                    lead.card_request.as_ref().unwrap(),
+                    now,
+                )
+                .unwrap();
+            }
+        }
+        let mut r = runtime(&h);
+        for pass in 1..=2 {
+            r.tick(&mut h.store, &mut e, ops::tests::TEAM, now + pass)
+                .unwrap();
+        }
+        let old = h.store.card(ops::tests::TEAM, first).unwrap().unwrap();
+        assert_eq!(old.decision.as_deref(), Some("stale"), "step {step}");
+        the_blocked_card_is_current(&h, &format!("step {step}"));
+    }
+}
+
+/// Finding 4, second sequence: the person decides on the old card after the
+/// row became Blocked and before the replacement ran. A Retry that a Blocked
+/// row never reads, and an acknowledged given to another list, are no
+/// dismissal of the Blocked card: it opens on the next pass, and the Retry
+/// starts nothing.
+#[test]
+fn a_decision_on_the_old_list_after_the_row_is_blocked_still_opens_the_blocked_card() {
+    for decision in ["retry", "acknowledged"] {
+        let (mut h, mut e, mut r, first, now) = blocked_behind_a_retry_card();
+        decide(&mut h, first, decision);
+        let events = e.events.len();
+        for pass in 1..=2 {
+            r.tick(&mut h.store, &mut e, ops::tests::TEAM, now + pass)
+                .unwrap();
+        }
+        let old = h.store.card(ops::tests::TEAM, first).unwrap().unwrap();
+        assert_eq!(old.decision.as_deref(), Some(decision));
+        the_blocked_card_is_current(&h, decision);
+        assert_eq!(e.events.len(), events, "{decision}: nothing was retried");
+    }
+}
+
+/// A real dismissal lasts: the person acknowledges the Blocked row's own
+/// card, from the list the row gives, and no card opens again while the row
+/// stays Blocked.
+#[test]
+fn a_persons_dismissal_of_the_blocked_card_lasts() {
+    let (mut h, mut e, mut r, _, now) = blocked_behind_a_retry_card();
+    r.tick(&mut h.store, &mut e, ops::tests::TEAM, now + 1)
+        .unwrap();
+    let current = row(&h, "lead").card_id.unwrap();
+    decide(&mut h, current, "acknowledged");
+    for pass in 2..=5 {
+        r.tick(&mut h.store, &mut e, ops::tests::TEAM, now + pass * 60_000)
+            .unwrap();
+    }
+    assert_eq!(cards(&h).len(), 2, "no card opens again");
+    assert_eq!(row(&h, "lead").card_id, Some(current));
+    assert_eq!(
+        h.store
+            .card(ops::tests::TEAM, current)
+            .unwrap()
+            .unwrap()
+            .decision
+            .as_deref(),
+        Some("acknowledged")
     );
 }
