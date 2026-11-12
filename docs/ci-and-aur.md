@@ -1507,6 +1507,9 @@ is the real Kimi image. `kimi-native.py --teams` runs only on a disposable
 GitHub-hosted runner. It runs the class in a child of its own under a 2400-second
 bound and sets the `ZERUS_TEAMS_KIMI_HOSTED` marker, without which the class skips.
 A skip is reported as no evidence.
+Kimi Code's steps 2 to 4 (delivery and the member's shell, the doorbell, the cancel
+notice) are selected but not yet proven: no hosted run has carried them yet, and their
+first proof is the first hosted run. Until then they count as no evidence.
 
 #### Bounds
 
