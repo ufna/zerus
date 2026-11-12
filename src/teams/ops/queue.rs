@@ -474,6 +474,7 @@ fn restore_row(ctx: &Context<'_>, node: u32) -> Result<()> {
 pub(super) fn finish_observation(ctx: &Context<'_>, node: u32, cancelled: bool) -> Result<()> {
     ctx.db.execute(&format!("UPDATE effects SET state='observed_done' WHERE team=?1 AND node=?2 AND state IN {OPEN_EFFECT_STATES}"),params![ctx.team.id,node]).map_err(storage)?;
     ctx.close_inbox(node)?;
+    timers::drop_marks(ctx, node)?;
     if cancelled || ctx.node(node)?.kind == NodeKind::Stage {
         ctx.db
             .execute(

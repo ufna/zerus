@@ -265,3 +265,36 @@ fn the_admission_reads_the_team_the_binding_the_mark_and_the_holder() {
         "the mark was dropped"
     );
 }
+
+/// An attempt that ends without a decision drops its mark, as a decision
+/// does: the task Done on the board (with branch integration the node then
+/// waits for its merge), the task cancelled on the board, and a person's
+/// execution taken over.
+#[test]
+fn an_attempt_that_ends_without_a_decision_drops_its_mark() {
+    for end in ["done", "cancelled", "taken over"] {
+        let (mut h, lead, m1, node) = holding();
+        let item = ask(&mut h, &m1, node, "Which width?");
+        reply(&mut h, &lead, item, "The old one.");
+        assert_eq!(marks(&h).len(), 1, "{end}");
+        match end {
+            "done" => h.observe(node, TaskStage::Done),
+            "cancelled" => h.cancel_fact(node),
+            _ => {
+                let mut o = h.observation(node, TaskStage::InProgress);
+                o.attempt = 2;
+                o.attempt_id = "00000000-0000-4000-8000-00000000bbbb".into();
+                h.run(
+                    &service(),
+                    Operation::ObserveTask {
+                        node,
+                        observation: o,
+                    },
+                )
+                .unwrap();
+                assert_eq!(h.store.generation(TEAM, node).unwrap(), Some(2));
+            }
+        }
+        assert!(marks(&h).is_empty(), "{end}");
+    }
+}

@@ -49,3 +49,15 @@ fn holds(ctx: &Context<'_>, node: u32, generation: u32, member: &str) -> Result<
         m == member && !matches!(state.as_str(), "reserved" | "refused" | "superseded")
     }))
 }
+/// An attempt that ends without a decision, its task Done or cancelled on
+/// the board or a person's execution taken over, drops the node's marks as
+/// a decision does (the trigger), beside the close of its inbox.
+pub(in crate::teams::ops) fn drop_marks(ctx: &Context<'_>, node: u32) -> Result<()> {
+    ctx.db
+        .execute(
+            "DELETE FROM answer_marks WHERE team=?1 AND node=?2",
+            params![ctx.team.id, node],
+        )
+        .map_err(storage)?;
+    Ok(())
+}

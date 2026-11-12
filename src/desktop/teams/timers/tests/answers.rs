@@ -204,3 +204,15 @@ fn a_busy_or_unknown_member_gets_no_doorbell() {
         assert!(a.w.effects.rang.is_empty());
     }
 }
+
+/// A task moved to Done on the board ends its attempt without a decision:
+/// its mark is dropped and nothing rings.
+#[test]
+fn a_task_done_on_the_board_rings_nothing() {
+    let mut a = asked();
+    a.answer();
+    a.w.h.observe(a.node, crate::teams::ops::TaskStage::Done);
+    a.w.answers(T0);
+    assert!(a.w.effects.rang.is_empty());
+    assert!(a.states().is_empty());
+}

@@ -97,6 +97,7 @@ pub(in crate::teams::ops) fn take_over(
     pipeline::observe_override(ctx, n)?;
     ctx.db.execute(&format!("UPDATE effects SET state='observed_done' WHERE team=?1 AND node=?2 AND state IN {OPEN_EFFECT_STATES}"),params![ctx.team.id,node]).map_err(storage)?;
     ctx.close_inbox(node)?;
+    drop_marks(ctx, node)?;
     ctx.settle_override(node)?;
     if n.kind == NodeKind::Stage || ctx.node_table(node)? != "nodes" {
         return Ok(());
