@@ -89,9 +89,11 @@ fn marked(db: &Connection) -> Result<bool> {
         .optional()
         .map_err(storage)?;
     match version {
-        Some(v) if v > EXTENSION => {
-            Err(storage("store schema is newer than this version of Zerus"))
-        }
+        // The same refusal as a newer core schema's.
+        Some(v) if v > EXTENSION => Err(Problem::new(
+            code::INVALID_STATE,
+            "store schema is newer than this version of Zerus",
+        )),
         v => Ok(v == Some(EXTENSION)),
     }
 }
