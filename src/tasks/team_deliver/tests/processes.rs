@@ -121,6 +121,19 @@ fn entry() {
             "tmux_tmpdir": dir.as_ref().map(|d| d.display().to_string()),
             "exists": dir.as_ref().is_some_and(|d| d.is_dir()),
         }))
+    } else if mode == "cli" {
+        // The real `hgs ARGS`. Main exits with an error's code and writes its
+        // message as one `hgs: ` line on stderr; its stdout is what is printed
+        // between the markers.
+        let args: Vec<String> =
+            serde_json::from_str(&std::env::var("HGS_TEAM_DELIVER_ARGS").unwrap()).unwrap();
+        println!("<<<hgs");
+        let result = crate::cli::dispatch_at(args, Instant::now());
+        println!("hgs>>>");
+        Ok(match result {
+            Ok(exit) => json!({ "exit": exit }),
+            Err(error) => json!({ "exit": error.code, "error": error.message }),
+        })
     } else {
         let args: Vec<String> =
             serde_json::from_str(&std::env::var("HGS_TEAM_DELIVER_ARGS").unwrap()).unwrap();
@@ -378,7 +391,26 @@ impl Fixture {
             .unwrap();
         (child, reply)
     }
-    fn finish(&self, mut child: Child, reply: PathBuf) -> Value {
+    fn finish(&self, child: Child, reply: PathBuf) -> Value {
+        let result = self.wait(child);
+        let mut reply: Value = serde_json::from_slice(&std::fs::read(reply).unwrap()).unwrap();
+        if let Some(exit) = reply["reply"]["exit"].as_i64() {
+            let mut values: Vec<Value> = String::from_utf8_lossy(&result.stdout)
+                .lines()
+                .filter_map(|line| serde_json::from_str(line).ok())
+                .collect();
+            assert_eq!(
+                values.len(),
+                1,
+                "{}",
+                String::from_utf8_lossy(&result.stdout)
+            );
+            reply["exit"] = json!(exit);
+            reply["reply"] = values.pop().unwrap();
+        }
+        reply
+    }
+    fn wait(&self, mut child: Child) -> std::process::Output {
         let until = Instant::now() + Duration::from_secs(18);
         while child.try_wait().unwrap().is_none() {
             if Instant::now() >= until {
@@ -399,22 +431,27 @@ impl Fixture {
             String::from_utf8_lossy(&result.stdout),
             String::from_utf8_lossy(&result.stderr)
         );
-        let mut reply: Value = serde_json::from_slice(&std::fs::read(reply).unwrap()).unwrap();
-        if let Some(exit) = reply["reply"]["exit"].as_i64() {
-            let mut values: Vec<Value> = String::from_utf8_lossy(&result.stdout)
-                .lines()
-                .filter_map(|line| serde_json::from_str(line).ok())
-                .collect();
-            assert_eq!(
-                values.len(),
-                1,
-                "{}",
-                String::from_utf8_lossy(&result.stdout)
-            );
-            reply["exit"] = json!(exit);
-            reply["reply"] = values.pop().unwrap();
-        }
-        reply
+        result
+    }
+    /// The real `hgs ARGS` with `input` on stdin, in this fixture's private
+    /// child: its exit status, its stdout, and its error, which main writes as
+    /// one `hgs: ` line on stderr.
+    fn cli(&self, args: &[String], input: &str) -> (i32, String, Option<String>) {
+        let (child, path) = self.spawn("cli", args, input, false);
+        let result = self.wait(child);
+        let reply: Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+        let text = String::from_utf8_lossy(&result.stdout);
+        let stdout = text
+            .split_once("<<<hgs\n")
+            .and_then(|(_, rest)| rest.split_once("hgs>>>"))
+            .map(|(stdout, _)| stdout.to_owned())
+            .unwrap_or_else(|| panic!("{text}"));
+        let exit = i32::try_from(reply["reply"]["exit"].as_i64().unwrap()).unwrap();
+        (
+            exit,
+            stdout,
+            reply["reply"]["error"].as_str().map(str::to_owned),
+        )
     }
     fn args(&self, recover: bool) -> Vec<String> {
         let mut args = vec![
@@ -1024,3 +1061,147 @@ mod cancel_tests;
 mod return_text_tests;
 
 mod attempt_tests;
+
+/// What keeps a hand-out from its reservation in [`blocked_handout`].
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum Blocked {
+    /// The person archived the member's stopped session with the real
+    /// `hgs archive`.
+    ArchivedMember,
+    /// Another connection holds a write transaction on the team store for the
+    /// whole command, as a busy writer does.
+    BusyTeamStore,
+    /// This computer's session bindings cannot be read: one of their
+    /// directories cannot be listed (mode 000), as any failed read before the
+    /// admission.
+    UnlistableBindings,
+}
+
+/// One hand-out that cannot reach its reservation, as the service sees it
+/// (zerus-63rru.58).
+#[derive(Debug)]
+pub(crate) struct RealHandout {
+    /// The real `hgs task team-deliver`: its exit status and stdout, and the
+    /// error main writes on stderr.
+    pub exit: i32,
+    pub stdout: String,
+    pub error: Option<String>,
+    /// What the command left behind: whether the task document changed, an
+    /// attempt exists for the ID, the team store changed, and an input
+    /// receipt exists for the ID.
+    pub task_changed: bool,
+    pub reserved: bool,
+    pub team_changed: bool,
+    pub offered: bool,
+    /// The outcome the caller's reader made of them, recorded as the service
+    /// records a hand-out's outcome; none for a non-start, which records none.
+    pub outcome: Option<ops::HandoutOutcome>,
+    /// The effect's state and the team's inbox items afterwards.
+    pub effect: String,
+    pub inbox: Vec<String>,
+}
+
+/// The real task command's answer for a hand-out that `blocked` keeps from
+/// its reservation, in the process harness's private store. The real
+/// `hgs task team-deliver` runs in a private child; nothing may be reserved,
+/// written or offered. `read` is the actor's reading of the child's exit and
+/// stdout: an outcome to record, or none.
+pub(crate) fn blocked_handout(
+    blocked: Blocked,
+    read: impl FnOnce(i32, &[u8], &str) -> Option<ops::HandoutOutcome>,
+) -> RealHandout {
+    use sha2::{Digest, Sha256};
+    let mut f = Fixture::new();
+    let name = "codex/deliver-m1";
+    let id = f.body.id.clone();
+    // A first admission writes the task's execution floor before it reserves
+    // (`fence::floor_within`); write it first, with the task's own `floor()`,
+    // so that any change to the task below is this command's.
+    {
+        let store = crate::tasks::store(&f.config, &f.task.project).unwrap();
+        let mut doc = store.load(&f.task.uuid).unwrap();
+        assert!(doc.floor().unwrap());
+        store.save(&mut doc).unwrap();
+    }
+    let before = f.document().revision();
+    let team = f.h.store.team(TEAM).unwrap().unwrap().revision;
+    let mut closed = None;
+    let held = match blocked {
+        Blocked::ArchivedMember => {
+            let (exit, stdout, error) = f.cli(&["archive".into(), name.into()], "");
+            assert_eq!((exit, error), (0, None), "{stdout}");
+            let record = format!("{:x}.json", Sha256::digest(name.as_bytes()));
+            assert!(
+                !f.sessions().contains_key(&record),
+                "the record is archived"
+            );
+            None
+        }
+        Blocked::BusyTeamStore => {
+            let db =
+                rusqlite::Connection::open(f.config.state.join("teams/teams-v1.sqlite3")).unwrap();
+            db.execute_batch("BEGIN IMMEDIATE").unwrap();
+            Some(db)
+        }
+        Blocked::UnlistableBindings => {
+            use std::os::unix::fs::PermissionsExt;
+            let bindings = f.config.state.join("bindings");
+            std::fs::create_dir_all(&bindings).unwrap();
+            std::fs::set_permissions(&bindings, std::fs::Permissions::from_mode(0o000)).unwrap();
+            closed = Some(bindings);
+            None
+        }
+    };
+    let mut args = vec!["task".to_owned(), "team-deliver".to_owned()];
+    args.extend(f.args(false));
+    let (exit, stdout, error) = f.cli(&args, &serde_json::to_string(&f.body).unwrap());
+    drop(held);
+    if let Some(path) = closed {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    let task_changed = f.document().revision() != before;
+    let reserved = f.document().attempt(&id).unwrap().is_some();
+    let team_changed = f.h.store.team(TEAM).unwrap().unwrap().revision != team;
+    let offered = f
+        .config
+        .state
+        .join("input_receipts")
+        .join(format!("{id}.json"))
+        .exists();
+    let outcome = read(exit, stdout.as_bytes(), &id);
+    if let Some(outcome) = &outcome {
+        f.h.outcome(&id, outcome.clone());
+    }
+    let effect =
+        f.h.store
+            .db
+            .as_ref()
+            .unwrap()
+            .query_row(
+                "SELECT state FROM effects WHERE team=?1 AND request_id=?2",
+                params![TEAM, id],
+                |r| r.get(0),
+            )
+            .unwrap();
+    let inbox =
+        f.h.store
+            .inbox(TEAM, 200, None)
+            .unwrap()
+            .rows
+            .into_iter()
+            .map(|item| item.kind)
+            .collect();
+    RealHandout {
+        exit,
+        stdout,
+        error,
+        task_changed,
+        reserved,
+        team_changed,
+        offered,
+        outcome,
+        effect,
+        inbox,
+    }
+}

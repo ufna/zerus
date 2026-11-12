@@ -352,3 +352,88 @@ fn project_limit_refusals_keep_the_task_commands_stable_reason_unchanged() {
         }
     }
 }
+
+/// zerus-63rru.58: the real task command's answer for a hand-out kept from
+/// its reservation, read by the actor's own reader. Returns what the command
+/// did and what the actor read: its delivery result, and what it records.
+fn blocked(
+    blocked: crate::tasks::Blocked,
+) -> (
+    crate::tasks::RealHandout,
+    super::super::ports::DeliveryResult,
+) {
+    use crate::desktop::teams::child::Ended;
+    let mut read = None;
+    let seen = crate::tasks::blocked_handout(blocked, |code, output, id| {
+        let ended = Ended::Exited {
+            code,
+            output: output.to_vec(),
+        };
+        let result = delivery_result(ended, id);
+        read = Some(result.clone());
+        match result {
+            super::super::ports::DeliveryResult::Outcome(outcome) => Some(outcome),
+            _ => None,
+        }
+    });
+    eprintln!("the real command and what the actor records: {seen:?}, read as {read:?}");
+    assert!(
+        !seen.task_changed && !seen.reserved && !seen.team_changed && !seen.offered,
+        "nothing written, reserved or offered: {seen:?}"
+    );
+    (seen, read.expect("the actor read the command"))
+}
+
+/// When the person archived a member's stopped session, a hand-out to it is
+/// refused before any reservation: the task command resolves the member's
+/// binding by its exact identity and finds none. The actor records that
+/// refusal: never uncertain, no decision for anyone.
+#[test]
+fn a_hand_out_whose_member_session_is_gone_is_refused_with_its_reason() {
+    let (seen, _) = blocked(crate::tasks::Blocked::ArchivedMember);
+    assert_eq!((seen.exit, &seen.error), (0, &None), "{seen:?}");
+    assert!(seen.stdout.contains(r#""state":"refused""#), "{seen:?}");
+    assert_eq!(
+        seen.outcome,
+        Some(HandoutOutcome::Refused {
+            reason: "Bound session identity is unavailable.".into()
+        })
+    );
+    assert_eq!(seen.effect, "refused", "{seen:?}");
+    assert!(seen.inbox.is_empty(), "{seen:?}");
+}
+
+/// A team store that another writer holds keeps a hand-out from beginning its
+/// reservation. Nothing was reserved or sent and the cause passes: the
+/// command answers a non-start, which the actor retries; the effect stays
+/// reserved and no one is asked to decide.
+#[test]
+fn a_busy_team_store_before_the_reservation_is_a_non_start_the_actor_retries() {
+    let (seen, read) = blocked(crate::tasks::Blocked::BusyTeamStore);
+    assert_eq!((seen.exit, &seen.error), (0, &None), "{seen:?}");
+    assert!(seen.stdout.contains(r#""state":"not_started""#), "{seen:?}");
+    assert!(
+        matches!(&read, super::super::ports::DeliveryResult::NotStarted { reason } if reason.contains("locked")),
+        "{read:?}"
+    );
+    assert_eq!(seen.outcome, None, "{seen:?}");
+    assert_eq!(seen.effect, "reserved", "{seen:?}");
+    assert!(seen.inbox.is_empty(), "{seen:?}");
+}
+
+/// A read that fails before the admission sends nothing either: here this
+/// computer's session bindings, one of whose directories cannot be listed.
+/// The command answers a non-start, which the actor retries.
+#[test]
+fn a_failed_read_before_the_admission_is_a_non_start_the_actor_retries() {
+    let (seen, read) = blocked(crate::tasks::Blocked::UnlistableBindings);
+    assert_eq!((seen.exit, &seen.error), (0, &None), "{seen:?}");
+    assert!(seen.stdout.contains(r#""state":"not_started""#), "{seen:?}");
+    assert!(
+        matches!(&read, super::super::ports::DeliveryResult::NotStarted { reason } if reason.contains("denied")),
+        "{read:?}"
+    );
+    assert_eq!(seen.outcome, None, "{seen:?}");
+    assert_eq!(seen.effect, "reserved", "{seen:?}");
+    assert!(seen.inbox.is_empty(), "{seen:?}");
+}

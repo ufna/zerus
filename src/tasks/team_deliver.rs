@@ -53,8 +53,21 @@ impl Input {
 const RULE: i32 = 2;
 const CUTTING_OVER: i32 = 3;
 const STALE: i32 = 4;
+const NOT_STARTED: i32 = 5;
 fn rule(message: impl std::fmt::Display) -> Error {
     Error::new(RULE, message.to_string())
+}
+/// A failure after this command saw, under the task admission, that no
+/// attempt exists for its ID, and before its reservation: nothing was
+/// reserved or sent. A rule's refusal, a stale observation or a cutover keeps
+/// its own answer; any other failure (a busy store, a failed read) is a
+/// non-start the caller may retry (zerus-63rru.58).
+fn not_started(error: Error) -> Error {
+    if matches!(error.code, RULE | STALE | CUTTING_OVER | NOT_STARTED) {
+        error
+    } else {
+        Error::new(NOT_STARTED, error.message)
+    }
 }
 fn cutting_over() -> Error {
     Error::new(CUTTING_OVER, BUSY)
@@ -314,10 +327,17 @@ fn request(
             "Task execution is conflicting; the person must settle it.",
         ));
     }
+    // A member session's refusal of the prepared input is a rule here, in its
+    // base request as in the final one below (zerus-63rru.58).
+    let refused = |message: String| rule(message);
     let base = if handover {
-        attempts::render(settings, starts, task, name, &to, true, &who, &body.id)?
+        attempts::render(
+            settings, starts, task, name, &to, true, &who, &body.id, refused,
+        )?
     } else if permit.kind == "handout" {
-        attempts::render(settings, starts, task, name, &to, false, &who, &body.id)?
+        attempts::render(
+            settings, starts, task, name, &to, false, &who, &body.id, refused,
+        )?
     } else {
         let dispatch = view
             .execution_id()
@@ -349,6 +369,7 @@ fn request(
             &to,
             &dispatch,
             Some(&notice),
+            refused,
         )?
     };
     let earlier = view
@@ -403,8 +424,11 @@ fn request(
     } else {
         String::new()
     };
+    // The member's session refuses this input as prepared: its identity, or
+    // the run or conversation the task was dispatched to, changed. A rule
+    // says no; nothing was reserved (zerus-63rru.58).
     let frozen =
-        crate::state::prepare_task_reply(&to, &dispatch, &body.id, &text, files).map_err(fail)?;
+        crate::state::prepare_task_reply(&to, &dispatch, &body.id, &text, files).map_err(rule)?;
     if frozen["expected_run_id"] != base["expected_run_id"]
         || frozen["expected_conversation_id"] != base["expected_conversation_id"]
     {
@@ -492,6 +516,9 @@ fn execute(config: &Config, args: &[String], delivery: &dyn Delivery) -> Result<
         Ok(reply) => Ok(reply),
         Err(error) if error.code == RULE => Ok(body.reply("refused", &error.message, None)),
         Err(error) if error.code == STALE => Ok(body.reply("stale", &error.message, None)),
+        Err(error) if error.code == NOT_STARTED => {
+            Ok(body.reply("not_started", &error.message, None))
+        }
         Err(error) => Err(error),
     }
 }
@@ -663,44 +690,53 @@ fn run(
             None,
         ));
     }
-    let state: String = teams_store
-        .db
-        .as_ref()
-        .unwrap()
-        .query_row(
-            "SELECT state FROM effects WHERE team=?1 AND request_id=?2",
-            params![body.team, body.id],
-            |r| r.get(0),
-        )
-        .map_err(fail)?;
-    if !matches!(
-        state.as_str(),
-        "reserved" | "uncertain" | "submitted" | "cutting_over"
-    ) {
-        return Err(rule("Effect is closed or belongs to another generation."));
-    }
-    if state != "reserved" {
+    // From here to the reservation nothing is reserved or sent: every failure
+    // is a refusal or a non-start, never unknown (zerus-63rru.58).
+    let prepared = (|| -> Result<Option<_>> {
+        let state: String = teams_store
+            .db
+            .as_ref()
+            .unwrap()
+            .query_row(
+                "SELECT state FROM effects WHERE team=?1 AND request_id=?2",
+                params![body.team, body.id],
+                |r| r.get(0),
+            )
+            .map_err(fail)?;
+        if !matches!(
+            state.as_str(),
+            "reserved" | "uncertain" | "submitted" | "cutting_over"
+        ) {
+            return Err(rule("Effect is closed or belongs to another generation."));
+        }
+        if state != "reserved" {
+            return Ok(None);
+        }
+        let permit = permit(&teams_store, body, &here)?;
+        marker(&task, &body.team, &here)?;
+        let machines = machines_for(config, here.clone())?;
+        let settings = tasks.project().map_err(fail)?.settings();
+        let (frozen, to, who) = request(
+            &settings,
+            0,
+            &task,
+            &r.project.1,
+            body,
+            &permit,
+            &machines,
+            &teams_store,
+        )?;
+        let bound = task.view().map_err(fail)?;
+        Ok(Some((permit, machines, frozen, to, who, bound)))
+    })()
+    .map_err(not_started)?;
+    let Some((permit, machines, frozen, to, who, bound)) = prepared else {
         return Ok(body.reply(
             "uncertain",
             "Effect already has an outcome; no delivery was repeated.",
             None,
         ));
-    }
-    let permit = permit(&teams_store, body, &here)?;
-    marker(&task, &body.team, &here)?;
-    let machines = machines_for(config, here.clone())?;
-    let settings = tasks.project().map_err(fail)?.settings();
-    let (frozen, to, who) = request(
-        &settings,
-        0,
-        &task,
-        &r.project.1,
-        body,
-        &permit,
-        &machines,
-        &teams_store,
-    )?;
-    let bound = task.view().map_err(fail)?;
+    };
     drop(tasks);
     drop(teams_store);
     delivery.before_reserve();
@@ -731,7 +767,9 @@ fn run(
                     .as_ref()
                     .ok_or_else(|| fail("Team store disappeared."))?
                     .execute_batch("BEGIN IMMEDIATE")
-                    .map_err(fail)?;
+                    .map_err(|e| {
+                        fail(format!("The team store is busy; nothing was sent ({e})."))
+                    })?;
                 let fresh = permit_for_reservation(&store, body, &here, &permit, &bound, task)?;
                 #[cfg(test)]
                 locked_test_pause(config, "deliver");
@@ -763,8 +801,10 @@ fn run(
                     Ok(Ok(()))
                 }
                 Err(error) => {
+                    // Nothing was saved: a failure before the reservation is a
+                    // refusal or a non-start (zerus-63rru.58).
                     if error.code != RULE {
-                        *fatal.borrow_mut() = Some(error);
+                        *fatal.borrow_mut() = Some(not_started(error));
                         return Ok(Err(Closed {
                             node: None,
                             reason: "read_failed",
@@ -918,6 +958,8 @@ fn delivered(body: &Input, result: attempts::Delivered) -> Value {
 
 #[cfg(test)]
 mod tests;
+#[cfg(all(test, unix))]
+pub(crate) use tests::processes::{blocked_handout, Blocked, RealHandout};
 
 #[cfg(test)]
 fn locked_test_pause(config: &Config, phase: &str) {
