@@ -56,14 +56,30 @@ fn competing(node: u32) -> Vec<Operation> {
         Operation::Release { node },
     ]
 }
+/// An acceptance and a cancel block every competing decision and a release.
+/// A Return or Reassign that has not started blocks an acceptance and a
+/// release; a new Return, Reassign or Cancel replaces it (tests/replace.rs).
 #[test]
-fn each_pending_decision_blocks_all_competing_decisions_and_release() {
-    for first in competing(1).into_iter().take(4) {
+fn each_pending_decision_blocks_competing_decisions_it_cannot_be_replaced_by() {
+    let ops = competing(1);
+    for first in [ops[0].clone(), ops[3].clone()] {
         let mut h = Harness::new();
         let (_, lead) = h.reported();
         h.run(&lead, first).unwrap();
         for next in competing(1) {
             refused(h.run(&lead, next), code::INVALID_STATE);
+        }
+    }
+    for first in [ops[1].clone(), ops[2].clone()] {
+        for (index, next) in competing(1).into_iter().enumerate() {
+            let mut h = Harness::new();
+            let (_, lead) = h.reported();
+            h.run(&lead, first.clone()).unwrap();
+            if (1..=3).contains(&index) {
+                h.run(&lead, next).unwrap();
+            } else {
+                refused(h.run(&lead, next), code::INVALID_STATE);
+            }
         }
     }
 }
