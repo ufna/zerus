@@ -69,6 +69,8 @@
 //! index entries at 4 KiB. No process environment is changed.
 mod ancestry;
 mod context;
+#[cfg(test)]
+mod test_sources;
 use ancestry::ancestors;
 
 use crate::config::Config;
@@ -87,6 +89,8 @@ pub(crate) enum Caller {
 }
 
 pub(crate) fn caller(config: &Config) -> Caller {
+    #[cfg(test)]
+    test_sources::called();
     if let Err(problem) = context::available() {
         return Caller::Refused(problem);
     }
