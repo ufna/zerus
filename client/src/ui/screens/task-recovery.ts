@@ -41,6 +41,13 @@ export const STORAGE_FAILED = "storage_failed";
  * a storage failure or no answer at all may have queued the task. */
 export const queueRefused = (notice: Pick<NotQueued, "code">) => !!notice.code && notice.code !== STORAGE_FAILED;
 
+/** A reply's sentence for a person: the store's own words, without the code
+ * the command line puts before them (`code: sentence`). The words are not
+ * changed; only the code, which a person does not read, is left out. */
+export function teamSentence(reason: string): string {
+  return reason.trim().replace(/^[a-z][a-z0-9_]*: /u, "");
+}
+
 /** A task's title in a notification: at most this many characters. */
 export const TITLE_CHARS = 60;
 
@@ -96,13 +103,16 @@ export function createRecovery(read: (key: string) => Promise<Task> = readSelect
       setSending(true); setRefusal("");
       const title = boundedTitle(task.title || task.ref || shown.task);
       const outcome = await send(shown.project, { uuid: shown.task }, shown.team, shown.name, { read: task, quiet: true });
+      // The notice reads once: the queue's reason, then the team's sentence
+      // only when it says something else.
+      const sentence = teamSentence(outcome.reason ?? "");
       if (current(shown.key)) {
         if (outcome.sent) setNotice(null);
-        else setRefusal(outcome.reason ?? "");
+        else setRefusal(sentence === shown.reason.trim() ? "" : sentence);
         setSending(false);
       }
       if (outcome.sent) notify("info", tr("“%1” was sent to %2.", title, shown.name));
-      else notify("error", tr("Result of sending “%1” to %2: %3", title, shown.name, outcome.reason ?? ""));
+      else notify("error", tr("Result of sending “%1” to %2: %3", title, shown.name, sentence));
       return outcome;
     },
   };

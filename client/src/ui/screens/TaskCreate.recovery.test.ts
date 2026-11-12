@@ -204,7 +204,7 @@ it("a stale refusal shows one notification naming task A with its reason, and B'
   const host = setup();
   const shown = toasts();
   const before = await staleSend(host, (_finish, refuse) => refuse("invalid_state: The team is stopped."));
-  expect(shown()).toEqual(["Result of sending “First task” to Fixes: invalid_state: The team is stopped."]);
+  expect(shown()).toEqual(["Result of sending “First task” to Fixes: The team is stopped."]);
   expect(shown().join(" ")).not.toContain("Second");
   expect(host.querySelector("[data-not-queued]")!.textContent).toBe(before);
   expect(host.querySelector("[data-recovery-refusal]")).toBeNull();
@@ -245,9 +245,23 @@ it("a visible current rejection keeps its reason on the notice, Send available, 
   f.reads[0].resolve(row(FIRST)); await settle();
   f.board.mockRejectedValueOnce("invalid_state: The team is stopped.");
   button(host, "Send to team")!.click(); await settle();
-  expect(host.querySelector("[data-recovery-refusal]")?.textContent).toBe("invalid_state: The team is stopped.");
+  expect(host.querySelector("[data-recovery-refusal]")?.textContent, "the team's sentence, without its code").toBe("The team is stopped.");
   expect(button(host, "Send to team")!.disabled).toBe(false);
-  expect(shown()).toEqual(["Result of sending “First task” to Fixes: invalid_state: The team is stopped."]);
+  expect(shown()).toEqual(["Result of sending “First task” to Fixes: The team is stopped."]);
+});
+
+it("a rejected Send reads once: the queue's reason, the team's sentence only when it says something else, never a code", async () => {
+  const host = setup();
+  const shown = toasts();
+  await createNotQueued(host, FIRST, "The team is stopped.");
+  f.reads[0].resolve(row(FIRST)); await settle();
+  f.board.mockRejectedValueOnce("invalid_state: The team is stopped.");
+  button(host, "Send to team")!.click(); await settle();
+  const notice = host.querySelector("[data-not-queued]")!.textContent!;
+  expect(notice.split("The team is stopped.").length - 1, "the same sentence is not read twice").toBe(1);
+  expect(notice).not.toContain("invalid_state");
+  expect(host.querySelector("[data-recovery-refusal]")).toBeNull();
+  expect(shown()).toEqual(["Result of sending “First task” to Fixes: The team is stopped."]);
 });
 
 /** Starts Send on a not-queued notice whose task was read; the native write waits. */
