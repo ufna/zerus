@@ -137,3 +137,81 @@ fn terminal_frontiers_survive_pending_work_and_are_reclaimed_after_it_settles() 
         .unwrap()
         .is_none());
 }
+
+fn settle_terminal_keys(h: &mut Harness) {
+    use crate::teams::ops::{CancelState, KeyClearState, Operation};
+    h.run(&person(), Operation::Stop).unwrap();
+    for c in h.store.pending_cancels(TEAM, 16, 0).unwrap() {
+        h.run(
+            &service(),
+            Operation::RecordCancel {
+                node: c.node,
+                decision: c.decision,
+                state: CancelState::Refused,
+                reason: "The task command refused".into(),
+                attempt: c.attempt,
+                attempt_id: c.attempt_id,
+            },
+        )
+        .unwrap();
+        h.run(
+            &service(),
+            Operation::RecordKeyClear {
+                node: c.node,
+                state: KeyClearState::Cleared,
+                reason: String::new(),
+            },
+        )
+        .unwrap();
+    }
+    h.run(&person(), Operation::Archive).unwrap();
+}
+#[test]
+fn recorded_terminal_effects_allow_metadata_pruning_but_unrecorded_outcomes_still_protect_it() {
+    use crate::teams::ops::HandoutOutcome;
+    for mode in ["submitted", "uncertain", "later reserved"] {
+        let mut h = Harness::new();
+        h.bind("m1");
+        h.bind("m2");
+        let node = h.add(&person(), 1);
+        let id = h.intent(node, "m1");
+        h.outcome(
+            &id,
+            if mode == "uncertain" {
+                HandoutOutcome::Uncertain {
+                    reason: "The delivery was uncertain".into(),
+                }
+            } else {
+                HandoutOutcome::Submitted {
+                    receipt: "submitted".into(),
+                }
+            },
+        );
+        if mode == "later reserved" {
+            let other = h.add(&person(), 2);
+            h.intent(other, "m2");
+        }
+        settle_terminal_keys(&mut h);
+        let first = h.store.open_effects(TEAM, 1, None).unwrap().rows.remove(0);
+        assert!(first.outcome.is_some());
+        let machine = h.store.team(TEAM).unwrap().unwrap().home;
+        let mut a = super::super::Runtime::open(h.temp.path(), &machine).unwrap();
+        for key in [
+            "cancel_cursor",
+            "cancel_recovery_cursor",
+            "journal",
+            "metadata_cursor",
+        ] {
+            a.ledger.reserve(TEAM, key, json!({})).unwrap();
+        }
+        for _ in 0..8 {
+            a.maintain(&h.store).unwrap();
+        }
+        let left = a.ledger.page(TEAM, "").unwrap();
+        assert_eq!(left.is_empty(), mode != "later reserved", "{mode}");
+        assert_eq!(
+            h.store.open_effects(TEAM, 16, None).unwrap().rows.len(),
+            if mode == "later reserved" { 2 } else { 1 }
+        );
+    }
+}

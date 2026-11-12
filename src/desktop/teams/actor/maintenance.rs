@@ -123,7 +123,10 @@ impl Runtime {
         if team.status != TeamStatus::Finished
             && (!store.pending_cancels(&id, 1, 0)?.is_empty()
                 || !store.keyed_tasks(&id, 0, 1)?.is_empty()
-                || !store.open_effects(&id, 1, None)?.rows.is_empty())
+                || self
+                    .open_effects(store, &id)?
+                    .iter()
+                    .any(|e| e.outcome.is_none()))
         {
             // Keep work frontiers while terminal work is pending. Pruning
             // their cursors here could strand rows behind a blocked page.
