@@ -180,14 +180,21 @@ impl Tree {
     }
 
     /// Records `pid` and `birth` as this computer's running DeepSeek host,
-    /// in the host folder `folder`, as `dsh/host_identity.rs` writes it.
+    /// in the host folder `folder`, as `dsh/host_identity.rs` writes it, with
+    /// this boot's identity.
     fn host(&self, folder: &str, pid: u32, birth: &str) {
+        let record = json!({"state":"running","version":2,"pid":pid,"birth":birth,
+            "pid_file":[1,2,3,4],"boot":crate::state::session_graph::caller_boot()});
+        self.identity(folder, &record);
+        let dir = self.state.join("dsh/hosts").join(folder);
+        std::fs::write(dir.join("host.pid"), pid.to_string()).unwrap();
+    }
+
+    /// Writes a host folder's identity record as given.
+    fn identity(&self, folder: &str, record: &Value) {
         let dir = self.state.join("dsh/hosts").join(folder);
         std::fs::create_dir_all(&dir).unwrap();
-        let record = json!({"state":"running","version":2,"pid":pid,"birth":birth,
-            "pid_file":[1,2,3,4],"boot":"00000000-0000-4000-8000-0000000000b0"});
         std::fs::write(dir.join("host.identity.json"), record.to_string()).unwrap();
-        std::fs::write(dir.join("host.pid"), pid.to_string()).unwrap();
     }
 
     /// OpenCode's own service file, registering `pid`, as OpenCode writes it.
@@ -578,7 +585,8 @@ fn a_host_id_without_a_birth_or_a_corrupt_record_refuses() {
 }
 
 /// At most 64 host folders are read, two small files each (the identity
-/// record and `host.pid`); a 65th folder refuses before any file is read.
+/// record and `host.pid`); stray files beside them are not counted. A 65th
+/// folder refuses before any file is read, with a sentence that names it.
 #[test]
 fn recorded_host_folders_are_read_within_their_bound() {
     for (folders, refused) in [(64, false), (65, true)] {
@@ -586,9 +594,16 @@ fn recorded_host_folders_are_read_within_their_bound() {
         for n in 0..folders {
             tree.host(&format!("{n:016x}"), 1 << 30, "1");
         }
+        for stray in [".DS_Store", "notes.txt", "host.pid"] {
+            std::fs::write(tree.state.join("dsh/hosts").join(stray), b"x").unwrap();
+        }
         let text = tree.answer();
         if refused {
             assert!(text.contains("PROBE refused:invalid_state"), "{text}");
+            assert!(
+                text.contains("more DeepSeek agent host folders than the check reads"),
+                "{text}"
+            );
             assert_eq!(host_reads(&text), 0, "{text}");
         } else {
             person(&text);
@@ -596,6 +611,158 @@ fn recorded_host_folders_are_read_within_their_bound() {
         }
         println!("HOST_FOLDERS {folders} HOST_READS {}", host_reads(&text));
     }
+}
+
+/// A state folder, or its `dsh` or `hosts` folder, that does not exist records
+/// no host. One that exists but cannot be read as a folder refuses.
+#[test]
+fn a_missing_state_or_host_folder_records_no_host() {
+    let tree = Tree::start("person", None);
+    std::fs::remove_dir_all(&tree.state).unwrap();
+    person(&tree.answer());
+    let tree = Tree::start("person", None);
+    std::fs::create_dir(tree.state.join("dsh")).unwrap();
+    person(&tree.answer());
+    let tree = Tree::start("person", None);
+    std::fs::create_dir(tree.state.join("dsh")).unwrap();
+    std::fs::write(tree.state.join("dsh/hosts"), b"not a folder").unwrap();
+    let text = tree.answer();
+    assert!(text.contains("PROBE refused:invalid_state"), "{text}");
+    assert!(
+        text.contains("Cannot verify a recorded agent host"),
+        "{text}"
+    );
+}
+
+/// Only directories are host folders: a stray `.DS_Store` beside them is not
+/// one, alone or next to a recorded host above the command.
+#[test]
+fn a_stray_file_in_the_host_records_is_not_a_host_folder() {
+    let tree = Tree::start("person", None);
+    std::fs::create_dir_all(tree.state.join("dsh/hosts")).unwrap();
+    std::fs::write(tree.state.join("dsh/hosts/.DS_Store"), b"\0").unwrap();
+    person(&tree.answer());
+    let tree = Tree::start("person", None);
+    tree.host(HOST, tree.pid, &tree.birth);
+    std::fs::write(tree.state.join("dsh/hosts/.DS_Store"), b"\0").unwrap();
+    let text = tree.answer();
+    assert!(text.contains(INSIDE_HOST), "{text}");
+}
+
+/// A starting record names the previous host with its birth (refused inside
+/// it) and a PID file without one (refused as unverifiable).
+#[test]
+fn a_starting_record_names_its_previous_host_and_its_pid_file() {
+    let boot = crate::state::session_graph::caller_boot();
+    let tree = Tree::start("person", None);
+    tree.identity(HOST, &json!({"state":"starting","version":2,
+        "attempt":"11111111-1111-4111-8111-111111111111","boot":boot,
+        "launcher":{"pid":(1u32 << 30),"birth":"1"},"phase":"spawning","pid_file":null,
+        "previous":{"version":2,"pid":tree.pid,"birth":tree.birth,"pid_file":[1,2,3,4],"boot":boot}}));
+    let text = tree.answer();
+    assert!(text.contains(INSIDE_HOST), "{text}");
+    let tree = Tree::start("person", None);
+    tree.identity(
+        HOST,
+        &json!({"state":"starting","version":2,
+        "attempt":"11111111-1111-4111-8111-111111111111","boot":boot,
+        "launcher":{"pid":(1u32 << 30),"birth":"1"},"phase":"spawning",
+        "pid_file":[tree.pid,[1,2,3,4]],"previous":null}),
+    );
+    let text = tree.answer();
+    assert!(text.contains("PROBE refused:invalid_state"), "{text}");
+    assert!(
+        text.contains("Cannot verify a recorded agent host"),
+        "{text}"
+    );
+}
+
+/// A starting record's launcher is the `hgs` that started the attempt, not a
+/// host: a command below the launcher is not refused for it.
+#[test]
+fn a_starting_records_launcher_is_not_a_host() {
+    let tree = Tree::start("person", None);
+    tree.identity(
+        HOST,
+        &json!({"state":"starting","version":2,
+        "attempt":"11111111-1111-4111-8111-111111111111",
+        "boot":crate::state::session_graph::caller_boot(),
+        "launcher":{"pid":tree.pid,"birth":tree.birth},"phase":"spawning",
+        "pid_file":null,"previous":null}),
+    );
+    person(&tree.answer());
+}
+
+/// The stated limit: a host spawned by an attempt that ended unconfirmed,
+/// before its running record, is named by no record (its starting record
+/// names only the launcher), so a command below it passes as a person.
+#[test]
+fn a_host_from_an_unconfirmed_start_is_named_nowhere_the_stated_limit() {
+    let tree = Tree::start("person", None);
+    tree.identity(
+        HOST,
+        &json!({"state":"starting","version":2,
+        "attempt":"11111111-1111-4111-8111-111111111111",
+        "boot":crate::state::session_graph::caller_boot(),
+        "launcher":{"pid":(1u32 << 30),"birth":"1"},"phase":"spawning",
+        "pid_file":null,"previous":null}),
+    );
+    person(&tree.answer());
+}
+
+/// A record that carries another boot's identity names no process of this
+/// boot, running or starting; one without a boot identity still matches.
+#[test]
+fn a_host_record_from_another_boot_is_not_this_boots_host() {
+    let other = "22222222-2222-4222-8222-222222222222";
+    let tree = Tree::start("person", None);
+    tree.identity(
+        HOST,
+        &json!({"state":"running","version":2,"pid":tree.pid,
+        "birth":tree.birth,"pid_file":[1,2,3,4],"boot":other}),
+    );
+    std::fs::write(
+        tree.state.join("dsh/hosts").join(HOST).join("host.pid"),
+        tree.pid.to_string(),
+    )
+    .unwrap();
+    person(&tree.answer());
+    let tree = Tree::start("person", None);
+    tree.identity(HOST, &json!({"state":"starting","version":2,
+        "attempt":"11111111-1111-4111-8111-111111111111","boot":other,
+        "launcher":{"pid":(1u32 << 30),"birth":"1"},"phase":"spawning","pid_file":null,
+        "previous":{"version":2,"pid":tree.pid,"birth":tree.birth,"pid_file":[1,2,3,4],"boot":other}}));
+    person(&tree.answer());
+    let tree = Tree::start("person", None);
+    tree.identity(
+        HOST,
+        &json!({"state":"running","version":1,"pid":tree.pid,
+        "birth":tree.birth,"pid_file":[1,2,3,4]}),
+    );
+    assert!(tree.answer().contains(INSIDE_HOST));
+}
+
+/// A recorded host at the top of the user's tree, as on macOS where launchd
+/// adopts it. Here the top is whatever the fixture's chain ends at: the
+/// user's service manager on Linux, the adopted helper on macOS. Its record
+/// lives only in this test's private state.
+#[test]
+fn a_recorded_host_at_the_top_of_the_users_tree_is_refused() {
+    let tree = Tree::start("person", None);
+    let mut top = tree.pid;
+    while let Some(parent) = crate::platform::process_identity(top)
+        .map(|identity| identity.parent)
+        .filter(|parent| crate::platform::process_identity(*parent).is_some())
+    {
+        top = parent;
+    }
+    let birth = crate::platform::process_identity(top).unwrap().birth;
+    tree.host(HOST, top, &birth);
+    let text = tree.answer();
+    assert!(text.contains(&format!("ANCESTOR pid={top} ")), "{text}");
+    assert!(text.contains("top=true"), "{text}");
+    assert!(text.contains(INSIDE_HOST), "{text}");
+    println!("HOST_AT_TOP pid={top} {text}");
 }
 
 /// OpenCode's own service file registers its process with no birth. An

@@ -52,6 +52,18 @@ fn a_deepseek_host_matches_by_process_id_and_birth() {
     assert_eq!(hosted(&chain, &Hosts::default(), unread), Ok(false));
 }
 
+/// The top of the user's tree is an ancestor like any other: on macOS launchd
+/// adopts the host and it is the top.
+#[test]
+fn a_host_at_the_top_of_the_chain_matches() {
+    let mut top = row(11, Some("b11"));
+    top.top = true;
+    let chain = [row(10, Some("b10")), top];
+    assert_eq!(hosted(&chain, &deepseek(11, Some("b11")), unread), Ok(true));
+    let started = |_: u32| Some(("b11".to_owned(), 90.0));
+    assert_eq!(hosted(&chain, &opencode(11, 100.0), started), Ok(true));
+}
+
 /// The record's birth is the walk's own `process_identity` value, so the
 /// recorded host always matches; a different birth is a reused process ID.
 #[test]

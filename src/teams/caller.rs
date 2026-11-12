@@ -24,7 +24,12 @@
 //!
 //! This is not verified Person authority. A command whose ancestry does not
 //! pass through readable same-user processes to its agent is outside this
-//! rule: reparenting and credential-changing helpers can sever that chain.
+//! rule: reparenting and credential-changing helpers can sever that chain. A
+//! command that leaves its host's or agent's process tree (a double fork,
+//! setsid, a background job whose shell exits) is adopted by the user's
+//! service manager and passes as a person; with its own markers kept it is
+//! refused plainly. This is the reparenting limit and it holds for every agent
+//! kind.
 //! Agents started without session markers are also undetectable, and the walk
 //! refuses parent zero. A caller that replaces or instruments `hgs` itself or
 //! writes the team store directly is outside this interim proof. Other
@@ -46,13 +51,20 @@
 //! resident host. A DeepSeek host is this computer's own record, matched by
 //! process ID and birth like a recorded agent and never by a program name;
 //! at most 64 host folders are read, and on macOS, where launchd adopts the
-//! host as the top, no environment needs to be read. OpenCode registers its
+//! host as the top, no environment needs to be read. A host spawned by an
+//! attempt that ended unconfirmed, before its running record, is named
+//! nowhere and passes as a person: the stated limit. OpenCode registers its
 //! service only in its own file, read as untrusted data: the process it
 //! names counts when that ancestor is not younger than the file, so the file
-//! can only add a refusal, and an OpenCode service that runs without being
-//! registered there is not detected. A host record whose birth differs is not
-//! that host. A recorded ID without a birth, an unreadable or corrupt host
-//! record and more folders than the bound refuse. A marked caller whose
+//! can only add a refusal. The check does not see a service that is not
+//! registered there, a command it detaches, or an agent that changes its own
+//! environment or the service file: one that points its state directory
+//! elsewhere, or backdates, deletes or rewrites its own service file. OpenCode
+//! is not covered against an agent that means to pass as a person. A host
+//! record whose birth differs is not that host, and a record from another boot
+//! names no process of this one. A missing state folder records no host. A
+//! recorded ID without a birth, an unreadable or corrupt host record and more
+//! host folders than the bound refuse. A marked caller whose
 //! binding says a resident host serves its session is refused plainly: such a
 //! session cannot be a team lead or member in this milestone, and
 //! `host_served_agent` lets team creation and member launch refuse it too.
@@ -158,6 +170,13 @@ fn inside_agent() -> Problem {
 fn inside_host() -> Problem {
     Problem::new(code::NOT_ALLOWED,
         "This command runs inside an agent host's process tree; person-only operations need a caller outside it.")
+}
+
+/// The recorded host folders are kept per DeepSeek agent home and nothing
+/// removes them, so more than the bound is named as its own cause.
+fn too_many_hosts() -> Problem {
+    Problem::new(code::INVALID_STATE,
+        "This computer records more DeepSeek agent host folders than the check reads (64, one per agent home); this interim check cannot establish a person as caller.")
 }
 
 fn host_unreadable() -> Problem {
@@ -273,7 +292,10 @@ fn agent_above() -> Result<Option<Problem>, Problem> {
             }
         }
     }
-    let hosts = crate::state::session_graph::caller_hosts().map_err(|_| host_unreadable())?;
+    let hosts = crate::state::session_graph::caller_hosts().map_err(|unread| match unread {
+        crate::state::session_graph::Unread::TooMany => too_many_hosts(),
+        crate::state::session_graph::Unread::Unreadable => host_unreadable(),
+    })?;
     if hosted(&chain, &hosts, |pid| {
         crate::platform::process_identity(pid).map(|native| (native.birth, native.started))
     })? {

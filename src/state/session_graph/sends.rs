@@ -13,13 +13,19 @@ const MAX_RECEIPT: usize = 1024 * 1024;
 mod caller_binding;
 #[path = "caller_hosts.rs"]
 mod caller_hosts;
-pub(crate) use caller_hosts::Hosts;
+pub(crate) use caller_hosts::{Hosts, Unread};
 #[cfg(test)]
 pub(crate) use caller_hosts::{Named, Registered};
 
 /// The resident agent hosts this computer records, for the person path.
-pub(crate) fn caller_hosts() -> std::result::Result<Hosts, &'static str> {
+pub(crate) fn caller_hosts() -> std::result::Result<Hosts, Unread> {
     caller_hosts::hosts()
+}
+
+/// This boot's identity, as the tests' host records carry it.
+#[cfg(all(test, unix))]
+pub(crate) fn caller_boot() -> Option<String> {
+    caller_hosts::current_boot()
 }
 
 /// The backend of a session a resident host serves, when a marked claim
