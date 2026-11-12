@@ -113,6 +113,14 @@ fn entry() {
     }
     let result = if mode == "init" {
         crate::swarm::dispatch(&config, &["initialize".into()], false).map(|_| json!({}))
+    } else if mode == "tmux-env" {
+        // What a tmux started by this child would choose its server by.
+        let dir = std::env::var_os("TMUX_TMPDIR").map(PathBuf::from);
+        Ok(json!({
+            "tmux": std::env::var_os("TMUX").map(|v| v.to_string_lossy().into_owned()),
+            "tmux_tmpdir": dir.as_ref().map(|d| d.display().to_string()),
+            "exists": dir.as_ref().is_some_and(|d| d.is_dir()),
+        }))
     } else {
         let args: Vec<String> =
             serde_json::from_str(&std::env::var("HGS_TEAM_DELIVER_ARGS").unwrap()).unwrap();
@@ -320,6 +328,10 @@ impl Fixture {
             .config
             .state
             .join(format!("reply-{}.json", uuid::Uuid::new_v4()));
+        // The cleared environment would leave tmux on its default socket
+        // directory, the real server; every child gets this test's own.
+        let tmux = self.config.state.join("tmux");
+        std::fs::create_dir_all(&tmux).unwrap();
         let mut cmd = Command::new(std::env::current_exe().unwrap());
         cmd.args([
             "--exact",
@@ -328,6 +340,7 @@ impl Fixture {
         ])
         .env_clear()
         .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+        .env("TMUX_TMPDIR", &tmux)
         .env("HOME", &self.config.home)
         .env("HGS_CONFIG_DIR", &self.config.dir)
         .env("HGS_STATE_DIR", &self.config.state)
@@ -449,6 +462,26 @@ impl Fixture {
             .load(&self.task.uuid)
             .unwrap()
     }
+}
+
+/// Every child runs with this test's own existing tmux directory and no
+/// inherited server. The cleared environment alone would leave tmux on its
+/// default socket directory, which is the developer's real server.
+#[test]
+fn every_child_chooses_a_private_tmux_server() {
+    let f = Fixture::new();
+    let (child, reply) = f.spawn("tmux-env", &[], "", false);
+    let out = f.finish(child, reply);
+    let reply = &out["reply"];
+    assert!(reply["tmux"].is_null(), "{out}");
+    let dir = PathBuf::from(
+        reply["tmux_tmpdir"]
+            .as_str()
+            .unwrap_or_else(|| panic!("the child has no TMUX_TMPDIR: {out}")),
+    );
+    assert_eq!(dir, f.config.state.join("tmux"));
+    assert!(dir.starts_with(f.h.temp.path()), "{out}");
+    assert_eq!(reply["exists"], true, "{out}");
 }
 
 #[test]
