@@ -130,7 +130,7 @@ pub(crate) mod repositories;
 mod launch_observation;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub(crate) use launch_observation::{
-    observe_team_launch, observe_team_session, TeamObservation, TeamSession,
+    observe_team_launch, observe_team_session, TeamObservation, TeamRecord, TeamSession,
 };
 /// The maintained ownership reader; Teams supplies the exact generated path.
 #[cfg(any(target_os = "linux", target_os = "macos"))]

@@ -301,3 +301,182 @@ fn backfilled_from_the_ledger_child() {
 fn a_member_bound_before_handles_takes_its_handle_from_the_launch_ledger() {
     isolated(&format!("{CHILD}backfilled_from_the_ledger_child"));
 }
+
+/// An owned linked worktree for `member` on its own branch, with the
+/// ownership receipts the launcher's check reads.
+fn owned(
+    w: &World,
+    root: &std::path::Path,
+    empty: &std::path::Path,
+    member: &str,
+) -> (String, String) {
+    use super::production::git;
+    let base = root.parent().unwrap();
+    let wt = base.join(format!("worktree-{member}"));
+    let branch = format!("zerus/team/{member}");
+    git(
+        root,
+        empty,
+        &["worktree", "add", "-q", "-b", &branch, wt.to_str().unwrap()],
+    );
+    let metadata = std::path::PathBuf::from(git(&wt, empty, &["rev-parse", "--absolute-git-dir"]));
+    let common = root.join(".git");
+    let nonce = uuid::Uuid::new_v4().to_string();
+    let owner = json!({"version":1,"id":nonce,"common_dir":common,"path":wt,"metadata":metadata,"branch":branch,"head":"fixture"});
+    let receipt = crate::state::team_worktree_receipt_path(w.h.temp.path(), &common, &wt);
+    std::fs::create_dir_all(receipt.parent().unwrap()).unwrap();
+    std::fs::write(&receipt, owner.to_string()).unwrap();
+    std::fs::write(metadata.join("zerus-owner.json"), owner.to_string()).unwrap();
+    (wt.to_str().unwrap().to_owned(), branch)
+}
+
+/// The parent link reads the member and the lead through their handles: a
+/// lead whose first run ended has no evidence left and still links.
+#[test]
+#[ignore = "run by its isolated wrapper"]
+fn parent_after_the_leads_first_run_child() {
+    use super::production::git;
+    use crate::desktop::teams::ledger::{Ledger, Row, State};
+    use crate::desktop::teams::ports::{Placement, Plan};
+    let w = world(&["lead", "m1"]);
+    let base = crate::platform::canonical(w.h.temp.path()).unwrap();
+    let root = base.join("repo");
+    std::fs::create_dir(&root).unwrap();
+    let empty = base.join("empty-config");
+    std::fs::write(&empty, "").unwrap();
+    git(&root, &empty, &["init", "-q", "--initial-branch", "main"]);
+    git(&root, &empty, &["config", "user.name", "Teams Fixture"]);
+    git(
+        &root,
+        &empty,
+        &["config", "user.email", "fixture@example.test"],
+    );
+    git(&root, &empty, &["config", "commit.gpgsign", "false"]);
+    git(&root, &empty, &["commit", "--allow-empty", "-qm", "base"]);
+    let t = team(&w);
+    let mut plans = BTreeMap::new();
+    for id in ["lead", "m1"] {
+        let m = member(&w, id);
+        let (wt, branch) = owned(&w, &root, &empty, id);
+        // The session works in its owned worktree.
+        let sid = session_of(id);
+        let launch = launch_of(&w.h, id);
+        std::fs::remove_file(
+            w.h.temp
+                .path()
+                .join("launches")
+                .join(format!("{launch}.json")),
+        )
+        .unwrap();
+        let mut record = producer::launched_record(
+            &m.agent,
+            &name(id),
+            &launch,
+            &sid,
+            &run(id),
+            &wt,
+            &m.account,
+        );
+        producer::confirmed(&mut record, &format!("conversation-{id}"));
+        producer::save(&mut record).unwrap();
+        producer::launch_started(&launch, &name(id), &sid).unwrap();
+        // The launcher records the handle at binding.
+        let mut h_store = crate::teams::store::Store::open(w.h.temp.path()).unwrap();
+        let rev = h_store.team(TEAM).unwrap().unwrap().revision;
+        crate::teams::ops::apply(
+            &mut h_store,
+            &service(),
+            &crate::teams::ops::Request {
+                request_id: uuid::Uuid::new_v4().to_string(),
+                team: TEAM.into(),
+                expected_revision: rev,
+                operation: crate::teams::ops::Operation::SetMemberHandle {
+                    member: id.into(),
+                    session_id: sid.clone(),
+                    label_hint: name(id),
+                },
+            },
+            1,
+        )
+        .unwrap();
+        let plan = Plan {
+            id: uuid::Uuid::new_v4().to_string(),
+            team: TEAM.into(),
+            person: t.owner.clone(),
+            machine: t.home.clone(),
+            project: t.project.clone(),
+            member: id.into(),
+            role: m.role.clone(),
+            agent: m.agent.clone(),
+            account: m.account.clone(),
+            model: String::new(),
+            effort: String::new(),
+            base_commit: t.base_commit.clone(),
+            placement: Placement {
+                source: root.to_str().unwrap().into(),
+                git_dir: root.join(".git").to_str().unwrap().into(),
+                branch,
+                destination: wt,
+            },
+            parent: (id == "m1").then(|| member(&w, "lead").session.unwrap()),
+            launch_id: launch,
+        };
+        let mut row = Row::new(&t, id, "epoch", State::Done);
+        row.plan = Some(plan.clone());
+        assert!(Ledger::open(w.h.temp.path())
+            .unwrap()
+            .insert(&row, 1)
+            .unwrap());
+        plans.insert(id, plan);
+    }
+    // The lead's first run ends: its evidence goes.
+    let lead_launch = launch_of(&w.h, "lead");
+    producer::launch_finished(&lead_launch, &name("lead"), &run("lead"));
+    assert!(!evidence(&w, &lead_launch).exists());
+    let parent = |w: &World| {
+        use crate::desktop::teams::ports::{Effects, ObservedSession, Worktree};
+        let mut launcher = crate::desktop::teams::native::Native {
+            config: w.native.config.clone(),
+            machine: w.native.machine.clone(),
+            stop: w.native.stop.clone(),
+        };
+        // `parent` reads both sessions itself; the observation it is given
+        // at binding is not used.
+        let unused = ObservedSession {
+            machine: String::new(),
+            launch_id: String::new(),
+            agent: String::new(),
+            account: String::new(),
+            worktree: Worktree {
+                path: String::new(),
+                ownership_nonce: String::new(),
+            },
+            parent: None,
+            name: String::new(),
+            session_id: String::new(),
+            run_id: String::new(),
+            conversation_id: String::new(),
+        };
+        crate::desktop::teams::child::FIXTURE_EXIT.with(|s| {
+            *s.borrow_mut() = Some(
+                json!({"parent":{"session_id":"existing"}})
+                    .to_string()
+                    .into_bytes(),
+            )
+        });
+        let result = launcher.parent(&plans["m1"], &unused, "original");
+        crate::desktop::teams::child::FIXTURE_EXIT.with(|s| s.borrow_mut().take());
+        result
+    };
+    assert_eq!(parent(&w), "existing_link_kept");
+    // Without the lead's handle only the evidence remains, and it is gone.
+    rusqlite::Connection::open(w.h.temp.path().join("teams/teams-v1.sqlite3"))
+        .unwrap()
+        .execute("DELETE FROM member_handles WHERE member='lead'", [])
+        .unwrap();
+    assert_eq!(parent(&w), "identity_pending");
+}
+#[test]
+fn the_parent_link_reaches_a_lead_whose_first_run_ended() {
+    isolated(&format!("{CHILD}parent_after_the_leads_first_run_child"));
+}

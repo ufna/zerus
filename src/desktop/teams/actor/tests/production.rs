@@ -9,7 +9,7 @@ use std::{
     sync::{atomic::AtomicBool, Arc},
 };
 
-fn git(dir: &Path, empty: &Path, args: &[&str]) -> String {
+pub(super) fn git(dir: &Path, empty: &Path, args: &[&str]) -> String {
     let mut cmd = Command::new("git");
     for (k, _) in std::env::vars_os() {
         if k.to_string_lossy().starts_with("GIT_") {
