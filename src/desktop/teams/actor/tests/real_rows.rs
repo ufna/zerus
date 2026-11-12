@@ -147,7 +147,7 @@ fn read(
     let member = member(run);
     let mut team = crate::teams::ops::tests::fixture().team;
     team.home = MACHINE.into();
-    let free = super::super::availability::free(&native.config, EPOCH, &team.id, &member);
+    let free = super::super::availability::free(&native.config, EPOCH, &team.id, &member, false);
     let presence = super::super::auxiliary::presence(&native, &team, &member).map(|p| {
         json!({"live":p.live,"working":p.working,"background":p.background,"pending":p.pending,"idle":p.idle()})
     });
@@ -212,9 +212,9 @@ fn a_real_idle_row_is_read_by_availability_and_presence() {
 
 /// Production availability and delivery against producer-made fleet rows:
 /// the child's reply is the fixture exit, so the held admission still runs.
-struct Production {
-    native: super::super::native::Native,
-    deliveries: Vec<String>,
+pub(super) struct Production {
+    pub(super) native: super::super::native::Native,
+    pub(super) deliveries: Vec<String>,
 }
 impl super::super::ports::Ports for Production {
     fn changes(
