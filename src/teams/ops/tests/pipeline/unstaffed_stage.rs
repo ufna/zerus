@@ -160,3 +160,27 @@ fn a_stage_that_is_not_ready_or_still_staffed_is_never_retired() {
         assert_eq!(unstaffed_items(&h), 0, "{case}");
     }
 }
+
+/// A hold has an owner. While its stage runs the parent is held by the
+/// pipeline itself (`want_stage`), so a person's Hold is refused as already
+/// held; when the stage is retired and the run handed to the lead, that hold
+/// ends with it, as at the stage's creation.
+#[test]
+fn the_pipelines_hold_on_the_parent_ends_with_its_retired_stage() {
+    let (mut h, parent, _) = wanted();
+    created_stage(&mut h, parent);
+    assert!(h.node(parent).hold, "the pipeline holds the parent");
+    refused(
+        h.run(&person(), Operation::Hold { node: parent }),
+        code::INVALID_STATE,
+    );
+    remove(&mut h, "m3");
+    reconcile(&mut h).unwrap();
+    assert!(stages(&h, parent).is_empty(), "the stage is retired");
+    assert_eq!(run_state(&h, parent), "lead");
+    assert!(
+        !h.node(parent).hold,
+        "the pipeline's hold ended with its run"
+    );
+    assert_eq!(report_items(&h, parent).len(), 1);
+}

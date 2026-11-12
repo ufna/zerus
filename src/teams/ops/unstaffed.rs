@@ -137,6 +137,9 @@ fn stage_to_lead(ctx: &mut Context<'_>, stage: u32, reason: &str) -> Result<()> 
     pipeline::retire_stage(ctx, stage)?;
     if current {
         let parent = ctx.node(parent)?;
+        // The parent's hold while its stage runs is the pipeline's own
+        // (`want_stage`); handing the run to the lead ends it, as at the
+        // stage's creation.
         pipeline::to_lead(ctx, &parent, reason)?;
     }
     Ok(())

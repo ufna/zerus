@@ -1,4 +1,6 @@
 use super::*;
+use crate::teams::store::EffectIntent;
+use std::collections::BTreeSet;
 use zerus_team_plan::ready::{self, MemberView, PlanView};
 impl Runtime {
     fn members(&self, store: &Store, team: &str) -> Result<Vec<Member>> {
@@ -41,9 +43,9 @@ impl Runtime {
         &mut self,
         store: &mut Store,
         team: &Team,
+        mut r: ops::Readiness,
         now: i64,
     ) -> Result<ops::Readiness> {
-        let mut r = ops::readiness(store, &team.id)?;
         let view = PlanView {
             phases: &r.phases,
             nodes: &r.nodes,
@@ -76,7 +78,28 @@ impl Runtime {
         team: &Team,
         now: i64,
     ) -> Result<()> {
-        let r = self.cooled_readiness(store, team, now)?;
+        // One readiness read: uncooled for the unstaffed comparison, then
+        // cooled for the hand-outs. Members and open effects are read once,
+        // and only when a node is ready.
+        let raw = ops::readiness(store, &team.id)?;
+        let any_ready = !ready::ready(&PlanView {
+            phases: &raw.phases,
+            nodes: &raw.nodes,
+            members: &[],
+            lead: &team.lead,
+            integration: team.settings.integration,
+        })
+        .is_empty();
+        let (effects, all_members) = if any_ready {
+            (
+                self.open_effects(store, &team.id)?,
+                self.members(store, &team.id)?,
+            )
+        } else {
+            (Vec::new(), Vec::new())
+        };
+        self.unstaffed(store, team, &raw, &all_members, &effects, now)?;
+        let r = self.cooled_readiness(store, team, raw, now)?;
         let initial = PlanView {
             phases: &r.phases,
             nodes: &r.nodes,
@@ -87,9 +110,8 @@ impl Runtime {
         if ready::ready(&initial).is_empty() {
             return Ok(());
         }
-        let effects = self.open_effects(store, &team.id)?;
         let mut members = Vec::new();
-        for m in self.members(store, &team.id)? {
+        for m in all_members {
             let free = m.id != team.lead
                 && m.state == MemberState::Active
                 && m.session.is_some()
@@ -122,6 +144,71 @@ impl Runtime {
             if let Err(e) = result {
                 self.failure(store, team, &key, &revision, &e, now)?;
             }
+        }
+        Ok(())
+    }
+    /// zerus-63rru.45: the kernel's unstaffed set over the uncooled view,
+    /// compared with the lead's open items; the store reconciles only when
+    /// they differ and recomputes the set itself. The request is kept in the
+    /// ledger before it is applied, so a restart replays it by its request ID
+    /// and gets its saved reply. A race (`unstaffed_unchanged`, or a revision
+    /// that moved) is settled, never a gate failure or a card.
+    fn unstaffed(
+        &mut self,
+        store: &mut Store,
+        team: &Team,
+        raw: &ops::Readiness,
+        members: &[Member],
+        effects: &[EffectIntent],
+        now: i64,
+    ) -> Result<()> {
+        if let Some(saved) = self.load::<Request>(&team.id, UNSTAFFED)? {
+            self.apply_unstaffed(store, team, saved, now)?;
+        }
+        let open: BTreeSet<u32> = effects.iter().map(|e| e.node).collect();
+        #[allow(unused_mut)]
+        let mut set: BTreeSet<u32> = ops::unstaffed_of(team, raw, members, &open)
+            .into_iter()
+            .map(|u| u.node)
+            .collect();
+        #[cfg(test)]
+        STALE_VIEW.with(|stale| {
+            if let Some(node) = stale.get() {
+                set.insert(node);
+            }
+        });
+        if set == store.open_unstaffed(&team.id)? || !self.due(store, team, UNSTAFFED, "", now)? {
+            return Ok(());
+        }
+        let (_, request) = request(store, &team.id, Operation::ReconcileUnstaffed)?;
+        self.put(&team.id, UNSTAFFED, &request)?;
+        self.apply_unstaffed(store, team, request, now)
+    }
+    fn apply_unstaffed(
+        &mut self,
+        store: &mut Store,
+        team: &Team,
+        request: Request,
+        now: i64,
+    ) -> Result<()> {
+        let actor = Actor::Service {
+            person: team.owner.clone(),
+            team: team.id.clone(),
+        };
+        match ops::apply(store, &actor, &request, now) {
+            Ok(_) => {
+                unstaffed_boundary("applied");
+                self.recovered(store, team, UNSTAFFED, now)?;
+            }
+            Err(e) if e.code == code::UNSTAFFED_UNCHANGED || e.code == code::STALE_REVISION => {}
+            // Not saved: the same request ID is applied again next pass.
+            Err(e) if e.code == code::STORAGE_FAILED => {
+                return self.failure(store, team, UNSTAFFED, "", &e, now);
+            }
+            Err(e) => self.failure(store, team, UNSTAFFED, "", &e, now)?,
+        }
+        if let Some(row) = self.ledger.get(&team.id, UNSTAFFED)? {
+            self.ledger.remove(&row)?;
         }
         Ok(())
     }
@@ -243,4 +330,24 @@ impl Runtime {
         self.send(store, ports, team, (&node, &m), "reopen", now)?;
         self.recovered(store, team, &format!("reopen:{}", d.seq), now)
     }
+}
+
+/// The ledger key of the service's reconcile of unstaffed nodes.
+const UNSTAFFED: &str = "unstaffed";
+#[cfg(test)]
+thread_local! {
+    /// A test's stale view: the service believes this node is unstaffed.
+    pub(super) static STALE_VIEW: std::cell::Cell<Option<u32>> = const { std::cell::Cell::new(None) };
+    pub(super) static UNSTAFFED_CRASH: std::cell::Cell<Option<&'static str>> = const { std::cell::Cell::new(None) };
+}
+fn unstaffed_boundary(point: &str) {
+    #[cfg(test)]
+    UNSTAFFED_CRASH.with(|slot| {
+        if slot.get() == Some(point) {
+            slot.set(None);
+            panic!("fixture unstaffed restart at {point}");
+        }
+    });
+    #[cfg(not(test))]
+    let _ = point;
 }
