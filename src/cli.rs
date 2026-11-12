@@ -1688,7 +1688,9 @@ fn bound_terminal(session: &str) -> Result<Option<(String, String)>> {
     Ok(Some((fields[0].to_owned(), run)))
 }
 
-/// Commands that start a session; with `--parent` they name its parent.
+/// Commands that start a session, one list for the hosted forwarding refusal,
+/// the claimed-parent gate (`fork` takes no `--parent`) and the forwarded
+/// parent link; with `--parent` a launch names its parent.
 const LAUNCH_COMMANDS: &[&str] = &["claude", "codex", "kimi", "dsh", "opencode", "fork"];
 
 /// Why forwarding `command` to another computer is refused for a resident
@@ -1718,11 +1720,7 @@ fn hosted_forwarding_refusal(
         (command, args, machine.is_some() || referenced)
     };
     let launch = LAUNCH_COMMANDS.contains(&verb);
-    let parent = launch
-        && rest
-            .iter()
-            .take_while(|arg| arg.as_str() != "--")
-            .any(|arg| arg == "--parent");
+    let parent = launch && names_parent(rest);
     let send = matches!(verb, "send" | "send-now");
     if !(send || launch && !parent || named && !parent) {
         return None;
@@ -1735,6 +1733,49 @@ fn hosted_forwarding_refusal(
     } else {
         format!("This DeepSeek tool call (HGS_AGENT=dsh) cannot prove its session, so it does not act on another computer: {reason}")
     })
+}
+
+/// Whether a launch's own options name its parent: `--parent` followed by a
+/// claim with its session, run and conversation IDs (zerus-ppd26.10). The
+/// scan follows the launch and fork option grammars, so the value of another
+/// option (`-n --parent`), a conversation ID after `-c`, or an agent flag
+/// after `--` never counts as a parent.
+fn names_parent(args: &[String]) -> bool {
+    let mut i = 0;
+    while let Some(arg) = args.get(i) {
+        match arg.as_str() {
+            "--" => return false,
+            "--parent" => {
+                return args.get(i + 1).is_some_and(|claim| {
+                    serde_json::from_str::<serde_json::Value>(claim).is_ok_and(|claim| {
+                        ["session_id", "run_id", "conversation_id"]
+                            .iter()
+                            .all(|key| claim[key].as_str().is_some_and(|id| !id.is_empty()))
+                    })
+                })
+            }
+            "-n"
+            | "--model"
+            | "--effort"
+            | "--account"
+            | "--parent-link"
+            | "--launch-id"
+            | "--archive"
+            | "--expected-run-id"
+            | "--expected-conversation-id"
+            | "--session-id" => i += 1,
+            "-c" | "--resume" | "--continue"
+                if args
+                    .get(i + 1)
+                    .is_some_and(|value| conversation_id(value).is_some()) =>
+            {
+                i += 1
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    false
 }
 
 /// The refusal of a send by a DeepSeek tool call without its hosted proof.
@@ -1970,9 +2011,15 @@ fn remote_via(
         platform::remote_sh(&format!("if ~/.local/bin/hgs --help 2>/dev/null | grep -qF '{}'; then exec ~/.local/bin/hgs {}; else echo 'hgs: update the selected computer to stream events (watch-v1)' >&2; exit 1; fi",zerus_watch_protocol::HELP_MARKER,platform::join(&remote_args)))
     } else if command == "guide" {
         platform::remote_sh(&format!("if ~/.local/bin/hgs --help 2>/dev/null | grep -qF 'hgs [@host] guide'; then exec ~/.local/bin/hgs {}; else echo 'hgs: the selected computer has no agent guide; check hgs @host -h' >&2; exit 1; fi",platform::join(&remote_args)))
-    } else if matches!(command, "claude" | "codex" | "kimi" | "dsh" | "opencode") && args.iter().take_while(|s| s.as_str() != "--").any(|s| s == "--parent") {
+    } else if LAUNCH_COMMANDS.contains(&command)
+        && command != "fork"
+        && args
+            .iter()
+            .take_while(|s| s.as_str() != "--")
+            .any(|s| s == "--parent")
+    {
         platform::remote_sh(&format!("if ~/.local/bin/hgs --help 2>/dev/null | grep -qEx '[[:space:]]*claimed-parent-v1[[:space:]]*'; then exec ~/.local/bin/hgs {}; else echo 'hgs: update the selected computer to claim a launch parent' >&2; exit 1; fi", platform::join(&remote_args)))
-    } else if let Some(link) = (matches!(command, "claude" | "codex" | "kimi" | "dsh" | "opencode" | "fork") && machine.is_none())
+    } else if let Some(link) = (LAUNCH_COMMANDS.contains(&command) && machine.is_none())
         .then(state::parent_link::forwarded_argument)
         .flatten()
     {

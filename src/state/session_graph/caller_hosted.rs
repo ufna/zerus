@@ -11,7 +11,7 @@ use super::*;
 use crate::state::provider_binding::Provider;
 
 /// What this proof establishes and what it does not, stated with its result.
-pub(crate) const HOSTED_LIMIT: &str = "One DeepSeek host process serves every session of its agent home: process ancestry proves only that this command runs under the host that serves the session, and the host's per-call token proves which conversation's tool call started it. The host socket's peer credentials prove that the answering socket is the recorded host's, which never hands its listener to a child. A same-user process that reads another tool call's environment can copy that call's token; that is deliberate instrumentation and outside this proof.";
+pub(crate) const HOSTED_LIMIT: &str = "One DeepSeek host process serves every session of its agent home: process ancestry proves only that this command runs under the host that serves the session, and the host's per-call token proves which conversation's tool call started it. The host socket's peer credentials prove that the answering socket is the recorded host's, which never hands its listener to a child, and everything that socket serves hides live tokens. A same-user process that reads another tool call's environment can copy that call's token; that is deliberate instrumentation and outside this proof.";
 
 /// The longest the proof waits for the host to answer for a token.
 #[cfg(unix)]
@@ -52,7 +52,9 @@ const HOST_CHANGED: &str = "The DeepSeek host changed while this tool call was b
 ///    the session index (its ID layout record or its label, as `hgs self`
 ///    reads a claim), else the label. It must be a DeepSeek binding whose
 ///    name or launch label is `name`, whose run is `run` and, when claimed,
-///    whose session ID is `session`.
+///    whose session ID is `session`. A label's rename shadow is followed to
+///    its current binding, which must be the same session, run,
+///    conversation and home.
 /// 3. The binding's agent home selects the one host folder that `ensure_host`
 ///    and every host request use. Its record is read through the Teams
 ///    proof's own reader (`caller_hosts`, this boot's records only), and only
@@ -61,7 +63,8 @@ const HOST_CHANGED: &str = "The DeepSeek host changed while this tool call was b
 ///    process: at most 64 steps, and parent 0, a loop or an unreadable step
 ///    refuses.
 /// 5. This process's `DSH_HOME` is the binding's agent home (the native host
-///    sets it on every tool call).
+///    sets it on every tool call): the same spelling, or the same existing
+///    directory.
 /// 6. The host, asked over its private socket, knows the token as a live
 ///    tool call of the binding's conversation, the top-level one for a child
 ///    agent. Each connection's peer credentials (`SO_PEERCRED` on Linux,
@@ -118,6 +121,27 @@ pub(crate) fn hosted_caller(
     {
         return Err(BINDING);
     }
+    // A label's rename shadow stands for its current binding: follow it here,
+    // through the DeepSeek provider, to the very same session, run,
+    // conversation and home (zerus-ppd26.7).
+    let record = if record["rename_shadow"] == true {
+        let current = Provider::DeepSeek
+            .read_label(string(&record, "rename_target"))
+            .map_err(|_| BINDING)?;
+        let same = |key: &str| current[key] == record[key] && !string(&current, key).is_empty();
+        if current["rename_shadow"] == true
+            || current["backend"] != "dsh"
+            || current["run_id"] != run
+            || !["session_id", "conversation_id", "agent_home"]
+                .into_iter()
+                .all(same)
+        {
+            return Err(BINDING);
+        }
+        current
+    } else {
+        record
+    };
     if record["state"] == "archived" {
         return Ok(None);
     }
@@ -127,7 +151,7 @@ pub(crate) fn hosted_caller(
         return Err(BINDING);
     }
     // 5. The native host's own home for this call.
-    if home != agent_home {
+    if !same_home(&home, agent_home) {
         return Err(OTHER_HOME);
     }
     // 3. The host record of that agent home, through the Teams reader.
@@ -165,12 +189,34 @@ pub(crate) fn hosted_caller(
     {
         return Err(OTHER_CONVERSATION);
     }
-    if crate::platform::process_identity(host).is_none_or(|identity| identity.birth != birth) {
+    if host_birth(host).as_deref() != Some(birth.as_str()) {
         return Err(HOST_CHANGED);
     }
     let mut record = record;
     record["caller_proof"] = json!({"kind":"hosted_call","host_pid":host,"limit":HOSTED_LIMIT});
     Ok(Some(record))
+}
+
+/// Whether two spellings name the same native home: equal, or the same
+/// existing directory, so a trailing slash, a relative spelling or a symbolic
+/// link of the home is that home (zerus-ppd26.8).
+#[cfg(unix)]
+fn same_home(home: &str, agent_home: &str) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    home == agent_home
+        || matches!((fs::metadata(home), fs::metadata(agent_home)), (Ok(a), Ok(b))
+            if a.is_dir() && b.is_dir() && a.dev() == b.dev() && a.ino() == b.ino())
+}
+
+/// The host's birth, read again after its answer. A test stands in a host
+/// replaced in between here (zerus-ppd26.6): no real race can be timed there.
+#[cfg(unix)]
+fn host_birth(pid: u32) -> Option<String> {
+    #[cfg(test)]
+    if tests::REPLACED_HOST.with(std::cell::Cell::get) {
+        return Some("a replaced host".into());
+    }
+    crate::platform::process_identity(pid).map(|identity| identity.birth)
 }
 
 /// DeepSeek hosts run only on Linux and macOS; nothing else proves one.
@@ -190,6 +236,13 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     const TOKEN: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+
+    thread_local! {
+        /// Makes the final host-birth read report a replaced host.
+        pub(super) static REPLACED_HOST: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    }
+    /// The stand-in that took the socket over in the middle of an exchange.
+    static TAKEN_OVER: Mutex<Option<std::process::Child>> = Mutex::new(None);
     const CONVERSATION: &str = "session-91250d76-ca68-48b6-87f8-3a0e4400c314";
     const NAME: &str = "dsh/project/hosted";
 
@@ -233,6 +286,72 @@ mod tests {
         isolated("token_fixture");
     }
 
+    #[test]
+    fn a_renamed_sessions_old_label_stays_its_proven_current_binding() {
+        isolated("rename_fixture");
+    }
+
+    #[test]
+    #[ignore = "run by its isolated wrapper"]
+    fn rename_fixture() {
+        // zerus-ppd26.7: an ID-less claim through a label's rename shadow is
+        // proven as the current binding, and caller_record keeps it.
+        let (old, new, id) = (
+            "dsh/project/old",
+            "dsh/project/new",
+            "6a4c5887-557a-4f31-b1c8-ad0a94c3c705",
+        );
+        let home = std::env::var("DSH_HOME").unwrap();
+        let binding = |name: &str, run: &str| {
+            json!({"backend":"dsh","agent":"dsh","name":name,"agent_home":home,"conversation_id":CONVERSATION,
+                "run_id":run,"session_id":id,"created":1.0,"paused":false})
+        };
+        let dir = crate::state::storage::root()
+            .join("dsh/hosts")
+            .join(crate::state::dsh::host_key(&home));
+        crate::platform::private_dir(&dir).unwrap();
+        host(
+            dir.join("host.sock"),
+            Arc::new(Mutex::new(("answer", CONVERSATION.to_owned()))),
+        );
+        let me = std::process::id();
+        running(
+            &dir,
+            me,
+            &crate::platform::process_identity(me).unwrap().birth,
+            caller_hosts::written_boot().as_deref(),
+        );
+        let mut current = binding(new, "run-renamed");
+        current["launch_label"] = json!(old);
+        let mut shadow = current.clone();
+        shadow["name"] = json!(old);
+        shadow["rename_shadow"] = json!(true);
+        shadow["rename_target"] = json!(new);
+        Provider::DeepSeek.save(&mut shadow).unwrap();
+        Provider::DeepSeek.save(&mut current).unwrap();
+        let proven = hosted_caller(old, "run-renamed", None).unwrap().unwrap();
+        assert_eq!(
+            (proven["name"].as_str(), proven["rename_shadow"].as_bool()),
+            (Some(new), None)
+        );
+        assert_eq!(proven["caller_proof"]["kind"], "hosted_call");
+        std::env::set_var("HGS_SESSION", old);
+        std::env::set_var("HGS_RUN_ID", "run-renamed");
+        let followed = crate::state::session_graph::caller_record()
+            .expect("the renamed hosted call stays identified");
+        assert_eq!(
+            (
+                followed["name"].as_str(),
+                followed["caller_proof"]["kind"].as_str()
+            ),
+            (Some(new), Some("hosted_call"))
+        );
+        // A shadow whose current binding is another run is no proof.
+        current["run_id"] = json!("run-other");
+        Provider::DeepSeek.save(&mut current).unwrap();
+        assert_eq!(hosted_caller(old, "run-renamed", None), Err(BINDING));
+    }
+
     /// A stand-in host socket served by this process, which the record names
     /// as the host: `mode` chooses the answer to each request.
     fn host(socket: PathBuf, mode: Arc<Mutex<(&'static str, String)>>) {
@@ -272,6 +391,33 @@ mod tests {
                     std::thread::sleep(Duration::from_millis(100));
                 }
                 return;
+            }
+            ("huge", Some("ping")) => {
+                // A valid answer padded to 1 MiB, well past the reply cap.
+                json!({"protocol":1,"version":"0.2.1-rc.2","callTokens":true,"pad":"x".repeat(1 << 20)})
+            }
+            ("takeover", Some("ping")) => {
+                // The recorded host answers the ping, but a stand-in takes the
+                // socket over before the call-token connection.
+                let path = stream
+                    .local_addr()
+                    .unwrap()
+                    .as_pathname()
+                    .unwrap()
+                    .to_owned();
+                let ready = path.with_extension("sock.ready");
+                let child = std::process::Command::new("python3")
+                    .args(["-I", "-c", STAND_IN])
+                    .arg(&path)
+                    .arg(&conversation)
+                    .spawn()
+                    .unwrap();
+                *TAKEN_OVER.lock().unwrap() = Some(child);
+                let until = std::time::Instant::now() + Duration::from_secs(10);
+                while !ready.exists() && std::time::Instant::now() < until {
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+                json!({"protocol":1,"version":"0.2.1-rc.2","callTokens":true})
             }
             ("older", Some("ping")) => json!({"protocol":1,"version":"0.2.1-rc.2"}),
             (_, Some("ping")) => json!({"protocol":1,"version":"0.2.1-rc.2","callTokens":true}),
@@ -448,6 +594,41 @@ while True:
         host(socket, mode.clone());
         assert!(hosted_caller(NAME, "run-1", Some(&id)).unwrap().is_some());
 
+        // zerus-ppd26.6: the peer of EVERY connection is checked, so a takeover
+        // between the ping and the call-token connection proves nothing (O1).
+        set("takeover", CONVERSATION);
+        let refused = hosted_caller(NAME, "run-1", Some(&id));
+        if let Some(mut child) = TAKEN_OVER.lock().unwrap().take() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+        assert!(refused.unwrap_err().contains("not served by the host"));
+        let _ = fs::remove_file(&ready);
+        set("answer", CONVERSATION);
+        host(dir.join("host.sock"), mode.clone());
+        assert!(hosted_caller(NAME, "run-1", Some(&id)).unwrap().is_some());
+        // The peer's birth is compared, not only its pid (O2).
+        assert!(crate::state::dsh::call_token_conversation(
+            &home,
+            TOKEN,
+            (me, "1"),
+            Duration::from_secs(2)
+        )
+        .unwrap_err()
+        .contains("not served by the host"));
+        // A host replaced after its answer is no proof (R8).
+        REPLACED_HOST.with(|replaced| replaced.set(true));
+        let replaced = hosted_caller(NAME, "run-1", Some(&id));
+        REPLACED_HOST.with(|replaced| replaced.set(false));
+        assert_eq!(replaced, Err(HOST_CHANGED));
+        // A reply past 64 KiB is refused, however valid (R6).
+        set("huge", CONVERSATION);
+        assert!(hosted_caller(NAME, "run-1", Some(&id))
+            .unwrap_err()
+            .contains("did not confirm"));
+        set("answer", CONVERSATION);
+        assert!(hosted_caller(NAME, "run-1", Some(&id)).unwrap().is_some());
+
         // The recorded host, with its birth, this boot, must be an ancestor.
         // Above the host the walk refuses either at parent 0 or at the first
         // ancestor it cannot read; both are refusals.
@@ -485,6 +666,26 @@ while True:
         // The native home of this call must be the session's.
         std::env::set_var("DSH_HOME", format!("{home}-other"));
         assert_eq!(hosted_caller(NAME, "run-1", Some(&id)), Err(OTHER_HOME));
+        // Another spelling of the same home is that home (zerus-ppd26.8);
+        // another existing directory is not.
+        crate::platform::private_dir(Path::new(&home)).unwrap();
+        let link = crate::state::storage::root().join("home-link");
+        std::os::unix::fs::symlink(&home, &link).unwrap();
+        let other = crate::state::storage::root().join("other-home");
+        crate::platform::private_dir(&other).unwrap();
+        for (spelling, same) in [
+            (format!("{home}/"), true),
+            (link.display().to_string(), true),
+            (other.display().to_string(), false),
+        ] {
+            std::env::set_var("DSH_HOME", &spelling);
+            let result = hosted_caller(NAME, "run-1", Some(&id));
+            if same {
+                assert!(result.unwrap().is_some(), "{spelling}");
+            } else {
+                assert_eq!(result, Err(OTHER_HOME), "{spelling}");
+            }
+        }
         std::env::set_var("DSH_HOME", &home);
 
         // An archived binding is established and not live.
