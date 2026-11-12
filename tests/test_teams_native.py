@@ -57,15 +57,22 @@ WAITING = {
 }
 
 
-class TeamsContract:
+class ClassFixture:
+    """One team per class, brought up once; the ordered steps share it, and a failed
+    step fails the later ones with its name."""
     agent = None
     variable = None
     fx = None
     failed = None
+    delegations = None
+    service_answers = ()
+    after_refusal = None
 
     @classmethod
     def setUpClass(cls):
-        cls.fx = fixture.TeamFixture(cls.agent, os.environ[cls.variable], cls.__name__)
+        cls.fx = fixture.TeamFixture(cls.agent, os.environ[cls.variable], cls.__name__,
+                                     delegations=cls.delegations, service_answers=cls.service_answers,
+                                     after_refusal=cls.after_refusal)
         try:
             cls.fx.bring_up()
         except BaseException:
@@ -94,6 +101,10 @@ class TeamsContract:
         if result is not None and len(result.failures) + len(result.errors) > before and not type(self).failed:
             type(self).failed = self._testMethodName
         return outcome
+
+
+class TeamsContract(ClassFixture):
+    """Delegations off: the person answers every startup card."""
 
     # 1 -----------------------------------------------------------------------
     def test_1_launch_and_identity(self):
@@ -279,6 +290,102 @@ class TeamsContract:
         self.assertTrue(any(a.get('run_id') == view['run_id'] for a in archives), 'Terminate archived the run')
 
 
+class TrustContract(ClassFixture):
+    """Delegation confirm_trust on: the standing confirmation answers the members' startup
+    folder-trust cards (zerus-63rru.48), and a prompt that is not a startup prompt stays
+    the person's. The agent's own trust record proves the answer reached it."""
+    delegations = {'confirm_trust': True}
+    trust_source = None
+
+    def test_1_the_service_answers_the_startup_folder_trust(self):
+        fx = self.fx
+        answered = [json.loads(line) for line in (fx.evidence.folder / 'person-answers.jsonl').read_text().splitlines()] \
+            if (fx.evidence.folder / 'person-answers.jsonl').is_file() else []
+        for member_id in ('lead', 'm1'):
+            with self.subTest(member=member_id):
+                seen = [v for k, v in fx.cards_seen.items() if k[0] == member_id and v['source'] == self.trust_source]
+                self.assertEqual(len(seen), 1, 'the real startup trust card appeared once')
+                self.assertIsNone(seen[0]['card'].get('conversation_id'), 'the real card carries a null conversation')
+                self.assertFalse([a for a in answered if a['member'] == member_id and a['source'] == self.trust_source],
+                                 'the person did not answer it')
+                name = fx.sessions[member_id]['name']
+                rows = fx.audit_rows(name)
+                fx.evidence.write(f'audit-{member_id}.json', rows)
+                grants = [r for r in rows if json.loads(r['question']).get('source') == self.trust_source]
+                self.assertEqual(len(grants), 1, 'one audited grant for the card')
+                self.assertNotIn(grants[0]['status'], ('prepared', 'cancelled', 'unknown'), grants[0])
+                self.assert_agent_trusted(member_id)
+        refusals = [c for c in fx.cards() if 'needs your attention' in c.get('text', '')]
+        fx.evidence.write('cards-after-trust.json', refusals)
+        self.assertFalse(refusals, 'no member card was left for the person')
+
+    def test_2_a_prompt_that_is_not_a_startup_prompt_stays_the_persons(self):
+        fx = self.fx
+        fx.send('m1', 'Ask the fixture questions now.')
+        card = fx.wait('m1 asked a question mid-conversation', lambda: next(iter(fx.inspect('m1').get('pending_questions') or []), None),
+                       fixture.BOUND['turn'], 2)
+        fx.evidence.write('mid-conversation-card.json', card)
+        refused = fx.wait('the service refused the mid-conversation prompt with a card for the person',
+                          lambda: [c for c in fx.cards() if 'Member m1 needs your attention' in c.get('text', '')
+                                   and 'not a startup prompt' in c.get('text', '')], fixture.BOUND['doorbell'], 3)
+        fx.evidence.write('mid-conversation-refusal.json', refused)
+        still = [q.get('question_id') for q in fx.inspect('m1').get('pending_questions') or []]
+        self.assertIn(card.get('question_id'), still, 'the prompt is still pending for the person')
+        grants = [r for r in fx.audit_rows(fx.sessions['m1']['name'])
+                  if json.loads(r['question']).get('question_id') == card.get('question_id')]
+        self.assertFalse(grants, 'no audited grant for a prompt that is not a startup prompt')
+
+    def assert_agent_trusted(self, member_id):
+        raise NotImplementedError
+
+
+class ClaudeTrust:
+    trust_source = 'claude_folder_trust'
+    service_answers = ('claude_folder_trust',)
+
+    def assert_agent_trusted(self, member_id):
+        home = self.fx.agent_home(member_id)
+        record = json.loads((home / '.claude.json').read_text())
+        worktree = self.fx.members()[member_id]['worktree']
+        self.assertTrue((record.get('projects') or {}).get(worktree, {}).get('hasTrustDialogAccepted'),
+                        'Claude recorded the trust for exactly the member worktree')
+
+
+class CodexTrustContract(ClassFixture):
+    """Delegation confirm_trust on, Codex: every member worktree is a linked worktree, so
+    Codex's Folder access panel carries its Git root note and asks to trust the repository
+    root. The standing confirmation refuses that scope (zerus-63rru.49 and the owner's
+    decision); the panel, wrapped or not, is now recognized, so the person answers it
+    through hgs answer, not only in Terminal."""
+    delegations = {'confirm_trust': True}
+    after_refusal = {'codex_folder_trust': 'grants a different scope'}
+
+    def test_1_the_repository_scope_is_refused_and_the_person_answers_it(self):
+        fx = self.fx
+        answered = [json.loads(line) for line in (fx.evidence.folder / 'person-answers.jsonl').read_text().splitlines()]
+        for member_id in ('lead', 'm1'):
+            with self.subTest(member=member_id):
+                seen = [v for k, v in fx.cards_seen.items() if k[0] == member_id and v['source'] == 'codex_folder_trust']
+                self.assertEqual(len(seen), 1, 'the Folder access panel is recognized as Codex folder trust')
+                card = seen[0]['card']
+                item = card['questions'][0]
+                self.assertEqual(item['question'], 'Trust this Git repository?')
+                self.assertTrue(card.get('can_answer'), 'the person can answer it through hgs answer')
+                worktree = fx.members()[member_id]['worktree']
+                self.assertEqual(item['body'].split('\n\n', 1)[0].replace('\n', ''), worktree,
+                                 'the panel names the member worktree, wrapped as the terminal shows it')
+                rows = [r for r in fx.audit_rows(fx.sessions[member_id]['name'])
+                        if json.loads(r['question']).get('source') == 'codex_folder_trust']
+                self.assertFalse(rows, 'the standing confirmation granted nothing')
+                refusal = [c for c in fx.cards() if f'Member {member_id} needs your attention' in c.get('text', '')
+                           and 'grants a different scope' in c.get('text', '')]
+                self.assertTrue(refusal, 'the service refused the repository scope with a card for the person')
+                person = [a for a in answered if a['member'] == member_id and a['source'] == 'codex_folder_trust']
+                self.assertEqual([(a.get('terminal'), a.get('exit')) for a in person], [(None, 0)],
+                                 'the person answered it once through hgs answer')
+        fx.evidence.write('codex-trust-cards.json', fx.cards())
+
+
 class TeamsFixtureIsolation(unittest.TestCase):
     """The fixture's own isolation, without an agent: the tmux wrapper judges resolved
     paths, and the preflight refuses the runner's account name in a child's environment."""
@@ -375,6 +482,18 @@ class TeamsFixtureProducers(unittest.TestCase):
 class NativeTeamsClaude(TeamsContract, unittest.TestCase):
     agent = 'claude'
     variable = 'HGS_CLAUDE_TEST_BIN'
+
+
+@unittest.skipUnless(os.environ.get('HGS_CLAUDE_TEST_BIN') and fixture.HGS, 'Set HGS_TEST_BIN and HGS_CLAUDE_TEST_BIN')
+class NativeTeamsTrustClaude(ClaudeTrust, TrustContract, unittest.TestCase):
+    agent = 'claude'
+    variable = 'HGS_CLAUDE_TEST_BIN'
+
+
+@unittest.skipUnless(os.environ.get('HGS_CODEX_TEST_BIN') and fixture.HGS, 'Set HGS_TEST_BIN and HGS_CODEX_TEST_BIN')
+class NativeTeamsTrustCodex(CodexTrustContract, unittest.TestCase):
+    agent = 'codex'
+    variable = 'HGS_CODEX_TEST_BIN'
 
 
 @unittest.skipUnless(os.environ.get('HGS_CODEX_TEST_BIN') and fixture.HGS, 'Set HGS_TEST_BIN and HGS_CODEX_TEST_BIN')

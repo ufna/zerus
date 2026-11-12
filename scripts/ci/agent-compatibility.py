@@ -95,10 +95,12 @@ HINT_METHODS = ('test_lifecycle', 'test_lost_mark', 'test_pre_feature_first_resu
 # one agent kind in a private root and a private desktop service, latest release only.
 # Kimi's class runs in the hosted Kimi workflow; DeepSeek and OpenCode cannot be team
 # members in this milestone. Its waits carry their own bounds; this is the row's bound.
-TEAMS_CLASSES = {'claude': 'test_teams_native.NativeTeamsClaude', 'codex': 'test_teams_native.NativeTeamsCodex'}
+TEAMS_CLASSES = {'claude': ['test_teams_native.NativeTeamsClaude', 'test_teams_native.NativeTeamsTrustClaude'],
+                 'codex': ['test_teams_native.NativeTeamsCodex']}
 TEAMS_TIMEOUT = 2400
-TEAMS_COVERAGE = ('team member launch and identity, team stop and Terminate; delivery, the member shell caller proof, '
-                  'the lead doorbell and the cancel notice wait for zerus-63rru.51')
+TEAMS_COVERAGE = ('team member launch and identity, team stop and Terminate, and for Claude Code the standing '
+                  'folder-trust confirmation; delivery, the member shell caller proof, the lead doorbell and the cancel '
+                  'notice wait for zerus-63rru.51')
 HINT_CLASSES = {
     'claude': ('NativeClaudeHint', 'NativeWindowsClaudeHint'),
     'codex': ('NativeCodexHint', 'NativeWindowsCodexHint'),
@@ -629,7 +631,7 @@ def qualify(agent, package, work, results, hgs, hint_inputs=None, package_cache=
                 test_env.update(seed_helper().environment(effort_seed['value']))
             suites, timeout = spec['suites'], spec['timeout']
             if teams:
-                suites, timeout = [TEAMS_CLASSES[agent]], TEAMS_TIMEOUT
+                suites, timeout = list(TEAMS_CLASSES[agent]), TEAMS_TIMEOUT
             if hint_inputs is not None:
                 suites = hint_suites(agent, target)
                 timeout = hint_end - time.monotonic()

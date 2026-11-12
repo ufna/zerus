@@ -273,7 +273,8 @@ class ModelServer(api.Server):
                 return self.shell(offered, ' '.join(shlex.quote(x) for x in (
                     '/bin/bash', str(script), begin.group(1), begin.group(2), report.group(1), report.group(2))))
             return ('text', 'Fixture: the delivered prompt has no pinned commands')
-        return ('text', REPLY)
+        # Anything else is the shared fixture's own plan (a reply, or its questions).
+        return api.plan(body, '')
 
     def log_request(self, route, number, body, answer):
         row = dict(n=number, at=time.time(), route=route, prompt=api.typed(body), users=user_texts(body),
@@ -410,8 +411,19 @@ class Census(threading.Thread):
 class TeamFixture:
     """One private root, one private service, one team (lead and member m1) of one agent."""
 
-    def __init__(self, agent, native, case):
+    DELEGATIONS_OFF = {'accept_results': False, 'answer_members': False, 'confirm_trust': False,
+                       'merge_accepted': False, 'resume_exited': False}
+
+    def __init__(self, agent, native, case, delegations=None, service_answers=(), after_refusal=None):
         self.agent, self.native, self.case = agent, Path(native).resolve(), case
+        # Card sources the person answers only once the service has refused them with a
+        # card naming the member and containing the given text.
+        self.after_refusal = dict(after_refusal or {})
+        # The team's delegations, and the startup card sources the person leaves to the
+        # standing confirmation (it must answer them, or the bring-up fails).
+        self.delegations = dict(self.DELEGATIONS_OFF, **(delegations or {}))
+        self.service_answers = tuple(service_answers)
+        self.cards_seen = {}
         base = os.environ.get('TMPDIR') or tempfile.gettempdir()
         self.root = Path(tempfile.mkdtemp(prefix='hgs-teams-native-', dir=base)).resolve()
         if ROOT_CREATED is not None:
@@ -629,9 +641,7 @@ class TeamFixture:
             'request_id': str(uuid.uuid4()), 'team': self.team, 'expected_revision': 0, 'project': 'teams-fixture',
             'name': 'Teams fixture', 'goal': 'Real-agent contract.', 'home': self.machine,
             'integration_branch': 'zerus/team/fixture-' + self.agent, 'base_commit': self.commit,
-            # Standing confirmations stay off in this round (zerus-63rru.48 and .49).
-            'delegations': {'accept_results': False, 'answer_members': False, 'confirm_trust': False,
-                            'merge_accepted': False, 'resume_exited': False}}))
+            'delegations': self.delegations}))
         if reply.get('ok') is not True:
             raise AssertionError('team create: ' + json.dumps(reply)[:800])
 
@@ -713,6 +723,13 @@ class TeamFixture:
             if not pending and live and (started or view.get('first_message_can_send')):
                 return view
             for card in pending:
+                self.capture_card(member_id, card)
+                if card.get('source') in self.service_answers:
+                    continue  # the standing confirmation's to answer
+                wanted = self.after_refusal.get(card.get('source'))
+                if wanted and not any(f'Member {member_id} needs your attention' in c.get('text', '') and wanted in c.get('text', '')
+                                      for c in self.cards()):
+                    continue  # the service has not refused it yet
                 if card.get('question_id') in answered:
                     continue
                 items = card.get('questions') or []
@@ -737,6 +754,47 @@ class TeamFixture:
         view = self.wait(f'{member_id} ready after the person answered its startup cards', step, BOUND['card'] + BOUND['ready'], 2)
         self.sessions[member_id].update(run=view.get('run_id'), conversation=view.get('conversation_id') or '')
         return view
+
+    def capture_card(self, member_id, card):
+        """The first sight of each startup card: the inspection's card and the pane as
+        tmux holds it, with its size, so the real rendering is kept in the evidence."""
+        key = (member_id, card.get('question_id'))
+        if key in self.cards_seen:
+            return
+        target = '=' + self.sessions[member_id]['name'] + ':'
+        pane = subprocess.run(['tmux', 'capture-pane', '-p', '-t', target], env=self.env, capture_output=True, text=True)
+        size = subprocess.run(['tmux', 'display-message', '-p', '-t', target, '#{pane_width}x#{pane_height}'],
+                              env=self.env, capture_output=True, text=True)
+        number = len(self.cards_seen)
+        self.cards_seen[key] = dict(member=member_id, source=card.get('source'), at=time.time(), size=size.stdout.strip(),
+                                    card=card)
+        self.evidence.write(f'startup-card-{number}-{member_id}.json', self.cards_seen[key])
+        self.evidence.write(f'startup-card-{number}-{member_id}-pane.txt', pane.stdout)
+
+    def audit_rows(self, session_name):
+        """Read-only: the approval-audit journal's attempts of one session."""
+        import sqlite3
+        path = Path(self.env['HGS_STATE_DIR']) / 'approval-audit/journal.sqlite3'
+        if not path.is_file():
+            return []
+        db = sqlite3.connect(f'file:{path}?mode=ro', uri=True, timeout=1)
+        try:
+            cursor = db.execute('SELECT id, request_id, at, session, provider, prompt, question, status, detail '
+                                'FROM attempts WHERE session=? ORDER BY id', (session_name,))
+            cols = [c[0] for c in cursor.description]
+            return [dict(zip(cols, row)) for row in cursor]
+        finally:
+            db.close()
+
+    def agent_home(self, member_id):
+        """The account home a member runs in: a managed account, or the native one in HOME."""
+        account = self.members()[member_id].get('account')
+        if account and account.startswith('native-'):
+            return Path(self.env['HOME'])
+        return Path(self.env['HGS_CONFIG_DIR']) / 'accounts' / account
+
+    def cards(self):
+        return self.json('team', 'cards', '--team', self.team, '--limit', '50', '--json').get('rows') or []
 
     # ---- person actions --------------------------------------------------------
     def send(self, member_id, text):
