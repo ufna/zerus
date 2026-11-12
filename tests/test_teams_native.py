@@ -294,9 +294,21 @@ class TeamsContract(ClassFixture):
             _, task_uuid = fx.add_task('Fixture task for the stop', 'Fixture task: unfinished when the team stops.')
             fx.wait('task node in the queue', lambda: fx.node_of(task_uuid), fixture.BOUND['handout'], 2)
         before = {m: fx.process(m) for m in ('lead', 'm1')}
-        revision = fx.status()['team']['revision']
-        reply = fx.json('team', 'stop', '--json', stdin=json.dumps(dict(
-            request_id=str(uuid.uuid4()), team=fx.team, expected_revision=revision)))
+        refusals = []
+
+        def stop():
+            # The service may change the team between the person's read and the stop (a
+            # hand-out of the task above): a stale revision changes nothing, so the person
+            # refreshes and asks again with a new request.
+            revision = fx.status()['team']['revision']
+            reply = fx.json('team', 'stop', '--json', ok=False, stdin=json.dumps(dict(
+                request_id=str(uuid.uuid4()), team=fx.team, expected_revision=revision)))
+            if (reply.get('error') or {}).get('code') == 'stale_revision':
+                refusals.append(revision)
+                return None
+            return reply
+        reply = fx.wait("the person's team stop at a fresh revision", stop, fixture.BOUND['stop'], 1)
+        fx.evidence.write('stop-reply.json', dict(reply=reply, stale_revisions=refusals))
         self.assertTrue(reply.get('ok'), reply)
         fx.wait('team stopped', lambda: fx.status()['team'].get('status') == 'stopped', fixture.BOUND['stop'], 2)
         # The service acts on the stop (it records the cancel of the unfinished node) and
