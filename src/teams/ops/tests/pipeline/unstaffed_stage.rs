@@ -213,3 +213,33 @@ fn the_lead_closing_a_retired_stages_parent_item_is_not_told_again() {
     assert_eq!(h.store.inbox(TEAM, 200, None).unwrap().rows, inbox);
     assert_eq!(unstaffed_items(&h), 0);
 }
+
+/// Review 45, P1 (the reviewer's reproducer): a person's Hold set before the
+/// report survives the reconcile that retires the stage. It holds once the
+/// rule "A hold has an owner" (teams/wp10-reassign-route) is merged and the
+/// stage path ends only the pipeline's own hold.
+#[test]
+#[ignore = "needs the hold owner rule of teams/wp10-reassign-route"]
+fn a_persons_hold_from_before_the_report_survives_the_stage_reconcile() {
+    let mut h = pipeline_harness("reviewed");
+    h.bind("m1");
+    h.bind("m3");
+    let parent = h.add(&person(), 1);
+    h.submit(parent, "m1");
+    h.run(&person(), Operation::Hold { node: parent }).unwrap();
+    assert!(
+        h.node(parent).hold,
+        "the person held the parent before the report"
+    );
+    h.report(parent, "m1");
+    let stage = created_stage(&mut h, parent);
+    remove(&mut h, "m3");
+    reconcile(&mut h).unwrap();
+    assert!(stages(&h, parent).is_empty());
+    assert_ne!(stage, parent);
+    assert_eq!(run_state(&h, parent), "lead");
+    assert!(
+        h.node(parent).hold,
+        "the stage reconcile released the person's pre-report hold"
+    );
+}
