@@ -63,7 +63,17 @@ fn seed_member(n: &native::Native, db: &rusqlite::Connection, m: &Member) {
             .join(format!("{launch}.json")),
         json!({"launch_id":launch,"session_id":sid,"name":name,"started_at":1.0}),
     );
-    let row=json!({"name":name,"agent":m.agent,"cmd":m.agent,"state":"running","process_state":"running","activity":"idle","phase":"idle","run_id":run,"launch_id":launch,"conversation_id":format!("conversation-{}",m.id),"conversation_state":"active","process_work":{"count":0},"subagents_active":0,"optional_questions":{"count":0}}).to_string();
+    // The producer's idle row of the member's agent kind, with its identity.
+    let row = super::super::rows::seed_row(
+        &m.agent,
+        &[
+            ("name", json!(name)),
+            ("run_id", json!(run)),
+            ("launch_id", json!(launch)),
+            ("conversation_id", json!(format!("conversation-{}", m.id))),
+        ],
+    )
+    .to_string();
     db.execute(
         "INSERT OR REPLACE INTO desktop_catalog_rows(generation,key,json,bytes) VALUES(1,?1,?2,?3)",
         params![format!("run:{run}"), row, row.len()],

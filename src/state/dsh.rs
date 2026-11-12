@@ -446,6 +446,12 @@ pub(super) fn snapshot(name: &str) -> Result<Value> {
     Ok(snapshot_from(&record, &list))
 }
 
+/// The listing projection of `record` from a host's `list` answer, for the
+/// fleet-row fixtures of the Teams actor's tests (zerus-63rru.51).
+#[cfg(test)]
+pub(super) fn listed_for_fixture(record: &Value, list: &Value) -> Value {
+    snapshot_from(record, list)
+}
 fn snapshot_from(record: &Value, list: &Value) -> Value {
     let row = list["items"].as_array().and_then(|items| {
         items
