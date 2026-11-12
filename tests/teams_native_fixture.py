@@ -835,7 +835,10 @@ class TeamFixture:
         self.panes[key] = pane.stdout
 
     def audit_rows(self, session_name):
-        """Read-only: the approval-audit journal's attempts of one session."""
+        """Read-only: the approval-audit journal's attempts of one session. Its question
+        column holds the saved reservation, {"question", "answers", "categories"}
+        (approval_log.rs, reserve); each row carries that question's source, ID and run
+        and the categories beside it."""
         import sqlite3
         path = Path(self.env['HGS_STATE_DIR']) / 'approval-audit/journal.sqlite3'
         if not path.is_file():
@@ -845,9 +848,15 @@ class TeamFixture:
             cursor = db.execute('SELECT id, request_id, at, session, provider, prompt, question, status, detail '
                                 'FROM attempts WHERE session=? ORDER BY id', (session_name,))
             cols = [c[0] for c in cursor.description]
-            return [dict(zip(cols, row)) for row in cursor]
+            rows = [dict(zip(cols, row)) for row in cursor]
         finally:
             db.close()
+        for row in rows:
+            saved = json.loads(row['question'])
+            question = saved.get('question') or {}
+            row.update(source=question.get('source'), question_id=question.get('question_id'),
+                       run=question.get('run_id'), categories=saved.get('categories') or [])
+        return rows
 
     def agent_home(self, member_id):
         """The account home a member runs in: a managed account, or the native one in HOME."""

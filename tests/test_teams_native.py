@@ -322,7 +322,7 @@ class TrustContract(ClassFixture):
                 name = fx.sessions[member_id]['name']
                 rows = fx.audit_rows(name)
                 fx.evidence.write(f'audit-{member_id}.json', rows)
-                grants = [r for r in rows if json.loads(r['question']).get('source') == self.trust_source]
+                grants = [r for r in rows if r['source'] == self.trust_source]
                 self.assertEqual(len(grants), 1, 'one audited grant for the card')
                 self.assertNotIn(grants[0]['status'], ('prepared', 'cancelled', 'unknown'), grants[0])
                 self.assert_agent_trusted(member_id)
@@ -343,7 +343,7 @@ class TrustContract(ClassFixture):
         still = [q.get('question_id') for q in fx.inspect('m1').get('pending_questions') or []]
         self.assertIn(card.get('question_id'), still, 'the prompt is still pending for the person')
         grants = [r for r in fx.audit_rows(fx.sessions['m1']['name'])
-                  if json.loads(r['question']).get('question_id') == card.get('question_id')]
+                  if r['question_id'] == card.get('question_id')]
         self.assertFalse(grants, 'no audited grant for a prompt that is not a startup prompt')
 
     def assert_agent_trusted(self, member_id):
@@ -401,7 +401,7 @@ class CodexTrustContract(ClassFixture):
                 self.assertEqual(variant, 'one-row' if fixture.hosted_runner() else 'wrapped',
                                  'a hosted runner shows the one-row panel, a local run the wrapped one')
                 rows = [r for r in fx.audit_rows(fx.sessions[member_id]['name'])
-                        if json.loads(r['question']).get('source') == 'codex_folder_trust']
+                        if r['source'] == 'codex_folder_trust']
                 self.assertFalse(rows, 'the standing confirmation granted nothing')
                 refusal = [c for c in fx.cards() if f'Member {member_id} needs your attention' in c.get('text', '')
                            and 'grants a different scope' in c.get('text', '')]
@@ -454,7 +454,7 @@ class ResumeContract(ClassFixture):
                        fixture.BOUND['turn'], 2)
         latest = fx.requests_with(lambda r: brief in r['users'])[-1]
         self.assertEqual(latest['users'].count(brief), 1, 'the brief arrives once')
-        rows = [r for r in fx.audit_rows(fx.sessions['m1']['name']) if json.loads(r['question']).get('source') == 'team_resume']
+        rows = [r for r in fx.audit_rows(fx.sessions['m1']['name']) if r['source'] == 'team_resume']
         fx.evidence.write('resume-audit.json', rows)
         self.assertTrue(rows, 'the resume is audited')
         self.assertFalse([r for r in rows if r['status'] in ('prepared', 'cancelled', 'unknown')], rows)
@@ -487,7 +487,7 @@ class ResumeContract(ClassFixture):
                                    and 'Member m1 needs your attention' in c.get('text', '')], fixture.BOUND['doorbell'], 3)
         fx.evidence.write('terminate-refusal.json', refused)
         rows = [r for r in fx.audit_rows(fx.sessions['m1']['name'])
-                if json.loads(r['question']).get('source') == 'team_resume' and view['run_id'] in r['question']]
+                if r['source'] == 'team_resume' and r['run'] == view['run_id']]
         self.assertFalse(rows, 'no resume was reserved for the terminated run')
         live = [r for r in fx.rows() if r.get('launch_id') == launch and r.get('runtime_state') == 'live']
         self.assertFalse(live, 'no session of the member launch runs again')
@@ -672,6 +672,34 @@ class TeamsCodexPanel(unittest.TestCase):
 
 class TeamsFixtureDiagnostics(unittest.TestCase):
     """The read-only evidence of a refused resume, on a synthetic private state."""
+
+    def test_audit_rows_read_the_reservation_the_journal_saves(self):
+        import sqlite3
+        from types import SimpleNamespace
+        # The shape comes from its producer: reserve() saves {"question", "answers"} and
+        # the categories into the question column.
+        producer = (Path(__file__).resolve().parents[1] / 'src/approval_log.rs').read_text()
+        self.assertIn('let mut saved = json!({"question":question,"answers":answers});', producer)
+        self.assertIn('saved["categories"] = categories;', producer)
+        self.assertRegex(producer, r'INSERT OR IGNORE INTO attempts\(identity,request_id,at,host,session,provider,prompt,question\)')
+        self.assertIn('params![identity,request,at,host,session,provider,prompt,saved.to_string()]', producer)
+        with tempfile.TemporaryDirectory() as base:
+            state = Path(base) / 'state'
+            (state / 'approval-audit').mkdir(parents=True)
+            db = sqlite3.connect(state / 'approval-audit/journal.sqlite3')
+            db.execute("CREATE TABLE attempts (id INTEGER PRIMARY KEY, identity TEXT, request_id TEXT, at INTEGER, "
+                       "host TEXT, session TEXT, provider TEXT, prompt TEXT, question TEXT, status TEXT, detail TEXT)")
+            saved = {'question': {'source': 'team_resume', 'question_id': 'q-1', 'run_id': 'run-1'}, 'answers': [],
+                     'categories': ['team_resume']}
+            db.execute("INSERT INTO attempts VALUES (1, 'i', 'r', 1, 'h', 'member', 'claude', '', ?, 'approved', '')",
+                       (json.dumps(saved),))
+            db.execute("INSERT INTO attempts VALUES (2, 'j', 's', 1, 'h', 'other', 'claude', '', ?, 'approved', '')",
+                       (json.dumps(saved),))
+            db.commit()
+            db.close()
+            rows = fixture.TeamFixture.audit_rows(SimpleNamespace(env={'HGS_STATE_DIR': str(state)}), 'member')
+        self.assertEqual([(r['id'], r['source'], r['question_id'], r['run'], r['categories']) for r in rows],
+                         [(1, 'team_resume', 'q-1', 'run-1', ['team_resume'])])
 
     def test_folder_watch_times_a_folder_that_goes_and_comes_back(self):
         with tempfile.TemporaryDirectory() as base:
