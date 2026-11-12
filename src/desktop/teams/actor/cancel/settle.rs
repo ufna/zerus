@@ -66,12 +66,9 @@ impl Runtime {
         if !self.cancel_still_pending(store, p, t, row)? {
             return self.cancel_done(store, t, key, now);
         }
-        let reason = "The recorded cancel outcome left the same decision pending.";
-        if row.refusal_exit {
-            self.cancel_refused_exit(store, t, key, row, reason)?;
-            return Err(problem(&row.reason));
-        }
-        self.changed_cancel_visit(store, p, t, key, row, reason, now)
+        Err(problem(
+            "The recorded cancel outcome still has a pending decision.",
+        ))
     }
     pub(super) fn cancel_still_pending(
         &self,
@@ -149,6 +146,26 @@ impl Runtime {
         boundary("refusal_exit");
         Ok(())
     }
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn stale_cancel_exit(
+        &mut self,
+        store: &mut Store,
+        p: &mut impl Ports,
+        t: &Team,
+        key: &str,
+        row: &mut Entry,
+        now: i64,
+    ) -> Result<()> {
+        row.reply = Some(TaskReply::Refused { reason:
+            "The cancel command answered stale. The actor stopped after three stale answers with unchanged observations.".into()
+        });
+        row.fact = None;
+        row.refusal_exit = true;
+        self.reserve_cancel_fact(store, t, row)?;
+        self.put(&t.id, key, row)?;
+        boundary("refusal_exit");
+        self.settle_cancel(store, p, t, key, row, now)
+    }
     pub(super) fn cancel_visit_current(
         &self,
         store: &Store,
@@ -168,19 +185,16 @@ impl Runtime {
         t: &Team,
         key: &str,
         row: &mut Entry,
-        reason: &str,
+        _reason: &str,
         now: i64,
     ) -> Result<()> {
-        let answered = row.reply.take();
+        row.reply = None;
         row.fact = None;
         row.refusal_exit = false;
         if !self.refresh_cancel(store, p, t, key, row, now)? {
             return Ok(());
         }
-        if row.children >= 3 || row.pending.task.is_none() {
-            row.reply = answered;
-            return self.cancel_refused_exit(store, t, key, row, reason);
-        }
+        row.unchanged_answers = 0;
         row.next_ms = 0;
         self.put(&t.id, key, row)?;
         self.recovered(store, t, key, now)

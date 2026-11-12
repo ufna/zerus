@@ -31,19 +31,14 @@ pub(in crate::desktop::teams) enum FactOutcome {
 
 impl Runtime {
     pub(super) fn cancel_command(
-        &mut self,
+        &self,
         p: &mut impl Ports,
         t: &Team,
-        key: &str,
-        row: &mut Entry,
+        row: &Entry,
     ) -> Result<Answer> {
         if row.pending.task.is_none() {
             return Ok(Answer::without_task());
         }
-        // Reserve a possible child before the effect. A crash may consume
-        // a slot without starting it; it can never grant a fourth start.
-        row.children += 1;
-        self.put(&t.id, key, row)?;
         p.cancel(t, &row.pending, &uuid::Uuid::new_v4().to_string())
     }
 }

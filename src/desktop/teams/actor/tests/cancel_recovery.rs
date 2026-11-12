@@ -17,13 +17,39 @@ struct Recovery {
     facts: Vec<Fact>,
     reject_exit: bool,
     cleared: Vec<(String, u32)>,
+    hold: bool,
+    stale: bool,
+    fail_observe: bool,
+    settle_observation: bool,
+    reads: usize,
+    malformed: bool,
 }
 impl Ports for Recovery {
     fn changes(&mut self, _: &str, _: &str, _: u64) -> Result<zerus_replica::Changes> {
         unreachable!()
     }
-    fn observe(&mut self, _: &mut Store, _: &TaskRef) -> Result<()> {
-        unreachable!()
+    fn observe(&mut self, store: &mut Store, task: &TaskRef) -> Result<()> {
+        self.reads += 1;
+        if self.fail_observe {
+            return Err(super::super::problem("The task cannot be observed yet."));
+        }
+        if self.settle_observation {
+            assert_eq!(store.node(TEAM, 1)?.unwrap().task.as_ref(), Some(task));
+            let mut o = store.task_observation(TEAM, 1)?.unwrap();
+            o.previous_revision = o.revision.clone();
+            o.revision = uuid::Uuid::new_v4().to_string();
+            o.cancelled = true;
+            super::super::write(
+                store,
+                TEAM,
+                Operation::ObserveTask {
+                    node: 1,
+                    observation: o,
+                },
+                100,
+            )?;
+        }
+        Ok(())
     }
     fn free(&mut self, _: &Team, _: &Member) -> Result<bool> {
         Ok(false)
@@ -47,15 +73,27 @@ impl Ports for Recovery {
                 id: pending.attempt_id.clone(),
             }
         };
-        let state = if self.live { "released" } else { "cancelled" };
+        let state = if self.hold {
+            "cutting_over"
+        } else if self.stale {
+            "stale"
+        } else if self.live && !self.settle_observation {
+            "released"
+        } else {
+            "cancelled"
+        };
         crate::desktop::teams::child::FIXTURE_EXIT.with(|s| {
             *s.borrow_mut() = Some(
-                json!({"schema":1,"team":team.id,"node":pending.node,"state":state,"error":"",
+                json!({"schema":1,"team":team.id,"node":pending.node,"state":state,"error":if self.hold { "The project is held for cutover." } else if self.stale { "Observe this task before trying again." } else { "" },
                 "attempt":pair.number,"attempt_id":pair.id})
                 .to_string()
                 .into_bytes(),
             )
         });
+        if self.malformed {
+            crate::desktop::teams::child::FIXTURE_EXIT
+                .with(|s| *s.borrow_mut() = Some(b"{".to_vec()));
+        }
         self.native.run_cancel(team, pending, original)
     }
     fn record_cancel(
@@ -168,6 +206,12 @@ fn case(status: &str, exit: bool) -> (Harness, Runtime, Recovery) {
         facts: vec![],
         reject_exit: false,
         cleared: vec![],
+        hold: false,
+        stale: false,
+        fail_observe: false,
+        settle_observation: false,
+        reads: 0,
+        malformed: false,
     };
     (h, runtime, p)
 }
@@ -341,6 +385,12 @@ fn many_halted_cancel_rows_do_not_spend_the_page_budget_before_a_later_node() {
         facts: vec![],
         reject_exit: false,
         cleared: vec![],
+        hold: false,
+        stale: false,
+        fail_observe: false,
+        settle_observation: false,
+        reads: 0,
+        malformed: false,
     };
     a.page(&mut h.store, &mut p, &[], 100, false).unwrap();
     assert_eq!(p.calls, vec![(TEAM.into(), 13)]);
@@ -349,5 +399,147 @@ fn many_halted_cancel_rows_do_not_spend_the_page_budget_before_a_later_node() {
     for row in a.ledger.prefix_page(TEAM, "cancel:", "").unwrap() {
         assert!(row.data["next_ms"].as_i64().unwrap() > 100);
         assert_eq!(row.data["halted"], true);
+    }
+}
+
+#[test]
+fn a_thirty_minute_cutover_hold_backs_off_without_refusing_and_runs_when_released() {
+    for status in ["live", "stopped", "archived"] {
+        let (mut h, mut a, mut p) = case(status, false);
+        p.loss = None;
+        p.hold = true;
+        for minute in 0..30 {
+            let t = h.store.team(TEAM).unwrap().unwrap();
+            a.cancels(&mut h.store, &mut p, &t, 100 + minute * 60_000)
+                .unwrap();
+        }
+        assert_eq!(p.calls.len(), 5, "{status}");
+        assert!(p.facts.is_empty());
+        assert_eq!(
+            h.store.cards(TEAM, 200, None).unwrap().rows.len(),
+            usize::from(p.live)
+        );
+        let row = a.ledger.prefix_page(TEAM, "cancel:", "").unwrap().remove(0);
+        assert!(row.data["reason"].as_str().unwrap().contains("cutover"));
+        assert_eq!(row.data["next_ms"], 1_800_100);
+        p.hold = false;
+        let t = h.store.team(TEAM).unwrap().unwrap();
+        a.cancels(&mut h.store, &mut p, &t, 1_800_100).unwrap();
+        assert_eq!(p.calls.len(), 6);
+        assert_eq!(p.facts.len(), 1);
+        assert!(!p.facts[0].refused);
+        assert!(a
+            .ledger
+            .prefix_page(TEAM, "cancel:", "")
+            .unwrap()
+            .is_empty());
+        assert!(h
+            .store
+            .cards(TEAM, 200, None)
+            .unwrap()
+            .rows
+            .iter()
+            .all(|c| c.state != "open"));
+        assert!(a.ledger.terminal_retry().unwrap().is_none());
+    }
+}
+#[test]
+fn proven_nonstarts_have_their_own_backoff_and_never_consume_stale_answer_slots() {
+    for status in ["live", "stopped"] {
+        let (mut h, mut a, mut p) = case(status, false);
+        p.loss = None;
+        p.native
+            .stop
+            .store(true, std::sync::atomic::Ordering::Release);
+        for minute in 0..30 {
+            let t = h.store.team(TEAM).unwrap().unwrap();
+            a.cancels(&mut h.store, &mut p, &t, 100 + minute * 60_000)
+                .unwrap();
+        }
+        assert_eq!(p.calls.len(), 5);
+        assert!(p.facts.is_empty());
+        let row = a.ledger.prefix_page(TEAM, "cancel:", "").unwrap().remove(0);
+        assert_eq!(row.data["unchanged_answers"], 0);
+        assert_eq!(
+            h.store.cards(TEAM, 200, None).unwrap().rows.len(),
+            usize::from(p.live)
+        );
+        p.native
+            .stop
+            .store(false, std::sync::atomic::Ordering::Release);
+        let t = h.store.team(TEAM).unwrap().unwrap();
+        a.cancels(&mut h.store, &mut p, &t, 1_800_100).unwrap();
+        assert_eq!(p.facts.len(), 1);
+        assert!(!p.facts[0].refused);
+    }
+}
+#[test]
+fn a_cancelled_answer_is_saved_while_observation_retries_without_another_child() {
+    let (mut h, mut a, mut p) = case("live", false);
+    p.loss = None;
+    p.settle_observation = true;
+    p.fail_observe = true;
+    for minute in 0..30 {
+        let machine = a.machine.clone();
+        drop(a);
+        a = Runtime::open(h.temp.path(), &machine).unwrap();
+        let t = h.store.team(TEAM).unwrap().unwrap();
+        a.cancels(&mut h.store, &mut p, &t, 100 + minute * 60_000)
+            .unwrap();
+    }
+    assert_eq!(p.calls.len(), 1);
+    assert_eq!(p.reads, 5);
+    assert!(p.facts.is_empty());
+    assert_eq!(h.store.cards(TEAM, 200, None).unwrap().rows.len(), 1);
+    p.fail_observe = false;
+    let t = h.store.team(TEAM).unwrap().unwrap();
+    a.cancels(&mut h.store, &mut p, &t, 1_800_100).unwrap();
+    assert_eq!(p.calls.len(), 1);
+    assert!(p.facts.is_empty());
+    assert!(h.store.pending_cancels(TEAM, 16, 0).unwrap().is_empty());
+    assert_eq!(h.node(1).state, NodeState::Cancelled);
+}
+#[test]
+fn three_unchanged_live_stale_answers_record_one_refusal_and_no_fourth_child() {
+    let (mut h, mut a, mut p) = case("live", false);
+    p.loss = None;
+    p.stale = true;
+    for pass in 0..100 {
+        let t = h.store.team(TEAM).unwrap().unwrap();
+        a.cancels(&mut h.store, &mut p, &t, 100 + pass * 60_000)
+            .unwrap();
+    }
+    assert_eq!(p.calls.len(), 3);
+    assert_eq!(p.facts.len(), 1);
+    assert!(p.facts[0].refused);
+    assert!(h.store.pending_cancels(TEAM, 16, 0).unwrap().is_empty());
+    assert_eq!(h.store.inbox(TEAM, 200, None).unwrap().rows.len(), 1);
+}
+
+#[test]
+fn unreadable_answers_fail_with_backoff_and_recover_without_a_bound_refusal() {
+    for status in ["live", "stopped"] {
+        let (mut h, mut a, mut p) = case(status, false);
+        p.loss = None;
+        p.malformed = true;
+        for minute in 0..30 {
+            let t = h.store.team(TEAM).unwrap().unwrap();
+            a.cancels(&mut h.store, &mut p, &t, 100 + minute * 60_000)
+                .unwrap();
+        }
+        assert_eq!(p.calls.len(), 5);
+        assert!(p.facts.is_empty());
+        let row = a.ledger.prefix_page(TEAM, "cancel:", "").unwrap().remove(0);
+        assert_eq!(row.data["unchanged_answers"], 0);
+        assert!(row.data["reason"].as_str().unwrap().contains("malformed"));
+        assert_eq!(
+            h.store.cards(TEAM, 200, None).unwrap().rows.len(),
+            usize::from(p.live)
+        );
+        p.malformed = false;
+        let t = h.store.team(TEAM).unwrap().unwrap();
+        a.cancels(&mut h.store, &mut p, &t, 1_800_100).unwrap();
+        assert_eq!(p.facts.len(), 1);
+        assert!(!p.facts[0].refused);
     }
 }

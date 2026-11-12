@@ -1,5 +1,6 @@
 //! A cancelled answer names work for the ordinary observer. It grants no
-//! separate writer of a live task's end and needs no durable answer marker.
+//! separate writer of a live task's end. The answer is durable while the
+//! ordinary observation retries, without starting another command.
 use super::*;
 impl Runtime {
     pub(super) fn cancel_needs_observation(
@@ -38,19 +39,17 @@ impl Runtime {
         if !matches!(fresh.status, TeamStatus::Running | TeamStatus::Paused) {
             return Ok(false);
         }
+        if !self.cancel_still_pending(store, p, &fresh, row)? {
+            self.cancel_done(store, &fresh, key, now)?;
+            return Ok(true);
+        }
         boundary("before_observe");
         p.observe(store, task)?;
         boundary("observed");
         if self.cancel_still_pending(store, p, &fresh, row)? {
-            self.changed_cancel_visit(
-                store,
-                p,
-                &fresh,
-                key,
-                row,
-                "The ordinary observation left the same cancel decision pending.",
-                now,
-            )?;
+            return Err(problem(
+                "The cancelled task still has a pending team decision after observation.",
+            ));
         } else {
             self.cancel_done(store, &fresh, key, now)?;
         }

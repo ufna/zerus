@@ -47,7 +47,7 @@ struct Entry {
     deferrals: u32,
     fact: Option<Fact>,
     #[serde(default)]
-    children: u8,
+    unchanged_answers: u8,
     #[serde(default)]
     refusal_exit: bool,
     #[serde(default)]
@@ -108,7 +108,7 @@ impl Runtime {
                 attempt: None,
                 deferrals: 0,
                 fact: None,
-                children: 0,
+                unchanged_answers: 0,
                 refusal_exit: false,
                 halted: false,
                 failures: 0,
@@ -218,7 +218,7 @@ impl Runtime {
             // Retire a cached answer from an older build. Observation is now
             // the sole writer for a live task's end; never rewrite that old
             // fact under its already reserved request ID.
-            row.reply = None;
+            row.reply = Some(TaskReply::Cancelled);
             row.fact = None;
             self.put(&t.id, key, row)?;
             return self
@@ -233,6 +233,9 @@ impl Runtime {
             row.reply = None;
             row.fact = None;
             self.put(&t.id, key, row)?;
+            return self.defer_cancel(store, p, t, key, row, now);
+        }
+        if matches!(row.reply, Some(TaskReply::Stale)) {
             return self.defer_cancel(store, p, t, key, row, now);
         }
         if row.reply.is_none() {
@@ -257,21 +260,11 @@ impl Runtime {
         if !self.refresh_cancel(store, p, t, key, row, now)? {
             return Ok(());
         }
-        if row.children >= 3 && row.pending.task.is_some() {
-            self.cancel_refused_exit(
-                store,
-                t,
-                key,
-                row,
-                "Three cancel command attempts produced no recordable outcome.",
-            )?;
-            return self.settle_cancel(store, p, t, key, row, now);
-        }
         *budget -= 1;
-        let answer = self.cancel_command(p, t, key, row)?;
+        let answer = self.cancel_command(p, t, row)?;
         boundary("effect");
         match &answer.reply {
-            TaskReply::Stale => return self.defer_cancel(store, p, t, key, row, now),
+            TaskReply::Stale => (),
             TaskReply::Cancelled | TaskReply::Released if answer.attempt.is_none() => {
                 return Err(problem("Cancel returned no attempt evidence"));
             }
@@ -279,15 +272,18 @@ impl Runtime {
             TaskReply::CuttingOver { reason } => return Err(problem(reason)),
             _ => return Err(problem("Cancel answered another command")),
         }
-        if matches!(answer.reply, TaskReply::Cancelled)
-            && self.observe_cancelled(store, p, t, key, row, now)?
-        {
-            return Ok(());
-        }
         row.reply = Some(answer.reply);
         row.attempt = answer.attempt;
         self.put(&t.id, key, row)?;
         boundary("outcome");
+        if matches!(row.reply, Some(TaskReply::Stale)) {
+            return self.defer_cancel(store, p, t, key, row, now);
+        }
+        if self.cancel_needs_observation(store, t, row)?
+            && self.observe_cancelled(store, p, t, key, row, now)?
+        {
+            return Ok(());
+        }
         self.settle_cancel(store, p, t, key, row, now)
     }
     fn refresh_cancel(
@@ -310,8 +306,8 @@ impl Runtime {
             return Ok(false);
         };
         if fresh != &row.pending {
-            // No answer is cached here. A stale check observed a new pair;
-            // after its backoff a fresh admission may check that same decision.
+            // A stale check observed progress. The next command must use
+            // the current pair, after its backoff and a fresh admission.
             row.pending = fresh.clone();
             self.put(&t.id, key, row)?;
         }
@@ -331,20 +327,35 @@ impl Runtime {
             .team(&t.id)?
             .ok_or_else(|| problem("Cancel team disappeared"))?;
         if !matches!(team.status, TeamStatus::Running | TeamStatus::Paused) {
+            row.reply = None;
+            self.put(&t.id, key, row)?;
             return Err(problem("A terminal cancel returned no current answer"));
         }
-        let observed = if let Some(task) = &row.pending.task {
-            p.observe(store, task)
+        let before = store.task_observation(&t.id, row.pending.node)?;
+        let pending = row.pending.clone();
+        if let Some(task) = &row.pending.task {
+            p.observe(store, task)?;
+        }
+        if !self.refresh_cancel(store, p, t, key, row, now)? {
+            return Ok(());
+        }
+        let unchanged =
+            before == store.task_observation(&t.id, row.pending.node)? && pending == row.pending;
+        row.unchanged_answers = if unchanged && matches!(row.reply, Some(TaskReply::Stale)) {
+            row.unchanged_answers.saturating_add(1)
         } else {
-            Ok(())
+            0
         };
+        self.put(&t.id, key, row)?;
+        if row.unchanged_answers >= 3 {
+            return self.stale_cancel_exit(store, p, t, key, row, now);
+        }
+        row.reply = None;
+        row.fact = None;
         row.deferrals = row.deferrals.saturating_add(1);
         row.next_ms = now.saturating_add(retry::delay(row.deferrals));
         self.put(&t.id, key, row)?;
-        if matches!(t.status, TeamStatus::Running | TeamStatus::Paused) {
-            self.defer(store, t, key, "", now)?;
-        }
-        observed
+        self.defer(store, t, key, "", now)
     }
     pub(super) fn cancel_done(
         &mut self,

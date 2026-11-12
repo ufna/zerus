@@ -20,6 +20,7 @@ struct Fake {
     keep_recorded: bool,
     answered_cancelled: bool,
     fail_observe: bool,
+    crashes_before_spawn: u8,
 }
 impl Ports for Fake {
     fn changes(&mut self, _: &str, _: &str, _: u64) -> Result<zerus_replica::Changes> {
@@ -67,6 +68,10 @@ impl Ports for Fake {
             .collect())
     }
     fn cancel(&mut self, _: &Team, p: &Pending, _: &str) -> Result<Answer> {
+        if self.crashes_before_spawn > 0 {
+            self.crashes_before_spawn -= 1;
+            panic!("fixture crash before spawn");
+        }
         self.calls.push(p.node);
         self.answered_cancelled = matches!(self.reply, None | Some(TaskReply::Cancelled));
         Ok(Answer {
@@ -396,11 +401,7 @@ fn live_cancel_restarts_before_and_after_the_observation_never_record_an_end_fac
         assert!(p.pending.is_empty(), "{point}");
         assert_eq!(
             p.calls.len(),
-            if matches!(point, "effect" | "before_observe") {
-                2
-            } else {
-                1
-            },
+            if point == "effect" { 2 } else { 1 },
             "{point}"
         );
         assert_eq!(p.reads, 1, "{point}");
@@ -408,7 +409,7 @@ fn live_cancel_restarts_before_and_after_the_observation_never_record_an_end_fac
     }
 }
 #[test]
-fn a_failed_live_cancel_observation_backs_off_and_repeats_only_the_idempotent_command() {
+fn a_failed_live_cancel_observation_backs_off_and_retries_observation_without_a_child() {
     let (mut h, mut a, mut p) = setup();
     p.fail_observe = true;
     a.cancels(&mut h.store, &mut p, &h_team(), 100).unwrap();
@@ -417,7 +418,7 @@ fn a_failed_live_cancel_observation_backs_off_and_repeats_only_the_idempotent_co
     assert!(p.facts.is_empty());
     p.fail_observe = false;
     a.cancels(&mut h.store, &mut p, &h_team(), 60_100).unwrap();
-    assert_eq!(p.calls.len(), 2);
+    assert_eq!(p.calls.len(), 1);
     assert!(p.pending.is_empty());
     assert!(p.facts.is_empty());
 }
@@ -464,36 +465,23 @@ fn an_invalid_terminal_stale_reply_backs_off_without_observing_or_recording_a_re
 }
 
 #[test]
-fn one_decision_starts_at_most_three_cancel_commands_across_a_hundred_passes_and_restarts() {
-    for changed in [false, true] {
-        let (mut h, mut a, mut p) = setup();
-        p.reply = Some(if changed {
-            TaskReply::Released
-        } else {
-            TaskReply::CuttingOver {
-                reason: "No outcome yet".into(),
-            }
-        });
-        p.always_changed = changed;
-        for pass in 0..100 {
-            let machine = a.machine.clone();
-            if pass > 0 {
-                drop(a);
-                a = super::super::Runtime::open(h.temp.path(), &machine).unwrap();
-            }
-            a.tick(&mut h.store, &mut p, TEAM, 100 + pass * 900_000, false)
-                .unwrap();
+fn three_live_stale_answers_with_unchanged_observations_have_no_fourth_child_in_a_hundred_passes() {
+    let (mut h, mut a, mut p) = setup();
+    p.reply = Some(TaskReply::Stale);
+    for pass in 0..100 {
+        let machine = a.machine.clone();
+        if pass > 0 {
+            drop(a);
+            a = super::super::Runtime::open(h.temp.path(), &machine).unwrap();
         }
-        assert_eq!(p.calls.len(), 3, "changed={changed}");
-        assert!(p.pending.is_empty());
-        let exits: Vec<_> = p.facts.iter().filter(|f| f.refused).collect();
-        assert_eq!(exits.len(), 1);
-        assert!(exits[0].reason.contains(if changed {
-            "execution changed"
-        } else {
-            "Three cancel command attempts"
-        }));
+        a.cancels(&mut h.store, &mut p, &h_team(), 100 + pass * 900_000)
+            .unwrap();
     }
+    assert_eq!(p.calls.len(), 3);
+    assert!(p.pending.is_empty());
+    assert_eq!(p.facts.len(), 1);
+    assert!(p.facts[0].refused);
+    assert!(p.facts[0].reason.contains("stale"));
 }
 
 #[test]
@@ -520,7 +508,7 @@ fn a_cancel_pass_spends_at_most_four_effects_and_resumes_the_rest() {
 }
 
 #[test]
-fn the_decision_budget_survives_successful_visits_that_leave_the_decision_pending() {
+fn a_saved_complete_answer_retries_only_its_record_or_observation_while_a_decision_stays_pending() {
     for observed in [false, true] {
         let (mut h, mut a, mut p) = setup();
         p.reply = Some(if observed {
@@ -532,51 +520,70 @@ fn the_decision_budget_survives_successful_visits_that_leave_the_decision_pendin
         p.keep_recorded = !observed;
         for pass in 0..100 {
             let machine = a.machine.clone();
-            if pass > 0 {
-                drop(a);
-                a = super::super::Runtime::open(h.temp.path(), &machine).unwrap();
-            }
-            a.tick(&mut h.store, &mut p, TEAM, 100 + pass * 900_000, false)
+            drop(a);
+            a = super::super::Runtime::open(h.temp.path(), &machine).unwrap();
+            a.cancels(&mut h.store, &mut p, &h_team(), 100 + pass * 900_000)
                 .unwrap();
         }
-        assert_eq!(p.calls.len(), 3, "observed={observed}");
-        assert!(p.pending.is_empty());
-        assert_eq!(p.facts.iter().filter(|f| f.refused).count(), 1);
+        assert_eq!(p.calls.len(), 1);
+        assert!(p.facts.iter().all(|f| !f.refused));
+        let ids: std::collections::BTreeSet<_> = p.facts.iter().map(|f| &f.request_id).collect();
+        assert!(ids.len() <= 1);
+        assert_eq!(h.store.cards(TEAM, 200, None).unwrap().rows.len(), 1);
     }
 }
-
 #[test]
-fn a_changed_snapshot_before_the_exit_keeps_the_same_decisions_child_budget() {
+fn a_crash_after_a_stale_answer_before_its_save_can_cost_one_extra_child() {
     let (mut h, mut a, mut p) = setup();
-    p.reply = Some(TaskReply::CuttingOver {
-        reason: "No answer".into(),
-    });
-    for pass in 0..3 {
-        a.tick(&mut h.store, &mut p, TEAM, 100 + pass * 900_000, false)
-            .unwrap();
+    p.reply = Some(TaskReply::Stale);
+    for now in [100, 60_100] {
+        a.cancels(&mut h.store, &mut p, &h_team(), now).unwrap();
     }
-    assert_eq!(p.calls.len(), 3);
-    super::super::cancel::CRASH.with(|s| s.set(Some("refusal_exit")));
+    super::super::cancel::CRASH.with(|s| s.set(Some("effect")));
     assert!(
-        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| a.tick(
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| a.cancels(
             &mut h.store,
             &mut p,
-            TEAM,
-            2_700_100,
-            false
+            &h_team(),
+            180_100
         )))
         .is_err()
     );
-    p.pending[0].attempt += 1;
-    p.pending[0].attempt_id = "new-observation".into();
     let machine = a.machine.clone();
     drop(a);
     let mut a = super::super::Runtime::open(h.temp.path(), &machine).unwrap();
-    for pass in 4..100 {
-        a.tick(&mut h.store, &mut p, TEAM, 100 + pass * 900_000, false)
+    for pass in 0..100 {
+        a.cancels(&mut h.store, &mut p, &h_team(), 180_101 + pass * 900_000)
             .unwrap();
     }
-    assert_eq!(p.calls.len(), 3);
+    assert_eq!(p.calls.len(), 4);
     assert!(p.pending.is_empty());
-    assert_eq!(p.facts.iter().filter(|f| f.refused).count(), 1);
+    assert_eq!(p.facts.len(), 1);
+    assert!(p.facts[0].refused);
+}
+
+#[test]
+fn crashes_before_spawn_do_not_count_as_answers_even_after_each_restart() {
+    let (mut h, mut a, mut p) = setup();
+    p.crashes_before_spawn = 5;
+    for pass in 0..5 {
+        assert!(
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| a.cancels(
+                &mut h.store,
+                &mut p,
+                &h_team(),
+                100 + pass
+            )))
+            .is_err()
+        );
+        let machine = a.machine.clone();
+        drop(a);
+        a = super::super::Runtime::open(h.temp.path(), &machine).unwrap();
+    }
+    assert!(p.calls.is_empty());
+    p.reply = Some(TaskReply::Released);
+    a.cancels(&mut h.store, &mut p, &h_team(), 106).unwrap();
+    assert_eq!(p.calls.len(), 1);
+    assert_eq!(p.facts.len(), 1);
+    assert!(!p.facts[0].refused);
 }
