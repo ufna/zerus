@@ -40,7 +40,8 @@ pub(in crate::teams::ops) fn observe_override(ctx: &mut Context<'_>, n: &Node) -
                         params![ctx.team.id, n.id],
                     )
                     .map_err(storage)?;
-                retire_stage(ctx, n.id)?;
+                // The current stage's own task ended: it ends here.
+                end_stage(ctx, n.id)?;
                 let target = ctx.node(target)?;
                 to_lead(
                     ctx,

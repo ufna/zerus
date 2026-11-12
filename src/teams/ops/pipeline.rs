@@ -14,7 +14,7 @@ pub(super) use overrides::{
     released_stage, task_ended,
 };
 use stages::want_stage;
-pub(super) use stages::{current_stage, retire_stage};
+pub(super) use stages::{current_stage, end_stage, retire_stage};
 
 fn spec<'a>(ctx: &'a Context<'_>, n: &Node) -> Result<&'a Pipeline> {
     ctx.team

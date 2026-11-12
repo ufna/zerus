@@ -75,7 +75,8 @@ pub(super) fn outcome(ctx: &mut Context<'_>) -> Result<()> {
     match outcome {
         StageTaskOutcome::Created { task } => bind(ctx, node, task),
         StageTaskOutcome::Refused { reason } | StageTaskOutcome::Uncertain { reason } => {
-            pipeline::retire_stage(ctx, node)?;
+            // A creation refused or uncertain was never bound.
+            pipeline::end_stage(ctx, node)?;
             let target = ctx.node(target)?;
             pipeline::to_lead(ctx, &target, reason)
         }

@@ -7,7 +7,50 @@ pub(in crate::teams::ops) fn current_stage(
 ) -> Result<bool> {
     ctx.db.query_row("SELECT EXISTS(SELECT 1 FROM pipeline_runs p JOIN nodes n ON n.team=p.team AND n.id=p.node JOIN stage_tasks s ON s.team=p.team AND s.node=p.stage WHERE p.team=?1 AND p.node=?2 AND p.stage=?3 AND p.state='active' AND p.generation=n.generation AND s.generation=n.generation AND n.node_state='reported')",params![ctx.team.id,target,stage],|r|r.get(0)).map_err(storage)
 }
+/// The pipeline lets a stage go: the caller has already taken it from its
+/// pipeline (its creation superseded, its parent's run moved on), so it is
+/// no longer the current stage and its holder's verdict is refused. A
+/// retirement never settles a pending cancel, in any team state: a stage
+/// that has one, a person's or a stop's, keeps it and stays where the cancel
+/// step finds it; a stage whose task is bound, which may still be running,
+/// gets the retirement's own, as a stop opens one for a node. Either way it
+/// is neither archived nor released here, and its other unsettled decision
+/// and its open effects are superseded. That cancel's answer, or the
+/// observation of its task, ends it; then it is archived and its key
+/// cleared as for any decided stage. A stage with neither ends here, as
+/// before (a stop has already released every binding of its team).
 pub(in crate::teams::ops) fn retire_stage(ctx: &Context<'_>, stage: u32) -> Result<()> {
+    let bound: bool = ctx
+        .db
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM live_tasks WHERE team=?1 AND node=?2)",
+            params![ctx.team.id, stage],
+            |r| r.get(0),
+        )
+        .map_err(storage)?;
+    let pending = ctx.pending(stage)?;
+    let cancel = matches!(&pending, Some((_, kind, _)) if kind == "cancel");
+    if !cancel && !bound {
+        return end_stage(ctx, stage);
+    }
+    if !cancel {
+        if pending.is_some() {
+            ctx.settle_override(stage)?;
+        }
+        ctx.decision(
+            stage,
+            "cancel",
+            "The stage was retired by its pipeline.",
+            DecisionState::Pending,
+        )?;
+    }
+    ctx.close_inbox(stage)?;
+    ctx.db.execute(&format!("UPDATE effects SET state='superseded' WHERE team=?1 AND node=?2 AND state IN {OPEN_EFFECT_STATES}"),params![ctx.team.id,stage]).map_err(storage)?;
+    Ok(())
+}
+/// A stage whose own task ended, or that has no bound task: its decisions
+/// settled, its effects superseded, its binding released, and archived.
+pub(in crate::teams::ops) fn end_stage(ctx: &Context<'_>, stage: u32) -> Result<()> {
     ctx.settle_override(stage)?;
     ctx.close_inbox(stage)?;
     ctx.db.execute(&format!("UPDATE effects SET state='superseded' WHERE team=?1 AND node=?2 AND state IN {OPEN_EFFECT_STATES}"),params![ctx.team.id,stage]).map_err(storage)?;

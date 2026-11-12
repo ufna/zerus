@@ -4,6 +4,7 @@ mod answers;
 mod attempts;
 mod cancels;
 mod cards;
+mod retire;
 mod route;
 mod stages;
 mod terminal;
