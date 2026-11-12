@@ -459,9 +459,11 @@ fn observe_dispatch(name: &str) -> Result<i32> {
     expect(name, &request.expected_run_id, &request.expected_conversation_id)?;
     let record = read(name)?;
     // The answer path's own identity and availability rule, read only.
-    let current = string(&record, "run_id") == request.expected_run_id
-        && string(&record, "conversation_id") == request.expected_conversation_id
-        && matches(&record, panes_of(&live()?, &record))
+    let current = names_session(
+        &record,
+        &request.expected_run_id,
+        &request.expected_conversation_id,
+    ) && matches(&record, panes_of(&live()?, &record))
         && process_alive(&record)
         && !pause_active(&record)
         && string(&record, "error").is_empty()
@@ -670,6 +672,28 @@ fn validated_answers(card: &Value, answers: &[Answer]) -> Result<Value> {
     Ok(json!(normalized))
 }
 
+/// A pending question's native identity, or a session record's (`run_id`,
+/// `conversation_id`): a string is itself, and null is "". A new run's record
+/// holds its conversation as null until the first SessionStart, a startup
+/// card copies that null, and the snapshot and the answer request carry "";
+/// all of them are one identity. A missing key or another type is none at all.
+/// The answer command, the Teams confirmation policy and the approval audit
+/// read a question's identity only through this function (zerus-63rru.60).
+pub(crate) fn native_identity<'a>(value: &'a Value, key: &str) -> Option<&'a str> {
+    match value.get(key)? {
+        Value::Null => Some(""),
+        Value::String(text) => Some(text),
+        _ => None,
+    }
+}
+
+/// Whether `record` is the session a request names: its run, and its
+/// conversation by [`native_identity`].
+fn names_session(record: &Value, run: &str, conversation: &str) -> bool {
+    string(record, "run_id") == run
+        && native_identity(record, "conversation_id") == Some(conversation)
+}
+
 fn startup_question_id(id: &str) -> bool {
     ["codex-hooks-trust:", "codex-update:", "codex-goal-resume:", "codex-trust:", "kimi-trust:", "claude-trust:", "claude-permissions:", "claude-resume:", "claude-usage-limit:"].iter().any(|prefix| id.starts_with(prefix))
 }
@@ -680,9 +704,11 @@ fn matching_record(name: &str, request: &AnswerRequest) -> Result<Value> {
     expect(name, &request.expected_run_id, &request.expected_conversation_id)?;
     let record = read(name)?;
     terminating::check_mutation(&record)?;
-    if string(&record, "run_id") != request.expected_run_id
-        || string(&record, "conversation_id") != request.expected_conversation_id
-    {
+    if !names_session(
+        &record,
+        &request.expected_run_id,
+        &request.expected_conversation_id,
+    ) {
         return Err("session identity changed; refresh before answering".into());
     }
     if !matches(&record, panes_of(&live()?, &record))
@@ -780,6 +806,35 @@ pub(super) fn answer_lock(run_id: &str) -> Result<PathBuf> {
         .join(format!("{:x}.lock", Sha256::digest(run_id.as_bytes()))))
 }
 
+/// The answer command's reading of its request: the exact fields, and the
+/// identities it requires. Only a startup question may name no conversation.
+fn read_request(input: &[u8]) -> Result<AnswerRequest> {
+    let request: AnswerRequest = serde_json::from_slice(input)
+        .map_err(|error| format!("invalid answer payload: {error}"))?;
+    uuid::Uuid::parse_str(&request.request_id).map_err(|_| "request_id must be a UUID")?;
+    if request.expected_run_id.is_empty()
+        || (request.expected_conversation_id.is_empty()
+            && !startup_question_id(&request.question_id))
+        || request.expected_question_hash.len() != 64
+    {
+        return Err("question identities are required; refresh before answering".into());
+    }
+    Ok(request)
+}
+
+/// What the answer command reads from a request it would accept: its run,
+/// conversation and question (for tests of the requests other code builds).
+// Its only callers are the Teams confirmation tests (Linux and macOS).
+#[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
+pub(crate) fn read_answer_request(input: &[u8]) -> Result<(String, String, String)> {
+    let request = read_request(input)?;
+    Ok((
+        request.expected_run_id,
+        request.expected_conversation_id,
+        request.question_id,
+    ))
+}
+
 pub(super) fn dispatch(args: &[String]) -> Result<i32> {
     if args.len() == 3 && args[1] == "--observe" && args[2] == "--json" {
         return observe_dispatch(&args[0]);
@@ -795,18 +850,10 @@ pub(super) fn dispatch(args: &[String]) -> Result<i32> {
     if input.len() as u64 > MAX_PAYLOAD_BYTES {
         return Err("answer payload exceeds128 KiB".into());
     }
-    let request: AnswerRequest = serde_json::from_slice(&input)
-        .map_err(|error| format!("invalid answer payload: {error}"))?;
+    let request = read_request(&input)?;
     let request_id = uuid::Uuid::parse_str(&request.request_id)
         .map_err(|_| "request_id must be a UUID")?
         .to_string();
-    if request.expected_run_id.is_empty()
-        || (request.expected_conversation_id.is_empty()
-            && !startup_question_id(&request.question_id))
-        || request.expected_question_hash.len() != 64
-    {
-        return Err("question identities are required; refresh before answering".into());
-    }
     let digest = format!("{:x}", Sha256::digest(&input));
     let receipt_path = absolute_root()?
         .join("question_receipts")
@@ -1053,6 +1100,72 @@ pub(super) fn dispatch(args: &[String]) -> Result<i32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// zerus-63rru.60: one reading of a native identity. A record's or a
+    /// card's null conversation is "", a string is itself, and a missing key
+    /// or another type names no session.
+    #[test]
+    fn a_native_identity_is_read_once_for_records_and_cards() {
+        let with = |c: Option<Value>| {
+            let mut v = json!({"run_id":"run-1"});
+            if let Some(c) = c {
+                v["conversation_id"] = c;
+            }
+            v
+        };
+        assert_eq!(
+            native_identity(&with(Some(Value::Null)), "conversation_id"),
+            Some("")
+        );
+        assert_eq!(
+            native_identity(&with(Some(json!(""))), "conversation_id"),
+            Some("")
+        );
+        assert_eq!(
+            native_identity(&with(Some(json!("c-1"))), "conversation_id"),
+            Some("c-1")
+        );
+        assert_eq!(native_identity(&with(None), "conversation_id"), None);
+        assert_eq!(
+            native_identity(&with(Some(json!(7))), "conversation_id"),
+            None
+        );
+        assert!(names_session(&with(Some(Value::Null)), "run-1", ""));
+        assert!(names_session(&with(Some(json!(""))), "run-1", ""));
+        assert!(names_session(&with(Some(json!("c-1"))), "run-1", "c-1"));
+        assert!(!names_session(&with(Some(json!("c-1"))), "run-1", ""));
+        assert!(!names_session(&with(Some(Value::Null)), "run-2", ""));
+        assert!(!names_session(&with(None), "run-1", ""));
+        assert!(!names_session(&with(Some(json!(7))), "run-1", ""));
+    }
+
+    /// The answer command's request reader, in its own order: the exact
+    /// fields, a UUID request, then the identities. Only a startup question
+    /// may name no conversation.
+    #[test]
+    fn the_answer_request_reader_requires_identities_but_a_startup_conversation() {
+        let request = |id: &str, question: &str, conversation: &str| {
+            json!({"request_id":id,"expected_run_id":"run-1","expected_conversation_id":conversation,
+                "question_id":question,"expected_question_hash":"a".repeat(64),
+                "answers":[{"question_id":"trust","selected_option_ids":["trust_1"]}]})
+            .to_string()
+        };
+        let uuid = "00000000-0000-4000-8000-000000000060";
+        assert!(read_request(request(uuid, "claude-trust:abc", "").as_bytes()).is_ok());
+        assert!(read_request(request(uuid, "claude-approval:abc", "c-1").as_bytes()).is_ok());
+        assert_eq!(
+            read_request(request(uuid, "claude-approval:abc", "").as_bytes())
+                .err()
+                .unwrap(),
+            "question identities are required; refresh before answering"
+        );
+        assert_eq!(
+            read_request(request("not-a-uuid", "claude-approval:abc", "").as_bytes())
+                .err()
+                .unwrap(),
+            "request_id must be a UUID"
+        );
+    }
 
     #[test]
     fn answer_text_matches_response_format() {

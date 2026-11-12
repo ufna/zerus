@@ -219,7 +219,11 @@ fn reserve(
     for key in ["question_id", "question_hash", "run_id"] {
         string(question, key, 1024)?;
     }
-    if !empty_conversation || question["conversation_id"] != "" {
+    // One reading of the question's conversation (zerus-63rru.60). A team
+    // startup card has none yet, null or "" alike; every other reservation,
+    // the ordinary admission's always, needs a conversation string.
+    let conversation = crate::state::native_identity(question, "conversation_id");
+    if !(empty_conversation && conversation == Some("")) {
         string(question, "conversation_id", 1024)?;
     }
     let hash = string(question, "question_hash", 64)?;
@@ -232,7 +236,10 @@ fn reserve(
             json!([
                 provider,
                 question["run_id"],
-                question["conversation_id"],
+                // The normalized identity: a startup card's null and "" are
+                // one reservation. A string, which every other reservation
+                // has, is itself, so those identities are unchanged.
+                conversation.unwrap_or(""),
                 question["question_id"],
                 hash
             ])
@@ -440,6 +447,46 @@ mod tests {
     fn payload() -> Value {
         json!({"host":"desktop-a","session":"claude/sample/review","provider":"claude","question":question()})
     }
+
+    /// The ordinary admission is the dangerous opt-in (zerus-63rru.60): its
+    /// reservation answers each form of a question's conversation exactly as
+    /// it did before the team audit learned that a startup card's null
+    /// conversation is none yet, and a row with a string conversation keeps
+    /// its identity byte for byte (pinned at b81df82c0).
+    #[test]
+    fn the_ordinary_reservation_answers_every_conversation_form_as_before() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut db = open(&dir.path().join("audit")).unwrap();
+        let answers = json!([{"question_id":"approval","selected_option_ids":["1"],"text":""}]);
+        let mut p = payload();
+        for (conversation, refusal) in [
+            (Value::Null, "Missing conversation_id"),
+            (json!(""), "Invalid conversation_id"),
+            (json!(7), "Missing conversation_id"),
+        ] {
+            p["question"]["conversation_id"] = conversation.clone();
+            let error = reserve(&mut db, &p, answers.clone(), false).unwrap_err();
+            assert_eq!(error.message, refusal, "{conversation}");
+        }
+        p["question"]["conversation_id"] = json!("fixture-conversation");
+        let reserved = reserve(&mut db, &p, answers.clone(), false).unwrap();
+        assert_eq!(reserved["fresh"], true);
+        let identity: String = db
+            .query_row(
+                "SELECT identity FROM attempts WHERE id=?1",
+                [reserved["id"].as_i64().unwrap()],
+                |r| r.get(0),
+            )
+            .unwrap();
+        println!("PIN identity {identity}");
+        assert_eq!(identity, PINNED_IDENTITY);
+        assert_eq!(
+            reserve(&mut db, &p, answers, false).unwrap()["fresh"],
+            false
+        );
+    }
+    const PINNED_IDENTITY: &str =
+        "4a236ed0649b16cacb2c8f6a4ef9f691ae4f0a445744a1832031f5391c27528d";
 
     #[test]
     fn selects_only_known_one_time_tool_grants() {
