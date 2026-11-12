@@ -35,6 +35,8 @@ export function TaskActions(props: {
   const buttons = () => taskButtons(props.card, props.teamStatus);
   /** Why a shown decision is disabled, each reason once. */
   const why = () => [...new Set(buttons().flatMap((button) => button.blocked ? [button.blocked] : []))];
+  /** What an open decision does now, each line once. */
+  const notes = () => [...new Set(buttons().flatMap((button) => button.note ? [button.note] : []))];
   return (
     <Show when={buttons().length}>
       <span class="team-finding-actions" data-task-actions>
@@ -46,6 +48,7 @@ export function TaskActions(props: {
           )}
         </For>
         <For each={why()}>{(reason) => <span class="team-action-why dim" data-action-why>{reason}</span>}</For>
+        <For each={notes()}>{(line) => <span class="team-action-why dim" data-action-note>{line}</span>}</For>
       </span>
     </Show>
   );

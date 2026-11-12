@@ -53,12 +53,28 @@ export interface TaskButton {
   reason?: boolean;
   /** Why the store would refuse it now: the button is disabled and says so. */
   blocked?: string;
+  /** What sending it does now, said beside the open button. */
+  note?: string;
 }
 
 /** The decisions the store refuses while a previous one has not settled
  * (ops common.rs undecided: accept, return, reassign, cancel, route,
  * release). */
 const WAIT_FOR_DECISION = new Set<TaskButton["id"]>(["accept", "return", "release", "cancel"]);
+
+/** The decisions that replace a pending Return or Reassign that has not
+ * started (zerus-63rru.43; Reassign is not offered here). An acceptance is
+ * never replaced, and a release waits like before. */
+const REPLACING = new Set<TaskButton["id"]>(["return", "cancel"]);
+
+/** The line beside a decision that replaces the pending one, naming its kind. */
+function replacesPending(kind: string): string {
+  switch (kind) {
+    case "return": return tr("A new decision here replaces the pending return.");
+    case "reassign": return tr("A new decision here replaces the pending reassignment.");
+    default: return tr("A new decision here replaces the pending decision (%1).", kind);
+  }
+}
 
 /** A card's decisions, by the team's status and the card's state: admit a
  * task not admitted yet; accept a reported one; return a reported one that
@@ -81,7 +97,14 @@ export function taskButtons(card: TaskView, teamStatus: string): TaskButton[] {
   buttons.push({ id: "cancel", text: tr("Cancel task"), danger: true, reason: true });
   if (!card.pending_decision) return buttons;
   const waiting = tr("The task's previous decision has not settled yet.");
-  return buttons.map((button) => WAIT_FOR_DECISION.has(button.id) ? { ...button, blocked: waiting } : button);
+  // A pending decision that has not started can be replaced by a new Return
+  // or Cancel (the row says so); otherwise, and when an older hgs does not
+  // say, the four wait for it as the store requires.
+  const replaces = card.pending_replaceable === true ? replacesPending(card.pending_decision) : undefined;
+  return buttons.map((button) => {
+    if (replaces && REPLACING.has(button.id)) return button.blocked ? button : { ...button, note: replaces };
+    return WAIT_FOR_DECISION.has(button.id) ? { ...button, blocked: waiting } : button;
+  });
 }
 
 /** A member's operations, by the team's status and the member's state: pause

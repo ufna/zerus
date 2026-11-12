@@ -47,6 +47,9 @@ export interface TeamCard {
   holder?: string | null;
   /** The kind of the decision that has not settled, when one is pending. */
   pending_decision?: string | null;
+  /** The pending decision has not started and a new Return, Reassign or
+   * Cancel replaces it; absent (an older hgs) reads as false. */
+  pending_replaceable?: boolean;
 }
 export interface TeamGroup { state: string; cards: TeamCard[] }
 export interface TeamBar {

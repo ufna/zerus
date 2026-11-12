@@ -423,8 +423,14 @@ pub struct QueueCard {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub holder: Option<Option<String>>,
     /// The kind of the task's decision that has not settled, when there is
-    /// one: the store refuses accept, return, release and cancel meanwhile.
+    /// one: the store refuses accept, return, release and cancel meanwhile,
+    /// unless the pending decision can still be replaced.
     pub pending_decision: Option<String>,
+    /// The pending decision has not started and a new Return, Reassign or
+    /// Cancel replaces it (zerus-63rru.43, computed by the store with the
+    /// operation's own predicate); false when nothing is pending, and when an
+    /// older hgs does not say.
+    pub pending_replaceable: bool,
 }
 
 /// One group of the board: its state and its cards.

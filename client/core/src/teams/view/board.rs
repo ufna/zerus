@@ -93,6 +93,7 @@ fn card(node: &Value) -> QueueCard {
         stages: Vec::new(),
         holder: holder(node),
         pending_decision: optional_name(node, "pending_decision"),
+        pending_replaceable: flag(node, "pending_replaceable"),
     }
 }
 

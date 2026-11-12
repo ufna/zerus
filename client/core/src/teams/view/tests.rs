@@ -783,3 +783,82 @@ fn the_waiting_decisions_fixture_is_the_cores_view() {
         serde_json::from_str(include_str!("../fixtures/waiting-decisions.json")).unwrap();
     assert_eq!(serde_json::to_value(&view).unwrap(), fixture);
 }
+
+/// The queue rows of zerus-63rru.43's cases: a pending Return that has not
+/// started (replaceable), one that has (not replaceable), a pending acceptance
+/// (never replaced), a pending reassignment of a held task (replaceable), a row
+/// from an older hgs without the flag, and a replaceable decision of a kind the
+/// view has no words for.
+fn pending_rows() -> Value {
+    let base = current("queue")["rows"][0].clone();
+    let row = |id: u64, state: &str, held: bool, pending: &str, replaceable: Option<bool>| {
+        let mut row = base.clone();
+        row["id"] = json!(id);
+        row["title"] = json!(format!("Task {id}"));
+        row["state"] = json!(state);
+        row["hold"] = json!(held);
+        row["holder"] = json!("m1");
+        row["rank"] = json!(format!("a0{id}"));
+        row["task"]["uuid"] = json!(format!("00000000-0000-4000-8000-00000000000{id}"));
+        row["pending_decision"] = json!(pending);
+        match replaceable {
+            Some(flag) => row["pending_replaceable"] = json!(flag),
+            None => {
+                row.as_object_mut().unwrap().remove("pending_replaceable");
+            }
+        }
+        row
+    };
+    json!({"ok": true, "actor": {"kind": "person"}, "next": null, "rows": [
+        row(1, "reported", false, "return", Some(true)),
+        row(2, "reported", false, "return", Some(false)),
+        row(3, "reported", false, "accept", Some(false)),
+        row(4, "pending", true, "reassign", Some(true)),
+        row(5, "reported", false, "return", None),
+        row(6, "reported", false, "route", Some(true)),
+    ]})
+}
+
+/// zerus-63rru.43: the queue card carries pending_replaceable as the store
+/// computes it; a row without the field (an older hgs) reads false. The board
+/// view of the six cases is pinned as fixtures/board-pending.json, which the
+/// frontend's test renders.
+#[test]
+fn the_pending_decision_rows_are_the_cores_view() {
+    let view = team(&current("status"), &pending_rows());
+    let flags: Vec<(u64, Option<String>, bool)> = view
+        .groups
+        .iter()
+        .flat_map(|group| &group.cards)
+        .map(|card| {
+            (
+                card.node,
+                card.pending_decision.clone(),
+                card.pending_replaceable,
+            )
+        })
+        .collect();
+    let mut flags = flags;
+    flags.sort();
+    assert_eq!(
+        flags,
+        [
+            (1, Some("return".into()), true),
+            (2, Some("return".into()), false),
+            (3, Some("accept".into()), false),
+            (4, Some("reassign".into()), true),
+            (5, Some("return".into()), false),
+            (6, Some("route".into()), true),
+        ]
+    );
+    let fixture: Value =
+        serde_json::from_str(include_str!("../fixtures/board-pending.json")).unwrap();
+    assert_eq!(serde_json::to_value(&view).unwrap(), fixture);
+    // Nothing pending: the flag is false.
+    let plain = team(&current("status"), &current("queue"));
+    assert!(plain
+        .groups
+        .iter()
+        .flat_map(|group| &group.cards)
+        .all(|card| !card.pending_replaceable));
+}
