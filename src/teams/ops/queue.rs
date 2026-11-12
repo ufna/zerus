@@ -307,7 +307,6 @@ pub(super) fn observe(ctx: &mut Context<'_>) -> Result<()> {
     let mut n = ctx.node(*node)?;
     let table = ctx.node_table(*node)?;
     let (stage, was_terminal) = validate_observation(ctx, *node, o)?;
-    let o = &timers::kept(ctx, *node, o)?;
     let released =
         rows::released(ctx.db, &ctx.team.id, *node)? || pipeline::released_stage(ctx, &n)?;
     let left = o.key != KeyState::Ours;
@@ -327,6 +326,10 @@ pub(super) fn observe(ctx: &mut Context<'_>) -> Result<()> {
             leave_team(ctx, *node)?;
         }
         return Ok(());
+    }
+    // A conflict of attempts decides nothing: it is recorded as it came.
+    if timers::conflict(o) {
+        return rows::record_observation(ctx.db, &ctx.team.id, *node, o, false);
     }
     let active = matches!(ctx.team.status, TeamStatus::Running | TeamStatus::Paused);
     // A finished node takes today's restore below; a live one a person sent

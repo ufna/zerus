@@ -391,27 +391,6 @@ fn the_current_attempt_can_change_while_the_highest_generation_stays() {
 }
 
 #[test]
-fn a_conflict_keeps_the_stored_attempt_and_decides_nothing() {
-    let (mut h, _, node, id) = handed();
-    seen(&mut h, node, TaskStage::InProgress, 2, "").unwrap();
-    let kept = h.store.task_observation(TEAM, node).unwrap().unwrap();
-    assert_eq!(
-        (
-            kept.attempt,
-            kept.attempt_id.as_str(),
-            h.store.generation(TEAM, node).unwrap()
-        ),
-        (1, id.as_str(), Some(1))
-    );
-    seen(&mut h, node, TaskStage::InProgress, 2, PERSON).unwrap();
-    assert_eq!(
-        h.store.generation(TEAM, node).unwrap(),
-        Some(2),
-        "decided once a current attempt shows"
-    );
-}
-
-#[test]
 fn a_cancelled_answer_applies_only_to_the_attempt_the_store_holds() {
     for (attempt, id, applies) in [
         (0, "", false),
@@ -494,4 +473,159 @@ fn a_finished_node_still_in_the_live_plan_takes_todays_restore_once() {
         "one restore, not two"
     );
     assert_eq!(last_event(&h), "person_override");
+}
+
+fn pair(h: &Harness, node: u32) -> (u64, String) {
+    let o = h.store.task_observation(TEAM, node).unwrap().unwrap();
+    (o.attempt, o.attempt_id)
+}
+
+#[test]
+fn a_conflict_is_recorded_as_it_came_and_decides_nothing() {
+    let (mut h, _, node, _) = handed();
+    seen(&mut h, node, TaskStage::InProgress, 2, "").unwrap();
+    assert_eq!(
+        pair(&h, node),
+        (2, String::new()),
+        "the newest observation's pair"
+    );
+    assert_eq!(h.store.generation(TEAM, node).unwrap(), Some(1));
+    assert_ne!(last_event(&h), "person_override");
+}
+
+#[test]
+fn the_reviewers_conflict_blocks_a_late_cancel_and_the_next_answer_is_a_refusal() {
+    let (mut h, lead, node, a) = handed();
+    h.run(
+        &lead,
+        Operation::Cancel {
+            node,
+            reason: "Superseded".into(),
+        },
+    )
+    .unwrap();
+    let decision = h
+        .store
+        .pending_cancels(TEAM, 1, 0)
+        .unwrap()
+        .remove(0)
+        .decision;
+    seen(&mut h, node, TaskStage::InProgress, 2, "").unwrap();
+    let row = h.store.pending_cancels(TEAM, 1, 0).unwrap().remove(0);
+    assert_eq!(
+        (row.attempt, row.attempt_id.as_str()),
+        (2, ""),
+        "team-cancel compares the conflict"
+    );
+    let rev = h.store.team(TEAM).unwrap().unwrap().revision;
+    refused(
+        h.run(&service(), cancel(node, decision, 1, &a)),
+        code::INVALID_STATE,
+    );
+    refused(
+        h.run(&service(), cancel(node, decision, 2, "")),
+        code::INVALID_STATE,
+    );
+    assert_eq!(
+        h.store.team(TEAM).unwrap().unwrap().revision,
+        rev,
+        "nothing written"
+    );
+    assert_eq!(
+        (h.store.generation(TEAM, node).unwrap(), bound(&h, node)),
+        (Some(1), true)
+    );
+    let refusal = Operation::RecordCancel {
+        node,
+        decision,
+        state: CancelState::Refused,
+        reason: "The delivery is in conflict".into(),
+        attempt: 2,
+        attempt_id: String::new(),
+    };
+    h.run(&service(), refusal).unwrap();
+    assert!(
+        h.store
+            .inbox(TEAM, 200, None)
+            .unwrap()
+            .rows
+            .iter()
+            .any(|i| i.kind.starts_with("cancel_refused:") && i.state == "open"),
+        "the lead is told"
+    );
+    assert!(bound(&h, node));
+}
+
+#[test]
+fn a_conflict_that_settles_decides_as_any_observation() {
+    // Back on A, the attempt the node runs under: nothing.
+    let (mut h, _, node, a) = handed();
+    seen(&mut h, node, TaskStage::InProgress, 2, "").unwrap();
+    seen(&mut h, node, TaskStage::InProgress, 2, &a).unwrap();
+    assert_eq!(
+        (h.store.generation(TEAM, node).unwrap(), pair(&h, node)),
+        (Some(1), (2, a.clone()))
+    );
+    // On another attempt: a person's execution.
+    seen(&mut h, node, TaskStage::InProgress, 3, "").unwrap();
+    seen(&mut h, node, TaskStage::InProgress, 3, PERSON).unwrap();
+    assert_eq!(h.store.generation(TEAM, node).unwrap(), Some(2));
+    // Back on the person's attempt after another conflict: no second override.
+    seen(&mut h, node, TaskStage::InProgress, 4, "").unwrap();
+    seen(&mut h, node, TaskStage::InProgress, 4, PERSON).unwrap();
+    assert_eq!(
+        h.store.generation(TEAM, node).unwrap(),
+        Some(2),
+        "the remembered attempt"
+    );
+    // On the node's own effect: the team's own.
+    seen(&mut h, node, TaskStage::InProgress, 5, "").unwrap();
+    seen(&mut h, node, TaskStage::InProgress, 5, &a).unwrap();
+    assert_eq!(h.store.generation(TEAM, node).unwrap(), Some(2));
+}
+
+#[test]
+fn a_conflict_on_a_node_with_a_pending_accept_decides_nothing() {
+    let (mut h, lead, node, _) = handed();
+    h.report(node, "m1");
+    h.run(&lead, Operation::Accept { node }).unwrap();
+    seen(&mut h, node, TaskStage::InProgress, 2, "").unwrap();
+    assert_eq!(h.store.generation(TEAM, node).unwrap(), Some(1));
+    assert!(h
+        .store
+        .decisions(TEAM, 200, None)
+        .unwrap()
+        .rows
+        .iter()
+        .any(|d| d.kind == "accept" && d.state != crate::teams::store::DecisionState::Settled));
+}
+
+#[test]
+fn the_legacy_pair_takes_only_a_default_cancel() {
+    let mut h = Harness::new();
+    let lead = h.bind("lead");
+    h.bind("m1");
+    let node = h.add(&person(), 1);
+    h.submit(node, "m1");
+    assert_eq!(pair(&h, node), (0, String::new()));
+    h.run(
+        &lead,
+        Operation::Cancel {
+            node,
+            reason: "Superseded".into(),
+        },
+    )
+    .unwrap();
+    let decision = h
+        .store
+        .pending_cancels(TEAM, 1, 0)
+        .unwrap()
+        .remove(0)
+        .decision;
+    refused(
+        h.run(&service(), cancel(node, decision, 1, "x")),
+        code::INVALID_STATE,
+    );
+    h.run(&service(), cancel(node, decision, 0, "")).unwrap();
+    assert_eq!(h.node(node).state, NodeState::Cancelled);
 }

@@ -15,7 +15,7 @@ use super::*;
 use std::time::Duration;
 
 /// Raised whenever this package's layout changes.
-pub(crate) const EXTENSION: u32 = 4;
+pub(crate) const EXTENSION: u32 = 5;
 
 #[cfg(test)]
 type Hook = Box<dyn FnOnce() -> Result<()>>;
@@ -143,6 +143,7 @@ fn observed_attempts(db: &Connection) -> Result<()> {
     for (column, kind) in [
         ("attempt", "INTEGER NOT NULL DEFAULT 0"),
         ("attempt_id", "TEXT NOT NULL DEFAULT ''"),
+        ("last_attempt_id", "TEXT NOT NULL DEFAULT ''"),
     ] {
         let present: bool = db
             .query_row(

@@ -7,33 +7,28 @@
 //! done in turn: the end of the earlier attempt, then the person's restore.
 //! The node's own hand-out or reopen is never such an attempt, whether or not
 //! its outcome is recorded, also when it comes back as current after a newer
-//! attempt never started.
+//! attempt never started. A conflict, two attempts claiming the highest
+//! generation, is recorded as it came (the number with an empty ID) and
+//! decides nothing.
 use super::*;
 
-/// The observation with the attempt fields the store keeps. Without a
-/// current attempt (two attempts claim the highest generation) the stored
-/// pair stays and nothing is decided from the observation's.
-pub(in crate::teams::ops) fn kept(
-    ctx: &Context<'_>,
-    node: u32,
-    o: &TaskObservation,
-) -> Result<TaskObservation> {
-    let mut kept = o.clone();
-    if o.attempt_id.is_empty() {
-        (kept.attempt, kept.attempt_id) = stored(ctx, node)?;
-    }
-    Ok(kept)
+/// Two attempts claim the highest generation: the observation has a number
+/// and no current attempt.
+pub(in crate::teams::ops) fn conflict(o: &TaskObservation) -> bool {
+    o.attempt > 0 && o.attempt_id.is_empty()
 }
 /// A person's new execution of a live node: active, with a current attempt
-/// that is not the stored one and not an effect of this node, whether or not
-/// the highest generation grew.
+/// that is neither the last current attempt the store saw nor an effect of
+/// this node, whether or not the highest generation grew. A conflict (no
+/// current attempt) decides nothing; when one settles back on the attempt
+/// the node already runs under, that is no second override.
 pub(in crate::teams::ops) fn person_attempt(
     ctx: &Context<'_>,
     node: u32,
     o: &TaskObservation,
 ) -> Result<bool> {
     let active = o.stage == TaskStage::InProgress && !o.cancelled && o.key == KeyState::Ours;
-    if !active || o.attempt_id.is_empty() || o.attempt_id == stored(ctx, node)?.1 {
+    if !active || o.attempt_id.is_empty() || o.attempt_id == remembered(ctx, node)? {
         return Ok(false);
     }
     let own: bool = ctx
@@ -65,7 +60,22 @@ pub(in crate::teams::ops) fn take_over(
     ctx.event = Some("person_override");
     Ok(())
 }
-/// The attempt and its ID the store holds for the node; none before one.
+/// The last current attempt ID the store saw for the node, kept across a
+/// conflict for the override rule alone.
+fn remembered(ctx: &Context<'_>, node: u32) -> Result<String> {
+    Ok(ctx
+        .db
+        .query_row(
+            "SELECT last_attempt_id FROM task_observations WHERE team=?1 AND node=?2",
+            params![ctx.team.id, node],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(storage)?
+        .unwrap_or_default())
+}
+/// The newest observation's attempt pair for the node, a conflict's empty ID
+/// included; none before one.
 pub(in crate::teams::ops) fn stored(ctx: &Context<'_>, node: u32) -> Result<(u64, String)> {
     Ok(ctx
         .db
