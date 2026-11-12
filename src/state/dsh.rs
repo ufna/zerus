@@ -1922,6 +1922,9 @@ pub(crate) fn dispatch(command: &str, args: &[String]) -> Result<i32> {
                 let receipt_path = root()
                     .join("dsh/receipts")
                     .join(format!("{}.json", string(&request, "request_id")));
+                // One request offers at most once across ordinary and witnessed
+                // sends (zerus-hfw2s.5). Taken after, and inside, the bindings lock.
+                let _request = witness::request_lock(string(&request, "request_id"))?;
                 let digest = format!(
                     "{:x}",
                     Sha256::digest(json!([name, request]).to_string().as_bytes())

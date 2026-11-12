@@ -5709,7 +5709,7 @@ A task input to a hosted DeepSeek session is witnessed (`zerus-hfw2s`). The
 caller is the Agent Teams task delivery; it uses
 `state::dsh::witness::submit_witnessed(name, request, deadline)`. For recovery
 it uses `recorded(name, request)`, which reads the store under the same
-bindings lock and answers `Absent`, `Conflict` (the request ID holds another
+per-request lock and answers `Absent`, `Conflict` (the request ID holds another
 input) or `Outcome(code)`. A lock or store that cannot be read is an error.
 Only `Absent` means that no witnessed submit offered, or is offering, this
 exact request. Each input answers with exactly one fixed
@@ -5720,7 +5720,9 @@ binding is refused as an identity conflict, and the stored outcome is kept.
 The receipt path is read without following links. A link, another
 non-regular file, an unparsable file, or a parsed value that is not a
 well-formed receipt of this request ID proves nothing about what was offered.
-Each is `Unknown{unseen}`, with no host call and nothing written. A pending
+Each is `Unknown{unseen}`, with no host call and nothing written. The opened
+descriptor is checked again, so a path replaced after its check is no
+receipt either. A pending
 marker whose write reports a failure is answered by what the store then holds:
 no receipt is `NotOffered{host_refused}`, and a receipt is `Unknown{pending}`.
 
@@ -5730,7 +5732,8 @@ no receipt is `NotOffered{host_refused}`, and a receipt is `Unknown{pending}`.
   host. This also covers a host whose `ping` lacks `inputWitness` ("This
   DeepSeek host cannot witness a task input; it can after its next own start").
   It also covers the host's own refusal of this exact request before its
-  prompt.
+  prompt, and a stored binding without its run or conversation ID ("Session
+  identity is incomplete"), whose receipt would not read as well-formed.
 - `NotOffered{unsafe_content}`: a text block HGS would insert contains the
   case-sensitive literal `dsh-session:`. The host's session-reference plugin
   rewrites such a mention or fails the turn on it. This is checked before any
@@ -5777,11 +5780,38 @@ changed message or a cancellation is concluded only from a complete slice.
 `dropped_after_claim` may be concluded from any prefix. The deadline is the
 caller's: about 20 seconds for a Teams hand-out and about 90 seconds for a
 person's send. A foreground bash step alone can last 60 seconds, so a hand-out
-during a long tool call often ends `Unknown{pending}`. Receipts live in
+during a long tool call often ends `Unknown{pending}`. The deadline budgets the
+whole call (`zerus-hfw2s.8`):
+
+- The wait for the request's lock ends at the deadline. Another call that still
+  holds the request may be offering it, so this answers `Unknown{unseen}` and
+  this call sends nothing.
+- `ping` and `inspect` each get at most what is left. Running out before the
+  marker, or less than one second left to offer and read, answers
+  `NotOffered{host_refused}` ("The deadline passed before the input was
+  offered; nothing was written or sent").
+- After the marker, the send and the reads share what is left. Running out
+  answers `Unknown{pending}`.
+
+`tests/fixtures/dsh-input-witness-facts.json` records the pinned reviewed host
+it was captured on. It is regenerated only on that host, where the native test
+also compares its live facts with it. Receipts live in
 `dsh/receipts/<request_id>.json`. They are written with a temporary file,
 fsync, rename and directory fsync. Their states are `pending`, `submitted`, or
 `not_offered` with its `code`; an unknown outcome keeps `pending` with its
 `code`.
+
+Exclusivity is per request ID, never per computer (`zerus-hfw2s.5`): a
+witnessed submit holds `dsh/witness-locks/<request_id>.lock` from before its
+store check until after its send. `recorded()` takes the same lock, and so does
+an ordinary send around its receipt check, marker and send, inside the bindings
+lock. The witness path never takes the machine-wide `dsh/bindings.lock`, so one
+slow host never delays a witnessed submit or `recorded()` for another session.
+The binding record is read without that lock: the run and conversation
+identity check before the marker is the gate, and the offer and its witness
+stay with the request's own conversation. A lock file is removed on release; a
+crash leaves at most one per in-flight request, and that request's next use
+removes it.
 
 The official Schedule plugin (**Automation tasks** in Native UI Plugins) is
 listed and managed per exact session. The reviewed web bundles include it,
