@@ -650,7 +650,7 @@ fn preflight_capacity_and_routing_fail_before_creating_a_task() {
 }
 
 #[test]
-fn late_refusal_reports_the_existing_task_and_removes_its_marker() {
+fn unknown_intake_keeps_the_existing_task_and_its_prepared_marker() {
     let f = Fixture::new();
     f.h.store.db.as_ref().unwrap().execute_batch("CREATE TRIGGER reject_team_intake BEFORE INSERT ON live_tasks BEGIN SELECT RAISE(ABORT,'fixture team refusal'); END").unwrap();
     let out = f.run(
@@ -662,11 +662,14 @@ fn late_refusal_reports_the_existing_task_and_removes_its_marker() {
     assert_eq!(out["value"]["task_exists"], true);
     assert_eq!(out["value"]["team"]["queued"], false);
     assert_eq!(out["value"]["team"]["error"]["code"], "storage_failed");
-    assert!(out["value"]["message"]
-        .as_str()
-        .unwrap()
-        .contains("exists and was not queued"));
-    assert_eq!(f.document(&out["value"]["task"]).team().unwrap(), None);
+    assert_eq!(
+        f.document(&out["value"]["task"])
+            .team()
+            .unwrap()
+            .unwrap()
+            .team,
+        TEAM
+    );
     assert!(f.h.store.queue(TEAM, 200, None).unwrap().rows.is_empty());
 }
 
