@@ -1549,3 +1549,108 @@ fn an_accepted_task_is_not_current_otherwise() {
     .unwrap();
     assert!(!accepted(&h, node, 1), "no observation");
 }
+
+fn own(h: &Harness, node: u32, generation: u32) -> bool {
+    h.store.own_task_current(TEAM, node, generation).unwrap()
+}
+
+/// The read for a reopen and a hand-over: the newest observation leaves the
+/// execution the node took in uncontradicted, at any stage.
+#[test]
+fn an_own_task_is_current_at_any_stage_under_the_attempt_the_node_took_in() {
+    for stage in [TaskStage::InProgress, TaskStage::InReview, TaskStage::Done] {
+        // The node's own attempt.
+        let (mut h, lead, node, id) = handed();
+        if stage == TaskStage::Done {
+            h.report(node, "m1");
+            h.run(&lead, Operation::Accept { node }).unwrap();
+        }
+        seen(&mut h, node, stage, 1, &id).unwrap();
+        assert!(own(&h, node, 1), "{stage:?}: own attempt");
+        assert!(!own(&h, node, 0), "{stage:?}: an earlier generation named");
+        // A person's attempt the node took over.
+        let (mut h, _, node, _) = handed();
+        seen(&mut h, node, TaskStage::InProgress, 2, PERSON).unwrap();
+        if stage != TaskStage::InProgress {
+            seen(&mut h, node, stage, 2, PERSON).unwrap();
+        }
+        assert!(own(&h, node, 2), "{stage:?}: a person's attempt taken over");
+        // A conflict at this stage.
+        let (mut h, _, node, _) = handed();
+        conflicted(&mut h, node, stage, 2).unwrap();
+        if stage != TaskStage::Done {
+            assert!(!own(&h, node, 1), "{stage:?}: a conflict");
+        }
+        // Another current attempt: the same number, another ID.
+        let (mut h, _, node, _) = handed();
+        seen(&mut h, node, TaskStage::InReview, 1, "another-attempt").unwrap();
+        assert!(!own(&h, node, 1), "another current attempt");
+    }
+    // A Done task under a conflict: applied as an end, still a conflict.
+    let (mut h, lead, node, _) = handed();
+    h.report(node, "m1");
+    h.run(&lead, Operation::Accept { node }).unwrap();
+    conflicted(&mut h, node, TaskStage::Done, 2).unwrap();
+    assert!(bound(&h, node));
+    assert!(!own(&h, node, 1), "Done under a conflict");
+    // No current attempt and no conflict: a refused first hand-out.
+    let (mut h, _, node) = refused_hand_out();
+    seen(&mut h, node, TaskStage::Todo, 1, "").unwrap();
+    assert!(own(&h, node, 1), "no current attempt");
+    // The legacy pair.
+    let mut h = Harness::new();
+    h.bind("m1");
+    let node = h.add(&person(), 1);
+    h.submit(node, "m1");
+    assert!(own(&h, node, 1), "the legacy pair");
+}
+
+#[test]
+fn an_own_task_is_not_current_otherwise() {
+    // Cancelled: rebound to pin the clause.
+    let (mut h, _, node, id) = handed();
+    let mut o = h.observation(node, TaskStage::InProgress);
+    (o.attempt, o.attempt_id, o.cancelled) = (1, id.clone(), true);
+    h.run(
+        &service(),
+        Operation::ObserveTask {
+            node,
+            observation: o,
+        },
+    )
+    .unwrap();
+    rebind(&h, node);
+    assert!(!own(&h, node, 1), "cancelled");
+    // The key left: rebound to pin the key clause.
+    let (mut h, _, node, id) = handed();
+    let mut o = h.observation(node, TaskStage::InProgress);
+    (o.attempt, o.attempt_id, o.key) = (1, id.clone(), KeyState::Absent);
+    h.run(
+        &service(),
+        Operation::ObserveTask {
+            node,
+            observation: o,
+        },
+    )
+    .unwrap();
+    assert!(!own(&h, node, 1), "the key left");
+    rebind(&h, node);
+    assert!(!own(&h, node, 1), "the key left, bound");
+    // No binding, and no observation.
+    let (h, _, node, _) = handed();
+    let db = h.store.db.as_ref().unwrap();
+    db.execute(
+        "DELETE FROM live_tasks WHERE team=?1 AND node=?2",
+        rusqlite::params![TEAM, node],
+    )
+    .unwrap();
+    assert!(!own(&h, node, 1), "no binding");
+    rebind(&h, node);
+    assert!(own(&h, node, 1));
+    db.execute(
+        "DELETE FROM task_observations WHERE team=?1 AND node=?2",
+        rusqlite::params![TEAM, node],
+    )
+    .unwrap();
+    assert!(!own(&h, node, 1), "no observation");
+}
