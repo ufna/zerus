@@ -20,8 +20,8 @@ const item = (over: Partial<WaitingItem>): WaitingItem => ({
 const view: WaitingView = {
   items: [
     item({ id: `${TEAM_A}:1`, card: 1, kind: "note", text: "Tell the team the release moved to Monday." }),
-    item({ id: `${TEAM_B}:2`, card: 2, team: TEAM_B, kind: "integration", text: "Accept the merge of Task 2?", created_ms: NOW - 7_200_000 }),
-    item({ id: `${TEAM_A}:3`, card: 3, kind: "pipeline_acceptance", text: "Accept the pipeline's work on Task 3?", node: 3, created_ms: NOW - 3_600_000 }),
+    item({ id: `${TEAM_B}:2`, card: 2, team: TEAM_B, kind: "integration", text: "Accept the merge of Task 2?", created_ms: NOW - 7_200_000, decisions: ["approve", "reject"] }),
+    item({ id: `${TEAM_A}:3`, card: 3, kind: "pipeline_acceptance", text: "Accept the pipeline's work on Task 3?", node: 3, created_ms: NOW - 3_600_000, decisions: ["approve", "reject"] }),
     item({ id: `${TEAM_A}:4`, card: 4, kind: "task_waits_owner", text: "Task 1 is reported; its work is decided on the team's board.", node: 1, created_ms: NOW - 60_000 }),
   ],
   next: "w1.next",
@@ -56,7 +56,7 @@ it("lists the cards oldest first with their team, kind, text and age", () => {
   expect(cards[1].textContent).toContain("2 h");
 });
 
-it("offers the verdict kinds approve and reject, and every other kind an acknowledgement", () => {
+it("offers each card's own list: the store's pairs, and acknowledged where a card lists it or lists nothing", () => {
   const { host } = setup();
   const words = (id: string) => [...host.querySelectorAll(`[data-waiting="${id}"] button[data-decision]`)].map((button) => button.getAttribute("data-decision"));
   expect(words(`${TEAM_A}:1`)).toEqual(["acknowledged"]);
@@ -69,7 +69,7 @@ it("offers the verdict kinds approve and reject, and every other kind an acknowl
 it("marks only a card's first decision as the primary one, as the client's other notices do", () => {
   // The visual pass: Retry and Acknowledge drew as two primary buttons side
   // by side; Check and Dismiss of an uncertain action draw one primary.
-  const retry = item({ id: `${TEAM_A}:5`, card: 5, kind: "team_actor_blocked", text: "The service could not finish a step." });
+  const retry = item({ id: `${TEAM_A}:5`, card: 5, kind: "team_actor_blocked", text: "The service could not finish a step.", decisions: ["retry", "acknowledged"] });
   const { host } = setup({ view: { items: [...view.items, retry], next: null } });
   const looks = (id: string) => [...host.querySelectorAll<HTMLButtonElement>(`[data-waiting="${id}"] button[data-decision]`)]
     .map((button) => [button.getAttribute("data-decision"), button.classList.contains("primary"), button.classList.contains("danger")]);

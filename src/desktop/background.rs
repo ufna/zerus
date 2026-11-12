@@ -57,13 +57,17 @@ pub(super) struct Runtime {
 
 /// The actor can replace only an already admitted background runtime after its
 /// actual original drain. A display-ready slot or client retry grants nothing.
+/// The caller passes the runtime it holds; whether it drained, which includes
+/// the Teams worker's own thread, is decided here and nowhere else.
 pub(super) fn replacement_permitted(
     background_mode: bool,
-    drained: bool,
+    background: Option<&Runtime>,
     location: &Location,
     store: &Store,
 ) -> Result<bool> {
-    Ok(background_mode && drained && super::revoke::background_permitted(location, store)?)
+    Ok(background_mode
+        && background.is_some_and(Runtime::drained)
+        && super::revoke::background_permitted(location, store)?)
 }
 
 #[cfg(test)]

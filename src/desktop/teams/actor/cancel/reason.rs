@@ -28,7 +28,13 @@ fn answered(row: &Entry) -> String {
     } else {
         &row.sentence
     };
-    let own = sentence(own, 512);
+    // The command's own words: its control characters are removed here,
+    // and whitespace is normalized below.
+    let own: String = own
+        .chars()
+        .filter(|c| !c.is_control() || c.is_whitespace())
+        .collect();
+    let own = sentence(&own, 512);
     if own.is_empty() {
         format!("The cancel command answered {state}.")
     } else {

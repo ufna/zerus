@@ -49,6 +49,8 @@ mod ports;
 mod timers;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 mod worker;
+#[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
+pub(super) use worker::entry_hold::Hold as WorkerEntryHold;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub(super) use worker::Worker;
 #[cfg(test)]

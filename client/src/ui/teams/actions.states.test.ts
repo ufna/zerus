@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { barActions, memberActions, taskButtons } from "./actions";
+import { barActions, memberActions, taskButtons, type TaskButton } from "./actions";
 import { teamView } from "./fixtures";
 import actionKinds from "../../../core/src/teams/fixtures/action-kinds.json";
 import type { MemberView, TaskView, TeamView } from "./types";
@@ -89,4 +89,70 @@ it("every action the Team tab offers is a kind the core reads (fixtures/action-k
   }
   expect(offered.size).toBeGreaterThan(10);
   for (const kind of offered) expect(actionKinds, kind).toContain(kind);
+});
+
+// zerus-63rru.29: the rows now carry what the store's three refusals depend on,
+// so the view disables and explains those actions before they are sent.
+describe("the refusals the rows let the view foresee", () => {
+  const reported = (over: Partial<TaskView>) => card({ state: "reported", admitted: true, held: false, implementer: "m1", ...over });
+  const byId = (buttons: TaskButton[]) => Object.fromEntries(buttons.map((button) => [button.id, button.blocked ?? ""]));
+
+  it("a pending decision blocks accept, return, release and cancel with its reason; admit and hold stay open", () => {
+    const pending = "The task's previous decision has not settled yet.";
+    expect(byId(taskButtons(reported({ holder: "m1", pending_decision: "accept" }), "running"))).toEqual({ accept: pending, return: pending, hold: "", cancel: pending });
+    expect(byId(taskButtons(card({ state: "pending", admitted: false, held: true, pending_decision: "cancel" }), "running"))).toEqual({ admit: "", release: pending, cancel: pending });
+    expect(byId(taskButtons(reported({ holder: "m1", pending_decision: null }), "running"))).toEqual({ accept: "", return: "", hold: "", cancel: "" });
+  });
+
+  it("Return follows the row's holder; a row from an older hgs without one keeps the implementer", () => {
+    const nobody = "Nobody holds this task's attempt, so there is nobody to return it to.";
+    expect(byId(taskButtons(reported({ holder: "m3" }), "running")).return).toBe("");
+    expect(byId(taskButtons(reported({ holder: null }), "running")).return, "the store refuses a Return without a holder").toBe(nobody);
+    expect(byId(taskButtons(reported({ holder: undefined, implementer: "m1" }), "running")).return).toBe("");
+    expect(taskButtons(reported({ holder: undefined, implementer: "" }), "running").map((button) => button.id)).not.toContain("return");
+  });
+
+  it("a member the person stopped cannot be stopped again; the person may still resume it", () => {
+    const stopped = memberActions({ ...teamView.members[1], state: "paused", person_stopped: true } as MemberView, "running");
+    expect(stopped.find((action) => action.id === "resume_member")?.disabled).toBeFalsy();
+    const stop = stopped.find((action) => action.id === "stop_member")!;
+    expect(stop.disabled).toBe(true);
+    expect(stop.reason).toBe("You stopped this member. Resume it to let it work again.");
+    const running = memberActions({ ...teamView.members[1], state: "active", person_stopped: false } as MemberView, "running");
+    expect(running.find((action) => action.id === "stop_member")?.disabled).toBeFalsy();
+  });
+});
+
+// zerus-63rru.43: a pending Return or Reassign that has not started can be
+// replaced by a new Return, Reassign or Cancel; an acceptance never is, and a
+// started decision refuses as before. The row's pending_replaceable says which.
+describe("a pending decision that can be replaced", () => {
+  const waiting = "The task's previous decision has not settled yet.";
+  const replaced = (kind: string) => ({ return: "A new decision here replaces the pending return.", reassign: "A new decision here replaces the pending reassignment." } as Record<string, string>)[kind]
+    ?? `A new decision here replaces the pending decision (${kind}).`;
+  const looks = (buttons: TaskButton[]) => Object.fromEntries(buttons.map((button) => [button.id, button.blocked ? `blocked: ${button.blocked}` : button.note ? `note: ${button.note}` : "open"]));
+  const task = (over: Partial<TaskView>) => card({ state: "reported", admitted: true, held: false, implementer: "m1", holder: "m1", ...over });
+
+  it("keeps Return and Cancel with a line naming what they replace; Accept and Release stay blocked", () => {
+    expect(looks(taskButtons(task({ pending_decision: "return", pending_replaceable: true }), "running"))).toEqual({
+      accept: `blocked: ${waiting}`, return: `note: ${replaced("return")}`, hold: "open", cancel: `note: ${replaced("return")}`,
+    });
+    expect(looks(taskButtons(task({ state: "pending", held: true, pending_decision: "reassign", pending_replaceable: true }), "running"))).toEqual({
+      release: `blocked: ${waiting}`, cancel: `note: ${replaced("reassign")}`,
+    });
+    expect(looks(taskButtons(task({ pending_decision: "route", pending_replaceable: true }), "running")).return).toBe(`note: ${replaced("route")}`);
+  });
+
+  it("blocks all four when the pending decision cannot be replaced, or the row does not say", () => {
+    for (const replaceable of [false, undefined]) {
+      expect(looks(taskButtons(task({ pending_decision: "return", pending_replaceable: replaceable }), "running")), String(replaceable)).toEqual({
+        accept: `blocked: ${waiting}`, return: `blocked: ${waiting}`, hold: "open", cancel: `blocked: ${waiting}`,
+      });
+    }
+  });
+
+  it("a Return with nobody to go to stays blocked for that reason even when the pending one can be replaced", () => {
+    expect(looks(taskButtons(task({ holder: null, pending_decision: "return", pending_replaceable: true }), "running")).return)
+      .toBe("blocked: Nobody holds this task's attempt, so there is nobody to return it to.");
+  });
 });

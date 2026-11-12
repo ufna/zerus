@@ -56,7 +56,7 @@ const TEAM_B = "00000000-0000-4000-8000-00000000bbbb";
 const waitingFixture: WaitingView = {
   items: [
     { id: `${TEAM_A}:3`, team: TEAM_A, card: 3, kind: "note", node: null, text: "Tell the team the release moved to Monday.", state: "open", by: "local", created_ms: Date.now() - 6 * 60_000 },
-    { id: `${TEAM_B}:4`, team: TEAM_B, card: 4, kind: "integration", node: 2, text: "Accept the merge of Task 2 into the integration branch?", state: "open", by: "local", created_ms: Date.now() - 3 * 3_600_000 },
+    { id: `${TEAM_B}:4`, team: TEAM_B, card: 4, kind: "integration", node: 2, text: "Accept the merge of Task 2 into the integration branch?", state: "open", by: "local", created_ms: Date.now() - 3 * 3_600_000, decisions: ["approve", "reject"] },
     { id: `${TEAM_A}:5`, team: TEAM_A, card: 5, kind: "task_waits_owner", node: 1, text: "Task 1 is reported; its work is decided on the team's board.", state: "open", by: "lead", created_ms: Date.now() - 2 * 86_400_000 },
   ],
   next: "fixture-waiting-next",

@@ -31,14 +31,12 @@ fn exercise(mut h: Harness, node: u32, own: String, step: &str, conflict: bool) 
     assert!(cards[0].text.contains("automatically") && cards[0].text.contains("board"));
     assert!(!cards[0].text.contains("Automatic checks use a backoff"));
     let key = format!("gate:held:{step}:{node}");
-    let failures = a.ledger.get(TEAM, &key).unwrap().unwrap().data["failures"].clone();
+    // Steady passes under one reason write nothing: the row keeps its version.
+    let row = a.ledger.get(TEAM, &key).unwrap().unwrap();
     for second in 1..=10 {
         run(&mut h, &mut a, &mut p, 1_740_100 + second * 1000);
     }
-    assert_eq!(
-        a.ledger.get(TEAM, &key).unwrap().unwrap().data["failures"],
-        failures
-    );
+    assert_eq!(a.ledger.get(TEAM, &key).unwrap().unwrap(), row);
     assert_eq!(open(&h).len(), 1);
     assert_eq!((p.finishes, p.merges, p.deliveries), (0, 0, 0));
     reviewed::observe(
@@ -132,7 +130,7 @@ fn held_accepts_and_reopens_make_one_card_by_time_and_recover_after_restart() {
     }
 }
 #[test]
-fn a_held_reason_change_closes_the_old_card_and_starts_the_new_condition_count() {
+fn a_held_reason_change_keeps_the_card_until_the_new_reason_has_stood_for_the_period() {
     let (mut h, node, _) = reviewed::accepted();
     h.settings(|s| s.integration = Integration::None);
     reviewed::observe(&mut h, node, TaskStage::InReview, "", true);
@@ -143,16 +141,20 @@ fn a_held_reason_change_closes_the_old_card_and_starts_the_new_condition_count()
     }
     let old = open(&h)[0].seq;
     reviewed::observe(&mut h, node, TaskStage::InReview, "another", false);
-    run(&mut h, &mut a, &mut p, 180_101);
-    assert!(open(&h).is_empty());
-    assert_ne!(h.store.card(TEAM, old).unwrap().unwrap().state, "open");
-    for now in [240_101, 360_101] {
+    for now in [180_101, 240_101, 300_101] {
         run(&mut h, &mut a, &mut p, now);
+        let cards = open(&h);
+        assert_eq!((cards.len(), cards[0].seq), (1, old), "{now}");
+        assert!(cards[0].text.contains("conflict"));
     }
+    run(&mut h, &mut a, &mut p, 360_101);
     let new = open(&h);
     assert_eq!(new.len(), 1);
     assert_ne!(new[0].seq, old);
     assert!(new[0].text.contains("another execution"));
+    let replaced = h.store.card(TEAM, old).unwrap().unwrap();
+    assert_eq!(replaced.decision.as_deref(), Some("stale"));
+    assert_eq!(h.store.cards(TEAM, 200, None).unwrap().rows.len(), 2);
 }
 #[test]
 fn archiving_the_node_closes_its_held_card_and_reclaims_the_retry_row_on_the_next_pass() {
@@ -309,10 +311,11 @@ fn observation_churn_under_one_held_reason_never_advances_its_clock() {
             run(&mut h, &mut a, &mut p, 100 + second * 1_000);
             assert!(open(&h).is_empty(), "{step}, second {second}");
         }
+        // The clock is the hold's age, which churn never restarts.
         let key = format!("gate:held:{step}:{node}");
         assert_eq!(
-            a.ledger.get(TEAM, &key).unwrap().unwrap().data["failures"],
-            1
+            a.ledger.get(TEAM, &key).unwrap().unwrap().data["hold"]["start"],
+            100
         );
         for now in [60_100, 180_100] {
             reviewed::observe(&mut h, node, TaskStage::InReview, "", true);
@@ -320,5 +323,231 @@ fn observation_churn_under_one_held_reason_never_advances_its_clock() {
         }
         assert_eq!(open(&h).len(), 1, "{step}");
         assert_eq!((p.finishes, p.merges, p.deliveries), (0, 0, 0));
+    }
+}
+
+fn own(h: &Harness, node: u32) -> String {
+    h.store
+        .effects(TEAM, 200, None)
+        .unwrap()
+        .rows
+        .into_iter()
+        .find(|e| e.node == node)
+        .unwrap()
+        .request_id
+}
+/// A reported node whose step is held: an accept (finish, or merge with
+/// integration by branch) or a pending Return (reopen).
+fn hold(step: &str) -> (Harness, u32, String, crate::teams::ops::Actor) {
+    let mut h = Harness::new();
+    let (node, lead) = h.reported();
+    if step != "merge" {
+        h.settings(|s| s.integration = Integration::None);
+    }
+    let id = own(&h, node);
+    reviewed::observe(&mut h, node, TaskStage::InReview, &id, false);
+    let op = if step == "reopen" {
+        Operation::Return {
+            node,
+            reason: "Revise".into(),
+        }
+    } else {
+        Operation::Accept { node }
+    };
+    h.run(&lead, op).unwrap();
+    (h, node, id, lead)
+}
+fn reason(h: &mut Harness, node: u32, id: &str, conflict: bool) {
+    let attempt = if conflict { id } else { "persons-attempt" };
+    reviewed::observe(h, node, TaskStage::InReview, attempt, conflict);
+}
+fn minute(h: &mut Harness, a: &mut super::super::super::Runtime, p: &mut Work, m: i64) {
+    a.begin_pass();
+    a.tick(&mut h.store, p, TEAM, 1_000 + m * 60_000, m == 0)
+        .unwrap();
+}
+
+/// Review 08y, F2-1: a reason alternating every minute for an hour. The hold
+/// is silent for its first period only; the first card opens at minute 3
+/// with the sentence of that pass and stays, because neither reason stands
+/// for the period. A reason that then stands replaces it; the hold's end
+/// closes the card and the step runs once.
+#[test]
+fn a_reason_alternating_every_minute_for_an_hour_opens_one_card_at_the_holds_period() {
+    for step in ["finish", "merge", "reopen"] {
+        let (mut h, node, id, _) = hold(step);
+        let mut a = actor(&h);
+        let mut p = Work::default();
+        let mut first = None;
+        for m in 0..61 {
+            reason(&mut h, node, &id, m % 2 == 0);
+            minute(&mut h, &mut a, &mut p, m);
+            let all = h.store.cards(TEAM, 200, None).unwrap().rows;
+            assert!(all.len() <= 1, "{step}, minute {m}: {}", all.len());
+            if first.is_none() && !all.is_empty() {
+                first = Some((m, all[0].clone()));
+            }
+        }
+        let (at, card) = first.unwrap_or_else(|| panic!("{step}: no card in an hour"));
+        assert_eq!(at, 3, "{step}");
+        assert_eq!(card.node, Some(node));
+        assert!(
+            card.text.contains("another execution"),
+            "{step}: {}",
+            card.text
+        );
+        assert_eq!(
+            open(&h).iter().map(|c| c.seq).collect::<Vec<_>>(),
+            [card.seq],
+            "{step}"
+        );
+        // Minute 60 observed the conflict; it stands from there.
+        for m in 61..63 {
+            minute(&mut h, &mut a, &mut p, m);
+            assert_eq!(open(&h)[0].seq, card.seq, "{step}, minute {m}");
+        }
+        minute(&mut h, &mut a, &mut p, 63);
+        let current = open(&h);
+        assert_eq!(current.len(), 1, "{step}");
+        assert_ne!(current[0].seq, card.seq, "{step}");
+        assert!(current[0].text.contains("conflict"), "{step}");
+        assert_eq!((p.finishes, p.merges, p.deliveries), (0, 0, 0), "{step}");
+        reviewed::observe(
+            &mut h,
+            node,
+            if step == "merge" {
+                TaskStage::Done
+            } else {
+                TaskStage::InReview
+            },
+            &id,
+            false,
+        );
+        p.allow_delivery = step == "reopen";
+        p.contains = Some(false);
+        minute(&mut h, &mut a, &mut p, 64);
+        assert!(open(&h).is_empty(), "{step}");
+        let key = format!("gate:held:{step}:{node}");
+        assert!(a.ledger.get(TEAM, &key).unwrap().is_none(), "{step}");
+        assert_eq!(
+            match step {
+                "finish" => p.finishes,
+                "merge" => p.merges,
+                _ => p.deliveries,
+            },
+            1,
+            "{step}"
+        );
+    }
+}
+
+#[test]
+fn a_dismissal_outlasts_a_reason_that_never_stands_for_the_period() {
+    let (mut h, node, id, _) = hold("finish");
+    let mut a = actor(&h);
+    let mut p = Work::default();
+    reason(&mut h, node, &id, true);
+    for m in 0..4 {
+        minute(&mut h, &mut a, &mut p, m);
+    }
+    let card = open(&h)[0].seq;
+    h.run(
+        &person(),
+        Operation::DecideCard {
+            card,
+            decision: "acknowledged".into(),
+        },
+    )
+    .unwrap();
+    for m in 4..34 {
+        reason(&mut h, node, &id, m % 2 == 0);
+        minute(&mut h, &mut a, &mut p, m);
+        assert!(open(&h).is_empty(), "minute {m}");
+    }
+    // Minute 33 observed another execution; it stands from there.
+    for m in 34..36 {
+        minute(&mut h, &mut a, &mut p, m);
+        assert!(open(&h).is_empty(), "minute {m}");
+    }
+    minute(&mut h, &mut a, &mut p, 36);
+    let current = open(&h);
+    assert_eq!(current.len(), 1);
+    assert!(current[0].text.contains("another execution"));
+    let dismissed = h.store.card(TEAM, card).unwrap().unwrap();
+    assert_eq!(dismissed.decision.as_deref(), Some("acknowledged"));
+    assert_eq!(h.store.cards(TEAM, 200, None).unwrap().rows.len(), 2);
+}
+
+#[test]
+fn a_new_decision_is_a_new_hold_whose_card_waits_for_its_own_period() {
+    let (mut h, node, id, lead) = hold("reopen");
+    let mut a = actor(&h);
+    let mut p = Work::default();
+    reason(&mut h, node, &id, true);
+    for m in 0..4 {
+        minute(&mut h, &mut a, &mut p, m);
+    }
+    let old = open(&h)[0].seq;
+    h.run(
+        &lead,
+        Operation::Return {
+            node,
+            reason: "Revise again".into(),
+        },
+    )
+    .unwrap();
+    for m in 4..7 {
+        minute(&mut h, &mut a, &mut p, m);
+        assert!(open(&h).is_empty(), "minute {m}");
+    }
+    assert_ne!(h.store.card(TEAM, old).unwrap().unwrap().state, "open");
+    minute(&mut h, &mut a, &mut p, 7);
+    let current = open(&h);
+    assert_eq!(current.len(), 1);
+    assert_ne!(current[0].seq, old);
+    let decision = h.store.pending_reopens(TEAM, 1, None).unwrap().rows[0].seq;
+    assert!(current[0].text.contains(&format!("decision {decision}")));
+    assert_eq!(p.deliveries, 0);
+}
+
+#[test]
+fn a_reason_replacement_interrupted_at_each_durable_step_leaves_one_current_card() {
+    for point in ["replacement_closed", "replacement_reset", "notice_reserved"] {
+        let (mut h, node, id, _) = hold("finish");
+        let mut a = actor(&h);
+        let mut p = Work::default();
+        reason(&mut h, node, &id, true);
+        for m in 0..4 {
+            minute(&mut h, &mut a, &mut p, m);
+        }
+        let old = open(&h)[0].seq;
+        reason(&mut h, node, &id, false);
+        for m in 4..7 {
+            minute(&mut h, &mut a, &mut p, m);
+        }
+        super::super::super::retry::CRASH.with(|s| s.set(Some(point)));
+        let crashed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            minute(&mut h, &mut a, &mut p, 7)
+        }));
+        let remaining = super::super::super::retry::CRASH.with(|s| s.replace(None));
+        assert!(crashed.is_err() && remaining.is_none(), "unvisited {point}");
+        drop(a);
+        let mut a = actor(&h);
+        minute(&mut h, &mut a, &mut p, 8);
+        minute(&mut h, &mut a, &mut p, 9);
+        let current = open(&h);
+        assert_eq!(current.len(), 1, "{point}");
+        assert_ne!(current[0].seq, old, "{point}");
+        assert!(current[0].text.contains("another execution"), "{point}");
+        assert_eq!(
+            h.store.cards(TEAM, 200, None).unwrap().rows.len(),
+            2,
+            "{point}"
+        );
+        let key = format!("gate:held:finish:{node}");
+        assert_eq!(
+            a.ledger.get(TEAM, &key).unwrap().unwrap().data["card"],
+            current[0].seq
+        );
     }
 }

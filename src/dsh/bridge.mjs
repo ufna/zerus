@@ -2,13 +2,123 @@
 // 0.2.2-rc.1 hosts. Its ping version identifies the adapter, not the harness.
 // Loaded through its supported Cordis --patch extension mechanism. No fork of
 // the engine, credential copying, HTTP authentication bypass or PTY injection.
+// One method wrapper adds explicit environment entries, the subprocess
+// service's documented caller entries, to processes a tool call starts.
 import net from 'node:net';
 import fs from 'node:fs/promises';
-import { createHash, randomUUID } from 'node:crypto';
+import { closeSync, constants, fstatSync, openSync, readSync } from 'node:fs';
+import { join } from 'node:path';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { isDeepStrictEqual } from 'node:util';
 
 export const name = 'hgs-native-dsh';
+
+// zerus-ppd26. One host serves every DeepSeek session of its agent home, so
+// its own environment names no session: hgs starts it without the markers of
+// whichever session launched it. Every tool call's processes instead carry
+// HGS_AGENT=dsh and exactly the calling session's own markers, or none of
+// them; an explicit undefined entry is the subprocess service's tombstone
+// that removes an inherited value. Never a partial or inherited set.
+const SESSION_MARKERS = Object.freeze(['HGS_SESSION', 'HGS_RUN_ID', 'HGS_SESSION_ID', 'HGS_ACCOUNT_ID']);
+const IDENTITY_BYTES = 4096;
+const NATIVE_SESSION = /^session-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+export function callEnvironment(identity) {
+  const env = { HGS_AGENT: 'dsh' };
+  for (const key of SESSION_MARKERS) env[key] = undefined;
+  if (identity) Object.assign(env, { HGS_SESSION: identity.session, HGS_RUN_ID: identity.run,
+    HGS_SESSION_ID: identity.session_id, HGS_ACCOUNT_ID: identity.account });
+  return Object.freeze(env);
+}
+
+const plainMarker = value => typeof value === 'string' && value.length > 0 && value.length <= 2048
+  && [...value].every(c => { const n = c.codePointAt(0); return n > 0x1f && (n < 0x7f || n > 0x9f); });
+
+// The file hgs writes for one native conversation (state/dsh/shell_identity.rs).
+export function parseIdentity(text, sessionId) {
+  let value;
+  try { value = JSON.parse(text); } catch { return undefined; }
+  if (value?.version !== 1 || value.conversation !== sessionId) return undefined;
+  const { session, run, session_id, account } = value;
+  return [session, run, session_id, account].every(plainMarker) ? { session, run, session_id, account } : undefined;
+}
+
+// A child agent's processes carry its top-level session's markers, as an
+// in-process subagent of another agent shares that agent's environment.
+export function identitySession(agent) {
+  const header = agent?.session?.header;
+  const id = header?.origin === 'subagent' ? header.parentSession : (agent?.session?.id ?? header?.id);
+  return typeof id === 'string' && NATIVE_SESSION.test(id) ? id : undefined;
+}
+
+export function readIdentity(dir, sessionId) {
+  if (typeof dir !== 'string' || !dir || !sessionId) return undefined;
+  let fd;
+  try {
+    fd = openSync(join(dir, sessionId + '.json'), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    const meta = fstatSync(fd);
+    if (!meta.isFile() || meta.size > IDENTITY_BYTES) return undefined;
+    const buffer = Buffer.alloc(IDENTITY_BYTES + 1);
+    const read = readSync(fd, buffer, 0, buffer.length, 0);
+    return read > IDENTITY_BYTES ? undefined : parseIdentity(buffer.subarray(0, read).toString('utf8'), sessionId);
+  } catch { return undefined; } finally { if (fd !== undefined) closeSync(fd); }
+}
+
+// zerus-ppd26 Part B. Process ancestry cannot tell hosted agents apart, so
+// each tool call's processes also carry a fresh random token of 256 bits. The
+// host keeps token -> the calling top-level conversation while the call runs
+// and, for its background or promoted jobs, until each job settles; hgs asks
+// the host for it over the private socket to prove which conversation's call
+// started a command. The table is bounded; an evicted token is unknown.
+export const CALL_TOKEN = 'HGS_DSH_CALL_TOKEN';
+const CALL_TOKENS = 4096;
+export function callTokens(limit = CALL_TOKENS) {
+  const live = new Map(), jobs = new Map();
+  const release = token => { const entry = live.get(token); if (entry && !entry.open && entry.jobs.size === 0) live.delete(token); };
+  return {
+    open(conversation) {
+      const token = randomBytes(32).toString('hex');
+      live.set(token, { conversation, open: true, jobs: new Set() });
+      while (live.size > limit) live.delete(live.keys().next().value);
+      return token;
+    },
+    close(token) { const entry = live.get(token); if (entry) { entry.open = false; release(token); } },
+    job(token, id) { const entry = live.get(token); if (entry) { entry.jobs.add(id); jobs.set(id, token); } },
+    settled(id) {
+      const token = jobs.get(id);
+      jobs.delete(id);
+      if (token === undefined) return;
+      live.get(token)?.jobs.delete(id);
+      release(token);
+    },
+    conversation(token) {
+      return typeof token === 'string' && /^[0-9a-f]{64}$/.test(token) ? live.get(token)?.conversation : undefined;
+    },
+    get size() { return live.size; },
+  };
+}
+
+// Adds the current call's entries to each process the service starts while
+// that call runs; later caller entries never override them.
+export function wrapSpawns(service, current) {
+  const wrapped = [];
+  for (const method of ['spawn', 'spawnTerminal']) {
+    const original = service?.[method];
+    if (typeof original !== 'function') continue;
+    const wrapper = function (spec, ...rest) {
+      const env = current();
+      return original.call(this, env && spec && typeof spec === 'object' ? { ...spec, env: { ...spec.env, ...env } } : spec, ...rest);
+    };
+    service[method] = wrapper;
+    wrapped.push([method, original, wrapper]);
+  }
+  return {
+    installed: wrapped.some(([method]) => method === 'spawn'),
+    current: () => wrapped.every(([method, , wrapper]) => service[method] === wrapper),
+    restore() { for (const [method, original, wrapper] of wrapped) if (service[method] === wrapper) service[method] = original; },
+  };
+}
 export const inject = ['sessionController', 'agents', 'goals', 'llm', 'agentDefaultModel', 'sessionQuery', 'userQuestions', 'workspaceRegistry', 'subagents', 'permissionPresets', 'approval', 'commands'];
 
 // 0.2.2 moved selection from the controller's WeakMap to the Agent's native
@@ -152,15 +262,43 @@ export function apply(ctx, config) {
   const owned = new Map(), opening = new Map(), questions = new Map();
   const generation = randomUUID();
   const shellContext = new AsyncLocalStorage(), shellCalls = new Map(), jobCalls = new Map();
+  const callContext = new AsyncLocalStorage(), tokens = callTokens();
+  const identities = typeof config.shellIdentities === 'string' && config.shellIdentities ? config.shellIdentities : null;
+  let spawns = null, spawnService = null;
+  // A reloaded subprocess service is wrapped again before the next call.
+  function callEnvironmentInstalled() {
+    const service = ctx.get('subprocess');
+    if (spawns && service === spawnService && spawns.current()) return true;
+    spawns?.restore();
+    spawns = wrapSpawns(service, () => callContext.getStore());
+    spawnService = spawns.installed ? service : null;
+    return spawns.installed;
+  }
+  callEnvironmentInstalled();
+  ctx.on('dispose', () => spawns?.restore());
   const jobRegistry = ctx.get('jobs');
   if (jobRegistry) ctx.on('dispose',jobRegistry.events.subscribe({owners:'scope'},event => {
+    // A job a tool call registers keeps that call's token until it settles.
+    const token = callContext.getStore()?.[CALL_TOKEN];
+    if (event.type === 'registered' && token) tokens.job(token, event.job.id);
+    if (event.type === 'settled' || event.type === 'removed') tokens.settled(event.job.id);
     const call = shellContext.getStore();
     if (event.type === 'registered' && event.job.kind === 'bash' && call?.owner === event.job.owner) {
       call.jobId=event.job.id;jobCalls.set(event.job.id,call);
     }
     if (event.type === 'removed') jobCalls.delete(event.job.id);
   }));
-  ctx.on('tools/execute',async (exec,next) => {
+  // Every tool call, whatever the tool or agent: its processes carry
+  // HGS_AGENT=dsh and the calling top-level session's markers or none.
+  ctx.on('tools/execute', async (exec, next) => {
+    callEnvironmentInstalled();
+    const session = identitySession(exec.agent);
+    const token = session === undefined ? undefined : tokens.open(session);
+    const env = Object.freeze({ ...callEnvironment(readIdentity(identities, session)), [CALL_TOKEN]: token });
+    try { return await callContext.run(env, () => observeShell(exec, next)); }
+    finally { if (token) tokens.close(token); }
+  });
+  function observeShell(exec, next) {
     if (exec.name !== 'bash' || !exec.agent?.session?.id) return next();
     const call={callId:exec.callId,owner:exec.agent.session.id,command:String(exec.arguments?.command ?? '').slice(0,16000),
       cwd:exec.arguments?.workdir?.slice(0,4096),startedAt:Date.now(),status:'running'};
@@ -175,7 +313,7 @@ export function apply(ctx, config) {
         return result;
       } catch(error){call.status='failed';call.finishedAt=Date.now();throw error;}
     });
-  });
+  }
   const recovery = new Map(), recoveryReceipts = new Map();
   const compactions = new Map(), compactReceipts = new Set();
   const forkReceipts = new Map(), forking = new Map();
@@ -255,6 +393,13 @@ export function apply(ctx, config) {
   function checkPermissions(mode) {
     if (mode !== undefined && !['provider', 'bypass'].includes(mode)) throw new Error('Unknown account permission mode');
   }
+  // The native default route, effort included, as the official session
+  // controller's agentOptions(). A selection the session already recorded
+  // still wins on resume; this is only the route of a session without one.
+  function defaultAgentOptions() {
+    const { provider, model, reasoningEffort } = ctx.agentDefaultModel.currentSelection();
+    return { provider, model, ...(reasoningEffort === undefined ? {} : { reasoningEffort }) };
+  }
   async function resume(sessionId, permissionMode) {
     checkPermissions(permissionMode);
     const live = ctx.agents.get(sessionId);
@@ -265,8 +410,7 @@ export function apply(ctx, config) {
       try {
         if (observation.header.origin === 'subagent') throw new Error('Use the parent to manage a subagent');
         const composition = await models.compose(control.presetForObservation(observation));
-        const { provider, model } = ctx.agentDefaultModel.currentSelection();
-        const handle = await ctx.agents.resume({ resumeSessionId: sessionId, agentOptions: { provider, model }, setup: composition.setup });
+        const handle = await ctx.agents.resume({ resumeSessionId: sessionId, agentOptions: defaultAgentOptions(), setup: composition.setup });
         applyPermissions(handle.agent, permissionMode);
         owned.set(sessionId, handle);
         await publishWorkspace(sessionId);
@@ -518,6 +662,7 @@ export function apply(ctx, config) {
     const p = request.params ?? {};
     switch (request.method) {
       case 'ping': return { protocol: 1, version: '0.2.1-rc.2', generation, accountPermissions: true, sessionActions: true,
+        shellIdentity: callEnvironmentInstalled(), callTokens: callEnvironmentInstalled(),
         nativeOperations: ['fork', 'history-search', 'schedules'], schedule: Boolean(scheduleService()) };
       case 'list': {
         const list = await api.list({}, new AbortController().signal);
@@ -632,8 +777,7 @@ export function apply(ctx, config) {
           if (error?.code !== 'SESSION_QUERY_SESSION_NOT_FOUND') throw error;
         }
         const composition = await models.compose('standard');
-        const { provider, model } = ctx.agentDefaultModel.currentSelection();
-        const handle = await ctx.agents.create({ sessionId, agentOptions: { provider, model },
+        const handle = await ctx.agents.create({ sessionId, agentOptions: defaultAgentOptions(),
           meta: { cwd: p.cwd, agentPreset: composition.agentPreset }, setup: composition.setup });
         applyPermissions(handle.agent, p.permissionMode);
         owned.set(sessionId, handle);
@@ -707,7 +851,12 @@ export function apply(ctx, config) {
         return api.prompt(p, new AbortController().signal);
       }
       case 'settings': {
-        const agent = topLevel(await resume(p.sessionId));
+        // A launch applying account defaults binds the exact host generation
+        // that created the session. A paused session resumes under the
+        // account permission mode HGS passes, as a scoped resume does.
+        if (p.generation !== undefined && p.generation !== generation) throw new Error('DeepSeek host changed; refresh before changing settings');
+        checkPermissions(p.permissionMode);
+        const agent = topLevel(await resume(p.sessionId, p.permissionMode));
         const catalog = await api.modelCatalog();
         const model = catalog.groups.find(g => g.id === p.provider)?.models.find(m => m.id === p.model);
         if (!model) throw new Error('This model is unavailable for the native account');
@@ -737,6 +886,11 @@ export function apply(ctx, config) {
           seen.add(answer.id);
         }
         q.settle({ answers: p.answers }); return { accepted: true };
+      }
+      // Which conversation's live tool call holds this token; nothing else.
+      case 'call-token': {
+        const conversation = tokens.conversation(p.token);
+        return conversation === undefined ? { known: false } : { known: true, conversation };
       }
       default: throw new Error('Unsupported HGS native request');
     }

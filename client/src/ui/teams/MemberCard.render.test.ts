@@ -95,6 +95,16 @@ it("offers resume only to a paused member", () => {
   expect(buttons.map((button) => button.textContent)).toEqual(["Resume", "Stop", "Remove"]);
 });
 
+it("shows Stop disabled with its reason for a member the person stopped, and Resume open", () => {
+  const { host } = setup(member({ state: "paused", person_stopped: true }));
+  (host.querySelector('[aria-label="Member actions"]') as HTMLButtonElement).click();
+  const items = [...host.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')];
+  const stop = items.find((item) => item.textContent === "Stop")!;
+  expect(stop.getAttribute("aria-disabled")).toBe("true");
+  expect(stop.title).toBe("You stopped this member. Resume it to let it work again.");
+  expect(items.find((item) => item.textContent === "Resume")?.getAttribute("aria-disabled")).not.toBe("true");
+});
+
 it("keeps lead Pause/Stop and offers no Remove, which the store refuses for the lead", () => {
   const { host, onAction } = setup(member({ lead: true }));
   (host.querySelector('[aria-label="Member actions"]') as HTMLButtonElement).click();
