@@ -129,7 +129,7 @@ fn main() {
             );
             // One write (eprintln! writes each piece on its own), so that no
             // frame a pseudoconsole paints shows the prefix without the message.
-            let line = format!("hgs: {}\n", err.message);
+            let line = cli::error_line(&err.message);
             eprint!("{line}");
             err.code
         }

@@ -72,12 +72,14 @@ impl Native<'_> {
 
     /// Run one original with its own custody. `admit` runs right before the
     /// spawn and may hold a value, such as a store transaction, across it.
+    #[allow(clippy::too_many_arguments)]
     fn original<T>(
         &self,
         id: &str,
         args: &[&str],
         input: &[u8],
         codes: Codes,
+        output: Output,
         deadline: Duration,
         admit: impl FnOnce() -> std::io::Result<T>,
     ) -> Ended {
@@ -95,10 +97,7 @@ impl Native<'_> {
                 stdin: Stdin::Bytes(input),
                 unwritten: "team_timer_input_unwritten",
             },
-            output: Output::Stdout {
-                bytes: 64 << 10,
-                too_large: "team_timer_output_large",
-            },
+            output,
             codes,
             retain: None,
         };

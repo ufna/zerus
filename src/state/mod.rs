@@ -1057,6 +1057,29 @@ impl Unresolved {
     }
 }
 
+/// The real `hgs inspect` reply for `record`, after this component's own
+/// writer saved it: the Teams confirmation's tests read inspections from here
+/// (zerus-63rru.56).
+#[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
+pub(crate) fn inspection_for_test(record: &mut Value) -> Result<Value> {
+    storage::write(record)?;
+    journal::inspection(string(record, "name"), 0, None, false)
+}
+/// `record` as a completed pause leaves it, saved by this component.
+#[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
+pub(crate) fn pause_for_test(record: &mut Value) -> Result<()> {
+    let _guard = lock(None)?;
+    lifecycle::mark_paused(record);
+    storage::write(record)
+}
+/// Archives `record` through this component's own archive, as an exit's
+/// archive does, and returns the archive ID.
+#[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
+pub(crate) fn archive_for_test(record: &Value) -> Result<String> {
+    let _guard = lock(None)?;
+    archive::save(record)
+}
+
 /// zerus-ucck P3a: a label a command names without a selection, resolved
 /// among its candidates. A label whose only holder is in the ID layout selects
 /// that session, so every read of the label in this command reaches it. A
