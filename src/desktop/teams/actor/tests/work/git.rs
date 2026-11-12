@@ -86,6 +86,10 @@ fn blank_or_control_git_paths_are_quoted_in_the_conflict_fact() {
         ("ls\u{2028}forged", r#""ls\u2028forged""#),
         ("ps\u{2029}forged", r#""ps\u2029forged""#),
         ("esc\u{1b}[31mred\u{7}", r#""esc\u001b[31mred\u0007""#),
+        // A clean name spelled like the quoted form of x and BEL, beside that
+        // name itself: a name that starts with a quote is always quoted.
+        ("\"x\\u0007\"", r##""\"x\\u0007\"""##),
+        ("x\u{7}", r#""x\u0007""#),
         // Displayed as "invoice_exe.pdf": shown with its override escaped.
         ("invoice_\u{202E}fdp.exe", r#""invoice_\u202efdp.exe""#),
     ] {

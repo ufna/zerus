@@ -36,17 +36,31 @@ pub(crate) fn lines(text: &str) -> String {
         .collect()
 }
 
-/// A path shown on one line, cut to `limit` bytes. A path that is blank or
-/// holds a control character, a line separator or a bidirectional override
-/// or isolate is shown changed: quoted, with each such character escaped, so
-/// two different names never read the same, no name starts a line of its own
-/// and none is displayed in another order than its bytes.
+/// A path shown on one line in at most `limit` bytes. A clean name is shown
+/// as it is. A name that is blank, holds a control character, a line or
+/// paragraph separator or a bidirectional override or isolate, starts with a
+/// double quote, or is longer than `limit` is shown changed: quoted, with
+/// JSON's escapes and each such character escaped. So no name starts a line
+/// of its own or is displayed in another order than its bytes, and two
+/// different names never read the same while both are shown whole: a name
+/// shown as it is never starts with a quote and every quoted form does, and
+/// the escaping is reversible. A quoted form cut at the limit ends with a
+/// marker after its closing quote, so it never reads like a whole name. The
+/// limit: two names whose quoted forms are both cut read the same when they
+/// share the part shown.
 pub(crate) fn path(name: &str, limit: usize) -> String {
-    let name = cut(name, limit);
-    if !name.trim().is_empty() && !name.chars().any(breaks) {
+    if name.len() <= limit
+        && !name.starts_with('"')
+        && !name.trim().is_empty()
+        && !name.chars().any(breaks)
+    {
         return name.to_owned();
     }
+    const CUT: &str = "\u{2026}";
     let mut shown = String::from("\"");
+    // Where each escaped character ends, so that a cut drops whole pieces.
+    let mut ends = Vec::new();
+    let mut whole = true;
     for ch in name.chars() {
         let piece = match ch {
             ch if !ch.is_control() && breaks(ch) => format!("\\u{:04x}", u32::from(ch)),
@@ -57,11 +71,22 @@ pub(crate) fn path(name: &str, limit: usize) -> String {
             }
         };
         if shown.len() + piece.len() + 1 > limit {
+            whole = false;
             break;
         }
         shown.push_str(&piece);
+        ends.push(shown.len());
+    }
+    if !whole {
+        while shown.len() + 1 + CUT.len() > limit {
+            ends.pop();
+            shown.truncate(ends.last().copied().unwrap_or(1));
+        }
     }
     shown.push('"');
+    if !whole {
+        shown.push_str(CUT);
+    }
     shown
 }
 
@@ -141,6 +166,40 @@ mod tests {
         }
         let long = format!("\n{}", "x".repeat(5000));
         let shown = path(&long, 4096);
-        assert!(shown.len() <= 4096 && shown.starts_with('"') && shown.ends_with('"'));
+        assert!(shown.len() <= 4096 && shown.starts_with('"'));
+        assert!(shown.ends_with("\"\u{2026}"), "a cut form is marked");
+    }
+
+    /// Two different names never read the same while both are shown whole
+    /// (the review of zerus-63rru.59): a clean name written like a quoted
+    /// form, a name that starts with a quote, a clean name longer than the
+    /// limit, and a cut quoted form against the whole one of its prefix.
+    #[test]
+    fn no_name_shown_as_it_is_reads_like_a_quoted_one() {
+        // The reviewer's pair: a clean name that spells the quoted form of
+        // `x` and BEL, and that dirty name.
+        let spelled = "\"x\\u0007\"";
+        let dirty = "x\u{7}";
+        assert_eq!(path(dirty, 4096), r#""x\u0007""#);
+        assert_eq!(path(spelled, 4096), r##""\"x\\u0007\"""##);
+        assert_ne!(path(spelled, 4096), path(dirty, 4096));
+        // Any name that starts with a quote is quoted.
+        assert_eq!(path("\"a", 4096), r#""\"a""#);
+        // A clean name longer than the limit is quoted and marked as cut,
+        // so it never reads like the clean name of its first bytes.
+        let long = "a".repeat(20);
+        let shown = path(&long, 10);
+        assert_eq!(shown, "\"aaaaa\"\u{2026}");
+        assert_ne!(shown, path(&long[..10], 10));
+        assert_eq!(path(&long[..10], 10), long[..10]);
+        // A cut quoted form never reads like the whole one of its prefix.
+        let cut = path("ab\u{7}cdefgh\u{7}", 14);
+        assert!(cut.ends_with("\"\u{2026}"), "{cut}");
+        assert_ne!(cut, path("ab\u{7}", 14));
+        // A cut drops whole escapes, never part of one.
+        assert_eq!(
+            path("\u{7}\u{7}\u{7}", 16),
+            r#""\u0007""#.to_owned() + "\u{2026}"
+        );
     }
 }
