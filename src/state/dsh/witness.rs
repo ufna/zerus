@@ -129,6 +129,12 @@ const READ_WAIT: Duration = Duration::from_secs(25);
 /// What a receipt's digest covers: the text of each block and every block's
 /// type, never image bytes. A receipt is no proof of attachment content.
 const DIGEST_SCOPE: &str = "text_and_block_types";
+/// An earlier send may have offered the input, but nothing witnessed it:
+/// unknown, never a refusal.
+const UNWITNESSED: &str =
+    "An earlier send without a witness already offered exactly this input; it is never witnessed or sent again";
+const UNREADABLE: &str =
+    "The input's recorded outcome could not be read, so an earlier call may have offered it; it is never sent again";
 const NO_WITNESS: &str =
     "This DeepSeek host cannot witness a task input; it can after its next own start";
 
@@ -339,6 +345,9 @@ fn receipt_path(request_id: &str) -> PathBuf {
 enum Stored {
     Absent,
     Exact(Value),
+    /// Exactly this request, recorded by an ordinary send without a witness:
+    /// it may have been offered.
+    Unwitnessed,
     Conflict,
 }
 
@@ -349,16 +358,22 @@ fn stored(binding: &Binding) -> Result<Stored> {
         Err(error) => return Err(error.to_string()),
     };
     let receipt: Value = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
-    let exact = receipt["witness_version"] == json!(1)
-        && string(&receipt, "digest") == binding.digest
+    let same = string(&receipt, "digest") == binding.digest
         && string(&receipt, "name") == binding.name
         && string(&receipt, "run_id") == binding.run_id
         && string(&receipt, "conversation_id") == binding.conversation_id;
-    Ok(if exact {
-        Stored::Exact(receipt)
-    } else {
-        Stored::Conflict
+    Ok(match (same, receipt["witness_version"] == json!(1)) {
+        (true, true) => Stored::Exact(receipt),
+        (true, false) => Stored::Unwitnessed,
+        (false, _) => Stored::Conflict,
     })
+}
+
+fn unknown(code: UnknownCode, detail: &str) -> Witnessed {
+    Witnessed::Unknown {
+        code,
+        detail: detail.to_owned(),
+    }
 }
 
 /// The recorded outcome of `request` to `name`, for recovery: None when no
@@ -368,6 +383,7 @@ pub(crate) fn recorded(name: &str, request: &Value) -> Result<Option<Witnessed>>
     let binding = binding_of(name, request, &digest);
     Ok(match stored(&binding)? {
         Stored::Exact(receipt) => Some(replay(&receipt, &binding)),
+        Stored::Unwitnessed => Some(unknown(UnknownCode::Unseen, UNWITNESSED)),
         Stored::Absent | Stored::Conflict => None,
     })
 }
@@ -406,13 +422,16 @@ pub(super) fn submit_with(
         binding: binding.clone(),
         reason,
     };
+    // Without the lock the receipt store cannot be read: an earlier call may
+    // have offered this input.
     let guard = match lock(Some(&root().join("dsh/bindings.lock"))) {
         Ok(guard) => guard,
-        Err(error) => return refuse(NotOfferedCode::HostRefused, error),
+        Err(error) => return unknown(UnknownCode::Unseen, &format!("{UNREADABLE}: {error}")),
     };
     let prepared = match prepare(name, request, &digest, rpc) {
         Ok(Prepared::Offer(prepared)) => prepared,
         Ok(Prepared::Recorded(receipt)) => return replay(&receipt, &binding),
+        Ok(Prepared::Unknown(witnessed)) => return witnessed,
         Err((code, reason)) => return refuse(code, reason),
     };
     let Offer {
@@ -460,9 +479,12 @@ struct Offer {
 enum Prepared {
     Offer(Offer),
     Recorded(Value),
+    /// The store says this input may already have been offered.
+    Unknown(Witnessed),
 }
 
-/// Every check before the pending marker. Each failure is a definite refusal.
+/// Every check before the pending marker. Each failure is a definite refusal,
+/// except a store that may already hold this input (Prepared::Unknown).
 fn prepare(
     name: &str,
     request: &Value,
@@ -475,8 +497,18 @@ fn prepare(
     }
     // A request ID already recorded answers only for exactly that request,
     // whatever the session holds now; nothing is sent or overwritten.
-    match stored(&binding_of(name, request, digest)).map_err(host)? {
+    let stored = match stored(&binding_of(name, request, digest)) {
+        Ok(stored) => stored,
+        Err(error) => {
+            return Ok(Prepared::Unknown(unknown(
+                UnknownCode::Unseen,
+                &format!("{UNREADABLE}: {error}"),
+            )))
+        }
+    };
+    match stored {
         Stored::Exact(receipt) => return Ok(Prepared::Recorded(receipt)),
+        Stored::Unwitnessed => return Ok(Prepared::Unknown(unknown(UnknownCode::Unseen, UNWITNESSED))),
         Stored::Conflict => {
             return Err(host("This request ID was already used for another input (identity conflict); nothing was sent".into()))
         }
@@ -1255,5 +1287,49 @@ mod tests {
             Some("dropped_after_claim")
         );
         assert!(recorded(name, &old).unwrap().is_none());
+        // zerus-hfw2s.1: an earlier call may have offered exactly this input, so the
+        // answer is unknown, never a refusal, and nothing is asked or written.
+        let unknown_unsent = |request: &Value, detail: &str| {
+            let path = receipt_path(string(request, "request_id"));
+            let before = fs::read(&path).ok();
+            let (outcome, calls) = run(
+                request,
+                witnessing.clone(),
+                Err("unreachable".into()),
+                Duration::from_secs(5),
+            );
+            assert!(
+                matches!(&outcome, Witnessed::Unknown { code: UnknownCode::Unseen, detail: d } if d.starts_with(detail)),
+                "{outcome:?}"
+            );
+            assert!(calls.is_empty(), "{calls:?}");
+            assert_eq!(fs::read(&path).ok(), before);
+        };
+        // (a) Exactly this request, recorded by an ordinary send without a witness.
+        let ordinary = request("WITNESS");
+        let digest = request_digest(name, &ordinary);
+        atomic(
+            &receipt_path(string(&ordinary, "request_id")),
+            &json!({"request_id":ordinary["request_id"],"name":name,"run_id":"run-W","conversation_id":"session-W",
+                "digest":digest,"status":"submitted","transport":"native_dsh"})
+                .to_string(),
+        )
+        .unwrap();
+        unknown_unsent(&ordinary, UNWITNESSED);
+        assert_eq!(
+            recorded(name, &ordinary).unwrap().map(|w| w.code()),
+            Some("unseen")
+        );
+        // (b) A receipt that cannot be read.
+        let torn = request("WITNESS");
+        atomic(&receipt_path(string(&torn, "request_id")), "{\"status\":").unwrap();
+        unknown_unsent(&torn, UNREADABLE);
+        assert!(recorded(name, &torn).is_err());
+        // (b) A lock that cannot be taken: the store was never read.
+        let lock_path = root().join("dsh/bindings.lock");
+        fs::remove_file(&lock_path).unwrap();
+        fs::create_dir(&lock_path).unwrap();
+        unknown_unsent(&request("WITNESS"), UNREADABLE);
+        fs::remove_dir(&lock_path).unwrap();
     }
 }

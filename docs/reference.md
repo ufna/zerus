@@ -5735,7 +5735,11 @@ identity conflict, and the stored outcome is kept.
   deadline. `Unknown{changed}`: recorded with other content, for example after
   an edit in the native UI.
 - `Unknown{host_gone}`: the host stopped answering or changed generation.
-  `Unknown{unseen}`: the host holds no record of the request.
+  `Unknown{unseen}`: no witness exists for the request. Either the host holds
+  no record of it, or an earlier call may already have offered it. That happens
+  when exactly this request was recorded by an ordinary send without a witness,
+  or when its receipt or the store's lock could not be read. It is never a
+  refusal and never sent again.
 
 The digest is SHA-256 over each content block's type and, for a text block, its
 text, each followed by NUL. The host keeps images as attachment references, so
@@ -5755,6 +5759,8 @@ reports facts only:
 - `complete` says whether the page reached the log's end;
 - it also returns the adapter's own disposal windows and whether the flush made
   them durable.
+- After the adapter disposes of a session itself, each record bound to it keeps
+  its final facts (`frozen: true`) instead of the disposed session's log.
 
 HGS pages forward from `through` and classifies the events. A receipt, a
 changed message or a cancellation is concluded only from a complete slice.

@@ -756,7 +756,23 @@ export function apply(ctx, config) {
         windows.push([from, session.seq]);
         while (windows.length > 16) windows.shift();
         disposals.set(session, windows);
+        await freezeWitnesses(session);
       }
+    }
+  }
+  // A disposed session's log no longer changes: keep each of its records with
+  // its final facts and drop the session, so records never retain the logs of
+  // disposed sessions. A record whose facts exceed one page keeps the session.
+  async function freezeWitnesses(session) {
+    const records = [...witnesses.values()].filter(record => record.session === session);
+    if (!records.length) return;
+    let durable = false;
+    try { durable = Boolean(await ctx.get('sessions')?.flush(session)); } catch {}
+    for (const record of records) {
+      const facts = witnessFacts(record, session.seq);
+      if (!facts.complete) continue;
+      record.frozen = { ...facts, durable, frozen: true };
+      delete record.session;
     }
   }
   // One page of facts from `from` (at least spliceSeq), at most WITNESS_SCAN
@@ -786,6 +802,10 @@ export function apply(ctx, config) {
     const record = witnesses.get(p.requestId);
     if (!record || record.sessionId !== p.sessionId) return { generation, state: 'unseen' };
     if (record.refused !== undefined) return { generation, state: 'refused', reason: record.refused };
+    if (record.frozen) {
+      const from = Math.max(Number.isSafeInteger(p.fromSeq) ? p.fromSeq : record.frozen.from, record.frozen.from);
+      return { generation, state: 'tracked', ...record.frozen, from, events: record.frozen.events.filter(event => event.seq >= from) };
+    }
     // Wait, bounded, until the message is delivered or can no longer be.
     const deadline = Date.now() + Math.min(Math.max(Number(p.waitMs) || 0, 0), WITNESS_WAIT);
     for (;;) {

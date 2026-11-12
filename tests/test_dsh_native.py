@@ -1445,6 +1445,8 @@ class NativeInputWitness(unittest.TestCase):
         forgot = self.rpc('session-action', {'sessionId': sid, 'action': 'forget', 'generation': self.generation()})
         self.assertEqual(forgot['status'], 'completed', forgot)
         facts = self.witness(sid, rid, 2000)
+        # The adapter kept the record but answers from its final facts, without the disposed session.
+        self.assertIs(facts.get('frozen'), True, facts)
         canceled = [e for e in facts['events'] if e['type'] == 'agent/inbox/spliced' and e['outcome'] == 'canceled']
         self.assertTrue(canceled, facts)
         self.assertTrue(any(start <= canceled[-1]['seq'] < end for start, end in facts['disposals']), facts)
