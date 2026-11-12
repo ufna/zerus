@@ -1,9 +1,14 @@
 use super::intents::{Admission, IntentState, Intents};
 use super::types::*;
-use super::wire::{classify, prepare, run_action};
+// The helper-script tests run on Unix only.
+#[cfg(unix)]
+use super::wire::run_action;
+use super::wire::{classify, prepare};
 use crate::actions::{Exit, Invocation};
 use serde_json::{json, Value};
-use std::path::{Path, PathBuf};
+use std::path::Path;
+#[cfg(unix)]
+use std::path::PathBuf;
 use zerus_team_plan::model::Integration;
 
 fn a_call(team: &str, revision: u64, action: TeamAction) -> TeamCall {

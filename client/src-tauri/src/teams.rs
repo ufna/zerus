@@ -357,7 +357,8 @@ fn decode_team_reply(code: i32, stdout: &[u8], stderr: &[u8]) -> Result<Value, S
     serde_json::from_slice(stdout).map_err(|error| error.to_string())
 }
 
-#[cfg(test)]
+// Runs a source-built command line through a Unix executable fixture.
+#[cfg(all(test, unix))]
 mod real_create;
 
 #[cfg(test)]
