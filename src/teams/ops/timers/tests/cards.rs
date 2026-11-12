@@ -641,3 +641,149 @@ fn an_open_card_saved_before_the_list_replays_to_its_saved_reply() {
     let again = crate::teams::ops::apply(&mut h.store, &service(), &listed, 1234).unwrap();
     assert_eq!(again, first);
 }
+
+/// Finding 5 of the cards review: a member's own question or report is
+/// admitted against the member of the newest effect of the generation
+/// unless that effect is known refused or superseded. A reserved effect
+/// still admits its member, whose report or question proves the delivery
+/// before the outcome is recorded; a member that was never assigned is
+/// refused. The task is then In review without a person's take-over (no
+/// attempt of its own), as in the reviewer's probe. A superseded newest
+/// effect of the current generation is written directly: through
+/// operations, a supersession either advances the generation in the same
+/// operation (a reopen, a person's Back to To do) or takes the node out of
+/// the live plan (a task leaving the team, a retired stage).
+#[test]
+fn a_members_question_or_report_needs_a_delivery_not_known_refused_or_superseded() {
+    for state in ["reserved", "submitted", "refused", "superseded"] {
+        let mut h = Harness::new();
+        h.bind("lead");
+        let m1 = h.bind("m1");
+        let m2 = h.bind("m2");
+        let node = h.add(&person(), 1);
+        let id = h.intent(node, "m1");
+        match state {
+            "submitted" => h.outcome(
+                &id,
+                HandoutOutcome::Submitted {
+                    receipt: "Exact receipt".into(),
+                },
+            ),
+            "refused" => h.outcome(
+                &id,
+                HandoutOutcome::Refused {
+                    reason: "Verified no start".into(),
+                },
+            ),
+            "superseded" => {
+                h.store
+                    .db
+                    .as_ref()
+                    .unwrap()
+                    .execute(
+                        "UPDATE effects SET state='superseded' WHERE request_id=?1",
+                        [&id],
+                    )
+                    .unwrap();
+            }
+            _ => (),
+        }
+        h.observe(node, TaskStage::InReview);
+        let ask = |text: &str| Operation::Ask {
+            node,
+            generation: 1,
+            text: text.into(),
+        };
+        let revision = h.store.team(TEAM).unwrap().unwrap().revision;
+        refused(h.run(&m2, ask("I was never assigned")), code::NOT_ALLOWED);
+        assert_eq!(h.store.team(TEAM).unwrap().unwrap().revision, revision);
+        let question = h.run(&m1, ask("Which file?"));
+        let report = h.run(
+            &service(),
+            Operation::RecordReport {
+                node,
+                generation: 1,
+                member: "m1".into(),
+                text: "Implemented".into(),
+                commit: COMMIT.into(),
+            },
+        );
+        if matches!(state, "reserved" | "submitted") {
+            question.unwrap();
+            report.unwrap();
+        } else {
+            assert_eq!(question.unwrap_err().code, code::NOT_ALLOWED, "{state}");
+            assert_eq!(report.unwrap_err().code, code::INVALID_STATE, "{state}");
+            assert_eq!(
+                h.store.team(TEAM).unwrap().unwrap().revision,
+                revision,
+                "{state}: nothing written"
+            );
+        }
+    }
+}
+
+/// The recipient is chosen first and judged after: the newest effect of the
+/// generation, or nobody when that effect is refused or superseded. An older
+/// delivered effect below a newer refused one never admits its member. The
+/// older effect is closed by writing its state, as a report would close it,
+/// so that a second hand-out of the same generation can be reserved.
+#[test]
+fn a_refused_newest_effect_does_not_fall_back_to_an_older_delivered_member() {
+    let mut h = Harness::new();
+    h.bind("lead");
+    let m1 = h.bind("m1");
+    let m2 = h.bind("m2");
+    let node = h.add(&person(), 1);
+    let older = h.intent(node, "m1");
+    h.outcome(
+        &older,
+        HandoutOutcome::Submitted {
+            receipt: "Exact receipt".into(),
+        },
+    );
+    h.store
+        .db
+        .as_ref()
+        .unwrap()
+        .execute(
+            "UPDATE effects SET state='reported' WHERE request_id=?1",
+            [&older],
+        )
+        .unwrap();
+    let newer = h.intent(node, "m2");
+    h.outcome(
+        &newer,
+        HandoutOutcome::Refused {
+            reason: "Verified no start".into(),
+        },
+    );
+    assert_eq!(h.store.generation(TEAM, node).unwrap(), Some(1));
+    h.observe(node, TaskStage::InReview);
+    for member in [&m1, &m2] {
+        refused(
+            h.run(
+                member,
+                Operation::Ask {
+                    node,
+                    generation: 1,
+                    text: "Which file?".into(),
+                },
+            ),
+            code::NOT_ALLOWED,
+        );
+    }
+    refused(
+        h.run(
+            &service(),
+            Operation::RecordReport {
+                node,
+                generation: 1,
+                member: "m1".into(),
+                text: "Implemented".into(),
+                commit: COMMIT.into(),
+            },
+        ),
+        code::INVALID_STATE,
+    );
+}

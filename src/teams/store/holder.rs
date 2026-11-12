@@ -4,6 +4,12 @@ pub(super) const HOLDER_SQL: &str = "SELECT e.member,e.generation,e.state FROM n
 /// The states of a newest effect that hold nothing: only reserved, or
 /// refused, or superseded. The page's row facts use the same list.
 pub(crate) const NOT_HOLDING: &str = "('reserved','refused','superseded')";
+/// The states of a newest effect whose member received nothing: a known
+/// refusal, or a supersession. They differ from [`NOT_HOLDING`] in exactly
+/// one state, reserved: a member's own report or question proves a reserved
+/// delivery before its outcome is recorded, so it admits its member, who
+/// does not yet hold the attempt. A known outcome is never such a proof.
+pub(crate) const NOT_RECEIVED: &str = "('refused','superseded')";
 
 /// The one rule for who holds a live node's attempt: the newest effect of
 /// its current generation, unless that effect holds nothing. Choosing the
