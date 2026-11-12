@@ -7,6 +7,8 @@ import { createComponent } from "solid-js";
 import { render } from "solid-js/web";
 import { TeamBar } from "./team-bar";
 import { teamView } from "./fixtures";
+import { translateWithCatalog } from "../../i18n";
+import russian from "../../i18n.ru.json";
 
 let dispose: (() => void) | undefined;
 afterEach(() => { dispose?.(); dispose = undefined; document.body.replaceChildren(); });
@@ -28,12 +30,24 @@ it("shows the team's name, status and progress", () => {
   expect(host.querySelectorAll(".team-progress .seg").length).toBe(2);
 });
 
-it("shows the counts the core gave", () => {
-  const { host } = setup();
-  const chips = host.querySelector("[data-strip-chips]")?.textContent ?? "";
-  expect(chips).toContain("2 active");
-  expect(chips).toContain("1 inbox");
-  expect(chips).toContain("1 cards");
+it("shows the counts the core gave, a singular for one and a plural for more", () => {
+  const chips = (inbox: number, cards: number) => {
+    const { host } = setup({ ...teamView, bar: { ...teamView.bar, counts: { ...teamView.bar.counts, inbox, cards } } });
+    const text = [...host.querySelectorAll("[data-strip-chips] .team-chip")].map((chip) => chip.textContent);
+    dispose?.(); dispose = undefined; host.remove();
+    return text;
+  };
+  expect(chips(1, 1)).toEqual(["2 active", "1 inbox item", "1 card"]);
+  expect(chips(2, 3)).toEqual(["2 active", "2 inbox items", "3 cards"]);
+  expect(chips(0, 0)).toEqual(["2 active", "0 inbox items", "0 cards"]);
+});
+
+it("words the counts with the catalog's three Russian plural forms", () => {
+  const forms = (n: number) => [n === 1 ? "%n card" : "%n cards", n === 1 ? "%n inbox item" : "%n inbox items"].map((source) => translateWithCatalog(russian, "ru", source, n));
+  expect(forms(1)).toEqual(["1 карточка", "1 входящий"]);
+  expect(forms(2)).toEqual(["2 карточки", "2 входящих"]);
+  expect(forms(5)).toEqual(["5 карточек", "5 входящих"]);
+  expect(forms(21)).toEqual(["21 карточка", "21 входящий"]);
 });
 
 it("offers the team's own operations by its status", () => {

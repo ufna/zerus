@@ -56,8 +56,8 @@ export function TeamBar(props: {
       <span class="mono team-count">{counts().accepted}/{counts().total}</span>
       <span class="team-chips" data-strip-chips>
         <span class="chip team-chip" title={tr("Active members")}><Icon name="users" size={12} />{tr("%1 active", props.view.bar.counts.members.active)}</span>
-        <span class="chip team-chip" title={tr("Open inbox items")}><Icon name="inbox" size={12} />{tr("%1 inbox", props.view.bar.counts.inbox)}</span>
-        <span class="chip team-chip" title={tr("Open cards")}><Icon name="layers" size={12} />{tr("%1 cards", props.view.bar.counts.cards)}</span>
+        <span class="chip team-chip" title={tr("Open inbox items")}><Icon name="inbox" size={12} />{props.view.bar.counts.inbox === 1 ? tr("%n inbox item", 1) : tr("%n inbox items", props.view.bar.counts.inbox)}</span>
+        <span class="chip team-chip" title={tr("Open cards")}><Icon name="layers" size={12} />{props.view.bar.counts.cards === 1 ? tr("%n card", 1) : tr("%n cards", props.view.bar.counts.cards)}</span>
       </span>
       <TeamBarActions view={props.view} busy={props.busy} onAction={props.onAction} />
     </header>
