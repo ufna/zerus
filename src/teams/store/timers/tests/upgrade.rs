@@ -859,7 +859,11 @@ fn a_layout_9_store_with_a_stranded_return_opens_and_its_hold_is_the_persons() {
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
         )
         .unwrap();
-    assert_eq!(stored, (true, Some("person".to_owned()), false), "the person's");
+    assert_eq!(
+        stored,
+        (true, Some("person".to_owned()), false),
+        "the person's"
+    );
     let error = h.run(&lead, Operation::Release { node }).unwrap_err();
     assert_eq!(error.code, code::NOT_ALLOWED);
     h.run(&person(), Operation::Release { node }).unwrap();

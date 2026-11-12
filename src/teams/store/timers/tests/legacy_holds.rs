@@ -105,7 +105,8 @@ fn marker(h: &Harness) -> Option<u32> {
         .ok()
 }
 /// The stored hold: (flag, owner, hand-back).
-fn stored(h: &Harness, node: u32) -> (bool, Option<String>, bool) {
+type Stored = (bool, Option<String>, bool);
+fn stored(h: &Harness, node: u32) -> Stored {
     db(h)
         .query_row(
             "SELECT hold,hold_owner,hand_back FROM nodes WHERE team=?1 AND id=?2",
@@ -128,17 +129,17 @@ fn lead(h: &Harness) -> Actor {
             .unwrap(),
     }
 }
-fn person_hold() -> (bool, Option<String>, bool) {
+fn person_hold() -> Stored {
     (true, Some("person".to_owned()), false)
 }
-fn lead_hold() -> (bool, Option<String>, bool) {
+fn lead_hold() -> Stored {
     (true, Some("lead".to_owned()), false)
 }
-fn hand_back() -> (bool, Option<String>, bool) {
+fn hand_back() -> Stored {
     (false, None, true)
 }
 /// The holds store's nodes and what the records say of each.
-fn expected() -> [(u32, (bool, Option<String>, bool), &'static str); 8] {
+fn expected() -> [(u32, Stored, &'static str); 8] {
     [
         (
             1,
