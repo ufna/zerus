@@ -276,9 +276,12 @@ class RemoteLoginShells(unittest.TestCase):
         def table(name):
             found = re.search(r'const ' + name + r': &\[&str\] = &\[(.*?)\];', source, re.S)
             return re.findall(r'"([a-z_-]+)"', found.group(1))
-        session_commands, launches = table('SESSION_COMMANDS'), table('LAUNCH_COMMANDS')
+        session_commands = table('SESSION_COMMANDS')
         self.assertIn('send', session_commands)
-        self.assertIn('fork', launches)
+        # The launch verbs are pinned here, not only read from the table they
+        # check (zerus-ppd26.10): dropping one from the table fails this test.
+        launches = ['claude', 'codex', 'kimi', 'dsh', 'opencode', 'fork']
+        self.assertEqual(table('LAUNCH_COMMANDS'), launches)
         machine = '33333333-3333-4333-8333-333333333333'
         reference = (f'zerus://session?machine={machine}&host=peer&name=codex%2Fp%2Fa&conversation=c&run=r')
         (self.peer / '.local/bin/hgs').write_text(PEER_HGS.replace(
@@ -296,6 +299,16 @@ class RemoteLoginShells(unittest.TestCase):
         for command in launches:
             target = 'codex/p/a' if command == 'fork' else '/tmp'
             calls.append(('launch', ['@peer', command, target]))
+        # A word that only looks like --parent names no parent: the value of
+        # another option, or an agent flag after -- (zerus-ppd26.10).
+        for shape in (['claude', '-n', '--parent'], ['claude', '--model', '--parent'], ['codex', '--account', '--parent'],
+                      ['fork', 'codex/p/a', '-n', '--parent'], ['claude', '/tmp', '--', '--parent', parent],
+                      ['dsh', '/tmp', '--parent'], ['kimi', '/tmp', '--parent', 'not a claim'],
+                      # The value of -n or --account, followed by a real claim
+                      # that the peer reads as the project folder.
+                      ['claude', '-n', '--parent', parent], ['codex', '--account', '--parent', parent],
+                      ['fork', 'codex/p/a', '-n', '--parent', parent]):
+            calls.append(('shape', ['@peer', *shape]))
         sent = self.root / 'ssh-args.json'
 
         def run(call, extra):

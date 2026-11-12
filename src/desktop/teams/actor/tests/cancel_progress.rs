@@ -301,3 +301,28 @@ fn a_commands_sentence_reaches_the_outcome_without_control_characters() {
         clean(&fact.reason, "fact");
     }
 }
+
+/// Review 44: a cutting_over reply's sentence becomes the row's error and,
+/// after three failures, the retry card's text. It is cleaned as the
+/// command's other sentences are: no control character, whitespace
+/// normalized, cut.
+#[test]
+fn a_cutting_over_sentence_reaches_the_failure_card_clean() {
+    let hostile = format!(
+        "{}{}",
+        "busy\u{0007} \t\n\u{001B}\u{0000}\u{009B}".repeat(200),
+        "x".repeat(600)
+    );
+    let (mut h, node) = live();
+    let mut p = Command::new(&h, node, "cutting_over", &hostile);
+    passes(&mut h, &mut p, 10);
+    let cards = h.store.cards(TEAM, 200, None).unwrap().rows;
+    let card = cards
+        .iter()
+        .find(|c| c.kind == "team_actor_blocked")
+        .expect("the retry card after three failures");
+    assert!(!card.text.chars().any(char::is_control), "{:?}", card.text);
+    assert!(card.text.contains("busy busy busy"), "{}", card.text);
+    assert!(p.facts.is_empty(), "a held project records no outcome");
+    assert_eq!(h.store.pending_cancels(TEAM, 16, 0).unwrap().len(), 1);
+}

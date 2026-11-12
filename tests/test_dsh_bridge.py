@@ -209,7 +209,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { AsyncLocalStorage } from 'node:async_hooks';
-const { callEnvironment, parseIdentity, identitySession, readIdentity, wrapSpawns, callTokens, CALL_TOKEN } = await import(process.argv[2]);
+const { callEnvironment, parseIdentity, identitySession, readIdentity, wrapSpawns, callTokens, CALL_TOKEN, HIDDEN_TOKEN } = await import(process.argv[2]);
 const conversation = 'session-91250d76-ca68-48b6-87f8-3a0e4400c314';
 const file = { version: 1, conversation, session: 'dsh/project/a', run: 'run-1',
                session_id: '6a4c5887-557a-4f31-b1c8-ad0a94c3c705', account: 'native-dsh' };
@@ -329,6 +329,28 @@ const first = tokens.open('session-00000000-0000-4000-8000-000000000001');
 for (let n = 0; n < 3; n++) tokens.open(conversation);
 assert.equal(tokens.conversation(first), undefined);
 assert.equal(tokens.size, 3);
+""")
+
+    def test_one_conversation_never_pushes_out_anothers_tokens_and_live_ones_stay_hidden(self):
+        # zerus-ppd26.5: a conversation evicts only its own oldest tokens, and
+        # what the host serves never carries a live token.
+        self.run_js("""
+const tokens = callTokens(10, 3);
+const other = 'session-00000000-0000-4000-8000-000000000001';
+const theirs = tokens.open(other);
+const mine = [];
+for (let n = 0; n < 6; n++) mine.push(tokens.open(conversation));
+assert.equal(tokens.conversation(theirs), other, 'another conversation keeps its token');
+assert.deepEqual(mine.map(token => tokens.conversation(token) !== undefined), [false, false, false, true, true, true]);
+assert.equal(tokens.size, 4);
+const ended = mine[0], live = mine[5], unrelated = 'ab'.repeat(32);
+const served = JSON.stringify({ output: `HGS_DSH_CALL_TOKEN=${live}\\nother ${unrelated} ended ${ended}` });
+const hidden = tokens.redact(served);
+assert.ok(!hidden.includes(live));
+assert.ok(hidden.includes(`HGS_DSH_CALL_TOKEN=${HIDDEN_TOKEN}`));
+assert.ok(hidden.includes(unrelated) && hidden.includes(ended), 'only live tokens are hidden');
+tokens.close(live);
+assert.ok(tokens.redact(served).includes(live), 'an ended token is no longer live');
 """)
 
 

@@ -643,8 +643,7 @@ fn pause_one(record: &Value, scope: Option<&session_action::Scope>) -> Result<()
         if current["run_id"] != record["run_id"] {
             return Err("session changed while pausing".into());
         }
-        current["paused"] = json!(true);
-        current.as_object_mut().unwrap().remove("pausing");
+        mark_paused(&mut current);
         write(&mut current)?;
     }
     if remaining {
@@ -1280,6 +1279,14 @@ fn verify_requested(record: &Value, snapshot: &Snapshot, requested: &str) -> Res
         ));
     }
     Ok(())
+}
+
+/// What a completed pause records on the session: paused, no longer pausing.
+pub(super) fn mark_paused(record: &mut Value) {
+    record["paused"] = json!(true);
+    if let Some(fields) = record.as_object_mut() {
+        fields.remove("pausing");
+    }
 }
 
 #[cfg(all(test, unix))]

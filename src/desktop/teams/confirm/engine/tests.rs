@@ -362,6 +362,26 @@ fn member_stopped_by_a_person_or_nonself_exit_never_resumes() {
     }
 }
 
+/// A session the person paused, or is pausing or terminating, reads as
+/// ended and paused: nothing is planned, no card opens and the run keeps its
+/// one resume (zerus-63rru.56).
+#[test]
+fn a_paused_session_plans_nothing_and_keeps_its_resume() {
+    let mut f = Fake::new();
+    f.exited(1);
+    f.snapshot.self_exit = false;
+    f.snapshot.paused = true;
+    f.run("epoch-1", 100).unwrap();
+    assert_eq!(f.resumes, 0);
+    assert!(f.durable.borrow().rows.is_empty(), "nothing claimed");
+    assert!(f.durable.borrow().cards.is_empty(), "no owner card");
+    // Once the member exits by itself in that run, its resume is still there.
+    f.snapshot.paused = false;
+    f.snapshot.self_exit = true;
+    f.run("epoch-1", 200).unwrap();
+    assert_eq!(f.resumes, 1);
+}
+
 #[test]
 fn all_manual_prompts_and_inactive_teams_make_one_card_without_an_answer() {
     for field in [
