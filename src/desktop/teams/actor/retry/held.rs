@@ -41,6 +41,7 @@ impl Runtime {
         row: &Row,
         step: &str,
         node: u32,
+        reopens: &std::collections::BTreeSet<u64>,
     ) -> Result<bool> {
         let gate: Gate =
             serde_json::from_value(row.data.clone()).map_err(crate::teams::store::storage)?;
@@ -53,7 +54,7 @@ impl Runtime {
             return Ok(true);
         }
         if step == "reopen" {
-            return Ok(false);
+            return Ok(!reopens.contains(&decision));
         }
         if !store.ready_accept(&team.id, node, generation, decision)? {
             return Ok(true);

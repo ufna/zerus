@@ -222,3 +222,58 @@ fn dismissing_a_held_card_lasts_until_the_reason_changes() {
     assert!(cards[0].text.contains("another execution"));
     assert_eq!((p.finishes, p.merges, p.deliveries), (0, 0, 0));
 }
+
+#[test]
+fn settled_reopens_retire_both_held_and_legacy_cards_when_the_task_leaves() {
+    let mut h = Harness::new();
+    let (node, lead) = h.reported();
+    h.run(
+        &lead,
+        Operation::Return {
+            node,
+            reason: "Revise".into(),
+        },
+    )
+    .unwrap();
+    let decision = h.store.pending_reopens(TEAM, 1, None).unwrap().rows[0].seq;
+    reviewed::observe(&mut h, node, TaskStage::InReview, "", true);
+    let mut a = actor(&h);
+    let mut p = Work::default();
+    for now in [100, 60_100, 180_100] {
+        run(&mut h, &mut a, &mut p, now);
+    }
+    let team = h.store.team(TEAM).unwrap().unwrap();
+    let legacy = format!("reopen:{decision}");
+    a.force_failure(
+        &mut h.store,
+        &team,
+        &legacy,
+        "",
+        &crate::desktop::teams::actor::problem("The reopen failed"),
+        180_100,
+    )
+    .unwrap();
+    assert_eq!(open(&h).len(), 2);
+    a.cleanup_metadata(&mut h.store, &team, 180_101).unwrap();
+    assert_eq!(open(&h).len(), 2, "pending decisions must keep their cards");
+    let mut observation = h.store.task_observation(TEAM, node).unwrap().unwrap();
+    observation.previous_revision = observation.revision.clone();
+    observation.revision = uuid::Uuid::new_v4().to_string();
+    observation.key = crate::teams::ops::KeyState::Absent;
+    h.run(&service(), Operation::ObserveTask { node, observation })
+        .unwrap();
+    assert!(h
+        .store
+        .pending_reopens(TEAM, 1, None)
+        .unwrap()
+        .rows
+        .is_empty());
+    drop(a);
+    let mut a = actor(&h);
+    run(&mut h, &mut a, &mut p, 180_102);
+    for key in [format!("gate:held:reopen:{node}"), format!("gate:{legacy}")] {
+        assert!(a.ledger.get(TEAM, &key).unwrap().is_none(), "{key}");
+    }
+    assert!(open(&h).is_empty());
+    assert_eq!(p.deliveries, 0);
+}

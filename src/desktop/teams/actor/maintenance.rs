@@ -18,42 +18,88 @@ impl Runtime {
             String::new()
         };
         let merging = self.ledger.merge_pending(&team.id)?;
+        let reopens = self.metadata_reopens(store, team, &rows)?;
         for row in rows {
-            let Some(key) = row.key.strip_prefix("gate:") else {
-                continue;
-            };
-            let held = key.strip_prefix("held:");
-            let Some((kind, value)) = held.unwrap_or(key).split_once(':') else {
-                continue;
-            };
-            if if held.is_some() {
-                !matches!(kind, "finish" | "merge" | "reopen")
-            } else {
-                !matches!(
-                    kind,
-                    "observe" | "report" | "handout" | "finish" | "finish_refused" | "integration"
-                )
-            } {
-                continue;
-            }
-            if held.is_none() && kind == "integration" && merging {
-                continue;
-            }
-            let Ok(node) = value.parse::<u32>() else {
-                continue;
-            };
-            if held.is_some() && self.held_retired(store, team, &row, kind, node)? {
-                self.recovered(store, team, key, now)?;
-                continue;
-            }
-            if store
-                .node(&team.id, node)?
-                .is_none_or(|n| matches!(n.state, NodeState::Accepted | NodeState::Cancelled))
-            {
-                self.recovered(store, team, key, now)?;
-            }
+            self.cleanup_gate(store, team, &row, &reopens, merging, now)?;
         }
         self.put(&team.id, "metadata_cursor", &next)?;
+        Ok(())
+    }
+    fn metadata_reopens(
+        &self,
+        store: &Store,
+        team: &Team,
+        rows: &[Row],
+    ) -> Result<std::collections::BTreeSet<u64>> {
+        let mut pending = std::collections::BTreeSet::new();
+        if !rows
+            .iter()
+            .any(|r| r.key.starts_with("gate:reopen:") || r.key.starts_with("gate:held:reopen:"))
+        {
+            return Ok(pending);
+        }
+        let mut cursor = None;
+        for _ in 0..4 {
+            let page = store.pending_reopens(&team.id, 200, cursor.as_ref())?;
+            pending.extend(page.rows.into_iter().map(|d| d.seq));
+            cursor = page.next;
+            if cursor.is_none() {
+                return Ok(pending);
+            }
+        }
+        Err(problem("Reopen cleanup page bound exceeded"))
+    }
+    fn cleanup_gate(
+        &mut self,
+        store: &mut Store,
+        team: &Team,
+        row: &Row,
+        reopens: &std::collections::BTreeSet<u64>,
+        merging: bool,
+        now: i64,
+    ) -> Result<()> {
+        let Some(key) = row.key.strip_prefix("gate:") else {
+            return Ok(());
+        };
+        if let Some(decision) = key
+            .strip_prefix("reopen:")
+            .and_then(|s| s.parse::<u64>().ok())
+        {
+            if !reopens.contains(&decision) {
+                self.recovered(store, team, key, now)?;
+            }
+            return Ok(());
+        }
+        let held = key.strip_prefix("held:");
+        let Some((kind, value)) = held.unwrap_or(key).split_once(':') else {
+            return Ok(());
+        };
+        if if held.is_some() {
+            !matches!(kind, "finish" | "merge" | "reopen")
+        } else {
+            !matches!(
+                kind,
+                "observe" | "report" | "handout" | "finish" | "finish_refused" | "integration"
+            )
+        } {
+            return Ok(());
+        }
+        if held.is_none() && kind == "integration" && merging {
+            return Ok(());
+        }
+        let Ok(node) = value.parse::<u32>() else {
+            return Ok(());
+        };
+        if held.is_some() && self.held_retired(store, team, row, kind, node, reopens)? {
+            self.recovered(store, team, key, now)?;
+            return Ok(());
+        }
+        if store
+            .node(&team.id, node)?
+            .is_none_or(|n| matches!(n.state, NodeState::Accepted | NodeState::Cancelled))
+        {
+            self.recovered(store, team, key, now)?;
+        }
         Ok(())
     }
 }
