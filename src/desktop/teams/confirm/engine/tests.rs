@@ -839,6 +839,44 @@ fn an_earlier_trust_notice_row_for_an_ordinary_question_stays_history() {
     assert_eq!(f.answers, 0);
 }
 
+/// What an earlier row still does: its "trust" key belongs to the run. If the
+/// earlier code claimed it for another startup prompt (here Codex's
+/// hooks-trust prompt) and the same run then shows its folder-trust prompt,
+/// that prompt meets the settled row: no answer and no new card. It stays
+/// with the person, as it did before this change. Only a run caught at
+/// startup across the update can hold such a row.
+#[test]
+fn an_earlier_trust_row_of_the_same_run_leaves_its_folder_trust_prompt_to_the_person() {
+    let mut f = Fake::new();
+    at_startup(&mut f, "codex");
+    let prompt = f.snapshot.questions[0].clone();
+    f.snapshot.questions = vec![crate::state::trust_fixture::hooks_trust_prompt()];
+    let question = f.snapshot.questions[0].clone();
+    let plan = candidate(&f.binding, &f.snapshot, Kind::Trust, question);
+    execute(&mut f, plan, "epoch-0", 50).unwrap();
+    let rows = f.durable.borrow().rows.clone();
+    let cards = f.durable.borrow().cards.clone();
+    assert_eq!((rows.len(), cards.len()), (1, 1));
+    f.snapshot.questions = vec![prompt];
+    f.run("epoch-1", 100).unwrap();
+    f.run("epoch-2", 200).unwrap();
+    assert_eq!(f.durable.borrow().rows, rows);
+    assert_eq!(f.durable.borrow().cards, cards);
+    assert_eq!(f.answers, 0);
+    // The member's next run has its own key: its prompt is answered as before,
+    // beside the earlier row, which stays as it was.
+    let run = "run-after-the-update";
+    f.binding.run = run.into();
+    f.facts.binding = f.binding.clone();
+    f.snapshot.run = run.into();
+    f.snapshot.questions[0]["run_id"] = json!(run);
+    f.run("epoch-3", 300).unwrap();
+    assert_eq!(f.answers, 1);
+    assert_eq!(f.durable.borrow().rows.len(), 2);
+    let earlier = rows.keys().next().unwrap();
+    assert_eq!(f.durable.borrow().rows[earlier], rows[earlier]);
+}
+
 /// An exited member that still shows a pending question that is not a
 /// folder-trust prompt plans nothing: neither a trust notice nor a resume
 /// (which a pending question holds back anyway).
