@@ -22,6 +22,74 @@ impl TaskTeam {
 }
 
 impl TaskDoc {
+    /// The caller proves the team's stored acceptance before entering here.
+    /// No report is invented on behalf of the attempt's holder.
+    pub fn finish_team_accepted(&mut self, actor: &Actor, now: i64) -> Result<()> {
+        self.writable()?;
+        let key = self
+            .team()?
+            .ok_or_else(|| Error::new("A valid team key is required."))?;
+        if !matches!(actor, Actor::Agent(session) if session.machine == key.home && !session.session_id.is_empty())
+        {
+            return Err(Error::new(
+                "The team finish must be recorded as its local lead.",
+            ));
+        }
+        if self.execution_managed()
+            && (!self.executes_attempts()
+                || self.needs_schema_repair()
+                || (self.meta().get("floor").is_some() && self.floor_record().is_none()))
+        {
+            return Err(Error::new(
+                "This task is cutting over to execution attempts.",
+            ));
+        }
+        let view = self.view()?;
+        if view.cancelled_at.is_some() || !matches!(view.stage, Stage::Active | Stage::Review) {
+            return Err(Error::new(
+                "Only an active or reviewed team task can finish.",
+            ));
+        }
+        self.not_held()?;
+        let execution = view
+            .execution
+            .as_ref()
+            .filter(|e| !e.conflict)
+            .ok_or_else(|| Error::new("Exactly one current recorded attempt is required."))?;
+        let current = execution
+            .current
+            .as_ref()
+            .filter(|c| !c.legacy && !c.id.is_empty())
+            .ok_or_else(|| Error::new("Exactly one current recorded attempt is required."))?;
+        let phase = match view.stage {
+            Stage::Active => matches!(
+                current.phase,
+                execution::Phase::Submitted | execution::Phase::Running
+            ),
+            Stage::Review => current.phase == execution::Phase::Ready,
+            _ => false,
+        };
+        if !phase {
+            return Err(Error::new(
+                "The current attempt cannot be finished by the team.",
+            ));
+        }
+        if self.content_len() + 1024 > MAX_DOCUMENT {
+            return Err(Error::new("task history is full"));
+        }
+        // All rule refusals precede mutation. Ready closes this exact attempt;
+        // the ordinary stage entry and readable team sentence preserve both
+        // existing history forms, without a synthetic holder report.
+        if view.stage == Stage::Active {
+            self.push_event(&current.id, execution::EventKind::Ready, actor, now)?;
+        }
+        self.fields().insert("stage", Stage::Done.as_str())?;
+        self.fields().insert("stage_at", now)?;
+        self.log("stage", actor, now, Stage::Done.as_str(), None)?;
+        self.log("team", actor, now, "Finished by the team", None)?;
+        self.commit()
+    }
+
     #[cfg(any(test, feature = "test-support"))]
     pub fn set_raw_team_for_test(&mut self, raw: &str) {
         self.fields().insert("team", raw).unwrap();

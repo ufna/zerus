@@ -87,7 +87,10 @@ fn start(
     }
     if let Some(c) = cursor {
         if c.scope != scope || c.after > c.ceiling {
-            return Err(storage("Cursor belongs to a different list."));
+            return Err(Problem::new(
+                code::INVALID_STATE,
+                "Cursor belongs to a different list.",
+            ));
         }
         return Ok(c.clone());
     }

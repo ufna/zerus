@@ -75,15 +75,16 @@ pub(super) fn caller<'a>(
     })
 }
 
-/// Preview-off ordinary tasks retain their existing protocol. Every Teams
-/// path, including a foreign/invalid marker while off, uses caller() instead.
+/// Explicit team intake uses the shared proof. All other commands first use
+/// their ordinary actor; the loaded task then decides whether proof is needed.
 pub(super) fn actor(
     config: &Config,
     machines: &Machines,
     args: &[String],
     forwardable: bool,
+    names_team: bool,
 ) -> Result<Actor> {
-    if !crate::teams::enabled(&config.state) {
+    if !names_team {
         return super::actor(&machines.here, args, forwardable);
     }
     caller(config, machines, args, forwardable)
@@ -91,8 +92,8 @@ pub(super) fn actor(
         .map_err(problem)
 }
 
-/// A replicated foreign or invalid marker still needs the proved actor while
-/// the local preview is off, including for holder-only protocol steps.
+/// A guarded local, foreign or invalid marker asks the shared proof even for
+/// holder-only protocol and text writes. Ordinary tasks never ask it.
 pub(super) fn actor_for_marked_task(
     config: &Config,
     machines: &Machines,
@@ -100,11 +101,7 @@ pub(super) fn actor_for_marked_task(
     forwardable: bool,
     task: &TaskDoc,
 ) -> Result<Option<Actor>> {
-    if crate::teams::enabled(&config.state) {
-        return Ok(None);
-    }
-    let key = task.team().map_err(fail)?;
-    if (key.is_none() && !task.team_invalid()) || key.is_some_and(|key| key.home == machines.here) {
+    if !bridge::guarded(&config.state, &machines.here, task).map_err(problem)? {
         return Ok(None);
     }
     caller(config, machines, args, forwardable)
@@ -245,11 +242,7 @@ pub(super) fn guard(
         "message" if option(args, "--mode")? == Some("reopen") => "reopen",
         _ => return Ok(()),
     };
-    let key = task.team().map_err(fail)?;
-    if key.is_none() && !task.team_invalid() {
-        return Ok(());
-    }
-    if key.is_some_and(|key| key.home == machines.here) && !crate::teams::enabled(&config.state) {
+    if !bridge::guarded(&config.state, &machines.here, task).map_err(problem)? {
         return Ok(());
     }
     bridge::guard(

@@ -11,6 +11,8 @@ mod observations;
 mod pipeline;
 mod queue;
 mod readiness;
+mod roster;
+mod storage;
 mod talk;
 mod team;
 
@@ -55,6 +57,8 @@ pub(crate) fn request(rev: u64, op: Operation) -> Request {
 pub(crate) fn create() -> Operation {
     let t = fixture().team;
     Operation::Create {
+        expected_template: None,
+        delegations: None,
         project: t.project,
         name: t.name,
         goal: t.goal,

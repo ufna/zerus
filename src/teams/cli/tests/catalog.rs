@@ -23,7 +23,12 @@ fn the_catalog_shows_the_built_in_entries_and_exports_only_the_persons() {
     let harness = Harness::new();
     let (reply, exit) = run(&harness, "catalog show", "");
     assert_eq!(exit, 0, "{reply}");
-    assert_eq!(reply["catalog"], serde_json::to_value(builtin()).unwrap());
+    let mut shown = reply["catalog"].clone();
+    for template in shown["templates"].as_array_mut().unwrap() {
+        let digest = template.as_object_mut().unwrap().remove("digest").unwrap();
+        assert_eq!(digest.as_str().unwrap().len(), 64);
+    }
+    assert_eq!(shown, serde_json::to_value(builtin()).unwrap());
     let (reply, exit) = run(&harness, "catalog export", "");
     assert_eq!(exit, 0, "{reply}");
     assert_eq!(

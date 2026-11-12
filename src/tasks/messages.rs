@@ -23,7 +23,7 @@ pub(super) fn execute(config: &Config, args: &[String]) -> Result<Value> {
     } else {
         (machines(config)?, None)
     };
-    let mut who = super::teams::actor(config, &machines, args, true)?;
+    let mut who = super::teams::actor(config, &machines, args, true, false)?;
     let r = super::reference_by(
         config,
         args,
@@ -317,8 +317,21 @@ pub(super) fn prompt(
     text: &str,
     worker: Option<&zerus_replica::TaskWorker>,
 ) -> String {
+    prompt_from(project_name, task_id, id, mode, text, worker, None)
+}
+
+/// A service return supplies its attribution from the stored decision.
+pub(super) fn prompt_from(
+    project_name: &str,
+    task_id: &str,
+    id: &str,
+    mode: &str,
+    text: &str,
+    worker: Option<&zerus_replica::TaskWorker>,
+    reopen: Option<&str>,
+) -> String {
     let worker = worker.map(|w| format!("\nCoordinator: relay this feedback to the registered child {} only if its exact current identity still matches; otherwise explain why it cannot be delivered.", w.id)).unwrap_or_default();
     format!("[Zerus task {project_name}/{task_id} message {id}]\n{}\n\n{text}{worker}\n\n{}",
-        if mode == "reopen" { "The person requests changes. Continue this task." } else { "The person added task feedback." },
+        if mode == "reopen" { reopen.unwrap_or("The person requests changes. Continue this task.") } else { "The person added task feedback." },
         format_args!("Read the task context with `hgs task get {project_name}/{task_id}` and report the result with `hgs task report {project_name}/{task_id}`."))
 }

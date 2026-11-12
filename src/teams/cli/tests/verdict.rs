@@ -29,6 +29,8 @@ pub(super) fn configured_stage(
     h.apply(
         &person(),
         Operation::Create {
+            expected_template: None,
+            delegations: None,
             project: team.project,
             name: team.name,
             goal: team.goal,

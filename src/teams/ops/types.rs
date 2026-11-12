@@ -149,6 +149,10 @@ pub enum CancelState {
 #[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Operation {
     Create {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        expected_template: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        delegations: Option<Delegations>,
         project: String,
         name: String,
         goal: String,

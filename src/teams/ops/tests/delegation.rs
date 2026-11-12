@@ -233,7 +233,7 @@ fn revocation_and_its_owner_card_are_atomic_with_the_settings() {
     settings.delegations.merge_accepted = false;
     refused(
         h.run(&person(), Operation::ChangeSettings { settings }),
-        code::INVALID_STATE,
+        code::STORAGE_FAILED,
     );
     assert_eq!(h.store.team(TEAM).unwrap().unwrap(), before);
     assert_eq!(state(&h, seq), DecisionState::Ready);

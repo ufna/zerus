@@ -32,6 +32,7 @@ mod messages;
 mod history;
 mod index;
 mod teams;
+mod team_deliver;
 
 /// A send that pasted the prompt but could not record it: its outcome is
 /// uncertain, and the phone's receipt says so.
@@ -44,7 +45,7 @@ fn paste_uncertain(message: &str) -> bool {
     message.starts_with(SENT_UNRECORDED) || message.starts_with("delivery uncertain")
 }
 
-const USAGE: &str = "usage: hgs task list --project P [--stage S] | list --project P --stage S --limit 1..200 [--after CURSOR|--before CURSOR] [--if-revision R] [--session ID [--host ALIAS]] | get REF [--history-limit 1..80 [--history-before CURSOR] [--attachments metadata]] | attachment REF --file N [--entry ID] | add --project P [--backlog] [--start] [--team TEAM [--role ROLE] [--pipeline PIPELINE]] [--target SESSION|any [--host ALIAS]] [--title TITLE [--request-id UUID]] [--position N] | edit REF | rename REF | move REF --top|--before REF|--after REF|--position N | stage REF backlog|todo|done | target REF SESSION|any|new-session|subagent|team TEAM [--role ROLE] [--pipeline PIPELINE] [--parent SESSION] [--host ALIAS] | send REF [--session SESSION [--host ALIAS]] | start-plan REF --json | start-deliver REF --json [--recover-only] | cancel REF [--reason TEXT] | cancel-execution REF --json (guard JSON on stdin) | handoff REF --session SESSION [--host ALIAS] | start REF | report REF [--progress|--ready] [--considered REV] | report-attempt REF --attempt UUID [--progress|--ready] [--considered REV] | comment REF [--content-json] | message REF --request-id UUID --mode queue|send|reopen|note [--expect-dispatch ID] [--content-json] | worker REF --subagent ID --request-id REQUEST | settings --project P [--set] | review-copy --project P --uuid UUID [--confirm FINGERPRINT] --json | cutover --project P [--hold on|off [--confirm]] | digests --json | exchange --json | mobile-send|mobile-cancel|mobile-done --json
+const USAGE: &str = "usage: hgs task list --project P [--stage S] | list --project P --stage S --limit 1..200 [--after CURSOR|--before CURSOR] [--if-revision R] [--session ID [--host ALIAS]] | get REF [--history-limit 1..80 [--history-before CURSOR] [--attachments metadata]] | attachment REF --file N [--entry ID] | add --project P [--backlog] [--start] [--team TEAM [--role ROLE] [--pipeline PIPELINE]] [--target SESSION|any [--host ALIAS]] [--title TITLE [--request-id UUID]] [--position N] | edit REF | rename REF | move REF --top|--before REF|--after REF|--position N | stage REF backlog|todo|done | target REF SESSION|any|new-session|subagent|team TEAM [--role ROLE] [--pipeline PIPELINE] [--parent SESSION] [--host ALIAS] | send REF [--session SESSION [--host ALIAS]] | team-deliver REF --json [--recover-only] | team-done REF --json | team-clear REF --json | team-cancel REF --json | team-stage --json | start-plan REF --json | start-deliver REF --json [--recover-only] | cancel REF [--reason TEXT] | cancel-execution REF --json (guard JSON on stdin) | handoff REF --session SESSION [--host ALIAS] | start REF | report REF [--progress|--ready] [--considered REV] | report-attempt REF --attempt UUID [--progress|--ready] [--considered REV] | comment REF [--content-json] | message REF --request-id UUID --mode queue|send|reopen|note [--expect-dispatch ID] [--content-json] | worker REF --subagent ID --request-id REQUEST | settings --project P [--set] | review-copy --project P --uuid UUID [--confirm FINGERPRINT] --json | cutover --project P [--hold on|off [--confirm]] | digests --json | exchange --json | mobile-send|mobile-cancel|mobile-done --json
   REF is T-xxxxxx with --project P, or PROJECT/T-xxxxxx; texts and --set settings are read from stdin;
   a change an agent makes prints one line, and --json prints the task";
 
@@ -525,6 +526,15 @@ pub fn dispatch(config: &Config, args: &[String], dry: bool) -> Result<i32> {
     if dry {
         return Err(fail("task commands do not support --dry-run"));
     }
+    if args.first().is_some_and(|action| action == "team-stage") {
+        return team_deliver::stage::dispatch(config, &args[1..]);
+    }
+    if args.first().is_some_and(|action| matches!(action.as_str(), "team-done" | "team-clear" | "team-cancel")) {
+        return team_deliver::completion::dispatch(config, &args[0], &args[1..]);
+    }
+    if args.first().is_some_and(|action| action == "team-deliver") {
+        return team_deliver::dispatch(config, &args[1..]);
+    }
     if args.first().is_some_and(|action| matches!(action.as_str(), "control" | "begin-attempt")) {
         return controls::dispatch(config, args);
     }
@@ -982,7 +992,7 @@ fn add(config: &Config, args: &[String]) -> Result<Value> {
     let content = stdin_content(args)?;
     let text = content.text;
     let machines = machines(config)?;
-    let author = teams::actor(config, &machines, args, false)?;
+    let author = teams::actor(config, &machines, args, false, team.is_some())?;
     let title = option(args, "--title")?;
     if title.is_none() { agent_text(&text, "add", &author)?; }
     let (id, name) = project_arg(config, args, &author)?;
@@ -1068,7 +1078,7 @@ fn change_guarded(config: &Config, action: &str, args: &[String], wait: Option<s
         (machines(config)?, None)
     };
     let here = machines.here.as_str();
-    let mut who = teams::actor(config, &machines, args, matches!(action, "send" | "handoff" | "cancel"))?;
+    let mut who = teams::actor(config, &machines, args, matches!(action, "send" | "handoff" | "cancel"), team.is_some())?;
     if let Some(text) = &text {
         if action != "edit" || !text.is_empty() { agent_text(text, action, &who)?; }
     }
@@ -1602,6 +1612,17 @@ fn cancel(
         .map_err(fail)?;
     task.record_cancel(reason, who, now()).map_err(fail)?;
     store.save(task).map_err(fail)?;
+    cancel_notice(machines, task, project_name, who, &settings, undelivered)
+}
+
+/// The existing best-effort cancel notice, shared by person and team writes.
+fn cancel_notice(
+    machines: &Machines, task: &mut TaskDoc, project_name: &str, who: &Actor,
+    settings: &Settings, undelivered: Option<String>,
+) -> Result<Value> {
+    let stored = task.view().map_err(fail)?.session.ok_or_else(|| fail("Cancelled task has no holder."))?;
+    let resolved = machines.resolve(&stored);
+    let session = resolved.as_ref().unwrap_or(&stored);
     let message = cancel_message(
         &settings.cancel_template,
         &task.view().map_err(fail)?,
@@ -1612,7 +1633,7 @@ fn cancel(
     let pasted = match undelivered {
         Some(reason) => Err(reason),
         None if resolved.is_none() => Err("the task's session identity is no longer available".into()),
-        None => crate::state::submit_task_message(session, &message, &[]).map_err(|e| e.to_string()),
+        None => cancel_notice_submit(session, &message),
     };
     Ok(match pasted {
         Ok(receipt) => json!({"cancel_message": {"sent": true, "receipt": receipt}}),
@@ -1622,6 +1643,17 @@ fn cancel(
             json!({"cancel_message": {"sent": false, "error": error}})
         }
     })
+}
+
+fn cancel_notice_submit(session: &SessionKey, message: &str) -> std::result::Result<Value, String> {
+    #[cfg(test)]
+    if let Some(path) = std::env::var_os("HGS_TEST_TASK_CANCEL_NOTICE") {
+        use std::io::Write;
+        let mut file = std::fs::OpenOptions::new().create(true).append(true).open(path).map_err(|e| e.to_string())?;
+        writeln!(file, "{}", json!({"session":session,"text":message})).map_err(|e| e.to_string())?;
+        return Ok(json!({"status":"submitted","request_id":uuid::Uuid::new_v4().to_string()}));
+    }
+    crate::state::submit_task_message(session, message, &[]).map_err(|e| e.to_string())
 }
 
 fn settings(config: &Config, args: &[String]) -> Result<Value> {

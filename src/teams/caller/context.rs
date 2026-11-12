@@ -105,6 +105,11 @@ const RESOLVE_NO_XDEV: u64 = 0x01;
 /// mount rule refused. Production never exposes a reason beyond refusal.
 #[cfg(target_os = "linux")]
 pub(super) fn admitted() -> std::io::Result<()> {
+    #[cfg(test)]
+    if super::test_sources::selected("namespace") {
+        let (_root, namespace) = super::test_sources::namespace_input()?;
+        return require_initial_namespace(&namespace);
+    }
     let proc = open_proc_root()?;
     admit_from(&proc)
 }
