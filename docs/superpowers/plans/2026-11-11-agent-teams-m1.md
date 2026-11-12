@@ -1427,8 +1427,11 @@ answers `stale` there: it acts when the document's current attempt is the
 one the store last observed or is the node's own effect that was delivered
 and not yet observed, and otherwise it refuses with a reason that begins
 `attempt_changed:`, because a person took the task after the stop. Once
-the store has observed a task cancelled, the team has let it go; a person
-who wants it back sends it to the team again.
+the store has observed a task cancelled, the team has let it go. Giving
+such a task back to a team is not possible yet: a task keeps its cancelled
+mark when it is moved back to To do, until it is sent, started or reopened,
+and the intake refuses a cancelled task so that a duplicate cannot pass a
+cancellation. That is a known limit with a tracked follow-up.
 
 **A reader of a reply ignores what it does not know.** The contract's types
 refuse unknown fields, and that stays the rule for what a person or a
