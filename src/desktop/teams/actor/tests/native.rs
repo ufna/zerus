@@ -453,7 +453,7 @@ fn a_reopen_after_the_member_cleared_its_conversation_is_refused_with_its_reason
     assert!(seen.stdout.contains(r#""state":"refused""#), "{seen:?}");
     assert!(
         matches!(&seen.outcome, Some(HandoutOutcome::Refused { reason })
-            if reason.contains("dispatched run or conversation changed")),
+            if reason.contains(crate::state::CONVERSATION_GONE)),
         "{seen:?}"
     );
     assert_eq!(seen.effect, "refused", "{seen:?}");

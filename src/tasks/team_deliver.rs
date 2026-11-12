@@ -370,6 +370,9 @@ fn request(
             &dispatch,
             Some(&notice),
             refused,
+            // The team route continues a resumed member's conversation
+            // (zerus-63rru.64); the general route keeps the dispatch's run.
+            crate::state::Continuation::SameConversation,
         )?
     };
     let earlier = view
@@ -427,8 +430,15 @@ fn request(
     // The member's session refuses this input as prepared: its identity, or
     // the run or conversation the task was dispatched to, changed. A rule
     // says no; nothing was reserved (zerus-63rru.58).
-    let frozen =
-        crate::state::prepare_task_reply(&to, &dispatch, &body.id, &text, files).map_err(rule)?;
+    let frozen = crate::state::prepare_task_reply(
+        &to,
+        &dispatch,
+        &body.id,
+        &text,
+        files,
+        crate::state::Continuation::SameConversation,
+    )
+    .map_err(rule)?;
     if frozen["expected_run_id"] != base["expected_run_id"]
         || frozen["expected_conversation_id"] != base["expected_conversation_id"]
     {
