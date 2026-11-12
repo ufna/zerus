@@ -288,6 +288,24 @@ mod tests {
         bound.conversation = "conversation-1".into();
         assert!(parse_view(&b.machine, &bound, &v, &raw, None).is_err());
     }
+    /// The real startup shape end to end: inspect and the record both carry
+    /// a null conversation, and so does the card. The grant takes it.
+    #[test]
+    fn a_real_startup_view_with_null_conversations_reaches_the_trust_grant() {
+        let (b, s) = crate::desktop::teams::confirm::policy::tests::real_card();
+        let raw = json!({"name":s.name,"run_id":b.run,"conversation_id":null,"session_id":b.session,"launch_id":b.launch,"agent":b.agent,"account_id":b.account,"cwd":b.folder,"worktree_owner":{"id":b.nonce}});
+        let mut view = raw.clone();
+        view["tracked"] = json!(true);
+        view["runtime_state"] = json!("live");
+        view["process_state"] = json!("running");
+        view["pending_questions"] = json!(s.questions);
+        let parsed = parse_view(&b.machine, &b, &view, &raw, None).unwrap();
+        assert_eq!(parsed.conversation, "");
+        assert_eq!(
+            super::super::super::policy::trust(&b, &parsed).unwrap(),
+            s.questions[0]
+        );
+    }
     #[test]
     fn clean_supervisor_archive_and_explicit_crashes_are_eligible_but_ambiguous_exits_are_manual() {
         let clean = json!({"completion_source":"supervisor","completion_reason":"clean_exit","exited_at":1000.0,"exit_code":0,"termination_signal":null,"conversation_id":"conversation-1"});
