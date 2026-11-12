@@ -63,3 +63,21 @@ fn an_older_host_is_refused_with_a_sentence_a_person_can_act_on() {
         "The DeepSeek host that serves /work/example/.dsh was started before Zerus could prove its sessions' commands; it serves proven calls after its next own start, which Zerus never forces."
     );
 }
+
+/// A host whose `ping` advertises call tokens under a protocol other than 1
+/// does not advertise them: the member launch's check finds it older, as it
+/// finds a host without them (the review's mutant W7, zerus-63rru.28).
+#[test]
+fn a_host_advertising_call_tokens_under_another_protocol_is_older() {
+    isolated("teams::hosted::tests::other_protocol_fixture");
+}
+
+#[test]
+#[ignore = "run by its isolated wrapper"]
+fn other_protocol_fixture() {
+    let home = std::env::var("DSH_HOME").unwrap();
+    let host = Host::start();
+    assert_eq!(deepseek_host(&home), Ok(HostState::Proves));
+    host.answer(Answer::OtherProtocol);
+    assert_eq!(deepseek_host(&home), Ok(HostState::Older));
+}

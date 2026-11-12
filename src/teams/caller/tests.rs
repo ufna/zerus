@@ -170,6 +170,10 @@ mod hosts;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 mod hosted;
 
+// Any other marked claim below a recorded host is refused (zerus-63rru.28).
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+mod under_host;
+
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 fn catalog(config: &std::path::Path) {
     std::fs::create_dir_all(config.join("swarm")).unwrap();

@@ -106,3 +106,67 @@ fn refusal_fixture() {
         "no refusal falls back to the ancestry proof"
     );
 }
+
+/// A wrong session-ID hint beside an otherwise valid label, run and token:
+/// the hint selects the binding, so another session's ID, or one that no
+/// session has, is refused and never read past to the label.
+#[test]
+fn a_wrong_session_id_beside_a_valid_label_run_and_token_is_refused() {
+    isolated("teams::caller::tests::hosted::wrong_session_id_fixture");
+}
+
+#[test]
+#[ignore = "run by its isolated wrapper"]
+fn wrong_session_id_fixture() {
+    let config = Config::load().unwrap();
+    let host = Host::start();
+    let member = host.launched(NAME, Some(LAUNCH));
+    let other = host.launched(
+        "dsh/example/other",
+        Some("00000000-0000-4000-8000-0000000000e2"),
+    );
+    host.call(&member);
+    assert_eq!(caller(&config), key(&config, format!("launch_id:{LAUNCH}")));
+    let others = other["session_id"].as_str().unwrap().to_owned();
+    assert_ne!(Some(others.as_str()), member["session_id"].as_str());
+    for wrong in [others.as_str(), "00000000-0000-4000-8000-0000000000ee"] {
+        std::env::set_var("HGS_SESSION_ID", wrong);
+        let answer = caller(&config);
+        println!("WRONG_SESSION_ID {wrong} {answer:?}");
+        assert_eq!(
+            answer,
+            Caller::Refused(Problem::new(
+                code::NOT_ALLOWED,
+                "Cannot verify the DeepSeek session binding the markers name."
+            )),
+            "{wrong}"
+        );
+    }
+}
+
+/// A host whose `ping` advertises call tokens under a protocol other than 1
+/// does not advertise them: its tool calls cannot be proven.
+#[test]
+fn a_host_advertising_call_tokens_under_another_protocol_is_refused() {
+    isolated("teams::caller::tests::hosted::other_protocol_fixture");
+}
+
+#[test]
+#[ignore = "run by its isolated wrapper"]
+fn other_protocol_fixture() {
+    let config = Config::load().unwrap();
+    let host = Host::start();
+    let member = host.launched(NAME, Some(LAUNCH));
+    host.call(&member);
+    assert_eq!(caller(&config), key(&config, format!("launch_id:{LAUNCH}")));
+    host.answer(Answer::OtherProtocol);
+    let answer = caller(&config);
+    println!("OTHER_PROTOCOL {answer:?}");
+    assert_eq!(
+        answer,
+        Caller::Refused(Problem::new(
+            code::NOT_ALLOWED,
+            "The running DeepSeek host predates per-call tokens; its tool calls cannot be proven."
+        ))
+    );
+}

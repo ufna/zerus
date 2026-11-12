@@ -460,6 +460,7 @@ fn hosted_name(mode: &str) -> Option<&'static str> {
 
 const HOST: &str = "0123456789abcdef";
 const INSIDE_HOST: &str = "inside an agent host's process tree";
+const CLAIM_BELOW_HOST: &str = "session markers that name another session cannot be proven here";
 
 fn host_reads(text: &str) -> usize {
     text.lines()
@@ -498,8 +499,10 @@ fn an_unmarked_shell_below_a_recorded_host_is_refused() {
 
 /// The shape observed with a real DeepSeek host: the host's own environment
 /// holds the markers of another, live session that started it. A command
-/// that keeps them is refused as before (that session's process is not its
-/// ancestor); one that drops them is refused as inside the host's tree.
+/// that keeps them is a marked claim below a recorded host, refused by that
+/// rule before any binding is read (zerus-63rru.28; before it, the descent
+/// from that session's process failed); one that drops them is refused as
+/// inside the host's tree.
 #[test]
 fn a_host_holding_another_sessions_markers_refuses_both_shells() {
     let other = Job(Command::new("sleep").arg("30").spawn().unwrap());
@@ -509,11 +512,9 @@ fn a_host_holding_another_sessions_markers_refuses_both_shells() {
     kept.host(HOST, kept.pid, &kept.birth);
     let text = kept.answer();
     assert!(text.contains(&format!("PARENT {}", shell(&kept))), "{text}");
-    // As today: the descent from the claimed session's process fails, either
-    // at a process of another user above the host or at a non-ancestor.
     refused(&text);
-    assert!(text.contains("verify the claimed agent"), "{text}");
-    assert!(!text.contains(INSIDE_HOST), "{text}");
+    assert!(text.contains(CLAIM_BELOW_HOST), "{text}");
+    assert!(!text.contains("verify the claimed agent"), "{text}");
     for mode in ["normal", "withheld-middle"] {
         let dropped = Tree::start(mode, None);
         dropped.record(other.0.id(), &start);

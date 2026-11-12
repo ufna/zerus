@@ -26,19 +26,27 @@ pub(crate) fn catalog(config: &Path) {
 
 /// Runs the ignored test `test` (its full path) alone in a child of this test
 /// binary, with a private state root, configuration with a machine identity,
-/// `DSH_HOME` and call token, and no session markers or `HGS_AGENT`, so no
-/// environment change reaches another test.
+/// `DSH_HOME` and call token, a private `XDG_STATE_HOME` (so OpenCode's
+/// service file is never the real one), and no session markers or
+/// `HGS_AGENT`, so no environment change reaches another test.
 pub(crate) fn isolated(test: &str) {
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path().join("s");
     let config = temp.path().join("config");
     catalog(&config);
     let output = std::process::Command::new(std::env::current_exe().unwrap())
-        .args(["--exact", test, "--ignored", "--test-threads=1"])
+        .args([
+            "--exact",
+            test,
+            "--ignored",
+            "--test-threads=1",
+            "--nocapture",
+        ])
         .env("HGS_STATE_DIR", &root)
         .env("HGS_CONFIG_DIR", &config)
         .env("DSH_HOME", root.join("native"))
         .env("HGS_DSH_CALL_TOKEN", TOKEN)
+        .env("XDG_STATE_HOME", temp.path().join("xdg-state"))
         .env_remove("HGS_SESSION")
         .env_remove("HGS_SESSION_ID")
         .env_remove("HGS_RUN_ID")
@@ -51,6 +59,8 @@ pub(crate) fn isolated(test: &str) {
         "{text}{}",
         String::from_utf8_lossy(&output.stderr)
     );
+    // The child's own lines, for a run with --nocapture.
+    print!("{text}");
 }
 
 /// What the stand-in host answers.
@@ -67,6 +77,8 @@ pub(crate) enum Answer {
     Other,
     /// No answer within the proof's deadline.
     Silent,
+    /// `ping` advertises call tokens under a protocol other than 1.
+    OtherProtocol,
 }
 
 /// The stand-in host of this process's `DSH_HOME`: this very process, as its
@@ -122,6 +134,50 @@ impl Host {
     }
 }
 
+/// Runs the ignored test `test` alone in a child of this process, which keeps
+/// this process's environment with `markers` added, and returns what it
+/// printed. This process is that child's real parent: when it is the
+/// stand-in host, the host is an ancestor of the command, as a host is of
+/// its tool calls' commands.
+pub(crate) fn below(test: &str, markers: &[(&str, &str)]) -> String {
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            test,
+            "--ignored",
+            "--test-threads=1",
+            "--nocapture",
+        ])
+        .envs(markers.iter().copied())
+        .output()
+        .unwrap();
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        output.status.success() && text.contains("1 passed"),
+        "{text}"
+    );
+    text
+}
+
+/// A live Claude or Codex session whose agent process is this process's
+/// parent, with that process's birth, saved by the state's own writer: in an
+/// isolated child, the test runner that started it.
+pub(crate) fn parent_session(agent: &str, name: &str, run: &str, id: &str) -> Value {
+    let parent = crate::platform::process_identity(std::process::id())
+        .unwrap()
+        .parent;
+    let birth = crate::platform::process_start_time(parent).unwrap();
+    let mut record = json!({"version":1,"run_identity_version":1,"name":name,"agent":agent,
+        "run_id":run,"launch_id":id,"session_id":id,"conversation_id":id,
+        "pid":parent,"process_start":birth,"state":"running","pane":"%0"});
+    crate::state::inspection_for_test(&mut record).unwrap();
+    record
+}
+
 fn reply(mut stream: std::os::unix::net::UnixStream, answer: Arc<Mutex<(Answer, String)>>) {
     let mut line = String::new();
     if BufReader::new(&stream).read_line(&mut line).is_err() {
@@ -135,6 +191,9 @@ fn reply(mut stream: std::os::unix::net::UnixStream, answer: Arc<Mutex<(Answer, 
             return;
         }
         (Answer::Older, Some("ping")) => json!({"protocol":1,"version":"0.2.1-rc.2"}),
+        (Answer::OtherProtocol, Some("ping")) => {
+            json!({"protocol":2,"version":"0.2.1-rc.2","callTokens":true})
+        }
         (_, Some("ping")) => json!({"protocol":1,"version":"0.2.1-rc.2","callTokens":true}),
         (Answer::Unknown, Some("call-token")) => json!({"known":false}),
         (Answer::Other, Some("call-token")) => {

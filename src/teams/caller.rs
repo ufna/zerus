@@ -81,6 +81,15 @@
 //! OpenCode's shared service serves its session is refused plainly: such a
 //! session cannot be a team lead or member in this milestone, and
 //! `host_served_agent` lets team creation and member launch refuse it too.
+//! Any other marked claim below a recorded resident agent host is refused
+//! with a sentence of its own: a command there can only be a session that
+//! host serves, and only a DeepSeek claim's token proves one. The person path
+//! and such a claim ask one check, [`hosted_ancestor`]: the host records
+//! first, so a computer that records none walks no process, then one walk of
+//! the process table alone, reading no environment, matched by process ID and
+//! birth; never `HGS_AGENT` or another marker. When it cannot tell (records
+//! unreadable or over their bound, a birth unreadable, a walk past its
+//! bound), both refuse with the person path's sentences.
 //! [`limits`] is the one text that states every limit of these proofs.
 //!
 //! With a session-ID hint, ids/<ID>.json selects one verified record.
@@ -173,6 +182,11 @@ pub(crate) fn caller(config: &Config) -> Caller {
         if hosted.as_deref().is_some_and(host_served_agent) {
             return Caller::Refused(host_served());
         }
+        match hosted_ancestor() {
+            Ok(None) => (),
+            Ok(Some(_)) => return Caller::Refused(claim_inside_host()),
+            Err(refusal) => return Caller::Refused(host_refusal(refusal)),
+        }
         return match prove(config, name, run, id) {
             Ok(Some(key)) => Caller::Session(key),
             Ok(None) => Caller::Refused(not_allowed()),
@@ -222,6 +236,12 @@ fn inside_agent() -> Problem {
 fn inside_host() -> Problem {
     Problem::new(code::NOT_ALLOWED,
         "This command runs inside an agent host's process tree; person-only operations need a caller outside it.")
+}
+
+/// A marked claim of another session below a recorded resident agent host.
+fn claim_inside_host() -> Problem {
+    Problem::new(code::NOT_ALLOWED,
+        "This command runs inside an agent host's process tree, where a command can only be a session that host serves; session markers that name another session cannot be proven here.")
 }
 
 /// The recorded host folders are kept per DeepSeek agent home and nothing
@@ -351,14 +371,7 @@ fn agent_above() -> Result<Option<Problem>, Problem> {
             }
         }
     }
-    let hosts = crate::state::session_graph::caller_hosts().map_err(|unread| match unread {
-        crate::state::session_graph::Unread::TooManyFolders => too_many_hosts(),
-        crate::state::session_graph::Unread::TooManyEntries => too_many_entries(),
-        crate::state::session_graph::Unread::Unreadable => host_unreadable(),
-    })?;
-    if hosted(&chain, &hosts, |pid| {
-        crate::platform::process_identity(pid).map(|native| (native.birth, native.started))
-    })? {
+    if hosted_ancestor().map_err(host_refusal)?.is_some() {
         return Ok(Some(inside_host()));
     }
     // T2: no deterministic test pins this post-proof race window; changing a
@@ -366,6 +379,82 @@ fn agent_above() -> Result<Option<Problem>, Problem> {
     // Recheck original edges and births before accepting a negative proof.
     ancestry::unchanged(&chain)?;
     Ok(None)
+}
+
+/// A recorded resident agent host that is an ancestor of this command.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Host {
+    pid: u32,
+    birth: String,
+}
+
+/// Why [`hosted_ancestor`] cannot tell whether a recorded host is above this
+/// command. Each cause is its own.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Refusal {
+    /// More host folders than the reader's bound.
+    TooManyFolders,
+    /// More entries in the host records than the listing's bound.
+    TooManyEntries,
+    /// A host record that exists cannot be read, or is malformed.
+    Unreadable,
+    /// A recorded process ID is an ancestor's, but the birth that would tell
+    /// the two apart cannot be read on one side.
+    Birth,
+    /// The walk did not reach the top of the user's tree within its bound, or
+    /// could not read a process on the way.
+    Walk,
+}
+
+/// Whether a recorded resident agent host is an ancestor of this command:
+/// `Ok(None)` when none is, `Ok(Some(host))` when one is, and `Err` with its
+/// cause when the check cannot tell. Both the person path and a marked claim
+/// that is not a DeepSeek claim ask it (zerus-63rru.28): a command below a
+/// host can be only a session that host serves. The records are read first,
+/// so a computer that records no host walks no process; then one walk of the
+/// process table alone, at most 64 steps to the top of the user's tree,
+/// matched by process ID and birth. No marker is read.
+fn hosted_ancestor() -> Result<Option<Host>, Refusal> {
+    hosted_ancestor_read(
+        crate::state::session_graph::caller_hosts,
+        ancestry::processes,
+        native_start,
+    )
+}
+
+fn hosted_ancestor_read(
+    hosts: impl FnOnce() -> Result<
+        crate::state::session_graph::Hosts,
+        crate::state::session_graph::Unread,
+    >,
+    walk: impl FnOnce() -> Result<Vec<ancestry::Ancestor>, Problem>,
+    native: impl Fn(u32) -> Option<(String, f64)>,
+) -> Result<Option<Host>, Refusal> {
+    let hosts = hosts().map_err(|unread| match unread {
+        crate::state::session_graph::Unread::TooManyFolders => Refusal::TooManyFolders,
+        crate::state::session_graph::Unread::TooManyEntries => Refusal::TooManyEntries,
+        crate::state::session_graph::Unread::Unreadable => Refusal::Unreadable,
+    })?;
+    if hosts.deepseek.is_empty() && hosts.opencode.is_none() {
+        return Ok(None);
+    }
+    let chain = walk().map_err(|_| Refusal::Walk)?;
+    hosted(&chain, &hosts, native)
+}
+
+/// A check that cannot tell refuses, in the person path's own words.
+fn host_refusal(refusal: Refusal) -> Problem {
+    match refusal {
+        Refusal::TooManyFolders => too_many_hosts(),
+        Refusal::TooManyEntries => too_many_entries(),
+        Refusal::Unreadable | Refusal::Birth => host_unreadable(),
+        Refusal::Walk => unreadable(),
+    }
+}
+
+/// A process's birth and start, as [`hosted`] matches OpenCode's service.
+fn native_start(pid: u32) -> Option<(String, f64)> {
+    crate::platform::process_identity(pid).map(|native| (native.birth, native.started))
 }
 
 /// Whether a recorded resident agent host is one of these ancestors.
@@ -383,7 +472,7 @@ fn hosted(
     chain: &[ancestry::Ancestor],
     hosts: &crate::state::session_graph::Hosts,
     native: impl Fn(u32) -> Option<(String, f64)>,
-) -> Result<bool, Problem> {
+) -> Result<Option<Host>, Refusal> {
     for ancestor in chain {
         for named in hosts
             .deepseek
@@ -391,23 +480,31 @@ fn hosted(
             .filter(|named| named.pid == ancestor.pid)
         {
             match (&named.birth, &ancestor.identity.birth) {
-                (Some(recorded), Some(birth)) if recorded == birth => return Ok(true),
+                (Some(recorded), Some(birth)) if recorded == birth => {
+                    return Ok(Some(Host {
+                        pid: ancestor.pid,
+                        birth: birth.clone(),
+                    }))
+                }
                 (Some(_), Some(_)) => (),
-                _ => return Err(host_unreadable()),
+                _ => return Err(Refusal::Birth),
             }
         }
         if let Some(service) = hosts.opencode.as_ref().filter(|s| s.pid == ancestor.pid) {
             match native(ancestor.pid) {
                 Some((birth, started)) if Some(&birth) == ancestor.identity.birth.as_ref() => {
                     if started <= service.written + 1.0 {
-                        return Ok(true);
+                        return Ok(Some(Host {
+                            pid: ancestor.pid,
+                            birth,
+                        }));
                     }
                 }
-                _ => return Err(host_unreadable()),
+                _ => return Err(Refusal::Birth),
             }
         }
     }
-    Ok(false)
+    Ok(None)
 }
 
 /// Claims are only discovery hints. The explicit saved-record proof establishes

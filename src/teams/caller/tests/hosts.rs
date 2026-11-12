@@ -2,7 +2,7 @@
 //! real processes are in `regressions`.
 use super::*;
 use crate::state::session_graph::{Hosts, Named, Registered};
-use ancestry::{Ancestor, Process};
+use ancestry::{Ancestor, Inspection, Process};
 
 fn row(pid: u32, birth: Option<&str>) -> Ancestor {
     Ancestor {
@@ -37,6 +37,26 @@ fn unread(_: u32) -> Option<(String, f64)> {
     None
 }
 
+fn host(pid: u32, birth: &str) -> Option<Host> {
+    Some(Host {
+        pid,
+        birth: birth.into(),
+    })
+}
+
+/// The host records as [`hosted_ancestor`] reads them.
+fn hosts(hosts: Hosts) -> impl FnOnce() -> Result<Hosts, crate::state::session_graph::Unread> {
+    move || Ok(hosts)
+}
+
+fn chain() -> Result<Vec<Ancestor>, Problem> {
+    Ok(vec![row(10, Some("b10")), row(11, Some("b11"))])
+}
+
+fn never() -> Result<Vec<Ancestor>, Problem> {
+    panic!("no walk without a recorded host")
+}
+
 #[test]
 fn a_deepseek_host_matches_by_process_id_and_birth() {
     let chain = [
@@ -44,12 +64,12 @@ fn a_deepseek_host_matches_by_process_id_and_birth() {
         row(11, Some("b11")),
         row(12, Some("b12")),
     ];
-    assert_eq!(hosted(&chain, &deepseek(11, Some("b11")), unread), Ok(true));
     assert_eq!(
-        hosted(&chain, &deepseek(13, Some("b13")), unread),
-        Ok(false)
+        hosted(&chain, &deepseek(11, Some("b11")), unread),
+        Ok(host(11, "b11"))
     );
-    assert_eq!(hosted(&chain, &Hosts::default(), unread), Ok(false));
+    assert_eq!(hosted(&chain, &deepseek(13, Some("b13")), unread), Ok(None));
+    assert_eq!(hosted(&chain, &Hosts::default(), unread), Ok(None));
 }
 
 /// The top of the user's tree is an ancestor like any other: on macOS launchd
@@ -59,9 +79,15 @@ fn a_host_at_the_top_of_the_chain_matches() {
     let mut top = row(11, Some("b11"));
     top.top = true;
     let chain = [row(10, Some("b10")), top];
-    assert_eq!(hosted(&chain, &deepseek(11, Some("b11")), unread), Ok(true));
+    assert_eq!(
+        hosted(&chain, &deepseek(11, Some("b11")), unread),
+        Ok(host(11, "b11"))
+    );
     let started = |_: u32| Some(("b11".to_owned(), 90.0));
-    assert_eq!(hosted(&chain, &opencode(11, 100.0), started), Ok(true));
+    assert_eq!(
+        hosted(&chain, &opencode(11, 100.0), started),
+        Ok(host(11, "b11"))
+    );
 }
 
 /// The record's birth is the walk's own `process_identity` value, so the
@@ -69,24 +95,46 @@ fn a_host_at_the_top_of_the_chain_matches() {
 #[test]
 fn a_host_record_whose_birth_differs_is_not_that_host() {
     let chain = [row(10, Some("b10")), row(11, Some("b11"))];
-    assert_eq!(
-        hosted(&chain, &deepseek(11, Some("old")), unread),
-        Ok(false)
-    );
+    assert_eq!(hosted(&chain, &deepseek(11, Some("old")), unread), Ok(None));
 }
 
+/// An unreadable birth is a refusal, never a miss: a recorded process ID
+/// without a birth, an ancestor whose birth cannot be read, or an OpenCode
+/// service whose start cannot be read, wherever that ID is an ancestor's.
 #[test]
-fn a_recorded_process_id_without_a_birth_on_either_side_refuses() {
+fn an_unreadable_birth_is_a_refusal_never_a_miss() {
     let chain = [row(10, Some("b10")), row(11, Some("b11"))];
     assert_eq!(
         hosted(&chain, &deepseek(11, None), unread),
-        Err(host_unreadable())
+        Err(Refusal::Birth)
     );
     let top = [row(10, Some("b10")), row(11, None)];
     assert_eq!(
         hosted(&top, &deepseek(11, Some("b11")), unread),
-        Err(host_unreadable())
+        Err(Refusal::Birth)
     );
+    assert_eq!(
+        hosted(&chain, &opencode(11, 100.0), unread),
+        Err(Refusal::Birth)
+    );
+    assert_eq!(
+        hosted_ancestor_read(hosts(deepseek(11, None)), chain_of(&chain), unread),
+        Err(Refusal::Birth)
+    );
+    assert_eq!(host_refusal(Refusal::Birth), host_unreadable());
+}
+
+fn chain_of(rows: &[Ancestor]) -> impl FnOnce() -> Result<Vec<Ancestor>, Problem> {
+    let rows: Vec<_> = rows
+        .iter()
+        .map(|row| Ancestor {
+            pid: row.pid,
+            identity: row.identity.clone(),
+            claim: None,
+            top: row.top,
+        })
+        .collect();
+    move || Ok(rows)
 }
 
 /// OpenCode's file names no birth: its process ID counts when the ancestor
@@ -97,28 +145,120 @@ fn an_opencode_service_counts_when_it_is_not_younger_than_its_file() {
     let started = |at: f64| move |_: u32| Some(("b11".to_owned(), at));
     assert_eq!(
         hosted(&chain, &opencode(11, 100.0), started(90.0)),
-        Ok(true)
+        Ok(host(11, "b11"))
     );
     assert_eq!(
         hosted(&chain, &opencode(11, 100.0), started(100.5)),
-        Ok(true)
+        Ok(host(11, "b11"))
     );
     assert_eq!(
         hosted(&chain, &opencode(11, 100.0), started(102.0)),
-        Ok(false)
+        Ok(None)
     );
     assert_eq!(
         hosted(&chain, &opencode(12, 100.0), started(90.0)),
-        Ok(false)
-    );
-    assert_eq!(
-        hosted(&chain, &opencode(11, 100.0), unread),
-        Err(host_unreadable())
+        Ok(None)
     );
     let replaced = |_: u32| Some(("other".to_owned(), 90.0));
     assert_eq!(
         hosted(&chain, &opencode(11, 100.0), replaced),
-        Err(host_unreadable())
+        Err(Refusal::Birth)
+    );
+}
+
+/// The check reads the records first and walks only when some host is
+/// recorded, OpenCode's registered service among them (zerus-63rru.28).
+#[test]
+fn the_check_reads_the_records_first_and_walks_only_with_some() {
+    assert_eq!(
+        hosted_ancestor_read(hosts(Hosts::default()), never, unread),
+        Ok(None)
+    );
+    assert_eq!(
+        hosted_ancestor_read(hosts(deepseek(11, Some("b11"))), chain, unread),
+        Ok(host(11, "b11"))
+    );
+    assert_eq!(
+        hosted_ancestor_read(hosts(deepseek(12, Some("b12"))), chain, unread),
+        Ok(None)
+    );
+    let started = |_: u32| Some(("b11".to_owned(), 90.0));
+    assert_eq!(
+        hosted_ancestor_read(hosts(opencode(11, 100.0)), chain, started),
+        Ok(host(11, "b11"))
+    );
+    assert_eq!(
+        hosted_ancestor_read(hosts(opencode(12, 100.0)), chain, started),
+        Ok(None)
+    );
+}
+
+/// When the check cannot tell, its refusal names the cause, each its own,
+/// and each refuses in the person path's words.
+#[test]
+fn the_checks_refusal_tells_its_causes_apart() {
+    use crate::state::session_graph::Unread;
+    let causes = [
+        hosted_ancestor_read(|| Err(Unread::TooManyFolders), never, unread),
+        hosted_ancestor_read(|| Err(Unread::TooManyEntries), never, unread),
+        hosted_ancestor_read(|| Err(Unread::Unreadable), never, unread),
+        hosted_ancestor_read(hosts(deepseek(11, None)), chain, unread),
+        hosted_ancestor_read(
+            hosts(deepseek(12, Some("b12"))),
+            || Err(unreadable()),
+            unread,
+        ),
+    ];
+    let all = [
+        Refusal::TooManyFolders,
+        Refusal::TooManyEntries,
+        Refusal::Unreadable,
+        Refusal::Birth,
+        Refusal::Walk,
+    ];
+    assert_eq!(causes, all.map(Err));
+    assert_eq!(
+        all.map(host_refusal),
+        [
+            too_many_hosts(),
+            too_many_entries(),
+            host_unreadable(),
+            host_unreadable(),
+            unreadable(),
+        ]
+    );
+}
+
+/// The walk fails closed at its bound: 64 processes may reach the top of
+/// the user's tree, and a 65th refuses as a walk past its bound, never as no
+/// host above.
+#[test]
+fn the_checks_walk_fails_closed_at_its_bound() {
+    // Each process is the child of the one below it; 1 is another user's.
+    let table = |pid: u32| {
+        Ok(if pid > 1 {
+            Inspection::Own(Process {
+                parent: pid - 1,
+                birth: Some(format!("b{pid}")),
+            })
+        } else {
+            Inspection::Foreign
+        })
+    };
+    let empty = |_: u32| Ok(Vec::new());
+    let at_top = || hosts(deepseek(2, Some("b2")));
+    assert_eq!(
+        hosted_ancestor_read(at_top(), || ancestry::walk(65, table, empty), unread),
+        Ok(host(2, "b2"))
+    );
+    assert_eq!(
+        hosted_ancestor_read(at_top(), || ancestry::walk(66, table, empty), unread),
+        Err(Refusal::Walk)
+    );
+    let elsewhere = || hosts(deepseek(1000, Some("b1000")));
+    assert_eq!(
+        hosted_ancestor_read(elsewhere(), || ancestry::walk(66, table, empty), unread),
+        Err(Refusal::Walk)
     );
 }
 
