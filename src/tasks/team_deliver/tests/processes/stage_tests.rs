@@ -516,6 +516,7 @@ fn the_real_task_dispatch_routes_creation_clear_and_read_only_delivery_recovery(
         },
     )
     .unwrap();
+    f.h.release_retired(f.body.node);
     f.task = task;
     let args: Vec<String> = std::iter::once("team-clear".into())
         .chain(f.args(false))
