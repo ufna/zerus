@@ -1469,15 +1469,17 @@ A skip is reported as no evidence.
 
 Every wait names what it waits for and has its own bound, about three times the
 duration measured on a loaded development host; the upstream canary has no Teams
-step yet. Measured on 2026-11-12 with Claude Code 2.1.322 and Codex 0.167.2:
+step yet. Measured on 2026-11-12 with Claude Code 2.1.322 and Codex 0.167.2, over
+seven passing runs:
 
 | Wait | Measured | Bound |
 |---|---|---|
-| Lead and member bound by launch ID | 132–141 s | 420 s |
-| Ready after the person's startup answers | 3–7 s | 360 s |
-| Parent link written by the service | 38–49 s | 200 s |
+| Lead and member bound by launch ID | 129–141 s | 420 s |
+| Ready after the person's startup answers | 3.5–11 s | 360 s |
+| A Codex conversation started by its first message | 0.8–3 s | 180 s |
+| Parent link written by the service | 26–53 s | 200 s |
 | The service's cancel and key clear after a stop | 2 s | 180 s |
-| One whole class | 206–216 s | 2400 s (the row) |
+| One whole run | 215–230 s | 2400 s (the row) |
  Each wait logs its measured duration as a `ZERUS_TEAMS_WAIT=` line and in
 `waits.jsonl`, so a bound can be tightened from evidence. The row's bound is 2400
 seconds. Locally, run the contract outside any agent session, for example in a
