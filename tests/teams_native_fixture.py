@@ -869,7 +869,7 @@ class TeamFixture:
             except (ValueError, KeyError, TypeError) as error:
                 raise AssertionError(f'audit journal row {row["id"]} has a shape the reader does not know: {error!r}')
             row.update(source=fields['source'], question_id=fields['question_id'], run=fields['run_id'],
-                       categories=categories)
+                       categories=categories, saved_question=question)
         return rows
 
     def audit_rows(self, session_name):
@@ -882,6 +882,19 @@ class TeamFixture:
         members = {session['name']: member_id for member_id, session in self.sessions.items()}
         return sorted((members.get(row['session'], row['session']), row['source'], tuple(row['categories']), row['status'])
                       for row in self.journal())
+
+    def claude_trust_records(self):
+        """Read-only, private root only: where Claude keeps its folder trust. Every
+        .claude.json in the root, with its project keys and the trust flag only."""
+        records = {}
+        for path in sorted(self.root.rglob('.claude.json'))[:20]:
+            try:
+                projects = json.loads(path.read_text()).get('projects') or {}
+            except (OSError, ValueError) as error:
+                records[str(path)] = repr(error)
+                continue
+            records[str(path)] = {key: bool((value or {}).get('hasTrustDialogAccepted')) for key, value in projects.items()}
+        return records
 
     def agent_home(self, member_id):
         """The account home a member runs in: a managed account, or the native one in HOME."""
@@ -1169,6 +1182,12 @@ class TeamFixture:
             self.evidence.write('diagnose-observation.json', self.observation())
         except Exception as error:
             self.evidence.write('diagnose-observation.json', str(error)[:500])
+        if self.agent == 'claude':
+            try:
+                worktrees = {member_id: (session.get('member') or {}).get('worktree') for member_id, session in self.sessions.items()}
+                self.evidence.write('claude-trust-records.json', dict(worktrees=worktrees, records=self.claude_trust_records()))
+            except Exception as error:
+                self.evidence.write('claude-trust-records.json', str(error)[:500])
         for member_id, session in list(self.sessions.items()):
             try:
                 view = self.inspect(member_id)

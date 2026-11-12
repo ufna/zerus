@@ -330,9 +330,6 @@ class TrustContract(ClassFixture):
             if (fx.evidence.folder / 'person-answers.jsonl').is_file() else []
         for member_id in ('lead', 'm1'):
             with self.subTest(member=member_id):
-                seen = [v for k, v in fx.cards_seen.items() if k[0] == member_id and v['source'] == self.trust_source]
-                self.assertEqual(len(seen), 1, 'the real startup trust card appeared once')
-                self.assertIsNone(seen[0]['card'].get('conversation_id'), 'the real card carries a null conversation')
                 self.assertFalse([a for a in answered if a['member'] == member_id and a['source'] == self.trust_source],
                                  'the person did not answer it')
                 name = fx.sessions[member_id]['name']
@@ -340,7 +337,20 @@ class TrustContract(ClassFixture):
                 fx.evidence.write(f'audit-{member_id}.json', rows)
                 grants = [r for r in rows if r['source'] == self.trust_source]
                 self.assertEqual(len(grants), 1, 'one audited grant for the card')
-                self.assertNotIn(grants[0]['status'], ('prepared', 'cancelled', 'unknown'), grants[0])
+                self.assertEqual(grants[0]['status'], 'approved', grants[0])
+                # The card the service answered, as its grant saved it: the real startup card
+                # with its null conversation. The service may answer before the fixture's
+                # first look; a card the fixture did see is the granted one.
+                card = grants[0]['saved_question']
+                self.assertEqual(card['questions'][0]['question'], 'Trust this folder?')
+                self.assertIn('conversation_id', card)
+                self.assertIsNone(card['conversation_id'], 'the real card carries a null conversation')
+                seen = [v['card'] for k, v in fx.cards_seen.items() if k[0] == member_id and v['source'] == self.trust_source]
+                self.assertLessEqual(len(seen), 1, 'the startup trust card appeared at most once')
+                if seen:
+                    self.assertEqual(seen[0].get('question_id'), card.get('question_id'), 'the card seen is the card granted')
+                pending = [q for q in fx.inspect(member_id).get('pending_questions') or [] if q.get('source') == self.trust_source]
+                self.assertFalse(pending, 'no second startup trust card for the member')
                 self.assert_agent_trusted(member_id)
         refusals = [c for c in fx.cards() if 'needs your attention' in c.get('text', '')]
         fx.evidence.write('cards-after-trust.json', refusals)
@@ -378,11 +388,16 @@ class ClaudeTrust:
     service_answers = ('claude_folder_trust',)
 
     def assert_agent_trusted(self, member_id):
-        home = self.fx.agent_home(member_id)
-        record = json.loads((home / '.claude.json').read_text())
-        worktree = self.fx.members()[member_id]['worktree']
-        self.assertTrue((record.get('projects') or {}).get(worktree, {}).get('hasTrustDialogAccepted'),
-                        'Claude recorded the trust for exactly the member worktree')
+        fx = self.fx
+        home = fx.agent_home(member_id)
+        # Where Claude keeps trust, recorded before asserting it (zerus-63rru.60: the grant
+        # must be no wider than the card's folder).
+        records = fx.claude_trust_records()
+        fx.evidence.write(f'claude-trust-records-{member_id}.json', dict(home=str(home), records=records))
+        worktree = fx.members()[member_id]['worktree']
+        mine = records.get(str(home / '.claude.json'))
+        self.assertIsInstance(mine, dict, "the member account's own .claude.json is readable")
+        self.assertTrue(mine.get(worktree), 'Claude recorded the trust for exactly the member worktree')
 
 
 class CodexTrustContract(ClassFixture):
