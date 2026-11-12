@@ -4,6 +4,7 @@ use std::os::unix::fs::PermissionsExt;
 
 #[test]
 fn every_fixture_child_has_an_existing_private_tmux_directory() {
+    // Requires tmux on PATH with its normal no-server reply for the private socket directory.
     let h = Harness::new();
     let mut config = super::super::production::native(&h).config;
     config.home = h.temp.path().display().to_string();

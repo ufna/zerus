@@ -21,12 +21,8 @@ impl Runtime {
         if gate.is_some_and(|g| g.event.as_deref() != Some(reason.as_str())) {
             self.recovered(store, team, &key, now)?;
         }
-        let stamp = serde_json::to_string(&(
-            decision,
-            generation,
-            observation.as_ref().map(|o| &o.revision),
-        ))
-        .map_err(crate::teams::store::storage)?;
+        let stamp = serde_json::to_string(&(decision, generation, &reason))
+            .map_err(crate::teams::store::storage)?;
         if self.due(store, team, &key, &stamp, now)? {
             self.failure(store, team, &key, &stamp, &problem(&reason), now)?;
         }

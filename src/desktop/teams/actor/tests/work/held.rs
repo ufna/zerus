@@ -277,3 +277,48 @@ fn settled_reopens_retire_both_held_and_legacy_cards_when_the_task_leaves() {
     assert!(open(&h).is_empty());
     assert_eq!(p.deliveries, 0);
 }
+
+#[test]
+fn observation_churn_under_one_held_reason_never_advances_its_clock() {
+    for step in ["finish", "merge", "reopen"] {
+        let mut h = Harness::new();
+        let (node, lead) = h.reported();
+        if step == "finish" {
+            h.settings(|s| s.integration = Integration::None);
+        }
+        h.run(
+            &lead,
+            if step == "reopen" {
+                Operation::Return {
+                    node,
+                    reason: "Revise".into(),
+                }
+            } else {
+                Operation::Accept { node }
+            },
+        )
+        .unwrap();
+        let mut a = actor(&h);
+        let mut p = Work::default();
+        for second in 0..30 {
+            reviewed::observe(&mut h, node, TaskStage::InReview, "", true);
+            if second == 10 {
+                drop(a);
+                a = actor(&h);
+            }
+            run(&mut h, &mut a, &mut p, 100 + second * 1_000);
+            assert!(open(&h).is_empty(), "{step}, second {second}");
+        }
+        let key = format!("gate:held:{step}:{node}");
+        assert_eq!(
+            a.ledger.get(TEAM, &key).unwrap().unwrap().data["failures"],
+            1
+        );
+        for now in [60_100, 180_100] {
+            reviewed::observe(&mut h, node, TaskStage::InReview, "", true);
+            run(&mut h, &mut a, &mut p, now);
+        }
+        assert_eq!(open(&h).len(), 1, "{step}");
+        assert_eq!((p.finishes, p.merges, p.deliveries), (0, 0, 0));
+    }
+}
