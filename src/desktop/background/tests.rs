@@ -245,7 +245,7 @@ fn slow_replacement_keeps_draining_on_actor_turns_without_a_client_retry() {
     assert!(runtime.drain(&mut store, Duration::ZERO).is_err());
     assert!(!runtime.drained());
     assert!(location.handoff_lock().is_err());
-    assert!(!replacement_permitted(true, runtime.drained(), &location, &store).unwrap());
+    assert!(!replacement_permitted(true, Some(&runtime), &location, &store).unwrap());
     // No frontend call/retry follows the timeout. Only normal actor polling.
     release.send(()).unwrap();
     let until = Instant::now() + Duration::from_secs(3);
@@ -256,18 +256,22 @@ fn slow_replacement_keeps_draining_on_actor_turns_without_a_client_retry() {
         thread::sleep(Duration::from_millis(2));
     }
     assert!(location.handoff_lock().is_ok());
-    assert!(replacement_permitted(true, runtime.drained(), &location, &store).unwrap());
+    assert!(replacement_permitted(true, Some(&runtime), &location, &store).unwrap());
     assert!(
-        !replacement_permitted(false, runtime.drained(), &location, &store).unwrap(),
+        !replacement_permitted(false, Some(&runtime), &location, &store).unwrap(),
         "passive serve cannot start background"
+    );
+    assert!(
+        !replacement_permitted(true, None, &location, &store).unwrap(),
+        "no runtime, nothing drained to replace"
     );
     // Routine update changes only launch eligibility, not the retained grant.
     std::fs::write(&image, b"updated owned fixture image").unwrap();
     assert!(!ownership::service_granted(&store, &location.configuration).unwrap());
-    assert!(replacement_permitted(true, true, &location, &store).unwrap());
+    assert!(replacement_permitted(true, Some(&runtime), &location, &store).unwrap());
     ownership::invalidate(&store.db).unwrap();
     assert!(
-        !replacement_permitted(true, true, &location, &store).unwrap(),
+        !replacement_permitted(true, Some(&runtime), &location, &store).unwrap(),
         "revoke cannot be rearmed by a drained handle"
     );
     drop(runtime);
@@ -303,7 +307,7 @@ fn a_replacement_waits_until_the_teams_worker_thread_has_drained() {
             .drain(&mut f.store, Duration::from_secs(2))
             .is_err());
         assert!(!f.runtime.drained());
-        assert!(!replacement_permitted(true, f.runtime.drained(), &f.location, &f.store).unwrap());
+        assert!(!replacement_permitted(true, Some(&f.runtime), &f.location, &f.store).unwrap());
     }));
     // Released on every exit; the drain then joins the original thread.
     hold.release();
@@ -313,7 +317,7 @@ fn a_replacement_waits_until_the_teams_worker_thread_has_drained() {
     }
     drained.unwrap();
     assert!(f.runtime.drained());
-    assert!(replacement_permitted(true, f.runtime.drained(), &f.location, &f.store).unwrap());
+    assert!(replacement_permitted(true, Some(&f.runtime), &f.location, &f.store).unwrap());
 }
 
 #[test]
