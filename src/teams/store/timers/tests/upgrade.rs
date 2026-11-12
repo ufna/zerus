@@ -733,15 +733,18 @@ fn refused_release(h: &mut Harness, lead: &Actor, node: u32) {
 /// a hand-back in its current generation (an item of each hand-back kind, a
 /// reopen refused or not delivered, its pipeline waiting on the person or a
 /// stage) it is a hand-back, which the lead may end; with none, or only an
-/// earlier generation's, it is the person's, and the lead's Release says
-/// why it is refused.
+/// earlier generation's, a delivered reopen, a pipeline active without a
+/// stage or an uncertain delivery's item, it is the person's, and the lead's
+/// Release says why it is refused.
 #[test]
 fn the_step_to_layout_11_classifies_each_legacy_hold() {
     let mut h = Harness::new();
     let lead = h.bind("lead");
-    h.bind("m1");
+    for member in ["m1", "m2", "m3"] {
+        h.bind(member);
+    }
     let mut nodes = Vec::new();
-    for n in 1..=10 {
+    for n in 1..=15 {
         nodes.push(h.add(&person(), n));
     }
     let kinds = [
@@ -760,26 +763,42 @@ fn the_step_to_layout_11_classifies_each_legacy_hold() {
             )
             .unwrap();
     }
-    for (node, state) in [(nodes[5], "refused"), (nodes[6], "uncertain")] {
+    // A reopen that was not delivered; the delivered one (node 12) is no trace.
+    for (node, member, state) in [
+        (nodes[5], "m1", "refused"),
+        (nodes[6], "m1", "uncertain"),
+        (nodes[7], "m2", "cutting_over"),
+        (nodes[12], "m3", "submitted"),
+    ] {
         db(&h)
             .execute(
-                "INSERT INTO effects(team,node,member,generation,request_id,actor,kind,created_ms,state) VALUES(?1,?2,'m1',1,?3,?4,'reopen',1,?5)",
-                params![TEAM, node, uuid::Uuid::new_v4().to_string(), actor, state],
+                "INSERT INTO effects(team,node,member,generation,request_id,actor,kind,created_ms,state) VALUES(?1,?2,?3,1,?4,?5,'reopen',1,?6)",
+                params![TEAM, node, member, uuid::Uuid::new_v4().to_string(), actor, state],
             )
             .unwrap();
     }
-    db(&h)
-        .execute(
-            "INSERT INTO pipeline_runs(team,node,generation,state) VALUES(?1,?2,1,'person')",
-            params![TEAM, nodes[7]],
-        )
-        .unwrap();
-    // An earlier generation's item is no trace of the hold it has now.
+    // A pipeline waiting on the person or on a stage; one active without a
+    // stage (node 13) is no trace.
+    for (node, state, stage) in [
+        (nodes[8], "person", None),
+        (nodes[9], "active", Some(nodes[14])),
+        (nodes[13], "active", None),
+    ] {
+        db(&h)
+            .execute(
+                "INSERT INTO pipeline_runs(team,node,generation,state,stage) VALUES(?1,?2,1,?3,?4)",
+                params![TEAM, node, state, stage],
+            )
+            .unwrap();
+    }
+    // An earlier generation's item is no trace of the hold it has now, and
+    // an uncertain delivery's item is filed by ordinary hand-outs too.
     db(&h)
         .execute_batch(&format!(
             "UPDATE nodes SET generation=2 WHERE team='{TEAM}' AND id={};
-             INSERT INTO inbox(team,kind,node,generation,actor,text,created_ms) VALUES('{TEAM}','cancel_refused:96',{},1,'{actor}','Old',1);",
-            nodes[9], nodes[9]
+             INSERT INTO inbox(team,kind,node,generation,actor,text,created_ms) VALUES('{TEAM}','cancel_refused:96',{},1,'{actor}','Old',1);
+             INSERT INTO inbox(team,kind,node,generation,actor,text,created_ms) VALUES('{TEAM}','delivery_uncertain',{},1,'{actor}','Unknown',1);",
+            nodes[11], nodes[11], nodes[14]
         ))
         .unwrap();
     db(&h)
@@ -804,14 +823,14 @@ fn the_step_to_layout_11_classifies_each_legacy_hold() {
     let handed_back = (false, None, true);
     let persons = (true, Some("person".to_owned()), false);
     for (i, node) in nodes.iter().enumerate() {
-        let expected = if i < 8 { &handed_back } else { &persons };
+        let expected = if i < 10 { &handed_back } else { &persons };
         assert_eq!(&stored(&h, *node), expected, "node {i}");
         assert!(h.node(*node).hold, "node {i}");
     }
     h.run(&lead, Operation::Release { node: nodes[0] }).unwrap();
     assert!(!h.node(nodes[0]).hold, "the lead ends a hand-back");
     let error = h
-        .run(&lead, Operation::Release { node: nodes[8] })
+        .run(&lead, Operation::Release { node: nodes[10] })
         .unwrap_err();
     assert!(
         error.message.contains("before holds had owners"),
