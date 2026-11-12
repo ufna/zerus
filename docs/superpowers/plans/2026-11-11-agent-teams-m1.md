@@ -1876,6 +1876,22 @@ run or conversation changed) is a refusal, not an uncertainty. Outside the
 window nothing changes: a failure before the attempt read or after the
 reservation is still unknown, and a recovery never sends.
 
+**A reopen is checked by the member's launch and conversation, not by its
+run.** A reopen sends a member a short message for a task it already has.
+Before sending, the task command required the run and the conversation the
+task had been handed to. A member resumed since the hand-out has a new run
+and the same conversation: it still holds the task's whole context, but its
+reopen was refused, retried and ended as a card. A member that cleared its
+conversation was refused too, but only after retries and without its
+reason (2026-11-12). On the team route the check compares the member's
+launch identity and the conversation; every caller outside a team keeps
+the same-run comparison, and a source guard lists every use of the new
+one. A resumed member's reopen goes through. A member that cleared its
+conversation no longer has the task: its reopen is refused and final,
+nothing is sent, and the task goes back to the lead at once with a
+sentence that says why, without a failure gate or a retry. A new execution
+for the same member with the full prompt is not part of this.
+
 **Known limit: the key of a task that was closed before the stop.** After a
 stop the service clears the team key of the tasks that were open at the
 stop and of released stages. A task accepted or cancelled earlier keeps its
