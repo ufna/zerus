@@ -18,12 +18,18 @@ impl Runtime {
             person: team.owner.clone(),
             team: team.id.clone(),
         };
-        match ops::apply(
+        let result = ops::apply(
             store,
             &actor,
             row.receipt.as_ref().expect("reserved receipt"),
             now,
-        ) {
+        );
+        #[cfg(test)]
+        let result = match AFTER_APPLY.with(|slot| slot.borrow_mut().take()) {
+            Some(hook) => hook(row.receipt.as_ref().unwrap(), result),
+            None => result,
+        };
+        match result {
             Ok(_) => {
                 boundary("recorded");
                 self.command_settled(store, team, key, now)
@@ -67,4 +73,11 @@ fn operation(row: &Command) -> Result<Operation> {
             reason,
         })
     }
+}
+
+#[cfg(test)]
+type Applied = Box<dyn FnOnce(&Request, Result<ops::Reply>) -> Result<ops::Reply>>;
+#[cfg(test)]
+thread_local! {
+    pub(in crate::desktop::teams::actor) static AFTER_APPLY: std::cell::RefCell<Option<Applied>> = const { std::cell::RefCell::new(None) };
 }

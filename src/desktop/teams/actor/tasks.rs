@@ -3,7 +3,7 @@
 use super::*;
 use ports::TaskReply;
 use serde::{Deserialize, Serialize};
-mod settle;
+pub(super) mod settle;
 #[derive(Serialize, Deserialize)]
 struct Command {
     node: u32,

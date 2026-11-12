@@ -491,3 +491,5 @@ fn a_healthy_answer_step_does_not_reclassify_a_failed_team_card_as_sweep_health(
     assert!(gate.data["notice"].is_object());
     assert!(crate::desktop::teams::health(h.temp.path()).is_none());
 }
+
+mod receipts;
