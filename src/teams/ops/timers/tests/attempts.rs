@@ -1299,8 +1299,17 @@ fn an_accepted_and_observed_node_is_still_archived_at_once() {
 }
 
 fn reviewed(h: &Harness, node: u32, generation: u32) -> bool {
-    h.store
+    let reviewed = h
+        .store
         .reviewed_task_current(TEAM, node, generation)
+        .unwrap();
+    // Wherever the reviewed read holds, the accepted one does too.
+    assert!(!reviewed || accepted(h, node, generation));
+    reviewed
+}
+fn accepted(h: &Harness, node: u32, generation: u32) -> bool {
+    h.store
+        .accepted_task_current(TEAM, node, generation)
         .unwrap()
 }
 /// A row no writer leaves, built to pin one clause of the read: the
@@ -1441,4 +1450,100 @@ fn a_reviewed_task_is_not_current_otherwise() {
         )
         .unwrap();
     assert!(!reviewed(&h, node, 1), "no observation");
+}
+
+/// The actor's read for new merge writes: an observation agrees with an
+/// acceptance when the task is In review under the execution the node
+/// took in, or when it is Done, whoever executed it.
+#[test]
+fn an_accepted_task_is_current_in_review_or_done() {
+    // Done before its merge, under the node's own attempt and under another
+    // current attempt: still bound.
+    for attempt in ["own", "another"] {
+        let (mut h, lead, node, id) = handed();
+        h.report(node, "m1");
+        h.run(&lead, Operation::Accept { node }).unwrap();
+        let current = if attempt == "own" {
+            id.as_str()
+        } else {
+            PERSON
+        };
+        seen(&mut h, node, TaskStage::Done, 2, current).unwrap();
+        assert!(bound(&h, node), "{attempt}");
+        assert!(!reviewed(&h, node, 1), "{attempt}");
+        assert!(accepted(&h, node, 1), "{attempt}");
+        assert!(!accepted(&h, node, 0), "{attempt}: an earlier generation");
+    }
+    // In review under the node's own attempt, as the reviewed read.
+    let (mut h, _, node, id) = handed();
+    seen(&mut h, node, TaskStage::InReview, 1, &id).unwrap();
+    assert!(reviewed(&h, node, 1) && accepted(&h, node, 1));
+    // In review under another current attempt: no.
+    seen(&mut h, node, TaskStage::InReview, 1, "another-attempt").unwrap();
+    assert!(!accepted(&h, node, 1), "In review under another attempt");
+}
+
+#[test]
+fn an_accepted_task_is_not_current_otherwise() {
+    // Done with the conflict flag.
+    let (mut h, lead, node, _) = handed();
+    h.report(node, "m1");
+    h.run(&lead, Operation::Accept { node }).unwrap();
+    conflicted(&mut h, node, TaskStage::Done, 2).unwrap();
+    assert!(bound(&h, node));
+    assert!(!accepted(&h, node, 1), "Done with a conflict");
+    // Running, and To do.
+    let (mut h, _, node, id) = handed();
+    assert!(!accepted(&h, node, 1), "running");
+    seen(&mut h, node, TaskStage::Todo, 1, &id).unwrap();
+    assert!(!accepted(&h, node, 1), "To do");
+    // Cancelled: rebound to pin the clause itself.
+    let (mut h, _, node, id) = handed();
+    let mut o = h.observation(node, TaskStage::Done);
+    (o.attempt, o.attempt_id, o.cancelled) = (1, id.clone(), true);
+    h.run(
+        &service(),
+        Operation::ObserveTask {
+            node,
+            observation: o,
+        },
+    )
+    .unwrap();
+    rebind(&h, node);
+    assert!(!accepted(&h, node, 1), "cancelled");
+    // The key left: rebound to pin the key clause.
+    let (mut h, _, node, id) = handed();
+    let mut o = h.observation(node, TaskStage::Done);
+    (o.attempt, o.attempt_id, o.key) = (1, id.clone(), KeyState::Absent);
+    h.run(
+        &service(),
+        Operation::ObserveTask {
+            node,
+            observation: o,
+        },
+    )
+    .unwrap();
+    assert!(!accepted(&h, node, 1), "the key left");
+    rebind(&h, node);
+    assert!(!accepted(&h, node, 1), "the key left, bound");
+    // No bound task, and no observation.
+    let (mut h, lead, node, id) = handed();
+    h.report(node, "m1");
+    h.run(&lead, Operation::Accept { node }).unwrap();
+    seen(&mut h, node, TaskStage::Done, 1, &id).unwrap();
+    assert!(accepted(&h, node, 1));
+    let db = h.store.db.as_ref().unwrap();
+    db.execute(
+        "DELETE FROM live_tasks WHERE team=?1 AND node=?2",
+        rusqlite::params![TEAM, node],
+    )
+    .unwrap();
+    assert!(!accepted(&h, node, 1), "no bound task");
+    rebind(&h, node);
+    db.execute(
+        "DELETE FROM task_observations WHERE team=?1 AND node=?2",
+        rusqlite::params![TEAM, node],
+    )
+    .unwrap();
+    assert!(!accepted(&h, node, 1), "no observation");
 }
