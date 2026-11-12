@@ -338,7 +338,7 @@ def record_roots(case, destination):
             continue
         if path.is_file():
             path = path.parent
-        if not path.name.startswith(('hgs-pause-', 'hgs-kimi-image-', 'hgs-kimi-native-', 'hgs-teams-native-')):
+        if not path.name.startswith(('hgs-pause-', 'hgs-kimi-image-', 'hgs-kimi-native-', 'hgs-tn-')):
             raise ValueError('fixture root is not a declared private temporary root')
         info = path.lstat()
         if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:

@@ -63,6 +63,37 @@ ALLOWED_HOSTS = {
 # (the upstream canary has no Teams step yet); the logged durations tighten them.
 BOUND = dict(service=60, bound=420, listed=90, card=180, ready=180, parent=200, handout=240, turn=180,
              doorbell=240, cancel=240, stop=180, exit=60, teardown=60)
+# The private root's name. It is short so that a member worktree in a hosted runner's
+# /tmp (`/tmp/hgs-tn-XXXXXXXX/work/zerus-team-<uuid>`, 73 columns) fits one row of
+# Codex's Folder access panel; a local root inside the worktree's target/ wraps.
+ROOT_PREFIX = 'hgs-tn-'
+# Codex's Folder access panel shows the folder in rows of this many columns in the
+# member's 80-column pane (measured with Codex 0.167.2); a longer folder continues on
+# the rows below.
+CODEX_PANEL_COLUMNS = 76
+
+
+def hosted_runner(env=None):
+    """A disposable GitHub-hosted runner, where the private root sits in a short /tmp."""
+    env = os.environ if env is None else env
+    return env.get('GITHUB_ACTIONS') == 'true' and env.get('RUNNER_ENVIRONMENT') == 'github-hosted'
+
+
+def codex_panel_variant(pane, folder):
+    """Which Folder access panel `pane` shows for `folder`: 'one-row' when the folder
+    fills the row under the panel's title, 'wrapped' when it continues on the rows
+    below, None when the pane does not show that folder there."""
+    lines = [line.strip() for line in pane.splitlines()]
+    if 'Folder access' not in lines:
+        return None
+    joined = ''
+    for count, line in enumerate(lines[lines.index('Folder access') + 1:], 1):
+        joined += line
+        if not line or not folder.startswith(joined):
+            return None
+        if joined == folder:
+            return 'one-row' if count == 1 else 'wrapped'
+    return None
 
 TMUX_WRAPPER = r'''#!/bin/bash
 # Teams fixture tmux wrapper: logs every call; passes it to the real tmux only when it
@@ -424,8 +455,9 @@ class TeamFixture:
         self.delegations = dict(self.DELEGATIONS_OFF, **(delegations or {}))
         self.service_answers = tuple(service_answers)
         self.cards_seen = {}
+        self.panes = {}
         base = os.environ.get('TMPDIR') or tempfile.gettempdir()
-        self.root = Path(tempfile.mkdtemp(prefix='hgs-teams-native-', dir=base)).resolve()
+        self.root = Path(tempfile.mkdtemp(prefix=ROOT_PREFIX, dir=base)).resolve()
         if ROOT_CREATED is not None:
             ROOT_CREATED(case, self.root)
         folder = os.environ.get('ZERUS_TEAMS_EVIDENCE') or str(self.root / 'evidence')
@@ -774,6 +806,7 @@ class TeamFixture:
                                     card=card)
         self.evidence.write(f'startup-card-{number}-{member_id}.json', self.cards_seen[key])
         self.evidence.write(f'startup-card-{number}-{member_id}-pane.txt', pane.stdout)
+        self.panes[key] = pane.stdout
 
     def audit_rows(self, session_name):
         """Read-only: the approval-audit journal's attempts of one session."""

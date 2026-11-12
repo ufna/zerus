@@ -1360,7 +1360,7 @@ part of the Dev gate or of Nightly: a red run is visible and holds nothing back.
 - **Selection.** Each agent gets the same one latest official release as ordinary
   CI, with the same checked fetch. There is no Effort seed and no
   terminal-geometry matrix, and no other job's timing changes.
-- **Setup.** Each class creates one private root (`hgs-teams-native-*` in `TMPDIR`)
+- **Setup.** Each class creates one private root (`hgs-tn-*` in `TMPDIR`)
   with:
   - `HOME`, every XDG folder and a 0700 `XDG_RUNTIME_DIR`;
   - `HGS_STATE_DIR` and `HGS_CONFIG_DIR`;
@@ -1413,7 +1413,9 @@ Further classes repeat the same bring-up with one of the team's delegations on:
   Folder access panel carries its Git-root note and asks "Trust this Git
   repository?". The standing confirmation refuses that scope: it records no grant
   and leaves a card naming the member, and the person then answers the panel through
-  `hgs answer`.
+  `hgs answer`. The case reads which panel the pane showed (a folder of up to 76
+  columns fills one row): a hosted runner, whose root in `/tmp` is short, must show
+  the one-row panel and a local run the wrapped one.
 - **Resume of an exited Claude Code member** (`NativeTeamsResumeClaude`,
   `resume_exited`, selected; the person answers folder trust). A member whose agent
   exits by itself (`/exit`) is resumed by the service in a new run of the same launch

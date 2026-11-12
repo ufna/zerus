@@ -364,7 +364,11 @@ class CodexTrustContract(ClassFixture):
     Codex's Folder access panel carries its Git root note and asks to trust the repository
     root. The standing confirmation refuses that scope (zerus-63rru.49 and the owner's
     decision); the panel, wrapped or not, is now recognized, so the person answers it
-    through hgs answer, not only in Terminal."""
+    through hgs answer, not only in Terminal.
+
+    The panel's variant is what the pane showed, checked against the folder's length: a
+    hosted runner (a short root in /tmp) must show the one-row panel and a local run (a
+    root inside the worktree) the wrapped one, so neither variant drops out unseen."""
     delegations = {'confirm_trust': True}
     after_refusal = {'codex_folder_trust': 'grants a different scope'}
 
@@ -382,6 +386,17 @@ class CodexTrustContract(ClassFixture):
                 worktree = fx.members()[member_id]['worktree']
                 self.assertEqual(item['body'].split('\n\n', 1)[0].replace('\n', ''), worktree,
                                  'the panel names the member worktree, wrapped as the terminal shows it')
+                self.assertEqual(seen[0]['size'], '80x24', 'the panel rows are measured in an 80-column pane')
+                key = next(k for k, v in fx.cards_seen.items() if v is seen[0])
+                variant = fixture.codex_panel_variant(fx.panes[key], worktree)
+                fits = len(worktree) <= fixture.CODEX_PANEL_COLUMNS
+                fx.evidence.write(f'codex-panel-{member_id}.json', dict(
+                    variant=variant, folder_columns=len(worktree), row_columns=fixture.CODEX_PANEL_COLUMNS,
+                    hosted=fixture.hosted_runner()))
+                self.assertEqual(variant, 'one-row' if fits else 'wrapped',
+                                 'the pane shows the folder on as many rows as its length needs')
+                self.assertEqual(variant, 'one-row' if fixture.hosted_runner() else 'wrapped',
+                                 'a hosted runner shows the one-row panel, a local run the wrapped one')
                 rows = [r for r in fx.audit_rows(fx.sessions[member_id]['name'])
                         if json.loads(r['question']).get('source') == 'codex_folder_trust']
                 self.assertFalse(rows, 'the standing confirmation granted nothing')
@@ -555,6 +570,46 @@ class TeamsWaitingList(unittest.TestCase):
         for place, text in (('workflow header', header), ('docs section', section), ('row coverage', compat.TEAMS_COVERAGE)):
             with self.subTest(place=place):
                 self.assertEqual(set(self.ISSUE.findall(text)), fixes)
+
+
+class TeamsCodexPanel(unittest.TestCase):
+    """Reading which Folder access panel Codex showed (synthetic folders)."""
+
+    def pane(self, folder, columns=fixture.CODEX_PANEL_COLUMNS):
+        rows = [folder[i:i + columns] for i in range(0, len(folder), columns)]
+        return '\n'.join(['', '  Folder access', *('  ' + row for row in rows), '',
+                          '  Note: You\u2019re in a subdirectory of a Git project. Trusting will apply to the',
+                          '  repository root:', '  /tmp/example/work/proj', ''])
+
+    def test_the_variant_is_what_the_pane_shows(self):
+        short = '/tmp/hgs-tn-abcdefgh/work/zerus-team-' + str(uuid.UUID(int=1))
+        long = '/srv/example/target/run/tmp/hgs-tn-abcdefgh/work/zerus-team-' + str(uuid.UUID(int=2))
+        self.assertLessEqual(len(short), fixture.CODEX_PANEL_COLUMNS)
+        self.assertGreater(len(long), fixture.CODEX_PANEL_COLUMNS)
+        self.assertEqual(fixture.codex_panel_variant(self.pane(short), short), 'one-row')
+        self.assertEqual(fixture.codex_panel_variant(self.pane(long), long), 'wrapped')
+        # Another folder, a cut folder, or no panel title is no variant.
+        self.assertIsNone(fixture.codex_panel_variant(self.pane(short), long))
+        self.assertIsNone(fixture.codex_panel_variant(self.pane(long), short))
+        cut = '\n'.join(['', '  Folder access', '  ' + long[:fixture.CODEX_PANEL_COLUMNS], '', '  Note: example'])
+        self.assertIsNone(fixture.codex_panel_variant(cut, long))
+        # The folder's rows follow each other: a blank row between its halves is not the panel.
+        rest = long[fixture.CODEX_PANEL_COLUMNS:]
+        gap = self.pane(long).replace('\n  ' + rest + '\n', '\n\n  ' + rest + '\n')
+        self.assertNotEqual(gap, self.pane(long))
+        self.assertIsNone(fixture.codex_panel_variant(gap, long))
+        self.assertIsNone(fixture.codex_panel_variant(self.pane(short).replace('Folder access', 'Folder'), short))
+
+    def test_a_hosted_root_in_tmp_fits_one_row_and_a_worktree_root_wraps(self):
+        # mkdtemp adds eight characters; the service names the member worktree after its launch.
+        member = 'work/zerus-team-' + str(uuid.uuid4())
+        hosted = Path('/tmp') / (fixture.ROOT_PREFIX + 'x' * 8) / member
+        self.assertLessEqual(len(str(hosted)), fixture.CODEX_PANEL_COLUMNS)
+        local = Path(__file__).resolve().parents[1] / 'target/run/tmp' / (fixture.ROOT_PREFIX + 'x' * 8) / member
+        self.assertGreater(len(str(local)), fixture.CODEX_PANEL_COLUMNS)
+        self.assertTrue(fixture.hosted_runner({'GITHUB_ACTIONS': 'true', 'RUNNER_ENVIRONMENT': 'github-hosted'}))
+        for env in ({}, {'GITHUB_ACTIONS': 'true'}, {'GITHUB_ACTIONS': 'true', 'RUNNER_ENVIRONMENT': 'self-hosted'}):
+            self.assertFalse(fixture.hosted_runner(env), env)
 
 
 class TeamsFixtureProducers(unittest.TestCase):
