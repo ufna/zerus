@@ -2,6 +2,7 @@
 //! cleanup of a stopped team's task keys.
 use super::*;
 use crate::teams::store::timers::PendingCancel;
+use rusqlite::OptionalExtension;
 
 fn record(node: u32, decision: u64, state: CancelState, reason: &str) -> Operation {
     Operation::RecordCancel {
@@ -54,34 +55,6 @@ fn a_leads_cancel_is_pending_once_with_its_task() {
     assert_eq!(
         (rows[0].node, rows[0].generation, rows[0].task.clone()),
         (node, 1, Some(task(1)))
-    );
-}
-
-#[test]
-fn the_operation_then_the_observation_end_the_node_once() {
-    let (mut h, node, _) = cancelling();
-    let d = decision(&h, node);
-    h.run(&service(), record(node, d, CancelState::Cancelled, ""))
-        .unwrap();
-    assert_eq!(h.node(node).state, NodeState::Cancelled);
-    assert!(pending(&h).is_empty());
-    assert!(h
-        .store
-        .effects(TEAM, 200, None)
-        .unwrap()
-        .rows
-        .iter()
-        .all(|e| e.state != "submitted"));
-    let before = h.node(node);
-    h.cancel_fact(node);
-    assert_eq!(
-        h.node(node),
-        before,
-        "the observation finds nothing left to do"
-    );
-    refused(
-        h.run(&service(), record(node, d, CancelState::Cancelled, "")),
-        code::INVALID_STATE,
     );
 }
 
@@ -394,13 +367,14 @@ fn bound(h: &Harness, node: u32) -> bool {
     )
     .unwrap()
 }
-fn outcome(h: &Harness, decision: u64) -> String {
+fn outcome(h: &Harness, decision: u64) -> Option<String> {
     let db = h.store.db.as_ref().unwrap();
     db.query_row(
         "SELECT state FROM cancel_outcomes WHERE decision=?1",
         [decision],
         |r| r.get(0),
     )
+    .optional()
     .unwrap()
 }
 fn last_event(h: &Harness) -> String {
@@ -409,30 +383,72 @@ fn last_event(h: &Harness) -> String {
 }
 const PERSON: &str = "00000000-0000-4000-8000-00000000bbbb";
 
+/// In a live team a task's end is recorded by its observation alone.
 #[test]
-fn a_cancelled_answer_keeps_the_binding_and_its_observation_releases_it() {
-    let (mut h, node, _) = cancelling();
-    let d = decision(&h, node);
-    h.run(&service(), record(node, d, CancelState::Cancelled, ""))
-        .unwrap();
-    assert_eq!(h.node(node).state, NodeState::Cancelled);
-    assert!(pending(&h).is_empty());
-    assert!(bound(&h, node), "the answer does not release the task");
-    assert_eq!(outcome(&h, d), "cancelled");
-    h.cancel_fact(node);
-    assert!(!bound(&h, node), "its observation does");
-    assert_eq!(h.node(node).state, NodeState::Cancelled);
+fn a_cancelled_answer_for_a_bound_live_node_is_refused_and_writes_nothing() {
+    for paused in [false, true] {
+        let (mut h, node, _) = cancelling();
+        if paused {
+            h.run(&person(), Operation::Pause).unwrap();
+        }
+        let d = decision(&h, node);
+        let rev = h.store.team(TEAM).unwrap().unwrap().revision;
+        let refusal = h
+            .run(&service(), record(node, d, CancelState::Cancelled, ""))
+            .unwrap_err();
+        assert_eq!(refusal.code, code::INVALID_STATE);
+        assert!(
+            refusal.message.contains("observed instead"),
+            "{}",
+            refusal.message
+        );
+        assert_eq!(h.store.team(TEAM).unwrap().unwrap().revision, rev);
+        assert_eq!(pending(&h).len(), 1, "the decision stays pending");
+        assert!(bound(&h, node));
+        assert_eq!(outcome(&h, d), None);
+        assert_eq!(h.node(node).state, NodeState::InProgress);
+    }
 }
 
-/// In the order answer, then observation: the person moves the task back
-/// and sends it again; the binding kept by the answer lets the service
-/// observe it, and the finished node is restored.
+/// The new shape end to end at the store's port: the command answered
+/// cancelled, the service observes the task, and the observation of the
+/// cancelled task ends the node and settles the decision.
 #[test]
-fn a_task_that_runs_again_after_a_cancelled_answer_restores_the_node() {
+fn the_observation_of_the_cancelled_task_ends_the_node_and_settles_the_cancel() {
     let (mut h, node, _) = cancelling();
     let d = decision(&h, node);
-    h.run(&service(), record(node, d, CancelState::Cancelled, ""))
-        .unwrap();
+    refused(
+        h.run(&service(), record(node, d, CancelState::Cancelled, "")),
+        code::INVALID_STATE,
+    );
+    h.cancel_fact(node);
+    assert_eq!(h.node(node).state, NodeState::Cancelled);
+    assert!(
+        pending(&h).is_empty(),
+        "the observation settles the decision"
+    );
+    assert!(!bound(&h, node));
+    assert!(h
+        .store
+        .effects(TEAM, 200, None)
+        .unwrap()
+        .rows
+        .iter()
+        .all(|e| e.state != "submitted"));
+    for state in [CancelState::Cancelled, CancelState::Released] {
+        refused(
+            h.run(&service(), record(node, d, state, "")),
+            code::INVALID_STATE,
+        );
+    }
+    assert_eq!(outcome(&h, d), None);
+}
+
+/// A person revived the task before the service observed the cancel: the
+/// observation takes the person's execution over and settles the decision.
+#[test]
+fn the_observation_of_a_revived_task_takes_it_over() {
+    let (mut h, node, _) = cancelling();
     let mut o = h.observation(node, TaskStage::InProgress);
     o.attempt = 2;
     o.attempt_id = PERSON.into();
@@ -447,31 +463,134 @@ fn a_task_that_runs_again_after_a_cancelled_answer_restores_the_node() {
     assert_eq!(h.store.generation(TEAM, node).unwrap(), Some(2));
     assert!(bound(&h, node));
     assert!(pending(&h).is_empty());
-    assert!(h
-        .store
-        .inbox(TEAM, 200, None)
-        .unwrap()
-        .rows
-        .iter()
-        .all(|i| i.state != "open"));
     assert_eq!(last_event(&h), "person_override");
     assert_eq!(h.node(node).state, NodeState::InProgress);
 }
 
+/// A live node without a task has nothing to observe: its cancel is
+/// applied as before.
 #[test]
-fn a_released_answer_releases_the_binding_at_once() {
-    let (mut h, node, _) = cancelling();
-    let d = decision(&h, node);
-    refused(
-        h.run(&service(), record(node, d, CancelState::Released, "why")),
-        code::INVALID_STATE,
-    );
-    h.run(&service(), record(node, d, CancelState::Released, ""))
-        .unwrap();
-    assert_eq!(h.node(node).state, NodeState::Cancelled);
-    assert!(pending(&h).is_empty());
-    assert!(!bound(&h, node));
-    assert_eq!(outcome(&h, d), "released");
+fn a_cancelled_answer_for_a_live_node_without_a_task_is_applied() {
+    let mut create = create();
+    if let Operation::Create { bundle, .. } = &mut create {
+        let catalog = zerus_team_plan::builtin();
+        bundle.roles = catalog.roles;
+        bundle.pipelines = catalog.pipelines;
+        bundle.template.default_pipeline = "reviewed".into();
+    }
+    let mut p = Harness::empty();
+    p.run(&person(), create).unwrap();
+    for member in ["lead", "m1", "m3"] {
+        p.bind(member);
+    }
+    let parent = p.add(&person(), 1);
+    p.submit(parent, "m1");
+    p.report(parent, "m1");
+    let stage = p
+        .store
+        .queue(TEAM, 200, None)
+        .unwrap()
+        .rows
+        .into_iter()
+        .find(|n| n.id != parent)
+        .unwrap()
+        .id;
+    assert!(!bound(&p, stage), "the wanted stage has no task yet");
+    p.run(
+        &person(),
+        Operation::Cancel {
+            node: stage,
+            reason: "Not needed".into(),
+        },
+    )
+    .unwrap();
+    let row = pending(&p).into_iter().find(|r| r.node == stage).unwrap();
+    assert_eq!(row.task, None);
+    p.run(
+        &service(),
+        record(stage, row.decision, CancelState::Cancelled, ""),
+    )
+    .unwrap();
+    assert_eq!(p.node(stage).state, NodeState::Cancelled);
+    assert_eq!(outcome(&p, row.decision).as_deref(), Some("cancelled"));
+}
+
+/// Released and refused in every team state, and cancelled after a stop or
+/// an archive. A released answer ends the node in a live team and its
+/// binding goes with the record; a refusal goes to the lead in a live team
+/// and is kept for the terminal page after a stop.
+#[test]
+fn released_refused_and_cancelled_answers_in_every_team_state() {
+    for status in ["running", "paused", "stopped", "archived"] {
+        for state in [
+            CancelState::Released,
+            CancelState::Refused,
+            CancelState::Cancelled,
+        ] {
+            let (mut h, node, _) = cancelling();
+            match status {
+                "paused" => drop(h.run(&person(), Operation::Pause).unwrap()),
+                "stopped" => drop(h.run(&person(), Operation::Stop).unwrap()),
+                "archived" => {
+                    h.run(&person(), Operation::Stop).unwrap();
+                    h.run(&person(), Operation::Archive).unwrap();
+                }
+                _ => (),
+            }
+            let live = matches!(status, "running" | "paused");
+            let d = decision(&h, node);
+            let before = h.node(node).state;
+            let why = if state == CancelState::Refused {
+                "Delivery unknown"
+            } else {
+                ""
+            };
+            let result = h.run(&service(), record(node, d, state, why));
+            let case = format!("{status} {state:?}");
+            if live && state == CancelState::Cancelled {
+                refused(result, code::INVALID_STATE);
+                assert!(bound(&h, node), "{case}");
+                continue;
+            }
+            result.unwrap();
+            assert!(pending(&h).iter().all(|p| p.node != node), "{case}");
+            let recorded = serde_json::to_value(state).unwrap();
+            assert_eq!(
+                outcome(&h, d).as_deref(),
+                recorded.as_str(),
+                "{case}: recorded as it came"
+            );
+            match (state, live) {
+                (CancelState::Released, true) => {
+                    assert_eq!(h.node(node).state, NodeState::Cancelled, "{case}");
+                    assert!(!bound(&h, node), "{case}: released with the record");
+                }
+                (CancelState::Refused, true) => {
+                    assert_eq!(h.node(node).state, before, "{case}");
+                    assert!(h.node(node).hold, "{case}");
+                    assert!(bound(&h, node), "{case}");
+                    assert!(h
+                        .store
+                        .inbox(TEAM, 200, None)
+                        .unwrap()
+                        .rows
+                        .iter()
+                        .any(|i| i.kind == format!("cancel_refused:{d}")));
+                }
+                (_, false) => {
+                    assert_eq!(h.node(node).state, before, "{case}");
+                    assert!(!bound(&h, node), "{case}: the stop released it");
+                    let refusals = h.store.cancel_refusals(TEAM, (0, 0), 10).unwrap();
+                    assert_eq!(
+                        refusals.iter().any(|r| r.1 == d),
+                        state == CancelState::Refused,
+                        "{case}"
+                    );
+                }
+                _ => unreachable!(),
+            }
+        }
+    }
 }
 
 #[test]
@@ -487,85 +606,36 @@ fn a_released_answer_about_another_attempt_is_refused() {
         attempt_id: PERSON.into(),
     };
     refused(h.run(&service(), other), code::INVALID_STATE);
+    refused(
+        h.run(&service(), record(node, d, CancelState::Released, "why")),
+        code::INVALID_STATE,
+    );
     assert!(bound(&h, node));
     assert_eq!(pending(&h).len(), 1);
 }
 
 #[test]
-fn a_repeated_answer_is_refused_and_keeps_the_binding() {
+fn a_repeated_answer_is_refused_and_writes_nothing() {
     let (mut h, node, _) = cancelling();
     let d = decision(&h, node);
-    h.run(&service(), record(node, d, CancelState::Cancelled, ""))
+    h.run(&service(), record(node, d, CancelState::Released, ""))
         .unwrap();
     let rev = h.store.team(TEAM).unwrap().unwrap().revision;
-    for state in [CancelState::Cancelled, CancelState::Released] {
+    for state in [
+        CancelState::Released,
+        CancelState::Cancelled,
+        CancelState::Refused,
+    ] {
+        let why = if state == CancelState::Refused {
+            "Again"
+        } else {
+            ""
+        };
         refused(
-            h.run(&service(), record(node, d, state, "")),
+            h.run(&service(), record(node, d, state, why)),
             code::INVALID_STATE,
         );
     }
     assert_eq!(h.store.team(TEAM).unwrap().unwrap().revision, rev);
-    assert!(bound(&h, node));
-    assert_eq!(outcome(&h, d), "cancelled");
-}
-
-/// A repeat of the observation the store held before the answer shows the
-/// task as it was then: it neither restores nor releases anything.
-#[test]
-fn a_repeat_of_the_earlier_observation_decides_nothing() {
-    let (mut h, node, _) = cancelling();
-    let d = decision(&h, node);
-    let earlier = h.store.task_observation(TEAM, node).unwrap().unwrap();
-    h.run(&service(), record(node, d, CancelState::Cancelled, ""))
-        .unwrap();
-    let before = h.node(node);
-    h.run(
-        &service(),
-        Operation::ObserveTask {
-            node,
-            observation: earlier,
-        },
-    )
-    .unwrap();
-    assert_eq!(h.node(node), before);
-    assert_eq!(h.store.generation(TEAM, node).unwrap(), Some(1));
-    assert!(bound(&h, node));
-    assert_ne!(last_event(&h), "person_override");
-}
-
-/// A stop between the answer and the observation ends as a stop after the
-/// observation: the stop releases every binding, and the ended node takes
-/// no second cancel.
-#[test]
-fn a_stop_between_the_answer_and_the_observation_ends_as_after_it() {
-    let mut ends = Vec::new();
-    for observed in [false, true] {
-        let (mut h, node, _) = cancelling();
-        let d = decision(&h, node);
-        h.run(&service(), record(node, d, CancelState::Cancelled, ""))
-            .unwrap();
-        if observed {
-            h.cancel_fact(node);
-        }
-        h.run(&person(), Operation::Stop).unwrap();
-        assert!(!bound(&h, node), "the stop releases every binding");
-        let waiting: Vec<u32> = pending(&h).iter().map(|p| p.node).collect();
-        let keyed: Vec<u32> = h
-            .store
-            .keyed_tasks(TEAM, 0, 200)
-            .unwrap()
-            .iter()
-            .map(|k| k.node)
-            .collect();
-        ends.push((
-            h.node(node).state,
-            h.store.generation(TEAM, node).unwrap(),
-            waiting,
-            keyed,
-            h.store.keyed_teams("", 10).unwrap(),
-        ));
-    }
-    assert_eq!(ends[0], ends[1]);
-    assert_eq!(ends[0].0, NodeState::Cancelled);
-    assert!(ends[0].2.is_empty(), "no second cancel of the ended node");
+    assert_eq!(outcome(&h, d).as_deref(), Some("released"));
 }

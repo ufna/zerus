@@ -256,8 +256,8 @@ fn prepare(
     )?;
     let view = document.view().map_err(storage)?;
     let duplicate = binding(store, task)?.is_some_and(|(id, _)| id == team);
-    // A cancelled task is never sent, also while a cancelled answer keeps its
-    // binding until the task's observation releases it.
+    // A cancelled task is never sent, also while it is still bound: between
+    // a cancel written to the task and the observation of that cancel.
     if view.cancelled_at.is_some()
         || (!duplicate && !matches!(view.stage, Stage::Backlog | Stage::Todo))
     {

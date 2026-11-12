@@ -623,97 +623,83 @@ fn edit(h: &Harness, reference: &TaskRef, change: impl FnOnce(&mut TaskDoc)) {
     store.save(&mut doc).unwrap();
 }
 
-/// The end-to-end witness, through the service's own observer: a lead's
-/// cancel answered as cancelled keeps the task's binding. A person who moves
-/// the task back and sends it again is observed and the node is restored;
-/// a task that stays cancelled is released by its observation. While the
-/// binding waits, the cancelled task cannot be sent to the team again.
+/// The shape end to end, through the service's own observer: the command
+/// answers cancelled; that answer is refused for the bound live node and
+/// writes nothing; the service observes the task, and the observation of the
+/// cancelled task ends the node and settles the decision. Until then the
+/// cancelled task is still bound and cannot be sent to the team again.
 #[test]
-fn a_cancelled_answer_leaves_the_task_to_its_observation() {
-    for resend in [true, false] {
-        let mut h = Harness::new();
-        let lead = h.bind("lead");
-        let reference = document(&h);
-        let person = caller(&h, &TaskActor::Person);
-        let node = send(&person, &reference, TEAM, None, None)
+fn a_cancelled_task_is_ended_by_its_observation() {
+    let mut h = Harness::new();
+    let lead = h.bind("lead");
+    let reference = document(&h);
+    let node = send(
+        &caller(&h, &TaskActor::Person),
+        &reference,
+        TEAM,
+        None,
+        None,
+    )
+    .unwrap()
+    .node
+    .unwrap();
+    edit(&h, &reference, |doc| {
+        doc.record_send(&person_session(), "request-1", &TaskActor::Person, 2)
             .unwrap()
-            .node
-            .unwrap();
-        edit(&h, &reference, |doc| {
-            doc.record_send(&person_session(), "request-1", &TaskActor::Person, 2)
-                .unwrap()
-        });
-        observe(h.temp.path(), &reference).unwrap();
-        h.run(
-            &lead,
-            ops::Operation::Cancel {
-                node,
-                reason: "Superseded".into(),
-            },
-        )
-        .unwrap();
-        let decision = h
-            .store
-            .pending_cancels(TEAM, 1, 0)
+    });
+    observe(h.temp.path(), &reference).unwrap();
+    h.run(
+        &lead,
+        ops::Operation::Cancel {
+            node,
+            reason: "Superseded".into(),
+        },
+    )
+    .unwrap();
+    let decision = h
+        .store
+        .pending_cancels(TEAM, 1, 0)
+        .unwrap()
+        .remove(0)
+        .decision;
+    // The command's work on the task, then its answer.
+    edit(&h, &reference, |doc| {
+        doc.record_cancel("Superseded", &TaskActor::Person, 3)
             .unwrap()
-            .remove(0)
-            .decision;
-        // The command's work on the task, then its answer.
-        edit(&h, &reference, |doc| {
-            doc.record_cancel("Superseded", &TaskActor::Person, 3)
-                .unwrap()
-        });
-        h.run(
-            &ops::tests::service(),
-            ops::Operation::RecordCancel {
-                node,
-                decision,
-                state: ops::CancelState::Cancelled,
-                reason: String::new(),
-                attempt: 0,
-                attempt_id: String::new(),
-            },
-        )
-        .unwrap();
-        assert_eq!(h.node(node).state, NodeState::Cancelled);
-        assert_eq!(
-            binding(&h.store, &reference).unwrap(),
-            Some((TEAM.to_owned(), node)),
-            "the answer does not release the task"
-        );
-        let again = send(
-            &caller(&h, &TaskActor::Person),
-            &reference,
-            TEAM,
-            None,
-            None,
-        );
-        assert_eq!(again.unwrap_err().code, code::INVALID_STATE);
-        assert_eq!(
-            task(&h, &reference).team().unwrap().unwrap().team,
-            TEAM,
-            "the refused send leaves the key"
-        );
-        if resend {
-            edit(&h, &reference, |doc| {
-                doc.set_stage(Stage::Todo, &TaskActor::Person, 4).unwrap();
-                doc.record_send(&person_session(), "request-2", &TaskActor::Person, 5)
-                    .unwrap();
-            });
-            observe(h.temp.path(), &reference).unwrap();
-            assert_eq!(h.node(node).state, NodeState::InProgress);
-            assert_eq!(h.store.generation(TEAM, node).unwrap(), Some(2));
-            assert_eq!(
-                binding(&h.store, &reference).unwrap(),
-                Some((TEAM.to_owned(), node))
-            );
-            assert!(h.store.pending_cancels(TEAM, 200, 0).unwrap().is_empty());
-            let events = h.store.journal(TEAM, 200, None).unwrap().rows;
-            assert!(events.iter().any(|e| e.kind == "person_override"));
-        } else {
-            observe(h.temp.path(), &reference).unwrap();
-            assert_eq!(binding(&h.store, &reference).unwrap(), None);
-            assert_eq!(h.node(node).state, NodeState::Cancelled);
-        }
-    }
+    });
+    let answer = h.run(
+        &ops::tests::service(),
+        ops::Operation::RecordCancel {
+            node,
+            decision,
+            state: ops::CancelState::Cancelled,
+            reason: String::new(),
+            attempt: 0,
+            attempt_id: String::new(),
+        },
+    );
+    assert_eq!(answer.unwrap_err().code, code::INVALID_STATE);
+    assert_eq!(h.store.pending_cancels(TEAM, 200, 0).unwrap().len(), 1);
+    assert_eq!(h.node(node).state, NodeState::InProgress);
+    assert_eq!(
+        binding(&h.store, &reference).unwrap(),
+        Some((TEAM.to_owned(), node))
+    );
+    let again = send(
+        &caller(&h, &TaskActor::Person),
+        &reference,
+        TEAM,
+        None,
+        None,
+    );
+    assert_eq!(again.unwrap_err().code, code::INVALID_STATE);
+    assert_eq!(
+        task(&h, &reference).team().unwrap().unwrap().team,
+        TEAM,
+        "the refused send leaves the key"
+    );
+    observe(h.temp.path(), &reference).unwrap();
+    assert_eq!(h.node(node).state, NodeState::Cancelled);
+    assert!(h.store.pending_cancels(TEAM, 200, 0).unwrap().is_empty());
+    assert_eq!(binding(&h.store, &reference).unwrap(), None);
 }

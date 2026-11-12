@@ -169,6 +169,18 @@ fn cancel(node: u32, decision: u64, attempt: u64, id: &str) -> Operation {
         attempt_id: id.into(),
     }
 }
+/// The command's answer that the key was already gone: in a live team it is
+/// the answer bound to an attempt that the store still applies.
+fn released(node: u32, decision: u64, attempt: u64, id: &str) -> Operation {
+    Operation::RecordCancel {
+        node,
+        decision,
+        state: CancelState::Released,
+        reason: String::new(),
+        attempt,
+        attempt_id: id.into(),
+    }
+}
 fn last_event(h: &Harness) -> String {
     h.store
         .journal(TEAM, 200, None)
@@ -227,7 +239,11 @@ fn the_reviewers_witness_ends_in_the_same_state_in_both_orders() {
                 code::INVALID_STATE,
             );
         } else {
-            h.run(&service(), cancel(node, decision, 1, &id)).unwrap();
+            // A live node's task is observed instead: the answer writes nothing.
+            refused(
+                h.run(&service(), cancel(node, decision, 1, &id)),
+                code::INVALID_STATE,
+            );
             seen(&mut h, node, TaskStage::InProgress, 2, PERSON).unwrap();
         }
         ends.push(state(&h, node));
@@ -405,7 +421,7 @@ fn the_current_attempt_can_change_while_the_highest_generation_stays() {
 }
 
 #[test]
-fn a_cancelled_answer_applies_only_to_the_attempt_the_store_holds() {
+fn a_released_answer_applies_only_to_the_attempt_the_store_holds() {
     for (attempt, id, applies) in [
         (0, "", false),
         (2, "x", false),
@@ -434,7 +450,11 @@ fn a_cancelled_answer_applies_only_to_the_attempt_the_store_holds() {
             id.to_owned()
         };
         let rev = h.store.team(TEAM).unwrap().unwrap().revision;
-        let result = h.run(&service(), cancel(node, decision, attempt, &id));
+        refused(
+            h.run(&service(), cancel(node, decision, attempt, &id)),
+            code::INVALID_STATE,
+        );
+        let result = h.run(&service(), released(node, decision, attempt, &id));
         assert_eq!(result.is_ok(), applies, "({attempt}, {id})");
         if !applies {
             assert_eq!(
@@ -533,11 +553,11 @@ fn the_reviewers_conflict_blocks_a_late_cancel_and_the_next_answer_is_a_refusal(
     );
     let rev = h.store.team(TEAM).unwrap().unwrap().revision;
     refused(
-        h.run(&service(), cancel(node, decision, 1, &a)),
+        h.run(&service(), released(node, decision, 1, &a)),
         code::INVALID_STATE,
     );
     refused(
-        h.run(&service(), cancel(node, decision, 2, "")),
+        h.run(&service(), released(node, decision, 2, "")),
         code::INVALID_STATE,
     );
     assert_eq!(
@@ -637,10 +657,10 @@ fn the_legacy_pair_takes_only_a_default_cancel() {
         .remove(0)
         .decision;
     refused(
-        h.run(&service(), cancel(node, decision, 1, "x")),
+        h.run(&service(), released(node, decision, 1, "x")),
         code::INVALID_STATE,
     );
-    h.run(&service(), cancel(node, decision, 0, "")).unwrap();
+    h.run(&service(), released(node, decision, 0, "")).unwrap();
     assert_eq!(h.node(node).state, NodeState::Cancelled);
 }
 
@@ -729,7 +749,7 @@ fn an_empty_id_without_the_flag_is_an_ordinary_pair_and_is_applied() {
     .unwrap();
     let row = h.store.pending_cancels(TEAM, 1, 0).unwrap().remove(0);
     assert_eq!((row.attempt, row.attempt_id.as_str()), (1, ""));
-    h.run(&service(), cancel(node, row.decision, 1, ""))
+    h.run(&service(), released(node, row.decision, 1, ""))
         .unwrap();
     assert_eq!(
         h.node(node).state,
@@ -777,7 +797,7 @@ fn a_pair_with_an_empty_id_is_never_confused_with_a_conflict() {
         } else {
             seen(&mut h, node, TaskStage::InProgress, 2, "").unwrap();
         }
-        let result = h.run(&service(), cancel(node, decision, 2, ""));
+        let result = h.run(&service(), released(node, decision, 2, ""));
         assert_eq!(result.is_ok(), !flagged, "flagged: {flagged}");
     }
 }

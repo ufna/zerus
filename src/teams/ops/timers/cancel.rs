@@ -1,11 +1,14 @@
 //! A cancel decision carried out by the service. The service runs the
 //! team-cancel child for each pending cancel and records its answer here,
 //! against that exact decision of the node's current generation. In a live
-//! team a cancelled answer ends the node's attempt as the observation of a
-//! cancelled task does, but an answer does not release the task: the
-//! binding stays, so that the service still observes the task, and that
-//! observation releases it or, when the task runs again, restores the node.
-//! A released answer says the key is already gone: the binding goes at once.
+//! team a task's end is recorded by its observation alone: a cancelled
+//! answer for a node whose task is bound is refused and writes nothing, and
+//! the service observes the task instead; that observation ends the node
+//! and settles the decision, or takes a person's revived task over. A
+//! cancelled answer ends a node without a task, and after a stop or an
+//! archive it settles the decision. A released answer says the key is
+//! already gone from the task: in every team state it is recorded, and the
+//! node's binding goes with it. A refused answer goes back to the lead.
 use super::*;
 
 pub(in crate::teams::ops) fn record_cancel(ctx: &mut Context<'_>) -> Result<()> {
@@ -23,6 +26,12 @@ pub(in crate::teams::ops) fn record_cancel(ctx: &mut Context<'_>) -> Result<()> 
     let (node, decision) = (*node, *decision);
     text(attempt_id, 256)?;
     pending(ctx, node, decision)?;
+    let live = matches!(ctx.team.status, TeamStatus::Running | TeamStatus::Paused);
+    if *state == CancelState::Cancelled && live && bound(ctx, node)? {
+        return Err(invalid(
+            "The task is observed instead: in a live team a task's end is recorded by its observation.",
+        ));
+    }
     // A cancel acts on one attempt: an answer about another one never ends a
     // node whose task runs again. A refusal is not bound to an attempt.
     // The newest observation's pair, compared by equality, an empty ID
@@ -47,17 +56,18 @@ pub(in crate::teams::ops) fn record_cancel(ctx: &mut Context<'_>) -> Result<()> 
         }
     }
     ctx.db.execute("INSERT INTO cancel_outcomes(decision,team,node,generation,state,reason,at_ms) VALUES(?1,?2,?3,?4,?5,?6,?7)",params![decision,ctx.team.id,node,ctx.generation(node)?,encode(state)?.trim_matches('"'),why,ctx.now]).map_err(storage)?;
-    let live = matches!(ctx.team.status, TeamStatus::Running | TeamStatus::Paused);
     match (state, live) {
-        (CancelState::Cancelled, true) => cancelled(ctx, node, false)?,
-        (CancelState::Released, true) => cancelled(ctx, node, true)?,
+        // A node without a task (a bound one was refused above), or a
+        // released task: the node ends and its binding goes with the record.
+        (CancelState::Cancelled | CancelState::Released, true) => cancelled(ctx, node)?,
         (CancelState::Refused, true) => {
             ctx.settle(node)?;
             let body = format!("The cancel of task {node} was refused: {why}");
             ctx.reply.item = Some(ctx.inbox(node, &format!("cancel_refused:{decision}"), &body)?);
         }
         // After a stop or an archive the decision settles and nothing else
-        // of the node changes; its key is cleared next.
+        // of the node changes; its key is cleared next. The stop or the
+        // archive already released every binding of the team.
         (_, false) => ctx.settle(node)?,
     }
     store::timers::settle(ctx.db, &ctx.team.id)?;
@@ -90,9 +100,18 @@ fn pending(ctx: &Context<'_>, node: u32, decision: u64) -> Result<()> {
         )),
     }
 }
-/// What a cancelled observation does to the node, without its task
-/// revision; the binding goes only with `release`.
-fn cancelled(ctx: &Context<'_>, node: u32, release: bool) -> Result<()> {
+/// Whether the node's task is bound: the service observes it.
+fn bound(ctx: &Context<'_>, node: u32) -> Result<bool> {
+    ctx.db
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM live_tasks WHERE team=?1 AND node=?2)",
+            params![ctx.team.id, node],
+            |r| r.get(0),
+        )
+        .map_err(storage)
+}
+/// What a cancelled observation does to the node, without its task revision.
+fn cancelled(ctx: &Context<'_>, node: u32) -> Result<()> {
     let table = ctx.node_table(node)?;
     ctx.db
         .execute(
@@ -100,5 +119,5 @@ fn cancelled(ctx: &Context<'_>, node: u32, release: bool) -> Result<()> {
             params![ctx.team.id, node],
         )
         .map_err(storage)?;
-    queue::finish_observation(ctx, node, true, release)
+    queue::finish_observation(ctx, node, true)
 }

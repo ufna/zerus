@@ -306,7 +306,7 @@ pub(super) fn observe(ctx: &mut Context<'_>) -> Result<()> {
     };
     let mut n = ctx.node(*node)?;
     let table = ctx.node_table(*node)?;
-    let (stage, observed_end, repeat) = validate_observation(ctx, *node, o)?;
+    let (stage, observed_end) = validate_observation(ctx, *node, o)?;
     let released =
         rows::released(ctx.db, &ctx.team.id, *node)? || pipeline::released_stage(ctx, &n)?;
     let left = o.key != KeyState::Ours;
@@ -333,14 +333,10 @@ pub(super) fn observe(ctx: &mut Context<'_>) -> Result<()> {
         return rows::record_observation(ctx.db, &ctx.team.id, *node, o, false);
     }
     // The node's own end counts as well as the stored observation's: a
-    // cancelled answer ends the node and keeps the binding until the task's
-    // next observation, and a conflict is recorded without ending or
-    // restoring anything. Until then a repeat of the stored observation
-    // shows the task as it was before that end and decides nothing.
+    // conflict is recorded without ending or restoring anything, so after a
+    // conflict on a finished node the stored observation no longer shows
+    // the end its node keeps.
     let ended = node_ended(ctx, table, *node)?;
-    if ended && !observed_end && repeat {
-        return Ok(());
-    }
     let was_terminal = observed_end || ended;
     let active = matches!(ctx.team.status, TeamStatus::Running | TeamStatus::Paused);
     // A finished node takes today's restore below; a live one a person sent
@@ -367,7 +363,7 @@ pub(super) fn observe(ctx: &mut Context<'_>) -> Result<()> {
     let target = ctx.node_table(*node)?;
     ctx.db.execute(&format!("UPDATE {target} SET data=?3,task_revision=?4,task_stage=?5,task_cancelled=?6,rank=?7 WHERE team=?1 AND id=?2"),params![ctx.team.id,node,rows::node_payload(&n)?,o.revision,stage,o.cancelled,o.rank]).map_err(storage)?;
     if o.cancelled || o.stage == TaskStage::Done {
-        finish_observation(ctx, *node, o.cancelled, true)?;
+        finish_observation(ctx, *node, o.cancelled)?;
     }
     rows::record_observation(
         ctx.db,
@@ -390,13 +386,12 @@ fn node_ended(ctx: &Context<'_>, table: &str, node: u32) -> Result<bool> {
         )
         .map_err(storage)
 }
-/// The stage's text, whether the stored observation shows the task ended,
-/// and whether this observation repeats the stored one.
+/// The stage's text and whether the stored observation shows the task ended.
 fn validate_observation(
     ctx: &Context<'_>,
     node: u32,
     o: &TaskObservation,
-) -> Result<(String, bool, bool)> {
+) -> Result<(String, bool)> {
     reason(&o.revision)?;
     text(&o.revision, 256)?;
     text(&o.previous_revision, 256)?;
@@ -422,9 +417,7 @@ fn validate_observation(
     }
     Ok((
         stage,
-        old.as_ref()
-            .is_some_and(|old| old.stage == TaskStage::Done || old.cancelled),
-        old.is_some_and(|old| old.revision == o.revision),
+        old.is_some_and(|old| old.stage == TaskStage::Done || old.cancelled),
     ))
 }
 
@@ -478,25 +471,16 @@ fn restore_row(ctx: &Context<'_>, node: u32) -> Result<()> {
         .map_err(storage)?;
     Ok(())
 }
-/// The end of the node's attempt. `release` drops the task's binding with
-/// it; a cancelled answer keeps it for the task's next observation.
-pub(super) fn finish_observation(
-    ctx: &Context<'_>,
-    node: u32,
-    cancelled: bool,
-    release: bool,
-) -> Result<()> {
+pub(super) fn finish_observation(ctx: &Context<'_>, node: u32, cancelled: bool) -> Result<()> {
     ctx.db.execute(&format!("UPDATE effects SET state='observed_done' WHERE team=?1 AND node=?2 AND state IN {OPEN_EFFECT_STATES}"),params![ctx.team.id,node]).map_err(storage)?;
     ctx.close_inbox(node)?;
     if cancelled || ctx.node(node)?.kind == NodeKind::Stage {
-        if release {
-            ctx.db
-                .execute(
-                    "DELETE FROM live_tasks WHERE team=?1 AND node=?2",
-                    params![ctx.team.id, node],
-                )
-                .map_err(storage)?;
-        }
+        ctx.db
+            .execute(
+                "DELETE FROM live_tasks WHERE team=?1 AND node=?2",
+                params![ctx.team.id, node],
+            )
+            .map_err(storage)?;
         ctx.settle_override(node)?;
     } else if let Some((_, kind, _)) = ctx.pending(node)? {
         let n = ctx.node(node)?;
