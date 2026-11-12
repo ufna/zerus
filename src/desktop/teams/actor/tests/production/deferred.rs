@@ -194,3 +194,63 @@ fn unknown_occupancy_releases_its_member_after_five_proven_nonstarts() {
         "five occupancy readers and one delivery"
     );
 }
+
+#[test]
+fn production_reopen_rechecks_member_and_launch_identity_and_admits_the_control() {
+    for mode in ["control", "pause member", "stop member", "fleet launch"] {
+        let mut h = Harness::new();
+        let (node, lead) = h.reported();
+        h.run(
+            &lead,
+            Operation::Return {
+                node,
+                reason: "Revise".into(),
+            },
+        )
+        .unwrap();
+        let machine = h.store.team(TEAM).unwrap().unwrap().home;
+        let mut a = Runtime::open(h.temp.path(), &machine).unwrap();
+        let state = h.temp.path().to_owned();
+        let change: Change = Box::new(move |_, native, _, _| {
+            let op = match mode {
+                "pause member" => Some(Operation::PauseMember {
+                    member: "m1".into(),
+                }),
+                "stop member" => Some(Operation::StopMember {
+                    member: "m1".into(),
+                }),
+                "fleet launch" => {
+                    fleet::change(native, mode);
+                    None
+                }
+                _ => None,
+            };
+            if let Some(op) = op {
+                let result = as_person(&state, op);
+                assert!(result.starts_with("ok"), "{result}");
+            }
+            String::new()
+        });
+        let mut p = w(&h, vec![], change);
+        a.tick(&mut h.store, &mut p, TEAM, 100, false).unwrap();
+        assert_eq!(p.calls, 1, "{mode}: {:?}", p.log);
+        let effect = h
+            .store
+            .effects(TEAM, 200, None)
+            .unwrap()
+            .rows
+            .into_iter()
+            .find(|e| e.kind == "reopen")
+            .unwrap();
+        assert_eq!(
+            effect.state,
+            if mode == "control" {
+                "submitted"
+            } else {
+                "refused"
+            },
+            "{mode}"
+        );
+        assert_eq!(p.admissions.get(), usize::from(mode == "control"), "{mode}");
+    }
+}
