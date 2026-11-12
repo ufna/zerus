@@ -18,9 +18,9 @@ node and generation from hgs team current:
     {"request_id":"UUID","team":"TEAM","expected_revision":42,
      "node":7,"generation":1,"text":"what blocks the attempt"}
 
-UUID is a fresh identifier and TEAM is the team current names. The reply's
-item number is the question the lead answers. A request that names its own
-actor, or names the operation, is refused.
+UUID is a fresh identifier and TEAM is the team current names. The lead's
+answer appears under that node in hgs team current, and a message tells you
+when one waits. A request that names its own actor or the operation is refused.
 
 A stage task (a review or a test) ends with its holder's verdict on stdin:
 

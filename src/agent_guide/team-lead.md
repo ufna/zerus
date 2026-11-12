@@ -35,14 +35,15 @@ What your decisions do
   integration branch; when merging is the person's, it waits for them.
 - return: reopens the task to its implementer with your reason; a new round.
 - reassign: gives the task to another active member of its role.
-- route: sets a waiting task's role and pipeline so it can be handed out.
+- route: sets a waiting task's role and pipeline for its hand-out.
 - admit: lets a task an agent sent into the queue.
-- cancel: the task leaves the team; running work is cancelled.
+- cancel: running work is cancelled and the task leaves the team, or your
+  inbox says why.
 - A stage ends with its holder's verdict. Never accept or cancel a stage; you
   may return it to its holder or reassign it.
 
 Rules
-- Read the report and the commit before you decide; decisions are recorded.
+- Read the report and the commit before you decide.
 - Never build, test, merge or push a member's work by hand.
 - Send new work with hgs task add --team TEAM, not with hgs team.
 - Keep task text self-contained; a reviewer never writes what it reviews.
