@@ -55,9 +55,6 @@ CREATE TRIGGER IF NOT EXISTS timer_cards_item_v1 AFTER UPDATE OF state ON inbox
   WHERE state='open' AND kind IN ('report_waiting','silent_lead') AND seq IN
   (SELECT seq FROM timer_firings WHERE team=NEW.team AND subject=NEW.seq AND target='card');
 END;
--- Version 1 of the stage triggers filled the outbox this frontier replaces.
-DROP TRIGGER IF EXISTS key_clear_stage_archived_v1;
-DROP TRIGGER IF EXISTS key_clear_stage_settled_v1;
 -- A stage is released when it is archived and its creation is no longer
 -- live, in either order; one with a key to clear enters the frontier, and a
 -- terminal team that had left the pending set returns to it.
@@ -105,18 +102,3 @@ CREATE INDEX IF NOT EXISTS cancel_refusals ON cancel_outcomes(team,node) WHERE s
 -- generation comes before the node so that a node-range read keeps using
 -- the index of open decisions.
 CREATE INDEX IF NOT EXISTS decisions_attempt ON decisions(team,generation,node);
--- A lead's answer reaches its member through the member's own read and a
--- doorbell. One mark per member: the newest reply to a question of the
--- attempt it holds, and how many replies of that attempt there were.
-CREATE TABLE IF NOT EXISTS answer_marks (
- team TEXT NOT NULL, member TEXT NOT NULL, node INTEGER NOT NULL, generation INTEGER NOT NULL,
- revision INTEGER NOT NULL, replies INTEGER NOT NULL, PRIMARY KEY(team,member)
-);
-CREATE INDEX IF NOT EXISTS answer_marks_node ON answer_marks(team,node);
--- The questions of one attempt, newest first, without the team's history.
-CREATE INDEX IF NOT EXISTS inbox_questions ON inbox(team,node,generation,seq) WHERE kind GLOB 'question:*';
--- An accept, a return, a reassignment, a cancel or a stop ends what a mark
--- points at: any decision on the node drops it.
-CREATE TRIGGER IF NOT EXISTS answer_mark_drop_v1 AFTER INSERT ON decisions BEGIN
- DELETE FROM answer_marks WHERE team=NEW.team AND node=NEW.node;
-END;

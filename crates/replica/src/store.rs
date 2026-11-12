@@ -19,6 +19,7 @@ use std::io::{ErrorKind, Write};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime};
 
+mod change_reader;
 mod copy_review;
 pub use copy_review::{CopyReview, CopyReviewOutcome};
 

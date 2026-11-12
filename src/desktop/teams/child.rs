@@ -51,14 +51,69 @@ pub(super) fn run(
     deadline: Instant,
     stop: &AtomicBool,
 ) -> Ended {
+    let id = original.as_ref().map(|o| o.id);
+    run_guarded(config, args, input, id, stderr, deadline, stop, || {
+        if let Some(o) = &original {
+            admission(config, o.plan, o.bound)?;
+        }
+        Ok(())
+    })
+}
+/// A Teams effect has its own stored-effect admission, with the same child,
+/// configuration, process group, bounded drains and close-only custody.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn run_guarded<T>(
+    config: &Config,
+    args: &[String],
+    input: Option<&[u8]>,
+    original_id: Option<&str>,
+    stderr: bool,
+    deadline: Instant,
+    stop: &AtomicBool,
+    admit: impl FnOnce() -> super::ports::Result<T>,
+) -> Ended {
     #[cfg(test)]
     if let Some(output) = FIXTURE_EXIT.with(|slot| slot.borrow_mut().take()) {
-        return Ended::Exited { code: 0, output };
+        let mut command = std::process::Command::new("fixture");
+        return match configure(config, &mut command, stop, admit) {
+            Ok(guard) => {
+                if let Some(hook) =
+                    original_child::AFTER_FINAL_CHECK.with(|s| s.borrow_mut().take())
+                {
+                    hook();
+                }
+                drop(guard);
+                if let Some(hook) = original_child::AFTER_SPAWN.with(|s| s.borrow_mut().take()) {
+                    hook();
+                }
+                Ended::Exited { code: 0, output }
+            }
+            Err(_) => Ended::NotStarted,
+        };
     }
 
     let Ok(program) = crate::self_exec::current() else {
         return Ended::NotStarted;
     };
+    let spec = spec(input, stderr);
+    let check = |command: &mut std::process::Command| configure(config, command, stop, admit);
+    match original_id {
+        None => original_child::run_unheld(&program, args, spec, deadline, |command| {
+            check(command).map(drop)
+        }),
+        Some(id) => {
+            let Some((held, path, identity)) = custody(config, id) else {
+                return Ended::NotStarted;
+            };
+            let result = original_child::run(&program, args, spec, &held, deadline, check);
+            if !matches!(result, Ended::Unknown(_)) {
+                remove_custody(&path, identity);
+            }
+            result
+        }
+    }
+}
+fn spec(input: Option<&[u8]>, stderr: bool) -> Spec<'_> {
     let input = input.map_or(Input::Closed, |bytes| Input::Frozen {
         stdin: Stdin::Bytes(bytes),
         unwritten: "team_input_unwritten",
@@ -71,54 +126,50 @@ pub(super) fn run(
             too_large: "team_output_too_large",
         }
     };
-    let spec = Spec {
+    Spec {
         custody_env: CUSTODY,
         input,
         output,
         codes: CODES,
         retain: None,
-    };
-    let check = |command: &mut std::process::Command| {
-        if stop.load(Ordering::Acquire) || !crate::teams::enabled(&config.state) {
-            return Err(std::io::ErrorKind::Interrupted.into());
-        }
-        if let Some(original) = &original {
-            admission(config, original.plan, original.bound)
-                .map_err(|_| std::io::Error::from(std::io::ErrorKind::PermissionDenied))?;
-        }
-        for var in [
-            "HGS_SESSION",
-            "HGS_SESSION_ID",
-            "HGS_RUN_ID",
-            "HGS_CONVERSATION_ID",
-            "HGS_LAUNCH_ID",
-            "HGS_LAUNCH_SESSION_ID",
-            "HGS_ACCOUNT_ID",
-            "HGS_PARENT",
-            "TMUX",
-            "TMUX_PANE",
-        ] {
-            command.env_remove(var);
-        }
-        command
-            .env("HGS_CONFIG_DIR", &config.dir)
-            .env("HGS_STATE_DIR", &config.state);
-        Ok(())
-    };
-    match original {
-        None => original_child::run_unheld(&program, args, spec, deadline, check),
-        Some(ref original) => {
-            let Some((held, path, identity)) = custody(config, original.id) else {
-                return Ended::NotStarted;
-            };
-            let result = original_child::run(&program, args, spec, &held, deadline, check);
-            if !matches!(result, Ended::Unknown(_)) {
-                remove_custody(&path, identity);
-            }
-            result
-        }
     }
 }
+fn configure<T>(
+    config: &Config,
+    command: &mut std::process::Command,
+    stop: &AtomicBool,
+    admit: impl FnOnce() -> super::ports::Result<T>,
+) -> std::io::Result<T> {
+    if stop.load(Ordering::Acquire) || !crate::teams::enabled(&config.state) {
+        return Err(std::io::ErrorKind::Interrupted.into());
+    }
+    for var in [
+        "HGS_SESSION",
+        "HGS_SESSION_ID",
+        "HGS_RUN_ID",
+        "HGS_CONVERSATION_ID",
+        "HGS_LAUNCH_ID",
+        "HGS_LAUNCH_SESSION_ID",
+        "HGS_ACCOUNT_ID",
+        "HGS_PARENT",
+        "TMUX",
+        "TMUX_PANE",
+    ] {
+        command.env_remove(var);
+    }
+    command
+        .env("HGS_CONFIG_DIR", &config.dir)
+        .env("HGS_STATE_DIR", &config.state);
+    let guard = admit().map_err(|_| std::io::Error::from(std::io::ErrorKind::PermissionDenied))?;
+    // The caller reads its in-process fleet facts inside this admission.
+    // Recheck stop and the Teams switch last while that fence is still held;
+    // child-based occupancy reads belong before admission, outside spawn_turn.
+    if stop.load(Ordering::Acquire) || !crate::teams::enabled(&config.state) {
+        return Err(std::io::ErrorKind::Interrupted.into());
+    }
+    Ok(guard)
+}
+
 pub(super) fn custody(
     config: &Config,
     id: &str,
@@ -274,7 +325,15 @@ mod tests {
         prune_custody(&config);
         assert!(path.exists());
         drop(held);
-        prune_custody(&config);
+        // A concurrent fixture may be between fork and exec, before its
+        // CLOEXEC descriptor closes. Pruning conservatively waits for release.
+        for _ in 0..100 {
+            prune_custody(&config);
+            if !path.exists() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
         assert!(!path.exists());
         assert!(other.exists());
     }
