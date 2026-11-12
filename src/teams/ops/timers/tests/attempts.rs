@@ -1178,3 +1178,122 @@ fn a_release_is_recorded_under_a_conflict_when_its_pair_is_equal() {
         }
     }
 }
+
+/// A node kept in the queue by finding 15: accepted, merged, its newest
+/// observation a conflict of its task running.
+fn kept() -> (Harness, Actor, u32) {
+    let (mut h, lead, node, _) = handed();
+    h.report(node, "m1");
+    h.run(&lead, Operation::Accept { node }).unwrap();
+    h.observe(node, TaskStage::Done);
+    conflicted(&mut h, node, TaskStage::InProgress, 2).unwrap();
+    let decision = h.accept_decision(node);
+    h.run(
+        &service(),
+        Operation::RecordIntegration {
+            decision,
+            node,
+            commit: COMMIT.into(),
+        },
+    )
+    .unwrap();
+    assert!(in_queue(&h, node));
+    (h, lead, node)
+}
+fn keyed(h: &Harness) -> Vec<u32> {
+    h.store
+        .keyed_tasks(TEAM, 0, 200)
+        .unwrap()
+        .iter()
+        .map(|k| k.node)
+        .collect()
+}
+fn archived(h: &Harness, node: u32) -> bool {
+    let db = h.store.db.as_ref().unwrap();
+    db.query_row(
+        "SELECT EXISTS(SELECT 1 FROM node_archive WHERE team=?1 AND id=?2)",
+        rusqlite::params![TEAM, node],
+        |r| r.get(0),
+    )
+    .unwrap()
+}
+
+/// Finding 19: the person stops the team while a node is kept. The stop's
+/// pending cancel is settled by its own answer, never by the archive: until
+/// then the cancel step finds it and the key-clear frontier does not hold
+/// it; after the answer the node is archived and enters the frontier once.
+/// A cancelled answer under the conflict is refused by the gate.
+#[test]
+fn a_kept_node_waits_for_the_answer_to_its_stop_cancel() {
+    for state in [CancelState::Released, CancelState::Refused] {
+        let (mut h, _, node) = kept();
+        h.run(&person(), Operation::Stop).unwrap();
+        let rows = h.store.pending_cancels(TEAM, 200, 0).unwrap();
+        assert_eq!(rows.iter().map(|r| r.node).collect::<Vec<_>>(), vec![node]);
+        assert!(!keyed(&h).contains(&node), "not yet in the frontier");
+        assert!(!archived(&h, node));
+        let row = rows[0].clone();
+        refused(
+            h.run(&service(), cancel(node, row.decision, 2, "")),
+            code::INVALID_STATE,
+        );
+        let answer = Operation::RecordCancel {
+            node,
+            decision: row.decision,
+            state,
+            reason: if state == CancelState::Refused {
+                "Delivery unknown".into()
+            } else {
+                String::new()
+            },
+            attempt: row.attempt,
+            attempt_id: row.attempt_id.clone(),
+        };
+        h.run(&service(), answer).unwrap();
+        assert!(h.store.pending_cancels(TEAM, 200, 0).unwrap().is_empty());
+        assert!(archived(&h, node), "{state:?}");
+        assert_eq!(keyed(&h), vec![node], "{state:?}: in the frontier once");
+    }
+}
+
+/// In a running team a kept node takes no Cancel: it is accepted, and no
+/// one cancels a decided node, so the stop's is the only cancel it can wait
+/// for. It stays in the queue, with no cancel pending, across operations.
+#[test]
+fn a_kept_node_in_a_running_team_takes_no_cancel() {
+    let (mut h, lead, node) = kept();
+    for actor in [lead, person()] {
+        let cancel = Operation::Cancel {
+            node,
+            reason: "Superseded".into(),
+        };
+        let refusal = h.run(&actor, cancel).unwrap_err();
+        assert_eq!(refusal.message, "Task is already decided.");
+    }
+    h.run(&person(), Operation::Pause).unwrap();
+    h.run(&person(), Operation::Resume).unwrap();
+    assert!(h.store.pending_cancels(TEAM, 200, 0).unwrap().is_empty());
+    assert!(in_queue(&h, node));
+    assert!(bound(&h, node));
+}
+
+/// An ordinary accepted node whose Done observation agrees leaves at once.
+#[test]
+fn an_accepted_and_observed_node_is_still_archived_at_once() {
+    let (mut h, lead, node, _) = handed();
+    h.report(node, "m1");
+    h.run(&lead, Operation::Accept { node }).unwrap();
+    let decision = h.accept_decision(node);
+    h.run(
+        &service(),
+        Operation::RecordIntegration {
+            decision,
+            node,
+            commit: COMMIT.into(),
+        },
+    )
+    .unwrap();
+    h.observe(node, TaskStage::Done);
+    assert!(archived(&h, node));
+    assert!(!in_queue(&h, node));
+}
