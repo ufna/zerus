@@ -111,6 +111,11 @@ fn terminal(archived: bool) -> (Harness, Runtime, Adapter) {
     };
     (h, runtime, p)
 }
+fn refused(archived: bool) -> (Harness, Runtime, Adapter) {
+    let (h, runtime, mut p) = terminal(archived);
+    p.pair.id = "not-an-effect-of-this-node".into();
+    (h, runtime, p)
+}
 fn passes(h: &mut Harness, runtime: &mut Runtime, p: &mut Adapter) {
     for pass in 0..20 {
         runtime
@@ -119,9 +124,9 @@ fn passes(h: &mut Harness, runtime: &mut Runtime, p: &mut Adapter) {
     }
 }
 #[test]
-fn terminal_unobserved_own_delivery_exits_a_saved_refusal_and_cleanup_continues() {
+fn an_unrecordable_terminal_answer_exits_a_saved_refusal_and_cleanup_continues() {
     for archived in [false, true] {
-        let (mut h, mut runtime, mut p) = terminal(archived);
+        let (mut h, mut runtime, mut p) = refused(archived);
         passes(&mut h, &mut runtime, &mut p);
         assert_eq!(p.children, 1);
         assert_eq!(p.facts.len(), 2);
@@ -141,7 +146,7 @@ fn terminal_unobserved_own_delivery_exits_a_saved_refusal_and_cleanup_continues(
 #[test]
 fn cancel_refusal_exit_survives_a_restart_on_both_sides_of_its_reservation() {
     for point in ["fact_refused", "refusal_exit"] {
-        let (mut h, mut runtime, mut p) = terminal(false);
+        let (mut h, mut runtime, mut p) = refused(false);
         super::super::cancel::CRASH.with(|s| s.set(Some(point)));
         assert!(
             std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| runtime.page(
@@ -171,7 +176,7 @@ fn cancel_refusal_exit_survives_a_restart_on_both_sides_of_its_reservation() {
 }
 #[test]
 fn a_second_proved_refusal_ends_the_visit_durably_without_replaying_either_request() {
-    let (mut h, mut runtime, mut p) = terminal(false);
+    let (mut h, mut runtime, mut p) = refused(false);
     p.reject_exit = true;
     runtime.page(&mut h.store, &mut p, &[], 100, false).unwrap();
     assert_eq!(p.facts.len(), 2);
@@ -196,7 +201,7 @@ fn a_second_proved_refusal_ends_the_visit_durably_without_replaying_either_reque
 fn a_terminal_saved_refusal_takes_the_exit_even_when_its_visit_changed() {
     use super::super::cancel::FactOutcome;
     for legacy in [false, true] {
-        let (mut h, _, mut p) = terminal(false);
+        let (mut h, _, mut p) = refused(false);
         let t = h.store.team(TEAM).unwrap().unwrap();
         let mut pending = Native::pending_cancels(&h.store, TEAM, 0)
             .unwrap()
@@ -228,5 +233,22 @@ fn a_terminal_saved_refusal_takes_the_exit_even_when_its_visit_changed() {
             FactOutcome::Refused { .. }
         ));
         assert!(h.store.request_refused(TEAM, &fact.request_id).unwrap());
+    }
+}
+
+#[test]
+fn terminal_own_delivery_unobserved_is_recorded_as_cancelled_without_the_exit() {
+    for archived in [false, true] {
+        let (mut h, mut runtime, mut p) = terminal(archived);
+        passes(&mut h, &mut runtime, &mut p);
+        assert_eq!(p.children, 1);
+        assert_eq!(p.facts.len(), 1);
+        assert!(!p.facts[0].refused && !p.facts[0].released);
+        assert!(!h
+            .store
+            .request_refused(TEAM, &p.facts[0].request_id)
+            .unwrap());
+        assert!(h.store.pending_cancels(TEAM, 16, 0).unwrap().is_empty());
+        assert_eq!(p.cleared, vec![1]);
     }
 }

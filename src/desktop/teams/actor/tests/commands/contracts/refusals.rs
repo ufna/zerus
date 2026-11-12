@@ -96,12 +96,10 @@ fn drive(f: &Fixture, count: i64, answered: &str) {
     }
     assert_eq!(p.children, 1);
     assert_eq!(p.states, vec![answered.to_owned()]);
-    assert_eq!(p.records.len(), 2);
-    assert!(!p.records[0].refused && p.records[1].refused);
-    assert_ne!(p.records[0].request_id, p.records[1].request_id);
-    assert!(p.records[1].reason.contains(answered));
-    assert!(s.request_refused(TEAM, &p.records[0].request_id).unwrap());
-    assert!(!s.request_refused(TEAM, &p.records[1].request_id).unwrap());
+    assert_eq!(p.records.len(), 1);
+    assert!(!p.records[0].refused);
+    assert_eq!(p.records[0].released, answered == "released");
+    assert!(!s.request_refused(TEAM, &p.records[0].request_id).unwrap());
     assert!(s.pending_cancels(TEAM, 16, 0).unwrap().is_empty());
     assert_eq!(p.clears, 1);
     let tasks = ProjectStore::open(&f.config.state.join("replica"), &f.task.project).unwrap();
