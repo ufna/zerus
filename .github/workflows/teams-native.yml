@@ -3,53 +3,61 @@ name: Agent Teams real agents
 # The separately selected Agent Teams contract (docs/ci-and-aur.md, "Agent Teams real
 # agents"): one team of one agent kind in a private root with a private desktop
 # service, against the latest official Claude Code, Codex and Kimi Code releases and
-# a keyless loopback model. It runs on Teams-affecting pull requests and main pushes
-# and on demand; no other job's timing changes.
+# a keyless loopback model. A green run covers member launch and identity, team stop
+# and Terminate; delivery, the member's shell, the lead's doorbell and the cancel
+# notice are written and wait for zerus-63rru.51, and folder trust and resume for
+# zerus-63rru.48 and .49. This workflow is not part of the Dev gate or Nightly: a red
+# run is visible and holds nothing back.
 on:
   pull_request:
     branches: [main]
+    # Keep the pull_request and push lists identical (tests/test_ci_security.py
+    # compares them). They name every component whose drift the contract can catch
+    # and every script, test and fixture it executes or reads.
     paths:
       - '.github/workflows/teams-native.yml'
+      - '.cargo/**'
+      - 'src/**'
+      - 'crates/**'
+      - 'client/core/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'build.rs'
       - 'scripts/ci/agent-compatibility.py'
+      - 'scripts/ci/agent-compatibility.json'
       - 'scripts/ci/kimi-native.py'
+      - 'scripts/ci/kimi-native-manifests/**'
       - 'scripts/ci/install-tmux.sh'
       - 'tests/test_teams_native.py'
       - 'tests/teams_native_fixture.py'
       - 'tests/model_api_fixture.py'
-      - 'crates/team-plan/**'
-      - 'src/teams/**'
-      - 'src/desktop/teams/**'
-      - 'src/tasks/**'
-      - 'src/tasks.rs'
-      - 'src/accounts/**'
-      - 'src/accounts.rs'
-      - 'src/state/**'
-      - 'Cargo.toml'
-      - 'Cargo.lock'
   push:
     branches: [main]
+    # Keep the pull_request and push lists identical (tests/test_ci_security.py
+    # compares them). They name every component whose drift the contract can catch
+    # and every script, test and fixture it executes or reads.
     paths:
       - '.github/workflows/teams-native.yml'
+      - '.cargo/**'
+      - 'src/**'
+      - 'crates/**'
+      - 'client/core/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'build.rs'
       - 'scripts/ci/agent-compatibility.py'
+      - 'scripts/ci/agent-compatibility.json'
       - 'scripts/ci/kimi-native.py'
+      - 'scripts/ci/kimi-native-manifests/**'
       - 'scripts/ci/install-tmux.sh'
       - 'tests/test_teams_native.py'
       - 'tests/teams_native_fixture.py'
       - 'tests/model_api_fixture.py'
-      - 'crates/team-plan/**'
-      - 'src/teams/**'
-      - 'src/desktop/teams/**'
-      - 'src/tasks/**'
-      - 'src/tasks.rs'
-      - 'src/accounts/**'
-      - 'src/accounts.rs'
-      - 'src/state/**'
-      - 'Cargo.toml'
-      - 'Cargo.lock'
   workflow_dispatch:
 
 permissions:
   contents: read
+cache-mode: none
 
 # Pull requests: one run per PR, and a new head cancels the older run; closing the
 # PR cancels the rest (pr-closed.yml). Main pushes and manual runs stay independent.
@@ -60,6 +68,7 @@ concurrency:
 jobs:
   teams:
     name: Teams contract, Claude Code and Codex (ubuntu-24.04)
+    if: github.event.repository.private == false || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     env:
@@ -76,6 +85,10 @@ jobs:
         run: |
           bash scripts/ci/install-tmux.sh "$RUNNER_TEMP/tmux"
           echo "$RUNNER_TEMP/tmux/bin" >> "$GITHUB_PATH"
+      # The same pinned Node as the Linux CLI job that runs agent-compatibility.py.
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24'
       - name: Build the exact CLI with pinned Rust and at most two jobs
         shell: bash
         run: |
@@ -96,6 +109,7 @@ jobs:
 
   teams-kimi:
     name: Teams contract, Kimi Code (ubuntu-24.04)
+    if: github.event.repository.private == false || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     env:
