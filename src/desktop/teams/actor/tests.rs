@@ -120,3 +120,9 @@ fn the_terminal_retry_is_a_single_bounded_row_even_when_the_actor_budget_is_full
     ledger.terminal_succeeded().unwrap();
     assert!(ledger.terminal_retry().unwrap().is_none());
 }
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+mod native_cancels;
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+mod native_cancel_tick;

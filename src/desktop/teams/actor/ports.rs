@@ -20,7 +20,7 @@ pub(in crate::desktop::teams) trait Ports {
         _team: &Team,
         _pending: &super::cancel::Pending,
         _original: &str,
-    ) -> Result<TaskReply> {
+    ) -> Result<super::cancel::Answer> {
         Err(unavailable())
     }
     fn record_cancel(
@@ -139,6 +139,7 @@ impl From<HandoutOutcome> for DeliveryResult {
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(in crate::desktop::teams) enum TaskReply {
+    Stale,
     Cancelled,
     Released,
     Created,

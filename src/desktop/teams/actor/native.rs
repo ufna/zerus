@@ -9,12 +9,15 @@ mod tasks;
 #[allow(unused_imports)]
 pub(super) use tasks::{clear_request, stage_arguments, stage_request, task_reply};
 mod admission;
+mod cancels;
 use super::*;
 use crate::{
     config::Config,
     desktop::teams::child::{self, Ended},
     teams::ops::HandoutOutcome,
 };
+#[cfg(test)]
+pub(super) use cancels::answer as cancel_answer;
 use serde_json::{json, Value};
 use std::{
     sync::{atomic::AtomicBool, Arc},
@@ -99,6 +102,8 @@ impl Native {
         }
         let args = task_arguments(task, action);
         let input = task_request(team, node, member, id);
+        #[cfg(test)]
+        capture_child(&args, &input);
         let input = input.to_string();
         let mut retry = None;
         let ended = child::run_guarded(
@@ -125,6 +130,32 @@ impl Native {
     }
 }
 impl Ports for Native {
+    fn cancels(
+        &mut self,
+        store: &Store,
+        team: &str,
+        after: u32,
+    ) -> Result<Vec<super::cancel::Pending>> {
+        Self::pending_cancels(store, team, after)
+    }
+    fn cancel(
+        &mut self,
+        team: &Team,
+        pending: &super::cancel::Pending,
+        original: &str,
+    ) -> Result<super::cancel::Answer> {
+        self.run_cancel(team, pending, original)
+    }
+    fn record_cancel(
+        &mut self,
+        store: &mut Store,
+        team: &Team,
+        fact: &super::cancel::Fact,
+        now: i64,
+    ) -> Result<()> {
+        Self::save_cancel(store, team, fact, now)
+    }
+
     fn clock_ms(&self, _: i64) -> i64 {
         chrono::Utc::now().timestamp_millis()
     }
@@ -376,4 +407,13 @@ pub(super) fn task_request(
     } else {
         json!({"schema":1,"team":team.id,"node":node.id})
     }
+}
+
+#[cfg(test)]
+thread_local! {
+    pub(super) static CAPTURED_CHILD: std::cell::RefCell<Option<(Vec<String>, Value)>> = const {std::cell::RefCell::new(None)};
+}
+#[cfg(test)]
+pub(super) fn capture_child(args: &[String], input: &Value) {
+    CAPTURED_CHILD.with(|s| *s.borrow_mut() = Some((args.to_vec(), input.clone())));
 }

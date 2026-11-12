@@ -779,3 +779,52 @@ fn a_failed_observation_after_stale_delivery_still_keeps_the_delivery_backoff() 
     tick(&mut h, &mut a, &mut p, 60_100, false);
     assert_eq!(p.sends, 2);
 }
+
+#[test]
+fn person_override_closing_an_interrupted_effect_never_resends_or_binds_the_old_outcome() {
+    for point in ["effect", "outcome"] {
+        let (mut h, mut a, mut p) = setup(1);
+        super::super::delivery::CRASH.with(|s| s.set(Some(point)));
+        assert!(
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| tick(
+                &mut h, &mut a, &mut p, 100, false
+            )))
+            .is_err()
+        );
+        assert_eq!(p.sends, 1);
+        let mut observation = h.observation(1, TaskStage::InProgress);
+        observation.attempt = 2;
+        observation.attempt_id = "person-started-elsewhere".into();
+        h.run(
+            &service(),
+            Operation::ObserveTask {
+                node: 1,
+                observation,
+            },
+        )
+        .unwrap();
+        assert_eq!(h.store.generation(TEAM, 1).unwrap(), Some(2));
+        assert!(h
+            .store
+            .open_effects(TEAM, 200, None)
+            .unwrap()
+            .rows
+            .is_empty());
+        let home = a.machine.clone();
+        drop(a);
+        let mut a = super::super::Runtime::open(h.temp.path(), &home).unwrap();
+        let team = h.store.team(TEAM).unwrap().unwrap();
+        for now in [101, 60_100] {
+            a.recover(&mut h.store, &mut p, &team, now).unwrap();
+        }
+        assert_eq!(p.sends, 1);
+        assert_eq!(h.store.generation(TEAM, 1).unwrap(), Some(2));
+        assert!(h.node(1).assignee.is_none());
+        assert!(!a
+            .ledger
+            .page(TEAM, "")
+            .unwrap()
+            .iter()
+            .any(|r| r.key.starts_with("delivery:")));
+    }
+}

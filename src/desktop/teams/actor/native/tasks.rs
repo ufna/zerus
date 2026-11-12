@@ -36,13 +36,15 @@ impl Native {
             "cleared",
         )
     }
-    fn task_child<T>(
+    pub(super) fn task_child<T>(
         &self,
         args: &[String],
         input: &Value,
         original: &str,
         admit: impl FnOnce() -> Result<T>,
     ) -> Ended {
+        #[cfg(test)]
+        super::capture_child(args, input);
         let bytes = input.to_string().into_bytes();
         child::run_guarded(
             &self.config,
@@ -114,6 +116,9 @@ pub(in crate::desktop::teams::actor) fn task_reply(
     };
     let value: Value = serde_json::from_slice(&output)
         .map_err(|_| problem("The task command reply is malformed"))?;
+    reply_value(&value, request, success)
+}
+pub(super) fn reply_value(value: &Value, request: &Value, success: &str) -> Result<TaskReply> {
     if value["schema"] != 1
         || value["team"] != request["team"]
         || value["node"] != request["node"]
@@ -132,6 +137,7 @@ pub(in crate::desktop::teams::actor) fn task_reply(
             Ok(TaskReply::Cancelled)
         }
         Some("released") if success == "cancelled" && reason.is_empty() => Ok(TaskReply::Released),
+        Some("stale") if success == "cancelled" => Ok(TaskReply::Stale),
         Some("refused") if !reason.trim().is_empty() => Ok(TaskReply::Refused { reason }),
         Some("cutting_over") => Ok(TaskReply::CuttingOver { reason }),
         _ => Err(problem("The task reply has no recognized answer")),

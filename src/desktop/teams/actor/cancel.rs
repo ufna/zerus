@@ -3,12 +3,18 @@
 use super::*;
 use ports::TaskReply;
 use serde::{Deserialize, Serialize};
+mod answer;
+pub(in crate::desktop::teams) use answer::{Answer, Attempt};
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(in crate::desktop::teams) struct Pending {
     pub node: u32,
     pub generation: u32,
     pub decision: u64,
     pub task: Option<TaskRef>,
+    #[serde(default)]
+    pub attempt: u64,
+    #[serde(default)]
+    pub attempt_id: String,
 }
 #[derive(Clone, Serialize, Deserialize)]
 pub(in crate::desktop::teams) struct Fact {
@@ -17,11 +23,19 @@ pub(in crate::desktop::teams) struct Fact {
     pub pending: Pending,
     pub refused: bool,
     pub reason: String,
+    #[serde(default)]
+    pub attempt: u64,
+    #[serde(default)]
+    pub attempt_id: String,
 }
 #[derive(Serialize, Deserialize)]
 struct Entry {
     pending: Pending,
     reply: Option<TaskReply>,
+    #[serde(default)]
+    attempt: Option<Attempt>,
+    #[serde(default)]
+    deferrals: u32,
     fact: Option<Fact>,
     failures: u32,
     next_ms: i64,
@@ -45,7 +59,9 @@ impl Runtime {
         } else {
             String::new()
         };
+        let mut visited = std::collections::BTreeSet::new();
         for row in rows {
+            visited.insert(row.key.clone());
             self.cancel_row(store, p, t, &row.key, now, &mut budget)?;
         }
         self.put(&t.id, "cancel_recovery_cursor", &next)?;
@@ -61,6 +77,9 @@ impl Runtime {
                 break;
             }
             let key = format!("cancel:{}", pending.decision);
+            if visited.contains(&key) {
+                continue;
+            }
             self.reserve_cancel(t, &key, pending)?;
             self.cancel_row(store, p, t, &key, now, &mut budget)?;
         }
@@ -71,6 +90,8 @@ impl Runtime {
             let row = Entry {
                 pending,
                 reply: None,
+                attempt: None,
+                deferrals: 0,
                 fact: None,
                 failures: 0,
                 next_ms: 0,
@@ -152,31 +173,109 @@ impl Runtime {
         now: i64,
         budget: &mut u8,
     ) -> Result<()> {
-        if row.reply.is_none() {
-            if *budget == 0 {
-                return Ok(());
-            }
-            let pending = p.cancels(store, &t.id, row.pending.node.saturating_sub(1))?;
-            if pending.first() != Some(&row.pending) {
-                return self.cancel_done(store, t, key, now);
-            }
-            *budget -= 1;
-            let reply = if row.pending.task.is_none() {
-                TaskReply::Cancelled
-            } else {
-                p.cancel(t, &row.pending, &uuid::Uuid::new_v4().to_string())?
-            };
-            boundary("effect");
-            match reply {
-                TaskReply::Cancelled | TaskReply::Released | TaskReply::Refused { .. } => (),
-                TaskReply::CuttingOver { ref reason } => return Err(problem(reason)),
-                _ => return Err(problem("Cancel answered another command")),
-            }
-            row.reply = Some(reply);
+        if matches!(row.reply, Some(TaskReply::Cancelled | TaskReply::Released))
+            && row.attempt.is_none()
+        {
+            // A legacy saved success has no attempt evidence. Read again;
+            // never invent a pair from the pending row or record that fact.
+            row.reply = None;
+            row.fact = None;
             self.put(&t.id, key, row)?;
-            boundary("outcome");
+            return self.defer_cancel(store, p, t, key, row, now);
+        }
+        if row.reply.is_none() {
+            return self.invoke_cancel(store, p, t, key, row, now, budget);
         }
         self.settle_cancel(store, p, t, key, row, now)
+    }
+    #[allow(clippy::too_many_arguments)]
+    fn invoke_cancel(
+        &mut self,
+        store: &mut Store,
+        p: &mut impl Ports,
+        t: &Team,
+        key: &str,
+        row: &mut Entry,
+        now: i64,
+        budget: &mut u8,
+    ) -> Result<()> {
+        if *budget == 0 {
+            return Ok(());
+        }
+        if !self.refresh_cancel(store, p, t, key, row, now)? {
+            return Ok(());
+        }
+        *budget -= 1;
+        let answer = if row.pending.task.is_none() {
+            Answer::without_task()
+        } else {
+            p.cancel(t, &row.pending, &uuid::Uuid::new_v4().to_string())?
+        };
+        boundary("effect");
+        match &answer.reply {
+            TaskReply::Stale => return self.defer_cancel(store, p, t, key, row, now),
+            TaskReply::Cancelled | TaskReply::Released if answer.attempt.is_none() => {
+                return Err(problem("Cancel returned no attempt evidence"));
+            }
+            TaskReply::Cancelled | TaskReply::Released | TaskReply::Refused { .. } => (),
+            TaskReply::CuttingOver { reason } => return Err(problem(reason)),
+            _ => return Err(problem("Cancel answered another command")),
+        }
+        row.reply = Some(answer.reply);
+        row.attempt = answer.attempt;
+        self.put(&t.id, key, row)?;
+        boundary("outcome");
+        self.settle_cancel(store, p, t, key, row, now)
+    }
+    fn refresh_cancel(
+        &mut self,
+        store: &mut Store,
+        p: &mut impl Ports,
+        t: &Team,
+        key: &str,
+        row: &mut Entry,
+        now: i64,
+    ) -> Result<bool> {
+        let pending = p.cancels(store, &t.id, row.pending.node.saturating_sub(1))?;
+        let Some(fresh) = pending.first().filter(|f| {
+            f.node == row.pending.node
+                && f.generation == row.pending.generation
+                && f.decision == row.pending.decision
+                && f.task == row.pending.task
+        }) else {
+            self.cancel_done(store, t, key, now)?;
+            return Ok(false);
+        };
+        if fresh != &row.pending {
+            // No answer is cached here. A stale check observed a new pair;
+            // after its backoff a fresh admission may check that same decision.
+            row.pending = fresh.clone();
+            self.put(&t.id, key, row)?;
+        }
+        Ok(true)
+    }
+    #[allow(clippy::too_many_arguments)]
+    fn defer_cancel(
+        &mut self,
+        store: &mut Store,
+        p: &mut impl Ports,
+        t: &Team,
+        key: &str,
+        row: &mut Entry,
+        now: i64,
+    ) -> Result<()> {
+        let observed = if let Some(task) = &row.pending.task {
+            p.observe(store, task)
+        } else {
+            Ok(())
+        };
+        row.deferrals = row.deferrals.saturating_add(1);
+        row.next_ms = now.saturating_add(retry::delay(row.deferrals));
+        self.put(&t.id, key, row)?;
+        if matches!(t.status, TeamStatus::Running | TeamStatus::Paused) {
+            self.defer(store, t, key, "", now)?;
+        }
+        observed
     }
     fn settle_cancel(
         &mut self,
@@ -195,6 +294,11 @@ impl Runtime {
                     .ok_or_else(|| problem("Cancel team disappeared"))?
                     .revision,
                 pending: row.pending.clone(),
+                attempt: row.attempt.as_ref().map_or(0, |a| a.number),
+                attempt_id: row
+                    .attempt
+                    .as_ref()
+                    .map_or_else(String::new, |a| a.id.clone()),
                 refused: matches!(row.reply, Some(TaskReply::Refused { .. })),
                 reason: match &row.reply {
                     Some(TaskReply::Refused { reason }) => cut(reason, 2048),

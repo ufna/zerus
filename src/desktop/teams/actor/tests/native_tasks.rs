@@ -279,7 +279,6 @@ fn native_task_admission_refuses_changed_creation_and_a_live_or_other_task_clear
 
 #[test]
 fn literal_cancel_replies_keep_release_distinct_until_the_store_fact() {
-    use super::super::native::task_reply;
     use crate::desktop::teams::child::Ended;
     let request = json!({"schema":1,"team":"team","node":2});
     for state in ["cancelled", "released", "refused", "cutting_over"] {
@@ -288,18 +287,18 @@ fn literal_cancel_replies_keep_release_distinct_until_the_store_fact() {
         } else {
             "Reason"
         };
-        let raw = json!({"schema":1,"team":"team","node":2,"state":state,"error":error})
+        let raw = json!({"schema":1,"team":"team","node":2,"state":state,"error":error,"attempt":1,"attempt_id":"observed-attempt"})
             .to_string()
             .into_bytes();
-        let reply = task_reply(
+        let reply = super::super::native::cancel_answer(
             Ended::Exited {
                 code: 0,
                 output: raw,
             },
             &request,
-            "cancelled",
         )
-        .unwrap();
+        .unwrap()
+        .reply;
         assert!(matches!(
             (state, reply),
             ("cancelled", TaskReply::Cancelled)
@@ -312,13 +311,12 @@ fn literal_cancel_replies_keep_release_distinct_until_the_store_fact() {
         let raw = json!({"schema":1,"team":"team","node":2,"state":state,"error":""})
             .to_string()
             .into_bytes();
-        assert!(task_reply(
+        assert!(super::super::native::cancel_answer(
             Ended::Exited {
                 code: 0,
                 output: raw
             },
-            &request,
-            "cancelled"
+            &request
         )
         .is_err());
     }
