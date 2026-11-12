@@ -2105,6 +2105,14 @@ class PullRequestRunCancellationTests(unittest.TestCase):
                 self.assertEqual(field(job(text, name), "if"), guard.removeprefix("if: "))
         self.assertIn("actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0", job(text, "teams"))
         self.assertIn("zerus-63rru.51", text, "the header names what a green run does not cover yet")
+        # One Rust toolchain for both jobs, the one the hosted Kimi workflow installs.
+        kimi = (self.WORKFLOWS / "kimi-native.yml").read_text()
+        def toolchains(workflow):
+            return (set(re.findall(r"rustup toolchain install (\S+)", workflow))
+                    | set(re.findall(r"RUSTUP_TOOLCHAIN=(\S+)", workflow)))
+        self.assertEqual(len(toolchains(kimi)), 1)
+        self.assertEqual(toolchains(text), toolchains(kimi))
+        self.assertEqual(len(re.findall(r"rustup toolchain install ", text)), 2)
 
     def test_another_label_neither_cancels_nor_repeats_an_opted_in_hint_run(self):
         text = (self.WORKFLOWS / "agent-hint.yml").read_text()
