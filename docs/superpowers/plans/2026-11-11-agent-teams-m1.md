@@ -1364,8 +1364,13 @@ observations it missed would have done in turn: the end of the earlier
 attempt, then the person's restore. Pending decisions of the node are
 settled, the node moves to its next generation and the event is
 `person_override`. A node that is already finished takes the restore it
-takes today. A task whose attempts conflict has no current attempt; the
-store keeps what it observed and decides nothing from it.
+takes today. A task whose attempts conflict has no current attempt. The
+store records that observation as it came, the number with an empty ID, so
+that no answer about an attempt matches it; a kept earlier pair would let
+a late answer about that attempt through (measured, 2026-11-12). It
+remembers the last current attempt it saw for one purpose: when the
+conflict is settled, the same attempt again changes nothing, the node's own
+effect is the team's, and any other attempt is a person's new execution.
 
 A cancel acts on one attempt. `team-cancel` compares, under its locks, the
 document's highest generation and current attempt with the pair the store
@@ -1373,8 +1378,9 @@ holds for the node. When they differ, the store has not observed what the
 document now holds: the command writes nothing and answers `stale`, and
 the service observes the task before it asks again. Its reply names what
 it acted on in `attempt` and `attempt_id`, `RecordCancel` carries both, and
-the store applies a cancelled answer only while the node's stored pair is
-still that one; otherwise the operation is refused and writes nothing. An
+the store applies a cancelled answer only while the newest observation
+of the node's task still shows that pair; otherwise the operation is
+refused and writes nothing. An
 answer about an earlier attempt therefore never ends a node whose task runs
 again, and both orders of the answer and the observation leave the same
 state. No service command finishes, reopens or cancels a task whose current
