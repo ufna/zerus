@@ -429,7 +429,10 @@ fn a_refusal_after_a_warning_keeps_the_last_line() {
     let stderr = f.h.temp.path().join("stub-stderr");
     let line = std::fs::read_to_string(&stderr).unwrap();
     let warning = format!("{}\n", crate::config::HINT_POLICY_DIAGNOSTIC);
-    std::fs::write(&stderr, warning + &line).unwrap();
+    // An unrelated line comes first, so the first `hgs: ` line (the warning)
+    // and the last one (the refusal) differ: only the last is the reason.
+    let other = "a line another program wrote on the shared stderr\n";
+    std::fs::write(&stderr, format!("{other}{warning}{line}")).unwrap();
     assert_eq!(
         f.native().ring(&f.h.store, &ring),
         Rung::Refused("The expected run changed".into())
