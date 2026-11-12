@@ -376,15 +376,34 @@ fn unknown(code: UnknownCode, detail: &str) -> Witnessed {
     }
 }
 
-/// The recorded outcome of `request` to `name`, for recovery: None when no
-/// witnessed input was recorded for exactly this request.
-pub(crate) fn recorded(name: &str, request: &Value) -> Result<Option<Witnessed>> {
+/// What the receipt store holds for a request, for recovery (`recorded`).
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum Recorded {
+    /// No witnessed submit has offered this exact request, and none is
+    /// offering it now: the only answer that licenses a new send.
+    Absent,
+    /// This request ID already holds another input (another payload, name,
+    /// run or conversation). Nothing about this request; never send it.
+    Conflict,
+    /// The stored outcome of exactly this request, replayed as recorded.
+    Outcome(Witnessed),
+}
+
+/// The recorded outcome of `request` to `name`, for recovery. It reads the
+/// store under the same bindings lock `submit_witnessed` holds from before its
+/// pending marker until after its send, so it never sees a submit between the
+/// two: only `Recorded::Absent` means that no witnessed submit offered, or is
+/// offering, this exact request. A lock or store that cannot be read is an
+/// error, never `Absent`.
+pub(crate) fn recorded(name: &str, request: &Value) -> Result<Recorded> {
     let digest = request_digest(name, request);
     let binding = binding_of(name, request, &digest);
+    let _guard = lock(Some(&root().join("dsh/bindings.lock")))?;
     Ok(match stored(&binding)? {
-        Stored::Exact(receipt) => Some(replay(&receipt, &binding)),
-        Stored::Unwitnessed => Some(unknown(UnknownCode::Unseen, UNWITNESSED)),
-        Stored::Absent | Stored::Conflict => None,
+        Stored::Exact(receipt) => Recorded::Outcome(replay(&receipt, &binding)),
+        Stored::Unwitnessed => Recorded::Outcome(unknown(UnknownCode::Unseen, UNWITNESSED)),
+        Stored::Conflict => Recorded::Conflict,
+        Stored::Absent => Recorded::Absent,
     })
 }
 
@@ -1238,7 +1257,7 @@ mod tests {
                 "{outcome:?}"
             );
             assert!(calls.is_empty(), "{calls:?}");
-            assert!(recorded(name, &conflict).unwrap().is_none());
+            assert_eq!(recorded(name, &conflict).unwrap(), Recorded::Conflict);
         }
         assert_eq!(
             fs::read(receipt_path(string(&good, "request_id"))).unwrap(),
@@ -1277,16 +1296,48 @@ mod tests {
             unreachable!()
         };
         assert_eq!(stored["digest_scope"], DIGEST_SCOPE);
-        // recorded() replays exactly what was stored.
+        // zerus-hfw2s.3: recorded() answers Absent, Conflict or the exact Outcome.
+        let code = |recorded: Recorded| match recorded {
+            Recorded::Outcome(witnessed) => witnessed.code(),
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(code(recorded(name, &good).unwrap()), "received");
         assert_eq!(
-            recorded(name, &good).unwrap().map(|w| w.code()),
-            Some("received")
+            code(recorded(name, &dropped).unwrap()),
+            "dropped_after_claim"
         );
-        assert_eq!(
-            recorded(name, &dropped).unwrap().map(|w| w.code()),
-            Some("dropped_after_claim")
+        assert_eq!(recorded(name, &old).unwrap(), Recorded::Absent);
+        let mut other = good.clone();
+        other["text"] = json!("another input under the same request ID");
+        assert_eq!(recorded(name, &other).unwrap(), Recorded::Conflict);
+        // A held bindings lock: recorded() waits for its holder and then sees the
+        // marker the holder wrote, never Absent in between (as submit_with holds
+        // the lock from before its marker until after its send).
+        let held = request("WITNESS");
+        let holder = lock(Some(&root().join("dsh/bindings.lock"))).unwrap();
+        let (done, answered) = std::sync::mpsc::channel();
+        let reader = {
+            let (name, held) = (name.to_owned(), held.clone());
+            std::thread::spawn(move || {
+                let answer = recorded(&name, &held);
+                done.send(()).unwrap();
+                answer
+            })
+        };
+        std::thread::sleep(Duration::from_millis(400));
+        assert!(
+            answered.try_recv().is_err(),
+            "recorded() answered while the lock was held"
         );
-        assert!(recorded(name, &old).unwrap().is_none());
+        atomic(
+            &receipt_path(string(&held, "request_id")),
+            &json!({"request_id":held["request_id"],"name":name,"run_id":"run-W","conversation_id":"session-W",
+                "digest":request_digest(name, &held),"witness_version":1,"status":"pending"})
+                .to_string(),
+        )
+        .unwrap();
+        drop(holder);
+        assert_eq!(code(reader.join().unwrap().unwrap()), "pending");
         // zerus-hfw2s.1: an earlier call may have offered exactly this input, so the
         // answer is unknown, never a refusal, and nothing is asked or written.
         let unknown_unsent = |request: &Value, detail: &str| {
@@ -1316,10 +1367,7 @@ mod tests {
         )
         .unwrap();
         unknown_unsent(&ordinary, UNWITNESSED);
-        assert_eq!(
-            recorded(name, &ordinary).unwrap().map(|w| w.code()),
-            Some("unseen")
-        );
+        assert_eq!(code(recorded(name, &ordinary).unwrap()), "unseen");
         // (b) A receipt that cannot be read.
         let torn = request("WITNESS");
         atomic(&receipt_path(string(&torn, "request_id")), "{\"status\":").unwrap();
@@ -1330,6 +1378,8 @@ mod tests {
         fs::remove_file(&lock_path).unwrap();
         fs::create_dir(&lock_path).unwrap();
         unknown_unsent(&request("WITNESS"), UNREADABLE);
+        // recorded() without its lock is an error, never Absent.
+        assert!(recorded(name, &request("WITNESS")).is_err());
         fs::remove_dir(&lock_path).unwrap();
     }
 }

@@ -5707,8 +5707,12 @@ history as unavailable.
 
 A task input to a hosted DeepSeek session is witnessed (`zerus-hfw2s`). The
 caller is the Agent Teams task delivery; it uses
-`state::dsh::witness::submit_witnessed(name, request, deadline)` and
-`recorded(name, request)` for recovery. Each input answers with exactly one fixed
+`state::dsh::witness::submit_witnessed(name, request, deadline)`. For recovery
+it uses `recorded(name, request)`, which reads the store under the same
+bindings lock and answers `Absent`, `Conflict` (the request ID holds another
+input) or `Outcome(code)`. A lock or store that cannot be read is an error.
+Only `Absent` means that no witnessed submit offered, or is offering, this
+exact request. Each input answers with exactly one fixed
 code. Codes are never folded, retried or promoted. A repeat of exactly the same
 request ID, digest, name, run and conversation replays the stored code without
 sending. The same request ID with any other payload or binding is refused as an
