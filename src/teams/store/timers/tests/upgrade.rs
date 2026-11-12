@@ -727,3 +727,126 @@ fn refused_release(h: &mut Harness, lead: &Actor, node: u32) {
     h.run(&person(), Operation::Release { node }).unwrap();
     assert!(!h.node(node).hold);
 }
+
+/// The hold review's finding 2: the step to layout 11 classifies each held
+/// node of an earlier layout instead of guessing one way. With the trace of
+/// a hand-back in its current generation (an item of each hand-back kind, a
+/// reopen refused or not delivered, its pipeline waiting on the person or a
+/// stage) it is a hand-back, which the lead may end; with none, or only an
+/// earlier generation's, it is the person's, and the lead's Release says
+/// why it is refused.
+#[test]
+fn the_step_to_layout_11_classifies_each_legacy_hold() {
+    let mut h = Harness::new();
+    let lead = h.bind("lead");
+    h.bind("m1");
+    let mut nodes = Vec::new();
+    for n in 1..=10 {
+        nodes.push(h.add(&person(), n));
+    }
+    let kinds = [
+        "return_without_holder:91",
+        "member_removed:92",
+        "conflict_holder_removed:93",
+        "verdict_holder_removed:94",
+        "cancel_refused:95",
+    ];
+    let actor = r#"{"kind":"service","person":"local","team":"t"}"#;
+    for (node, kind) in nodes.iter().zip(kinds) {
+        db(&h)
+            .execute(
+                "INSERT INTO inbox(team,kind,node,generation,actor,text,created_ms) VALUES(?1,?2,?3,1,?4,'Handed back',1)",
+                params![TEAM, kind, node, actor],
+            )
+            .unwrap();
+    }
+    for (node, state) in [(nodes[5], "refused"), (nodes[6], "uncertain")] {
+        db(&h)
+            .execute(
+                "INSERT INTO effects(team,node,member,generation,request_id,actor,kind,created_ms,state) VALUES(?1,?2,'m1',1,?3,?4,'reopen',1,?5)",
+                params![TEAM, node, uuid::Uuid::new_v4().to_string(), actor, state],
+            )
+            .unwrap();
+    }
+    db(&h)
+        .execute(
+            "INSERT INTO pipeline_runs(team,node,generation,state) VALUES(?1,?2,1,'person')",
+            params![TEAM, nodes[7]],
+        )
+        .unwrap();
+    // An earlier generation's item is no trace of the hold it has now.
+    db(&h)
+        .execute_batch(&format!(
+            "UPDATE nodes SET generation=2 WHERE team='{TEAM}' AND id={};
+             INSERT INTO inbox(team,kind,node,generation,actor,text,created_ms) VALUES('{TEAM}','cancel_refused:96',{},1,'{actor}','Old',1);",
+            nodes[9], nodes[9]
+        ))
+        .unwrap();
+    db(&h)
+        .execute_batch(&format!(
+            "UPDATE nodes SET hold=1 WHERE team='{TEAM}';
+             ALTER TABLE nodes DROP COLUMN hand_back; ALTER TABLE node_archive DROP COLUMN hand_back;
+             ALTER TABLE nodes DROP COLUMN hold_owner; ALTER TABLE node_archive DROP COLUMN hold_owner;
+             UPDATE timers_extension SET version=10;"
+        ))
+        .unwrap();
+    reopen(&mut h);
+    assert_eq!(marker(&h), Some(EXTENSION));
+    let stored = |h: &Harness, node: u32| -> (bool, Option<String>, bool) {
+        db(h)
+            .query_row(
+                "SELECT hold,hold_owner,hand_back FROM nodes WHERE team=?1 AND id=?2",
+                params![TEAM, node],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap()
+    };
+    let handed_back = (false, None, true);
+    let persons = (true, Some("person".to_owned()), false);
+    for (i, node) in nodes.iter().enumerate() {
+        let expected = if i < 8 { &handed_back } else { &persons };
+        assert_eq!(&stored(&h, *node), expected, "node {i}");
+        assert!(h.node(*node).hold, "node {i}");
+    }
+    h.run(&lead, Operation::Release { node: nodes[0] }).unwrap();
+    assert!(!h.node(nodes[0]).hold, "the lead ends a hand-back");
+    let error = h
+        .run(&lead, Operation::Release { node: nodes[8] })
+        .unwrap_err();
+    assert!(
+        error.message.contains("before holds had owners"),
+        "{}",
+        error.message
+    );
+}
+
+/// A store that is really at layout 9 (no hold owner, no hand-back column)
+/// with a Return its holder no longer reads: the step to 10 hands it back in
+/// that layout's own form, and the step to 11 reads it as a hand-back, which
+/// the lead may end.
+#[test]
+fn a_layout_9_store_with_a_stranded_return_opens_and_the_lead_may_end_its_hand_back() {
+    let mut h = Harness::new();
+    let (node, seq, lead) = old_return(&mut h, true);
+    db(&h)
+        .execute_batch(
+            "ALTER TABLE cards DROP COLUMN decisions;
+             ALTER TABLE nodes DROP COLUMN hand_back; ALTER TABLE node_archive DROP COLUMN hand_back;
+             ALTER TABLE nodes DROP COLUMN hold_owner; ALTER TABLE node_archive DROP COLUMN hold_owner;
+             UPDATE timers_extension SET version=9;",
+        )
+        .unwrap();
+    reopen(&mut h);
+    assert_eq!(marker(&h), Some(EXTENSION));
+    assert_eq!(handed_back(&h), [format!("return_without_holder:{seq}")]);
+    let stored: (bool, Option<String>, bool) = db(&h)
+        .query_row(
+            "SELECT hold,hold_owner,hand_back FROM nodes WHERE team=?1 AND id=?2",
+            params![TEAM, node],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(stored, (false, None, true), "a hand-back");
+    h.run(&lead, Operation::Release { node }).unwrap();
+    assert!(!h.node(node).hold);
+}

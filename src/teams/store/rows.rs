@@ -243,6 +243,19 @@ pub(crate) fn hand_back(
 ) -> Result<u64> {
     settle_decisions(db, team, Some(node), actor, false)?;
     set_hand_back(db, team, node, true)?;
+    hand_back_item(db, team, node, actor, kind, text, now)
+}
+/// The lead's inbox item of a hand-back, of the cause's own kind, in the
+/// node's current generation.
+pub(crate) fn hand_back_item(
+    db: &Connection,
+    team: &str,
+    node: u32,
+    actor: &str,
+    kind: &str,
+    text: &str,
+    now: i64,
+) -> Result<u64> {
     let generation: u32 = db
         .query_row(
             "SELECT generation FROM nodes WHERE team=?1 AND id=?2 UNION ALL SELECT generation FROM node_archive WHERE team=?1 AND id=?2 LIMIT 1",
