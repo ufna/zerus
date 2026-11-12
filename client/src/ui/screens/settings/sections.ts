@@ -8,6 +8,7 @@ import { RecoverySection, refreshRecovery } from "./Recovery";
 import { FilesSection } from "./Files";
 import { AnalyticsSection } from "./Analytics";
 import { ApprovalsSection } from "./Approvals";
+import { TeamsSection } from "./Teams";
 import { WorktreesSection, refreshWorktrees } from "./Worktrees";
 import { MobileSection } from "./Mobile";
 import { ProcessesSection } from "./Processes";
@@ -23,7 +24,7 @@ import { trNoop } from "../../../i18n";
 
 export type SectionId =
   | "appearance" | "sessions" | "recovery" | "processes" | "updates" | "mobile" | "files"
-  | "worktrees" | "approvals" | "voice" | "keyboard" | "analytics" | "about";
+  | "worktrees" | "approvals" | "teams" | "voice" | "keyboard" | "analytics" | "about";
 
 export interface Section {
   id: SectionId;
@@ -43,6 +44,7 @@ export const SECTIONS: readonly Section[] = [
   { id: "files", label: "Files", icon: "hard-drive", component: FilesSection },
   { id: "worktrees", label: "Worktrees", icon: "folder-git-2", component: WorktreesSection, refresh: refreshWorktrees },
   { id: "approvals", label: trNoop("Automatic approvals"), icon: "shield-check", component: ApprovalsSection },
+  { id: "teams", label: trNoop("Agent Teams"), icon: "users", component: TeamsSection },
   { id: "voice", label: trNoop("Voice input"), icon: "mic", component: VoiceSection, refresh: refreshVoice },
   { id: "keyboard", label: "Keyboard", icon: "keyboard", component: KeyboardSection },
   { id: "analytics", label: trNoop("Private analytics"), icon: "gauge", component: AnalyticsSection },

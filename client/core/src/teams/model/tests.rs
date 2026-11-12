@@ -769,3 +769,77 @@ fn generations_do_not_accumulate_for_retired_teams() {
         model.generations.len()
     );
 }
+
+/// A page names the cursor it was read from (second review, findings 2, 3
+/// and 13): the views keep list pages by their cursor and never take a later
+/// waiting page for the first one. The first page names none, and its
+/// serialized view is unchanged.
+#[test]
+fn a_page_names_the_cursor_it_was_read_from() {
+    let now = Instant::now();
+    let mut model = TeamsModel::default();
+    model.follow(follow_all(TEAM), now);
+    let first = model.apply(&TeamRead::List { after: None }, Ok(list_reply()), now);
+    let TeamsUpdate::List(view) = &first[0].1 else {
+        panic!("a list update")
+    };
+    assert_eq!(view.after, None);
+    assert!(first[0].1.payload().get("after").is_none());
+    assert!(model.page("list", Some("t1.next")));
+    let later = model.apply(
+        &TeamRead::List {
+            after: Some("t1.next".into()),
+        },
+        Ok(list_reply()),
+        now,
+    );
+    let TeamsUpdate::List(view) = &later[0].1 else {
+        panic!("a list update for the later page")
+    };
+    assert_eq!(view.after.as_deref(), Some("t1.next"));
+    assert_eq!(later[0].1.payload()["after"], "t1.next");
+
+    let waiting = model.apply(&TeamRead::Waiting { after: None }, Ok(waiting_reply()), now);
+    let TeamsUpdate::Waiting(view) = &waiting[0].1 else {
+        panic!("a waiting update")
+    };
+    assert_eq!(view.after, None);
+    assert!(model.page("waiting", Some("w1.next")));
+    let later = model.apply(
+        &TeamRead::Waiting {
+            after: Some("w1.next".into()),
+        },
+        Ok(waiting_reply()),
+        now,
+    );
+    let TeamsUpdate::Waiting(view) = &later[0].1 else {
+        panic!("a later waiting update")
+    };
+    assert_eq!(view.after.as_deref(), Some("w1.next"));
+}
+
+#[test]
+fn a_team_view_names_its_queue_page() {
+    let now = Instant::now();
+    let mut model = TeamsModel::default();
+    model.follow(follow_all(TEAM), now);
+    let out = watched(&mut model, now, TEAM);
+    let (_, TeamsUpdate::Team(view)) = out
+        .iter()
+        .find(|(key, _)| key == &team_key("team", TEAM))
+        .unwrap()
+    else {
+        panic!("a team view")
+    };
+    assert_eq!(view.after, None);
+    assert!(model.page(&team_key("team", TEAM), Some("t1.q2")));
+    let read = TeamRead::Queue {
+        team: TEAM.to_owned(),
+        after: Some("t1.q2".into()),
+    };
+    let out = model.apply(&read, Ok(queue(TEAM)), now);
+    let TeamsUpdate::Team(view) = &out[0].1 else {
+        panic!("a team view of the later page")
+    };
+    assert_eq!(view.after.as_deref(), Some("t1.q2"));
+}
