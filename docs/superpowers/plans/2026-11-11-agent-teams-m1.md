@@ -1892,6 +1892,23 @@ nothing is sent, and the task goes back to the lead at once with a
 sentence that says why, without a failure gate or a retry. A new execution
 for the same member with the full prompt is not part of this.
 
+**A subagent count is settled only when every child that may run now is
+counted.** A fleet row carries a member's active subagents as a count with
+a flag beside it, and the reader ignored the flag. The flag does not mean
+one thing: for the hook-fed sources of Claude, Codex and Kimi's own roster
+it only says that ended, interrupted or pruned children are no longer
+listed, which is history; for Kimi's profile groups and for a DeepSeek
+session's catalog it says that children which may be running now could not
+be counted (2026-11-12). The reader decides by the row's `subagent_source`.
+History never keeps a member. An incomplete count about children that may
+run now is unknown: the member is not free and gives no presence, and when
+a ready task needs it the unreadable-member card says that the state of
+some of its subagents cannot be settled. A count above zero is work,
+settled or not. A source the reader does not know is unknown, and a guard
+fails when a producer writes one the reader has not classified. A DeepSeek
+member is never free until the host's list carries a complete job summary:
+the tests' list answer holds only the keys the host sends.
+
 **Known limit: the key of a task that was closed before the stop.** After a
 stop the service clears the team key of the tasks that were open at the
 stop and of released stages. A task accepted or cancelled earlier keeps its
