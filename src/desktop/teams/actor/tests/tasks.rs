@@ -498,3 +498,21 @@ fn a_healthy_answer_step_does_not_reclassify_a_failed_team_card_as_sweep_health(
 mod budget;
 mod receipts;
 mod vanished;
+
+/// A stage command's cutting-over sentence reaches the retry card cleaned.
+#[test]
+fn a_stage_commands_cutting_over_sentence_reaches_its_card_clean() {
+    let (mut h, _, _) = wanted();
+    let machine = h.store.team(TEAM).unwrap().unwrap().home;
+    let mut a = super::super::Runtime::open(h.temp.path(), &machine).unwrap();
+    let mut p = Fake {
+        stage_reply: Some(TaskReply::CuttingOver {
+            reason: super::hostile_sentence(),
+        }),
+        ..Default::default()
+    };
+    for now in [100, 60_100, 180_100, 420_100] {
+        tick(&mut h, &mut a, &mut p, now);
+    }
+    super::assert_clean(&super::blocked_cards(&h), "stage");
+}

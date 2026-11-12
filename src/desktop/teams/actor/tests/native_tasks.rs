@@ -323,3 +323,104 @@ fn literal_cancel_replies_keep_release_distinct_until_the_store_fact() {
         .is_err());
     }
 }
+
+/// A stage or clear command's refusal is recorded cleaned: decoded by the
+/// production command, recorded through the operation the actor applies,
+/// read back from the store and from the lead's item.
+#[test]
+fn a_stage_or_clear_refusal_is_recorded_without_control_characters() {
+    let refusal = |team: &str, node: u32, id: Option<&str>| {
+        let mut reply = json!({"schema":1,"team":team,"node":node,"state":"refused","error":super::hostile_sentence()});
+        if let Some(id) = id {
+            reply["id"] = json!(id);
+        }
+        crate::desktop::teams::child::FIXTURE_EXIT
+            .with(|s| *s.borrow_mut() = Some(reply.to_string().into_bytes()));
+    };
+    // Creation refused: the stage's outcome and the lead's item.
+    let (mut h, e) = reserved();
+    let team = h.store.team(TEAM).unwrap().unwrap();
+    refusal(&e.team, e.node, Some(&e.request_id));
+    let TaskReply::Refused { reason } = super::production::native(&h)
+        .stage(&team, &e, &uuid::Uuid::new_v4().to_string())
+        .unwrap()
+    else {
+        panic!("not a refusal")
+    };
+    h.run(
+        &service(),
+        Operation::StageTaskOutcome {
+            effect_request_id: e.request_id.clone(),
+            outcome: StageTaskOutcome::Refused { reason },
+        },
+    )
+    .unwrap();
+    let outcome: String = h
+        .store
+        .db
+        .as_ref()
+        .unwrap()
+        .query_row(
+            "SELECT outcome FROM stage_tasks WHERE team=?1 AND node=?2",
+            rusqlite::params![TEAM, e.node],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let outcome: serde_json::Value = serde_json::from_str(&outcome).unwrap();
+    let stored = outcome["refused"]["reason"]
+        .as_str()
+        .or_else(|| outcome["Refused"]["reason"].as_str())
+        .or_else(|| outcome["reason"].as_str())
+        .unwrap_or_else(|| panic!("{outcome}"))
+        .to_owned();
+    super::assert_clean(&[stored], "stage");
+    let items: Vec<String> = h
+        .store
+        .inbox(TEAM, 200, None)
+        .unwrap()
+        .rows
+        .into_iter()
+        .map(|i| i.text)
+        .collect();
+    // The lead's item carries the command's words cleaned; the item's own
+    // line breaks are its template's.
+    let told = items
+        .iter()
+        .find(|t| t.contains("busy busy busy"))
+        .unwrap_or_else(|| panic!("{items:?}"));
+    assert!(
+        !told.chars().any(|c| c.is_control() && c != '\n'),
+        "{told:?}"
+    );
+    // Clearing refused: the recorded key-clear reason.
+    let (mut h, keyed) = released();
+    let team = h.store.team(TEAM).unwrap().unwrap();
+    refusal(TEAM, keyed.node, None);
+    let TaskReply::Refused { reason } = super::production::native(&h)
+        .clear_stage(&team, &keyed, &uuid::Uuid::new_v4().to_string())
+        .unwrap()
+    else {
+        panic!("not a refusal")
+    };
+    h.run(
+        &service(),
+        Operation::RecordKeyClear {
+            node: keyed.node,
+            state: crate::teams::ops::KeyClearState::Refused,
+            reason,
+        },
+    )
+    .unwrap();
+    let stored: String = h
+        .store
+        .db
+        .as_ref()
+        .unwrap()
+        .query_row(
+            "SELECT reason FROM key_clears WHERE team=?1 AND node=?2",
+            rusqlite::params![TEAM, keyed.node],
+            |r| r.get(0),
+        )
+        .unwrap();
+    super::assert_clean(&[stored], "clear");
+}

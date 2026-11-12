@@ -9,6 +9,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import shlex
 import signal
 import socket
 import subprocess
@@ -375,6 +376,49 @@ class HostStartedByHgs(Hosted, unittest.TestCase):
                     followup = self.shell(rerun, 'HGS_IDENTITY_CHILD_CALL', agent_id=next(iter(child)), timeout=90)
                     self.assertOwnMarkers(followup['env'], rerun)
                     self.assertEqual(followup['env']['DSH_SESSION_ID'], result['env']['DSH_SESSION_ID'])
+
+    def test_a_running_jobs_output_never_shows_its_live_token(self):
+        # zerus-ppd26.5: a background job that prints its environment while it
+        # runs keeps its token live; what the host's socket serves hides it.
+        session = self.launch()
+        seen = self.root / 'probes' / (uuid.uuid4().hex[:12] + '.token')
+        script = ("import os, time; token = os.environ['HGS_DSH_CALL_TOKEN']; "
+                  "print('HGS_DSH_CALL_TOKEN=' + token, flush=True); "
+                  f"open({str(seen)!r}, 'w').write(token); time.sleep(60)")
+        request = {'request_id': str(uuid.uuid4()), 'expected_run_id': session['run_id'],
+                   'expected_conversation_id': session['conversation_id'],
+                   'text': 'HGS_IDENTITY_BACKGROUND_FIXTURE ' + shlex.join([sys.executable, '-I', '-c', script])}
+        self.call('send', session['name'], '--json', input=json.dumps(request))
+        until = time.monotonic() + 60
+        while not seen.exists() and time.monotonic() < until:
+            time.sleep(.1)
+        token = seen.read_text()
+        self.assertRegex(token, '^[0-9a-f]{64}$')
+        self.assertTrue(self.rpc('call-token', {'token': token})['known'], 'the running job keeps its token live')
+        generation = self.rpc('ping')['generation']
+        output = None
+        while time.monotonic() < until:
+            jobs = [job for job in self.rpc('inspect', {'sessionId': session['conversation_id']}).get('jobs') or []
+                    if job.get('status') == 'running']
+            if jobs:
+                output = self.rpc('job-output', {'generation': generation, 'sessionId': session['conversation_id'],
+                                                 'jobId': jobs[0]['id'], 'owner': jobs[0]['owner']})
+                if 'HGS_DSH_CALL_TOKEN=' in output['output']:
+                    break
+            time.sleep(.2)
+        self.assertIsNotNone(output)
+        self.assertIn('HGS_DSH_CALL_TOKEN=[hidden call token]', output['output'])
+        self.assertNotIn(token, json.dumps(output))
+        # A reply and an error that echo a request carry no live token either
+        # (zerus-ppd26.13, OWN1): the native error names the session it was given.
+        echoed = self.rpc('session-action', {'sessionId': token, 'action': 'pause', 'generation': 'other'})
+        self.assertEqual(echoed['sessionId'], '[hidden call token]')
+        with self.assertRaises(RuntimeError) as refused:
+            self.rpc('workspace', {'sessionId': token})
+        self.assertIn('[hidden call token]', str(refused.exception))
+        self.assertNotIn(token, str(refused.exception))
+        self.rpc('job-stop', {'generation': generation, 'sessionId': session['conversation_id'],
+                              'jobId': jobs[0]['id'], 'owner': jobs[0]['owner']})
 
     def test_no_tool_call_holds_a_descriptor_of_the_host_socket(self):
         # zerus-ppd26 Part B: peer credentials name the process that created the

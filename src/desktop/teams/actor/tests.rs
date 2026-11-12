@@ -42,6 +42,34 @@ fn actor_ledger_rejects_large_rows_and_unprivate_files() {
 }
 
 use super::ports::Result;
+
+/// A command sentence with control characters, whitespace runs and more than
+/// any cut: what a broken or hostile command could answer.
+pub(super) fn hostile_sentence() -> String {
+    format!(
+        "{}{}",
+        "busy\u{0007} \t\n\u{001B}\u{0000}\u{009B}".repeat(200),
+        "x".repeat(600)
+    )
+}
+/// The texts of the actor's retry cards, open or closed.
+pub(super) fn blocked_cards(h: &Harness) -> Vec<String> {
+    let cards = h.store.cards(TEAM, 200, None).unwrap().rows;
+    cards
+        .into_iter()
+        .filter(|c| c.kind == "team_actor_blocked")
+        .map(|c| c.text)
+        .collect()
+}
+/// A command's sentence reached the card cleaned: no control character,
+/// whitespace normalized.
+pub(super) fn assert_clean(texts: &[String], case: &str) {
+    assert!(!texts.is_empty(), "{case}: no card");
+    for text in texts {
+        assert!(!text.chars().any(char::is_control), "{case}: {text:?}");
+        assert!(text.contains("busy busy busy"), "{case}: {text}");
+    }
+}
 use crate::teams::{ops::tests::*, store::Store};
 use zerus_team_plan::model::*;
 mod cancel;
@@ -145,6 +173,10 @@ pub(super) mod producers;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 mod cancel_recovery;
 
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+mod handles;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+mod real_rows;
 mod retry_cards;
 mod unstaffed;
 
@@ -152,7 +184,21 @@ mod unstaffed;
 mod retired_stage;
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
+pub(in crate::desktop::teams) mod rows;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+mod subagent_rows;
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 mod cleanup_bound;
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+mod unreadable;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+mod unreadable_handles;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+mod unreadable_stop;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+mod handed;
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 mod cancel_progress;

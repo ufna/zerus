@@ -58,6 +58,7 @@ pub(in crate::desktop::teams::confirm) fn sample() -> (Binding, Facts, Snapshot)
         exit_identity: String::new(),
         archive: None,
         receipt_at: None,
+        restore_refusal: None,
         questions: vec![question],
     };
     (binding, facts, snapshot)
@@ -297,4 +298,102 @@ fn a_consistent_folder_prompt_after_session_start_is_manual() {
     s.questions[0]["conversation_id"] = json!(b.conversation);
     session(&b, &s).unwrap();
     assert!(trust(&b, &s).is_err());
+}
+
+/// Claude Code 2.1.322's startup card as `hgs inspect` showed it for a
+/// generated member in the first real-agent probe, with synthetic paths and
+/// identifiers of the same lengths. Its conversation is null, not empty.
+const REAL_CLAUDE_CARD: &str =
+    include_str!("../../../../../tests/fixtures/claude-folder-trust-card-2.1.322.json");
+
+pub(in crate::desktop::teams::confirm) fn real_card() -> (Binding, Snapshot) {
+    let (mut b, _, mut s) = sample();
+    let card: Value = serde_json::from_str(REAL_CLAUDE_CARD).unwrap();
+    let body = card["questions"][0]["body"].as_str().unwrap();
+    let folder = body.split_once("\n\n").unwrap().0.to_owned();
+    let run = card["run_id"].as_str().unwrap().to_owned();
+    (b.folder, s.folder) = (folder.clone(), folder);
+    (b.run, s.run) = (run.clone(), run);
+    s.questions = vec![card];
+    (b, s)
+}
+
+#[test]
+fn a_real_startup_card_with_a_null_conversation_is_eligible() {
+    let (b, s) = real_card();
+    assert!(s.questions[0]["conversation_id"].is_null());
+    assert_eq!(s.conversation, "");
+    assert_eq!(trust(&b, &s).unwrap(), s.questions[0]);
+    // An empty string is the same absent conversation, as today.
+    let mut empty = s.clone();
+    empty.questions[0]["conversation_id"] = json!("");
+    trust(&b, &empty).unwrap();
+}
+
+#[test]
+fn only_an_absent_conversation_matches_a_startup_snapshot() {
+    let (b, s) = real_card();
+    let mut missing = s.clone();
+    missing.questions[0]
+        .as_object_mut()
+        .unwrap()
+        .remove("conversation_id");
+    let mut cases = vec![("missing", missing)];
+    for (name, value) in [
+        ("named", json!("conversation-1")),
+        ("number", json!(0)),
+        ("false", json!(false)),
+        ("list", json!([])),
+        ("object", json!({})),
+    ] {
+        let mut other = s.clone();
+        other.questions[0]["conversation_id"] = value;
+        cases.push((name, other));
+    }
+    // The run and the question hash stay bound as before.
+    for (name, value) in [("run_id", json!(null)), ("run_id", json!(""))] {
+        let mut other = s.clone();
+        other.questions[0][name] = value;
+        cases.push((name, other));
+    }
+    let mut hash = s.clone();
+    hash.questions[0]["question_hash"] = json!(null);
+    cases.push(("hash", hash));
+    for (name, case) in cases {
+        assert_eq!(
+            trust(&b, &case).unwrap_err(),
+            if name == "hash" {
+                "The prompt hash is unavailable"
+            } else {
+                "The prompt identity changed"
+            },
+            "{name}"
+        );
+    }
+    // A null card in a session that has a conversation is never a startup.
+    let (mut b, mut s) = real_card();
+    b.conversation = "conversation-1".into();
+    s.conversation = b.conversation.clone();
+    assert!(trust(&b, &s).is_err());
+}
+
+/// zerus-63rru.60: each producer's startup card, its conversation null as the
+/// producers copy it, is the snapshot's startup prompt (the snapshot reads
+/// the same record's null as "").
+#[test]
+fn each_producers_startup_card_is_eligible() {
+    for agent in ["claude", "codex", "kimi"] {
+        let (mut b, _, mut s) = sample();
+        let card = crate::state::trust_fixture::startup_card(agent);
+        assert!(card["conversation_id"].is_null(), "{agent}");
+        b.agent = agent.into();
+        b.folder = crate::state::trust_fixture::FOLDER.into();
+        b.run = card["run_id"].as_str().unwrap().into();
+        s.agent = b.agent.clone();
+        s.folder = b.folder.clone();
+        s.run = b.run.clone();
+        s.conversation = String::new();
+        s.questions = vec![card.clone()];
+        assert_eq!(trust(&b, &s), Ok(card), "{agent}");
+    }
 }

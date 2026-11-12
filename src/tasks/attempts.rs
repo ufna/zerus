@@ -321,7 +321,17 @@ pub(super) fn freeze(
     // The hourly limit is counted in the final admission only: no scan of
     // the project's tasks here, outside every bound (#1519 R2).
     let id = uuid::Uuid::new_v4().to_string();
-    let request = render(&settings, 0, task, project_name, to, pin, who, &id)?;
+    let request = render(
+        &settings,
+        0,
+        task,
+        project_name,
+        to,
+        pin,
+        who,
+        &id,
+        prepare_failed,
+    )?;
     let view = task.view().map_err(fail)?;
     Ok(Frozen {
         id,
@@ -344,6 +354,7 @@ pub(super) fn render(
     pin: bool,
     who: &Actor,
     id: &str,
+    refused: fn(String) -> Error,
 ) -> Result<Value> {
     settings.check_agent(who, to, true, starts).map_err(fail)?;
     let mut view = task.view().map_err(fail)?;
@@ -354,7 +365,15 @@ pub(super) fn render(
     let (mut prompt, attachments) =
         super::dispatch_content(settings, &view, project_name, subagent)?;
     super::controls::pin_dispatch(&mut prompt, project_name, &view.id, id);
-    crate::state::prepare_task_reply(to, "", id, &prompt, &attachments).map_err(fail)
+    crate::state::prepare_task_reply(
+        to,
+        "",
+        id,
+        &prompt,
+        &attachments,
+        crate::state::Continuation::SameRun,
+    )
+    .map_err(refused)
 }
 
 /// A `task send` or `task handoff` through the attempt admission. `Some`
@@ -443,6 +462,7 @@ pub(super) fn send(
             pin,
             who,
             &frozen.id,
+            prepare_failed,
         ) {
             Ok(request) if request == frozen.request => {}
             Ok(_) => return refuse("changed", super::dispatch::CHANGED.into()),
@@ -570,7 +590,25 @@ pub(super) fn reopen_request(
     to: &SessionKey,
     dispatch: &str,
 ) -> Result<Value> {
-    reopen_request_from(project_name, view, id, text, files, to, dispatch, None)
+    reopen_request_from(
+        project_name,
+        view,
+        id,
+        text,
+        files,
+        to,
+        dispatch,
+        None,
+        prepare_failed,
+        crate::state::Continuation::SameRun,
+    )
+}
+
+/// How the task commands other than a team's delivery answer a member
+/// session's refusal of a prepared input: a plain failure, as before. The
+/// team delivery passes its own rule refusal (zerus-63rru.58).
+pub(super) fn prepare_failed(message: String) -> Error {
+    fail(message)
 }
 
 /// The service has proved the stored return's author under its team lock.
@@ -584,6 +622,8 @@ pub(super) fn reopen_request_from(
     to: &SessionKey,
     dispatch: &str,
     notice: Option<&str>,
+    refused: fn(String) -> Error,
+    continuation: crate::state::Continuation,
 ) -> Result<Value> {
     let mut prompt = super::messages::prompt_from(
         project_name,
@@ -600,7 +640,8 @@ pub(super) fn reopen_request_from(
         .map(serde_json::to_value)
         .collect::<std::result::Result<Vec<_>, _>>()
         .map_err(fail)?;
-    crate::state::prepare_task_reply(to, dispatch, id, &prompt, &attachments).map_err(fail)
+    crate::state::prepare_task_reply(to, dispatch, id, &prompt, &attachments, continuation)
+        .map_err(refused)
 }
 
 /// A fresh reopen through the attempt admission (desktop-u's (b)). In the

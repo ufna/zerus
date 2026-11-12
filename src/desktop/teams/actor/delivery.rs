@@ -275,7 +275,11 @@ impl Runtime {
                     now,
                 )?;
             }
-            if matches!(d.outcome, Some(HandoutOutcome::Submitted { .. })) {
+            // A hand-back is settled by the store at once; nothing retries it.
+            if matches!(
+                d.outcome,
+                Some(HandoutOutcome::Submitted { .. } | HandoutOutcome::HandedBack { .. })
+            ) {
                 self.recovered(store, team, &format!("handout:{}", d.node), now)?;
             }
             d.gated = true;

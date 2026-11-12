@@ -20,6 +20,8 @@ const CODES: Codes = Codes {
     timed_out: "team_doorbell_timed_out",
     retained: "team_doorbell_retained",
 };
+/// The doorbell keeps this much of the send's stderr, its refusal.
+const REFUSAL_BYTES: usize = 8 << 10;
 /// Agents whose `hgs send` writes `input_receipts` before the first byte.
 const RECEIPTED: [&str; 3] = ["claude", "codex", "kimi"];
 
@@ -41,6 +43,9 @@ pub(super) fn deliver(n: &Native<'_>, store: &Store, ring: &Ring) -> Rung {
         &args,
         &input,
         CODES,
+        // `hgs send` refuses only on stderr; its stdout carries the receipt,
+        // which is read from the receipt store instead (zerus-63rru.57).
+        Output::StderrPrefix(REFUSAL_BYTES),
         Duration::from_secs(45),
         || {
             let tx = immediate(db)
@@ -65,7 +70,7 @@ pub(super) fn deliver(n: &Native<'_>, store: &Store, ring: &Ring) -> Rung {
         Ended::Exited { code, output } => receipt(&roots, ring, &input, code, &output),
     }
 }
-fn receipt(roots: &Roots, ring: &Ring, input: &[u8], code: i32, output: &[u8]) -> Rung {
+fn receipt(roots: &Roots, ring: &Ring, input: &[u8], code: i32, stderr: &[u8]) -> Rung {
     let digest = |bytes: &[u8]| format!("{:x}", Sha256::digest(bytes));
     let plan = send::Plan {
         session: ring.name.clone(),
@@ -85,24 +90,29 @@ fn receipt(roots: &Roots, ring: &Ring, input: &[u8], code: i32, output: &[u8]) -
             Err(why) => Rung::Uncertain(why.into()),
         },
         Err(Failure::Missing) if code != 0 && RECEIPTED.contains(&ring.agent.as_str()) => {
-            Rung::Refused(refusal(output))
+            Rung::Refused(refusal(stderr))
         }
         Err(failure) => {
             Rung::Uncertain(format!("The doorbell receipt is unavailable: {failure:?}"))
         }
     }
 }
-fn refusal(output: &[u8]) -> String {
-    let reply: serde_json::Value = serde_json::from_slice(output).unwrap_or_default();
-    let text = reply["error"]
-        .as_str()
-        .or(reply["message"].as_str())
-        .unwrap_or("");
-    let text: String = text.chars().take(512).collect();
-    if text.trim().is_empty() {
+/// The CLI's reason for a refused send: `hgs` writes a refused command as one
+/// `hgs: <reason>` line on stderr, last, after any warnings that start the same
+/// way (`cli::error_line`), and nothing on stdout (zerus-63rru.57).
+fn refusal(stderr: &[u8]) -> String {
+    let text = String::from_utf8_lossy(stderr);
+    let text = text.trim_end();
+    let last = text
+        .rfind(&format!("\n{}", crate::cli::ERROR_PREFIX))
+        .map_or(0, |at| at + 1);
+    let line = &text[last..];
+    let reason = line.strip_prefix(crate::cli::ERROR_PREFIX).unwrap_or(line);
+    let reason = crate::desktop::teams::reason_text(reason);
+    if reason.is_empty() {
         "The send was refused before any input".into()
     } else {
-        text
+        reason
     }
 }
 /// A busy writer is a certain non-start, never an Unknown.

@@ -77,8 +77,10 @@ fn open(h: &Harness) -> Vec<u64> {
         .collect()
 }
 
-#[test]
-fn more_pending_reopens_than_the_cleanup_reads_keep_their_cards_and_the_pass_goes_on() {
+/// A held reopen card, then 801 synthetic pending returns beyond the store's
+/// caps: more than the four pages of 200 the cleanup reads. Returns the held
+/// card and the last pending decision, which lies beyond those pages.
+fn beyond_the_bound() -> (Harness, Runtime, Doorbells, Vec<u64>, u64) {
     let mut h = Harness::new();
     let (node, lead) = h.reported();
     let id = h
@@ -145,6 +147,12 @@ fn more_pending_reopens_than_the_cleanup_reads_keep_their_cards_and_the_pass_goe
         .unwrap()
         .next
         .is_some());
+    (h, a, p, held, last)
+}
+
+#[test]
+fn more_pending_reopens_than_the_cleanup_reads_keep_their_cards_and_the_pass_goes_on() {
+    let (mut h, mut a, mut p, held, last) = beyond_the_bound();
     let team = h.store.team(TEAM).unwrap().unwrap();
     let legacy = format!("reopen:{last}");
     a.force_failure(
@@ -243,4 +251,37 @@ fn more_pending_reopens_than_the_cleanup_reads_keep_their_cards_and_the_pass_goe
         .get(TEAM, &format!("gate:{legacy}"))
         .unwrap()
         .is_none());
+}
+
+/// The bound's row keeps its backoff: passes that land on the row before it
+/// is due again neither read the four pages nor count another failure.
+#[test]
+fn the_bound_is_read_again_only_when_its_row_is_due() {
+    let (mut h, mut a, mut p, held, _) = beyond_the_bound();
+    h.run(&person(), Operation::Pause).unwrap();
+    let failures = |a: &Runtime| {
+        a.ledger
+            .get(TEAM, "gate:cleanup:reopens")
+            .unwrap()
+            .map(|row| row.data["failures"].clone())
+    };
+    // Every pass lands on the reopen rows: no filler, one page.
+    for second in [0i64, 10, 20, 30, 40, 50] {
+        let teams = h.store.live_teams(16, None).unwrap().rows;
+        a.page(
+            &mut h.store,
+            &mut p,
+            &teams,
+            2_000_000 + second * 1_000,
+            false,
+        )
+        .unwrap();
+        assert_eq!(failures(&a), Some(json!(1)), "second {second}");
+        assert!(open(&h).contains(&held[0]), "second {second}");
+    }
+    let teams = h.store.live_teams(16, None).unwrap().rows;
+    a.page(&mut h.store, &mut p, &teams, 2_060_000, false)
+        .unwrap();
+    assert_eq!(failures(&a), Some(json!(2)), "due again after its backoff");
+    assert!(open(&h).contains(&held[0]));
 }

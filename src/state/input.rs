@@ -1049,7 +1049,32 @@ pub(super) fn submit_task(session: &zerus_replica::SessionKey, text: &str, attac
     submit(name, request.to_string().as_bytes(), None)
 }
 
-pub(super) fn task_reply(session: &zerus_replica::SessionKey, dispatch: &str, id: &str, text: &str, attachments: &[Value]) -> Result<Value> {
+/// How a task input is bound to the task's original dispatch when it
+/// continues that dispatch, as a reopen does (zerus-63rru.64).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Continuation {
+    /// The dispatch's run, and its conversation when the receipt records one:
+    /// a task's session outside a team.
+    SameRun,
+    /// A team member, whose launch identity is checked first: the
+    /// dispatch's conversation. A resumed member keeps its launch and its
+    /// conversation, so a new run is no change; a dispatch receipt without a
+    /// conversation still needs the same run, the only thing that binds it.
+    SameConversation,
+}
+/// The team route's refusal when the member's session no longer has the
+/// conversation the task was dispatched to: a clear or a replacement.
+pub(crate) const CONVERSATION_GONE: &str =
+    "the member's session no longer has the conversation this task was dispatched to";
+
+pub(super) fn task_reply(
+    session: &zerus_replica::SessionKey,
+    dispatch: &str,
+    id: &str,
+    text: &str,
+    attachments: &[Value],
+    continuation: Continuation,
+) -> Result<Value> {
     let record = read(&session.session)?;
     let key = if string(&record, "launch_id").is_empty() { "run_id" } else { "launch_id" };
     if session.session_id.is_empty() || session.session_id != format!("{key}:{}", string(&record, key)) {
@@ -1059,9 +1084,23 @@ pub(super) fn task_reply(session: &zerus_replica::SessionKey, dispatch: &str, id
         let bytes = fs::read(absolute_root()?.join("input_receipts").join(format!("{dispatch}.json")))
             .map_err(|_| "the task dispatch receipt is unavailable; delivery is not authorized")?;
         let receipt: Value = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
-        if receipt["status"] != "submitted" || string(&receipt,"run_id") != string(&record,"run_id")
-            || !string(&receipt,"conversation_id").is_empty() && receipt["conversation_id"] != record["conversation_id"] {
-            return Err("the task's dispatched run or conversation changed; refresh or hand off the task explicitly".into());
+        let changed = || {
+            "the task's dispatched run or conversation changed; refresh or hand off the task explicitly".to_owned()
+        };
+        let same_run = string(&receipt, "run_id") == string(&record, "run_id");
+        let recorded = !string(&receipt, "conversation_id").is_empty();
+        let same_conversation =
+            !recorded || receipt["conversation_id"] == record["conversation_id"];
+        if receipt["status"] != "submitted" {
+            return Err(changed());
+        }
+        match continuation {
+            Continuation::SameRun if !same_run || !same_conversation => return Err(changed()),
+            Continuation::SameConversation if !same_conversation => {
+                return Err(CONVERSATION_GONE.into())
+            }
+            Continuation::SameConversation if !recorded && !same_run => return Err(changed()),
+            _ => {}
         }
     }
     let request = json!({"request_id":id,"text":text,"attachments":attachments,

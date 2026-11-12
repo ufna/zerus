@@ -224,15 +224,21 @@ impl Ports for Native {
         crate::teams::tasks::report(&self.config.state, task)
     }
     fn free(&mut self, team: &Team, m: &Member) -> Result<bool> {
+        Ok(self.availability(team, m)? == ports::Availability::Free)
+    }
+    /// One read: the fleet row's answer, then the session's task index for a
+    /// member that row calls free.
+    fn availability(&mut self, team: &Team, m: &Member) -> Result<ports::Availability> {
         let Some(session) = m.session.as_ref() else {
-            return Ok(false);
+            return Ok(ports::Availability::Busy);
         };
-        if session.machine != self.machine
-            || !super::availability::free(&self.config, &self.epoch, &team.id, m)?
-        {
-            return Ok(false);
+        if session.machine != self.machine {
+            return Ok(ports::Availability::Busy);
         }
-        self.unoccupied(m)
+        match super::availability::availability(&self.config, &self.epoch, &team.id, m, true)? {
+            ports::Availability::Free if !self.unoccupied(m)? => Ok(ports::Availability::Busy),
+            answer => Ok(answer),
+        }
     }
     fn repository(&mut self, team: &Team) -> Result<String> {
         self.work_repository(team)
@@ -279,10 +285,26 @@ impl Ports for Native {
 }
 pub(super) fn delivery_result(ended: Ended, id: &str) -> ports::DeliveryResult {
     if let Ended::Exited { code: 0, output } = &ended {
-        if serde_json::from_slice::<Value>(output).is_ok_and(|v| {
-            v["schema"] == 1 && v["id"] == id && v["state"] == "stale" && v["error"].is_string()
-        }) {
-            return ports::DeliveryResult::Stale;
+        if let Ok(v) = serde_json::from_slice::<Value>(output) {
+            if v["schema"] == 1 && v["id"] == id {
+                match (v["state"].as_str(), v["error"].as_str()) {
+                    (Some("stale"), Some(_)) => return ports::DeliveryResult::Stale,
+                    // The task command reserved and sent nothing, for a cause
+                    // that may pass (zerus-63rru.58): retry the same delivery.
+                    (Some("not_started"), Some(reason)) => {
+                        // Cleaned as the other delivery sentences are.
+                        let said = super::cancel::reason::spoken(&cut(reason, 2048));
+                        return ports::DeliveryResult::NotStarted {
+                            reason: if said.is_empty() {
+                                "The task writer did not start delivery".to_owned()
+                            } else {
+                                said
+                            },
+                        };
+                    }
+                    _ => {}
+                }
+            }
         }
     }
     delivery_reply(ended, id).into()
@@ -324,16 +346,19 @@ pub(super) fn decode_delivery(raw: &[u8], id: &str) -> HandoutOutcome {
         None if v["state"] == "submitted" => "",
         _ => return bad(),
     };
-    let reason = cut(
-        if error.trim().is_empty() {
-            "The task writer did not complete delivery"
-        } else {
-            error
-        },
-        2048,
-    );
+    // The command's own words, cleaned before they are recorded; a sentence
+    // with nothing readable left keeps the fixed one.
+    let said = super::cancel::reason::spoken(&cut(error, 2048));
+    let reason = if said.is_empty() {
+        "The task writer did not complete delivery".to_owned()
+    } else {
+        said
+    };
     match v["state"].as_str() {
         Some("submitted") => HandoutOutcome::Submitted { receipt: id.into() },
+        // Final only from the exact reply: the reopen's member no longer has
+        // the task's conversation (zerus-63rru.64).
+        Some("refused") if v["final"] == true => HandoutOutcome::HandedBack { reason },
         Some("refused") => HandoutOutcome::Refused { reason },
         Some("uncertain") => HandoutOutcome::Uncertain { reason },
         Some("cutting_over") => HandoutOutcome::CuttingOver { reason },

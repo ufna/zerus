@@ -73,14 +73,33 @@ export function readIdentity(dir, sessionId) {
 // started a command. The table is bounded; an evicted token is unknown.
 export const CALL_TOKEN = 'HGS_DSH_CALL_TOKEN';
 const CALL_TOKENS = 4096;
-export function callTokens(limit = CALL_TOKENS) {
-  const live = new Map(), jobs = new Map();
-  const release = token => { const entry = live.get(token); if (entry && !entry.open && entry.jobs.size === 0) live.delete(token); };
+// A conversation's calls and jobs make room only from its own oldest tokens:
+// another conversation's live token is never evicted (zerus-ppd26.5, .13).
+const CONVERSATION_TOKENS = 512;
+// What the host's socket serves in place of a live token (zerus-ppd26.5).
+export const HIDDEN_TOKEN = '[hidden call token]';
+export function callTokens(limit = CALL_TOKENS, share = CONVERSATION_TOKENS) {
+  const live = new Map(), jobs = new Map(), held = new Map();
+  const drop = token => {
+    const entry = live.get(token);
+    if (!entry) return;
+    live.delete(token);
+    for (const id of entry.jobs) jobs.delete(id);
+    const mine = held.get(entry.conversation);
+    mine?.delete(token);
+    if (mine?.size === 0) held.delete(entry.conversation);
+  };
+  const release = token => { const entry = live.get(token); if (entry && !entry.open && entry.jobs.size === 0) drop(token); };
   return {
+    // A full table holding only other conversations' live tokens issues none:
+    // that call stays unproven rather than taking another conversation's.
     open(conversation) {
+      const mine = held.get(conversation) ?? new Set();
+      while (mine.size > 0 && (mine.size >= share || live.size >= limit)) drop(mine.values().next().value);
+      if (live.size >= limit) return undefined;
       const token = randomBytes(32).toString('hex');
       live.set(token, { conversation, open: true, jobs: new Set() });
-      while (live.size > limit) live.delete(live.keys().next().value);
+      held.set(conversation, mine.add(token));
       return token;
     },
     close(token) { const entry = live.get(token); if (entry) { entry.open = false; release(token); } },
@@ -94,6 +113,26 @@ export function callTokens(limit = CALL_TOKENS) {
     },
     conversation(token) {
       return typeof token === 'string' && /^[0-9a-f]{64}$/.test(token) ? live.get(token)?.conversation : undefined;
+    },
+    // A live token printed whole never leaves the host in what its socket
+    // serves. Every 64-character window of each hex run is tested, so a token
+    // after another hex digit or a JSON-escaped control character is
+    // hidden too, and every copy of it (zerus-ppd26.13).
+    redact(text) {
+      if (live.size === 0) return text;
+      return text.replace(/[0-9a-f]{64,}/g, run => {
+        let out = '', at = 0, from = 0;
+        while (at + 64 <= run.length) {
+          if (live.has(run.slice(at, at + 64))) {
+            out += run.slice(from, at) + HIDDEN_TOKEN;
+            at += 64;
+            from = at;
+          } else {
+            at += 1;
+          }
+        }
+        return out + run.slice(from);
+      });
     },
     get size() { return live.size; },
   };
@@ -912,9 +951,9 @@ export function apply(ctx, config) {
       (async () => {
         try {
           const request = JSON.parse(Buffer.concat(chunks).toString('utf8'));
-          socket.end(JSON.stringify({ ok: true, value: await execute(request) }) + '\n');
+          socket.end(tokens.redact(JSON.stringify({ ok: true, value: await execute(request) })) + '\n');
         } catch (error) {
-          socket.end(JSON.stringify({ ok: false, error: String(error?.message ?? error), code: error?.code }) + '\n');
+          socket.end(tokens.redact(JSON.stringify({ ok: false, error: String(error?.message ?? error), code: error?.code })) + '\n');
         }
       })();
     });

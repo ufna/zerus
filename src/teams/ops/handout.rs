@@ -187,6 +187,9 @@ fn record_outcome(
     kind: &str,
 ) -> Result<()> {
     let e = read_effect(ctx, id)?;
+    if matches!(outcome, HandoutOutcome::HandedBack { .. }) && kind != "reopen" {
+        return Err(invalid("Only a reopen is handed back to the lead."));
+    }
     if e.kind != kind || e.outcome.is_some() {
         return Err(invalid(
             "Effect kind differs or its outcome was already recorded.",
@@ -229,6 +232,13 @@ fn record_outcome(
         ctx.reply.item = Some(ctx.inbox(e.node, "delivery_uncertain", why)?);
     }
     if kind == "reopen" && ctx.reopening(e.node)? {
+        if let HandoutOutcome::HandedBack { reason } = outcome {
+            // At once, never retried: the decision settled, the node held and
+            // one inbox item for the lead (zerus-63rru.64).
+            let kind = format!("reopen_handed_back:{id}");
+            ctx.reply.item = Some(super::members::hand_to_lead(ctx, e.node, &kind, reason)?);
+            return Ok(());
+        }
         ctx.settle(e.node)?;
         // A reopen that was not delivered hands the node back to the lead;
         // a delivered one ends the decision's hold with the decision.
@@ -252,7 +262,7 @@ fn outcome_state(outcome: &HandoutOutcome) -> Result<(&'static str, Option<&str>
             reason(receipt)?;
             ("submitted", None)
         }
-        HandoutOutcome::Refused { reason: r } => {
+        HandoutOutcome::Refused { reason: r } | HandoutOutcome::HandedBack { reason: r } => {
             reason(r)?;
             ("refused", None)
         }

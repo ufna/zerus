@@ -1790,6 +1790,125 @@ final input is a terminal path with no DeepSeek route, and a hosted run's
 end writes no end record. OpenCode and platforms without the proof stay
 refused as before.
 
+**A held step's card follows the hold's age, not its reason.** A step the
+service holds back (a finish, a merge or a reopen it cannot carry out yet)
+had its card keyed by the reason, so a change of reason closed the card and
+restarted the count, and a reason that alternated every minute never opened
+one (the second review of the actor, 2026-11-12). A hold is a decision and
+its generation. It is silent for its first period, three one-minute checks,
+whatever its reasons do; the first card opens when the hold's age passes
+the period, with the sentence of that pass. A change of reason neither
+restarts the age nor closes the card: the card is replaced when the new
+reason has stood for the period. A dismissal lasts while the reason is the
+same, Retry checks again on the next pass, and the card closes when the
+hold ends or another decision or generation takes the row.
+
+**One reader of a fleet row, and its keys are the producers'.** The actor
+read a member's row by names no producer writes (`subagents_active`, and a
+`state` that a live terminal row never carries) in tests whose rows were
+written by hand, so a real idle member was never free and never handed a
+task; the first run against real agents found it (2026-11-12). One module
+reads a fleet row (`actor/fleet.rs`) and lists every key it reads. A member
+is live when its `process_state` is `running`, its `runtime_state` is `live`
+and its `state` is absent or `running`; it is free when it is live, ready
+and idle and its three counts (active children, background work, open
+questions) are zero. A count that is null, absent or of another type is
+unknown: the member is never free and its presence reports nothing. The
+tests' rows come from the listing's own steps through test-only seams; one
+guard compares the committed fixture's key paths with them and another
+fails when the reader names a key no producer writes.
+
+**A member is found by its session, not by its launch's evidence.** A
+member is bound to the launch that started it, and every later read of the
+member (is it free, which run is current, who is its parent) went through
+that launch's start file, which the product removes when the launch is
+confirmed finished and after seven days at the latest. A member whose start
+file was gone could not be read and was never handed a task (found by
+tracing the producer, 2026-11-12). The store keeps a durable handle beside
+the binding: the session's own ID, written once by the service when the
+binding is verified, in a companion table that an older build ignores, so
+the layout does not move. Every later read resolves the session's current
+record through the handle with bounded point reads and requires that
+record to carry the bound launch and the member's agent and folder. What
+does not resolve is named and never free: `Gone` (archived, forgotten, or
+rewritten without its ID), `Changed` (the record carries another launch),
+`StartedFresh`, `Unavailable` (a fault or a bound) and `NoHandle`. A fresh
+start ends the binding: it does not carry the launch's identity to the new
+conversation, because that identity is also the task executor's key and
+carrying it would change what a fresh start means for every task; that is
+the owner's decision and is not taken here. One session is one member's. A
+member bound before the handle existed gets it on its first verified free
+check, from the launch ledger, a completed resume or the evidence while it
+lasts.
+
+**A member a ready task needs and that cannot be read gets one card.** A
+member whose state could not be read (its session record gone or changed, a
+count never reported, a fault) was never free, and nobody was told: a ready
+task waited behind it without a word (2026-11-12). The reader gives one of
+three answers, `Free`, `Busy` or `Unreadable` with its fact. A count names
+the member unreadable only when the member is live, ready and idle, every
+known count is zero and this one is unknown; a working member with an
+unknown count is busy, and so is a member with no row. Whether anybody
+needs the member is the kernel's own selection run once more, with the
+unreadable members counted as free and placed after every known member and
+with tasks already handed out held, so the card never names a task another
+member is taking. The row uses the held steps' period: silent for the
+period, then one card with the sentence alone and the decisions Retry and
+Acknowledged; a changed fact or task replaces the card only when it has
+stood for the period. The row ends on the first pass in which nobody needs
+the member: no ready task, a paused team, the member readable again,
+another member taking the task, the member stopped or archived. A team's
+Stop closes the card in the Stop itself.
+
+**A hand-out that fails before its reservation says that nothing was
+sent.** The task command that hands a team's task to a member answered
+every failure alike, with an error exit that the actor reads as uncertain.
+So a failure that provably came before anything durable (a team store that
+was busy, a setting that could not be read) raised a card and was never
+tried again (2026-11-12). The window is exact: it opens when the command
+has seen, under the task's admission, that no attempt exists for its ID,
+and closes at the reservation's save; nothing in it is durable. Inside it a
+rule's refusal stays a refusal and a stale observation stays stale; every
+other failure answers `not_started` with its cause, exit 0 and the echoed
+ID, which the actor reads as nothing sent and tries again with its
+backoff. A member session that refuses the prepared input (its identity,
+run or conversation changed) is a refusal, not an uncertainty. Outside the
+window nothing changes: a failure before the attempt read or after the
+reservation is still unknown, and a recovery never sends.
+
+**A reopen is checked by the member's launch and conversation, not by its
+run.** A reopen sends a member a short message for a task it already has.
+Before sending, the task command required the run and the conversation the
+task had been handed to. A member resumed since the hand-out has a new run
+and the same conversation: it still holds the task's whole context, but its
+reopen was refused, retried and ended as a card. A member that cleared its
+conversation was refused too, but only after retries and without its
+reason (2026-11-12). On the team route the check compares the member's
+launch identity and the conversation; every caller outside a team keeps
+the same-run comparison, and a source guard lists every use of the new
+one. A resumed member's reopen goes through. A member that cleared its
+conversation no longer has the task: its reopen is refused and final,
+nothing is sent, and the task goes back to the lead at once with a
+sentence that says why, without a failure gate or a retry. A new execution
+for the same member with the full prompt is not part of this.
+
+**A subagent count is settled only when every child that may run now is
+counted.** A fleet row carries a member's active subagents as a count with
+a flag beside it, and the reader ignored the flag. The flag does not mean
+one thing: for the hook-fed sources of Claude, Codex and Kimi's own roster
+it only says that ended, interrupted or pruned children are no longer
+listed, which is history; for Kimi's profile groups and for a DeepSeek
+session's catalog it says that children which may be running now could not
+be counted (2026-11-12). The reader decides by the row's `subagent_source`.
+History never keeps a member. An incomplete count about children that may
+run now is unknown: the member is not free and gives no presence, and when
+a ready task needs it the unreadable-member card says that the state of
+some of its subagents cannot be settled. A count above zero is work,
+settled or not. A source the reader does not know is unknown, and a guard
+fails when a producer writes one the reader has not classified. A DeepSeek
+member is never free until the host's list carries a complete job summary:
+the tests' list answer holds only the keys the host sends.
+
 **Known limit: the key of a task that was closed before the stop.** After a
 stop the service clears the team key of the tasks that were open at the
 stop and of released stages. A task accepted or cancelled earlier keeps its

@@ -74,14 +74,23 @@ fn native_report_reads_the_holders_bounded_text_without_changing_the_document() 
     assert_eq!(tasks.load(&task.uuid).unwrap().revision(), before);
 }
 
-pub(super) fn resumed(state: &std::path::Path, team: &str, member: &str, launch: &str, run: &str) {
+/// The standing confirmation's completed resume of `member`'s `launch`,
+/// naming `session` and the run it resumed into.
+pub(super) fn resumed(
+    state: &std::path::Path,
+    team: &str,
+    member: &str,
+    launch: &str,
+    session: &str,
+    run: &str,
+) {
     let dir = state.join("teams/standing-v1");
     crate::platform::private_dir(&dir).unwrap();
     let path = dir.join("journal.sqlite3");
     crate::sqlite_file::create(&path).unwrap();
     let db = rusqlite::Connection::open(path).unwrap();
     db.execute_batch("CREATE TABLE IF NOT EXISTS standing_bindings(team TEXT,member TEXT,launch TEXT,parent TEXT,body TEXT,receipt_ms INTEGER,PRIMARY KEY(team,member,launch))").unwrap();
-    let body = json!({"team":team,"member":member,"person":"local","machine":"machine","role":"developer","agent":"codex","account":"account","launch":launch,"session":"native-session","run":run,"conversation":"conversation","folder":"fixture-folder","common":"fixture-repo","nonce":"nonce"});
+    let body = json!({"team":team,"member":member,"person":"local","machine":"machine","role":"developer","agent":"codex","account":"account","launch":launch,"session":session,"run":run,"conversation":"conversation","folder":"fixture-folder","common":"fixture-repo","nonce":"nonce"});
     db.execute(
         "INSERT OR REPLACE INTO standing_bindings VALUES(?1,?2,?3,'completed',?4,100)",
         rusqlite::params![team, member, launch, body.to_string()],
@@ -89,32 +98,62 @@ pub(super) fn resumed(state: &std::path::Path, team: &str, member: &str, launch:
     .unwrap();
 }
 
+/// The session record of `member`, bound to `launch`, on run `run`: the
+/// supervisor's own record, in the ID layout, where its ID finds it.
+fn session_record(native: &super::super::native::Native, member: &Member, launch: &str, run: &str) {
+    use std::os::unix::fs::PermissionsExt;
+    let sid = super::production::fleet::session_of(&member.id);
+    let mut record = crate::state::listing_fixture::launched_record(
+        &member.agent,
+        &format!("{}/resumed", member.agent),
+        launch,
+        &sid,
+        run,
+        &member.worktree,
+        &member.account,
+    );
+    crate::state::listing_fixture::confirmed(&mut record, "conversation");
+    record["layout"] = json!("id");
+    let dir = native.config.state.join("sessions");
+    crate::platform::private_dir(&dir).unwrap();
+    let path = dir.join(format!("{sid}.json"));
+    std::fs::write(&path, record.to_string()).unwrap();
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).unwrap();
+}
+
+/// A completed resume only names the session (zerus-63rru.53): the current
+/// run is the one the session's record carries now, and liveness is still
+/// the fleet row's.
 #[test]
-fn current_run_prefers_the_completed_resume_and_does_not_infer_liveness() {
+fn a_completed_resume_names_the_session_whose_record_gives_the_run() {
+    use super::super::availability::{current, Current, Unresolved};
     let h = Harness::new();
     let native = super::production::native(&h);
+    let launch = "00000000-0000-4000-8000-0000000000c1";
     let mut member = fixture()
         .members
         .into_iter()
         .find(|m| m.id == "m1")
         .unwrap();
     member.session = Some(zerus_team_plan::model::SessionKey {
-        machine: "machine".into(),
-        session_id: "launch_id:launch".into(),
+        machine: native.machine.clone(),
+        session_id: format!("launch_id:{launch}"),
     });
     assert_eq!(
-        super::super::availability::current_run(&native.config, TEAM, &member).unwrap(),
-        None
+        current(&native.config, TEAM, &member, false).unwrap(),
+        Current::Unresolved(Unresolved::NoHandle)
     );
-    resumed(h.temp.path(), TEAM, "m1", "launch", "resumed-run");
+    session_record(&native, &member, launch, "record-run");
+    let session = super::production::fleet::session_of("m1");
+    resumed(h.temp.path(), TEAM, "m1", launch, &session, "receipt-run");
     assert_eq!(
         super::super::availability::current_run(&native.config, TEAM, &member)
             .unwrap()
             .as_deref(),
-        Some("resumed-run")
+        Some("record-run")
     );
     assert!(!matches!(
-        super::super::availability::free(&native.config, "epoch", TEAM, &member),
+        super::super::availability::free(&native.config, "epoch", TEAM, &member, false),
         Ok(true)
     ));
 }
@@ -139,13 +178,8 @@ impl Ports for ResumeAtView {
         let free = self.native.free(t, m)?;
         self.free_reads += 1;
         if self.free_reads == 1 {
-            resumed(
-                &self.native.config.state,
-                &t.id,
-                &m.id,
-                &self.launch,
-                "new-run",
-            );
+            // A person resumes the member: its record moves to a new run.
+            session_record(&self.native, m, &self.launch, "new-run");
         }
         Ok(free)
     }
@@ -185,7 +219,17 @@ fn fleet_runs(native: &super::super::native::Native, launch: &str) {
     )
     .unwrap();
     for (run, activity) in [("old-run", "idle"), ("new-run", "busy")] {
-        let row=json!({"name":"codex/resumed","agent":"codex","cmd":"codex","state":"running","process_state":"running","activity":activity,"phase":"idle","run_id":run,"launch_id":launch,"conversation_id":"conversation","conversation_state":"active","process_work":{"count":0},"subagents_active":0,"optional_questions":{"count":0}}).to_string();
+        let row = super::rows::seed_row(
+            "codex",
+            &[
+                ("name", json!("codex/resumed")),
+                ("activity", json!(activity)),
+                ("run_id", json!(run)),
+                ("launch_id", json!(launch)),
+                ("conversation_id", json!("conversation")),
+            ],
+        )
+        .to_string();
         db.execute(
             "INSERT INTO desktop_catalog_rows(generation,key,json,bytes) VALUES(1,?1,?2,?3)",
             rusqlite::params![format!("run:{run}"), row, row.len()],
@@ -219,7 +263,18 @@ fn a_member_resumed_between_the_view_and_the_intent_is_rechecked_on_its_new_run(
     .unwrap();
     let node = h.add(&person(), 1);
     fleet_runs(&native, &launch);
-    resumed(h.temp.path(), TEAM, "m1", &launch, "old-run");
+    let bound = h.store.member(TEAM, "m1").unwrap().unwrap();
+    session_record(&native, &bound, &launch, "old-run");
+    // The launcher records the handle at binding.
+    h.run(
+        &service(),
+        crate::teams::ops::Operation::SetMemberHandle {
+            member: "m1".into(),
+            session_id: super::production::fleet::session_of("m1"),
+            label_hint: String::new(),
+        },
+    )
+    .unwrap();
     super::super::native::TEST_INVENTORY.with(|s| {
         *s.borrow_mut() = Some(json!({"node_id":native.machine,"organization":{"projects":[]}}))
     });

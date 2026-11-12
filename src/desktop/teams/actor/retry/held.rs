@@ -38,7 +38,7 @@ impl Runtime {
         self.for_row(|a| a.hold_write(store, team, (&key, decision, generation), &reason, now))?;
         Ok(false)
     }
-    fn hold_write(
+    pub(super) fn hold_write(
         &mut self,
         store: &mut Store,
         team: &Team,
@@ -112,7 +112,11 @@ impl Runtime {
                     .transpose()?
                     .flatten()
                     .is_some_and(|c| c.state == "open");
-                let close = "The reason this task waits changed; its new card states it.";
+                let close = if key.starts_with("unreadable:") {
+                    "What cannot be read about this member changed; its new card states it."
+                } else {
+                    "The reason this task waits changed; its new card states it."
+                };
                 if !self.replace_gate_card(
                     store,
                     team,

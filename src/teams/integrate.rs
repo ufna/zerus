@@ -394,6 +394,11 @@ pub fn sync_base(repo: &Repo, branch: &str, base_branch: &str) -> Result<Merge, 
     )
 }
 
+/// The outer deadline of one Git: every command of a report, a merge or a
+/// sync shares it. Tests open Git with the same value unless a fixture's
+/// budget lengthens it for one deliberately huge case.
+const GIT_BUDGET: Duration = Duration::from_secs(30);
+
 fn unavailable(message: impl Into<String>) -> Problem {
     Problem::new(code::INTEGRATION_UNAVAILABLE, message)
 }
@@ -475,7 +480,18 @@ impl Git {
             overrides: Vec::new(),
             filters: BTreeSet::new(),
             repository_drivers: false,
-            deadline: Instant::now() + Duration::from_secs(30),
+            // One deadline covers every command of this Git. Only a test
+            // fixture can lengthen it, for a deliberately huge case.
+            deadline: Instant::now() + {
+                #[cfg(test)]
+                {
+                    tests::budget()
+                }
+                #[cfg(not(test))]
+                {
+                    GIT_BUDGET
+                }
+            },
             ref_budget: None,
         };
         if !supported_version(&git.read(&["--version"])?) {
@@ -942,6 +958,24 @@ mod tests {
     }
 
     thread_local! { static PROGRAM: RefCell<Option<PathBuf>> = const {RefCell::new(None)}; }
+    thread_local! { static BUDGET: Cell<Option<Duration>> = const { Cell::new(None) }; }
+    /// The outer deadline of a Git opened on this thread: the production
+    /// [`GIT_BUDGET`] unless a fixture's [`Budget`] lengthens it.
+    pub(super) fn budget() -> Duration {
+        BUDGET.with(|budget| budget.get()).unwrap_or(GIT_BUDGET)
+    }
+    /// A longer outer Git deadline for this thread while the guard lives.
+    struct Budget(Option<Duration>);
+    impl Budget {
+        fn set(budget: Duration) -> Self {
+            Self(BUDGET.with(|slot| slot.replace(Some(budget))))
+        }
+    }
+    impl Drop for Budget {
+        fn drop(&mut self) {
+            BUDGET.with(|slot| slot.set(self.0));
+        }
+    }
     pub(super) fn program() -> PathBuf {
         PROGRAM
             .with(|p| p.borrow().clone())
@@ -2067,6 +2101,11 @@ mod tests {
             &["update-ref", "refs/heads/main", &commit, &f.base],
         );
         git(&f.main, &["config", "filter.unused.clean", "cat"]);
+        // Each report below runs about 440 Git processes under one outer
+        // deadline: 7 seconds of the production 30 on an idle machine, all of
+        // it on a loaded one. This case is about the batches, not the
+        // machine's speed, so its deadline is one no slow machine reaches.
+        let _budget = Budget::set(Duration::from_secs(600));
         let before = (f.refs(), snapshot(&f.main));
         assert_eq!(
             reported_commit(&f.main).unwrap(),
@@ -2090,6 +2129,21 @@ mod tests {
             "integration_unavailable"
         );
         assert_eq!(before, (f.refs(), snapshot(&f.main)));
+    }
+
+    /// A Git opened through the product path, with no fixture budget, has
+    /// the production thirty seconds.
+    #[test]
+    fn a_git_without_a_fixture_budget_has_the_production_thirty_seconds() {
+        let f = Fixture::new();
+        let before = Instant::now();
+        let git = Git::repo(&f.repo).unwrap();
+        let after = Instant::now();
+        let thirty = Duration::from_secs(30);
+        assert!(
+            git.deadline >= before + thirty && git.deadline <= after + thirty,
+            "the outer deadline is not thirty seconds from the opening"
+        );
     }
 
     #[test]

@@ -352,3 +352,212 @@ fn project_limit_refusals_keep_the_task_commands_stable_reason_unchanged() {
         }
     }
 }
+
+/// zerus-63rru.58: the real task command's answer for a hand-out kept from
+/// its reservation, read by the actor's own reader. Returns what the command
+/// did and what the actor read: its delivery result, and what it records.
+fn blocked(
+    blocked: crate::tasks::Blocked,
+) -> (
+    crate::tasks::RealHandout,
+    super::super::ports::DeliveryResult,
+) {
+    use crate::desktop::teams::child::Ended;
+    let mut read = None;
+    let seen = crate::tasks::blocked_handout(blocked, |code, output, id| {
+        let ended = Ended::Exited {
+            code,
+            output: output.to_vec(),
+        };
+        let result = delivery_result(ended, id);
+        read = Some(result.clone());
+        match result {
+            super::super::ports::DeliveryResult::Outcome(outcome) => Some(outcome),
+            _ => None,
+        }
+    });
+    eprintln!("the real command and what the actor records: {seen:?}, read as {read:?}");
+    assert!(
+        !seen.task_changed && !seen.reserved && !seen.team_changed && !seen.offered,
+        "nothing written, reserved or offered: {seen:?}"
+    );
+    (seen, read.expect("the actor read the command"))
+}
+
+/// When the person archived a member's stopped session, a hand-out to it is
+/// refused before any reservation: the task command resolves the member's
+/// binding by its exact identity and finds none. The actor records that
+/// refusal: never uncertain, no decision for anyone.
+#[test]
+fn a_hand_out_whose_member_session_is_gone_is_refused_with_its_reason() {
+    let (seen, _) = blocked(crate::tasks::Blocked::ArchivedMember);
+    assert_eq!((seen.exit, &seen.error), (0, &None), "{seen:?}");
+    assert!(seen.stdout.contains(r#""state":"refused""#), "{seen:?}");
+    assert_eq!(
+        seen.outcome,
+        Some(HandoutOutcome::Refused {
+            reason: "Bound session identity is unavailable.".into()
+        })
+    );
+    assert_eq!(seen.effect, "refused", "{seen:?}");
+    assert!(seen.inbox.is_empty(), "{seen:?}");
+}
+
+/// A team store that another writer holds keeps a hand-out from beginning its
+/// reservation. Nothing was reserved or sent and the cause passes: the
+/// command answers a non-start, which the actor retries; the effect stays
+/// reserved and no one is asked to decide.
+#[test]
+fn a_busy_team_store_before_the_reservation_is_a_non_start_the_actor_retries() {
+    let (seen, read) = blocked(crate::tasks::Blocked::BusyTeamStore);
+    assert_eq!((seen.exit, &seen.error), (0, &None), "{seen:?}");
+    assert!(seen.stdout.contains(r#""state":"not_started""#), "{seen:?}");
+    assert!(
+        matches!(&read, super::super::ports::DeliveryResult::NotStarted { reason } if reason.contains("locked")),
+        "{read:?}"
+    );
+    assert_eq!(seen.outcome, None, "{seen:?}");
+    assert_eq!(seen.effect, "reserved", "{seen:?}");
+    assert!(seen.inbox.is_empty(), "{seen:?}");
+}
+
+/// A read that fails before the admission sends nothing either: here this
+/// computer's session bindings, one of whose directories cannot be listed.
+/// The command answers a non-start, which the actor retries.
+#[test]
+fn a_failed_read_before_the_admission_is_a_non_start_the_actor_retries() {
+    let (seen, read) = blocked(crate::tasks::Blocked::UnlistableBindings);
+    assert_eq!((seen.exit, &seen.error), (0, &None), "{seen:?}");
+    assert!(seen.stdout.contains(r#""state":"not_started""#), "{seen:?}");
+    assert!(
+        matches!(&read, super::super::ports::DeliveryResult::NotStarted { reason } if reason.contains("denied")),
+        "{read:?}"
+    );
+    assert_eq!(seen.outcome, None, "{seen:?}");
+    assert_eq!(seen.effect, "reserved", "{seen:?}");
+    assert!(seen.inbox.is_empty(), "{seen:?}");
+}
+
+/// Witness b: a reopen after the member cleared its conversation. The real
+/// SessionStart hook of a `/clear` gave the member's session a new
+/// conversation since the hand-out, so the reopen's "continue this task"
+/// would land in a conversation that never had the task. The task command
+/// refuses it for good before any reservation (zerus-63rru.64), the actor
+/// reads that as a hand-back, and the store hands the task to the lead at
+/// once: the effect refused and one inbox item that says why.
+#[test]
+fn a_reopen_after_the_member_cleared_its_conversation_is_handed_back_to_the_lead() {
+    let (seen, _) = blocked(crate::tasks::Blocked::ClearedMember);
+    let (before, after) = seen.conversation.clone().unwrap();
+    assert_ne!(before, after, "the real hook changed the conversation");
+    assert_eq!((seen.exit, &seen.error), (0, &None), "{seen:?}");
+    assert!(
+        seen.stdout.contains(r#""state":"refused""#) && seen.stdout.contains(r#""final":true"#),
+        "{seen:?}"
+    );
+    assert!(
+        matches!(&seen.outcome, Some(HandoutOutcome::HandedBack { reason })
+            if reason.contains("no longer has this task's conversation")),
+        "{seen:?}"
+    );
+    assert_eq!(seen.effect, "refused", "{seen:?}");
+    assert!(
+        seen.inbox
+            .iter()
+            .any(|kind| kind.starts_with("reopen_handed_back:")),
+        "{seen:?}"
+    );
+}
+
+/// A hand-out command's own sentence is recorded cleaned: decoded by the
+/// production deliver, recorded through the outcome operation the actor
+/// applies, read back from the store.
+#[test]
+fn a_delivery_commands_sentence_is_recorded_without_control_characters() {
+    use super::*;
+    for state in ["refused", "uncertain", "cutting_over"] {
+        let mut h = Harness::new();
+        h.bind("m1");
+        let node = h.add(&person(), 1);
+        let id = h.intent(node, "m1");
+        let team = h.store.team(TEAM).unwrap().unwrap();
+        let row = h.store.node(TEAM, node).unwrap().unwrap();
+        let member = h.store.member(TEAM, "m1").unwrap().unwrap();
+        let mut native = super::production::native(&h);
+        let reply =
+            serde_json::json!({"schema":1,"id":id,"state":state,"error":super::hostile_sentence()});
+        crate::desktop::teams::child::FIXTURE_EXIT
+            .with(|s| *s.borrow_mut() = Some(reply.to_string().into_bytes()));
+        let super::super::ports::DeliveryResult::Outcome(outcome) =
+            super::super::ports::Ports::deliver(&mut native, &team, &row, &member, &id)
+        else {
+            panic!("{state}: no outcome")
+        };
+        h.outcome(&id, outcome);
+        let recorded = h
+            .store
+            .effects(TEAM, 200, None)
+            .unwrap()
+            .rows
+            .into_iter()
+            .find(|e| e.request_id == id)
+            .and_then(|e| e.outcome)
+            .map(|v| serde_json::from_value::<HandoutOutcome>(v).unwrap())
+            .expect("the recorded outcome");
+        let reason = match recorded {
+            HandoutOutcome::Refused { reason }
+            | HandoutOutcome::Uncertain { reason }
+            | HandoutOutcome::CuttingOver { reason } => reason,
+            other => panic!("{state}: {other:?}"),
+        };
+        super::assert_clean(&[reason], state);
+        let items = h.store.inbox(TEAM, 200, None).unwrap().rows;
+        // Items keep their own line breaks; no other control character.
+        assert!(
+            items
+                .iter()
+                .all(|i| !i.text.chars().any(|c| c.is_control() && c != '\n')),
+            "{state}: an inbox item carries a control character"
+        );
+    }
+}
+
+/// A non-start's sentence is cleaned as the other delivery sentences are:
+/// decoded by the production deliver, recorded as the actor records it after
+/// five non-starts (a refusal), read back from the store (zerus-63rru.58).
+#[test]
+fn a_non_starts_sentence_is_recorded_without_control_characters() {
+    use super::*;
+    let mut h = Harness::new();
+    h.bind("m1");
+    let node = h.add(&person(), 1);
+    let id = h.intent(node, "m1");
+    let team = h.store.team(TEAM).unwrap().unwrap();
+    let row = h.store.node(TEAM, node).unwrap().unwrap();
+    let member = h.store.member(TEAM, "m1").unwrap().unwrap();
+    let mut native = super::production::native(&h);
+    let reply = serde_json::json!({"schema":1,"id":id,"state":"not_started","error":super::hostile_sentence()});
+    crate::desktop::teams::child::FIXTURE_EXIT
+        .with(|s| *s.borrow_mut() = Some(reply.to_string().into_bytes()));
+    let super::super::ports::DeliveryResult::NotStarted { reason } =
+        super::super::ports::Ports::deliver(&mut native, &team, &row, &member, &id)
+    else {
+        panic!("no non-start")
+    };
+    super::assert_clean(std::slice::from_ref(&reason), "not_started");
+    h.outcome(&id, HandoutOutcome::Refused { reason });
+    let recorded = h
+        .store
+        .effects(TEAM, 200, None)
+        .unwrap()
+        .rows
+        .into_iter()
+        .find(|e| e.request_id == id)
+        .and_then(|e| e.outcome)
+        .map(|v| serde_json::from_value::<HandoutOutcome>(v).unwrap())
+        .expect("the recorded outcome");
+    let HandoutOutcome::Refused { reason } = recorded else {
+        panic!("{recorded:?}")
+    };
+    super::assert_clean(&[reason], "not_started recorded");
+}
