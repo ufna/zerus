@@ -85,7 +85,7 @@ impl Runtime {
                 self.ledger.remove(&row)?;
             }
         }
-        if *budget == 0 || !self.due(store, team, &key, &stamp, now)? {
+        if *budget == 0 || !self.due(store, team, &key, "", now)? {
             return Ok(());
         }
         *budget -= 1;

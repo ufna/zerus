@@ -7,6 +7,7 @@ use crate::teams::{
 #[derive(Default)]
 struct Work {
     text: Option<String>,
+    fail_observe: bool,
     start_ms: Option<i64>,
     clock_check: Option<std::path::PathBuf>,
     dirty: bool,
@@ -49,6 +50,9 @@ impl Ports for Work {
     }
     fn observe(&mut self, _: &mut Store, _: &TaskRef) -> Result<()> {
         self.phase.push("observe");
+        if self.fail_observe {
+            return Err(super::super::problem("Fixture task observation failed"));
+        }
         Ok(())
     }
     fn free(&mut self, _: &Team, _: &Member) -> Result<bool> {
@@ -1106,3 +1110,5 @@ mod r2;
 mod r3;
 
 mod reviewed;
+
+mod finish_backoff;
