@@ -437,3 +437,24 @@ fn a_failed_read_before_the_admission_is_a_non_start_the_actor_retries() {
     assert_eq!(seen.effect, "reserved", "{seen:?}");
     assert!(seen.inbox.is_empty(), "{seen:?}");
 }
+
+/// Witness b: a reopen after the member cleared its conversation. The real
+/// SessionStart hook of a `/clear` gave the member's session a new
+/// conversation since the hand-out, so the reopen's "continue this task"
+/// would land in a conversation that never had the task. The task command
+/// refuses it with its reason before any reservation, and the actor records
+/// that refusal: never uncertain.
+#[test]
+fn a_reopen_after_the_member_cleared_its_conversation_is_refused_with_its_reason() {
+    let (seen, _) = blocked(crate::tasks::Blocked::ClearedMember);
+    let (before, after) = seen.conversation.clone().unwrap();
+    assert_ne!(before, after, "the real hook changed the conversation");
+    assert_eq!((seen.exit, &seen.error), (0, &None), "{seen:?}");
+    assert!(seen.stdout.contains(r#""state":"refused""#), "{seen:?}");
+    assert!(
+        matches!(&seen.outcome, Some(HandoutOutcome::Refused { reason })
+            if reason.contains("dispatched run or conversation changed")),
+        "{seen:?}"
+    );
+    assert_eq!(seen.effect, "refused", "{seen:?}");
+}
