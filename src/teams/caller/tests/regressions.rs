@@ -184,7 +184,7 @@ impl Tree {
     /// this boot's identity.
     fn host(&self, folder: &str, pid: u32, birth: &str) {
         let record = json!({"state":"running","version":2,"pid":pid,"birth":birth,
-            "pid_file":[1,2,3,4],"boot":crate::state::session_graph::caller_boot()});
+            "pid_file":[1,2,3,4],"boot":crate::state::session_graph::written_boot()});
         self.identity(folder, &record);
         let dir = self.state.join("dsh/hosts").join(folder);
         std::fs::write(dir.join("host.pid"), pid.to_string()).unwrap();
@@ -649,11 +649,85 @@ fn a_stray_file_in_the_host_records_is_not_a_host_folder() {
     assert!(text.contains(INSIDE_HOST), "{text}");
 }
 
+/// A link in place of a host folder may lead to a live host: it refuses like
+/// an unreadable record, as a link in place of `dsh` or `hosts` does.
+#[test]
+fn a_link_in_place_of_a_host_folder_refuses() {
+    let tree = Tree::start("person", None);
+    tree.host(HOST, tree.pid, &tree.birth);
+    let hosts = tree.state.join("dsh/hosts");
+    let moved = tree.temp.path().join("moved-host");
+    std::fs::rename(hosts.join(HOST), &moved).unwrap();
+    std::os::unix::fs::symlink(&moved, hosts.join(HOST)).unwrap();
+    let text = tree.answer();
+    assert!(text.contains("PROBE refused:invalid_state"), "{text}");
+    assert!(
+        text.contains("Cannot verify a recorded agent host"),
+        "{text}"
+    );
+}
+
+/// The listing stops at 1024 entries of any kind, before it looks at the
+/// next one, and says that stray entries are the cause: with no host folder,
+/// and with a live host's folder beside 1024 files.
+#[test]
+fn stray_entries_past_the_listing_bound_refuse_and_say_so() {
+    for with_host in [false, true] {
+        let tree = Tree::start("person", None);
+        let hosts = tree.state.join("dsh/hosts");
+        std::fs::create_dir_all(&hosts).unwrap();
+        let files = if with_host { 1024 } else { 1025 };
+        for n in 0..files {
+            std::fs::write(hosts.join(format!("stray-{n}")), b"").unwrap();
+        }
+        if with_host {
+            tree.host(HOST, tree.pid, &tree.birth);
+        }
+        let text = tree.answer();
+        assert!(text.contains("PROBE refused:invalid_state"), "{text}");
+        assert!(text.contains("more than 1024 entries"), "{text}");
+        assert!(
+            !text.contains("host folders than the check reads"),
+            "{text}"
+        );
+    }
+}
+
+/// A state folder that exists but cannot be searched is not a missing one:
+/// it refuses. (Skipped as root, which searches any folder.)
+#[test]
+fn a_state_folder_that_cannot_be_searched_refuses() {
+    use std::os::unix::fs::PermissionsExt;
+    if unsafe { libc::geteuid() } == 0 {
+        eprintln!("skipped: root searches every folder");
+        return;
+    }
+    struct Searchable(PathBuf);
+    impl Drop for Searchable {
+        fn drop(&mut self) {
+            let _ = std::fs::set_permissions(&self.0, std::fs::Permissions::from_mode(0o700));
+        }
+    }
+    let tree = Tree::start("person", None);
+    let locked = tree.temp.path().join("locked");
+    std::fs::create_dir_all(locked.join("state")).unwrap();
+    std::fs::remove_dir_all(&tree.state).unwrap();
+    std::os::unix::fs::symlink(locked.join("state"), &tree.state).unwrap();
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+    let _restore = Searchable(locked);
+    let text = tree.answer();
+    assert!(text.contains("PROBE refused:invalid_state"), "{text}");
+    assert!(
+        text.contains("Cannot verify a recorded agent host"),
+        "{text}"
+    );
+}
+
 /// A starting record names the previous host with its birth (refused inside
 /// it) and a PID file without one (refused as unverifiable).
 #[test]
 fn a_starting_record_names_its_previous_host_and_its_pid_file() {
-    let boot = crate::state::session_graph::caller_boot();
+    let boot = crate::state::session_graph::written_boot();
     let tree = Tree::start("person", None);
     tree.identity(HOST, &json!({"state":"starting","version":2,
         "attempt":"11111111-1111-4111-8111-111111111111","boot":boot,
@@ -686,7 +760,7 @@ fn a_starting_records_launcher_is_not_a_host() {
         HOST,
         &json!({"state":"starting","version":2,
         "attempt":"11111111-1111-4111-8111-111111111111",
-        "boot":crate::state::session_graph::caller_boot(),
+        "boot":crate::state::session_graph::written_boot(),
         "launcher":{"pid":tree.pid,"birth":tree.birth},"phase":"spawning",
         "pid_file":null,"previous":null}),
     );
@@ -703,7 +777,7 @@ fn a_host_from_an_unconfirmed_start_is_named_nowhere_the_stated_limit() {
         HOST,
         &json!({"state":"starting","version":2,
         "attempt":"11111111-1111-4111-8111-111111111111",
-        "boot":crate::state::session_graph::caller_boot(),
+        "boot":crate::state::session_graph::written_boot(),
         "launcher":{"pid":(1u32 << 30),"birth":"1"},"phase":"spawning",
         "pid_file":null,"previous":null}),
     );

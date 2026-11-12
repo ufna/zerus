@@ -15,7 +15,7 @@ use std::{
 };
 
 #[cfg(unix)]
-mod host_identity;
+pub(in crate::state) mod host_identity;
 
 #[cfg(unix)]
 // Resident bridge identity is independent of the installed harness release.

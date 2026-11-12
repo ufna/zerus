@@ -22,10 +22,20 @@ pub(crate) fn caller_hosts() -> std::result::Result<Hosts, Unread> {
     caller_hosts::hosts()
 }
 
-/// This boot's identity, as the tests' host records carry it.
+/// This boot's identity as the host's own writer reads it, for the tests'
+/// host records.
 #[cfg(all(test, unix))]
-pub(crate) fn caller_boot() -> Option<String> {
-    caller_hosts::current_boot()
+pub(crate) fn written_boot() -> Option<String> {
+    caller_hosts::written_boot()
+}
+
+/// What one host folder names under `boot`, for the tests of the record rules.
+#[cfg(all(test, unix))]
+pub(crate) fn caller_host_folder(
+    folder: &Path,
+    boot: Option<&str>,
+) -> std::result::Result<Vec<Named>, &'static str> {
+    caller_hosts::named_in(folder, boot)
 }
 
 /// The backend of a session a resident host serves, when a marked claim

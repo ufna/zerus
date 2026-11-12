@@ -179,6 +179,13 @@ fn too_many_hosts() -> Problem {
         "This computer records more DeepSeek agent host folders than the check reads (64, one per agent home); this interim check cannot establish a person as caller.")
 }
 
+/// The listing stops at 1024 entries of any kind; past that the cause is
+/// stray entries beside the host folders, and the sentence says so.
+fn too_many_entries() -> Problem {
+    Problem::new(code::INVALID_STATE,
+        "The DeepSeek agent host records of this computer hold more than 1024 entries, most of them stray files beside the host folders; this interim check cannot establish a person as caller.")
+}
+
 fn host_unreadable() -> Problem {
     Problem::new(code::INVALID_STATE,
         "Cannot verify a recorded agent host of this computer; this interim check cannot establish a person as caller.")
@@ -293,7 +300,8 @@ fn agent_above() -> Result<Option<Problem>, Problem> {
         }
     }
     let hosts = crate::state::session_graph::caller_hosts().map_err(|unread| match unread {
-        crate::state::session_graph::Unread::TooMany => too_many_hosts(),
+        crate::state::session_graph::Unread::TooManyFolders => too_many_hosts(),
+        crate::state::session_graph::Unread::TooManyEntries => too_many_entries(),
         crate::state::session_graph::Unread::Unreadable => host_unreadable(),
     })?;
     if hosted(&chain, &hosts, |pid| {

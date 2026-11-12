@@ -6,18 +6,24 @@
 //! DeepSeek hosts are this computer's own records: one folder per agent home
 //! under `dsh/hosts`, each naming the host's process ID and its birth as
 //! `platform::process_identity` reads it. A state folder, `dsh` or `hosts`
-//! that does not exist records no host. Only directories are host folders: a
-//! stray file such as `.DS_Store`, or a link, is not one. More than
-//! [`HOST_FOLDERS`] directories, or more than [`HOST_ENTRIES`] entries of any
-//! kind, refuse with their own sentence, since these folders are kept per
-//! agent home and nothing removes them. A folder or record that exists but
-//! cannot be read, or is malformed, refuses.
+//! that does not exist records no host. Only directories are host folders,
+//! and a plain file beside them, such as `.DS_Store`, is ignored. Any other
+//! entry refuses like an unreadable record: a link in place of a host folder
+//! may lead to a live host. More than [`HOST_FOLDERS`] directories, or more
+//! than [`HOST_ENTRIES`] entries of any kind, refuse with a sentence of their
+//! own, since these folders are kept per agent home and nothing removes them.
+//! A folder or record that exists but cannot be read, or is malformed,
+//! refuses.
 //!
 //! A running record names its host with its birth. A starting record names
 //! the previous host with its birth and a PID file without one; its launcher
 //! is the `hgs` that started the attempt, not a host. An older `host.pid`
-//! names a process ID without a birth. A record that carries the identity of
-//! another boot names no process of this boot. A host spawned by an attempt
+//! names a process ID without a birth, unless the record publishes that same
+//! ID. A record that carries the identity of another boot, in the very form
+//! the writer stamps, names no process of this boot; this boot is read by the
+//! writer's own function, so the two cannot drift apart, and a record whose
+//! boot is in any other form, or a boot that cannot be read, sets nothing
+//! aside. A host spawned by an attempt
 //! that ended unconfirmed, before its running record, is named nowhere and
 //! passes as a person: the stated limit.
 //!
@@ -46,11 +52,15 @@ const UNREADABLE: &str = "Cannot verify a recorded agent host.";
 /// Why the recorded hosts were not read.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Unread {
-    /// A folder or record that exists cannot be read, or is malformed.
+    /// A folder or record that exists cannot be read, is malformed, or is
+    /// neither a folder nor a plain file.
     Unreadable,
-    /// More host folders, or entries, than the bound.
+    /// More host folders than [`HOST_FOLDERS`].
     #[cfg_attr(not(unix), allow(dead_code))]
-    TooMany,
+    TooManyFolders,
+    /// More entries of any kind than [`HOST_ENTRIES`].
+    #[cfg_attr(not(unix), allow(dead_code))]
+    TooManyEntries,
 }
 
 /// A process that a host record names, with the birth it recorded, or none
@@ -109,14 +119,18 @@ fn deepseek() -> std::result::Result<Vec<Named>, Unread> {
         .enumerate()
     {
         if count == HOST_ENTRIES {
-            return Err(Unread::TooMany);
+            return Err(Unread::TooManyEntries);
         }
         let entry = entry.map_err(|_| Unread::Unreadable)?;
-        if !entry.file_type().map_err(|_| Unread::Unreadable)?.is_dir() {
+        let kind = entry.file_type().map_err(|_| Unread::Unreadable)?;
+        if kind.is_file() {
             continue;
         }
+        if !kind.is_dir() {
+            return Err(Unread::Unreadable);
+        }
         if folders.len() == HOST_FOLDERS {
-            return Err(Unread::TooMany);
+            return Err(Unread::TooManyFolders);
         }
         let name = entry.file_name();
         folders.push(name.into_string().map_err(|_| Unread::Unreadable)?);
@@ -137,75 +151,51 @@ fn deepseek() -> std::result::Result<Vec<Named>, Unread> {
     Err(Unread::Unreadable)
 }
 
-/// This boot's identity, read as `dsh/host_identity.rs` records it; none when
-/// it cannot be read, and then no record is set aside for its boot.
-#[cfg(target_os = "linux")]
-fn boot() -> Option<String> {
-    use std::io::Read;
-    let mut text = String::new();
-    std::fs::File::open("/proc/sys/kernel/random/boot_id")
-        .ok()?
-        .take(129)
-        .read_to_string(&mut text)
-        .ok()?;
-    canonical_boot(text.trim())
-}
-
-#[cfg(target_os = "macos")]
-fn boot() -> Option<String> {
-    let mut bytes = [0u8; 129];
-    let mut size = bytes.len();
-    // SAFETY: the name is NUL-terminated and the buffer is valid for `size`.
-    let code = unsafe {
-        libc::sysctlbyname(
-            c"kern.bootsessionuuid".as_ptr(),
-            bytes.as_mut_ptr().cast(),
-            &mut size,
-            std::ptr::null_mut(),
-            0,
-        )
-    };
-    if code != 0 || !(1..=128).contains(&size) {
-        return None;
-    }
-    canonical_boot(
-        std::str::from_utf8(&bytes[..size])
-            .ok()?
-            .trim_end_matches('\0'),
-    )
-}
-
-#[cfg(all(unix, not(any(target_os = "linux", target_os = "macos"))))]
-fn boot() -> Option<String> {
-    None
-}
-
+/// This boot's identity through the very read that stamps the records,
+/// `dsh/host_identity.rs`'s own, so the reader and the writer cannot drift
+/// apart. A read that fails sets nothing aside.
 #[cfg(unix)]
-fn canonical_boot(text: &str) -> Option<String> {
-    uuid::Uuid::parse_str(text)
-        .ok()
-        .filter(|id| !id.is_nil())
-        .map(|id| id.to_string())
+fn boot() -> Option<String> {
+    crate::state::dsh::host_identity::boot().ok()
 }
 
-/// This boot's identity for the tests' records.
+/// Whether a record's boot is in the one form the writer stamps: a canonical,
+/// lowercase, hyphenated UUID that is not nil. Any other form is an unknown
+/// boot, and the record stays named.
+#[cfg(unix)]
+fn written_form(value: &str) -> bool {
+    uuid::Uuid::parse_str(value).is_ok_and(|id| !id.is_nil() && id.to_string() == value)
+}
+
+/// This boot's identity as the writer reads it, for the tests' records.
 #[cfg(all(test, unix))]
-pub(super) fn current_boot() -> Option<String> {
-    boot()
+pub(super) fn written_boot() -> Option<String> {
+    crate::state::dsh::host_identity::boot().ok()
+}
+
+/// What one host folder names, for the tests of the record rules.
+#[cfg(all(test, unix))]
+pub(super) fn named_in(
+    folder: &Path,
+    boot: Option<&str>,
+) -> std::result::Result<Vec<Named>, &'static str> {
+    let folder = std::fs::canonicalize(folder).map_err(|_| UNREADABLE)?;
+    host(&Directory::open(&folder).map_err(|_| UNREADABLE)?, boot)
 }
 
 /// What one host folder names: a running host with its birth; a starting
 /// record's previous host with its birth and its PID file without one; an
-/// older `host.pid` without one, unless it is the running host's own. A record
-/// that carries another boot's identity than `boot` names nothing.
+/// older `host.pid` without one, unless the record publishes that same ID
+/// (the running host's, or the starting record's PID file). A record that
+/// carries another boot's identity than `boot` names nothing, and so neither
+/// does the `host.pid` it publishes.
 #[cfg(unix)]
 fn host(folder: &Directory, boot: Option<&str>) -> std::result::Result<Vec<Named>, &'static str> {
     let other_boot = |record: &Value| {
         boot.is_some_and(|now| {
             record["boot"]
                 .as_str()
-                .and_then(canonical_boot)
-                .is_some_and(|then| then != now)
+                .is_some_and(|then| written_form(then) && then != now)
         })
     };
     let identity = small(folder, "host.identity.json", 1024)?;
@@ -219,13 +209,13 @@ fn host(folder: &Directory, boot: Option<&str>) -> std::result::Result<Vec<Named
         })
         .transpose()?;
     let mut named = Vec::new();
-    let mut running = None;
+    let mut published = None;
     if let Some(bytes) = identity {
         let value: Value = serde_json::from_slice(&bytes).map_err(|_| UNREADABLE)?;
         match value["state"].as_str() {
             Some("running") => {
                 let host = recorded(&value)?;
-                running = Some(host.pid);
+                published = Some(host.pid);
                 if !other_boot(&value) {
                     named.push(host);
                 }
@@ -243,6 +233,7 @@ fn host(folder: &Directory, boot: Option<&str>) -> std::result::Result<Vec<Named
                             .ok_or(UNREADABLE)
                     })
                     .transpose()?;
+                published = pid_file;
                 if !other_boot(&value) {
                     if let Some(previous) = previous.filter(|_| !other_boot(&value["previous"])) {
                         named.push(previous);
@@ -255,7 +246,7 @@ fn host(folder: &Directory, boot: Option<&str>) -> std::result::Result<Vec<Named
             _ => return Err(UNREADABLE),
         }
     }
-    if let Some(pid) = legacy.filter(|pid| Some(*pid) != running) {
+    if let Some(pid) = legacy.filter(|pid| Some(*pid) != published) {
         named.push(Named { pid, birth: None });
     }
     Ok(named)

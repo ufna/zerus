@@ -11,7 +11,7 @@ pub(crate) use sends::{
     caller_record_for, forward_send, send_origin, Hosts, Unread,
 };
 #[cfg(all(test, unix))]
-pub(crate) use sends::caller_boot;
+pub(crate) use sends::{caller_host_folder, written_boot};
 #[cfg(test)]
 pub(crate) use sends::{caller_binding_reads, caller_host_reads, Named, Registered};
 
