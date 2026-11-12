@@ -35,10 +35,11 @@ fn answered(row: &Entry) -> String {
         format!("The cancel command answered {state}: {own}.")
     }
 }
-/// A sentence taken from the command's answer: its control characters are
-/// removed, whitespace is normalized and it is cut to 512 bytes. Every place
-/// that takes the command's own words uses this.
-pub(super) fn spoken(text: &str) -> String {
+/// A sentence taken from a task command's answer (cancel, finish, stage or
+/// clear): its control characters are removed, whitespace is normalized and
+/// it is cut to 512 bytes. Every place that takes a command's own words into
+/// an outcome, a row's error or a card uses this, whichever step carries it.
+pub(in crate::desktop::teams::actor) fn spoken(text: &str) -> String {
     let text: String = text
         .chars()
         .filter(|c| !c.is_control() || c.is_whitespace())

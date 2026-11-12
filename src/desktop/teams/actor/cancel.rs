@@ -5,7 +5,7 @@ use ports::TaskReply;
 use serde::{Deserialize, Serialize};
 mod answer;
 mod observe;
-mod reason;
+pub(super) mod reason;
 pub(super) mod settle;
 pub(in crate::desktop::teams) use answer::{Answer, Attempt, FactOutcome};
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
