@@ -28,6 +28,13 @@ thread_local! {
     pub(crate) static TRANSITIONS: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
 }
 
+/// Read first and read only, before any statement of the store's schema
+/// extensions that can write: a store marked by a newer program is refused
+/// and nothing is written to it. The transition reads the mark again inside
+/// its own transaction.
+pub(in crate::teams::store) fn fence(db: &Connection) -> Result<()> {
+    marked(db).map(|_| ())
+}
 pub(in crate::teams::store) fn extend(db: &Connection) -> Result<()> {
     if marked(db)? {
         return Ok(());
