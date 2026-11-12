@@ -1473,7 +1473,14 @@ person had started it again with conflicting attempts archived the node as
 accepted while the task was active. And a recorded answer that ends a
 pipeline's stage does for the pipeline what the observation of that end
 does: the parent returns to the lead, whether the stage had no task and
-was recorded as cancelled, or was released.
+was recorded as cancelled, or was released. And a cancel that is still
+pending is settled by its own answer or by an observation, never by the
+archiving of its node: a stop that found a kept node, accepted in the
+store while its task ran again, created the cancel, released the binding,
+and the archiving step then settled that cancel with the rest, so the
+service never asked for the task to be cancelled and the cleanup passed it
+without an answer (the same confirmation). A node with a pending cancel
+stays where the cancel step finds it.
 
 **A reader of a reply ignores what it does not know.** The contract's types
 refuse unknown fields, and that stays the rule for what a person or a
