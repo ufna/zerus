@@ -23,8 +23,8 @@ the Teams service touches a real session, in order:
 
 Further classes turn one of the team's delegations
 on: folder trust by the standing confirmation (Codex selected; Claude Code waits for
-zerus-63rru.60) and the resume of an exited member (Claude Code selected; Codex waits
-for zerus-63rru.54 and zerus-63rru.56).
+the owner's decision zerus-63rru.66) and the resume of an exited member (Claude Code
+and Codex selected).
 The model is a keyless loopback fixture; no account and no model quota are used.
 Run through `scripts/ci/agent-compatibility.py --contract teams`, or directly with
 HGS_TEST_BIN and HGS_CLAUDE_TEST_BIN or HGS_CODEX_TEST_BIN, outside any agent
@@ -54,11 +54,9 @@ import teams_native_fixture as fixture
 # coverage and the docs naming the same fixes.
 WAITING = {
     # Whole classes the teams contract does not select yet.
-    'NativeTeamsTrustClaude': 'zerus-63rru.60 (src/approval_log/team.rs:58 compares the real card\'s null '
-                              'conversation with an empty string, so the audit reservation fails before delivery; '
-                              'run tc12)',
-    'NativeTeamsResumeCodex': 'zerus-63rru.54 (a resumed Codex member never gets its brief: the observe call is refused) '
-                              'and zerus-63rru.56 (three states read as an exit)',
+    'NativeTeamsTrustClaude': 'zerus-63rru.66 (the owner decides whether the standing confirmation may answer a '
+                              'card whose recorded trust is the main checkout; and test_2: a later prompt in the '
+                              'same run gets no card, a question to the coordinator; runs tc20, tc21, tp1, tp3)',
 }
 
 
@@ -990,7 +988,7 @@ class NativeTeamsResumeUnworkedClaude(UnworkedResumeContract, unittest.TestCase)
 
 @unittest.skipUnless(os.environ.get('HGS_CODEX_TEST_BIN') and fixture.HGS, 'Set HGS_TEST_BIN and HGS_CODEX_TEST_BIN')
 class NativeTeamsResumeCodex(ResumeContract, unittest.TestCase):
-    """Waiting (WAITING): not selected by the teams contract until zerus-63rru.54 and .56."""
+    """Selected since zerus-63rru.54 and .56 (tx10: the brief arrives, nothing is read as an exit)."""
     agent = 'codex'
     variable = 'HGS_CODEX_TEST_BIN'
     exit_keys = ('/quit', 'Enter')
