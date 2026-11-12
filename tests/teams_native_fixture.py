@@ -521,6 +521,8 @@ class TeamFixture:
                     'home/.local/state', 'run', 'tmux', 'tmp', 'state', 'cfg', 'scripts', 'out', 'model', 'work'):
             (r / sub).mkdir(parents=True, exist_ok=True)
         os.chmod(r / 'run', 0o700)
+        # The person's answers start as an empty log, so a reader can tell "none" from "lost".
+        (self.evidence.folder / 'person-answers.jsonl').write_text('')
         os.chmod(r / 'tmux', 0o700)
         for name, text in (('tmux', TMUX_WRAPPER), ('ssh', REFUSE), ('scp', REFUSE), ('systemd-run', REFUSE), ('hgs', REFUSE)):
             path = r / 'bin' / name
@@ -906,39 +908,39 @@ class TeamFixture:
     JOURNAL_BOUND = 500
 
     def journal(self):
-        """Read-only: every attempt of the private approval-audit journal, in order. Its
-        question column holds the saved reservation (approval_log.rs, reserve):
-        {"question": {"source", "question_id", "run_id", ...}, "answers": [...]} and, for
-        the Teams kinds, "categories". Each row carries that question's source, ID and run
-        and the categories beside it. A row of any other shape fails the reader: an
-        unknown shape is an error, never "no match". A missing journal is an empty one."""
-        import sqlite3
-        path = Path(self.env['HGS_STATE_DIR']) / 'approval-audit/journal.sqlite3'
-        if not path.is_file():
-            return []
-        db = sqlite3.connect(f'file:{path}?mode=ro', uri=True, timeout=1)
-        try:
-            cursor = db.execute('SELECT id, request_id, at, session, provider, prompt, question, status, detail '
-                                f'FROM attempts ORDER BY id LIMIT {self.JOURNAL_BOUND + 1}')
-            cols = [c[0] for c in cursor.description]
-            rows = [dict(zip(cols, row)) for row in cursor]
-        finally:
-            db.close()
-        if len(rows) > self.JOURNAL_BOUND:
-            raise AssertionError(f'the audit journal holds more than {self.JOURNAL_BOUND} rows')
-        for row in rows:
+        """Every attempt of the approval-audit journal, read through the product's own
+        reader, hgs approval-log list (paged) and detail (src/approval_log.rs), so the
+        store's place is the product's and a moved or renamed store is followed. Each row
+        carries its question's source, ID and run and its categories. A reply or a row of
+        any other shape fails the reader: an unknown shape is an error, never "no match".
+        What this cannot catch: a product whose own writer and reader disagree on the
+        store; and the product's reader reads a store that does not exist yet as empty."""
+        entries, before = [], None
+        while True:
+            page = self.json('approval-log', 'list', stdin=json.dumps({} if before is None else {'before': before}))
+            entries.extend(self.listed(page, 'entries', 'approval-log list'))
+            if len(entries) > self.JOURNAL_BOUND:
+                raise AssertionError(f'the audit journal holds more than {self.JOURNAL_BOUND} rows')
+            before = page.get('next') if isinstance(page, dict) else None
+            if before is None:
+                break
+        rows = []
+        for entry in sorted(entries, key=lambda e: e.get('id', 0) if isinstance(e, dict) else 0):
             try:
-                saved = json.loads(row['question'])
-                question = saved['question']
+                detail = self.json('approval-log', 'detail', stdin=json.dumps({'id': entry['id']}))
+                question = detail['question']
                 fields = {key: question[key] for key in ('source', 'question_id', 'run_id')}
-                categories = saved.get('categories', [])
-                if (not all(isinstance(value, str) for value in fields.values())
-                        or not isinstance(saved['answers'], list) or not isinstance(categories, list)):
+                categories = entry['categories'] if entry['categories'] is not None else []
+                if (not all(isinstance(value, str) for value in fields.values()) or not isinstance(detail['answers'], list)
+                        or not isinstance(categories, list) or detail['id'] != entry['id']
+                        or not isinstance(entry['session'], str) or not isinstance(entry['status'], str)):
                     raise TypeError('a field has an unexpected type')
             except (ValueError, KeyError, TypeError) as error:
-                raise AssertionError(f'audit journal row {row["id"]} has a shape the reader does not know: {error!r}')
-            row.update(source=fields['source'], question_id=fields['question_id'], run=fields['run_id'],
-                       categories=categories, saved_question=question)
+                raise AssertionError(f'audit journal row {entry!r:.200} has a shape the reader does not know: {error!r}')
+            rows.append(dict(id=entry['id'], at=entry.get('at'), session=entry['session'], provider=entry.get('provider'),
+                             prompt=entry.get('prompt'), status=entry['status'], detail=detail.get('detail'),
+                             source=fields['source'], question_id=fields['question_id'], run=fields['run_id'],
+                             categories=categories, saved_question=question))
         return rows
 
     def audit_rows(self, session_name):
@@ -1055,7 +1057,12 @@ class TeamFixture:
     def live_runs(self, launch, control):
         """The live sessions of one launch in `hgs ls`. Every listed session must say its
         runtime state, and the launch `control` (one known to be live) must be found live by
-        the same reading: a positive control for "nothing of this launch is live"."""
+        the same reading: a positive control for "nothing of this launch is live". A launch
+        or control that is not a non-empty string fails the reader: a missing launch must
+        not satisfy "nothing of it runs"."""
+        for value in (launch, control):
+            if not isinstance(value, str) or not value:
+                raise AssertionError(f'not a launch: {value!r}')
         rows = [row for row in self.rows() if row.get('launch_id') in (launch, control)]
         for row in rows:
             if not isinstance(row.get('runtime_state'), str):

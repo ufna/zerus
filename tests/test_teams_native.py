@@ -394,8 +394,7 @@ class TrustContract(ClassFixture):
 
     def test_1_the_service_answers_the_startup_folder_trust(self):
         fx = self.fx
-        answered = [json.loads(line) for line in (fx.evidence.folder / 'person-answers.jsonl').read_text().splitlines()] \
-            if (fx.evidence.folder / 'person-answers.jsonl').is_file() else []
+        answered = [json.loads(line) for line in (fx.evidence.folder / 'person-answers.jsonl').read_text().splitlines()]
         for member_id in self.member_ids():
             with self.subTest(member=member_id):
                 self.assertFalse([a for a in answered if a['member'] == member_id and a['source'] == self.trust_source],
@@ -483,6 +482,32 @@ class ClaudeTrust:
         self.assertEqual(mine, {main: True}, "the account holds exactly the main checkout as trusted, no worktree key")
 
 
+def codex_config(fx, member):
+    """The config.toml Codex reads for a member: the native account's in HOME/.codex,
+    a managed account's in its own home."""
+    account = fx.members()[member].get('account')
+    if not account:
+        raise AssertionError(f'{member} has no account')
+    if account.startswith('native-'):
+        return Path(fx.env['HOME']) / '.codex/config.toml'
+    return Path(fx.env['HGS_CONFIG_DIR']) / 'accounts' / account / 'config.toml'
+
+
+def codex_trust_problems(records, accounts, main):
+    """How Codex's recorded folder trust differs from the card the person answered: every
+    members' account configuration holds exactly {main: trusted}, and every other
+    config.toml in the root holds no project at all. A wider, narrower or extra record is a
+    problem."""
+    problems = [f'{path}: not a readable configuration' for path, value in records.items() if not isinstance(value, dict)]
+    for path in sorted(accounts):
+        if records.get(path) != {main: 'trusted'}:
+            problems.append(f'{path}: {records.get(path)!r} instead of {{{main!r}: trusted}}')
+    for path, value in records.items():
+        if path not in accounts and value:
+            problems.append(f'{path}: unexpected projects {value!r}')
+    return problems
+
+
 class CodexTrustContract(ClassFixture):
     """Delegation confirm_trust on, Codex: every member worktree is a linked worktree, so
     Codex's Folder access panel carries its Git root note and asks to trust the repository
@@ -534,6 +559,12 @@ class CodexTrustContract(ClassFixture):
         # The standing confirmation refused before any reservation, and the person's own
         # answers write none: the whole journal is empty.
         journal_is(self, [], 'the journal holds nothing at all')
+        # What Codex recorded for the person's answer: the repository's main checkout, as
+        # the card says, in the members' account configuration, and nothing else anywhere.
+        records = fx.codex_trust_records()
+        fx.evidence.write('codex-trust-records-asserted.json', records)
+        accounts = {str(codex_config(fx, member)) for member in ('lead', 'm1')}
+        self.assertEqual(codex_trust_problems(records, accounts, str((fx.root / 'work/proj').resolve())), [])
 
 
 class ResumeContract(ClassFixture):
@@ -571,7 +602,8 @@ class ResumeContract(ClassFixture):
             raise
         fx.evidence.write('m1-folder-watch.json', watch.finish())
         fx.evidence.write('resumed-view.json', {k: resumed.get(k) for k in ('run_id', 'conversation_id', 'launch_id', 'activity')})
-        self.assertEqual(resumed.get('launch_id'), before.get('launch_id'), 'the same launch')
+        self.assertEqual(resumed.get('launch_id'), fx.sessions['m1']['launch'], 'the same launch')
+        self.assertTrue(before.get('conversation_id'), 'the exited run had a conversation')
         self.assertEqual(resumed.get('conversation_id'), before.get('conversation_id'), 'the same conversation')
         brief = self.brief_text()
         seen = fx.wait('the brief reached the resumed member', lambda: fx.requests_with(lambda r: r.get('prompt') == brief),
@@ -607,7 +639,9 @@ class ResumeContract(ClassFixture):
         fx = self.fx
         view = fx.inspect('m1')
         pid, _ = fx.process('m1')
-        launch = view.get('launch_id')
+        # The launch from the team store's binding (fails if absent), and the view agrees.
+        launch = fx.sessions['m1']['launch']
+        self.assertEqual(view.get('launch_id'), launch)
         last = max([c.get('seq', 0) for c in fx.cards()] or [0])
         fx.hgs('terminate', fx.sessions['m1']['name'], '--expected-run-id', view['run_id'], timeout=120)
         fx.wait('m1 process exited after Terminate', lambda: fx.start_ticks(pid) is None or None, fixture.BOUND['exit'], 1)
@@ -646,7 +680,7 @@ class UnworkedResumeContract(ClassFixture):
         cards = fx.wait('the service told the person about m1', lambda: [c for c in fx.cards() if c.get('seq', 0) > last
                         and 'Member m1 needs your attention' in c.get('text', '')], fixture.BOUND['doorbell'], 3)
         fx.evidence.write('unworked-cards.json', cards)
-        live = fx.live_runs(before.get('launch_id'), control=fx.sessions['lead']['launch'])
+        live = fx.live_runs(fx.sessions['m1']['launch'], control=fx.sessions['lead']['launch'])
         seen = fx.observation()
         fx.evidence.write('observation-at-refusal.json', seen)
         archives = (seen.get('m1') or {}).get('archives') or []
@@ -668,6 +702,9 @@ class QuestionAfterTrustContract(ClassFixture):
 
     def test_1_no_startup_card_and_an_ordinary_question_stays_the_persons(self):
         fx = self.fx
+        # The positive control: the same capture saw the person's two plain sessions' cards.
+        plain = sorted(k[0] for k, v in fx.cards_seen.items() if k[0].startswith('plain-') and v['source'] == 'claude_folder_trust')
+        self.assertEqual(plain, ['plain-native-claude', 'plain-zt-claude'], 'the capture saw the plain sessions\' trust cards')
         startup = [v['source'] for k, v in fx.cards_seen.items() if not k[0].startswith('plain-')]
         self.assertEqual(startup, [], 'no member showed a startup card')
         journal_is(self, [], 'the journal holds no grant: there was no startup card')
@@ -769,13 +806,29 @@ class TeamsWaitingList(unittest.TestCase):
         self.assertFalse(selected & waiting, 'a waiting class is not selected')
         self.assertEqual(written, selected | waiting, 'every written class is selected or waiting')
         self.assertEqual(set(WAITING) - waiting, {name for name in dir(TeamsContract) if name.startswith('waiting_')})
-        fixes = set(self.ISSUE.findall(' '.join(WAITING.values())))
+        self.assertEqual(self.mismatches(*self.places(compat), WAITING), [])
+
+    def places(self, compat):
         header = (self.ROOT / '.github/workflows/teams-native.yml').read_text().split('\non:', 1)[0]
         docs = (self.ROOT / 'docs/ci-and-aur.md').read_text()
         section = docs.split('\n### Agent Teams real agents\n', 1)[1].split('\n## ', 1)[0]
-        for place, text in (('workflow header', header), ('docs section', section), ('row coverage', compat.TEAMS_COVERAGE)):
+        return header, section, compat.TEAMS_COVERAGE
+
+    def mismatches(self, header, section, coverage, waiting):
+        """The places whose fixes differ from the waiting list's."""
+        fixes = set(self.ISSUE.findall(' '.join(waiting.values())))
+        return [place for place, text in (('workflow header', header), ('docs section', section), ('row coverage', coverage))
+                if set(self.ISSUE.findall(text)) != fixes]
+
+    def test_each_place_is_compared(self):
+        # Each place drifting alone is found (the review's mutant m7 removed one comparison).
+        header, section, coverage = self.places(self.script('agent-compatibility.py'))
+        extra = ' zerus-63rru.999'
+        for place, args in (('workflow header', (header + extra, section, coverage)),
+                            ('docs section', (header, section + extra, coverage)),
+                            ('row coverage', (header, section, coverage + extra))):
             with self.subTest(place=place):
-                self.assertEqual(set(self.ISSUE.findall(text)), fixes)
+                self.assertEqual(self.mismatches(*args, WAITING), [place])
 
 
 class TeamsCodexPanel(unittest.TestCase):
@@ -821,59 +874,82 @@ class TeamsCodexPanel(unittest.TestCase):
 class TeamsFixtureDiagnostics(unittest.TestCase):
     """The read-only evidence of a refused resume, on a synthetic private state."""
 
-    def test_audit_rows_read_the_reservation_the_journal_saves(self):
-        import sqlite3
+    def product_reader(self, entries, details, pages=None):
         from types import SimpleNamespace
-        # The shape comes from its producer: reserve() saves {"question", "answers"} and
-        # the categories into the question column.
+        calls = []
+
+        def json_(*argv, stdin=None, **kw):
+            calls.append((argv, json.loads(stdin)))
+            if argv[:2] == ('approval-log', 'list'):
+                if pages is not None:
+                    return pages[json.loads(stdin).get('before')]
+                return dict(entries=entries, next=None, previous=None)
+            if argv[:2] == ('approval-log', 'detail'):
+                return details[json.loads(stdin)['id']]
+            raise AssertionError(argv)
+        import types
+        reader = SimpleNamespace(json=json_, listed=fixture.TeamFixture.listed, JOURNAL_BOUND=fixture.TeamFixture.JOURNAL_BOUND)
+        reader.journal = types.MethodType(fixture.TeamFixture.journal, reader)
+        return reader, calls
+
+    def test_the_journal_is_read_through_the_products_own_reader(self):
+        # The reader's shapes come from their producer (src/approval_log.rs list and detail).
         producer = (Path(__file__).resolve().parents[1] / 'src/approval_log.rs').read_text()
-        self.assertIn('let mut saved = json!({"question":question,"answers":answers});', producer)
-        self.assertIn('saved["categories"] = categories;', producer)
-        self.assertRegex(producer, r'INSERT OR IGNORE INTO attempts\(identity,request_id,at,host,session,provider,prompt,question\)')
-        self.assertIn('params![identity,request,at,host,session,provider,prompt,saved.to_string()]', producer)
-        with tempfile.TemporaryDirectory() as base:
-            state = Path(base) / 'state'
-            (state / 'approval-audit').mkdir(parents=True)
-            db = sqlite3.connect(state / 'approval-audit/journal.sqlite3')
-            db.execute("CREATE TABLE attempts (id INTEGER PRIMARY KEY, identity TEXT, request_id TEXT, at INTEGER, "
-                       "host TEXT, session TEXT, provider TEXT, prompt TEXT, question TEXT, status TEXT, detail TEXT)")
-            saved = {'question': {'source': 'team_resume', 'question_id': 'q-1', 'run_id': 'run-1'}, 'answers': [],
-                     'categories': ['team_resume']}
-            db.execute("INSERT INTO attempts VALUES (1, 'i', 'r', 1, 'h', 'member', 'claude', '', ?, 'approved', '')",
-                       (json.dumps(saved),))
-            db.execute("INSERT INTO attempts VALUES (2, 'j', 's', 1, 'h', 'other', 'claude', '', ?, 'approved', '')",
-                       (json.dumps(saved),))
-            db.commit()
-            db.close()
-            import types
-            reader = SimpleNamespace(env={'HGS_STATE_DIR': str(state)}, JOURNAL_BOUND=fixture.TeamFixture.JOURNAL_BOUND)
-            reader.journal = types.MethodType(fixture.TeamFixture.journal, reader)
-            rows = fixture.TeamFixture.audit_rows(reader, 'member')
+        self.assertIn('"categories":saved_categories(row.get::<_,Option<String>>(7)?)', producer)
+        self.assertIn('json!({"id":id,"question":saved["question"],"answers":saved["answers"],"status":status,"detail":detail,', producer)
+        self.assertIn('"usage: hgs approval-log begin|finish|list|detail (JSON stdin)"', producer)
+        question = {'source': 'team_resume', 'question_id': 'resume:run-1', 'run_id': 'run-1'}
+        entries = [dict(id=1, at=1, host='h', session='member', provider='claude', prompt='', status='approved',
+                        categories=['team_resume']),
+                   dict(id=2, at=2, host='h', session='other', provider='claude', prompt='', status='approved',
+                        categories=None)]
+        details = {1: dict(id=1, question=question, answers=[], status='approved', detail=''),
+                   2: dict(id=2, question=dict(question, source='claude_tool_approval'), answers=[], status='approved',
+                           detail='')}
+        reader, calls = self.product_reader(entries, details)
+        rows = fixture.TeamFixture.audit_rows(reader, 'member')
         self.assertEqual([(r['id'], r['source'], r['question_id'], r['run'], r['categories']) for r in rows],
-                         [(1, 'team_resume', 'q-1', 'run-1', ['team_resume'])])
+                         [(1, 'team_resume', 'resume:run-1', 'run-1', ['team_resume'])])
+        self.assertEqual([c[0][:2] for c in calls], [('approval-log', 'list'), ('approval-log', 'detail'), ('approval-log', 'detail')])
+        # Pages are followed by the product's own cursor.
+        pages = {None: dict(entries=entries[1:], next=2, previous=None), 2: dict(entries=entries[:1], next=None, previous=2)}
+        reader, _ = self.product_reader(None, details, pages)
+        self.assertEqual([r['id'] for r in reader.journal()], [1, 2])
+        # A reply without its entries list fails the reader.
+        reader, _ = self.product_reader(None, details, {None: dict(rows=[])})
+        with self.assertRaisesRegex(AssertionError, 'reply has no entries list'):
+            reader.journal()
 
     def test_the_journal_reader_refuses_a_shape_it_does_not_know(self):
-        import sqlite3
-        from types import SimpleNamespace
-        for saved in ({'source': 'team_resume', 'question_id': 'q', 'run_id': 'r'},
-                      {'source': 'team_resume', 'question_id': 'q', 'run_id': 'r', 'answers': []},
-                      {'question': {'source': 'team_resume', 'question_id': 'q'}, 'answers': []},
-                      {'question': {'source': 'team_resume', 'question_id': 'q', 'run_id': 'r'}},
-                      {'question': {'source': 'team_resume', 'question_id': 'q', 'run_id': 'r'}, 'answers': [],
-                       'categories': 'team_resume'}):
-            with self.subTest(saved=saved), tempfile.TemporaryDirectory() as base:
-                state = Path(base) / 'state'
-                (state / 'approval-audit').mkdir(parents=True)
-                db = sqlite3.connect(state / 'approval-audit/journal.sqlite3')
-                db.execute("CREATE TABLE attempts (id INTEGER PRIMARY KEY, identity TEXT, request_id TEXT, at INTEGER, "
-                           "host TEXT, session TEXT, provider TEXT, prompt TEXT, question TEXT, status TEXT, detail TEXT)")
-                db.execute("INSERT INTO attempts VALUES (1, 'i', 'r', 1, 'h', 'member', 'claude', '', ?, 'approved', '')",
-                           (json.dumps(saved),))
-                db.commit()
-                db.close()
-                reader = SimpleNamespace(env={'HGS_STATE_DIR': str(state)}, JOURNAL_BOUND=5)
+        entry = dict(id=1, at=1, host='h', session='member', provider='claude', prompt='', status='approved',
+                     categories=['team_resume'])
+        good = dict(id=1, question={'source': 'team_resume', 'question_id': 'q', 'run_id': 'r'}, answers=[],
+                    status='approved', detail='')
+        for name, entry_, detail in (('no question', entry, dict(good, question=None)),
+                                     ('question without run', entry, dict(good, question={'source': 's', 'question_id': 'q'})),
+                                     ('no answers', entry, {k: v for k, v in good.items() if k != 'answers'}),
+                                     ('another id', entry, dict(good, id=2)),
+                                     ('categories not a list', dict(entry, categories='team_resume'), good),
+                                     ('no session', {k: v for k, v in entry.items() if k != 'session'}, good)):
+            with self.subTest(case=name):
+                reader, _ = self.product_reader([entry_], {1: detail})
                 with self.assertRaisesRegex(AssertionError, 'shape the reader does not know'):
-                    fixture.TeamFixture.journal(reader)
+                    reader.journal()
+
+    def test_codex_trust_problems_name_a_wider_or_extra_record(self):
+        main, account, native = '/tmp/example/work/proj', '/tmp/example/cfg/accounts/zt-codex/config.toml', \
+            '/tmp/example/home/.codex/config.toml'
+        problems = codex_trust_problems
+        self.assertEqual(problems({account: {main: 'trusted'}, native: {}}, {account}, main), [])
+        for name, records in (('a parent', {account: {'/tmp/example/work': 'trusted'}, native: {}}),
+                              ('the worktree', {account: {'/tmp/example/work/zerus-team-1': 'trusted'}, native: {}}),
+                              ('an extra project', {account: {main: 'trusted', '/tmp/example': 'trusted'}, native: {}}),
+                              ('another account', {account: {main: 'trusted'}, native: {main: 'trusted'}}),
+                              ('not trusted', {account: {main: 'untrusted'}, native: {}}),
+                              ('no record', {native: {}}),
+                              ('unreadable', {account: {main: 'trusted'}, native: 'TOMLDecodeError'})):
+            with self.subTest(case=name):
+                self.assertNotEqual(problems(records, {account}, main), [])
 
     def test_readers_refuse_a_reply_without_the_keys_a_check_relies_on(self):
         from types import SimpleNamespace
@@ -895,6 +971,11 @@ class TeamsFixtureDiagnostics(unittest.TestCase):
             live(reader([dict(control, runtime_state='stopped')]), 'L', 'C')
         with self.assertRaisesRegex(AssertionError, 'control launch C is not found live'):
             live(reader([dict(name='lead', launchId='C', runtime_state='live', run_id='r0')]), 'L', 'C')
+        for launch in (None, '', 7):
+            with self.subTest(launch=launch), self.assertRaisesRegex(AssertionError, 'not a launch'):
+                live(reader([control]), launch, 'C')
+        with self.assertRaisesRegex(AssertionError, 'not a launch'):
+            live(reader([control]), 'L', None)
         gone = SimpleNamespace(record=lambda member: dict(pid=2 ** 22 + 12345), start_ticks=fixture.TeamFixture.start_ticks)
         with self.assertRaisesRegex(AssertionError, 'not running when its identity is taken'):
             fixture.TeamFixture.process(gone, 'm1')

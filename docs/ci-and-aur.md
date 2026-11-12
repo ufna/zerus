@@ -1360,6 +1360,11 @@ part of the Dev gate or of Nightly: a red run is visible and holds nothing back.
 - **Selection.** Each agent gets the same one latest official release as ordinary
   CI, with the same checked fetch. There is no Effort seed and no
   terminal-geometry matrix, and no other job's timing changes.
+- **Static tests.** Run the suite's static parts from the repository root with the
+  tests folder on the path, as `scripts/ci/python-tests.py` does:
+  `PYTHONPATH=tests python3 -m unittest test_ci_security test_kimi_native_ci
+  test_agent_compatibility test_teams_native`. The native classes skip without a pinned
+  agent.
 - **Setup.** Each class creates one private root (`hgs-tn-*` in `TMPDIR`)
   with:
   - `HOME`, every XDG folder and a 0700 `XDG_RUNTIME_DIR`;
@@ -1471,7 +1476,10 @@ Each class checks its own isolation and fails rather than skipping:
   folder. There is no archive of the private root. The hosted Kimi runner records the
   root in its custody file as soon as it exists, but its retention refuses the
   sockets a killed session leaves behind, which is that campaign's reviewed rule. The
-  Claude Code and Codex job uploads only the evidence folder.
+  Claude Code and Codex job uploads only the evidence folder. A runner killed directly
+  (SIGKILL) also leaves the private desktop service and its tmux server running, since
+  the suite has no handler for it: locally the transient user unit's cgroup ends them
+  when the unit stops, and on a hosted runner the runner's end does.
 - **Network census.** Once a second, a census lists the TCP and UDP peers of the
   class's own processes: the descendants of the test process and of the private
   tmux server. Any peer that is neither loopback nor an address of an allow-listed
