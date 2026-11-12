@@ -62,11 +62,14 @@ const HOST_CHANGED: &str = "The DeepSeek host changed while this tool call was b
 ///    refuses.
 /// 5. This process's `DSH_HOME` is the binding's agent home (the native host
 ///    sets it on every tool call).
-/// 6. The host, asked over its private socket within 2 s, knows the token as
-///    a live tool call of the binding's conversation, the top-level one for a
-///    child agent. A host whose adapter does not advertise call tokens, no
-///    answer, an unknown token or another conversation refuses. The host's
-///    birth is read again afterwards.
+/// 6. The host, asked over its private socket, knows the token as a live
+///    tool call of the binding's conversation, the top-level one for a child
+///    agent. Each connection's peer (`SO_PEERCRED` on Linux, `LOCAL_PEERPID`
+///    on macOS) must be the very process and birth proven in step 4, so a
+///    socket file another process serves answers nothing. One 2 s deadline
+///    bounds every connect, write and read together. A host whose adapter does
+///    not advertise call tokens, no answer in time, an unknown token or
+///    another conversation refuses. The host's birth is read again afterwards.
 ///
 /// The limit is [`HOSTED_LIMIT`]: the token shows which conversation's tool
 /// call started this command, not that no other same-user process read it.
@@ -150,7 +153,9 @@ pub(crate) fn hosted_caller(
         return Err(ANCESTRY);
     };
     // 6. The host's per-call token names this conversation.
-    if crate::state::dsh::call_token_conversation(agent_home, &token, TOKEN_WAIT)? != conversation {
+    if crate::state::dsh::call_token_conversation(agent_home, &token, (host, &birth), TOKEN_WAIT)?
+        != conversation
+    {
         return Err(OTHER_CONVERSATION);
     }
     if crate::platform::process_identity(host).is_none_or(|identity| identity.birth != birth) {
@@ -221,45 +226,95 @@ mod tests {
         isolated("token_fixture");
     }
 
-    /// A stand-in host socket: `mode` chooses the answer to the next request.
+    /// A stand-in host socket served by this process, which the record names
+    /// as the host: `mode` chooses the answer to each request.
     fn host(socket: PathBuf, mode: Arc<Mutex<(&'static str, String)>>) {
+        let _ = fs::remove_file(&socket);
         let listener = std::os::unix::net::UnixListener::bind(socket).unwrap();
         std::thread::spawn(move || {
             for stream in listener.incoming() {
-                let Ok(mut stream) = stream else { continue };
-                let mut line = String::new();
-                if BufReader::new(&stream).read_line(&mut line).is_err() {
-                    continue;
-                }
-                let request: Value = serde_json::from_str(&line).unwrap_or_default();
-                let (mode, conversation) = mode.lock().unwrap().clone();
-                let value = match (mode, request["method"].as_str()) {
-                    ("silent", _) => {
-                        std::thread::sleep(Duration::from_secs(4));
-                        continue;
-                    }
-                    ("older", Some("ping")) => json!({"protocol":1,"version":"0.2.1-rc.2"}),
-                    (_, Some("ping")) => {
-                        json!({"protocol":1,"version":"0.2.1-rc.2","callTokens":true})
-                    }
-                    ("unknown", Some("call-token")) => json!({"known":false}),
-                    (_, Some("call-token")) if request["params"]["token"] == TOKEN => {
-                        json!({"known":true,"conversation":conversation})
-                    }
-                    (_, Some("call-token")) => json!({"known":false}),
-                    _ => {
-                        let _ = writeln!(
-                            stream,
-                            "{}",
-                            json!({"ok":false,"error":"Unsupported HGS native request"})
-                        );
-                        continue;
-                    }
-                };
-                let _ = writeln!(stream, "{}", json!({"ok":true,"value":value}));
+                let Ok(stream) = stream else { continue };
+                let mode = mode.clone();
+                std::thread::spawn(move || answer(stream, mode));
             }
         });
     }
+
+    fn answer(
+        mut stream: std::os::unix::net::UnixStream,
+        mode: Arc<Mutex<(&'static str, String)>>,
+    ) {
+        let mut line = String::new();
+        if BufReader::new(&stream).read_line(&mut line).is_err() {
+            return;
+        }
+        let request: Value = serde_json::from_str(&line).unwrap_or_default();
+        let (mode, conversation) = mode.lock().unwrap().clone();
+        let value = match (mode, request["method"].as_str()) {
+            ("silent", _) => {
+                std::thread::sleep(Duration::from_secs(4));
+                return;
+            }
+            ("drip", _) => {
+                // A valid answer, one byte every 100 ms: about 6 s in all.
+                let reply = json!({"ok":true,"value":{"protocol":1,"callTokens":true}});
+                for byte in format!("{reply}\n").bytes() {
+                    if stream.write_all(&[byte]).is_err() {
+                        return;
+                    }
+                    std::thread::sleep(Duration::from_millis(100));
+                }
+                return;
+            }
+            ("older", Some("ping")) => json!({"protocol":1,"version":"0.2.1-rc.2"}),
+            (_, Some("ping")) => json!({"protocol":1,"version":"0.2.1-rc.2","callTokens":true}),
+            ("unknown", Some("call-token")) => json!({"known":false}),
+            (_, Some("call-token")) if request["params"]["token"] == TOKEN => {
+                json!({"known":true,"conversation":conversation})
+            }
+            (_, Some("call-token")) => json!({"known":false}),
+            _ => {
+                let _ = writeln!(
+                    stream,
+                    "{}",
+                    json!({"ok":false,"error":"Unsupported HGS native request"})
+                );
+                return;
+            }
+        };
+        let _ = writeln!(stream, "{}", json!({"ok":true,"value":value}));
+    }
+
+    /// A process other than the recorded host that takes over the socket file
+    /// and answers like a host that knows the token.
+    const STAND_IN: &str = r#"
+import json, os, socket, sys
+path, conversation = sys.argv[1], sys.argv[2]
+try:
+    os.unlink(path)
+except FileNotFoundError:
+    pass
+server = socket.socket(socket.AF_UNIX)
+server.bind(path)
+server.listen(8)
+open(path + '.ready', 'w').close()
+while True:
+    connection, _ = server.accept()
+    with connection:
+        data = b''
+        while not data.endswith(b'\n'):
+            chunk = connection.recv(4096)
+            if not chunk:
+                break
+            data += chunk
+        try:
+            request = json.loads(data)
+        except ValueError:
+            continue
+        value = ({'protocol': 1, 'version': '0.2.1-rc.2', 'callTokens': True} if request.get('method') == 'ping'
+                 else {'known': True, 'conversation': conversation})
+        connection.sendall((json.dumps({'ok': True, 'value': value}) + '\n').encode())
+"#;
 
     fn running(dir: &Path, pid: u32, birth: &str, boot: Option<&str>) {
         let mut record =
@@ -347,6 +402,43 @@ mod tests {
             started.elapsed()
         );
         set("answer", CONVERSATION);
+        assert!(hosted_caller(NAME, "run-1", Some(&id)).unwrap().is_some());
+
+        // One deadline bounds the whole exchange: a valid answer dripped a
+        // byte at a time is refused within it.
+        set("drip", CONVERSATION);
+        let started = std::time::Instant::now();
+        assert!(hosted_caller(NAME, "run-1", Some(&id))
+            .unwrap_err()
+            .contains("did not confirm"));
+        assert!(
+            started.elapsed() < Duration::from_secs(3),
+            "{:?}",
+            started.elapsed()
+        );
+        set("answer", CONVERSATION);
+
+        // The socket's peer must be the host proven as the ancestor: a socket
+        // file another process serves, however well it answers, proves nothing.
+        let socket = dir.join("host.sock");
+        let mut stand_in = std::process::Command::new("python3")
+            .args(["-I", "-c", STAND_IN])
+            .arg(&socket)
+            .arg(CONVERSATION)
+            .spawn()
+            .unwrap();
+        let ready = dir.join("host.sock.ready");
+        let until = std::time::Instant::now() + Duration::from_secs(10);
+        while !ready.exists() && std::time::Instant::now() < until {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(ready.exists(), "the stand-in did not start");
+        let refused = hosted_caller(NAME, "run-1", Some(&id));
+        let _ = stand_in.kill();
+        let _ = stand_in.wait();
+        assert!(refused.unwrap_err().contains("not served by the host"));
+        let _ = fs::remove_file(&ready);
+        host(socket, mode.clone());
         assert!(hosted_caller(NAME, "run-1", Some(&id)).unwrap().is_some());
 
         // The recorded host, with its birth, this boot, must be an ancestor.

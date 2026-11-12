@@ -5450,8 +5450,11 @@ when the hosted caller proof holds:
    names a process and its birth;
 3. that process, with that birth, is an ancestor of the command;
 4. the command's `DSH_HOME` is the binding's agent home;
-5. the host, asked over its private socket within 2 seconds, holds the token
-   for the binding's conversation.
+5. the host, asked over its private socket, holds the token for the
+   binding's conversation; the socket's peer (`SO_PEERCRED` on Linux,
+   `LOCAL_PEERPID` on macOS) must be the very process and birth of step 3, so
+   a socket file another process serves answers nothing, and one 2-second
+   deadline bounds the whole exchange.
 
 An older host that does not advertise call tokens, no answer, an unknown token
 or another conversation refuses; so do another session's markers with a call's

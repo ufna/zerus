@@ -96,19 +96,27 @@ pub(crate) fn host_key(agent_home: &str) -> String {
     format!("{:x}", Sha256::digest(agent_home.as_bytes()))[..16].to_owned()
 }
 /// The conversation whose live tool call holds `token`, asked of the host of
-/// `agent_home` within `within` in all (zerus-ppd26 Part B). An adapter that
-/// does not advertise call tokens, no answer in time, a malformed reply or an
-/// unknown token is an error, never an answer.
+/// `agent_home` (zerus-ppd26 Part B). `host` is the recorded host process and
+/// birth that the caller proved as its own ancestor: each connection's peer
+/// must be that same process, so a socket file another process serves answers
+/// nothing. One deadline, `within` from the start, bounds every connect, write
+/// and read together, so a peer that answers a byte at a time cannot hold the
+/// command longer. An adapter that does not advertise call tokens, no answer
+/// in time, a malformed reply or an unknown token is an error, never an answer.
 #[cfg(unix)]
 pub(crate) fn call_token_conversation(
     agent_home: &str,
     token: &str,
+    host: (u32, &str),
     within: Duration,
 ) -> std::result::Result<String, &'static str> {
+    use std::io::Read;
     const NO_ANSWER: &str = "The DeepSeek host did not confirm this tool call in time.";
     const OLDER: &str =
         "The running DeepSeek host predates per-call tokens; its tool calls cannot be proven.";
     const UNKNOWN: &str = "The DeepSeek host knows no live tool call with this token.";
+    const OTHER_PEER: &str =
+        "The DeepSeek host socket is not served by the host this command runs under.";
     let deadline = Instant::now() + within;
     let remaining = || {
         deadline
@@ -120,12 +128,58 @@ pub(crate) fn call_token_conversation(
         .join("dsh/hosts")
         .join(host_key(agent_home))
         .join("host.sock");
-    let ping = rpc_at(&socket, "ping", json!({}), remaining()?).map_err(|_| NO_ANSWER)?;
+    let ask = |method: &str, params: Value| -> std::result::Result<Value, &'static str> {
+        let mut stream =
+            crate::platform::connect_unix(&socket, remaining()?).map_err(|_| NO_ANSWER)?;
+        let peer = host_peer(&stream).ok_or(OTHER_PEER)?;
+        if peer != host.0
+            || crate::platform::process_identity(peer).is_none_or(|process| process.birth != host.1)
+        {
+            return Err(OTHER_PEER);
+        }
+        let request = format!("{}\n", json!({"method":method,"params":params}));
+        let mut written = 0;
+        while written < request.len() {
+            stream
+                .set_write_timeout(Some(remaining()?))
+                .map_err(|_| NO_ANSWER)?;
+            match stream.write(&request.as_bytes()[written..]) {
+                Ok(0) => return Err(NO_ANSWER),
+                Ok(count) => written += count,
+                Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+                Err(_) => return Err(NO_ANSWER),
+            }
+        }
+        let mut response = Vec::new();
+        let mut chunk = [0u8; 4096];
+        let line = loop {
+            stream
+                .set_read_timeout(Some(remaining()?))
+                .map_err(|_| NO_ANSWER)?;
+            match stream.read(&mut chunk) {
+                Ok(0) => return Err(NO_ANSWER),
+                Ok(count) => response.extend_from_slice(&chunk[..count]),
+                Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+                Err(_) => return Err(NO_ANSWER),
+            }
+            if let Some(end) = response.iter().position(|byte| *byte == b'\n') {
+                break &response[..end];
+            }
+            if response.len() > 64 * 1024 {
+                return Err(NO_ANSWER);
+            }
+        };
+        let reply: Value = serde_json::from_slice(line).map_err(|_| NO_ANSWER)?;
+        if reply["ok"] != true {
+            return Err(NO_ANSWER);
+        }
+        Ok(reply["value"].clone())
+    };
+    let ping = ask("ping", json!({}))?;
     if ping["protocol"] != 1 || ping["callTokens"] != true {
         return Err(OLDER);
     }
-    let answer = rpc_at(&socket, "call-token", json!({"token":token}), remaining()?)
-        .map_err(|_| NO_ANSWER)?;
+    let answer = ask("call-token", json!({"token":token}))?;
     if answer["known"] != true {
         return Err(UNKNOWN);
     }
@@ -134,6 +188,58 @@ pub(crate) fn call_token_conversation(
         .filter(|conversation| !conversation.is_empty())
         .map(str::to_owned)
         .ok_or(UNKNOWN)
+}
+/// The process serving a connected host socket, as the kernel recorded it,
+/// and only when it runs as this user.
+#[cfg(target_os = "linux")]
+fn host_peer(stream: &UnixStream) -> Option<u32> {
+    use std::os::fd::AsRawFd;
+    let mut credentials: libc::ucred = unsafe { std::mem::zeroed() };
+    let mut size = std::mem::size_of_val(&credentials) as libc::socklen_t;
+    // SAFETY: a live socket and exactly sized writable credentials.
+    let read = unsafe {
+        libc::getsockopt(
+            stream.as_raw_fd(),
+            libc::SOL_SOCKET,
+            libc::SO_PEERCRED,
+            (&mut credentials as *mut libc::ucred).cast(),
+            &mut size,
+        )
+    };
+    (read == 0
+        && size as usize == std::mem::size_of_val(&credentials)
+        && credentials.pid > 0
+        && credentials.uid == unsafe { libc::geteuid() })
+    .then_some(credentials.pid as u32)
+}
+#[cfg(target_os = "macos")]
+fn host_peer(stream: &UnixStream) -> Option<u32> {
+    use std::os::fd::AsRawFd;
+    let (mut uid, mut gid): (libc::uid_t, libc::gid_t) = (0, 0);
+    // SAFETY: a connected Unix socket and two writable identifiers.
+    if unsafe { libc::getpeereid(stream.as_raw_fd(), &mut uid, &mut gid) } != 0
+        || uid != unsafe { libc::geteuid() }
+    {
+        return None;
+    }
+    let mut pid: libc::pid_t = 0;
+    let mut size = std::mem::size_of_val(&pid) as libc::socklen_t;
+    // SAFETY: a connected Unix socket and one writable pid_t.
+    let read = unsafe {
+        libc::getsockopt(
+            stream.as_raw_fd(),
+            libc::SOL_LOCAL,
+            libc::LOCAL_PEERPID,
+            (&mut pid as *mut libc::pid_t).cast(),
+            &mut size,
+        )
+    };
+    (read == 0 && size as usize == std::mem::size_of_val(&pid) && pid > 0).then_some(pid as u32)
+}
+/// No other Unix reads a socket peer's process here: nothing is proven.
+#[cfg(all(unix, not(any(target_os = "linux", target_os = "macos"))))]
+fn host_peer(_: &UnixStream) -> Option<u32> {
+    None
 }
 /// The native host listens on a Unix socket; DeepSeek is a Phase 2 non-goal on
 /// Windows, so nothing there starts or reaches a host.
