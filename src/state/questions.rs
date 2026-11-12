@@ -824,7 +824,8 @@ fn read_request(input: &[u8]) -> Result<AnswerRequest> {
 
 /// What the answer command reads from a request it would accept: its run,
 /// conversation and question (for tests of the requests other code builds).
-#[cfg(test)]
+// Its only callers are the Teams confirmation tests (Linux and macOS).
+#[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
 pub(crate) fn read_answer_request(input: &[u8]) -> Result<(String, String, String)> {
     let request = read_request(input)?;
     Ok((

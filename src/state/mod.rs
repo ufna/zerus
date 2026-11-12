@@ -128,7 +128,7 @@ mod launch_observation;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub(crate) use launch_observation::{observe_team_launch, TeamObservation};
 pub(crate) use questions::native_identity;
-#[cfg(test)]
+#[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
 pub(crate) use questions::read_answer_request;
 /// The maintained ownership reader; Teams supplies the exact generated path.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
