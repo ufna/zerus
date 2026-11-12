@@ -544,3 +544,21 @@ fn handover_is_stale_when_only_the_current_id_changes_at_the_same_highest() {
     stale(&f, &out, &before);
     assert_eq!(f.count(), count);
 }
+
+#[test]
+fn cancel_is_stale_when_a_rejected_handoff_raises_highest_but_not_current() {
+    let mut f = Fixture::new();
+    let home = f.lead.machine.clone();
+    f.bind("m2", &home);
+    delivered(&mut f);
+    decide(&mut f);
+    let mut doc = f.document();
+    reserve(&mut doc, &recipient(&f, "m2"), Origin::Handoff, false);
+    save(&f, &mut doc);
+    let e = doc.view().unwrap().execution.unwrap();
+    assert_eq!(e.highest, 2);
+    assert_eq!(e.current.unwrap().id, f.body.id);
+    let before = bytes(&f);
+    let out = call(&f, "team-cancel");
+    stale(&f, &out, &before);
+}
