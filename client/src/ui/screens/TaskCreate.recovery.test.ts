@@ -77,8 +77,9 @@ function setup(project: () => string = () => "example-project") {
 const choose = (host: HTMLElement) => host.querySelector<HTMLButtonElement>("button.tk-team")!.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
 const enter = (host: HTMLElement) => (host.querySelector("input.tk-newtitle") as HTMLInputElement).dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
 const button = (host: HTMLElement, label: string) => [...host.querySelectorAll<HTMLButtonElement>("[data-not-queued] button")].find((candidate) => candidate.textContent === label);
+/** A create whose queue refused the task (a refusal's code, so the notice gives its reason). */
 async function createNotQueued(host: HTMLElement, id: string, reason: string) {
-  f.create.mockImplementationOnce(async () => { f.setView(card({ text: "", created: id, not_queued: { task: id, team: TEAM, reason } })); return true; });
+  f.create.mockImplementationOnce(async () => { f.setView(card({ text: "", created: id, not_queued: { task: id, team: TEAM, reason, code: "invalid_state" } })); return true; });
   f.setView(card({ text: `Card ${id.slice(0, 1)}` }));
   (host.querySelector('[aria-label="New task"]') as HTMLButtonElement).click();
   choose(host); enter(host);
@@ -262,6 +263,21 @@ it("a rejected Send reads once: the queue's reason, the team's sentence only whe
   expect(notice).not.toContain("invalid_state");
   expect(host.querySelector("[data-recovery-refusal]")).toBeNull();
   expect(shown()).toEqual(["Result of sending “First task” to Fixes: The team is stopped."]);
+});
+
+it("after an unknown queue result, a rejected Send still shows the team's sentence on the notice", async () => {
+  const host = setup();
+  const reason = "The result is not known; repeat the same request with the same request ID.";
+  f.create.mockImplementationOnce(async () => { f.setView(card({ text: "", created: FIRST, not_queued: { task: FIRST, team: TEAM, reason, code: "storage_failed" } })); return true; });
+  f.setView(card({ text: "Card 1" }));
+  (host.querySelector('[aria-label="New task"]') as HTMLButtonElement).click();
+  choose(host); enter(host);
+  await vi.waitFor(() => expect(host.querySelector("[data-not-queued]")).not.toBeNull());
+  f.reads[0].resolve(row(FIRST)); await settle();
+  f.board.mockRejectedValueOnce(`storage_failed: ${reason}`);
+  button(host, "Send to team")!.click(); await settle();
+  // The notice did not show the store's sentence, so the Send's reply is not a repeat of it.
+  expect(host.querySelector("[data-recovery-refusal]")?.textContent).toBe(reason);
 });
 
 /** Starts Send on a not-queued notice whose task was read; the native write waits. */

@@ -77,7 +77,7 @@ export default function TaskCreate(props: { project?: string; scope: string; bac
     <Show when={recovery.notice()?.project === props.project ? recovery.notice() : undefined}>{(created) => <div class="tk-create-error" role="alert" data-not-queued>
       <span>{queueRefused(created())
         ? tr("The task was created, but %1 did not queue it: %2", created().name, created().reason)
-        : tr("The task was created; whether %1 queued it is not known: %2", created().name, created().reason)}</span>{" "}
+        : tr("The task was created; whether %1 queued it is not known. Send to team queues it now, and never twice.", created().name)}</span>{" "}
       <Show when={!recovery.row() && recovery.reading().state === "reading"}><span class="dim" role="status" data-recovery-reading>{tr("Reading the task…")}</span>{" "}</Show>
       <Show when={!recovery.row() ? recovery.reading() : undefined}>{(answer) => <Show when={answer().state === "failed"}>
         <span data-recovery-unread>{tr("The task could not be read: %1", (answer() as { reason: string }).reason)}</span>{" "}

@@ -103,12 +103,12 @@ export function createRecovery(read: (key: string) => Promise<Task> = readSelect
       setSending(true); setRefusal("");
       const title = boundedTitle(task.title || task.ref || shown.task);
       const outcome = await send(shown.project, { uuid: shown.task }, shown.team, shown.name, { read: task, quiet: true });
-      // The notice reads once: the queue's reason, then the team's sentence
-      // only when it says something else.
+      // The notice reads once: the queue's reason (shown for a refusal only),
+      // then the team's sentence only when it says something else.
       const sentence = teamSentence(outcome.reason ?? "");
       if (current(shown.key)) {
         if (outcome.sent) setNotice(null);
-        else setRefusal(sentence === shown.reason.trim() ? "" : sentence);
+        else setRefusal(queueRefused(shown) && sentence === shown.reason.trim() ? "" : sentence);
         setSending(false);
       }
       if (outcome.sent) notify("info", tr("“%1” was sent to %2.", title, shown.name));

@@ -195,14 +195,18 @@ it("a team chosen while the submit was in flight is kept", async () => {
   expect(chooser(host)!.textContent).toContain("Other");
 });
 
-// zerus-63rru.19: the queue's answer is a refusal only with a refusal's code. A
-// storage failure of the team store, or no answer, may have queued the task:
-// the notice says the result is not known and gives the store's sentence as it
-// came, and Send to team stays the way on.
+// zerus-63rru.19 and the polish package's item 5: the queue's answer is a
+// refusal only with a refusal's code. A storage failure of the team store, or
+// no answer, may have queued the task: the notice says so in the client's own
+// words, chosen by the code, and never the store's sentence for command-line
+// callers. Send to team is the way on; the store queues a task at most once,
+// by its identity (src/teams/ops/queue.rs existing_node).
+const UNKNOWN = "The task was created; whether Fixes queued it is not known. Send to team queues it now, and never twice.";
 it.each([
-  ["a storage failure", "storage_failed", "The result is not known; repeat the same request with the same request ID."],
-  ["no answer from the queue", "", "The team did not confirm that it queued the task."],
-])("a card whose queue gave %s is not called refused", async (_label, code, reason) => {
+  ["a storage failure", "storage_failed", "The result is not known; repeat the same request with the same request ID.", UNKNOWN],
+  ["no answer from the queue", "", "The team did not confirm that it queued the task.", UNKNOWN],
+  ["a refusal", "invalid_state", "The team is stopped.", "The task was created, but Fixes did not queue it: The team is stopped."],
+])("a card whose queue gave %s is told by the code", async (_label, code, reason, told) => {
   f.setList({ teams: [fixes], truncated: false, next: null });
   f.setView(card("example-project"));
   const created = "55555555-5555-4555-8555-555555555555";
@@ -214,8 +218,11 @@ it.each([
   choose(host);
   enter(host);
   await vi.waitFor(() => expect(host.querySelector("[data-not-queued]")).not.toBeNull());
+  expect(host.querySelector("[data-not-queued] > span")!.textContent).toBe(told);
   const text = host.querySelector("[data-not-queued]")!.textContent!;
-  expect(text).toContain(`The task was created; whether Fixes queued it is not known: ${reason}`);
-  expect(text).not.toContain("did not queue it");
+  if (told === UNKNOWN) {
+    expect(text, "the store's sentence for command-line callers is not shown").not.toContain(reason);
+    expect(text).not.toContain("did not queue it");
+  }
   expect([...host.querySelectorAll("[data-not-queued] button")].map((button) => button.textContent)).toContain("Send to team");
 });
