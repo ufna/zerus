@@ -162,3 +162,60 @@ fn a_stage_without_a_task_records_cancelled_without_invoking_the_native_adapter(
     assert!(p.cancelled.is_empty());
     assert!(h.store.pending_cancels(TEAM, 16, 0).unwrap().is_empty());
 }
+
+#[test]
+fn storage_failed_replays_the_saved_cancel_fact_request_without_a_second_child() {
+    let mut h = Harness::new();
+    let node = h.add(&person(), 1);
+    h.run(
+        &person(),
+        Operation::Cancel {
+            node,
+            reason: "Release the task".into(),
+        },
+    )
+    .unwrap();
+    let native = super::production::native(&h);
+    let mut runtime = Runtime::open(h.temp.path(), &native.machine).unwrap();
+    let mut p = Adapter {
+        native,
+        cancelled: Vec::new(),
+        cleared: Vec::new(),
+    };
+    h.store.db.as_ref().unwrap().execute_batch("CREATE TRIGGER reject_fact BEFORE INSERT ON requests BEGIN SELECT RAISE(ABORT,'fixture receipt failure'); END").unwrap();
+    let team = h.store.team(TEAM).unwrap().unwrap();
+    runtime.cancels(&mut h.store, &mut p, &team, 100).unwrap();
+    assert_eq!(p.cancelled, vec![node]);
+    let pending = h.store.pending_cancels(TEAM, 16, 0).unwrap().remove(0);
+    let key = format!("cancel:{}", pending.decision);
+    let row = runtime.ledger.get(TEAM, &key).unwrap().unwrap();
+    let id = row.data["fact"]["request_id"].as_str().unwrap().to_owned();
+    assert!(!h.store.request_refused(TEAM, &id).unwrap());
+    h.store
+        .db
+        .as_ref()
+        .unwrap()
+        .execute_batch("DROP TRIGGER reject_fact")
+        .unwrap();
+    runtime
+        .cancels(&mut h.store, &mut p, &team, 60_100)
+        .unwrap();
+    assert_eq!(p.cancelled, vec![node]);
+    assert_eq!(h.node(node).state, NodeState::Cancelled);
+    assert!(runtime.ledger.get(TEAM, &key).unwrap().is_none());
+    let saved: bool = h
+        .store
+        .db
+        .as_ref()
+        .unwrap()
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM requests WHERE id=?1)",
+            [&id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(
+        saved,
+        "the fact used a new request instead of replaying its original"
+    );
+}

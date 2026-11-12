@@ -124,7 +124,8 @@ fn cancel_fact_storage_failure_is_never_read_as_a_saved_refusal() {
         attempt: p.attempt,
         attempt_id: p.attempt_id.clone(),
     };
-    assert!(Native::save_cancel(&mut h.store, &t, &f, 100).is_err());
+    let error = Native::save_cancel(&mut h.store, &t, &f, 100).unwrap_err();
+    assert_eq!(error.code, zerus_team_plan::problem::code::STORAGE_FAILED);
     assert!(!h.store.request_refused(TEAM, &f.request_id).unwrap());
     assert_eq!(Native::pending_cancels(&h.store, TEAM, 0).unwrap(), vec![p]);
 }
@@ -278,4 +279,48 @@ fn cancel_holds_its_admission_until_spawn_and_then_releases_it() {
         .run_cancel(&t, &pending, &uuid::Uuid::new_v4().to_string())
         .unwrap();
     assert_eq!(mark.get(), 2);
+}
+
+#[test]
+fn a_saved_cancel_fact_refusal_for_a_conflict_ends_the_visit_even_at_the_same_pair() {
+    let mut h = Harness::new();
+    let node = h.add(&person(), 1);
+    let mut observation = h.observation(node, crate::teams::ops::TaskStage::Todo);
+    observation.attempt = 1;
+    h.run(&service(), Operation::ObserveTask { node, observation })
+        .unwrap();
+    h.run(
+        &person(),
+        Operation::Cancel {
+            node,
+            reason: "Release this task".into(),
+        },
+    )
+    .unwrap();
+    let pending = Native::pending_cancels(&h.store, TEAM, 0)
+        .unwrap()
+        .remove(0);
+    assert_eq!((pending.attempt, pending.attempt_id.as_str()), (1, ""));
+    let mut observation = h.observation(node, crate::teams::ops::TaskStage::Todo);
+    observation.attempt = 1;
+    observation.attempt_conflict = true;
+    h.run(&service(), Operation::ObserveTask { node, observation })
+        .unwrap();
+    let team = h.store.team(TEAM).unwrap().unwrap();
+    let fact = Fact {
+        request_id: uuid::Uuid::new_v4().to_string(),
+        revision: team.revision,
+        pending: pending.clone(),
+        refused: false,
+        reason: String::new(),
+        attempt: 1,
+        attempt_id: String::new(),
+    };
+    Native::save_cancel(&mut h.store, &team, &fact, 100).unwrap();
+    assert!(h.store.request_refused(TEAM, &fact.request_id).unwrap());
+    assert_ne!(h.node(node).state, NodeState::Cancelled);
+    assert_eq!(
+        Native::pending_cancels(&h.store, TEAM, 0).unwrap(),
+        vec![pending]
+    );
 }

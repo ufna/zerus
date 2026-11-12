@@ -96,10 +96,20 @@ impl Native {
             Err(error) => {
                 // An observation can win after the command. Only its saved
                 // refusal proves the end of this visit; never an error code.
+                // A conflict may keep the same (number, empty ID) pair, so
+                // that refused fact also ends this visit rather than replaying
+                // its permanent refusal after the conflict has settled.
                 if store.request_refused(&team.id, &request.request_id)?
-                    && Self::pending_cancels(store, &team.id, fact.pending.node.saturating_sub(1))?
-                        .first()
+                    && (Self::pending_cancels(
+                        store,
+                        &team.id,
+                        fact.pending.node.saturating_sub(1),
+                    )?
+                    .first()
                         != Some(&fact.pending)
+                        || store
+                            .task_observation(&team.id, fact.pending.node)?
+                            .is_some_and(|observation| observation.attempt_conflict))
                 {
                     Ok(())
                 } else {
