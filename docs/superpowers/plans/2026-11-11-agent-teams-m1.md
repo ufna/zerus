@@ -1860,6 +1860,22 @@ the member: no ready task, a paused team, the member readable again,
 another member taking the task, the member stopped or archived. A team's
 Stop closes the card in the Stop itself.
 
+**A hand-out that fails before its reservation says that nothing was
+sent.** The task command that hands a team's task to a member answered
+every failure alike, with an error exit that the actor reads as uncertain.
+So a failure that provably came before anything durable (a team store that
+was busy, a setting that could not be read) raised a card and was never
+tried again (2026-11-12). The window is exact: it opens when the command
+has seen, under the task's admission, that no attempt exists for its ID,
+and closes at the reservation's save; nothing in it is durable. Inside it a
+rule's refusal stays a refusal and a stale observation stays stale; every
+other failure answers `not_started` with its cause, exit 0 and the echoed
+ID, which the actor reads as nothing sent and tries again with its
+backoff. A member session that refuses the prepared input (its identity,
+run or conversation changed) is a refusal, not an uncertainty. Outside the
+window nothing changes: a failure before the attempt read or after the
+reservation is still unknown, and a recovery never sends.
+
 **Known limit: the key of a task that was closed before the stop.** After a
 stop the service clears the team key of the tasks that were open at the
 stop and of released stages. A task accepted or cancelled earlier keeps its
