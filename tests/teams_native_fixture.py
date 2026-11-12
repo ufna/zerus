@@ -195,6 +195,16 @@ class Evidence:
                                         encoding='utf-8')
 
 
+PINNED = r"`hgs task {verb} (?:'([^'`]+)'|([^\s'`]+)) --attempt ([0-9a-f]{{8}}-[0-9a-f]{{4}}-[0-9a-f]{{4}}-[0-9a-f]{{4}}-[0-9a-f]{{12}})"
+
+
+def pinned(prompt, verb):
+    """The (ref, attempt) of the pinned `hgs task <verb> REF --attempt UUID` in a real
+    delivered prompt, the ref quoted when it holds a space; None when it is not pinned."""
+    match = re.search(PINNED.format(verb=verb), prompt)
+    return (match.group(1) or match.group(2), match.group(3)) if match else None
+
+
 class Model(api.Handler):
     """The shared loopback fixture plus the Teams steps: a delivered task prompt and a
     typed `ZT-RUN <step>` each answer with one shell call that runs a fixture script."""
@@ -297,12 +307,14 @@ class ModelServer(api.Server):
         if step and (self.scripts / (step.group(1) + '.sh')).is_file():
             return self.shell(offered, '/bin/bash ' + shlex.quote(str(self.scripts / (step.group(1) + '.sh'))))
         if prompt.startswith('[Zerus task ') and not prompt.split('\n', 1)[0].rstrip().endswith('cancelled]'):
-            begin = re.search(r"`hgs task begin-attempt '?([^' `]+)'? --attempt ([0-9a-f-]{36})`", prompt)
-            report = re.search(r"`hgs task report-attempt '?([^' `]+)'? --attempt ([0-9a-f-]{36})", prompt)
-            if begin and report:
+            begin = pinned(prompt, 'begin-attempt')
+            report = pinned(prompt, 'report-attempt')
+            if report:
+                # Only the commands the prompt supplies: a prompt without a pinned
+                # begin-attempt gets no acknowledgement (empty arguments).
                 script = self.scripts / 'delivered.sh'
                 return self.shell(offered, ' '.join(shlex.quote(x) for x in (
-                    '/bin/bash', str(script), begin.group(1), begin.group(2), report.group(1), report.group(2))))
+                    '/bin/bash', str(script), *(begin or ('', '')), *report)))
             return ('text', 'Fixture: the delivered prompt has no pinned commands')
         # Anything else is the shared fixture's own plan (a reply, or its questions).
         return api.plan(body, '')

@@ -188,7 +188,8 @@ class TeamsContract(ClassFixture):
         fx.script('delivered', (
             'set -- "$@"; n=0; for x in ' + str(out) + '/delivered-*.json; do [ -e "$x" ] && n=$((n+1)); done; '
             'f=' + str(out) + '/delivered-$n.json\n'
-            'begin=$("$H" task begin-attempt "$1" --attempt "$2" 2>&1); b=$?\n'
+            'if [ -n "$1" ]; then begin=$("$H" task begin-attempt "$1" --attempt "$2" 2>&1); b=$?; '
+            'else begin="no begin-attempt is pinned"; b=-1; fi\n'
             'current=$("$H" team current --json 2>&1); c=$?\n'
             'inbox=$("$H" team inbox --team ' + fx.team + ' --json 2>&1); i=$?\n'
             'if [ -f ' + str(out) + '/begin-only ]; then report=""; r=-1; else\n'
@@ -208,12 +209,17 @@ class TeamsContract(ClassFixture):
         prompts = fx.requests_with(lambda r: (r.get('prompt') or '').startswith('[Zerus task ' + ref))
         self.assertTrue(prompts, 'no model request carried the delivered prompt')
         delivered = prompts[0]['prompt']
-        self.assertIn('hgs task begin-attempt', delivered)
+        # Observed with this head (tc22): a team-delivered prompt pins report-attempt and
+        # no begin-attempt, so the member runs no acknowledgement. Pinned as observed: a
+        # prompt that starts pinning one fails here (a question to the coordinator).
+        self.assertIn('hgs task report-attempt', delivered)
+        self.assertNotIn('hgs task begin-attempt', delivered)
         for request in prompts:
             self.assertEqual(sum(text == delivered for text in request['users']), 1,
                              'the delivered prompt appears once in the member conversation')
-        # The member's own shell: acknowledgement, caller proof, refusal, report.
-        self.assertEqual(result['begin_exit'], 0, result['begin'])
+        # The member's own shell: no acknowledgement (none is pinned), caller proof,
+        # refusal, report.
+        self.assertEqual(result['begin_exit'], -1, result['begin'])
         current = json.loads(result['current'])
         self.assertEqual(result['current_exit'], 0, result['current'])
         self.assertEqual(current['actor'], dict(kind='session', member='m1', person='local', team=fx.team))
@@ -252,12 +258,12 @@ class TeamsContract(ClassFixture):
     def test_4_cancel_notice(self):
         fx = self.fx
         out = fx.root / 'out'
-        (out / 'begin-only').write_text('the member acknowledges and keeps working\n')
+        (out / 'begin-only').write_text('the member keeps working without a report\n')
         ref, task_uuid = fx.add_task('Fixture task two', 'Fixture task two: keep working until cancelled.')
-        result = fx.wait('member acknowledged the second task',
+        result = fx.wait('member ran the second task in its shell and kept working',
                          lambda: (out / 'delivered-1.json').is_file() and json.loads((out / 'delivered-1.json').read_text()),
                          fixture.BOUND['handout'] + fixture.BOUND['turn'], 2)
-        self.assertEqual(result['begin_exit'], 0, result['begin'])
+        self.assertEqual((result['begin_exit'], result['report_exit']), (-1, -1), result)
         node = fx.node_of(task_uuid)
         cancel = out / 'lead-cancel.json'
         fx.script('lead-cancel', (
@@ -866,6 +872,17 @@ class TeamsFixtureDiagnostics(unittest.TestCase):
             added=['allowedTools', 'hasTrustDialogAccepted'], removed=[], changed=[])})
         self.assertNotIn('keep.txt', diff['changed'])
         self.assertNotIn('value', json.dumps(after), 'names and hashes only, no content')
+
+    def test_the_pinned_commands_of_a_delivered_prompt(self):
+        attempt = str(uuid.UUID(int=7))
+        prompt = ('[Zerus task Example project/T-abc]\nWritten by the person.\n\n'
+                  f"Report this execution with `hgs task report-attempt 'Example project/T-abc' --attempt {attempt}` "
+                  'instead of any unscoped report instruction above.')
+        self.assertEqual(fixture.pinned(prompt, 'report-attempt'), ('Example project/T-abc', attempt))
+        self.assertIsNone(fixture.pinned(prompt, 'begin-attempt'))
+        plain = f'Acknowledge with `hgs task begin-attempt T-abc --attempt {attempt}` first.'
+        self.assertEqual(fixture.pinned(plain, 'begin-attempt'), ('T-abc', attempt))
+        self.assertIsNone(fixture.pinned(plain.replace(attempt, 'not-a-uuid'), 'begin-attempt'))
 
     def test_folder_watch_times_a_folder_that_goes_and_comes_back(self):
         with tempfile.TemporaryDirectory() as base:
