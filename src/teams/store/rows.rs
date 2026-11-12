@@ -257,7 +257,8 @@ pub(crate) fn record_observation(
     released: bool,
 ) -> Result<()> {
     // The newest observation's attempt pair as it came, a conflict's empty ID
-    // included; beside it the last current attempt ID the store saw.
-    db.execute("INSERT INTO task_observations(team,node,data,released,attempt,attempt_id,last_attempt_id,attempt_conflict) VALUES(?1,?2,?3,?4,?5,?6,?6,?7) ON CONFLICT(team,node) DO UPDATE SET data=excluded.data,released=MAX(task_observations.released,excluded.released),attempt=excluded.attempt,attempt_id=excluded.attempt_id,last_attempt_id=CASE WHEN excluded.attempt_id<>'' THEN excluded.attempt_id ELSE task_observations.last_attempt_id END,attempt_conflict=excluded.attempt_conflict",params![team,node,encode(o)?,released,o.attempt,o.attempt_id,o.attempt_conflict]).map_err(storage)?;
+    // included. The attempt the node runs under is remembered apart, only
+    // when the node takes an execution in (ops::timers::remember).
+    db.execute("INSERT INTO task_observations(team,node,data,released,attempt,attempt_id,attempt_conflict) VALUES(?1,?2,?3,?4,?5,?6,?7) ON CONFLICT(team,node) DO UPDATE SET data=excluded.data,released=MAX(task_observations.released,excluded.released),attempt=excluded.attempt,attempt_id=excluded.attempt_id,attempt_conflict=excluded.attempt_conflict",params![team,node,encode(o)?,released,o.attempt,o.attempt_id,o.attempt_conflict]).map_err(storage)?;
     Ok(())
 }

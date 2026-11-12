@@ -826,3 +826,142 @@ fn an_ended_task_ends_its_node_whoever_executed_it() {
         }
     }
 }
+
+fn remembered(h: &Harness, node: u32) -> String {
+    let db = h.store.db.as_ref().unwrap();
+    db.query_row(
+        "SELECT last_attempt_id FROM task_observations WHERE team=?1 AND node=?2",
+        rusqlite::params![TEAM, node],
+        |r| r.get(0),
+    )
+    .unwrap()
+}
+
+/// The reviewer's sequence: the team's attempt runs; a person finishes the
+/// task, moves it back to To do and reserves a send P whose delivery is
+/// unknown; the store observes P while the task does not run, then P runs.
+/// P was never taken in, so it is judged when it starts.
+#[test]
+fn a_persons_attempt_observed_before_it_runs_is_taken_over_when_it_runs() {
+    for case in ["cancel", "none", "reopen"] {
+        let (mut h, lead, node, id) = handed();
+        let mut attempt = 2;
+        match case {
+            "cancel" => drop(
+                h.run(
+                    &lead,
+                    Operation::Cancel {
+                        node,
+                        reason: "Superseded".into(),
+                    },
+                )
+                .unwrap(),
+            ),
+            "reopen" => {
+                h.report(node, "m1");
+                h.run(
+                    &lead,
+                    Operation::Return {
+                        node,
+                        reason: "Fix it".into(),
+                    },
+                )
+                .unwrap();
+                drop(h.reopen(node, "m1"));
+                attempt = 3;
+            }
+            _ => (),
+        }
+        let before = h.store.generation(TEAM, node).unwrap().unwrap();
+        seen(&mut h, node, TaskStage::Todo, attempt, PERSON).unwrap();
+        assert_eq!(remembered(&h, node), id, "{case}: P is not taken in");
+        assert_eq!(h.store.generation(TEAM, node).unwrap(), Some(before));
+        seen(&mut h, node, TaskStage::InProgress, attempt, PERSON).unwrap();
+        assert_eq!(
+            state(&h, node),
+            (
+                before + 1,
+                true,
+                false,
+                "person_override".into(),
+                NodeState::InProgress
+            ),
+            "{case}"
+        );
+        assert!(
+            h.store
+                .effects(TEAM, 200, None)
+                .unwrap()
+                .rows
+                .iter()
+                .all(|e| !matches!(e.state.as_str(), "reserved" | "submitted")),
+            "{case}: nothing of the earlier attempt stays open"
+        );
+        assert_eq!(remembered(&h, node), PERSON, "{case}: now taken in");
+    }
+}
+
+/// A person's send that is reserved and never starts, then the node's own
+/// attempt current again: nothing changes.
+#[test]
+fn a_reserved_attempt_that_never_starts_changes_nothing() {
+    let (mut h, _, node, id) = handed();
+    seen(&mut h, node, TaskStage::Todo, 2, PERSON).unwrap();
+    seen(&mut h, node, TaskStage::InProgress, 2, &id).unwrap();
+    assert_eq!(h.store.generation(TEAM, node).unwrap(), Some(1));
+    assert_eq!(remembered(&h, node), id);
+    assert!(bound(&h, node));
+    assert!(h
+        .store
+        .journal(TEAM, 200, None)
+        .unwrap()
+        .rows
+        .iter()
+        .all(|e| e.kind != "person_override"));
+}
+
+/// The team's own effect observed while the task does not run yet is taken
+/// in at once, and no override follows when it runs.
+#[test]
+fn the_teams_own_effect_is_remembered_before_it_runs() {
+    let mut h = Harness::new();
+    h.bind("lead");
+    h.bind("m1");
+    let node = h.add(&person(), 1);
+    let id = h.intent(node, "m1");
+    seen(&mut h, node, TaskStage::Todo, 1, &id).unwrap();
+    assert_eq!(remembered(&h, node), id);
+    h.outcome(
+        &id,
+        HandoutOutcome::Submitted {
+            receipt: "receipt-example".into(),
+        },
+    );
+    seen(&mut h, node, TaskStage::InProgress, 1, &id).unwrap();
+    assert_eq!(h.store.generation(TEAM, node).unwrap(), Some(1));
+    assert!(h
+        .store
+        .journal(TEAM, 200, None)
+        .unwrap()
+        .rows
+        .iter()
+        .all(|e| e.kind != "person_override"));
+}
+
+/// Today's restore of a finished node by a task that does not run takes no
+/// execution in: the person's attempt is judged when it starts.
+#[test]
+fn a_restore_by_a_task_that_does_not_run_remembers_nothing() {
+    let (mut h, lead, node, id) = handed();
+    h.report(node, "m1");
+    h.run(&lead, Operation::Accept { node }).unwrap();
+    h.observe(node, TaskStage::Done);
+    seen(&mut h, node, TaskStage::Todo, 2, PERSON).unwrap();
+    assert_eq!(h.store.generation(TEAM, node).unwrap(), Some(2));
+    assert_eq!(remembered(&h, node), id);
+    seen(&mut h, node, TaskStage::InProgress, 2, PERSON).unwrap();
+    assert_eq!(h.store.generation(TEAM, node).unwrap(), Some(3));
+    assert_eq!(remembered(&h, node), PERSON);
+    seen(&mut h, node, TaskStage::InProgress, 2, PERSON).unwrap();
+    assert_eq!(h.store.generation(TEAM, node).unwrap(), Some(3), "once");
+}

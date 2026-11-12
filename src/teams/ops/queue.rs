@@ -365,7 +365,8 @@ pub(super) fn observe(ctx: &mut Context<'_>) -> Result<()> {
         *node,
         o,
         n.kind == NodeKind::Stage && (o.cancelled || o.stage == TaskStage::Done),
-    )
+    )?;
+    timers::remember(ctx, *node, o)
 }
 fn validate_observation(
     ctx: &Context<'_>,
