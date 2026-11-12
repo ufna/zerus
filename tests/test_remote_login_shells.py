@@ -307,7 +307,10 @@ class RemoteLoginShells(unittest.TestCase):
                       # The value of -n or --account, followed by a real claim
                       # that the peer reads as the project folder.
                       ['claude', '-n', '--parent', parent], ['codex', '--account', '--parent', parent],
-                      ['fork', 'codex/p/a', '-n', '--parent', parent]):
+                      ['fork', 'codex/p/a', '-n', '--parent', parent],
+                      # Neither --parent=CLAIM (no launch parser reads it) nor a
+                      # claim after the value of --parent-link (U5, U6).
+                      ['claude', '/tmp', '--parent=' + parent], ['claude', '--parent-link', '--parent', parent]):
             calls.append(('shape', ['@peer', *shape]))
         sent = self.root / 'ssh-args.json'
 
@@ -346,6 +349,47 @@ class RemoteLoginShells(unittest.TestCase):
                     result = run(call, hosted)
                     self.assertNotIn('cannot prove its session', result.stderr)
                     self.assertTrue(sent.exists(), result.stdout + result.stderr)
+
+    def test_the_parent_scan_skips_every_value_a_launch_parser_takes(self):
+        # zerus-ppd26.13: names_parent skips the values in LAUNCH_VALUE_OPTIONS;
+        # every option LaunchOptions::parse or the fork parser reads a value for
+        # must be there, so a new value option cannot pass as --parent.
+        import re
+        source = (ROOT / 'src/cli.rs').read_text()
+        table = re.search(r'const LAUNCH_VALUE_OPTIONS: &\[&str\] = &\[(.*?)\];', source, re.S)
+        skipped = set(re.findall(r'"(-[-a-z]+)"', table.group(1)))
+
+        def function(marker):
+            at = source.index(marker)
+            start = source.rindex('fn ', 0, at)
+            end = source.index('\n    }\n', at) if source[start - 4:start] == '    ' else source.index('\n}\n', at)
+            return source[start:end]
+
+        def value_options(body, index):
+            found, optional = set(), set()
+            for arm in re.finditer(r'((?:"-[-a-z]+"\s*\|\s*)*"-[-a-z]+")\s*=>\s*\{', body):
+                depth, end = 0, arm.end() - 1
+                for end in range(arm.end() - 1, len(body)):
+                    depth += {'{': 1, '}': -1}.get(body[end], 0)
+                    if depth == 0:
+                        break
+                block, names = body[arm.end():end], re.findall(r'"(-[-a-z]+)"', arm.group(1))
+                if re.search(r'get\(' + index + r'\s*\+\s*1\)', block):
+                    optional.update(names)
+                elif re.search(r'\b' + index + r'\s*\+\s*1\b|\b' + index + r'\s*\+=\s*1\b', block):
+                    found.update(names)
+            return found, optional
+
+        launch, optional = value_options(function('fn parse(args: &[String], dry: bool) -> Result<Self> {'), 'i')
+        fork, _ = value_options(function('unknown fork option'), 'index')
+        self.assertIn('--account', launch)
+        self.assertIn('--archive', fork)
+        self.assertEqual(optional, {'-c', '--resume', '--continue'})
+        # --parent itself is read by the scan, and -- ends it, as it ends the parsers.
+        self.assertEqual((launch | fork) - {'--parent', '--'} - skipped, set())
+        scan = function('fn names_parent(args: &[String]) -> bool {')
+        self.assertIn('"-c" | "--resume" | "--continue"', scan)
+        self.assertIn('"--" => return false', scan)
 
     def test_a_reference_takes_exactly_one_verified_hop(self):
         # #1376 review: a reference reaches its computer through one SSH hop the

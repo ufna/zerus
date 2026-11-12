@@ -11,7 +11,11 @@ use super::*;
 use crate::state::provider_binding::Provider;
 
 /// What this proof establishes and what it does not, stated with its result.
-pub(crate) const HOSTED_LIMIT: &str = "One DeepSeek host process serves every session of its agent home: process ancestry proves only that this command runs under the host that serves the session, and the host's per-call token proves which conversation's tool call started it. The host socket's peer credentials prove that the answering socket is the recorded host's, which never hands its listener to a child, and everything that socket serves hides live tokens. A same-user process that reads another tool call's environment can copy that call's token; that is deliberate instrumentation and outside this proof.";
+pub(crate) const HOSTED_LIMIT: &str = "One DeepSeek host process serves every session of its agent home: process ancestry proves only that this command runs under the host that serves the session, and the host's per-call token proves which conversation's tool call started it. The host socket's peer credentials prove that the answering socket is the recorded host's, which never hands its listener to a child, and everything that socket serves hides a live token printed whole; a call can always disclose its own token, split or encoded. A same-user process that reads another tool call's environment can copy that call's token; that is deliberate instrumentation and outside this proof.";
+
+/// The most rename shadows the proof follows from a claimed label.
+#[cfg(unix)]
+const RENAME_LINKS: usize = 4;
 
 /// The longest the proof waits for the host to answer for a token.
 #[cfg(unix)]
@@ -52,9 +56,9 @@ const HOST_CHANGED: &str = "The DeepSeek host changed while this tool call was b
 ///    the session index (its ID layout record or its label, as `hgs self`
 ///    reads a claim), else the label. It must be a DeepSeek binding whose
 ///    name or launch label is `name`, whose run is `run` and, when claimed,
-///    whose session ID is `session`. A label's rename shadow is followed to
-///    its current binding, which must be the same session, run,
-///    conversation and home.
+///    whose session ID is `session`. A label's rename shadows are followed,
+///    at most four links, each the same session, conversation and home, to a
+///    current binding of the claimed run.
 /// 3. The binding's agent home selects the one host folder that `ensure_host`
 ///    and every host request use. Its record is read through the Teams
 ///    proof's own reader (`caller_hosts`, this boot's records only), and only
@@ -121,27 +125,31 @@ pub(crate) fn hosted_caller(
     {
         return Err(BINDING);
     }
-    // A label's rename shadow stands for its current binding: follow it here,
-    // through the DeepSeek provider, to the very same session, run,
-    // conversation and home (zerus-ppd26.7).
-    let record = if record["rename_shadow"] == true {
-        let current = Provider::DeepSeek
+    // A label's rename shadow stands for its current binding: follow a short
+    // chain of shadows here, through the DeepSeek provider, each link the very
+    // same session, conversation and home, to a binding of the claimed run
+    // that is no shadow (zerus-ppd26.7, .13).
+    let mut record = record;
+    for _ in 0..RENAME_LINKS {
+        if record["rename_shadow"] != true {
+            break;
+        }
+        let next = Provider::DeepSeek
             .read_label(string(&record, "rename_target"))
             .map_err(|_| BINDING)?;
-        let same = |key: &str| current[key] == record[key] && !string(&current, key).is_empty();
-        if current["rename_shadow"] == true
-            || current["backend"] != "dsh"
-            || current["run_id"] != run
+        let same = |key: &str| next[key] == record[key] && !string(&next, key).is_empty();
+        if next["backend"] != "dsh"
             || !["session_id", "conversation_id", "agent_home"]
                 .into_iter()
                 .all(same)
         {
             return Err(BINDING);
         }
-        current
-    } else {
-        record
-    };
+        record = next;
+    }
+    if record["rename_shadow"] == true || record["run_id"] != run {
+        return Err(BINDING);
+    }
     if record["state"] == "archived" {
         return Ok(None);
     }
@@ -192,7 +200,6 @@ pub(crate) fn hosted_caller(
     if host_birth(host).as_deref() != Some(birth.as_str()) {
         return Err(HOST_CHANGED);
     }
-    let mut record = record;
     record["caller_proof"] = json!({"kind":"hosted_call","host_pid":host,"limit":HOSTED_LIMIT});
     Ok(Some(record))
 }
@@ -294,17 +301,26 @@ mod tests {
     #[test]
     #[ignore = "run by its isolated wrapper"]
     fn rename_fixture() {
-        // zerus-ppd26.7: an ID-less claim through a label's rename shadow is
-        // proven as the current binding, and caller_record keeps it.
-        let (old, new, id) = (
+        // zerus-ppd26.7, .13: an ID-less claim through any label of a chain of
+        // rename shadows (old -> middle -> current, U4) is proven as the current
+        // binding, and caller_record keeps it. The chain is bounded, and every
+        // link must be the same session (OWN3), conversation and home.
+        let (old, middle, new, id) = (
             "dsh/project/old",
+            "dsh/project/middle",
             "dsh/project/new",
             "6a4c5887-557a-4f31-b1c8-ad0a94c3c705",
         );
         let home = std::env::var("DSH_HOME").unwrap();
-        let binding = |name: &str, run: &str| {
+        let binding = |name: &str| {
             json!({"backend":"dsh","agent":"dsh","name":name,"agent_home":home,"conversation_id":CONVERSATION,
-                "run_id":run,"session_id":id,"created":1.0,"paused":false})
+                "run_id":"run-renamed","session_id":id,"created":1.0,"paused":false})
+        };
+        let shadow = |name: &str, target: &str| {
+            let mut record = binding(name);
+            record["rename_shadow"] = json!(true);
+            record["rename_target"] = json!(target);
+            record
         };
         let dir = crate::state::storage::root()
             .join("dsh/hosts")
@@ -321,20 +337,20 @@ mod tests {
             &crate::platform::process_identity(me).unwrap().birth,
             caller_hosts::written_boot().as_deref(),
         );
-        let mut current = binding(new, "run-renamed");
+        let mut current = binding(new);
         current["launch_label"] = json!(old);
-        let mut shadow = current.clone();
-        shadow["name"] = json!(old);
-        shadow["rename_shadow"] = json!(true);
-        shadow["rename_target"] = json!(new);
-        Provider::DeepSeek.save(&mut shadow).unwrap();
-        Provider::DeepSeek.save(&mut current).unwrap();
-        let proven = hosted_caller(old, "run-renamed", None).unwrap().unwrap();
-        assert_eq!(
-            (proven["name"].as_str(), proven["rename_shadow"].as_bool()),
-            (Some(new), None)
-        );
-        assert_eq!(proven["caller_proof"]["kind"], "hosted_call");
+        for mut record in [shadow(old, middle), shadow(middle, new), current.clone()] {
+            Provider::DeepSeek.save(&mut record).unwrap();
+        }
+        for label in [old, middle, new] {
+            let proven = hosted_caller(label, "run-renamed", None).unwrap().unwrap();
+            assert_eq!(
+                (proven["name"].as_str(), proven["rename_shadow"].as_bool()),
+                (Some(new), None),
+                "{label}"
+            );
+            assert_eq!(proven["caller_proof"]["kind"], "hosted_call");
+        }
         std::env::set_var("HGS_SESSION", old);
         std::env::set_var("HGS_RUN_ID", "run-renamed");
         let followed = crate::state::session_graph::caller_record()
@@ -346,7 +362,53 @@ mod tests {
             ),
             (Some(new), Some("hosted_call"))
         );
-        // A shadow whose current binding is another run is no proof.
+        // A link to another session ID is no proof, even of the same run,
+        // conversation and home (OWN3).
+        let mut stranger = binding("dsh/project/stranger");
+        stranger["session_id"] = json!("00000000-0000-4000-8000-000000000009");
+        Provider::DeepSeek.save(&mut stranger).unwrap();
+        Provider::DeepSeek
+            .save(&mut shadow(
+                "dsh/project/to-stranger",
+                "dsh/project/stranger",
+            ))
+            .unwrap();
+        assert_eq!(
+            hosted_caller("dsh/project/to-stranger", "run-renamed", None),
+            Err(BINDING)
+        );
+        // A loop, and a chain longer than four links, are no proof.
+        Provider::DeepSeek
+            .save(&mut shadow("dsh/project/loop-a", "dsh/project/loop-b"))
+            .unwrap();
+        Provider::DeepSeek
+            .save(&mut shadow("dsh/project/loop-b", "dsh/project/loop-a"))
+            .unwrap();
+        assert_eq!(
+            hosted_caller("dsh/project/loop-a", "run-renamed", None),
+            Err(BINDING)
+        );
+        let links = [
+            "dsh/project/l1",
+            "dsh/project/l2",
+            "dsh/project/l3",
+            "dsh/project/l4",
+            "dsh/project/l5",
+        ];
+        for pair in links.windows(2) {
+            Provider::DeepSeek
+                .save(&mut shadow(pair[0], pair[1]))
+                .unwrap();
+        }
+        Provider::DeepSeek.save(&mut shadow(links[4], new)).unwrap();
+        assert_eq!(hosted_caller(links[0], "run-renamed", None), Err(BINDING));
+        assert!(
+            hosted_caller(links[1], "run-renamed", None)
+                .unwrap()
+                .is_some(),
+            "four links"
+        );
+        // A current binding of another run is no proof.
         current["run_id"] = json!("run-other");
         Provider::DeepSeek.save(&mut current).unwrap();
         assert_eq!(hosted_caller(old, "run-renamed", None), Err(BINDING));

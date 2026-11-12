@@ -324,10 +324,14 @@ assert.equal(tokens.conversation(plain), conversation);
 tokens.close(plain);
 assert.equal(tokens.conversation(plain), undefined);
 for (const bad of [undefined, '', 'X'.repeat(64), call.toUpperCase(), call + '0', 7]) assert.equal(tokens.conversation(bad), undefined);
-// Bounded: the oldest live token is dropped and is then unknown.
+// Bounded: a full table recycles only the opener's own oldest token, so
+// another conversation's live token stays (zerus-ppd26.13).
 const first = tokens.open('session-00000000-0000-4000-8000-000000000001');
-for (let n = 0; n < 3; n++) tokens.open(conversation);
-assert.equal(tokens.conversation(first), undefined);
+const own = [];
+for (let n = 0; n < 3; n++) own.push(tokens.open(conversation));
+assert.equal(tokens.conversation(first), 'session-00000000-0000-4000-8000-000000000001');
+assert.equal(tokens.conversation(own[0]), undefined);
+assert.equal(tokens.conversation(own[2]), conversation);
 assert.equal(tokens.size, 3);
 """)
 
@@ -351,6 +355,50 @@ assert.ok(hidden.includes(`HGS_DSH_CALL_TOKEN=${HIDDEN_TOKEN}`));
 assert.ok(hidden.includes(unrelated) && hidden.includes(ended), 'only live tokens are hidden');
 tokens.close(live);
 assert.ok(tokens.redact(served).includes(live), 'an ended token is no longer live');
+""")
+
+    def test_every_copy_of_a_live_token_is_hidden_whatever_precedes_it(self):
+        # zerus-ppd26.13: each 64-character window of a hex run is tested, so a
+        # token after a hex digit or a JSON-escaped control character is hidden,
+        # and every copy in one reply (U1).
+        self.run_js("""
+const tokens = callTokens();
+const live = tokens.open(conversation), other = tokens.open(conversation);
+for (const text of [live, 'c' + live, 'deadbeef' + live, live + live, live + ' and again ' + live,
+    String.fromCharCode(27) + live, String.fromCharCode(0) + live, String.fromCharCode(8) + live,
+    String.fromCharCode(12) + live, 'x' + live + 'cafe', other + live]) {
+  const served = tokens.redact(JSON.stringify({ output: text }));
+  assert.ok(!served.includes(live), JSON.stringify(text.slice(0, 12)));
+  assert.ok(!served.includes(other));
+  assert.ok(served.includes(HIDDEN_TOKEN));
+}
+const twice = tokens.redact(JSON.stringify({ output: live + ' then ' + live }));
+assert.equal(twice.split(HIDDEN_TOKEN).length - 1, 2, 'both copies');
+// Hex around a token stays as it was.
+assert.ok(tokens.redact('deadbeef' + live + 'cafe').startsWith('deadbeef' + HIDDEN_TOKEN + 'cafe'));
+const unrelated = 'a'.repeat(200);
+assert.equal(tokens.redact(unrelated), unrelated);
+""")
+
+    def test_a_full_table_never_takes_another_conversations_live_token(self):
+        # zerus-ppd26.13: a conversation makes room only from its own tokens; a
+        # newcomer facing a full table gets none and its call stays unproven.
+        self.run_js("""
+const tokens = callTokens(4, 3);
+const a = 'session-00000000-0000-4000-8000-00000000000a', b = 'session-00000000-0000-4000-8000-00000000000b';
+const c = 'session-00000000-0000-4000-8000-00000000000c';
+const mine = [tokens.open(a), tokens.open(a), tokens.open(a)], theirs = tokens.open(b);
+assert.equal(tokens.size, 4);
+assert.equal(tokens.open(c), undefined, 'a newcomer takes no token of another conversation');
+assert.ok(mine.every(token => tokens.conversation(token) === a) && tokens.conversation(theirs) === b);
+const next = tokens.open(a);
+assert.equal(tokens.conversation(mine[0]), undefined, 'a recycles its own oldest');
+assert.equal(tokens.conversation(next), a);
+assert.equal(tokens.conversation(theirs), b);
+const again = tokens.open(b);
+assert.equal(tokens.conversation(theirs), undefined);
+assert.equal(tokens.conversation(again), b);
+assert.ok(mine.slice(1).every(token => tokens.conversation(token) === a));
 """)
 
 
