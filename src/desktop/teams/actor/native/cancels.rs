@@ -9,18 +9,25 @@ impl Native {
         team: &str,
         after: u32,
     ) -> Result<Vec<Pending>> {
-        Ok(store
+        store
             .pending_cancels(team, 16, after)?
             .into_iter()
-            .map(|p| Pending {
-                node: p.node,
-                generation: p.generation,
-                decision: p.decision,
-                task: p.task,
-                attempt: p.attempt,
-                attempt_id: p.attempt_id,
+            .map(|p| {
+                Ok(Pending {
+                    node: p.node,
+                    generation: p.generation,
+                    decision: p.decision,
+                    task: p.task,
+                    attempt: p.attempt,
+                    attempt_id: p.attempt_id,
+                    attempt_conflict: Some(
+                        store
+                            .task_observation(team, p.node)?
+                            .is_some_and(|o| o.attempt_conflict),
+                    ),
+                })
             })
-            .collect())
+            .collect()
     }
     pub(in crate::desktop::teams::actor) fn run_cancel(
         &self,
@@ -64,15 +71,6 @@ impl Native {
         }
         Ok(store)
     }
-    fn cancel_visit_changed(store: &Store, team: &str, pending: &Pending) -> Result<bool> {
-        Ok(
-            Self::pending_cancels(store, team, pending.node.saturating_sub(1))?.first()
-                != Some(pending)
-                || store
-                    .task_observation(team, pending.node)?
-                    .is_some_and(|observation| observation.attempt_conflict),
-        )
-    }
     pub(in crate::desktop::teams::actor) fn save_cancel(
         store: &mut Store,
         team: &Team,
@@ -102,23 +100,7 @@ impl Native {
             person: team.owner.clone(),
             team: team.id.clone(),
         };
-        match ops::apply(store, &actor, &request, now) {
-            Ok(_) => Ok(()),
-            Err(error) => {
-                // An observation can win after the command. Only its saved
-                // refusal proves the end of this visit; never an error code.
-                // A conflict may keep the same (number, empty ID) pair, so
-                // that refused fact also ends this visit rather than replaying
-                // its permanent refusal after the conflict has settled.
-                if store.request_refused(&team.id, &request.request_id)?
-                    && Self::cancel_visit_changed(store, &team.id, &fact.pending)?
-                {
-                    Ok(())
-                } else {
-                    Err(error)
-                }
-            }
-        }
+        ops::apply(store, &actor, &request, now).map(|_| ())
     }
 }
 pub(in crate::desktop::teams::actor) fn answer(ended: Ended, input: &Value) -> Result<Answer> {

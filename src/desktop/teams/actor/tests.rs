@@ -131,3 +131,6 @@ mod native_cancel_tick;
 mod cancel_observation;
 
 mod deferred;
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+mod cancel_refusal;

@@ -6,6 +6,7 @@ pub(super) fn run() {
     creation_and_clear();
     cancel::run();
     handover();
+    refusals::run();
 }
 fn delivery() {
     let mut f = Fixture::new();
@@ -196,3 +197,5 @@ fn handover() {
         zerus_replica::execution::Origin::Handoff
     ));
 }
+
+mod refusals;

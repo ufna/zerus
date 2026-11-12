@@ -15,6 +15,7 @@ struct Fake {
     answer_pair: Option<Attempt>,
     missing_pair: bool,
     keep_once: bool,
+    always_changed: bool,
     answered_cancelled: bool,
     fail_observe: bool,
 }
@@ -76,16 +77,25 @@ impl Ports for Fake {
             }),
         })
     }
-    fn record_cancel(&mut self, _: &mut Store, _: &Team, f: &Fact, _: i64) -> Result<()> {
+    fn cancel_fact_outcome(
+        &mut self,
+        _: &mut Store,
+        _: &Team,
+        f: &Fact,
+        _: i64,
+    ) -> Result<super::super::cancel::FactOutcome> {
         self.facts.push(f.clone());
-        if self.keep_once {
+        if (self.keep_once || self.always_changed) && !f.refused {
             self.keep_once = false;
             self.pending[0].attempt += 1;
-            self.pending[0].attempt_id = "new-person-attempt".into();
+            self.pending[0].attempt_id = format!("person-attempt-{}", self.pending[0].attempt);
+            return Ok(super::super::cancel::FactOutcome::Changed {
+                reason: "The observed execution changed".into(),
+            });
         } else {
             self.pending.retain(|p| p.decision != f.pending.decision);
         }
-        Ok(())
+        Ok(super::super::cancel::FactOutcome::Recorded)
     }
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     fn terminal_timers(
@@ -114,6 +124,7 @@ fn setup() -> (Harness, super::super::Runtime, Fake) {
         task: h.node(node).task,
         attempt: 0,
         attempt_id: String::new(),
+        attempt_conflict: Some(false),
     };
     (
         h,
@@ -448,4 +459,37 @@ fn an_invalid_terminal_stale_reply_backs_off_without_observing_or_recording_a_re
     assert_eq!(p.reads, 0);
     assert!(p.facts[0].refused);
     assert_eq!(p.facts[0].reason, "attempt_changed: the person resumed it");
+}
+
+#[test]
+fn one_decision_starts_at_most_three_cancel_commands_across_a_hundred_passes_and_restarts() {
+    for changed in [false, true] {
+        let (mut h, mut a, mut p) = setup();
+        p.reply = Some(if changed {
+            TaskReply::Released
+        } else {
+            TaskReply::CuttingOver {
+                reason: "No outcome yet".into(),
+            }
+        });
+        p.always_changed = changed;
+        for pass in 0..100 {
+            let machine = a.machine.clone();
+            if pass > 0 {
+                drop(a);
+                a = super::super::Runtime::open(h.temp.path(), &machine).unwrap();
+            }
+            a.tick(&mut h.store, &mut p, TEAM, 100 + pass * 900_000, false)
+                .unwrap();
+        }
+        assert_eq!(p.calls.len(), 3, "changed={changed}");
+        assert!(p.pending.is_empty());
+        let exits: Vec<_> = p.facts.iter().filter(|f| f.refused).collect();
+        assert_eq!(exits.len(), 1);
+        assert!(exits[0].reason.contains(if changed {
+            "execution changed"
+        } else {
+            "Three cancel command attempts"
+        }));
+    }
 }

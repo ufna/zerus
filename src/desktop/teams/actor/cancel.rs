@@ -5,7 +5,8 @@ use ports::TaskReply;
 use serde::{Deserialize, Serialize};
 mod answer;
 mod observe;
-pub(in crate::desktop::teams) use answer::{Answer, Attempt};
+pub(super) mod settle;
+pub(in crate::desktop::teams) use answer::{Answer, Attempt, FactOutcome};
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(in crate::desktop::teams) struct Pending {
     pub node: u32,
@@ -16,6 +17,9 @@ pub(in crate::desktop::teams) struct Pending {
     pub attempt: u64,
     #[serde(default)]
     pub attempt_id: String,
+    // Older visits have no conflict snapshot and cannot prove equality.
+    #[serde(default)]
+    pub attempt_conflict: Option<bool>,
 }
 #[derive(Clone, Serialize, Deserialize)]
 pub(in crate::desktop::teams) struct Fact {
@@ -42,6 +46,12 @@ struct Entry {
     #[serde(default)]
     deferrals: u32,
     fact: Option<Fact>,
+    #[serde(default)]
+    children: u8,
+    #[serde(default)]
+    refusal_exit: bool,
+    #[serde(default)]
+    halted: bool,
     failures: u32,
     next_ms: i64,
     reason: String,
@@ -98,6 +108,9 @@ impl Runtime {
                 attempt: None,
                 deferrals: 0,
                 fact: None,
+                children: 0,
+                refusal_exit: false,
+                halted: false,
                 failures: 0,
                 next_ms: 0,
                 reason: String::new(),
@@ -169,8 +182,17 @@ impl Runtime {
             row.next_ms = now.saturating_add(retry::delay(row.failures));
             row.reason = cut(&error.message, 2048);
             self.put(&t.id, key, &row)?;
+            let live = store
+                .team(&t.id)?
+                .is_some_and(|t| matches!(t.status, TeamStatus::Running | TeamStatus::Paused));
             if live {
-                self.failure(store, t, key, "", &error, now)?;
+                if row.halted {
+                    self.force_failure(store, t, key, "", &error, now)?;
+                } else {
+                    self.failure(store, t, key, "", &error, now)?;
+                }
+            } else if row.halted {
+                return self.for_row(|_| Err(error));
             }
         }
         Ok(())
@@ -186,6 +208,12 @@ impl Runtime {
         now: i64,
         budget: &mut u8,
     ) -> Result<()> {
+        if row.halted {
+            if self.cancel_visit_current(store, p, t, row)? {
+                return Err(problem(&row.reason));
+            }
+            return self.cancel_done(store, t, key, now);
+        }
         if self.cancel_needs_observation(store, t, row)? {
             // Retire a cached answer from an older build. Observation is now
             // the sole writer for a live task's end; never rewrite that old
@@ -229,12 +257,18 @@ impl Runtime {
         if !self.refresh_cancel(store, p, t, key, row, now)? {
             return Ok(());
         }
+        if row.children >= 3 && row.pending.task.is_some() {
+            self.cancel_refused_exit(
+                store,
+                t,
+                key,
+                row,
+                "Three cancel command attempts produced no recordable outcome.",
+            )?;
+            return self.settle_cancel(store, p, t, key, row, now);
+        }
         *budget -= 1;
-        let answer = if row.pending.task.is_none() {
-            Answer::without_task()
-        } else {
-            p.cancel(t, &row.pending, &uuid::Uuid::new_v4().to_string())?
-        };
+        let answer = self.cancel_command(p, t, key, row)?;
         boundary("effect");
         match &answer.reply {
             TaskReply::Stale => return self.defer_cancel(store, p, t, key, row, now),
@@ -311,49 +345,6 @@ impl Runtime {
             self.defer(store, t, key, "", now)?;
         }
         observed
-    }
-    fn settle_cancel(
-        &mut self,
-        store: &mut Store,
-        p: &mut impl Ports,
-        t: &Team,
-        key: &str,
-        row: &mut Entry,
-        now: i64,
-    ) -> Result<()> {
-        if row.fact.is_none() {
-            row.fact = Some(Fact {
-                request_id: uuid::Uuid::new_v4().to_string(),
-                revision: store
-                    .team(&t.id)?
-                    .ok_or_else(|| problem("Cancel team disappeared"))?
-                    .revision,
-                pending: row.pending.clone(),
-                attempt: row.attempt.as_ref().map_or(0, |a| a.number),
-                attempt_id: row
-                    .attempt
-                    .as_ref()
-                    .map_or_else(String::new, |a| a.id.clone()),
-                refused: matches!(row.reply, Some(TaskReply::Refused { .. })),
-                released: matches!(row.reply, Some(TaskReply::Released)),
-                reason: match &row.reply {
-                    Some(TaskReply::Refused { reason }) => cut(reason, 2048),
-                    _ => String::new(),
-                },
-            });
-            self.put(&t.id, key, row)?;
-        }
-        match p.record_cancel(store, t, row.fact.as_ref().unwrap(), now) {
-            Ok(()) => {
-                boundary("recorded");
-                self.cancel_done(store, t, key, now)
-            }
-            Err(error) if error.code == code::STALE_REVISION => {
-                row.fact = None;
-                self.put(&t.id, key, row).map(|_| ())
-            }
-            Err(error) => Err(error),
-        }
     }
     pub(super) fn cancel_done(
         &mut self,

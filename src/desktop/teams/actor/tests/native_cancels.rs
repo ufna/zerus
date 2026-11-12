@@ -6,6 +6,31 @@ use super::super::{
 use super::*;
 use crate::teams::ops::Operation;
 
+fn outcome(
+    h: &mut Store,
+    team: &Team,
+    fact: &Fact,
+    now: i64,
+) -> Result<super::super::cancel::FactOutcome> {
+    let native = &mut super::super::native::Native {
+        config: crate::config::Config {
+            home: String::new(),
+            dir: std::path::PathBuf::new(),
+            state: std::path::PathBuf::new(),
+            selves: vec![],
+            peers: vec![],
+            base_peers: vec![],
+            peers_from_environment: false,
+            machines: Default::default(),
+            tab: false,
+            tab_colors: String::new(),
+        },
+        machine: team.home.clone(),
+        epoch: String::new(),
+        stop: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+    };
+    super::super::ports::Ports::cancel_fact_outcome(native, h, team, fact, now)
+}
 fn cancelling() -> (Harness, Pending) {
     let mut h = Harness::new();
     let node = h.add(&person(), 1);
@@ -97,7 +122,10 @@ fn a_cancel_fact_settles_a_saved_refusal_only_when_the_exact_decision_has_gone()
         attempt: p.attempt,
         attempt_id: p.attempt_id.clone(),
     };
-    assert!(Native::save_cancel(&mut h.store, &t, &f, 100).is_err());
+    assert!(matches!(
+        outcome(&mut h.store, &t, &f, 100).unwrap(),
+        super::super::cancel::FactOutcome::Refused { .. }
+    ));
     assert!(h.store.request_refused(TEAM, &f.request_id).unwrap());
     assert_eq!(
         Native::pending_cancels(&h.store, TEAM, 0).unwrap(),
@@ -107,7 +135,7 @@ fn a_cancel_fact_settles_a_saved_refusal_only_when_the_exact_decision_has_gone()
     f.request_id = uuid::Uuid::new_v4().to_string();
     f.revision = h.store.team(TEAM).unwrap().unwrap().revision;
     f.refused = false;
-    Native::save_cancel(&mut h.store, &t, &f, 101).unwrap();
+    outcome(&mut h.store, &t, &f, 101).unwrap();
     assert!(h.store.request_refused(TEAM, &f.request_id).unwrap());
 }
 #[test]
@@ -126,7 +154,7 @@ fn cancel_fact_storage_failure_is_never_read_as_a_saved_refusal() {
         attempt: p.attempt,
         attempt_id: p.attempt_id.clone(),
     };
-    let error = Native::save_cancel(&mut h.store, &t, &f, 100).unwrap_err();
+    let error = outcome(&mut h.store, &t, &f, 100).unwrap_err();
     assert_eq!(error.code, zerus_team_plan::problem::code::STORAGE_FAILED);
     assert!(!h.store.request_refused(TEAM, &f.request_id).unwrap());
     assert_eq!(Native::pending_cancels(&h.store, TEAM, 0).unwrap(), vec![p]);
@@ -150,7 +178,7 @@ fn a_missing_saved_refusal_never_settles_a_cancel_even_after_the_decision_moved(
         attempt: 0,
         attempt_id: String::new(),
     };
-    assert!(Native::save_cancel(&mut h.store, &t, &fact, 100).is_err());
+    assert!(outcome(&mut h.store, &t, &fact, 100).is_err());
     assert!(!h.store.request_refused(TEAM, &fact.request_id).unwrap());
     assert!(Native::pending_cancels(&h.store, TEAM, 0)
         .unwrap()
@@ -193,7 +221,7 @@ fn a_cancel_fact_records_the_reply_pair_even_when_it_differs_from_the_pending_sn
         attempt: 7,
         attempt_id: "reply-attempt".into(),
     };
-    Native::save_cancel(&mut h.store, &t, &fact, 100).unwrap();
+    outcome(&mut h.store, &t, &fact, 100).unwrap();
     assert!(Native::pending_cancels(&h.store, TEAM, 0)
         .unwrap()
         .is_empty());
@@ -325,7 +353,7 @@ fn conflict_cancel_fact(released: bool) -> (Harness, Pending, Team, Fact) {
 #[test]
 fn a_release_is_recorded_under_an_attempt_conflict_with_the_reply_pair() {
     let (mut h, _, team, fact) = conflict_cancel_fact(true);
-    Native::save_cancel(&mut h.store, &team, &fact, 100).unwrap();
+    outcome(&mut h.store, &team, &fact, 100).unwrap();
     assert!(!h.store.request_refused(TEAM, &fact.request_id).unwrap());
     assert_eq!(h.node(fact.pending.node).state, NodeState::Cancelled);
     assert!(Native::pending_cancels(&h.store, TEAM, 0)
@@ -339,12 +367,33 @@ fn a_saved_cancel_fact_refusal_for_a_conflict_ends_the_visit_even_at_the_same_pa
     // same pair. New live cancellations use the observer before this port.
     let (mut h, pending, team, fact) = conflict_cancel_fact(false);
     for _ in 0..2 {
-        Native::save_cancel(&mut h.store, &team, &fact, 100).unwrap();
+        outcome(&mut h.store, &team, &fact, 100).unwrap();
         assert!(h.store.request_refused(TEAM, &fact.request_id).unwrap());
         assert_ne!(h.node(pending.node).state, NodeState::Cancelled);
         assert_eq!(
             Native::pending_cancels(&h.store, TEAM, 0).unwrap(),
-            vec![pending.clone()]
+            vec![Pending {
+                attempt_conflict: Some(true),
+                ..pending.clone()
+            }]
         );
     }
+}
+
+#[test]
+fn a_live_changed_visit_does_not_take_the_saved_refusal_exit() {
+    let (mut h, _, team, mut fact) = conflict_cancel_fact(true);
+    fact.attempt = 2;
+    fact.attempt_id = "another-attempt".into();
+    assert!(matches!(
+        outcome(&mut h.store, &team, &fact, 100).unwrap(),
+        super::super::cancel::FactOutcome::Changed { .. }
+    ));
+    assert!(h.store.request_refused(TEAM, &fact.request_id).unwrap());
+    assert!(h
+        .store
+        .cancel_refusals(TEAM, (0, 0), 16)
+        .unwrap()
+        .is_empty());
+    assert_eq!(Native::pending_cancels(&h.store, TEAM, 0).unwrap().len(), 1);
 }

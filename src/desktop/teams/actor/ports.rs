@@ -32,6 +32,18 @@ pub(in crate::desktop::teams) trait Ports {
     ) -> Result<()> {
         Err(unavailable())
     }
+    fn cancel_fact_outcome(
+        &mut self,
+        store: &mut Store,
+        team: &Team,
+        fact: &super::cancel::Fact,
+        now: i64,
+    ) -> Result<super::cancel::FactOutcome> {
+        match self.record_cancel(store, team, fact, now) {
+            Ok(()) => Ok(super::cancel::FactOutcome::Recorded),
+            Err(error) => super::cancel::settle::classify(store, self, team, fact, error),
+        }
+    }
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     fn team_timers(
         &mut self,
