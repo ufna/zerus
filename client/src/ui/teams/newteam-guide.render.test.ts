@@ -4,6 +4,8 @@ import { afterEach, expect, it } from "vitest";
 import { createComponent, type JSX } from "solid-js";
 import { render } from "solid-js/web";
 import { NewTeamHowTo, NewTeamIntroSteps } from "./NewTeamGuide";
+import { translateWithCatalog } from "../../i18n";
+import russian from "../../i18n.ru.json";
 
 let dispose: (() => void) | undefined;
 afterEach(() => { dispose?.(); dispose = undefined; document.body.replaceChildren(); });
@@ -15,6 +17,14 @@ function setup() {
   dispose = render(() => both() as unknown as JSX.Element, host);
   return host;
 }
+
+it("says that accepted work is merged into the integration branch, in both languages without the stumble", () => {
+  const host = setup();
+  const steps = [...host.querySelectorAll("[data-intro-steps] li")].map((step) => step.textContent);
+  expect(steps[2]).toBe("Accepted work is merged into one integration branch; you follow it in the Team tab.");
+  expect(host.textContent).not.toContain("accepts accepted");
+  expect(translateWithCatalog(russian, "ru", steps[2]!)).toBe("Принятая работа сливается в одну ветку интеграции; вы следите за ней на вкладке «Команда».");
+});
 
 it("tells how a standing team works", () => {
   const host = setup();

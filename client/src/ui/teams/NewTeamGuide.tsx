@@ -15,7 +15,7 @@ export function NewTeamIntroSteps(): JSX.Element {
       <ol>
         <li>{tr("A lead takes the tasks you send and hands them to the members with the right role.")}</li>
         <li>{tr("Every task runs through its pipeline, for example an implementation and a review.")}</li>
-        <li>{tr("The team accepts accepted work into one integration branch; you follow it in the Team tab.")}</li>
+        <li>{tr("Accepted work is merged into one integration branch; you follow it in the Team tab.")}</li>
         <li>{tr("Nothing runs before you press Create team.")}</li>
       </ol>
     </div>
