@@ -4,6 +4,8 @@
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 mod auxiliary;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
+mod sweep_items;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 mod availability;
 mod cancel;
 mod delivery;
