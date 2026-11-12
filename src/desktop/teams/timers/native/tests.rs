@@ -147,7 +147,7 @@ impl Fixture {
             name: "claude/example/m1".into(),
             run: "run-m1".into(),
             conversation: "conversation-m1".into(),
-            text: "1 answer from your lead waits. Read them with: hgs team current".into(),
+            text: "1 answer from your lead waits. Read it with: hgs team current".into(),
         }
     }
 }

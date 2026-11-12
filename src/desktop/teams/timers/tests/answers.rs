@@ -4,7 +4,7 @@ use crate::teams::{ops::Operation, store::timers::Gate};
 
 const QUESTION: &str = "Which width exactly?";
 const ANSWER: &str = "Keep the old width, carefully.";
-const TEXT_ONE: &str = "1 answer from your lead waits. Read them with: hgs team current";
+const TEXT_ONE: &str = "1 answer from your lead waits. Read it with: hgs team current";
 
 struct Asked {
     w: World,

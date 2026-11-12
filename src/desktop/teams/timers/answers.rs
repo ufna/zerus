@@ -115,9 +115,8 @@ fn one(
 }
 /// The service's own words: a count and the command, nothing of an answer.
 pub(super) fn text(count: u32) -> String {
-    let count = match count {
-        1 => "1 answer from your lead waits".to_owned(),
-        n => format!("{n} answers from your lead wait"),
-    };
-    format!("{count}. Read them with: hgs team current")
+    match count {
+        1 => "1 answer from your lead waits. Read it with: hgs team current".to_owned(),
+        n => format!("{n} answers from your lead wait. Read them with: hgs team current"),
+    }
 }
