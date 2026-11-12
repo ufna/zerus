@@ -203,5 +203,9 @@ fn dispatch(ctx: &mut Context<'_>) -> Result<()> {
         Operation::OpenCard { .. } => talk::open_card(ctx),
         Operation::CloseCard { .. } => talk::close_card(ctx),
         Operation::DecideCard { .. } => talk::decide_card(ctx),
+        Operation::FireTimer { .. } => timers::fire(ctx),
+        Operation::RecordKeyClear { .. } => timers::key_clear(ctx),
+        Operation::RecordLateSession { .. } => timers::late_session(ctx),
+        Operation::RecordCancel { .. } => timers::record_cancel(ctx),
     }
 }

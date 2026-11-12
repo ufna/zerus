@@ -192,6 +192,7 @@ fn record_outcome(
             params![ctx.team.id, id, encode(outcome)?],
         )
         .map_err(storage)?;
+    timers::outcome_time(ctx, id)?;
     // A late receipt is still a fact. It never resurrects a superseded,
     // reported or observed-done slot and never settles a newer decision.
     if current && e.state != "superseded" && state == "submitted" {

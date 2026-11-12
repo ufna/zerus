@@ -231,6 +231,9 @@ fn legacy_observation(db: &Connection, team: &str, node: u32) -> Result<Option<T
                 rank,
                 title,
                 key: KeyState::Ours,
+                attempt: 0,
+                attempt_id: String::new(),
+                attempt_conflict: false,
             })
         })
         .transpose()
@@ -253,6 +256,9 @@ pub(crate) fn record_observation(
     o: &TaskObservation,
     released: bool,
 ) -> Result<()> {
-    db.execute("INSERT INTO task_observations(team,node,data,released) VALUES(?1,?2,?3,?4) ON CONFLICT(team,node) DO UPDATE SET data=excluded.data,released=MAX(task_observations.released,excluded.released)",params![team,node,encode(o)?,released]).map_err(storage)?;
+    // The newest observation's attempt pair as it came, a conflict's empty ID
+    // included. The attempt the node runs under is remembered apart, only
+    // when the node takes an execution in (ops::timers::remember).
+    db.execute("INSERT INTO task_observations(team,node,data,released,attempt,attempt_id,attempt_conflict) VALUES(?1,?2,?3,?4,?5,?6,?7) ON CONFLICT(team,node) DO UPDATE SET data=excluded.data,released=MAX(task_observations.released,excluded.released),attempt=excluded.attempt,attempt_id=excluded.attempt_id,attempt_conflict=excluded.attempt_conflict",params![team,node,encode(o)?,released,o.attempt,o.attempt_id,o.attempt_conflict]).map_err(storage)?;
     Ok(())
 }

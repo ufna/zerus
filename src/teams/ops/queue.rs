@@ -306,7 +306,7 @@ pub(super) fn observe(ctx: &mut Context<'_>) -> Result<()> {
     };
     let mut n = ctx.node(*node)?;
     let table = ctx.node_table(*node)?;
-    let (stage, was_terminal) = validate_observation(ctx, *node, o)?;
+    let (stage, observed_end) = validate_observation(ctx, *node, o)?;
     let released =
         rows::released(ctx.db, &ctx.team.id, *node)? || pipeline::released_stage(ctx, &n)?;
     let left = o.key != KeyState::Ours;
@@ -327,7 +327,23 @@ pub(super) fn observe(ctx: &mut Context<'_>) -> Result<()> {
         }
         return Ok(());
     }
+    // A conflict of attempts of a task that runs or waits decides nothing: it
+    // is recorded as it came. An ended task's conflict is applied below.
+    if timers::conflict(o) {
+        return rows::record_observation(ctx.db, &ctx.team.id, *node, o, false);
+    }
+    // The node's own end counts as well as the stored observation's: a
+    // conflict is recorded without ending or restoring anything, so after a
+    // conflict on a finished node the stored observation no longer shows
+    // the end its node keeps.
+    let ended = node_ended(ctx, table, *node)?;
+    let was_terminal = observed_end || ended;
     let active = matches!(ctx.team.status, TeamStatus::Running | TeamStatus::Paused);
+    // A finished node takes today's restore below; a live one a person sent
+    // again between two observations ends its attempt and is restored here.
+    if active && table == "nodes" && !was_terminal && timers::person_attempt(ctx, *node, o)? {
+        timers::take_over(ctx, *node, &mut n)?;
+    }
     pipeline::before_observation(ctx, &mut n, o, table == "nodes" && !was_terminal)?;
     if !active && table == "nodes" {
         archive_inactive(ctx, *node)?;
@@ -355,8 +371,22 @@ pub(super) fn observe(ctx: &mut Context<'_>) -> Result<()> {
         *node,
         o,
         n.kind == NodeKind::Stage && (o.cancelled || o.stage == TaskStage::Done),
-    )
+    )?;
+    timers::remember(ctx, *node, o)
 }
+/// Whether the node's own projection shows its task ended, cancelled or done.
+fn node_ended(ctx: &Context<'_>, table: &str, node: u32) -> Result<bool> {
+    ctx.db
+        .query_row(
+            &format!(
+                "SELECT task_cancelled OR task_stage='done' FROM {table} WHERE team=?1 AND id=?2"
+            ),
+            params![ctx.team.id, node],
+            |r| r.get(0),
+        )
+        .map_err(storage)
+}
+/// The stage's text and whether the stored observation shows the task ended.
 fn validate_observation(
     ctx: &Context<'_>,
     node: u32,
@@ -367,6 +397,7 @@ fn validate_observation(
     text(&o.previous_revision, 256)?;
     text(&o.rank, 256)?;
     text(&o.title, 1024)?;
+    text(&o.attempt_id, 256)?;
     let old = rows::observation(ctx.db, &ctx.team.id, node)?;
     let stage = encode(&o.stage)?.trim_matches('"').to_owned();
     if let Some(old) = &old {
@@ -377,6 +408,7 @@ fn validate_observation(
             && old.key == o.key;
         if (old.revision != o.revision && old.revision != o.previous_revision)
             || (old.revision == o.revision && !same)
+            || o.attempt < old.attempt
         {
             return Err(stale());
         }
@@ -439,7 +471,7 @@ fn restore_row(ctx: &Context<'_>, node: u32) -> Result<()> {
         .map_err(storage)?;
     Ok(())
 }
-fn finish_observation(ctx: &Context<'_>, node: u32, cancelled: bool) -> Result<()> {
+pub(super) fn finish_observation(ctx: &Context<'_>, node: u32, cancelled: bool) -> Result<()> {
     ctx.db.execute(&format!("UPDATE effects SET state='observed_done' WHERE team=?1 AND node=?2 AND state IN {OPEN_EFFECT_STATES}"),params![ctx.team.id,node]).map_err(storage)?;
     ctx.close_inbox(node)?;
     if cancelled || ctx.node(node)?.kind == NodeKind::Stage {
