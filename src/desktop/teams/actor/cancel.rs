@@ -5,6 +5,7 @@ use ports::TaskReply;
 use serde::{Deserialize, Serialize};
 mod answer;
 mod observe;
+mod reason;
 pub(super) mod settle;
 pub(in crate::desktop::teams) use answer::{Answer, Attempt, FactOutcome};
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -41,6 +42,8 @@ pub(in crate::desktop::teams) struct Fact {
 struct Entry {
     pending: Pending,
     reply: Option<TaskReply>,
+    #[serde(default)]
+    sentence: String,
     #[serde(default)]
     attempt: Option<Attempt>,
     #[serde(default)]
@@ -105,6 +108,7 @@ impl Runtime {
             let row = Entry {
                 pending,
                 reply: None,
+                sentence: String::new(),
                 attempt: None,
                 deferrals: 0,
                 fact: None,
@@ -272,6 +276,7 @@ impl Runtime {
             TaskReply::CuttingOver { reason } => return Err(problem(reason)),
             _ => return Err(problem("Cancel answered another command")),
         }
+        row.sentence = cut(&answer.sentence, 1024);
         row.reply = Some(answer.reply);
         row.attempt = answer.attempt;
         self.put(&t.id, key, row)?;

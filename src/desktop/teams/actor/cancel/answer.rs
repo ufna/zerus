@@ -9,6 +9,7 @@ pub(in crate::desktop::teams) struct Attempt {
 #[derive(Clone, Debug)]
 pub(in crate::desktop::teams) struct Answer {
     pub reply: TaskReply,
+    pub sentence: String,
     pub attempt: Option<Attempt>,
 }
 impl Answer {
@@ -16,6 +17,7 @@ impl Answer {
     pub(super) fn without_task() -> Self {
         Self {
             reply: TaskReply::Cancelled,
+            sentence: String::new(),
             attempt: Some(Attempt::default()),
         }
     }

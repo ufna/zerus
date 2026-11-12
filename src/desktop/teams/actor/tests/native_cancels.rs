@@ -431,3 +431,23 @@ fn a_saved_live_refusal_with_a_changed_snapshot_leaves_its_decision_for_observat
         assert!(h.store.cards(TEAM, 200, None).unwrap().rows.is_empty());
     }
 }
+
+#[test]
+fn the_native_cancel_answer_keeps_its_bounded_own_sentence() {
+    let message = "Read the current attempt. ".repeat(200);
+    let request = json!({"schema":1,"team":TEAM,"node":1});
+    for state in ["stale", "refused"] {
+        let answer = super::super::native::cancel_answer(
+            crate::desktop::teams::child::Ended::Exited {
+                code: 0,
+                output: json!({"schema":1,"team":TEAM,"node":1,"state":state,"error":message})
+                    .to_string()
+                    .into_bytes(),
+            },
+            &request,
+        )
+        .unwrap();
+        assert!(answer.sentence.starts_with("Read the current attempt."));
+        assert!(answer.sentence.len() <= 1024);
+    }
+}

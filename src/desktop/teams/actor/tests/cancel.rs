@@ -76,6 +76,7 @@ impl Ports for Fake {
         self.answered_cancelled = matches!(self.reply, None | Some(TaskReply::Cancelled));
         Ok(Answer {
             reply: self.reply.clone().unwrap_or(TaskReply::Cancelled),
+            sentence: String::new(),
             attempt: (!self.missing_pair).then(|| {
                 self.answer_pair.clone().unwrap_or(Attempt {
                     number: p.attempt,

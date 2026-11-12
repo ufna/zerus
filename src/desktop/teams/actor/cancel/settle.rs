@@ -128,16 +128,7 @@ impl Runtime {
             boundary("refusal_halted");
             return Ok(());
         }
-        let answered = match &row.reply {
-            Some(TaskReply::Cancelled) => "cancelled".into(),
-            Some(TaskReply::Released) => "released".into(),
-            Some(TaskReply::Refused { reason }) => format!("refused: {}", cut(reason, 512)),
-            _ => "no recordable answer".into(),
-        };
-        let reason = format!(
-            "The cancel command answered {answered}. The team store could not record that answer: {}",
-            cut(reason, 1300)
-        );
+        let reason = reason::refused(row, reason);
         row.reply = Some(TaskReply::Refused { reason });
         row.fact = None;
         row.refusal_exit = true;
@@ -156,8 +147,8 @@ impl Runtime {
         row: &mut Entry,
         now: i64,
     ) -> Result<()> {
-        row.reply = Some(TaskReply::Refused { reason:
-            "The cancel command answered stale. The actor stopped after three stale answers with unchanged observations.".into()
+        row.reply = Some(TaskReply::Refused {
+            reason: reason::stalled(row),
         });
         row.fact = None;
         row.refusal_exit = true;

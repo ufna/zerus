@@ -543,3 +543,37 @@ fn unreadable_answers_fail_with_backoff_and_recover_without_a_bound_refusal() {
         assert!(!p.facts[0].refused);
     }
 }
+
+#[test]
+fn cancel_exits_name_the_actual_answer_and_the_store_or_retry_cause() {
+    for released in [false, true] {
+        let (mut h, mut a, mut p) = case("stopped", true);
+        p.loss = None;
+        p.live = released;
+        let t = h.store.team(TEAM).unwrap().unwrap();
+        a.cancels(&mut h.store, &mut p, &t, 100).unwrap();
+        let reason = &p.facts.last().unwrap().reason;
+        assert!(reason.starts_with(if released {
+            "The cancel command answered released."
+        } else {
+            "The cancel command answered cancelled."
+        }));
+        assert!(reason.contains("The team store refused this outcome:"));
+        assert!(reason.contains("another attempt"));
+        assert!(!reason.contains("invalid_state"));
+        assert!(reason.len() <= 2048);
+    }
+    let (mut h, mut a, mut p) = case("live", false);
+    p.loss = None;
+    p.stale = true;
+    for now in [100, 60_100, 180_100] {
+        let t = h.store.team(TEAM).unwrap().unwrap();
+        a.cancels(&mut h.store, &mut p, &t, now).unwrap();
+    }
+    let reason = &p.facts[0].reason;
+    assert!(reason
+        .starts_with("The cancel command answered stale: Observe this task before trying again."));
+    assert!(reason.contains("The service stopped retrying after three stale answers"));
+    assert!(!reason.contains("team store") && !reason.contains("no recordable answer"));
+    assert!(reason.len() <= 2048);
+}

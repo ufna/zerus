@@ -125,5 +125,9 @@ pub(in crate::desktop::teams::actor) fn answer(ended: Ended, input: &Value) -> R
     } else {
         None
     };
-    Ok(Answer { reply, attempt })
+    Ok(Answer {
+        reply,
+        sentence: cut(value["error"].as_str().unwrap_or_default(), 1024),
+        attempt,
+    })
 }
