@@ -8,14 +8,29 @@
 //! The node's own hand-out or reopen is never such an attempt, whether or not
 //! its outcome is recorded, also when it comes back as current after a newer
 //! attempt never started. A conflict, two attempts claiming the highest
-//! generation, is recorded as it came (the number with an empty ID) and
-//! decides nothing.
+//! generation, is its own flag: it is recorded as it came (the number, an
+//! empty ID, the flag) and decides nothing while the task runs or waits.
 use super::*;
 
-/// Two attempts claim the highest generation: the observation has a number
-/// and no current attempt.
+/// Two attempts claim the highest generation: the flag, and nothing else. An
+/// empty ID without it is an ordinary pair, a task with no current attempt.
+/// A conflict of a task that still runs or waits decides nothing; the end of
+/// a task (cancelled or Done) does not depend on who executed it.
 pub(in crate::teams::ops) fn conflict(o: &TaskObservation) -> bool {
-    o.attempt > 0 && o.attempt_id.is_empty()
+    o.attempt_conflict && !o.cancelled && o.stage != TaskStage::Done
+}
+/// Whether the newest observation of the node's task is a conflict.
+pub(in crate::teams::ops) fn in_conflict(ctx: &Context<'_>, node: u32) -> Result<bool> {
+    Ok(ctx
+        .db
+        .query_row(
+            "SELECT attempt_conflict FROM task_observations WHERE team=?1 AND node=?2",
+            params![ctx.team.id, node],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(storage)?
+        .unwrap_or(false))
 }
 /// A person's new execution of a live node: active, with a current attempt
 /// that is neither the last current attempt the store saw nor an effect of
