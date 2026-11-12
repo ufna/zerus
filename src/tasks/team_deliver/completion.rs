@@ -26,14 +26,30 @@ pub(crate) fn execute(config: &Config, action: &str, args: &[String]) -> Result<
     }
     let result = if action == "team-cancel" {
         super::cancel::write(config, args, &body)
+            .map(|(state, attempt, id)| (state, Some((attempt, id))))
     } else {
-        write(config, action, args, &body)
+        write(config, action, args, &body).map(|state| (state, None))
     };
     match result {
-        Ok(state) => Ok(body.reply(state, "")),
-        Err(error) if error.code != RULE && error.code != CUTTING_OVER => Err(error),
+        Ok((state, pair)) => {
+            #[cfg(test)]
+            if action == "team-cancel" {
+                locked_test_pause(config, "cancel_reply");
+            }
+            let mut reply = body.reply(state, "");
+            if let Some((attempt, attempt_id)) = pair {
+                reply["attempt"] = json!(attempt);
+                reply["attempt_id"] = json!(attempt_id);
+            }
+            Ok(reply)
+        }
+        Err(error) if error.code != RULE && error.code != CUTTING_OVER && error.code != STALE => {
+            Err(error)
+        }
         Err(error) => Ok(body.reply(
-            if error.code == CUTTING_OVER {
+            if error.code == STALE {
+                "stale"
+            } else if error.code == CUTTING_OVER {
                 "cutting_over"
             } else {
                 "refused"
@@ -215,6 +231,7 @@ fn write(config: &Config, action: &str, args: &[String], body: &Input) -> Result
         if expected.is_none() || expected.as_ref() != current.execution_id().as_ref() {
             return Err(rule("Task now belongs to another attempt."));
         }
+        observed_attempt(&teams, &body.team, body.node, &current)?;
         if current.stage == Stage::Done {
             return Ok("done");
         }

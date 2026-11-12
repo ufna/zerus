@@ -102,6 +102,8 @@ fn entry() {
             "HGS_TEST_TEAM_LOCK_AT",
             if phase == "team-done" {
                 "done"
+            } else if phase == "cancel-reply-command" {
+                "cancel_reply"
             } else if phase == "cancel-command" {
                 "cancel"
             } else {
@@ -119,9 +121,13 @@ fn entry() {
         }
         if matches!(
             mode.as_str(),
-            "command" | "cancel-command" | "crash-cancel-command" | "lock-cancel-command"
+            "command"
+                | "cancel-command"
+                | "crash-cancel-command"
+                | "lock-cancel-command"
+                | "lock-cancel-reply-command"
         ) {
-            if mode.contains("cancel-command") {
+            if mode.contains("cancel") {
                 std::env::set_var(
                     "HGS_TEST_TASK_CANCEL_NOTICE",
                     config.state.join("cancel-notices"),
@@ -983,3 +989,5 @@ mod review_tests;
 mod cancel_tests;
 
 mod return_text_tests;
+
+mod attempt_tests;

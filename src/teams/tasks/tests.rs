@@ -702,3 +702,4 @@ fn a_cancelled_task_is_ended_by_its_observation() {
     assert!(h.store.pending_cancels(TEAM, 200, 0).unwrap().is_empty());
     assert_eq!(binding(&h.store, &reference).unwrap(), None);
 }
+mod attempts;
