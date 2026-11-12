@@ -2,13 +2,15 @@
 
 SQL dumps of stores that the old commits wrote with their own operations, for
 the step to layout 11 (`../legacy_holds.rs`). Each dump ends with the store's
-`user_version`, which a dump does not carry.
+`user_version`, which a dump does not carry. A newer `sqlite3` writes a text
+with a line break as `unistr('…\u000a…')`, which the bundled SQLite lacks; such
+a value is written as `replace('…\u000a…','\u000a',char(10))` instead.
 
 | Layout | Commit | Cases |
 |---|---|---|
 | 8 | 40046fa3f0c0a21371ea2e618e9e963c4adb5646 | holds, stopped, pipeline_active, pipeline_person |
 | 9 | 452bec1fe71057cbbe04ff42954dc83bea13373d | holds, stopped, pipeline_active, pipeline_person, stranded |
-| 10 | c29dc402e05089ee80f7d734d8ea4b1c6502095c | holds, stopped, pipeline_active, pipeline_person, removed |
+| 10 | c29dc402e05089ee80f7d734d8ea4b1c6502095c | holds, stopped, pipeline_active, pipeline_person, removed, conflict, pipeline_verdict |
 
 To regenerate one, check the commit out in its own worktree, add the module
 below as `src/teams/ops/tests/wp10_legacy.rs` with `#[cfg(test)] mod wp10_legacy;`
@@ -196,6 +198,51 @@ fn wp10_generate_legacy() {
             h.run(&person(), Operation::ArchiveMember { member: "m2".into() }).unwrap();
             assert!(h.node(node).hold);
             assert!(h.node(second).hold);
+            keep(h);
+        }
+        "conflict" => {
+            // Layout 10: an integration conflict whose holder was removed.
+            let mut h = Harness::new();
+            let lead = h.bind("lead");
+            h.bind("m1");
+            let node = reported(&mut h, 1);
+            h.run(&lead, Operation::Accept { node }).unwrap();
+            let decision = h.store.decisions(TEAM, 200, None).unwrap().rows.into_iter().rev()
+                .find(|d| d.node == node && d.kind == "accept").unwrap().seq;
+            h.run(&person(), Operation::ArchiveMember { member: "m1".into() }).unwrap();
+            h.run(&service(), Operation::RecordIntegrationConflict {
+                node, decision, conflicts: vec!["src/example.rs".into()],
+            }).unwrap();
+            assert!(h.node(node).hold);
+            keep(h);
+        }
+        "pipeline_verdict" => {
+            // Layout 10: a failing verdict whose implementer was removed.
+            let mut h = Harness::empty();
+            let mut create = create();
+            if let Operation::Create { bundle, .. } = &mut create {
+                bundle.template.default_pipeline = "reviewed".into();
+            }
+            h.run(&person(), create).unwrap();
+            h.bind("lead");
+            h.bind("m1");
+            h.bind("m3");
+            let parent = h.add(&person(), 1);
+            h.submit(parent, "m1");
+            h.report(parent, "m1");
+            let stage = stages(&h, parent)[0].id;
+            let id = uuid::Uuid::new_v4().to_string();
+            h.run(&service(), serde_json::from_value(serde_json::json!({"op":"stage_task_intent","node":stage,"effect_request_id":id})).unwrap()).unwrap();
+            h.run(&service(), serde_json::from_value(serde_json::json!({"op":"stage_task_outcome","effect_request_id":id,"outcome":{"status":"created","task":task(1000+stage)}})).unwrap()).unwrap();
+            h.observe(stage, TaskStage::Todo);
+            h.submit(stage, "m3");
+            h.run(&person(), Operation::ArchiveMember { member: "m1".into() }).unwrap();
+            let reviewer = Actor::Session {
+                person: "local".into(), team: TEAM.into(), member: "m3".into(),
+                session: h.store.member(TEAM, "m3").unwrap().unwrap().session.unwrap(),
+            };
+            h.run(&reviewer, serde_json::from_value(serde_json::json!({"op":"verdict","node":stage,"generation":1,"pass":false,"text":"Fails the criteria"})).unwrap()).unwrap();
+            assert!(h.node(parent).hold);
             keep(h);
         }
         "stranded" => {

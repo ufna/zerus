@@ -469,3 +469,20 @@ fn a_verdict_places_only_the_card_of_its_stages_parent() {
         assert_eq!(stored(&h, 1), person_hold(), "layout {}", dump.layout);
     }
 }
+
+/// Layout 10: an integration conflict whose holder was removed, and a
+/// failing verdict whose implementer was removed, each placed by the saved
+/// reply of the operation that filed its item: hand-backs the lead ends.
+#[test]
+fn a_removed_holders_conflict_and_verdict_are_hand_backs() {
+    for (dump, node) in [
+        (dump!(10, "conflict"), 1),
+        (dump!(10, "pipeline_verdict"), 1),
+    ] {
+        let mut h = legacy(&dump, Clock::Kept, None);
+        assert_eq!(stored(&h, node), hand_back(), "{}", dump.case);
+        let lead = lead(&h);
+        h.run(&lead, Operation::Release { node }).unwrap();
+        assert!(!h.node(node).hold, "{}", dump.case);
+    }
+}
