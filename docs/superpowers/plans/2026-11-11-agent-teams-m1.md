@@ -1375,10 +1375,16 @@ kept earlier pair would let a late answer about that attempt through
 decides nothing else: nothing of the node changes until an observation
 without the flag arrives. A task that has ended, cancelled or Done, is
 applied as today whether or not its attempts conflict, because its end does
-not depend on who executed it. The store remembers the last current attempt
-it saw for one purpose: when a current attempt appears again, the same one
-changes nothing, the node's own effect is the team's, and any other is a
-person's new execution.
+not depend on who executed it. The store remembers the attempt its node
+runs under, for one purpose: when an observation shows a running task, the
+same attempt changes nothing, the node's own effect is the team's, and any
+other is a person's new execution. That memory changes only when the node
+takes an execution in: its own effect is observed, a person's attempt is
+taken over, or the upgrade seeds it from what was stored. An attempt that
+is merely observed while the task does not run, a send that is reserved
+and not yet delivered, is not remembered, so that it is still judged when
+it starts; remembering it early let an old cancel decision reach the
+person's execution (measured, 2026-11-12).
 
 A cancel acts on one attempt. `team-cancel` compares, under its locks, the
 document's highest generation, current attempt and conflict flag with what
