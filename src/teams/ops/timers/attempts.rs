@@ -24,19 +24,6 @@ use super::*;
 pub(in crate::teams::ops) fn conflict(o: &TaskObservation) -> bool {
     o.attempt_conflict && !o.cancelled && o.stage != TaskStage::Done
 }
-/// Whether the newest observation of the node's task is a conflict.
-pub(in crate::teams::ops) fn in_conflict(ctx: &Context<'_>, node: u32) -> Result<bool> {
-    Ok(ctx
-        .db
-        .query_row(
-            "SELECT attempt_conflict FROM task_observations WHERE team=?1 AND node=?2",
-            params![ctx.team.id, node],
-            |r| r.get(0),
-        )
-        .optional()
-        .map_err(storage)?
-        .unwrap_or(false))
-}
 /// A person's new execution of a live node: active, with a current attempt
 /// that is neither the last current attempt the store saw nor an effect of
 /// this node, whether or not the highest generation grew. A conflict (no
@@ -79,10 +66,26 @@ pub(in crate::teams::ops) fn remember(
 }
 /// Whether the attempt is an effect of this node: the team's own.
 fn own(ctx: &Context<'_>, node: u32, id: &str) -> Result<bool> {
+    own_effect(ctx, node, id, false)
+}
+/// Whether the attempt is an effect of this node; with `current`, only a
+/// hand-out or a reopen of the node's current generation, the team's own
+/// attempt as the cancel command narrows it.
+pub(in crate::teams::ops) fn own_effect(
+    ctx: &Context<'_>,
+    node: u32,
+    id: &str,
+    current: bool,
+) -> Result<bool> {
+    let generation = if current {
+        Some(ctx.generation(node)?)
+    } else {
+        None
+    };
     ctx.db
         .query_row(
-            "SELECT EXISTS(SELECT 1 FROM effects WHERE request_id=?1 AND team=?2 AND node=?3)",
-            params![id, ctx.team.id, node],
+            "SELECT EXISTS(SELECT 1 FROM effects WHERE request_id=?1 AND team=?2 AND node=?3 AND (?4 IS NULL OR (generation=?4 AND kind IN ('handout','reopen'))))",
+            params![id, ctx.team.id, node, generation],
             |r| r.get(0),
         )
         .map_err(storage)

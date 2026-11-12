@@ -639,3 +639,431 @@ fn a_repeated_answer_is_refused_and_writes_nothing() {
     assert_eq!(h.store.team(TEAM).unwrap().unwrap().revision, rev);
     assert_eq!(outcome(&h, d).as_deref(), Some("released"));
 }
+
+/// An answer as team-cancel gives it: its state and the attempt it acted on.
+fn acted(node: u32, decision: u64, state: CancelState, attempt: u64, id: &str) -> Operation {
+    Operation::RecordCancel {
+        node,
+        decision,
+        state,
+        reason: String::new(),
+        attempt,
+        attempt_id: id.into(),
+    }
+}
+/// The node handed out to m1 and delivered as (1, E); the newest
+/// observation still (0, empty, To do). `end`: stop, or stop and archive.
+fn delivered_unobserved(end: &str) -> (Harness, u32, String) {
+    let mut h = Harness::new();
+    h.bind("lead");
+    h.bind("m1");
+    let node = h.add(&person(), 1);
+    let id = h.intent(node, "m1");
+    h.outcome(
+        &id,
+        HandoutOutcome::Submitted {
+            receipt: "receipt-example".into(),
+        },
+    );
+    terminal(&mut h, end);
+    (h, node, id)
+}
+fn terminal(h: &mut Harness, end: &str) {
+    match end {
+        "running" => (),
+        "stopped" => drop(h.run(&person(), Operation::Stop).unwrap()),
+        _ => {
+            h.run(&person(), Operation::Stop).unwrap();
+            h.run(&person(), Operation::Archive).unwrap();
+        }
+    }
+}
+fn keyed_once(h: &Harness, node: u32) -> bool {
+    let keyed: Vec<u32> = h
+        .store
+        .keyed_tasks(TEAM, 0, 200)
+        .unwrap()
+        .iter()
+        .map(|k| k.node)
+        .filter(|n| *n == node)
+        .collect();
+    keyed == vec![node]
+}
+
+/// The reviewer's sequence: the team's own hand-out was delivered and not
+/// yet observed when the person stopped the team. team-cancel acts on that
+/// attempt and answers with its pair; the store takes it by the command's
+/// own rule, in a stopped and in an archived team, cancelled and released.
+#[test]
+fn a_stopped_teams_cancel_of_its_own_delivered_effect_is_recorded() {
+    for end in ["stopped", "archived"] {
+        for state in [CancelState::Cancelled, CancelState::Released] {
+            let (mut h, node, id) = delivered_unobserved(end);
+            let row = pending(&h).remove(0);
+            assert_eq!((row.attempt, row.attempt_id.as_str()), (0, ""));
+            h.run(&service(), acted(node, row.decision, state, 1, &id))
+                .unwrap();
+            assert!(pending(&h).is_empty(), "{end} {state:?}");
+            assert_eq!(outcomes(&h), 1, "{end} {state:?}");
+            assert!(keyed_once(&h, node), "{end} {state:?}");
+            let rev = h.store.team(TEAM).unwrap().unwrap().revision;
+            refused(
+                h.run(&service(), acted(node, row.decision, state, 1, &id)),
+                code::INVALID_STATE,
+            );
+            assert_eq!(h.store.team(TEAM).unwrap().unwrap().revision, rev);
+        }
+    }
+}
+
+/// A reopen's attempt: the lead returned the node, the reopen was delivered
+/// and not observed, then the stop.
+#[test]
+fn a_stopped_teams_cancel_of_its_own_reopen_is_recorded() {
+    let mut h = Harness::new();
+    let lead = h.bind("lead");
+    h.bind("m1");
+    let node = h.add(&person(), 1);
+    h.submit(node, "m1");
+    h.report(node, "m1");
+    h.run(
+        &lead,
+        Operation::Return {
+            node,
+            reason: "Fix it".into(),
+        },
+    )
+    .unwrap();
+    let reopen = h.reopen(node, "m1");
+    h.reopen_outcome(
+        &reopen,
+        HandoutOutcome::Submitted {
+            receipt: "receipt-example".into(),
+        },
+    );
+    h.run(&person(), Operation::Stop).unwrap();
+    let row = pending(&h).remove(0);
+    h.run(
+        &service(),
+        acted(node, row.decision, CancelState::Cancelled, 2, &reopen),
+    )
+    .unwrap();
+    assert!(pending(&h).is_empty());
+    assert!(keyed_once(&h, node));
+}
+
+/// The second door: the newest observation of a stopped team is a
+/// conflict, and the person settles the document onto the node's own
+/// delivered effect. The command acts on it, and the store takes the
+/// answer; the observation's own pair is taken as well, since a conflict
+/// holds no cancelled answer back after a stop.
+#[test]
+fn a_stopped_teams_own_effect_is_recorded_under_a_conflict() {
+    for own_effect in [true, false] {
+        let mut h = Harness::new();
+        h.bind("m1");
+        let node = h.add(&person(), 1);
+        let id = h.submit(node, "m1");
+        let mut o = h.observation(node, TaskStage::InProgress);
+        (o.attempt, o.attempt_id, o.attempt_conflict) = (2, String::new(), true);
+        h.run(
+            &service(),
+            Operation::ObserveTask {
+                node,
+                observation: o,
+            },
+        )
+        .unwrap();
+        h.run(&person(), Operation::Stop).unwrap();
+        let row = pending(&h).remove(0);
+        assert_eq!((row.attempt, row.attempt_id.as_str()), (2, ""));
+        let acted_on = if own_effect { id.as_str() } else { "" };
+        h.run(
+            &service(),
+            acted(node, row.decision, CancelState::Cancelled, 2, acted_on),
+        )
+        .unwrap();
+        assert!(pending(&h).is_empty());
+        assert!(keyed_once(&h, node));
+    }
+}
+
+/// The reviewer's f3 sequence: two person sends conflict, the observation
+/// records the task running as (1, empty, conflict), and the person stops
+/// the team and cancels the task on the board in either order; the store
+/// sees the same in both, the stop and then the command's true answer,
+/// cancelled with (1, empty). Stopped and archived: recorded, settled, one
+/// outcome, the key in the cleanup frontier once. A conflicting document
+/// that is not cancelled ends as a refused outcome.
+#[test]
+fn a_conflicting_task_cancelled_after_a_stop_is_recorded() {
+    for end in ["stopped", "archived"] {
+        for state in [CancelState::Cancelled, CancelState::Refused] {
+            let mut h = Harness::new();
+            h.bind("m1");
+            let node = h.add(&person(), 1);
+            let mut o = h.observation(node, TaskStage::InProgress);
+            (o.attempt, o.attempt_id, o.attempt_conflict) = (1, String::new(), true);
+            h.run(
+                &service(),
+                Operation::ObserveTask {
+                    node,
+                    observation: o,
+                },
+            )
+            .unwrap();
+            terminal(&mut h, end);
+            let row = pending(&h).remove(0);
+            let answer = Operation::RecordCancel {
+                node,
+                decision: row.decision,
+                state,
+                reason: if state == CancelState::Refused {
+                    "The document runs with conflicting attempts".into()
+                } else {
+                    String::new()
+                },
+                attempt: 1,
+                attempt_id: String::new(),
+            };
+            h.run(&service(), answer).unwrap();
+            assert!(pending(&h).is_empty(), "{end} {state:?}");
+            assert_eq!(outcomes(&h), 1, "{end} {state:?}");
+            assert_eq!(
+                outcome(&h, row.decision).as_deref(),
+                Some(if state == CancelState::Refused {
+                    "refused"
+                } else {
+                    "cancelled"
+                })
+            );
+            if state == CancelState::Cancelled {
+                assert!(keyed_once(&h, node), "{end}");
+            }
+        }
+    }
+}
+
+/// The reviewer's reopen variant: the observation still (1, A, In review),
+/// the reopen B delivered and not observed (the document runs (2, B)), then
+/// the stop: cancelled with (2, B) is recorded. And its released variant: a
+/// hand-out delivered and reported with no observation, the store still at
+/// (0, empty, To do), then the stop: released with (1, E) is recorded.
+#[test]
+fn the_reviewers_reopen_and_reported_variants_are_recorded() {
+    for end in ["stopped", "archived"] {
+        let mut h = Harness::new();
+        let lead = h.bind("lead");
+        h.bind("m1");
+        let node = h.add(&person(), 1);
+        let a = h.intent(node, "m1");
+        h.outcome(
+            &a,
+            HandoutOutcome::Submitted {
+                receipt: "receipt-example".into(),
+            },
+        );
+        let mut o = h.observation(node, TaskStage::InReview);
+        (o.attempt, o.attempt_id) = (1, a.clone());
+        h.run(
+            &service(),
+            Operation::ObserveTask {
+                node,
+                observation: o,
+            },
+        )
+        .unwrap();
+        h.run(
+            &service(),
+            Operation::RecordReport {
+                node,
+                generation: 1,
+                member: "m1".into(),
+                text: "Implemented and checked".into(),
+                commit: COMMIT.into(),
+            },
+        )
+        .unwrap();
+        h.run(
+            &lead,
+            Operation::Return {
+                node,
+                reason: "Fix it".into(),
+            },
+        )
+        .unwrap();
+        let b = h.reopen(node, "m1");
+        h.reopen_outcome(
+            &b,
+            HandoutOutcome::Submitted {
+                receipt: "receipt-example".into(),
+            },
+        );
+        terminal(&mut h, end);
+        let row = pending(&h).remove(0);
+        assert_eq!((row.attempt, row.attempt_id.clone()), (1, a.clone()));
+        h.run(
+            &service(),
+            acted(node, row.decision, CancelState::Cancelled, 2, &b),
+        )
+        .unwrap();
+        assert!(pending(&h).is_empty(), "{end}");
+        assert!(keyed_once(&h, node), "{end}");
+
+        let mut h = Harness::new();
+        h.bind("m1");
+        let node = h.add(&person(), 1);
+        let e = h.intent(node, "m1");
+        h.outcome(
+            &e,
+            HandoutOutcome::Submitted {
+                receipt: "receipt-example".into(),
+            },
+        );
+        // The member's report is on the task document only: the store takes
+        // a report after it observes In review, and it observed nothing.
+        terminal(&mut h, end);
+        let row = pending(&h).remove(0);
+        assert_eq!((row.attempt, row.attempt_id.as_str()), (0, ""));
+        h.run(
+            &service(),
+            acted(node, row.decision, CancelState::Released, 1, &e),
+        )
+        .unwrap();
+        assert!(pending(&h).is_empty(), "{end}");
+        assert!(keyed_once(&h, node), "{end}");
+    }
+}
+
+/// What stays refused, with nothing written: a person's attempt ID, an
+/// effect of another node, of an earlier generation, of another kind, a
+/// number below the observed one; and the own-effect answer itself in a
+/// running team.
+#[test]
+fn an_answer_about_any_other_attempt_is_still_refused() {
+    // A person's attempt ID, and a number below the observed one.
+    for end in ["stopped", "archived", "running"] {
+        let (mut h, node, id) = delivered_unobserved(end);
+        if end == "running" {
+            h.run(
+                &person(),
+                Operation::Cancel {
+                    node,
+                    reason: "Superseded".into(),
+                },
+            )
+            .unwrap();
+        }
+        let row = pending(&h).remove(0);
+        let rev = h.store.team(TEAM).unwrap().unwrap().revision;
+        let mut wrong = vec![(1, PERSON.to_owned())];
+        if end == "running" {
+            wrong.push((1, id.clone()));
+        }
+        for (attempt, attempt_id) in wrong {
+            for state in [CancelState::Cancelled, CancelState::Released] {
+                refused(
+                    h.run(
+                        &service(),
+                        acted(node, row.decision, state, attempt, &attempt_id),
+                    ),
+                    code::INVALID_STATE,
+                );
+            }
+        }
+        assert_eq!(h.store.team(TEAM).unwrap().unwrap().revision, rev, "{end}");
+        assert_eq!(outcomes(&h), 0, "{end}");
+    }
+    // A number below the observed one.
+    let mut h = Harness::new();
+    h.bind("m1");
+    let node = h.add(&person(), 1);
+    let id = h.submit(node, "m1");
+    // The node's own effect observed with a higher number (attempts that
+    // never started claimed generations 2 and 3): no take-over, the
+    // generation stays, and only the number tells the answer apart.
+    let mut o = h.observation(node, TaskStage::InProgress);
+    (o.attempt, o.attempt_id) = (3, id.clone());
+    h.run(
+        &service(),
+        Operation::ObserveTask {
+            node,
+            observation: o,
+        },
+    )
+    .unwrap();
+    assert_eq!(h.store.generation(TEAM, node).unwrap(), Some(1));
+    h.run(&person(), Operation::Stop).unwrap();
+    let row = pending(&h).remove(0);
+    refused(
+        h.run(
+            &service(),
+            acted(node, row.decision, CancelState::Cancelled, 2, &id),
+        ),
+        code::INVALID_STATE,
+    );
+    // An effect of another node.
+    let (mut h, node, _) = delivered_unobserved("running");
+    let other = h.add(&person(), 2);
+    h.bind("m2");
+    let foreign = h.intent(other, "m2");
+    terminal(&mut h, "stopped");
+    let row = pending(&h).into_iter().find(|r| r.node == node).unwrap();
+    refused(
+        h.run(
+            &service(),
+            acted(node, row.decision, CancelState::Cancelled, 1, &foreign),
+        ),
+        code::INVALID_STATE,
+    );
+    // An effect of an earlier generation: the first hand-out, after a
+    // return and a reopen moved the node on.
+    let mut h = Harness::new();
+    let lead = h.bind("lead");
+    h.bind("m1");
+    let node = h.add(&person(), 1);
+    let first = h.submit(node, "m1");
+    h.report(node, "m1");
+    h.run(
+        &lead,
+        Operation::Return {
+            node,
+            reason: "Fix it".into(),
+        },
+    )
+    .unwrap();
+    let reopen = h.reopen(node, "m1");
+    h.reopen_outcome(
+        &reopen,
+        HandoutOutcome::Submitted {
+            receipt: "receipt-example".into(),
+        },
+    );
+    h.run(&person(), Operation::Stop).unwrap();
+    assert_eq!(h.store.generation(TEAM, node).unwrap(), Some(2));
+    let row = pending(&h).remove(0);
+    refused(
+        h.run(
+            &service(),
+            acted(node, row.decision, CancelState::Cancelled, 2, &first),
+        ),
+        code::INVALID_STATE,
+    );
+    // An effect of another kind: a row no writer makes, built to pin the
+    // kind condition.
+    let (mut h, node, id) = delivered_unobserved("stopped");
+    h.store
+        .db
+        .as_ref()
+        .unwrap()
+        .execute("UPDATE effects SET kind='clear' WHERE request_id=?1", [&id])
+        .unwrap();
+    let row = pending(&h).remove(0);
+    refused(
+        h.run(
+            &service(),
+            acted(node, row.decision, CancelState::Cancelled, 1, &id),
+        ),
+        code::INVALID_STATE,
+    );
+}

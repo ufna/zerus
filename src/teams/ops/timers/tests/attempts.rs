@@ -776,9 +776,10 @@ fn an_empty_id_without_the_flag_is_an_ordinary_pair_and_is_applied() {
 }
 
 #[test]
-fn a_pair_with_an_empty_id_is_never_confused_with_a_conflict() {
-    // The conflict gate is the cancelled answer's: shown after a stop, where
-    // a cancelled answer is admitted at all.
+fn after_a_stop_the_observed_pair_is_recorded_with_or_without_a_conflict() {
+    // After a stop a conflict of the newest observation holds no cancelled
+    // answer back: nothing observes again, and the command answers cancelled
+    // for a conflicting document only when it is already cancelled.
     for flagged in [false, true] {
         let (mut h, _, node, _) = handed();
         if flagged {
@@ -789,8 +790,9 @@ fn a_pair_with_an_empty_id_is_never_confused_with_a_conflict() {
         h.run(&person(), Operation::Stop).unwrap();
         let row = h.store.pending_cancels(TEAM, 1, 0).unwrap().remove(0);
         assert_eq!((row.attempt, row.attempt_id.as_str()), (2, ""));
-        let result = h.run(&service(), cancel(node, row.decision, 2, ""));
-        assert_eq!(result.is_ok(), !flagged, "flagged: {flagged}");
+        h.run(&service(), cancel(node, row.decision, 2, ""))
+            .unwrap();
+        assert!(h.store.pending_cancels(TEAM, 200, 0).unwrap().is_empty());
     }
 }
 
@@ -1225,7 +1227,11 @@ fn archived(h: &Harness, node: u32) -> bool {
 /// A cancelled answer under the conflict is refused by the gate.
 #[test]
 fn a_kept_node_waits_for_the_answer_to_its_stop_cancel() {
-    for state in [CancelState::Released, CancelState::Refused] {
+    for state in [
+        CancelState::Cancelled,
+        CancelState::Released,
+        CancelState::Refused,
+    ] {
         let (mut h, _, node) = kept();
         h.run(&person(), Operation::Stop).unwrap();
         let rows = h.store.pending_cancels(TEAM, 200, 0).unwrap();
@@ -1233,10 +1239,6 @@ fn a_kept_node_waits_for_the_answer_to_its_stop_cancel() {
         assert!(!keyed(&h).contains(&node), "not yet in the frontier");
         assert!(!archived(&h, node));
         let row = rows[0].clone();
-        refused(
-            h.run(&service(), cancel(node, row.decision, 2, "")),
-            code::INVALID_STATE,
-        );
         let answer = Operation::RecordCancel {
             node,
             decision: row.decision,

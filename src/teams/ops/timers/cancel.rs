@@ -35,14 +35,24 @@ pub(in crate::teams::ops) fn record_cancel(ctx: &mut Context<'_>) -> Result<()> 
     // A cancel acts on one attempt: an answer about another one never ends a
     // node whose task runs again. A refusal is not bound to an attempt.
     // The newest observation's pair, compared by equality, an empty ID
-    // included. While that observation is a conflict no cancelled answer is
-    // applied, whatever its pair; a release reports that the key is gone,
-    // not who executed an attempt, so the conflict does not hold it back.
+    // included. A conflict of that observation holds no answer back: in a
+    // live team a bound task's cancelled answer is refused above and a node
+    // without a task has no observation, and after a stop nothing observes
+    // again and the command answers cancelled for a conflicting document
+    // only when that document is already cancelled.
     let held = super::attempts::stored(ctx, node)?;
-    let conflict = super::attempts::in_conflict(ctx, node)?;
     let ends = matches!(state, CancelState::Cancelled | CancelState::Released);
-    let gated = *state == CancelState::Cancelled && conflict;
-    if ends && (gated || held != (*attempt, attempt_id.clone())) {
+    let observed = held == (*attempt, attempt_id.clone());
+    // In a stopped or archived team nothing observes again, and the command
+    // reads the document under its locks: it also acts on the node's own
+    // delivered effect, and the store takes that answer by the same rule (an
+    // effect of the node's current generation, a hand-out or a reopen, with
+    // a number not below the observed one).
+    let own = !live
+        && !attempt_id.is_empty()
+        && *attempt >= held.0
+        && super::attempts::own_effect(ctx, node, attempt_id, true)?;
+    if ends && !observed && !own {
         return Err(invalid(
             "The cancel acted on another attempt than the one the store holds.",
         ));
