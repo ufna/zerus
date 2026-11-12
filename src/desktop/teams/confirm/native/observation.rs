@@ -90,15 +90,7 @@ impl Native<'_> {
                 json!({"expected_run_id":s.run,"expected_conversation_id":s.conversation})
                     .to_string();
             s.ready = self
-                .read(
-                    vec![
-                        "send".into(),
-                        s.name.clone(),
-                        "--observe".into(),
-                        "--json".into(),
-                    ],
-                    Some(request.as_bytes()),
-                )
+                .observe_send(&s.name, request.as_bytes())
                 .is_ok_and(|v| v["ready"] == true);
         }
         Ok((s, raw))
@@ -240,6 +232,85 @@ mod tests {
         view["pending_questions"] = json!(s.questions);
         (b, view, raw)
     }
+    /// Runs one ignored fixture alone in a child of this test binary with a
+    /// private state root and configuration and no session markers.
+    fn isolated(test: &str) {
+        let temp = tempfile::tempdir().unwrap();
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", test, "--ignored", "--test-threads=1"])
+            .env("HGS_STATE_DIR", temp.path().join("state"))
+            .env("HGS_CONFIG_DIR", temp.path().join("config"))
+            .env_remove("HGS_SESSION")
+            .env_remove("HGS_SESSION_ID")
+            .env_remove("HGS_RUN_ID")
+            .output()
+            .unwrap();
+        let text = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            output.status.success() && text.contains("1 passed"),
+            "{text}{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    /// A resumed Codex member's readiness is asked with an argv the CLI's own
+    /// observe gate admits (zerus-63rru.54): the argv the service spawns runs
+    /// through `cli::dispatch_at`, and must not be that gate's refusal.
+    #[test]
+    fn a_resumed_codex_members_observation_passes_the_clis_own_gate() {
+        isolated("desktop::teams::confirm::native::observation::tests::observation_gate_fixture");
+    }
+
+    #[test]
+    #[ignore = "run by its isolated wrapper"]
+    fn observation_gate_fixture() {
+        let state = std::path::PathBuf::from(std::env::var("HGS_STATE_DIR").unwrap());
+        let config = Config {
+            home: String::new(),
+            dir: std::path::PathBuf::from(std::env::var("HGS_CONFIG_DIR").unwrap()),
+            state: state.clone(),
+            selves: vec![],
+            peers: vec![],
+            base_peers: vec![],
+            peers_from_environment: false,
+            machines: Default::default(),
+            tab: false,
+            tab_colors: String::new(),
+        };
+        crate::platform::private_dir(&state.join("teams")).unwrap();
+        std::fs::write(state.join("teams/preview"), "on").unwrap();
+        let mut store = crate::teams::store::Store::open(&state).unwrap();
+        let stop = Arc::new(AtomicBool::new(false));
+        let (mut b, mut view, mut raw) = native_fixture();
+        b.agent = "codex".into();
+        b.conversation = "conversation-1".into();
+        for v in [&mut view, &mut raw] {
+            v["agent"] = json!("codex");
+            v["name"] = json!("codex/example/member");
+            v["conversation_id"] = json!("conversation-1");
+        }
+        view["pending_questions"] = json!([]);
+        let native = Native::new(&config, &b.machine, &stop, &mut store).unwrap();
+        crate::desktop::teams::child::FIXTURE_EXIT
+            .with(|slot| *slot.borrow_mut() = Some(br#"{"ready":true}"#.to_vec()));
+        let (s, _) = native.read_view(&b, &view, raw, None).unwrap();
+        assert!(s.ready);
+        let spawned = crate::desktop::teams::child::FIXTURE_ARGS
+            .with(|slot| slot.borrow_mut().pop())
+            .expect("the observation child");
+        let gate = |argv: Vec<String>| match crate::cli::dispatch_at(argv, Instant::now()) {
+            Err(error) if error.code == 2 && error.message.contains("--observe takes exactly") => {
+                Err(error.message)
+            }
+            _ => Ok(()),
+        };
+        assert_eq!(gate(spawned.clone()), Ok(()), "{spawned:?}");
+        // The machine guard in front of the same words is what the gate refused.
+        let mut guarded = vec!["--expect-machine".to_owned(), b.machine.clone()];
+        guarded.extend(spawned);
+        assert!(gate(guarded).is_err());
+    }
+
     #[test]
     fn native_read_requires_the_bound_launch_run_session_agent_account_folder_and_owner() {
         let (b, v, raw) = native_fixture();
