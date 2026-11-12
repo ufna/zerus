@@ -458,3 +458,56 @@ fn a_reopen_after_the_member_cleared_its_conversation_is_refused_with_its_reason
     );
     assert_eq!(seen.effect, "refused", "{seen:?}");
 }
+
+/// A hand-out command's own sentence is recorded cleaned: decoded by the
+/// production deliver, recorded through the outcome operation the actor
+/// applies, read back from the store.
+#[test]
+fn a_delivery_commands_sentence_is_recorded_without_control_characters() {
+    use super::*;
+    for state in ["refused", "uncertain", "cutting_over"] {
+        let mut h = Harness::new();
+        h.bind("m1");
+        let node = h.add(&person(), 1);
+        let id = h.intent(node, "m1");
+        let team = h.store.team(TEAM).unwrap().unwrap();
+        let row = h.store.node(TEAM, node).unwrap().unwrap();
+        let member = h.store.member(TEAM, "m1").unwrap().unwrap();
+        let mut native = super::production::native(&h);
+        let reply =
+            serde_json::json!({"schema":1,"id":id,"state":state,"error":super::hostile_sentence()});
+        crate::desktop::teams::child::FIXTURE_EXIT
+            .with(|s| *s.borrow_mut() = Some(reply.to_string().into_bytes()));
+        let super::super::ports::DeliveryResult::Outcome(outcome) =
+            super::super::ports::Ports::deliver(&mut native, &team, &row, &member, &id)
+        else {
+            panic!("{state}: no outcome")
+        };
+        h.outcome(&id, outcome);
+        let recorded = h
+            .store
+            .effects(TEAM, 200, None)
+            .unwrap()
+            .rows
+            .into_iter()
+            .find(|e| e.request_id == id)
+            .and_then(|e| e.outcome)
+            .map(|v| serde_json::from_value::<HandoutOutcome>(v).unwrap())
+            .expect("the recorded outcome");
+        let reason = match recorded {
+            HandoutOutcome::Refused { reason }
+            | HandoutOutcome::Uncertain { reason }
+            | HandoutOutcome::CuttingOver { reason } => reason,
+            other => panic!("{state}: {other:?}"),
+        };
+        super::assert_clean(&[reason], state);
+        let items = h.store.inbox(TEAM, 200, None).unwrap().rows;
+        // Items keep their own line breaks; no other control character.
+        assert!(
+            items
+                .iter()
+                .all(|i| !i.text.chars().any(|c| c.is_control() && c != '\n')),
+            "{state}: an inbox item carries a control character"
+        );
+    }
+}

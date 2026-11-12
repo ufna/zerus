@@ -5440,7 +5440,12 @@ as an agent, and refuse person actions plainly.
 Each call's processes also carry `HGS_DSH_CALL_TOKEN`, a fresh random token of
 256 bits. The host keeps it, naming the calling top-level conversation, while
 the call runs and, for a background or promoted job the call starts, until that
-job settles; the table is bounded and an evicted token is unknown. A command
+job settles; the table is bounded and an evicted token is unknown. Each
+conversation holds at most 512 live tokens, so one conversation's calls and jobs
+push out only its own oldest. Everything the host's private socket serves, such
+as a running job's output that printed its environment, shows a live token as
+`[hidden call token]`. What the host's own web UI shows is outside this:
+reaching it takes the sign-in address in the host's private log. A command
 then acts as its hosted session for `hgs task` and for the source of `hgs send`
 when the hosted caller proof holds:
 
@@ -5477,8 +5482,11 @@ sentence naming the missing proof. Neither sends nor launches as nobody. Every
 route to another computer passes one check before anything is forwarded: by
 `@host`, by a session reference (its verified hop, or `inspect` of it) or by
 `--expect-machine`, such a call sends nothing and launches nothing without
-`--parent`, and on a route that names a machine it runs no command at all,
-because the peer cannot see who calls. A launch Zerus does not track
+`--parent`, and on a route that names a machine it runs no other command,
+because the peer cannot see who calls. A launch names its parent only with
+`--parent` followed by a claim of the parent's session, run and conversation
+IDs among its own options: the value of another option, or a word after `--`,
+is no parent. A launch Zerus does not track
 (`HGS_TRACKING=0`, or a plain shell session) records no parent at all and is
 outside this rule. Hosts an older Zerus started never set `HGS_AGENT=dsh`, so
 their calls are unaffected.

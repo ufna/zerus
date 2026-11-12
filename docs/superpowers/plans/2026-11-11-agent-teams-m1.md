@@ -1790,6 +1790,57 @@ final input is a terminal path with no DeepSeek route, and a hosted run's
 end writes no end record. OpenCode and platforms without the proof stay
 refused as before.
 
+**A held step's card follows the hold's age, not its reason.** A step the
+service holds back (a finish, a merge or a reopen it cannot carry out yet)
+had its card keyed by the reason, so a change of reason closed the card and
+restarted the count, and a reason that alternated every minute never opened
+one (the second review of the actor, 2026-11-12). A hold is a decision and
+its generation. It is silent for its first period, three one-minute checks,
+whatever its reasons do; the first card opens when the hold's age passes
+the period, with the sentence of that pass. A change of reason neither
+restarts the age nor closes the card: the card is replaced when the new
+reason has stood for the period. A dismissal lasts while the reason is the
+same, Retry checks again on the next pass, and the card closes when the
+hold ends or another decision or generation takes the row.
+
+**One reader of a fleet row, and its keys are the producers'.** The actor
+read a member's row by names no producer writes (`subagents_active`, and a
+`state` that a live terminal row never carries) in tests whose rows were
+written by hand, so a real idle member was never free and never handed a
+task; the first run against real agents found it (2026-11-12). One module
+reads a fleet row (`actor/fleet.rs`) and lists every key it reads. A member
+is live when its `process_state` is `running`, its `runtime_state` is `live`
+and its `state` is absent or `running`; it is free when it is live, ready
+and idle and its three counts (active children, background work, open
+questions) are zero. A count that is null, absent or of another type is
+unknown: the member is never free and its presence reports nothing. The
+tests' rows come from the listing's own steps through test-only seams; one
+guard compares the committed fixture's key paths with them and another
+fails when the reader names a key no producer writes.
+
+**A member is found by its session, not by its launch's evidence.** A
+member is bound to the launch that started it, and every later read of the
+member (is it free, which run is current, who is its parent) went through
+that launch's start file, which the product removes when the launch is
+confirmed finished and after seven days at the latest. A member whose start
+file was gone could not be read and was never handed a task (found by
+tracing the producer, 2026-11-12). The store keeps a durable handle beside
+the binding: the session's own ID, written once by the service when the
+binding is verified, in a companion table that an older build ignores, so
+the layout does not move. Every later read resolves the session's current
+record through the handle with bounded point reads and requires that
+record to carry the bound launch and the member's agent and folder. What
+does not resolve is named and never free: `Gone` (archived, forgotten, or
+rewritten without its ID), `Changed` (the record carries another launch),
+`StartedFresh`, `Unavailable` (a fault or a bound) and `NoHandle`. A fresh
+start ends the binding: it does not carry the launch's identity to the new
+conversation, because that identity is also the task executor's key and
+carrying it would change what a fresh start means for every task; that is
+the owner's decision and is not taken here. One session is one member's. A
+member bound before the handle existed gets it on its first verified free
+check, from the launch ledger, a completed resume or the evidence while it
+lasts.
+
 **Known limit: the key of a task that was closed before the stop.** After a
 stop the service clears the team key of the tasks that were open at the
 stop and of released stages. A task accepted or cancelled earlier keeps its

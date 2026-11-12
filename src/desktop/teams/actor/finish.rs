@@ -119,6 +119,7 @@ impl Runtime {
             Ok(Finish::Done) => self.cooldown(store, team, &key, stamp, now.saturating_add(60_000)),
             Ok(Finish::Stale) => self.defer_finish(store, ports, team, target, now),
             Ok(Finish::Refused(reason)) => {
+                let reason = super::cancel::reason::spoken(&reason);
                 self.put(
                     &team.id,
                     &held,
@@ -131,6 +132,7 @@ impl Runtime {
                 self.force_failure(store, team, &refusal, stamp, &problem(&reason), now)
             }
             Ok(Finish::CuttingOver(reason)) => {
+                let reason = super::cancel::reason::spoken(&reason);
                 self.failure(store, team, &key, stamp, &problem(&reason), now)
             }
             Err(error) => self.failure(store, team, &key, stamp, &error, now),

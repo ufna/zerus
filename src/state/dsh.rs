@@ -848,6 +848,12 @@ pub(super) fn claim_live(_: &Value, _: std::time::Duration) -> Result<bool> {
     Ok(false)
 }
 
+/// The listing projection of `record` from a host's `list` answer, for the
+/// fleet-row fixtures of the Teams actor's tests (zerus-63rru.51).
+#[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
+pub(super) fn listed_for_fixture(record: &Value, list: &Value) -> Value {
+    snapshot_from(record, list)
+}
 fn snapshot_from(record: &Value, list: &Value) -> Value {
     let row = list["items"].as_array().and_then(|items| {
         items

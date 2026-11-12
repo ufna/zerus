@@ -45,6 +45,8 @@ fn a_reopened_store_keeps_its_timer_triggers_under_their_versioned_names() {
             "key_clear_stage_archived_v2",
             "key_clear_stage_settled_v2",
             "key_clear_terminal_v1",
+            "member_handles_removed_v1",
+            "member_handles_terminal_v1",
             "timer_cards_decided_v1",
             "timer_cards_item_v1"
         ],

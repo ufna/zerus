@@ -228,7 +228,7 @@ impl Ports for Native {
             return Ok(false);
         };
         if session.machine != self.machine
-            || !super::availability::free(&self.config, &self.epoch, &team.id, m)?
+            || !super::availability::free(&self.config, &self.epoch, &team.id, m, true)?
         {
             return Ok(false);
         }
@@ -334,14 +334,14 @@ pub(super) fn decode_delivery(raw: &[u8], id: &str) -> HandoutOutcome {
         None if v["state"] == "submitted" => "",
         _ => return bad(),
     };
-    let reason = cut(
-        if error.trim().is_empty() {
-            "The task writer did not complete delivery"
-        } else {
-            error
-        },
-        2048,
-    );
+    // The command's own words, cleaned before they are recorded; a sentence
+    // with nothing readable left keeps the fixed one.
+    let said = super::cancel::reason::spoken(&cut(error, 2048));
+    let reason = if said.is_empty() {
+        "The task writer did not complete delivery".to_owned()
+    } else {
+        said
+    };
     match v["state"].as_str() {
         Some("submitted") => HandoutOutcome::Submitted { receipt: id.into() },
         Some("refused") => HandoutOutcome::Refused { reason },

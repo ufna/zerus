@@ -41,6 +41,11 @@ pub(super) fn step(p: &mut impl Ports, b: &Binding, epoch: &str, now: i64) -> Re
         }
     }
     let snapshot = p.observe(b)?;
+    // A paused or terminating member was stopped by a person: not an exit and
+    // not a prompt (zerus-63rru.56). Nothing is planned or claimed.
+    if snapshot.paused {
+        return Ok(());
+    }
     let kind = if !snapshot.questions.is_empty() {
         Kind::Trust
     } else if snapshot.ended {

@@ -1,5 +1,54 @@
 //! The reviewer's turn-contention probe, with executable assertions.
+//!
+//! Each scenario holds the process-wide spawn turn on purpose for seconds,
+//! longer than other tests' bounded turn waits (a merge's five seconds, a
+//! one-second Git deadline). In a shared test process a parallel test could
+//! take the turn when this scenario's holder released it and keep it past
+//! this merge's own five-second wait; this scenario's hold, in turn, could
+//! run out another test's wait. So each scenario runs alone in a test
+//! process of its own, where the only holder of the turn is its own.
 use super::*;
+/// The parent asks a fresh test process to run exactly this scenario, and
+/// requires that it ran and passed; the child runs it directly.
+fn alone(name: &str, scenario: impl FnOnce()) {
+    const VARIABLE: &str = "HGS_TEAMS_TURN_SCENARIO";
+    if std::env::var(VARIABLE).as_deref() == Ok(name) {
+        return scenario();
+    }
+    let mut command = Command::new(std::env::current_exe().expect("this test binary"));
+    command
+        .args(["--exact", &format!("teams::integrate::tests::r3::{name}")])
+        .args(["--nocapture", "--test-threads=1"])
+        .env(VARIABLE, name)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    let child = crate::platform::spawn_in_turn(&mut command).expect("the scenario's process");
+    let pid = child.id();
+    let (sent, done) = std::sync::mpsc::channel();
+    let reader = std::thread::spawn(move || {
+        let _ = sent.send(child.wait_with_output());
+    });
+    // A generous bound on the whole child: its own clocks are all inside.
+    let output = match done.recv_timeout(Duration::from_secs(300)) {
+        Ok(output) => output.expect("the scenario's output"),
+        Err(_) => {
+            unsafe { libc::kill(pid as i32, libc::SIGKILL) };
+            panic!("the scenario's process did not finish within its bound");
+        }
+    };
+    reader.join().unwrap();
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(output.status.success(), "{name} failed alone:\n{text}");
+    assert!(
+        text.contains("test result: ok. 1 passed"),
+        "{name} did not run alone:\n{text}"
+    );
+}
 fn hold_ref_turn(seconds: u64) -> std::thread::JoinHandle<()> {
     let (ready, receive) = std::sync::mpsc::channel();
     let until = Instant::now() + Duration::from_secs(30);
@@ -16,6 +65,12 @@ fn hold_ref_turn(seconds: u64) -> std::thread::JoinHandle<()> {
 }
 #[test]
 fn turn_contention_is_unavailable_without_taking_the_store_admission() {
+    alone(
+        "turn_contention_is_unavailable_without_taking_the_store_admission",
+        turn_contention,
+    );
+}
+fn turn_contention() {
     let f = Fixture::new();
     let incoming = f.branch("member", "new.txt", "incoming");
     create_branch(&f.repo, "teams/held", &f.base).unwrap();
@@ -40,6 +95,12 @@ fn turn_contention_is_unavailable_without_taking_the_store_admission() {
 }
 #[test]
 fn turn_wait_does_not_use_the_admitted_writers_five_seconds() {
+    alone(
+        "turn_wait_does_not_use_the_admitted_writers_five_seconds",
+        turn_wait,
+    );
+}
+fn turn_wait() {
     let f = Fixture::new();
     let incoming = f.branch("member", "new.txt", "incoming");
     create_branch(&f.repo, "teams/held", &f.base).unwrap();

@@ -51,6 +51,65 @@ pub(super) fn set_session(ctx: &mut Context<'_>) -> Result<()> {
     m.state = MemberState::Active;
     save(ctx, &m)
 }
+/// The longest session name a handle keeps as its label hint.
+const HINT_BYTES: usize = 512;
+/// Records the durable handle of a member bound to a launch: once, while the
+/// member and its team are live, and only for a session no other member's
+/// handle holds. A member bound by run has no launch and gets none.
+pub(super) fn set_handle(ctx: &mut Context<'_>) -> Result<()> {
+    let Operation::SetMemberHandle {
+        member,
+        session_id,
+        label_hint,
+    } = ctx.op
+    else {
+        unreachable!()
+    };
+    ctx.active()?;
+    let m = ctx.member(member)?;
+    let Some((machine, launch)) = m
+        .session
+        .as_ref()
+        .filter(|_| m.state != MemberState::Removed)
+        .and_then(|s| Some((&s.machine, s.session_id.strip_prefix("launch_id:")?)))
+    else {
+        return Err(invalid("Only a member bound to a launch has a handle."));
+    };
+    uuid(session_id)?;
+    text(label_hint, HINT_BYTES)?;
+    let own: bool = ctx
+        .db
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM member_handles WHERE team=?1 AND member=?2)",
+            params![ctx.team.id, member],
+            |r| r.get(0),
+        )
+        .map_err(storage)?;
+    if own {
+        return Err(Problem::new(
+            code::DUPLICATE,
+            "The member already has a handle.",
+        ));
+    }
+    let held: bool = ctx
+        .db
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM member_handles WHERE machine=?1 AND session_id=?2)",
+            params![machine, session_id],
+            |r| r.get(0),
+        )
+        .map_err(storage)?;
+    if held {
+        return Err(invalid("The session is another member's."));
+    }
+    ctx.db
+        .execute(
+            "INSERT INTO member_handles(team,member,machine,session_id,launch,label_hint,created_ms) VALUES(?1,?2,?3,?4,?5,?6,?7)",
+            params![ctx.team.id, member, machine, session_id, launch, label_hint, ctx.now],
+        )
+        .map_err(storage)?;
+    Ok(())
+}
 pub(super) fn set_state(ctx: &mut Context<'_>) -> Result<()> {
     let Operation::SetMemberState { member, state } = ctx.op else {
         unreachable!()

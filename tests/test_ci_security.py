@@ -2073,6 +2073,7 @@ class PullRequestRunCancellationTests(unittest.TestCase):
             "android-approval-ui.yml": "android-approval-ui-run-4242",
             "android-project-ui.yml": "android-project-ui-run-4242",
             "ios-approval-ui.yml": "ios-approval-ui-run-4242",
+            "teams-native.yml": "teams-native-run-4242",
         }
         manual = {name for name, text in self.pull_request_workflows().items()
                   if re.search(r"(?m)^  workflow_dispatch:", text)}
@@ -2085,6 +2086,33 @@ class PullRequestRunCancellationTests(unittest.TestCase):
                 # Kimi keeps its per-ref noncancelling group; the others stay independent per run.
                 self.assertEqual(rendered(group, dispatch), value)
                 self.assertIs(rendered(cancel, dispatch), False)
+
+    def test_teams_native_workflow_has_no_cache_identical_paths_and_a_public_guard(self):
+        text = (self.WORKFLOWS / "teams-native.yml").read_text()
+        # A standalone workflow that uses no cache says so, directly after its permissions.
+        self.assertRegex(text, r"(?m)^permissions:\n  contents: read\ncache-mode: none$")
+        self.assertNotRegex(text, r"actions/cache[@/]")
+        self.assertNotRegex(text, r"(?m)^    cache-mode:")
+        on = re.search(r"(?ms)^on:\n(.*?)^\S", text)[1]
+        lists = re.findall(r"(?m)^    paths:\n((?:      - .*\n)+)", on)
+        self.assertEqual(len(lists), 2, "pull_request and push each name their paths")
+        self.assertEqual(lists[0], lists[1], "the pull_request and push path lists stay identical")
+        for path in ("'src/**'", "'crates/**'", "'client/core/**'", "'Cargo.lock'", "'tests/teams_native_fixture.py'"):
+            self.assertIn("      - " + path + "\n", lists[0])
+        guard = "if: github.event.repository.private == false || github.event_name == 'workflow_dispatch'"
+        for name in ("teams", "teams-kimi"):
+            with self.subTest(job=name):
+                self.assertEqual(field(job(text, name), "if"), guard.removeprefix("if: "))
+        self.assertIn("actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0", job(text, "teams"))
+        self.assertIn("zerus-63rru.51", text, "the header names what a green run does not cover yet")
+        # One Rust toolchain for both jobs, the one the hosted Kimi workflow installs.
+        kimi = (self.WORKFLOWS / "kimi-native.yml").read_text()
+        def toolchains(workflow):
+            return (set(re.findall(r"rustup toolchain install (\S+)", workflow))
+                    | set(re.findall(r"RUSTUP_TOOLCHAIN=(\S+)", workflow)))
+        self.assertEqual(len(toolchains(kimi)), 1)
+        self.assertEqual(toolchains(text), toolchains(kimi))
+        self.assertEqual(len(re.findall(r"rustup toolchain install ", text)), 2)
 
     def test_another_label_neither_cancels_nor_repeats_an_opted_in_hint_run(self):
         text = (self.WORKFLOWS / "agent-hint.yml").read_text()

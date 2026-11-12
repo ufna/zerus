@@ -312,6 +312,7 @@ fn schema_extensions(db: &Connection) -> Result<()> {
     #[cfg(test)]
     timers::after_fence()?;
     common_schema(db)?;
+    handles_schema(db)?;
     read_indexes(db)?;
     timers::extend(db)
 }
@@ -321,6 +322,16 @@ const COMMON_SCHEMA: [&str; 3] = [
     include_str!("pipeline-schema.sql"),
     include_str!("observation-schema.sql"),
     include_str!("read-indexes.sql"),
+];
+/// The member handles' table and the triggers that end a handle with its
+/// membership (zerus-63rru.53). Like the common batches it moves no version
+/// or mark, but its trigger bodies hold statements of their own, so its
+/// objects are named here for the presence check.
+const HANDLES_SCHEMA: &str = include_str!("handles-schema.sql");
+const HANDLE_OBJECTS: [(&str, &str); 3] = [
+    ("table", "member_handles"),
+    ("trigger", "member_handles_terminal_v1"),
+    ("trigger", "member_handles_removed_v1"),
 ];
 
 /// The objects a batch of `CREATE ... IF NOT EXISTS` statements creates.
@@ -389,6 +400,41 @@ fn common_schema(db: &Connection) -> Result<()> {
         (Ok(()), false) => "RELEASE common_schema;",
         (Err(_), true) => "ROLLBACK;",
         (Err(_), false) => "ROLLBACK TO common_schema; RELEASE common_schema;",
+    };
+    db.execute_batch(end).map_err(storage)?;
+    result
+}
+
+/// Creates the member handles' objects on a store that lacks one, as the
+/// common batches are created: under the write lock, after the mark is read
+/// again under it. An ordinary open finds all three and takes no lock.
+fn handles_schema(db: &Connection) -> Result<()> {
+    let mut complete = true;
+    for (kind, name) in HANDLE_OBJECTS {
+        complete &= db
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type=?1 AND name=?2)",
+                params![kind, name],
+                |r| r.get::<_, bool>(0),
+            )
+            .map_err(storage)?;
+    }
+    if complete {
+        return Ok(());
+    }
+    let own = db.is_autocommit();
+    db.execute_batch(if own {
+        "BEGIN IMMEDIATE;"
+    } else {
+        "SAVEPOINT handles_schema;"
+    })
+    .map_err(begin_error)?;
+    let result = timers::fence(db).and_then(|()| db.execute_batch(HANDLES_SCHEMA).map_err(storage));
+    let end = match (&result, own) {
+        (Ok(()), true) => "COMMIT;",
+        (Ok(()), false) => "RELEASE handles_schema;",
+        (Err(_), true) => "ROLLBACK;",
+        (Err(_), false) => "ROLLBACK TO handles_schema; RELEASE handles_schema;",
     };
     db.execute_batch(end).map_err(storage)?;
     result

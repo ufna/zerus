@@ -32,6 +32,10 @@ pub(super) fn run(n: &Native<'_>, task: &TaskRef, request: &ClearRequest) -> Ans
         &args,
         &input,
         CODES,
+        Output::Stdout {
+            bytes: 64 << 10,
+            too_large: "team_timer_output_large",
+        },
         Duration::from_secs(30),
         || Ok(()),
     ) {
