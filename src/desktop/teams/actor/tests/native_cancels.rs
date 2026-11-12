@@ -397,3 +397,37 @@ fn a_live_changed_visit_does_not_take_the_saved_refusal_exit() {
         .is_empty());
     assert_eq!(Native::pending_cancels(&h.store, TEAM, 0).unwrap().len(), 1);
 }
+
+#[test]
+fn a_saved_live_refusal_with_a_changed_snapshot_leaves_its_decision_for_observation() {
+    use super::super::cancel::FactOutcome;
+    for paused in [false, true] {
+        let (mut h, pending) = cancelling();
+        if paused {
+            h.run(&person(), Operation::Pause).unwrap();
+        }
+        let team = h.store.team(TEAM).unwrap().unwrap();
+        let mut earlier = pending.clone();
+        earlier.attempt_conflict = Some(!pending.attempt_conflict.unwrap_or(false));
+        let fact = Fact {
+            request_id: uuid::Uuid::new_v4().to_string(),
+            revision: team.revision,
+            pending: earlier,
+            refused: true,
+            released: false,
+            reason: String::new(),
+            attempt: pending.attempt,
+            attempt_id: pending.attempt_id.clone(),
+        };
+        assert!(matches!(
+            outcome(&mut h.store, &team, &fact, 100).unwrap(),
+            FactOutcome::Changed { .. }
+        ));
+        assert!(h.store.request_refused(TEAM, &fact.request_id).unwrap());
+        assert_eq!(
+            Native::pending_cancels(&h.store, TEAM, 0).unwrap(),
+            vec![pending]
+        );
+        assert!(h.store.cards(TEAM, 200, None).unwrap().rows.is_empty());
+    }
+}
