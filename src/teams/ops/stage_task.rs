@@ -75,8 +75,10 @@ pub(super) fn outcome(ctx: &mut Context<'_>) -> Result<()> {
     match outcome {
         StageTaskOutcome::Created { task } => bind(ctx, node, task),
         StageTaskOutcome::Refused { reason } | StageTaskOutcome::Uncertain { reason } => {
-            // A creation refused or uncertain was never bound.
-            pipeline::end_stage(ctx, node)?;
+            // A creation refused or uncertain was never bound: the stage is
+            // retired, which keeps a person's pending cancel for its own
+            // answer and otherwise ends the stage at once, as before.
+            pipeline::retire_stage(ctx, node)?;
             let target = ctx.node(target)?;
             pipeline::to_lead(ctx, &target, reason)
         }

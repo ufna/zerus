@@ -578,3 +578,67 @@ fn a_persons_cancel_of_an_unbound_stage_survives_the_parents_return() {
     assert!(archived(&h, stage));
     assert_eq!(h.node(stage).state, NodeState::Cancelled);
 }
+
+/// The DeepSeek reviewer's reproducer, committed: a person's cancel of a
+/// stage whose creation is reserved survives that creation's refused or
+/// uncertain outcome. The stage is retired, not ended: the cancel stays
+/// pending and the stage live, while its parent goes to the lead with the
+/// creation's reason. The cancel's own answer then ends the stage.
+#[test]
+fn a_persons_cancel_of_a_reserved_stage_survives_a_refused_or_uncertain_creation() {
+    for status in ["refused", "uncertain"] {
+        let mut h = pipeline();
+        let (parent, stage) = staged(&mut h);
+        let id = uuid::Uuid::new_v4().to_string();
+        h.run(
+            &service(),
+            op(serde_json::json!({"op":"stage_task_intent","node":stage,"effect_request_id":id})),
+        )
+        .unwrap();
+        person_cancel(&mut h, stage).unwrap();
+        let before = pending(&h, stage);
+        assert_eq!(before.len(), 1, "{status}: the person's cancel is pending");
+        h.run(
+            &service(),
+            op(serde_json::json!({"op":"stage_task_outcome","effect_request_id":id,"outcome":{"status":status,"reason":"The creation child refused"}})),
+        )
+        .unwrap();
+        assert_eq!(pending(&h, stage), before, "{status}: still pending");
+        assert_eq!(outcomes(&h, stage), 0, "{status}");
+        assert!(!archived(&h, stage), "{status}: it waits for the answer");
+        assert!(
+            h.store
+                .inbox(TEAM, 200, None)
+                .unwrap()
+                .rows
+                .iter()
+                .any(|i| i.node == parent && i.text.contains("The creation child refused")),
+            "{status}: the parent goes to the lead"
+        );
+        answer(&mut h, stage, CancelState::Cancelled).unwrap();
+        assert!(pending(&h, stage).is_empty(), "{status}");
+        assert_eq!(outcomes(&h, stage), 1, "{status}");
+        assert!(archived(&h, stage), "{status}: ended by its answer");
+    }
+}
+
+/// Without a pending cancel, a refused creation ends its stage at once, as
+/// before.
+#[test]
+fn a_refused_creation_without_a_cancel_ends_its_stage_at_once() {
+    let mut h = pipeline();
+    let (_, stage) = staged(&mut h);
+    let id = uuid::Uuid::new_v4().to_string();
+    h.run(
+        &service(),
+        op(serde_json::json!({"op":"stage_task_intent","node":stage,"effect_request_id":id})),
+    )
+    .unwrap();
+    h.run(
+        &service(),
+        op(serde_json::json!({"op":"stage_task_outcome","effect_request_id":id,"outcome":{"status":"refused","reason":"The creation child refused"}})),
+    )
+    .unwrap();
+    assert!(pending(&h, stage).is_empty());
+    assert!(archived(&h, stage));
+}
