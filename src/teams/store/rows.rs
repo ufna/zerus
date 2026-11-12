@@ -80,6 +80,17 @@ pub(crate) fn set_explicit_hold(
     .map_err(storage)?;
     Ok(())
 }
+/// Ends every hand-back of a team: the stop's Cancel is each node's next
+/// decision, and takes the hold over while it is pending. An explicit hold
+/// stays.
+pub(crate) fn end_hand_backs(db: &Connection, team: &str) -> Result<()> {
+    db.execute(
+        "UPDATE nodes SET hand_back=0 WHERE team=?1 AND hand_back",
+        [team],
+    )
+    .map_err(storage)?;
+    Ok(())
+}
 /// Whether a node is held for the team's next step.
 pub(crate) fn handed_back(db: &Connection, team: &str, node: u32) -> Result<bool> {
     db.query_row(

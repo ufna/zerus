@@ -458,3 +458,87 @@ fn an_explicit_hold_survives_the_report_and_a_rejected_integration() {
         assert!(held(&h, node), "{owner:?}: after the rejection");
     }
 }
+
+/// The hold review's finding 1: a hand-back, then Stop. The stop's Cancel is
+/// the node's next decision: it ends the hand-back in the Stop operation and
+/// holds the node itself while it waits; once it is answered only an
+/// explicit hold remains. In a stopped team no Release is taken, by the lead
+/// or the person ("The team is not active.").
+#[test]
+fn a_stop_ends_a_hand_back_and_keeps_an_explicit_hold() {
+    for owner in [Owner::None, Owner::Person, Owner::Lead] {
+        let (mut h, lead, node) = reported();
+        hold(&mut h, &lead, node, owner);
+        return_task(&mut h, &lead, node);
+        let id = h.reopen(node, "m1");
+        h.reopen_outcome(
+            &id,
+            HandoutOutcome::Refused {
+                reason: "Not delivered".into(),
+            },
+        );
+        let stored = |h: &Harness| -> (bool, Option<String>, bool) {
+            h.store
+                .db
+                .as_ref()
+                .unwrap()
+                .query_row(
+                    "SELECT hold,hold_owner,hand_back FROM nodes WHERE team=?1 AND id=?2",
+                    params![TEAM, node],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                )
+                .unwrap()
+        };
+        let owner_name = match owner {
+            Owner::Person => Some("person".to_owned()),
+            Owner::Lead => Some("lead".to_owned()),
+            Owner::None => None,
+        };
+        assert_eq!(
+            stored(&h),
+            (explicit(owner), owner_name.clone(), true),
+            "{owner:?}"
+        );
+        h.run(&person(), Operation::Stop).unwrap();
+        assert_eq!(
+            stored(&h),
+            (explicit(owner), owner_name.clone(), false),
+            "{owner:?}: the stop ends the hand-back"
+        );
+        assert!(held(&h, node), "{owner:?}: the stop's Cancel holds it");
+        let row = h
+            .store
+            .pending_cancels(TEAM, 16, 0)
+            .unwrap()
+            .into_iter()
+            .find(|r| r.node == node)
+            .unwrap();
+        h.run(
+            &service(),
+            Operation::RecordCancel {
+                node,
+                decision: row.decision,
+                state: CancelState::Cancelled,
+                reason: String::new(),
+                attempt: row.attempt,
+                attempt_id: row.attempt_id,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            held(&h, node),
+            explicit(owner),
+            "{owner:?}: after the answer"
+        );
+        assert_eq!(
+            stored(&h),
+            (explicit(owner), owner_name, false),
+            "{owner:?}"
+        );
+        for actor in [lead.clone(), person()] {
+            let error = release(&mut h, &actor, node).unwrap_err();
+            assert_eq!(error.code, code::INVALID_STATE, "{owner:?}");
+            assert!(error.message.contains("not active"), "{}", error.message);
+        }
+    }
+}
