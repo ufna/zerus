@@ -12,6 +12,7 @@ struct Adapter {
     native: Native,
     cancelled: Vec<u32>,
     cleared: Vec<u32>,
+    unknown_fact: bool,
 }
 impl Ports for Adapter {
     fn changes(&mut self, _: &str, _: &str, _: u64) -> Result<zerus_replica::Changes> {
@@ -46,7 +47,15 @@ impl Ports for Adapter {
         fact: &Fact,
         now: i64,
     ) -> Result<()> {
-        Native::save_cancel(store, team, fact, now)
+        Native::save_cancel(store, team, fact, now)?;
+        if std::mem::take(&mut self.unknown_fact) {
+            Err(zerus_team_plan::Problem::new(
+                zerus_team_plan::problem::code::STORAGE_FAILED,
+                "fixture lost the committed fact reply",
+            ))
+        } else {
+            Ok(())
+        }
     }
     fn terminal_timers(
         &mut self,
@@ -121,6 +130,7 @@ fn a_stop_cancels_each_unfinished_stage_before_any_key_is_cleared() {
         native,
         cancelled: Vec::new(),
         cleared: Vec::new(),
+        unknown_fact: false,
     };
     for pass in 0..3 {
         runtime
@@ -155,6 +165,7 @@ fn a_stage_without_a_task_records_cancelled_without_invoking_the_native_adapter(
         native,
         cancelled: Vec::new(),
         cleared: Vec::new(),
+        unknown_fact: false,
     };
     let team = h.store.team(TEAM).unwrap().unwrap();
     runtime.cancels(&mut h.store, &mut p, &team, 100).unwrap();
@@ -181,6 +192,7 @@ fn storage_failed_replays_the_saved_cancel_fact_request_without_a_second_child()
         native,
         cancelled: Vec::new(),
         cleared: Vec::new(),
+        unknown_fact: false,
     };
     h.store.db.as_ref().unwrap().execute_batch("CREATE TRIGGER reject_fact BEFORE INSERT ON requests BEGIN SELECT RAISE(ABORT,'fixture receipt failure'); END").unwrap();
     let team = h.store.team(TEAM).unwrap().unwrap();
@@ -217,5 +229,46 @@ fn storage_failed_replays_the_saved_cancel_fact_request_without_a_second_child()
     assert!(
         saved,
         "the fact used a new request instead of replaying its original"
+    );
+}
+
+#[test]
+fn a_lost_committed_cancel_fact_reply_replays_its_original_request_after_restart() {
+    let mut h = Harness::new();
+    let node = h.add(&person(), 1);
+    h.run(
+        &person(),
+        Operation::Cancel {
+            node,
+            reason: "Release this task".into(),
+        },
+    )
+    .unwrap();
+    let native = super::production::native(&h);
+    let mut runtime = Runtime::open(h.temp.path(), &native.machine).unwrap();
+    let mut p = Adapter {
+        native,
+        cancelled: Vec::new(),
+        cleared: Vec::new(),
+        unknown_fact: true,
+    };
+    let team = h.store.team(TEAM).unwrap().unwrap();
+    let decision = h.store.pending_cancels(TEAM, 16, 0).unwrap()[0].decision;
+    runtime.cancels(&mut h.store, &mut p, &team, 100).unwrap();
+    assert_eq!(p.cancelled, vec![node]);
+    assert!(h.store.pending_cancels(TEAM, 16, 0).unwrap().is_empty());
+    let key = format!("cancel:{decision}");
+    let row = runtime.ledger.get(TEAM, &key).unwrap().unwrap();
+    let id = row.data["fact"]["request_id"].as_str().unwrap().to_owned();
+    assert!(!h.store.request_refused(TEAM, &id).unwrap());
+    drop(runtime);
+    let mut runtime = Runtime::open(h.temp.path(), &p.native.machine).unwrap();
+    runtime
+        .cancels(&mut h.store, &mut p, &team, 60_100)
+        .unwrap();
+    assert_eq!(p.cancelled, vec![node]);
+    assert!(
+        runtime.ledger.get(TEAM, &key).unwrap().is_none(),
+        "the original saved success must replay even though its decision has settled"
     );
 }
