@@ -1,6 +1,6 @@
 use super::*;
 
-fn refused_first(f: &mut Fixture) {
+pub(super) fn refused_first(f: &mut Fixture) {
     assert_eq!(f.run("refused", false)["reply"]["state"], "refused");
     f.h.outcome(
         &f.body.id,

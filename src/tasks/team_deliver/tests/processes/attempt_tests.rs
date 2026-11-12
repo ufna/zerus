@@ -568,3 +568,4 @@ fn cancel_is_stale_when_a_rejected_handoff_raises_highest_but_not_current() {
 }
 
 mod conflict;
+mod witness;
