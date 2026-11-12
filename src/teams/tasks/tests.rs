@@ -607,3 +607,5 @@ fn a_legacy_direct_claim_does_not_gain_a_delivered_holders_exception() {
         assert!(guard(&caller(&h, &member), &doc, action).is_err());
     }
 }
+
+mod attempts;
