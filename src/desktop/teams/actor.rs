@@ -8,6 +8,8 @@ mod availability;
 mod cancel;
 mod delivery;
 mod finish;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+mod fleet;
 mod integration;
 mod ledger;
 mod maintenance;

@@ -83,33 +83,29 @@ pub(super) fn presence(n: &Native, team: &Team, member: &Member) -> Option<timer
         return None;
     }
     let row = super::availability::record(&n.config, &n.epoch, &team.id, member).ok()??;
-    let name = row["name"].as_str()?;
-    let run = row["run_id"].as_str()?;
-    let conversation = row["conversation_id"].as_str()?;
-    if name.is_empty() || name.len() > 256 || run.is_empty() || conversation.is_empty() {
+    let named = super::fleet::Identity::of(&row);
+    if named.name.is_empty()
+        || named.name.len() > 256
+        || named.run.is_empty()
+        || named.conversation.is_empty()
+    {
         return None;
     }
-    let activity = row["activity"].as_str()?;
-    if !matches!(activity, "idle" | "busy" | "working") {
-        return None;
-    }
-    let background = row["process_work"]["count"].as_u64()? > 0;
-    let subagents = row["subagents_active"].as_u64()?;
-    let questions = row["optional_questions"]["count"].as_u64()?;
-    let working = activity != "idle" || subagents > 0;
-    let phase = row["phase"].as_str()?;
-    let pending = questions > 0 || (phase != "idle" && !working);
-    if !super::availability::idle(&row) && !working && !background && !pending {
+    // The same reader as availability: unknown stays unknown, so a row with
+    // an unknown count gives no presence.
+    let facts = super::fleet::Facts::of(&row);
+    let seen = facts.seen()?;
+    if !facts.free() && !seen.working && !seen.background && !seen.pending {
         return None;
     }
     Some(timers::Presence {
-        name: name.into(),
-        run: run.into(),
-        conversation: conversation.into(),
-        live: row["state"] == "running",
-        working,
-        background,
-        pending,
+        name: named.name.into(),
+        run: named.run.into(),
+        conversation: named.conversation.into(),
+        live: seen.live,
+        working: seen.working,
+        background: seen.background,
+        pending: seen.pending,
     })
 }
 impl Runtime {

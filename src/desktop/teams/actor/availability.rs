@@ -32,11 +32,11 @@ pub(super) fn record(
         .map_err(crate::teams::store::storage)?;
     let Some(row) = row else { return Ok(None) };
     let value: Value = serde_json::from_str(&row).map_err(crate::teams::store::storage)?;
-    let identity = value["run_id"] == run
-        && if let Some(id) = session.session_id.strip_prefix("launch_id:") {
-            value["launch_id"] == id
-        } else {
-            value["run_id"] == run
+    let named = super::fleet::Identity::of(&value);
+    let identity = named.run == run
+        && match session.session_id.strip_prefix("launch_id:") {
+            Some(id) => named.launch == id,
+            None => true,
         };
     Ok(identity.then_some(value))
 }
@@ -95,38 +95,56 @@ fn connection(config: &Config) -> Result<Connection> {
         .map_err(crate::teams::store::storage)?;
     Ok(db)
 }
+/// Free for work: live, ready and idle, with no job, child or question,
+/// each known. The row is read only by [`super::fleet::Facts`].
 pub(super) fn idle(row: &Value) -> bool {
-    let view = zerus_client_core::view::row(row);
-    view.status == "ready"
-        && row["state"] == "running"
-        && row["activity"] == "idle"
-        && row["phase"] == "idle"
-        && row["process_work"]["count"].as_i64() == Some(0)
-        && row["subagents_active"].as_i64() == Some(0)
-        && row["optional_questions"]["count"].as_i64() == Some(0)
+    super::fleet::Facts::of(row).free()
 }
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::desktop::teams::actor::tests::rows::{seed_row, KINDS};
     use serde_json::json;
     fn row() -> Value {
-        json!({"name":"codex/example/member","agent":"codex","cmd":"codex","state":"running","process_state":"running","activity":"idle","phase":"idle","run_id":"run","launch_id":"launch","conversation_id":"conversation","conversation_state":"active","process_work":{"count":0},"subagents_active":0,"optional_questions":{"count":0}})
+        seed_row(
+            "codex",
+            &[
+                ("run_id", json!("run")),
+                ("launch_id", json!("launch")),
+                ("conversation_id", json!("conversation")),
+            ],
+        )
     }
     #[test]
     fn idle_is_required_and_unknown_or_pending_or_background_is_not_free() {
         assert!(idle(&row()));
+        for kind in KINDS {
+            assert!(idle(&seed_row(kind, &[])), "the producer's idle {kind} row");
+        }
         for (path, value) in [
             ("activity", json!("busy")),
             ("phase", json!("approval")),
-            ("state", json!("stopped")),
-            ("process_work", json!({"count":1})),
-            ("optional_questions", json!({"count":1})),
-            ("subagents_active", json!(1)),
-            ("process_work", Value::Null),
+            ("process_state", json!("exited")),
+            ("process_state", json!("unknown")),
+            ("runtime_state", json!("stopped")),
+            ("process_work.count", json!(1)),
+            ("optional_questions.count", json!(1)),
+            ("subagent_active_count", json!(1)),
+            ("process_work.count", Value::Null),
+            ("subagent_active_count", Value::Null),
+            ("optional_questions", Value::Null),
         ] {
-            let mut raw = row();
-            raw[path] = value;
-            assert!(!idle(&raw), "{path}");
+            assert!(
+                !idle(&seed_row("codex", &[(path, value.clone())])),
+                "{path} {value}"
+            );
+        }
+        // Only a DeepSeek row carries a state of its own.
+        for state in ["paused", "stopped", "archived"] {
+            assert!(
+                !idle(&seed_row("dsh", &[("state", json!(state))])),
+                "{state}"
+            );
         }
     }
     #[test]
@@ -192,7 +210,15 @@ mod record_tests {
             [],
         )
         .unwrap();
-        let row=json!({"name":"codex/example/member","agent":"codex","cmd":"codex","state":"running","activity":"idle","phase":"idle","run_id":"run","conversation_id":"conversation","conversation_state":"active","process_work":{"count":0},"subagents_active":0,"optional_questions":{"count":0}}).to_string();
+        let row = crate::desktop::teams::actor::tests::rows::seed_row(
+            "codex",
+            &[
+                ("name", json!("codex/example/member")),
+                ("run_id", json!("run")),
+                ("conversation_id", json!("conversation")),
+            ],
+        )
+        .to_string();
         db.execute(
             "INSERT INTO desktop_catalog_rows(generation,key,json,bytes) VALUES(1,'run:run',?1,?2)",
             params![row, row.len()],
