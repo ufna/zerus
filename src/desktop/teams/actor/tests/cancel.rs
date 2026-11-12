@@ -493,3 +493,26 @@ fn one_decision_starts_at_most_three_cancel_commands_across_a_hundred_passes_and
         }));
     }
 }
+
+#[test]
+fn a_cancel_pass_spends_at_most_four_effects_and_resumes_the_rest() {
+    let (mut h, mut a, mut p) = setup();
+    let template = p.pending[0].clone();
+    p.pending = (1..=9)
+        .map(|node| Pending {
+            node,
+            decision: 100 + u64::from(node),
+            task: Some(task(node)),
+            ..template.clone()
+        })
+        .collect();
+    p.reply = Some(TaskReply::Released);
+    a.cancels(&mut h.store, &mut p, &h_team(), 100).unwrap();
+    assert_eq!(p.calls, vec![1, 2, 3, 4]);
+    assert_eq!(p.pending.len(), 5);
+    a.cancels(&mut h.store, &mut p, &h_team(), 101).unwrap();
+    assert_eq!(p.calls.len(), 8);
+    a.cancels(&mut h.store, &mut p, &h_team(), 102).unwrap();
+    assert_eq!(p.calls, (1..=9).collect::<Vec<_>>());
+    assert!(p.pending.is_empty());
+}
