@@ -728,16 +728,13 @@ fn refused_release(h: &mut Harness, lead: &Actor, node: u32) {
     assert!(!h.node(node).hold);
 }
 
-/// The hold review's finding 2: the step to layout 11 classifies each held
-/// node of an earlier layout instead of guessing one way. With the trace of
-/// a hand-back in its current generation (an item of each hand-back kind, a
-/// reopen refused or not delivered, its pipeline waiting on the person or a
-/// stage) it is a hand-back, which the lead may end; with none, or only an
-/// earlier generation's, a delivered reopen, a pipeline active without a
-/// stage or an uncertain delivery's item, it is the person's, and the lead's
-/// Release says why it is refused.
+/// A trace alone proves nothing: a hand-back's item, effect or pipeline step
+/// that no journal record places (here none of them has the operation's row
+/// that made it) leaves the hold the person's, whatever the trace's kind or
+/// generation, and the lead's Release says why it is refused. The stores the
+/// old commits wrote are in `legacy_holds`.
 #[test]
-fn the_step_to_layout_11_classifies_each_legacy_hold() {
+fn a_hand_back_trace_without_its_record_leaves_the_hold_the_persons() {
     let mut h = Harness::new();
     let lead = h.bind("lead");
     for member in ["m1", "m2", "m3"] {
@@ -820,17 +817,13 @@ fn the_step_to_layout_11_classifies_each_legacy_hold() {
             )
             .unwrap()
     };
-    let handed_back = (false, None, true);
     let persons = (true, Some("person".to_owned()), false);
     for (i, node) in nodes.iter().enumerate() {
-        let expected = if i < 10 { &handed_back } else { &persons };
-        assert_eq!(&stored(&h, *node), expected, "node {i}");
+        assert_eq!(stored(&h, *node), persons, "node {i}");
         assert!(h.node(*node).hold, "node {i}");
     }
-    h.run(&lead, Operation::Release { node: nodes[0] }).unwrap();
-    assert!(!h.node(nodes[0]).hold, "the lead ends a hand-back");
     let error = h
-        .run(&lead, Operation::Release { node: nodes[10] })
+        .run(&lead, Operation::Release { node: nodes[0] })
         .unwrap_err();
     assert!(
         error.message.contains("before holds had owners"),
@@ -841,10 +834,11 @@ fn the_step_to_layout_11_classifies_each_legacy_hold() {
 
 /// A store that is really at layout 9 (no hold owner, no hand-back column)
 /// with a Return its holder no longer reads: the step to 10 hands it back in
-/// that layout's own form, and the step to 11 reads it as a hand-back, which
-/// the lead may end.
+/// that layout's own form, which no journal row records, so the step to 11
+/// leaves it the person's: the lead's Release is refused, the person's ends
+/// it.
 #[test]
-fn a_layout_9_store_with_a_stranded_return_opens_and_the_lead_may_end_its_hand_back() {
+fn a_layout_9_store_with_a_stranded_return_opens_and_its_hold_is_the_persons() {
     let mut h = Harness::new();
     let (node, seq, lead) = old_return(&mut h, true);
     db(&h)
@@ -865,7 +859,13 @@ fn a_layout_9_store_with_a_stranded_return_opens_and_the_lead_may_end_its_hand_b
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
         )
         .unwrap();
-    assert_eq!(stored, (false, None, true), "a hand-back");
-    h.run(&lead, Operation::Release { node }).unwrap();
+    assert_eq!(
+        stored,
+        (true, Some("person".to_owned()), false),
+        "the person's"
+    );
+    let error = h.run(&lead, Operation::Release { node }).unwrap_err();
+    assert_eq!(error.code, code::NOT_ALLOWED);
+    h.run(&person(), Operation::Release { node }).unwrap();
     assert!(!h.node(node).hold);
 }
