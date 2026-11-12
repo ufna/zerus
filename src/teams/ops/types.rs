@@ -141,8 +141,12 @@ pub enum KeyClearState {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CancelState {
+    /// The task was cancelled under that attempt; its key stays, and the
+    /// task's next observation releases the binding or restores the node.
     Cancelled,
     Refused,
+    /// The key was already gone from the task: the binding goes at once.
+    Released,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

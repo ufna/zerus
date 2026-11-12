@@ -1070,3 +1070,20 @@ fn an_upgrade_takes_in_the_teams_own_effect() {
             .all(|e| e.kind != "person_override"));
     }
 }
+
+/// A conflict recorded on a finished node changes nothing of it; the
+/// observation that settles it then finds the node finished by its own
+/// projection and takes today's restore, not a silent reopen.
+#[test]
+fn a_conflict_on_a_finished_node_then_a_running_task_takes_todays_restore() {
+    let (mut h, lead, node, id) = handed();
+    h.report(node, "m1");
+    h.run(&lead, Operation::Accept { node }).unwrap();
+    h.observe(node, TaskStage::Done);
+    conflicted(&mut h, node, TaskStage::InProgress, 2).unwrap();
+    assert_eq!(h.node(node).state, NodeState::Reported, "recorded only");
+    seen(&mut h, node, TaskStage::InProgress, 2, &id).unwrap();
+    assert_eq!(h.store.generation(TEAM, node).unwrap(), Some(2));
+    assert_eq!(last_event(&h), "person_override");
+    assert_eq!(h.node(node).state, NodeState::InProgress);
+}

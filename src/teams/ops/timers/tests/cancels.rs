@@ -384,3 +384,188 @@ fn a_page_boundary_between_two_refused_cancels_of_one_node_loses_neither() {
     assert_eq!(paged, all, "a page of one returns both rows of the node");
     assert_eq!((all[0].1, all[1].1), (first, second));
 }
+
+fn bound(h: &Harness, node: u32) -> bool {
+    let db = h.store.db.as_ref().unwrap();
+    db.query_row(
+        "SELECT EXISTS(SELECT 1 FROM live_tasks WHERE team=?1 AND node=?2)",
+        rusqlite::params![TEAM, node],
+        |r| r.get(0),
+    )
+    .unwrap()
+}
+fn outcome(h: &Harness, decision: u64) -> String {
+    let db = h.store.db.as_ref().unwrap();
+    db.query_row(
+        "SELECT state FROM cancel_outcomes WHERE decision=?1",
+        [decision],
+        |r| r.get(0),
+    )
+    .unwrap()
+}
+fn last_event(h: &Harness) -> String {
+    let rows = h.store.journal(TEAM, 200, None).unwrap().rows;
+    rows.last().unwrap().kind.clone()
+}
+const PERSON: &str = "00000000-0000-4000-8000-00000000bbbb";
+
+#[test]
+fn a_cancelled_answer_keeps_the_binding_and_its_observation_releases_it() {
+    let (mut h, node, _) = cancelling();
+    let d = decision(&h, node);
+    h.run(&service(), record(node, d, CancelState::Cancelled, ""))
+        .unwrap();
+    assert_eq!(h.node(node).state, NodeState::Cancelled);
+    assert!(pending(&h).is_empty());
+    assert!(bound(&h, node), "the answer does not release the task");
+    assert_eq!(outcome(&h, d), "cancelled");
+    h.cancel_fact(node);
+    assert!(!bound(&h, node), "its observation does");
+    assert_eq!(h.node(node).state, NodeState::Cancelled);
+}
+
+/// In the order answer, then observation: the person moves the task back
+/// and sends it again; the binding kept by the answer lets the service
+/// observe it, and the finished node is restored.
+#[test]
+fn a_task_that_runs_again_after_a_cancelled_answer_restores_the_node() {
+    let (mut h, node, _) = cancelling();
+    let d = decision(&h, node);
+    h.run(&service(), record(node, d, CancelState::Cancelled, ""))
+        .unwrap();
+    let mut o = h.observation(node, TaskStage::InProgress);
+    o.attempt = 2;
+    o.attempt_id = PERSON.into();
+    h.run(
+        &service(),
+        Operation::ObserveTask {
+            node,
+            observation: o,
+        },
+    )
+    .unwrap();
+    assert_eq!(h.store.generation(TEAM, node).unwrap(), Some(2));
+    assert!(bound(&h, node));
+    assert!(pending(&h).is_empty());
+    assert!(h
+        .store
+        .inbox(TEAM, 200, None)
+        .unwrap()
+        .rows
+        .iter()
+        .all(|i| i.state != "open"));
+    assert_eq!(last_event(&h), "person_override");
+    assert_eq!(h.node(node).state, NodeState::InProgress);
+}
+
+#[test]
+fn a_released_answer_releases_the_binding_at_once() {
+    let (mut h, node, _) = cancelling();
+    let d = decision(&h, node);
+    refused(
+        h.run(&service(), record(node, d, CancelState::Released, "why")),
+        code::INVALID_STATE,
+    );
+    h.run(&service(), record(node, d, CancelState::Released, ""))
+        .unwrap();
+    assert_eq!(h.node(node).state, NodeState::Cancelled);
+    assert!(pending(&h).is_empty());
+    assert!(!bound(&h, node));
+    assert_eq!(outcome(&h, d), "released");
+}
+
+#[test]
+fn a_released_answer_about_another_attempt_is_refused() {
+    let (mut h, node, _) = cancelling();
+    let d = decision(&h, node);
+    let other = Operation::RecordCancel {
+        node,
+        decision: d,
+        state: CancelState::Released,
+        reason: String::new(),
+        attempt: 2,
+        attempt_id: PERSON.into(),
+    };
+    refused(h.run(&service(), other), code::INVALID_STATE);
+    assert!(bound(&h, node));
+    assert_eq!(pending(&h).len(), 1);
+}
+
+#[test]
+fn a_repeated_answer_is_refused_and_keeps_the_binding() {
+    let (mut h, node, _) = cancelling();
+    let d = decision(&h, node);
+    h.run(&service(), record(node, d, CancelState::Cancelled, ""))
+        .unwrap();
+    let rev = h.store.team(TEAM).unwrap().unwrap().revision;
+    for state in [CancelState::Cancelled, CancelState::Released] {
+        refused(
+            h.run(&service(), record(node, d, state, "")),
+            code::INVALID_STATE,
+        );
+    }
+    assert_eq!(h.store.team(TEAM).unwrap().unwrap().revision, rev);
+    assert!(bound(&h, node));
+    assert_eq!(outcome(&h, d), "cancelled");
+}
+
+/// A repeat of the observation the store held before the answer shows the
+/// task as it was then: it neither restores nor releases anything.
+#[test]
+fn a_repeat_of_the_earlier_observation_decides_nothing() {
+    let (mut h, node, _) = cancelling();
+    let d = decision(&h, node);
+    let earlier = h.store.task_observation(TEAM, node).unwrap().unwrap();
+    h.run(&service(), record(node, d, CancelState::Cancelled, ""))
+        .unwrap();
+    let before = h.node(node);
+    h.run(
+        &service(),
+        Operation::ObserveTask {
+            node,
+            observation: earlier,
+        },
+    )
+    .unwrap();
+    assert_eq!(h.node(node), before);
+    assert_eq!(h.store.generation(TEAM, node).unwrap(), Some(1));
+    assert!(bound(&h, node));
+    assert_ne!(last_event(&h), "person_override");
+}
+
+/// A stop between the answer and the observation ends as a stop after the
+/// observation: the stop releases every binding, and the ended node takes
+/// no second cancel.
+#[test]
+fn a_stop_between_the_answer_and_the_observation_ends_as_after_it() {
+    let mut ends = Vec::new();
+    for observed in [false, true] {
+        let (mut h, node, _) = cancelling();
+        let d = decision(&h, node);
+        h.run(&service(), record(node, d, CancelState::Cancelled, ""))
+            .unwrap();
+        if observed {
+            h.cancel_fact(node);
+        }
+        h.run(&person(), Operation::Stop).unwrap();
+        assert!(!bound(&h, node), "the stop releases every binding");
+        let waiting: Vec<u32> = pending(&h).iter().map(|p| p.node).collect();
+        let keyed: Vec<u32> = h
+            .store
+            .keyed_tasks(TEAM, 0, 200)
+            .unwrap()
+            .iter()
+            .map(|k| k.node)
+            .collect();
+        ends.push((
+            h.node(node).state,
+            h.store.generation(TEAM, node).unwrap(),
+            waiting,
+            keyed,
+            h.store.keyed_teams("", 10).unwrap(),
+        ));
+    }
+    assert_eq!(ends[0], ends[1]);
+    assert_eq!(ends[0].0, NodeState::Cancelled);
+    assert!(ends[0].2.is_empty(), "no second cancel of the ended node");
+}

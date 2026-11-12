@@ -98,7 +98,7 @@ END;
 -- The service's answer for each cancel decision it carried out.
 CREATE TABLE IF NOT EXISTS cancel_outcomes (
  decision INTEGER PRIMARY KEY, team TEXT NOT NULL, node INTEGER NOT NULL, generation INTEGER NOT NULL,
- state TEXT NOT NULL CHECK(state IN ('cancelled','refused')), reason TEXT NOT NULL, at_ms INTEGER NOT NULL
+ state TEXT NOT NULL CHECK(state IN ('cancelled','refused','released')), reason TEXT NOT NULL, at_ms INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS cancel_refusals ON cancel_outcomes(team,node) WHERE state='refused';
 -- A node's decisions of one attempt, without its settled generations. The
