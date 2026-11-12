@@ -6,7 +6,7 @@
 use super::*;
 use crate::{
     desktop::original_store::{self, Failure, Roots},
-    teams::store::timers::admit_bell,
+    teams::store::timers::admit,
 };
 use rusqlite::{Connection, Transaction, TransactionBehavior};
 use sha2::{Digest, Sha256};
@@ -49,7 +49,7 @@ pub(super) fn deliver(n: &Native<'_>, store: &Store, ring: &Ring) -> Rung {
             if let Some(hook) = super::tests::LOCKED.with(|slot| slot.borrow_mut().take()) {
                 hook();
             }
-            admit_bell(&tx, &ring.bell)
+            admit(&tx, &ring.gate)
                 .map_err(|_| std::io::Error::from(std::io::ErrorKind::PermissionDenied))?;
             Ok(tx)
         },

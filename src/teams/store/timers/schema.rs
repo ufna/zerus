@@ -17,16 +17,23 @@
 use super::*;
 use std::time::Duration;
 
-/// The current layout, and the first that reaches the integration branch.
-/// Every lower value was written only by unmerged development builds of
-/// this package; a later layout steps from this one.
-pub(crate) const EXTENSION: u32 = 8;
-/// Each earlier layout that reached the integration branch, with the step
-/// that brings a store marked with it forward; the steps run in order up to
-/// the current layout. None yet.
-const STEPS: &[(u32, Step)] = &[];
+/// The layout the whole transition builds before any step: the first that
+/// reached the integration branch, with the timers. Every lower value was
+/// written only by unmerged development builds of this package.
+pub(crate) const BASE: u32 = 8;
+/// The current layout: the base and the steps after it.
+pub(crate) const EXTENSION: u32 = 9;
+/// Each layout that reached the integration branch, with the step that
+/// brings a store marked with it to the next; the steps run in order up to
+/// the current layout, after the base for a store from before the extension.
+const STEPS: &[(u32, Step)] = &[(8, answers)];
 /// One step from a merged layout to the next, inside the transition.
 type Step = fn(&Connection) -> Result<()>;
+/// Layout 8 to 9: the lead's answers reach their members.
+fn answers(db: &Connection) -> Result<()> {
+    db.execute_batch(include_str!("../answers.sql"))
+        .map_err(storage)
+}
 
 #[cfg(test)]
 type Hook = Box<dyn FnOnce() -> Result<()>>;
@@ -141,7 +148,7 @@ fn version(db: &Connection) -> Result<Option<u32>> {
     .map_err(storage)
 }
 fn transition(db: &Connection, mark: Mark) -> Result<()> {
-    match mark {
+    let from = match mark {
         Mark::Absent => {
             // Triggers exist before any backfill reads, so a write that
             // commits after this transaction is seen by them, and none can
@@ -152,13 +159,13 @@ fn transition(db: &Connection, mark: Mark) -> Result<()> {
             backfill_teams(db)?;
             backfill_released(db)?;
             backfill_stopped(db)?;
+            BASE
         }
-        Mark::Merged(from) => {
-            for (_, step) in STEPS.iter().filter(|(layout, _)| *layout >= from) {
-                step(db)?;
-            }
-        }
+        Mark::Merged(from) => from,
         Mark::Current => return Ok(()),
+    };
+    for (_, step) in STEPS.iter().filter(|(layout, _)| *layout >= from) {
+        step(db)?;
     }
     #[cfg(test)]
     if let Some(hook) = BEFORE_MARK.with(|slot| slot.borrow_mut().take()) {

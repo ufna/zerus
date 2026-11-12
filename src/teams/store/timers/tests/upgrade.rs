@@ -1,14 +1,18 @@
 //! The transition that adds this package to a store: one immediate
 //! transaction, a marker written last, rerun whole when the marker is absent.
 use super::*;
-use crate::teams::store::timers::schema::{AFTER_FENCE, BEFORE_MARK, EXTENSION, TRANSITIONS};
+use crate::teams::store::timers::schema::{AFTER_FENCE, BASE, BEFORE_MARK, EXTENSION, TRANSITIONS};
 use std::sync::{Arc, Barrier, Mutex};
 
-/// Every object timers.sql creates, so that a store can be returned to its
-/// layout from before this package.
+/// Every object timers.sql and answers.sql create, so that a store can be
+/// returned to its layout from before this package.
 fn objects() -> Vec<(String, String)> {
     let mut found = Vec::new();
-    for line in include_str!("../../timers.sql").lines() {
+    let sql = [
+        include_str!("../../timers.sql"),
+        include_str!("../../answers.sql"),
+    ];
+    for line in sql.iter().flat_map(|sql| sql.lines()) {
         let words: Vec<&str> = line.split_whitespace().collect();
         if let ["CREATE", kind, "IF", "NOT", "EXISTS", name, ..] = words.as_slice() {
             found.push((kind.to_string(), name.trim_end_matches('(').to_string()));
@@ -244,6 +248,27 @@ fn a_store_whose_older_read_index_is_replaced_is_extended_too() {
     assert_eq!(marker(&h), Some(EXTENSION));
 }
 
+/// A store marked by the layout before the lead's answers (version 8) runs
+/// the transition again and gains their table, index and trigger.
+#[test]
+fn a_store_marked_before_the_answers_gains_them_on_the_next_open() {
+    let mut h = stopped();
+    let full = names(&h);
+    db(&h)
+        .execute_batch(
+            "DROP TRIGGER answer_mark_drop_v1; DROP INDEX inbox_questions; DROP TABLE answer_marks;",
+        )
+        .unwrap();
+    db(&h)
+        .execute("UPDATE timers_extension SET version=8", [])
+        .unwrap();
+    let before = transitions();
+    reopen(&mut h);
+    assert_eq!(transitions(), before + 1);
+    assert_eq!(names(&h), full);
+    assert_eq!(marker(&h), Some(EXTENSION));
+}
+
 #[test]
 fn a_marker_newer_than_this_program_refuses_the_open_and_writes_nothing() {
     let h = stopped();
@@ -435,7 +460,7 @@ fn content(h: &Harness) -> Vec<String> {
 /// store is left as it was.
 #[test]
 fn every_development_mark_is_refused_and_writes_nothing() {
-    for mark in 0..EXTENSION {
+    for mark in 0..BASE {
         let h = stopped();
         db(&h)
             .execute("UPDATE timers_extension SET version=?1", [mark])

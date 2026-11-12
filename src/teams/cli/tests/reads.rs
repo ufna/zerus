@@ -178,6 +178,30 @@ fn the_inbox_and_the_journal_name_the_report_and_the_answer() {
 }
 
 #[test]
+fn a_members_current_work_shows_its_own_questions_with_the_answer() {
+    let harness = seeded();
+    let (reply, exit) = harness.cli(&Caller::Session(key(M1_SESSION)), "current", "");
+    assert_eq!(exit, 0, "{reply}");
+    let node = &reply["nodes"][0];
+    let question = &node["questions"][0];
+    assert_eq!(
+        question["question"],
+        "Should the empty case keep its old width?"
+    );
+    assert_eq!(question["state"], "answered");
+    assert_eq!(
+        question["answer"],
+        "Keep it, and say so in the commit message."
+    );
+    assert_eq!(node["questions_more"], false);
+    let (lead, _) = harness.cli(&Caller::Session(key(LEAD_SESSION)), "current", "");
+    assert!(
+        lead["nodes"].as_array().unwrap().is_empty(),
+        "nobody else's"
+    );
+}
+
+#[test]
 fn only_a_session_reads_the_current_work() {
     let harness = seeded();
     let (reply, exit) = harness.cli(&Caller::Session(key(LEAD_SESSION)), "current", "");
