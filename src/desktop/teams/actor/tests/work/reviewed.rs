@@ -1,6 +1,6 @@
 //! Fresh task observations, independently of the node's retained stage.
 use super::*;
-fn observe(h: &mut Harness, node: u32, stage: TaskStage, id: &str, conflict: bool) {
+pub(super) fn observe(h: &mut Harness, node: u32, stage: TaskStage, id: &str, conflict: bool) {
     let mut o = h.store.task_observation(TEAM, node).unwrap().unwrap();
     o.previous_revision = o.revision.clone();
     o.revision = uuid::Uuid::new_v4().to_string();
@@ -17,7 +17,7 @@ fn observe(h: &mut Harness, node: u32, stage: TaskStage, id: &str, conflict: boo
     )
     .unwrap();
 }
-fn accepted() -> (Harness, u32, String) {
+pub(super) fn accepted() -> (Harness, u32, String) {
     let mut h = Harness::new();
     let (node, lead) = h.reported();
     let id = h

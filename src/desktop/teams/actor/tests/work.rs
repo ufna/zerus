@@ -8,6 +8,8 @@ use crate::teams::{
 struct Work {
     text: Option<String>,
     fail_observe: bool,
+    allow_delivery: bool,
+    deliveries: u32,
     start_ms: Option<i64>,
     clock_check: Option<std::path::PathBuf>,
     dirty: bool,
@@ -56,7 +58,7 @@ impl Ports for Work {
         Ok(())
     }
     fn free(&mut self, _: &Team, _: &Member) -> Result<bool> {
-        Ok(false)
+        Ok(self.allow_delivery)
     }
     fn deliver(
         &mut self,
@@ -65,7 +67,12 @@ impl Ports for Work {
         _: &Member,
         _: &str,
     ) -> super::super::ports::DeliveryResult {
-        panic!("work fixture must not deliver")
+        assert!(self.allow_delivery, "work fixture must not deliver");
+        self.deliveries += 1;
+        HandoutOutcome::Submitted {
+            receipt: "fixture hand-over".into(),
+        }
+        .into()
     }
     fn report(&mut self, _: &TaskRef) -> Result<Option<String>> {
         self.phase.push("report");
@@ -1112,3 +1119,5 @@ mod r3;
 mod reviewed;
 
 mod finish_backoff;
+
+mod held;

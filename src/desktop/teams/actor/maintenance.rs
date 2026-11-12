@@ -22,21 +22,30 @@ impl Runtime {
             let Some(key) = row.key.strip_prefix("gate:") else {
                 continue;
             };
-            let Some((kind, value)) = key.split_once(':') else {
+            let held = key.strip_prefix("held:");
+            let Some((kind, value)) = held.unwrap_or(key).split_once(':') else {
                 continue;
             };
-            if !matches!(
-                kind,
-                "observe" | "report" | "handout" | "finish" | "finish_refused" | "integration"
-            ) {
+            if if held.is_some() {
+                !matches!(kind, "finish" | "merge" | "reopen")
+            } else {
+                !matches!(
+                    kind,
+                    "observe" | "report" | "handout" | "finish" | "finish_refused" | "integration"
+                )
+            } {
                 continue;
             }
-            if kind == "integration" && merging {
+            if held.is_none() && kind == "integration" && merging {
                 continue;
             }
             let Ok(node) = value.parse::<u32>() else {
                 continue;
             };
+            if held.is_some() && self.held_retired(store, team, &row, kind, node)? {
+                self.recovered(store, team, key, now)?;
+                continue;
+            }
             if store
                 .node(&team.id, node)?
                 .is_none_or(|n| matches!(n.state, NodeState::Accepted | NodeState::Cancelled))

@@ -103,7 +103,14 @@ impl Runtime {
         now: i64,
         budget: &mut u8,
     ) -> Result<()> {
-        if !store.accepted_task_current(&team.id, d.node, d.generation)? {
+        let ready = store.accepted_task_current(&team.id, d.node, d.generation)?;
+        if !self.held_step(
+            store,
+            team,
+            ("merge", d.node, d.generation, d.seq, "accept"),
+            ready,
+            now,
+        )? {
             return Ok(());
         }
         let Some(report) = store.report(&team.id, d.node, d.generation)? else {

@@ -1,3 +1,4 @@
+mod held;
 use super::*;
 use serde::{Deserialize, Serialize};
 #[derive(Default, Serialize, Deserialize)]
@@ -159,7 +160,11 @@ impl Runtime {
             g.failures = g.failures.saturating_add(1);
             g.revision = revision.into();
             g.at = now.saturating_add(delay(g.failures));
-            g.event = event.map(String::from);
+            g.event = if key.starts_with("held:") {
+                Some(e.message.clone())
+            } else {
+                event.map(String::from)
+            };
         }
         self.put(&team.id, &name, &g)?;
         if (force || g.failures >= 3) && g.card.is_none() {
@@ -175,13 +180,15 @@ impl Runtime {
                         &team.id,
                         Operation::OpenCard {
                             kind: "team_actor_blocked".into(),
-                            node: None,
-                            text: format!(
-                                "{}: {}. {}",
-                                cut(key, 200),
-                                cut(&e.message, 2000),
-                                timing
-                            ),
+                            node: key
+                                .strip_prefix("held:")
+                                .and_then(|s| s.rsplit(':').next())
+                                .and_then(|s| s.parse().ok()),
+                            text: if key.starts_with("held:") {
+                                cut(&e.message, 3000)
+                            } else {
+                                format!("{}: {}. {}", cut(key, 200), cut(&e.message, 2000), timing)
+                            },
                         },
                     )?
                     .1,

@@ -51,9 +51,6 @@ impl Runtime {
         let Some(n) = store.node(&team.id, d.node)? else {
             return Ok(());
         };
-        if !store.reviewed_task_current(&team.id, d.node, d.generation)? {
-            return Ok(());
-        }
         let Some(o) = store.task_observation(&team.id, d.node)? else {
             return Ok(());
         };
@@ -66,6 +63,16 @@ impl Runtime {
             && n.kind != NodeKind::Stage
             && !n.integrated
         {
+            return Ok(());
+        }
+        let ready = store.reviewed_task_current(&team.id, d.node, d.generation)?;
+        if !self.held_step(
+            store,
+            team,
+            ("finish", d.node, d.generation, d.seq, d.kind.as_str()),
+            ready,
+            now,
+        )? {
             return Ok(());
         }
         let stamp = serde_json::to_string(&(d.seq, d.generation, &o.revision))
