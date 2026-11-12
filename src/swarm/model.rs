@@ -70,6 +70,29 @@ impl Store {
                     }),
                 );
             }
+            if let Some(groups) = p.get("groups") {
+                let groups = groups.as_array().ok_or_else(|| anyhow::anyhow!("invalid project groups"))?;
+                ensure!(groups.len() <= 200, "too many project groups");
+                for group in groups {
+                    let group_id = group["id"].as_str().ok_or_else(|| anyhow::anyhow!("missing group ID"))?;
+                    let key = Key::ProjectGroup { project: id.into(), id: group_id.into() };
+                    ensure!(!fields.contains_key(&key), "duplicate group ID");
+                    fields.insert(key, group["name"].clone());
+                }
+            }
+            if let Some(order) = p.get("group_order") {
+                fields.insert(Key::SessionGroupOrder { project: id.into() }, order.clone());
+            }
+            if let Some(assignments) = p.get("session_groups") {
+                let assignments = assignments.as_object().ok_or_else(|| anyhow::anyhow!("invalid session groups"))?;
+                for (member, group) in assignments {
+                    let (machine, session) = member.split_once('\n')
+                        .ok_or_else(|| anyhow::anyhow!("invalid group member identity"))?;
+                    let key = Key::SessionGroup { machine: machine_id(machine)?, session: session.into() };
+                    ensure!(!fields.contains_key(&key), "session belongs to more than one group");
+                    fields.insert(key, json!({"project": id, "group": group}));
+                }
+            }
             if let Some(folders) = p["folders"].as_array() {
                 for f in folders {
                     let alias = f["machine_id"]
@@ -161,6 +184,19 @@ impl Store {
                 None => match &key {
                     Key::Project { field, .. } if field == "alive" => json!(false),
                     Key::Folder { .. } | Key::Session { .. } => Value::Null,
+                    // A client that does not understand groups may drop the
+                    // extension fields. Only explicit capable edits remove them.
+                    Key::ProjectGroup { project, .. } => {
+                        if !patch.desired["projects"].as_array().into_iter().flatten()
+                            .any(|p| p["id"] == *project && p.get("groups").is_some()) { continue; }
+                        Value::Null
+                    }
+                    Key::SessionGroup { .. } => {
+                        let project = before[&key]["project"].as_str().unwrap_or_default();
+                        if !patch.desired["projects"].as_array().into_iter().flatten()
+                            .any(|p| p["id"] == project && p.get("session_groups").is_some()) { continue; }
+                        Value::Null
+                    }
                     _ => continue,
                 },
             };
@@ -316,7 +352,39 @@ impl Store {
                 _ => {}
             }
         }
+        // Groups are independent registers. An assignment is presented only
+        // while its group and project membership still exist.
+        for (key, value) in &values {
+            if let Key::ProjectGroup { project, id } = key {
+                if value.is_null() { continue; }
+                if let Some(p) = projects.get_mut(project) {
+                    let groups = p.as_object_mut().unwrap().entry("groups").or_insert_with(|| json!([]));
+                    groups.as_array_mut().unwrap().push(json!({"id": id, "name": value}));
+                }
+            }
+        }
+        for (key, value) in &values {
+            if let Key::SessionGroup { machine, session } = key {
+                let Some(p) = value["project"].as_str().and_then(|id| projects.get_mut(id)) else { continue; };
+                if !p["groups"].as_array().into_iter().flatten().any(|g| g["id"] == value["group"]) { continue; }
+                let member = format!("{}\n{session}", aliases.get(machine).unwrap_or(machine));
+                if !p["sessions"].as_array().unwrap().contains(&json!(member)) { continue; }
+                p.as_object_mut().unwrap().entry("session_groups").or_insert_with(|| json!({}))
+                    [member] = value["group"].clone();
+            }
+        }
         for p in projects.values_mut() {
+            let order = values.get(&Key::SessionGroupOrder { project: p["id"].as_str().unwrap_or_default().into() });
+            if let Some(groups) = p.get_mut("groups").and_then(Value::as_array_mut) {
+                let positions: BTreeMap<_, _> = order.and_then(Value::as_array).into_iter().flatten()
+                    .filter_map(Value::as_str).enumerate().map(|(at, id)| (id, at)).collect();
+                groups.sort_by_cached_key(|g| (positions.get(g["id"].as_str().unwrap_or_default()).copied().unwrap_or(usize::MAX),
+                    g["name"].as_str().unwrap_or_default().to_lowercase(), g["id"].as_str().unwrap_or_default().to_owned()));
+                if order.is_some() {
+                    let ids = json!(groups.iter().map(|g| g["id"].clone()).collect::<Vec<_>>());
+                    p["group_order"] = ids;
+                }
+            }
             if p["folders"].as_array().unwrap().is_empty()
                 && p["sessions"].as_array().unwrap().is_empty()
             {
@@ -379,7 +447,8 @@ impl Store {
             .into_iter()
             // Concurrent preference and order edits resolve to the newest head
             // and the next choice on any device supersedes them; nothing to review.
-            .filter(|(key, _)| !matches!(key, Key::Preference { .. } | Key::Order { .. }))
+            .filter(|(key, _)| !matches!(key, Key::Preference { .. } | Key::Order { .. }
+                | Key::ProjectGroup { .. } | Key::SessionGroup { .. } | Key::SessionGroupOrder { .. }))
             .filter_map(|(key, heads)| {
                 let variants: BTreeSet<_> = heads.iter().map(|o| o.value.to_string()).collect();
                 if variants.len() <= 1 {
@@ -441,6 +510,77 @@ mod tests {
     }
     fn org(name: &str) -> Value {
         json!({"projects":[{"id":"project","name":name,"color":"#123456","vivid":false,"folders":[],"sessions":[]}]})
+    }
+    #[test]
+    fn manual_group_order_is_project_scoped_and_legacy_editors_keep_it() {
+        let mut a = store();
+        let mut initial = org("Initial");
+        initial["projects"][0]["groups"] = json!([
+            {"id":"ui","name":"UI"}, {"id":"inventory","name":"Inventory"}, {"id":"mutants","name":"Mutants"}]);
+        initial["projects"][0]["group_order"] = json!(["mutants", "ui", "inventory"]);
+        a.initialize(&initial).unwrap();
+        let first = a.snapshot(&config());
+        let order = |snapshot: &Value| snapshot["organization"]["projects"][0]["groups"].as_array().unwrap()
+            .iter().map(|g| g["id"].as_str().unwrap().to_owned()).collect::<Vec<_>>();
+        assert_eq!(order(&first), vec!["mutants", "ui", "inventory"]);
+        let mut desired = first["organization"].clone();
+        desired["projects"][0].as_object_mut().unwrap().remove("group_order");
+        desired["projects"][0]["groups"][0]["name"] = json!("AAA");
+        a.apply(Patch { base:first["organization"].clone(), desired,
+            versions:serde_json::from_value(first["versions"].clone()).unwrap() }).unwrap();
+        assert_eq!(order(&a.snapshot(&config())), vec!["mutants", "ui", "inventory"]);
+        for invalid in [json!(["ui", "ui"]), json!("ui"), json!([""])] {
+            assert!(a.catalog.set(&a.node_id.clone(), Key::SessionGroupOrder {project:"project".into()}, invalid).is_err());
+        }
+    }
+    #[test]
+    fn session_groups_round_trip_and_an_older_editor_cannot_erase_them() {
+        let mut a = store();
+        let mut initial = org("Initial");
+        initial["projects"][0]["sessions"] = json!(["local\ncodex/sample/one"]);
+        initial["projects"][0]["groups"] = json!([{"id":"ui", "name":"UI"}]);
+        initial["projects"][0]["session_groups"] = json!({"local\ncodex/sample/one":"ui"});
+        a.initialize(&initial).unwrap();
+        let first = a.snapshot(&config());
+        assert_eq!(first["organization"]["projects"][0]["groups"], initial["projects"][0]["groups"]);
+        assert_eq!(first["organization"]["projects"][0]["session_groups"], initial["projects"][0]["session_groups"]);
+        let mut desired = first["organization"].clone();
+        let project = desired["projects"][0].as_object_mut().unwrap();
+        project.remove("groups"); project.remove("session_groups");
+        project.insert("name".into(), json!("Renamed by older client"));
+        a.apply(Patch { base:first["organization"].clone(), desired,
+            versions:serde_json::from_value(first["versions"].clone()).unwrap() }).unwrap();
+        let after = a.snapshot(&config());
+        assert_eq!(after["organization"]["projects"][0]["groups"], initial["projects"][0]["groups"]);
+        assert_eq!(after["organization"]["projects"][0]["session_groups"], initial["projects"][0]["session_groups"]);
+        // A capable explicit removal tombstones the group and membership only.
+        let mut desired = after["organization"].clone();
+        desired["projects"][0]["groups"] = json!([]);
+        desired["projects"][0]["session_groups"] = json!({});
+        a.apply(Patch { base:after["organization"].clone(), desired,
+            versions:serde_json::from_value(after["versions"].clone()).unwrap() }).unwrap();
+        let after = a.snapshot(&config());
+        assert_eq!(after["organization"]["projects"][0]["sessions"], initial["projects"][0]["sessions"]);
+        assert!(after["organization"]["projects"][0].get("groups").is_none());
+        assert!(after["organization"]["projects"][0].get("session_groups").is_none());
+    }
+
+    #[test]
+    fn deleted_group_stays_deleted_after_a_concurrent_rename_and_old_exports_omit_group_keys() {
+        let mut a = store();
+        a.initialize(&org("Initial")).unwrap();
+        let key = Key::ProjectGroup { project:"project".into(), id:"ui".into() };
+        a.catalog.set(&a.node_id.clone(), key.clone(), json!("UI")).unwrap();
+        let mut b = a.clone(); b.node_id = new_id();
+        a.catalog.set(&a.node_id.clone(), key.clone(), Value::Null).unwrap();
+        b.catalog.set(&b.node_id.clone(), key.clone(), json!("Interface")).unwrap();
+        a.catalog.merge(&b.catalog.swarm_id, b.catalog.operations.values().cloned().collect()).unwrap();
+        assert_eq!(a.catalog.values()[&key], Value::Null);
+        assert_eq!(a.snapshot(&config())["conflicts"], json!([]));
+        let old = super::super::catalog::exported(&a.catalog, &Value::Null);
+        assert!(old.operations.values().all(|op| !matches!(op.key, Key::ProjectGroup { .. } | Key::SessionGroup { .. })));
+        let capable = super::super::catalog::exported(&a.catalog, &json!(super::super::catalog::kinds()));
+        assert!(capable.operations.values().any(|op| op.key == key));
     }
     #[test]
     fn an_observed_id_move_consumes_raw_heads_but_an_old_name_only_move_does_not() {

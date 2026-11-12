@@ -6,9 +6,9 @@ import { render } from "solid-js/web";
 // zerus-5wmh.18.1: the selection bar's Move to project opens the
 // organization's Move dialog with the selected rows, and a choice moves them
 // all with one call (one swarm apply).
-const bridge = vi.hoisted(() => ({ moveToProject: vi.fn(async () => ({ outcome: "done", conflicts: 0 })) }));
+const bridge = vi.hoisted(() => ({ moveToProject: vi.fn(async () => ({ outcome: "done", conflicts: 0 })), editSessionGroup: vi.fn(async () => ({ outcome: "done", conflicts: 0 })) }));
 vi.mock("../../bridge", async (original) => ({ ...await original<object>(), gitRows: vi.fn().mockResolvedValue(undefined),
-  windowVisibility: { hidden: () => false, onChange: () => () => {} }, moveToProject: bridge.moveToProject,
+  windowVisibility: { hidden: () => false, onChange: () => () => {} }, ...bridge,
 }));
 vi.mock("@tanstack/solid-virtual", () => ({
   createVirtualizer: (options: { count: number; getItemKey(n: number): string }) => ({
@@ -68,4 +68,25 @@ it("keeps Move to project disabled with the sync reason until project editing is
   await settle();
   const move = t.move()!;
   expect([move.disabled, move.getAttribute("aria-label")]).toEqual([true, "Project sync is starting."]);
+});
+
+it("drags group header buttons while keeping No group fixed below them", async () => {
+  const t = mount(true); setMulti({}); bridge.editSessionGroup.mockClear();
+  const g = grouping(true);
+  g.headers[0].session_groups = [{ id: "ui", name: "UI", collapsed: false }, { id: "inventory", name: "Inventory", collapsed: false }];
+  applyGrouping({ ...emptyBatch(), grouping: g, groups: [
+    { computer: "", key: "run:move-0", group: "alpha", subgroup: "ui", rank: 1 },
+    { computer: "", key: "run:move-1", group: "alpha", subgroup: "inventory", rank: 2 },
+  ] });
+  await settle();
+  const bands = [...t.host.querySelectorAll<HTMLButtonElement>(".session-group-band")];
+  expect(bands.map((b) => b.querySelector(".gb-name")?.textContent)).toEqual(["UI", "Inventory", "No group"]);
+  expect(bands.map((b) => b.getAttribute("draggable"))).toEqual(["true", "true", null]);
+  const start = new Event("dragstart", { bubbles: true, cancelable: true });
+  Object.defineProperty(start, "dataTransfer", { value: { setData: vi.fn(), effectAllowed: "" } });
+  bands[1].dispatchEvent(start);
+  bands[0].dispatchEvent(new MouseEvent("dragover", { bubbles: true, cancelable: true, clientY: 42 }));
+  bands[0].dispatchEvent(new Event("drop", { bubbles: true, cancelable: true }));
+  await settle();
+  expect(bridge.editSessionGroup).toHaveBeenLastCalledWith("alpha", { kind: "reorder", id: "inventory", before: "ui" });
 });

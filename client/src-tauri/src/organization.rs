@@ -2045,6 +2045,26 @@ pub async fn rename_project(
     edit(state, move |_| Intent::Rename { project, name }).await
 }
 
+/// Session groups use the same durable writer and causal snapshot as projects.
+#[tauri::command]
+pub async fn edit_session_group(
+    state: State<'_, Organization>,
+    project: String,
+    mut change: zerus_client_core::swarm::session_groups::Change,
+) -> Result<EditOutcome, String> {
+    if let zerus_client_core::swarm::session_groups::Change::Create { id, .. } = &mut change {
+        *id = uuid::Uuid::new_v4().to_string();
+    }
+    edit(state, move |_| Intent::SessionGroup { project, change }).await
+}
+
+#[tauri::command(async)]
+pub fn set_session_group_collapsed(
+    state: State<'_, Organization>, project: String, group: String, collapsed: bool,
+) {
+    state.0.pump.set_collapsed(&swarm::session_groups::collapse_key(&project, &group), collapsed);
+}
+
 /// Delete project…: its members and the rows it lists go to `destination`.
 #[tauri::command]
 pub async fn delete_project(

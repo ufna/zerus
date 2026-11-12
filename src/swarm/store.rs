@@ -145,6 +145,7 @@ pub fn snapshot_files(config: &Config) -> Vec<PathBuf> {
     let dir = config.dir.join("swarm");
     vec![
         dir.join("catalog.json"),
+        dir.join(super::session_groups::FILE),
         dir.join(OUTDATED),
         dir.join(REPLICA_OUTDATED),
         dir.join(SESSION_IDS),
@@ -183,6 +184,7 @@ pub fn read_snapshot(config: &Config) -> Result<Value> {
         serde_json::from_slice(&bytes).context("read swarm catalog")?
     };
     data.catalog.validate()?;
+    super::session_groups::merge(&mut data.catalog, &super::session_groups::read(&dir))?;
     data.twins = super::session_ids::read(&dir, &data.catalog.swarm_id);
     data.id_memberships = super::session_memberships::Memberships::load(&dir, &data.catalog)
         .and_then(|mut primary| {
@@ -247,10 +249,11 @@ impl AdoptionLock {
             outdated_original: Vec::new(),
             replica_outdated_original: Vec::new(),
             session_ids_original: Vec::new(),
+            groups_original: super::session_groups::read(&config.dir.join("swarm")),
         };
         let result = (|| {
             store.data.catalog.validate()?;
-            let bytes = serde_json::to_vec(&store.data)?;
+            let bytes = super::session_groups::legacy_bytes(&store.data)?;
             if bytes != store.original {
                 store.record_membership(&bytes, true)?;
                 replace(&store.path, &bytes)?;
@@ -281,6 +284,7 @@ pub struct LockedStore {
     outdated_original: Vec<u8>,
     replica_outdated_original: Vec<u8>,
     session_ids_original: Vec<u8>,
+    groups_original: std::result::Result<Vec<u8>, super::Unread>,
 }
 
 #[cfg(test)]
@@ -408,6 +412,8 @@ impl LockedStore {
         data.catalog.validate()?;
         let (twins, twins_original) = super::session_ids::Twins::load(&dir, &data.catalog.swarm_id);
         let mut data = data;
+        let groups_original = super::session_groups::read(&dir);
+        super::session_groups::merge(&mut data.catalog, &groups_original)?;
         data.twins = twins;
         let id_memberships_original = super::read_regular(
             &dir.join(super::session_memberships::FILE),
@@ -450,6 +456,7 @@ impl LockedStore {
             outdated_original,
             replica_outdated_original,
             session_ids_original,
+            groups_original,
         };
         if refresh {
             let node = loaded.data.node_id.clone();
@@ -551,6 +558,15 @@ impl LockedStore {
     pub fn save_catalog_only(&mut self) -> Result<()> {
         super::adoption::guard_directory(self.path.parent().expect("catalog directory"))?;
         self.data.catalog.validate()?;
+        let group_path = self.path.with_file_name(super::session_groups::FILE);
+        let current_groups = super::session_groups::read(self.path.parent().unwrap());
+        ensure!(current_groups == self.groups_original, "Session group catalog changed; refresh before editing");
+        if let Some(bytes) = super::session_groups::bytes(&self.data.catalog)? {
+            if current_groups.as_ref().ok() != Some(&bytes) {
+                replace(&group_path, &bytes)?;
+                self.groups_original = Ok(bytes);
+            }
+        }
         // Promotion was computed under this same catalog lock, before the
         // caller changed a name. Publish primary data FIRST, so a changed
         // compatibility name cannot hide another ID's original grouping.
@@ -573,7 +589,7 @@ impl LockedStore {
                 self.id_memberships_original = Ok(bytes);
             }
         }
-        let bytes = serde_json::to_vec(&self.data)?;
+        let bytes = super::session_groups::legacy_bytes(&self.data)?;
         if bytes != self.original {
             // The new membership generation is durable BEFORE the peer change
             // is published: a catalog write that fails after it leaves a
@@ -714,6 +730,49 @@ mod tests {
         store.save().unwrap();
         drop(store);
         (dir, config)
+    }
+
+    #[test]
+    fn session_groups_survive_restart_and_legacy_local_catalog_writes() {
+        let (_dir, config) = membership_fixture();
+        let catalog_path = config.dir.join("swarm/catalog.json");
+        let group_path = config.dir.join("swarm").join(super::super::session_groups::FILE);
+        let key = Key::ProjectGroup { project: "sample".into(), id: "ui".into() };
+        {
+            let mut store = LockedStore::load(&config).unwrap();
+            let actor = store.data.node_id.clone();
+            store.data.catalog.set(&actor, Key::project("sample", "alive"), json!(true)).unwrap();
+            store.data.catalog.set(&actor, Key::project("sample", "name"), json!("Sample")).unwrap();
+            store.data.catalog.set(&actor, key.clone(), json!("UI")).unwrap();
+            store.save().unwrap();
+        }
+        let original_groups = fs::read(&group_path).unwrap();
+        // This is exactly what an older writer sees: no new key kinds in main.
+        let mut legacy: Store = serde_json::from_slice(&fs::read(&catalog_path).unwrap()).unwrap();
+        assert!(legacy.catalog.operations.values().all(|op| super::super::catalog::FLOOR_KINDS.contains(&op.key.kind())));
+        legacy.catalog.set(&legacy.node_id.clone(), Key::project("sample", "name"), json!("Renamed")).unwrap();
+        fs::write(&catalog_path, serde_json::to_vec(&legacy).unwrap()).unwrap();
+        let loaded = LockedStore::load(&config).unwrap();
+        assert_eq!(loaded.data.catalog.values()[&key], "UI");
+        assert_eq!(loaded.data.catalog.values()[&Key::project("sample", "name")], "Renamed");
+        assert_eq!(fs::read(&group_path).unwrap(), original_groups);
+        assert_eq!(read_snapshot(&config).unwrap()["organization"]["projects"][0]["groups"][0]["name"], "UI");
+    }
+
+    #[test]
+    fn changed_or_damaged_group_catalog_is_never_overwritten() {
+        let (_dir, config) = membership_fixture();
+        let group_path = config.dir.join("swarm").join(super::super::session_groups::FILE);
+        let main_path = config.dir.join("swarm/catalog.json");
+        let before = fs::read(&main_path).unwrap();
+        let mut loaded = LockedStore::load(&config).unwrap();
+        fs::write(&group_path, b"damaged groups").unwrap();
+        assert!(loaded.save_catalog_only().is_err());
+        drop(loaded);
+        assert!(LockedStore::load(&config).is_err());
+        assert!(read_snapshot(&config).is_err());
+        assert_eq!(fs::read(&group_path).unwrap(), b"damaged groups");
+        assert_eq!(fs::read(&main_path).unwrap(), before);
     }
 
     #[test]

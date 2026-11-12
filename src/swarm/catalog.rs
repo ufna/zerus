@@ -11,6 +11,9 @@ use uuid::Uuid;
 #[serde(tag = "kind", deny_unknown_fields, rename_all = "snake_case")]
 pub enum Key {
     Project { id: String, field: String },
+    ProjectGroup { project: String, id: String },
+    SessionGroup { machine: String, session: String },
+    SessionGroupOrder { project: String },
     Folder { id: String },
     Session { machine: String, session: String },
     Machine { id: String, field: String },
@@ -49,6 +52,9 @@ impl Key {
     pub fn kind(&self) -> &'static str {
         match self {
             Self::Project { .. } => "project",
+            Self::ProjectGroup { .. } => "project_group",
+            Self::SessionGroup { .. } => "session_group",
+            Self::SessionGroupOrder { .. } => "session_group_order",
             Self::Folder { .. } => "folder",
             Self::Session { .. } => "session",
             Self::Machine { .. } => "machine",
@@ -62,6 +68,24 @@ impl Key {
         };
         let string = |v: &Value, max| v.as_str().is_some_and(|s| label(s, max));
         match self {
+            Self::SessionGroupOrder { project } => {
+                ensure!(label(project, 128), "invalid session group order project");
+                let ids = value.as_array().ok_or_else(|| anyhow::anyhow!("invalid session group order"))?;
+                ensure!(ids.len() <= 200 && ids.iter().all(|id| string(id, 128))
+                    && ids.iter().filter_map(Value::as_str).collect::<BTreeSet<_>>().len() == ids.len(),
+                    "invalid session group order");
+            }
+            Self::ProjectGroup { project, id } => {
+                ensure!(label(project, 128) && label(id, 128), "invalid project group identity");
+                ensure!(value.is_null() || string(value, 320), "invalid project group name");
+            }
+            Self::SessionGroup { machine, session } => {
+                ensure!(uuid(machine) && !session.is_empty() && session.len() <= 2048
+                    && !session.contains('\0'), "invalid group session identity");
+                ensure!(value.is_null() || (value.as_object().is_some_and(|o| o.len() == 2)
+                    && string(&value["project"], 128) && string(&value["group"], 128)),
+                    "invalid session group assignment");
+            }
             Self::Project { id, field } => {
                 ensure!(label(id, 128), "invalid project ID");
                 ensure!(
@@ -198,6 +222,9 @@ pub fn kinds() -> BTreeSet<String> {
         "machine",
         "preference",
         "order",
+        "project_group",
+        "session_group",
+        "session_group_order",
     ]
     .into_iter()
     .map(str::to_owned)
@@ -340,6 +367,9 @@ impl Catalog {
                     machine: right,
                     session: right_session,
                 },
+            ) | (
+                Key::SessionGroup { machine: left, session: left_session },
+                Key::SessionGroup { machine: right, session: right_session },
             ) => {
                 left_session == right_session
                     && ids.get(left).unwrap_or(left) == ids.get(right).unwrap_or(right)
@@ -353,6 +383,9 @@ impl Catalog {
             Key::Session { machine, session } => Key::Session {
                 machine: ids.get(machine).unwrap_or(machine).clone(),
                 session: session.clone(),
+            },
+            Key::SessionGroup { machine, session } => Key::SessionGroup {
+                machine: ids.get(machine).unwrap_or(machine).clone(), session: session.clone(),
             },
             _ => key.clone(),
         }
@@ -395,6 +428,9 @@ impl Catalog {
                 machine: self.machine(machine),
                 session: session.clone(),
             },
+            Key::SessionGroup { machine, session } => Key::SessionGroup {
+                machine: self.machine(machine), session: session.clone(),
+            },
             _ => key.clone(),
         }
     }
@@ -422,7 +458,8 @@ impl Catalog {
         // older replicas bring back fields/folders that existed before removal.
         let deleted = heads.iter().find(|o| match key {
             Key::Project { field, .. } if field == "alive" => o.value == false,
-            Key::Folder { .. } | Key::Session { .. } => o.value.is_null(),
+            Key::Folder { .. } | Key::Session { .. } | Key::ProjectGroup { .. }
+                | Key::SessionGroup { .. } => o.value.is_null(),
             _ => false,
         });
         deleted.copied().or_else(|| heads.last().copied())

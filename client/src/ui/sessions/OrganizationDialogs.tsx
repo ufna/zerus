@@ -7,6 +7,8 @@ import type { Session } from "./types";
 import { deleteText, nameProblem, projectColor, type OrgDialog } from "./organization-ui";
 import { tr } from "../../i18n";
 import { dialogs } from "./org-dialogs";
+import SessionGroupDialog from "./SessionGroupDialog";
+import { sessionGroupPrompt } from "./session-group-dialogs";
 
 // The organization dialogs: Move to project (also for a selection), New
 // project, Rename project and Delete project, in one modal host as
@@ -100,6 +102,7 @@ export function OrganizationDialogs() {
   });
   const kind = () => dialog()?.kind;
   return (
+    <><Show when={sessionGroupPrompt()} keyed>{(prompt) => <SessionGroupDialog prompt={prompt} />}</Show>
     <dialog class="dlg" ref={el} role={kind() === "delete" ? "alertdialog" : "dialog"} aria-labelledby="org-dlg-title"
       aria-describedby={kind() === "delete" ? "org-dlg-body" : undefined} style={{ width: kind() === "move" ? "380px" : "460px" }} onClose={close}>
       <Show when={dialog()} keyed>
@@ -110,6 +113,6 @@ export function OrganizationDialogs() {
           return <NameDialog title={named?.title ?? tr("New project")} initial={named?.initial ?? ""} />;
         }}
       </Show>
-    </dialog>
+    </dialog></>
   );
 }

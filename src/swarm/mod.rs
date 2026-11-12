@@ -16,6 +16,7 @@ pub(crate) use infer_project::{
 };
 mod session_project;
 mod session_ids;
+mod session_groups;
 mod session_memberships;
 pub(crate) mod session_labels;
 #[cfg(unix)]

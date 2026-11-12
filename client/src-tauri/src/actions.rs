@@ -2132,6 +2132,8 @@ pub struct ArchiveRow {
     pub row: ViewRow,
     pub group: String,
     pub rank: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub subgroup: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize)]
@@ -2180,6 +2182,7 @@ fn grouped_archive_page(
                 row,
                 group: place.group,
                 rank: place.rank,
+                subgroup: place.subgroup,
             })
             .collect(),
         next_cursor: page.next_cursor,

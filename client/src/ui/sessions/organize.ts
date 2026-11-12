@@ -2,7 +2,7 @@ import { batch, createSignal } from "solid-js";
 import { listRows, type Row } from "./model";
 import { archive } from "../../store/archive";
 import { catalog } from "../../store/catalog";
-import { grouping, groupOf, headerOf, INBOX, moveProject, moveToProject } from "../../store/organization";
+import { grouping, groupOf, groups, headerOf, INBOX, moveProject, moveToProject, editSessionGroup, memberOf } from "../../store/organization";
 import { multi, setMulti, selectedKey } from "../../store/ui";
 import { projectOf } from "./creations-ui";
 import { nestable, setParentDialog } from "../../store/parentLinks";
@@ -74,10 +74,10 @@ export function bulkSelect(key: string, additive: boolean, range: boolean) {
 
 // --- Drag and drop ---------------------------------------------------------
 
-export type DragItem = { kind: "session" | "group"; id: string };
+export type DragItem = { kind: "session" | "group"; id: string } | { kind: "session_group"; id: string; project: string };
 /** Where a drop lands: a group (project) and the session or group it goes
  *  before (none = the end), drawn as a line or as a frame around a header. */
-export type Drop = { group: string; before?: string; line?: number; inset?: number; box?: { top: number; height: number };
+export type Drop = { group: string; valid?: false; subgroup?: string | null; before?: string; line?: number; inset?: number; box?: { top: number; height: number };
   /** Drop onto this session's card to make the dragged session its child (zerus-sa9qn.9). */
   nest?: string };
 
@@ -91,7 +91,8 @@ export function placement(rows: Row[], offsets: number[], heights: number[], ove
   const end = rows.length ? offsets[rows.length - 1] + heights[rows.length - 1] : 0;
   let i = overId ? rows.findIndex((r) => r.id === overId) : -1;
   // The blank area after the list is an explicit move to the end of the Inbox, whichever project is the default (SessionList.cpp:482-484).
-  if (i < 0) return item.kind === "group" ? { group: "", line: end, inset: 8 } : { group: INBOX, line: end, inset: 12 };
+  if (i < 0) return item.kind === "session_group" ? { group: "", valid: false }
+    : item.kind === "group" ? { group: "", line: end, inset: 8 } : { group: INBOX, line: end, inset: 12 };
   // A subagent row is not a target of its own: the whole family is one session.
   while (i > 0 && rows[i].type === "child") i--;
   const over = rows[i];
@@ -100,27 +101,47 @@ export function placement(rows: Row[], offsets: number[], heights: number[], ove
   const top = offsets[i];
   let bottom = top + heights[i];
   if (item.kind === "session") for (let n = i + 1; n < rows.length && rows[n].type === "child"; n++) bottom = offsets[n] + heights[n];
-  const nextHeader = () => { let n = i + 1; while (n < rows.length && rows[n].type !== "header") n++; return n; };
+  if (item.kind === "session_group") {
+    if (group !== item.project) return { group, valid: false };
+    // Groups move as whole blocks. The fixed No group band is always last.
+    if (over.type === "header" && over.subgroup && y <= (top + bottom) / 2)
+      return { group, before: over.subgroup, line: top, inset: 8 };
+    if (over.type === "header" && over.subgroup === "") return { group, line: top, inset: 8 };
+    let header = i;
+    while (header >= 0 && rows[header].type !== "header") header--;
+    const band = rows[header];
+    if (band?.type === "header" && band.subgroup === "")
+      return { group, line: offsets[header], inset: 8 };
+    let next = i + 1;
+    while (next < rows.length && rows[next].type !== "header") next++;
+    const target = rows[next];
+    return { group, before: target?.type === "header" && target.project === group ? target.subgroup || undefined : undefined,
+      line: next < rows.length ? offsets[next] : end, inset: 8 };
+  }
+  const nextHeader = () => { let n = i + 1; while (n < rows.length) { const row = rows[n]; if (row.type === "header" && row.subgroup === undefined) break; n++; } return n; };
   if (item.kind === "group") {
     // The upper half of a header places before its group; anything else, after it.
-    if (over.type === "header" && y <= (top + bottom) / 2) return { group, before: group, line: top, inset: 8 };
+    if (over.type === "header" && over.subgroup === undefined && y <= (top + bottom) / 2) return { group, before: group, line: top, inset: 8 };
     const n = nextHeader();
     const next = rows[n];
     return next?.type === "header" ? { group, before: next.project, line: offsets[n], inset: 8 } : { group, line: end, inset: 8 };
   }
   // A session over a header moves into that project (frame around the band).
-  if (over.type === "header") return { group, box: { top: top + 6, height: 30 } };
+  const subgroup = over.type === "header" ? over.subgroup !== undefined ? over.subgroup || null : (headerOf(group)?.session_groups?.length ? null : undefined)
+    : over.type === "card" ? groups[over.session.key]?.subgroup ?? (headerOf(group)?.session_groups?.length ? null : undefined) : undefined;
+  const scope = subgroup === undefined ? {} : { subgroup };
+  if (over.type === "header") return { group, ...scope, box: { top: top + 6, height: 30 } };
   // The middle of another card on the same computer nests the dragged session under it.
   const moving = catalog.rows[item.id];
   if (over.type === "card" && moving && nestable(moving, over.session)) {
     const height = heights[i];
     if (y > top + height * 0.3 && y < top + height * 0.7) return { group, nest: over.session.key, box: { top: top + 4, height: height - 10 } };
   }
-  if (y <= (top + bottom) / 2) return { group, before: over.id, line: top, inset: 12 };
+  if (y <= (top + bottom) / 2) return { group, ...scope, before: over.id, line: top, inset: 12 };
   let n = i + 1;
   while (n < rows.length && rows[n].type === "child") n++;
   const next = rows[n];
-  return { group, before: next?.type === "card" && groupOf(next.session.key) === group ? next.id : undefined, line: bottom, inset: 12 };
+  return { group, ...scope, before: next?.type === "card" && groupOf(next.session.key) === group ? next.id : undefined, line: bottom, inset: 12 };
 }
 
 /**
@@ -129,6 +150,12 @@ export function placement(rows: Row[], offsets: number[], heights: number[], ove
  * its own project too (sessionMoved, moveSession; SessionsWindow.cpp:556-561).
  */
 export function applyDrop(item: DragItem, d: Drop) {
+  if (d.valid === false) return;
+  if (item.kind === "session_group") {
+    if (d.group !== item.project || d.before === item.id) return;
+    void editSessionGroup(item.project, { kind: "reorder", id: item.id, before: d.before ?? null });
+    return;
+  }
   if (d.nest) {
     // A link change is confirmed first; the host checks it.
     const child = catalog.rows[item.id], parent = catalog.rows[d.nest];
@@ -140,5 +167,10 @@ export function applyDrop(item: DragItem, d: Drop) {
   const moving = catalog.rows[item.id] ?? archive.row(item.id);
   // Qt's moveSession ignores a project that is not listed (SessionOrganization.cpp:188-189), such as the Inbox once it is deleted.
   if (!moving || (grouping().loaded && !headerOf(d.group))) return;
+  if (d.subgroup !== undefined) {
+    const anchor = d.before ? catalog.rows[d.before] ?? archive.row(d.before) : undefined;
+    void editSessionGroup(d.group, { kind: "move", group: d.subgroup, members: [memberOf(moving)], before: anchor ? memberOf(anchor) : null });
+    return;
+  }
   void moveToProject([moving], d.group, d.before ? catalog.rows[d.before] ?? archive.row(d.before) : undefined);
 }

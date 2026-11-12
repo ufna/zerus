@@ -9,6 +9,7 @@ import { placement } from "./organize";
 import type { Row } from "./model";
 import { emptyBatch, type CreationCard, type GroupingOut, type ViewRow } from "../../types";
 import type { Session } from "./types";
+import { groupRows } from "./group-rows";
 import { accountBinding } from "./scope-filters";
 
 // The creation cards' rows, buttons, menu and footer (SessionsWindow.cpp
@@ -58,6 +59,22 @@ const stateOf = (cards: CreationCard[], extra: Partial<Placement> = {}): Placeme
 const shape = (rows: Row[]) => rows.map((r) => r.type === "header" ? `#${r.project}:${r.total}` : r.type === "card" ? r.session.name.slice(-2) : r.type === "creation" ? `+${r.creation.id}` : "child");
 
 describe("the creation rows (SessionsWindowRows.cpp 300-341)", () => {
+  it("preserves every session group while creation cards are present", () => {
+    const single = grouping([header("alpha")]);
+    single.headers[0].session_groups = [{ id: "ui", name: "UI", collapsed: false }, { id: "inventory", name: "Inventory", collapsed: false }];
+    const one = session(1), two = session(2);
+    const list = new Map([["alpha", [one, two]]]);
+    const scope = scopeOf(single, list, { subgroup: (s) => s === one ? "ui" : s === two ? "inventory" : undefined });
+    const rows = groupRows(scope);
+    const out = placeCreations(rows, scope, stateOf([card("new", { group: "alpha" })]));
+    expect(out.map((r) => r.type === "header" ? r.subgroup ?? r.project : r.id)).toEqual([
+      "alpha", "ui", one.key, "inventory", two.key, "", creationRowId("new"),
+    ]);
+    expect(out[0]).toMatchObject({ type: "header", total: 3 });
+    const adopted = session(3);
+    const revealed = placeCreations(rows, scope, stateOf([], { adopted, groupOf: () => "alpha" }));
+    expect(revealed.at(-1)).toMatchObject({ type: "card", id: adopted.key });
+  });
   const g = grouping([header("alpha"), header("ungrouped"), header("beta")]);
   const members = new Map([["alpha", [session(1), session(2)]], ["ungrouped", [session(3)]]]);
   const rows = sessionRows(g, members);

@@ -126,6 +126,15 @@ pub(super) fn rows(snapshot: &Value) -> BTreeMap<String, Value> {
         for (index, chunk) in chunks.into_iter().enumerate() {
             rows.insert(format!("members:{id}:{index}"), json!({"sessions": chunk}));
         }
+        if let Some(assignments) = project.as_object_mut().and_then(|o| o.remove("session_groups")) {
+            let assignments: Vec<_> = assignments.as_object().into_iter().flatten()
+                .map(|(member, group)| (member.clone(), group.clone())).collect();
+            project["group_member_chunks"] = json!(assignments.len().div_ceil(64));
+            for (index, chunk) in assignments.chunks(64).enumerate() {
+                let members: serde_json::Map<String, Value> = chunk.iter().cloned().collect();
+                rows.insert(format!("group-members:{id}:{index}"), json!({"session_groups": members}));
+            }
+        }
         rows.insert(format!("project:{id}"), project);
         ids.push(Value::String(id));
     }
@@ -386,6 +395,22 @@ fn rebuild(rows: &BTreeMap<String, Value>) -> Value {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn group_membership_is_paged_and_rebuilt_without_loss() {
+        let members: serde_json::Map<String, serde_json::Value> = (0..145)
+            .map(|n| (format!("workstation\ncodex/sample/{n}"), serde_json::json!("ui"))).collect();
+        let snapshot = serde_json::json!({"schema":1,"organization":{"projects":[
+            {"id":"sample","sessions":[],"groups":[{"id":"ui","name":"UI"}],"session_groups":members}]},"versions":{}});
+        let rows = super::rows(&snapshot);
+        assert_eq!(rows["project:sample"]["group_member_chunks"], 3);
+        assert!(rows["project:sample"].get("session_groups").is_none());
+        assert_eq!(rows["group-members:sample:0"]["session_groups"].as_object().unwrap().len(), 64);
+        let rebuilt = zerus_client_core::organization::rebuild(&rows).unwrap();
+        assert_eq!(rebuilt, snapshot);
+        let mut missing = rows;
+        missing.remove("group-members:sample:1");
+        assert!(zerus_client_core::organization::rebuild(&missing).is_none());
+    }
     use super::*;
 
     const SECOND: Duration = Duration::from_secs(1);

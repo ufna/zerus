@@ -36,7 +36,7 @@ const SUPERSEDED = "superseded";
 export interface PagingComputer { computer: ComputerId; machine: string }
 
 /** An archived row: a Session keyed by computer and archive id, and when it was archived. */
-export type ArchivedSession = Session & { archivedAt: number; group: string; rank: number };
+export type ArchivedSession = Session & { archivedAt: number; group: string; rank: number; subgroup?: string };
 
 export interface Page {
   rows: ArchivedSession[];
@@ -162,9 +162,9 @@ const HOST_VALUES: Pick<RowMarks, "overlay"> = {
 };
 
 /** One archived row as a Session: keyed `archive:<archive id>` on its computer, named as the paging computer names it. */
-export function archivedSession(computer: ComputerId, machine: string, row: ViewRow & Partial<Pick<ArchiveRow, "group" | "rank">>): ArchivedSession {
+export function archivedSession(computer: ComputerId, machine: string, row: ViewRow & Partial<Pick<ArchiveRow, "group" | "rank" | "subgroup">>): ArchivedSession {
   const s = toSession(computer, `archive:${row.archive_id ?? ""}`, { ...row, machine: row.machine || machine }, HOST_VALUES);
-  return Object.assign(s, { archivedAt: typeof row.archived_at === "number" ? row.archived_at : 0, group: row.group ?? "ungrouped", rank: row.rank ?? 0 });
+  return Object.assign(s, { archivedAt: typeof row.archived_at === "number" ? row.archived_at : 0, group: row.group ?? "ungrouped", rank: row.rank ?? 0, subgroup: row.subgroup });
 }
 
 /** Newest first; then by computer, name and archive id (Qt's entry key). */
@@ -214,6 +214,7 @@ export function archiveListRows(rows: readonly ArchivedSession[], scope: ListSco
   }
   return groupRows({
     grouping: organization, members, projects: scope.projects ?? [],
+    subgroup: (s) => (s as ArchivedSession).subgroup,
     visible: (s) => scope.includes((s as ArchivedSession).archivedAt) && inScope(s, scope) && (scope.accepts?.(s) ?? true), online: () => false,
     expanded: () => false, compact: scope.compact, children: false,
   });
@@ -263,7 +264,7 @@ export function createArchive(deps: ArchiveDeps) {
   let requests = deps.firstRequest ?? 0;
   // Only the current in-flight request per computer can hold deltas: at most
   // one page (50 identities), newest per key. Shown rows own their placements.
-  const held = new Map<ComputerId, Map<string, Pick<GroupOut, "group" | "rank">>>();
+  const held = new Map<ComputerId, Map<string, Pick<GroupOut, "group" | "rank" | "subgroup">>>();
 
   const bounds = () => rangeBounds(range(), now());
   const includes = (at: number) => { const [from, until] = bounds(); return at >= from && at < until; };
@@ -278,12 +279,12 @@ export function createArchive(deps: ArchiveDeps) {
         const p = untrack(pages)[g.computer];
         if (!p) continue;
         if (g.archive_request === p.shownRequest && p.shownRequest !== 0) {
-          const rows = p.rows.map((s) => s.catalogKey === g.key ? { ...s, group: g.group, rank: g.rank } : s);
+          const rows = p.rows.map((s) => s.catalogKey === g.key ? { ...s, group: g.group, rank: g.rank, subgroup: g.subgroup } : s);
           put(g.computer, { ...p, rows });
         } else if (g.archive_request === p.request && p.request !== 0) {
           let pending = held.get(g.computer);
           if (!pending) held.set(g.computer, pending = new Map());
-          if (pending.has(g.key) || pending.size < 50) pending.set(g.key, { group: g.group, rank: g.rank });
+          if (pending.has(g.key) || pending.size < 50) pending.set(g.key, { group: g.group, rank: g.rank, subgroup: g.subgroup });
         }
       }
     });

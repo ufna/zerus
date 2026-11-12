@@ -486,6 +486,15 @@ export async function renameProject(project: string, name: string): Promise<Edit
   return invoke<EditOutcome>("rename_project", { project, name });
 }
 
+export async function editSessionGroup(project: string, change: import("./types").SessionGroupChange): Promise<EditOutcome> {
+  if (!inTauri()) return refusedOutside();
+  return invoke<EditOutcome>("edit_session_group", { project, change });
+}
+
+export async function setSessionGroupCollapsed(project: string, group: string, collapsed: boolean): Promise<void> {
+  if (inTauri()) await invoke("set_session_group_collapsed", { project, group, collapsed });
+}
+
 /** Delete project…: its members go to `destination`. */
 export async function deleteProject(project: string, destination: string): Promise<EditOutcome> {
   if (!inTauri()) return refusedOutside();

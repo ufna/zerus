@@ -2823,6 +2823,20 @@ order and Android lists projects by ID. Empty-project visibility, collapse state
 session order within a project and default project are local.
 **All swarm projects** explicitly shows the full shared catalog.
 
+Desktop projects can contain named session groups (one level, up to 200 per
+project). Use **Projects > Session groups > Manage groups…** or a project
+header's menu to create, rename or delete groups. **Move to session group…**
+assigns a session or a selection from one project; **No group** returns it
+directly to the project. Dragging onto a group header can also move a session
+from another project. Deleting a group keeps its sessions in the project.
+Drag a group header to change its position within the project. The manual
+order synchronizes between capable desktops. Groups appear above the fixed
+**No group** section, and their headers align with the project header.
+Group names and membership synchronize through the catalog; collapse state
+stays on each desktop. Tasks and project folders are unaffected. Older
+clients keep their flat project view and preserve group records. Update both
+the CLI and desktop to edit and display groups.
+
 A newly discovered session appears in the local default project until a shared
 assignment arrives. Discovery alone does not publish that fallback as a project
 assignment, so another desktop can launch the session into its chosen project

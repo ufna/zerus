@@ -30,6 +30,7 @@ pub mod layout;
 pub mod legacy_projects;
 pub mod qt_import;
 pub mod runs;
+pub mod session_groups;
 pub mod sync;
 
 use crate::paths::windows_shaped;

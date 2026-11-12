@@ -160,7 +160,8 @@ impl Layout {
         if ![0, 1].contains(&saved.version) {
             return Err("the project layout has an unsupported version");
         }
-        if saved.collapsed.len() > super::MAX_PROJECTS
+        if saved.collapsed.iter().filter(|id| !id.starts_with("session-group:")).count() > super::MAX_PROJECTS
+            || saved.collapsed.len() > super::MAX_PROJECTS * (super::session_groups::MAX_GROUPS + 1)
             || saved.order.len() > MAX_MEMBERS
             || saved.order.values().map(Vec::len).sum::<usize>() > MAX_MEMBERS
             || saved.run_groups.len() > MAX_RUNS
@@ -196,11 +197,16 @@ impl Layout {
     }
 
     fn from_saved(saved: Saved) -> Self {
+        let mut projects = 0;
+        let mut groups = 0;
         let mut layout = Self {
             collapsed: saved
                 .collapsed
                 .into_iter()
-                .take(super::MAX_PROJECTS)
+                .filter(|id| {
+                    if id.starts_with("session-group:") { groups += 1; groups <= super::MAX_PROJECTS * super::session_groups::MAX_GROUPS }
+                    else { projects += 1; projects <= super::MAX_PROJECTS }
+                })
                 .collect(),
             default_project: saved.default_project,
             runs_seeded: saved.runs_seeded,
@@ -517,6 +523,10 @@ impl Layout {
             self.dirty = true;
         }
         self.dirty |= self.collapsed.remove(project);
+        let prefix = format!("session-group:{project}:");
+        let before = self.collapsed.len();
+        self.collapsed.retain(|id| !id.starts_with(&prefix));
+        self.dirty |= before != self.collapsed.len();
         if self.default_project.as_deref() == Some(project) {
             self.default_project = None;
             self.dirty = true;

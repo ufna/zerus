@@ -1434,8 +1434,8 @@ Data path:
   write controller (`core/src/swarm/sync.rs`, a port of `SwarmController`) and
   hands the presented organization to the pump's grouping
   (`core/src/swarm/grouping.rs`).
-- The pump puts `Batch.groups` (each row's project and rank, only for rows
-  whose project or rank changed) and `Batch.grouping` (the headers and whether
+- The pump puts `Batch.groups` (each row's project, session group and rank, only for rows
+  whose placement changed) and `Batch.grouping` (the headers and whether
   edits can run, when they changed) on its batches, and strips
   `Batch.organizations`: the organization itself never reaches the webview.
 - `src/store/organization.ts` keeps the assignments and headers, and
@@ -1452,11 +1452,47 @@ Qt's grouping rules (`SessionOrganization.cpp`, `SessionsWindowRows.cpp`):
 - A row no project lists belongs to the default project: this device's choice
   when it is listed, else the catalog's `default_project` when it is listed, else
   the first project, else the Inbox (`ungrouped`).
-- With one project the list shows no header and nothing collapses. A project
+- With one project and no session groups the list shows no header and nothing collapses. A project
   without visible members is hidden ("Hide projects without active sessions",
   on by default). A header's counts cover members the filters hide; muted
   members never count as attention or unread. Its colour is the project's
   `color`, else its palette slot.
+
+Projects can contain one level of named **session groups**, such as UI,
+Inventory and Mutants. Open **Projects > Session groups > Manage groups…**
+or a project header's **Manage session groups…** menu to create, rename or
+delete them. A session's **Move to session group…** menu assigns it to a
+group or **No group**; a selection from one project can move together.
+Sessions can also be dragged onto a group header, including across projects.
+Drag group headers to arrange them within their project; the order is shared
+and survives renaming. Named groups appear first, followed by the fixed **No
+group** section. All headers align with the project band without a left inset.
+Deleting a group keeps its sessions in the project. Moving a session to
+another project clears its previous group; sorting and renaming preserve it.
+Tasks and folders have no session group membership.
+
+Group names and memberships use separate causal `project_group` and
+`session_group` catalog registers, with `session_group_order` holding each
+project's manual order. `organization.projects[].groups` lists
+`{id,name}`, and `session_groups` maps the project's member keys to group IDs.
+Only peers advertising those kinds receive their operations; legacy edits that
+omit the extension fields preserve them. Concurrent names and assignments
+select the newest causal head, while concurrent deletion or unassignment wins.
+New registers are persisted in `swarm/session-groups.json` under the existing
+catalog lock; `catalog.json` retains only rollback-floor key kinds. An older
+local writer can update that main file without erasing groups. A damaged or
+unexpectedly replaced group file refuses writes and retains both originals.
+The empty-peer adoption shortcut refuses catalogs with group sidecars until
+that protocol can bind their transfer; the reviewed Join Swarm path carries
+groups through the normal capable catalog exchange.
+The stream
+chunks group memberships into rows of at most 64 entries; the webview receives
+only the placements of loaded live rows and bounded archive pages. Each project
+allows 200 groups. Group collapse is device-local in the existing layout file,
+using reserved `session-group:<project>:<group>` collapse keys, and does not
+change project membership. The empty group ID in presentation denotes the
+fixed **No group** section and has its own local collapse state; it is never
+a shared group record or a draggable group.
 
 This device's layout (collapsed projects, the order inside each project and the
 default project) stays local, as in Qt. It lives in `organization-layout.json`
@@ -1475,6 +1511,8 @@ recorded, `kept` with Qt's status text, or `refused` with the reason):
 | `move_to_project(members, project, before)` | Move to project, a drop |
 | `create_project(name, members)` | New project… (in the Move to project dialog) |
 | `rename_project(project, name)` | Rename project… |
+| `edit_session_group(project, change)` | Manage session groups…, Move to session group…, group drop |
+| `set_session_group_collapsed(project, group, collapsed)` | Session group header click (local layout) |
 | `move_project(project, before)` | Move project up, Move project down |
 | `sort_project(project)` | Sort sessions by name |
 | `delete_project(project, destination)` | Delete project… |

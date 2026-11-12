@@ -71,7 +71,7 @@ describe("the owner's compact session row menu", () => {
   it("an archived row has no terminal entry and no Mute or Mark group, and no doubled separators", () => {
     const expected = [
       "Compact session row", "---", "Copy restore command", "Copy session ID", "---",
-      "Rename…", "Move to project…", "---", "Forget archived session…",
+      "Rename…", "Move to project…", "Move to session group…", "---", "Forget archived session…",
     ];
     expect(labels(sessionMenu(archivedSession("", "Local", archived("codex"))))).toEqual(expected);
     expect(labels(sessionMenu(archivedSession("", "Local", archived("dsh"))))).toEqual(expected);
@@ -82,7 +82,7 @@ describe("the owner's compact session row menu", () => {
     expect(labels(sessionMenu(live))).toEqual([
       "Mark needs attention", "Mute", "---", "Compact session row", "---",
       "Open terminal", "Copy connect command", "Copy session ID", "---",
-      "Clear session…", "Rename…", "Move to project…", "---", "Terminate session…",
+      "Clear session…", "Rename…", "Move to project…", "Move to session group…", "---", "Terminate session…",
     ]);
   });
 

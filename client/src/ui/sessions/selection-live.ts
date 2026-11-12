@@ -14,7 +14,8 @@ import { selectionSnapshot, type SelectionAction, type SelectionRow } from "./se
 import { liveNameIndex } from "./actions-ui";
 import { openMoveSelection } from "./org-dialogs";
 import { editEntry } from "./organization-ui";
-import { STARTING, grouping } from "../../store/organization";
+import { STARTING, grouping, groupOf } from "../../store/organization";
+import { openSessionGroups } from "./session-group-dialogs";
 
 // The live (store-bound) halves of the selection bar and the batch menu; the
 // pure models are in selection-ui.ts, machine-batch.ts and archive-entries.ts.
@@ -39,7 +40,10 @@ export const runSelection = (rows: readonly Session[], a: SelectionAction) => {
 /** The context menu of a row inside a multi-selection (Qt populateSelectionMenu). */
 export const selectionContextMenu = (listed: readonly Row[]): MenuEntry[] => {
   const sessions = selectedRows(listed), rows = sessions.map(selectionSnapshot);
-  return selectionMenu(selectionCount(rows), rows.length, running(), (a) => runSelection(sessions, a), clearMulti, anyUnmuted(rows), moveRefusal());
+  const menu = selectionMenu(selectionCount(rows), rows.length, running(), (a) => runSelection(sessions, a), clearMulti, anyUnmuted(rows), moveRefusal());
+  const project = sessions.length ? groupOf(sessions[0].key) : undefined;
+  if (project && sessions.every((s) => groupOf(s.key) === project)) menu.push({ label: tr("Move to session group…"), icon: "list-tree", disabled: !grouping().ready, action: () => openSessionGroups(project, sessions) });
+  return menu;
 };
 
 /** Pause all and Resume all per computer (Qt's populateBatchActions): this computer first, then the peers. */

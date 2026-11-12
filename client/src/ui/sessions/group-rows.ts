@@ -2,10 +2,11 @@ import { countedHeaderAttention, isWorking, needsAttention, quietAttention, visi
 import type { CreationCard, GroupingOut } from "../../types";
 import type { Session, Subagent } from "./types";
 import { currentChildren } from "./subagents";
+import { tr } from "../../i18n";
 
 export type Row =
   /** `project` is the project's id; `name` and the colour come from the organization's header. */
-  | { type: "header"; id: string; project: string; name: string; color: string | null; palette: number; collapsed: boolean; total: number; attention: number; unread: number; working: number }
+  | { type: "header"; id: string; project: string; subgroup?: string; name: string; color: string | null; palette: number; collapsed: boolean; total: number; attention: number; unread: number; working: number }
   | { type: "card"; id: string; session: Session; expandable: boolean; expanded: boolean; compactRow: boolean;
       /** Nesting under parent sessions (zerus-sa9qn.2): 0 at top level. */
       depth?: number;
@@ -32,6 +33,7 @@ export interface ListInput {
   grouping: GroupingOut;
   /** Each project's rows in list order (groupMembers). */
   members: Map<string, Session[]>;
+  subgroup?: (s: Session) => string | undefined;
   /** The state, machine and search filters. */
   visible: (s: Session) => boolean;
   /** The window's online state of a row's computer (Qt's `entry.online`). */
@@ -178,7 +180,7 @@ export function groupRows(input: ListInput): Row[] {
   };
   const wanted = (id: string) => !input.projects.length || input.projects.includes(id);
   const headers = input.grouping.loaded ? input.grouping.headers : [];
-  if (headers.length <= 1) {
+  if (headers.length <= 1 && !headers.some((h) => h.session_groups?.length)) {
     // One project, or none presented yet: no header, and nothing collapses (293, 324, 326).
     for (const [id, list] of input.members) if (wanted(id)) cards(list.filter(input.visible));
     return out;
@@ -188,7 +190,8 @@ export function groupRows(input: ListInput): Row[] {
     const all = input.members.get(h.id) ?? [];
     const list = all.filter(input.visible);
     // A project without visible members stays hidden (323; "Hide projects without active sessions" defaults on, 109).
-    if (!list.length) continue;
+    const sessionGroups = h.session_groups ?? [];
+    if (!list.length && (!sessionGroups.length || input.children === false)) continue;
     // The counters cover members the filters hide; muted members never count as attention or unread (398-404).
     // A computer that is not online counts only Review later as attention and nothing as working.
     let attention = 0, unread = 0, working = 0;
@@ -201,7 +204,28 @@ export function groupRows(input: ListInput): Row[] {
     }
     out.push({ type: "header", id: `h:${h.id}`, project: h.id, name: h.name, color: h.color, palette: h.palette,
                collapsed: h.collapsed, total: list.length, attention, unread, working });
-    if (!h.collapsed) cards(list);
+    if (!h.collapsed) {
+      if (!sessionGroups.length) { cards(list); continue; }
+      const known = new Set(sessionGroups.map((g) => g.id));
+      const buckets = new Map<string, Session[]>(), allBuckets = new Map<string, Session[]>();
+      const bucket = (s: Session) => { const id = input.subgroup?.(s); return id && known.has(id) ? id : ""; };
+      for (const s of all) { const key = bucket(s), rows = allBuckets.get(key); if (rows) rows.push(s); else allBuckets.set(key, [s]); }
+      for (const s of list) { const key = bucket(s), rows = buckets.get(key); if (rows) rows.push(s); else buckets.set(key, [s]); }
+      for (const g of [...sessionGroups, { id: "", name: tr("No group"), collapsed: h.ungrouped_collapsed ?? false }]) {
+        const shown = buckets.get(g.id) ?? [], members = allBuckets.get(g.id) ?? [];
+        if (!shown.length && input.children === false) continue;
+        let attention = 0, unread = 0, working = 0;
+        for (const s of members) {
+          const up = input.online(s);
+          if (countedHeaderAttention(s, up)) attention++;
+          if (!quietAttention(s) && visibleUnreadReply(s, up)) unread++;
+          if (isWorking(s, up)) working++;
+        }
+        out.push({ type: "header", id: `sg:${h.id}:${g.id}`, project: h.id, subgroup: g.id, name: g.name,
+          color: h.color, palette: h.palette, collapsed: g.collapsed, total: shown.length, attention, unread, working });
+        if (!g.collapsed) cards(shown);
+      }
+    }
   }
   return out;
 }

@@ -117,6 +117,7 @@ function listScope() {
   const visible = (s: Session) => matchesLiveFilters(s, f, hosts, q);
   return {
     grouping: grouping(), members: membersByGroup(), visible, online, projects: projectFilter(),
+    subgroup: (s: Session) => groups[s.key]?.subgroup,
     expanded: (k: string) => !!expandedChildren[k], compact: (k: string) => !!compactRows[k], filter: f, hosts, query: q,
     accounts: accountFilter(), folder: folderFilter(),
     includeCompleted: flag("workspace/showCompletedSubagents"),
@@ -143,7 +144,8 @@ export const listRows = createMemo<Row[]>(() => {
 export function rowsAllOpen(): Row[] {
   if (stateFilter() === "archived") return [];
   const scope = listScope();
-  const grouping = { ...scope.grouping, headers: scope.grouping.headers.map((header) => ({ ...header, collapsed: false })) };
+  const grouping = { ...scope.grouping, headers: scope.grouping.headers.map((header) => ({ ...header, collapsed: false, ungrouped_collapsed: false,
+    session_groups: header.session_groups?.map((g) => ({ ...g, collapsed: false })) })) };
   return groupRows({ ...scope, grouping, teamCollapsed: () => false });
 }
 

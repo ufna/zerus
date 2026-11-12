@@ -28,6 +28,8 @@ pub struct GroupOut {
     pub key: String,
     pub group: String,
     pub rank: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subgroup: Option<String>,
     /// The archive read whose reply owns this placement. Live rows omit it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub archive_request: Option<u64>,
@@ -54,6 +56,17 @@ pub struct HeaderOut {
     pub collapsed: bool,
     pub is_default: bool,
     pub palette: usize,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub session_groups: Vec<SessionGroupOut>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub ungrouped_collapsed: bool,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct SessionGroupOut {
+    pub id: String,
+    pub name: String,
+    pub collapsed: bool,
 }
 
 /// Whether edits can run, and the catalog's status line (from `sync::Controller`).
@@ -143,6 +156,8 @@ pub struct Grouping {
     listed: HashSet<String>,
     default: String,
     membership: Arc<BTreeMap<String, String>>,
+    session_groups: BTreeMap<String, Vec<(String, String)>>,
+    subgroup_members: BTreeMap<String, (String, String)>,
     rows: HashMap<At, Slot>,
     /// Only the last produced page's identities, at most 50 per configured computer.
     archives: BTreeMap<ComputerId, ArchivePage>,
@@ -185,6 +200,8 @@ impl Grouping {
             listed: HashSet::new(),
             default: INBOX.into(),
             membership: Arc::default(),
+            session_groups: BTreeMap::new(),
+            subgroup_members: BTreeMap::new(),
             rows: HashMap::new(),
             archives: BTreeMap::new(),
             archive_reset_through: 0,
@@ -205,6 +222,10 @@ impl Grouping {
             .filter(|project| self.listed.contains(project.as_str()))
             .cloned()
             .unwrap_or_else(|| self.default.clone())
+    }
+
+    fn subgroup_for(&self, member: &str, project: &str) -> Option<String> {
+        self.subgroup_members.get(member).filter(|(p, _)| p == project).map(|(_, g)| g.clone())
     }
 
     fn place(
@@ -454,6 +475,7 @@ impl Grouping {
                 GroupOut {
                     computer: row.computer.clone(),
                     key: row.key.clone(),
+                    subgroup: self.subgroup_for(&super::archive_member(&row.machine, &row.archive_id), &group),
                     group,
                     rank,
                     archive_request: None,
@@ -622,6 +644,27 @@ impl Grouping {
             self.default = self.projects[0].0.clone();
         }
         self.membership = membership;
+        self.session_groups.clear();
+        let mut subgroup_members = BTreeMap::new();
+        for project in &listed_projects {
+            let id = project_id(project);
+            let groups: Vec<_> = project["groups"].as_array().into_iter().flatten()
+                .take(super::session_groups::MAX_GROUPS)
+                .filter_map(|g| Some((g["id"].as_str()?.to_owned(), g["name"].as_str()?.to_owned())))
+                .collect();
+            let listed: BTreeSet<_> = groups.iter().map(|(id, _)| id.as_str()).collect();
+            for (member, group) in project["session_groups"].as_object().into_iter().flatten() {
+                if let Some(group) = group.as_str().filter(|g| listed.contains(g)) {
+                    subgroup_members.insert(member.clone(), (id.to_owned(), group.to_owned()));
+                }
+            }
+            self.session_groups.insert(id.to_owned(), groups);
+        }
+        if self.subgroup_members != subgroup_members {
+            self.subgroup_members = subgroup_members;
+            self.dirty.extend(self.rows.keys().cloned());
+            for page in self.archives.values_mut() { for slot in &mut page.rows { slot.dirty = true; } }
+        }
         // Startup tokens may reveal a rename before any organization was
         // presented. Keep its project/rank while the hub writes that intent;
         // a second writer that already removed the old member stays untouched.
@@ -783,6 +826,11 @@ impl Grouping {
     /// The local side of an edit; the hub presents the edited organization next.
     pub fn edited(&mut self, intent: &Intent) {
         match intent {
+            Intent::SessionGroup { project, change: super::session_groups::Change::Delete { id } } => {
+                self.layout.set_collapsed(&super::session_groups::collapse_key(project, id), false);
+            }
+            Intent::SessionGroup { project, change: super::session_groups::Change::Move { members, before, .. } } =>
+                self.layout.place(project, members, before.as_deref()),
             Intent::Move {
                 members,
                 project,
@@ -801,6 +849,7 @@ impl Grouping {
                 self.layout.forget(project);
             }
             Intent::Color { .. }
+            | Intent::SessionGroup { .. }
             | Intent::Rename { .. }
             | Intent::Reorder { .. }
             | Intent::Renamed { .. }
@@ -843,6 +892,10 @@ impl Grouping {
                     collapsed: self.layout.collapsed(id),
                     is_default: *id == self.default,
                     palette: at % 8,
+                    session_groups: self.session_groups.get(id).into_iter().flatten()
+                        .map(|(group, name)| SessionGroupOut { id:group.clone(), name:name.clone(),
+                            collapsed:self.layout.collapsed(&super::session_groups::collapse_key(id, group)) }).collect(),
+                    ungrouped_collapsed: self.layout.collapsed(&super::session_groups::collapse_key(id, "")),
                 })
                 .collect()
         } else {
@@ -867,10 +920,12 @@ impl Grouping {
                     key: at.1,
                     group: slot.group.clone(),
                     rank: slot.rank,
+                    subgroup: self.subgroup_for(&slot.member, &slot.group),
                     archive_request: None,
                 })
             })
             .collect();
+        let subgroup_members = &self.subgroup_members;
         for (computer, page) in &mut self.archives {
             for slot in &mut page.rows {
                 if std::mem::take(&mut slot.dirty) {
@@ -879,6 +934,8 @@ impl Grouping {
                         key: slot.row.key.clone(),
                         group: slot.group.clone(),
                         rank: slot.rank,
+                        subgroup: subgroup_members.get(&super::archive_member(&slot.row.machine, &slot.row.archive_id))
+                            .filter(|(project, _)| *project == slot.group).map(|(_, group)| group.clone()),
                         archive_request: Some(page.request),
                     });
                 }
@@ -952,6 +1009,36 @@ mod tests {
 
     fn present(grouping: &mut Grouping, org: &Value, revision: u64) {
         grouping.present(org, Arc::new(members(org)), revision);
+    }
+
+    #[test]
+    fn session_group_changes_publish_placements_and_local_collapse_survives_reload() {
+        let member = "workstation\ncodex/sample/one";
+        let mut org = organization(&[member], &[]);
+        org["projects"][0]["groups"] = json!([{"id":"ui","name":"UI"}]);
+        let mut grouping = Grouping::default();
+        grouping.observe(&upsert("run:one", "workstation", "codex/sample/one"));
+        present(&mut grouping, &org, 1);
+        let (_, headers) = grouping.take();
+        assert_eq!(headers.unwrap().headers[0].session_groups[0].name, "UI");
+        org["projects"][0]["session_groups"] = json!({member:"ui"});
+        present(&mut grouping, &org, 2);
+        let (placements, _) = grouping.take();
+        assert_eq!(placements[0].subgroup.as_deref(), Some("ui"));
+        let collapse = super::super::session_groups::collapse_key("alpha", "ui");
+        grouping.set_collapsed(&collapse, true);
+        assert!(grouping.take().1.unwrap().headers[0].session_groups[0].collapsed);
+        grouping.set_collapsed(&super::super::session_groups::collapse_key("alpha", ""), true);
+        assert!(grouping.take().1.unwrap().headers[0].ungrouped_collapsed);
+        let bytes = grouping.take_layout().unwrap();
+        let mut restored = Grouping::new(Layout::try_from_json(&bytes).unwrap());
+        present(&mut restored, &org, 1);
+        let header = restored.take().1.unwrap().headers.remove(0);
+        assert!(header.session_groups[0].collapsed);
+        assert!(header.ungrouped_collapsed);
+        org["projects"][0]["session_groups"] = json!({});
+        present(&mut grouping, &org, 3);
+        assert_eq!(grouping.take().0[0].subgroup, None);
     }
 
     #[test]

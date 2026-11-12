@@ -24,6 +24,7 @@ pub const NOTHING: &str = "Choose the sessions to move.";
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Intent {
+    SessionGroup { project: String, change: super::session_groups::Change },
     /// Move to project, a drop and a selection's move: the members, in order,
     /// into `project` as explicit members (moveSession, 187-201). `before`
     /// places them in the local order only: `before` is not used for the
@@ -139,6 +140,13 @@ fn move_into(organization: &mut Value, members: &[String], project: &str) -> Res
         .filter(|member| !member.is_empty() && seen.insert(*member))
         .collect();
     take(organization, &seen);
+    for source in projects_mut(organization).into_iter().flatten() {
+        if project_id(source) != project {
+            if let Some(groups) = source.get_mut("session_groups").and_then(Value::as_object_mut) {
+                groups.retain(|member, _| !seen.contains(member.as_str()));
+            }
+        }
+    }
     let target = &mut projects_mut(organization).ok_or(GONE)?[at];
     if !target.get("sessions").is_some_and(Value::is_array) {
         target["sessions"] = json!([]);
@@ -156,6 +164,7 @@ fn move_into(organization: &mut Value, members: &[String], project: &str) -> Res
 pub fn apply(organization: &Value, intent: &Intent) -> Result<Value, String> {
     let mut next = organization.clone();
     match intent {
+        Intent::SessionGroup { project, change } => super::session_groups::apply(&mut next, project, change)?,
         Intent::CreateFolder { id, name, folder } => {
             if listed(organization, id) {
                 return Err("This project identity is already listed.".into());
@@ -315,6 +324,9 @@ pub fn apply(organization: &Value, intent: &Intent) -> Result<Value, String> {
             }
             take(&mut next, &BTreeSet::from([to.as_str()]));
             for project in projects_mut(&mut next).into_iter().flatten() {
+                if let Some(groups) = project.get_mut("session_groups").and_then(Value::as_object_mut) {
+                    if let Some(group) = groups.remove(from) { groups.insert(to.clone(), group); }
+                }
                 if let Some(list) = project.get_mut("sessions").and_then(Value::as_array_mut) {
                     for member in list
                         .iter_mut()
@@ -372,7 +384,7 @@ pub(crate) fn project_order(organization: &Value) -> Value {
     )
 }
 
-type Shape = (Vec<(String, Value, Value, Value)>, BTreeMap<String, String>);
+type Shape = (Vec<(String, Value, Value, Value, Value, Value, Value)>, BTreeMap<String, String>);
 
 fn shape(organization: &Value) -> Shape {
     let fields = projects(organization)
@@ -383,6 +395,9 @@ fn shape(organization: &Value) -> Shape {
                 p["name"].clone(),
                 p["color"].clone(),
                 p["folders"].clone(),
+                p["groups"].clone(),
+                p["session_groups"].clone(),
+                p["group_order"].clone(),
             )
         })
         .collect();

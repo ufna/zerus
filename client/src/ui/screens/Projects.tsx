@@ -26,6 +26,7 @@ import { catalogName, createCatalogEdits } from "./project-catalog";
 import { tr } from "../../i18n";
 import { legacyProjectStatus } from "../../store/legacyProjects";
 import { POINTER_DRAG, pointerDrag } from "../lib/pointerDrag";
+import { openSessionGroups } from "../sessions/session-group-dialogs";
 
 // Projects (ProjectsDialog.cpp), ported from design/webui/src/screens/Projects.tsx:
 // the shared project catalog the Sessions list groups by (the organization
@@ -298,6 +299,10 @@ export function ProjectsScreen() {
                   <button class="btn" disabled={!p().accessible || !settingsLoaded()} onClick={(event) => setColorProject({ project: { ...p() }, origin: event.currentTarget })}><Icon name="palette" size={14} />{tr("Edit color…")}</button>
                 </div>
               </div>
+              <div class="form-row"><label>{tr("Session groups")}</label><div class="row">
+                <span class="grow muted ell">{organization.headerOf(p().id)?.session_groups?.map((g) => g.name).join(", ")}</span>
+                <button class="btn" disabled={!edits.canEdit(p().id)} onClick={() => openSessionGroups(p().id)}><Icon name="list-tree" size={14} />{tr("Manage groups…")}</button>
+              </div></div>
               <label class="check proj-default" title={editHint()}>
                 <input type="checkbox" checked={p().is_default} disabled={defaultBusy() || !edits.canEdit(p().id)} aria-describedby={editDescription()}
                   onChange={(event) => { const checked = event.currentTarget.checked; event.currentTarget.checked = p().is_default; if (checked && !p().is_default) void chooseDefault(p().id); }} />{tr("Default for sessions started outside Zerus")}

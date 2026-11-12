@@ -23,6 +23,9 @@ const state = vi.hoisted(() => ({
 
 vi.mock("../../store/organization", () => ({
   INBOX: "ungrouped",
+  groups: {},
+  memberOf: (s: Session) => `${s.rawMachine}\n${s.name}`,
+  editSessionGroup: vi.fn(() => Promise.resolve({ outcome: "done", conflicts: 0 })),
   grouping: vi.fn((): Partial<GroupingOut> => ({ loaded: state.loaded, default_project: "beta" })),
   groupOf: vi.fn((id: string) => state.assigned[id] ?? "beta"),
   headerOf: vi.fn((id: string) => (state.listed.includes(id) ? { id } : undefined)),
@@ -53,12 +56,45 @@ const layout = (rows: Row[]) => {
 };
 
 beforeEach(() => {
+  mocked.editSessionGroup.mockClear();
   mocked.moveProject.mockClear();
   mocked.moveToProject.mockClear();
   state.assigned = { [A]: "alpha", [B]: "alpha", [C]: "beta" };
   state.listed = ["alpha", "beta", "ungrouped"];
   state.loaded = true;
   state.archived = {};
+});
+
+describe("session group reordering", () => {
+  const group = (id: string): Row => ({ ...header("alpha") as Extract<Row, { type: "header" }>, id: `sg:alpha:${id}`, subgroup: id });
+  const item = { kind: "session_group", id: "inventory", project: "alpha" } as const;
+  it("moves before a group or after its whole block without changing session membership", () => {
+    const rows = [header("alpha"), group("ui"), card(A), group("inventory"), card(B), group(""), card(C)];
+    const { offsets, heights } = layout(rows);
+    const before = placement(rows, offsets, heights, rows[1].id, offsets[1] + 2, item);
+    expect(before).toMatchObject({ group: "alpha", before: "ui", line: offsets[1] });
+    applyDrop(item, before);
+    expect(mocked.editSessionGroup).toHaveBeenLastCalledWith("alpha", { kind: "reorder", id: "inventory", before: "ui" });
+    const after = placement(rows, offsets, heights, rows[1].id, offsets[1] + 39, { ...item, id: "ui" });
+    expect(after).toMatchObject({ group: "alpha", before: "inventory", line: offsets[3] });
+    expect(mocked.moveToProject).not.toHaveBeenCalled();
+    expect(mocked.moveProject).not.toHaveBeenCalled();
+  });
+  it("keeps No group last and refuses a move to another project or the blank area", () => {
+    const rows = [header("alpha"), group("ui"), group(""), header("beta")];
+    const { offsets, heights } = layout(rows);
+    applyDrop(item, placement(rows, offsets, heights, rows[2].id, offsets[2] + 30, item));
+    expect(mocked.editSessionGroup).toHaveBeenLastCalledWith("alpha", { kind: "reorder", id: "inventory", before: null });
+    mocked.editSessionGroup.mockClear();
+    applyDrop(item, placement(rows, offsets, heights, rows[3].id, offsets[3] + 2, item));
+    applyDrop(item, placement(rows, offsets, heights, undefined, 1000, item));
+    expect(mocked.editSessionGroup).not.toHaveBeenCalled();
+  });
+  it("drops a session on No group as an explicit unassignment", () => {
+    const rows = [group("")], { offsets, heights } = layout(rows);
+    applyDrop({ kind: "session", id: A }, placement(rows, offsets, heights, rows[0].id, 20, { kind: "session", id: A }));
+    expect(mocked.editSessionGroup).toHaveBeenLastCalledWith("alpha", { kind: "move", group: null, members: [organization.memberOf(catalog.rows[A])], before: null });
+  });
 });
 
 describe("project drops", () => {
@@ -109,6 +145,15 @@ describe("session drops", () => {
 });
 
 describe("placement", () => {
+  it("drops onto a session group in one shared edit, and can return it to the project", () => {
+    const group: Row = { ...header("alpha") as Extract<Row, { type: "header" }>, id: "sg:alpha:ui", subgroup: "ui" };
+    const target = placement([group], [0], [40], group.id, 20, { kind: "session", id: A });
+    expect(target).toMatchObject({ group: "alpha", subgroup: "ui" });
+    applyDrop({ kind: "session", id: A }, target);
+    expect(mocked.editSessionGroup).toHaveBeenLastCalledWith("alpha", { kind: "move", group: "ui", members: [organization.memberOf(catalog.rows[A])], before: null });
+    applyDrop({ kind: "session", id: A }, { group: "alpha", subgroup: null });
+    expect(mocked.editSessionGroup).toHaveBeenLastCalledWith("alpha", { kind: "move", group: null, members: [organization.memberOf(catalog.rows[A])], before: null });
+  });
   const { rows, offsets, heights } = layout([header("alpha"), card(A), card(C), header("beta"), card(B)]);
   const session = { kind: "session" as const, id: A };
 

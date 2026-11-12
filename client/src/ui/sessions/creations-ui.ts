@@ -224,16 +224,26 @@ function headerRow(h: HeaderOut, all: readonly Session[], online: (s: Session) =
 }
 
 /** The adopted session's row (and its open subagents) among its project's rows, at its rank (`groupRows`' cards). */
-function withSession(rows: readonly Row[], s: Session, members: readonly Session[], scope: Pick<ListInput, "expanded" | "compact">): Row[] {
+function withSession(rows: readonly Row[], s: Session, members: readonly Session[], scope: Pick<ListInput, "expanded" | "compact" | "subgroup">): Row[] {
   const rank = new Map(members.map((m, i) => [m.key, i]));
   const mine = rank.get(s.key) ?? Number.MAX_SAFE_INTEGER;
   let at = rows.findIndex((r) => r.type === "card" && (rank.get(r.id) ?? -1) > mine);
   if (at < 0) at = rows.length;
+  const subgroup = scope.subgroup?.(s) ?? "";
+  const groupHeader = rows.findIndex((r) => r.type === "header" && r.subgroup === subgroup);
+  if (groupHeader >= 0) {
+    // A creation's adopted row reveals its group while it is selected.
+    const next = rows.findIndex((r, i) => i > groupHeader && r.type === "header");
+    at = Math.max(groupHeader + 1, Math.min(at, next < 0 ? rows.length : next));
+  }
   const kids = s.subagents ?? [];
   const expanded = kids.length > 0 && scope.expanded(s.key);
   const add: Row[] = [{ type: "card", id: s.key, session: s, expandable: kids.length > 0, expanded, compactRow: scope.compact(s.key) }];
   if (expanded) kids.forEach((child, i) => add.push({ type: "child", id: `${s.key}/${child.id}`, parent: s, child, first: i === 0, last: i === kids.length - 1 }));
-  return [...rows.slice(0, at), ...add, ...rows.slice(at)];
+  const visible = [...rows];
+  const target = visible[groupHeader];
+  if (target?.type === "header") visible[groupHeader] = { ...target, total: target.total + 1, collapsed: false };
+  return [...visible.slice(0, at), ...add, ...visible.slice(at)];
 }
 
 /**
@@ -253,7 +263,7 @@ export function placeCreations(rows: Row[], scope: ListScope, state: Placement):
   const cardRows = (list: readonly CreationCard[]): Row[] => list.map((c) => ({ type: "creation", id: creationRowId(c.id), creation: c }));
   const g = scope.grouping;
   const headers = g.loaded ? g.headers : [];
-  if (headers.length <= 1) {
+  if (headers.length <= 1 && !headers.some((h) => h.session_groups?.length)) {
     // One project, or none presented yet: no header and nothing collapses (`groupRows`).
     const out = missing ? withSession(rows, missing, scope.members.get(adoptedGroup!) ?? [], scope) : [...rows];
     for (const list of shown.values()) out.push(...cardRows(list));
@@ -262,7 +272,7 @@ export function placeCreations(rows: Row[], scope: ListScope, state: Placement):
   const segments = new Map<string, { header: HeaderRow; rows: Row[] }>();
   let current: Row[] | undefined;
   for (const r of rows) {
-    if (r.type === "header") segments.set(r.project, { header: r, rows: (current = []) });
+    if (r.type === "header" && r.subgroup === undefined) segments.set(r.project, { header: r, rows: (current = []) });
     else current?.push(r);
   }
   const out: Row[] = [];
@@ -277,7 +287,10 @@ export function placeCreations(rows: Row[], scope: ListScope, state: Placement):
     out.push({ ...header, total: header.total + cards.length + (adds && !counted ? 1 : 0) });
     if (h.collapsed) continue;
     const members = segment?.rows ?? [];
-    out.push(...(adds ? withSession(members, adds, scope.members.get(h.id) ?? [], scope) : members), ...cardRows(cards));
+    const placed = adds ? withSession(members, adds, scope.members.get(h.id) ?? [], scope) : members;
+    const ungrouped = placed.find((r) => r.type === "header" && r.subgroup === "");
+    out.push(...placed.map((r) => r === ungrouped && r.type === "header" ? { ...r, total: r.total + cards.length } : r));
+    if (ungrouped?.type !== "header" || !ungrouped.collapsed) out.push(...cardRows(cards));
   }
   return out;
 }

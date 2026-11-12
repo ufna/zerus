@@ -179,6 +179,69 @@ class Swarm(unittest.TestCase):
         self.assertEqual(len({s['digest'] for s in snapshots}), 1)
         return snapshots
 
+    def test_session_groups_replicate_and_deletion_keeps_sessions(self):
+        self.join('a', 'b'); self.join('b', 'a')
+        self.join('c', 'b'); self.join('b', 'c')
+        self.converge()
+        before = self.call('a', 'get')
+        desired = copy.deepcopy(before['organization'])
+        p = next(p for p in desired['projects'] if p['id'] == 'a')
+        p['groups'] = [{'id': 'ui', 'name': 'UI'}]
+        p['sessions'] = ['a\ncodex/sample/one']
+        p['session_groups'] = {'a\ncodex/sample/one': 'ui'}
+        self.patch('a', before, desired)
+        for snapshot in self.converge():
+            p = next(p for p in snapshot['organization']['projects'] if p['id'] == 'a')
+            self.assertEqual(p['groups'], [{'id': 'ui', 'name': 'UI'}])
+            self.assertEqual(list(p['session_groups'].values()), ['ui'])
+        for node in ('a', 'b', 'c'):
+            persisted = json.loads((self.root / node / 'swarm/catalog.json').read_text())
+            self.assertTrue(all(op['key']['kind'] in ('project', 'folder', 'session', 'machine', 'preference', 'order')
+                                for op in persisted['catalog']['operations'].values()))
+            self.assertTrue((self.root / node / 'swarm/session-groups.json').is_file())
+        before = self.call('b', 'get')
+        desired = copy.deepcopy(before['organization'])
+        next(p for p in desired['projects'] if p['id'] == 'a')['groups'][0]['name'] = 'Interface'
+        self.patch('b', before, desired)
+        for snapshot in self.converge():
+            p = next(p for p in snapshot['organization']['projects'] if p['id'] == 'a')
+            self.assertEqual(p['groups'][0]['name'], 'Interface')
+        before = self.call('c', 'get')
+        desired = copy.deepcopy(before['organization'])
+        p = next(p for p in desired['projects'] if p['id'] == 'a')
+        p['groups'] = []
+        p['session_groups'] = {}
+        self.patch('c', before, desired)
+        for snapshot in self.converge():
+            p = next(p for p in snapshot['organization']['projects'] if p['id'] == 'a')
+            self.assertFalse(p.get('groups'))
+            self.assertFalse(p.get('session_groups'))
+            self.assertEqual(len(p['sessions']), 1)
+            self.assertEqual(snapshot['conflicts'], [])
+
+    def test_manual_session_group_order_replicates_and_survives_rename(self):
+        self.join('a', 'b'); self.join('b', 'a'); self.join('c', 'b'); self.join('b', 'c')
+        self.converge()
+        before = self.call('a', 'get')
+        desired = copy.deepcopy(before['organization'])
+        p = next(p for p in desired['projects'] if p['id'] == 'a')
+        p['groups'] = [{'id': id, 'name': id.title()} for id in ('ui', 'inventory', 'mutants')]
+        p['group_order'] = ['mutants', 'ui', 'inventory']
+        self.patch('a', before, desired)
+        for snapshot in self.converge():
+            p = next(p for p in snapshot['organization']['projects'] if p['id'] == 'a')
+            self.assertEqual([g['id'] for g in p['groups']], ['mutants', 'ui', 'inventory'])
+        before = self.call('b', 'get')
+        desired = copy.deepcopy(before['organization'])
+        p = next(p for p in desired['projects'] if p['id'] == 'a')
+        next(g for g in p['groups'] if g['id'] == 'inventory')['name'] = 'AAA'
+        p['group_order'] = ['inventory', 'mutants', 'ui']
+        self.patch('b', before, desired)
+        for snapshot in self.converge():
+            p = next(p for p in snapshot['organization']['projects'] if p['id'] == 'a')
+            self.assertEqual([g['id'] for g in p['groups']], ['inventory', 'mutants', 'ui'])
+            self.assertEqual(snapshot['conflicts'], [])
+
     def worker(self, node):
         """A headless worker in a session of its own, as its service unit runs it."""
         env = dict(self.env, HGS_CONFIG_DIR=str(self.root / node), HGS_STATE_DIR=str(self.root / node / 'state'))

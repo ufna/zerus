@@ -818,6 +818,7 @@ mod tests {
             kinds(),
             FLOOR_KINDS
                 .into_iter()
+                .chain(["project_group", "session_group", "session_group_order"])
                 .map(str::to_owned)
                 .collect::<BTreeSet<_>>()
         );

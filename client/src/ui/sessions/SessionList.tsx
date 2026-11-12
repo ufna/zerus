@@ -1,8 +1,9 @@
 import { TextInput } from "../lib/TextField";
 import { steadyTitle } from "../lib/steady-title";
-import { inspectSession, windowVisibility } from "../../bridge";
+import { inspectSession, windowVisibility, setSessionGroupCollapsed } from "../../bridge";
 import { sessionTerminalEntry } from "../../store/sessionTerminal";
-import { groupOf } from "../../store/organization";
+import { groupOf, groups } from "../../store/organization";
+import { openSessionGroups } from "./session-group-dialogs";
 import { taskDragOver, taskDrop } from "../../store/taskAssignment";
 import { For, Show, Suspense, createMemo, createEffect, createSignal, lazy, on, onCleanup } from "solid-js";
 import { createVirtualizer } from "@tanstack/solid-virtual";
@@ -252,6 +253,7 @@ export function sessionMenu(s: Session, inspected?: import("../../types").Detail
     ...(fresh ? [fresh] : archived ? [] : [clearEntry(s, preparedClear)]),
     act.rename,
     moveEntry(s),
+    { label: tr("Move to session group…"), icon: "list-tree", disabled: !grouping().ready, action: () => openSessionGroups(groupOf(s.key), [s]) },
     { separator: true },
     act.end,
   ];
@@ -283,7 +285,8 @@ export function sessionContextMenu(e: MouseEvent, s: Session) {
 
 /** The project header's menu (SessionsWindow.cpp:2568-2616); its rules are organization-ui.ts's. */
 function headerMenu(project: string): MenuEntry[] {
-  return headerEntries(grouping(), project, {
+  return [{ label: tr("Manage session groups…"), icon: "list-tree", disabled: !grouping().ready, action: () => openSessionGroups(project) },
+    ...headerEntries(grouping(), project, {
     newSession: () => newSessionForProject(project),
     filter: () => setProjectFilter([project]),
     collapse: (collapsed) => setProjectCollapsed(project, collapsed),
@@ -292,7 +295,12 @@ function headerMenu(project: string): MenuEntry[] {
     move: (before) => { void moveProject(project, before); },
     sort: () => { void sortProject(project); },
     remove: () => openDeleteProjectDialog(project),
-  });
+  })];
+}
+
+function collapseHeader(row: Extract<Row, { type: "header" }>, collapsed: boolean) {
+  if (row.subgroup !== undefined) void setSessionGroupCollapsed(row.project, row.subgroup, collapsed);
+  else setProjectCollapsed(row.project, collapsed);
 }
 
 function batchMenu(): MenuEntry[] {
@@ -308,16 +316,18 @@ function batchMenu(): MenuEntry[] {
 function Header(props: { row: Extract<Row, { type: "header" }>; list?: RowSource }) {
   const name = () => props.row.name;
   const open = () => !props.row.collapsed;
+  const drag = (): DragItem | undefined => props.row.subgroup === undefined ? { kind: "group", id: props.row.project }
+    : props.row.subgroup ? { kind: "session_group", id: props.row.subgroup, project: props.row.project } : undefined;
   return (
-    <button onDragOver={(e) => taskDragOver(e, props.row.project)} onDrop={(e) => taskDrop(e, props.row.project)} class="group-band entity" style={{ "--entity": projectColor(props.row) }} draggable={POINTER_DRAG ? undefined : "true"} onDragStart={(e) => startDrag(e, { kind: "group", id: props.row.project })}
-      onPointerDown={(e) => { if (props.list) pointerOrganize(e, { kind: "group", id: props.row.project }, props.list); }}
-      aria-expanded={open()} onClick={() => setProjectCollapsed(props.row.project, !props.row.collapsed)}
-      onContextMenu={(e) => openMenu(e, headerMenu(props.row.project))}
+    <button onDragOver={(e) => { if (props.row.subgroup === undefined) taskDragOver(e, props.row.project); }} onDrop={(e) => { if (props.row.subgroup === undefined) taskDrop(e, props.row.project); }} class="group-band entity" classList={{ "session-group-band": props.row.subgroup !== undefined }} style={{ "--entity": projectColor(props.row) }} draggable={!POINTER_DRAG && drag() ? "true" : undefined} onDragStart={(e) => { const item = drag(); if (item) startDrag(e, item); else e.preventDefault(); }}
+      onPointerDown={(e) => { const item = drag(); if (props.list && item) pointerOrganize(e, item, props.list); }}
+      aria-expanded={open()} onClick={() => collapseHeader(props.row, !props.row.collapsed)}
+      onContextMenu={(e) => openMenu(e, props.row.subgroup !== undefined ? [{ label: tr("Manage session groups…"), icon: "list-tree", action: () => openSessionGroups(props.row.project) }] : headerMenu(props.row.project))}
       title={tr("%1: %2 shown, %3 need a response, %4 working, %5 unread replies. Click to collapse or expand; drag to reorder.", name(), props.row.total, props.row.attention, props.row.working, props.row.unread)}>
       <svg class="gb-chev" width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
         <path d={open() ? "M1 3L5 7L9 3" : "M3 1L7 5L3 9"} />
       </svg>
-      <Icon name="projects" size={16} class="gb-icon" />
+      <Icon name={props.row.subgroup === undefined ? "projects" : "list-tree"} size={16} class="gb-icon" />
       <span class="gb-name ell">{name()}</span>
       <Show when={props.row.working}><span class="gb-count working">● {props.row.working}</span></Show>
       <Show when={props.row.unread}><span class="gb-count hot">● {props.row.unread}</span></Show>
@@ -633,7 +643,8 @@ export function SessionList() {
     const hiddenBy = (key: string | undefined) => {
       if (!key) return undefined;
       const project = groupOf(key);
-      return rows.find((r): r is Extract<Row, { type: "header" }> => r.type === "header" && r.project === project && r.collapsed);
+      return rows.find((r): r is Extract<Row, { type: "header" }> => r.type === "header" && r.project === project && r.collapsed
+        && (r.subgroup === undefined || r.subgroup === (groups[key]?.subgroup ?? "")));
     };
     const move = (next: Row | undefined) => {
       if (!next) return;
@@ -665,13 +676,14 @@ export function SessionList() {
       const right = e.key === "ArrowRight";
       // A plain row's project (SessionList.cpp:623-627): Left collapses it, Right expands it.
       const project = (key: string) => {
-        const header = rows.find((r): r is Extract<Row, { type: "header" }> => r.type === "header" && r.project === groupOf(key));
-        if (header && header.collapsed === right) setProjectCollapsed(header.project, !right);
+        const headers = rows.filter((r): r is Extract<Row, { type: "header" }> => r.type === "header" && r.project === groupOf(key));
+        const header = headers.find((r) => r.subgroup === (groups[key]?.subgroup ?? "")) ?? headers.find((r) => r.subgroup === undefined);
+        if (header && header.collapsed === right) collapseHeader(header, !right);
       };
       if (i < 0) {
         // Right reopens the project that hides the open conversation's row.
         const header = right ? hiddenBy(selectedKey()) : undefined;
-        if (header) { e.preventDefault(); setProjectCollapsed(header.project, false); }
+        if (header) { e.preventDefault(); collapseHeader(header, false); }
         return;
       }
       const r = nav[i];
@@ -854,7 +866,7 @@ function pointerOrganize(e: PointerEvent, item: DragItem, list: RowSource) {
 /** Qt's drop indicator: a 2 px accent line between rows, or a frame around a project header. */
 function DropIndicator() {
   return (
-    <Show when={drop()}>{(d) => (
+    <Show when={drop()?.valid === false ? undefined : drop()}>{(d) => (
       <Show when={d().box} fallback={<i class="drop-line" style={{ transform: `translateY(${(d().line ?? 0) - 1}px)`, left: `${d().inset ?? 12}px`, right: `${d().inset ?? 12}px` }} />}>
         {(b) => <i class="drop-box" style={{ transform: `translateY(${b().top}px)`, height: `${b().height}px` }} />}
       </Show>
@@ -1062,8 +1074,8 @@ function StripBand(props: { row: Extract<Row, { type: "header" }> }) {
   const counter = () => props.row.attention ? { text: `! ${props.row.attention}`, cls: "hot" } : props.row.unread ? { text: `● ${props.row.unread}`, cls: "hot" }
     : props.row.working ? { text: `● ${props.row.working}`, cls: "working" } : { text: String(props.row.total), cls: "total" };
   return (
-    <button class="group-band strip-band entity" style={{ "--entity": projectColor(props.row) }} title={name()}
-      onClick={() => setProjectCollapsed(props.row.project, !props.row.collapsed)}>
+    <button class="group-band strip-band entity" classList={{ "session-group-band": props.row.subgroup !== undefined }} style={{ "--entity": projectColor(props.row) }} title={name()}
+      aria-expanded={!props.row.collapsed} onClick={() => collapseHeader(props.row, !props.row.collapsed)}>
       <span class="ell">{name()}</span>
       <span class={`gb-count ${counter().cls}`}>{counter().text}</span>
     </button>

@@ -409,3 +409,8 @@
   .warn-text { color: var(--z-list-tone-attention); }
 }
 
+.group-band.session-group-band { background: var(--z-color-raised); }
+.session-groups-body { gap: 10px; max-height: 60vh; }
+.session-group-item { min-height: 32px; gap: 6px; }
+.session-group-item .grow { min-width: 0; }
+.session-group-delete { padding: 10px; border: 1px solid var(--z-color-border); border-radius: 6px; }

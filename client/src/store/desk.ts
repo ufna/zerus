@@ -1,6 +1,7 @@
 import { deskPage, deskTakePending, onDeskNotice, onOpenSession, onOpenUpdates, type DeskNotice, type OpenSession } from "../bridge";
 import { catalog, rowId } from "./catalog";
-import { groupOf, headerOf, setProjectCollapsed } from "./organization";
+import { groupOf, groups, headerOf, setProjectCollapsed } from "./organization";
+import { setSessionGroupCollapsed } from "../bridge";
 import {
   revealRow, search, setDetailTab, setMachineFilter, setPage, setProjectFilter, setSearch, setSelectedKey,
   page, selectedKey, setAccountFilter, setFolderFilter, setStateFilter, setSubagentOpen, toast,
@@ -60,6 +61,9 @@ function revealSession(target: OpenSession, options: OpenSessionOptions): void {
   if (catalog.rows[id] !== undefined) {
     const project = groupOf(id);
     if (headerOf(project)?.collapsed) setProjectCollapsed(project, false);
+    const subgroup = groups[id]?.subgroup ?? "";
+    if (subgroup ? headerOf(project)?.session_groups?.find((g) => g.id === subgroup)?.collapsed : headerOf(project)?.ungrouped_collapsed)
+      void setSessionGroupCollapsed(project, subgroup, false);
   }
   const keep = target.preserveFilters && search() === "" && options.keepFiltersIf?.(id) === true;
   if (!keep) {

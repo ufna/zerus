@@ -180,8 +180,18 @@ export interface TasksOut { computer: ComputerId; key: string; kind: string; pay
 // the webview gets each row's project and rank, and the ordered headers.
 
 /** One row's place: its project and its rank inside it. */
-export interface GroupOut { computer: ComputerId; key: string; group: string; rank: number; archive_request?: number }
+export interface GroupOut { computer: ComputerId; key: string; group: string; rank: number; subgroup?: string; archive_request?: number }
+export interface SessionGroup { id: string; name: string; collapsed: boolean }
+export type SessionGroupChange =
+  | { kind: "create"; id: string; name: string }
+  | { kind: "rename"; id: string; name: string }
+  | { kind: "delete"; id: string }
+  | { kind: "reorder"; id: string; before: string | null }
+  | { kind: "assign"; group: string | null; members: string[] }
+  | { kind: "move"; group: string | null; members: string[]; before: string | null };
 export interface HeaderOut {
+  session_groups?: SessionGroup[];
+  ungrouped_collapsed?: boolean;
   id: string;
   name: string;
   /** The project's colour; null uses the palette slot. */
@@ -831,7 +841,7 @@ export interface TerminalFacts {
 }
 
 /** One checked page of a computer's archive (`archive_page`). */
-export interface ArchiveRow extends ViewRow { group: string; rank: number }
+export interface ArchiveRow extends ViewRow { group: string; rank: number; subgroup?: string }
 export interface ArchivePage {
   rows: ArchiveRow[];
   next_cursor: string;

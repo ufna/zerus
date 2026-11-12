@@ -387,9 +387,14 @@ fn capture(config: &Config) -> Result<Snapshot> {
 
 fn capture_locked(config: &Config, _lock: &AdoptionLock) -> Result<Snapshot> {
     let directory = config.dir.join("swarm");
+    ensure!(matches!(super::session_groups::read(&directory), Err(Unread::Missing)),
+        "Empty-peer adoption cannot transfer session groups yet; use the reviewed Join Swarm workflow");
     let outer_raw = super::read_regular(&directory.join("catalog.json"), MAIN_BYTES)
         .map_err(|reason| anyhow::anyhow!("source catalog unavailable: {reason:?}"))?;
     let store: Store = bounded(&outer_raw, "outer swarm store")?;
+    ensure!(!store.catalog.operations.values().any(|op| matches!(op.key,
+        Key::ProjectGroup { .. } | Key::SessionGroup { .. } | Key::SessionGroupOrder { .. })),
+        "Empty-peer adoption cannot transfer session groups yet; use the reviewed Join Swarm workflow");
     ensure!(
         canonical_uuid(&store.node_id),
         "invalid local node identity"

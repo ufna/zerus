@@ -5,7 +5,7 @@ import { applyBatch, catalog, toSession } from "../../store/catalog";
 import { applyGrouping } from "../../store/organization";
 import { rowOut } from "../../store/testing";
 import { groupMembers, groupRows, membersByGroup, projectChoices, summarize, type ListInput } from "./model";
-import { emptyBatch, type Batch, type GroupingOut, type ViewRow } from "../../types";
+import { emptyBatch, type Batch, type GroupingOut, type HeaderOut, type ViewRow } from "../../types";
 import type { Session } from "./types";
 
 // The list model's module reads the page's query (store/ui.ts); the tests run without a page.
@@ -13,7 +13,7 @@ vi.hoisted(() => { vi.stubGlobal("location", new URL("http://localhost/")); });
 
 const session = (n: number, extra: Partial<ViewRow> = {}): Session =>
   toSession("", `run:${n}`, { name: `claude/sample-project/s${n}`, machine: "workstation", status: "ready", ...extra });
-const header = (id: string, collapsed = false) => ({ id, name: id.toUpperCase(), color: null, accessible: true, collapsed, is_default: id === "ungrouped", palette: 0 });
+const header = (id: string, collapsed = false): HeaderOut => ({ id, name: id.toUpperCase(), color: null, accessible: true, collapsed, is_default: id === "ungrouped", palette: 0 });
 const grouping = (headers: ReturnType<typeof header>[]): GroupingOut => ({
   loaded: true, default_project: "ungrouped", headers, ready: true, reason: null, busy: false, status: "", status_error: false, conflicts: 0,
 });
@@ -22,6 +22,37 @@ const input = (g: GroupingOut, members: Map<string, Session[]>, extra: Partial<L
 });
 const batchOf = (part: Partial<Batch>): Batch => ({ ...emptyBatch(), ...part });
 const shape = (rows: ReturnType<typeof groupRows>) => rows.map((r) => (r.type === "header" ? `#${r.project}` : r.type === "card" ? r.session.name.slice(-2) : "child"));
+
+describe("session groups within projects", () => {
+  const g = () => grouping([{ ...header("alpha"), session_groups: [
+    { id: "ui", name: "UI", collapsed: false }, { id: "inventory", name: "Inventory", collapsed: true },
+  ] }]);
+  const one = session(1), two = session(2, { status: "working" }), three = session(3);
+  const members = new Map([["alpha", [one, two, three]]]);
+  const subgroup = (s: Session) => s === two ? "ui" : s === three ? "inventory" : undefined;
+  it("keeps project identity while partitioning sessions, even with one project", () => {
+    const rows = groupRows(input(g(), members, { subgroup }));
+    expect(rows.map((r) => r.type === "header" ? r.subgroup ?? r.project : r.id)).toEqual(["alpha", "ui", two.key, "inventory", "", one.key]);
+    expect(rows.filter((r) => r.type === "header")).toMatchObject([
+      { project: "alpha", total: 3, working: 1 }, { project: "alpha", subgroup: "ui", total: 1, working: 1 },
+      { project: "alpha", subgroup: "inventory", total: 1, collapsed: true },
+      { project: "alpha", subgroup: "", name: "No group", total: 1 },
+    ]);
+  });
+  it("keeps the manual group order above ungrouped rows and collapses the fixed last band", () => {
+    const grouped = g(); grouped.headers[0].session_groups!.reverse(); grouped.headers[0].ungrouped_collapsed = true;
+    const rows = groupRows(input(grouped, members, { subgroup }));
+    expect(rows.filter((r) => r.type === "header").map((r) => r.subgroup ?? r.project)).toEqual(["alpha", "inventory", "ui", ""]);
+    expect(rows.some((r) => r.id === one.key)).toBe(false);
+    expect(rows.some((r) => r.id === two.key)).toBe(true);
+  });
+  it("unknown group assignments remain visible and project collapse hides every group", () => {
+    const rows = groupRows(input(g(), members, { subgroup: () => "deleted" }));
+    expect(rows.filter((r) => r.type === "card").map((r) => r.id)).toEqual([one.key, two.key, three.key]);
+    const closed = g(); closed.headers[0].collapsed = true;
+    expect(groupRows(input(closed, members, { subgroup }))).toHaveLength(1);
+  });
+});
 
 describe("grouped rows", () => {
   it("one project shows no header and nothing collapses", () => {

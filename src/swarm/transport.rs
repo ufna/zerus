@@ -792,6 +792,14 @@ pub fn join(config: &Config, alias: &str, request: Join) -> Result<Value> {
                 continue;
             }
             match &mut key {
+                Key::ProjectGroup { project, .. } | Key::SessionGroupOrder { project } => {
+                    if let Some(target) = request.project_map.get(project) { *project = target.clone(); }
+                }
+                Key::SessionGroup { .. } if !value.is_null() => {
+                    if let Some(target) = value["project"].as_str().and_then(|id| request.project_map.get(id)) {
+                        value["project"] = json!(target);
+                    }
+                }
                 Key::Project { id, .. } => {
                     if let Some(target) = request.project_map.get(id) {
                         *id = target.clone();
@@ -829,6 +837,9 @@ pub fn join(config: &Config, alias: &str, request: Join) -> Result<Value> {
                 _ => {}
             }
             // Compare only after mapping the joining catalog's project IDs.
+            if matches!(key, Key::SessionGroupOrder { .. }) && existing.contains_key(&key) {
+                continue;
+            }
             // Keeping peer placement never promotes its Inbox above a concrete
             // local project. Distinct concrete choices retain the explicit
             // preview's keep-peer policy; without it they remain causal heads.

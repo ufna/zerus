@@ -88,6 +88,14 @@ pub fn rebuild(rows: &BTreeMap<String, Value>) -> Option<Value> {
             sessions.extend(chunk["sessions"].as_array().cloned().unwrap_or_default());
         }
         object.insert("sessions".into(), Value::Array(sessions));
+        if let Some(chunks) = object.remove("group_member_chunks") {
+            let mut assignments = Map::new();
+            for index in 0..chunks.as_u64()? {
+                let chunk = rows.get(&format!("group-members:{id}:{index}"))?;
+                assignments.extend(chunk["session_groups"].as_object()?.clone());
+            }
+            object.insert("session_groups".into(), Value::Object(assignments));
+        }
         projects.push(project);
     }
     if snapshot["organization"].is_object() {

@@ -36,7 +36,7 @@ export const memberOf = (s: Row) => s.state === "archived" ? `${s.rawMachine}\na
 
 type Say = (tone: "error" | "warn" | "info", text: string, sticky?: boolean, key?: string, title?: string) => void;
 type Row = Pick<Session, "rawMachine" | "name"> & Partial<Pick<Session, "state" | "archiveId">>;
-export type Assignment = { group: string; rank: number };
+export type Assignment = { group: string; rank: number; subgroup?: string };
 
 export function createOrganization(say: Say, unsay: (key: string) => void = () => {}, archived: (key: string) => string | undefined = () => undefined) {
   const [grouping, setGrouping] = createSignal<GroupingOut>(emptyGrouping());
@@ -76,7 +76,7 @@ export function createOrganization(say: Say, unsay: (key: string) => void = () =
         for (const id of Object.keys(s)) if (id.startsWith(prefix) && !kept.has(id)) delete s[id];
       }
       for (const k of b.removes) delete s[rowId(k.computer, k.key)];
-      for (const g of assigned) if (g.archive_request === undefined) s[rowId(g.computer, g.key)] = { group: g.group, rank: g.rank };
+      for (const g of assigned) if (g.archive_request === undefined) s[rowId(g.computer, g.key)] = { group: g.group, rank: g.rank, subgroup: g.subgroup };
     }));
   }
 
@@ -130,6 +130,8 @@ export function createOrganization(say: Say, unsay: (key: string) => void = () =
     run(refusal(projectId, destination), () => bridge.deleteProject(projectId, destination));
   const moveProject = (projectId: string, before: string | undefined) => run(refusal(projectId), () => bridge.moveProject(projectId, before ?? null));
   const sortProject = (projectId: string) => run(refusal(projectId), () => bridge.sortProject(projectId));
+  const editSessionGroup = (project: string, change: import("../types").SessionGroupChange) =>
+    run(refusal(project), () => bridge.editSessionGroup(project, change));
   async function setDefaultProject(projectId: string): Promise<boolean> {
     const why = refusal(projectId);
     if (why) { say("info", why); return false; }
@@ -140,7 +142,7 @@ export function createOrganization(say: Say, unsay: (key: string) => void = () =
   /** Expand or collapse: this device's layout; the next batch shows it. */
   const setProjectCollapsed = (projectId: string, collapsed: boolean) => { void bridge.setProjectCollapsed(projectId, collapsed).catch(() => {}); };
 
-  return { grouping, groups, defaultProject, applyGrouping, groupOf, headerOf, moveToProject, createProject,
+  return { grouping, groups, defaultProject, applyGrouping, groupOf, headerOf, moveToProject, createProject, editSessionGroup,
            renameProject, setProjectColor, deleteProject, moveProject, sortProject, setProjectCollapsed, setDefaultProject, changeProjectFolder };
 }
 
@@ -151,7 +153,7 @@ let archivedGroup: (key: string) => string | undefined = () => undefined;
 export function bindArchivedGroups(lookup: (key: string) => string | undefined) { archivedGroup = lookup; }
 
 const app = createOrganization(notify, clearNotice, (key) => archivedGroup(key));
-export const { grouping, groups, defaultProject, applyGrouping, groupOf, headerOf, moveToProject, createProject,
+export const { grouping, groups, defaultProject, applyGrouping, groupOf, headerOf, moveToProject, createProject, editSessionGroup,
                renameProject, setProjectColor, deleteProject, moveProject, sortProject, setProjectCollapsed, setDefaultProject, changeProjectFolder } = app;
 
 /** Project settings… asks the Projects screen to show this project. */
