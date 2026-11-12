@@ -338,3 +338,17 @@ fn literal_stale_replies_are_positive_nonwrites_only_for_the_exact_successful_ch
         Finish::Stale
     );
 }
+
+#[test]
+fn project_limit_refusals_keep_the_task_commands_stable_reason_unchanged() {
+    for reason in [
+        "project_agents_other: This project allows agents to start tasks only in their own session.",
+        "project_agent_limit: The project's hourly agent start limit is reached.",
+    ] {
+        let raw = serde_json::json!({"schema":1,"id":"effect","state":"refused","error":reason}).to_string();
+        match decode_delivery(raw.as_bytes(), "effect") {
+            HandoutOutcome::Refused {reason: actual} => assert_eq!(actual, reason),
+            outcome => panic!("rule refusal was lost: {outcome:?}"),
+        }
+    }
+}

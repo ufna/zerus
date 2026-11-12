@@ -285,8 +285,7 @@ fn cancel_holds_its_admission_until_spawn_and_then_releases_it() {
     assert_eq!(mark.get(), 2);
 }
 
-#[test]
-fn a_saved_cancel_fact_refusal_for_a_conflict_ends_the_visit_even_at_the_same_pair() {
+fn conflict_cancel_fact(released: bool) -> (Harness, Pending, Team, Fact) {
     let mut h = Harness::new();
     let node = h.add(&person(), 1);
     let mut observation = h.observation(node, crate::teams::ops::TaskStage::Todo);
@@ -316,16 +315,36 @@ fn a_saved_cancel_fact_refusal_for_a_conflict_ends_the_visit_even_at_the_same_pa
         revision: team.revision,
         pending: pending.clone(),
         refused: false,
-        released: true,
+        released,
         reason: String::new(),
         attempt: 1,
         attempt_id: String::new(),
     };
+    (h, pending, team, fact)
+}
+#[test]
+fn a_release_is_recorded_under_an_attempt_conflict_with_the_reply_pair() {
+    let (mut h, _, team, fact) = conflict_cancel_fact(true);
     Native::save_cancel(&mut h.store, &team, &fact, 100).unwrap();
-    assert!(h.store.request_refused(TEAM, &fact.request_id).unwrap());
-    assert_ne!(h.node(node).state, NodeState::Cancelled);
-    assert_eq!(
-        Native::pending_cancels(&h.store, TEAM, 0).unwrap(),
-        vec![pending]
-    );
+    assert!(!h.store.request_refused(TEAM, &fact.request_id).unwrap());
+    assert_eq!(h.node(fact.pending.node).state, NodeState::Cancelled);
+    assert!(Native::pending_cancels(&h.store, TEAM, 0)
+        .unwrap()
+        .is_empty());
+}
+#[test]
+fn a_saved_cancel_fact_refusal_for_a_conflict_ends_the_visit_even_at_the_same_pair() {
+    // An old cancelled fact for a bound live task is still refused. Its
+    // saved receipt ends this legacy visit even when the conflict kept the
+    // same pair. New live cancellations use the observer before this port.
+    let (mut h, pending, team, fact) = conflict_cancel_fact(false);
+    for _ in 0..2 {
+        Native::save_cancel(&mut h.store, &team, &fact, 100).unwrap();
+        assert!(h.store.request_refused(TEAM, &fact.request_id).unwrap());
+        assert_ne!(h.node(pending.node).state, NodeState::Cancelled);
+        assert_eq!(
+            Native::pending_cancels(&h.store, TEAM, 0).unwrap(),
+            vec![pending.clone()]
+        );
+    }
 }

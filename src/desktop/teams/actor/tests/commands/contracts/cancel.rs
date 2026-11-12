@@ -10,6 +10,7 @@ pub(super) fn run() {
     already_cancelled();
     refused_done();
     stale();
+    terminal_refuses_an_unobserved_person_attempt();
 }
 fn decide(f: &mut Fixture) {
     f.h.run(
@@ -169,4 +170,43 @@ fn refused_done() {
     let tasks = ProjectStore::open(&f.config.state.join("replica"), &f.task.project).unwrap();
     assert_eq!(tasks.load(&f.task.uuid).unwrap().revision(), revision);
     assert_eq!(f.inputs(), 1);
+}
+
+fn terminal_refuses_an_unobserved_person_attempt() {
+    for archived in [false, true] {
+        let mut f = Fixture::new();
+        f.h.run(&person(), Operation::Stop).unwrap();
+        if archived {
+            f.h.run(&person(), Operation::Archive).unwrap();
+        }
+        person_attempt(&f);
+        let (args, input) = f.cancel_vector();
+        let before = {
+            let tasks =
+                ProjectStore::open(&f.config.state.join("replica"), &f.task.project).unwrap();
+            tasks.load(&f.task.uuid).unwrap().revision()
+        };
+        for _ in 0..2 {
+            let reply = check(&f, &args, &input, "refused");
+            let reason = reply["error"].as_str().unwrap();
+            assert!(reason.starts_with("attempt_changed:"), "{reply}");
+            let decoded = cancel_answer(
+                Ended::Exited {
+                    code: 0,
+                    output: reply.to_string().into_bytes(),
+                },
+                &input,
+            )
+            .unwrap();
+            assert_eq!(
+                decoded.reply,
+                super::super::super::super::ports::TaskReply::Refused {
+                    reason: reason.into()
+                }
+            );
+        }
+        assert_eq!(f.inputs(), 0);
+        let tasks = ProjectStore::open(&f.config.state.join("replica"), &f.task.project).unwrap();
+        assert_eq!(tasks.load(&f.task.uuid).unwrap().revision(), before);
+    }
 }
