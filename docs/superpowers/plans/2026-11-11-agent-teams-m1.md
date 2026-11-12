@@ -1502,18 +1502,25 @@ store takes the answer by the same rule, or the two disagree for ever: in
 a stopped or archived team a cancelled or a released answer is recorded
 when its pair is the newest observation's, or when it names an effect of
 that node's current generation, a hand-out or a reopen, with a number not
-below the observed one. The gate that holds a cancelled answer back while
-the newest observation is a conflict applies to the first case only,
-because nothing observes again after a stop and the command has read the
-document itself under its locks. The first version compared with the
-observation alone: a team stopped between a hand-out and the observation
-of its start kept its cancel pending for ever, the service replayed the
-refused record every fifteen minutes and the cleanup never reached the
-task's key (the review of the actor, 2026-11-12). The service has its own
-exit as well, for any refusal a later rule may bring: a saved refusal of a
-cancel's record for a visit that did not change is recorded once as a
+below the observed one. After a stop a cancelled answer is not held
+back by a conflict of the newest observation either: the command answers
+cancelled for a conflicting document only when that document is already
+cancelled, and refuses one that is not; a task's end does not depend on
+who executed it; and nothing observes again. The first version compared
+with the observation alone and kept the conflict gate. A team stopped
+between a hand-out and the observation of its start kept its cancel
+pending for ever, the service replayed the refused record every fifteen
+minutes and the cleanup never reached the task's key; and a conflicted
+task that the person cancelled around a stop got a new cancel command on
+every pass, because the service took the conflict for a visit that an
+observation would settle (the review of the actor, 2026-11-12). The
+service has its own exits as well, for any refusal a later rule may
+bring. A visit of a stopped or archived team ends only with a recorded
+outcome: a saved refusal of a cancel's record there is recorded once as a
 refused outcome, with what the command answered and what the store said,
-and is never replayed. Once
+and is never replayed; in a live team that holds for a visit that did not
+change. And for one pending decision the number of cancel commands the
+service starts is bounded, whatever the rules say. Once
 the store has observed a task cancelled, the team has let it go. Giving
 such a task back to a team is not possible yet: a task keeps its cancelled
 mark when it is moved back to To do, until it is sent, started or reopened,
