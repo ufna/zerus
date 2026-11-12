@@ -1,6 +1,7 @@
 //! The store follows the task's attempts: an observation carries the
 //! highest attempt generation and the current attempt's ID, kept beside it.
 use super::*;
+use rusqlite::OptionalExtension;
 
 fn stored(h: &Harness, node: u32) -> (u64, String) {
     let db = h.store.db.as_ref().unwrap();
@@ -557,7 +558,7 @@ fn the_reviewers_conflict_blocks_a_late_cancel_and_the_next_answer_is_a_refusal(
         code::INVALID_STATE,
     );
     refused(
-        h.run(&service(), released(node, decision, 2, "")),
+        h.run(&service(), cancel(node, decision, 2, "")),
         code::INVALID_STATE,
     );
     assert_eq!(
@@ -776,28 +777,19 @@ fn an_empty_id_without_the_flag_is_an_ordinary_pair_and_is_applied() {
 
 #[test]
 fn a_pair_with_an_empty_id_is_never_confused_with_a_conflict() {
+    // The conflict gate is the cancelled answer's: shown after a stop, where
+    // a cancelled answer is admitted at all.
     for flagged in [false, true] {
-        let (mut h, lead, node, _) = handed();
-        h.run(
-            &lead,
-            Operation::Cancel {
-                node,
-                reason: "Superseded".into(),
-            },
-        )
-        .unwrap();
-        let decision = h
-            .store
-            .pending_cancels(TEAM, 1, 0)
-            .unwrap()
-            .remove(0)
-            .decision;
+        let (mut h, _, node, _) = handed();
         if flagged {
             conflicted(&mut h, node, TaskStage::InProgress, 2).unwrap();
         } else {
             seen(&mut h, node, TaskStage::InProgress, 2, "").unwrap();
         }
-        let result = h.run(&service(), released(node, decision, 2, ""));
+        h.run(&person(), Operation::Stop).unwrap();
+        let row = h.store.pending_cancels(TEAM, 1, 0).unwrap().remove(0);
+        assert_eq!((row.attempt, row.attempt_id.as_str()), (2, ""));
+        let result = h.run(&service(), cancel(node, row.decision, 2, ""));
         assert_eq!(result.is_ok(), !flagged, "flagged: {flagged}");
     }
 }
@@ -1125,4 +1117,64 @@ fn a_merge_under_a_conflict_of_a_done_task_keeps_the_node() {
     assert!(in_queue(&h, node), "the attempts still conflict");
     seen(&mut h, node, TaskStage::Done, 2, &id).unwrap();
     assert!(!in_queue(&h, node), "the observation agrees");
+}
+
+fn outcome(h: &Harness, decision: u64) -> Option<String> {
+    let db = h.store.db.as_ref().unwrap();
+    db.query_row(
+        "SELECT state FROM cancel_outcomes WHERE decision=?1",
+        [decision],
+        |r| r.get(0),
+    )
+    .optional()
+    .unwrap()
+}
+
+/// Finding 17: a release reports that the key is gone, not who executed an
+/// attempt. Its pair must equal the newest observation's, a conflict's
+/// (N, empty) included, and it is recorded although that observation is a
+/// conflict: in a running team the node ends and its binding goes, after a
+/// stop the cleanup of the key proceeds.
+#[test]
+fn a_release_is_recorded_under_a_conflict_when_its_pair_is_equal() {
+    for stopped in [false, true] {
+        let (mut h, lead, node, id) = handed();
+        if !stopped {
+            h.run(
+                &lead,
+                Operation::Cancel {
+                    node,
+                    reason: "Superseded".into(),
+                },
+            )
+            .unwrap();
+        }
+        conflicted(&mut h, node, TaskStage::Todo, 2).unwrap();
+        if stopped {
+            h.run(&person(), Operation::Stop).unwrap();
+        }
+        let row = h.store.pending_cancels(TEAM, 1, 0).unwrap().remove(0);
+        assert_eq!((row.attempt, row.attempt_id.as_str()), (2, ""));
+        refused(
+            h.run(&service(), released(node, row.decision, 1, &id)),
+            code::INVALID_STATE,
+        );
+        h.run(&service(), released(node, row.decision, 2, ""))
+            .unwrap();
+        assert_eq!(outcome(&h, row.decision).as_deref(), Some("released"));
+        assert!(h.store.pending_cancels(TEAM, 200, 0).unwrap().is_empty());
+        assert!(!bound(&h, node));
+        if stopped {
+            let keyed: Vec<u32> = h
+                .store
+                .keyed_tasks(TEAM, 0, 200)
+                .unwrap()
+                .iter()
+                .map(|k| k.node)
+                .collect();
+            assert_eq!(keyed, vec![node], "the cleanup proceeds");
+        } else {
+            assert_eq!(h.node(node).state, NodeState::Cancelled);
+        }
+    }
 }
