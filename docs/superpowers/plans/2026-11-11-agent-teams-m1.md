@@ -1407,6 +1407,22 @@ again, and both orders of the answer and the observation leave the same
 state. No service command finishes, reopens or cancels a task whose current
 attempt is not the one the store observed.
 
+**Only a layout that reached the integration branch is upgraded.** The
+store's extension marks its layout, and during the reviews of package 10
+that mark moved through six values, each with its own step and its own
+seeding rule for what the step before had stored. None of those layouts
+was ever merged or installed; the steps between them exist only for the
+implementers' own test stores, and every round found one more combination
+of them that the seed got wrong. The merged extension therefore knows two
+stores: one from before the extension, which it extends in one
+transaction to the current layout, and one at a layout that was on the
+integration branch, which it steps forward. A mark that only an unmerged
+development build could have written is refused with a sentence that says
+so, and nothing is written; a newer mark is refused as before. A store
+from before the extension holds no attempt of any task, so its first
+observation is judged against no attempt, as for a task that never
+recorded one.
+
 **In a live team a task's end is recorded by its observation alone.** An
 answer and an observation are two reports of one fact, and every rule that
 let both write it produced an order in which they disagreed. The first
@@ -1428,7 +1444,11 @@ team whose task is bound. It takes that answer where no observation can
 follow: for a node without a task, and in a stopped or archived team,
 whose bindings are gone. `released` and `refused` are recorded as answers
 in every state, because no observation says them: a released task has
-lost its key, and its binding is released with the record. In a stopped or
+lost its key, and its binding is released with the record. A release is
+recorded also while the newest observation is a conflict of attempts: it
+says that the key is gone, not who executed an attempt, so only its pair
+must equal the newest observation's, and the conflict gate is the
+cancelled answer's alone. In a stopped or
 archived team no observation follows either, so `team-cancel` never
 answers `stale` there: it acts when the document's current attempt is the
 one the store last observed or is the node's own effect that was delivered
@@ -1439,6 +1459,21 @@ such a task back to a team is not possible yet: a task keeps its cancelled
 mark when it is moved back to To do, until it is sent, started or reopened,
 and the intake refuses a cancelled task so that a duplicate cannot pass a
 cancellation. That is a known limit with a tracked follow-up.
+
+**A node with a bound task leaves the live queue only on an observation
+that agrees.** The service's pass observes the nodes of the live queue, so
+a node that is archived while its task is bound and not ended is lost to
+it. Every writer that archives a node therefore asks the newest
+observation first: the task has ended, cancelled or Done, and its attempts
+do not conflict. A fact that arrives when the observation does not agree
+is still recorded, because it happened, and the node stays in the queue
+for the next observation to decide. The case that showed it (the
+confirmation of 2026-11-12): a merge recorded for an accepted task after a
+person had started it again with conflicting attempts archived the node as
+accepted while the task was active. And a recorded answer that ends a
+pipeline's stage does for the pipeline what the observation of that end
+does: the parent returns to the lead, whether the stage had no task and
+was recorded as cancelled, or was released.
 
 **A reader of a reply ignores what it does not know.** The contract's types
 refuse unknown fields, and that stays the rule for what a person or a
@@ -1451,7 +1486,27 @@ shapes are strict on the way in. Found on 2026-11-12: the catalog reply
 gained a digest in each template row, and the merged client core, which
 read those rows through the strict template type, refused the whole
 catalog. A merge that changes a reply runs the client core's tests against
-the new fixtures.
+the new fixtures. One kind of unknown field is never dropped: a field of
+what the person is asked to confirm. A permission in a template's
+delegations that the client does not know is kept as a fact of that row,
+and Create stays blocked with its reason; a tolerant read that removed it
+made the form show five permissions and allow a create (the desktop's
+review, 2026-11-12). And what the client sends is strict at every level,
+the action inside a call included: an unknown field in a request is
+refused, never silently left out.
+
+**A failed intake leaves the task's team key as it found it.** Sending a
+task to a team writes the key into the task and then asks the store to
+queue it. When the store's answer is certain that nothing was written, a
+refusal or `store_busy`, the intake puts the key back to what it was
+before the call: absent for a first send, the same team for a repeat of a
+task that is already queued. When the result is not known,
+`storage_failed`, the key stays: the store may hold the node, and a repeat
+finds it by the task's identity. The intake never clears a key it did not
+set. Clearing it on every error made a failed repeat look like a person
+taking the task out of the team: the observer released the node, and the
+next send queued the task a second time (the desktop's review,
+2026-11-12).
 
 **Known limit: the key of a task that was closed before the stop.** After a
 stop the service clears the team key of the tasks that were open at the
