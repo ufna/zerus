@@ -144,18 +144,57 @@ pub(super) fn archive(ctx: &mut Context<'_>) -> Result<()> {
 fn hand_back(ctx: &mut Context<'_>, member: &str) -> Result<()> {
     for (seq, node, kind) in reopen_decisions(ctx)? {
         if ctx.unstarted(node)?.map(|(s, _)| s) != Some(seq)
-            || handout::reopen_target(ctx, node, &kind)?.as_deref() != Some(member)
+            || aimed_at(ctx, node, &kind)?.as_deref() != Some(member)
         {
             continue;
         }
         ctx.settle(node)?;
-        queue::set_hold(ctx, node, true)?;
         let body = format!(
             "Member {member} was removed before the {kind} of task {node} started; the decision is settled and the task waits for a new one."
         );
-        ctx.inbox(node, &format!("member_removed:{seq}"), &body)?;
+        hand_to_lead(ctx, node, &format!("member_removed:{seq}"), &body)?;
     }
     Ok(())
+}
+/// The member a pending Return or Reassign is aimed at, read only to hand
+/// its node back when that member is removed: a Reassign's assignee, and for
+/// a Return the member of the newest effect of the node's current
+/// generation, whatever that effect's state. That is wider than the holder a
+/// reopen is delivered to (`handout::reopen_target`), so that a Return
+/// admitted while its member's hand-out was only reserved is still found. It
+/// never chooses a recipient for a delivery.
+fn aimed_at(ctx: &Context<'_>, node: u32, kind: &str) -> Result<Option<String>> {
+    if kind == "reassign" {
+        return Ok(ctx.node(node)?.assignee);
+    }
+    ctx.db
+        .query_row(
+            "SELECT member FROM effects WHERE team=?1 AND node=?2 AND generation=?3 ORDER BY seq DESC LIMIT 1",
+            params![ctx.team.id, node, ctx.generation(node)?],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(storage)
+}
+/// The member a Return of the node would go back to, its holder, when that
+/// member was removed from the team: such a Return could never be carried
+/// out. Every writer of a Return asks it.
+pub(super) fn removed_holder(ctx: &Context<'_>, node: u32) -> Result<Option<String>> {
+    let Some(holder) = handout::holder(ctx, node)? else {
+        return Ok(None);
+    };
+    Ok((ctx.member(&holder)?.state == MemberState::Removed).then_some(holder))
+}
+/// Hands a node to the lead instead of a Return or Reassign that its member
+/// can no longer carry out: held, with one inbox item of the cause's own kind.
+pub(super) fn hand_to_lead(
+    ctx: &mut Context<'_>,
+    node: u32,
+    kind: &str,
+    text: &str,
+) -> Result<u64> {
+    queue::set_hold(ctx, node, true)?;
+    ctx.inbox(node, kind, text)
 }
 /// The team's unsettled Returns and Reassigns, from the partial index of
 /// open decisions and within its bound.

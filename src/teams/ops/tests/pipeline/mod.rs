@@ -2,6 +2,7 @@ use super::*;
 mod creation;
 mod delegation;
 mod overrides;
+mod removed_holder;
 mod review;
 mod review2;
 mod verdicts;

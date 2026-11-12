@@ -72,8 +72,7 @@ pub(super) fn return_task(ctx: &mut Context<'_>) -> Result<()> {
             "Only a reported task with a holder can be returned.",
         ));
     };
-    // A Return to a removed holder could never be carried out.
-    if ctx.member(&holder)?.state == MemberState::Removed {
+    if members::removed_holder(ctx, *node)?.is_some() {
         return Err(invalid(
             "The task's holder was removed from the team; reassign or cancel the task instead.",
         ));
@@ -238,6 +237,16 @@ pub(super) fn conflict(ctx: &mut Context<'_>) -> Result<()> {
         return Ok(());
     }
     ctx.settle(*node)?;
+    // The conflict happened and stays recorded; a Return to a removed holder
+    // could never be carried out, so the lead decides instead.
+    if let Some(member) = members::removed_holder(ctx, *node)? {
+        let text = format!(
+            "Member {member} was removed from the team; the integration conflict of task {node} is recorded and nobody can take the task back, so it waits for the lead to reassign or cancel it.\n{body}"
+        );
+        let kind = format!("conflict_holder_removed:{decision}");
+        ctx.reply.item = Some(members::hand_to_lead(ctx, *node, &kind, &text)?);
+        return Ok(());
+    }
     ctx.decision(*node, "return", &body, DecisionState::Pending)?;
     ctx.reply.item = Some(ctx.inbox(*node, "integration_conflict", &body)?);
     Ok(())

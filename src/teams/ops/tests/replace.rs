@@ -1,7 +1,7 @@
 //! A Return or Reassign that has not started can be replaced, and removing
 //! its member hands it back to the lead (plan, "Decisions during wave 3").
 use super::*;
-use crate::teams::store::{Decision, JournalEntry};
+use crate::teams::store::{Decision, InboxItem, JournalEntry};
 
 const NOT_SETTLED: &str = "The previous decision has not settled.";
 
@@ -583,4 +583,134 @@ fn removal_settles_only_the_unstarted_decisions_aimed_at_the_member() {
             .iter()
             .all(|k| !k.starts_with("member_removed:")));
     }
+}
+
+fn conflicted(node: u32, decision: u64) -> Operation {
+    Operation::RecordIntegrationConflict {
+        node,
+        decision,
+        conflicts: vec!["src/example.rs".into()],
+    }
+}
+fn items(h: &Harness) -> Vec<InboxItem> {
+    h.store.inbox(TEAM, 200, None).unwrap().rows
+}
+
+/// Every writer of a Return asks whether the holder was removed. A conflict
+/// for a removed holder stays recorded and hands the node to the lead
+/// instead of a Return that could never be carried out; with the holder
+/// present it returns the task as before. A replay changes nothing.
+#[test]
+fn an_integration_conflict_for_a_removed_holder_goes_to_the_lead_instead_of_a_return() {
+    for gone in [true, false] {
+        let mut h = Harness::new();
+        let (node, lead) = h.reported();
+        h.bind("m2");
+        let accept = decide(&mut h, &lead, Operation::Accept { node });
+        if gone {
+            h.run(&person(), removed("m1")).unwrap();
+        }
+        let rev = h.store.team(TEAM).unwrap().unwrap().revision;
+        let r = request(rev, conflicted(node, accept.seq));
+        let first = super::super::apply(&mut h.store, &service(), &r, 1234).unwrap();
+        let fact = h.store.integration_fact(TEAM, node).unwrap().unwrap();
+        assert_eq!(fact.decision, accept.seq);
+        assert_eq!(fact.conflicts, vec!["src/example.rs".to_owned()]);
+        assert_eq!(decision(&h, accept.seq).state, DecisionState::Settled);
+        let kind = format!("conflict_holder_removed:{}", accept.seq);
+        if gone {
+            assert!(all(&h)
+                .iter()
+                .all(|d| d.node != node || d.state == DecisionState::Settled));
+            assert!(reopens(&h).is_empty());
+            assert!(h.node(node).hold);
+            let handed: Vec<_> = items(&h)
+                .into_iter()
+                .filter(|i| i.node == node && i.kind == kind && i.state == "open")
+                .collect();
+            assert_eq!(handed.len(), 1);
+            assert!(handed[0].text.contains("Member m1 was removed"));
+            assert!(handed[0].text.contains("integration conflict"));
+            assert_eq!(first.item, Some(handed[0].seq));
+            assert!(!open_items(&h, node).contains(&"integration_conflict".to_owned()));
+        } else {
+            let ret = newest(&h, node);
+            assert_eq!(
+                (ret.kind.as_str(), ret.state),
+                ("return", DecisionState::Pending)
+            );
+            assert_eq!(reopens(&h), vec![ret.seq]);
+            assert!(open_items(&h, node).contains(&"integration_conflict".to_owned()));
+            assert!(!open_items(&h, node).contains(&kind));
+        }
+        let (decisions, inbox, entries) = (all(&h), items(&h), journal(&h));
+        let again = super::super::apply(&mut h.store, &service(), &r, 1234).unwrap();
+        assert_eq!(again, first);
+        assert_eq!(
+            (all(&h), items(&h), journal(&h)),
+            (decisions, inbox, entries)
+        );
+        if gone {
+            let next = decide(&mut h, &lead, reassigned(node, "m2"));
+            assert_eq!(
+                (next.kind.as_str(), next.state),
+                ("reassign", DecisionState::Pending)
+            );
+            assert_eq!(reopens(&h), vec![next.seq]);
+        }
+    }
+}
+
+/// A Return admitted while its member's hand-out was only reserved (the task
+/// observed In review before any outcome) is still handed back when that
+/// member is removed: the removal reads the newest effect of the node's
+/// current generation, whatever its state, never the narrower holder a
+/// reopen is delivered to.
+#[test]
+fn removal_hands_back_a_return_admitted_while_the_hand_out_was_only_reserved() {
+    let mut h = Harness::new();
+    let lead = h.bind("lead");
+    h.bind("m1");
+    h.bind("m2");
+    let node = h.add(&person(), 1);
+    h.intent(node, "m1");
+    h.observe(node, TaskStage::InReview);
+    let earlier = decide(&mut h, &lead, returned(node));
+    // The removal's own reading: the newest effect of the generation is m1's
+    // reservation, with no outcome.
+    let effect = h
+        .store
+        .effects(TEAM, 200, None)
+        .unwrap()
+        .rows
+        .pop()
+        .unwrap();
+    assert_eq!(
+        (effect.node, effect.member.as_str(), effect.state.as_str()),
+        (node, "m1", "reserved")
+    );
+    assert!(effect.outcome.is_none());
+    assert_eq!(
+        Some(effect.generation),
+        h.store.generation(TEAM, node).unwrap()
+    );
+    h.run(&person(), removed("m1")).unwrap();
+    // Whatever the holder reading is, the Return was aimed at m1 and is
+    // handed back: settled, the node held, one item, nothing pending.
+    assert_eq!(decision(&h, earlier.seq).state, DecisionState::Settled);
+    assert!(reopens(&h).is_empty());
+    assert!(h.node(node).hold);
+    let kind = format!("member_removed:{}", earlier.seq);
+    assert_eq!(
+        open_items(&h, node)
+            .into_iter()
+            .filter(|k| k.starts_with("member_removed:"))
+            .collect::<Vec<_>>(),
+        vec![kind]
+    );
+    let next = decide(&mut h, &lead, reassigned(node, "m2"));
+    assert_eq!(
+        (next.kind.as_str(), next.state),
+        ("reassign", DecisionState::Pending)
+    );
 }
