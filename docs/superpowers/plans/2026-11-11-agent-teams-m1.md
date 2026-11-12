@@ -1519,8 +1519,22 @@ bring. A visit of a stopped or archived team ends only with a recorded
 outcome: a saved refusal of a cancel's record there is recorded once as a
 refused outcome, with what the command answered and what the store said,
 and is never replayed; in a live team that holds for a visit that did not
-change. And for one pending decision the number of cancel commands the
-service starts is bounded, whatever the rules say. Once
+change. A saved refusal that only says "ask again", a stale revision, is
+not a refusal by a rule: the request's ID is spent and nothing was
+decided, so the same record is made again under a new ID; taking it for a
+rule's refusal recorded a true answer as refused after one lost write
+(the delta review, the same day). And a live team's cancel that keeps
+answering stale although its observation changes nothing is given up
+after three such answers, as a refused outcome that reaches the lead. The
+count is of answers that teach nothing new, not of attempts: an answer
+that says "ask again" for a reason that ends by itself (a project's
+cutover hold), a command that provably did not start, and an answer whose
+observation failed are retried with a backoff and a card while they last,
+and never become a refusal by repetition; the first version counted
+attempts and gave up on a stopped team's task seven minutes into a
+cutover, clearing its key while it still ran. A row that has halted is
+its own state: its siblings and the other teams are served in the same
+pass. Once
 the store has observed a task cancelled, the team has let it go. Giving
 such a task back to a team is not possible yet: a task keeps its cancelled
 mark when it is moved back to To do, until it is sent, started or reopened,
