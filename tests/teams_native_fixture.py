@@ -705,7 +705,11 @@ class TeamFixture:
         return int(out.stdout.strip()) if out.stdout.strip().isdigit() else os.getpid()
 
     def inspect(self, member_id):
-        return self.json('inspect', self.sessions[member_id]['name'], timeout=60)
+        view = self.json('inspect', self.sessions[member_id]['name'], timeout=60)
+        if view.get('tracked') is True and view.get('session_id'):
+            self.sessions[member_id]['last_tracked'] = {key: view.get(key) for key in (
+                'session_id', 'run_id', 'launch_id', 'conversation_id')}
+        return view
 
     def answer_startup(self, member_id):
         """The person answers each startup card of this member until it is ready. Claude
@@ -880,6 +884,62 @@ class TeamFixture:
             except Exception as error:
                 self.evidence.write(f'diagnose-{name}.json', str(error)[:500])
 
+    VIEW_FIELDS = ('tracked', 'name', 'agent', 'cwd', 'run_id', 'session_id', 'launch_id', 'conversation_id', 'state',
+                   'archive_id', 'pending_questions_error', 'runtime_state', 'process_state')
+    RECORD_FIELDS = ('archive_id', 'name', 'agent', 'cwd', 'run_id', 'session_id', 'launch_id', 'conversation_id',
+                     'account_id', 'state', 'conversation_state', 'completion_source', 'completion_reason', 'exited_at',
+                     'exit_code', 'termination_signal', 'session_end', 'error', 'expected_id', 'paused', 'pausing',
+                     'terminating')
+
+    def observation(self):
+        """Read-only, through the private state only: what the service's observation of a
+        member reads (confirm/native/observation.rs), so a refused resume names its step:
+        the inspection by the member's last session ID, the archive catalog rows of its
+        name, each archive's exit fields and the archive's own inspection."""
+        import sqlite3
+        state = Path(self.env['HGS_STATE_DIR'])
+        after = str(2 ** 63 - 1)
+
+        def read(*argv):
+            run = self.hgs(*argv, ok=False, timeout=60)
+            try:
+                value = json.loads(run.stdout)
+            except ValueError:
+                value = None
+            if not isinstance(value, dict):
+                return dict(exit=run.returncode, stdout=run.stdout[:500], stderr=run.stderr[-500:])
+            return dict(exit=run.returncode, stderr=run.stderr[-500:], pending_questions=len(value.get('pending_questions') or []),
+                        **{key: value.get(key) for key in self.VIEW_FIELDS})
+
+        catalog = state / 'archive-catalog-v1.sqlite3'
+        out = {}
+        for member_id, session in self.sessions.items():
+            last = session.get('last_tracked') or {}
+            item = out[member_id] = dict(name=session['name'], last_tracked=last, archives=[])
+            if last.get('session_id'):
+                item['by_session_id'] = read('inspect', '--session-id', last['session_id'], '--after', after,
+                                             '--skip-processes')
+            rows = []
+            if catalog.is_file():
+                db = sqlite3.connect(f'file:{catalog}?mode=ro', uri=True, timeout=1)
+                try:
+                    rows = db.execute('SELECT id, run, conversation FROM archive_rows WHERE name=? LIMIT 5',
+                                      (session['name'],)).fetchall()
+                finally:
+                    db.close()
+            for archive_id, run, conversation in rows:
+                entry = dict(id=archive_id, run=run, conversation=conversation)
+                path = state / 'archives' / f'{archive_id}.json'
+                if path.is_file() and not path.is_symlink() and path.stat().st_size <= 1 << 20:
+                    record = json.loads(path.read_text())
+                    entry['record'] = {key: record.get(key) for key in self.RECORD_FIELDS}
+                    entry['record'].update(has_supervisor='supervisor' in record,
+                                           worktree_owner=(record.get('worktree_owner') or {}).get('id'))
+                entry['view'] = read('inspect', session['name'], '--archive', archive_id, '--after', after,
+                                     '--skip-processes')
+                item['archives'].append(entry)
+        return out
+
     def fleet_rows(self):
         """Read-only: the private service's fleet rows of this team's runs, the fields the
         teams actor reads to decide that a member is free (actor/availability.rs)."""
@@ -928,6 +988,10 @@ class TeamFixture:
                     self.evidence.write('diagnose-' + name.replace('/', '-') + '.json', tables)
             except Exception as error:
                 self.evidence.write('diagnose-ledger-error.txt', str(error)[:500])
+        try:
+            self.evidence.write('diagnose-observation.json', self.observation())
+        except Exception as error:
+            self.evidence.write('diagnose-observation.json', str(error)[:500])
         for member_id, session in list(self.sessions.items()):
             try:
                 view = self.inspect(member_id)
