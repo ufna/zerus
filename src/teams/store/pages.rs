@@ -22,7 +22,7 @@ fn row_facts(table: &str) -> String {
     } else {
         "NULL".to_owned()
     };
-    format!("{holder},(SELECT d.kind FROM decisions d WHERE d.team={table}.team AND d.node={table}.id AND d.state<>'settled')")
+    format!("{holder},(SELECT d.kind FROM decisions d WHERE d.team={table}.team AND d.node={table}.id AND d.state<>'settled'),(SELECT d.state FROM decisions d WHERE d.team={table}.team AND d.node={table}.id AND d.state<>'settled')")
 }
 
 fn start(
@@ -262,10 +262,16 @@ impl Store {
                         filter.as_deref().unwrap_or(&c.rank)
                     ],
                     |r| {
+                        let pending: Option<String> = r.get(8)?;
+                        let state: Option<DecisionState> = r.get(9)?;
                         Ok(QueueRow {
                             node: rows::node_row(r)?,
                             holder: r.get(7)?,
-                            pending: r.get(8)?,
+                            pending_replaceable: pending
+                                .as_deref()
+                                .zip(state)
+                                .is_some_and(|(kind, state)| state.replaceable(kind)),
+                            pending,
                         })
                     },
                 )

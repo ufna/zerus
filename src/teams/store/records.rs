@@ -34,13 +34,16 @@ pub struct Page<T> {
     pub next: Option<Cursor>,
 }
 /// A queue row with what a view needs to foresee a refusal: the member
-/// holding the attempt (none when no one does) and the kind of a pending
-/// decision (none when nothing is pending).
+/// holding the attempt (none when no one does), the kind of a pending
+/// decision (none when nothing is pending), and whether a new Return,
+/// Reassign or Cancel would replace that decision instead of being refused
+/// (`DecisionState::replaceable`; false when nothing is pending).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct QueueRow {
     pub node: zerus_team_plan::model::Node,
     pub holder: Option<String>,
     pub pending: Option<String>,
+    pub pending_replaceable: bool,
 }
 /// A member row with whether the person stopped the member.
 #[derive(Clone, Debug, PartialEq, Eq)]

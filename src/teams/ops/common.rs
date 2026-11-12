@@ -79,15 +79,14 @@ impl Context<'_> {
         }
     }
     /// The node's Return or Reassign that has not started: unsettled, and no
-    /// reopen was reserved for it (`reopening`, the reopen intent's mark).
+    /// reopen was reserved for it (the reopen intent moves it from Pending to
+    /// EffectReserved, which `reopening` reads). The rule is
+    /// `DecisionState::replaceable`, which the queue row shows as well.
     pub fn unstarted(&self, node: u32) -> Result<Option<(u64, String)>> {
-        let Some((seq, kind, _)) = self.pending(node)? else {
+        let Some((seq, kind, state)) = self.pending(node)? else {
             return Ok(None);
         };
-        if !matches!(kind.as_str(), "return" | "reassign") || self.reopening(node)? {
-            return Ok(None);
-        }
-        Ok(Some((seq, kind)))
+        Ok(state.replaceable(&kind).then_some((seq, kind)))
     }
     /// The one-unsettled-decision rule for a lead's or the person's Return,
     /// Reassign or Cancel. An earlier Return or Reassign that has not started

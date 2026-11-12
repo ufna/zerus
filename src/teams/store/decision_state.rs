@@ -13,6 +13,15 @@ pub enum DecisionState {
     Settled,
 }
 impl DecisionState {
+    /// Whether a node's unsettled decision of `kind` in this state can still
+    /// be replaced by a lead's or the person's Return, Reassign or Cancel: a
+    /// Return or Reassign that has not started. Reserving its reopen is what
+    /// moves it on from Pending; an acceptance and a cancel are never
+    /// replaced. The operations (`Context::unstarted`) and the queue row's
+    /// `pending_replaceable` both read this one rule.
+    pub fn replaceable(self, kind: &str) -> bool {
+        matches!(kind, "return" | "reassign") && self == Self::Pending
+    }
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Pending => "pending",

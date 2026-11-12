@@ -727,3 +727,52 @@ fn removal_hands_back_a_return_admitted_while_the_hand_out_was_only_reserved() {
         ("reassign", DecisionState::Pending)
     );
 }
+
+fn queue_facts(h: &Harness, node: u32) -> (Option<String>, bool) {
+    let row = h
+        .store
+        .queue_rows(TEAM, 200, None)
+        .unwrap()
+        .rows
+        .into_iter()
+        .find(|r| r.node.id == node)
+        .unwrap();
+    (row.pending, row.pending_replaceable)
+}
+
+/// The queue row says whether a new Return, Reassign or Cancel would replace
+/// the node's pending decision, by the operations' own rule: true for a
+/// Return or Reassign that has not started, false once its reopen is
+/// reserved, false for an acceptance, false when nothing is pending. A
+/// Cancel is admitted exactly when the row says so.
+#[test]
+fn the_queue_row_says_whether_the_pending_decision_can_be_replaced() {
+    for first in ["return", "reassign", "accept"] {
+        for reserved in [false, true] {
+            if first == "accept" && reserved {
+                continue;
+            }
+            let mut h = Harness::new();
+            let (node, lead) = h.reported();
+            h.bind("m2");
+            assert_eq!(queue_facts(&h, node), (None, false), "nothing pending");
+            let op = match first {
+                "return" => returned(node),
+                "reassign" => reassigned(node, "m2"),
+                _ => Operation::Accept { node },
+            };
+            decide(&mut h, &lead, op);
+            if reserved {
+                h.reopen(node, if first == "return" { "m1" } else { "m2" });
+            }
+            let replaceable = first != "accept" && !reserved;
+            let case = format!("{first} reserved={reserved}");
+            assert_eq!(
+                queue_facts(&h, node),
+                (Some(first.to_owned()), replaceable),
+                "{case}"
+            );
+            assert_eq!(h.run(&lead, cancelled(node)).is_ok(), replaceable, "{case}");
+        }
+    }
+}
