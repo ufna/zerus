@@ -110,3 +110,60 @@ fn a_handed_task_is_never_refused_into_a_failure_card() {
     assert_eq!(handed(&h), [(1, "m1".to_owned())]);
     assert_eq!(blocked(&h), 0);
 }
+
+/// A delivery reserved in the ledger whose intent never reached the store
+/// (the service stopped between the two) has no effect. While its replay
+/// waits for the backoff of a failed replay, the task stays held: the free
+/// member takes the task that waits, not the one whose delivery is pending.
+#[test]
+fn a_task_whose_delivery_waits_for_its_replay_is_held() {
+    let mut h = Harness::new();
+    h.bind("m1");
+    h.bind("m2");
+    h.add(&person(), 1);
+    h.add(&person(), 2);
+    let native = super::production::native(&h);
+    let team = h.store.team(TEAM).unwrap().unwrap();
+    let mut a = Runtime::open(h.temp.path(), &team.home).unwrap();
+    let mut p = Production {
+        native,
+        deliveries: vec![],
+    };
+    row(&p, &h, "m2", &[("activity", json!("busy"))]);
+    // m1 takes task 1; the service stops after the ledger's reservation and
+    // before the store's intent.
+    super::super::delivery::CRASH.with(|c| c.set(Some("reserved")));
+    let stopped = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        a.tick(&mut h.store, &mut p, TEAM, T0, false).unwrap()
+    }));
+    assert!(stopped.is_err());
+    assert_eq!(
+        super::super::delivery::CRASH.with(|c| c.replace(None)),
+        None
+    );
+    let mut a = Runtime::open(h.temp.path(), &team.home).unwrap();
+    h.store.refresh().unwrap();
+    let pending = a.ledger.prefix_page(TEAM, "delivery:", "").unwrap();
+    assert_eq!(pending.len(), 1);
+    assert_eq!(pending[0].data["node"], json!(1));
+    assert!(handed(&h).is_empty(), "no effect: the intent never applied");
+    // Its replay failed once and waits for its backoff.
+    a.failure(
+        &mut h.store,
+        &team,
+        &pending[0].key,
+        "",
+        &crate::desktop::teams::actor::problem("fixture replay failure"),
+        T0,
+    )
+    .unwrap();
+    row(&p, &h, "m2", &[]);
+    a.tick(&mut h.store, &mut p, TEAM, T0 + 30_000, false)
+        .unwrap();
+    assert_eq!(p.deliveries.len(), 1, "{:?}", p.deliveries);
+    assert!(p.deliveries[0].starts_with("m2 -> Outcome(Submitted"));
+    assert_eq!(handed(&h), [(2, "m2".to_owned())]);
+    assert!(a.ledger.get(TEAM, &pending[0].key).unwrap().is_some());
+    assert!(a.ledger.get(TEAM, "gate:handout:1").unwrap().is_none());
+    assert_eq!(blocked(&h), 0);
+}
