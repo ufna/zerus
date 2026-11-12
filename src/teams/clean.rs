@@ -46,8 +46,11 @@ pub(crate) fn lines(text: &str) -> String {
 /// shown as it is never starts with a quote and every quoted form does, and
 /// the escaping is reversible. A quoted form cut at the limit ends with a
 /// marker after its closing quote, so it never reads like a whole name. The
-/// limit: two names whose quoted forms are both cut read the same when they
-/// share the part shown.
+/// limits: two names whose quoted forms are both cut read the same when they
+/// share the part shown; and a limit under five bytes holds no marked cut,
+/// so such a name shows the marker alone (nothing under three bytes), which
+/// reads like any other name so cut. Whatever the limit, the answer is never
+/// longer than it.
 pub(crate) fn path(name: &str, limit: usize) -> String {
     if name.len() <= limit
         && !name.starts_with('"')
@@ -77,16 +80,24 @@ pub(crate) fn path(name: &str, limit: usize) -> String {
         shown.push_str(&piece);
         ends.push(shown.len());
     }
-    if !whole {
-        while shown.len() + 1 + CUT.len() > limit {
-            ends.pop();
-            shown.truncate(ends.last().copied().unwrap_or(1));
+    if whole && shown.len() < limit {
+        shown.push('"');
+        return shown;
+    }
+    // Cut: drop whole pieces until the closing quote and the marker fit.
+    while shown.len() + 1 + CUT.len() > limit {
+        if ends.pop().is_none() {
+            // Under five bytes no marked cut fits.
+            return if CUT.len() <= limit {
+                CUT.to_owned()
+            } else {
+                String::new()
+            };
         }
+        shown.truncate(ends.last().copied().unwrap_or(1));
     }
     shown.push('"');
-    if !whole {
-        shown.push_str(CUT);
-    }
+    shown.push_str(CUT);
     shown
 }
 
@@ -201,5 +212,38 @@ mod tests {
             path("\u{7}\u{7}\u{7}", 16),
             r#""\u0007""#.to_owned() + "\u{2026}"
         );
+    }
+
+    /// `path` with its answer within a deadline: a call that spins fails
+    /// the test instead of hanging the run.
+    fn within(name: &str, limit: usize) -> String {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let name = name.to_owned();
+        std::thread::spawn(move || {
+            let _ = tx.send(path(&name, limit));
+        });
+        rx.recv_timeout(std::time::Duration::from_secs(5))
+            .unwrap_or_else(|_| panic!("path did not answer for a limit of {limit}"))
+    }
+
+    /// Every limit answers, and never with more than its bytes: under five
+    /// bytes no marked cut fits, so a name that must be cut shows the marker
+    /// alone, and nothing under three bytes.
+    #[test]
+    fn a_tiny_limit_answers_within_its_bytes() {
+        let names = ["\u{7}x", "x\u{7}", "\"q", "", "   ", "abcdefgh"];
+        for limit in 0..=8 {
+            for name in names {
+                let shown = within(name, limit);
+                assert!(shown.len() <= limit, "{name:?} at {limit}: {shown:?}");
+            }
+        }
+        for limit in 0..5 {
+            let marker = if limit >= 3 { "\u{2026}" } else { "" };
+            assert_eq!(within("\u{7}x", limit), marker, "a limit of {limit}");
+        }
+        assert_eq!(within("\u{7}x", 5), "\"\"\u{2026}");
+        assert_eq!(within("\u{7}x", 7), "\"\"\u{2026}");
+        assert_eq!(within("x\u{7}", 7), "\"x\"\u{2026}");
     }
 }
