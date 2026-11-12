@@ -1,0 +1,399 @@
+//! The step to layout 11 on stores the old commits wrote with their own
+//! operations (layout 8: 40046fa3f, layout 9: 452bec1fe, layout 10:
+//! c29dc402e), kept as SQL dumps under `legacy/`. The generator ran inside
+//! each commit's own ops test harness; its source and how to rerun it are
+//! in `legacy/README.md`. A held node without an unsettled decision belongs
+//! to the last of its recorded events in journal order; a hand-back the
+//! records cannot place, an archived record, or nothing found leaves it the
+//! person's. No clock is read.
+use super::*;
+use crate::teams::store::timers::schema::EXTENSION;
+
+/// What a store's layout, case and dump are.
+struct Dump {
+    layout: u32,
+    case: &'static str,
+    sql: &'static str,
+}
+macro_rules! dump {
+    ($layout:literal, $case:literal) => {
+        Dump {
+            layout: $layout,
+            case: $case,
+            sql: include_str!(concat!("legacy/layout", $layout, "-", $case, ".sql")),
+        }
+    };
+}
+const HOLDS: [Dump; 3] = [dump!(8, "holds"), dump!(9, "holds"), dump!(10, "holds")];
+
+#[derive(Clone, Copy, Debug)]
+enum Clock {
+    /// The times as the old commit wrote them.
+    Kept,
+    /// Every time the same.
+    One,
+    /// Every time running backwards against the rows' order.
+    Descending,
+}
+
+/// The dump as a store of its own layout, opened at this head.
+fn legacy(dump: &Dump, clock: Clock, archived: bool) -> Harness {
+    let mut h = Harness::empty();
+    drop(h.store.db.take());
+    let path = h.temp.path().join("teams/teams-v1.sqlite3");
+    for suffix in ["", "-wal", "-shm"] {
+        let _ = std::fs::remove_file(format!("{}{suffix}", path.display()));
+    }
+    // Created private, as the store creates its file.
+    drop(
+        crate::platform::private_open(
+            std::fs::OpenOptions::new()
+                .create(true)
+                .truncate(true)
+                .write(true),
+        )
+        .open(&path)
+        .unwrap(),
+    );
+    let db = Connection::open(&path).unwrap();
+    db.execute_batch(dump.sql).unwrap();
+    let layout: u32 = db
+        .query_row("SELECT version FROM timers_extension WHERE id=1", [], |r| {
+            r.get(0)
+        })
+        .unwrap();
+    assert_eq!(layout, dump.layout, "{}", dump.case);
+    let times: Vec<(String, String)> = {
+        let mut statement = db
+            .prepare("SELECT m.name,c.name FROM sqlite_master m, pragma_table_info(m.name) c WHERE m.type='table' AND c.name LIKE '%\\_ms' ESCAPE '\\'")
+            .unwrap();
+        let rows = statement
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        rows
+    };
+    assert!(times.iter().any(|(t, c)| t == "journal" && c == "at_ms"));
+    for (table, column) in &times {
+        let value = match clock {
+            Clock::Kept => continue,
+            Clock::One => "1".to_owned(),
+            Clock::Descending => "1000000000-rowid".to_owned(),
+        };
+        db.execute(&format!("UPDATE {table} SET {column}={value}"), [])
+            .unwrap();
+    }
+    if archived {
+        // As the journal's archive writer moves rows (ops/journal.rs).
+        db.execute_batch(&format!(
+            "INSERT INTO journal_archive SELECT * FROM journal WHERE team='{TEAM}'; DELETE FROM journal WHERE team='{TEAM}';"
+        ))
+        .unwrap();
+    }
+    drop(db);
+    reopen(&mut h);
+    assert_eq!(marker(&h), Some(EXTENSION));
+    h
+}
+fn marker(h: &Harness) -> Option<u32> {
+    db(h)
+        .query_row("SELECT version FROM timers_extension WHERE id=1", [], |r| {
+            r.get(0)
+        })
+        .ok()
+}
+/// The stored hold: (flag, owner, hand-back).
+fn stored(h: &Harness, node: u32) -> (bool, Option<String>, bool) {
+    db(h)
+        .query_row(
+            "SELECT hold,hold_owner,hand_back FROM nodes WHERE team=?1 AND id=?2",
+            params![TEAM, node],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .unwrap()
+}
+fn lead(h: &Harness) -> Actor {
+    Actor::Session {
+        person: "local".into(),
+        team: TEAM.into(),
+        member: "lead".into(),
+        session: h
+            .store
+            .member(TEAM, "lead")
+            .unwrap()
+            .unwrap()
+            .session
+            .unwrap(),
+    }
+}
+fn person_hold() -> (bool, Option<String>, bool) {
+    (true, Some("person".to_owned()), false)
+}
+fn lead_hold() -> (bool, Option<String>, bool) {
+    (true, Some("lead".to_owned()), false)
+}
+fn hand_back() -> (bool, Option<String>, bool) {
+    (false, None, true)
+}
+/// The holds store's nodes and what the records say of each.
+fn expected() -> [(u32, (bool, Option<String>, bool), &'static str); 7] {
+    [
+        (
+            1,
+            person_hold(),
+            "a hand-back, the lead's Release, the person's Hold",
+        ),
+        (2, hand_back(), "the person's Hold, then a hand-back"),
+        (3, lead_hold(), "the lead's Hold, then nothing"),
+        (
+            4,
+            lead_hold(),
+            "a hand-back, the lead's Release, the lead's Hold",
+        ),
+        (5, hand_back(), "a refused reopen, placed by its effect"),
+        (
+            6,
+            person_hold(),
+            "a reopen cutting over, the lead's Release, the person's Hold",
+        ),
+        (7, person_hold(), "the person's Hold, then nothing"),
+    ]
+}
+
+/// The reviewer's sequence and its mirrors, on the stores of each layout.
+#[test]
+fn each_legacy_hold_goes_to_the_last_recorded_event_that_set_it() {
+    for dump in &HOLDS {
+        let h = legacy(dump, Clock::Kept, false);
+        for (node, want, case) in expected() {
+            assert_eq!(
+                stored(&h, node),
+                want,
+                "layout {}: node {node}, {case}",
+                dump.layout
+            );
+            assert!(
+                h.node(node).hold,
+                "layout {}: node {node} stays held",
+                dump.layout
+            );
+        }
+    }
+}
+
+/// The reviewer's sequence: the lead may not release the person's Hold;
+/// the person may. A lead's hold and a hand-back the lead releases.
+#[test]
+fn the_migrated_holds_are_released_by_their_owners_only() {
+    for dump in &HOLDS {
+        let mut h = legacy(dump, Clock::Kept, false);
+        let lead = lead(&h);
+        for node in [1, 6, 7] {
+            let error = h.run(&lead, Operation::Release { node }).unwrap_err();
+            assert_eq!(
+                error.code,
+                code::NOT_ALLOWED,
+                "layout {}: node {node}",
+                dump.layout
+            );
+            h.run(&person(), Operation::Release { node }).unwrap();
+            assert!(!h.node(node).hold, "layout {}: node {node}", dump.layout);
+        }
+        for node in [2, 3, 4, 5] {
+            h.run(&lead, Operation::Release { node }).unwrap();
+            assert!(!h.node(node).hold, "layout {}: node {node}", dump.layout);
+        }
+    }
+}
+
+/// The step reads no clock: the same stores with every time made equal, or
+/// running backwards, classify the same.
+#[test]
+fn the_step_classifies_by_the_records_order_not_by_their_times() {
+    for dump in &HOLDS {
+        for clock in [Clock::One, Clock::Descending] {
+            let h = legacy(dump, clock, false);
+            for (node, want, case) in expected() {
+                assert_eq!(
+                    stored(&h, node),
+                    want,
+                    "layout {} {clock:?}: node {node}, {case}",
+                    dump.layout
+                );
+            }
+        }
+    }
+}
+
+/// The archive is not read: with every row of the team archived, as the
+/// journal's own archive writer moves them, nothing places a hold, and each
+/// is the person's.
+#[test]
+fn a_hold_whose_records_are_archived_is_the_persons() {
+    for dump in &HOLDS {
+        let h = legacy(dump, Clock::Kept, true);
+        for (node, _, case) in expected() {
+            assert_eq!(
+                stored(&h, node),
+                person_hold(),
+                "layout {}: node {node}, {case}",
+                dump.layout
+            );
+        }
+    }
+}
+
+/// A hand-back that no record places (a removed member's item, a pipeline
+/// active on a stage, the step to layout 10's own Return item) is the
+/// person's: the layout-11 store reads it held through every reader, the
+/// lead's Release is refused, the episode's own end neither fails nor frees
+/// the node, and the person's Release frees it.
+fn unplaced(dump: &Dump, node: u32, end: impl Fn(&mut Harness)) {
+    let label = format!("layout {} {}", dump.layout, dump.case);
+    let mut h = legacy(dump, Clock::Kept, false);
+    assert_eq!(stored(&h, node), person_hold(), "{label}");
+    assert!(h.node(node).hold, "{label}");
+    assert!(
+        h.store
+            .queue(TEAM, 200, None)
+            .unwrap()
+            .rows
+            .iter()
+            .any(|n| n.id == node && n.hold),
+        "{label}: the queue reads it held"
+    );
+    crate::teams::ops::readiness(&h.store, TEAM).unwrap();
+    let lead = lead(&h);
+    let error = h.run(&lead, Operation::Release { node }).unwrap_err();
+    assert_eq!(error.code, code::NOT_ALLOWED, "{label}");
+    end(&mut h);
+    let (flag, owner, _) = stored(&h, node);
+    assert_eq!(
+        (flag, owner.as_deref()),
+        (true, Some("person")),
+        "{label}: the episode's end keeps it"
+    );
+    assert!(h.node(node).hold, "{label}");
+    let mut h = legacy(dump, Clock::Kept, false);
+    h.run(&person(), Operation::Release { node }).unwrap();
+    assert!(!h.node(node).hold, "{label}: the person's Release frees it");
+}
+
+/// Layout 10: the lead's decision on the removed member's item.
+#[test]
+fn a_removed_members_hand_back_is_the_persons() {
+    unplaced(&dump!(10, "removed"), 1, |h| {
+        let lead = lead(h);
+        h.run(
+            &lead,
+            Operation::Reassign {
+                node: 1,
+                member: "m1".into(),
+                reason: "To a present member".into(),
+            },
+        )
+        .unwrap();
+    });
+}
+
+/// Layout 9: the step to 10 hands the stranded Return back without a
+/// journal row; the lead's decision on its item.
+#[test]
+fn the_step_to_layout_10s_own_hand_back_is_the_persons() {
+    unplaced(&dump!(9, "stranded"), 1, |h| {
+        let lead = lead(h);
+        h.run(
+            &lead,
+            Operation::Reassign {
+                node: 1,
+                member: "m1".into(),
+                reason: "Decided again".into(),
+            },
+        )
+        .unwrap();
+    });
+}
+
+/// Layouts 8, 9 and 10: a parent whose pipeline is active on a stage. The
+/// stage's end: its task is created, handed out, and its verdict passes.
+#[test]
+fn a_pipeline_active_on_a_stage_is_the_persons() {
+    for dump in [
+        dump!(8, "pipeline_active"),
+        dump!(9, "pipeline_active"),
+        dump!(10, "pipeline_active"),
+    ] {
+        unplaced(&dump, 1, |h| {
+            let stage = h
+                .store
+                .queue(TEAM, 200, None)
+                .unwrap()
+                .rows
+                .into_iter()
+                .find(|n| n.stage_of == Some(1))
+                .unwrap()
+                .id;
+            let id = uuid::Uuid::new_v4().to_string();
+            h.run(
+                &service(),
+                Operation::StageTaskIntent {
+                    node: stage,
+                    effect_request_id: id.clone(),
+                },
+            )
+            .unwrap();
+            h.run(
+                &service(),
+                Operation::StageTaskOutcome {
+                    effect_request_id: id,
+                    outcome: crate::teams::ops::StageTaskOutcome::Created {
+                        task: task(1000 + stage),
+                    },
+                },
+            )
+            .unwrap();
+            h.observe(stage, crate::teams::ops::TaskStage::Todo);
+            h.submit(stage, "m3");
+            let reviewer = Actor::Session {
+                person: "local".into(),
+                team: TEAM.into(),
+                member: "m3".into(),
+                session: h
+                    .store
+                    .member(TEAM, "m3")
+                    .unwrap()
+                    .unwrap()
+                    .session
+                    .unwrap(),
+            };
+            h.run(
+                &reviewer,
+                Operation::Verdict {
+                    node: stage,
+                    generation: 1,
+                    pass: true,
+                    text: "Checked the criteria".into(),
+                },
+            )
+            .unwrap();
+        });
+    }
+}
+
+/// Layouts 8, 9 and 10: a pipeline waiting on the person is placed exactly,
+/// by the card its operation's reply names, and stays a hand-back.
+#[test]
+fn a_pipeline_waiting_on_the_person_is_a_hand_back() {
+    for dump in [
+        dump!(8, "pipeline_person"),
+        dump!(9, "pipeline_person"),
+        dump!(10, "pipeline_person"),
+    ] {
+        let mut h = legacy(&dump, Clock::Kept, false);
+        assert_eq!(stored(&h, 1), hand_back(), "layout {}", dump.layout);
+        let lead = lead(&h);
+        h.run(&lead, Operation::Release { node: 1 }).unwrap();
+        assert!(!h.node(1).hold, "layout {}", dump.layout);
+    }
+}
