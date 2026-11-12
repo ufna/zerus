@@ -55,9 +55,6 @@ CREATE TRIGGER IF NOT EXISTS timer_cards_item_v1 AFTER UPDATE OF state ON inbox
   WHERE state='open' AND kind IN ('report_waiting','silent_lead') AND seq IN
   (SELECT seq FROM timer_firings WHERE team=NEW.team AND subject=NEW.seq AND target='card');
 END;
--- Version 1 of the stage triggers filled the outbox this frontier replaces.
-DROP TRIGGER IF EXISTS key_clear_stage_archived_v1;
-DROP TRIGGER IF EXISTS key_clear_stage_settled_v1;
 -- A stage is released when it is archived and its creation is no longer
 -- live, in either order; one with a key to clear enters the frontier, and a
 -- terminal team that had left the pending set returns to it.
