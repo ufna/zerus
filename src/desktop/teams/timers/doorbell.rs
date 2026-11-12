@@ -5,7 +5,10 @@ use super::{
     ledger::{Binding, Ledger},
     ports::{Effects, Presence, Result, Ring, Rung},
 };
-use crate::teams::store::{timers::Bell, Store};
+use crate::teams::store::{
+    timers::{Bell, Gate},
+    Store,
+};
 use zerus_team_plan::model::{Member, MemberState, Team, TeamStatus};
 
 #[allow(clippy::too_many_arguments)]
@@ -43,12 +46,12 @@ pub(super) fn ring(
     };
     let ring = Ring {
         id: reserved.id.clone(),
-        bell: Bell {
+        gate: Gate::Lead(Bell {
             team: team.id.clone(),
             member: lead.id.clone(),
             session: session.clone(),
             after: reserved.after,
-        },
+        }),
         agent: lead.agent.clone(),
         name: p.name.clone(),
         run: p.run.clone(),

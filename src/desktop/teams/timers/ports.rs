@@ -1,7 +1,7 @@
 //! What the timers read from sessions and the effects they cause. Every
 //! effect is this computer's own `hgs` as one original child; a read never
 //! admits an effect, and an unknown result is never repeated.
-use crate::teams::store::{timers::Bell, Store};
+use crate::teams::store::{timers::Gate, Store};
 use serde::Serialize;
 use zerus_team_plan::{
     model::{Member, TaskRef, Team},
@@ -39,12 +39,13 @@ pub(in crate::desktop::teams) trait Sessions {
     fn presence(&mut self, team: &Team, member: &Member) -> Option<Presence>;
 }
 
-/// One reserved doorbell: `hgs send NAME --json` to the exact run and
-/// conversation it was reserved for. It names the count, never an item.
+/// One reserved doorbell, the lead's or a member's: `hgs send NAME --json`
+/// to the exact run and conversation it was reserved for. It names a count
+/// and a command, never the text of an item, a question or an answer.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(in crate::desktop::teams) struct Ring {
     pub id: String,
-    pub bell: Bell,
+    pub gate: Gate,
     pub agent: String,
     pub name: String,
     pub run: String,

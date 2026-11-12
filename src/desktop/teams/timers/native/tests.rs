@@ -3,7 +3,7 @@
 use super::*;
 use crate::teams::{
     ops::{tests::*, Actor, Operation},
-    store::timers::Bell,
+    store::timers::{AnswerBell, Bell, Gate},
 };
 use std::{cell::RefCell, os::unix::fs::PermissionsExt, path::PathBuf};
 type Hook = Box<dyn FnOnce()>;
@@ -95,17 +95,59 @@ impl Fixture {
         };
         Ring {
             id: uuid::Uuid::new_v4().to_string(),
-            bell: Bell {
+            gate: Gate::Lead(Bell {
                 team: TEAM.into(),
                 member: "lead".into(),
                 session,
                 after: 0,
-            },
+            }),
             agent: agent.into(),
             name: "claude/example/lead".into(),
             run: "run-1".into(),
             conversation: "conversation-1".into(),
             text: "1 item waits in your team inbox.".into(),
+        }
+    }
+    /// A member's answer doorbell whose stored admission holds.
+    fn answer(&mut self) -> Ring {
+        let lead = self.h.bind("lead");
+        let m1 = self.h.bind("m1");
+        let node = self.h.add(&person(), 1);
+        self.h.submit(node, "m1");
+        let ask = Operation::Ask {
+            node,
+            generation: 1,
+            text: "Which width?".into(),
+        };
+        let item = self.h.run(&m1, ask).unwrap().item.unwrap();
+        self.h
+            .run(
+                &lead,
+                Operation::Reply {
+                    item,
+                    text: "The old one.".into(),
+                },
+            )
+            .unwrap();
+        let mark = self.h.store.answer_marks(TEAM, "", 1).unwrap().remove(0);
+        let Actor::Session { session, .. } = m1 else {
+            unreachable!()
+        };
+        Ring {
+            id: uuid::Uuid::new_v4().to_string(),
+            gate: Gate::Answer(AnswerBell {
+                team: TEAM.into(),
+                member: "m1".into(),
+                session,
+                node,
+                generation: 1,
+                mark: mark.revision,
+            }),
+            agent: "claude".into(),
+            name: "claude/example/m1".into(),
+            run: "run-m1".into(),
+            conversation: "conversation-m1".into(),
+            text: "1 answer from your lead waits. Read them with: hgs team current".into(),
         }
     }
 }
@@ -235,6 +277,26 @@ fn the_preview_switched_off_after_the_lock_is_taken_starts_nothing() {
     });
     assert!(matches!(
         f.native().ring(&f.h.store, &ring),
+        Rung::NotStarted(_)
+    ));
+    assert!(f.args().is_none(), "the stub never ran");
+}
+
+#[test]
+fn an_answer_doorbell_is_admitted_by_its_member_and_stopped_by_the_flag() {
+    let mut f = Fixture::new();
+    let ring = f.answer();
+    f.mode("submitted");
+    assert_eq!(f.native().ring(&f.h.store, &ring), Rung::Submitted);
+    let mut again = ring.clone();
+    again.id = uuid::Uuid::new_v4().to_string();
+    let stop = f.stop.clone();
+    LOCKED.with(|slot| {
+        *slot.borrow_mut() = Some(Box::new(move || stop.store(true, Ordering::Release)))
+    });
+    std::fs::remove_file(f.h.temp.path().join("stub-args")).unwrap();
+    assert!(matches!(
+        f.native().ring(&f.h.store, &again),
         Rung::NotStarted(_)
     ));
     assert!(f.args().is_none(), "the stub never ran");

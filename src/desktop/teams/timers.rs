@@ -4,6 +4,7 @@
 //! only through service operations; each session effect is one original
 //! child admitted at its spawn, and an unknown result is never repeated.
 #![allow(dead_code)] // The tick of package 8 calls these entries.
+mod answers;
 mod clear;
 mod doorbell;
 mod fire;
@@ -92,6 +93,34 @@ impl Timers {
             now,
         )?;
         Ok(())
+    }
+    /// One live team's member doorbells for the lead's answers, beside the
+    /// lead's doorbell in the same tick.
+    pub fn answers(
+        &mut self,
+        store: &mut Store,
+        ledger: &Ledger,
+        sessions: &mut impl Sessions,
+        effects: &mut impl Effects,
+        id: &str,
+        now: i64,
+    ) -> Result<()> {
+        store.refresh()?;
+        let team = store.team(id)?.filter(|t| t.status == TeamStatus::Running);
+        let Some(team) = team else {
+            return Ok(());
+        };
+        let roster = roster(store, &team)?;
+        answers::ring(
+            store,
+            ledger,
+            sessions,
+            effects,
+            &self.epoch,
+            &team,
+            &roster,
+            now,
+        )
     }
     /// Once per pass: one page of a terminal team's task keys and one page
     /// of member launches that completed after a stop or a removal. In the
