@@ -215,6 +215,13 @@ fn folder_item(
 #[cfg(test)]
 pub(super) mod tests;
 
+/// What the person can do for a seat whose exited session cannot come back
+/// (zerus-63rru.62), from what this build offers: Remove on the member card
+/// (`archive_member`), and `hgs team reassign`, which the person or the lead
+/// may run; the desktop has no Reassign button. A fresh start is not offered:
+/// it ends the member's binding here.
+pub(super) const SEAT: &str = "If its session cannot come back, remove the member with Remove on its member card; you or the lead can reassign its tasks to another member with hgs team reassign.";
+
 pub(super) fn resume(s: &Snapshot) -> Result<(), String> {
     need(
         !s.live && s.ended && !s.paused,
@@ -231,5 +238,11 @@ pub(super) fn resume(s: &Snapshot) -> Result<(), String> {
     need(
         !s.conversation.is_empty(),
         "The exited conversation is unknown",
-    )
+    )?;
+    match &s.restore_refusal {
+        Some(why) => Err(format!(
+            "The archive of its exited session offers no restore: {why}. {SEAT}"
+        )),
+        None => Ok(()),
+    }
 }

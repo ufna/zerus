@@ -1079,6 +1079,13 @@ pub(crate) fn archive_for_test(record: &Value) -> Result<String> {
     let _guard = lock(None)?;
     archive::save(record)
 }
+/// The real `hgs inspect NAME --archive ID` reply, as the Teams confirmation
+/// reads an exited member's archive (zerus-63rru.62): after every event,
+/// without processes.
+#[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
+pub(crate) fn archive_inspection_for_test(name: &str, id: &str) -> Result<Value> {
+    journal::inspection_with(name, i64::MAX, Some(id), false, false)
+}
 
 /// zerus-ucck P3a: a label a command names without a selection, resolved
 /// among its candidates. A label whose only holder is in the ID layout selects

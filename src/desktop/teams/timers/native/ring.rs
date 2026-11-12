@@ -108,17 +108,7 @@ fn refusal(stderr: &[u8]) -> String {
         .map_or(0, |at| at + 1);
     let line = &text[last..];
     let reason = line.strip_prefix(crate::cli::ERROR_PREFIX).unwrap_or(line);
-    let reason: String = reason
-        .chars()
-        .map(|c| if c.is_control() { ' ' } else { c })
-        .collect();
-    let reason: String = reason
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
-        .chars()
-        .take(512)
-        .collect();
+    let reason = crate::desktop::teams::reason_text(reason);
     if reason.is_empty() {
         "The send was refused before any input".into()
     } else {
