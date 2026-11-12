@@ -12,6 +12,8 @@ pub(crate) use actor::presence;
 mod confirm;
 mod health;
 mod items;
+#[cfg(test)]
+pub(crate) use items::Item as ServiceItem;
 pub(crate) use items::Items as ServiceItems;
 /// The service items `hgs team status` shows for a team, read without
 /// creating the actor ledger; None from a service that does not write them.

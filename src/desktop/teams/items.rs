@@ -40,9 +40,23 @@ CREATE TRIGGER IF NOT EXISTS service_item_removed AFTER DELETE ON service_items 
  UPDATE service_items_budget SET rows=rows-1 WHERE id=1;
 END;";
 
+/// The kinds the service writes; a reader takes any string.
+pub(crate) mod kind {
+    /// A stopped or archived team's cancel that keeps failing; its subject
+    /// is the decision.
+    pub const CANCEL_RETRY: &str = "cancel_retry";
+    /// A stopped or archived team's cancel whose refused outcome was refused
+    /// too: it waits for the person; its subject is the decision.
+    pub const CANCEL_HALTED: &str = "cancel_halted";
+    /// A stopped or archived team's key clears that its last full sweep left
+    /// without a final answer; no subject.
+    pub const KEY_CLEAR: &str = "key_clear";
+    /// The terminal page's fault, for the whole service.
+    pub const TERMINAL_PAGE: &str = "terminal_page";
+}
 /// The kind of the marker that says a team (or the service) has more items
 /// than the table holds. It is never listed as an item.
-const UNLISTED: &str = "unlisted";
+pub(crate) const UNLISTED: &str = "unlisted";
 /// Items in one status page.
 pub(crate) const PAGE: usize = 20;
 /// The count of the rest stops here and reads as "1000 or more".
@@ -147,6 +161,57 @@ pub(crate) fn clear_team(db: &Connection, team: &str) -> Result<()> {
     db.execute("DELETE FROM service_items WHERE team=?1", [team])
         .map_err(storage)?;
     Ok(())
+}
+
+/// The failures an item already counts, when it exists.
+pub(crate) fn failures(
+    db: &Connection,
+    team: &str,
+    kind: &str,
+    subject: &str,
+) -> Result<Option<u32>> {
+    db.query_row(
+        "SELECT failures FROM service_items WHERE team=?1 AND kind=?2 AND subject=?3",
+        params![team, kind, subject],
+        |r| r.get(0),
+    )
+    .optional()
+    .map_err(storage)
+}
+/// An item's key, the orphan pass's cursor.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct Key {
+    pub team: String,
+    pub kind: String,
+    pub subject: String,
+}
+/// One page of item keys after `after`, in key order.
+pub(crate) fn keys(db: &Connection, after: &Key, limit: u32) -> Result<Vec<Key>> {
+    let mut statement = db
+        .prepare("SELECT team,kind,subject FROM service_items WHERE (team,kind,subject)>(?1,?2,?3) ORDER BY team,kind,subject LIMIT ?4")
+        .map_err(storage)?;
+    let rows = statement
+        .query_map(params![after.team, after.kind, after.subject, limit], |r| {
+            Ok(Key {
+                team: r.get(0)?,
+                kind: r.get(1)?,
+                subject: r.get(2)?,
+            })
+        })
+        .map_err(storage)?
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(storage);
+    rows
+}
+/// Whether the table has room for a new item: the orphan pass then removes
+/// a team's marker, and its next failure is listed again.
+pub(crate) fn has_room(db: &Connection) -> Result<bool> {
+    db.query_row(
+        "SELECT rows<16384 FROM service_items_budget WHERE id=1",
+        [],
+        |r| r.get(0),
+    )
+    .map_err(storage)
 }
 
 /// One item as `hgs team status` shows it.

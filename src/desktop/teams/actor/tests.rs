@@ -137,6 +137,8 @@ mod cancel_refusal;
 
 mod terminal_pruning;
 
+mod service_items;
+
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 mod cancel_recovery;
 

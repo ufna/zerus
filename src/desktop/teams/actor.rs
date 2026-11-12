@@ -50,6 +50,8 @@ pub(super) struct Runtime {
     row_failure: bool,
     hints: BTreeMap<String, observe::Hint>,
     cancel_after: String,
+    /// The orphan pass's cursor over the service items.
+    items_after: super::items::Key,
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     auxiliary: auxiliary::State,
 }
@@ -68,6 +70,7 @@ impl Runtime {
             row_failure: false,
             hints: BTreeMap::new(),
             cancel_after: String::new(),
+            items_after: Default::default(),
             #[cfg(any(target_os = "linux", target_os = "macos"))]
             auxiliary: auxiliary::State::new(state, &epoch),
         })
@@ -172,6 +175,7 @@ impl Runtime {
         result
     }
     pub fn maintain(&mut self, store: &Store) -> Result<()> {
+        self.prune_items(store)?;
         for _ in 0..16 {
             if self.maintenance_team.is_none() {
                 let page = store.teams(1, self.maintenance.as_ref())?;

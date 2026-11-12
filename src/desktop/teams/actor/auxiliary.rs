@@ -1,5 +1,6 @@
 //! Persistent package-10 state. The actor owns the entry points and
 //! their retry scopes; each effect remains behind its package's ports.
+use super::super::items::{self, kind::KEY_CLEAR};
 use super::super::timers;
 use super::native::Native;
 use super::*;
@@ -70,6 +71,14 @@ impl State {
             &mut effects,
             now,
         )
+    }
+    /// The teams whose key sweep reached its end since the last call.
+    pub fn finished_sweeps(&mut self) -> Vec<timers::Finished> {
+        self.engine.finished_sweeps()
+    }
+    #[cfg(test)]
+    pub fn push_finished(&mut self, finished: timers::Finished) {
+        self.engine.push_finished(finished);
     }
 }
 struct SessionRows<'a>(&'a Native);
@@ -153,6 +162,39 @@ impl Runtime {
             Err(error) => self.failure(store, team, "timers:answers", stamp, &error, now),
         }
     }
+    /// Each team whose key sweep reached its end since the last pass: its
+    /// service item says how many keys got no final answer, counting the
+    /// sweeps that left some, or goes once a sweep leaves none.
+    pub(super) fn sweep_items(&mut self, now: i64) -> Result<()> {
+        for done in self.auxiliary.finished_sweeps() {
+            let Some((node, why)) = done.last.as_ref().filter(|_| done.unanswered > 0) else {
+                self.ledger.clear_item(&done.team, KEY_CLEAR, "")?;
+                continue;
+            };
+            let failures = self
+                .ledger
+                .item_failures(&done.team, KEY_CLEAR, "")?
+                .unwrap_or(0)
+                .saturating_add(1);
+            let reason = format!(
+                "{} task keys got no final answer on the last sweep; the last: {why}",
+                done.unanswered
+            );
+            self.ledger.put_item(&items::Failure {
+                team: &done.team,
+                kind: KEY_CLEAR,
+                subject: "",
+                node: Some(*node),
+                reason: &reason,
+                failures,
+                now,
+                // The sweep comes back on a later terminal pass, at the
+                // latest after the terminal page's longest backoff.
+                next_ms: Some(now.saturating_add(super::retry::delay(u32::MAX))),
+            })?;
+        }
+        Ok(())
+    }
     pub(super) fn terminal_entry(
         &mut self,
         store: &mut Store,
@@ -169,7 +211,8 @@ impl Runtime {
         }
         let cancelled = self.terminal_cancels(store, ports, now);
         let timers = ports.terminal_timers(&mut self.auxiliary, store, now);
-        match cancelled.and(timers) {
+        let swept = self.sweep_items(now);
+        match cancelled.and(timers).and(swept) {
             Ok(()) => self.ledger.terminal_succeeded(),
             Err(error) => {
                 eprintln!("hgs: Teams terminal page will retry: {}", error.code);

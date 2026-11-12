@@ -262,3 +262,65 @@ fn terminal_own_delivery_unobserved_is_recorded_as_cancelled_without_the_exit() 
         assert_eq!(p.cleared, vec![1]);
     }
 }
+
+/// A stopped team's cancel that halts is its own service item: it replaces
+/// the cancel's earlier retry item, and goes with its row once the decision
+/// no longer waits.
+#[test]
+fn a_halted_stopped_cancel_is_its_own_service_item_until_its_row_ends() {
+    let (mut h, mut runtime, mut p) = refused(false);
+    p.reject_exit = true;
+    let decision = h.store.pending_cancels(TEAM, 16, 0).unwrap()[0].decision;
+    let subject = decision.to_string();
+    let earlier = crate::desktop::teams::ServiceFailure {
+        team: TEAM,
+        kind: "cancel_retry",
+        subject: &subject,
+        node: Some(1),
+        reason: "An earlier failure",
+        failures: 1,
+        now: 50,
+        next_ms: Some(60_050),
+    };
+    crate::desktop::teams::put_service_item(
+        &crate::desktop::teams::test_actor_ledger(h.temp.path()),
+        &earlier,
+    )
+    .unwrap();
+    runtime.page(&mut h.store, &mut p, &[], 100, false).unwrap();
+    let key = format!("cancel:{decision}");
+    assert_eq!(
+        runtime.ledger.get(TEAM, &key).unwrap().unwrap().data["halted"],
+        true
+    );
+    let items = crate::desktop::teams::service_items(h.temp.path(), TEAM, Some(true), 100)
+        .unwrap()
+        .items;
+    let kinds: Vec<(&str, &str)> = items
+        .iter()
+        .map(|i| (i.kind.as_str(), i.subject.as_str()))
+        .collect();
+    assert_eq!(kinds, [("cancel_halted", subject.as_str())]);
+    assert!(
+        items[0].reason.contains("refused too"),
+        "{}",
+        items[0].reason
+    );
+    h.store
+        .db
+        .as_ref()
+        .unwrap()
+        .execute(
+            "UPDATE decisions SET state='settled' WHERE seq=?1",
+            [decision],
+        )
+        .unwrap();
+    passes(&mut h, &mut runtime, &mut p);
+    assert!(runtime.ledger.get(TEAM, &key).unwrap().is_none());
+    assert!(
+        crate::desktop::teams::service_items(h.temp.path(), TEAM, Some(true), 100)
+            .unwrap()
+            .items
+            .is_empty()
+    );
+}
