@@ -172,6 +172,8 @@ mod cancel_recovery;
 mod handles;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 mod real_rows;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+mod removed_handout;
 mod retry_cards;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub(in crate::desktop::teams) mod rows;

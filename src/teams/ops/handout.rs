@@ -241,6 +241,20 @@ fn record_outcome(
         queue::set_hold(ctx, e.node, state != "submitted")?;
         if state == "submitted" {
             ctx.close_inbox(e.node)?;
+        } else if let HandoutOutcome::Refused { reason } = outcome {
+            // A held node with nobody told is the fault zerus-63rru.77
+            // closes: an uncertain end already wrote its item above.
+            let reason = reason.trim_end();
+            let stop = if reason.ends_with(['.', '!', '?']) {
+                ""
+            } else {
+                "."
+            };
+            let text = format!(
+                "The reopen of task {} for member {} was not delivered: {reason}{stop} The decision is settled and the task waits for the lead.",
+                e.node, e.member
+            );
+            ctx.reply.item = Some(ctx.inbox(e.node, &format!("reopen_refused:{id}"), &text)?);
         }
     }
     Ok(())

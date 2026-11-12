@@ -11,6 +11,7 @@ mod observations;
 mod pipeline;
 mod queue;
 mod readiness;
+mod removed_handout;
 mod replace;
 mod roster;
 mod storage;

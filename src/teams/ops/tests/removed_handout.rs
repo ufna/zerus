@@ -1,0 +1,299 @@
+//! zerus-63rru.77: a member's removal settles its open hand-out of a task
+//! that has not started through the existing hand-back (the effect
+//! superseded, the node held, one inbox item); a reopen already reserved is
+//! handed back with its decision; and a reopen that ends refused tells the
+//! lead, whoever its member is.
+use super::*;
+use crate::teams::store::{EffectIntent, InboxItem};
+
+fn removed(member: &str) -> Operation {
+    Operation::ArchiveMember {
+        member: member.into(),
+    }
+}
+fn items(h: &Harness, node: u32) -> Vec<InboxItem> {
+    let rows = h.store.inbox(TEAM, 200, None).unwrap().rows;
+    rows.into_iter().filter(|i| i.node == node).collect()
+}
+fn effect(h: &Harness, id: &str) -> EffectIntent {
+    let rows = h.store.effects(TEAM, 200, None).unwrap().rows;
+    rows.into_iter().find(|e| e.request_id == id).unwrap()
+}
+fn decision(h: &Harness, node: u32) -> crate::teams::store::Decision {
+    let rows = h.store.decisions(TEAM, 200, None).unwrap().rows;
+    rows.into_iter().rev().find(|d| d.node == node).unwrap()
+}
+fn handed(member: &str, node: u32) -> String {
+    format!(
+        "Member {member} was removed before task {node} started; the delivery's result is not known: the prompt may have reached a session that is now gone. The task waits for the lead."
+    )
+}
+/// The team with m1 holding task 1's hand-out in `state`, and m2 free.
+fn holding(state: &str) -> (Harness, u32, String) {
+    let mut h = Harness::new();
+    h.bind("lead");
+    h.bind("m1");
+    h.bind("m2");
+    let node = h.add(&person(), 1);
+    let id = h.intent(node, "m1");
+    let reason = "fixture reason".to_owned();
+    match state {
+        "reserved" => {}
+        "submitted" => h.outcome(
+            &id,
+            HandoutOutcome::Submitted {
+                receipt: "receipt-example".into(),
+            },
+        ),
+        "uncertain" => h.outcome(&id, HandoutOutcome::Uncertain { reason }),
+        "cutting_over" => h.outcome(&id, HandoutOutcome::CuttingOver { reason }),
+        _ => unreachable!(),
+    }
+    assert_eq!(effect(&h, &id).state, state);
+    (h, node, id)
+}
+
+#[test]
+fn removal_settles_an_unstarted_hand_out_in_each_open_state_and_tells_the_lead_once() {
+    for state in ["reserved", "submitted", "uncertain", "cutting_over"] {
+        let (mut h, node, id) = holding(state);
+        let before = items(&h, node);
+        // An uncertain end already told the lead once.
+        let told = usize::from(matches!(state, "uncertain" | "cutting_over"));
+        assert_eq!(before.len(), told, "{state}");
+        h.run(&person(), removed("m1")).unwrap();
+
+        let e = effect(&h, &id);
+        assert_eq!(e.state, "superseded", "{state}");
+        // The outcome stays a fact: an uncertainty is not lost.
+        assert_eq!(e.outcome.is_some(), state != "reserved", "{state}");
+        let n = h.node(node);
+        assert!(n.hold, "{state}: the node is with the lead");
+        assert_eq!(n.state, NodeState::Pending, "{state}");
+        let after = items(&h, node);
+        assert_eq!(after.len(), before.len() + 1, "{state}: one new item");
+        for (old, now) in before.iter().zip(&after) {
+            assert_eq!((&old.kind, &old.state), (&now.kind, &now.state), "{state}");
+        }
+        let item = after.last().unwrap();
+        assert_eq!(item.kind, format!("member_removed:{id}"), "{state}");
+        assert_eq!(item.state, "open", "{state}");
+        assert_eq!(item.text, handed("m1", node), "{state}");
+        assert!(
+            !item.text.contains("uncertain"),
+            "{state}: not a second fact"
+        );
+        assert!(
+            h.store.unstarted(TEAM, 0, 200).unwrap().is_empty(),
+            "{state}"
+        );
+
+        // A repeated removal is refused and writes nothing.
+        let again = h.run(&person(), removed("m1")).unwrap_err();
+        assert_eq!(again.message, "The member cannot be removed.", "{state}");
+        assert_eq!(items(&h, node).len(), after.len(), "{state}");
+        // No pass hands the held task out again, to anybody.
+        let other = uuid::Uuid::new_v4().to_string();
+        let refused = h
+            .run(
+                &service(),
+                Operation::HandoutIntent {
+                    node,
+                    member: "m2".into(),
+                    effect_request_id: other,
+                },
+            )
+            .unwrap_err();
+        assert_eq!(
+            refused.message, "The plan kernel does not consider this node ready.",
+            "{state}"
+        );
+    }
+}
+
+#[test]
+fn a_late_outcome_of_the_settled_hand_out_is_a_fact_and_reopens_nothing() {
+    for outcome in [
+        HandoutOutcome::Submitted {
+            receipt: "receipt-example".into(),
+        },
+        HandoutOutcome::Refused {
+            reason: "Effect is closed or belongs to another generation.".into(),
+        },
+    ] {
+        let (mut h, node, id) = holding("reserved");
+        h.run(&person(), removed("m1")).unwrap();
+        let before = items(&h, node).len();
+        h.outcome(&id, outcome.clone());
+        let e = effect(&h, &id);
+        assert_eq!(e.state, "superseded", "{outcome:?}");
+        assert!(e.outcome.is_some(), "{outcome:?}");
+        assert!(h.node(node).hold, "{outcome:?}");
+        assert_eq!(h.node(node).implementer, None, "{outcome:?}");
+        assert_eq!(items(&h, node).len(), before, "{outcome:?}");
+    }
+}
+
+#[test]
+fn removal_leaves_a_started_task_a_paused_member_and_a_pending_cancel_as_they_were() {
+    // A started task stays with its member (zerus-63rru.77's second commit
+    // takes it back).
+    let (mut h, node, id) = holding("submitted");
+    h.observe(node, TaskStage::InProgress);
+    h.run(&person(), removed("m1")).unwrap();
+    assert_eq!(effect(&h, &id).state, "submitted");
+    assert!(!h.node(node).hold);
+    assert!(items(&h, node).is_empty());
+
+    // A paused member keeps its hand-out; that wait is intended.
+    let (mut h, node, id) = holding("submitted");
+    h.run(
+        &person(),
+        Operation::PauseMember {
+            member: "m1".into(),
+        },
+    )
+    .unwrap();
+    assert_eq!(effect(&h, &id).state, "submitted");
+    assert!(!h.node(node).hold);
+    assert!(items(&h, node).is_empty());
+
+    // A Cancel still ends its task: the removal leaves the node to it.
+    let (mut h, node, id) = holding("submitted");
+    h.run(
+        &person(),
+        Operation::Cancel {
+            node,
+            reason: "Not needed".into(),
+        },
+    )
+    .unwrap();
+    h.run(&person(), removed("m1")).unwrap();
+    assert_eq!(effect(&h, &id).state, "submitted");
+    let d = decision(&h, node);
+    assert_eq!(
+        (d.kind.as_str(), d.state),
+        ("cancel", DecisionState::Pending)
+    );
+    assert!(items(&h, node).is_empty());
+}
+
+#[test]
+fn removal_hands_back_a_reopen_already_reserved_with_its_decision() {
+    for kind in ["return", "reassign"] {
+        let mut h = Harness::new();
+        let (node, lead) = h.reported();
+        h.bind("m2");
+        let target = if kind == "return" { "m1" } else { "m2" };
+        let op = if kind == "return" {
+            Operation::Return {
+                node,
+                reason: "Revise the result".into(),
+            }
+        } else {
+            Operation::Reassign {
+                node,
+                member: "m2".into(),
+                reason: "Another member takes it".into(),
+            }
+        };
+        h.run(&lead, op).unwrap();
+        let id = h.reopen(node, target);
+        let seq = decision(&h, node).seq;
+        assert_eq!(decision(&h, node).state, DecisionState::EffectReserved);
+        let before = items(&h, node).len();
+        h.run(&person(), removed(target)).unwrap();
+
+        assert_eq!(decision(&h, node).state, DecisionState::Settled, "{kind}");
+        assert_eq!(decision(&h, node).seq, seq, "{kind}: no new decision");
+        assert_eq!(effect(&h, &id).state, "superseded", "{kind}");
+        assert!(h.node(node).hold, "{kind}");
+        let after = items(&h, node);
+        assert_eq!(after.len(), before + 1, "{kind}");
+        let item = after.last().unwrap();
+        assert_eq!(item.kind, format!("member_removed:{seq}"), "{kind}");
+        assert_eq!(
+            item.text,
+            format!(
+                "Member {target} was removed while the {kind} of task {node} was being delivered; the delivery's result is not known: the prompt may have reached a session that is now gone. The decision is settled and the task waits for a new one."
+            ),
+            "{kind}"
+        );
+        // Its delivery cannot be admitted any more.
+        assert!(!h.store.effect_reserved(TEAM, &id).unwrap(), "{kind}");
+    }
+}
+
+#[test]
+fn a_reopen_that_ends_refused_tells_the_lead_whoever_its_member_is() {
+    for (outcome, told) in [
+        (
+            HandoutOutcome::Refused {
+                reason: "Delivery did not start".into(),
+            },
+            Some("reopen_refused"),
+        ),
+        (
+            HandoutOutcome::Uncertain {
+                reason: "fixture unknown".into(),
+            },
+            Some("delivery_uncertain"),
+        ),
+        (
+            HandoutOutcome::Submitted {
+                receipt: "receipt-example".into(),
+            },
+            None,
+        ),
+    ] {
+        let mut h = Harness::new();
+        let (node, lead) = h.reported();
+        h.run(
+            &lead,
+            Operation::Return {
+                node,
+                reason: "Revise the result".into(),
+            },
+        )
+        .unwrap();
+        let id = h.reopen(node, "m1");
+        let before: Vec<String> = items(&h, node)
+            .into_iter()
+            .filter(|i| i.state == "open")
+            .map(|i| i.kind)
+            .collect();
+        h.reopen_outcome(&id, outcome.clone());
+        assert_eq!(
+            decision(&h, node).state,
+            DecisionState::Settled,
+            "{outcome:?}"
+        );
+        let new: Vec<InboxItem> = items(&h, node)
+            .into_iter()
+            .filter(|i| i.state == "open" && !before.contains(&i.kind))
+            .collect();
+        match told {
+            Some("reopen_refused") => {
+                assert!(h.node(node).hold);
+                assert_eq!(new.len(), 1, "{new:?}");
+                assert_eq!(new[0].kind, format!("reopen_refused:{id}"));
+                assert_eq!(
+                    new[0].text,
+                    format!("The reopen of task {node} for member m1 was not delivered: Delivery did not start. The decision is settled and the task waits for the lead.")
+                );
+            }
+            Some(kind) => {
+                assert!(h.node(node).hold);
+                assert_eq!(
+                    new.iter().map(|i| i.kind.as_str()).collect::<Vec<_>>(),
+                    [kind],
+                    "one item, not two"
+                );
+            }
+            None => {
+                assert!(!h.node(node).hold);
+                assert!(new.is_empty(), "{new:?}");
+            }
+        }
+    }
+}

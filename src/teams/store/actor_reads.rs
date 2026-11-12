@@ -33,6 +33,14 @@ impl Store {
             "SELECT EXISTS(SELECT 1 FROM decisions WHERE seq=?1 AND team=?2 AND node=?3 AND generation=?4 AND kind='accept' AND state='ready')",
             params![decision,team,node,generation],|r|r.get(0)).map_err(storage))
     }
+    /// Whether the effect is still the reservation a delivery may act on:
+    /// reserved, with no outcome, as the spawn admission and the task
+    /// writer's own permit require. A removal's hand-back supersedes it
+    /// (zerus-63rru.77); a point read of the unique request ID.
+    pub fn effect_reserved(&self, team: &str, id: &str) -> Result<bool> {
+        self.active()?;
+        self.db.as_ref().map_or(Ok(false),|db|db.query_row("SELECT EXISTS(SELECT 1 FROM effects WHERE request_id=?1 AND team=?2 AND state='reserved' AND outcome IS NULL)",params![id,team],|r|r.get(0)).map_err(storage))
+    }
     /// Only a saved refusal proves that this request was refused.
     pub fn request_refused(&self, team: &str, id: &str) -> Result<bool> {
         self.active()?;

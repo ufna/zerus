@@ -39,6 +39,20 @@ impl Delivery for Fake {
         if self.mode == "crash-reserved" {
             std::process::exit(73);
         }
+        if self.mode == "type-after-pause" {
+            // After the reservation and its save, before the first key: a
+            // test acts on the store here, then lets the child type.
+            std::fs::write(
+                self.root.join(format!("typing-{}", std::process::id())),
+                b"typing",
+            )
+            .unwrap();
+            let until = Instant::now() + Duration::from_secs(8);
+            while !self.root.join("release-typing").exists() && Instant::now() < until {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            assert!(self.root.join("release-typing").exists());
+        }
         let mut count = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
@@ -1082,6 +1096,8 @@ mod cancel_tests;
 mod return_text_tests;
 
 mod attempt_tests;
+
+mod removal_tests;
 
 /// What keeps a hand-out from its reservation in [`blocked_handout`].
 #[derive(Clone, Copy, Debug)]
