@@ -483,7 +483,8 @@ class TeamFixture:
     DELEGATIONS_OFF = {'accept_results': False, 'answer_members': False, 'confirm_trust': False,
                        'merge_accepted': False, 'resume_exited': False}
 
-    def __init__(self, agent, native, case, delegations=None, service_answers=(), after_refusal=None, count=1, pinned=None):
+    def __init__(self, agent, native, case, delegations=None, service_answers=(), after_refusal=None, count=1, pinned=None,
+                 pretrust=()):
         self.agent, self.native, self.case = agent, Path(native).resolve(), case
         # Card sources the person answers only once the service has refused them with a
         # card naming the member and containing the given text.
@@ -495,6 +496,8 @@ class TeamFixture:
         # The role's member count, and the account its members are pinned to (none: the
         # service picks the freest).
         self.count, self.pinned = count, pinned
+        # Accounts on which the person trusts the main checkout before the team starts.
+        self.pretrust = tuple(pretrust)
         self.cards_seen = {}
         self.panes = {}
         base = os.environ.get('TMPDIR') or tempfile.gettempdir()
@@ -772,6 +775,8 @@ class TeamFixture:
         self.start_model()
         self.project()
         self.accounts()
+        for account in self.pretrust:
+            self.trust_main_checkout(account)
         self.create_team()
         self.start_service()
         bound = self.wait('lead and members bound by launch ID', lambda: (lambda m: m if len(m) == 1 + self.count and all(
@@ -783,6 +788,44 @@ class TeamFixture:
         self.census.roots.add(self.tmux_server())
         for member_id in bound:
             self.answer_startup(member_id)
+
+    def trust_main_checkout(self, account):
+        """The person trusts the team's main checkout on one account before the team
+        starts: a plain session there on that account, its trust card answered through
+        hgs answer, then the session ended by Terminate."""
+        if not getattr(self, 'main_project', None):
+            self.hgs('project', 'add', 'trusted-main', str(self.root / 'work/proj'))
+            self.main_project = 'trusted-main'
+        self.hgs('account', 'default', account)
+        tag = 'trust-' + account
+        self.hgs(self.agent, self.main_project, '-n', tag, '-d', timeout=120)
+        row = self.wait(f'the plain session on {account} is listed', lambda: next(
+            (r for r in self.rows() if str(r.get('name', '')).endswith('/' + tag)), None), BOUND['listed'], 2)
+        key = 'plain-' + account
+        self.sessions[key] = dict(name=row['name'], member={})
+        view = self.answer_startup(key)
+        self.hgs('terminate', row['name'], '--expected-run-id', view.get('run_id'), timeout=120)
+        del self.sessions[key]
+
+    def answer_question(self, member_id, card):
+        """The person answers an ordinary question card in full: the first option of each
+        question, or a short text where it offers none."""
+        view = self.inspect(member_id)
+        answers = []
+        for item in card.get('questions') or []:
+            options = item.get('options') or []
+            answers.append(dict(question_id=item['id'], selected_option_ids=[options[0]['id']] if options else [],
+                                text='' if options else 'Fixture answer.'))
+        payload = dict(request_id=str(uuid.uuid4()), expected_run_id=view.get('run_id'),
+                       expected_conversation_id=view.get('conversation_id') or '', question_id=card['question_id'],
+                       expected_question_hash=card['question_hash'], answers=answers)
+        return self.json('answer', self.sessions[member_id]['name'], '--json', stdin=json.dumps(payload))
+
+    def handouts(self, node):
+        """The members the service handed one node to, from its journal."""
+        rows = self.listed(self.json('team', 'journal', '--team', self.team, '--limit', '200', '--json'), 'rows', 'team journal')
+        return [ref[len('member:'):] for row in rows if row.get('kind') == 'handout_intent' and f'node:{node}' in (row.get('refs') or [])
+                for ref in row.get('refs') or [] if ref.startswith('member:')]
 
     def tmux_server(self):
         out = subprocess.run(['tmux', 'display-message', '-p', '#{pid}'], env=self.env, capture_output=True, text=True)

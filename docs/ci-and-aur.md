@@ -1385,9 +1385,12 @@ It runs these steps in order:
    conversation. Codex starts its conversation at the first message, so for Codex the
    person's first message to each session comes before this check.
 2. **Delivery and the member's shell.** `team-deliver` puts the prompt into the
-   member exactly once. The member's own tool shell acknowledges with the pinned
-   `begin-attempt`, passes the caller proof (`hgs team current` names the member),
-   is refused the lead's inbox, and reports with the pinned `report-attempt`.
+   member exactly once. The prompt pins `report-attempt` exactly once and
+   `begin-attempt` at most once (only while the product's task controls are on; off
+   today), and the case records which form it met. The member's own tool shell runs
+   every pinned command: it acknowledges with `begin-attempt` when one is pinned,
+   passes the caller proof (`hgs team current` names the member), is refused the
+   lead's inbox, and reports with `report-attempt`.
 3. **The lead's doorbell.** The lead gets one message naming the inbox, with none
    of the item's text, and its own shell reads the inbox as the lead.
 4. **The cancel notice.** The lead cancels a delivered task from its shell, and the
@@ -1433,7 +1436,8 @@ select them until their fixes land.
 
 | Case | Waits for |
 |---|---|
-| Claude Code folder trust by the standing confirmation (`NativeTeamsTrustClaude`, two members pinned to one account): the service answers each member's startup folder trust with one audit grant, and a prompt that is not a startup prompt stays the person's. What Claude Code 2.1.322 records is pinned as observed: the account holds exactly the main checkout as trusted and no worktree key, and the later worktree on the same account still shows its card | `zerus-63rru.66` (the owner's decision on the scope Claude Code records); and whether a later prompt in the same run must get its own card |
+| Claude Code folder trust by the standing confirmation (`NativeTeamsTrustClaude`, two members pinned to one account): the service answers each member's startup folder trust with one audit grant. What Claude Code 2.1.322 records is pinned as observed: the account holds exactly the main checkout as trusted and no worktree key. Then each member asks an ordinary question: it stays pending for the person, with no card and no grant, and its member is not free while it is open | `zerus-63rru.66` (the owner's decision on the scope Claude Code records) and `zerus-63rru.73` (an ordinary question is taken as a trust candidate today) |
+| An ordinary question after no startup card (`NativeTeamsQuestionAfterTrustClaude`): the person has trusted the main checkout on both Claude accounts first; the question plans nothing, no card and no grant | `zerus-63rru.73` (today it opens one notice card) |
 
 #### Isolation
 
@@ -1531,8 +1535,10 @@ the Teams caller proof refuses a person command below a live agent.
   fakes.
 - **Timers past their first firing:** they are agent-independent and stay with the
   package fakes.
-- **The waiting case:** Claude Code folder trust by the standing confirmation, for
-  the owner's decision `zerus-63rru.66`. The case exists and is not selected.
+- **The waiting cases:** Claude Code folder trust by the standing confirmation, for
+  the owner's decision `zerus-63rru.66` and for `zerus-63rru.73`, and an ordinary
+  question after no startup card, for `zerus-63rru.73`. The cases exist and are not
+  selected.
 
 ## Automatic nightly publication
 

@@ -23,8 +23,8 @@ the Teams service touches a real session, in order:
 
 Further classes turn one of the team's delegations
 on: folder trust by the standing confirmation (Codex selected; Claude Code waits for
-the owner's decision zerus-63rru.66) and the resume of an exited member (Claude Code
-and Codex selected).
+the owner's decision zerus-63rru.66 and for zerus-63rru.73) and the resume of an
+exited member (Claude Code and Codex selected).
 The model is a keyless loopback fixture; no account and no model quota are used.
 Run through `scripts/ci/agent-compatibility.py --contract teams`, or directly with
 HGS_TEST_BIN and HGS_CLAUDE_TEST_BIN or HGS_CODEX_TEST_BIN, outside any agent
@@ -55,8 +55,10 @@ import teams_native_fixture as fixture
 WAITING = {
     # Whole classes the teams contract does not select yet.
     'NativeTeamsTrustClaude': 'zerus-63rru.66 (the owner decides whether the standing confirmation may answer a '
-                              'card whose recorded trust is the main checkout; and test_2: a later prompt in the '
-                              'same run gets no card, a question to the coordinator; runs tc20, tc21, tp1, tp3)',
+                              'card whose recorded trust is the main checkout; runs tc20, tc21, tp1 to tp3) and '
+                              'zerus-63rru.73 (test_2: an ordinary question is taken as a trust candidate)',
+    'NativeTeamsQuestionAfterTrustClaude': 'zerus-63rru.73 (an ordinary question after no startup card opens one '
+                                           'notice card today)',
 }
 
 
@@ -72,12 +74,14 @@ class ClassFixture:
     after_refusal = None
     count = 1
     pinned = None
+    pretrust = ()
 
     @classmethod
     def setUpClass(cls):
         cls.fx = fixture.TeamFixture(cls.agent, os.environ[cls.variable], cls.__name__,
                                      delegations=cls.delegations, service_answers=cls.service_answers,
-                                     after_refusal=cls.after_refusal, count=cls.count, pinned=cls.pinned)
+                                     after_refusal=cls.after_refusal, count=cls.count, pinned=cls.pinned,
+                                     pretrust=cls.pretrust)
         try:
             cls.fx.bring_up()
         except BaseException:
@@ -122,6 +126,43 @@ def journal_is(case, expected, label):
     finally:
         fx.evidence.write('journal-' + re.sub(r'\W+', '-', label).strip('-')[:60] + '.json',
                           dict(expected=expected, last=last[0] if last else None))
+
+
+# Hand-outs took 0.1 to 0.9 s from the task's observation in tc23; a quiet window ten
+# times longer shows that nobody took the task.
+QUIET = 15
+
+
+def ordinary_question_stays_the_persons(case, askers):
+    """zerus-63rru.73: only the member agent's own folder-trust prompt is a candidate of
+    the standing confirmation. An ordinary question plans nothing (no card, no audit row),
+    stays pending for the person, and its member is not free while it is open. The
+    positive control: once the person answers one member's question, that member takes
+    the task nobody took while every question was open."""
+    fx = case.fx
+    journal = fx.journal_summary()
+    seen = {c.get('seq') for c in fx.cards()}
+    for member in askers:
+        fx.send(member, 'Ask the fixture questions now.')
+    cards = {member: fx.wait(f'{member} asked a question mid-conversation', lambda m=member: next(iter(fx.pending(m)), None),
+                             fixture.BOUND['turn'], 2) for member in askers}
+    fx.evidence.write('ordinary-questions.json', cards)
+    _, task_uuid = fx.add_task('Fixture task while questions are open', 'Fixture task: taken once a question is answered.')
+    node = fx.wait('task node in the queue', lambda: fx.node_of(task_uuid), fixture.BOUND['handout'], 2)
+    deadline = time.monotonic() + QUIET
+    while time.monotonic() < deadline:
+        case.assertEqual(fx.handouts(node['id']), [], 'no member with an open question is handed a task')
+        time.sleep(1)
+    first = askers[0]
+    fx.answer_question(first, cards[first])
+    taken = fx.wait(f'{first} takes the task once its question is answered', lambda: fx.handouts(node['id']) or None,
+                    fixture.BOUND['handout'], 1)
+    case.assertEqual(taken, [first])
+    for member in askers[1:]:
+        case.assertIn(cards[member]['question_id'], [q.get('question_id') for q in fx.pending(member)],
+                      f"{member}'s question is still the person's")
+    case.assertEqual([c for c in fx.cards() if c.get('seq') not in seen], [], 'no Teams card for an ordinary question')
+    journal_is(case, journal, 'the journal is unchanged by the ordinary questions')
 
 
 class TeamsContract(ClassFixture):
@@ -177,6 +218,16 @@ class TeamsContract(ClassFixture):
         self.assertEqual((parent.get('parent') or {}).get('name'), fx.sessions['lead']['name'],
                          'the member is linked to its lead (manual link written after binding)')
 
+    def pinned_form(self, prompt):
+        """Which acknowledgement form a delivered prompt pins: report-attempt exactly once
+        and begin-attempt at most once (src/tasks/controls.rs pin_dispatch); anything else
+        fails."""
+        reports = re.findall(fixture.PINNED.format(verb='report-attempt'), prompt)
+        begins = re.findall(fixture.PINNED.format(verb='begin-attempt'), prompt)
+        self.assertEqual(len(reports), 1, 'report-attempt is pinned exactly once')
+        self.assertLessEqual(len(begins), 1, 'begin-attempt is pinned at most once')
+        return 'begin and report' if begins else 'report only'
+
     # 2 -----------------------------------------------------------------------
     def test_2_delivery_and_member_shell(self):
         fx = self.fx
@@ -205,17 +256,17 @@ class TeamsContract(ClassFixture):
         prompts = fx.requests_with(lambda r: (r.get('prompt') or '').startswith('[Zerus task ' + ref))
         self.assertTrue(prompts, 'no model request carried the delivered prompt')
         delivered = prompts[0]['prompt']
-        # Observed with this head (tc22): a team-delivered prompt pins report-attempt and
-        # no begin-attempt, so the member runs no acknowledgement. Pinned as observed: a
-        # prompt that starts pinning one fails here (a question to the coordinator).
-        self.assertIn('hgs task report-attempt', delivered)
-        self.assertNotIn('hgs task begin-attempt', delivered)
+        # Every dispatched prompt pins report-attempt exactly once, and begin-attempt at most
+        # once: only while the product's task controls are on (TASK_CONTROLS; off in
+        # 1d565627e). The member runs every command its prompt pins; the form met is kept.
+        form = self.pinned_form(delivered)
+        fx.evidence.write('delivered-0-form.json', dict(form=form))
         for request in prompts:
             self.assertEqual(sum(text == delivered for text in request['users']), 1,
                              'the delivered prompt appears once in the member conversation')
-        # The member's own shell: no acknowledgement (none is pinned), caller proof,
+        # The member's own shell: the acknowledgement when one is pinned, caller proof,
         # refusal, report.
-        self.assertEqual(result['begin_exit'], -1, result['begin'])
+        self.assertEqual(result['begin_exit'], 0 if form == 'begin and report' else -1, result['begin'])
         current = json.loads(result['current'])
         self.assertEqual(result['current_exit'], 0, result['current'])
         self.assertEqual(current['actor'], dict(kind='session', member='m1', person='local', team=fx.team))
@@ -259,7 +310,11 @@ class TeamsContract(ClassFixture):
         result = fx.wait('member ran the second task in its shell and kept working',
                          lambda: (out / 'delivered-1.json').is_file() and json.loads((out / 'delivered-1.json').read_text()),
                          fixture.BOUND['handout'] + fixture.BOUND['turn'], 2)
-        self.assertEqual((result['begin_exit'], result['report_exit']), (-1, -1), result)
+        second = fx.requests_with(lambda r: (r.get('prompt') or '').startswith('[Zerus task ' + ref))
+        self.assertTrue(second, 'no model request carried the second delivered prompt')
+        form = self.pinned_form(second[0]['prompt'])
+        fx.evidence.write('delivered-1-form.json', dict(form=form))
+        self.assertEqual((result['begin_exit'], result['report_exit']), (0 if form == 'begin and report' else -1, -1), result)
         node = fx.node_of(task_uuid)
         cancel = out / 'lead-cancel.json'
         fx.script('lead-cancel', (
@@ -376,24 +431,9 @@ class TrustContract(ClassFixture):
     def startup_grants(self):
         return sorted((member, self.trust_source, ('team_folder_trust',), 'approved') for member in self.member_ids())
 
-    def test_2_a_prompt_that_is_not_a_startup_prompt_stays_the_persons(self):
-        fx = self.fx
-        fx.send('m1', 'Ask the fixture questions now.')
-        card = fx.wait('m1 asked a question mid-conversation', lambda: next(iter(fx.inspect('m1').get('pending_questions') or []), None),
-                       fixture.BOUND['turn'], 2)
-        fx.evidence.write('mid-conversation-card.json', card)
-        refused = fx.wait('the service refused the mid-conversation prompt with a card for the person',
-                          lambda: [c for c in fx.cards() if 'Member m1 needs your attention' in c.get('text', '')
-                                   and 'not a startup prompt' in c.get('text', '')], fixture.BOUND['doorbell'], 3)
-        fx.evidence.write('mid-conversation-refusal.json', refused)
-        still = [q.get('question_id') for q in fx.inspect('m1').get('pending_questions') or []]
-        self.assertIn(card.get('question_id'), still, 'the prompt is still pending for the person')
-        grants = [r for r in fx.audit_rows(fx.sessions['m1']['name'])
-                  if r['question_id'] == card.get('question_id')]
-        self.assertFalse(grants, 'no audited grant for a prompt that is not a startup prompt')
-        # The positive control: the same reader still finds the two startup grants, and
-        # nothing else.
-        journal_is(self, self.startup_grants(), 'the journal still holds only the two startup grants')
+    def test_2_an_ordinary_question_stays_the_persons(self):
+        """After the startup grants, every member asks an ordinary question (zerus-63rru.73)."""
+        ordinary_question_stays_the_persons(self, self.member_ids()[1:])
 
     def assert_agent_trusted(self, member_id):
         raise NotImplementedError
@@ -410,7 +450,9 @@ class ClaudeTrust:
     count = 2
     pinned = 'zt-claude'
 
-    def test_3_a_second_worktree_on_the_same_account_still_asked(self):
+    # Waits for the separating probes (a) and (b): whether a later worktree on the same
+    # account still asks is a rule or a race of a running session (zerus-63rru.66).
+    def waiting_3_a_second_worktree_on_the_same_account_still_asked(self):
         fx = self.fx
         launches = {}
         for row in fx.listed(fx.json('team', 'journal', '--team', fx.team, '--limit', '200', '--json'), 'rows', 'team journal'):
@@ -612,6 +654,23 @@ class UnworkedResumeContract(ClassFixture):
         fx.evidence.write('journal-after-refusal.json', fx.journal_summary())
         self.assertFalse(live, 'nothing of the member launch started')
         self.assertTrue(any(self.reason in c.get('text', '') for c in cards), "the card carries the command's own reason")
+
+
+class QuestionAfterTrustContract(ClassFixture):
+    """Delegation confirm_trust on, and the person has trusted the main checkout on both
+    Claude accounts before the team starts, so no member shows a startup card. An ordinary
+    question then plans nothing: the mirror of the trust case's test_2 (zerus-63rru.73:
+    today it opens one notice card)."""
+    delegations = {'confirm_trust': True}
+    pinned = 'zt-claude'
+    pretrust = ('native-claude', 'zt-claude')
+
+    def test_1_no_startup_card_and_an_ordinary_question_stays_the_persons(self):
+        fx = self.fx
+        startup = [v['source'] for k, v in fx.cards_seen.items() if not k[0].startswith('plain-')]
+        self.assertEqual(startup, [], 'no member showed a startup card')
+        journal_is(self, [], 'the journal holds no grant: there was no startup card')
+        ordinary_question_stays_the_persons(self, ['m1'])
 
 
 class TeamsFixtureIsolation(unittest.TestCase):
@@ -892,6 +951,18 @@ class TeamsFixtureDiagnostics(unittest.TestCase):
         self.assertEqual(fixture.pinned(plain, 'begin-attempt'), ('T-abc', attempt))
         self.assertIsNone(fixture.pinned(plain.replace(attempt, 'not-a-uuid'), 'begin-attempt'))
 
+    def test_handouts_name_the_members_a_node_went_to(self):
+        from types import SimpleNamespace
+        rows = [dict(kind='handout_intent', refs=['team:t', 'node:1', 'member:m1', 'effect:e']),
+                dict(kind='handout_intent', refs=['team:t', 'node:2', 'member:m2', 'effect:f']),
+                dict(kind='observe_task', refs=['team:t', 'node:1'])]
+        reader = SimpleNamespace(team='t', listed=fixture.TeamFixture.listed, json=lambda *argv, **kw: dict(rows=rows))
+        self.assertEqual(fixture.TeamFixture.handouts(reader, 1), ['m1'])
+        self.assertEqual(fixture.TeamFixture.handouts(reader, 3), [])
+        reader.json = lambda *argv, **kw: dict(items=rows)
+        with self.assertRaisesRegex(AssertionError, 'reply has no rows list'):
+            fixture.TeamFixture.handouts(reader, 1)
+
     def test_folder_watch_times_a_folder_that_goes_and_comes_back(self):
         with tempfile.TemporaryDirectory() as base:
             folder = Path(base) / 'member'
@@ -982,6 +1053,13 @@ class NativeTeamsResumeClaude(ResumeContract, unittest.TestCase):
 @unittest.skipUnless(os.environ.get('HGS_CLAUDE_TEST_BIN') and fixture.HGS, 'Set HGS_TEST_BIN and HGS_CLAUDE_TEST_BIN')
 class NativeTeamsResumeUnworkedClaude(UnworkedResumeContract, unittest.TestCase):
     """Selected since zerus-63rru.62: the card of the refused restore carries the command's reason."""
+    agent = 'claude'
+    variable = 'HGS_CLAUDE_TEST_BIN'
+
+
+@unittest.skipUnless(os.environ.get('HGS_CLAUDE_TEST_BIN') and fixture.HGS, 'Set HGS_TEST_BIN and HGS_CLAUDE_TEST_BIN')
+class NativeTeamsQuestionAfterTrustClaude(QuestionAfterTrustContract, unittest.TestCase):
+    """Waiting (WAITING): not selected by the teams contract until zerus-63rru.73."""
     agent = 'claude'
     variable = 'HGS_CLAUDE_TEST_BIN'
 
