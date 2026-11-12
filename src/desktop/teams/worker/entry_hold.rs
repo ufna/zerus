@@ -4,43 +4,51 @@
 //! none of this.
 use std::{
     path::{Path, PathBuf},
-    sync::{mpsc, Mutex},
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        mpsc, Mutex,
+    },
     time::Duration,
 };
 
 struct Slot {
+    id: u64,
     state: PathBuf,
     entered: mpsc::SyncSender<()>,
     release: mpsc::Receiver<()>,
 }
 
 static SLOTS: Mutex<Vec<Slot>> = Mutex::new(Vec::new());
+static NEXT: AtomicU64 = AtomicU64::new(0);
 
 /// The test's side of one pause. Dropping it releases the paused thread, or
 /// withdraws the slot when no thread reached it, also while unwinding.
 pub(in crate::desktop) struct Hold {
-    state: PathBuf,
+    id: u64,
     entered: mpsc::Receiver<()>,
     release: Option<mpsc::SyncSender<()>>,
 }
 
 impl Hold {
-    /// Pauses the next worker thread that enters its run for `state`.
+    /// Pauses the next worker thread that enters its run for `state`. A
+    /// later hold for the same folder waits for the next thread after it.
     pub fn install(state: &Path) -> Self {
+        let id = NEXT.fetch_add(1, Ordering::Relaxed);
         let (entered, reached) = mpsc::sync_channel(1);
         let (release, receive) = mpsc::sync_channel(1);
         let mut slots = SLOTS.lock().unwrap_or_else(|e| e.into_inner());
         assert!(
             slots.iter().all(|slot| slot.state != state),
-            "one hold per state folder"
+            "one pending hold per state folder"
         );
         slots.push(Slot {
+            id,
             state: state.to_owned(),
             entered,
             release: receive,
         });
         Self {
-            state: state.to_owned(),
+            id,
             entered: reached,
             release: Some(release),
         }
@@ -62,7 +70,7 @@ impl Drop for Hold {
         SLOTS
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .retain(|slot| slot.state != self.state);
+            .retain(|slot| slot.id != self.id);
         self.release();
     }
 }
