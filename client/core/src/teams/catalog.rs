@@ -6,6 +6,8 @@
 //! malformed entry (a template without a roster or settings, a role without an
 //! agent, a stage of an unknown kind) refuses the whole catalog before the form
 //! sees it, and is then given back with every field the form reads present.
+//! Each template keeps the `digest` that `catalog show` adds beside the
+//! catalog type, so the form can bind a create to the template it showed.
 use serde::Serialize;
 use serde_json::{json, Value};
 use zerus_team_plan::catalog::{Catalog, LeadSpec, Pipeline, Role, Template};
@@ -40,7 +42,7 @@ fn lead(lead: &LeadSpec) -> Value {
     })
 }
 
-fn template(template: &Template) -> Value {
+fn template(template: &Template, digest: Option<String>) -> Value {
     let roster: Vec<Value> = template
         .roster
         .iter()
@@ -49,7 +51,33 @@ fn template(template: &Template) -> Value {
     json!({
         "id": template.id, "name": template.name, "description": template.description, "lead": lead(&template.lead),
         "roster": roster, "default_pipeline": template.default_pipeline, "settings": value(&template.settings),
+        "digest": digest,
     })
+}
+
+/// The longest digest kept; the command line's is 64 hex characters.
+const DIGEST_CHARS: usize = 128;
+
+/// Takes each template row's `digest` out of a raw catalog, in order. The
+/// command line adds it to `catalog show` only, outside the catalog type, so
+/// the rest is read as that type unchanged. It is opaque: kept as it came
+/// when it is a short word, and absent otherwise (an older command line
+/// sends none), which leaves the form unable to bind the template.
+fn take_digests(raw: &mut Value) -> Vec<Option<String>> {
+    let Some(templates) = raw.get_mut("templates").and_then(Value::as_array_mut) else {
+        return Vec::new();
+    };
+    templates
+        .iter_mut()
+        .map(|row| {
+            let digest = row.as_object_mut()?.remove("digest")?;
+            let text = digest.as_str()?;
+            (!text.is_empty()
+                && text.len() <= DIGEST_CHARS
+                && !text.chars().any(|c| c.is_control() || c.is_whitespace()))
+            .then(|| text.to_owned())
+        })
+        .collect()
 }
 
 /// The form's catalog from a `catalog show` reply: a success whose catalog is
@@ -63,7 +91,9 @@ pub fn form_catalog(reply: &Value) -> Result<Value, String> {
         .get("catalog")
         .filter(|catalog| catalog.is_object())
         .ok_or("The catalog answer has no catalog.")?;
-    let catalog: Catalog = serde_json::from_value(raw.clone())
+    let mut raw = raw.clone();
+    let digests = take_digests(&mut raw);
+    let catalog: Catalog = serde_json::from_value(raw)
         .map_err(|error| format!("The catalog answer is not a catalog: {error}."))?;
     if catalog
         .templates
@@ -74,7 +104,12 @@ pub fn form_catalog(reply: &Value) -> Result<Value, String> {
     }
     let roles: Vec<Value> = catalog.roles.iter().map(role).collect();
     let pipelines: Vec<Value> = catalog.pipelines.iter().map(pipeline).collect();
-    let templates: Vec<Value> = catalog.templates.iter().map(template).collect();
+    let templates: Vec<Value> = catalog
+        .templates
+        .iter()
+        .enumerate()
+        .map(|(index, entry)| template(entry, digests.get(index).cloned().flatten()))
+        .collect();
     Ok(json!({
         "ok": true,
         "catalog": {"roles": roles, "pipelines": pipelines, "templates": templates, "planning_rules": catalog.planning_rules},
@@ -107,6 +142,55 @@ mod tests {
             "../../../../crates/team-plan/fixtures/catalog-builtin.json"
         ))
         .unwrap()
+    }
+
+    /// The command line's own `catalog show` reply with the digests
+    /// (`crates/team-plan/fixtures/cli-catalog.json`).
+    fn shown() -> Value {
+        serde_json::from_str(include_str!(
+            "../../../../crates/team-plan/fixtures/cli-catalog.json"
+        ))
+        .unwrap()
+    }
+
+    #[test]
+    fn catalog_show_keeps_each_templates_digest_in_its_row() {
+        let reply = shown();
+        let form = form_catalog(&reply).expect("a catalog with digests is read");
+        let sent: Vec<(&str, &str)> = reply["catalog"]["templates"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|row| (row["id"].as_str().unwrap(), row["digest"].as_str().unwrap()))
+            .collect();
+        let kept: Vec<(&str, &str)> = form["catalog"]["templates"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|row| (row["id"].as_str().unwrap(), row["digest"].as_str().unwrap()))
+            .collect();
+        assert_eq!(kept, sent);
+        assert!(kept.contains(&(
+            "bugfix",
+            "6d15fdbdd92ac4d5c5bc53f0bd6da7871c0dbf1842f4d4f25bf94aebc95bbb9d"
+        )));
+    }
+
+    #[test]
+    fn a_catalog_without_digests_is_read_with_none_so_nothing_can_be_bound() {
+        let form = form_catalog(&json!({"ok": true, "catalog": builtin()})).unwrap();
+        for row in form["catalog"]["templates"].as_array().unwrap() {
+            assert!(row["digest"].is_null(), "{row}");
+        }
+        let mut reply = shown();
+        let templates = reply["catalog"]["templates"].as_array_mut().unwrap();
+        templates[0]["digest"] = json!(12);
+        templates[1]["digest"] = json!("a b");
+        templates[2]["digest"] = json!("x".repeat(129));
+        let form = form_catalog(&reply).expect("a malformed digest leaves the catalog readable");
+        for row in form["catalog"]["templates"].as_array().unwrap() {
+            assert!(row["digest"].is_null(), "{row}");
+        }
     }
 
     #[test]
