@@ -37,7 +37,7 @@ enum Clock {
 }
 
 /// The dump as a store of its own layout, opened at this head.
-fn legacy(dump: &Dump, clock: Clock, archived: bool) -> Harness {
+fn legacy(dump: &Dump, clock: Clock, archived: Option<&str>) -> Harness {
     let mut h = Harness::empty();
     drop(h.store.db.take());
     let path = h.temp.path().join("teams/teams-v1.sqlite3");
@@ -84,10 +84,11 @@ fn legacy(dump: &Dump, clock: Clock, archived: bool) -> Harness {
         db.execute(&format!("UPDATE {table} SET {column}={value}"), [])
             .unwrap();
     }
-    if archived {
+    if let Some(rows) = archived {
         // As the journal's archive writer moves rows (ops/journal.rs).
+        let rows = format!("team='{TEAM}' AND seq<=({rows})");
         db.execute_batch(&format!(
-            "INSERT INTO journal_archive SELECT * FROM journal WHERE team='{TEAM}'; DELETE FROM journal WHERE team='{TEAM}';"
+            "INSERT INTO journal_archive SELECT * FROM journal WHERE {rows}; DELETE FROM journal WHERE {rows};"
         ))
         .unwrap();
     }
@@ -137,7 +138,7 @@ fn hand_back() -> (bool, Option<String>, bool) {
     (false, None, true)
 }
 /// The holds store's nodes and what the records say of each.
-fn expected() -> [(u32, (bool, Option<String>, bool), &'static str); 7] {
+fn expected() -> [(u32, (bool, Option<String>, bool), &'static str); 8] {
     [
         (
             1,
@@ -158,6 +159,11 @@ fn expected() -> [(u32, (bool, Option<String>, bool), &'static str); 7] {
             "a reopen cutting over, the lead's Release, the person's Hold",
         ),
         (7, person_hold(), "the person's Hold, then nothing"),
+        (
+            8,
+            person_hold(),
+            "as 1, then a card of the node numbered as its item",
+        ),
     ]
 }
 
@@ -165,7 +171,7 @@ fn expected() -> [(u32, (bool, Option<String>, bool), &'static str); 7] {
 #[test]
 fn each_legacy_hold_goes_to_the_last_recorded_event_that_set_it() {
     for dump in &HOLDS {
-        let h = legacy(dump, Clock::Kept, false);
+        let h = legacy(dump, Clock::Kept, None);
         for (node, want, case) in expected() {
             assert_eq!(
                 stored(&h, node),
@@ -187,9 +193,9 @@ fn each_legacy_hold_goes_to_the_last_recorded_event_that_set_it() {
 #[test]
 fn the_migrated_holds_are_released_by_their_owners_only() {
     for dump in &HOLDS {
-        let mut h = legacy(dump, Clock::Kept, false);
+        let mut h = legacy(dump, Clock::Kept, None);
         let lead = lead(&h);
-        for node in [1, 6, 7] {
+        for node in [1, 6, 7, 8] {
             let error = h.run(&lead, Operation::Release { node }).unwrap_err();
             assert_eq!(
                 error.code,
@@ -213,7 +219,7 @@ fn the_migrated_holds_are_released_by_their_owners_only() {
 fn the_step_classifies_by_the_records_order_not_by_their_times() {
     for dump in &HOLDS {
         for clock in [Clock::One, Clock::Descending] {
-            let h = legacy(dump, clock, false);
+            let h = legacy(dump, clock, None);
             for (node, want, case) in expected() {
                 assert_eq!(
                     stored(&h, node),
@@ -232,7 +238,7 @@ fn the_step_classifies_by_the_records_order_not_by_their_times() {
 #[test]
 fn a_hold_whose_records_are_archived_is_the_persons() {
     for dump in &HOLDS {
-        let h = legacy(dump, Clock::Kept, true);
+        let h = legacy(dump, Clock::Kept, Some("SELECT max(seq) FROM journal"));
         for (node, _, case) in expected() {
             assert_eq!(
                 stored(&h, node),
@@ -251,7 +257,7 @@ fn a_hold_whose_records_are_archived_is_the_persons() {
 /// the node, and the person's Release frees it.
 fn unplaced(dump: &Dump, node: u32, end: impl Fn(&mut Harness)) {
     let label = format!("layout {} {}", dump.layout, dump.case);
-    let mut h = legacy(dump, Clock::Kept, false);
+    let mut h = legacy(dump, Clock::Kept, None);
     assert_eq!(stored(&h, node), person_hold(), "{label}");
     assert!(h.node(node).hold, "{label}");
     assert!(
@@ -275,7 +281,7 @@ fn unplaced(dump: &Dump, node: u32, end: impl Fn(&mut Harness)) {
         "{label}: the episode's end keeps it"
     );
     assert!(h.node(node).hold, "{label}");
-    let mut h = legacy(dump, Clock::Kept, false);
+    let mut h = legacy(dump, Clock::Kept, None);
     h.run(&person(), Operation::Release { node }).unwrap();
     assert!(!h.node(node).hold, "{label}: the person's Release frees it");
 }
@@ -283,55 +289,65 @@ fn unplaced(dump: &Dump, node: u32, end: impl Fn(&mut Harness)) {
 /// Layout 10: the lead's decision on the removed member's item.
 #[test]
 fn a_removed_members_hand_back_is_the_persons() {
-    unplaced(&dump!(10, "removed"), 1, |h| {
-        let lead = lead(h);
-        h.run(
-            &lead,
-            Operation::Reassign {
-                node: 1,
-                member: "m1".into(),
-                reason: "To a present member".into(),
-            },
-        )
-        .unwrap();
-    });
+    // Node 2 was the lead's Hold before the same hand-back: still the person's.
+    for node in [1, 2] {
+        unplaced(&dump!(10, "removed"), node, |h| {
+            let lead = lead(h);
+            h.run(
+                &lead,
+                Operation::Reassign {
+                    node,
+                    member: "m1".into(),
+                    reason: "To a present member".into(),
+                },
+            )
+            .unwrap();
+        });
+    }
 }
 
 /// Layout 9: the step to 10 hands the stranded Return back without a
 /// journal row; the lead's decision on its item.
 #[test]
 fn the_step_to_layout_10s_own_hand_back_is_the_persons() {
-    unplaced(&dump!(9, "stranded"), 1, |h| {
-        let lead = lead(h);
-        h.run(
-            &lead,
-            Operation::Reassign {
-                node: 1,
-                member: "m1".into(),
-                reason: "Decided again".into(),
-            },
-        )
-        .unwrap();
-    });
+    // Node 2 was the lead's Hold before its Return: still the person's.
+    for node in [1, 2] {
+        unplaced(&dump!(9, "stranded"), node, |h| {
+            let lead = lead(h);
+            h.run(
+                &lead,
+                Operation::Reassign {
+                    node,
+                    member: "m1".into(),
+                    reason: "Decided again".into(),
+                },
+            )
+            .unwrap();
+        });
+    }
 }
 
 /// Layouts 8, 9 and 10: a parent whose pipeline is active on a stage. The
 /// stage's end: its task is created, handed out, and its verdict passes.
 #[test]
 fn a_pipeline_active_on_a_stage_is_the_persons() {
-    for dump in [
-        dump!(8, "pipeline_active"),
-        dump!(9, "pipeline_active"),
-        dump!(10, "pipeline_active"),
+    // Parent 3 (its first sibling's stage is node 2) had a hand-back placed by its record before its stage.
+    for (dump, parent) in [
+        (dump!(8, "pipeline_active"), 1),
+        (dump!(8, "pipeline_active"), 3),
+        (dump!(9, "pipeline_active"), 1),
+        (dump!(9, "pipeline_active"), 3),
+        (dump!(10, "pipeline_active"), 1),
+        (dump!(10, "pipeline_active"), 3),
     ] {
-        unplaced(&dump, 1, |h| {
+        unplaced(&dump, parent, |h| {
             let stage = h
                 .store
                 .queue(TEAM, 200, None)
                 .unwrap()
                 .rows
                 .into_iter()
-                .find(|n| n.stage_of == Some(1))
+                .find(|n| n.stage_of == Some(parent))
                 .unwrap()
                 .id;
             let id = uuid::Uuid::new_v4().to_string();
@@ -390,10 +406,41 @@ fn a_pipeline_waiting_on_the_person_is_a_hand_back() {
         dump!(9, "pipeline_person"),
         dump!(10, "pipeline_person"),
     ] {
-        let mut h = legacy(&dump, Clock::Kept, false);
+        let mut h = legacy(&dump, Clock::Kept, None);
         assert_eq!(stored(&h, 1), hand_back(), "layout {}", dump.layout);
         let lead = lead(&h);
         h.run(&lead, Operation::Release { node: 1 }).unwrap();
         assert!(!h.node(1).hold, "layout {}", dump.layout);
+    }
+}
+
+/// A hand-back whose record is archived is not placed, even when a later
+/// Hold is live: node 4's refused cancel is archived, its lead's Release and
+/// Hold are not, and the hold is the person's. Node 5's records stay live.
+#[test]
+fn a_hand_back_whose_record_is_archived_is_not_outweighed_by_a_live_hold() {
+    for dump in &HOLDS {
+        let h = legacy(
+            dump,
+            Clock::Kept,
+            Some("SELECT max(seq) FROM journal WHERE kind='record_cancel' AND refs LIKE '%\"node:4\"%'"),
+        );
+        assert_eq!(stored(&h, 4), person_hold(), "layout {}", dump.layout);
+        assert_eq!(stored(&h, 5), hand_back(), "layout {}", dump.layout);
+    }
+}
+
+/// A Release last with the flag still set (a stop's own hold, whose cancel
+/// was refused after the lead had released a hand-back): no record says
+/// who holds it, and it is the person's.
+#[test]
+fn a_release_last_leaves_the_hold_the_persons() {
+    for dump in [
+        dump!(8, "stopped"),
+        dump!(9, "stopped"),
+        dump!(10, "stopped"),
+    ] {
+        let h = legacy(&dump, Clock::Kept, None);
+        assert_eq!(stored(&h, 1), person_hold(), "layout {}", dump.layout);
     }
 }

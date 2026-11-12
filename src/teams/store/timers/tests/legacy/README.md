@@ -6,9 +6,9 @@ the step to layout 11 (`../legacy_holds.rs`). Each dump ends with the store's
 
 | Layout | Commit | Cases |
 |---|---|---|
-| 8 | 40046fa3f0c0a21371ea2e618e9e963c4adb5646 | holds, pipeline_active, pipeline_person |
-| 9 | 452bec1fe71057cbbe04ff42954dc83bea13373d | holds, pipeline_active, pipeline_person, stranded |
-| 10 | c29dc402e05089ee80f7d734d8ea4b1c6502095c | holds, pipeline_active, pipeline_person, removed |
+| 8 | 40046fa3f0c0a21371ea2e618e9e963c4adb5646 | holds, stopped, pipeline_active, pipeline_person |
+| 9 | 452bec1fe71057cbbe04ff42954dc83bea13373d | holds, stopped, pipeline_active, pipeline_person, stranded |
+| 10 | c29dc402e05089ee80f7d734d8ea4b1c6502095c | holds, stopped, pipeline_active, pipeline_person, removed |
 
 To regenerate one, check the commit out in its own worktree, add the module
 below as `src/teams/ops/tests/wp10_legacy.rs` with `#[cfg(test)] mod wp10_legacy;`
@@ -98,6 +98,44 @@ fn wp10_generate_legacy() {
             // 7: the person's Hold, then nothing.
             let node = h.add(&person(), 7);
             h.run(&person(), Operation::Hold { node }).unwrap();
+            // 8: as 1, then cards on the node until one has the number of its
+            // refused cancel's item: a later reply of the node that names the
+            // same number from another table.
+            // (m1 still has node 6's reopen open, cutting over.)
+            let node = h.add(&person(), 8);
+            h.submit(node, "m2");
+            h.report(node, "m2");
+            cancel_refused(&mut h, &lead, node);
+            let item = h.store.inbox(TEAM, 200, None).unwrap().rows.into_iter()
+                .find(|i| i.node == node && i.kind.starts_with("cancel_refused:")).unwrap().seq;
+            h.run(&lead, Operation::Release { node }).unwrap();
+            h.run(&person(), Operation::Hold { node }).unwrap();
+            let mut card = 0;
+            for n in 0..400 {
+                card = h.run(&person(), serde_json::from_value(serde_json::json!({"op":"open_card","kind":"note","text":format!("Note {n}"),"node":node})).unwrap()).unwrap().item.unwrap();
+                if card >= item {
+                    break;
+                }
+            }
+            assert_eq!(card, item, "a card with the item's number");
+            keep(h);
+        }
+        "stopped" => {
+            // A hand-back, the lead's Release, then the stop's own hold, whose
+            // cancel is refused: the flag stays set with a Release last.
+            let mut h = Harness::new();
+            let lead = h.bind("lead");
+            h.bind("m1");
+            let node = reported(&mut h, 1);
+            cancel_refused(&mut h, &lead, node);
+            h.run(&lead, Operation::Release { node }).unwrap();
+            h.run(&person(), Operation::Stop).unwrap();
+            let row = h.store.pending_cancels(TEAM, 16, 0).unwrap().into_iter().find(|r| r.node == node).unwrap();
+            h.run(&service(), Operation::RecordCancel {
+                node, decision: row.decision, state: CancelState::Refused,
+                reason: "Still running after the stop".into(), attempt: row.attempt, attempt_id: row.attempt_id,
+            }).unwrap();
+            assert!(h.node(node).hold);
             keep(h);
         }
         "pipeline_active" | "pipeline_person" => {
@@ -116,6 +154,18 @@ fn wp10_generate_legacy() {
             let parent = h.add(&person(), 1);
             h.submit(parent, "m1");
             h.report(parent, "m1");
+            if case == "pipeline_active" {
+                // 2: a hand-back placed by its record, then the pipeline's stage.
+                let lead = Actor::Session {
+                    person: "local".into(), team: TEAM.into(), member: "lead".into(),
+                    session: h.store.member(TEAM, "lead").unwrap().unwrap().session.unwrap(),
+                };
+                let node = h.add(&person(), 2);
+                h.submit(node, "m1");
+                cancel_refused(&mut h, &lead, node);
+                h.report(node, "m1");
+                assert!(h.node(node).hold);
+            }
             if case == "pipeline_person" {
                 let stage = stages(&h, parent)[0].id;
                 let id = uuid::Uuid::new_v4().to_string();
@@ -139,19 +189,32 @@ fn wp10_generate_legacy() {
             h.bind("m2");
             let node = reported(&mut h, 1);
             h.run(&lead, Operation::Reassign { node, member: "m2".into(), reason: "Member removal hand-back".into() }).unwrap();
+            // 2: the lead's Hold, then the same hand-back.
+            let second = reported(&mut h, 2);
+            h.run(&lead, Operation::Hold { node: second }).unwrap();
+            h.run(&lead, Operation::Reassign { node: second, member: "m2".into(), reason: "Member removal hand-back".into() }).unwrap();
             h.run(&person(), Operation::ArchiveMember { member: "m2".into() }).unwrap();
             assert!(h.node(node).hold);
+            assert!(h.node(second).hold);
             keep(h);
         }
         "stranded" => {
             let mut h = Harness::new();
             let lead = h.bind("lead");
             h.bind("m1");
+            h.bind("m2");
             let node = h.add(&person(), 1);
             let _id = h.intent(node, "m1");
             h.observe(node, TaskStage::InReview);
             h.run(&lead, Operation::Return { node, reason: "A Return admitted while the hand-out was reserved".into() }).unwrap();
             assert!(h.node(node).hold);
+            // 2: the lead's Hold, then the same stranded Return.
+            let second = h.add(&person(), 2);
+            let _id = h.intent(second, "m2");
+            h.observe(second, TaskStage::InReview);
+            h.run(&lead, Operation::Hold { node: second }).unwrap();
+            h.run(&lead, Operation::Return { node: second, reason: "A Return admitted while the hand-out was reserved".into() }).unwrap();
+            assert!(h.node(second).hold);
             keep(h);
         }
         _ => panic!("unknown case"),
