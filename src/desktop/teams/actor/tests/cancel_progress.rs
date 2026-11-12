@@ -122,6 +122,12 @@ fn delivered(h: &mut Harness) -> u32 {
     );
     node
 }
+fn stopped() -> (Harness, u32) {
+    let mut h = Harness::new();
+    let node = delivered(&mut h);
+    h.run(&person(), Operation::Stop).unwrap();
+    (h, node)
+}
 fn live() -> (Harness, u32) {
     let mut h = Harness::new();
     let node = delivered(&mut h);
@@ -240,5 +246,58 @@ fn the_progress_fingerprint_covers_exactly_what_the_stale_check_reads() {
         let mut o = base.clone();
         change(&mut o);
         assert_eq!(print(&o), print(&base), "{field} is not read");
+    }
+}
+
+/// E5: the longest sentence a command can return, with whitespace runs, BEL
+/// and other control characters, CJK, accents and emoji, through both exits:
+/// the stale limit of a live team and a store refusal in a stopped team. The
+/// recorded reasons and the lead's items carry no control character and
+/// stay under two kibibytes.
+#[test]
+fn a_commands_sentence_reaches_the_outcome_without_control_characters() {
+    let long = format!(
+        "{}{}{}{}",
+        "\u{754C} \t\n\u{0007}".repeat(500),
+        "\u{001B}[31m\u{0000}\u{007F}\u{009B} ".repeat(20),
+        "\u{00E9}. ".repeat(900),
+        "\u{1F600}".repeat(400)
+    );
+    let clean = |text: &str, what: &str| {
+        assert!(!text.chars().any(char::is_control), "{what}: {text:?}");
+        assert!(text.len() <= 2048, "{what}: {} bytes", text.len());
+    };
+    let (mut h, node) = live();
+    let mut p = Command::new(&h, node, "stale", &long);
+    passes(&mut h, &mut p, 60);
+    assert_eq!(minutes(&p), [0, 1, 3]);
+    let recorded = outcomes(&h);
+    assert_eq!(recorded.len(), 1);
+    assert!(recorded[0]
+        .1
+        .starts_with("The cancel command answered stale: \u{754C} \u{754C} "));
+    assert!(recorded[0].1.contains("made no progress"));
+    let (mut s, stopped_node) = stopped();
+    let mut q = Command::new(&s, stopped_node, "refused", &long);
+    q.inflate_first_fact = true;
+    passes(&mut s, &mut q, 30);
+    assert_eq!(q.calls.len(), 1);
+    assert_eq!(q.facts.len(), 2, "the original, then the exit");
+    let exit = outcomes(&s);
+    assert_eq!(exit.len(), 1);
+    assert!(exit[0]
+        .1
+        .starts_with("The cancel command answered refused: "));
+    assert!(exit[0].1.contains("The team store refused this outcome"));
+    for (h, label) in [(&h, "live"), (&s, "stopped")] {
+        for (_, reason) in outcomes(h) {
+            clean(&reason, label);
+        }
+        for item in h.store.inbox(TEAM, 200, None).unwrap().rows {
+            clean(&item.text, label);
+        }
+    }
+    for fact in p.facts.iter().chain(&q.facts[1..]) {
+        clean(&fact.reason, "fact");
     }
 }
