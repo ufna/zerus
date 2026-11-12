@@ -110,7 +110,21 @@ pub(crate) fn launcher_value() -> Result<String> {
         return link_of(&parent, &machine, config.host(), "claimed")
             .map(|link| link.to_string()).ok_or("The parent identity is incomplete".into());
     }
-    Ok(proven_link().or_else(|| FORWARDED.get().cloned()).unwrap_or_default())
+    if let Some(link) = proven_link().or_else(|| FORWARDED.get().cloned()) {
+        return Ok(link);
+    }
+    // A resident DeepSeek host's tool call is never the person, so it never
+    // launches a session that no one launched (zerus-ppd26 Part B).
+    if let Some(reason) = session_graph::hosted_proof_refusal() {
+        return Err(hosted_launch_refusal(&reason));
+    }
+    Ok(String::new())
+}
+
+/// The refusal of a launch that a DeepSeek tool call without its hosted proof
+/// would start with no parent.
+pub(crate) fn hosted_launch_refusal(reason: &str) -> String {
+    format!("This DeepSeek tool call (HGS_AGENT=dsh) cannot prove its session, so it does not launch a session without a parent: {reason} Name the parent with --parent.")
 }
 
 /// The launcher of a new native-API session. Resolve the link directly:

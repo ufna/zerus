@@ -1025,6 +1025,17 @@ fn dispatch_normal(mut args: Vec<String>) -> Result<i32> {
             return state::session_graph::forward_send(&target, args, origin);
         }
     }
+    // A resident DeepSeek host's tool call is never the person: without its
+    // hosted proof its message is refused, here and before any @host
+    // forwarding, never sent without a sender (zerus-ppd26 Part B).
+    if command == "send" {
+        if let Some(reason) = state::session_graph::hosted_proof_refusal() {
+            return Err(Error::new(
+                1,
+                format!("This DeepSeek tool call (HGS_AGENT=dsh) cannot prove its session, so its message is not sent: {reason}"),
+            ));
+        }
+    }
     if !target.is_empty() && !config.is_self(&target) {
         return remote(&config, &target, command, args, dry);
     }
@@ -1717,6 +1728,26 @@ fn remote_via(
 ) -> Result<i32> {
     if target.starts_with('-') || target.chars().any(char::is_whitespace) {
         return Err(Error::new(1, "invalid SSH host alias"));
+    }
+    // A launch a resident DeepSeek host's tool call starts on a peer without
+    // its proven link or an explicit --parent is refused, as a local one is
+    // (zerus-ppd26 Part B).
+    if matches!(
+        command,
+        "claude" | "codex" | "kimi" | "dsh" | "opencode" | "fork"
+    ) && machine.is_none()
+        && !args
+            .iter()
+            .take_while(|s| s.as_str() != "--")
+            .any(|s| s == "--parent")
+        && state::parent_link::forwarded_argument().is_none()
+    {
+        if let Some(reason) = state::session_graph::hosted_proof_refusal() {
+            return Err(Error::new(
+                1,
+                state::parent_link::hosted_launch_refusal(&reason),
+            ));
+        }
     }
     let mut args = args.to_vec();
     if command == "inspect" && args.first().is_some_and(|arg| arg.starts_with("zerus://session?")) && args.len()==1 {

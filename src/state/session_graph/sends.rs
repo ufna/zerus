@@ -159,6 +159,27 @@ pub(crate) fn hosted_agent_call() -> bool {
     std::env::var_os("HGS_AGENT").is_some_and(|agent| agent == HOSTED_AGENT)
 }
 
+/// Why a resident DeepSeek host's tool call (`HGS_AGENT=dsh`) cannot act as
+/// its session, or `None` when this is no such call or its hosted proof holds
+/// (zerus-ppd26 Part B). Such a call is never the person: a path that would
+/// otherwise go on with no origin (a send without a sender, a launch without
+/// a parent) refuses it with this sentence instead. A call that scrubs every
+/// marker is outside this rule, as for every agent.
+pub(crate) fn hosted_proof_refusal() -> Option<String> {
+    if !hosted_agent_call() {
+        return None;
+    }
+    let (Some(name), Some(run)) = (nonempty_env("HGS_SESSION"), nonempty_env("HGS_RUN_ID")) else {
+        return Some("It carries no session markers.".into());
+    };
+    match hosted_caller(&name, &run, nonempty_env("HGS_SESSION_ID").as_deref()) {
+        Ok(Some(record)) if target_receipt(&record).is_some() => None,
+        Ok(Some(_)) => Some("Its session cannot be named on this computer.".into()),
+        Ok(None) => Some("Its session is archived.".into()),
+        Err(reason) => Some(reason.to_owned()),
+    }
+}
+
 /// The calling agent's own binding under its current name, proven like a
 /// send's origin.
 pub(crate) fn caller_record() -> Option<Value> {
@@ -333,6 +354,10 @@ pub(crate) fn forward_send(route: &str, args: &[String], origin: Value) -> crate
         .env_remove("HGS_SESSION")
         .env_remove("HGS_SESSION_ID")
         .env_remove("HGS_RUN_ID")
+        // The delivering child sends what this process already attributed;
+        // it is no hosted call of its own (zerus-ppd26 Part B).
+        .env_remove("HGS_AGENT")
+        .env_remove("HGS_DSH_CALL_TOKEN")
         .stdin(file)
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit());

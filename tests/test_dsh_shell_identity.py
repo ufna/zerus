@@ -55,6 +55,47 @@ with open(cfg['out'] + '.tmp', 'w') as f:
 os.rename(cfg['out'] + '.tmp', cfg['out'])
 '''
 
+# Run inside a hosted tool call on Linux: the socket inodes of host.sock (its
+# listener and any accepted connection), which of them each process of this
+# call holds, which the host holds, and whether the host's are close-on-exec.
+FD_PROBE = r'''
+import json, os, sys
+path, host = sys.argv[1], int(sys.argv[2])
+inodes = set()
+with open('/proc/net/unix') as table:
+    next(table)
+    for line in table:
+        fields = line.split()
+        if len(fields) >= 8 and fields[7] == path:
+            inodes.add(fields[6])
+def sockets(pid):
+    found = {}
+    for fd in os.listdir(f'/proc/{pid}/fd'):
+        try:
+            target = os.readlink(f'/proc/{pid}/fd/{fd}')
+        except OSError:
+            continue
+        if target.startswith('socket:['):
+            found[fd] = target[8:-1]
+    return found
+chain, pid = [], os.getpid()
+while pid not in (0, 1, host):
+    chain.append(pid)
+    with open(f'/proc/{pid}/stat') as stat:
+        text = stat.read()
+    pid = int(text[text.rindex(')') + 2:].split()[1])
+held = {str(p): sorted(i for i in sockets(p).values() if i in inodes) for p in chain}
+host_held = {fd: inode for fd, inode in sockets(host).items() if inode in inodes}
+cloexec = {}
+for fd in host_held:
+    with open(f'/proc/{host}/fdinfo/{fd}') as info:
+        for line in info:
+            if line.startswith('flags:'):
+                cloexec[fd] = bool(int(line.split()[1], 8) & 0o2000000)
+print(json.dumps({'inodes': sorted(inodes), 'reached_host': pid == host, 'chain': chain, 'held': held,
+                  'host_held': host_held, 'cloexec': cloexec}))
+'''
+
 # A test-only `dsh` on PATH: execs the released harness with the keyless
 # fixture model merged into the patch file hgs wrote. Every other argument, the
 # environment and the process tree stay exactly as hgs made them.
@@ -335,6 +376,25 @@ class HostStartedByHgs(Hosted, unittest.TestCase):
                     self.assertOwnMarkers(followup['env'], rerun)
                     self.assertEqual(followup['env']['DSH_SESSION_ID'], result['env']['DSH_SESSION_ID'])
 
+    def test_no_tool_call_holds_a_descriptor_of_the_host_socket(self):
+        # zerus-ppd26 Part B: peer credentials name the process that created the
+        # host's listener, not the one that accepts; the proof relies on the host
+        # never handing that listener to a child. A tool call's processes hold no
+        # descriptor of host.sock, and the host's own are close-on-exec.
+        session = self.launch()
+        pid = json.loads((self.host_dir / 'host.identity.json').read_text())['pid']
+        socket_path = str(self.host_dir / 'host.sock')
+        for mark in ('HGS_SELF_NATIVE_FIXTURE', 'HGS_IDENTITY_BACKGROUND_FIXTURE'):
+            with self.subTest(mark):
+                runs = self.shell(session, mark, runs=[('fds', [sys.executable, '-I', '-c', FD_PROBE, socket_path, str(pid)],
+                                                        None)], timeout=90)['runs']
+                self.assertEqual(runs['fds']['code'], 0, runs['fds'])
+                found = json.loads(runs['fds']['stdout'])
+                self.assertTrue(found['inodes'] and found['reached_host'] and found['chain'], found)
+                self.assertTrue(found['host_held'], 'the host must hold its listener: ' + json.dumps(found))
+                self.assertEqual({pid: held for pid, held in found['held'].items() if held}, {}, found)
+                self.assertTrue(found['cloexec'] and all(found['cloexec'].values()), found)
+
     def test_a_hosted_call_acts_as_its_own_session_and_no_other(self):
         # zerus-ppd26 Part B: the host's per-call token under the host's
         # ancestry proves the session; another session's markers, a forged or
@@ -342,6 +402,15 @@ class HostStartedByHgs(Hosted, unittest.TestCase):
         own, other = self.launch(), self.launch()
         ref = self.task()
         hgs = str(HGS)
+        refused_sends = []
+
+        def unproven_send(label):
+            request = {'request_id': str(uuid.uuid4()), 'expected_run_id': other['run_id'],
+                       'expected_conversation_id': other['conversation_id'], 'text': 'UNPROVEN-' + label}
+            refused_sends.append(request)
+            return json.dumps(request)
+
+        orphan = 'orphan-' + uuid.uuid4().hex[:8]
         send = {'request_id': str(uuid.uuid4()), 'expected_run_id': other['run_id'],
                 'expected_conversation_id': other['conversation_id'], 'text': 'from a hosted call'}
         result = self.shell(own, runs=[
@@ -353,6 +422,16 @@ class HostStartedByHgs(Hosted, unittest.TestCase):
              {'HGS_SESSION': other['name'], 'HGS_RUN_ID': other['run_id'], 'HGS_SESSION_ID': other['session_id']}),
             ('forged', [hgs, 'task', 'comment', ref], 'with a forged token', {'HGS_DSH_CALL_TOKEN': '0' * 64}),
             ('tokenless', [hgs, 'task', 'comment', ref], 'without a token', {'HGS_DSH_CALL_TOKEN': None}),
+            # Without its proof a hosted call never sends or launches as nobody.
+            ('send_tokenless', [hgs, 'send', other['name'], '--json'], unproven_send('no token'), {'HGS_DSH_CALL_TOKEN': None}),
+            ('send_forged', [hgs, 'send', other['name'], '--json'], unproven_send('zero token'), {'HGS_DSH_CALL_TOKEN': '0' * 64}),
+            ('launch_tokenless', [hgs, 'dsh', str(self.root / 'ws'), '--new', '-n', orphan, '-d'], None,
+             {'HGS_DSH_CALL_TOKEN': None}),
+            # Refused here, before any @host forwarding is built.
+            ('remote_send', [hgs, '--dry-run', '@peer', 'send', other['name'], '--json'], unproven_send('remote'),
+             {'HGS_DSH_CALL_TOKEN': None, 'HGS_PEERS': 'peer'}),
+            ('remote_launch', [hgs, '--dry-run', '@peer', 'dsh', '/tmp', '--new', '-n', orphan, '-d'], None,
+             {'HGS_DSH_CALL_TOKEN': None, 'HGS_PEERS': 'peer'}),
         ])
         runs = result['runs']
         token = result['env']['HGS_DSH_CALL_TOKEN']
@@ -365,6 +444,18 @@ class HostStartedByHgs(Hosted, unittest.TestCase):
         for name in ('impersonate', 'forged', 'tokenless'):
             self.assertNotEqual(runs[name]['code'], 0, (name, runs[name]))
             self.assertIn('never acts as the person', runs[name]['stderr'], (name, runs[name]))
+        for name, missing in (('send_tokenless', 'carries no DeepSeek per-call token'),
+                              ('send_forged', 'knows no live tool call with this token')):
+            self.assertEqual(runs[name]['code'], 1, (name, runs[name]))
+            self.assertIn('cannot prove its session, so its message is not sent', runs[name]['stderr'])
+            self.assertIn(missing, runs[name]['stderr'])
+        for name, sentence in (('launch_tokenless', 'does not launch a session without a parent'),
+                               ('remote_send', 'so its message is not sent'),
+                               ('remote_launch', 'does not launch a session without a parent')):
+            self.assertEqual(runs[name]['code'], 1, (name, runs[name]))
+            self.assertIn(sentence, runs[name]['stderr'], (name, runs[name]))
+            self.assertNotIn('ssh', runs[name]['stdout'], (name, runs[name]))
+        self.assertFalse(any(str(path).endswith(orphan) for path in (self.state / 'dsh').rglob('*')))
         log = json.loads(self.call('task', 'get', ref, '--history-limit', '20').stdout)['task']['log']
         acted = [entry for entry in log if entry['kind'] != 'created']
         self.assertTrue(acted)
@@ -378,10 +469,23 @@ class HostStartedByHgs(Hosted, unittest.TestCase):
                    if json.loads(row[0])['request_id'] == send['request_id']]
         self.assertEqual([source['name'] for source in sources], [own['name']])
         # The first call has ended, so its token now proves nothing.
-        stale = self.shell(own, runs=[('stale', [hgs, 'task', 'comment', ref], 'with an ended call token',
-                                       {'HGS_DSH_CALL_TOKEN': token})])['runs']['stale']
+        later = self.shell(own, runs=[('stale', [hgs, 'task', 'comment', ref], 'with an ended call token',
+                                       {'HGS_DSH_CALL_TOKEN': token}),
+                                      ('send_stale', [hgs, 'send', other['name'], '--json'], unproven_send('ended token'),
+                                       {'HGS_DSH_CALL_TOKEN': token})])['runs']
+        stale = later['stale']
         self.assertNotEqual(stale['code'], 0, stale)
         self.assertIn('never acts as the person', stale['stderr'])
+        self.assertEqual(later['send_stale']['code'], 1, later['send_stale'])
+        self.assertIn('so its message is not sent', later['send_stale']['stderr'])
+        # Nothing of a refused send was recorded or delivered.
+        refused = {request['request_id'] for request in refused_sends}
+        rows = sqlite3.connect(f"file:{self.state / 'graph/sends.sqlite3'}?mode=ro", uri=True).execute(
+            'SELECT payload FROM sends').fetchall()
+        self.assertFalse(refused & {json.loads(row[0])['request_id'] for row in rows})
+        delivered = json.dumps(json.loads(self.call('inspect', other['name']).stdout))
+        self.assertIn('from a hosted call', delivered)
+        self.assertNotIn('UNPROVEN-', delivered)
 
     def test_without_an_identity_a_hosted_call_is_never_the_person(self):
         session = self.launch()

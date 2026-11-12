@@ -11,7 +11,7 @@ use super::*;
 use crate::state::provider_binding::Provider;
 
 /// What this proof establishes and what it does not, stated with its result.
-pub(crate) const HOSTED_LIMIT: &str = "One DeepSeek host process serves every session of its agent home: process ancestry proves only that this command runs under the host that serves the session, and the host's per-call token proves which conversation's tool call started it. A same-user process that reads another tool call's environment can copy that call's token; that is deliberate instrumentation and outside this proof.";
+pub(crate) const HOSTED_LIMIT: &str = "One DeepSeek host process serves every session of its agent home: process ancestry proves only that this command runs under the host that serves the session, and the host's per-call token proves which conversation's tool call started it. The host socket's peer credentials prove that the answering socket is the recorded host's, which never hands its listener to a child. A same-user process that reads another tool call's environment can copy that call's token; that is deliberate instrumentation and outside this proof.";
 
 /// The longest the proof waits for the host to answer for a token.
 #[cfg(unix)]
@@ -64,12 +64,19 @@ const HOST_CHANGED: &str = "The DeepSeek host changed while this tool call was b
 ///    sets it on every tool call).
 /// 6. The host, asked over its private socket, knows the token as a live
 ///    tool call of the binding's conversation, the top-level one for a child
-///    agent. Each connection's peer (`SO_PEERCRED` on Linux, `LOCAL_PEERPID`
-///    on macOS) must be the very process and birth proven in step 4, so a
-///    socket file another process serves answers nothing. One 2 s deadline
-///    bounds every connect, write and read together. A host whose adapter does
-///    not advertise call tokens, no answer in time, an unknown token or
-///    another conversation refuses. The host's birth is read again afterwards.
+///    agent. Each connection's peer credentials (`SO_PEERCRED` on Linux,
+///    `LOCAL_PEERPID` on macOS) name the process that created the listening
+///    socket; they must be the very process and birth proven in step 4, so
+///    the answering socket belongs to that host. They do not show which
+///    process accepted the connection: a process holding the host's listening
+///    descriptor, a child that inherited it or the host re-executed while
+///    listening, would answer as the host. The host never hands its listener
+///    to a child (it is opened close-on-exec, and the end-to-end suite checks
+///    on Linux that no tool call's process holds a descriptor of `host.sock`)
+///    and never re-executes while listening. One 2 s deadline bounds every
+///    connect, write and read together. A host whose adapter does not
+///    advertise call tokens, no answer in time, an unknown token or another
+///    conversation refuses. The host's birth is read again afterwards.
 ///
 /// The limit is [`HOSTED_LIMIT`]: the token shows which conversation's tool
 /// call started this command, not that no other same-user process read it.

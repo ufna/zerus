@@ -8,7 +8,8 @@ mod sends;
 pub(super) use sends::target_receipt;
 pub(crate) use sends::{
     caller_agent_for, caller_hosted_backend, caller_hosts, caller_machine, caller_record,
-    caller_record_for, forward_send, hosted_agent_call, send_origin, Hosts, Unread, HOSTED_LIMIT,
+    caller_record_for, forward_send, hosted_agent_call, hosted_proof_refusal, send_origin, Hosts,
+    Unread, HOSTED_LIMIT,
 };
 #[cfg(all(test, unix))]
 pub(crate) use sends::{caller_host_folder, written_boot};

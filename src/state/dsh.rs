@@ -98,8 +98,9 @@ pub(crate) fn host_key(agent_home: &str) -> String {
 /// The conversation whose live tool call holds `token`, asked of the host of
 /// `agent_home` (zerus-ppd26 Part B). `host` is the recorded host process and
 /// birth that the caller proved as its own ancestor: each connection's peer
-/// must be that same process, so a socket file another process serves answers
-/// nothing. One deadline, `within` from the start, bounds every connect, write
+/// credentials, which name the process that created the listening socket,
+/// must be that same process, so the answering socket is the host's (the host
+/// never hands its listener to a child). One deadline, `within` from the start, bounds every connect, write
 /// and read together, so a peer that answers a byte at a time cannot hold the
 /// command longer. An adapter that does not advertise call tokens, no answer
 /// in time, a malformed reply or an unknown token is an error, never an answer.

@@ -5451,15 +5451,31 @@ when the hosted caller proof holds:
 3. that process, with that birth, is an ancestor of the command;
 4. the command's `DSH_HOME` is the binding's agent home;
 5. the host, asked over its private socket, holds the token for the
-   binding's conversation; the socket's peer (`SO_PEERCRED` on Linux,
-   `LOCAL_PEERPID` on macOS) must be the very process and birth of step 3, so
-   a socket file another process serves answers nothing, and one 2-second
-   deadline bounds the whole exchange.
+   binding's conversation; the socket's peer credentials (`SO_PEERCRED` on
+   Linux, `LOCAL_PEERPID` on macOS), which name the process that created the
+   listening socket, must be the very process and birth of step 3, so the
+   answering socket is the host's; one 2-second deadline bounds the whole
+   exchange.
 
 An older host that does not advertise call tokens, no answer, an unknown token
 or another conversation refuses; so do another session's markers with a call's
 own token, a made-up token and the token of a call that has ended. `hgs self`
 reports such a proof as `identity_source` `hosted_call`, with its limit.
+
+Peer credentials do not show which process accepted a connection: a process
+that held the host's listening descriptor, such as a child that inherited it or
+the host re-executed while listening, would answer as the host. The host never
+hands its listener to a child, because it is opened close-on-exec, and never
+re-executes while listening. On Linux the end-to-end suite checks that no
+process of a tool call holds a descriptor of `host.sock` and that the host's
+listener is close-on-exec; on macOS this rests on the same Node behaviour.
+
+A command that carries `HGS_AGENT=dsh` but whose hosted proof fails (no token,
+a wrong or ended token, or any other refusal) is never the person: `hgs send`
+refuses it, before any `@host` forwarding, and so does a launch without
+`--parent`, each with a sentence naming the missing proof. Neither sends nor
+launches as nobody. Hosts an older Zerus started never set `HGS_AGENT=dsh`, so
+their calls are unaffected.
 
 The limit: one process serves all hosted sessions, so process ancestry proves
 only that a command runs under the host serving a session, not which hosted
