@@ -103,10 +103,13 @@ fn every_timer_read_searches_an_index() {
     let queue = crate::teams::store::pages::node_page_sql("nodes", false);
     let live = crate::teams::store::pages::node_page_sql("nodes", true);
     let archived = crate::teams::store::pages::node_page_sql("node_archive", true);
+    let effect_nodes = crate::teams::store::unstaffed::open_effect_nodes_sql();
     for (name, sql) in [
         ("QUEUE_PAGE", queue.as_str()),
         ("NODES_BY_STATE_PAGE", live.as_str()),
         ("ARCHIVE_BY_STATE_PAGE", archived.as_str()),
+        ("UNSTAFFED_OPEN_ITEMS", crate::teams::store::unstaffed::OPEN_ITEMS),
+        ("OPEN_EFFECT_NODES", effect_nodes.as_str()),
         ("MEMBER_PAGE", crate::teams::store::pages::MEMBER_PAGE_SQL),
         ("NEWEST", sql::NEWEST),
         ("OPEN", sql::OPEN),

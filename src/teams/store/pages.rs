@@ -22,7 +22,7 @@ fn row_facts(table: &str) -> String {
     } else {
         "NULL".to_owned()
     };
-    format!("{holder},(SELECT d.kind FROM decisions d WHERE d.team={table}.team AND d.node={table}.id AND d.state<>'settled'),(SELECT d.state FROM decisions d WHERE d.team={table}.team AND d.node={table}.id AND d.state<>'settled')")
+    format!("{holder},(SELECT d.kind FROM decisions d WHERE d.team={table}.team AND d.node={table}.id AND d.state<>'settled'),(SELECT d.state FROM decisions d WHERE d.team={table}.team AND d.node={table}.id AND d.state<>'settled'),(SELECT i.text FROM inbox i WHERE i.team={table}.team AND i.node={table}.id AND i.state='open' AND i.kind LIKE 'unstaffed:%' LIMIT 1)")
 }
 
 fn start(
@@ -272,6 +272,7 @@ impl Store {
                                 .zip(state)
                                 .is_some_and(|(kind, state)| state.replaceable(kind)),
                             pending,
+                            unstaffed: r.get(10)?,
                         })
                     },
                 )

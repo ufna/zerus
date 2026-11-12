@@ -37,13 +37,16 @@ pub struct Page<T> {
 /// holding the attempt (none when no one does), the kind of a pending
 /// decision (none when nothing is pending), and whether a new Return,
 /// Reassign or Cancel would replace that decision instead of being refused
-/// (`DecisionState::replaceable`; false when nothing is pending).
+/// (`DecisionState::replaceable`; false when nothing is pending), and the
+/// sentence of the lead's open item when no member can take the ready node
+/// (none otherwise).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct QueueRow {
     pub node: zerus_team_plan::model::Node,
     pub holder: Option<String>,
     pub pending: Option<String>,
     pub pending_replaceable: bool,
+    pub unstaffed: Option<String>,
 }
 /// A member row with whether the person stopped the member.
 #[derive(Clone, Debug, PartialEq, Eq)]

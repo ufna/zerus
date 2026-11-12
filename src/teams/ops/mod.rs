@@ -19,6 +19,7 @@ mod talk;
 mod team;
 mod timers;
 mod types;
+mod unstaffed;
 mod validation;
 use super::store::{self, rows, DecisionState, Store};
 #[allow(unused_imports)]

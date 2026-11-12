@@ -208,5 +208,6 @@ fn dispatch(ctx: &mut Context<'_>) -> Result<()> {
         Operation::RecordKeyClear { .. } => timers::key_clear(ctx),
         Operation::RecordLateSession { .. } => timers::late_session(ctx),
         Operation::RecordCancel { .. } => timers::record_cancel(ctx),
+        Operation::ReconcileUnstaffed => unstaffed::reconcile(ctx),
     }
 }

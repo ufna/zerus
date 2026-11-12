@@ -16,6 +16,7 @@ mod roster;
 mod storage;
 mod talk;
 mod team;
+mod unstaffed;
 
 pub(crate) const TEAM: &str = "00000000-0000-4000-8000-00000000beef";
 pub(crate) const TEAM_B: &str = "00000000-0000-4000-8000-00000000beee";
