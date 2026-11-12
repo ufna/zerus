@@ -1,7 +1,10 @@
 //! Additive service reads. No effects, migrations or task document access.
 use super::*;
 mod admission;
+// Read by the teams actor, which is built on Linux and macOS only.
+#[cfg_attr(not(any(target_os = "linux", target_os = "macos")), allow(unused_imports))]
 pub use admission::Admission;
+#[cfg_attr(not(any(target_os = "linux", target_os = "macos")), allow(unused_imports))]
 pub(crate) use admission::BUSY as ADMISSION_BUSY;
 use rusqlite::params;
 
