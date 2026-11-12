@@ -110,8 +110,12 @@ fn bound(ctx: &Context<'_>, node: u32) -> Result<bool> {
         )
         .map_err(storage)
 }
-/// What a cancelled observation does to the node, without its task revision.
-fn cancelled(ctx: &Context<'_>, node: u32) -> Result<()> {
+/// What a cancelled observation does to the node, without its task
+/// revision: first what the end does to the node's pipeline, through the
+/// observation path's own function, then the end of the node.
+fn cancelled(ctx: &mut Context<'_>, node: u32) -> Result<()> {
+    let n = ctx.node(node)?;
+    pipeline::task_ended(ctx, &n, true)?;
     let table = ctx.node_table(node)?;
     ctx.db
         .execute(
