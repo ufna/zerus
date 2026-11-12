@@ -126,3 +126,6 @@ mod native_cancels;
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 mod native_cancel_tick;
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+mod cancel_observation;

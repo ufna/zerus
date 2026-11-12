@@ -15,6 +15,8 @@ struct Fake {
     answer_pair: Option<Attempt>,
     missing_pair: bool,
     keep_once: bool,
+    answered_cancelled: bool,
+    fail_observe: bool,
 }
 impl Ports for Fake {
     fn changes(&mut self, _: &str, _: &str, _: u64) -> Result<zerus_replica::Changes> {
@@ -26,6 +28,12 @@ impl Ports for Fake {
     }
     fn observe(&mut self, _: &mut Store, _: &TaskRef) -> Result<()> {
         self.reads += 1;
+        if self.fail_observe {
+            return Err(super::super::problem("fixture observation unavailable"));
+        }
+        if self.answered_cancelled {
+            self.pending.clear();
+        }
         if self.move_pair {
             for p in &mut self.pending {
                 p.attempt += 1;
@@ -57,6 +65,7 @@ impl Ports for Fake {
     }
     fn cancel(&mut self, _: &Team, p: &Pending, _: &str) -> Result<Answer> {
         self.calls.push(p.node);
+        self.answered_cancelled = matches!(self.reply, None | Some(TaskReply::Cancelled));
         Ok(Answer {
             reply: self.reply.clone().unwrap_or(TaskReply::Cancelled),
             attempt: (!self.missing_pair).then(|| {
@@ -123,9 +132,13 @@ fn the_tick_consumes_cancels_and_keeps_their_distinct_final_state() {
         p.reply = Some(reply);
         a.tick(&mut h.store, &mut p, TEAM, 100, false).unwrap();
         assert_eq!(p.calls, vec![1]);
-        assert_eq!(p.facts.len(), 1);
-        assert!(!p.facts[0].refused);
-        assert_eq!(p.facts[0].released, released);
+        assert_eq!(p.facts.len(), usize::from(released));
+        if released {
+            assert!(!p.facts[0].refused);
+            assert!(p.facts[0].released);
+        } else {
+            assert_eq!(p.reads, 2);
+        }
         a.tick(&mut h.store, &mut p, TEAM, 101, false).unwrap();
         assert_eq!(p.calls.len(), 1);
     }
@@ -139,9 +152,10 @@ fn a_no_task_cancel_records_without_a_child() {
     assert!(p.calls.is_empty());
 }
 #[test]
-fn cancel_restarts_before_and_after_each_effect_keep_the_known_answer() {
+fn released_cancel_restarts_before_and_after_each_effect_keep_the_known_answer() {
     for point in ["reserved", "effect", "outcome", "recorded"] {
         let (mut h, mut a, mut p) = setup();
+        p.reply = Some(TaskReply::Released);
         super::super::cancel::CRASH.with(|s| s.set(Some(point)));
         assert!(
             std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| a.cancels(
@@ -226,6 +240,7 @@ fn stale_cancel_observes_and_uses_the_new_pair_after_its_backoff_without_a_card(
 #[test]
 fn a_cancel_fact_uses_the_reply_pair_instead_of_the_pending_pair() {
     let (mut h, mut a, mut p) = setup();
+    p.reply = Some(TaskReply::Released);
     p.answer_pair = Some(Attempt {
         number: 7,
         id: "actual-reply".into(),
@@ -240,6 +255,7 @@ fn a_cancel_fact_uses_the_reply_pair_instead_of_the_pending_pair() {
 #[test]
 fn a_saved_answer_whose_attempt_moved_ends_the_visit_without_a_second_child() {
     let (mut h, mut a, mut p) = setup();
+    p.reply = Some(TaskReply::Released);
     super::super::cancel::CRASH.with(|s| s.set(Some("outcome")));
     assert!(
         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| a.cancels(
@@ -272,7 +288,7 @@ fn a_stale_cancel_keeps_its_backoff_across_a_restart() {
     let mut a = super::super::Runtime::open(h.temp.path(), &machine).unwrap();
     a.cancels(&mut h.store, &mut p, &h_team(), 101).unwrap();
     assert_eq!(p.calls.len(), 1);
-    p.reply = None;
+    p.reply = Some(TaskReply::Released);
     a.cancels(&mut h.store, &mut p, &h_team(), 60_100).unwrap();
     assert_eq!(p.calls.len(), 2);
     assert_eq!(p.facts.len(), 1);
@@ -296,8 +312,9 @@ fn a_cancel_success_without_attempt_evidence_never_records_a_fact() {
     assert_eq!(h.store.cards(TEAM, 16, None).unwrap().rows.len(), 1);
 }
 #[test]
-fn a_legacy_saved_cancel_without_a_pair_is_observed_and_deferred_after_restart() {
+fn a_legacy_saved_cancel_without_a_pair_is_settled_by_observation_only() {
     let (mut h, mut a, mut p) = setup();
+    p.answered_cancelled = true;
     let key = format!("cancel:{}", p.pending[0].decision);
     a.put(
         TEAM,
@@ -309,20 +326,19 @@ fn a_legacy_saved_cancel_without_a_pair_is_observed_and_deferred_after_restart()
     let machine = a.machine.clone();
     drop(a);
     let mut a = super::super::Runtime::open(h.temp.path(), &machine).unwrap();
-    a.cancels(&mut h.store, &mut p, &h_team(), 100).unwrap();
+    for now in [100, 101, 60_100] {
+        a.cancels(&mut h.store, &mut p, &h_team(), now).unwrap();
+    }
     assert_eq!(p.reads, 1);
     assert!(p.calls.is_empty());
     assert!(p.facts.is_empty());
-    a.cancels(&mut h.store, &mut p, &h_team(), 101).unwrap();
-    assert!(p.calls.is_empty());
-    a.cancels(&mut h.store, &mut p, &h_team(), 60_100).unwrap();
-    assert_eq!(p.calls.len(), 1);
-    assert_eq!(p.facts.len(), 1);
+    assert!(a.ledger.get(TEAM, &key).unwrap().is_none());
 }
 
 #[test]
-fn a_legacy_reserved_fact_keeps_its_original_cancelled_operation_and_request() {
+fn a_legacy_reserved_live_cancel_fact_is_retired_without_reusing_its_request() {
     let (mut h, mut a, mut p) = setup();
+    p.answered_cancelled = true;
     let key = format!("cancel:{}", p.pending[0].decision);
     let id = uuid::Uuid::new_v4().to_string();
     let revision = h.store.team(TEAM).unwrap().unwrap().revision;
@@ -337,10 +353,99 @@ fn a_legacy_reserved_fact_keeps_its_original_cancelled_operation_and_request() {
     .unwrap();
     a.cancels(&mut h.store, &mut p, &h_team(), 100).unwrap();
     assert!(p.calls.is_empty());
-    assert_eq!(p.facts.len(), 1);
-    assert_eq!(p.facts[0].request_id, id);
     assert!(
-        !p.facts[0].released,
-        "a reserved legacy operation cannot change under its saved request ID"
+        p.facts.is_empty(),
+        "a legacy fact is not rewritten under its old or a new ID"
     );
+    assert_eq!(p.reads, 1);
+    assert!(a.ledger.get(TEAM, &key).unwrap().is_none());
+}
+
+#[test]
+fn live_cancel_restarts_before_and_after_the_observation_never_record_an_end_fact() {
+    for point in ["reserved", "effect", "before_observe", "observed"] {
+        let (mut h, mut a, mut p) = setup();
+        super::super::cancel::CRASH.with(|s| s.set(Some(point)));
+        assert!(
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| a.cancels(
+                &mut h.store,
+                &mut p,
+                &h_team(),
+                100
+            )))
+            .is_err(),
+            "{point}"
+        );
+        let machine = a.machine.clone();
+        drop(a);
+        let mut a = super::super::Runtime::open(h.temp.path(), &machine).unwrap();
+        a.cancels(&mut h.store, &mut p, &h_team(), 101).unwrap();
+        assert!(p.pending.is_empty(), "{point}");
+        assert_eq!(
+            p.calls.len(),
+            if matches!(point, "effect" | "before_observe") {
+                2
+            } else {
+                1
+            },
+            "{point}"
+        );
+        assert_eq!(p.reads, 1, "{point}");
+        assert!(p.facts.is_empty(), "{point}");
+    }
+}
+#[test]
+fn a_failed_live_cancel_observation_backs_off_and_repeats_only_the_idempotent_command() {
+    let (mut h, mut a, mut p) = setup();
+    p.fail_observe = true;
+    a.cancels(&mut h.store, &mut p, &h_team(), 100).unwrap();
+    a.cancels(&mut h.store, &mut p, &h_team(), 101).unwrap();
+    assert_eq!(p.calls.len(), 1);
+    assert!(p.facts.is_empty());
+    p.fail_observe = false;
+    a.cancels(&mut h.store, &mut p, &h_team(), 60_100).unwrap();
+    assert_eq!(p.calls.len(), 2);
+    assert!(p.pending.is_empty());
+    assert!(p.facts.is_empty());
+}
+
+#[test]
+fn a_cached_release_without_a_tuple_is_observed_without_recording_a_default_pair() {
+    let (mut h, mut a, mut p) = setup();
+    p.answered_cancelled = true;
+    let key = format!("cancel:{}", p.pending[0].decision);
+    a.put(
+        TEAM,
+        &key,
+        &json!({"pending":p.pending[0],"reply":"Released","fact":null,
+        "failures":0,"next_ms":0,"reason":""}),
+    )
+    .unwrap();
+    for now in [100, 101, 60_100] {
+        a.cancels(&mut h.store, &mut p, &h_team(), now).unwrap();
+    }
+    assert_eq!(p.reads, 1);
+    assert!(p.calls.is_empty());
+    assert!(p.facts.is_empty());
+    assert!(a.ledger.get(TEAM, &key).unwrap().is_none());
+}
+#[test]
+fn an_invalid_terminal_stale_reply_backs_off_without_observing_or_recording_a_refusal() {
+    let (mut h, mut a, mut p) = setup();
+    h.run(&person(), crate::teams::ops::Operation::Stop)
+        .unwrap();
+    p.reply = Some(TaskReply::Stale);
+    a.terminal_cancels(&mut h.store, &mut p, 100).unwrap();
+    a.terminal_cancels(&mut h.store, &mut p, 101).unwrap();
+    assert_eq!(p.calls.len(), 1);
+    assert_eq!(p.reads, 0);
+    assert!(p.facts.is_empty());
+    p.reply = Some(TaskReply::Refused {
+        reason: "attempt_changed: the person resumed it".into(),
+    });
+    a.terminal_cancels(&mut h.store, &mut p, 60_100).unwrap();
+    assert_eq!(p.calls.len(), 2);
+    assert_eq!(p.reads, 0);
+    assert!(p.facts[0].refused);
+    assert_eq!(p.facts[0].reason, "attempt_changed: the person resumed it");
 }

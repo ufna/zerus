@@ -4,6 +4,7 @@ use super::*;
 use ports::TaskReply;
 use serde::{Deserialize, Serialize};
 mod answer;
+mod observe;
 pub(in crate::desktop::teams) use answer::{Answer, Attempt};
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(in crate::desktop::teams) struct Pending {
@@ -177,6 +178,17 @@ impl Runtime {
         now: i64,
         budget: &mut u8,
     ) -> Result<()> {
+        if self.cancel_needs_observation(store, t, row)? {
+            // Retire a cached answer from an older build. Observation is now
+            // the sole writer for a live task's end; never rewrite that old
+            // fact under its already reserved request ID.
+            row.reply = None;
+            row.fact = None;
+            self.put(&t.id, key, row)?;
+            return self
+                .observe_cancelled(store, p, t, key, row, now)
+                .map(|_| ());
+        }
         if matches!(row.reply, Some(TaskReply::Cancelled | TaskReply::Released))
             && row.attempt.is_none()
         {
@@ -225,6 +237,11 @@ impl Runtime {
             TaskReply::CuttingOver { reason } => return Err(problem(reason)),
             _ => return Err(problem("Cancel answered another command")),
         }
+        if matches!(answer.reply, TaskReply::Cancelled)
+            && self.observe_cancelled(store, p, t, key, row, now)?
+        {
+            return Ok(());
+        }
         row.reply = Some(answer.reply);
         row.attempt = answer.attempt;
         self.put(&t.id, key, row)?;
@@ -268,6 +285,12 @@ impl Runtime {
         row: &mut Entry,
         now: i64,
     ) -> Result<()> {
+        let team = store
+            .team(&t.id)?
+            .ok_or_else(|| problem("Cancel team disappeared"))?;
+        if !matches!(team.status, TeamStatus::Running | TeamStatus::Paused) {
+            return Err(problem("A terminal cancel returned no current answer"));
+        }
         let observed = if let Some(task) = &row.pending.task {
             p.observe(store, task)
         } else {
@@ -324,7 +347,13 @@ impl Runtime {
             Err(error) => Err(error),
         }
     }
-    fn cancel_done(&mut self, store: &mut Store, t: &Team, key: &str, now: i64) -> Result<()> {
+    pub(super) fn cancel_done(
+        &mut self,
+        store: &mut Store,
+        t: &Team,
+        key: &str,
+        now: i64,
+    ) -> Result<()> {
         if matches!(t.status, TeamStatus::Running | TeamStatus::Paused) {
             self.recovered(store, t, key, now)?;
         }
