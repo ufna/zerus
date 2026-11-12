@@ -588,3 +588,31 @@ fn crashes_before_spawn_do_not_count_as_answers_even_after_each_restart() {
     assert_eq!(p.facts.len(), 1);
     assert!(!p.facts[0].refused);
 }
+
+#[test]
+fn a_cached_stale_answer_counts_once_across_restarts_before_and_after_its_durable_count() {
+    for point in ["outcome", "before_stale_count_save", "stale_counted"] {
+        let (mut h, mut a, mut p) = setup();
+        p.reply = Some(TaskReply::Stale);
+        super::super::cancel::CRASH.with(|s| s.set(Some(point)));
+        assert!(
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| a.cancels(
+                &mut h.store,
+                &mut p,
+                &h_team(),
+                100
+            )))
+            .is_err()
+        );
+        let machine = a.machine.clone();
+        drop(a);
+        let mut a = super::super::Runtime::open(h.temp.path(), &machine).unwrap();
+        for now in [101, 60_101, 180_101] {
+            a.cancels(&mut h.store, &mut p, &h_team(), now).unwrap();
+        }
+        assert_eq!(p.calls.len(), 3, "{point}");
+        assert!(p.pending.is_empty());
+        assert_eq!(p.facts.len(), 1);
+        assert!(p.facts[0].refused);
+    }
+}

@@ -351,7 +351,7 @@ impl Runtime {
         } else {
             0
         };
-        self.put(&t.id, key, row)?;
+        boundary("before_stale_count_save");
         if row.unchanged_answers >= 3 {
             return self.stale_cancel_exit(store, p, t, key, row, now);
         }
@@ -360,7 +360,9 @@ impl Runtime {
         row.deferrals = row.deferrals.saturating_add(1);
         row.next_ms = now.saturating_add(retry::delay(row.deferrals));
         self.put(&t.id, key, row)?;
-        self.defer(store, t, key, "", now)
+        self.defer(store, t, key, "", now)?;
+        boundary("stale_counted");
+        Ok(())
     }
     pub(super) fn cancel_done(
         &mut self,
