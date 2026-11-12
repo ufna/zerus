@@ -1,5 +1,69 @@
+use super::ports::{Availability, Fact};
 use super::*;
+use std::collections::{BTreeMap, BTreeSet};
 use zerus_team_plan::ready::{self, MemberView, PlanView};
+
+/// The members a ready task needs and that cannot be read (zerus-63rru.55).
+#[derive(Default)]
+pub(super) struct Needs {
+    /// Members whose read this pass named a fact, with role and fact.
+    unreadable: BTreeMap<String, (String, Fact)>,
+    /// Members whose read was not due or failed: their rows stay as they are.
+    unread: BTreeSet<String>,
+    /// The needed ones: member, the ready task it would take, role and fact.
+    pub needed: BTreeMap<String, (u32, String, Fact)>,
+}
+impl Needs {
+    /// "Needs" is the kernel's own selection run once more with the
+    /// unreadable members counted as free: a member is needed when that
+    /// selection gives it a task. They come after every other member, so
+    /// the members the first selection could use take what they took there
+    /// (the kernel picks the first qualifying member in order): a task the
+    /// second gives an unreadable member is one the first left waiting.
+    /// `handed` are the tasks already handed out whose observation has not
+    /// moved yet (an open effect or a pending delivery): the kernel still
+    /// lists them as ready, but nobody is needed for them.
+    fn select(&mut self, view: &PlanView, handed: &BTreeSet<u32>) {
+        if self.unreadable.is_empty() {
+            return;
+        }
+        let nodes: Vec<Node> = view
+            .nodes
+            .iter()
+            .map(|n| Node {
+                hold: n.hold || handed.contains(&n.id),
+                ..n.clone()
+            })
+            .collect();
+        let (known, unreadable): (Vec<&MemberView>, Vec<&MemberView>) = view
+            .members
+            .iter()
+            .partition(|m| !self.unreadable.contains_key(&m.id));
+        let members: Vec<MemberView> = known
+            .into_iter()
+            .cloned()
+            .chain(unreadable.into_iter().map(|m| MemberView {
+                free: true,
+                ..m.clone()
+            }))
+            .collect();
+        let again = PlanView {
+            nodes: &nodes,
+            members: &members,
+            ..*view
+        };
+        for h in ready::handouts(&again) {
+            if let Some((role, fact)) = self.unreadable.get(&h.member) {
+                self.needed
+                    .insert(h.member.clone(), (h.node, role.clone(), *fact));
+            }
+        }
+    }
+    /// Whether this pass leaves `member`'s row as it is.
+    pub fn unread(&self, member: &str) -> bool {
+        self.unread.contains(member)
+    }
+}
 impl Runtime {
     fn members(&self, store: &Store, team: &str) -> Result<Vec<Member>> {
         let mut out = Vec::new();
@@ -14,6 +78,8 @@ impl Runtime {
         }
         Err(problem("Member page bound exceeded"))
     }
+    /// The member's availability, or None when its read is not due this
+    /// pass (a failed read waits for its backoff) or failed.
     fn member_free(
         &mut self,
         store: &mut Store,
@@ -21,19 +87,19 @@ impl Runtime {
         team: &Team,
         m: &Member,
         now: i64,
-    ) -> Result<bool> {
+    ) -> Result<Option<Availability>> {
         let key = format!("member_free:{}", m.id);
         if !self.due(store, team, &key, "", now)? {
-            return Ok(false);
+            return Ok(None);
         }
-        match ports.free(team, m) {
-            Ok(free) => {
+        match ports.availability(team, m) {
+            Ok(answer) => {
                 self.recovered(store, team, &key, now)?;
-                Ok(free)
+                Ok(Some(answer))
             }
             Err(e) => {
                 self.failure(store, team, &key, "", &e, now)?;
-                Ok(false)
+                Ok(None)
             }
         }
     }
@@ -85,22 +151,39 @@ impl Runtime {
             integration: team.settings.integration,
         };
         if ready::ready(&initial).is_empty() {
-            return Ok(());
+            // No ready task: nobody needs a member that cannot be read.
+            return self.unreadable_members(store, team, &Needs::default(), now);
         }
         let effects = self.open_effects(store, &team.id)?;
         let mut members = Vec::new();
+        let mut needs = Needs::default();
         for m in self.members(store, &team.id)? {
-            let free = m.id != team.lead
+            let answer = if m.id != team.lead
                 && m.state == MemberState::Active
                 && m.session.is_some()
                 && !self.ledger.pending_member(&team.id, &m.id)?
                 && !effects.iter().any(|e| e.member == m.id)
-                && self.member_free(store, ports, team, &m, now)?;
+            {
+                self.member_free(store, ports, team, &m, now)?
+            } else {
+                Some(Availability::Busy)
+            };
+            match answer {
+                Some(Availability::Unreadable(fact)) => {
+                    needs
+                        .unreadable
+                        .insert(m.id.clone(), (m.role.clone(), fact));
+                }
+                None => {
+                    needs.unread.insert(m.id.clone());
+                }
+                Some(_) => {}
+            }
             members.push(MemberView {
                 id: m.id,
                 role: m.role,
                 state: m.state,
-                free,
+                free: answer == Some(Availability::Free),
             });
         }
         let view = PlanView {
@@ -110,6 +193,16 @@ impl Runtime {
             lead: &team.lead,
             integration: team.settings.integration,
         };
+        if !needs.unreadable.is_empty() {
+            let mut handed: BTreeSet<u32> = effects.iter().map(|e| e.node).collect();
+            for id in ready::ready(&view) {
+                if self.ledger.pending_node(&team.id, id)? {
+                    handed.insert(id);
+                }
+            }
+            needs.select(&view, &handed);
+        }
+        self.unreadable_members(store, team, &needs, now)?;
         for h in ready::handouts(&view).into_iter().take(8) {
             let key = format!("handout:{}", h.node);
             let revision = store
@@ -242,5 +335,62 @@ impl Runtime {
         }
         self.send(store, ports, team, (&node, &m), "reopen", now)?;
         self.recovered(store, team, &format!("reopen:{}", d.seq), now)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::teams::ops::tests::*;
+
+    /// The kernel picks the first qualifying member in order. Counted free
+    /// after every other member, an unreadable m1 listed before a free m2
+    /// does not take the task m2 takes in the first selection: it is needed
+    /// for the task that waits.
+    #[test]
+    fn an_unreadable_member_is_needed_for_the_task_the_first_selection_left() {
+        let mut h = Harness::new();
+        h.bind("m1");
+        h.bind("m2");
+        h.add(&person(), 1);
+        h.add(&person(), 2);
+        let team = h.store.team(TEAM).unwrap().unwrap();
+        let r = ops::readiness(&h.store, TEAM).unwrap();
+        let members: Vec<MemberView> = ["m1", "m2"]
+            .iter()
+            .map(|id| {
+                let m = h.store.member(TEAM, id).unwrap().unwrap();
+                MemberView {
+                    id: m.id,
+                    role: m.role,
+                    state: m.state,
+                    free: *id == "m2",
+                }
+            })
+            .collect();
+        let view = PlanView {
+            phases: &r.phases,
+            nodes: &r.nodes,
+            members: &members,
+            lead: &team.lead,
+            integration: team.settings.integration,
+        };
+        let first = ready::handouts(&view);
+        assert_eq!(
+            first
+                .iter()
+                .map(|h| (h.node, h.member.as_str()))
+                .collect::<Vec<_>>(),
+            [(1, "m2")]
+        );
+        let mut needs = Needs::default();
+        needs
+            .unreadable
+            .insert("m1".into(), ("developer".into(), Fact::Children));
+        needs.select(&view, &BTreeSet::new());
+        assert_eq!(
+            needs.needed.into_iter().collect::<Vec<_>>(),
+            [("m1".to_owned(), (2, "developer".to_owned(), Fact::Children))]
+        );
     }
 }

@@ -1,5 +1,6 @@
 //! Point reads of the fleet rows already committed by Broker. No session cache
 //! and no catalog walk: the existing (generation,key) index selects one row.
+use super::ports::{Availability, Fact};
 use super::*;
 use crate::{config::Config, desktop::store::Location};
 use rusqlite::{params, Connection, OpenFlags, OptionalExtension};
@@ -16,7 +17,33 @@ pub(super) fn free(
     member: &Member,
     backfill: bool,
 ) -> Result<bool> {
-    Ok(record(config, epoch, team, member, backfill)?.is_some_and(|row| idle(&row)))
+    Ok(availability(config, epoch, team, member, backfill)? == Availability::Free)
+}
+/// [`free`]'s answer from the same read, naming what cannot be read
+/// (zerus-63rru.55): a binding that resolves to no run, or an unknown count
+/// of an otherwise free member. A member with no row, or with one that is
+/// busy, is busy.
+pub(super) fn availability(
+    config: &Config,
+    epoch: &str,
+    team: &str,
+    member: &Member,
+    backfill: bool,
+) -> Result<Availability> {
+    Ok(match read(config, epoch, team, member, backfill)? {
+        Read::Row(row) => {
+            let facts = super::fleet::Facts::of(&row);
+            if facts.free() {
+                Availability::Free
+            } else {
+                facts
+                    .unknown()
+                    .map_or(Availability::Busy, Availability::Unreadable)
+            }
+        }
+        Read::Missing => Availability::Busy,
+        Read::Unresolved(why) => Availability::Unreadable(why.fact()),
+    })
 }
 pub(super) fn record(
     config: &Config,
@@ -25,11 +52,28 @@ pub(super) fn record(
     member: &Member,
     backfill: bool,
 ) -> Result<Option<Value>> {
+    Ok(match read(config, epoch, team, member, backfill)? {
+        Read::Row(row) => Some(row),
+        Read::Missing | Read::Unresolved(_) => None,
+    })
+}
+/// What one read of a member found.
+enum Read {
+    /// The current fleet row of its current run.
+    Row(Value),
+    /// Unbound, or no current row that names its run (and launch).
+    Missing,
+    /// Its binding resolves to no run, for the reason named.
+    Unresolved(Unresolved),
+}
+fn read(config: &Config, epoch: &str, team: &str, member: &Member, backfill: bool) -> Result<Read> {
     let Some(session) = member.session.as_ref() else {
-        return Ok(None);
+        return Ok(Read::Missing);
     };
-    let Current::Run(run) = current(config, team, member, backfill)? else {
-        return Ok(None);
+    let run = match current(config, team, member, backfill)? {
+        Current::Run(run) => run,
+        Current::Unbound => return Ok(Read::Missing),
+        Current::Unresolved(why) => return Ok(Read::Unresolved(why)),
     };
     let db = connection(config)?;
     let row: Option<String> = db
@@ -40,7 +84,9 @@ pub(super) fn record(
         )
         .optional()
         .map_err(crate::teams::store::storage)?;
-    let Some(row) = row else { return Ok(None) };
+    let Some(row) = row else {
+        return Ok(Read::Missing);
+    };
     let value: Value = serde_json::from_str(&row).map_err(crate::teams::store::storage)?;
     let named = super::fleet::Identity::of(&value);
     let identity = named.run == run
@@ -48,7 +94,11 @@ pub(super) fn record(
             Some(id) => named.launch == id,
             None => true,
         };
-    Ok(identity.then_some(value))
+    Ok(if identity {
+        Read::Row(value)
+    } else {
+        Read::Missing
+    })
 }
 /// Why a member bound to a launch has no current run (zerus-63rru.53): a
 /// named state of the reader, never a silent none. Each leaves the member
@@ -66,6 +116,18 @@ pub(super) enum Unresolved {
     StartedFresh,
     /// The store, the record or the deadline did not answer; a later read may.
     Unavailable,
+}
+impl Unresolved {
+    /// The fact a card names for this result.
+    pub(super) fn fact(&self) -> Fact {
+        match self {
+            Unresolved::NoHandle => Fact::NoHandle,
+            Unresolved::Gone => Fact::Gone,
+            Unresolved::Changed => Fact::Changed,
+            Unresolved::StartedFresh => Fact::StartedFresh,
+            Unresolved::Unavailable => Fact::Unavailable,
+        }
+    }
 }
 /// A member's current run, or why it has none.
 #[derive(Clone, Debug, PartialEq, Eq)]

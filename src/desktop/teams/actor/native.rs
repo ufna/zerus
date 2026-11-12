@@ -224,15 +224,21 @@ impl Ports for Native {
         crate::teams::tasks::report(&self.config.state, task)
     }
     fn free(&mut self, team: &Team, m: &Member) -> Result<bool> {
+        Ok(self.availability(team, m)? == ports::Availability::Free)
+    }
+    /// One read: the fleet row's answer, then the session's task index for a
+    /// member that row calls free.
+    fn availability(&mut self, team: &Team, m: &Member) -> Result<ports::Availability> {
         let Some(session) = m.session.as_ref() else {
-            return Ok(false);
+            return Ok(ports::Availability::Busy);
         };
-        if session.machine != self.machine
-            || !super::availability::free(&self.config, &self.epoch, &team.id, m, true)?
-        {
-            return Ok(false);
+        if session.machine != self.machine {
+            return Ok(ports::Availability::Busy);
         }
-        self.unoccupied(m)
+        match super::availability::availability(&self.config, &self.epoch, &team.id, m, true)? {
+            ports::Availability::Free if !self.unoccupied(m)? => Ok(ports::Availability::Busy),
+            answer => Ok(answer),
+        }
     }
     fn repository(&mut self, team: &Team) -> Result<String> {
         self.work_repository(team)

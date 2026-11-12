@@ -9,6 +9,7 @@
 //! Unknown stays unknown: a count that is missing or null is not zero, a
 //! value the reader does not know is not the one it waits for, and a member
 //! whose row has an unknown is not free.
+use super::ports::Fact;
 use serde_json::Value;
 
 /// Every key path [`Facts::of`] reads, and whether every producer writes it
@@ -87,6 +88,30 @@ impl Facts {
             && self.background == Some(0)
             && self.children == Some(0)
             && self.questions == Some(0)
+    }
+
+    /// The count that keeps an otherwise free member from being free
+    /// (zerus-63rru.55): live, ready and idle, every known count zero, and
+    /// this one unknown. The first such count in [`READ`]'s order. None when
+    /// the member is free, or when anything known keeps it busy: a working
+    /// member whose count is still unknown is busy, not unreadable. This
+    /// only names why [`Facts::free`] said no; it decides nothing.
+    pub fn unknown(&self) -> Option<Fact> {
+        let idle = self.live
+            && self.ready
+            && self.activity.as_deref() == Some("idle")
+            && self.phase.as_deref() == Some("idle");
+        let counts = [
+            (self.background, Fact::Background),
+            (self.children, Fact::Children),
+            (self.questions, Fact::Questions),
+        ];
+        if !idle || counts.iter().any(|(count, _)| count.is_some_and(|n| n > 0)) {
+            return None;
+        }
+        counts
+            .into_iter()
+            .find_map(|(count, name)| count.is_none().then_some(name))
     }
 
     /// Working, Background and a pending request, or None while any of them

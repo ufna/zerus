@@ -103,6 +103,16 @@ pub(in crate::desktop::teams) trait Ports {
     fn observe(&mut self, store: &mut Store, task: &TaskRef) -> Result<()>;
     /// Both a current native fleet row and the session's task index must agree.
     fn free(&mut self, team: &Team, member: &Member) -> Result<bool>;
+    /// The same answer as [`Ports::free`] from the same read, and when the
+    /// member cannot be read, why (zerus-63rru.55). An adapter that cannot
+    /// tell keeps `free`'s answer: free or busy, never unreadable.
+    fn availability(&mut self, team: &Team, member: &Member) -> Result<Availability> {
+        Ok(if self.free(team, member)? {
+            Availability::Free
+        } else {
+            Availability::Busy
+        })
+    }
     fn report(&mut self, _task: &TaskRef) -> Result<Option<String>> {
         Ok(None)
     }
@@ -139,6 +149,39 @@ pub(in crate::desktop::teams) trait Ports {
     /// An uncertain original is never repeated. NotStarted proves no child
     /// ran and permits a later attempt with a fresh admission.
     fn deliver(&mut self, team: &Team, node: &Node, member: &Member, id: &str) -> DeliveryResult;
+}
+
+/// Whether a member can take a task now.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(in crate::desktop::teams) enum Availability {
+    Free,
+    /// Known not to be free: working, waiting, stopped or occupied.
+    Busy,
+    /// Not free because the fact named here cannot be read; unknown is never
+    /// free.
+    Unreadable(Fact),
+}
+
+/// What cannot be read about a member: an unknown count of its fleet row
+/// while it is otherwise free, or why its binding names no current run.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(in crate::desktop::teams) enum Fact {
+    /// `process_work.count`: the process table could not be verified.
+    Background,
+    /// `subagent_active_count`: no hook event has reported it yet.
+    Children,
+    /// `optional_questions.count`: the question index could not be read.
+    Questions,
+    /// Bound before session handles, with no source left that names it.
+    NoHandle,
+    /// No live or saved session carries its handle.
+    Gone,
+    /// Its session names another launch, agent or folder.
+    Changed,
+    /// The person started its session fresh.
+    StartedFresh,
+    /// The store, the record or the deadline did not answer.
+    Unavailable,
 }
 
 /// Only a positive non-write permits another admission. NotStarted means

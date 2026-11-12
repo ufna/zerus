@@ -243,6 +243,13 @@ impl super::super::ports::Ports for Production {
     ) -> super::super::ports::Result<bool> {
         super::super::ports::Ports::free(&mut self.native, t, m)
     }
+    fn availability(
+        &mut self,
+        t: &zerus_team_plan::model::Team,
+        m: &Member,
+    ) -> super::super::ports::Result<super::super::ports::Availability> {
+        super::super::ports::Ports::availability(&mut self.native, t, m)
+    }
     fn deliver(
         &mut self,
         t: &zerus_team_plan::model::Team,
