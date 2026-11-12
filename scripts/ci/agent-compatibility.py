@@ -99,9 +99,10 @@ TEAMS_CLASSES = {'claude': ['test_teams_native.NativeTeamsClaude', 'test_teams_n
                  'codex': ['test_teams_native.NativeTeamsCodex', 'test_teams_native.NativeTeamsTrustCodex']}
 TEAMS_TIMEOUT = 2400
 TEAMS_COVERAGE = ('team member launch and identity, team stop and Terminate; for Codex the refused repository-scope '
-                  'folder trust answered by the person; for Claude Code the resume of an exited member. Claude folder '
-                  'trust by the standing confirmation waits for the audit half of zerus-63rru.48; the Codex resume for '
-                  'zerus-63rru.54 and .56; delivery, the member shell, the doorbell and the cancel notice for zerus-63rru.51')
+                  'folder trust answered by the person; for Claude Code the resume of an exited member. Claude Code '
+                  'folder trust by the standing confirmation waits for zerus-63rru.60; the Codex resume for '
+                  'zerus-63rru.54 and zerus-63rru.56; delivery, the member shell, the doorbell and the cancel notice '
+                  'for zerus-63rru.51')
 HINT_CLASSES = {
     'claude': ('NativeClaudeHint', 'NativeWindowsClaudeHint'),
     'codex': ('NativeCodexHint', 'NativeWindowsCodexHint'),

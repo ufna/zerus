@@ -1402,14 +1402,33 @@ and the contract does not select them until the fix lands.
 
 The person answers each startup card the way the product offers it:
 
-- Claude's and Kimi's folder trust through `hgs answer`;
-- Codex's Folder access in Terminal (Enter on its first choice), because hgs shows
-  a wrapped panel only as a Terminal choice;
+- Claude's and Kimi's folder trust, and Codex's Folder access, through `hgs answer`;
 - Codex's hooks review through `hgs answer`. It shows once per account: after "Trust
   all and continue", a second session on the same account does not show it.
 
-Folder trust by the standing confirmation, and resume of an exited member, are added
-once `zerus-63rru.48` and `zerus-63rru.49` are fixed.
+Further classes repeat the same bring-up with one of the team's delegations on:
+
+- **Codex folder trust by the standing confirmation** (`NativeTeamsTrustCodex`,
+  `confirm_trust`, selected). Every member worktree is a linked worktree, so Codex's
+  Folder access panel carries its Git-root note and asks "Trust this Git
+  repository?". The standing confirmation refuses that scope: it records no grant
+  and leaves a card naming the member, and the person then answers the panel through
+  `hgs answer`.
+- **Resume of an exited Claude Code member** (`NativeTeamsResumeClaude`,
+  `resume_exited`, selected; the person answers folder trust). A member whose agent
+  exits by itself (`/exit`) is resumed by the service in a new run of the same launch
+  and conversation, gets its brief once, and the audit records `team_resume`. A member
+  the person terminates is refused with a card and no audit row, and no run of its
+  launch is live.
+
+Written and waiting: `WAITING` in the module lists these, and the contract does not
+select them until their fixes land.
+
+| Case | Waits for |
+|---|---|
+| Steps 2 to 4, every agent | `zerus-63rru.51` |
+| Claude Code folder trust by the standing confirmation (`NativeTeamsTrustClaude`): the service answers the startup folder trust with an audit grant, and a prompt that is not a startup prompt stays the person's | `zerus-63rru.60` (the audit reservation compares the real card's null conversation with an empty string) |
+| Codex resume of an exited member (`NativeTeamsResumeCodex`) | `zerus-63rru.54` (the resumed member never gets its brief) and `zerus-63rru.56` (three states read as an exit) |
 
 #### Isolation
 
@@ -1507,10 +1526,10 @@ the Teams caller proof refuses a person command below a live agent.
   fakes.
 - **Timers past their first firing:** they are agent-independent and stay with the
   package fakes.
-- **Standing folder trust and resume:** pending `zerus-63rru.48` and
-  `zerus-63rru.49`.
-- **Delivery, the member's shell, the doorbell and the cancel notice:** pending
-  `zerus-63rru.51`; the cases exist and are not selected.
+- **The waiting cases:** delivery, the member's shell, the doorbell and the cancel
+  notice (`zerus-63rru.51`), Claude Code folder trust by the standing confirmation
+  (`zerus-63rru.60`) and the Codex resume (`zerus-63rru.54` and `zerus-63rru.56`).
+  The cases exist and are not selected.
 
 ## Automatic nightly publication
 

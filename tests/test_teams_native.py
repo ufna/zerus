@@ -22,8 +22,10 @@ the Teams service touches a real session, in order:
    the member's process and archives its run.
 
 Steps 2 to 4 wait for zerus-63rru.51 (WAITING): they are kept as waiting_* methods
-that the contract does not select. Folder trust and resume of an exited member are
-added after zerus-63rru.48 and .49.
+that the contract does not select. Further classes turn one of the team's delegations
+on: folder trust by the standing confirmation (Codex selected; Claude Code waits for
+zerus-63rru.60) and the resume of an exited member (Claude Code selected; Codex waits
+for zerus-63rru.54 and zerus-63rru.56).
 The model is a keyless loopback fixture; no account and no model quota are used.
 Run through `scripts/ci/agent-compatibility.py --contract teams`, or directly with
 HGS_TEST_BIN and HGS_CLAUDE_TEST_BIN or HGS_CODEX_TEST_BIN, outside any agent
@@ -47,16 +49,17 @@ import teams_native_fixture as fixture
 
 
 # Cases written against real agents that wait for a product fix before the contract
-# selects them; each is a method of TeamsContract named waiting_*. Folder trust by the
-# standing confirmation and resume of an exited member wait for zerus-63rru.48 and .49
-# and are added with those fixes.
+# selects them: TeamsContract methods named waiting_*, and whole classes by name.
+# TeamsWaitingList keeps this list, the selection, the workflow header, the row's
+# coverage and the docs naming the same fixes.
 WAITING = {
     'waiting_2_delivery_and_member_shell': 'zerus-63rru.51 (no member is free: availability reads subagents_active)',
     'waiting_3_lead_doorbell': 'zerus-63rru.51 (the doorbell needs an idle lead and a report)',
     'waiting_4_cancel_notice': 'zerus-63rru.51 (a delivered task to cancel needs a hand-out)',
     # Whole classes the teams contract does not select yet.
-    'NativeTeamsTrustClaude': 'zerus-63rru.48, its audit half (src/approval_log/team.rs:58 compares the real card\'s '
-                              'null conversation with an empty string; run tc12)',
+    'NativeTeamsTrustClaude': 'zerus-63rru.60 (src/approval_log/team.rs:58 compares the real card\'s null '
+                              'conversation with an empty string, so the audit reservation fails before delivery; '
+                              'run tc12)',
     'NativeTeamsResumeCodex': 'zerus-63rru.54 (a resumed Codex member never gets its brief: the observe call is refused) '
                               'and zerus-63rru.56 (three states read as an exit)',
 }
@@ -519,6 +522,39 @@ class TeamsFixtureIsolation(unittest.TestCase):
                 with self.assertRaisesRegex(AssertionError, refusal):
                     self.fx.preflight()
                 self.fx.env[key] = saved
+
+
+class TeamsWaitingList(unittest.TestCase):
+    """Every written class is selected or waiting, and the waiting cases' fixes are named
+    alike wherever the contract lists them."""
+
+    ISSUE = re.compile(r'zerus-63rru\.\d+')
+    ROOT = Path(__file__).resolve().parent.parent
+
+    def script(self, name):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location('teams_' + name.removesuffix('.py').replace('-', '_'),
+                                                      self.ROOT / 'scripts/ci' / name)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+
+    def test_every_class_is_selected_or_waiting_and_each_list_names_the_same_fixes(self):
+        compat, kimi = self.script('agent-compatibility.py'), self.script('kimi-native.py')
+        selected = {name.split('.')[1] for names in compat.TEAMS_CLASSES.values() for name in names}
+        selected |= {name.split('.')[1] for name in kimi.TEAMS_METHODS}
+        written = {name for name, value in globals().items() if name.startswith('NativeTeams') and isinstance(value, type)}
+        waiting = {name for name in WAITING if name in written}
+        self.assertFalse(selected & waiting, 'a waiting class is not selected')
+        self.assertEqual(written, selected | waiting, 'every written class is selected or waiting')
+        self.assertEqual(set(WAITING) - waiting, {name for name in dir(TeamsContract) if name.startswith('waiting_')})
+        fixes = set(self.ISSUE.findall(' '.join(WAITING.values())))
+        header = (self.ROOT / '.github/workflows/teams-native.yml').read_text().split('\non:', 1)[0]
+        docs = (self.ROOT / 'docs/ci-and-aur.md').read_text()
+        section = docs.split('\n### Agent Teams real agents\n', 1)[1].split('\n## ', 1)[0]
+        for place, text in (('workflow header', header), ('docs section', section), ('row coverage', compat.TEAMS_COVERAGE)):
+            with self.subTest(place=place):
+                self.assertEqual(set(self.ISSUE.findall(text)), fixes)
 
 
 class TeamsFixtureProducers(unittest.TestCase):

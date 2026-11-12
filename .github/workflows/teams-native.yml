@@ -4,10 +4,13 @@ name: Agent Teams real agents
 # agents"): one team of one agent kind in a private root with a private desktop
 # service, against the latest official Claude Code, Codex and Kimi Code releases and
 # a keyless loopback model. A green run covers member launch and identity, team stop
-# and Terminate; delivery, the member's shell, the lead's doorbell and the cancel
-# notice are written and wait for zerus-63rru.51, and folder trust and resume for
-# zerus-63rru.48 and .49. This workflow is not part of the Dev gate or Nightly: a red
-# run is visible and holds nothing back.
+# and Terminate; for Codex also the refused repository-scope folder trust that the
+# person then answers, and for Claude Code the resume of an exited member. Written and
+# waiting: delivery, the member's shell, the lead's doorbell and the cancel notice for
+# zerus-63rru.51, Claude Code folder trust by the standing confirmation for
+# zerus-63rru.60, and the Codex resume for zerus-63rru.54 and zerus-63rru.56. This
+# workflow is not part of the Dev gate or Nightly: a red run is visible and holds
+# nothing back.
 on:
   pull_request:
     branches: [main]
