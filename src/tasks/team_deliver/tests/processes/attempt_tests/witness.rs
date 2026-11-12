@@ -1,5 +1,5 @@
-//! The command's actual answer is applied to the production store after a
-//! person's new execution, in both orders. All task facts use replica writers.
+//! The live team's end has one writer: the observation. A child answer is
+//! tested against that production rule with real replica execution facts.
 use super::*;
 use zerus_team_plan::model::NodeState;
 
@@ -182,25 +182,46 @@ fn end(f: &Fixture) -> (u32, bool, u64, String, NodeState) {
 }
 
 #[test]
-fn the_real_cancel_answer_and_new_person_execution_converge_in_both_orders() {
-    let mut ends = Vec::new();
-    for observation_first in [false, true] {
-        let mut f = Fixture::new();
-        let (decision, reply) = cancel(&mut f);
-        let id = person_send(&f, false);
-        let execution = f.document().view().unwrap().execution.unwrap();
-        assert_eq!(execution.highest, 2);
-        assert_eq!(execution.current.unwrap().id, id);
-        if observation_first {
-            observe(&f);
+fn the_live_cancel_is_settled_only_by_observing_the_cancelled_or_revived_task() {
+    for paused in [false, true] {
+        for revived in [false, true] {
+            let mut f = Fixture::new();
+            let (decision, reply) = cancel(&mut f);
+            if paused {
+                f.h.run(&person(), ops::Operation::Pause).unwrap();
+            }
+            // A successful child answer is never a second end writer for
+            // this bound live node. The service observes instead.
             refused_without_a_write(&mut f, decision, &reply);
-        } else {
-            record(&mut f, decision, &reply).unwrap();
-            observe(&f);
+            if revived {
+                person_send(&f, false);
+                let before = bytes(&f);
+                let repeat = call(&f, "team-cancel");
+                assert_eq!(repeat["reply"]["state"], "stale", "{repeat}");
+                assert_eq!(bytes(&f), before);
+                observe(&f);
+                end(&f);
+            } else {
+                let before = bytes(&f);
+                observe(&f);
+                assert!(!bound(&f));
+                assert!(f.h.store.pending_cancels(TEAM, 200, 0).unwrap().is_empty());
+                assert_eq!(
+                    f.h.store.node(TEAM, f.body.node).unwrap().unwrap().state,
+                    NodeState::Cancelled
+                );
+                assert_eq!(f.h.store.generation(TEAM, f.body.node).unwrap(), Some(1));
+                assert_eq!(bytes(&f), before);
+                // Once observed cancelled the task has left the team.
+                // A later ordinary revival cannot restore the old node.
+                person_send(&f, false);
+                let before = stored(&f);
+                observe(&f);
+                assert_eq!(stored(&f), before);
+                assert!(!bound(&f));
+            }
         }
-        ends.push(end(&f));
     }
-    assert_eq!(ends[0], ends[1]);
 }
 
 #[test]
@@ -272,12 +293,12 @@ fn the_real_released_answer_releases_the_binding_immediately() {
 }
 
 #[test]
-fn the_real_cancelled_answer_keeps_the_binding_until_the_cancelled_observation() {
+fn the_real_cancelled_task_releases_the_binding_only_at_observation() {
     let mut f = Fixture::new();
     let (decision, reply) = cancel(&mut f);
     let task = bytes(&f);
-    record(&mut f, decision, &reply).unwrap();
-    assert!(bound(&f), "an answer alone cannot release the binding");
+    refused_without_a_write(&mut f, decision, &reply);
+    assert!(bound(&f), "a refused answer cannot release the binding");
     observe(&f);
     assert!(!bound(&f), "observing the still cancelled task releases it");
     assert!(f.h.store.pending_cancels(TEAM, 200, 0).unwrap().is_empty());

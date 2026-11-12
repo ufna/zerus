@@ -20,6 +20,53 @@ fn authority(store: &Store, body: &Input, team: &Team, node: &Node) -> Result<St
         .ok_or_else(||rule("No Pending cancel decision for this generation."))
 }
 
+// A terminal team cannot observe again. Its last observation or a delivered
+// effect of this generation proves what it still owns; another execution
+// belongs to the person and must never be cancelled by retrying this decision.
+fn current_attempt(
+    store: &Store,
+    body: &Input,
+    team: &Team,
+    view: &zerus_replica::TaskView,
+) -> Result<(u64, String)> {
+    if matches!(team.status, TeamStatus::Running | TeamStatus::Paused) {
+        return observed_attempt(store, &body.team, body.node, view);
+    }
+    let current = crate::teams::tasks::attempt(view);
+    let observed = store
+        .task_observation(&body.team, body.node)
+        .map_err(problem)?
+        .map_or_else(
+            || (0, String::new(), false),
+            |o| (o.attempt, o.attempt_id, o.attempt_conflict),
+        );
+    if current == observed {
+        return Ok((current.0, current.1));
+    }
+    let delivered = view
+        .execution
+        .as_ref()
+        .filter(|e| !e.conflict && e.unknown.is_empty())
+        .and_then(|e| e.current.as_ref())
+        .is_some_and(|a| {
+            matches!(
+                a.phase,
+                Phase::Submitted | Phase::Running | Phase::Ready | Phase::Cancelled
+            )
+        });
+    let own: bool = store.db.as_ref().expect("bound store").query_row(
+        "SELECT EXISTS(SELECT 1 FROM effects WHERE request_id=?1 AND team=?2 AND node=?3 AND generation=(SELECT generation FROM nodes WHERE team=?2 AND id=?3 UNION ALL SELECT generation FROM node_archive WHERE team=?2 AND id=?3 LIMIT 1) AND kind IN ('handout','reopen'))",
+        params![current.1, body.team, body.node], |row| row.get(0),
+    ).map_err(fail)?;
+    if delivered && own && current.0 >= observed.0 && current.1 != observed.1 {
+        return Ok((current.0, current.1));
+    }
+    Err(rule(format!(
+        "attempt_changed: Task attempt {} ({}, conflict={}) differs from the terminal team's observation {} ({}, conflict={}) and is not its delivered effect.",
+        current.0, current.1, current.2, observed.0, observed.1, observed.2
+    )))
+}
+
 pub(super) fn write(
     config: &Config,
     args: &[String],
@@ -64,7 +111,7 @@ pub(super) fn write(
     if !absent || view.stage == Stage::Active {
         marker(&doc, &body.team, &here)?;
     }
-    let (attempt, attempt_id) = observed_attempt(&teams, &body.team, body.node, &view)?;
+    let (attempt, attempt_id) = current_attempt(&teams, body, &team, &view)?;
     if view.stage == Stage::Done {
         return Err(rule("A Done task cannot be cancelled or released."));
     }

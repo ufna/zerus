@@ -256,8 +256,8 @@ fn cancel_refuses_a_document_older_than_the_observed_attempt() {
     person_send(&f, false);
     crate::teams::tasks::observe(&f.config.state, &f.task).unwrap();
     // Observing the person's execution supersedes the earlier decision.
-    // Stop supplies a real Pending cancel for the newly observed generation.
-    f.h.run(&person(), ops::Operation::Stop).unwrap();
+    // A fresh decision still reaches the live team's lower-number guard.
+    decide(&mut f);
     restore_files(&f, &old);
     let out = call(&f, "team-cancel");
     assert_eq!(out["reply"]["state"], "refused", "{out}");
@@ -568,4 +568,5 @@ fn cancel_is_stale_when_a_rejected_handoff_raises_highest_but_not_current() {
 }
 
 mod conflict;
+mod terminal;
 mod witness;
