@@ -1347,7 +1347,10 @@ Logs are under ignored
 agents. It is selected separately: `scripts/ci/agent-compatibility.py --contract teams`
 runs it for Claude Code and Codex, and `scripts/ci/kimi-native.py --teams` runs its
 Kimi class. Both run in the **Agent Teams real agents** workflow (`teams-native.yml`)
-on Teams-affecting pull requests and main pushes, and on demand.
+on pull requests and main pushes that change a component the contract can catch
+drifting (`src/**`, `crates/**`, `client/core/**`, the Cargo files) or a script, test
+or fixture it runs, and on demand, on the public repository only. The workflow is not
+part of the Dev gate or of Nightly: a red run is visible and holds nothing back.
 
 - **Selection.** Each agent gets the same one latest official release as ordinary
   CI, with the same checked fetch. There is no Effort seed and no
