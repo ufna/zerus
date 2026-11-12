@@ -15,7 +15,7 @@ use super::*;
 use std::time::Duration;
 
 /// Raised whenever this package's layout changes.
-pub(crate) const EXTENSION: u32 = 6;
+pub(crate) const EXTENSION: u32 = 7;
 
 #[cfg(test)]
 type Hook = Box<dyn FnOnce() -> Result<()>>;
@@ -83,23 +83,7 @@ pub(in crate::teams::store) fn extend(db: &Connection) -> Result<()> {
 /// than this program's is a store written by a newer program: the open is
 /// refused as for a newer schema, and nothing is written.
 fn marked(db: &Connection) -> Result<bool> {
-    let table: bool = db
-        .query_row(
-            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='timers_extension')",
-            [],
-            |r| r.get(0),
-        )
-        .map_err(storage)?;
-    if !table {
-        return Ok(false);
-    }
-    let version: Option<u32> = db
-        .query_row("SELECT version FROM timers_extension WHERE id=1", [], |r| {
-            r.get(0)
-        })
-        .optional()
-        .map_err(storage)?;
-    match version {
+    match version(db)? {
         // The same refusal as a newer core schema's.
         Some(v) if v > EXTENSION => Err(Problem::new(
             code::INVALID_STATE,
@@ -108,12 +92,32 @@ fn marked(db: &Connection) -> Result<bool> {
         v => Ok(v == Some(EXTENSION)),
     }
 }
+/// The layout version the completion marker holds, if any.
+fn version(db: &Connection) -> Result<Option<u32>> {
+    let table: bool = db
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='timers_extension')",
+            [],
+            |r| r.get(0),
+        )
+        .map_err(storage)?;
+    if !table {
+        return Ok(None);
+    }
+    db.query_row("SELECT version FROM timers_extension WHERE id=1", [], |r| {
+        r.get(0)
+    })
+    .optional()
+    .map_err(storage)
+}
 fn transition(db: &Connection) -> Result<()> {
+    let from = version(db)?;
     // Triggers exist before any backfill reads, so a write that commits
     // after this transaction is seen by them, and none can commit inside it.
     db.execute_batch(include_str!("../timers.sql"))
         .map_err(storage)?;
     observed_attempts(db)?;
+    remembered_attempts(db, from)?;
     migrate_outbox(db)?;
     backfill_teams(db)?;
     backfill_released(db)?;
@@ -173,6 +177,21 @@ fn observed_attempts(db: &Connection) -> Result<()> {
     }
     Ok(())
 }
+/// The attempt a node runs under is remembered only when the node took it
+/// in: its own effect, or a person's execution the store took over, which a
+/// stored observation of a running task shows under the rules that wrote
+/// it. Layout 4 kept no memory and is seeded so; layouts 5 and 6 remembered
+/// every observed attempt and are corrected the same way, so that an
+/// attempt merely observed while the task did not run is judged when it
+/// starts. A store from before the attempt columns has nothing to seed from,
+/// and a later layout keeps what its rules wrote. One statement, once.
+fn remembered_attempts(db: &Connection, from: Option<u32>) -> Result<()> {
+    if matches!(from, Some(4..=6)) {
+        db.execute(TAKEN_IN, []).map_err(storage)?;
+    }
+    Ok(())
+}
+const TAKEN_IN: &str = "UPDATE task_observations SET last_attempt_id=CASE WHEN (json_extract(data,'$.stage')='in_progress' AND NOT json_extract(data,'$.cancelled')) OR EXISTS(SELECT 1 FROM effects e WHERE e.request_id=task_observations.attempt_id AND e.team=task_observations.team AND e.node=task_observations.node) THEN attempt_id ELSE '' END WHERE attempt_id<>''";
 /// Version 1 kept released stages in an outbox; they move to the frontier.
 fn migrate_outbox(db: &Connection) -> Result<()> {
     let old: bool = db
