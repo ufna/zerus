@@ -609,3 +609,111 @@ fn a_legacy_direct_claim_does_not_gain_a_delivered_holders_exception() {
 }
 
 mod attempts;
+fn person_session() -> zerus_replica::SessionKey {
+    zerus_replica::SessionKey {
+        machine: fixture().team.home,
+        session: "codex/example".into(),
+        session_id: "run_id:example".into(),
+    }
+}
+fn edit(h: &Harness, reference: &TaskRef, change: impl FnOnce(&mut TaskDoc)) {
+    let store = ProjectStore::open(&h.temp.path().join("replica"), &reference.project).unwrap();
+    let mut doc = store.load(&reference.uuid).unwrap();
+    change(&mut doc);
+    store.save(&mut doc).unwrap();
+}
+
+/// The end-to-end witness, through the service's own observer: a lead's
+/// cancel answered as cancelled keeps the task's binding. A person who moves
+/// the task back and sends it again is observed and the node is restored;
+/// a task that stays cancelled is released by its observation. While the
+/// binding waits, the cancelled task cannot be sent to the team again.
+#[test]
+fn a_cancelled_answer_leaves_the_task_to_its_observation() {
+    for resend in [true, false] {
+        let mut h = Harness::new();
+        let lead = h.bind("lead");
+        let reference = document(&h);
+        let person = caller(&h, &TaskActor::Person);
+        let node = send(&person, &reference, TEAM, None, None)
+            .unwrap()
+            .node
+            .unwrap();
+        edit(&h, &reference, |doc| {
+            doc.record_send(&person_session(), "request-1", &TaskActor::Person, 2)
+                .unwrap()
+        });
+        observe(h.temp.path(), &reference).unwrap();
+        h.run(
+            &lead,
+            ops::Operation::Cancel {
+                node,
+                reason: "Superseded".into(),
+            },
+        )
+        .unwrap();
+        let decision = h
+            .store
+            .pending_cancels(TEAM, 1, 0)
+            .unwrap()
+            .remove(0)
+            .decision;
+        // The command's work on the task, then its answer.
+        edit(&h, &reference, |doc| {
+            doc.record_cancel("Superseded", &TaskActor::Person, 3)
+                .unwrap()
+        });
+        h.run(
+            &ops::tests::service(),
+            ops::Operation::RecordCancel {
+                node,
+                decision,
+                state: ops::CancelState::Cancelled,
+                reason: String::new(),
+                attempt: 0,
+                attempt_id: String::new(),
+            },
+        )
+        .unwrap();
+        assert_eq!(h.node(node).state, NodeState::Cancelled);
+        assert_eq!(
+            binding(&h.store, &reference).unwrap(),
+            Some((TEAM.to_owned(), node)),
+            "the answer does not release the task"
+        );
+        let again = send(
+            &caller(&h, &TaskActor::Person),
+            &reference,
+            TEAM,
+            None,
+            None,
+        );
+        assert_eq!(again.unwrap_err().code, code::INVALID_STATE);
+        assert_eq!(
+            task(&h, &reference).team().unwrap().unwrap().team,
+            TEAM,
+            "the refused send leaves the key"
+        );
+        if resend {
+            edit(&h, &reference, |doc| {
+                doc.set_stage(Stage::Todo, &TaskActor::Person, 4).unwrap();
+                doc.record_send(&person_session(), "request-2", &TaskActor::Person, 5)
+                    .unwrap();
+            });
+            observe(h.temp.path(), &reference).unwrap();
+            assert_eq!(h.node(node).state, NodeState::InProgress);
+            assert_eq!(h.store.generation(TEAM, node).unwrap(), Some(2));
+            assert_eq!(
+                binding(&h.store, &reference).unwrap(),
+                Some((TEAM.to_owned(), node))
+            );
+            assert!(h.store.pending_cancels(TEAM, 200, 0).unwrap().is_empty());
+            let events = h.store.journal(TEAM, 200, None).unwrap().rows;
+            assert!(events.iter().any(|e| e.kind == "person_override"));
+        } else {
+            observe(h.temp.path(), &reference).unwrap();
+            assert_eq!(binding(&h.store, &reference).unwrap(), None);
+            assert_eq!(h.node(node).state, NodeState::Cancelled);
+        }
+    }
+}

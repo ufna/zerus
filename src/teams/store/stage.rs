@@ -20,7 +20,10 @@ impl Store {
         let scope = format!("{team}:stage_tasks");
         let c = if let Some(c) = cursor {
             if c.scope != scope || c.after > c.ceiling {
-                return Err(storage("Cursor belongs to another list."));
+                return Err(Problem::new(
+                    code::INVALID_STATE,
+                    "Cursor belongs to another list.",
+                ));
             }
             c.clone()
         } else {

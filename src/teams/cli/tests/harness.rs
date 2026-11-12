@@ -174,6 +174,8 @@ impl Harness {
             id,
             &person(),
             Operation::Create {
+                expected_template: None,
+                delegations: None,
                 project: team.project,
                 name: name.into(),
                 goal: team.goal,

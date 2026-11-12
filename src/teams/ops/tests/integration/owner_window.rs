@@ -340,7 +340,7 @@ fn a_failed_card_close_rolls_back_the_receipt_and_all_its_transitions() {
     h.store.db.as_ref().unwrap().execute_batch(
         "CREATE TRIGGER refuse_card_close BEFORE UPDATE OF state ON cards WHEN OLD.kind='integration' AND NEW.state='closed' BEGIN SELECT RAISE(ABORT,'fixture card close refusal'); END;"
     ).unwrap();
-    refused(h.run(&service(), receipt(node, seq)), code::INVALID_STATE);
+    refused(h.run(&service(), receipt(node, seq)), code::STORAGE_FAILED);
     assert!(h.store.integration_fact(TEAM, node).unwrap().is_none());
     assert_eq!(h.store.card(TEAM, card).unwrap().unwrap(), before_card);
     assert_eq!(h.node(node), before_node);

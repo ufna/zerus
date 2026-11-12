@@ -23,6 +23,7 @@ use crate::state::provider_binding::Provider;
 use crate::state::{repositories::directory::Directory, storage};
 
 /// At most this many DeepSeek host folders, one per agent home.
+#[cfg_attr(not(unix), allow(dead_code))]
 pub(crate) const HOST_FOLDERS: usize = 64;
 const UNREADABLE: &str = "Cannot verify a recorded agent host.";
 

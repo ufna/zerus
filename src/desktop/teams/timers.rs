@@ -157,7 +157,14 @@ fn record(store: &mut Store, team: &Team, operation: Operation, now: i64) -> Res
     };
     match ops::apply(store, &actor, &request, now) {
         Ok(_) => Ok(Recorded::Done),
-        Err(p) if p.code == code::STALE_REVISION => Ok(Recorded::Retry),
+        // Nothing was saved: a busy store, or a failed write rolled back.
+        Err(p)
+            if p.code == code::STALE_REVISION
+                || p.code == code::STORE_BUSY
+                || p.code == code::STORAGE_FAILED =>
+        {
+            Ok(Recorded::Retry)
+        }
         Err(p) if p.code == code::INVALID_STATE || p.code == code::DUPLICATE => {
             let proved = store.saved_refusal(&team.id, &request.request_id);
             Ok(if proved.unwrap_or(false) {

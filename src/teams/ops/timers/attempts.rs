@@ -10,6 +10,11 @@
 //! attempt never started. A conflict, two attempts claiming the highest
 //! generation, is its own flag: it is recorded as it came (the number, an
 //! empty ID, the flag) and decides nothing while the task runs or waits.
+//! The store remembers the attempt its node runs under, and that memory
+//! changes only when the node takes an execution in: its own effect is
+//! observed, a person's running execution is taken over or restored, or the
+//! upgrade seeds it. An attempt merely observed while the task does not run
+//! is not remembered, so that it is still judged when it starts.
 use super::*;
 
 /// Two attempts claim the highest generation: the flag, and nothing else. An
@@ -46,15 +51,41 @@ pub(in crate::teams::ops) fn person_attempt(
     if !active || o.attempt_id.is_empty() || o.attempt_id == remembered(ctx, node)? {
         return Ok(false);
     }
-    let own: bool = ctx
-        .db
-        .query_row(
-            "SELECT EXISTS(SELECT 1 FROM effects WHERE request_id=?1 AND team=?2 AND node=?3)",
-            params![o.attempt_id, ctx.team.id, node],
-            |r| r.get(0),
+    Ok(!own(ctx, node, &o.attempt_id)?)
+}
+/// What the node took in with this observation, remembered: the node's own
+/// effect, whatever the task's stage, or a running person's execution that
+/// the observation took over or restored (its `person_override`).
+pub(in crate::teams::ops) fn remember(
+    ctx: &Context<'_>,
+    node: u32,
+    o: &TaskObservation,
+) -> Result<()> {
+    if o.attempt_id.is_empty() {
+        return Ok(());
+    }
+    let running = o.stage == TaskStage::InProgress && !o.cancelled && o.key == KeyState::Ours;
+    let taken = running && ctx.event == Some("person_override");
+    if !taken && !own(ctx, node, &o.attempt_id)? {
+        return Ok(());
+    }
+    ctx.db
+        .execute(
+            "UPDATE task_observations SET last_attempt_id=?3 WHERE team=?1 AND node=?2",
+            params![ctx.team.id, node, o.attempt_id],
         )
         .map_err(storage)?;
-    Ok(!own)
+    Ok(())
+}
+/// Whether the attempt is an effect of this node: the team's own.
+fn own(ctx: &Context<'_>, node: u32, id: &str) -> Result<bool> {
+    ctx.db
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM effects WHERE request_id=?1 AND team=?2 AND node=?3)",
+            params![id, ctx.team.id, node],
+            |r| r.get(0),
+        )
+        .map_err(storage)
 }
 /// The end of the earlier attempt, as its cancelled observation would end
 /// it, then the person's restore as today. A stage is never restored.
@@ -75,8 +106,8 @@ pub(in crate::teams::ops) fn take_over(
     ctx.event = Some("person_override");
     Ok(())
 }
-/// The last current attempt ID the store saw for the node, kept across a
-/// conflict for the override rule alone.
+/// The attempt the node runs under, as far as the store took it in; for
+/// the override rule alone.
 fn remembered(ctx: &Context<'_>, node: u32) -> Result<String> {
     Ok(ctx
         .db

@@ -15,7 +15,7 @@ use super::*;
 use std::time::Duration;
 
 /// Raised whenever this package's layout changes.
-pub(crate) const EXTENSION: u32 = 6;
+pub(crate) const EXTENSION: u32 = 8;
 
 #[cfg(test)]
 type Hook = Box<dyn FnOnce() -> Result<()>>;
@@ -26,12 +26,23 @@ thread_local! {
         const { std::cell::RefCell::new(None) };
     /// Transitions completed on this thread.
     pub(crate) static TRANSITIONS: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+    /// Runs on the open path right after the first, unlocked fence.
+    pub(crate) static AFTER_FENCE: std::cell::RefCell<Option<Hook>> =
+        const { std::cell::RefCell::new(None) };
+}
+#[cfg(test)]
+pub(in crate::teams::store) fn after_fence() -> Result<()> {
+    match AFTER_FENCE.with(|slot| slot.borrow_mut().take()) {
+        Some(hook) => hook(),
+        None => Ok(()),
+    }
 }
 
 /// Read first and read only, before any statement of the store's schema
 /// extensions that can write: a store marked by a newer program is refused
-/// and nothing is written to it. The transition reads the mark again inside
-/// its own transaction.
+/// and nothing is written to it. Every write of the open path reads the mark
+/// again under the lock it writes with: the common batches, the read index
+/// conversion and the transition.
 pub(in crate::teams::store) fn fence(db: &Connection) -> Result<()> {
     marked(db).map(|_| ())
 }
@@ -72,6 +83,17 @@ pub(in crate::teams::store) fn extend(db: &Connection) -> Result<()> {
 /// than this program's is a store written by a newer program: the open is
 /// refused as for a newer schema, and nothing is written.
 fn marked(db: &Connection) -> Result<bool> {
+    match version(db)? {
+        // The same refusal as a newer core schema's.
+        Some(v) if v > EXTENSION => Err(Problem::new(
+            code::INVALID_STATE,
+            "store schema is newer than this version of Zerus",
+        )),
+        v => Ok(v == Some(EXTENSION)),
+    }
+}
+/// The layout version the completion marker holds, if any.
+fn version(db: &Connection) -> Result<Option<u32>> {
     let table: bool = db
         .query_row(
             "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='timers_extension')",
@@ -80,27 +102,23 @@ fn marked(db: &Connection) -> Result<bool> {
         )
         .map_err(storage)?;
     if !table {
-        return Ok(false);
+        return Ok(None);
     }
-    let version: Option<u32> = db
-        .query_row("SELECT version FROM timers_extension WHERE id=1", [], |r| {
-            r.get(0)
-        })
-        .optional()
-        .map_err(storage)?;
-    match version {
-        Some(v) if v > EXTENSION => {
-            Err(storage("store schema is newer than this version of Zerus"))
-        }
-        v => Ok(v == Some(EXTENSION)),
-    }
+    db.query_row("SELECT version FROM timers_extension WHERE id=1", [], |r| {
+        r.get(0)
+    })
+    .optional()
+    .map_err(storage)
 }
 fn transition(db: &Connection) -> Result<()> {
+    let from = version(db)?;
     // Triggers exist before any backfill reads, so a write that commits
     // after this transaction is seen by them, and none can commit inside it.
     db.execute_batch(include_str!("../timers.sql"))
         .map_err(storage)?;
+    released_outcomes(db)?;
     observed_attempts(db)?;
+    remembered_attempts(db, from)?;
     migrate_outbox(db)?;
     backfill_teams(db)?;
     backfill_released(db)?;
@@ -159,6 +177,50 @@ fn observed_attempts(db: &Connection) -> Result<()> {
         }
     }
     Ok(())
+}
+/// The attempt a node runs under is remembered only when the node took it
+/// in: its own effect, or a person's execution the store took over, which a
+/// stored observation of a running task shows under the rules that wrote
+/// it. Layout 4 kept no memory and is seeded so; layouts 5 and 6 remembered
+/// every observed attempt and are corrected the same way, so that an
+/// attempt merely observed while the task did not run is judged when it
+/// starts. A store from before the attempt columns has nothing to seed from,
+/// and a later layout keeps what its rules wrote. One statement, once.
+fn remembered_attempts(db: &Connection, from: Option<u32>) -> Result<()> {
+    if matches!(from, Some(4..=6)) {
+        db.execute(TAKEN_IN, []).map_err(storage)?;
+    }
+    Ok(())
+}
+const TAKEN_IN: &str = "UPDATE task_observations SET last_attempt_id=CASE WHEN (json_extract(data,'$.stage')='in_progress' AND NOT json_extract(data,'$.cancelled')) OR EXISTS(SELECT 1 FROM effects e WHERE e.request_id=task_observations.attempt_id AND e.team=task_observations.team AND e.node=task_observations.node) THEN attempt_id ELSE '' END WHERE attempt_id<>''";
+/// Before layout 8 a cancel outcome was cancelled or refused; the table is
+/// rebuilt once with its current definition, which also takes released.
+/// Its rows move as they are; no trigger or view reads it.
+fn released_outcomes(db: &Connection) -> Result<()> {
+    let sql: Option<String> = db
+        .query_row(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='cancel_outcomes'",
+            [],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(storage)?;
+    if sql.is_none_or(|sql| sql.contains("'released'")) {
+        return Ok(());
+    }
+    db.execute_batch(
+        "DROP INDEX IF EXISTS cancel_refusals;
+         ALTER TABLE cancel_outcomes RENAME TO cancel_outcomes_v1;",
+    )
+    .map_err(storage)?;
+    db.execute_batch(include_str!("../timers.sql"))
+        .map_err(storage)?;
+    db.execute_batch(
+        "INSERT INTO cancel_outcomes(decision,team,node,generation,state,reason,at_ms)
+          SELECT decision,team,node,generation,state,reason,at_ms FROM cancel_outcomes_v1;
+         DROP TABLE cancel_outcomes_v1;",
+    )
+    .map_err(storage)
 }
 /// Version 1 kept released stages in an outbox; they move to the frontier.
 fn migrate_outbox(db: &Connection) -> Result<()> {

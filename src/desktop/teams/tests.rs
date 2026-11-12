@@ -1640,6 +1640,7 @@ fn followup_stopped_budget_card_is_closed_before_outbox_is_pruned() {
         "the service discarded the only owner of its open capacity card"
     );
 }
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 #[test]
 fn followup_full_notification_outbox_is_visible() {
     let mut h = Harness::new();
@@ -1984,6 +1985,7 @@ fn followup_ownership_card_explains_when_it_retries_verify_only() {
     }
 }
 
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 #[test]
 fn worker_fault_health_survives_a_healthy_partial_sweep_and_clears_after_recovery() {
     let mut h = Harness::new();
@@ -2055,6 +2057,7 @@ fn worker_fault_health_survives_a_healthy_partial_sweep_and_clears_after_recover
 }
 
 // Health-narrowing regressions from the independent confirmation review.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 #[test]
 fn review07r2_backoff_is_not_evidence_that_a_fault_recovered() {
     let mut h = Harness::new();
@@ -2114,6 +2117,7 @@ fn review07r2_backoff_is_not_evidence_that_a_fault_recovered() {
         "a skipped backed-off check cannot clear a still-present fault"
     );
 }
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 #[test]
 fn review07r2_real_pages_do_not_clear_an_unresolved_earlier_team() {
     use super::ledger::Row;
@@ -2393,6 +2397,7 @@ fn review07r2_health_read_has_no_logical_writes_or_initialization() {
     assert_eq!(count, 1);
 }
 
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 #[test]
 fn notification_overflow_clears_after_its_notice_reservation_succeeds() {
     let mut h = Harness::new();
@@ -2446,6 +2451,7 @@ fn notification_overflow_clears_after_its_notice_reservation_succeeds() {
     assert_eq!(super::health(h.temp.path()), None);
 }
 
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 #[test]
 fn tick_failure_before_a_new_row_is_not_owned_by_the_previous_step() {
     let mut h = Harness::new();

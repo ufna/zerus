@@ -1,6 +1,7 @@
 use super::*;
 pub(super) fn creation_team(request: &Request, actor: &Actor) -> Result<Team, Problem> {
     let Operation::Create {
+        delegations,
         project,
         name,
         goal,
@@ -8,10 +9,15 @@ pub(super) fn creation_team(request: &Request, actor: &Actor) -> Result<Team, Pr
         bundle,
         integration_branch,
         base_commit,
+        ..
     } = &request.operation
     else {
         return Err(missing());
     };
+    let mut settings = bundle.template.settings.clone();
+    if let Some(delegations) = delegations {
+        settings.delegations = *delegations;
+    }
     Ok(Team {
         id: request.team.clone(),
         project: project.clone(),
@@ -21,7 +27,7 @@ pub(super) fn creation_team(request: &Request, actor: &Actor) -> Result<Team, Pr
         owner: actor.person().into(),
         status: TeamStatus::Running,
         lead: LEAD.into(),
-        settings: bundle.template.settings.clone(),
+        settings,
         bundle: *bundle.clone(),
         integration_branch: integration_branch.clone(),
         base_commit: base_commit.clone(),
@@ -81,6 +87,7 @@ pub(super) fn validate_create(team: &Team) -> Result<()> {
     {
         return Err(problem);
     }
+    crate::teams::catalog::validate_roster(&team.bundle)?;
     Ok(())
 }
 

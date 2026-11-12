@@ -1,7 +1,7 @@
 //! The transition that adds this package to a store: one immediate
 //! transaction, a marker written last, rerun whole when the marker is absent.
 use super::*;
-use crate::teams::store::timers::schema::{BEFORE_MARK, EXTENSION, TRANSITIONS};
+use crate::teams::store::timers::schema::{AFTER_FENCE, BEFORE_MARK, EXTENSION, TRANSITIONS};
 use std::sync::{Arc, Barrier, Mutex};
 
 /// Every object timers.sql creates, so that a store can be returned to its
@@ -319,9 +319,12 @@ fn a_marker_newer_than_this_program_refuses_the_open_and_writes_nothing() {
     assert_eq!(names(&h), full);
 }
 
+type Schema = Vec<(String, String, Option<String>)>;
 /// Every schema object's definition, to compare a store byte for byte.
-fn schema(h: &Harness) -> Vec<(String, String, Option<String>)> {
-    let db = db(h);
+fn schema(h: &Harness) -> Schema {
+    schema_of(db(h))
+}
+fn schema_of(db: &Connection) -> Schema {
     let mut s = db
         .prepare("SELECT type,name,sql FROM sqlite_master ORDER BY type,name")
         .unwrap();
@@ -370,4 +373,140 @@ fn an_older_store_with_the_older_index_still_upgrades() {
     reopen(&mut h);
     assert_eq!(schema(&h), full);
     assert_eq!(marker(&h), Some(EXTENSION));
+}
+
+/// Another program's commit right after this open's first, unlocked fence;
+/// the schema it leaves is returned through the cell.
+fn after_the_fence(h: &Harness, sql: String) -> std::rc::Rc<std::cell::RefCell<Schema>> {
+    let file = h.temp.path().join("teams/teams-v1.sqlite3");
+    let left = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    let seen = left.clone();
+    AFTER_FENCE.with(|slot| {
+        *slot.borrow_mut() = Some(Box::new(move || {
+            let other = Connection::open(file).unwrap();
+            other.execute_batch(&sql).unwrap();
+            *seen.borrow_mut() = schema_of(&other);
+            Ok(())
+        }))
+    });
+    left
+}
+fn refused_as_newer(h: &Harness) {
+    let refused = Store::open(h.temp.path()).unwrap_err();
+    assert!(
+        refused
+            .message
+            .contains("store schema is newer than this version of Zerus"),
+        "{}",
+        refused.message
+    );
+}
+
+/// The reviewer's interleaving: a newer program commits its mark and its own
+/// unique index between this open's first fence and the index conversion.
+#[test]
+fn a_mark_committed_after_the_first_fence_stops_the_index_conversion() {
+    let h = stopped();
+    let left = after_the_fence(
+        &h,
+        format!(
+            "BEGIN IMMEDIATE; UPDATE timers_extension SET version={}; DROP INDEX integration_card; CREATE UNIQUE INDEX integration_card ON cards(decision_seq); COMMIT;",
+            EXTENSION + 1
+        ),
+    );
+    refused_as_newer(&h);
+    assert!(!left.borrow().is_empty(), "the other program committed");
+    assert_eq!(schema(&h), *left.borrow(), "byte for byte what it left");
+}
+
+/// The same race before the common batches: a newer program that removed
+/// objects they would create again.
+#[test]
+fn a_mark_committed_after_the_first_fence_stops_the_common_batches() {
+    let h = stopped();
+    let left = after_the_fence(
+        &h,
+        format!(
+            "BEGIN IMMEDIATE; UPDATE timers_extension SET version={}; DROP TABLE verdicts; DROP INDEX teams_live; COMMIT;",
+            EXTENSION + 1
+        ),
+    );
+    refused_as_newer(&h);
+    assert!(!left.borrow().is_empty(), "the other program committed");
+    assert_eq!(schema(&h), *left.borrow(), "byte for byte what it left");
+}
+
+#[test]
+fn a_common_object_a_store_lacks_is_created_under_the_lock() {
+    let mut h = stopped();
+    let full = schema(&h);
+    db(&h)
+        .execute_batch("DROP TABLE verdicts; DROP INDEX teams_live;")
+        .unwrap();
+    reopen(&mut h);
+    assert_eq!(schema(&h), full);
+}
+
+/// The open looks only for the objects of `CREATE ... IF NOT EXISTS`
+/// statements: every statement of the common batches must be one.
+#[test]
+fn every_statement_of_the_common_batches_is_seen_by_the_presence_check() {
+    for sql in crate::teams::store::COMMON_SCHEMA {
+        let statements = sql.matches(';').count();
+        assert_eq!(crate::teams::store::created(sql).len(), statements, "{sql}");
+    }
+}
+
+/// Layout 7 took only cancelled and refused outcomes. The transition
+/// rebuilds the table once with its current definition and keeps its rows,
+/// so that a released answer can be recorded.
+#[test]
+fn a_store_before_released_outcomes_keeps_its_rows_and_takes_released() {
+    let mut h = stopped();
+    let full = schema(&h);
+    db(&h)
+        .execute_batch(
+            "DROP TABLE cancel_outcomes;
+             CREATE TABLE cancel_outcomes (
+              decision INTEGER PRIMARY KEY, team TEXT NOT NULL, node INTEGER NOT NULL, generation INTEGER NOT NULL,
+              state TEXT NOT NULL CHECK(state IN ('cancelled','refused')), reason TEXT NOT NULL, at_ms INTEGER NOT NULL
+             );
+             CREATE INDEX cancel_refusals ON cancel_outcomes(team,node) WHERE state='refused';
+             UPDATE timers_extension SET version=7;",
+        )
+        .unwrap();
+    db(&h)
+        .execute(
+            "INSERT INTO cancel_outcomes VALUES(900,?1,1,1,'cancelled','',1),(901,?1,2,1,'refused','Delivery unknown',2)",
+            [TEAM],
+        )
+        .unwrap();
+    reopen(&mut h);
+    assert_eq!(schema(&h), full, "the current definition, byte for byte");
+    let kept: Vec<(u64, String, String)> = {
+        let mut s = db(&h)
+            .prepare("SELECT decision,state,reason FROM cancel_outcomes ORDER BY decision")
+            .unwrap();
+        let rows = s
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .unwrap();
+        rows.collect::<rusqlite::Result<Vec<_>>>().unwrap()
+    };
+    assert_eq!(
+        kept,
+        vec![
+            (900, "cancelled".to_owned(), String::new()),
+            (901, "refused".to_owned(), "Delivery unknown".to_owned())
+        ]
+    );
+    db(&h)
+        .execute(
+            "INSERT INTO cancel_outcomes VALUES(902,?1,3,1,'released','',3)",
+            [TEAM],
+        )
+        .unwrap();
+    assert_eq!(
+        h.store.cancel_refusals(TEAM, (0, 0), 10).unwrap(),
+        vec![(2, 901, "Delivery unknown".to_owned())]
+    );
 }
