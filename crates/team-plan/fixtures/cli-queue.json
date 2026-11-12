@@ -11,9 +11,11 @@
     {
       "admitted": true,
       "hold": true,
+      "holder": "m1",
       "id": 1,
       "implementer": "m1",
       "kind": "task",
+      "pending_decision": null,
       "phase": 0,
       "pipeline": "reviewed",
       "rank": "a01",
@@ -30,9 +32,11 @@
     },
     {
       "admitted": true,
+      "holder": "m3",
       "id": 2,
       "implementer": "m1",
       "kind": "stage",
+      "pending_decision": null,
       "phase": 0,
       "pipeline": "reviewed",
       "rank": "a02",

@@ -382,6 +382,7 @@ fn the_person_decides_a_card() {
                 kind: "note".into(),
                 text: "The release moved.".into(),
                 node: None,
+                decisions: None,
             },
         )
         .item
@@ -389,13 +390,21 @@ fn the_person_decides_a_card() {
     let (reply, exit) = harness.cli(
         &lead_caller(),
         "decide",
-        &ask(&harness, 1, json!({"card": card, "decision": "seen"})),
+        &ask(
+            &harness,
+            1,
+            json!({"card": card, "decision": "acknowledged"}),
+        ),
     );
     assert_eq!((code(&reply), exit), ("not_allowed", 1), "{reply}");
     let (reply, exit) = harness.cli(
         &person_caller(),
         "decide",
-        &ask(&harness, 2, json!({"card": card, "decision": "seen"})),
+        &ask(
+            &harness,
+            2,
+            json!({"card": card, "decision": "acknowledged"}),
+        ),
     );
     assert_eq!(exit, 0, "{reply}");
     assert_eq!(

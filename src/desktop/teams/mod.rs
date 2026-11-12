@@ -10,6 +10,7 @@ mod actor;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 mod confirm;
 mod health;
+mod kept;
 mod launch;
 mod ledger;
 pub(crate) use health::Health;

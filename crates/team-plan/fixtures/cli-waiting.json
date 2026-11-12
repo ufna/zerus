@@ -18,6 +18,9 @@
       "created_ms": 1700000000000,
       "decided_actor": null,
       "decision": null,
+      "decisions": [
+        "acknowledged"
+      ],
       "kind": "note",
       "node": null,
       "seq": 1,

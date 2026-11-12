@@ -8,6 +8,7 @@ fn open(h: &mut Harness, actor: &Actor) -> u64 {
             kind: "launch_refused".into(),
             text: "No account available".into(),
             node: None,
+            decisions: None,
         },
     )
     .unwrap()
@@ -134,7 +135,7 @@ fn close_card_refuses_unknown_decided_or_foreign_cards() {
         &person(),
         Operation::DecideCard {
             card: decided,
-            decision: "Keep the launch paused".into(),
+            decision: "acknowledged".into(),
         },
     )
     .unwrap();
@@ -161,6 +162,7 @@ fn close_card_refuses_unknown_decided_or_foreign_cards() {
                 kind: "launch_refused".into(),
                 text: "No account".into(),
                 node: None,
+                decisions: None,
             },
         )
         .unwrap()

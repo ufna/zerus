@@ -172,9 +172,10 @@ pub(crate) fn archived_leaf(db: &Connection, team: &str, id: u32) -> Result<Opti
 }
 
 pub(crate) fn card_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<Card> {
+    let kind: String = r.get(1)?;
     Ok(Card {
         seq: r.get(0)?,
-        kind: r.get(1)?,
+        kind: kind.clone(),
         node: r.get(2)?,
         actor: sql_json(r, 3)?,
         text: r.get(4)?,
@@ -186,14 +187,40 @@ pub(crate) fn card_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<Card> {
             .transpose()
             .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?,
         created_ms: r.get(8)?,
+        decisions: match r.get::<_, Option<String>>(9)? {
+            Some(list) => serde_json::from_str(&list).map_err(|e| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    9,
+                    rusqlite::types::Type::Text,
+                    Box::new(e),
+                )
+            })?,
+            None => default_decisions(&kind),
+        },
     })
+}
+/// A card's decisions: the stored list, or by its kind. An integration card
+/// and a pipeline acceptance card take approve and reject; any other card
+/// opened without a list takes acknowledged alone.
+pub(crate) fn card_decisions(kind: &str, stored: Option<&str>) -> Result<Vec<String>> {
+    match stored {
+        Some(list) => serde_json::from_str(list).map_err(storage),
+        None => Ok(default_decisions(kind)),
+    }
+}
+pub(crate) fn default_decisions(kind: &str) -> Vec<String> {
+    if matches!(kind, "integration" | "pipeline_acceptance") {
+        vec!["approve".into(), "reject".into()]
+    } else {
+        vec!["acknowledged".into()]
+    }
 }
 
 /// A single indexed lookup; scope is checked before returning any card data.
-pub(crate) const CARD_BY_SEQ_SQL: &str = "SELECT seq,kind,node,actor,text,state,decision,decided_actor,created_ms,team FROM cards WHERE seq=?1";
+pub(crate) const CARD_BY_SEQ_SQL: &str = "SELECT seq,kind,node,actor,text,state,decision,decided_actor,created_ms,decisions,team FROM cards WHERE seq=?1";
 pub(crate) fn card(db: &Connection, team: &str, seq: u64) -> Result<Option<Card>> {
     let row: Option<(String, Card)> = db
-        .query_row(CARD_BY_SEQ_SQL, [seq], |r| Ok((r.get(9)?, card_row(r)?)))
+        .query_row(CARD_BY_SEQ_SQL, [seq], |r| Ok((r.get(10)?, card_row(r)?)))
         .optional()
         .map_err(storage)?;
     row.map(|(owner, card)| {
