@@ -141,3 +141,6 @@ mod terminal_pruning;
 mod cancel_recovery;
 
 mod retry_cards;
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+mod retired_stage;
