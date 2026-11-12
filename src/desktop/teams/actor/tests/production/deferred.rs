@@ -254,3 +254,50 @@ fn production_reopen_rechecks_member_and_launch_identity_and_admits_the_control(
         assert_eq!(p.admissions.get(), usize::from(mode == "control"), "{mode}");
     }
 }
+
+#[test]
+fn a_busy_delivery_waits_through_pause_and_resumes_only_its_original_effect() {
+    let mut h = Harness::new();
+    h.bind("m1");
+    h.add(&person(), 1);
+    let machine = h.store.team(TEAM).unwrap().unwrap().home;
+    let mut a = Runtime::open(h.temp.path(), &machine).unwrap();
+    let mut p = w(&h, vec![1], none());
+    a.tick(&mut h.store, &mut p, TEAM, 100, false).unwrap();
+    let id = h.store.open_effects(TEAM, 200, None).unwrap().rows[0]
+        .request_id
+        .clone();
+    h.run(&person(), Operation::Pause).unwrap();
+    for now in [60_100, 600_100] {
+        a.tick(&mut h.store, &mut p, TEAM, now, false).unwrap();
+        assert_eq!(p.calls, 1);
+        assert_eq!(
+            h.store.open_effects(TEAM, 200, None).unwrap().rows[0].request_id,
+            id
+        );
+    }
+    h.run(&person(), Operation::Resume).unwrap();
+    a.tick(&mut h.store, &mut p, TEAM, 600_200, false).unwrap();
+    let effects = h.store.effects(TEAM, 200, None).unwrap().rows;
+    assert_eq!(p.calls, 2);
+    assert_eq!(
+        effects.len(),
+        1,
+        "Pause must not replace the reserved hand-out"
+    );
+    assert_eq!(effects[0].request_id, id);
+    assert_eq!(effects[0].state, "submitted");
+    assert_eq!(p.admissions.get(), 1);
+}
+#[test]
+fn the_production_merge_clock_uses_wall_time_instead_of_the_page_clock() {
+    let h = Harness::new();
+    let n = native(&h);
+    let before = chrono::Utc::now().timestamp_millis();
+    let value = ports::Ports::clock_ms(&n, 5);
+    let after = chrono::Utc::now().timestamp_millis();
+    assert!(
+        (before..=after).contains(&value),
+        "{value} is a stale page clock"
+    );
+}
