@@ -1,7 +1,7 @@
 //! Additive Teams facts using the strict observer's pinned, bounded reads.
 //! A label is only a route: every final record must carry the launch UUID.
 use super::unix::*;
-use super::{TeamObservation, TeamRecord};
+use super::{TeamObservation, TeamRecord, TeamSession};
 use std::{path::Path, time::Instant};
 struct Reads<'a> {
     counts: &'a mut Counts,
@@ -216,6 +216,117 @@ fn selected_team(state: &Path, launch: &str, r: &mut Reads<'_>) -> Checked<TeamO
     Ok(TeamObservation::Absent {
         legacy: start["session_id"].is_null(),
     })
+}
+/// The most rename shadows the label hint is followed through.
+const HOPS: usize = 3;
+/// Whether `v` is the live or saved record of session `id`: it carries the
+/// ID, is no rename shadow and no archive.
+fn carries(v: &Value, id: &str) -> bool {
+    v["session_id"] == id
+        && v["rename_shadow"] != true
+        && v.get("archive_id")
+            .is_none_or(|a| a.is_null() || a.as_str() == Some(""))
+}
+/// Whether `v` lost its launch ID by starting fresh: a fresh start carries
+/// no launch ID and marks the record with `fresh_from` until its new
+/// conversation starts, then with a `session_clear` whose source is
+/// `fresh_start` (`clear_context::carry_fresh_start`, `observe_start`).
+fn started_fresh(v: &Value) -> bool {
+    let launch = &v["launch_id"];
+    (launch.is_null() || launch.as_str() == Some(""))
+        && (v["fresh_from"].is_object() || v["session_clear"]["source"] == "fresh_start")
+}
+/// The handle's own routes: its record in the ID layout, else the ID index's
+/// label. An index entry whose label now holds another record is a stale
+/// cache entry and a miss, never a fault: the index is not a source of truth.
+fn by_handle(state: &Path, id: &str, agent: &str, r: &mut Reads<'_>) -> Checked<Option<Value>> {
+    let folder = if matches!(agent, "dsh" | "opencode") {
+        state.join(agent).join("sessions")
+    } else {
+        state.join("sessions")
+    };
+    if let Some(v) = r.read(&folder.join(format!("{id}.json")), RAW)? {
+        if v["session_id"] != id || v["layout"] != "id" {
+            return Err(Fault);
+        }
+        return Ok(carries(&v, id).then_some(v));
+    }
+    let Some(index) = r.read(&state.join("ids").join(format!("{id}.json")), SMALL)? else {
+        return Ok(None);
+    };
+    let value = r.label(state, text(&index, "name")?)?;
+    Ok(value.filter(|v| carries(v, id)))
+}
+/// The label at binding, through at most [`HOPS`] rename shadows of this
+/// same session (a legacy rename leaves a shadow at the old label).
+fn by_hint(state: &Path, id: &str, hint: &str, r: &mut Reads<'_>) -> Checked<Option<Value>> {
+    if hint.is_empty() {
+        return Ok(None);
+    }
+    let mut label = hint.to_owned();
+    for _ in 0..=HOPS {
+        let Some(v) = r.label(state, &label)? else {
+            return Ok(None);
+        };
+        if v["session_id"] != id {
+            return Ok(None);
+        }
+        if v["rename_shadow"] != true {
+            return Ok(carries(&v, id).then_some(v));
+        }
+        label = text(&v, "rename_target")?.to_owned();
+    }
+    Ok(None)
+}
+fn selected_session(
+    state: &Path,
+    id: &str,
+    launch: &str,
+    agent: &str,
+    hint: &str,
+    r: &mut Reads<'_>,
+) -> Checked<TeamSession> {
+    if !canonical(id) || !canonical(launch) {
+        return Err(Fault);
+    }
+    let found = match by_handle(state, id, agent, r)? {
+        Some(v) => Some(v),
+        None => by_hint(state, id, hint, r)?,
+    };
+    let Some(v) = found else {
+        return Ok(TeamSession::Gone);
+    };
+    if v["launch_id"] != launch {
+        return Ok(if started_fresh(&v) {
+            TeamSession::StartedFresh
+        } else {
+            TeamSession::LaunchChanged
+        });
+    }
+    match record(v, launch)? {
+        TeamObservation::Record(found) => Ok(TeamSession::Record(found)),
+        _ => Err(Fault),
+    }
+}
+pub(super) fn session(
+    state: &Path,
+    id: &str,
+    launch: &str,
+    agent: &str,
+    hint: &str,
+    deadline: Instant,
+) -> TeamSession {
+    let mut counts = Counts {
+        deadline: Some(deadline),
+        ..Counts::default()
+    };
+    let mut r = Reads::new(&mut counts);
+    let result = selected_session(state, id, launch, agent, hint, &mut r)
+        .and_then(|result| r.finish().map(|()| result));
+    if Instant::now() >= deadline {
+        return TeamSession::Unavailable;
+    }
+    result.unwrap_or(TeamSession::Unavailable)
 }
 pub(super) fn observe(state: &Path, launch: &str, deadline: Instant) -> TeamObservation {
     if !canonical(launch) {
