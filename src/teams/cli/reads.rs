@@ -36,6 +36,8 @@ pub(super) fn status(config: &Config, caller: &Caller, args: &[String]) -> Resul
         "team": view,
         "members": super::board::members(&row,members.rows)?,
         "counts": counts(&store, &team)?,
+        "service_running": crate::desktop::teams::presence(config),
+        "health": crate::desktop::teams::health(&config.state),
     }))
 }
 

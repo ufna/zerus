@@ -93,7 +93,12 @@ impl Store {
         Ok(result)
     }
 }
-fn effect(db: &Connection, team: &str, node: u32, id: &str) -> Result<Option<StageTaskEffect>> {
+pub(super) fn effect(
+    db: &Connection,
+    team: &str,
+    node: u32,
+    id: &str,
+) -> Result<Option<StageTaskEffect>> {
     let row: Option<(u32,u32)> = db.query_row("SELECT s.target,s.generation FROM stage_tasks s JOIN pipeline_runs p ON p.team=s.team AND p.node=s.target JOIN nodes n ON n.team=p.team AND n.id=p.node WHERE s.team=?1 AND s.node=?2 AND s.request_id=?3 AND s.state='reserved' AND p.state='active' AND p.stage=s.node AND p.generation=s.generation AND n.generation=s.generation AND n.node_state='reported'",params![team,node,id],|r|Ok((r.get(0)?,r.get(1)?))).optional().map_err(storage)?;
     let Some((target, generation)) = row else {
         return Ok(None);
