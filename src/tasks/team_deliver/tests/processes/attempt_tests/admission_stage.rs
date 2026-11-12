@@ -305,3 +305,69 @@ fn other_service_routes_cannot_act_on_a_persons_send_observed_before_start() {
         assert!(f.document().view().unwrap().cancelled_at.is_none());
     }
 }
+
+fn person_reopens(f: &Fixture) -> String {
+    let to = recipient(f, "m1");
+    let native = NativeRequest {
+        machine: to.machine.clone(),
+        name: to.session.clone(),
+        run_id: "run-m1".into(),
+        conversation_id: "conversation-m1".into(),
+        digest: "ef".repeat(32),
+    };
+    let id = uuid::Uuid::new_v4().to_string();
+    let mut doc = f.document();
+    doc.reserve_attempt(&id, Origin::Reopen, &to, native, &Actor::Person, now())
+        .unwrap();
+    save(f, &mut doc);
+    id
+}
+
+#[test]
+fn only_an_in_progress_observation_counts_as_the_start_of_a_persons_reopen() {
+    for state in [TeamStatus::Running, TeamStatus::Paused] {
+        let mut f = Fixture::new();
+        completion_tests::reported(&mut f);
+        let id = person_reopens(&f);
+        observe(&f);
+        let o =
+            f.h.store
+                .task_observation(TEAM, f.body.node)
+                .unwrap()
+                .unwrap();
+        assert_eq!(o.stage, ops::TaskStage::InReview);
+        assert_eq!((o.attempt, o.attempt_id.as_str()), (2, id.as_str()));
+        cancellation_state(&mut f, state);
+        deliver_reserved(&f, &id);
+        assert_eq!(f.document().stage().unwrap(), Stage::Active);
+        let before = bytes(&f);
+        let sessions = f.sessions();
+        let out = call(&f, "team-cancel");
+        assert_eq!(out["reply"]["state"], "stale", "{state:?}: {out}");
+        assert_eq!(bytes(&f), before);
+        assert_eq!(f.sessions(), sessions);
+        assert!(!f.config.state.join("cancel-notices").exists());
+        observe(&f);
+        assert_eq!(f.h.store.generation(TEAM, f.body.node).unwrap(), Some(2));
+        assert!(f.h.store.pending_cancels(TEAM, 200, 0).unwrap().is_empty());
+        assert_eq!(
+            f.h.store
+                .journal(TEAM, 200, None)
+                .unwrap()
+                .rows
+                .last()
+                .unwrap()
+                .kind,
+            "person_override"
+        );
+        let out = call(&f, "team-cancel");
+        assert_eq!(out["reply"]["state"], "refused", "{out}");
+        assert!(out["reply"]["error"]
+            .as_str()
+            .unwrap()
+            .contains("No Pending cancel"));
+        assert_eq!(bytes(&f), before);
+        assert_eq!(f.document().stage().unwrap(), Stage::Active);
+        assert!(f.document().view().unwrap().cancelled_at.is_none());
+    }
+}
