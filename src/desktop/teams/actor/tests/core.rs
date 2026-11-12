@@ -828,3 +828,23 @@ fn person_override_closing_an_interrupted_effect_never_resends_or_binds_the_old_
             .any(|r| r.key.starts_with("delivery:")));
     }
 }
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[test]
+fn a_terminal_settle_error_after_the_live_page_is_a_row_fault_not_sweep_health() {
+    let (mut h, mut a, mut p) = setup(1);
+    p.stale = true;
+    tick(&mut h, &mut a, &mut p, 100, false);
+    let page = h.store.live_teams(16, None).unwrap().rows;
+    assert!(
+        a.ledger.prefix_page(TEAM, "delivery:", "").unwrap()[0].data["not_started"]
+            .as_bool()
+            .unwrap()
+    );
+    h.run(&person(), Operation::Stop).unwrap();
+    h.store.db.as_ref().unwrap().execute_batch("CREATE TRIGGER fail_settle BEFORE INSERT ON requests BEGIN SELECT RAISE(ABORT,'fixture settle storage failed'); END;").unwrap();
+    a.page(&mut h.store, &mut p, &page, 101, false).unwrap();
+    assert_eq!(p.sends, 1);
+    assert!(a.ledger.terminal_retry().unwrap().is_some());
+    assert!(crate::desktop::teams::health(h.temp.path()).is_none());
+}

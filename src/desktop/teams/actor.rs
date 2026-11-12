@@ -87,7 +87,8 @@ impl Runtime {
             return Ok(());
         }
         if !matches!(team.status, TeamStatus::Running | TeamStatus::Paused) {
-            self.terminal_deliveries(store, &team, now)?;
+            let settled = self.terminal_deliveries(store, &team, now);
+            self.for_row(|_| settled)?;
             return Ok(());
         }
         self.observe(store, ports, &team, now, safety)?;
