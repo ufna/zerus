@@ -100,11 +100,17 @@ fn observation(document: &TaskDoc, team: &str, home: &str) -> Result<TaskObserva
 fn record(store: &mut Store, team: &str, node: u32, document: &TaskDoc) -> Result<()> {
     let header = header::read(store, team)?.ok_or_else(|| Guard::ObservedTeam.problem())?;
     let mut observation = observation(document, team, &header.home)?;
-    observation.previous_revision = store
-        .task_observation(team, node)?
-        .map_or(String::new(), |o| o.revision);
+    let previous = store.task_observation(team, node)?;
+    observation.previous_revision = previous
+        .as_ref()
+        .map_or(String::new(), |o| o.revision.clone());
     if matches!(observation.key, ops::KeyState::Ours)
         && observation.previous_revision == observation.revision
+        && previous.as_ref().is_some_and(|old| {
+            old.attempt == observation.attempt
+                && old.attempt_id == observation.attempt_id
+                && old.attempt_conflict == observation.attempt_conflict
+        })
     {
         return Ok(());
     }

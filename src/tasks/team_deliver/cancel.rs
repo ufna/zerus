@@ -33,14 +33,18 @@ fn current_attempt(
         return observed_attempt(store, &body.team, body.node, view);
     }
     let current = crate::teams::tasks::attempt(view);
-    let observed = store
+    let observation = store
         .task_observation(&body.team, body.node)
-        .map_err(problem)?
-        .map_or_else(
-            || (0, String::new(), false),
-            |o| (o.attempt, o.attempt_id, o.attempt_conflict),
-        );
-    if current == observed {
+        .map_err(problem)?;
+    let observed_running = observation
+        .as_ref()
+        .is_some_and(|o| o.stage == crate::teams::ops::TaskStage::InProgress);
+    let observed = observation.as_ref().map_or_else(
+        || (0, String::new(), false),
+        |o| (o.attempt, o.attempt_id.clone(), o.attempt_conflict),
+    );
+    let running = view.stage == Stage::Active && view.cancelled_at.is_none();
+    if current == observed && (!running || observed_running) {
         return Ok((current.0, current.1));
     }
     let delivered = view
@@ -58,11 +62,16 @@ fn current_attempt(
         "SELECT EXISTS(SELECT 1 FROM effects WHERE request_id=?1 AND team=?2 AND node=?3 AND generation=(SELECT generation FROM nodes WHERE team=?2 AND id=?3 UNION ALL SELECT generation FROM node_archive WHERE team=?2 AND id=?3 LIMIT 1) AND kind IN ('handout','reopen'))",
         params![current.1, body.team, body.node], |row| row.get(0),
     ).map_err(fail)?;
-    if delivered && own && current.0 >= observed.0 && current.1 != observed.1 {
+    let equal_unseen_start = current == observed && running && !observed_running;
+    if delivered
+        && own
+        && current.0 >= observed.0
+        && (current.1 != observed.1 || equal_unseen_start)
+    {
         return Ok((current.0, current.1));
     }
     Err(rule(format!(
-        "attempt_changed: Task attempt {} ({}, conflict={}) differs from the terminal team's observation {} ({}, conflict={}) and is not its delivered effect.",
+        "attempt_changed: Task attempt {} ({}, conflict={}) is not the terminal team's judged execution from observation {} ({}, conflict={}) or its delivered effect.",
         current.0, current.1, current.2, observed.0, observed.1, observed.2
     )))
 }
