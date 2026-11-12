@@ -1,5 +1,23 @@
 //! Held decisions use the existing retry rows, with their own node and text.
+//! A hold is a decision and its generation; its reason is the sentence of
+//! the newest observation. The hold's age opens the first card, a reason
+//! replaces a kept card only once it has stood for the period, and the card
+//! closes when the hold ends.
 use super::*;
+
+/// How long a hold stays silent, and how long a changed reason must stand
+/// before it replaces the kept card: the third one-minute check.
+const PERIOD: i64 = 180_000;
+
+#[derive(Clone, Serialize, Deserialize)]
+pub(super) struct Hold {
+    /// The first pass that found this decision and generation held.
+    start: i64,
+    /// The newest reason, standing since `since`.
+    reason: String,
+    since: i64,
+}
+
 impl Runtime {
     pub(in crate::desktop::teams::actor) fn held_step(
         &mut self,
@@ -17,17 +35,113 @@ impl Runtime {
         }
         let observation = store.task_observation(&team.id, node)?;
         let reason = sentence(node, kind, decision, observation.as_ref());
-        let gate = self.load::<Gate>(&team.id, &format!("gate:{key}"))?;
-        if gate.is_some_and(|g| g.event.as_deref() != Some(reason.as_str())) {
-            self.recovered(store, team, &key, now)?;
-        }
-        let stamp = serde_json::to_string(&(decision, generation, &reason))
-            .map_err(crate::teams::store::storage)?;
-        if self.due(store, team, &key, &stamp, now)? {
-            self.failure(store, team, &key, &stamp, &problem(&reason), now)?;
-        }
+        self.for_row(|a| a.hold_write(store, team, (&key, decision, generation), &reason, now))?;
         Ok(false)
     }
+    fn hold_write(
+        &mut self,
+        store: &mut Store,
+        team: &Team,
+        hold: (&str, u64, u32),
+        reason: &str,
+        now: i64,
+    ) -> Result<()> {
+        let (key, decision, generation) = hold;
+        let name = format!("gate:{key}");
+        let mut row = self.ledger.get(&team.id, &name)?;
+        if row
+            .as_ref()
+            .is_some_and(|r| held_by(r) != Some((decision, generation)))
+        {
+            // Another decision or generation: the earlier hold has ended.
+            self.recover_gate(store, team, key, now)?;
+            row = self.ledger.get(&team.id, &name)?;
+            if row.is_some() {
+                return Ok(());
+            }
+        }
+        let mut g: Gate = row
+            .as_ref()
+            .map(|r| serde_json::from_value(r.data.clone()))
+            .transpose()
+            .map_err(crate::teams::store::storage)?
+            .unwrap_or_default();
+        g.revision = serde_json::to_string(&(decision, generation, None::<String>))
+            .map_err(crate::teams::store::storage)?;
+        let h = g.hold.get_or_insert_with(|| Hold {
+            start: now,
+            reason: reason.into(),
+            since: now,
+        });
+        if h.reason != reason {
+            h.reason = reason.into();
+            h.since = now;
+        }
+        let h = h.clone();
+        if let Some(id) = g.card {
+            // Retry checks again on this pass, as it does for every gate.
+            if store
+                .card(&team.id, id)?
+                .is_some_and(|c| c.state != "open" && c.decision.as_deref() == Some("retry"))
+            {
+                g.card = None;
+                g.notice = None;
+            }
+        }
+        let data = serde_json::to_value(&g).map_err(crate::teams::store::storage)?;
+        let mut row = match row {
+            Some(row) if row.data == data => row,
+            row => match self.reserve_gate(&team.id, &name, row, &g)? {
+                Some(row) => row,
+                None => return Ok(()),
+            },
+        };
+        // A pending opener first replays its own receipt; the second
+        // iteration can then replace a card whose reason has moved on.
+        for _ in 0..2 {
+            if !self.current_gate_card(store, team, &mut row, &mut g, now)? {
+                return Ok(());
+            }
+            if g.card.is_some() {
+                if g.event.as_deref() == Some(reason) || now.saturating_sub(h.since) < PERIOD {
+                    return Ok(());
+                }
+                let open = g
+                    .card
+                    .map(|id| store.card(&team.id, id))
+                    .transpose()?
+                    .flatten()
+                    .is_some_and(|c| c.state == "open");
+                let close = "The reason this task waits changed; its new card states it.";
+                if !self.replace_gate_card(
+                    store,
+                    team,
+                    (&mut row, &mut g),
+                    open.then_some(close),
+                    now,
+                )? {
+                    return Ok(());
+                }
+            } else if g.notice.is_none() && now.saturating_sub(h.start) < PERIOD {
+                return Ok(());
+            }
+            if g.notice.is_none() {
+                g.event = Some(reason.into());
+            }
+            if !self.open_gate_card(store, team, (key, &problem(reason)), &mut row, &mut g, now)? {
+                return Ok(());
+            }
+        }
+        Ok(())
+    }
+}
+/// The decision and generation a held row stands for, also in the rows of
+/// earlier builds, whose stamp carried the reason as well.
+fn held_by(row: &Row) -> Option<(u64, u32)> {
+    let revision = row.data.get("revision")?.as_str()?;
+    let (decision, generation, _): (u64, u32, Option<String>) =
+        serde_json::from_str(revision).ok()?;
+    Some((decision, generation))
 }
 impl Runtime {
     pub(in crate::desktop::teams::actor) fn held_retired(
