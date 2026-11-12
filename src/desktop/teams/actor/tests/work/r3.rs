@@ -65,3 +65,51 @@ fn a_refused_corrected_fact_with_a_ready_accept_never_starts_git_again() {
         assert!(h.store.integration_fact(TEAM, node).unwrap().is_none());
     }
 }
+
+#[test]
+fn a_recorded_integration_finishes_while_its_task_stays_on_the_live_queue() {
+    let mut h = Harness::new();
+    let (node, lead) = h.reported();
+    h.run(&lead, Operation::Accept { node }).unwrap();
+    let mut a = actor(&h);
+    let mut p = Work {
+        finish_reply: Some(Finish::CuttingOver("Wait for the project".into())),
+        ..Default::default()
+    };
+    run(&mut h, &mut a, &mut p, 100);
+    assert!(h.node(node).integrated);
+    assert!(h
+        .store
+        .queue(TEAM, 200, None)
+        .unwrap()
+        .rows
+        .iter()
+        .any(|n| n.id == node));
+    assert_eq!((p.merges, p.finishes), (1, 1));
+    run(&mut h, &mut a, &mut p, 101);
+    assert_eq!(
+        p.finishes, 1,
+        "the live queue must retain the finish backoff"
+    );
+    p.finish_reply = None;
+    run(&mut h, &mut a, &mut p, 60_100);
+    run(&mut h, &mut a, &mut p, 60_101);
+    assert_eq!((p.merges, p.finishes), (1, 2));
+    assert!(h
+        .store
+        .queue(TEAM, 200, None)
+        .unwrap()
+        .rows
+        .iter()
+        .any(|n| n.id == node));
+    h.observe(node, TaskStage::Done);
+    run(&mut h, &mut a, &mut p, 120_100);
+    assert_eq!((p.merges, p.finishes), (1, 2));
+    assert!(!h
+        .store
+        .queue(TEAM, 200, None)
+        .unwrap()
+        .rows
+        .iter()
+        .any(|n| n.id == node));
+}
