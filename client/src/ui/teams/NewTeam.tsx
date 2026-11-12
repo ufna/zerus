@@ -7,6 +7,7 @@ import {
   teams, type TeamCall, type TeamCatalog, type TeamCatalogTemplate, type TeamProjectFacts,
 } from "../../store/teams";
 import { NewTeamFooter } from "./NewTeamFooter";
+import { withoutCode } from "../../store/sentences";
 import { NewTeamHowTo, NewTeamIntroSteps } from "./NewTeamGuide";
 import { NewTeamPage } from "./NewTeamPage";
 import { TextInput } from "../lib/TextField";
@@ -268,7 +269,8 @@ export function NewTeam(props: NewTeamProps): JSX.Element {
     const entry = intentCall();
     if (entry) await teams.dismiss(entry, "new-team");
   };
-  const shownError = () => error() || props.failure || "";
+  // A refusal's sentence, without the code hgs puts before it.
+  const shownError = () => withoutCode(error() || props.failure || "");
   const save = async () => {
     const chosen = template();
     if (!chosen) return;
@@ -287,7 +289,7 @@ export function NewTeam(props: NewTeamProps): JSX.Element {
 
   return (
     <div class="nt-body" data-new-team-form>
-      <Show when={props.catalogError}><div class="notice danger nt-error" role="alert"><Icon name="triangle-alert" size={16} /><span>{props.catalogError}</span></div></Show>
+      <Show when={props.catalogError}><div class="notice danger nt-error" role="alert"><Icon name="triangle-alert" size={16} /><span>{withoutCode(props.catalogError!)}</span></div></Show>
       <fieldset class="nt-templates">
         <legend>{tr("Template")}</legend>
         <div class="nt-template-list">

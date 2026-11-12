@@ -92,6 +92,14 @@ it("shows a refusal's reason in the row", async () => {
   expect(host.querySelector("[data-teams-error]")?.textContent).toContain("Only a person turns the Teams preview on or off.");
 });
 
+it("shows a refusal's sentence without its code; the code stays in the switch's data", async () => {
+  f.preview.mockResolvedValueOnce({ outcome: "failed", detail: "store_busy: The team store is busy. Nothing was written; try again." });
+  const host = setup(false, "inactive");
+  toggle(host).click();
+  await wait();
+  expect(host.querySelector("[data-teams-error]")?.textContent).toBe("The team store is busy. Nothing was written; try again.");
+});
+
 it("an unknown result changes nothing and offers to read the state again", async () => {
   f.preview.mockResolvedValueOnce({ outcome: "uncertain", detail: "reply lost" });
   const host = setup(true);

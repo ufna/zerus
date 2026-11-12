@@ -4,6 +4,7 @@ import { notify } from "../../store/actions";
 import { tasks } from "../../store/tasks";
 import { sendToTeam, type SendOutcome } from "../../store/taskBoard";
 import { readSelectedTask } from "./task-view-read";
+import { withoutCode } from "../../store/sentences";
 import type { Task } from "./tasks-ui";
 
 // The New task form's recovery for a card the command line created and the
@@ -42,11 +43,8 @@ export const STORAGE_FAILED = "storage_failed";
 export const queueRefused = (notice: Pick<NotQueued, "code">) => !!notice.code && notice.code !== STORAGE_FAILED;
 
 /** A reply's sentence for a person: the store's own words, without the code
- * the command line puts before them (`code: sentence`). The words are not
- * changed; only the code, which a person does not read, is left out. */
-export function teamSentence(reason: string): string {
-  return reason.trim().replace(/^[a-z][a-z0-9_]*: /u, "");
-}
+ * the command line puts before them (`code: sentence`). */
+export const teamSentence = withoutCode;
 
 /** A task's title in a notification: at most this many characters. */
 export const TITLE_CHARS = 60;

@@ -1,4 +1,5 @@
 import { Show, createSignal, onCleanup, onMount } from "solid-js";
+import { withoutCode } from "../../../store/sentences";
 import { tr, trNoop } from "../../../i18n";
 import { teams } from "../../../store/teams";
 import { Group, Row, SectionHead, Switch } from "./ui";
@@ -85,7 +86,7 @@ export function TeamsSection() {
           <p class="set-group-hint" role="note" data-teams-unavailable>{tr("hgs is unavailable on this computer, so the preview cannot be changed.")}</p>
         </Show>
         <Show when={error()}>
-          <p class="set-group-hint" role="alert" data-teams-error>{error()}</p>
+          <p class="set-group-hint" role="alert" data-teams-error>{withoutCode(error())}</p>
         </Show>
         <Show when={uncertain()}>
           <p class="set-group-hint" role="status" data-teams-uncertain>

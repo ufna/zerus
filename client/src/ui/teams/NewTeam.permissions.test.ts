@@ -112,3 +112,22 @@ it("names who ends each of the template's pipelines and says nothing about phase
   expect(labels).not.toContain("Acceptance");
   expect(settingLines(fixture.templates[0]).flat().join(" ")).not.toMatch(/phase/iu);
 });
+
+it("a catalog read's or a template save's refusal is shown without its code", async () => {
+  const failing: TeamCatalogTemplate[] = [];
+  const host = document.createElement("div");
+  document.body.append(host);
+  dispose = render(() => createComponent(NewTeam, {
+    catalog: fixture, catalogError: "store_busy: The team store is busy. Nothing was written; try again.", busy: false,
+    machineId: "00000000-0000-4000-8000-0000000000aa", defaultProject: "example-project", defaultFolder: "/workspace/example",
+    onCheckFolder: async () => ({ git: true, head: "0123456789abcdef0123456789abcdef01234567", branch: "main", reason: "" }),
+    onCreate: async (input) => ({ outcome: "done", receipt: {}, request_id: input.request_id }),
+    onSaveTemplate: async (template) => { failing.push(template); throw "invalid_state: The built-in template is read-only."; },
+    onClose: () => {},
+  }), host);
+  expect(host.querySelector(".nt-error")?.textContent).toBe("The team store is busy. Nothing was written; try again.");
+  button(host, "Save as template").click();
+  await vi.waitFor(() => expect(failing).toHaveLength(1));
+  await vi.waitFor(() => expect(host.querySelector("[data-new-team-error]")?.textContent).toBe("The built-in template is read-only."));
+  expect(host.querySelector("[data-create-error]")?.textContent).not.toContain("invalid_state");
+});
