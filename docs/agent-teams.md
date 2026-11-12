@@ -29,7 +29,9 @@ folder: every member works in its own worktree.
 Open **Settings**, section **Agent Teams**, and turn on **Agent Teams
 (preview)**. The setting "Applies to this computer. Nothing runs until a team
 is created." From a terminal outside any agent session, `hgs team preview on`
-does the same, and `hgs team preview status` shows the state.
+does the same, and `hgs team preview status` shows the state. When the desktop
+cannot confirm a change, it says "The change could not be confirmed. Nothing on
+screen changed." and offers **Read the state again**.
 
 Turning it on adds a marker file to this computer's `hgs` state directory and
 makes the desktop show **New team** and **Waiting for you** in the rail, the
@@ -41,11 +43,11 @@ no live agent session runs above it, and a command inside a sandbox with its
 own user namespace is refused. Every other task command behaves as with the
 preview off. The team store is created only when the first team is created.
 
-Turning it off asks "Turn Agent Teams off?": "Teams on this computer stop
-being served. Nothing is deleted." With the preview off, `hgs team` answers
-`teams_inactive`, the entry points disappear, and a team's tasks on this
-computer behave as ordinary tasks. A task whose team lives on another
-computer still refuses agents.
+Turning it off while a team may still be live asks "Turn Agent Teams off?":
+"Teams on this computer stop being served. Nothing is deleted." With the
+preview off, `hgs team` answers `teams_inactive`, the entry points disappear,
+and a team's tasks on this computer behave as ordinary tasks. A task whose
+team lives on another computer still refuses agents.
 
 ## Starting a team
 
@@ -58,15 +60,50 @@ Press **New team** in the rail. The dialog starts from a **Template**:
 | Small | a developer, a reviewer | `reviewed` | after the lead routes it |
 
 Fill in **Team name**, **Goal** and **Project**. Under **Settings** the dialog
-shows the template's **Roster**, its **Pipelines** and the settings it brings:
-**Integration**, **Plan approval**, **Acceptance**, **Queue**, **Routing** and
-**Land stage**. Under **Project folder**, press **Check folder**: Create team
-stays blocked until the folder is a Git folder ("A Git folder at %1, base
-commit %2."). That commit is the team's base. **Integration branch** proposes
-`zerus/team/` followed by the team's name; you can change it.
+shows everything the template brings, for you to confirm:
 
-"Nothing is created until you press Create team." **Create team** records the
-team, and the desktop service then:
+- **Roster**: each role and how many members take it.
+- **Pipelines**: each pipeline the team uses, its stages, and who accepts its
+  work: "the lead accepts", "you accept" or "it accepts by itself".
+- **Integration**, **Queue**, **Routing** and **Land stage**.
+- **Permissions**: "What the lead and the service may do without you." Each is
+  a checkbox that starts as the template sets it; the built-in templates turn
+  all five on.
+
+| Permission | What it lets happen without you |
+|---|---|
+| **Accept results** | "The lead may accept a team task's result without you." |
+| **Answer members** | "The lead answers members' questions and permission requests without you." |
+| **Confirm folder trust** | "Zerus confirms the trust prompt of a folder it created for the team." |
+| **Resume exited members** | "Zerus resumes a member whose agent exited by itself." |
+| **Merge accepted work** | "An accepted result is merged into the integration branch without your approval." |
+
+Under **Project folder**, press **Check folder**: Create team stays blocked
+until the folder is a Git folder ("A Git folder at %1, base commit %2."). That
+commit is the team's base. **Integration branch** proposes `zerus/team/`
+followed by the team's name; you can change it.
+
+"Nothing is created until you press Create team." The team is created from
+exactly what the dialog showed you:
+
+- **Create team** sends the template you saw, identified by a digest of
+  everything a team takes from it, and the five permissions as you set them.
+  The team gets those permissions in place of the template's.
+- When the template changed after the dialog showed it, nothing is created:
+  "The template changed since you saw it, and nothing was created: review it
+  as it is now, then create the team again." The dialog shows it as it is now.
+- A template that asks you to confirm a permission or a setting this version
+  does not know can be neither created nor saved: "This version does not know
+  every permission of the template. Update Zerus to create a team."
+- When the result of Create team is not known, the dialog says "The create's
+  result is unknown. Check it with the same request, or dismiss it."
+  **Check** asks again with the same request, so it can never create a second
+  team.
+
+`hgs team create` at a terminal may leave out the digest and the permissions;
+the team then takes the template as the catalog holds it at that moment.
+
+Once the team is created, the desktop service:
 
 - creates the integration branch at the base commit, without checking it out;
 - launches the lead, then each member in its own generated worktree, linked
@@ -74,15 +111,29 @@ team, and the desktop service then:
 - picks each session's account at launch: by default the signed-in account of
   the role's agent with the most room left in its usage windows.
 
-A launch that is refused, or whose result is unknown, becomes a card in
-Waiting for you and is never repeated by itself. **Save as template** keeps
-the chosen template under a name of yours in your own catalog.
+A member that cannot be started becomes a card in Waiting for you that says
+why and whether Zerus tries again. When Zerus does not know whether a member
+started, it checks before it starts anything again. **Save as template** keeps
+the template under a name of yours in your own catalog, with the permissions
+as you set them.
 
-A new team starts with every delegation on: the lead may accept results
-(`accept_results`) and answer members' questions (`answer_members`), the
-service confirms folder trust (`confirm_trust`) and resumes members that exited
-(`resume_exited`), and accepted results are merged (`merge_accepted`). This
-form does not show them; a person changes them with `hgs team settings`.
+## When a change does not go through
+
+A change you make on the Team tab, in Waiting for you or with `hgs team`
+either goes through or ends in one of three ways:
+
+- **Refused by a rule.** Nothing was written. The desktop shows the team's
+  reason; the command line answers with a code and a sentence, for example
+  `stale_revision` when the team changed after you read it. Read the team
+  again before you decide anew.
+- **The store is busy.** "The team store is busy. Nothing was written; try
+  again." Nothing changed, and you may simply try again. A command waits 8
+  seconds for the store before it answers this way.
+- **The result is not known.** The write may have happened or not. The
+  command line says "The result is not known; repeat the same request with the
+  same request ID." The desktop keeps the change open with **Check**, which
+  repeats it with the same request, and **Dismiss**. A repeated request ID
+  never applies a change twice, so a change is never sent again as a new one.
 
 ## The Team tab
 
@@ -93,17 +144,21 @@ actions ask for confirmation first.
 
 **Members** lists each member with its role, what it works on ("Working on
 #%1", "Reviewing #%1", "Testing #%1") and whether its session is linked. A
-member's actions are **Pause**, **Resume**, **Stop** and **Remove**; "The
-team's lead cannot be removed."
+member's actions are **Pause**, **Resume**, **Stop** and **Remove**; the lead
+cannot be removed.
 
-The **Board** groups the team's tasks by state, with the queue as its own
-group: **Queue**, **In work**, **Submitted** for reported work, a group for
-each stage such as **In review** or **In test**, **Accepted** and
-**Cancelled**. A card shows the task's role, pipeline, member, round and
-stages; a stage card says which task it checks ("checks the work of %1").
-The card's decisions are **Admit**, **Accept**, **Return**, **Hold** or
-**Release**, and **Cancel task**; Return and Cancel ask for a reason. **Add
-task** opens the project's task board.
+The **Board** groups the team's tasks, with the queue as its own group:
+**Queue**, **In work**, **Submitted** for reported work, a group for each stage
+such as **In review** or **In test**, **Accepted** and **Cancelled**. A card
+shows the task's role, pipeline, member, round and stages; a stage card says
+which task it checks ("checks the work of %1"), and a card that waits for a
+decision says "Decision needed".
+
+A card's decisions are **Admit** for a task that waits for admission,
+**Accept** and **Return** for reported work, **Hold** or **Release**, and
+**Cancel task**. Return and Cancel task ask for a reason. Reassign and Route
+are commands (`hgs team reassign`, `hgs team route`). **Add task** opens the
+project's task board.
 
 ## Sending a task to a team
 
@@ -123,10 +178,13 @@ one task at a time.
 
 When the team refuses a new task, for example because its queue is full, the
 task is still created but not queued: it stays on the board as an ordinary
-task without the team key. The desktop says "The task was created, but %1 did
-not queue it: %2" and offers **Send to team** again or **Dismiss**; the CLI
-says "Task REF exists and was not queued (CODE): REASON". Only a task in
-Backlog or To do can be sent.
+task, and its team key is left as it was before the send. The desktop says
+"The task was created, but %1 did not queue it: %2" and offers **Send to
+team** again or **Dismiss**; the command line says "Task REF exists and was not
+queued (CODE): REASON". When the result is not known, the task keeps its team
+key and the desktop says "The task was created; whether %1 queued it is not
+known. Send to team queues it now, and never twice." Only a task in Backlog or
+To do can be sent.
 
 ## Waiting for you
 
@@ -135,11 +193,22 @@ computer. The page lists "Cards only you can answer, oldest first." Each card
 shows its kind, its team, its age, its text and its decisions; **Open task**
 opens the task on the team's board.
 
-| Card | When it appears | Your choice |
-|---|---|---|
-| **Integration** | Work was accepted, and merging it waits for you because the merge delegation is off | **Approve**: the service merges it and finishes the task. **Reject**: nothing is merged; the task stays in review for a new decision |
-| **Phase acceptance** | Every stage of a pipeline whose acceptance is yours has passed | **Approve**: the task is accepted, and merged where the team integrates. **Reject**: the task goes to the lead |
-| Every other kind | A member's launch was refused or its result is unknown, a standing confirmation needs you, or a step of the service keeps failing | **Acknowledge** closes the card |
+A card offers the decisions it accepts. **Integration** and **Work
+acceptance** take **Approve** or **Reject**. **Acknowledge** closes a card and
+changes nothing else.
+
+| Card | When it appears |
+|---|---|
+| **Integration** | The lead accepted a result, and merging it waits for you because Merge accepted work is off. **Approve**: the service merges it and finishes the task. **Reject**: nothing is merged; the task stays in review for a new decision |
+| **Work acceptance** | Every stage of a pipeline whose acceptance is yours has passed. **Approve**: the task is accepted, and merged where the team integrates. **Reject**: the task goes to the lead |
+| **Member not started** | A member could not be started; the card says why and whether Zerus tries again |
+| **Start not confirmed** | Whether a member started is not known; Zerus checks before it starts anything again |
+| **No room for members** | New members wait until there is room for another session or account |
+| **Member needs you** | A member's session asks for something Zerus does not confirm on your behalf |
+| **Team service blocked** | A step of the service failed three times, for example a hand-out a project limit refuses or a merge that cannot run, and is tried again |
+| **Report waiting** | A member's report has waited for the lead's decision longer than the team allows, an hour by default |
+| **Lead not working** | The lead has not worked for a while, 20 minutes by default, although items wait in its inbox |
+| **Late session** | A member's session started after the team stopped or the member was removed; Zerus does not stop it |
 
 The page also lists **Requests of team sessions**: a question or a permission
 request of a lead or a member that only a person can answer. Choosing one
@@ -148,26 +217,37 @@ opens that session.
 ## The lead's decisions
 
 The lead reads its inbox and decides each report the pipeline handed to it.
-A task has one decision at a time.
+The lead decides and the service carries the decision out. A task has one
+decision at a time.
 
 - **Accept.** With an integration branch, the task is Done once the service
   has merged it, or once you approved its Integration card. A merge conflict
   returns the task to its member with the list of conflicting files. Without
-  an integration branch the service moves the task to Done at once.
+  an integration branch the service moves the task to Done at once. The
+  service finishes or merges only while the task is still as the lead accepted
+  it; see [You and the team on one task](#you-and-the-team-on-one-task).
 - **Return**, with a reason. The service reopens the task to the same member
   with the reason, which starts a new round.
 - **Reassign**, to another active member of the same role, with a reason. The
   service hands the task over to that member.
 - **Hold** and **Release.** A held task is not handed out.
 - **Cancel**, with a reason. Running work is cancelled, and its member gets
-  the ordinary cancel notice of a task. A task with nothing running (Backlog,
-  To do or In review) leaves the team and stays in its stage as an ordinary
-  task. A task whose delivery is unknown, and a Done task, are left as they
-  are, and the lead gets an inbox item about it.
+  the ordinary cancel notice of a task; the task leaves the queue once the
+  service has seen it cancelled. A task with nothing running (Backlog, To do or
+  In review) leaves the team and stays in its stage as an ordinary task. A task
+  whose delivery is unknown, and a Done task, are left as they are, and the
+  lead gets an inbox item about it.
 
 A lead can accept only work its pipeline handed over, and cannot accept or
-cancel a stage: a stage ends by its holder's verdict or by you. You can make
-every one of these decisions yourself on the Team tab.
+cancel a stage: a stage ends by its holder's verdict or by you.
+
+**A member's question.** A member whose task is blocked asks with
+`hgs team ask`, and the question waits in the lead's inbox. With Answer
+members on, the lead answers with `hgs team reply`. The answer stays with the
+question: the member reads it in `hgs team current`, which shows the member's
+own questions about the task it now holds, newest first, with their answers.
+A question from an earlier round is not shown there; what the next round must
+know goes into the reason of a Return.
 
 ## Pipelines and stages
 
@@ -183,6 +263,58 @@ return reopens the task to its implementer without the lead. After the
 pipeline's rounds, three unless it sets another number, the task goes to the
 lead. Every reopen counts as a round, whoever caused it.
 
+## Doorbells and timers
+
+The inbox is where the lead's work waits; a doorbell only tells a session to
+look. When items wait, the service sends the lead one message that says how
+many wait and names `hgs team inbox`. When answers to its questions wait, a
+member gets one message that says how many and names `hgs team current`. A
+doorbell names a count and a command and never the text of an item, a question
+or an answer.
+
+A doorbell rings only while the team is running and the session is live, idle
+and has no pending request, and only for something that arrived after the
+previous doorbell. It rings at most once per interval, 120 seconds unless the
+team sets another, and goes to the exact run and conversation the service
+read. A doorbell whose delivery is not known is never sent again; the next new
+item rings a new one, and a resumed session gets a new doorbell, never the old
+one. A member's doorbell is dropped once the member no longer holds that
+attempt: after an accept, a return, a reassignment, a cancel or a stop.
+
+Timers turn waiting into an inbox item for the lead or a card for you:
+
+| After | When | Becomes |
+|---|---|---|
+| 120 seconds | a member's turn ended on a task in progress without a report | an inbox item |
+| 180 seconds | a handed-out task has not started | an inbox item |
+| 15 minutes | a report waits for the lead's decision | an inbox item |
+| 60 minutes | that report still waits | a **Report waiting** card |
+| 20 minutes | the lead has not worked while its oldest inbox item waits | a **Lead not working** card |
+
+The times are the team's settings. A timer fires once for its task and round,
+or for its inbox item, and only while its condition still holds: what ends the
+condition also closes the card it opened. No timer fires while the team is
+paused or stopped. After a restart of the desktop service a timer may fire
+late, never early.
+
+## You and the team on one task
+
+A team's task stays yours as well: you can start, cancel, close or move it on
+the task board at any time, and the team follows what you did.
+
+- **You start it yourself.** The team treats the run as yours: it ends its own
+  attempt, settles any decision that was waiting, and goes on from your run as
+  a new round.
+- **A team's cancel never ends your run.** A cancel acts on the run the team
+  knew. If you started the task again before the cancel was carried out, the
+  cancel is settled and your run goes on.
+- **Two runs at once.** While two runs claim the task, the team decides
+  nothing about it: it finishes and merges nothing, and no cancel ends it,
+  until one run remains. A task that has ended, cancelled or Done, counts as
+  ended whoever ran it.
+- **You take it out.** Retargeting the task away from the team takes it out of
+  the queue; the team does not take it back.
+
 ## The integration branch
 
 The integration branch collects accepted work. The service merges with Git
@@ -197,30 +329,33 @@ attempt opens a card in Waiting for you. Your own merge driver and signing
 settings are honoured. Landing the branch on your base branch, or pushing
 it, is your own step.
 
-The delegation to merge accepted results (`merge_accepted`) decides who
-starts a merge: the
-lead's Accept while it is on, your approval of the Integration card while it
-is off. Switching it off takes back every accepted result that has not
-merged yet and that you did not accept or approve yourself: each goes back to
-waiting for you with an Integration card.
+The permission **Merge accepted work** (`merge_accepted`) decides who starts a
+merge: the lead's Accept while it is on, your approval of the Integration card
+while it is off. Switching it off takes back every accepted result that has
+not merged yet and that you did not accept or approve yourself: each goes back
+to waiting for you with an Integration card.
 
 ## Pause, stop and archive
 
-- **Pause** stops hand-outs and sends nothing to any session. A paused member
-  takes no new task. The lead can pause and resume the team and its members,
-  but cannot resume what you paused or stopped.
+- **Pause** stops hand-outs and doorbells and sends nothing to any session;
+  no timer fires while the team is paused. A paused member takes no new task.
+  The lead can pause and resume the team and its members, but cannot resume
+  what you paused or stopped.
 - **Stop** a member: it takes no new task, and neither the lead nor the
   service resumes it. **Remove** takes it out of the team.
 - **Stop** the team: every unfinished task is cancelled as after a lead's
   Cancel. Running work is cancelled with the ordinary notice; a task with
   nothing running stays in its stage; a task whose delivery is unknown, and a
-  Done task, are left as they are. Every task of the team then loses its team
-  key and stays on the board as an ordinary task.
+  Done task, are left as they are; a task you started yourself after the stop
+  is left to you. The service then removes the team key from every task that
+  was open at the stop; each stays on the board as an ordinary task.
+- A member whose session starts after the team stopped, or after you removed
+  it, is not taken into the team: a **Late session** card names it.
 - **Archive** follows a stop and closes the team's open cards.
 
 Zerus never stops a team's agents by itself. The sessions stay, and you end
 them as any other session. Quitting a member's agent by hand is not a stop of
-the team or of the member: with the resume delegation on, the member is
+the team or of the member: with Resume exited members on, the member is
 resumed. Use Stop on the member instead.
 
 ## Project limits
@@ -235,8 +370,9 @@ third refusal opens a card in Waiting for you.
 
 ## What the service confirms by itself
 
-Two standing delegations of the team, `confirm_trust` and `resume_exited`,
-and nothing else, let the service answer for you:
+Two permissions of the team, **Confirm folder trust** (`confirm_trust`) and
+**Resume exited members** (`resume_exited`), and nothing else, let the service
+answer for you:
 
 - **Folder trust.** The startup folder trust prompt of a Claude, Codex or Kimi
   member whose worktree Zerus created for this team is answered at once.
@@ -262,11 +398,29 @@ tool approvals.
   are not affected.
 - A team lives on one computer: its lead, its members and its Team tab.
 - Only a queue: no planning from a goal, no phases and no Graph yet.
+- A session served by DeepSeek's host or OpenCode's shared service cannot be
+  a team's lead or member.
 - On Linux, `hgs team` from a shell inside a sandbox with its own user
-  namespace is refused, whether a person or an agent runs it.
+  namespace is refused, whether a person or an agent runs it, so a member
+  whose agent runs its commands in such a sandbox cannot take part.
 - A person's command is recognized by an interim rule: no live agent session
-  may be among its process ancestors. Every reply to such a command carries a
-  note that states what this rule cannot detect.
+  may be among its process ancestors. It guards against accidents and against
+  an agent that merely drops its session markers, not against one that sets
+  out to pass as you. Every reply to such a command carries a note that
+  states what this rule cannot detect.
+- A task that a team cancelled cannot be sent to a team again, even after you
+  move it back to To do.
+- An accepted task takes no Cancel, and neither does a task the team keeps in
+  its queue because it runs again or came back under another run; your own
+  move on the board, closing, cancelling or starting it again, resolves it.
+- If you switch Merge accepted work off while the service is merging a
+  result and then reject its Integration card, the result can already be on
+  the integration branch, and nothing tells you so.
+- After a stop, a task that was accepted or cancelled before the stop keeps
+  its team key. On another computer that key keeps agents from sending,
+  starting, moving or editing the task until a person retargets it.
+- After a stop, the service removes the team keys in the background; if that
+  keeps failing, nothing shows it yet.
 
 ## Origin
 
