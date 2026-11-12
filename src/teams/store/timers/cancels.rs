@@ -4,7 +4,7 @@
 use super::*;
 
 pub(crate) mod sql {
-    pub const PENDING: &str = "SELECT d.node,d.generation,d.seq,i.task_project,i.task_uuid FROM decisions d LEFT JOIN node_identity i ON i.team=d.team AND i.id=d.node WHERE d.team=?1 AND d.state<>'settled' AND d.node>?2 AND d.kind='cancel' AND d.state='pending' AND d.generation=COALESCE((SELECT n.generation FROM nodes n WHERE n.team=d.team AND n.id=d.node),(SELECT a.generation FROM node_archive a WHERE a.team=d.team AND a.id=d.node)) AND NOT EXISTS(SELECT 1 FROM cancel_outcomes c WHERE c.decision=d.seq) ORDER BY d.node LIMIT ?3";
+    pub const PENDING: &str = "SELECT d.node,d.generation,d.seq,i.task_project,i.task_uuid,COALESCE(o.attempt,0),COALESCE(o.attempt_id,'') FROM decisions d LEFT JOIN node_identity i ON i.team=d.team AND i.id=d.node LEFT JOIN task_observations o ON o.team=d.team AND o.node=d.node WHERE d.team=?1 AND d.state<>'settled' AND d.node>?2 AND d.kind='cancel' AND d.state='pending' AND d.generation=COALESCE((SELECT n.generation FROM nodes n WHERE n.team=d.team AND n.id=d.node),(SELECT a.generation FROM node_archive a WHERE a.team=d.team AND a.id=d.node)) AND NOT EXISTS(SELECT 1 FROM cancel_outcomes c WHERE c.decision=d.seq) ORDER BY d.node LIMIT ?3";
     /// Paged by the row: a node may have refused cancels of several decisions.
     pub const REFUSED: &str = "SELECT node,decision,reason FROM cancel_outcomes WHERE team=?1 AND state='refused' AND (node,decision)>(?2,?3) ORDER BY node,decision LIMIT ?4";
 }
@@ -17,6 +17,10 @@ pub struct PendingCancel {
     pub generation: u32,
     pub decision: u64,
     pub task: Option<TaskRef>,
+    /// The task attempt the store holds for the node: its generation and
+    /// ID, which team-cancel compares and RecordCancel must name.
+    pub attempt: u64,
+    pub attempt_id: String,
 }
 
 impl Store {
@@ -45,6 +49,8 @@ impl Store {
                     generation: r.get(1)?,
                     decision: r.get(2)?,
                     task,
+                    attempt: r.get(5)?,
+                    attempt_id: r.get(6)?,
                 })
             })
         })

@@ -12,11 +12,13 @@ pub(in crate::teams::ops) fn record_cancel(ctx: &mut Context<'_>) -> Result<()> 
         state,
         reason: why,
         attempt: _,
+        attempt_id,
     } = ctx.op
     else {
         unreachable!()
     };
     let (node, decision) = (*node, *decision);
+    text(attempt_id, 256)?;
     pending(ctx, node, decision)?;
     match state {
         CancelState::Cancelled if !why.is_empty() => {

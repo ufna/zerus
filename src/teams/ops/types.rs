@@ -329,9 +329,12 @@ pub enum Operation {
         state: CancelState,
         #[serde(default)]
         reason: String,
-        /// The task attempt the team-cancel child acted on.
+        /// The task attempt the team-cancel child acted on: its generation
+        /// and its ID (at most 256 bytes).
         #[serde(default)]
         attempt: u64,
+        #[serde(default)]
+        attempt_id: String,
     },
 }
 
