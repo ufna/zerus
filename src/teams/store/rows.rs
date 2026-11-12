@@ -53,7 +53,7 @@ pub(crate) fn deps(db: &Connection, team: &str, id: u32) -> Result<Vec<Dep>> {
         .collect::<std::result::Result<Vec<_>, _>>()
         .map_err(storage)?;
     if deps.len() > 200 {
-        return Err(storage("too many node dependencies"));
+        return Err(Guard::Dependencies.problem());
     }
     Ok(deps)
 }
@@ -100,7 +100,7 @@ pub(crate) fn archive_decided(db: &Connection, team: &str, actor: &str) -> Resul
             .map_err(storage)?
     };
     if ids.len() > 600 {
-        return Err(storage("Live node count exceeds its bound."));
+        return Err(Guard::LiveNodes.problem());
     }
     for node in ids {
         // A settings change can make an in-flight accepted task terminal.

@@ -229,6 +229,8 @@ fn error_codes_are_stable_and_unique() {
             "template_changed",
             "not_allowed",
             "invalid_state",
+            "store_busy",
+            "storage_failed",
             "unknown_role",
             "unknown_pipeline",
             "unknown_member",
@@ -245,13 +247,13 @@ fn error_codes_are_stable_and_unique() {
         ]
     );
     let mut codes = code::ALL.to_vec();
-    assert_eq!(codes.len(), 19);
+    assert_eq!(codes.len(), 21);
     assert!(codes
         .iter()
         .all(|c| c.chars().all(|ch| ch.is_ascii_lowercase() || ch == '_')));
     codes.sort_unstable();
     codes.dedup();
-    assert_eq!(codes.len(), 19);
+    assert_eq!(codes.len(), 21);
     assert_eq!(code::TEAMS_INACTIVE, "teams_inactive");
     let problem =
         Problem::new(code::NO_ACCOUNT_AVAILABLE, "No account has room").with_refs(["1794358800"]);
@@ -298,6 +300,44 @@ fn an_empty_catalog_writes_no_empty_lists() {
     assert_eq!(
         serde_json::to_value(&rules_only).unwrap(),
         serde_json::json!({"planning_rules": ["One rule."]})
+    );
+}
+
+#[test]
+fn storage_failure_has_a_distinct_pinned_problem_fixture() {
+    let problem: Problem = round_trip(include_str!("../fixtures/problem-storage-failed.json"));
+    assert_eq!(problem.code, "storage_failed");
+    assert!(code::ALL.contains(&problem.code.as_str()));
+    assert_ne!(problem.code, code::INVALID_STATE);
+    assert_eq!(
+        problem.message,
+        "The result is not known; repeat the same request with the same request ID."
+    );
+}
+
+#[test]
+fn diagnostic_detail_is_additive_and_old_problems_still_decode() {
+    let legacy: Problem = serde_json::from_value(
+        serde_json::json!({"code":"invalid_state","message":"Rule refused."}),
+    )
+    .unwrap();
+    assert!(serde_json::to_value(legacy)
+        .unwrap()
+        .get("detail")
+        .is_none());
+    let value = serde_json::json!({"code":"storage_failed","message":"The read failed and may be repeated.","detail":"database is locked"});
+    let problem: Problem = serde_json::from_value(value.clone()).unwrap();
+    assert_eq!(serde_json::to_value(problem).unwrap(), value);
+}
+
+#[test]
+fn busy_before_begin_is_a_distinct_pinned_refusal() {
+    let p: Problem = round_trip(include_str!("../fixtures/problem-store-busy.json"));
+    assert_eq!(p.code, code::STORE_BUSY);
+    assert!(code::ALL.contains(&p.code.as_str()));
+    assert_eq!(
+        p.message,
+        "The team store is busy. Nothing was written; try again."
     );
 }
 

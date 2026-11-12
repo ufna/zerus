@@ -2,7 +2,7 @@
 //! Project locks precede team operations; no code here performs a session effect.
 use super::{
     ops,
-    store::{storage, Store},
+    store::{storage, Guard, Store},
 };
 use ops::{Actor, Operation, Request, TaskObservation, TaskStage};
 use rusqlite::{params, OptionalExtension};
@@ -79,7 +79,7 @@ fn observation(document: &TaskDoc, team: &str, home: &str) -> Result<TaskObserva
     })
 }
 fn record(store: &mut Store, team: &str, node: u32, document: &TaskDoc) -> Result<()> {
-    let header = header::read(store, team)?.ok_or_else(|| storage("Observed team disappeared."))?;
+    let header = header::read(store, team)?.ok_or_else(|| Guard::ObservedTeam.problem())?;
     let mut observation = observation(document, team, &header.home)?;
     observation.previous_revision = store
         .task_observation(team, node)?
@@ -170,8 +170,8 @@ pub(crate) fn retarget(
         if let Some((team, node)) = binding(&store, &reference)? {
             // A replaced or malformed key cannot hide this computer's live
             // binding. The stored team's home decides who releases it.
-            let header = header::read(&store, &team)?
-                .ok_or_else(|| storage("Retargeted team disappeared."))?;
+            let header =
+                header::read(&store, &team)?.ok_or_else(|| Guard::RetargetedTeam.problem())?;
             if header.home == here {
                 record(&mut store, &team, node, document)?;
             }

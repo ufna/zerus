@@ -141,3 +141,29 @@ fn status_still_reports_the_oversized_roster_bound() {
         "over_cap"
     );
 }
+
+#[test]
+fn u2_an_undecodable_lead_record_does_not_refuse_the_list_page() {
+    for stopped in [false, true] {
+        let h = Harness::new();
+        h.create();
+        h.create_team(TEAM_B, "Docs", "zerus/team/docs");
+        h.bind("lead", LEAD_SESSION);
+        h.store().db.as_ref().unwrap().execute("UPDATE members SET state='\"unknown_state\"',data=json_set(data,'$.state','unknown_state') WHERE team=?1 AND id='lead'",[TEAM]).unwrap();
+        if stopped {
+            h.store()
+                .db
+                .as_ref()
+                .unwrap()
+                .execute("UPDATE teams SET status='\"stopped\"' WHERE id=?1", [TEAM])
+                .unwrap();
+        }
+        let (reply, exit) = h.cli(&Caller::Person, "list", "");
+        assert_eq!(exit, 0, "{reply}");
+        let rows = reply["rows"].as_array().unwrap();
+        assert_eq!(rows.len(), 2);
+        let row = rows.iter().find(|r| r["id"] == TEAM).unwrap();
+        assert_eq!(row["lead_session"], json!(key(LEAD_SESSION)));
+        assert!(row.get("member_sessions").is_none());
+    }
+}

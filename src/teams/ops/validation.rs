@@ -87,6 +87,7 @@ pub(super) fn validate_create(team: &Team) -> Result<()> {
     {
         return Err(problem);
     }
+    crate::teams::catalog::validate_roster(&team.bundle)?;
     Ok(())
 }
 

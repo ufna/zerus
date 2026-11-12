@@ -11,6 +11,8 @@ mod observations;
 mod pipeline;
 mod queue;
 mod readiness;
+mod roster;
+mod storage;
 mod talk;
 mod team;
 

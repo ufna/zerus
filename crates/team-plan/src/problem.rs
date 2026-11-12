@@ -1,8 +1,10 @@
-//! One refusal, with a stable code a caller can match on.
+//! One operation problem, with a stable code a caller can match on.
 
 use serde::{Deserialize, Serialize};
 
-/// Why an operation, a validation or a decision was refused.
+pub const MAX_DETAIL_BYTES: usize = 4096;
+
+/// A logical refusal or a storage failure whose result is not known.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Problem {
@@ -10,6 +12,9 @@ pub struct Problem {
     pub code: String,
     /// A short explanation for a person.
     pub message: String,
+    /// Optional diagnostic cause, bounded by the producer and absent on old replies.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
     /// What the problem is about: IDs, field names, a reset time.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub refs: Vec<String>,
@@ -20,8 +25,20 @@ impl Problem {
         Self {
             code: code.to_owned(),
             message: message.into(),
+            detail: None,
             refs: Vec::new(),
         }
+    }
+
+    pub fn with_detail(mut self, detail: impl Into<String>) -> Self {
+        let mut detail = detail.into();
+        let mut end = detail.len().min(MAX_DETAIL_BYTES);
+        while !detail.is_char_boundary(end) {
+            end -= 1;
+        }
+        detail.truncate(end);
+        self.detail = Some(detail);
+        self
     }
 
     pub fn with_refs<I, S>(mut self, refs: I) -> Self
@@ -50,6 +67,9 @@ pub mod code {
     pub const TEMPLATE_CHANGED: &str = "template_changed";
     pub const NOT_ALLOWED: &str = "not_allowed";
     pub const INVALID_STATE: &str = "invalid_state";
+    pub const STORE_BUSY: &str = "store_busy";
+    /// Storage failed or its result was lost; retry with the same request ID.
+    pub const STORAGE_FAILED: &str = "storage_failed";
     pub const UNKNOWN_ROLE: &str = "unknown_role";
     pub const UNKNOWN_PIPELINE: &str = "unknown_pipeline";
     pub const UNKNOWN_MEMBER: &str = "unknown_member";
@@ -65,13 +85,15 @@ pub mod code {
     pub const DELIVERY_UNCERTAIN: &str = "delivery_uncertain";
 
     /// Every code, for tests that pin the list.
-    pub const ALL: [&str; 19] = [
+    pub const ALL: [&str; 21] = [
         TEAMS_INACTIVE,
         NOT_FOUND,
         STALE_REVISION,
         TEMPLATE_CHANGED,
         NOT_ALLOWED,
         INVALID_STATE,
+        STORE_BUSY,
+        STORAGE_FAILED,
         UNKNOWN_ROLE,
         UNKNOWN_PIPELINE,
         UNKNOWN_MEMBER,
