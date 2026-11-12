@@ -1380,6 +1380,16 @@ again, and both orders of the answer and the observation leave the same
 state. No service command finishes, reopens or cancels a task whose current
 attempt is not the one the store observed.
 
+**Known limit: the key of a task that was closed before the stop.** After a
+stop the service clears the team key of the tasks that were open at the
+stop and of released stages. A task accepted or cancelled earlier keeps its
+key. On the team's home computer that key guards nothing once the team is
+stopped or archived. On another computer the task guard cannot read the
+team's status and refuses first, so an agent there cannot send, start, move
+or edit such a task until a person clears the key; a person is never
+stopped by it. Clearing every closed task of a long-lived team is a walk of
+its whole archive and is a tracked follow-up, not part of milestone 1.
+
 **Known limit.** A stage excludes the implementer of the target's current
 round. After a reassignment an earlier implementer could hold a stage of
 the same target where the stage's role equals the implementer's role; the
