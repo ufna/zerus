@@ -6,6 +6,7 @@
 mod child;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub(crate) use child::adopt_custody;
+mod actor;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 mod confirm;
 mod health;

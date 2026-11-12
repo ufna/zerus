@@ -1223,7 +1223,14 @@ and the spawn refuses the delivery. Outside facts are read last in the
 same section when they can be read in the process: the stop flag, the
 Teams switch and the member's fleet row. The task occupancy cannot be,
 because reading it spawns children; it is read as late as possible before
-the admission and is a scheduling hint, not an authority. A held section
+the admission and is a scheduling hint, not an authority. The window in
+which a person's own send can still reach the member beside the hand-out
+is therefore wider than that one read (named by the confirmation of
+2026-11-12): the wait for the process-wide spawn turn, the admission's own
+reads, the delivery command's time before its send, and the fact that the
+fleet row is a snapshot, since the admission fences the team's store and
+not the member's session. The team does not own a member's session against
+the person; a message that arrives beside a hand-out is the person's. A held section
 is short: the spawn itself, or the ref update with its own deadline of 5
 seconds, after which the merge is unknown and settled by reading. Writers
 of the command line wait 8 seconds for the store, longer than any held
@@ -1375,10 +1382,16 @@ kept earlier pair would let a late answer about that attempt through
 decides nothing else: nothing of the node changes until an observation
 without the flag arrives. A task that has ended, cancelled or Done, is
 applied as today whether or not its attempts conflict, because its end does
-not depend on who executed it. The store remembers the last current attempt
-it saw for one purpose: when a current attempt appears again, the same one
-changes nothing, the node's own effect is the team's, and any other is a
-person's new execution.
+not depend on who executed it. The store remembers the attempt its node
+runs under, for one purpose: when an observation shows a running task, the
+same attempt changes nothing, the node's own effect is the team's, and any
+other is a person's new execution. That memory changes only when the node
+takes an execution in: its own effect is observed, a person's attempt is
+taken over, or the upgrade seeds it from what was stored. An attempt that
+is merely observed while the task does not run, a send that is reserved
+and not yet delivered, is not remembered, so that it is still judged when
+it starts; remembering it early let an old cancel decision reach the
+person's execution (measured, 2026-11-12).
 
 A cancel acts on one attempt. `team-cancel` compares, under its locks, the
 document's highest generation, current attempt and conflict flag with what
@@ -1394,21 +1407,38 @@ again, and both orders of the answer and the observation leave the same
 state. No service command finishes, reopens or cancels a task whose current
 attempt is not the one the store observed.
 
-**An answer does not release a task; its observation does.** The service
-finds a task's node through the live binding and records nothing for a
-task that has none. A recorded cancel used to delete the binding, so the
-service went blind to that task: a person who then moved it back and sent
-it again was never observed, and the node stayed cancelled while its task
-ran, although the opposite order restored it (found by the end-to-end
-witness on 2026-11-12; tests at the store's port had applied the
-observation to the node directly). `RecordCancel` with `cancelled`
-therefore settles the decision and ends the node's attempt and keeps the
-binding. The next observation decides: a cancelled task releases the
-binding as any cancel does, a task that runs again restores the finished
-node. The command's `released` answer is its own state of `RecordCancel`:
-the key is already gone from the task, and the binding is released at
-once. Once the store has observed a task cancelled, the team has let it
-go; a person who wants it back sends it to the team again.
+**In a live team a task's end is recorded by its observation alone.** An
+answer and an observation are two reports of one fact, and every rule that
+let both write it produced an order in which they disagreed. The first
+version let a `cancelled` answer end the node; the second kept the task
+bound after the answer so that a later observation could still restore it.
+Both failed on the service's real paths, found by end-to-end tests on
+2026-11-12: the observer finds a task's node through the live binding
+only, and the service's pass observes the nodes of the live queue only, so
+an ended node was never looked at again. The rule now has one writer. In a
+running or paused team a `cancelled` answer of `team-cancel` writes nothing
+to the store: the service observes that task at once, and the observation
+ends the node and settles the decision, or, when a person has started the
+task again, takes the new execution over. A `stale` answer leads to the
+same observation. Until an observation has settled it the decision stays
+pending, so an interrupted visit is simply repeated: the command answers
+`cancelled` again for a task that is already cancelled and writes nothing.
+The store refuses `RecordCancel` with `cancelled` for a node of a live
+team whose task is bound. It takes that answer where no observation can
+follow: for a node without a task, and in a stopped or archived team,
+whose bindings are gone. `released` and `refused` are recorded as answers
+in every state, because no observation says them: a released task has
+lost its key, and its binding is released with the record. In a stopped or
+archived team no observation follows either, so `team-cancel` never
+answers `stale` there: it acts when the document's current attempt is the
+one the store last observed or is the node's own effect that was delivered
+and not yet observed, and otherwise it refuses with a reason that begins
+`attempt_changed:`, because a person took the task after the stop. Once
+the store has observed a task cancelled, the team has let it go. Giving
+such a task back to a team is not possible yet: a task keeps its cancelled
+mark when it is moved back to To do, until it is sent, started or reopened,
+and the intake refuses a cancelled task so that a duplicate cannot pass a
+cancellation. That is a known limit with a tracked follow-up.
 
 **A reader of a reply ignores what it does not know.** The contract's types
 refuse unknown fields, and that stays the rule for what a person or a
@@ -1421,7 +1451,27 @@ shapes are strict on the way in. Found on 2026-11-12: the catalog reply
 gained a digest in each template row, and the merged client core, which
 read those rows through the strict template type, refused the whole
 catalog. A merge that changes a reply runs the client core's tests against
-the new fixtures.
+the new fixtures. One kind of unknown field is never dropped: a field of
+what the person is asked to confirm. A permission in a template's
+delegations that the client does not know is kept as a fact of that row,
+and Create stays blocked with its reason; a tolerant read that removed it
+made the form show five permissions and allow a create (the desktop's
+review, 2026-11-12). And what the client sends is strict at every level,
+the action inside a call included: an unknown field in a request is
+refused, never silently left out.
+
+**A failed intake leaves the task's team key as it found it.** Sending a
+task to a team writes the key into the task and then asks the store to
+queue it. When the store's answer is certain that nothing was written, a
+refusal or `store_busy`, the intake puts the key back to what it was
+before the call: absent for a first send, the same team for a repeat of a
+task that is already queued. When the result is not known,
+`storage_failed`, the key stays: the store may hold the node, and a repeat
+finds it by the task's identity. The intake never clears a key it did not
+set. Clearing it on every error made a failed repeat look like a person
+taking the task out of the team: the observer released the node, and the
+next send queued the task a second time (the desktop's review,
+2026-11-12).
 
 **Known limit: the key of a task that was closed before the stop.** After a
 stop the service clears the team key of the tasks that were open at the
