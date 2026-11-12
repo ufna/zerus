@@ -43,15 +43,34 @@ pub(super) fn seed(h: &Harness, n: &native::Native) {
         seed_member(n, &db, &m);
     }
 }
+/// The seeded session ID of `member`: fixed, so a test can find its record.
+pub(in crate::desktop::teams::actor) fn session_of(member: &str) -> String {
+    let n = member
+        .bytes()
+        .fold(0u64, |a, b| a.wrapping_mul(31).wrapping_add(u64::from(b)));
+    format!("00000000-0000-4000-8000-{:012x}", n & 0xffff_ffff_ffff)
+}
 fn seed_member(n: &native::Native, db: &rusqlite::Connection, m: &Member) {
     let Some(binding) = &m.session else { return };
     let Some(launch) = binding.session_id.strip_prefix("launch_id:") else {
         return;
     };
-    let sid = uuid::Uuid::new_v4().to_string();
+    let sid = session_of(&m.id);
     let run = format!("fixture-{}", m.id);
     let name = format!("{}/fixture/{}", m.agent, m.id);
-    let record = json!({"version":1,"layout":"id","session_id":sid,"name":name,"launch_id":launch,"agent":m.agent,"account_id":m.account,"cwd":m.worktree,"run_id":run,"conversation_id":format!("conversation-{}",m.id)});
+    // The supervisor's own record for this launch (zerus-63rru.53), placed in
+    // the ID layout, where a session that reuses a label lives.
+    let mut record = crate::state::listing_fixture::launched_record(
+        &m.agent,
+        &name,
+        launch,
+        &sid,
+        &run,
+        &m.worktree,
+        &m.account,
+    );
+    crate::state::listing_fixture::confirmed(&mut record, &format!("conversation-{}", m.id));
+    record["layout"] = json!("id");
     write(
         &n.config.state.join("sessions").join(format!("{sid}.json")),
         record,

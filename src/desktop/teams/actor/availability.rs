@@ -6,19 +6,29 @@ use rusqlite::{params, Connection, OpenFlags, OptionalExtension};
 use serde_json::Value;
 use std::time::{Duration, Instant};
 const SQL:&str="SELECT r.json FROM desktop_catalog_sources s JOIN desktop_catalog_owner o ON o.id=1 AND o.epoch=s.epoch JOIN desktop_catalog_rows r ON r.generation=s.visible AND r.key=?1 WHERE s.computer='' AND s.epoch=?2 AND s.active=1 AND s.complete=1 AND json_extract(s.hello,'$.machine_id')=?3 AND r.bytes<=1048576 LIMIT 1";
-pub(super) fn free(config: &Config, epoch: &str, team: &str, member: &Member) -> Result<bool> {
-    Ok(record(config, epoch, team, member)?.is_some_and(|row| idle(&row)))
+/// Whether `member` is live and idle in its current run. With `backfill`, a
+/// member bound before handles gets its handle recorded once it is verified;
+/// a read inside an admission passes false and never writes.
+pub(super) fn free(
+    config: &Config,
+    epoch: &str,
+    team: &str,
+    member: &Member,
+    backfill: bool,
+) -> Result<bool> {
+    Ok(record(config, epoch, team, member, backfill)?.is_some_and(|row| idle(&row)))
 }
 pub(super) fn record(
     config: &Config,
     epoch: &str,
     team: &str,
     member: &Member,
+    backfill: bool,
 ) -> Result<Option<Value>> {
     let Some(session) = member.session.as_ref() else {
         return Ok(None);
     };
-    let Some(run) = current_run(config, team, member)? else {
+    let Current::Run(run) = current(config, team, member, backfill)? else {
         return Ok(None);
     };
     let db = connection(config)?;
@@ -40,41 +50,181 @@ pub(super) fn record(
         };
     Ok(identity.then_some(value))
 }
-/// Prefer the completed resumed-binding receipt here. That fact
-/// chooses a run only; the fleet and task-index checks still prove it free.
-pub(super) fn current_run(config: &Config, team: &str, member: &Member) -> Result<Option<String>> {
+/// Why a member bound to a launch has no current run (zerus-63rru.53): a
+/// named state of the reader, never a silent none. Each leaves the member
+/// not free; zerus-63rru.55's card tells the person.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) enum Unresolved {
+    /// Bound before handles, with no source left to take one from.
+    NoHandle,
+    /// No live or saved session carries the handle: archived or removed.
+    Gone,
+    /// The handle's session names another launch, agent or folder.
+    Changed,
+    /// The person started the session fresh: a new conversation is another
+    /// executor of tasks, so the binding ends.
+    StartedFresh,
+    /// The store, the record or the deadline did not answer; a later read may.
+    Unavailable,
+}
+/// A member's current run, or why it has none.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) enum Current {
+    Run(String),
+    /// No binding this reader resolves: unbound, or not a launch or a run.
+    Unbound,
+    Unresolved(Unresolved),
+}
+/// The run `member` is in now. A member bound by run is that run (it has no
+/// launch and so no handle). A member bound to a launch resolves through its
+/// durable handle, its session's own ID: the session's current record, which
+/// must still carry the bound launch, agent and folder. A member bound before
+/// handles takes one from the first source that names its session (the
+/// launch ledger, kept while the team lives; a completed standing resume; the
+/// launch's evidence while it lasts), verified the same way; with `backfill`
+/// it is recorded, once. The evidence serves only that first binding.
+pub(super) fn current(
+    config: &Config,
+    team: &str,
+    member: &Member,
+    backfill: bool,
+) -> Result<Current> {
     let Some(session) = member.session.as_ref() else {
-        return Ok(None);
+        return Ok(Current::Unbound);
     };
-    let run = if let Some(id) = session.session_id.strip_prefix("run_id:") {
-        id.to_owned()
-    } else if let Some(id) = session.session_id.strip_prefix("launch_id:") {
-        if let Some(binding) =
-            crate::desktop::teams::confirm::resumed_binding(&config.state, team, &member.id, id)
-                .map_err(|error| problem(&error))?
-        {
-            binding.run_id
-        } else {
-            match crate::state::observe_team_launch(
-                &config.state,
-                id,
-                Instant::now() + Duration::from_millis(300),
-            ) {
-                crate::state::TeamObservation::Record(r)
-                    if r.launch_id == id && r.cwd == member.worktree && r.agent == member.agent =>
-                {
-                    r.run_id
-                }
-                _ => return Ok(None),
-            }
-        }
-    } else {
-        return Ok(None);
-    };
-    if run.is_empty() || run.len() > 256 {
-        return Ok(None);
+    if let Some(run) = session.session_id.strip_prefix("run_id:") {
+        return Ok(checked(run.to_owned()));
     }
-    Ok(Some(run))
+    let Some(launch) = session.session_id.strip_prefix("launch_id:") else {
+        return Ok(Current::Unbound);
+    };
+    let store = crate::teams::store::Store::open(&config.state)?;
+    if let Some(handle) = store.member_handle(team, &member.id)? {
+        if handle.launch != launch || handle.machine != session.machine {
+            return Ok(Current::Unresolved(Unresolved::Changed));
+        }
+        return Ok(resolve(
+            config,
+            member,
+            launch,
+            &handle.session_id,
+            &handle.label_hint,
+        ));
+    }
+    drop(store);
+    let Some((id, hint)) = source(config, team, member, launch)? else {
+        return Ok(Current::Unresolved(Unresolved::NoHandle));
+    };
+    let current = resolve(config, member, launch, &id, &hint);
+    if backfill && matches!(current, Current::Run(_)) {
+        // A failed write costs only the next read another try.
+        let _ = record_handle(config, team, member, &id, &hint);
+    }
+    Ok(current)
+}
+/// The member's current run, or none; [`current`] names why.
+pub(super) fn current_run(config: &Config, team: &str, member: &Member) -> Result<Option<String>> {
+    Ok(match current(config, team, member, false)? {
+        Current::Run(run) => Some(run),
+        _ => None,
+    })
+}
+fn checked(run: String) -> Current {
+    if run.is_empty() || run.len() > 256 {
+        Current::Unresolved(Unresolved::Unavailable)
+    } else {
+        Current::Run(run)
+    }
+}
+/// The session whose durable ID is `id`, as `member`'s current run.
+fn resolve(config: &Config, member: &Member, launch: &str, id: &str, hint: &str) -> Current {
+    use crate::state::TeamSession;
+    match crate::state::observe_team_session(
+        &config.state,
+        id,
+        launch,
+        &member.agent,
+        hint,
+        Instant::now() + Duration::from_millis(300),
+    ) {
+        TeamSession::Record(r) if r.cwd == member.worktree && r.agent == member.agent => {
+            checked(r.run_id)
+        }
+        TeamSession::Record(_) | TeamSession::LaunchChanged => {
+            Current::Unresolved(Unresolved::Changed)
+        }
+        TeamSession::StartedFresh => Current::Unresolved(Unresolved::StartedFresh),
+        TeamSession::Gone => Current::Unresolved(Unresolved::Gone),
+        TeamSession::Unavailable => Current::Unresolved(Unresolved::Unavailable),
+    }
+}
+/// The session ID and name at binding of a member bound before handles,
+/// from the first source that names them for this exact launch.
+fn source(
+    config: &Config,
+    team: &str,
+    member: &Member,
+    launch: &str,
+) -> Result<Option<(String, String)>> {
+    let canonical = |id: &str| crate::state::session_id::canonical(id);
+    if let Some(observed) = crate::desktop::teams::ledger::Ledger::open(&config.state)?
+        .get(team, &member.id)?
+        .and_then(|row| row.observed)
+    {
+        if observed.launch_id == launch && canonical(&observed.session_id) {
+            return Ok(Some((observed.session_id, observed.name)));
+        }
+    }
+    if let Some(binding) =
+        crate::desktop::teams::confirm::resumed_binding(&config.state, team, &member.id, launch)
+            .map_err(|error| problem(&error))?
+    {
+        if canonical(&binding.session_id) {
+            return Ok(Some((binding.session_id, String::new())));
+        }
+    }
+    if let crate::state::TeamObservation::Record(r) = crate::state::observe_team_launch(
+        &config.state,
+        launch,
+        Instant::now() + Duration::from_millis(300),
+    ) {
+        if r.launch_id == launch && canonical(&r.session_id) {
+            return Ok(Some((r.session_id, r.name)));
+        }
+    }
+    Ok(None)
+}
+/// Records the verified handle of a member bound before handles, once.
+fn record_handle(config: &Config, team: &str, member: &Member, id: &str, hint: &str) -> Result<()> {
+    use crate::teams::ops::{Actor, Operation, Request};
+    let mut store = crate::teams::store::Store::open(&config.state)?;
+    let current = store
+        .team(team)?
+        .ok_or_else(|| problem("Team disappeared"))?;
+    let actor = Actor::Service {
+        person: current.owner.clone(),
+        team: team.to_owned(),
+    };
+    let request = Request {
+        request_id: uuid::Uuid::new_v4().to_string(),
+        team: team.to_owned(),
+        expected_revision: current.revision,
+        operation: Operation::SetMemberHandle {
+            member: member.id.clone(),
+            session_id: id.to_owned(),
+            label_hint: hint.to_owned(),
+        },
+    };
+    match crate::teams::ops::apply(
+        &mut store,
+        &actor,
+        &request,
+        chrono::Utc::now().timestamp_millis(),
+    ) {
+        Ok(_) => Ok(()),
+        Err(p) if p.code == zerus_team_plan::problem::code::DUPLICATE => Ok(()),
+        Err(p) => Err(p),
+    }
 }
 fn connection(config: &Config) -> Result<Connection> {
     let location = Location::new(config).map_err(|_| problem("Fleet location unavailable"))?;
@@ -238,7 +388,7 @@ mod record_tests {
             ownership_nonce: String::new(),
         };
         let before = std::fs::read(&path).unwrap();
-        assert!(free(&c, "epoch", "team", &m).unwrap());
+        assert!(free(&c, "epoch", "team", &m, false).unwrap());
         let native = super::super::native::Native {
             config: c.clone(),
             machine: "machine".into(),
@@ -277,14 +427,14 @@ mod record_tests {
         }
         db.execute("UPDATE desktop_catalog_rows SET json=?1", [&row])
             .unwrap();
-        assert!(!free(&c, "old-epoch", "team", &m).unwrap());
+        assert!(!free(&c, "old-epoch", "team", &m, false).unwrap());
         db.execute(
             "UPDATE desktop_catalog_rows SET json=json_set(json,'$.run_id','other-run')",
             [],
         )
         .unwrap();
         assert!(
-            !free(&c, "epoch", "team", &m).unwrap(),
+            !free(&c, "epoch", "team", &m, false).unwrap(),
             "a point key did not excuse a different payload identity"
         );
         db.execute(
@@ -295,13 +445,13 @@ mod record_tests {
         for field in ["active", "complete"] {
             db.execute(&format!("UPDATE desktop_catalog_sources SET {field}=0"), [])
                 .unwrap();
-            assert!(!free(&c, "epoch", "team", &m).unwrap());
+            assert!(!free(&c, "epoch", "team", &m, false).unwrap());
             assert!(super::super::auxiliary::presence(&native, &team, &m).is_none());
             db.execute(&format!("UPDATE desktop_catalog_sources SET {field}=1"), [])
                 .unwrap();
         }
         db.execute("DELETE FROM desktop_catalog_rows", []).unwrap();
-        assert!(!free(&c, "epoch", "team", &m).unwrap());
+        assert!(!free(&c, "epoch", "team", &m, false).unwrap());
     }
     #[test]
     fn an_ended_launch_without_a_resumed_binding_has_no_current_run() {
@@ -337,7 +487,15 @@ mod record_tests {
             worktree: String::new(),
             ownership_nonce: String::new(),
         };
+        // Teams is on, the member has no handle, and the launch's evidence
+        // has ended: a named state, not a silent none (zerus-63rru.53).
+        crate::platform::private_dir(&c.state.join("teams")).unwrap();
+        std::fs::write(c.state.join("teams/preview"), "on").unwrap();
+        assert_eq!(
+            current(&c, "team", &m, true).unwrap(),
+            Current::Unresolved(Unresolved::NoHandle)
+        );
         assert_eq!(current_run(&c, "team", &m).unwrap(), None);
-        assert!(!free(&c, "epoch", "team", &m).unwrap());
+        assert!(!free(&c, "epoch", "team", &m, false).unwrap());
     }
 }

@@ -174,6 +174,7 @@ fn dispatch(ctx: &mut Context<'_>) -> Result<()> {
         Operation::Archive => team::archive(ctx),
         Operation::ChangeSettings { .. } => team::change_settings(ctx),
         Operation::SetMemberSession { .. } => members::set_session(ctx),
+        Operation::SetMemberHandle { .. } => members::set_handle(ctx),
         Operation::SetMemberState { .. } => members::set_state(ctx),
         Operation::PauseMember { .. } => members::pause(ctx),
         Operation::ResumeMember { .. } => members::resume(ctx),

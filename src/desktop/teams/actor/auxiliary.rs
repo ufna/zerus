@@ -82,7 +82,7 @@ pub(super) fn presence(n: &Native, team: &Team, member: &Member) -> Option<timer
     if member.session.as_ref()?.machine != n.machine {
         return None;
     }
-    let row = super::availability::record(&n.config, &n.epoch, &team.id, member).ok()??;
+    let row = super::availability::record(&n.config, &n.epoch, &team.id, member, false).ok()??;
     let named = super::fleet::Identity::of(&row);
     if named.name.is_empty()
         || named.name.len() > 256

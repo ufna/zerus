@@ -74,26 +74,57 @@ pub(super) fn session(native: &Native, plan: &Plan, deadline: Instant) -> Result
         TeamObservation::Mismatch { field } => {
             Err(uncertain(&format!("Original launch {field} changed")))
         }
-        TeamObservation::Record(record) => {
-            if record.launch_id != plan.launch_id
-                || record.agent != plan.agent
-                || record.account != plan.account
-                || record.cwd != plan.placement.destination
-            {
-                return Err(uncertain("Original launch identity or cwd changed"));
-            }
-            Ok(LaunchRead::Session(Box::new(ObservedSession {
-                machine: native.machine.clone(),
-                launch_id: record.launch_id,
-                agent: record.agent,
-                account: record.account,
-                worktree: ownership(&native.config, &plan.placement)?,
-                parent: None,
-                name: record.name,
-                session_id: record.session_id,
-                run_id: record.run_id,
-                conversation_id: record.conversation_id,
-            })))
-        }
+        TeamObservation::Record(record) => observed(native, plan, record),
+    }
+}
+fn observed(native: &Native, plan: &Plan, record: crate::state::TeamRecord) -> Result<LaunchRead> {
+    if record.launch_id != plan.launch_id
+        || record.agent != plan.agent
+        || record.account != plan.account
+        || record.cwd != plan.placement.destination
+    {
+        return Err(uncertain("Original launch identity or cwd changed"));
+    }
+    Ok(LaunchRead::Session(Box::new(ObservedSession {
+        machine: native.machine.clone(),
+        launch_id: record.launch_id,
+        agent: record.agent,
+        account: record.account,
+        worktree: ownership(&native.config, &plan.placement)?,
+        parent: None,
+        name: record.name,
+        session_id: record.session_id,
+        run_id: record.run_id,
+        conversation_id: record.conversation_id,
+    })))
+}
+/// The session of `plan`'s member now: through its durable handle, its
+/// session's own ID (zerus-63rru.53), else, while it has none, through the
+/// launch's evidence, which is gone once the first run ends or after a week.
+pub(super) fn member_session(
+    native: &Native,
+    store: &crate::teams::store::Store,
+    plan: &Plan,
+    deadline: Instant,
+) -> Result<LaunchRead> {
+    use crate::state::TeamSession;
+    let Some(handle) = store.member_handle(&plan.team, &plan.member)? else {
+        return session(native, plan, deadline);
+    };
+    if handle.launch != plan.launch_id {
+        return Err(uncertain("Original launch identity changed"));
+    }
+    match crate::state::observe_team_session(
+        &native.config.state,
+        &handle.session_id,
+        &plan.launch_id,
+        &plan.agent,
+        &handle.label_hint,
+        deadline,
+    ) {
+        TeamSession::Record(record) => observed(native, plan, record),
+        TeamSession::Gone | TeamSession::StartedFresh => Ok(LaunchRead::Absent { legacy: false }),
+        TeamSession::LaunchChanged => Err(uncertain("Original launch identity changed")),
+        TeamSession::Unavailable => Err(invalid("Launch observation is temporarily unavailable")),
     }
 }
