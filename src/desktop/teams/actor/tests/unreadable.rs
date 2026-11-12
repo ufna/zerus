@@ -605,3 +605,37 @@ fn a_read_that_is_not_due_leaves_the_row_and_its_card() {
     assert_eq!(open(&h, "m1")[0].seq, card.seq);
     assert_eq!(cards(&h, "m1").len(), 1);
 }
+
+/// Native's answer keeps the session's task index: an idle, readable member
+/// whose session holds an active task elsewhere is busy, not free, in both
+/// `availability` and the `free` derived from it.
+#[test]
+fn an_occupied_member_is_busy_in_natives_answer() {
+    use super::super::native::TEST_INVENTORY;
+    use ports::Ports;
+    let w = world(&["m1"], 0);
+    let mut native = w.p.native;
+    let team = w.h.store.team(TEAM).unwrap().unwrap();
+    let member = w.h.store.member(TEAM, "m1").unwrap().unwrap();
+    TEST_INVENTORY.with(|s| {
+        *s.borrow_mut() =
+            Some(json!({"node_id":native.machine,"organization":{"projects":[{"id":"project-1"}]}}))
+    });
+    for (tasks, expected) in [
+        (json!([{"id":"busy"}]), Availability::Busy),
+        (json!([]), Availability::Free),
+    ] {
+        let reply = json!({"damaged_total":0,"tasks":tasks}).to_string();
+        crate::desktop::teams::child::FIXTURE_EXIT
+            .with(|s| *s.borrow_mut() = Some(reply.clone().into_bytes()));
+        assert_eq!(native.availability(&team, &member).unwrap(), expected);
+        crate::desktop::teams::child::FIXTURE_EXIT
+            .with(|s| *s.borrow_mut() = Some(reply.into_bytes()));
+        assert_eq!(
+            native.free(&team, &member).unwrap(),
+            expected == Availability::Free
+        );
+    }
+    crate::desktop::teams::child::FIXTURE_EXIT.with(|s| s.borrow_mut().take());
+    TEST_INVENTORY.with(|s| *s.borrow_mut() = None);
+}
