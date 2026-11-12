@@ -1444,7 +1444,11 @@ team whose task is bound. It takes that answer where no observation can
 follow: for a node without a task, and in a stopped or archived team,
 whose bindings are gone. `released` and `refused` are recorded as answers
 in every state, because no observation says them: a released task has
-lost its key, and its binding is released with the record. In a stopped or
+lost its key, and its binding is released with the record. A release is
+recorded also while the newest observation is a conflict of attempts: it
+says that the key is gone, not who executed an attempt, so only its pair
+must equal the newest observation's, and the conflict gate is the
+cancelled answer's alone. In a stopped or
 archived team no observation follows either, so `team-cancel` never
 answers `stale` there: it acts when the document's current attempt is the
 one the store last observed or is the node's own effect that was delivered
