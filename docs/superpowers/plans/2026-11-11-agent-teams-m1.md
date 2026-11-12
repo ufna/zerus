@@ -1600,6 +1600,25 @@ neither finished nor merged, and an accepted node takes no Cancel; the
 person's own move on the board (closing, cancelling or starting the task
 again) resolves it.
 
+**A decision that has not started can be replaced (after the review of
+the actor).** The rule that a node takes one unsettled decision at a time
+protects a decision the service is carrying out. It also locked a node
+whenever the service could not start one: a Return to a member that the
+person then stopped or removed, a Return to a member busy elsewhere for
+hours, a reopen held by a conflict of the task's executions. Four findings
+of 2026-11-12 were this one lock. A lead or the person may therefore give
+a node a new Return, Reassign or Cancel while its earlier Return or
+Reassign is still pending and nothing of it has started, that is, no
+effect of the node's current generation is open; the earlier decision is
+settled as superseded in the same operation and the journal says so. A
+decision that has started is not replaced: the new one is refused as
+before until the outcome is recorded. An acceptance is not replaced in
+this milestone. And removing a member settles the Returns and Reassigns
+aimed at it that have not started and hands their nodes back to the lead
+with one inbox item each, as a reopen that could not be delivered does. A
+member that is stopped or busy keeps them: that wait is intended, and the
+lead can now decide otherwise.
+
 **A reader of a reply ignores what it does not know.** The contract's types
 refuse unknown fields, and that stays the rule for what a person or a
 program sends: a request, a saved template, an imported catalog. A reply
