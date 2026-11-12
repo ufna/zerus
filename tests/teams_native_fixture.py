@@ -928,7 +928,9 @@ class TeamFixture:
         """Read-only, through the private state only: what the service's observation of a
         member reads (confirm/native/observation.rs), so a refused resume names its step:
         the inspection by the member's last session ID, the archive catalog rows of its
-        name, each archive's exit fields and the archive's own inspection."""
+        name, each archive's exit fields and the archive's own inspection; then the
+        lifecycle receipts of the member's session (the CLI's own refusal text) and
+        whether its worktree folder still exists."""
         import sqlite3
         state = Path(self.env['HGS_STATE_DIR'])
         after = str(2 ** 63 - 1)
@@ -945,10 +947,23 @@ class TeamFixture:
                         **{key: value.get(key) for key in self.VIEW_FIELDS})
 
         catalog = state / 'archive-catalog-v1.sqlite3'
+        receipts = []
+        folder = state / 'action_receipts'
+        if folder.is_dir() and not folder.is_symlink():
+            for path in sorted(folder.glob('*.json'))[:50]:
+                if path.is_file() and not path.is_symlink() and path.stat().st_size <= 64 << 10:
+                    receipt = json.loads(path.read_text())
+                    receipts.append({key: receipt.get(key) for key in (
+                        'request_id', 'name', 'run_id', 'conversation_id', 'archive_id', 'status', 'at', 'error',
+                        'error_source', 'result_target')})
         out = {}
         for member_id, session in self.sessions.items():
             last = session.get('last_tracked') or {}
-            item = out[member_id] = dict(name=session['name'], last_tracked=last, archives=[])
+            worktree = (session.get('member') or {}).get('worktree') or ''
+            item = out[member_id] = dict(name=session['name'], last_tracked=last, archives=[], worktree=dict(
+                path=worktree, exists=bool(worktree) and Path(worktree).is_dir(),
+                git_link=bool(worktree) and (Path(worktree) / '.git').is_file()),
+                action_receipts=[r for r in receipts if r.get('name') == session['name']])
             if last.get('session_id'):
                 item['by_session_id'] = read('inspect', '--session-id', last['session_id'], '--after', after,
                                              '--skip-processes')
