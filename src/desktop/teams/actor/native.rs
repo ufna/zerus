@@ -279,10 +279,26 @@ impl Ports for Native {
 }
 pub(super) fn delivery_result(ended: Ended, id: &str) -> ports::DeliveryResult {
     if let Ended::Exited { code: 0, output } = &ended {
-        if serde_json::from_slice::<Value>(output).is_ok_and(|v| {
-            v["schema"] == 1 && v["id"] == id && v["state"] == "stale" && v["error"].is_string()
-        }) {
-            return ports::DeliveryResult::Stale;
+        if let Ok(v) = serde_json::from_slice::<Value>(output) {
+            if v["schema"] == 1 && v["id"] == id {
+                match (v["state"].as_str(), v["error"].as_str()) {
+                    (Some("stale"), Some(_)) => return ports::DeliveryResult::Stale,
+                    // The task command reserved and sent nothing, for a cause
+                    // that may pass (zerus-63rru.58): retry the same delivery.
+                    (Some("not_started"), Some(reason)) => {
+                        // Cleaned as the other delivery sentences are.
+                        let said = super::cancel::reason::spoken(&cut(reason, 2048));
+                        return ports::DeliveryResult::NotStarted {
+                            reason: if said.is_empty() {
+                                "The task writer did not start delivery".to_owned()
+                            } else {
+                                said
+                            },
+                        };
+                    }
+                    _ => {}
+                }
+            }
         }
     }
     delivery_reply(ended, id).into()

@@ -33,6 +33,8 @@ mod history;
 mod index;
 mod teams;
 mod team_deliver;
+#[cfg(all(test, unix))]
+pub(crate) use team_deliver::{blocked_handout, Blocked, RealHandout};
 #[cfg(test)]
 #[allow(unused_imports)] // The Teams actor's isolated CLI fixture supplies native input.
 pub(crate) use team_deliver::FIXTURE_NATIVE_INPUT;

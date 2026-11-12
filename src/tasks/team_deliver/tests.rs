@@ -104,7 +104,7 @@ fn request_rejects_unknown_fields_and_invalid_identity() {
 }
 
 #[cfg(unix)]
-mod processes;
+pub(super) mod processes;
 
 #[test]
 fn a_member_effect_cannot_deliver_to_the_lead() {

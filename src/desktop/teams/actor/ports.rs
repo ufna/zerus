@@ -142,7 +142,9 @@ pub(in crate::desktop::teams) trait Ports {
 }
 
 /// Only a positive non-write permits another admission. NotStarted means
-/// no original CLI child ran; Stale is its explicit non-write answer.
+/// no original CLI child ran, or the task command answered that it reserved
+/// and sent nothing for a cause that may pass; Stale is its explicit
+/// non-write answer when the team's observation of the task is behind.
 /// A lost result or possible submission is always Outcome(Uncertain).
 #[derive(Clone, Debug)]
 pub(in crate::desktop::teams) enum DeliveryResult {
