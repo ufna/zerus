@@ -155,6 +155,8 @@ mod cleanup_bound;
 mod unreadable;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 mod unreadable_handles;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+mod unreadable_stop;
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 mod cancel_progress;

@@ -198,3 +198,89 @@ fn started_fresh_child() {
 fn a_member_started_fresh_is_named_on_its_card() {
     isolated(&format!("{CHILD}started_fresh_child"));
 }
+
+/// m1's card, open after a ready task has needed it for the period; then the
+/// member's own `operation` and one more pass: whether its card is closed.
+fn closed_by(w: World, operation: crate::teams::ops::Operation) -> bool {
+    let mut h = w.h;
+    h.add(&person(), 1);
+    let machine = h.store.team(TEAM).unwrap().unwrap().home;
+    let mut a = Runtime::open(h.temp.path(), &machine).unwrap();
+    let mut p = Production {
+        native: w.native,
+        deliveries: vec![],
+    };
+    let open = |h: &Harness| {
+        h.store
+            .cards(TEAM, 200, None)
+            .unwrap()
+            .rows
+            .into_iter()
+            .filter(|c| c.state == "open" && c.text.starts_with("Member m1 "))
+            .count()
+    };
+    for minute in 0..4 {
+        a.tick(
+            &mut h.store,
+            &mut p,
+            TEAM,
+            10_000_000 + minute * MINUTE,
+            false,
+        )
+        .unwrap();
+    }
+    assert_eq!(open(&h), 1, "the card before the member's own operation");
+    h.run(&person(), operation).unwrap();
+    a.tick(&mut h.store, &mut p, TEAM, 10_000_000 + 4 * MINUTE, false)
+        .unwrap();
+    assert!(p.deliveries.is_empty(), "{:?}", p.deliveries);
+    open(&h) == 0
+}
+
+#[test]
+#[ignore = "run by its isolated wrapper"]
+fn archived_then_stopped_child() {
+    let mut w = world();
+    bound(&mut w);
+    producer::archive(&w.record).unwrap();
+    assert_eq!(named(&w), Current::Unresolved(Unresolved::Gone));
+    let stop = crate::teams::ops::Operation::StopMember {
+        member: "m1".into(),
+    };
+    assert!(closed_by(w, stop), "a stopped Gone member's card closes");
+}
+#[test]
+fn a_gone_members_card_closes_on_the_next_pass_after_its_stop() {
+    isolated(&format!("{CHILD}archived_then_stopped_child"));
+}
+
+#[test]
+#[ignore = "run by its isolated wrapper"]
+fn changed_then_archived_child() {
+    let mut w = world();
+    bound(&mut w);
+    let m = w.h.store.member(TEAM, "m1").unwrap().unwrap();
+    let mut moved = producer::launched_record(
+        &m.agent,
+        &name(),
+        &launch(&w.h),
+        &session_of("m1"),
+        &run(),
+        &format!("{}-elsewhere", m.worktree),
+        &m.account,
+    );
+    producer::confirmed(&mut moved, "conversation-m1");
+    producer::save(&mut moved).unwrap();
+    assert_eq!(named(&w), Current::Unresolved(Unresolved::Changed));
+    let archive = crate::teams::ops::Operation::ArchiveMember {
+        member: "m1".into(),
+    };
+    assert!(
+        closed_by(w, archive),
+        "an archived Changed member's card closes"
+    );
+}
+#[test]
+fn a_changed_members_card_closes_on_the_next_pass_after_its_archive() {
+    isolated(&format!("{CHILD}changed_then_archived_child"));
+}
