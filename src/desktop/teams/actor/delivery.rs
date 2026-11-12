@@ -129,8 +129,10 @@ impl Runtime {
             .task
             .as_ref()
             .ok_or_else(|| problem("Stale delivery has no task"))?;
-        ports.observe(store, task)?;
-        self.defer(store, team, key, "", now)
+        let observed = ports.observe(store, task);
+        // Even a failed read must not leave the delivery itself ungated.
+        self.defer(store, team, key, "", now)?;
+        observed
     }
     pub(super) fn recover(
         &mut self,

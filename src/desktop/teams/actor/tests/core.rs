@@ -13,6 +13,7 @@ struct Fake {
     free_reads: usize,
     documents: BTreeSet<String>,
     failed_task: Option<String>,
+    fail_observation_after_send: bool,
     lock_after_send: Option<std::path::PathBuf>,
     held: Option<rusqlite::Connection>,
     pause_on_recheck: Option<std::path::PathBuf>,
@@ -33,6 +34,7 @@ impl Fake {
             free_reads: 0,
             documents: BTreeSet::new(),
             failed_task: None,
+            fail_observation_after_send: false,
             lock_after_send: None,
             held: None,
             pause_on_recheck: None,
@@ -105,11 +107,14 @@ impl super::super::ports::Ports for Fake {
     fn deliver(
         &mut self,
         _: &Team,
-        _: &Node,
+        node: &Node,
         _: &Member,
         _: &str,
     ) -> super::super::ports::DeliveryResult {
         self.sends += 1;
+        if self.fail_observation_after_send {
+            self.failed_task = node.task.as_ref().map(|t| t.uuid.clone());
+        }
         if let Some(path) = self.lock_after_send.take() {
             let db = rusqlite::Connection::open(path).unwrap();
             db.execute_batch("BEGIN IMMEDIATE").unwrap();
@@ -752,4 +757,25 @@ fn stale_delivery_observes_then_backs_off_across_restart_without_a_refusal_or_ca
     assert!(h.store.effects(TEAM, 16, None).unwrap().rows[0]
         .outcome
         .is_none());
+}
+
+#[test]
+fn a_failed_observation_after_stale_delivery_still_keeps_the_delivery_backoff() {
+    let (mut h, mut a, mut p) = setup(1);
+    p.stale = true;
+    p.fail_observation_after_send = true;
+    tick(&mut h, &mut a, &mut p, 100, false);
+    assert_eq!(p.sends, 1);
+    assert!(h.store.effects(TEAM, 16, None).unwrap().rows[0]
+        .outcome
+        .is_none());
+    tick(&mut h, &mut a, &mut p, 101, false);
+    assert_eq!(
+        p.sends, 1,
+        "failed observation bypassed the delivery's backoff"
+    );
+    p.failed_task = None;
+    p.fail_observation_after_send = false;
+    tick(&mut h, &mut a, &mut p, 60_100, false);
+    assert_eq!(p.sends, 2);
 }
