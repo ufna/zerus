@@ -442,21 +442,31 @@ fn a_failed_read_before_the_admission_is_a_non_start_the_actor_retries() {
 /// SessionStart hook of a `/clear` gave the member's session a new
 /// conversation since the hand-out, so the reopen's "continue this task"
 /// would land in a conversation that never had the task. The task command
-/// refuses it with its reason before any reservation, and the actor records
-/// that refusal: never uncertain.
+/// refuses it for good before any reservation (zerus-63rru.64), the actor
+/// reads that as a hand-back, and the store hands the task to the lead at
+/// once: the effect refused and one inbox item that says why.
 #[test]
-fn a_reopen_after_the_member_cleared_its_conversation_is_refused_with_its_reason() {
+fn a_reopen_after_the_member_cleared_its_conversation_is_handed_back_to_the_lead() {
     let (seen, _) = blocked(crate::tasks::Blocked::ClearedMember);
     let (before, after) = seen.conversation.clone().unwrap();
     assert_ne!(before, after, "the real hook changed the conversation");
     assert_eq!((seen.exit, &seen.error), (0, &None), "{seen:?}");
-    assert!(seen.stdout.contains(r#""state":"refused""#), "{seen:?}");
     assert!(
-        matches!(&seen.outcome, Some(HandoutOutcome::Refused { reason })
-            if reason.contains(crate::state::CONVERSATION_GONE)),
+        seen.stdout.contains(r#""state":"refused""#) && seen.stdout.contains(r#""final":true"#),
+        "{seen:?}"
+    );
+    assert!(
+        matches!(&seen.outcome, Some(HandoutOutcome::HandedBack { reason })
+            if reason.contains("no longer has this task's conversation")),
         "{seen:?}"
     );
     assert_eq!(seen.effect, "refused", "{seen:?}");
+    assert!(
+        seen.inbox
+            .iter()
+            .any(|kind| kind.starts_with("reopen_handed_back:")),
+        "{seen:?}"
+    );
 }
 
 /// A hand-out command's own sentence is recorded cleaned: decoded by the

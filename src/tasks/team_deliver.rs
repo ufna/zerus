@@ -54,6 +54,14 @@ const RULE: i32 = 2;
 const CUTTING_OVER: i32 = 3;
 const STALE: i32 = 4;
 const NOT_STARTED: i32 = 5;
+const HANDED_BACK: i32 = 6;
+/// The lead's sentence when a reopen's member no longer has the task's
+/// conversation (zerus-63rru.64).
+fn handed_back(member: &str) -> String {
+    format!(
+        "Member {member} no longer has this task's conversation (it was cleared or replaced since the task was handed to it), so this reopen cannot continue it; the task is held for you to hand out again or reassign."
+    )
+}
 fn rule(message: impl std::fmt::Display) -> Error {
     Error::new(RULE, message.to_string())
 }
@@ -63,7 +71,10 @@ fn rule(message: impl std::fmt::Display) -> Error {
 /// its own answer; any other failure (a busy store, a failed read) is a
 /// non-start the caller may retry (zerus-63rru.58).
 fn not_started(error: Error) -> Error {
-    if matches!(error.code, RULE | STALE | CUTTING_OVER | NOT_STARTED) {
+    if matches!(
+        error.code,
+        RULE | STALE | CUTTING_OVER | NOT_STARTED | HANDED_BACK
+    ) {
         error
     } else {
         Error::new(NOT_STARTED, error.message)
@@ -329,7 +340,13 @@ fn request(
     }
     // A member session's refusal of the prepared input is a rule here, in its
     // base request as in the final one below (zerus-63rru.58).
-    let refused = |message: String| rule(message);
+    let refused = |message: String| {
+        if message == crate::state::CONVERSATION_GONE {
+            Error::new(HANDED_BACK, message)
+        } else {
+            rule(message)
+        }
+    };
     let base = if handover {
         attempts::render(
             settings, starts, task, name, &to, true, &who, &body.id, refused,
@@ -438,7 +455,7 @@ fn request(
         files,
         crate::state::Continuation::SameConversation,
     )
-    .map_err(rule)?;
+    .map_err(refused)?;
     if frozen["expected_run_id"] != base["expected_run_id"]
         || frozen["expected_conversation_id"] != base["expected_conversation_id"]
     {
@@ -528,6 +545,13 @@ fn execute(config: &Config, args: &[String], delivery: &dyn Delivery) -> Result<
         Err(error) if error.code == STALE => Ok(body.reply("stale", &error.message, None)),
         Err(error) if error.code == NOT_STARTED => {
             Ok(body.reply("not_started", &error.message, None))
+        }
+        // The member no longer has the task's conversation: a final refusal,
+        // which the service hands back to the lead (zerus-63rru.64).
+        Err(error) if error.code == HANDED_BACK => {
+            let mut reply = body.reply("refused", &handed_back(&body.member), None);
+            reply["final"] = json!(true);
+            Ok(reply)
         }
         Err(error) => Err(error),
     }

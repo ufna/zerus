@@ -350,6 +350,9 @@ pub(super) fn decode_delivery(raw: &[u8], id: &str) -> HandoutOutcome {
     };
     match v["state"].as_str() {
         Some("submitted") => HandoutOutcome::Submitted { receipt: id.into() },
+        // Final only from the exact reply: the reopen's member no longer has
+        // the task's conversation (zerus-63rru.64).
+        Some("refused") if v["final"] == true => HandoutOutcome::HandedBack { reason },
         Some("refused") => HandoutOutcome::Refused { reason },
         Some("uncertain") => HandoutOutcome::Uncertain { reason },
         Some("cutting_over") => HandoutOutcome::CuttingOver { reason },

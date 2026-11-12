@@ -101,6 +101,9 @@ pub enum TaskStage {
     Done,
 }
 
+/// A hand-out's or reopen's outcome. `HandedBack` is a reopen refused for good
+/// because its member no longer has the task's conversation: handed back to
+/// the lead at once, never retried (zerus-63rru.64).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "status", rename_all = "snake_case", deny_unknown_fields)]
 pub enum HandoutOutcome {
@@ -108,6 +111,7 @@ pub enum HandoutOutcome {
     Refused { reason: String },
     CuttingOver { reason: String },
     Uncertain { reason: String },
+    HandedBack { reason: String },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
