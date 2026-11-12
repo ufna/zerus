@@ -191,6 +191,7 @@ pub fn merge_admitted<T>(
 #[cfg(test)]
 thread_local! {
     pub(crate) static BEFORE_ADMISSION: std::cell::RefCell<Option<Box<dyn FnOnce()>>> = const {std::cell::RefCell::new(None)};
+    pub(crate) static BEFORE_REF_TURN: std::cell::RefCell<Option<Box<dyn FnOnce()>>> = const {std::cell::RefCell::new(None)};
     pub(crate) static BEFORE_REF_WRITE: std::cell::RefCell<Option<Box<dyn FnOnce()>>> = const {std::cell::RefCell::new(None)};
 }
 
@@ -330,9 +331,20 @@ fn merge_git<T>(
     before_update();
     git.available(&reference)?;
     let reflog = format!("Zerus: merge {incoming}: {message}");
+    // Reserve the process turn before taking the store's write fence.
+    // A failed turn wait is a proven non-start with its own retry outcome.
+    #[cfg(test)]
+    if let Some(hook) = BEFORE_REF_TURN.with(|s| s.borrow_mut().take()) {
+        hook();
+    }
+    #[cfg(unix)]
+    let turn = crate::platform::spawn_turn_before(
+        git.deadline
+            .min(Instant::now() + git.ref_budget.unwrap_or(Duration::from_secs(30))),
+        &|| false,
+    )
+    .map_err(|error| unavailable(format!("Git ref writer did not start: {error:?}")))?;
     let admission = admit()?;
-    // Only the admitted ref writer gets this short bound. Plain merge and
-    // sync callers keep their existing shared Git deadline.
     let ref_deadline = git
         .ref_budget
         .map(|budget| git.deadline.min(Instant::now() + budget))
@@ -341,7 +353,7 @@ fn merge_git<T>(
     if let Some(hook) = BEFORE_REF_WRITE.with(|s| s.borrow_mut().take()) {
         hook();
     }
-    let output = git.run_until(
+    let output = git.run_prepared(
         &[
             "update-ref",
             "--no-deref",
@@ -352,6 +364,8 @@ fn merge_git<T>(
             &old,
         ],
         ref_deadline,
+        #[cfg(unix)]
+        Some(turn),
     );
     drop(admission);
     let output = output?;
@@ -574,12 +588,14 @@ impl Git {
         self.run_until(args, self.deadline)
     }
     fn run_until(&self, args: &[&str], deadline: Instant) -> Result<Output, Problem> {
-        // A deadline already elapsed is proof that no writer was launched.
-        if Instant::now() >= deadline {
-            return Err(unavailable(
-                "Git deadline passed before starting the command",
-            ));
-        }
+        self.run_prepared(
+            args,
+            deadline,
+            #[cfg(unix)]
+            None,
+        )
+    }
+    fn command(&self, args: &[&str]) -> Command {
         let mut command = Command::new(&self.program);
         for (key, _) in std::env::vars_os() {
             if key.to_string_lossy().starts_with("GIT_")
@@ -626,13 +642,44 @@ impl Git {
             .env("SSH_ASKPASS_REQUIRE", "never");
         #[cfg(test)]
         tests::configure(&mut command, args.first().copied());
-        let (status, stdout, stderr) = crate::platform::run_bounded(
+        command
+    }
+    fn run_prepared(
+        &self,
+        args: &[&str],
+        deadline: Instant,
+        #[cfg(unix)] turn: Option<std::sync::MutexGuard<'static, ()>>,
+    ) -> Result<Output, Problem> {
+        if Instant::now() >= deadline {
+            return Err(unavailable(
+                "Git deadline passed before starting the command",
+            ));
+        }
+        let mut command = self.command(args);
+        #[cfg(unix)]
+        let result = match turn {
+            Some(turn) => crate::platform::run_bounded_in_turn(
+                &mut command,
+                [8 * 1024 * 1024, 64 * 1024],
+                deadline,
+                &|| false,
+                turn,
+            ),
+            None => crate::platform::run_bounded(
+                &mut command,
+                [8 * 1024 * 1024, 64 * 1024],
+                deadline,
+                &|| false,
+            ),
+        };
+        #[cfg(not(unix))]
+        let result = crate::platform::run_bounded(
             &mut command,
             [8 * 1024 * 1024, 64 * 1024],
             deadline,
             &|| false,
-        )
-        .map_err(|error| {
+        );
+        let (status, stdout, stderr) = result.map_err(|error| {
             // Spawn proves non-start. Stopped is opaque: on Unix it also
             // covers time spent waiting for the spawn turn. Do not infer that
             // a writer started, or permit retry, from that unknown outcome.
@@ -859,6 +906,8 @@ fn protects_branch(admin: &Path, reference: &str, deadline: Instant) -> Result<b
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
+    mod r3;
     use super::*;
     use sha2::{Digest, Sha256};
     use std::cell::{Cell, RefCell};
