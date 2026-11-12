@@ -22,6 +22,7 @@ allow-listed host of the agent under test.
 import json
 import os
 from pathlib import Path
+import pwd
 import re
 import shlex
 import shutil
@@ -45,6 +46,9 @@ ROOT_CREATED = None
 REAL_TMUX = shutil.which('tmux') or '/usr/bin/tmux'
 SYSTEM_PATH = '/usr/local/bin:/usr/bin:/bin' if sys.platform != 'darwin' else '/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin'
 FIXTURE_KEY = 'fixture-key'
+# The children's account name: the runner's own never reaches an agent that talks to an
+# outside host. The preflight fails if the real name is the value of any variable.
+FIXTURE_USER = 'teams-fixture'
 DONE = 'Fixture complete.'
 REPLY = 'Fixture reply.'
 # Hosts each agent contacts whatever its switches say (measured 2026-11-12 with Claude
@@ -63,27 +67,39 @@ BOUND = dict(service=60, bound=420, listed=90, card=180, ready=180, parent=200, 
 TMUX_WRAPPER = r'''#!/bin/bash
 # Teams fixture tmux wrapper: logs every call; passes it to the real tmux only when it
 # names a server inside the private root (-S inside it, $TMUX inside it, or no socket
-# with the existing private TMUX_TMPDIR). Anything else is refused.
+# with the existing private TMUX_TMPDIR, judged by the socket path tmux will use).
+# Links are resolved before judging: an existing path, a link included, must resolve
+# inside the root, so a dangling link refuses; a path that does not exist yet is judged
+# by its nearest existing ancestor, resolved. Anything else is refused.
 ROOT=@ROOT@
 REAL=@REAL@
-args=("$@"); n=${#args[@]}; sock=""; idx=0; version_only=0
+args=("$@"); n=${#args[@]}; sock=""; label=""; idx=0; version_only=0
 while (( idx < n )); do
   a=${args[idx]}
   case "$a" in
     --) break ;;
     -S) sock=${args[idx+1]}; idx=$((idx+2)) ;;
     -S*) sock=${a#-S}; idx=$((idx+1)) ;;
-    -L|-f|-c|-T) idx=$((idx+2)) ;;
+    -L) label=${args[idx+1]}; idx=$((idx+2)) ;;
+    -L*) label=${a#-L}; idx=$((idx+1)) ;;
+    -f|-c|-T) idx=$((idx+2)) ;;
     -V) version_only=1; idx=$((idx+1)) ;;
     -*) idx=$((idx+1)) ;;
     *) break ;;
   esac
 done
-inside() { local p; p=$(realpath -m -- "$1") || return 1; [[ "$p" == "$ROOT"/* ]]; }
+resolve() {
+  local p=$1 rest="" d
+  while [[ ! -e "$p" && ! -L "$p" ]]; do rest="/$(basename -- "$p")$rest"; p=$(dirname -- "$p"); done
+  d=$(realpath -e -- "$p" 2>/dev/null) || return 1
+  printf '%s%s\n' "$d" "$rest"
+}
+inside() { local p; p=$(resolve "$1") || return 1; [[ "$p" == "$ROOT"/* ]]; }
 verdict=refused
 if [[ -n "$sock" ]]; then inside "$sock" && verdict=private
 elif [[ -n "${TMUX:-}" ]]; then inside "${TMUX%%,*}" && verdict=private
-elif [[ -n "${TMUX_TMPDIR:-}" && -d "$TMUX_TMPDIR" ]] && inside "$TMUX_TMPDIR"; then verdict=private
+elif [[ -n "${TMUX_TMPDIR:-}" && -d "$TMUX_TMPDIR" ]] && inside "$TMUX_TMPDIR" \
+     && inside "$TMUX_TMPDIR/tmux-$(id -u)/${label:-default}"; then verdict=private
 elif (( version_only == 1 && n == 1 )); then verdict=version
 fi
 printf '%s\t%s\t%s\n' "$(date +%s.%N)" "$verdict" "${1:-}" >> @LOGS@/tmux-calls.log
@@ -435,8 +451,8 @@ class TeamFixture:
         (r / 'home/.local/bin' / self.agent).symlink_to(self.native)
         home = r / 'home'
         self.env = {
-            'PATH': f'{r}/bin:{home}/.local/bin:{SYSTEM_PATH}', 'HOME': str(home), 'USER': os.environ.get('USER', 'fixture'),
-            'LOGNAME': os.environ.get('LOGNAME', 'fixture'), 'SHELL': '/bin/bash', 'LANG': 'C.UTF-8', 'TERM': 'xterm-256color',
+            'PATH': f'{r}/bin:{home}/.local/bin:{SYSTEM_PATH}', 'HOME': str(home), 'USER': FIXTURE_USER,
+            'LOGNAME': FIXTURE_USER, 'SHELL': '/bin/bash', 'LANG': 'C.UTF-8', 'TERM': 'xterm-256color',
             'XDG_CONFIG_HOME': f'{home}/.config', 'XDG_DATA_HOME': f'{home}/.local/share', 'XDG_CACHE_HOME': f'{home}/.cache',
             'XDG_STATE_HOME': f'{home}/.local/state', 'XDG_RUNTIME_DIR': f'{r}/run', 'HGS_STATE_DIR': f'{r}/state',
             'HGS_CONFIG_DIR': f'{r}/cfg', 'HGS_PEERS': '', 'TMUX_TMPDIR': f'{r}/tmux', 'TMPDIR': f'{r}/tmp',
@@ -457,6 +473,12 @@ class TeamFixture:
                     'HGS_SESSION', 'HGS_RUN_ID', 'HGS_SESSION_ID'):
             if key in env:
                 failures.append('present ' + key)
+        account = pwd.getpwuid(os.getuid()).pw_name
+        if env.get('USER') != FIXTURE_USER or env.get('LOGNAME') != FIXTURE_USER:
+            failures.append('USER and LOGNAME are not the fixture account name')
+        named = sorted(key for key, value in env.items() if value == account)
+        if named:
+            failures.append('the runner account name is the value of ' + ','.join(named))
         for key in ('TMUX_TMPDIR', 'XDG_RUNTIME_DIR'):
             if stat.S_IMODE(os.stat(env[key]).st_mode) != 0o700:
                 failures.append('mode ' + key)

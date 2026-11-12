@@ -1416,7 +1416,13 @@ once `zerus-63rru.48` and `zerus-63rru.49` are fixed.
 Each class checks its own isolation and fails rather than skipping:
 
 - **tmux.** A `tmux` wrapper first on `PATH` logs every call and refuses any call
-  that names no server inside the root.
+  that names no server inside the root. It resolves symbolic links before judging:
+  an existing socket path must resolve inside the root, and a path that does not
+  exist yet is judged by its nearest existing ancestor. A link from the private
+  folder to another server therefore never reaches tmux.
+- **Account name.** The suite's children never see the runner's account name:
+  `USER` and `LOGNAME` are the fixture value `teams-fixture`, and the preflight fails
+  if the real name is the value of any variable.
 - **Shims.** `ssh`, `scp`, `systemd-run` and `hgs` are refusing shims: nothing
   reaches another computer, the user manager or an installed hgs. The build under
   test runs only by its absolute path.
@@ -1483,8 +1489,8 @@ seven passing runs:
  Each wait logs its measured duration as a `ZERUS_TEAMS_WAIT=` line and in
 `waits.jsonl`, so a bound can be tightened from evidence. The row's bound is 2400
 seconds. Locally, run the contract outside any agent session, for example in a
-`systemd-run --user` unit: the Teams caller proof refuses a person command below a
-live agent.
+`systemd-run --user` unit with `env -i` and `USER=teams-fixture LOGNAME=teams-fixture`:
+the Teams caller proof refuses a person command below a live agent.
 
 #### Not covered in milestone 1
 

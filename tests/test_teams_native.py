@@ -33,8 +33,14 @@ The Kimi class runs only in the hosted Kimi workflow.
 import json
 import os
 from pathlib import Path
+import pwd
 import re
+import shutil
+import socket
+import subprocess
+import tempfile
 import unittest
+from unittest import mock
 import uuid
 
 import teams_native_fixture as fixture
@@ -271,6 +277,77 @@ class TeamsContract:
                 fixture.BOUND['exit'], 1)
         archives = [json.loads(p.read_text()) for p in (Path(fx.env['HGS_STATE_DIR']) / 'archives').glob('*.json')]
         self.assertTrue(any(a.get('run_id') == view['run_id'] for a in archives), 'Terminate archived the run')
+
+
+class TeamsFixtureIsolation(unittest.TestCase):
+    """The fixture's own isolation, without an agent: the tmux wrapper judges resolved
+    paths, and the preflight refuses the runner's account name in a child's environment."""
+
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory(prefix='hgs-teams-isolation-')
+        self.addCleanup(temporary.cleanup)
+        self.base = Path(temporary.name).resolve()
+        self.marker = self.base / 'real-tmux-called'
+        stand_in = self.base / 'real-tmux'
+        stand_in.write_text('#!/bin/sh\necho "$@" >> ' + str(self.marker) + '\n')
+        stand_in.chmod(0o755)
+        native = self.base / 'agent'
+        native.write_text('#!/bin/sh\n')
+        native.chmod(0o755)
+        patches = [mock.patch.object(fixture, 'REAL_TMUX', str(stand_in)), mock.patch.object(fixture, 'HGS', str(native)),
+                   mock.patch.dict(os.environ, ZERUS_TEAMS_EVIDENCE=str(self.base / 'evidence'))]
+        for patch in patches:
+            patch.start()
+            self.addCleanup(patch.stop)
+        # The root goes straight into TMPDIR, as in a run, so its socket paths stay short.
+        self.fx = fixture.TeamFixture('claude', native, 'Isolation')
+        self.addCleanup(shutil.rmtree, self.fx.root, True)
+        self.fx.build()
+        self.outside = self.base / 'outside'
+        self.outside.mkdir()
+        server = socket.socket(socket.AF_UNIX)
+        self.addCleanup(server.close)
+        server.bind(str(self.outside / 'default'))
+
+    def tmux(self, *argv, **env):
+        self.marker.unlink(missing_ok=True)
+        run = subprocess.run([str(self.fx.root / 'bin/tmux'), *argv], env=dict(self.fx.env, **env),
+                             capture_output=True, text=True, timeout=30)
+        return run.returncode, self.marker.exists()
+
+    def test_tmux_wrapper_refuses_a_link_out_of_the_root_before_tmux_runs(self):
+        private = self.fx.root / 'tmux'
+        self.assertEqual(self.tmux('-S', str(private / 'own.sock'), 'ls'), (0, True), 'a private socket passes')
+        self.assertEqual(self.tmux('ls'), (0, True), 'a fresh private server passes before tmux-<uid> exists')
+        (private / 'link.sock').symlink_to(self.outside / 'default')
+        (private / 'dangling.sock').symlink_to(self.outside / 'missing')
+        for name, argv, env in (
+                ('-S link', ('-S', str(private / 'link.sock'), 'ls'), {}),
+                ('$TMUX link', ('ls',), dict(TMUX=str(private / 'link.sock') + ',1,0')),
+                ('dangling link', ('-S', str(private / 'dangling.sock'), 'ls'), {})):
+            with self.subTest(case=name):
+                self.assertEqual(self.tmux(*argv, **env), (1, False), name + ' never reaches tmux')
+        (private / ('tmux-%d' % os.getuid())).symlink_to(self.outside, target_is_directory=True)
+        for name, argv in (('TMUX_TMPDIR route', ('ls',)), ('labelled server', ('-L', 'other', 'ls'))):
+            with self.subTest(case=name):
+                self.assertEqual(self.tmux(*argv), (1, False), name + ' through a linked tmux-<uid> never reaches tmux')
+        log = (self.fx.evidence.folder / 'tmux-calls.log').read_text().splitlines()
+        self.assertEqual([line.split('\t')[1] for line in log], ['private', 'private'] + ['refused'] * 5)
+
+    def test_preflight_refuses_the_runner_account_name(self):
+        account = pwd.getpwuid(os.getuid()).pw_name
+        self.assertEqual((self.fx.env['USER'], self.fx.env['LOGNAME']), (fixture.FIXTURE_USER, fixture.FIXTURE_USER))
+        self.fx.preflight()
+        for key, value, refusal in (('USER', account, 'account name'), ('LOGNAME', account, 'account name'),
+                                    ('HGS_PEERS', account, 'runner account name is the value of HGS_PEERS'),
+                                    ('USER', 'someone-else', 'not the fixture account name'),
+                                    ('LOGNAME', 'someone-else', 'not the fixture account name')):
+            with self.subTest(variable=key, value=value):
+                saved = self.fx.env[key]
+                self.fx.env[key] = value
+                with self.assertRaisesRegex(AssertionError, refusal):
+                    self.fx.preflight()
+                self.fx.env[key] = saved
 
 
 class TeamsFixtureProducers(unittest.TestCase):
