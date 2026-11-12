@@ -39,6 +39,7 @@ pub(super) struct Runtime {
     machine: String,
     epoch: String,
     maintenance: Option<crate::teams::store::Cursor>,
+    maintenance_team: Option<(String, String)>,
     row_failure: bool,
     hints: BTreeMap<String, observe::Hint>,
     cancel_after: String,
@@ -56,6 +57,7 @@ impl Runtime {
             machine: machine.into(),
             epoch: epoch.clone(),
             maintenance: None,
+            maintenance_team: None,
             row_failure: false,
             hints: BTreeMap::new(),
             cancel_after: String::new(),
@@ -162,22 +164,26 @@ impl Runtime {
         result
     }
     pub fn maintain(&mut self, store: &Store) -> Result<()> {
-        let page = store.teams(16, self.maintenance.as_ref())?;
-        for team in page.rows {
-            if !matches!(
-                team.status,
-                TeamStatus::Stopped | TeamStatus::Archived | TeamStatus::Finished
-            ) {
-                continue;
-            }
-            for row in self.ledger.page(&team.id, "delivery;")? {
-                // Unresolved receipts remain evidence for stop/restart work.
-                if !row.key.starts_with("delivery:") && !row.key.starts_with("merge:") {
-                    self.ledger.remove(&row)?;
+        for _ in 0..16 {
+            if self.maintenance_team.is_none() {
+                let page = store.teams(1, self.maintenance.as_ref())?;
+                self.maintenance = page.next;
+                let Some(team) = page.rows.first() else { break };
+                if matches!(
+                    team.status,
+                    TeamStatus::Stopped | TeamStatus::Archived | TeamStatus::Finished
+                ) {
+                    self.maintenance_team = Some((team.id.clone(), String::new()));
+                } else if self.maintenance.is_none() {
+                    break;
+                } else {
+                    continue;
                 }
             }
+            if !self.prune_terminal_rows(store)? || self.maintenance.is_none() {
+                break;
+            }
         }
-        self.maintenance = page.next;
         Ok(())
     }
     fn put<T: serde::Serialize>(&mut self, team: &str, key: &str, value: &T) -> Result<Row> {

@@ -48,3 +48,48 @@ impl Runtime {
         Ok(())
     }
 }
+
+impl Runtime {
+    pub(super) fn prune_terminal_rows(&mut self, store: &Store) -> Result<bool> {
+        let (id, after) = self
+            .maintenance_team
+            .clone()
+            .expect("selected terminal team");
+        let team = store.team(&id)?;
+        let Some(team) = team.filter(|t| {
+            matches!(
+                t.status,
+                TeamStatus::Stopped | TeamStatus::Archived | TeamStatus::Finished
+            )
+        }) else {
+            self.maintenance_team = None;
+            return Ok(true);
+        };
+        if team.status != TeamStatus::Finished
+            && (!store.pending_cancels(&id, 1, 0)?.is_empty()
+                || !store.keyed_tasks(&id, 0, 1)?.is_empty()
+                || !store.open_effects(&id, 1, None)?.rows.is_empty())
+        {
+            // Keep work frontiers while terminal work is pending. Pruning
+            // their cursors here could strand rows behind a blocked page.
+            self.maintenance_team = None;
+            return Ok(true);
+        }
+        let rows = self.ledger.page(&id, &after)?;
+        for row in &rows {
+            let evidence = ["delivery:", "merge:"]
+                .iter()
+                .any(|prefix| row.key.starts_with(prefix));
+            if team.status == TeamStatus::Finished || !evidence {
+                self.ledger.remove(row)?;
+            }
+        }
+        if rows.len() == 200 {
+            self.maintenance_team = Some((id, rows.last().unwrap().key.clone()));
+            Ok(false)
+        } else {
+            self.maintenance_team = None;
+            Ok(true)
+        }
+    }
+}
