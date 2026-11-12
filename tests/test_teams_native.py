@@ -450,9 +450,10 @@ class ClaudeTrust:
     count = 2
     pinned = 'zt-claude'
 
-    # Waits for the separating probes (a) and (b): whether a later worktree on the same
-    # account still asks is a rule or a race of a running session (zerus-63rru.66).
-    def waiting_3_a_second_worktree_on_the_same_account_still_asked(self):
+    # A rule, not a race (probes tp1, tp3, tp4): after an answer given on a worktree card,
+    # a later worktree on the same account asks again, with or without another session of
+    # the account running; only an answer given in the main checkout itself stops it.
+    def test_3_a_second_worktree_on_the_same_account_still_asked(self):
         fx = self.fx
         launches = {}
         for row in fx.listed(fx.json('team', 'journal', '--team', fx.team, '--limit', '200', '--json'), 'rows', 'team journal'):
