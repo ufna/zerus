@@ -4,21 +4,38 @@ pub(super) fn decisions() -> Vec<String> {
     vec!["retry".into(), "acknowledged".into()]
 }
 impl Runtime {
+    pub(super) fn reserve_gate(
+        &mut self,
+        team: &str,
+        name: &str,
+        row: Option<Row>,
+        g: &Gate,
+    ) -> Result<Option<Row>> {
+        if let Some(mut row) = row {
+            return Ok(self.save_gate(&mut row, g)?.then_some(row));
+        }
+        let data = serde_json::to_value(g).map_err(crate::teams::store::storage)?;
+        self.ledger.reserve(team, name, data).map(Some)
+    }
+    pub(super) fn save_gate(&mut self, row: &mut Row, g: &Gate) -> Result<bool> {
+        row.data = serde_json::to_value(g).map_err(crate::teams::store::storage)?;
+        self.ledger.save_if_current(row)
+    }
     pub(super) fn current_gate_card(
         &mut self,
         store: &mut Store,
         team: &Team,
-        name: &str,
+        row: &mut Row,
         g: &mut Gate,
         now: i64,
-    ) -> Result<()> {
-        let Some(id) = g.card else { return Ok(()) };
+    ) -> Result<bool> {
+        let Some(id) = g.card else { return Ok(true) };
         let kept = store.card(&team.id, id)?;
         if kept
             .as_ref()
             .is_some_and(|c| crate::desktop::teams::kept::stands(c, &decisions(), &["retry"]))
         {
-            return Ok(());
+            return Ok(true);
         }
         if kept.is_some_and(|c| c.state == "open") {
             write(
@@ -34,35 +51,39 @@ impl Runtime {
         }
         g.card = None;
         g.notice = None;
-        self.put(&team.id, name, g)?;
+        if !self.save_gate(row, g)? {
+            return Ok(false);
+        }
         boundary("replacement_reset");
-        Ok(())
+        Ok(true)
     }
     pub(super) fn open_gate_card(
         &mut self,
         store: &mut Store,
         team: &Team,
-        scope: (&str, &str),
+        scope: (&str, &Problem),
+        row: &mut Row,
         g: &mut Gate,
-        error: &Problem,
         now: i64,
-    ) -> Result<()> {
-        let (key, name) = scope;
+    ) -> Result<bool> {
+        let (key, error) = scope;
         if g.notice.is_none() {
             g.notice = Some(request(store, &team.id, operation(key, error))?.1);
-            self.put(&team.id, name, g)?;
+            if !self.save_gate(row, g)? {
+                return Ok(false);
+            }
             boundary("notice_reserved");
         }
-        self.apply_gate_notice(store, team, name, g, now)
+        self.apply_gate_notice(store, team, row, g, now)
     }
     pub(super) fn apply_gate_notice(
         &mut self,
         store: &mut Store,
         team: &Team,
-        name: &str,
+        row: &mut Row,
         g: &mut Gate,
         now: i64,
-    ) -> Result<()> {
+    ) -> Result<bool> {
         let actor = Actor::Service {
             person: team.owner.clone(),
             team: team.id.clone(),
@@ -75,9 +96,11 @@ impl Runtime {
             Err(e) if e.code == code::STALE_REVISION => g.notice = None,
             Err(e) => return Err(e),
         }
-        self.put(&team.id, name, g)?;
+        if !self.save_gate(row, g)? {
+            return Ok(false);
+        }
         boundary("notice_saved");
-        Ok(())
+        Ok(true)
     }
 }
 fn operation(key: &str, error: &Problem) -> Operation {

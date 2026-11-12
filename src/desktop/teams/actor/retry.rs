@@ -156,7 +156,13 @@ impl Runtime {
     ) -> Result<()> {
         let (key, revision, event) = scope;
         let name = format!("gate:{key}");
-        let mut g = self.load::<Gate>(&team.id, &name)?.unwrap_or_default();
+        let row = self.ledger.get(&team.id, &name)?;
+        let mut g: Gate = row
+            .as_ref()
+            .map(|r| serde_json::from_value(r.data.clone()))
+            .transpose()
+            .map_err(crate::teams::store::storage)?
+            .unwrap_or_default();
         if event.is_none() || g.event.as_deref() != event {
             g.failures = g.failures.saturating_add(1);
             g.revision = revision.into();
@@ -167,27 +173,36 @@ impl Runtime {
                 event.map(String::from)
             };
         }
-        self.put(&team.id, &name, &g)?;
+        let Some(mut row) = self.reserve_gate(&team.id, &name, row, &g)? else {
+            return Ok(());
+        };
         boundary("gate_saved");
         // A pending pre-upgrade opener must first replay its own receipt;
         // the second iteration can replace its now-outdated decision list.
         for _ in 0..2 {
-            self.current_gate_card(store, team, &name, &mut g, now)?;
+            if !self.current_gate_card(store, team, &mut row, &mut g, now)? {
+                return Ok(());
+            }
             if !(force || g.failures >= 3) || g.card.is_some() {
                 return Ok(());
             }
-            self.open_gate_card(store, team, (key, &name), &mut g, e, now)?;
+            if !self.open_gate_card(store, team, (key, e), &mut row, &mut g, now)? {
+                return Ok(());
+            }
         }
         Ok(())
     }
     fn recover_gate(&mut self, store: &mut Store, team: &Team, key: &str, now: i64) -> Result<()> {
         let name = format!("gate:{key}");
-        if let Some(row) = self.ledger.get(&team.id, &name)? {
+        if let Some(mut row) = self.ledger.get(&team.id, &name)? {
             let mut g: Gate =
                 serde_json::from_value(row.data.clone()).map_err(crate::teams::store::storage)?;
             // Settle an interrupted opener before forgetting its receipt.
-            if g.card.is_none() && g.notice.is_some() {
-                self.apply_gate_notice(store, team, &name, &mut g, now)?;
+            if g.card.is_none()
+                && g.notice.is_some()
+                && !self.apply_gate_notice(store, team, &mut row, &mut g, now)?
+            {
+                return Ok(());
             }
             if let Some(card) = g.card {
                 if store
@@ -207,11 +222,10 @@ impl Runtime {
                     boundary("recovery_closed");
                 }
             }
-            // Applying a saved notice can have advanced the ledger version.
-            if let Some(current) = self.ledger.get(&team.id, &name)? {
-                self.ledger.remove(&current)?;
-                boundary("recovery_removed");
-            }
+            // This is the entry version, advanced only by our own notice
+            // replay. A newer writer's version is never adopted for removal.
+            self.ledger.remove(&row)?;
+            boundary("recovery_removed");
         }
         Ok(())
     }
@@ -222,17 +236,32 @@ pub(super) fn delay(failures: u32) -> i64 {
 }
 
 #[cfg(test)]
+pub(super) type Interleave = (&'static str, Box<dyn FnOnce()>);
+#[cfg(test)]
 thread_local! {
     pub(super) static CRASH: std::cell::Cell<Option<&'static str>> = const { std::cell::Cell::new(None) };
+    pub(super) static INTERLEAVE: std::cell::RefCell<Option<Interleave>> = const { std::cell::RefCell::new(None) };
 }
 fn boundary(point: &str) {
     #[cfg(test)]
-    CRASH.with(|slot| {
-        if slot.get() == Some(point) {
-            slot.set(None);
-            panic!("fixture card restart at {point}");
+    {
+        let action = INTERLEAVE.with(|slot| {
+            if slot.borrow().as_ref().is_some_and(|(at, _)| *at == point) {
+                slot.borrow_mut().take()
+            } else {
+                None
+            }
+        });
+        if let Some((_, action)) = action {
+            action();
         }
-    });
+        CRASH.with(|slot| {
+            if slot.get() == Some(point) {
+                slot.set(None);
+                panic!("fixture card restart at {point}");
+            }
+        });
+    }
     #[cfg(not(test))]
     let _ = point;
 }

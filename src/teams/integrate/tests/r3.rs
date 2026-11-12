@@ -2,12 +2,16 @@
 use super::*;
 fn hold_ref_turn(seconds: u64) -> std::thread::JoinHandle<()> {
     let (ready, receive) = std::sync::mpsc::channel();
+    let until = Instant::now() + Duration::from_secs(30);
     let holder = std::thread::spawn(move || {
-        let _turn = crate::platform::spawn_turn();
-        ready.send(()).unwrap();
+        let turn = crate::platform::spawn_turn_before(until, &|| false);
+        ready.send(turn.is_ok()).unwrap();
+        let Ok(_turn) = turn else { return };
         std::thread::sleep(Duration::from_secs(seconds));
     });
-    receive.recv_timeout(Duration::from_secs(3)).unwrap();
+    // Only the acquired turn begins the deliberate hold. A parallel test
+    // can own it first; that startup wait has Git's ordinary bounded budget.
+    assert!(receive.recv_timeout(Duration::from_secs(31)).unwrap());
     holder
 }
 #[test]
