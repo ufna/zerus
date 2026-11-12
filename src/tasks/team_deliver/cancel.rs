@@ -20,6 +20,15 @@ fn authority(store: &Store, body: &Input, team: &Team, node: &Node) -> Result<St
         .ok_or_else(||rule("No Pending cancel decision for this generation."))
 }
 
+/// The team's own execution always has an attempt, its effect's ID. A running
+/// document with no current attempt and no conflict was started by a person
+/// outside the team (a legacy-route send records none): a cancel acts on one
+/// attempt, and this execution has none of the team's to act on.
+fn runs_without_attempt(view: &zerus_replica::TaskView) -> bool {
+    let (_, id, conflict) = crate::teams::tasks::attempt(view);
+    view.stage == Stage::Active && view.cancelled_at.is_none() && id.is_empty() && !conflict
+}
+
 // A terminal team cannot observe again. Its last observation or a delivered
 // effect of this generation proves what it still owns; another execution
 // belongs to the person and must never be cancelled by retrying this decision.
@@ -29,6 +38,13 @@ fn current_attempt(
     team: &Team,
     view: &zerus_replica::TaskView,
 ) -> Result<(u64, String)> {
+    // In every team state, before any observation is consulted: no later
+    // observation can give this execution an attempt of the team.
+    if runs_without_attempt(view) {
+        return Err(rule(
+            "no_team_attempt: The task runs without an attempt of the team: a person started it, and the team's cancel acts only on the team's own attempt.",
+        ));
+    }
     if matches!(team.status, TeamStatus::Running | TeamStatus::Paused) {
         return observed_attempt(store, &body.team, body.node, view);
     }

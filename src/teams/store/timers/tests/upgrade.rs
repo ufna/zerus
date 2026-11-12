@@ -287,14 +287,14 @@ fn a_store_marked_before_the_card_decisions_gains_their_column() {
     assert_eq!(marker(&h), Some(EXTENSION));
 }
 
-/// A store marked by the cards' layout (version 10) gains the index that
-/// reads its key refusals newest first in one step.
+/// A store marked by the hold owners' layout (version 11) gains the index
+/// that reads its key refusals newest first in one step.
 #[test]
 fn a_store_marked_before_the_key_refusal_order_gains_its_index() {
     let mut h = stopped();
     let full = schema(&h);
     db(&h)
-        .execute_batch("DROP INDEX key_refusals_newest; UPDATE timers_extension SET version=10;")
+        .execute_batch("DROP INDEX key_refusals_newest; UPDATE timers_extension SET version=11;")
         .unwrap();
     let before = transitions();
     reopen(&mut h);
@@ -673,4 +673,73 @@ fn the_step_to_layout_10_leaves_a_held_or_started_return_alone() {
         assert_ne!(state(&h), DecisionState::Settled, "{case}");
         assert!(handed_back(&h).is_empty(), "{case}");
     }
+}
+
+/// The step to layout 11 gives each stored hold an owner: a held node with
+/// an unsettled decision held for that decision, which now holds it by being
+/// pending; any other held node, live or archived, the person's.
+#[test]
+fn the_step_to_layout_11_gives_each_stored_hold_its_owner() {
+    let mut h = Harness::new();
+    let lead = h.bind("lead");
+    h.bind("m1");
+    let decided = h.add(&person(), 1);
+    h.run(
+        &lead,
+        Operation::Cancel {
+            node: decided,
+            reason: "Not needed".into(),
+        },
+    )
+    .unwrap();
+    let held = h.add(&person(), 2);
+    let archived = h.add(&person(), 3);
+    h.cancel_fact(archived);
+    let stored = |h: &Harness, table: &str, node: u32| -> (bool, Option<String>, bool) {
+        db(h)
+            .query_row(
+                &format!("SELECT hold,hold_owner,hand_back FROM {table} WHERE team=?1 AND id=?2"),
+                params![TEAM, node],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap()
+    };
+    let in_archive: bool = db(&h)
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM node_archive WHERE team=?1 AND id=?2)",
+            params![TEAM, archived],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(in_archive);
+    db(&h)
+        .execute_batch(&format!(
+            "UPDATE nodes SET hold=1 WHERE team='{TEAM}' AND id IN ({decided},{held});
+             UPDATE node_archive SET hold=1 WHERE team='{TEAM}' AND id={archived};
+             ALTER TABLE nodes DROP COLUMN hand_back; ALTER TABLE node_archive DROP COLUMN hand_back;
+             ALTER TABLE nodes DROP COLUMN hold_owner; ALTER TABLE node_archive DROP COLUMN hold_owner;
+             UPDATE timers_extension SET version=10;"
+        ))
+        .unwrap();
+    let before = transitions();
+    reopen(&mut h);
+    assert_eq!(transitions(), before + 1);
+    assert_eq!(marker(&h), Some(EXTENSION));
+    assert_eq!(stored(&h, "nodes", decided), (false, None, false));
+    assert!(h.node(decided).hold, "held by its pending Cancel");
+    assert_eq!(
+        stored(&h, "nodes", held),
+        (true, Some("person".into()), false)
+    );
+    assert_eq!(
+        stored(&h, "node_archive", archived),
+        (true, Some("person".into()), false)
+    );
+    refused_release(&mut h, &lead, held);
+}
+fn refused_release(h: &mut Harness, lead: &Actor, node: u32) {
+    let error = h.run(lead, Operation::Release { node }).unwrap_err();
+    assert_eq!(error.code, zerus_team_plan::problem::code::NOT_ALLOWED);
+    h.run(&person(), Operation::Release { node }).unwrap();
+    assert!(!h.node(node).hold);
 }

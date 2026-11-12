@@ -345,3 +345,131 @@ fn recovery_replays_an_interrupted_notice_before_removing_either_gate() {
         }
     }
 }
+
+fn newer_failure_at(
+    f: &Fixture,
+    point: &'static str,
+) -> std::rc::Rc<std::cell::RefCell<Option<super::super::ledger::Row>>> {
+    let mut store = Store::open(f.h.temp.path()).unwrap();
+    let team = store.team(TEAM).unwrap().unwrap();
+    let mut runtime = Runtime::open(f.h.temp.path(), &team.home).unwrap();
+    let key = f.key.clone();
+    let observed = std::rc::Rc::new(std::cell::RefCell::new(None));
+    let capture = observed.clone();
+    super::super::retry::INTERLEAVE.with(|slot| {
+        *slot.borrow_mut() = Some((
+            point,
+            Box::new(move || {
+                runtime
+                    .force_failure(
+                        &mut store,
+                        &team,
+                        &key,
+                        "revision",
+                        &super::super::problem("The check failed in the newer runtime"),
+                        200,
+                    )
+                    .unwrap();
+                *capture.borrow_mut() = Some(
+                    runtime
+                        .ledger
+                        .get(TEAM, &format!("gate:{key}"))
+                        .unwrap()
+                        .unwrap(),
+                );
+            }),
+        ));
+    });
+    observed
+}
+fn recovery_keeps_a_newer_gate(held: bool) {
+    let mut f = fixture(held);
+    fail(&mut f, 100);
+    let old = open(&f).remove(0).seq;
+    let observed = newer_failure_at(&f, "recovery_closed");
+    recover(&mut f, 201);
+    let newer = observed.borrow_mut().take().expect("second runtime ran");
+    assert_eq!(
+        f.runtime.ledger.get(TEAM, &newer.key).unwrap(),
+        Some(newer.clone())
+    );
+    let current = open(&f);
+    assert_eq!(current.len(), 1);
+    assert_ne!(current[0].seq, old);
+    assert_eq!(newer.data["card"], current[0].seq);
+    fail(&mut f, 202);
+    assert_eq!(open(&f)[0].seq, current[0].seq);
+    assert_eq!(cards(&f).len(), 2, "the newer card is still tracked");
+    decide(&mut f, current[0].seq, "retry");
+    let team = f.h.store.team(TEAM).unwrap().unwrap();
+    assert!(f
+        .runtime
+        .due(&mut f.h.store, &team, &f.key, "revision", 203)
+        .unwrap());
+    fail(&mut f, 204);
+    let card = open(&f).remove(0).seq;
+    assert_ne!(card, current[0].seq);
+    assert!(!f
+        .runtime
+        .due(&mut f.h.store, &team, &f.key, "revision", 205)
+        .unwrap());
+    assert_eq!(gate(&f).data["card"], card);
+    assert_eq!(cards(&f).len(), 3, "Retry was consumed once");
+}
+#[test]
+fn gate_recovery_keeps_the_row_and_card_written_by_a_second_runtime() {
+    recovery_keeps_a_newer_gate(false);
+}
+#[test]
+fn held_card_recovery_keeps_the_row_and_card_written_by_a_second_runtime() {
+    recovery_keeps_a_newer_gate(true);
+}
+
+#[test]
+fn card_replacement_and_notice_writes_never_adopt_a_newer_writers_version() {
+    for held in [false, true] {
+        for point in [
+            "replacement_closed",
+            "replacement_reset",
+            "notice_reserved",
+            "notice_applied",
+        ] {
+            let mut f = fixture(held);
+            if point.starts_with("replacement_") {
+                legacy(&mut f, true);
+            }
+            let observed = newer_failure_at(&f, point);
+            fail(&mut f, 201);
+            let newer = observed.borrow_mut().take().expect("second runtime ran");
+            assert_eq!(
+                f.runtime.ledger.get(TEAM, &newer.key).unwrap(),
+                Some(newer.clone()),
+                "{point}, held={held}"
+            );
+            let current = open(&f);
+            assert_eq!(current.len(), 1, "{point}, held={held}");
+            assert_eq!(newer.data["card"], current[0].seq);
+            let count = cards(&f).len();
+            fail(&mut f, 202);
+            assert_eq!(open(&f)[0].seq, current[0].seq);
+            assert_eq!(cards(&f).len(), count);
+        }
+    }
+}
+
+#[test]
+fn an_owned_gate_write_advances_only_its_own_successful_version() {
+    let mut f = fixture(false);
+    fail(&mut f, 100);
+    let mut owned = gate(&f);
+    let mut newer = owned.clone();
+    newer.data["revision"] = json!("newer observation");
+    f.runtime.ledger.save(&mut newer).unwrap();
+    assert!(!f.runtime.ledger.save_if_current(&mut owned).unwrap());
+    assert_eq!(owned.version + 1, newer.version);
+    assert_eq!(gate(&f), newer);
+    assert!(f.runtime.ledger.save_if_current(&mut newer).unwrap());
+    assert_eq!(gate(&f), newer);
+    f.runtime.ledger.remove(&owned).unwrap();
+    assert_eq!(gate(&f), newer, "a stale removal is a harmless non-write");
+}

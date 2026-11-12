@@ -96,12 +96,18 @@ impl Ledger {
         Ok(row)
     }
     pub fn save(&mut self, row: &mut Row) -> Result<()> {
-        let changed = self.0.execute("UPDATE actor_rows SET version=version+1,data=?4 WHERE team=?1 AND key=?2 AND version=?3",params![row.team,row.key,row.version,Self::encode(row)?]).map_err(write_error)?;
-        if changed != 1 {
+        if !self.save_if_current(row)? {
             return Err(storage("Actor row changed"));
         }
-        row.version += 1;
         Ok(())
+    }
+    /// A moved row belongs to its newer writer; do not adopt its version.
+    pub fn save_if_current(&mut self, row: &mut Row) -> Result<bool> {
+        let changed = self.0.execute("UPDATE actor_rows SET version=version+1,data=?4 WHERE team=?1 AND key=?2 AND version=?3",params![row.team,row.key,row.version,Self::encode(row)?]).map_err(write_error)?;
+        if changed == 1 {
+            row.version += 1;
+        }
+        Ok(changed == 1)
     }
     fn encode(row: &Row) -> Result<String> {
         let raw = serde_json::to_string(&row.data).map_err(storage)?;

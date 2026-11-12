@@ -114,7 +114,7 @@ pub(in crate::teams::ops) fn before_observation(
         ctx.settle_override(n.id)?;
         ctx.advance(n.id, n)?;
         ctx.db.execute(&format!("UPDATE effects SET state='superseded' WHERE team=?1 AND node=?2 AND state IN {OPEN_EFFECT_STATES}"),params![ctx.team.id,n.id]).map_err(storage)?;
-        queue::set_hold(ctx, n.id, false)?;
+        queue::hand_back(ctx, n.id, false)?;
         ctx.event = Some("person_override");
     }
     Ok(())

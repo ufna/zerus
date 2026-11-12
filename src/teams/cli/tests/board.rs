@@ -269,3 +269,50 @@ fn row_kind_uses_the_node_kind_for_a_reviewer_task_and_developer_stage() {
     assert_eq!(stage["kind"], "stage");
     assert_eq!(stage["stage"]["kind"], "review");
 }
+
+/// The queue reply carries `pending_replaceable` beside `pending_decision`,
+/// always: false with nothing pending, true for a Return that has not
+/// started, false once its reopen is reserved.
+#[test]
+fn queue_rows_say_whether_the_pending_decision_can_be_replaced() {
+    use crate::teams::ops::Operation;
+    let h = seeded();
+    let node = h.reported(1);
+    let facts = |h: &Harness| {
+        let (reply, exit) = h.cli(
+            &Caller::Person,
+            &format!("queue --team {TEAM} --limit 200"),
+            "",
+        );
+        assert_eq!(exit, 0, "{reply}");
+        let row = reply["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["id"] == node)
+            .unwrap()
+            .clone();
+        (
+            row["pending_decision"].clone(),
+            row["pending_replaceable"].clone(),
+        )
+    };
+    assert_eq!(facts(&h), (json!(null), json!(false)));
+    h.apply(
+        &person(),
+        Operation::Return {
+            node,
+            reason: "Revise the label".into(),
+        },
+    );
+    assert_eq!(facts(&h), (json!("return"), json!(true)));
+    h.apply(
+        &service(),
+        Operation::ReopenIntent {
+            node,
+            member: "m1".into(),
+            effect_request_id: uid(0x9001),
+        },
+    );
+    assert_eq!(facts(&h), (json!("return"), json!(false)));
+}
