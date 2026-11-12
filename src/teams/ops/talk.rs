@@ -11,7 +11,7 @@ pub(super) fn ask(ctx: &mut Context<'_>) -> Result<()> {
     };
     ctx.active()?;
     let n = ctx.live_node(*node)?;
-    let holder = handout::holder(ctx, *node)?;
+    let holder = handout::recipient(ctx, *node)?;
     if let Actor::Session { member, .. } = ctx.actor {
         if holder.as_ref() != Some(member) {
             return Err(Problem::new(

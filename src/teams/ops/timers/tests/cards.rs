@@ -523,3 +523,74 @@ fn the_row_facts_hold_across_a_page_boundary() {
         .iter()
         .any(|r| r.node.id == second && r.pending.as_deref() == Some("cancel")));
 }
+
+/// Finding 2 of the cards review: Return asks the attempt holder, the rule
+/// the queue row shows. A hand-out that was only reserved, or refused,
+/// holds nothing: the row's holder is null and the lead's Return is refused
+/// with its sentence; Reassign and Cancel remain, so nothing is stranded.
+/// A delivered hand-out holds: the row shows it and Return is taken.
+#[test]
+fn return_follows_the_holder_the_row_shows() {
+    for effect in ["reserved", "refused", "delivered"] {
+        for then in ["reassign", "cancel"] {
+            let mut h = Harness::new();
+            let lead = h.bind("lead");
+            h.bind("m1");
+            h.bind("m2");
+            let node = h.add(&person(), 1);
+            let id = h.intent(node, "m1");
+            match effect {
+                "refused" => h.outcome(
+                    &id,
+                    HandoutOutcome::Refused {
+                        reason: "Busy".into(),
+                    },
+                ),
+                "delivered" => h.outcome(
+                    &id,
+                    HandoutOutcome::Submitted {
+                        receipt: "receipt-example".into(),
+                    },
+                ),
+                _ => (),
+            }
+            h.observe(node, TaskStage::InReview);
+            assert_eq!(h.node(node).state, NodeState::Reported, "{effect}");
+            let (holder, _) = facts(&h, node);
+            let ret = h.run(
+                &lead,
+                Operation::Return {
+                    node,
+                    reason: "Fix it".into(),
+                },
+            );
+            if effect == "delivered" {
+                assert_eq!(holder, some("m1"));
+                ret.unwrap();
+                continue;
+            }
+            assert_eq!(holder, None, "{effect}");
+            let refusal = ret.unwrap_err();
+            assert_eq!(
+                (refusal.code.as_str(), refusal.message.as_str()),
+                (
+                    code::INVALID_STATE,
+                    "Only a reported task with a holder can be returned."
+                ),
+                "{effect}"
+            );
+            let other = match then {
+                "reassign" => Operation::Reassign {
+                    node,
+                    member: "m2".into(),
+                    reason: "Fresh eyes".into(),
+                },
+                _ => Operation::Cancel {
+                    node,
+                    reason: "Superseded".into(),
+                },
+            };
+            h.run(&lead, other).unwrap();
+        }
+    }
+}

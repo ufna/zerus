@@ -18,7 +18,7 @@ pub(crate) fn node_page_sql(table: &str, filtered: bool) -> String {
 }
 fn row_facts(table: &str) -> String {
     let holder = if table == "nodes" {
-        "(SELECT CASE WHEN e.state IN ('reserved','refused','superseded') THEN NULL ELSE e.member END FROM effects e WHERE e.team=nodes.team AND e.node=nodes.id AND e.generation=nodes.generation ORDER BY e.seq DESC LIMIT 1)".to_owned()
+        format!("(SELECT CASE WHEN e.state IN {} THEN NULL ELSE e.member END FROM effects e WHERE e.team=nodes.team AND e.node=nodes.id AND e.generation=nodes.generation ORDER BY e.seq DESC LIMIT 1)", super::holder::NOT_HOLDING)
     } else {
         "NULL".to_owned()
     };

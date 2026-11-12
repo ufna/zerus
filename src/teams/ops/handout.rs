@@ -8,7 +8,17 @@ pub(super) struct Effect {
     pub state: String,
     pub outcome: Option<String>,
 }
+/// Who holds the node's attempt, by the store's one rule (the attempt
+/// holder that the queue row shows): a hand-out that was only reserved, or
+/// was refused or superseded, holds nothing.
 pub(super) fn holder(ctx: &Context<'_>, node: u32) -> Result<Option<String>> {
+    Ok(crate::teams::store::holder_of(ctx.db, &ctx.team.id, node)?.map(|h| h.member))
+}
+/// The member the newest effect of the current generation went to, its
+/// outcome recorded or not. A member's own report or question proves the
+/// delivery and may arrive before the hand-out's outcome is recorded, so it
+/// is admitted against this, not against the holder.
+pub(super) fn recipient(ctx: &Context<'_>, node: u32) -> Result<Option<String>> {
     ctx.db.query_row("SELECT member FROM effects WHERE team=?1 AND node=?2 AND generation=?3 ORDER BY seq DESC LIMIT 1",params![ctx.team.id,node,ctx.generation(node)?],|r|r.get(0)).optional().map_err(storage)
 }
 pub(super) fn intent(ctx: &mut Context<'_>) -> Result<()> {
@@ -273,7 +283,7 @@ pub(super) fn report(ctx: &mut Context<'_>) -> Result<()> {
     let mut n = ctx.live_node(*node)?;
     if n.state != NodeState::Reported
         || *generation != ctx.generation(*node)?
-        || holder(ctx, *node)?.as_deref() != Some(member)
+        || recipient(ctx, *node)?.as_deref() != Some(member)
     {
         return Err(invalid(
             "Report does not belong to the current reviewed attempt's holder.",
