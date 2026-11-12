@@ -1790,6 +1790,34 @@ final input is a terminal path with no DeepSeek route, and a hosted run's
 end writes no end record. OpenCode and platforms without the proof stay
 refused as before.
 
+**A held step's card follows the hold's age, not its reason.** A step the
+service holds back (a finish, a merge or a reopen it cannot carry out yet)
+had its card keyed by the reason, so a change of reason closed the card and
+restarted the count, and a reason that alternated every minute never opened
+one (the second review of the actor, 2026-11-12). A hold is a decision and
+its generation. It is silent for its first period, three one-minute checks,
+whatever its reasons do; the first card opens when the hold's age passes
+the period, with the sentence of that pass. A change of reason neither
+restarts the age nor closes the card: the card is replaced when the new
+reason has stood for the period. A dismissal lasts while the reason is the
+same, Retry checks again on the next pass, and the card closes when the
+hold ends or another decision or generation takes the row.
+
+**One reader of a fleet row, and its keys are the producers'.** The actor
+read a member's row by names no producer writes (`subagents_active`, and a
+`state` that a live terminal row never carries) in tests whose rows were
+written by hand, so a real idle member was never free and never handed a
+task; the first run against real agents found it (2026-11-12). One module
+reads a fleet row (`actor/fleet.rs`) and lists every key it reads. A member
+is live when its `process_state` is `running`, its `runtime_state` is `live`
+and its `state` is absent or `running`; it is free when it is live, ready
+and idle and its three counts (active children, background work, open
+questions) are zero. A count that is null, absent or of another type is
+unknown: the member is never free and its presence reports nothing. The
+tests' rows come from the listing's own steps through test-only seams; one
+guard compares the committed fixture's key paths with them and another
+fails when the reader names a key no producer writes.
+
 **Known limit: the key of a task that was closed before the stop.** After a
 stop the service clears the team key of the tasks that were open at the
 stop and of released stages. A task accepted or cancelled earlier keeps its
