@@ -244,7 +244,9 @@ impl Runtime {
             TaskReply::Created if row.creation => (),
             TaskReply::Cleared if !row.creation => (),
             TaskReply::Refused { .. } => (),
-            TaskReply::CuttingOver { reason } => return Err(problem(reason)),
+            TaskReply::CuttingOver { reason } => {
+                return Err(problem(&super::cancel::reason::spoken(reason)))
+            }
             _ => return Err(problem("The task command answered another kind of effect")),
         }
         row.reply = Some(reply);

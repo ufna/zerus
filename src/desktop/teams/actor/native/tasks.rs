@@ -130,6 +130,9 @@ pub(super) fn reply_value(value: &Value, request: &Value, success: &str) -> Resu
         .as_str()
         .ok_or_else(|| problem("The task reply has no error field"))?;
     let reason = cut(reason, 2048);
+    // A refusal's sentence is recorded: it is cleaned first, and a refusal
+    // with nothing readable left is no recognized answer, as an empty one.
+    let said = super::super::cancel::reason::spoken(&reason);
     match value["state"].as_str() {
         Some("created") if success == "created" && reason.is_empty() => Ok(TaskReply::Created),
         Some("cleared") if success == "cleared" && reason.is_empty() => Ok(TaskReply::Cleared),
@@ -138,7 +141,7 @@ pub(super) fn reply_value(value: &Value, request: &Value, success: &str) -> Resu
         }
         Some("released") if success == "cancelled" && reason.is_empty() => Ok(TaskReply::Released),
         Some("stale") if success == "cancelled" => Ok(TaskReply::Stale),
-        Some("refused") if !reason.trim().is_empty() => Ok(TaskReply::Refused { reason }),
+        Some("refused") if !said.is_empty() => Ok(TaskReply::Refused { reason: said }),
         Some("cutting_over") => Ok(TaskReply::CuttingOver { reason }),
         _ => Err(problem("The task reply has no recognized answer")),
     }
