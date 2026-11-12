@@ -696,11 +696,116 @@ export function apply(ctx, config) {
     if (p.action === 'update' && (!p.expected || typeof p.expected !== 'object')) throw new Error('Expected task record is required');
     return { available: true, generation, result: await manageSchedule(schedule, p) };
   }
+  // zerus-hfw2s: input witness (docs/reference.md). A send with a requestId
+  // is bound to the FIRST message the harness inserted for it on that session
+  // ({session, messageId, spliceSeq}); a later insert with the same rpcId but
+  // another message id never rebinds it. input-witness flushes that session
+  // and returns bounded facts from its in-memory log forward from spliceSeq;
+  // HGS classifies them. The bridge records its own disposals so a canceled
+  // removal they cause can be told from any other.
+  const WITNESS_LIMIT = 256, WITNESS_SCAN = 4096, WITNESS_WAIT = 25000;
+  const witnesses = new Map(), expecting = new Map(), disposals = new WeakMap();
+  const witnessDigest = content => {
+    const hash = createHash('sha256');
+    for (const block of Array.isArray(content) ? content : [])
+      hash.update(`${block?.type ?? ''}\0${block?.type === 'text' ? block.text ?? '' : ''}\0`);
+    return hash.digest('hex');
+  };
+  const rememberWitness = (requestId, record) => {
+    witnesses.delete(requestId); witnesses.set(requestId, record);
+    while (witnesses.size > WITNESS_LIMIT) witnesses.delete(witnesses.keys().next().value);
+  };
+  const rpcIdOf = message => (message?.source?.kind === 'user' && typeof message.source.rpcId === 'string' ? message.source.rpcId : null);
+  ctx.on('agent/inbox/inserted', ({ agent, message }) => {
+    const rpcId = rpcIdOf(message), session = agent?.session;
+    if (!rpcId || !session || expecting.get(rpcId) !== session.id || witnesses.get(rpcId)?.messageId) return;
+    rememberWitness(rpcId, { sessionId: session.id, session, messageId: message.id, spliceSeq: session.seq - 1 });
+  });
+  // A duplicate request inserts nothing: bind the message an earlier send of
+  // the same request inserted, if the bounded tail of the log still holds it.
+  function bindEarlierInsert(requestId, sessionId) {
+    const session = ctx.agents.get(sessionId)?.session;
+    if (!session || witnesses.get(requestId)?.messageId) return;
+    const from = Math.max(0, session.seq - WITNESS_SCAN);
+    const events = session.snapshotEvents(from, session.seq);
+    for (const event of events) {
+      const message = event.type === 'agent/inbox/spliced' ? event.data.inserted.find(m => rpcIdOf(m) === requestId) : undefined;
+      if (message) return rememberWitness(requestId, { sessionId, session, messageId: message.id, spliceSeq: event.seq });
+    }
+  }
+  async function witnessedSend(p, send) {
+    const requestId = typeof p.requestId === 'string' && p.requestId ? p.requestId : null;
+    if (!requestId) return send();
+    expecting.set(requestId, p.sessionId);
+    try {
+      const sent = await send();
+      bindEarlierInsert(requestId, p.sessionId);
+      return sent;
+    } catch (error) {
+      // Refused only when the harness inserted nothing for this request.
+      if (!witnesses.get(requestId)?.messageId) rememberWitness(requestId, { sessionId: p.sessionId, refused: String(error?.message ?? error) });
+      throw error;
+    } finally { expecting.delete(requestId); }
+  }
+  async function disposeOwned(sessionId, handle) {
+    const session = handle?.agent?.session ?? ctx.agents.get(sessionId)?.session;
+    const from = session?.seq;
+    try { await handle.dispose(); } finally {
+      if (session && from !== undefined) {
+        const windows = disposals.get(session) ?? [];
+        windows.push([from, session.seq]);
+        while (windows.length > 16) windows.shift();
+        disposals.set(session, windows);
+      }
+    }
+  }
+  // One page of facts from `from` (at least spliceSeq), at most WITNESS_SCAN
+  // events; `complete` says it reached the log's end at `through`. HGS pages
+  // forward from the returned `through`.
+  function witnessFacts(record, through, from = record.spliceSeq) {
+    const { session, messageId, spliceSeq } = record;
+    const start = Math.min(Math.max(Number.isSafeInteger(from) ? from : spliceSeq, spliceSeq), through);
+    const end = Math.min(through, start + WITNESS_SCAN);
+    const events = [];
+    for (const event of session.snapshotEvents(start, end)) {
+      const d = event.data;
+      if (event.type === 'agent/inbox/spliced') events.push({ seq: event.seq, type: event.type, target: d.target, start: d.start,
+        removedCount: d.removedCount ?? 0, outcome: d.outcome ?? null, inserted: d.inserted.map(m => ({ id: m.id, rpcId: rpcIdOf(m) })) });
+      else if (event.type === 'user/message') events.push({ seq: event.seq, type: event.type, id: d.id, rpcId: rpcIdOf(d), digest: witnessDigest(d.content) });
+      else if (event.type === 'turn/end') events.push({ seq: event.seq, type: event.type, turn: d.turn, reason: d.reason?.kind ?? null });
+    }
+    const live = ctx.agents.get(record.sessionId);
+    const pending = Boolean(live && [...live.inbox.nextStep, ...live.inbox.nextTurn].some(m => m.id === messageId));
+    return { messageId, spliceSeq, from: start, through: end, complete: end === through, live: Boolean(live), pending,
+      idle: !live || live.status === 'idle', events,
+      disposals: (disposals.get(session) ?? []).filter(([first, last]) => last > spliceSeq && first < end) };
+  }
+  // {sessionId, requestId, generation, waitMs, fromSeq?}: see witnessFacts.
+  async function inputWitness(p) {
+    if (p.generation !== generation) return { generation, state: 'host_gone' };
+    const record = witnesses.get(p.requestId);
+    if (!record || record.sessionId !== p.sessionId) return { generation, state: 'unseen' };
+    if (record.refused !== undefined) return { generation, state: 'refused', reason: record.refused };
+    // Wait, bounded, until the message is delivered or can no longer be.
+    const deadline = Date.now() + Math.min(Math.max(Number(p.waitMs) || 0, 0), WITNESS_WAIT);
+    for (;;) {
+      const facts = witnessFacts(record, record.session.seq);
+      const delivered = facts.events.some(e => e.type === 'user/message' && e.id === record.messageId);
+      if (delivered || (!facts.pending && facts.idle) || Date.now() >= deadline) break;
+      await new Promise(resolve => setTimeout(resolve, 50));
+    }
+    // Only what was appended before the flush is reported, and only a
+    // successful flush makes it durable.
+    const through = record.session.seq;
+    let durable = false;
+    try { durable = Boolean(await ctx.get('sessions')?.flush(record.session)); } catch {}
+    return { generation, state: 'tracked', durable, ...witnessFacts(record, through, p.fromSeq) };
+  }
   async function execute(request) {
     if (closing) throw new Error('Native host is stopping');
     const p = request.params ?? {};
     switch (request.method) {
-      case 'ping': return { protocol: 1, version: '0.2.1-rc.2', generation, accountPermissions: true, sessionActions: true,
+      case 'ping': return { protocol: 1, version: '0.2.1-rc.2', generation, accountPermissions: true, sessionActions: true, inputWitness: true,
         shellIdentity: callEnvironmentInstalled(), callTokens: callEnvironmentInstalled(),
         nativeOperations: ['fork', 'history-search', 'schedules'], schedule: Boolean(scheduleService()) };
       case 'list': {
@@ -717,6 +822,7 @@ export function apply(ctx, config) {
         }) };
       }
       case 'inspect': return inspect(p);
+      case 'input-witness': return inputWitness(p);
       case 'fork': return fork(p);
       case 'search-history': return searchHistory(p);
       case 'schedules': return schedules(p);
@@ -845,7 +951,7 @@ export function apply(ctx, config) {
             changed = true; await api.rename({sessionId:p.sessionId,title:p.title});
           } else if (live) {
             changed = true; ctx.goals.disarm(live);
-            await handle.dispose();
+            await disposeOwned(p.sessionId, handle);
             if (owned.get(p.sessionId) === handle) owned.delete(p.sessionId);
           }
           return answer('completed');
@@ -860,7 +966,7 @@ export function apply(ctx, config) {
         const handle = owned.get(p.sessionId);
         if (!handle) throw new Error('This agent is owned by the native UI; stop it there');
         ctx.goals.disarm(live);
-        await handle.dispose(); owned.delete(p.sessionId);
+        await disposeOwned(p.sessionId, handle); owned.delete(p.sessionId);
         return { stopped: true };
       }
       case 'rename': return api.rename(p);
@@ -869,7 +975,7 @@ export function apply(ctx, config) {
         if (!parent) throw new Error('Resume the parent session before messaging this agent');
         return ctx.subagents.prompt(p, new AbortController().signal);
       }
-      case 'send': {
+      case 'send': return witnessedSend(p, async () => {
         topLevel(ctx.agents.get(p.sessionId));
         const compact = compactionPublic(p.sessionId);
         if (p.expectedCompactionId && (compact?.request_id !== p.expectedCompactionId || compact.status !== 'completed'))
@@ -888,7 +994,7 @@ export function apply(ctx, config) {
         if (needsSignIn(selection, await accountStatus()))
           throw new Error('Sign in to DeepSeek in the native UI before sending a message');
         return api.prompt(p, new AbortController().signal);
-      }
+      });
       case 'settings': {
         // A launch applying account defaults binds the exact host generation
         // that created the session. A paused session resumes under the
