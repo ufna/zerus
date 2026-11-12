@@ -77,7 +77,7 @@ fn unheld_returns(db: &Connection) -> Result<()> {
 }
 fn unheld_returns_of(db: &Connection, team: &str) -> Result<()> {
     let pending = format!(
-        "SELECT d.seq,d.node,n.generation FROM decisions d INDEXED BY decision_pending JOIN nodes n ON n.team=d.team AND n.id=d.node WHERE d.team=?1 AND d.state<>'{}' AND d.node>?2 AND d.kind='return' AND d.state='{}' ORDER BY d.node LIMIT 200",
+        "SELECT d.seq,d.node FROM decisions d INDEXED BY decision_pending JOIN nodes n ON n.team=d.team AND n.id=d.node WHERE d.team=?1 AND d.state<>'{}' AND d.node>?2 AND d.kind='return' AND d.state='{}' ORDER BY d.node LIMIT 200",
         DecisionState::Settled.as_str(),
         DecisionState::Pending.as_str()
     );
@@ -104,37 +104,20 @@ fn unheld_returns_of(db: &Connection, team: &str) -> Result<()> {
             .prepare(&pending)
             .and_then(|mut s| {
                 s.query_map(params![team, after], |r| {
-                    Ok((
-                        r.get::<_, u64>(0)?,
-                        r.get::<_, u32>(1)?,
-                        r.get::<_, u32>(2)?,
-                    ))
+                    Ok((r.get::<_, u64>(0)?, r.get::<_, u32>(1)?))
                 })?
                 .collect::<std::result::Result<Vec<_>, _>>()
             })
             .map_err(storage)?;
-        for (seq, node, generation) in &rows {
+        for (seq, node) in &rows {
             if holder_of(db, team, *node)?.is_some() {
                 continue;
             }
-            rows::settle_decisions(db, team, Some(*node), &actor, false)?;
-            db.execute(
-                "UPDATE nodes SET hold=1 WHERE team=?1 AND id=?2",
-                params![team, node],
-            )
-            .map_err(storage)?;
-            let text = format!(
-                "The return of task {node} had nobody to go to: no member holds its attempt (its hand-out was only reserved, refused or superseded). The task is held; decide again."
-            );
-            db.execute(
-                "INSERT INTO inbox(team,kind,node,generation,actor,text,created_ms) VALUES(?1,?2,?3,?4,?5,?6,?7)",
-                params![team, format!("return_without_holder:{seq}"), node, generation, actor, text, now],
-            )
-            .map_err(storage)?;
+            hand_back_return(db, team, *node, *seq, &actor, now)?;
             moved = true;
         }
         match rows.last() {
-            Some((_, node, _)) if rows.len() == 200 => after = *node,
+            Some((_, node)) if rows.len() == 200 => after = *node,
             _ => break,
         }
     }

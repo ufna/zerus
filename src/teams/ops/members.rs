@@ -148,7 +148,6 @@ fn hand_back(ctx: &mut Context<'_>, member: &str) -> Result<()> {
         {
             continue;
         }
-        ctx.settle(node)?;
         let body = format!(
             "Member {member} was removed before the {kind} of task {node} started; the decision is settled and the task waits for a new one."
         );
@@ -186,15 +185,24 @@ pub(super) fn removed_holder(ctx: &Context<'_>, node: u32) -> Result<Option<Stri
     Ok((ctx.member(&holder)?.state == MemberState::Removed).then_some(holder))
 }
 /// Hands a node to the lead instead of a Return or Reassign that its member
-/// can no longer carry out: held, with one inbox item of the cause's own kind.
+/// can no longer carry out, through the store's one writer of that outcome
+/// (`rows::hand_back`): its unsettled decision settled, the node held, one
+/// inbox item of the cause's own kind. The operation moves the revision.
 pub(super) fn hand_to_lead(
     ctx: &mut Context<'_>,
     node: u32,
     kind: &str,
     text: &str,
 ) -> Result<u64> {
-    queue::set_hold(ctx, node, true)?;
-    ctx.inbox(node, kind, text)
+    rows::hand_back(
+        ctx.db,
+        &ctx.team.id,
+        node,
+        &encode(ctx.actor)?,
+        kind,
+        text,
+        ctx.now,
+    )
 }
 /// The team's unsettled Returns and Reassigns, from the partial index of
 /// open decisions and within its bound.

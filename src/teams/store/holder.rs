@@ -31,6 +31,26 @@ pub(crate) fn holder_of(db: &Connection, team: &str, node: u32) -> Result<Option
     }))
 }
 
+/// Hands a Return that has nobody to go to back to the lead, through the
+/// store's one writer of that outcome (`rows::hand_back`): the decision
+/// settles, the node is held, and the lead gets one inbox item of its own
+/// kind, `return_without_holder:<seq>`. Used by the step to layout 10 for
+/// Returns an earlier layout admitted. Returns the item.
+pub(crate) fn hand_back_return(
+    db: &Connection,
+    team: &str,
+    node: u32,
+    seq: u64,
+    actor: &str,
+    now: i64,
+) -> Result<u64> {
+    let text = format!(
+        "The return of task {node} had nobody to go to: no member holds its attempt (its hand-out was only reserved, refused or superseded). The task is held; decide again."
+    );
+    let kind = format!("return_without_holder:{seq}");
+    rows::hand_back(db, team, node, actor, &kind, &text, now)
+}
+
 impl Store {
     /// The attempt holder of a live node: [`holder_of`].
     pub fn attempt_holder(&self, team: &str, node: u32) -> Result<Option<AttemptHolder>> {

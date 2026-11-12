@@ -661,11 +661,13 @@ fn an_integration_conflict_for_a_removed_holder_goes_to_the_lead_instead_of_a_re
     }
 }
 
-/// A Return admitted while its member's hand-out was only reserved (the task
-/// observed In review before any outcome) is still handed back when that
-/// member is removed: the removal reads the newest effect of the node's
-/// current generation, whatever its state, never the narrower holder a
-/// reopen is delivered to.
+/// A Return admitted under the old reading while its member's hand-out was
+/// only reserved is still handed back when that member is removed. The
+/// narrowed holder reads nobody for it, and the removal reads the newest
+/// effect of the node's current generation instead, whatever its state. The
+/// narrowed rule no longer admits such a Return, so the state is built as the
+/// step to layout 10's own test builds it: admitted against a submitted
+/// effect, then the effect set back to reserved.
 #[test]
 fn removal_hands_back_a_return_admitted_while_the_hand_out_was_only_reserved() {
     let mut h = Harness::new();
@@ -673,12 +675,26 @@ fn removal_hands_back_a_return_admitted_while_the_hand_out_was_only_reserved() {
     h.bind("m1");
     h.bind("m2");
     let node = h.add(&person(), 1);
-    h.intent(node, "m1");
+    let id = h.intent(node, "m1");
     h.observe(node, TaskStage::InReview);
+    let effect = |h: &Harness, state: &str| {
+        h.store
+            .db
+            .as_ref()
+            .unwrap()
+            .execute(
+                "UPDATE effects SET state=?2 WHERE request_id=?1",
+                rusqlite::params![id, state],
+            )
+            .unwrap();
+    };
+    effect(&h, "submitted");
     let earlier = decide(&mut h, &lead, returned(node));
-    // The removal's own reading: the newest effect of the generation is m1's
+    effect(&h, "reserved");
+    // The narrowed holder reads nobody; the removal's own reading is m1's
     // reservation, with no outcome.
-    let effect = h
+    assert!(h.store.attempt_holder(TEAM, node).unwrap().is_none());
+    let newest = h
         .store
         .effects(TEAM, 200, None)
         .unwrap()
@@ -686,27 +702,24 @@ fn removal_hands_back_a_return_admitted_while_the_hand_out_was_only_reserved() {
         .pop()
         .unwrap();
     assert_eq!(
-        (effect.node, effect.member.as_str(), effect.state.as_str()),
+        (newest.node, newest.member.as_str(), newest.state.as_str()),
         (node, "m1", "reserved")
     );
-    assert!(effect.outcome.is_none());
+    assert!(newest.outcome.is_none());
     assert_eq!(
-        Some(effect.generation),
+        Some(newest.generation),
         h.store.generation(TEAM, node).unwrap()
     );
     h.run(&person(), removed("m1")).unwrap();
-    // Whatever the holder reading is, the Return was aimed at m1 and is
-    // handed back: settled, the node held, one item, nothing pending.
     assert_eq!(decision(&h, earlier.seq).state, DecisionState::Settled);
     assert!(reopens(&h).is_empty());
     assert!(h.node(node).hold);
-    let kind = format!("member_removed:{}", earlier.seq);
     assert_eq!(
         open_items(&h, node)
             .into_iter()
             .filter(|k| k.starts_with("member_removed:"))
             .collect::<Vec<_>>(),
-        vec![kind]
+        vec![format!("member_removed:{}", earlier.seq)]
     );
     let next = decide(&mut h, &lead, reassigned(node, "m2"));
     assert_eq!(
