@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import waiting from "../../../core/src/teams/fixtures/cli-waiting.json";
 import cards from "../../../core/src/teams/fixtures/cli-cards.json";
 import { KNOWN_KINDS, waitingDecisions, waitingKindIcon, waitingKindLabel, waitingKindSentence } from "./decisions";
+import { resolveIcon } from "../lib/icons";
 
 // A card's kind in words, one sentence and an icon follow the exact kind the
 // store sends. The list is every kind opened on integrate/teams and the
@@ -20,7 +21,7 @@ const TABLE: Record<string, { label: string; icon: string }> = {
   launch_uncertain: { label: "Start not confirmed", icon: "circle-question-mark" },
   launch_capacity: { label: "No room for members", icon: "hourglass" },
   standing_confirmation: { label: "Member needs you", icon: "hand" },
-  team_actor_blocked: { label: "Team service blocked", icon: "triangle-alert" },
+  team_actor_blocked: { label: "Team service blocked", icon: "server" },
   report_waiting: { label: "Report waiting", icon: "clock" },
   silent_lead: { label: "Lead not working", icon: "bell" },
   late_session: { label: "Late session", icon: "timer" },
@@ -43,6 +44,18 @@ describe("a card's kind", () => {
     expect(labels.size, "no two kinds share a label").toBe(KNOWN_KINDS.length);
     expect(sentences.size, "no two kinds share a sentence").toBe(KNOWN_KINDS.length);
     expect(icons.size, "no two kinds share an icon").toBe(KNOWN_KINDS.length);
+  });
+
+  it("draws every kind's icon with its own glyph, the unknown kind's included", () => {
+    // Icon names resolve through the client's aliases (circle-alert and
+    // triangle-alert are one glyph), and a name without a glyph draws nothing.
+    const glyphs = new Map<string, string>();
+    for (const kind of [...KNOWN_KINDS, "unknown_kind"]) {
+      const glyph = resolveIcon(waitingKindIcon(kind)).html;
+      expect(glyph, `${kind}: the icon draws something`).not.toBe("");
+      expect(glyphs.get(glyph), `${kind} draws the same glyph as ${glyphs.get(glyph)}`).toBeUndefined();
+      glyphs.set(glyph, kind);
+    }
   });
 
   it("calls the pipeline's acceptance by its own name, not a phase's", () => {

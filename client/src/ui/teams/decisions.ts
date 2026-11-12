@@ -74,7 +74,7 @@ export function waitingKindIcon(kind: string): string {
     case "launch_uncertain": return "circle-question-mark";
     case "launch_capacity": return "hourglass";
     case "standing_confirmation": return "hand";
-    case "team_actor_blocked": return "triangle-alert";
+    case "team_actor_blocked": return "server";
     case "report_waiting": return "clock";
     case "silent_lead": return "bell";
     case "late_session": return "timer";
