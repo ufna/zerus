@@ -1394,6 +1394,19 @@ again, and both orders of the answer and the observation leave the same
 state. No service command finishes, reopens or cancels a task whose current
 attempt is not the one the store observed.
 
+**A reader of a reply ignores what it does not know.** The contract's types
+refuse unknown fields, and that stays the rule for what a person or a
+program sends: a request, a saved template, an imported catalog. A reply
+is different: reads gain fields, and a client built before a field existed
+must still read the rest. The client core therefore reads every Teams
+reply through types of its own or through a pass that keeps the fields it
+knows, the catalog and its template rows included, although the same
+shapes are strict on the way in. Found on 2026-11-12: the catalog reply
+gained a digest in each template row, and the merged client core, which
+read those rows through the strict template type, refused the whole
+catalog. A merge that changes a reply runs the client core's tests against
+the new fixtures.
+
 **Known limit: the key of a task that was closed before the stop.** After a
 stop the service clears the team key of the tasks that were open at the
 stop and of released stages. A task accepted or cancelled earlier keeps its
