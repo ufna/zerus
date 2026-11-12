@@ -136,3 +136,6 @@ mod deferred;
 mod cancel_refusal;
 
 mod terminal_pruning;
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+mod cancel_recovery;

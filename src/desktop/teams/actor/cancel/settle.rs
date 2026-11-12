@@ -196,6 +196,11 @@ pub(in crate::desktop::teams::actor) fn classify(
     fact: &Fact,
     error: Problem,
 ) -> Result<FactOutcome> {
+    // A stale receipt spends its UUID without deciding the fact. Let the
+    // caller reserve the same fact against the current revision first.
+    if error.code == code::STALE_REVISION {
+        return Err(error);
+    }
     if !store.request_refused(&team.id, &fact.request_id)? {
         return Err(error);
     }
