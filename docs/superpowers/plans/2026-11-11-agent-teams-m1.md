@@ -1331,7 +1331,11 @@ state, reason}`: `cancelled` and `released` both end the node as
 cancelled in the team, exactly as the observation of a cancelled task
 does; `refused` settles the decision and, in a live team, files one lead
 inbox item. The read is `Store::pending_cancels(team, limit, after)`. It
-ends no agent.
+ends no agent. Two later paragraphs of this section change this one: the
+command also answers `stale` ("A cancel acts on one attempt"), and in a
+live team a `cancelled` answer writes nothing to the store, because the
+task's observation ends the node ("In a live team a task's end is recorded
+by its observation alone").
 
 **After a stop Zerus cancels the unfinished tasks, releases them and ends
 no agent (package 10).** For each node the cancel comes first and the
@@ -1731,7 +1735,8 @@ card operations it needs in `src/teams/ops/`.
 - Pause and resume: a paused team hands out nothing; a paused member takes
   nothing; a team paused by the person is not resumed by the lead.
 - Stop and archive: the keys of the team's open tasks are cleared in
-  bounded pages through `clear_team_key`; a launch that completes after a
+  bounded pages through the service command `team-clear` (this brief first
+  called it `clear_team_key`); a launch that completes after a
   stop is recorded as provenance (tracker item `zerus-63rru.11`).
 
 **Tests:** each timer firing once and not after its condition passed; the

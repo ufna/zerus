@@ -224,11 +224,14 @@ field map: the team ID and the home computer. Readers that do not know the key
 ignore it and sync carries it, so older builds and phones are unaffected. It
 is also how a task is sent to a team from another computer: the home
 computer's teams actor sees the key arrive and adds the task to the queue.
-With it, `hgs task` on any computer can show the team and refuse the three actions
-that would bypass the plan: sending a team task, handing it off and moving it
-to Done. On the home computer the refusal applies to every agent except the
-team's lead; on another computer it applies to every agent. A person can still do all
-of them from the task board; the teams actor records the override and
+With it, `hgs task` on any computer can show the team and refuse to an agent
+every write that would bypass the plan: sending a team task or handing it
+off, changing its stage, target, title or text, starting, reopening or
+cancelling it. The refusal applies to every agent on every computer, the
+team's lead included: a lead decides through `hgs team` and the service
+acts (decided during milestone 1, "No agent drives a team's task" in the
+plan; the first draft excepted the lead on the home computer). A person can
+still do all of them from the task board; the teams actor records the override and
 re-plans. This key changes `crates/replica` and needs a check-in with that
 crate's owner before it is written.
 
@@ -351,7 +354,7 @@ by hand can be saved as a new template.
 
 **A template is data.** Nothing in it is executed. Everything that widens what
 agents may decide is shown on the New team form and confirmed there by the
-person, whatever the template says: the four delegations, automatic
+person, whatever the template says: the five delegations, automatic
 acceptance, tasks entering without the lead, and landing. A template file from
 elsewhere cannot turn any of them on silently.
 
@@ -396,7 +399,10 @@ Team status: Draft, Planning, Running, Paused, Finished, Archived, and Stopped.
    is decided and no Crit is open. The integration branch holds the result.
    A standing team is not finished; it is stopped or archived.
    Landing it on the base branch or pushing it is the person's own step.
-7. **Stop** cancels every unfinished task. **Archive** follows Finish or Stop.
+7. **Stop** ends the team's work: a running task is cancelled, a task with
+   nothing running leaves the team as an ordinary task, and a task that a
+   person took themselves after the stop is left to them. **Archive** follows
+   Finish or Stop.
    Both are the person's.
 
 A further phase is a draft from the lead. It is approved by the person, or
@@ -580,8 +586,9 @@ accepted only when the call has no session markers and no live session agent
 among its process ancestors, and its journal entry records that origin. This
 is an interim rule and is named as such in the output.
 
-**Delegations (D5, D9).** All of them are on for a new team; the person can
-turn each off for a team at any time.
+**Delegations (D5, D9).** The person sets each one when the team is created
+(the built-in templates propose all of them on) and can turn each off for a
+team at any time.
 
 - **Accept results.** The lead moves a team task to Done. In a hard-gate phase
   the phase then waits for the person.
@@ -684,8 +691,9 @@ mode can be added without changing the plan model.
   operations and answers reads; nothing is handed out, and status says so.
 - **Preview switch.** Teams are off by default behind one per-computer
   setting. With it off, `hgs team` answers `teams_inactive`, the desktop shows
-  no entry point, no store file exists and no code path of an ordinary session
-  changes.
+  no entry point, nothing of teams runs and no code path of an ordinary session
+  changes. A store written while the preview was on stays where it is:
+  switching the preview off deletes nothing.
 - First milestones are single-computer: the team, its lead and its members are
   on the home computer, and the Team tab is shown by that computer's desktop.
   Viewing from another computer and remote members come in the fourth
@@ -780,7 +788,7 @@ settings.
 | Destructive actions need confirmation | Kept. Stop, archive and member removal are the person's, confirmed in the desktop core |
 | Automatic tool approvals are a separate opt-in, off by default | Unchanged for ordinary sessions. For a team's members the delegation (D5, D9) confirms what they need, with the same journal, identity and no-replay rules |
 | Startup trust and persistent permission changes stay manual | Changed for a team's members by D9: Zerus answers the trust prompt of a folder it created for the team. A change beyond a member's own session or folder stays manual |
-| "Only the person accepts Done" (agent guide) | Changed for team tasks by D5: the team's lead may accept. The guide and the reference are updated |
+| "Only the person accepts Done" (agent guide) | Unchanged for `hgs task`: no agent moves a team task to Done. Under D5 the lead accepts through `hgs team`, and the service's own command finishes the task |
 | An unknown delivery is never replayed | Kept for hand-outs, doorbells, answers and resumes |
 | `Background` status contract | Unchanged. A member in `Background` is busy |
 | Native agents are never restarted or killed as part of an update | Unchanged. A member whose agent exited by itself is resumed under the delegation, at most three times an hour; one that a person stopped is not |
@@ -930,11 +938,14 @@ see or do in another's sessions, and where shared state lives.
 
 ## Documents to update as milestones land
 
-- `CLAUDE.md` and `AGENTS.md`: the team exception to person-only acceptance,
-  and the lead's delegations next to the automatic-approval rule.
-- `src/agent_guide/tasks.md`: the acceptance line.
+- `CLAUDE.md` and `AGENTS.md`: where the team code lives, and the team's
+  standing confirmations next to the automatic-approval rule. No exception
+  to person-only acceptance is needed, and `src/agent_guide/tasks.md` stays
+  as it is: see the project-rules table.
 - `docs/reference.md`: a Teams section; the supervised-child attention text in
   M3.
 - `docs/superpowers/specs/2026-10-27-tauri-web-ui-design.md`: the
   "Orchestration" row, pointing here.
 - A user guide for teams, based on the fork's guide, in English and Russian.
+  The English guide is `docs/agent-teams.md`; the Russian one waits for the
+  owner's decision, because the repository's documentation is English.
