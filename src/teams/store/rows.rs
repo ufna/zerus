@@ -150,6 +150,40 @@ pub(crate) fn settle_decisions(
     close_cards(db, team, node, actor)?;
     Ok(())
 }
+/// Hands a node back to the lead: its unsettled decision settles, the node is
+/// held, and the lead gets one inbox item of the cause's own kind. The one
+/// writer of that outcome: the step to layout 10, a member's removal, and a
+/// writer of a Return whose holder was removed. Each caller moves the team's
+/// revision once.
+pub(crate) fn hand_back(
+    db: &Connection,
+    team: &str,
+    node: u32,
+    actor: &str,
+    kind: &str,
+    text: &str,
+    now: i64,
+) -> Result<u64> {
+    settle_decisions(db, team, Some(node), actor, false)?;
+    db.execute(
+        "UPDATE nodes SET hold=1 WHERE team=?1 AND id=?2",
+        params![team, node],
+    )
+    .map_err(storage)?;
+    let generation: u32 = db
+        .query_row(
+            "SELECT generation FROM nodes WHERE team=?1 AND id=?2 UNION ALL SELECT generation FROM node_archive WHERE team=?1 AND id=?2 LIMIT 1",
+            params![team, node],
+            |r| r.get(0),
+        )
+        .map_err(storage)?;
+    db.execute(
+        "INSERT INTO inbox(team,kind,node,generation,actor,text,created_ms) VALUES(?1,?2,?3,?4,?5,?6,?7)",
+        params![team, kind, node, generation, actor, text, now],
+    )
+    .map_err(storage)?;
+    Ok(db.last_insert_rowid() as u64)
+}
 /// A node's settlement expires its integration cards; team settlement expires
 /// every open card, including proposals without a node.
 pub(crate) fn close_cards(

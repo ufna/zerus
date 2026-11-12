@@ -39,7 +39,7 @@ pub(super) fn append(ctx: &Context<'_>, request: &Request) -> Result<()> {
         .event
         .map(str::to_owned)
         .map_or_else(|| kind(ctx.op), Ok)?;
-    let body = match ctx.op {
+    let mut body = match ctx.op {
         Operation::CloseCard { reason, .. } => reason.clone(),
         Operation::ObserveTask { node, observation }
             if ctx.event == Some("person_override") && observation.key != KeyState::Ours =>
@@ -48,7 +48,17 @@ pub(super) fn append(ctx: &Context<'_>, request: &Request) -> Result<()> {
         }
         _ => format!("{kind} at revision {}", ctx.reply.revision),
     };
-    ctx.db.execute("INSERT INTO journal(team,at_ms,actor,kind,request_id,text,refs) VALUES(?1,?2,?3,?4,?5,?6,?7)",params![ctx.team.id,ctx.now,encode(ctx.actor)?,kind,request.request_id,body,encode(&references(request)?)?]).map_err(storage)?;
+    let mut refs = references(request)?;
+    if let Some(earlier) = ctx.superseded {
+        let (old, new) = replacement(ctx, earlier)?;
+        body.push_str(&format!(
+            "; decision {earlier} ({old}) superseded by decision {} ({})",
+            new.0, new.1
+        ));
+        refs.push(format!("decision:{earlier}"));
+        refs.push(format!("decision:{}", new.0));
+    }
+    ctx.db.execute("INSERT INTO journal(team,at_ms,actor,kind,request_id,text,refs) VALUES(?1,?2,?3,?4,?5,?6,?7)",params![ctx.team.id,ctx.now,encode(ctx.actor)?,kind,request.request_id,body,encode(&refs)?]).map_err(storage)?;
     let cutoff: Option<u64> = ctx
         .db
         .query_row(
@@ -67,6 +77,27 @@ pub(super) fn append(ctx: &Context<'_>, request: &Request) -> Result<()> {
         archive(ctx, None)?;
     }
     Ok(())
+}
+/// The superseded decision's kind, and the decision that replaced it: the
+/// node's newest, recorded by this operation.
+fn replacement(ctx: &Context<'_>, earlier: u64) -> Result<(String, (u64, String))> {
+    let (node, kind): (u32, String) = ctx
+        .db
+        .query_row(
+            "SELECT node,kind FROM decisions WHERE seq=?1 AND team=?2",
+            params![earlier, ctx.team.id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .map_err(storage)?;
+    let new = ctx
+        .db
+        .query_row(
+            "SELECT seq,kind FROM decisions WHERE team=?1 AND node=?2 ORDER BY seq DESC LIMIT 1",
+            params![ctx.team.id, node],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .map_err(storage)?;
+    Ok((kind, new))
 }
 fn archive(ctx: &Context<'_>, cutoff: Option<u64>) -> Result<()> {
     ctx.db.execute("INSERT INTO journal_archive SELECT * FROM journal WHERE team=?1 AND (?2 IS NULL OR seq<=?2)",params![ctx.team.id,cutoff]).map_err(storage)?;

@@ -64,15 +64,32 @@ pub(super) fn return_task(ctx: &mut Context<'_>) -> Result<()> {
         unreachable!()
     };
     ctx.active()?;
-    ctx.undecided(*node)?;
-    let n = ctx.live_node(*node)?;
+    let earlier = ctx.supersede(*node)?;
+    let mut n = ctx.live_node(*node)?;
     reason(why)?;
-    if n.state != NodeState::Reported || handout::holder(ctx, *node)?.is_none() {
+    let holder = handout::holder(ctx, *node)?;
+    let Some(holder) = holder.filter(|_| n.state == NodeState::Reported) else {
         return Err(invalid(
             "Only a reported task with a holder can be returned.",
         ));
+    };
+    if members::removed_holder(ctx, *node)?.is_some() {
+        return Err(invalid(
+            "The task's holder was removed from the team; reassign or cancel the task instead.",
+        ));
     }
     pipeline::override_task(ctx, *node)?;
+    // A superseded Reassign did not happen: the work goes back to its holder,
+    // who is also the member a later hand-out of the node follows.
+    if earlier.is_some_and(|(_, kind)| kind == "reassign") {
+        n.assignee = Some(holder);
+        ctx.db
+            .execute(
+                "UPDATE nodes SET data=?3 WHERE team=?1 AND id=?2",
+                params![ctx.team.id, node, rows::node_payload(&n)?],
+            )
+            .map_err(storage)?;
+    }
     ctx.decision(*node, "return", why, DecisionState::Pending)?;
     Ok(())
 }
@@ -86,7 +103,7 @@ pub(super) fn reassign(ctx: &mut Context<'_>) -> Result<()> {
         unreachable!()
     };
     ctx.active()?;
-    ctx.undecided(*node)?;
+    ctx.supersede(*node)?;
     let mut n = ctx.live_node(*node)?;
     let m = ctx.member(member)?;
     reason(why)?;
@@ -122,7 +139,7 @@ pub(super) fn cancel(ctx: &mut Context<'_>) -> Result<()> {
         unreachable!()
     };
     ctx.active()?;
-    ctx.undecided(*node)?;
+    ctx.supersede(*node)?;
     let n = ctx.live_node(*node)?;
     stage_end_authority(ctx, &n)?;
     reason(why)?;
@@ -224,6 +241,16 @@ pub(super) fn conflict(ctx: &mut Context<'_>) -> Result<()> {
         return Ok(());
     }
     ctx.settle(*node)?;
+    // The conflict happened and stays recorded; a Return to a removed holder
+    // could never be carried out, so the lead decides instead.
+    if let Some(member) = members::removed_holder(ctx, *node)? {
+        let text = format!(
+            "Member {member} was removed from the team; the integration conflict of task {node} is recorded and nobody can take the task back, so it waits for the lead to reassign or cancel it.\n{body}"
+        );
+        let kind = format!("conflict_holder_removed:{decision}");
+        ctx.reply.item = Some(members::hand_to_lead(ctx, *node, &kind, &text)?);
+        return Ok(());
+    }
     ctx.decision(*node, "return", &body, DecisionState::Pending)?;
     ctx.reply.item = Some(ctx.inbox(*node, "integration_conflict", &body)?);
     Ok(())

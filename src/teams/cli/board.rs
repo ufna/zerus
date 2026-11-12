@@ -15,9 +15,12 @@ pub(super) fn queue(team: &Team, page: Page<QueueRow>) -> Result<Page<Value>, Pr
             let node = row.node;
             let mut value = serde_json::to_value(&node).map_err(storage)?;
             // What a view needs to foresee a refusal: who holds the attempt
-            // and the kind of a pending decision, each null when none.
+            // and the kind of a pending decision, each null when none, and
+            // whether a new Return, Reassign or Cancel would replace that
+            // decision (always written; false when nothing is pending).
             value["holder"] = json!(row.holder);
             value["pending_decision"] = json!(row.pending);
+            value["pending_replaceable"] = json!(row.pending_replaceable);
             value["kind"] = json!(if node.kind == NodeKind::Stage {
                 "stage"
             } else {
