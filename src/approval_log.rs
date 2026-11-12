@@ -441,6 +441,46 @@ mod tests {
         json!({"host":"desktop-a","session":"claude/sample/review","provider":"claude","question":question()})
     }
 
+    /// The ordinary admission is the dangerous opt-in (zerus-63rru.60): its
+    /// reservation answers each form of a question's conversation exactly as
+    /// it did before the team audit learned that a startup card's null
+    /// conversation is none yet, and a row with a string conversation keeps
+    /// its identity byte for byte (pinned at b81df82c0).
+    #[test]
+    fn the_ordinary_reservation_answers_every_conversation_form_as_before() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut db = open(&dir.path().join("audit")).unwrap();
+        let answers = json!([{"question_id":"approval","selected_option_ids":["1"],"text":""}]);
+        let mut p = payload();
+        for (conversation, refusal) in [
+            (Value::Null, "Missing conversation_id"),
+            (json!(""), "Invalid conversation_id"),
+            (json!(7), "Missing conversation_id"),
+        ] {
+            p["question"]["conversation_id"] = conversation.clone();
+            let error = reserve(&mut db, &p, answers.clone(), false).unwrap_err();
+            assert_eq!(error.message, refusal, "{conversation}");
+        }
+        p["question"]["conversation_id"] = json!("fixture-conversation");
+        let reserved = reserve(&mut db, &p, answers.clone(), false).unwrap();
+        assert_eq!(reserved["fresh"], true);
+        let identity: String = db
+            .query_row(
+                "SELECT identity FROM attempts WHERE id=?1",
+                [reserved["id"].as_i64().unwrap()],
+                |r| r.get(0),
+            )
+            .unwrap();
+        println!("PIN identity {identity}");
+        assert_eq!(identity, PINNED_IDENTITY);
+        assert_eq!(
+            reserve(&mut db, &p, answers, false).unwrap()["fresh"],
+            false
+        );
+    }
+    const PINNED_IDENTITY: &str =
+        "4a236ed0649b16cacb2c8f6a4ef9f691ae4f0a445744a1832031f5391c27528d";
+
     #[test]
     fn selects_only_known_one_time_tool_grants() {
         let q = question();
