@@ -343,3 +343,90 @@ fn a_bad_terminal_delivery_row_does_not_stop_the_next_teams_settlement() {
         "refused"
     );
 }
+
+fn conflict_at_reopen(state: &Path, node: u32) {
+    let mut store = Store::open(state).unwrap();
+    let mut o = store.task_observation(TEAM, node).unwrap().unwrap();
+    o.previous_revision = o.revision.clone();
+    o.revision = uuid::Uuid::new_v4().to_string();
+    o.attempt = o.attempt.max(2);
+    o.attempt_id.clear();
+    o.attempt_conflict = true;
+    let revision = store.team(TEAM).unwrap().unwrap().revision;
+    ops::apply(
+        &mut store,
+        &service(),
+        &crate::teams::ops::tests::request(
+            revision,
+            Operation::ObserveTask {
+                node,
+                observation: o,
+            },
+        ),
+        100,
+    )
+    .unwrap();
+}
+#[test]
+fn reopens_wait_for_the_reviewed_attempt_before_reserving_an_effect() {
+    let mut h = Harness::new();
+    let (node, lead) = h.reported();
+    h.run(
+        &lead,
+        Operation::Return {
+            node,
+            reason: "Revise".into(),
+        },
+    )
+    .unwrap();
+    conflict_at_reopen(h.temp.path(), node);
+    let machine = h.store.team(TEAM).unwrap().unwrap().home;
+    let mut a = Runtime::open(h.temp.path(), &machine).unwrap();
+    let mut p = w(&h, vec![], none());
+    let team = h.store.team(TEAM).unwrap().unwrap();
+    a.reopens(&mut h.store, &mut p, &team, 100).unwrap();
+    assert_eq!(p.calls, 0);
+    assert!(!h
+        .store
+        .effects(TEAM, 200, None)
+        .unwrap()
+        .rows
+        .iter()
+        .any(|e| e.kind == "reopen"));
+}
+#[test]
+fn a_reopen_rechecks_the_reviewed_attempt_at_the_spawn() {
+    let mut h = Harness::new();
+    let (node, lead) = h.reported();
+    h.run(
+        &lead,
+        Operation::Return {
+            node,
+            reason: "Revise".into(),
+        },
+    )
+    .unwrap();
+    let machine = h.store.team(TEAM).unwrap().unwrap().home;
+    let mut a = Runtime::open(h.temp.path(), &machine).unwrap();
+    let state = h.temp.path().to_owned();
+    let mut p = w(
+        &h,
+        vec![],
+        Box::new(move |_, _, _, n| {
+            conflict_at_reopen(&state, n.id);
+            String::new()
+        }),
+    );
+    a.tick(&mut h.store, &mut p, TEAM, 100, false).unwrap();
+    assert_eq!(p.calls, 1);
+    assert_eq!(p.admissions.get(), 0);
+    let e = h
+        .store
+        .effects(TEAM, 200, None)
+        .unwrap()
+        .rows
+        .into_iter()
+        .find(|e| e.kind == "reopen")
+        .unwrap();
+    assert_eq!(e.state, "refused");
+}

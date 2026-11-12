@@ -72,6 +72,10 @@ impl Native {
             }) {
                 if effect.kind == "handout" {
                     store.handout_admissible(team, node.id, &member.id)?;
+                } else if effect.kind == "reopen"
+                    && !store.reviewed_task_current(&team.id, node.id, effect.generation)?
+                {
+                    return Err(problem("The reopened task's reviewed attempt changed"));
                 }
                 return Ok(());
             }
@@ -93,6 +97,9 @@ impl Native {
             || store.generation(&team.id, node.id)? != Some(decision.generation)
         {
             return Err(problem("Finishing generation changed"));
+        }
+        if !store.reviewed_task_current(&team.id, node.id, decision.generation)? {
+            return Err(problem("The accepted task's reviewed attempt changed"));
         }
         if team.settings.integration == Integration::Branch
             && node.kind != NodeKind::Stage

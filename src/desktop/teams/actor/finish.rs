@@ -51,6 +51,9 @@ impl Runtime {
         let Some(n) = store.node(&team.id, d.node)? else {
             return Ok(());
         };
+        if !store.reviewed_task_current(&team.id, d.node, d.generation)? {
+            return Ok(());
+        }
         let Some(o) = store.task_observation(&team.id, d.node)? else {
             return Ok(());
         };

@@ -103,6 +103,9 @@ impl Runtime {
         now: i64,
         budget: &mut u8,
     ) -> Result<()> {
+        if !store.accepted_task_current(&team.id, d.node, d.generation)? {
+            return Ok(());
+        }
         let Some(report) = store.report(&team.id, d.node, d.generation)? else {
             return Ok(());
         };
