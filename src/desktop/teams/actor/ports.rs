@@ -43,6 +43,16 @@ pub(in crate::desktop::teams) trait Ports {
         Ok(())
     }
     #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn answer_timers(
+        &mut self,
+        _state: &mut super::auxiliary::State,
+        _store: &mut Store,
+        _team: &Team,
+        _now: i64,
+    ) -> Result<()> {
+        Ok(())
+    }
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     fn terminal_timers(
         &mut self,
         _state: &mut super::auxiliary::State,

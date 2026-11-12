@@ -116,7 +116,11 @@ impl Runtime {
         }
         self.cleanup_metadata(store, &team, now)?;
         #[cfg(any(target_os = "linux", target_os = "macos"))]
-        self.team_entry(store, ports, &team, now)?;
+        {
+            let lead = self.team_entry(store, ports, &team, now);
+            let answers = self.answers_entry(store, ports, &team, now);
+            self.for_row(|_| lead.and(answers))?;
+        }
         Ok(())
     }
 

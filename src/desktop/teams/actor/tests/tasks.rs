@@ -23,6 +23,8 @@ struct Fake {
     lose_first: bool,
     clears: Vec<u32>,
     timer_teams: Vec<String>,
+    answer_teams: Vec<String>,
+    fail_answers: bool,
     terminals: usize,
     fail_timers: bool,
     release: Option<(std::path::PathBuf, u32)>,
@@ -42,6 +44,21 @@ impl Ports for Fake {
         self.timer_teams.push(t.id.clone());
         if self.fail_timers {
             Err(super::super::problem("fixture team timer fault"))
+        } else {
+            Ok(())
+        }
+    }
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn answer_timers(
+        &mut self,
+        _: &mut super::super::auxiliary::State,
+        _: &mut Store,
+        t: &Team,
+        _: i64,
+    ) -> Result<()> {
+        self.answer_teams.push(t.id.clone());
+        if self.fail_answers {
+            Err(super::super::problem("fixture answer timer fault"))
         } else {
             Ok(())
         }
@@ -272,6 +289,8 @@ fn the_tick_calls_each_live_team_entry_and_one_terminal_entry_per_pass() {
     a.page(&mut h.store, &mut p, &teams, 100, false).unwrap();
     assert_eq!(p.timer_teams.len(), 2);
     assert!(p.timer_teams.contains(&TEAM.into()) && p.timer_teams.contains(&TEAM_B.into()));
+    assert_eq!(p.answer_teams.len(), 2);
+    assert!(p.answer_teams.contains(&TEAM.into()) && p.answer_teams.contains(&TEAM_B.into()));
     assert_eq!(p.terminals, 1);
 }
 #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -291,6 +310,11 @@ fn timer_entry_faults_back_off_as_rows_and_do_not_set_sweep_health() {
     a.page(&mut h.store, &mut p, &teams, 101, false).unwrap();
     assert_eq!(p.terminals, 1);
     assert_eq!(p.timer_teams.len(), 1);
+    assert_eq!(
+        p.answer_teams.len(),
+        2,
+        "lead failure cannot suppress answers"
+    );
     assert!(crate::desktop::teams::health(h.temp.path()).is_none());
     p.fail_timers = false;
     a.page(&mut h.store, &mut p, &teams, 60_100, false).unwrap();
@@ -404,4 +428,66 @@ fn a_stage_cutting_over_retries_the_same_task_after_backoff() {
     assert_eq!(p.calls.len(), 2);
     assert_eq!(p.calls[0], p.calls[1]);
     assert_eq!(h.node(stage).task.unwrap().uuid, p.calls[0]);
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[test]
+fn answer_entry_faults_have_their_own_durable_backoff_and_no_sweep_health() {
+    let mut h = Harness::new();
+    let machine = h.store.team(TEAM).unwrap().unwrap().home;
+    let teams = h.store.live_teams(16, None).unwrap().rows;
+    let mut a = super::super::Runtime::open(h.temp.path(), &machine).unwrap();
+    let mut p = Fake {
+        fail_answers: true,
+        ..Default::default()
+    };
+    a.page(&mut h.store, &mut p, &teams, 100, false).unwrap();
+    assert_eq!(
+        (p.timer_teams.len(), p.answer_teams.len(), p.terminals),
+        (1, 1, 1)
+    );
+    assert!(crate::desktop::teams::health(h.temp.path()).is_none());
+    drop(a);
+    let mut a = super::super::Runtime::open(h.temp.path(), &machine).unwrap();
+    a.page(&mut h.store, &mut p, &teams, 101, false).unwrap();
+    assert_eq!(
+        (p.timer_teams.len(), p.answer_teams.len(), p.terminals),
+        (2, 1, 2)
+    );
+    p.fail_answers = false;
+    a.page(&mut h.store, &mut p, &teams, 60_100, false).unwrap();
+    assert_eq!(
+        (p.timer_teams.len(), p.answer_teams.len(), p.terminals),
+        (3, 2, 3)
+    );
+    assert!(crate::desktop::teams::health(h.temp.path()).is_none());
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[test]
+fn a_healthy_answer_step_does_not_reclassify_a_failed_team_card_as_sweep_health() {
+    let mut h = Harness::new();
+    let machine = h.store.team(TEAM).unwrap().unwrap().home;
+    let teams = h.store.live_teams(16, None).unwrap().rows;
+    let mut a = super::super::Runtime::open(h.temp.path(), &machine).unwrap();
+    let mut p = Fake {
+        fail_timers: true,
+        ..Default::default()
+    };
+    for now in [100, 60_100] {
+        a.page(&mut h.store, &mut p, &teams, now, false).unwrap();
+    }
+    // The third failure opens a card. Fail that row's storage write while
+    // the independent answer step succeeds; this is still a row failure.
+    let db = rusqlite::Connection::open(h.temp.path().join("teams/teams-v1.sqlite3")).unwrap();
+    db.execute_batch("CREATE TRIGGER fixture_card_write BEFORE INSERT ON cards BEGIN SELECT RAISE(ABORT,'fixture card storage failed'); END;").unwrap();
+    a.page(&mut h.store, &mut p, &teams, 180_100, false)
+        .unwrap();
+    assert_eq!(p.timer_teams.len(), 3);
+    assert_eq!(p.answer_teams.len(), 3);
+    assert!(h.store.cards(TEAM, 16, None).unwrap().rows.is_empty());
+    let gate = a.ledger.get(TEAM, "gate:timers:team").unwrap().unwrap();
+    assert_eq!(gate.data["failures"], 3);
+    assert!(gate.data["notice"].is_object());
+    assert!(crate::desktop::teams::health(h.temp.path()).is_none());
 }

@@ -1,4 +1,4 @@
-//! Persistent package-10 state. The actor owns the two entry points and
+//! Persistent package-10 state. The actor owns the entry points and
 //! their retry scopes; each effect remains behind its package's ports.
 use super::super::timers;
 use super::native::Native;
@@ -32,6 +32,23 @@ impl State {
             stop: &n.stop,
         };
         self.engine.team(
+            store,
+            self.ledger.as_ref().expect("opened timer ledger"),
+            &mut sessions,
+            &mut effects,
+            &team.id,
+            now,
+        )
+    }
+    pub fn answers(&mut self, n: &Native, store: &mut Store, team: &Team, now: i64) -> Result<()> {
+        self.prepare()?;
+        let mut sessions = SessionRows(n);
+        let mut effects = timers::Native {
+            config: &n.config,
+            machine: &n.machine,
+            stop: &n.stop,
+        };
+        self.engine.answers(
             store,
             self.ledger.as_ref().expect("opened timer ledger"),
             &mut sessions,
@@ -114,6 +131,26 @@ impl Runtime {
         match ports.team_timers(&mut self.auxiliary, store, team, now) {
             Ok(()) => self.recovered(store, team, "timers:team", now),
             Err(error) => self.failure(store, team, "timers:team", stamp, &error, now),
+        }
+    }
+    pub(super) fn answers_entry(
+        &mut self,
+        store: &mut Store,
+        ports: &mut impl Ports,
+        team: &Team,
+        now: i64,
+    ) -> Result<()> {
+        let stamp = if team.status == TeamStatus::Paused {
+            "paused"
+        } else {
+            "running"
+        };
+        if !self.due(store, team, "timers:answers", stamp, now)? {
+            return Ok(());
+        }
+        match ports.answer_timers(&mut self.auxiliary, store, team, now) {
+            Ok(()) => self.recovered(store, team, "timers:answers", now),
+            Err(error) => self.failure(store, team, "timers:answers", stamp, &error, now),
         }
     }
     pub(super) fn terminal_entry(

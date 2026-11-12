@@ -168,6 +168,15 @@ impl Ports for Native {
     ) -> Result<()> {
         state.team(self, store, team, now)
     }
+    fn answer_timers(
+        &mut self,
+        state: &mut super::auxiliary::State,
+        store: &mut Store,
+        team: &Team,
+        now: i64,
+    ) -> Result<()> {
+        state.answers(self, store, team, now)
+    }
     fn terminal_timers(
         &mut self,
         state: &mut super::auxiliary::State,
