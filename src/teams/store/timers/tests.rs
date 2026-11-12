@@ -118,6 +118,7 @@ fn every_timer_read_searches_an_index() {
         ("CANCEL_REFUSALS_AFTER", super::cancels::sql::REFUSED_AFTER),
         ("RELEASED_STAGES", sql::RELEASED_STAGES),
         ("WAITING", sql::WAITING),
+        ("REVIEWED", super::reviewed::sql::REVIEWED),
     ] {
         let plan = explain(db(&h), sql);
         println!("{name}:\n  {}", plan.join("\n  "));
