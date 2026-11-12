@@ -78,13 +78,11 @@ fn observed_attempt(
     view: &zerus_replica::TaskView,
 ) -> Result<(u64, String)> {
     let current = crate::teams::tasks::attempt(view);
-    let observed = store
-        .task_observation(team, node)
-        .map_err(problem)?
-        .map_or_else(
-            || (0, String::new(), false),
-            |o| (o.attempt, o.attempt_id, o.attempt_conflict),
-        );
+    let observation = store.task_observation(team, node).map_err(problem)?;
+    let observed = observation.as_ref().map_or_else(
+        || (0, String::new(), false),
+        |o| (o.attempt, o.attempt_id.clone(), o.attempt_conflict),
+    );
     if current.0 < observed.0 {
         return Err(rule(format!(
             "Task document attempt {} ({}) is older than the team's observed attempt {} ({}).",
@@ -93,6 +91,16 @@ fn observed_attempt(
     }
     if current != observed {
         return Err(Error::new(STALE,format!("Task document attempt {} ({}, conflict={}) differs from the team's observed attempt {} ({}, conflict={}); observe the task before trying again.",current.0,current.1,current.2,observed.0,observed.1,observed.2)));
+    }
+    // A reservation can be observed before it runs. Let the next running
+    // observation judge that execution before any service command drives it.
+    let running = view.stage == Stage::Active && view.cancelled_at.is_none();
+    if running
+        && !observation
+            .as_ref()
+            .is_some_and(|o| o.stage == crate::teams::ops::TaskStage::InProgress)
+    {
+        return Err(Error::new(STALE, "The task's execution start has not been observed; observe the task before trying again."));
     }
     Ok((current.0, current.1))
 }
