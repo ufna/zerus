@@ -1028,12 +1028,9 @@ fn dispatch_normal(mut args: Vec<String>) -> Result<i32> {
     // A resident DeepSeek host's tool call is never the person: without its
     // hosted proof its message is refused, here and before any @host
     // forwarding, never sent without a sender (zerus-ppd26 Part B).
-    if command == "send" {
+    if matches!(command.as_str(), "send" | "send-now") {
         if let Some(reason) = state::session_graph::hosted_proof_refusal() {
-            return Err(Error::new(
-                1,
-                format!("This DeepSeek tool call (HGS_AGENT=dsh) cannot prove its session, so its message is not sent: {reason}"),
-            ));
+            return Err(Error::new(1, hosted_send_refusal(&reason)));
         }
     }
     if !target.is_empty() && !config.is_self(&target) {
@@ -1682,6 +1679,60 @@ fn bound_terminal(session: &str) -> Result<Option<(String, String)>> {
     Ok(Some((fields[0].to_owned(), run)))
 }
 
+/// Commands that start a session; with `--parent` they name its parent.
+const LAUNCH_COMMANDS: &[&str] = &["claude", "codex", "kimi", "dsh", "opencode", "fork"];
+
+/// Why forwarding `command` to another computer is refused for a resident
+/// DeepSeek host's tool call (`HGS_AGENT=dsh`) without its hosted proof, or
+/// `None` (zerus-ppd26 Part B). Such a call is never the person, and the peer
+/// cannot see who calls: on every route it sends nothing and launches nothing
+/// without an explicit `--parent`, and on a route that names a machine (a
+/// session reference, forwarded as its verified hop or as `inspect`'s
+/// argument, or `--expect-machine`) it runs no command at all. A launch with
+/// `--parent` names its parent and goes on.
+fn hosted_forwarding_refusal(
+    command: &str,
+    args: &[String],
+    machine: Option<&str>,
+) -> Option<String> {
+    let (verb, rest, named) = if command == "--expect-machine" {
+        (
+            args.get(1).map(String::as_str).unwrap_or_default(),
+            args.get(2..).unwrap_or_default(),
+            true,
+        )
+    } else {
+        let referenced = args
+            .iter()
+            .take_while(|arg| arg.as_str() != "--")
+            .any(|arg| arg.starts_with("zerus://"));
+        (command, args, machine.is_some() || referenced)
+    };
+    let launch = LAUNCH_COMMANDS.contains(&verb);
+    let parent = launch
+        && rest
+            .iter()
+            .take_while(|arg| arg.as_str() != "--")
+            .any(|arg| arg == "--parent");
+    let send = matches!(verb, "send" | "send-now");
+    if !(send || launch && !parent || named && !parent) {
+        return None;
+    }
+    let reason = state::session_graph::hosted_proof_refusal()?;
+    Some(if send {
+        hosted_send_refusal(&reason)
+    } else if launch {
+        state::parent_link::hosted_launch_refusal(&reason)
+    } else {
+        format!("This DeepSeek tool call (HGS_AGENT=dsh) cannot prove its session, so it does not act on another computer: {reason}")
+    })
+}
+
+/// The refusal of a send by a DeepSeek tool call without its hosted proof.
+fn hosted_send_refusal(reason: &str) -> String {
+    format!("This DeepSeek tool call (HGS_AGENT=dsh) cannot prove its session, so its message is not sent: {reason}")
+}
+
 fn remote(
     config: &Config,
     target: &str,
@@ -1729,25 +1780,11 @@ fn remote_via(
     if target.starts_with('-') || target.chars().any(char::is_whitespace) {
         return Err(Error::new(1, "invalid SSH host alias"));
     }
-    // A launch a resident DeepSeek host's tool call starts on a peer without
-    // its proven link or an explicit --parent is refused, as a local one is
-    // (zerus-ppd26 Part B).
-    if matches!(
-        command,
-        "claude" | "codex" | "kimi" | "dsh" | "opencode" | "fork"
-    ) && machine.is_none()
-        && !args
-            .iter()
-            .take_while(|s| s.as_str() != "--")
-            .any(|s| s == "--parent")
-        && state::parent_link::forwarded_argument().is_none()
-    {
-        if let Some(reason) = state::session_graph::hosted_proof_refusal() {
-            return Err(Error::new(
-                1,
-                state::parent_link::hosted_launch_refusal(&reason),
-            ));
-        }
+    // Every route to another computer passes here, by @host or by a session
+    // reference's verified hop: the one place a DeepSeek tool call without its
+    // hosted proof is refused before anything is forwarded (zerus-ppd26).
+    if let Some(refusal) = hosted_forwarding_refusal(command, args, machine) {
+        return Err(Error::new(1, refusal));
     }
     let mut args = args.to_vec();
     if command == "inspect" && args.first().is_some_and(|arg| arg.starts_with("zerus://session?")) && args.len()==1 {

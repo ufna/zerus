@@ -5472,9 +5472,15 @@ listener is close-on-exec; on macOS this rests on the same Node behaviour.
 
 A command that carries `HGS_AGENT=dsh` but whose hosted proof fails (no token,
 a wrong or ended token, or any other refusal) is never the person: `hgs send`
-refuses it, before any `@host` forwarding, and so does a launch without
-`--parent`, each with a sentence naming the missing proof. Neither sends nor
-launches as nobody. Hosts an older Zerus started never set `HGS_AGENT=dsh`, so
+and `send-now` refuse it, and so does a launch without `--parent`, each with a
+sentence naming the missing proof. Neither sends nor launches as nobody. Every
+route to another computer passes one check before anything is forwarded: by
+`@host`, by a session reference (its verified hop, or `inspect` of it) or by
+`--expect-machine`, such a call sends nothing and launches nothing without
+`--parent`, and on a route that names a machine it runs no command at all,
+because the peer cannot see who calls. A launch Zerus does not track
+(`HGS_TRACKING=0`, or a plain shell session) records no parent at all and is
+outside this rule. Hosts an older Zerus started never set `HGS_AGENT=dsh`, so
 their calls are unaffected.
 
 The limit: one process serves all hosted sessions, so process ancestry proves
