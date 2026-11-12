@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { createTeams, newRequestId, type TeamCall, type TeamFollow, type TeamOutcome, type TeamView } from "./teams";
+import { createTeams, newRequestId, type TeamCall, type TeamCatalogTemplate, type TeamFollow, type TeamOutcome, type TeamsTransport, type TeamView } from "./teams";
 import { catalog, teamView, TEAM_ID } from "../ui/teams/fixtures";
 import type { TeamsOut } from "../types";
 
@@ -141,14 +141,28 @@ describe("the Teams store", () => {
     expect(teams.uncertain()).toBeNull();
   });
 
-  it("loads the catalog lazily and saves a changed template", async () => {
+  it("loads the catalog lazily, and reads it again after a save for the saved template's digest", async () => {
     const { transport } = fake();
+    // The command line's catalog: a save adds the row, and only its catalog read gives the digest.
+    let served = structuredClone(catalog);
+    let reads = 0;
+    transport.catalog = async () => { reads += 1; return { ok: true, catalog: structuredClone(served) }; };
+    (transport as TeamsTransport).saveTemplate = async (template: TeamCatalogTemplate) => { served = { ...served, templates: [...served.templates, { ...template, digest: "saved-digest" }] }; };
     const teams = createTeams(transport);
     await teams.openNewTeam();
     expect(teams.newTeamOpen()).toBe(true);
     expect(teams.catalog()?.templates[0].id).toBe("bugfix");
-    await teams.saveTemplate({ ...catalog.templates[0], id: "bugfix-mine", name: "My bugfix" });
+    await teams.openNewTeam();
+    expect(reads, "an open catalog is not read again").toBe(1);
+    const { digest: _shown, ...row } = catalog.templates[0];
+    await teams.saveTemplate({ ...row, id: "bugfix-mine", name: "My bugfix" });
+    expect(reads).toBe(2);
+    expect(teams.catalog()?.templates.find((template) => template.id === "bugfix-mine")?.digest).toBe("saved-digest");
+    // A read that fails keeps the catalog shown and tells why.
+    transport.catalog = async () => { throw new Error("read_failed: offline"); };
+    expect(await teams.reloadCatalog()).toBe(false);
     expect(teams.catalog()?.templates.some((template) => template.id === "bugfix-mine")).toBe(true);
+    expect(teams.catalogError()).toContain("offline");
   });
 
   it("checks a project folder through the core", async () => {

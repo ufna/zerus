@@ -20,6 +20,9 @@ import "../styles/newteam.css";
 // drafts, plan modes, working modes, accounts and member editing are M2 and are
 // not here.
 
+/** The command line's code for a create whose template changed since it was shown. */
+export const TEMPLATE_CHANGED = "template_changed";
+
 /** A URL-safe template id from a name. */
 export function slug(text: string): string {
   return text.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 60) || "team";
@@ -89,11 +92,18 @@ export function pipelineLines(catalog: TeamCatalog, template: TeamCatalogTemplat
     });
 }
 
+/** The permissions a create carries: the contract's five, each sent as shown. */
+export const CREATE_DELEGATIONS = ["accept_results", "answer_members", "confirm_trust", "resume_exited", "merge_accepted"] as const;
+
 export interface NewTeamInput {
   /** The new team's id and the create intent's request id, made here once. */
   team: string;
   request_id: string;
   template: string;
+  /** The digest of the template the form showed, as the catalog read gave it. */
+  expected_template: string;
+  /** The five permissions exactly as the checkboxes show them. */
+  delegations: Record<(typeof CREATE_DELEGATIONS)[number], boolean>;
   project: string;
   name: string;
   goal: string;
@@ -113,6 +123,8 @@ export interface NewTeamProps {
   onCheckFolder: (path: string) => Promise<TeamProjectFacts>;
   onCreate: (input: NewTeamInput) => Promise<import("../../store/teams").TeamOutcome>;
   onSaveTemplate: (template: TeamCatalogTemplate) => Promise<void>;
+  /** Reads the catalog again, after the command line said the template changed. */
+  onReloadCatalog?: () => Promise<unknown>;
   onClose: () => void;
   /** This dialog's refusal kept by the store: one that arrived while it was
    * closed, or a Dismiss the core refused. */
@@ -158,23 +170,33 @@ export function NewTeam(props: NewTeamProps): JSX.Element {
   const [howto, setHowto] = createSignal(false);
   const template = createMemo(() => props.catalog?.templates.find((candidate) => candidate.id === templateId()));
   const proposed = createMemo(() => branch() || `zerus/team/${slug(name() || template()?.name || "team")}`);
-  // The template's delegations as the person sets them here. A team is created
-  // from its template's settings (the create request names the template and
-  // nothing else carries settings), so the request carries exactly what the
-  // form shows only while these equal the template's; changed ones are saved
-  // as a template first and the team is created from it.
-  const [delegations, setDelegations] = createSignal<Record<string, boolean>>({});
-  createEffect(on(template, (chosen) => setDelegations({ ...(chosen?.settings.delegations ?? {}) })));
-  const delegationsChanged = () => {
+  // The permissions as the person sets them here: the shown template's own
+  // values with the person's choices over them. A choice is kept while its
+  // permission exists in the template as it is now, also after the catalog is
+  // read again; choosing another template starts from that template's values.
+  // The create carries exactly these, with the digest of the template shown.
+  const [choices, setChoices] = createSignal<Record<string, boolean>>({});
+  createEffect(on(templateId, () => setChoices({}), { defer: true }));
+  const delegations = createMemo<Record<string, boolean>>(() => {
     const given = template()?.settings.delegations ?? {};
-    return Object.entries(delegations()).some(([key, value]) => given[key] !== value);
-  };
+    return { ...given, ...Object.fromEntries(Object.entries(choices()).filter(([key]) => key in given)) };
+  });
+  /** The five permissions to send, or undefined when the shown ones are not exactly the five. */
+  const sent = createMemo(() => {
+    const shown = delegations();
+    const keys = Object.keys(shown);
+    if (keys.length !== CREATE_DELEGATIONS.length || !CREATE_DELEGATIONS.every((key) => typeof shown[key] === "boolean")) return undefined;
+    return Object.fromEntries(CREATE_DELEGATIONS.map((key) => [key, shown[key]])) as NewTeamInput["delegations"];
+  });
+  /** The command line said the template changed: it is shown as it is now. */
+  const [changed, setChanged] = createSignal(false);
   const createWhy = createMemo(() => {
     if (!template()) return tr("Choose a template.");
+    if (!template()!.digest) return tr("This hgs cannot confirm the template you see. Update hgs to create a team.");
+    if (!sent()) return tr("This version does not know every permission of the template. Update Zerus to create a team.");
     if (!name().trim()) return tr("Name the team.");
     if (!project().trim()) return tr("Name the project.");
     if (!checkedFolder()?.git) return tr("Check the project folder: it must be a Git folder.");
-    if (delegationsChanged()) return tr("Save the changed permissions as a template, then create the team from it.");
     if (locked()) return tr("Wait for the team to be created.");
     return "";
   });
@@ -196,21 +218,33 @@ export function NewTeam(props: NewTeamProps): JSX.Element {
       if (generation === checkGeneration) setChecking(false);
     }
   };
+  /** A refusal of the create: a changed template is shown again as it is now,
+   * never sent again by itself; any other refusal keeps its reason. */
+  const refused = (outcome: Extract<import("../../store/teams").TeamOutcome, { outcome: "failed" }>) => {
+    if (outcome.code !== TEMPLATE_CHANGED) { setError(outcome.detail); return; }
+    // The form says it in its own words; the store's copy of the refusal goes.
+    teams.clearFailure("new-team");
+    setChanged(true);
+    void props.onReloadCatalog?.();
+  };
   const create = async () => {
     const chosen = template();
     const checked = checkedFolder();
-    if (!chosen || !checked?.git || createWhy() || locked()) return;
+    const permissions = sent();
+    if (!chosen?.digest || !permissions || !checked?.git || createWhy() || locked()) return;
     // The held intent when there is one: never a second team id.
     const current = teams.claimCreate();
     setCreating(true);
     setError("");
+    setChanged(false);
     teams.clearFailure("new-team");
     try {
       const outcome = await props.onCreate({
-        team: current.team, request_id: current.request_id, template: chosen.id, project: project().trim(), name: name().trim(), goal: goal().trim(),
+        team: current.team, request_id: current.request_id, template: chosen.id, expected_template: chosen.digest, delegations: permissions,
+        project: project().trim(), name: name().trim(), goal: goal().trim(),
         home: props.machineId, integration_branch: proposed(), base_commit: checked.head, integration: chosen.settings.integration,
       });
-      if (outcome.outcome === "failed") setError(outcome.detail);
+      if (outcome.outcome === "failed") refused(outcome);
       // uncertain and pending keep the intent; the store's unresolved entry
       // offers Check and Dismiss until it ends.
     } catch (failure) {
@@ -224,7 +258,7 @@ export function NewTeam(props: NewTeamProps): JSX.Element {
     setError("");
     const outcome = await teams.runAgain(entry.call, "new-team");
     if (outcome.outcome === "done") props.onClose();
-    else if (outcome.outcome === "failed") setError(outcome.detail);
+    else if (outcome.outcome === "failed") refused(outcome);
   };
   const dismissCreate = async () => {
     const entry = intentCall();
@@ -236,7 +270,9 @@ export function NewTeam(props: NewTeamProps): JSX.Element {
     if (!chosen) return;
     setSaving(true); setError("");
     try {
-      const saving = { ...chosen, id: slug(`${chosen.id}-${name() || chosen.name}`), name: name().trim() || chosen.name, settings: { ...chosen.settings, delegations: { ...delegations() } } };
+      // A shown row carries its digest, which a template save refuses.
+      const { digest: _shown, ...given } = chosen;
+      const saving = { ...given, id: slug(`${chosen.id}-${name() || chosen.name}`), name: name().trim() || chosen.name, settings: { ...chosen.settings, delegations: { ...delegations() } } };
       await props.onSaveTemplate(saving);
       setSaved(tr("Template saved."));
       // The saved template carries the permissions shown: create from it.
@@ -299,7 +335,7 @@ export function NewTeam(props: NewTeamProps): JSX.Element {
                     {(key) => (
                       <label class="nt-template-row" classList={{ on: delegations()[key] }} data-delegation={key}>
                         <input type="checkbox" checked={delegations()[key]} disabled={locked()}
-                          onChange={(event) => setDelegations({ ...delegations(), [key]: event.currentTarget.checked })} />
+                          onChange={(event) => setChoices({ ...choices(), [key]: event.currentTarget.checked })} />
                         <span class="nt-template-copy"><span class="nt-template-name">{delegationWords(key).name}</span><span class="nt-hint">{delegationWords(key).sentence}</span></span>
                       </label>
                     )}
@@ -326,6 +362,9 @@ export function NewTeam(props: NewTeamProps): JSX.Element {
             disabled={locked() || template()?.settings.integration !== "branch"} historyKey="team-branch" />
         </label>
       </section>
+      <Show when={changed()}>
+        <div class="notice warn nt-error" role="status" data-template-changed><Icon name="triangle-alert" size={16} /><span>{tr("The template changed since you saw it, and nothing was created: review it as it is now, then create the team again.")}</span></div>
+      </Show>
       <Show when={shownError()}><div class="notice danger nt-error" role="alert" data-new-team-error><Icon name="triangle-alert" size={16} /><span>{shownError()}</span></div></Show>
       <Show when={sendingCreate() && !intentCall()}>
         <div class="notice nt-note" role="status" data-create-sending><Icon name="loader-circle" size={16} /><span>{tr("The team is being created.")}</span></div>
@@ -383,7 +422,8 @@ export function NewTeamDialog() {
               const call: TeamCall = {
                 team: input.team, team_name: input.name, request_id: input.request_id,
                 action: {
-                  kind: "create", template: input.template, project: input.project, name: input.name, goal: input.goal,
+                  kind: "create", template: input.template, expected_template: input.expected_template, delegations: input.delegations,
+                  project: input.project, name: input.name, goal: input.goal,
                   home: input.home, integration_branch: input.integration_branch, base_commit: input.base_commit,
                   integration: input.integration,
                 },
@@ -393,6 +433,7 @@ export function NewTeamDialog() {
               return outcome;
             }}
             onSaveTemplate={(template) => teams.saveTemplate(template)}
+            onReloadCatalog={() => teams.reloadCatalog()}
             onClose={close}
             failure={teams.failureFor("new-team")?.message}
           />

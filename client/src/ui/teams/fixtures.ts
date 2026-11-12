@@ -75,7 +75,7 @@ export const catalog: TeamCatalog = {
     { id: "reviewed", name: "Reviewed: review, lead", implementer: "developer", stages: [{ kind: "review", role: "reviewer" }], max_rounds: 0, accept: "lead" },
   ],
   templates: [{
-    id: "bugfix",
+    id: "bugfix", digest: "6d15fdbdd92ac4d5c5bc53f0bd6da7871c0dbf1842f4d4f25bf94aebc95bbb9d",
     name: trNoop("Bugfix"),
     description: trNoop("A queue of independent fixes: a developer and a reviewer."),
     lead: { agent: "claude", account: { mode: "freest" }, model: "", effort: "", rules: "" },

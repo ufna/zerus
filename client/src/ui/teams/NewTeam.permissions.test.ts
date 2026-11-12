@@ -2,9 +2,9 @@
 // New team shows what it grants (the guide review, number 4): every delegation
 // of the template with its value, in plain words, as a line the person can
 // change before creating; for each of the template's pipelines who ends it;
-// nothing about phases. The create request names the template, whose settings
-// are the team's, so it carries exactly what the form shows: changed
-// permissions are saved as a template first, and the team is created from it.
+// nothing about phases. The create carries exactly what the form shows: the
+// shown template's digest and the five permissions as the checkboxes show
+// them (the create binding); Save as template is an action of its own.
 import { afterEach, expect, it, vi } from "vitest";
 import { createComponent, createSignal } from "solid-js";
 import { render } from "solid-js/web";
@@ -26,7 +26,8 @@ function setup(start: TeamCatalog = fixture) {
     defaultProject: "example-project", defaultFolder: "/workspace/example",
     onCheckFolder: async () => ({ git: true, head: "0123456789abcdef0123456789abcdef01234567", branch: "main", reason: "" }),
     onCreate: async (input) => { created.push(input); return { outcome: "done", receipt: {}, request_id: input.request_id }; },
-    onSaveTemplate: async (template) => { saved.push(template); setCatalog({ ...catalog(), templates: [...catalog().templates, template] }); },
+    // As the store does: the save, then the command line's catalog read, which gives the saved template its digest.
+    onSaveTemplate: async (template) => { saved.push(template); setCatalog({ ...catalog(), templates: [...catalog().templates, { ...template, digest: "saved-digest" }] }); },
     onClose: () => {},
   }), host);
   const name = host.querySelector<HTMLInputElement>('input[placeholder="Fixes"]')!;
@@ -54,31 +55,49 @@ it("takes the delegations from the template: a value off and a name this version
   expect(host.querySelector('[data-delegation="future_power"]')!.textContent).toContain("A permission this version does not describe.");
 });
 
-it("creates from the template while the permissions are the template's", async () => {
+it("creates from the template with its digest and the permissions as shown", async () => {
   const { host, created } = setup();
   button(host, "Check folder").click();
   await vi.waitFor(() => expect(host.querySelector("[data-folder-ok]")).not.toBeNull());
   button(host, "Create team").click();
   await vi.waitFor(() => expect(created).toHaveLength(1));
   expect(created[0].template).toBe("bugfix");
+  expect(created[0].expected_template).toBe(fixture.templates[0].digest);
+  expect(created[0].delegations).toEqual({ accept_results: true, answer_members: true, confirm_trust: true, resume_exited: true, merge_accepted: true });
 });
 
-it("changed permissions are saved as a template first, and the team is created from it", async () => {
+it("changed permissions go with the create, without saving a template first", async () => {
   const { host, created, saved } = setup();
   button(host, "Check folder").click();
   await vi.waitFor(() => expect(host.querySelector("[data-folder-ok]")).not.toBeNull());
   const accept = host.querySelector<HTMLInputElement>('[data-delegation="accept_results"] input')!;
   accept.checked = false; accept.dispatchEvent(new Event("change", { bubbles: true }));
-  expect(button(host, "Create team").disabled).toBe(true);
-  expect(host.textContent).toContain("Save the changed permissions as a template, then create the team from it.");
+  expect(button(host, "Create team").disabled).toBe(false);
+  expect(host.querySelector("[data-create-blocker]")).toBeNull();
+  button(host, "Create team").click();
+  await vi.waitFor(() => expect(created).toHaveLength(1));
+  expect(saved).toHaveLength(0);
+  expect(created[0].template).toBe("bugfix");
+  expect(created[0].expected_template).toBe(fixture.templates[0].digest);
+  expect(created[0].delegations).toEqual({ accept_results: false, answer_members: true, confirm_trust: true, resume_exited: true, merge_accepted: true });
+});
+
+it("Save as template stays an action of its own: the saved row has no digest, and the form takes the saved one", async () => {
+  const { host, created, saved } = setup();
+  button(host, "Check folder").click();
+  await vi.waitFor(() => expect(host.querySelector("[data-folder-ok]")).not.toBeNull());
+  const merge = host.querySelector<HTMLInputElement>('[data-delegation="merge_accepted"] input')!;
+  merge.checked = false; merge.dispatchEvent(new Event("change", { bubbles: true }));
   button(host, "Save as template").click();
   await vi.waitFor(() => expect(saved).toHaveLength(1));
-  expect(saved[0].settings.delegations).toEqual({ accept_results: false, answer_members: true, confirm_trust: true, resume_exited: true, merge_accepted: true });
-  await vi.waitFor(() => expect(button(host, "Create team").disabled).toBe(false));
-  expect(delegations(host)[0]).toEqual(["accept_results", false]);
+  expect("digest" in saved[0], "a shown row's digest is never sent to a template save").toBe(false);
+  expect(saved[0].settings.delegations).toEqual({ accept_results: true, answer_members: true, confirm_trust: true, resume_exited: true, merge_accepted: false });
+  await vi.waitFor(() => expect(host.querySelector<HTMLInputElement>(`[data-template="${saved[0].id}"] input`)?.checked).toBe(true));
+  expect(delegations(host).at(-1)).toEqual(["merge_accepted", false]);
   button(host, "Create team").click();
   await vi.waitFor(() => expect(created).toHaveLength(1));
   expect(created[0].template).toBe(saved[0].id);
+  expect(created[0].expected_template).toBe("saved-digest");
 });
 
 it("names who ends each of the template's pipelines and says nothing about phases", () => {

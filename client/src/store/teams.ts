@@ -100,6 +100,10 @@ export interface TeamCatalogLead { agent: string; account: { mode: string; accou
 export interface TeamCatalogTemplate {
   id: string; name: string; description: string; lead: TeamCatalogLead;
   roster: TeamCatalogSeat[]; default_pipeline: string; settings: TeamCatalogSettings;
+  /** The digest `catalog show` gives the template (opaque); a create sends it
+   * back so the command line refuses a template that changed since it was
+   * shown. Absent from an older command line: nothing can be bound. */
+  digest?: string | null;
 }
 export interface TeamCatalog { roles: TeamCatalogRole[]; pipelines: TeamCatalogPipeline[]; templates: TeamCatalogTemplate[]; planning_rules: string[] }
 export interface TeamProjectFacts { git: boolean; head: string; branch: string; reason: string }
@@ -612,6 +616,11 @@ export function createTeams(transport: TeamsTransport = tauriTeams()) {
   async function openNewTeam() {
     setNewTeamOpen(true);
     if (catalog()) return;
+    await reloadCatalog();
+  }
+  /** Reads the catalog from the command line; on a failure the one shown stays
+   * and the reason is told. True when the catalog was read. */
+  async function reloadCatalog(): Promise<boolean> {
     try {
       const reply = (await transport.catalog()) as { catalog?: TeamCatalog } | TeamCatalog;
       const candidate = reply && "catalog" in reply && reply.catalog ? reply.catalog : (reply as TeamCatalog);
@@ -620,7 +629,8 @@ export function createTeams(transport: TeamsTransport = tauriTeams()) {
       }
       setCatalog(candidate);
       setCatalogError("");
-    } catch (error) { setCatalogError(errorText(error)); }
+      return true;
+    } catch (error) { setCatalogError(errorText(error)); return false; }
   }
   /** Closing keeps the create intent; a reason the person has seen goes. */
   function closeNewTeam() {
@@ -636,9 +646,11 @@ export function createTeams(transport: TeamsTransport = tauriTeams()) {
     return fresh;
   }
 
+  /** Saves a template, then reads the catalog again: only the command line's
+   * read gives the saved template its digest, which a create binds. */
   async function saveTemplate(template: TeamCatalogTemplate) {
     await transport.saveTemplate(template);
-    setCatalog(catalog() ? { ...catalog()!, templates: [...catalog()!.templates.filter((t) => t.id !== template.id), template] } : catalog());
+    await reloadCatalog();
   }
 
   /** A refusal carries hgs's own `code: message`; anything else is unknown,
@@ -774,7 +786,7 @@ export function createTeams(transport: TeamsTransport = tauriTeams()) {
   return {
     list, listed, listPages, listNext, team, failure, available, off, followed, visible, catalog, catalogError, newTeamOpen, confirmation, unresolved, uncertain, busy, sending,
     waitingView, waitingCount, waitingLater, apply, probe, recheck, hidden, openTeam, closeTeam, tasksChanged, page, openWaiting, pageWaiting, firstWaitingPage, decide, revisionOf,
-    teamOfSession, summaryOf, unresolvedOf, failureFor, readFailureFor, preview, openNewTeam, closeNewTeam, createIntent, claimCreate, saveTemplate, project, run, runAgain, confirm, cancelConfirmation, check, dismiss, clearFailure,
+    teamOfSession, summaryOf, unresolvedOf, failureFor, readFailureFor, preview, openNewTeam, closeNewTeam, reloadCatalog, createIntent, claimCreate, saveTemplate, project, run, runAgain, confirm, cancelConfirmation, check, dismiss, clearFailure,
   };
 }
 
