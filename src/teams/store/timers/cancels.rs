@@ -5,8 +5,11 @@ use super::*;
 
 pub(crate) mod sql {
     pub const PENDING: &str = "SELECT d.node,d.generation,d.seq,i.task_project,i.task_uuid,COALESCE(o.attempt,0),COALESCE(o.attempt_id,'') FROM decisions d LEFT JOIN node_identity i ON i.team=d.team AND i.id=d.node LEFT JOIN task_observations o ON o.team=d.team AND o.node=d.node WHERE d.team=?1 AND d.state<>'settled' AND d.node>?2 AND d.kind='cancel' AND d.state='pending' AND d.generation=COALESCE((SELECT n.generation FROM nodes n WHERE n.team=d.team AND n.id=d.node),(SELECT a.generation FROM node_archive a WHERE a.team=d.team AND a.id=d.node)) AND NOT EXISTS(SELECT 1 FROM cancel_outcomes c WHERE c.decision=d.seq) ORDER BY d.node LIMIT ?3";
-    /// Paged by the row: a node may have refused cancels of several decisions.
-    pub const REFUSED: &str = "SELECT node,decision,reason FROM cancel_outcomes WHERE team=?1 AND state='refused' AND (node,decision)>(?2,?3) ORDER BY node,decision LIMIT ?4";
+    /// Paged by the row in two bounded searches: the rest of the cursor's
+    /// node, then the nodes after it. A row-value cursor would be planned as
+    /// a range on the node alone and re-read the node's earlier refusals.
+    pub const REFUSED_REST: &str = "SELECT node,decision,reason FROM cancel_outcomes WHERE team=?1 AND state='refused' AND node=?2 AND decision>?3 ORDER BY decision LIMIT ?4";
+    pub const REFUSED_AFTER: &str = "SELECT node,decision,reason FROM cancel_outcomes WHERE team=?1 AND state='refused' AND node>?2 ORDER BY node,decision LIMIT ?3";
 }
 
 /// One cancel decision for the service to carry out. `task` is the bound
@@ -64,13 +67,24 @@ impl Store {
         limit: u32,
     ) -> Result<Vec<(u32, u64, String)>> {
         let page = super::limit(limit)?;
+        let row = |r: &rusqlite::Row<'_>| Ok((r.get(0)?, r.get(1)?, r.get(2)?));
         self.read(|db| {
-            rows(
+            let mut found = rows(
                 db,
-                sql::REFUSED,
+                sql::REFUSED_REST,
                 params![team, after.0, after.1, page],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-            )
+                row,
+            )?;
+            let left = page - found.len() as u32;
+            if left > 0 {
+                found.extend(rows(
+                    db,
+                    sql::REFUSED_AFTER,
+                    params![team, after.0, left],
+                    row,
+                )?);
+            }
+            Ok(found)
         })
     }
 }
