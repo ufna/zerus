@@ -91,6 +91,7 @@ it("Save as template stays an action of its own: the saved row has no digest, an
   button(host, "Save as template").click();
   await vi.waitFor(() => expect(saved).toHaveLength(1));
   expect("digest" in saved[0], "a shown row's digest is never sent to a template save").toBe(false);
+  expect(Object.keys(saved[0]).sort(), "only the template's own fields, never the row's facts").toEqual(["default_pipeline", "description", "id", "lead", "name", "roster", "settings"]);
   expect(saved[0].settings.delegations).toEqual({ accept_results: true, answer_members: true, confirm_trust: true, resume_exited: true, merge_accepted: false });
   await vi.waitFor(() => expect(host.querySelector<HTMLInputElement>(`[data-template="${saved[0].id}"] input`)?.checked).toBe(true));
   expect(delegations(host).at(-1)).toEqual(["merge_accepted", false]);
@@ -130,4 +131,13 @@ it("a catalog read's or a template save's refusal is shown without its code", as
   await vi.waitFor(() => expect(failing).toHaveLength(1));
   await vi.waitFor(() => expect(host.querySelector("[data-new-team-error]")?.textContent).toBe("The built-in template is read-only."));
   expect(host.querySelector("[data-create-error]")?.textContent).not.toContain("invalid_state");
+});
+
+it("a template this version cannot show whole cannot be saved either, so nothing it holds is dropped", () => {
+  const template = { ...fixture.templates[0], unknown_permissions: ["future_power"], unknown_fields: [] };
+  const { host } = setup({ ...fixture, templates: [template] });
+  expect(button(host, "Save as template").disabled).toBe(true);
+  const other = { ...fixture.templates[0], unknown_permissions: [], unknown_fields: ["settings/auto_land"] };
+  dispose?.(); dispose = undefined; document.body.replaceChildren();
+  expect(button(setup({ ...fixture, templates: [other] }).host, "Save as template").disabled).toBe(true);
 });

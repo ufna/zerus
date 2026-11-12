@@ -112,9 +112,27 @@ impl Private {
     }
 
     fn save(&self, row: &Value) {
-        let mut saved = row.clone();
-        // As the form does: a shown row's digest never goes to a save.
-        saved.as_object_mut().unwrap().remove("digest");
+        // As the form does: the template's own fields only, never the row's
+        // digest or the catalog read's facts.
+        let saved = Value::Object(
+            row.as_object()
+                .unwrap()
+                .iter()
+                .filter(|(key, _)| {
+                    [
+                        "id",
+                        "name",
+                        "description",
+                        "lead",
+                        "roster",
+                        "default_pipeline",
+                        "settings",
+                    ]
+                    .contains(&key.as_str())
+                })
+                .map(|(key, value)| (key.clone(), value.clone()))
+                .collect(),
+        );
         let reply = self.read(&["team", "template", "save", "--json"], Some(saved));
         saved_receipt(&reply, row["id"].as_str().unwrap()).unwrap();
     }

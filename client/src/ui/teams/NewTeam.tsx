@@ -189,6 +189,9 @@ export function NewTeam(props: NewTeamProps): JSX.Element {
     if (keys.length !== CREATE_DELEGATIONS.length || !CREATE_DELEGATIONS.every((key) => typeof shown[key] === "boolean")) return undefined;
     return Object.fromEntries(CREATE_DELEGATIONS.map((key) => [key, shown[key]])) as NewTeamInput["delegations"];
   });
+  /** The row holds what it asks to confirm and this version does not know:
+   * it can be neither created nor saved, so nothing it holds is dropped. */
+  const unknownConfirmed = () => !!(template()?.unknown_permissions?.length || template()?.unknown_fields?.length);
   /** The command line said the template changed: it is shown as it is now. */
   const [changed, setChanged] = createSignal(false);
   const createWhy = createMemo(() => {
@@ -276,9 +279,13 @@ export function NewTeam(props: NewTeamProps): JSX.Element {
     if (!chosen) return;
     setSaving(true); setError("");
     try {
-      // A shown row carries its digest, which a template save refuses.
-      const { digest: _shown, ...given } = chosen;
-      const saving = { ...given, id: slug(`${chosen.id}-${name() || chosen.name}`), name: name().trim() || chosen.name, settings: { ...chosen.settings, delegations: { ...delegations() } } };
+      // The template's own fields only: a shown row also carries its digest and
+      // facts of the catalog read, which a template save (strict) refuses.
+      const saving: TeamCatalogTemplate = {
+        id: slug(`${chosen.id}-${name() || chosen.name}`), name: name().trim() || chosen.name, description: chosen.description,
+        lead: chosen.lead, roster: chosen.roster, default_pipeline: chosen.default_pipeline,
+        settings: { ...chosen.settings, delegations: { ...delegations() } },
+      };
       await props.onSaveTemplate(saving);
       setSaved(tr("Template saved."));
       // The saved template carries the permissions shown: create from it.
@@ -392,7 +399,7 @@ export function NewTeam(props: NewTeamProps): JSX.Element {
         <NewTeamIntroSteps />
         <NewTeamHowTo open={howto()} onToggle={setHowto} />
       </section>
-      <NewTeamFooter busy={props.busy || creating() || sendingCreate()} createWhy={createWhy()} error={shownError()} canSave={!!template() && !locked()}
+      <NewTeamFooter busy={props.busy || creating() || sendingCreate()} createWhy={createWhy()} error={shownError()} canSave={!!template() && !locked() && !unknownConfirmed()}
         saving={saving()} showCreate={!intentCall() && !sendingCreate()} onSaveTemplate={() => void save()} onCancel={props.onClose} onCreate={() => void create()} />
     </div>
   );
