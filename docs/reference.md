@@ -5715,8 +5715,14 @@ Only `Absent` means that no witnessed submit offered, or is offering, this
 exact request. Each input answers with exactly one fixed
 code. Codes are never folded, retried or promoted. A repeat of exactly the same
 request ID, digest, name, run and conversation replays the stored code without
-sending. The same request ID with any other payload or binding is refused as an
-identity conflict, and the stored outcome is kept.
+sending. A well-formed receipt of the same request ID with any other payload or
+binding is refused as an identity conflict, and the stored outcome is kept.
+The receipt path is read without following links. A link, another
+non-regular file, an unparsable file, or a parsed value that is not a
+well-formed receipt of this request ID proves nothing about what was offered.
+Each is `Unknown{unseen}`, with no host call and nothing written. A pending
+marker whose write reports a failure is answered by what the store then holds:
+no receipt is `NotOffered{host_refused}`, and a receipt is `Unknown{pending}`.
 
 - `Receipt`: the conversation durably recorded this request's own message. It
   carries the same message ID and request ID, and the offered content digest.
@@ -5742,7 +5748,7 @@ identity conflict, and the stored outcome is kept.
   `Unknown{unseen}`: no witness exists for the request. Either the host holds
   no record of it, or an earlier call may already have offered it. That happens
   when exactly this request was recorded by an ordinary send without a witness,
-  or when its receipt or the store's lock could not be read. It is never a
+  or when its receipt, its receipt path or the store's lock could not be read. It is never a
   refusal and never sent again.
 
 The digest is SHA-256 over each content block's type and, for a text block, its

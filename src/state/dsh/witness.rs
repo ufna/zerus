@@ -133,6 +133,8 @@ const DIGEST_SCOPE: &str = "text_and_block_types";
 /// unknown, never a refusal.
 const UNWITNESSED: &str =
     "An earlier send without a witness already offered exactly this input; it is never witnessed or sent again";
+const MARKER_UNCERTAIN: &str =
+    "The pending marker was recorded although its write reported a failure; nothing was sent, and it is never sent again";
 const UNREADABLE: &str =
     "The input's recorded outcome could not be read, so an earlier call may have offered it; it is never sent again";
 const NO_WITNESS: &str =
@@ -351,13 +353,41 @@ enum Stored {
     Conflict,
 }
 
+/// Reads the receipt path without following links (zerus-hfw2s.6). Only a
+/// missing path is `Absent`. Anything else that cannot prove what this
+/// request ID holds is an error, answered `Unknown{unseen}`: a link, dangling
+/// or not, or any other non-regular file; a file that does not parse; a parsed
+/// value that is not a well-formed receipt of this request ID. Only a
+/// well-formed receipt of this request ID whose binding or digest differs is a
+/// `Conflict`.
 fn stored(binding: &Binding) -> Result<Stored> {
-    let bytes = match fs::read(receipt_path(&binding.request_id)) {
-        Ok(bytes) => bytes,
+    use std::io::Read;
+    const NOT_A_FILE: &str = "The receipt path holds no regular file";
+    let path = receipt_path(&binding.request_id);
+    match fs::symlink_metadata(&path) {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Stored::Absent),
         Err(error) => return Err(error.to_string()),
-    };
+        Ok(meta) if !meta.file_type().is_file() => return Err(NOT_A_FILE.into()),
+        Ok(_) => {}
+    }
+    let mut file = crate::platform::no_follow(fs::OpenOptions::new().read(true))
+        .open(&path)
+        .map_err(|e| e.to_string())?;
+    if !file.metadata().map_err(|e| e.to_string())?.is_file() {
+        return Err(NOT_A_FILE.into());
+    }
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes).map_err(|e| e.to_string())?;
     let receipt: Value = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
+    let field = |key: &str| receipt.get(key).and_then(Value::as_str);
+    let well_formed = receipt.is_object()
+        && field("request_id") == Some(binding.request_id.as_str())
+        && ["name", "run_id", "conversation_id", "digest"]
+            .iter()
+            .all(|key| field(key).is_some());
+    if !well_formed {
+        return Err("The receipt path holds no well-formed receipt of this request".into());
+    }
     let same = string(&receipt, "digest") == binding.digest
         && string(&receipt, "name") == binding.name
         && string(&receipt, "run_id") == binding.run_id
@@ -463,8 +493,14 @@ pub(super) fn submit_with(
     let path = receipt_path(&binding.request_id);
     // The pending marker: from here nothing is refused by HGS and nothing is
     // ever sent again for this request.
-    if let Err(error) = atomic(&path, &receipt.to_string()) {
-        return refuse(NotOfferedCode::HostRefused, error);
+    if let Err(error) = write_marker(&path, &receipt.to_string()) {
+        // The write may have failed after its rename (zerus-hfw2s.7): answer by
+        // what the store now holds, still under this request's lock.
+        return match stored(&binding) {
+            Ok(Stored::Absent) => refuse(NotOfferedCode::HostRefused, error),
+            Ok(_) => unknown(UnknownCode::Pending, MARKER_UNCERTAIN),
+            Err(read) => unknown(UnknownCode::Unseen, &format!("{UNREADABLE}: {read}")),
+        };
     }
     let sent = rpc(
         &record,
@@ -500,6 +536,19 @@ enum Prepared {
     Recorded(Value),
     /// The store says this input may already have been offered.
     Unknown(Witnessed),
+}
+
+/// Writes the pending marker. Tests can make it fail before writing anything,
+/// or after its rename, as a failed directory sync would.
+fn write_marker(path: &Path, contents: &str) -> Result<()> {
+    #[cfg(test)]
+    if let Some(after_rename) = tests::MARKER_FAULT.with(|fault| fault.take()) {
+        if after_rename {
+            atomic(path, contents)?;
+        }
+        return Err("injected marker failure".into());
+    }
+    atomic(path, contents)
 }
 
 /// Every check before the pending marker. Each failure is a definite refusal,
@@ -1381,5 +1430,86 @@ mod tests {
         // recorded() without its lock is an error, never Absent.
         assert!(recorded(name, &request("WITNESS")).is_err());
         fs::remove_dir(&lock_path).unwrap();
+        // zerus-hfw2s.6: a link or another non-regular file at the receipt path, or
+        // a parsed value that is no well-formed receipt of this request, cannot
+        // prove what was offered: unknown, no host call, nothing written.
+        #[cfg(unix)]
+        {
+            let dangling = request("WITNESS");
+            let path = receipt_path(string(&dangling, "request_id"));
+            std::os::unix::fs::symlink(root().join("dsh/receipts/missing.json"), &path).unwrap();
+            unknown_unsent(&dangling, UNREADABLE);
+            assert!(fs::symlink_metadata(&path)
+                .unwrap()
+                .file_type()
+                .is_symlink());
+            assert!(recorded(name, &dangling).is_err());
+            let linked = request("WITNESS");
+            std::os::unix::fs::symlink(
+                receipt_path(string(&good, "request_id")),
+                receipt_path(string(&linked, "request_id")),
+            )
+            .unwrap();
+            unknown_unsent(&linked, UNREADABLE);
+            assert!(recorded(name, &linked).is_err());
+        }
+        for shape in ["{}", "[]", "\"submitted\"", "null"] {
+            let odd = request("WITNESS");
+            atomic(&receipt_path(string(&odd, "request_id")), shape).unwrap();
+            unknown_unsent(&odd, UNREADABLE);
+            assert!(recorded(name, &odd).is_err(), "{shape}");
+        }
+        let foreign = request("WITNESS");
+        atomic(
+            &receipt_path(string(&foreign, "request_id")),
+            &json!({"request_id":uuid::Uuid::new_v4().to_string(),"name":name,"run_id":"run-W",
+                "conversation_id":"session-W","digest":"x","witness_version":1,"status":"submitted"})
+            .to_string(),
+        )
+        .unwrap();
+        unknown_unsent(&foreign, UNREADABLE);
+        // zerus-hfw2s.7: a marker write that failed after its rename is answered by
+        // the store (pending, nothing sent); one that wrote nothing is a refusal.
+        let faulted = request("WITNESS");
+        MARKER_FAULT.with(|fault| fault.set(Some(true)));
+        let (outcome, calls) = run(
+            &faulted,
+            witnessing.clone(),
+            Err("unreachable".into()),
+            Duration::from_secs(5),
+        );
+        assert!(
+            matches!(&outcome, Witnessed::Unknown { code: UnknownCode::Pending, detail } if detail == MARKER_UNCERTAIN),
+            "{outcome:?}"
+        );
+        assert_eq!(calls, ["ping", "inspect"]);
+        assert_eq!(code(recorded(name, &faulted).unwrap()), "pending");
+        let unwritten = request("WITNESS");
+        MARKER_FAULT.with(|fault| fault.set(Some(false)));
+        let (outcome, calls) = run(
+            &unwritten,
+            witnessing.clone(),
+            Err("unreachable".into()),
+            Duration::from_secs(5),
+        );
+        assert!(
+            matches!(
+                &outcome,
+                Witnessed::NotOffered {
+                    code: NotOfferedCode::HostRefused,
+                    ..
+                }
+            ),
+            "{outcome:?}"
+        );
+        assert_eq!(calls, ["ping", "inspect"]);
+        assert!(!receipt_path(string(&unwritten, "request_id")).exists());
+        assert_eq!(recorded(name, &unwritten).unwrap(), Recorded::Absent);
+    }
+
+    thread_local! {
+        /// Makes the next pending-marker write fail: `true` after its rename,
+        /// `false` before writing anything (`write_marker`).
+        pub(super) static MARKER_FAULT: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) };
     }
 }
