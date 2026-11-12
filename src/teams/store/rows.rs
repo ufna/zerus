@@ -93,8 +93,11 @@ pub(crate) fn node_payload(node: &Node) -> Result<String> {
 /// task is bound leaves it only when the newest observation agrees: the
 /// task has ended (cancelled or Done) and its attempts do not conflict.
 /// Otherwise what was decided stays recorded on the node, and the next
-/// observation decides; the service observes only the live queue.
-const LEAVES: &str = "team=?1 AND node_state IN ('accepted','cancelled') AND (NOT EXISTS(SELECT 1 FROM live_tasks l WHERE l.team=nodes.team AND l.node=nodes.id) OR EXISTS(SELECT 1 FROM task_observations o WHERE o.team=nodes.team AND o.node=nodes.id AND NOT o.attempt_conflict AND (json_extract(o.data,'$.cancelled') OR json_extract(o.data,'$.stage')='done')))";
+/// observation decides; the service observes only the live queue. A node
+/// whose cancel is still pending stays where the cancel step finds it, in
+/// a live and in a stopped team: that cancel is settled by its own answer
+/// or by an observation, never by this archive.
+const LEAVES: &str = "team=?1 AND node_state IN ('accepted','cancelled') AND (NOT EXISTS(SELECT 1 FROM live_tasks l WHERE l.team=nodes.team AND l.node=nodes.id) OR EXISTS(SELECT 1 FROM task_observations o WHERE o.team=nodes.team AND o.node=nodes.id AND NOT o.attempt_conflict AND (json_extract(o.data,'$.cancelled') OR json_extract(o.data,'$.stage')='done'))) AND NOT EXISTS(SELECT 1 FROM decisions d WHERE d.team=nodes.team AND d.node=nodes.id AND d.state<>'settled' AND d.kind='cancel')";
 pub(crate) fn archive_decided(db: &Connection, team: &str, actor: &str) -> Result<()> {
     let ids = {
         let mut statement = db
