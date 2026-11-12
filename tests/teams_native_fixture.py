@@ -834,11 +834,15 @@ class TeamFixture:
         self.evidence.write(f'startup-card-{number}-{member_id}-pane.txt', pane.stdout)
         self.panes[key] = pane.stdout
 
-    def audit_rows(self, session_name):
-        """Read-only: the approval-audit journal's attempts of one session. Its question
-        column holds the saved reservation, {"question", "answers", "categories"}
-        (approval_log.rs, reserve); each row carries that question's source, ID and run
-        and the categories beside it."""
+    JOURNAL_BOUND = 500
+
+    def journal(self):
+        """Read-only: every attempt of the private approval-audit journal, in order. Its
+        question column holds the saved reservation (approval_log.rs, reserve):
+        {"question": {"source", "question_id", "run_id", ...}, "answers": [...]} and, for
+        the Teams kinds, "categories". Each row carries that question's source, ID and run
+        and the categories beside it. A row of any other shape fails the reader: an
+        unknown shape is an error, never "no match". A missing journal is an empty one."""
         import sqlite3
         path = Path(self.env['HGS_STATE_DIR']) / 'approval-audit/journal.sqlite3'
         if not path.is_file():
@@ -846,17 +850,38 @@ class TeamFixture:
         db = sqlite3.connect(f'file:{path}?mode=ro', uri=True, timeout=1)
         try:
             cursor = db.execute('SELECT id, request_id, at, session, provider, prompt, question, status, detail '
-                                'FROM attempts WHERE session=? ORDER BY id', (session_name,))
+                                f'FROM attempts ORDER BY id LIMIT {self.JOURNAL_BOUND + 1}')
             cols = [c[0] for c in cursor.description]
             rows = [dict(zip(cols, row)) for row in cursor]
         finally:
             db.close()
+        if len(rows) > self.JOURNAL_BOUND:
+            raise AssertionError(f'the audit journal holds more than {self.JOURNAL_BOUND} rows')
         for row in rows:
-            saved = json.loads(row['question'])
-            question = saved.get('question') or {}
-            row.update(source=question.get('source'), question_id=question.get('question_id'),
-                       run=question.get('run_id'), categories=saved.get('categories') or [])
+            try:
+                saved = json.loads(row['question'])
+                question = saved['question']
+                fields = {key: question[key] for key in ('source', 'question_id', 'run_id')}
+                categories = saved.get('categories', [])
+                if (not all(isinstance(value, str) for value in fields.values())
+                        or not isinstance(saved['answers'], list) or not isinstance(categories, list)):
+                    raise TypeError('a field has an unexpected type')
+            except (ValueError, KeyError, TypeError) as error:
+                raise AssertionError(f'audit journal row {row["id"]} has a shape the reader does not know: {error!r}')
+            row.update(source=fields['source'], question_id=fields['question_id'], run=fields['run_id'],
+                       categories=categories)
         return rows
+
+    def audit_rows(self, session_name):
+        """The journal's attempts of one session (see journal)."""
+        return [row for row in self.journal() if row['session'] == session_name]
+
+    def journal_summary(self):
+        """The whole journal as (member, source, categories, status), sorted, for evidence
+        and for assertions about everything it holds."""
+        members = {session['name']: member_id for member_id, session in self.sessions.items()}
+        return sorted((members.get(row['session'], row['session']), row['source'], tuple(row['categories']), row['status'])
+                      for row in self.journal())
 
     def agent_home(self, member_id):
         """The account home a member runs in: a managed account, or the native one in HOME."""

@@ -114,6 +114,22 @@ class ClassFixture:
         return outcome
 
 
+def journal_is(case, expected, label):
+    """The whole audit journal settles to exactly `expected` (journal_summary) within a
+    turn's bound; the last summary read is kept in the evidence either way."""
+    fx = case.fx
+    last = []
+
+    def settled():
+        last[:] = [fx.journal_summary()]
+        return last[0] == expected or None
+    try:
+        fx.wait(label, settled, fixture.BOUND['turn'], 2)
+    finally:
+        fx.evidence.write('journal-' + re.sub(r'\W+', '-', label).strip('-')[:60] + '.json',
+                          dict(expected=expected, last=last[0] if last else None))
+
+
 class TeamsContract(ClassFixture):
     """Delegations off: the person answers every startup card."""
 
@@ -329,6 +345,10 @@ class TrustContract(ClassFixture):
         refusals = [c for c in fx.cards() if 'needs your attention' in c.get('text', '')]
         fx.evidence.write('cards-after-trust.json', refusals)
         self.assertFalse(refusals, 'no member card was left for the person')
+        journal_is(self, self.startup_grants(), 'the journal holds exactly the two startup grants')
+
+    def startup_grants(self):
+        return [(member, self.trust_source, ('team_folder_trust',), 'approved') for member in ('lead', 'm1')]
 
     def test_2_a_prompt_that_is_not_a_startup_prompt_stays_the_persons(self):
         fx = self.fx
@@ -345,6 +365,9 @@ class TrustContract(ClassFixture):
         grants = [r for r in fx.audit_rows(fx.sessions['m1']['name'])
                   if r['question_id'] == card.get('question_id')]
         self.assertFalse(grants, 'no audited grant for a prompt that is not a startup prompt')
+        # The positive control: the same reader still finds the two startup grants, and
+        # nothing else.
+        journal_is(self, self.startup_grants(), 'the journal still holds only the two startup grants')
 
     def assert_agent_trusted(self, member_id):
         raise NotImplementedError
@@ -410,6 +433,9 @@ class CodexTrustContract(ClassFixture):
                 self.assertEqual([(a.get('terminal'), a.get('exit')) for a in person], [(None, 0)],
                                  'the person answered it once through hgs answer')
         fx.evidence.write('codex-trust-cards.json', fx.cards())
+        # The standing confirmation refused before any reservation, and the person's own
+        # answers write none: the whole journal is empty.
+        journal_is(self, [], 'the journal holds nothing at all')
 
 
 class ResumeContract(ClassFixture):
@@ -456,9 +482,14 @@ class ResumeContract(ClassFixture):
         self.assertEqual(latest['users'].count(brief), 1, 'the brief arrives once')
         rows = [r for r in fx.audit_rows(fx.sessions['m1']['name']) if r['source'] == 'team_resume']
         fx.evidence.write('resume-audit.json', rows)
-        self.assertTrue(rows, 'the resume is audited')
-        self.assertFalse([r for r in rows if r['status'] in ('prepared', 'cancelled', 'unknown')], rows)
+        # One reservation for the resume of the exited run and one for the brief in the new run.
+        self.assertEqual(sorted((r['question_id'].split(':', 1)[0], r['run']) for r in rows),
+                         [('brief', resumed['run_id']), ('resume', before['run_id'])], 'the resume and its brief are audited')
+        journal_is(self, self.resume_journal(), 'the journal holds exactly the resume and its brief')
         type(self).resumed_run = resumed['run_id']
+
+    def resume_journal(self):
+        return [('m1', 'team_resume', ('team_resume',), 'approved')] * 2
 
     def diagnose_refused_resume(self):
         """A refused resume: what the service reads at that moment, then the person's own
@@ -487,8 +518,10 @@ class ResumeContract(ClassFixture):
                                    and 'Member m1 needs your attention' in c.get('text', '')], fixture.BOUND['doorbell'], 3)
         fx.evidence.write('terminate-refusal.json', refused)
         rows = [r for r in fx.audit_rows(fx.sessions['m1']['name'])
-                if r['source'] == 'team_resume' and r['run'] == view['run_id']]
+                if r['source'] == 'team_resume' and r['run'] == view['run_id'] and r['question_id'].startswith('resume:')]
         self.assertFalse(rows, 'no resume was reserved for the terminated run')
+        # The positive control: the same reader still finds the first resume and its brief.
+        journal_is(self, self.resume_journal(), 'the journal still holds only the first resume and its brief')
         live = [r for r in fx.rows() if r.get('launch_id') == launch and r.get('runtime_state') == 'live']
         self.assertFalse(live, 'no session of the member launch runs again')
 
@@ -522,6 +555,7 @@ class UnworkedResumeContract(ClassFixture):
         archives = (seen.get('m1') or {}).get('archives') or []
         if archives:
             fx.evidence.write('person-restore.json', fx.person_restore('m1', archives[-1]))
+        fx.evidence.write('journal-after-refusal.json', fx.journal_summary())
         self.assertFalse(live, 'nothing of the member launch started')
         self.assertTrue(any(self.reason in c.get('text', '') for c in cards), "the card carries the command's own reason")
 
@@ -697,9 +731,35 @@ class TeamsFixtureDiagnostics(unittest.TestCase):
                        (json.dumps(saved),))
             db.commit()
             db.close()
-            rows = fixture.TeamFixture.audit_rows(SimpleNamespace(env={'HGS_STATE_DIR': str(state)}), 'member')
+            import types
+            reader = SimpleNamespace(env={'HGS_STATE_DIR': str(state)}, JOURNAL_BOUND=fixture.TeamFixture.JOURNAL_BOUND)
+            reader.journal = types.MethodType(fixture.TeamFixture.journal, reader)
+            rows = fixture.TeamFixture.audit_rows(reader, 'member')
         self.assertEqual([(r['id'], r['source'], r['question_id'], r['run'], r['categories']) for r in rows],
                          [(1, 'team_resume', 'q-1', 'run-1', ['team_resume'])])
+
+    def test_the_journal_reader_refuses_a_shape_it_does_not_know(self):
+        import sqlite3
+        from types import SimpleNamespace
+        for saved in ({'source': 'team_resume', 'question_id': 'q', 'run_id': 'r'},
+                      {'source': 'team_resume', 'question_id': 'q', 'run_id': 'r', 'answers': []},
+                      {'question': {'source': 'team_resume', 'question_id': 'q'}, 'answers': []},
+                      {'question': {'source': 'team_resume', 'question_id': 'q', 'run_id': 'r'}},
+                      {'question': {'source': 'team_resume', 'question_id': 'q', 'run_id': 'r'}, 'answers': [],
+                       'categories': 'team_resume'}):
+            with self.subTest(saved=saved), tempfile.TemporaryDirectory() as base:
+                state = Path(base) / 'state'
+                (state / 'approval-audit').mkdir(parents=True)
+                db = sqlite3.connect(state / 'approval-audit/journal.sqlite3')
+                db.execute("CREATE TABLE attempts (id INTEGER PRIMARY KEY, identity TEXT, request_id TEXT, at INTEGER, "
+                           "host TEXT, session TEXT, provider TEXT, prompt TEXT, question TEXT, status TEXT, detail TEXT)")
+                db.execute("INSERT INTO attempts VALUES (1, 'i', 'r', 1, 'h', 'member', 'claude', '', ?, 'approved', '')",
+                           (json.dumps(saved),))
+                db.commit()
+                db.close()
+                reader = SimpleNamespace(env={'HGS_STATE_DIR': str(state)}, JOURNAL_BOUND=5)
+                with self.assertRaisesRegex(AssertionError, 'shape the reader does not know'):
+                    fixture.TeamFixture.journal(reader)
 
     def test_folder_watch_times_a_folder_that_goes_and_comes_back(self):
         with tempfile.TemporaryDirectory() as base:
