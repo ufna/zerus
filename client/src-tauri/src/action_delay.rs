@@ -189,17 +189,15 @@ impl Delays {
                 // A partial reservation drops all its claims before returning.
                 entry.insert(match &original {
                     Some(claim) => claim.clone(),
-                    None => match actions.reserve_end(&c.target) {
-                        Some(claim) => claim,
+                    None => match actions.reserve_end_for(&c.target, &c.action) {
+                        Ok(claim) => claim,
                         // An undo window whose deadline passed long ago and
                         // whose frontend never took it would otherwise keep
                         // this lane for the app's lifetime (zerus-ex66o).
-                        None if self.release_abandoned(&mut model, &c.target, Instant::now()) => {
-                            actions
-                                .reserve_end(&c.target)
-                                .ok_or(crate::actions::END_BUSY)?
+                        Err(_) if self.release_abandoned(&mut model, &c.target, Instant::now()) => {
+                            actions.reserve_end_for(&c.target, &c.action)?
                         }
-                        None => return Err(crate::actions::END_BUSY.into()),
+                        Err(refusal) => return Err(refusal),
                     },
                 });
             }

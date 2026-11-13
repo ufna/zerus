@@ -4,6 +4,8 @@ import { listen } from "@tauri-apps/api/event";
 import { emptyAccounts, emptyBatch, emptyMachines, emptyProjects, isEmptyBatch, type AccountsView, type MachinesView, type ProjectsView, type Screen, type Action, type ActivityEvent, type Batch, type ComputerId, type Details, type EditOutcome, type Outcome, type ReadMark, type Target, type TerminalConnected, type TerminalFacts, type TerminalEvent, type TerminalStatus, type TerminalTarget, type ArchivePage, type ArchivedActivity, type ProcessTarget, type Answer, type ComposerTab, type ComposerView, type Inspect, type SendReply, type SessionRef, type AttachmentRef, type Fetched, type TaskFileSource, type ConflictsPage, type DraftSource, type SavedDraftDetail, type SavedDraftsPage, type QuestionEdit, type QuestionReply, type ClearControl, emptyUsage, type TerminalFinished, type SessionUsageRef, type Usage } from "./types";
 import type { CreatedWorktree, CreationAction, CreationAdmission, CreationCard, CreationEvent, FolderOut, LaunchAccounts, LaunchChoices, LaunchPlan, LaunchStart, MachineMeta, NewSessionContext, NewSessionFormInput, NewSessionFormView, PathStyle, RepositoryFields } from "./types";
 import type { Text } from "./text";
+import { formatActionBusy } from "./action-busy";
+import { tr } from "./i18n";
 import type { ActivityPort, FollowRequest } from "./store/activity";
 import { documentVisibility, type PageVisibility } from "./store/visibility";
 import { emptyUpdatesView, type UpdateChannel, type UpdatesView } from "./types";
@@ -28,6 +30,10 @@ export interface Source extends ActivityPort {
 let source: Source | undefined;
 
 export const inTauri = () => typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+
+function actionInvoke<T>(command: string, args: Record<string, unknown>): Promise<T> {
+  return invoke<T>(command, args).catch((error: unknown) => { throw formatActionBusy(error, tr) ?? error; });
+}
 
 /** Content-free invariant evidence through the existing capped stderr logger. */
 export async function reportDetailInvariant(line: string): Promise<void> {
@@ -247,7 +253,7 @@ export async function metrics(windowMs?: number): Promise<Record<string, unknown
 /** One guarded session action; an Err (a rejected promise) is an unknown outcome. */
 export async function runAction(target: Target, action: Action, delay?: import("./store/endActionBusy").EndReference): Promise<Outcome> {
   if (!inTauri()) return { outcome: "failed", detail: "Actions need the desktop app." };
-  return invoke<Outcome>("run_action", { target, action, delay });
+  return actionInvoke<Outcome>("run_action", { target, action, delay });
 }
 
 /**
@@ -256,7 +262,7 @@ export async function runAction(target: Target, action: Action, delay?: import("
  */
 export async function setNotifications(target: Target, muted: boolean, expectedRevision: number | null): Promise<Record<string, unknown>> {
   if (!inTauri()) throw new Error("Actions need the desktop app.");
-  return invoke<Record<string, unknown>>("set_notifications", { target, muted, expectedRevision });
+  return actionInvoke<Record<string, unknown>>("set_notifications", { target, muted, expectedRevision });
 }
 
 /**
@@ -266,7 +272,7 @@ export async function setNotifications(target: Target, muted: boolean, expectedR
  */
 export async function setQuestionRouting(target: Target, sendToParent: boolean, expectedRevision: number): Promise<Record<string, unknown>> {
   if (!inTauri()) throw new Error("Actions need the desktop app.");
-  return invoke<Record<string, unknown>>("set_question_routing", { target, sendToParent, expectedRevision });
+  return actionInvoke<Record<string, unknown>>("set_question_routing", { target, sendToParent, expectedRevision });
 }
 
 /** What the person chose for Keep cache warm (core `keep_warm::Choice`). */
@@ -278,14 +284,14 @@ export type KeepWarmChoice = { kind: "off" } | { kind: "hours"; hours: number } 
  */
 export async function setKeepWarm(target: Target, choice: KeepWarmChoice, expectedRevision: number): Promise<Record<string, unknown>> {
   if (!inTauri()) throw new Error("Actions need the desktop app.");
-  return invoke<Record<string, unknown>>("set_keep_warm", { target, choice, expectedRevision });
+  return actionInvoke<Record<string, unknown>>("set_keep_warm", { target, choice, expectedRevision });
 }
 
 /** A session's parent link change (zerus-sa9qn.9), checked by its host; resolves with the host's reply. */
 export type ParentChange = { kind: "clear" } | { kind: "set"; session_id: string; name: string; conversation_id: string; run_id: string; replace: boolean };
 export async function setParent(target: Target, change: ParentChange): Promise<Record<string, unknown>> {
   if (!inTauri()) throw new Error("Actions need the desktop app.");
-  return invoke<Record<string, unknown>>("set_parent", { target, change });
+  return actionInvoke<Record<string, unknown>>("set_parent", { target, change });
 }
 
 /** The inspect fields of a session; null when they are unavailable. */
@@ -980,7 +986,7 @@ export function processesStop(key: string, ids: string[]) {
 
 const DESKTOP_ACTIONS = "Actions need the desktop app.";
 const desktop = <T>(command: string, args: Record<string, unknown>): Promise<T> =>
-  inTauri() ? invoke<T>(command, args) : Promise.reject(DESKTOP_ACTIONS);
+  inTauri() ? actionInvoke<T>(command, args) : Promise.reject(DESKTOP_ACTIONS);
 
 /** Opens the selected session's composer (undefined: none is open); null outside the app. */
 export const composerOpen = (session: SessionRef | undefined) =>
