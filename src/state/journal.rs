@@ -1450,6 +1450,7 @@ pub(super) fn update_activity(record: &mut Value, event: &Value) {
     record["subagents"] = json!(children);
     if ["UserPromptSubmit", "UserPromptQueued"].contains(&kind) {
         record["recovery_user_at"] = json!(timestamp);
+        kimi_completion::observe_submission(record, event, timestamp);
         record["recovery_user_text"] = json!(event["prompt"].as_str().map(str::to_owned).unwrap_or_else(||
             event["prompt"].as_array().into_iter().flatten().filter(|v|v["type"]=="text")
                 .map(|v|string(v,"text")).collect::<Vec<_>>().join("\n")));

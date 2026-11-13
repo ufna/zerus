@@ -549,7 +549,15 @@ class Model(http.server.BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header('Content-Type', 'text/event-stream')
         self.end_headers()
-        for delta, finish in (({'role': 'assistant', 'content': 'Fixture complete.'}, None), ({}, 'stop')):
+        response = (({'role': 'assistant', 'content': 'Fixture complete.'}, None), ({}, 'stop'))
+        background = getattr(self.server, 'background_command', None)
+        if background is not None and len(self.server.requests) == 1:
+            assert any(tool.get('function', {}).get('name') == 'Bash' for tool in body.get('tools', []))
+            response = ((dict(role='assistant', content=None, tool_calls=[dict(index=0,
+                id='call_background_fixture', type='function', function=dict(name='Bash', arguments=json.dumps(
+                    dict(command=background, description='Private completion fixture', run_in_background=True))))]), None),
+                ({}, 'tool_calls'))
+        for delta, finish in response:
             chunk = {'id': 'chat_fixture', 'object': 'chat.completion.chunk', 'model': 'fixture',
                      'choices': [{'index': 0, 'delta': delta, 'finish_reason': finish}]}
             if finish:
@@ -1045,6 +1053,85 @@ class NativeKimi(lifecycle.Harness):
             time.sleep(1)
             self.assertEqual(len(self.requests), requests)
             self.assertEqual(self.held(text), 1)
+
+    def test_background_task_completion_settles_its_own_main_turn(self):
+        started, release, finished = [self.root / name for name in ('bg-started', 'bg-release', 'bg-finished')]
+        self.model_server.background_command = (
+            'printf started > ' + shlex.quote(str(started)) +
+            '; while [ ! -f ' + shlex.quote(str(release)) + ' ]; do sleep 0.1; done' +
+            '; printf completed > ' + shlex.quote(str(finished)))
+        name = self.launch()
+        payload = self.payload(name, 'Run the private background fixture.')
+        def wire_rows():
+            cid = self.binding(name).get('conversation_id')
+            if not cid:
+                return []
+            paths = list((self.home / 'sessions').glob('*/' + cid + '/agents/main/wire.jsonl'))
+            if not paths:
+                return []
+            self.assertEqual(len(paths), 1)
+            with paths[0].open('rb') as source:
+                data = source.read((8 << 20) + 1)
+            self.assertLessEqual(len(data), 8 << 20)
+            if not data.endswith(b'\n'):
+                return []
+            return [json.loads(line) for line in data.splitlines()]
+        try:
+            receipt = self.send(name, payload)
+            self.assertEqual(receipt['status'], 'submitted')
+            self.until(started.exists, name)
+            def main_finished():
+                ends = [row for row in wire_rows() if row.get('type') == 'turn.ended'
+                        and row.get('agentId') == 'main' and row.get('reason') == 'completed']
+                return ends[0] if len(self.requests) == 2 and len(ends) == 1 else None
+            first = self.until(main_finished, name)
+            initial = first['turnId']
+            state = self.inspect(name)
+            self.assertTrue(state['active_tools'], 'the held Bash must remain outstanding')
+            self.assertNotEqual(state['activity'], 'idle', 'a wire end must not erase the running tool')
+            bound = self.binding(name)
+            if bound['kimi_turn_clock'].get('stopped') == initial:
+                self.assertGreater(bound.get('hook_observation', {}).get('events', {}).get('Stop', {}).get('count', 0), 0,
+                                   'only a real primary Stop can precede the outstanding-tool barrier')
+            self.assertFalse(finished.exists(), 'the task ended before the main turn became idle')
+        finally:
+            release.touch()
+        self.until(finished.exists, name)
+        def completed():
+            state = self.inspect(name)
+            clock = self.binding(name).get('kimi_turn_clock', {})
+            return (clock.get('started', -1) > initial and clock.get('stopped') == clock['started']
+                    and settled_turn(state, receipt))
+        state = self.until(completed, name)
+        task_record = self.binding(name)
+        rows = wire_rows()
+        task_turns = [row['turnId'] for row in rows if row.get('type') == 'turn.prompt'
+                      and row.get('agentId') == 'main' and row.get('origin', {}).get('kind') == 'task']
+        self.assertEqual(task_turns, [task_record['kimi_turn_clock']['started']])
+        self.assertTrue(any(row.get('type') == 'turn.ended' and row.get('agentId') == 'main'
+                            and row.get('turnId') == task_turns[0] and row.get('reason') == 'completed' for row in rows))
+        self.assertLessEqual(sum(event.get('type') == 'Stop' and event.get('kimi_turn_id') == initial
+                                 for event in state['events']), 1)
+        self.assertEqual(sum(event.get('type') == 'Stop' and event.get('kimi_turn_id') == task_turns[0]
+                             for event in state['events']), 1)
+        calls = len(self.requests)
+        self.assertEqual(calls, 3)
+        followup = self.payload(name, 'Typed follow-up after the background task.')
+        followup_receipt = self.send(name, followup)
+        final = self.until(lambda: self.binding(name)['kimi_turn_clock']['started'] > task_turns[0]
+                           and settled_recorded_turn(self.inspect(name), followup_receipt, followup['text']), name)
+        final_record = self.binding(name)
+        self.assertEqual(final_record['kimi_turn_clock']['stopped'], final_record['kimi_turn_clock']['started'])
+        self.assertEqual(len(self.requests), 4)
+        self.assertEqual(self.send(name, payload), receipt)
+        self.assertEqual(self.send(name, followup), followup_receipt)
+        time.sleep(1)
+        self.assertEqual(len(self.requests), 4, 'replaying input created another turn')
+        print('ZERUS_KIMI_BG_COMPLETION=' + json.dumps(dict(version=self.version, initial_turn=initial,
+            task_turns=task_turns, typed_turn=final_record['kimi_turn_clock']['started'], model_calls=4,
+            task_submission=task_record.get('kimi_submission'), typed_submission=final_record.get('kimi_submission'),
+            wire_task=[row for row in rows if row.get('type') == 'turn.prompt' and row.get('turnId') in task_turns],
+            replay_model_calls=0)))
 
     def test_busy_attachment_send_is_typed_once_and_delivered_once(self):
         # zerus-iitw8: Kimi shows pasted image paths as text and its paste
