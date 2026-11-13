@@ -1004,6 +1004,10 @@ pub(crate) fn submit_task_message(session: &zerus_replica::SessionKey, text: &st
     input::submit_task(session, text, attachments)
 }
 
+/// The terminal gate's sentence for a terminal that holds input, for the
+/// Teams tests that answer as the task command does (zerus-63rru.79).
+#[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
+pub(crate) use input::DRAFT as TERMINAL_DRAFT;
 pub(crate) use input::{Continuation, CONVERSATION_GONE};
 pub(crate) fn prepare_task_reply(
     session: &zerus_replica::SessionKey,

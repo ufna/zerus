@@ -527,3 +527,60 @@ fn a_refused_handout_cannot_be_reopened_to_bypass_a_new_dependency() {
     h.cancel_fact(dependency);
     h.intent(node, "m1");
 }
+
+/// The journal's hand-out outcome row says what the outcome was and, for a
+/// refusal, its reason, cleaned (zerus-63rru.79): an intent that typed
+/// nothing does not read like a hand-out that happened.
+#[test]
+fn the_journal_says_each_hand_out_outcome_and_a_refusals_reason_cleaned() {
+    let mut h = Harness::new();
+    h.bind("m1");
+    h.bind("m2");
+    let mut texts = Vec::new();
+    // An uncertain outcome keeps its member's slot: m2 takes it.
+    for (n, (member, outcome)) in [
+        (
+            "m1",
+            HandoutOutcome::Refused {
+                reason: "terminal has a draft,\n\tdialog\u{1b}[31m, or\u{202e} prompt".into(),
+            },
+        ),
+        (
+            "m2",
+            HandoutOutcome::Uncertain {
+                reason: "The task input was not confirmed.".into(),
+            },
+        ),
+        (
+            "m1",
+            HandoutOutcome::Submitted {
+                receipt: "receipt".into(),
+            },
+        ),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let node = h.add(&person(), n as u32 + 1);
+        let id = h.intent(node, member);
+        h.outcome(&id, outcome);
+        let row = h
+            .store
+            .journal(TEAM, 200, None)
+            .unwrap()
+            .rows
+            .into_iter()
+            .rev()
+            .find(|j| j.kind == "handout_outcome")
+            .unwrap();
+        texts.push(row.text.split_once(": ").unwrap().1.to_owned());
+    }
+    assert_eq!(
+        texts,
+        [
+            "refused: terminal has a draft, dialog[31m, or prompt",
+            "uncertain: The task input was not confirmed.",
+            "submitted",
+        ]
+    );
+}

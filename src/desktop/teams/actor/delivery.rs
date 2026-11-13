@@ -15,6 +15,13 @@ struct Delivery {
     not_started: bool,
     #[serde(default)]
     nonstarts: u32,
+    /// The refusal is the terminal gate's: the member's terminal holds
+    /// input (zerus-63rru.79). An older build reads a plain refusal.
+    #[serde(default)]
+    waiting: bool,
+    /// The stamp of the member's row when that refusal was observed.
+    #[serde(default)]
+    stamp: Option<String>,
 }
 impl Runtime {
     pub(super) fn send(
@@ -53,6 +60,8 @@ impl Runtime {
             gated: false,
             not_started: false,
             nonstarts: 0,
+            waiting: false,
+            stamp: None,
         };
         let key = format!("delivery:{id}");
         self.ledger.reserve(
@@ -102,6 +111,17 @@ impl Runtime {
             }
             ports::DeliveryResult::Outcome(outcome) => {
                 d.outcome = Some(outcome);
+                self.put(&team.id, key, &d)?;
+                boundary("outcome");
+                self.settle(store, team, key, d, now)
+            }
+            // Refused before any input because the member's terminal holds
+            // input: recorded as a refusal, with that cause and the member's
+            // row as it is now, both kept before anything settles.
+            ports::DeliveryResult::TerminalWaiting { reason } => {
+                d.stamp = ports.row_stamp(team, assignment.1).ok().flatten();
+                d.waiting = true;
+                d.outcome = Some(HandoutOutcome::Refused { reason });
                 self.put(&team.id, key, &d)?;
                 boundary("outcome");
                 self.settle(store, team, key, d, now)
@@ -234,6 +254,15 @@ impl Runtime {
                 }
             }
         }
+        if d.outcome.is_none() && !store.effect_reserved(&team.id, &d.id)? {
+            // The store settled this effect before any outcome reached the
+            // row: a removal's hand-back (zerus-63rru.77), a reopen or an
+            // override. No admission lets it out again, so the row ends now:
+            // nothing is delivered, replayed or recorded, no failure stays.
+            self.recovered(store, team, key, now)?;
+            self.ledger.remove(&row)?;
+            return Ok(());
+        }
         if d.not_started && d.outcome.is_none() {
             if *budget == 0 || ports.stopped() || team.status != TeamStatus::Running {
                 return Ok(());
@@ -262,7 +291,19 @@ impl Runtime {
         now: i64,
     ) -> Result<()> {
         if !d.gated {
-            if let Some(HandoutOutcome::Refused { reason }) = &d.outcome {
+            // A refusal of an effect the store has already settled (a
+            // removal's hand-back, which told the lead) is no failure of the
+            // node's hand-out (zerus-63rru.77), and neither is a refusal of
+            // the terminal gate (zerus-63rru.79).
+            let refused = match &d.outcome {
+                Some(HandoutOutcome::Refused { reason })
+                    if !d.waiting && store.effect_reserved(&team.id, &d.id)? =>
+                {
+                    Some(reason)
+                }
+                _ => None,
+            };
+            if let Some(reason) = refused {
                 let revision = store
                     .task_observation(&team.id, d.node)?
                     .map_or(String::new(), |o| o.revision);
@@ -274,6 +315,15 @@ impl Runtime {
                     &problem(reason),
                     now,
                 )?;
+            }
+            // A refusal of the terminal gate is not a failed hand-out: the
+            // member's terminal is not free (zerus-63rru.79).
+            if d.waiting {
+                self.terminal_refused(&team.id, &d.member, d.stamp.clone(), now)?;
+            }
+            // A submitted delivery: the member's terminal took input.
+            if matches!(d.outcome, Some(HandoutOutcome::Submitted { .. })) {
+                self.terminal_free(&team.id, &d.member)?;
             }
             // A hand-back is settled by the store at once; nothing retries it.
             if matches!(
@@ -388,6 +438,8 @@ impl Delivery {
             gated: false,
             not_started: false,
             nonstarts: 0,
+            waiting: false,
+            stamp: None,
         }
     }
 }

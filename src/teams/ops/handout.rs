@@ -247,6 +247,20 @@ fn record_outcome(
         }
         if state == "submitted" {
             ctx.close_inbox(e.node)?;
+        } else if let HandoutOutcome::Refused { reason } = outcome {
+            // A held node with nobody told is the fault zerus-63rru.77
+            // closes: an uncertain end already wrote its item above.
+            let reason = reason.trim_end();
+            let stop = if reason.ends_with(['.', '!', '?']) {
+                ""
+            } else {
+                "."
+            };
+            let text = format!(
+                "The reopen of task {} for member {} was not delivered: {reason}{stop} The decision is settled and the task waits for the lead.",
+                e.node, e.member
+            );
+            ctx.reply.item = Some(ctx.inbox(e.node, &format!("reopen_refused:{id}"), &text)?);
         }
     }
     // A refused delivery may have been the only reason a Return or Reassign
@@ -350,6 +364,64 @@ pub(super) fn report(ctx: &mut Context<'_>) -> Result<()> {
         ctx.settle(*node)?;
     }
     pipeline::reported(ctx, &n, body)
+}
+/// A report the removed member wrote after its removal took the task back
+/// (zerus-63rru.77). The team does not record it: the lead is told once per
+/// node and generation, with where the work is, and a second telling is a
+/// duplicate. Only for the generation whose newest effect the removal
+/// settled.
+pub(super) fn late_report(ctx: &mut Context<'_>) -> Result<()> {
+    let Operation::RecordLateReport {
+        node,
+        generation,
+        member,
+    } = ctx.op
+    else {
+        unreachable!()
+    };
+    ctx.active()?;
+    let n = ctx.live_node(*node)?;
+    let m = ctx.member(member)?;
+    let newest: Option<(String, String)> = ctx.db.query_row("SELECT member,state FROM effects INDEXED BY effects_attempt WHERE team=?1 AND node=?2 AND generation=?3 ORDER BY seq DESC LIMIT 1",params![ctx.team.id,node,generation],|r|Ok((r.get(0)?,r.get(1)?))).optional().map_err(storage)?;
+    let recorded: bool = ctx
+        .db
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM reports WHERE team=?1 AND node=?2 AND generation=?3)",
+            params![ctx.team.id, node, generation],
+            |r| r.get(0),
+        )
+        .map_err(storage)?;
+    if n.state != NodeState::Reported
+        || *generation != ctx.generation(*node)?
+        || m.state != MemberState::Removed
+        || recorded
+        || newest
+            .as_ref()
+            .map(|(who, state)| (who.as_str(), state.as_str()))
+            != Some((member.as_str(), "superseded"))
+    {
+        return Err(invalid(
+            "No report of a removed member waits here after its removal.",
+        ));
+    }
+    let told: bool = ctx
+        .db
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM inbox WHERE team=?1 AND kind='removed_report' AND node=?2 AND generation=?3)",
+            params![ctx.team.id, node, generation],
+            |r| r.get(0),
+        )
+        .map_err(storage)?;
+    if told {
+        return Err(Problem::new(
+            code::DUPLICATE,
+            "This late report was already told.",
+        ));
+    }
+    let text = super::members::late_report_text(member, *node, &m.worktree);
+    ctx.reply.node = Some(*node);
+    ctx.reply.item = Some(ctx.inbox(*node, "removed_report", &text)?);
+    Ok(())
 }
 
 fn require_ready(db: &Connection, team: &Team, node: u32) -> Result<()> {
