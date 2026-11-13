@@ -677,6 +677,7 @@ class Harness(unittest.TestCase):
         # kill-server returns before the supervised agents have drained and
         # synced their final records. Identify only this private socket's pane
         # processes and recorded processes whose start identity still matches.
+        assert Path(self.socket).parent.is_dir(), "the private tmux socket directory is gone"
         panes = subprocess.run([TMUX, "-S", self.socket, "list-panes", "-a", "-F", "#{pane_pid}"],
                                env=self.env, capture_output=True, text=True)
         table = process_table()
@@ -712,6 +713,7 @@ class Harness(unittest.TestCase):
                     if pid in table and table[pid][2] == started and not table[pid][1].startswith(("Z", "X"))}
 
         live_owned(table)
+        assert Path(self.socket).parent.is_dir(), "the private tmux socket directory is gone"
         subprocess.run([TMUX, "-S", self.socket, "kill-server"], env=self.env, capture_output=True)
         deadline = time.monotonic() + 6
         while remaining := live_owned(process_table()):

@@ -989,17 +989,32 @@ fn reserve(
 fn delivered(body: &Input, result: attempts::Delivered) -> Value {
     match result {
         attempts::Delivered::Submitted(receipt) => body.reply("submitted", "", Some(receipt)),
-        attempts::Delivered::NotAdmitted { reason, waiting } => {
+        attempts::Delivered::NotAdmitted {
+            reason,
+            waiting,
+            dialog,
+        } => {
             let mut reply = body.reply("refused", &reason, None);
             // The member waits for a person: the typed cause the service
             // reads instead of the sentence (zerus-63rru.79).
             if waiting {
                 reply["cause"] = json!(TERMINAL_WAITING);
+                // Which dialog, when the gate knows one: the actor's card
+                // names it (zerus-63rru.83). An older actor reads the
+                // answer as today; the field is additive.
+                if let Some(dialog) = dialog {
+                    reply["dialog"] = json!(dialog);
+                }
             }
             reply
         }
         attempts::Delivered::Uncertain(error) => body.reply("uncertain", &error, None),
     }
+}
+
+#[cfg(all(test, unix))]
+fn delivered_test_answer(body: &Input, result: attempts::Delivered) -> Value {
+    delivered(body, result)
 }
 
 #[cfg(test)]

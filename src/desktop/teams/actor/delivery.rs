@@ -19,6 +19,9 @@ struct Delivery {
     /// input (zerus-63rru.79). An older build reads a plain refusal.
     #[serde(default)]
     waiting: bool,
+    /// Which dialog the gate knew, when one did (zerus-63rru.83).
+    #[serde(default)]
+    dialog: Option<String>,
     /// The stamp of the member's row when that refusal was observed.
     #[serde(default)]
     stamp: Option<String>,
@@ -61,6 +64,7 @@ impl Runtime {
             not_started: false,
             nonstarts: 0,
             waiting: false,
+            dialog: None,
             stamp: None,
         };
         let key = format!("delivery:{id}");
@@ -118,9 +122,10 @@ impl Runtime {
             // Refused before any input because the member's terminal holds
             // input: recorded as a refusal, with that cause and the member's
             // row as it is now, both kept before anything settles.
-            ports::DeliveryResult::TerminalWaiting { reason } => {
+            ports::DeliveryResult::TerminalWaiting { reason, dialog } => {
                 d.stamp = ports.row_stamp(team, assignment.1).ok().flatten();
                 d.waiting = true;
+                d.dialog = dialog;
                 d.outcome = Some(HandoutOutcome::Refused { reason });
                 self.put(&team.id, key, &d)?;
                 boundary("outcome");
@@ -319,7 +324,13 @@ impl Runtime {
             // A refusal of the terminal gate is not a failed hand-out: the
             // member's terminal is not free (zerus-63rru.79).
             if d.waiting {
-                self.terminal_refused(&team.id, &d.member, d.stamp.clone(), now)?;
+                self.terminal_refused(
+                    &team.id,
+                    &d.member,
+                    d.stamp.clone(),
+                    d.dialog.clone(),
+                    now,
+                )?;
             }
             // A submitted delivery: the member's terminal took input.
             if matches!(d.outcome, Some(HandoutOutcome::Submitted { .. })) {
@@ -439,6 +450,7 @@ impl Delivery {
             not_started: false,
             nonstarts: 0,
             waiting: false,
+            dialog: None,
             stamp: None,
         }
     }
