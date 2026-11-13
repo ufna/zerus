@@ -952,7 +952,7 @@ class TeamsFixtureDiagnostics(unittest.TestCase):
 
     def test_codex_trust_problems_name_a_wider_or_extra_record(self):
         main, account, native = '/tmp/example/work/proj', '/tmp/example/cfg/accounts/zt-codex/config.toml', \
-            '/tmp/example/home/.codex/config.toml'
+            '/tmp/example/native/.codex/config.toml'
         problems = codex_trust_problems
         self.assertEqual(problems({account: {main: 'trusted'}, native: {}}, {account}, main), [])
         for name, records in (('a parent', {account: {'/tmp/example/work': 'trusted'}, native: {}}),
