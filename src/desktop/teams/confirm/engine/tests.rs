@@ -822,6 +822,21 @@ fn a_codex_repository_card_answers_only_the_main_checkout_the_producer_names() {
 }
 
 
+/// A folder card without a disclosure is refused for every agent
+/// (zerus-63rru.66 round 3, the restored shared guard's committed oracle).
+#[test]
+fn a_folder_card_without_a_disclosure_is_refused_for_every_agent() {
+    for agent in ["claude", "codex", "kimi"] {
+        let mut f = Fake::new();
+        at_startup(&mut f, agent);
+        let folder = crate::state::trust_fixture::FOLDER;
+        let q = &mut f.snapshot.questions[0];
+        q["questions"][0]["body"] = json!(format!("{folder}\n\n"));
+        let why = super::super::policy::trust(&f.binding, &f.snapshot).err();
+        assert_eq!(why.as_deref(), Some("The prompt carries no disclosure"), "{agent}");
+    }
+}
+
 /// The repository card is Codex's own: Claude's policy refuses it
 /// (zerus-63rru.66).
 #[test]

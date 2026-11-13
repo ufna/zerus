@@ -272,6 +272,9 @@ pub fn detail(reply: &Map<String, Value>) -> String {
     )
     .to_owned()];
     let categories = known_categories(reply.get("categories").unwrap_or(&Value::Null));
+    if let Some(scope) = reply.get("scope").and_then(Value::as_str).filter(|s| !s.is_empty()) {
+        parts.push(format!("Trusted for {scope} and its subfolders on this account"));
+    }
     if !categories.is_empty() {
         let set = categories
             .iter()

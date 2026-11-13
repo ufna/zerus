@@ -330,12 +330,14 @@ fn detail_entry(id: i64, saved: &Value, status: &str, detail: &str) -> Value {
         "scope":saved.get("scope").and_then(Value::as_str)})
 }
 
-pub(crate) fn saved_scope(raw: &str) -> Value {
-    serde_json::from_str::<Value>(raw)
-        .ok()
-        .and_then(|value| value.get("scope").cloned())
-        .unwrap_or(Value::Null)
-}
+/// The granted scope, extracted by SQLite alone with the same byte bound
+/// as the categories guard (zerus-63rru.66 round 3): a row past the bound,
+/// or whose scope is not a bounded text, shows none rather than parsing the
+/// whole saved question.
+pub(crate) const SCOPE: &str = "CASE WHEN length(CAST(question AS BLOB))>196608 THEN NULL
+    WHEN json_valid(question) AND json_type(question,'$.scope')='text'
+        AND length(json_extract(question,'$.scope'))<=4096
+    THEN json_extract(question,'$.scope') END";
 
 pub(crate) fn saved_categories(raw: Option<String>) -> Value {
     raw.and_then(|raw| serde_json::from_str::<Value>(&raw).ok())
@@ -376,10 +378,10 @@ fn list(db: &Connection, payload: &Value) -> Result<Value> {
         };
     let operator = if reverse { ">" } else { "<" };
     let order = if reverse { "ASC" } else { "DESC" };
-    let mut statement = db.prepare(&format!("SELECT id,at,host,session,provider,prompt,status,{CATEGORIES},question FROM attempts WHERE id{operator}?1{filter} ORDER BY id {order} LIMIT {}",PAGE+1)).map_err(bad)?;
+    let mut statement = db.prepare(&format!("SELECT id,at,host,session,provider,prompt,status,{CATEGORIES},{SCOPE} FROM attempts WHERE id{operator}?1{filter} ORDER BY id {order} LIMIT {}",PAGE+1)).map_err(bad)?;
     let rows = statement.query_map(values.as_slice(),|row| Ok(json!({"id":row.get::<_,i64>(0)?,"at":row.get::<_,i64>(1)?,"host":row.get::<_,String>(2)?,"session":row.get::<_,String>(3)?,"provider":row.get::<_,String>(4)?,"prompt":row.get::<_,String>(5)?,"status":row.get::<_,String>(6)?,
         "categories":saved_categories(row.get::<_,Option<String>>(7)?),
-        "scope":saved_scope(&row.get::<_,String>(8)?)}))).map_err(bad)?;
+        "scope":row.get::<_,Option<String>>(8)?}))).map_err(bad)?;
     let mut entries = rows
         .collect::<std::result::Result<Vec<_>, _>>()
         .map_err(bad)?;
@@ -493,6 +495,16 @@ fn the_journal_list_and_detail_carry_the_recorded_scope() {
         detail_entry(id, &json!({"question":{},"answers":[]}), "approved", "")["scope"].is_null(),
         "an old row without a scope stays valid"
     );
+    // The oversized control (zerus-63rru.66 round 3): the list extracts the
+    // scope in SQLite under the byte bound, so a valid row past the bound
+    // shows no scope rather than parsing its whole question.
+    let oversized = json!({"question":{"padding":"x".repeat(4 << 20)},"answers":[],"scope":"/work/repository"});
+    db.execute("INSERT INTO attempts(identity,request_id,at,host,session,provider,prompt,question) VALUES('big2','big2',3,'h','s','codex','big-scope',?1)", [oversized.to_string()]).unwrap();
+    let page = list(&db, &json!({})).unwrap();
+    let entries = page["entries"].as_array().unwrap();
+    let big = entries.iter().find(|e| e["prompt"] == "big-scope").unwrap();
+    assert!(big["scope"].is_null(), "the oversized row shows no scope: {big}");
+    assert_eq!(entries.iter().find(|e| e["prompt"] == "Trust this folder?").unwrap()["scope"], "/work/repository");
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]

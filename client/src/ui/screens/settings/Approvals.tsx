@@ -108,6 +108,7 @@ export function ApprovalsSection() {
               { key: "session", label: "Session", render: (e) => <span title={e.session}>{e.session}</span> },
               { key: "question", label: "Question", class: "ell-cell", render: (e) => <span title={e.prompt}>{e.prompt}</span> },
               { key: "category", label: trNoop("Category"), render: (e) => { const names = categoryLabels(e.categories).map((label) => tr(label)).join(", "); return <span title={names}>{names}</span>; } },
+              { key: "scope", label: trNoop("Scope"), render: (e) => <span title={e.scope ?? ""}>{e.scope ? tr("Trusted for %1 and its subfolders on this account", e.scope) : ""}</span> },
               { key: "result", label: "Result", render: (e) => <span title={e.result}>{e.result}</span> },
             ]} />
           <aside class="an-detail appr-detail">

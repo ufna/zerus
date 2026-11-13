@@ -116,6 +116,17 @@ fn a_detail_shows_the_question_and_the_answer_chosen() {
     );
     let bare = json!({"status": "failed", "detail": ""});
     assert_eq!(detail(bare.as_object().unwrap()), "Failed");
+    // The granted scope's sentence (zerus-63rru.66 round 3): present when the
+    // reply carries it, absent for a row without one.
+    let scoped = json!({"status": "approved", "detail": "", "scope": "/fixture/main"});
+    assert_eq!(
+        detail(scoped.as_object().unwrap()),
+        "Approved once\n\nTrusted for /fixture/main and its subfolders on this account"
+    );
+    assert_eq!(
+        detail(json!({"status": "approved", "detail": ""}).as_object().unwrap()),
+        "Approved once"
+    );
     let categorized = json!({"status": "approved", "detail": "", "categories": ["shell", "paid"]});
     assert_eq!(
         detail(categorized.as_object().unwrap()),
