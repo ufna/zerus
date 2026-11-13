@@ -41,6 +41,30 @@ pub(crate) fn caller_host_folder(
     caller_hosts::named_in(folder, boot)
 }
 
+/// The processes this boot's record names as the DeepSeek host of
+/// `agent_home`, each with its recorded birth: the very read the hosted
+/// caller proof makes (zerus-63rru.28). A process named without a birth is
+/// left out, as the proof leaves it out; no record names no host.
+#[cfg(unix)]
+pub(crate) fn caller_host_for_home(
+    agent_home: &str,
+) -> std::result::Result<Vec<(u32, String)>, &'static str> {
+    Ok(caller_hosts::deepseek_home(agent_home)?
+        .into_iter()
+        .filter_map(|host| host.birth.map(|birth| (host.pid, birth)))
+        .collect())
+}
+
+/// Whether a marked claim names a DeepSeek session, whose commands only the
+/// hosted caller proof can bind to it: by the name's agent alone, before any
+/// binding is read.
+pub(crate) fn hosted_claim(name: &str) -> bool {
+    matches!(
+        crate::state::provider_binding::Provider::named(name),
+        Some(crate::state::provider_binding::Provider::DeepSeek)
+    )
+}
+
 /// The backend of a session a resident host serves, when a marked claim
 /// names one by its exact route; `None` for every other claim.
 pub(crate) fn caller_hosted_backend(

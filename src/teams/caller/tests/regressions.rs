@@ -460,6 +460,7 @@ fn hosted_name(mode: &str) -> Option<&'static str> {
 
 const HOST: &str = "0123456789abcdef";
 const INSIDE_HOST: &str = "inside an agent host's process tree";
+const CLAIM_BELOW_HOST: &str = "session markers that name another session cannot be proven here";
 
 fn host_reads(text: &str) -> usize {
     text.lines()
@@ -498,8 +499,10 @@ fn an_unmarked_shell_below_a_recorded_host_is_refused() {
 
 /// The shape observed with a real DeepSeek host: the host's own environment
 /// holds the markers of another, live session that started it. A command
-/// that keeps them is refused as before (that session's process is not its
-/// ancestor); one that drops them is refused as inside the host's tree.
+/// that keeps them is a marked claim below a recorded host, refused by that
+/// rule before any binding is read (zerus-63rru.28; before it, the descent
+/// from that session's process failed); one that drops them is refused as
+/// inside the host's tree.
 #[test]
 fn a_host_holding_another_sessions_markers_refuses_both_shells() {
     let other = Job(Command::new("sleep").arg("30").spawn().unwrap());
@@ -509,11 +512,9 @@ fn a_host_holding_another_sessions_markers_refuses_both_shells() {
     kept.host(HOST, kept.pid, &kept.birth);
     let text = kept.answer();
     assert!(text.contains(&format!("PARENT {}", shell(&kept))), "{text}");
-    // As today: the descent from the claimed session's process fails, either
-    // at a process of another user above the host or at a non-ancestor.
     refused(&text);
-    assert!(text.contains("verify the claimed agent"), "{text}");
-    assert!(!text.contains(INSIDE_HOST), "{text}");
+    assert!(text.contains(CLAIM_BELOW_HOST), "{text}");
+    assert!(!text.contains("verify the claimed agent"), "{text}");
     for mode in ["normal", "withheld-middle"] {
         let dropped = Tree::start(mode, None);
         dropped.record(other.0.id(), &start);
@@ -865,9 +866,11 @@ fn an_ancestor_registered_as_the_opencode_service_is_refused() {
     person(&malformed.answer());
 }
 
-/// A marked caller whose binding says a resident host serves its session
-/// cannot be a lead or a member: refused with the sentence that says so. A
-/// binding whose run differs is not that session and refuses as unverified.
+/// A marked caller whose binding says OpenCode's shared service serves its
+/// session cannot be a lead or a member: refused with the sentence that says
+/// so. A marked DeepSeek claim takes the hosted proof only (zerus-63rru.28):
+/// this tree carries no per-call token, so it is refused in that proof's
+/// words, whatever its binding says, and the ancestry proof reads nothing.
 #[test]
 fn a_marked_session_served_by_a_resident_host_is_refused_plainly() {
     for (mode, backend, conversation) in [
@@ -893,8 +896,13 @@ fn a_marked_session_served_by_a_resident_host_is_refused_plainly() {
         .unwrap();
         let text = tree.answer();
         refused(&text);
-        let plain = text.contains("served by a resident agent host");
-        assert_eq!(plain, mode != "hosted-dsh-run", "{mode}: {text}");
+        let plain = text.contains("served by OpenCode's shared service");
+        assert_eq!(plain, backend == "opencode", "{mode}: {text}");
+        let hosted = text.contains("This command carries no DeepSeek per-call token");
+        assert_eq!(hosted, backend == "dsh", "{mode}: {text}");
+        if backend == "dsh" {
+            assert!(text.lines().any(|line| line == "READS 0"), "{mode}: {text}");
+        }
     }
 }
 
