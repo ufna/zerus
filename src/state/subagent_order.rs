@@ -10,8 +10,6 @@ use serde_json::json;
 use std::collections::BTreeSet;
 use std::time::Duration;
 
-const CLIENT: &str = "state::subagent_order::reordered_children_child";
-
 fn record(agent: &str) -> Value {
     let mut record = launched_record(
         agent,

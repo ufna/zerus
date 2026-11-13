@@ -3,7 +3,7 @@
 //! with the children its producers record, in a child test process with a
 //! private state root. A count whose incompleteness is history counts; one
 //! about children that may be running now is unknown.
-use super::super::fleet::{Facts, Incomplete, SOURCES};
+use super::super::fleet::{Facts, SOURCES};
 use super::super::ports::Fact;
 use serde_json::{json, Value};
 use std::collections::BTreeMap;

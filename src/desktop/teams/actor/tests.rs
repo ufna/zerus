@@ -177,6 +177,7 @@ mod retry_cards;
 pub(in crate::desktop::teams) mod rows;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 mod reordered_children;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 mod subagent_rows;
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
