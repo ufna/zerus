@@ -278,6 +278,19 @@ metadata. Use the exact tested SHA recorded in the job summary when reviewing
 such a manual run. Automatic PR and push runs produce CI gate without a dispatch.
 Review and merging remain deliberate; successful CI does not auto-merge PRs.
 
+The existing CI workflow accepts `windows_flake_rounds` from 0 to 40 for opt-in
+native Windows qualification. Zero keeps ordinary runs unchanged. A selected
+run samples four independent sustained transports per round and serial mode
+round trips under two local hash workers. Mode sampling stops at the first
+refused or unknown choice, retaining the original fixture custody; it never
+retries that choice. Per-invocation readiness, lease, Stop and cleanup bounds
+stay unchanged. Additional dispatch-only steps have their own aggregate CI
+allowance for the extra rounds; ordinary suite commands and limits are
+unchanged. Mode sampling requires that exact Windows shell/native step to
+succeed, while earlier independent failures stay visible. Use the PR's
+reviewed workflow and exact source pin;
+do not start a second full matrix while that SHA is already under verification.
+
 Arch is the Linux GUI build environment because the application uses Qt 6 and KDE
 Frameworks 6. Ubuntu remains useful for portable CLI and minimum-Rust checks.
 Linux CLI CI builds the pinned official tmux 3.7c archive with an exact SHA-256;
