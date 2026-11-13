@@ -767,3 +767,144 @@ fn stale_items_are_ended_a_page_at_a_time_and_the_lead_is_told_once() {
         code::INVALID_STATE,
     );
 }
+
+/// The review's u2 pin: a stale item ends with the exact sentence and the
+/// service as its reply actor. The sentence is spelled here once; the
+/// product's constant is private to the operation.
+#[test]
+fn the_stale_ending_writes_the_exact_reply_and_its_actor() {
+    let mut h = Harness::new();
+    let node = legacy(&mut h, 2);
+    assert_eq!(unended(&h), 2);
+    h.run(&service(), Operation::EndStaleUnstaffed).unwrap();
+    let db = h.store.db.as_ref().unwrap();
+    let ended: (String, String) = db
+        .query_row(
+            "SELECT reply,reply_actor FROM inbox WHERE team=?1 AND kind LIKE 'unstaffed:%' AND reply IS NOT NULL",
+            [TEAM],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        ended,
+        (
+            "The service ended this item: a newer item of the same task stands for it.".to_owned(),
+            crate::teams::store::encode(&service()).unwrap(),
+        ),
+        "the reply and its actor, exactly"
+    );
+    assert_eq!(unended(&h), 1, "the node's newest item stays");
+    let told = h.store.told_unstaffed(TEAM).unwrap();
+    assert_eq!(told.len(), 1, "{told:?}");
+    assert_eq!(told[0].node, node);
+}
+
+/// The review's u6 pin: the newest of each node is the one kept, by sequence
+/// and never by the clock — three nodes whose items interleave by sequence
+/// and whose clocks are inverted against it.
+#[test]
+fn each_nodes_newest_is_kept_and_told_across_interleaved_nodes() {
+    let mut h = Harness::new();
+    let lead = h.bind("lead");
+    h.bind("m1");
+    h.bind("m2");
+    let nodes = [
+        h.add(&person(), 1),
+        h.add(&person(), 2),
+        h.add(&person(), 3),
+    ];
+    for n in nodes {
+        h.run(
+            &lead,
+            Operation::Reassign {
+                node: n,
+                member: "m2".into(),
+                reason: "Give it to m2".into(),
+            },
+        )
+        .unwrap();
+    }
+    removed(&mut h, "m2");
+    // Rounds of the product's own episodes, round-robin so the items of the
+    // three nodes interleave by sequence: the first reconcile tells all
+    // three stranded nodes, then each node is held and released in turn.
+    reconcile(&mut h).unwrap();
+    for round in 0..2 {
+        for n in nodes {
+            if round != 0 {
+                h.run(&person(), Operation::Release { node: n }).unwrap();
+                reconcile(&mut h).unwrap();
+            }
+            h.run(&person(), Operation::Hold { node: n }).unwrap();
+            reconcile(&mut h).unwrap();
+        }
+    }
+    // The earlier head's layout: every reply removed by SQL, and the clocks
+    // deliberately inverted against the sequence, so the newest item of each
+    // node carries the oldest clock.
+    let stripped: usize = {
+        let db = h.store.db.as_ref().unwrap();
+        let stripped = db
+            .execute(
+                "UPDATE inbox SET state='closed',reply=NULL,reply_actor=NULL WHERE team=?1 AND kind LIKE 'unstaffed:%'",
+                [TEAM],
+            )
+            .unwrap();
+        db.execute(
+            "UPDATE inbox SET created_ms = 1000000 - seq * 10 WHERE team=?1 AND kind LIKE 'unstaffed:%'",
+            [TEAM],
+        )
+        .unwrap();
+        stripped
+    };
+    assert!(stripped >= 6, "{stripped}");
+    h.run(&service(), Operation::EndStaleUnstaffed).unwrap();
+    let db = h.store.db.as_ref().unwrap();
+    // Exactly each node's newest unended item (the maximum sequence) is kept,
+    // and it is the one told.
+    let kept: Vec<(u32, u64)> = {
+        let mut s = db
+            .prepare(
+                "SELECT node,seq FROM inbox WHERE team=?1 AND kind LIKE 'unstaffed:%' AND reply IS NULL ORDER BY node",
+            )
+            .unwrap();
+        let rows = s
+            .query_map([TEAM], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap();
+        rows.collect::<rusqlite::Result<_>>().unwrap()
+    };
+    assert_eq!(kept.len(), 3, "one kept item per node: {kept:?}");
+    for (n, seq) in &kept {
+        let max: u64 = db
+            .query_row(
+                "SELECT max(seq) FROM inbox WHERE team=?1 AND node=?2 AND kind LIKE 'unstaffed:%'",
+                rusqlite::params![TEAM, n],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(*seq, max, "node {n} keeps its newest by sequence");
+        let kept_clock: i64 = db
+            .query_row(
+                "SELECT created_ms FROM inbox WHERE team=?1 AND node=?2 AND seq=?3",
+                rusqlite::params![TEAM, n, seq],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let stale_clock: i64 = db
+            .query_row(
+                "SELECT min(created_ms) FROM inbox WHERE team=?1 AND node=?2 AND seq<?3",
+                rusqlite::params![TEAM, n, seq],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(
+            kept_clock < stale_clock,
+            "node {n}: the newest by sequence carries the oldest clock ({kept_clock} < {stale_clock})"
+        );
+    }
+    let told = h.store.told_unstaffed(TEAM).unwrap();
+    assert_eq!(told.len(), 3, "each node told once: {told:?}");
+    for (n, _) in &kept {
+        assert!(told.iter().any(|t| t.node == *n), "node {n} is told");
+    }
+}
