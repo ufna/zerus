@@ -146,6 +146,13 @@ impl TaskDoc {
             return Err(Error::new("invalid team display name"));
         }
         if !self.team_invalid() && self.team()?.as_ref() == team {
+            // An unchanged binding still clears a stale mark: the team takes
+            // the task anew (zerus-63rru.36 round 2). A repeat of a task
+            // without a mark stays the no-op it was.
+            if self.fields().get("cancelled_at").is_some() {
+                self.fields().delete("cancelled_at")?;
+                self.fields().delete("cancel_reason")?;
+            }
             return Ok(());
         }
         if self.content_len() + 1024 > MAX_DOCUMENT {
@@ -157,6 +164,11 @@ impl TaskDoc {
             .unwrap_or_default();
         if team.is_some() {
             self.fields().insert("team", raw.as_str())?;
+            // A task that a team takes is not cancelled: the mark and its
+            // reason go with the binding, in the same commit
+            // (zerus-63rru.36). The ordinary send already clears them.
+            self.fields().delete("cancelled_at")?;
+            self.fields().delete("cancel_reason")?;
         } else {
             self.fields().delete("team")?;
         }

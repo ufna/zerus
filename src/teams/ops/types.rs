@@ -75,6 +75,14 @@ pub struct TaskObservation {
     pub stage: TaskStage,
     #[serde(default)]
     pub cancelled: bool,
+    /// The task's current attempt is in phase Cancelled: the cancel this
+    /// team owns, read from the attempt pair after rule 1 cleared the mark
+    /// (zerus-63rru.36). The node whose effect matches the attempt's ID
+    /// ends on it; a newer node for the same task does not. Carried in
+    /// memory beside the observation; never stored, so the stored JSON
+    /// keeps the base field set (round 3).
+    #[serde(default, skip)]
+    pub current_cancelled: bool,
     pub rank: String,
     #[serde(default)]
     pub title: String,

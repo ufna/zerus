@@ -627,8 +627,9 @@ fn edit(h: &Harness, reference: &TaskRef, change: impl FnOnce(&mut TaskDoc)) {
 /// The shape end to end, through the service's own observer: the command
 /// answers cancelled; that answer is refused for the bound live node and
 /// writes nothing; the service observes the task, and the observation of the
-/// cancelled task ends the node and settles the decision. Until then the
-/// cancelled task is still bound and cannot be sent to the team again.
+/// cancelled task ends the node and settles the decision. A resend of the
+/// still-bound cancelled task is refused by its stage and writes nothing
+/// (zerus-63rru.36 round 3); the To do resend queues.
 #[test]
 fn a_cancelled_task_is_ended_by_its_observation() {
     let mut h = Harness::new();
@@ -698,6 +699,11 @@ fn a_cancelled_task_is_ended_by_its_observation() {
         task(&h, &reference).team().unwrap().unwrap().team,
         TEAM,
         "the refused send leaves the key"
+    );
+    assert_eq!(h.node(node).state, NodeState::InProgress, "nothing was written");
+    assert_eq!(
+        binding(&h.store, &reference).unwrap(),
+        Some((TEAM.to_owned(), node))
     );
     observe(h.temp.path(), &reference).unwrap();
     assert_eq!(h.node(node).state, NodeState::Cancelled);
