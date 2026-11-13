@@ -194,7 +194,7 @@ fn reply(mut stream: std::os::unix::net::UnixStream, answer: Arc<Mutex<(Answer, 
         (Answer::OtherProtocol, Some("ping")) => {
             json!({"protocol":2,"version":"0.2.1-rc.2","callTokens":true})
         }
-        (_, Some("ping")) => json!({"protocol":1,"version":"0.2.1-rc.2","callTokens":true}),
+        (_, Some("ping")) => json!({"protocol":1,"version":"0.2.1-rc.2","callTokens":true,"inputWitness":true,"teamLifecycle":true}),
         (Answer::Unknown, Some("call-token")) => json!({"known":false}),
         (Answer::Other, Some("call-token")) => {
             json!({"known":true,"conversation":"session-00000000-0000-4000-8000-0000000000ff"})

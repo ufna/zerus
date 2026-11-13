@@ -80,6 +80,27 @@ impl Ledger {
             })
             .transpose()
     }
+    pub(crate) fn input(&self, team: &str, key: &str) -> Result<Option<Row>> {
+        self.0.query_row("SELECT version,data FROM actor_inputs WHERE team=?1 AND key=?2", params![team,key],
+            |r| Ok((r.get(0)?, r.get::<_,String>(1)?))).optional().map_err(storage)?
+            .map(|(version,data)| Ok(Row { team:team.into(), key:key.into(), version, data:serde_json::from_str(&data).map_err(storage)? })).transpose()
+    }
+    pub(crate) fn reserve_input(&mut self, team: &str, key: &str, data: Value) -> Result<()> {
+        let raw = serde_json::to_string(&data).map_err(storage)?;
+        self.0.execute("INSERT INTO actor_inputs(team,key,version,data) VALUES(?1,?2,0,?3)", params![team,key,raw]).map_err(storage)?;
+        Ok(())
+    }
+    pub(crate) fn save_input(&mut self, row: &mut Row) -> Result<()> {
+        let raw = serde_json::to_string(&row.data).map_err(storage)?;
+        let changed = self.0.execute("UPDATE actor_inputs SET version=version+1,data=?4 WHERE team=?1 AND key=?2 AND version=?3",params![row.team,row.key,row.version,raw]).map_err(storage)?;
+        if changed != 1 { return Err(storage("Retained hosted input changed")); }
+        row.version += 1;
+        Ok(())
+    }
+    pub(crate) fn remove_input(&mut self, team: &str, id: &str) -> Result<()> {
+        self.0.execute("DELETE FROM actor_inputs WHERE team=?1 AND key=?2", params![team,format!("hosted-input:{id}")]).map_err(storage)?;
+        Ok(())
+    }
     pub fn reserve(&mut self, team: &str, key: &str, data: Value) -> Result<Row> {
         let row = Row {
             team: team.into(),

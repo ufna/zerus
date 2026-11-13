@@ -130,6 +130,34 @@ impl Native {
     }
 }
 impl Ports for Native {
+    fn recover_delivery(&mut self, team: &Team, node: &Node, member: &Member, id: &str) -> Result<Option<HandoutOutcome>> {
+        let task = node.task.as_ref().ok_or_else(|| problem("Delivery has no task"))?;
+        let mut args = task_arguments(task, "team-deliver");
+        args.push("--recover-only".into());
+        let input = task_request(team, node, Some(member), id).to_string();
+        // Recovery is allowed while the member is working. The command
+        // reads only its retained request, and rechecks the effect before
+        // an Absent answer may offer that exact input.
+        let ended = child::run_guarded(&self.config, &args, Some(input.as_bytes()), Some(id), false,
+            Instant::now() + Duration::from_secs(30), &self.stop, || {
+                let store = Store::open(&self.config.state)?.admission()?;
+                let current = store.team(&team.id)?.ok_or_else(|| problem("Recovery team disappeared"))?;
+                if current.home != self.machine || current.owner != team.owner || current.project != team.project
+                    || current.status != TeamStatus::Running || !store.effect_reserved(&team.id, id)?
+                    || store.node(&team.id, node.id)?.as_ref().and_then(|n| n.task.as_ref()) != Some(task) {
+                    return Err(problem("Delivery recovery admission changed"));
+                }
+                Ok(store)
+            });
+        if let Ended::Exited { code: 0, output } = &ended {
+            if let Ok(value) = serde_json::from_slice::<Value>(output) {
+                if value["id"] == id && value["schema"] == 1 && value["state"] != "pending" {
+                    return Ok(Some(decode_delivery(output, id)));
+                }
+            }
+        }
+        Ok(None)
+    }
     fn cancels(
         &mut self,
         store: &Store,
@@ -288,6 +316,17 @@ impl Ports for Native {
         id: &str,
     ) -> ports::DeliveryResult {
         match self.command(team, node, Some(member), id, "team-deliver", None) {
+            Ok(Ended::NotStarted) if member.agent == "dsh" => ports::DeliveryResult::NotStarted {
+                reason: "The hosted delivery child did not start".into(),
+            },
+            Ok(ended) if member.agent == "dsh" => {
+                let confirmed = match &ended {
+                    Ended::Exited { code: 0, output } => serde_json::from_slice::<Value>(output).is_ok_and(|v|
+                        v["schema"] == 1 && v["id"] == id && matches!(v["state"].as_str(), Some("submitted" | "refused" | "uncertain" | "cutting_over" | "stale" | "not_started"))),
+                    _ => false,
+                };
+                if confirmed { delivery_result(ended, id) } else { ports::DeliveryResult::ReadLater }
+            }
             Ok(ended) => delivery_result(ended, id),
             Err(error) => ports::DeliveryResult::NotStarted {
                 reason: error.message,

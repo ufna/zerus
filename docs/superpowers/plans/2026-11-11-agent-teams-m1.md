@@ -804,7 +804,7 @@ bound, makes one card marked uncertain and is never retried.
 **Parent link.** A launch by the service cannot prove ancestry, so the link
 is written after binding with the existing `hgs parent` action `set`, and
 reads `manual`. It is written only when the member has none and never
-replaces one. An agent the command refuses (DeepSeek, OpenCode) has no link,
+replaces one. An agent the command refuses (OpenCode) has no link,
 which is a known skip. The link is presentation and attention routing: a
 failed write blocks nothing and makes no card, and the lead's authority over
 members comes from the team store. A source of its own for team links needs
@@ -1888,8 +1888,8 @@ has. A reviewer traces each such key to the line that writes it and builds
 its probes from what that line writes. Unknown stays unknown: a null or
 missing count is not zero.
 
-**A hosted DeepSeek tool call proves its own session; a DeepSeek seat waits
-until it can be reached.** One DeepSeek host process serves every session of
+**A hosted DeepSeek tool call proves its own session; DeepSeek seats belong
+to M1 (owner decision, 2026-11-13).** One DeepSeek host process serves every session of
 its agent home, so process ancestry reaches only the host. The hosted caller
 proof (`state::session_graph::caller_hosted`, zerus-ppd26 Part B, merged
 2026-11-12) ties a tool call to its session through the host's per-call
@@ -1902,11 +1902,28 @@ existed has no tokens and proves nothing until its next own start; no host
 is restarted or reloaded for it. Whether the host of an agent home can
 prove its calls is asked at the member launch in the desktop, before the
 worktree and again before the session is bound, and not at team creation:
-the command line may see another agent home. The roster keeps refusing a
-DeepSeek seat until the service can reach such a member: the task delivery's
-final input is a terminal path with no DeepSeek route, and a hosted run's
-end writes no end record. OpenCode and platforms without the proof stay
-refused as before.
+the command line may see another agent home. The roster admits DeepSeek;
+the member launch requires the resident host to advertise call tokens,
+input witnesses and hosted lifecycle answers before worktree creation and
+before binding. A missing host may start normally at launch, never during
+observation. The task route retains its exact request before the first
+witnessed call, with a whole-call budget of twenty seconds under the actor's
+thirty-second child limit. Recovery reads only that request: Absent may offer
+it with the same ID, Conflict sends nothing and returns to the lead, an
+Outcome keeps its fixed classification, and unreadable evidence gets bounded
+later reads before becoming uncertain. A pre-marker unsafe_content or
+host_refused leaves recorded() Absent; Teams retains its final mapped reply,
+and only a crash before that final write permits the same stored input again.
+Unsafe content, canceled input and dropped-after-claim return the task to the
+lead at once without automatic reassignment; host disposal requires a fresh
+member observation; every Unknown stays uncertain without replay or promotion.
+Doorbells use ordinary hosted send and its exact native receipt; cancel notices
+use a witnessed hosted message with explicit refusal or uncertainty. The host
+reports a member's end only from its own agent/disposed event, bounded to 4096
+records per host; an unreachable host or an absent lifecycle record is unknown.
+The standing terminal-confirmation scan skips DeepSeek and never resumes it
+from a failed terminal observation. OpenCode and platforms without the proof
+stay refused as before.
 
 **No other session is proven below a host.** A marked claim that is not a
 DeepSeek claim took the ancestry proof without asking whether the command

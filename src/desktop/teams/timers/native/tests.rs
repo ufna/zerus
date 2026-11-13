@@ -194,6 +194,7 @@ fn a_refusing_exit_without_a_receipt_is_refused_only_for_receipted_agents() {
     let mut other = ring.clone();
     other.id = uuid::Uuid::new_v4().to_string();
     other.agent = "dsh".into();
+    crate::platform::private_dir(&f.h.temp.path().join("dsh")).unwrap();
     assert!(matches!(
         f.native().ring(&f.h.store, &other),
         Rung::Uncertain(_)

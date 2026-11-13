@@ -1002,6 +1002,14 @@ pub(crate) fn inspect_reference(reference: &crate::session_reference::Reference)
 /// conversation, the way `hgs send` does, and returns the durable receipt.
 pub(crate) fn submit_task_message(session: &zerus_replica::SessionKey, text: &str, attachments: &[Value]) -> Result<Value> {
     local_sessions()?;
+    if session.session.starts_with("dsh/") {
+        let request = input::task_reply(session, "", &uuid::Uuid::new_v4().to_string(), text, attachments, Continuation::SameConversation)?;
+        return match dsh::witness::submit_witnessed(&session.session, &request, std::time::Duration::from_secs(10)) {
+            dsh::witness::Witnessed::Receipt(receipt) => Ok(receipt),
+            dsh::witness::Witnessed::NotOffered { code, reason, .. } => Err(format!("DeepSeek cancel notice refused ({}): {reason}", code.code())),
+            dsh::witness::Witnessed::Unknown { code, .. } => Err(format!("DeepSeek cancel notice uncertain ({}); it is never sent again", code.code())),
+        };
+    }
     input::submit_task(session, text, attachments)
 }
 

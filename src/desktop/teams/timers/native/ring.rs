@@ -33,7 +33,9 @@ pub(super) fn deliver(n: &Native<'_>, store: &Store, ring: &Ring) -> Rung {
         "expected_conversation_id":ring.conversation,"text":ring.text})
     .to_string()
     .into_bytes();
-    let Ok(roots) = Roots::open(&n.config.state, "input_receipts") else {
+    let root = if ring.agent == "dsh" { n.config.state.join("dsh") } else { n.config.state.clone() };
+    let folder = if ring.agent == "dsh" { "receipts" } else { "input_receipts" };
+    let Ok(roots) = Roots::open(&root, folder) else {
         return Rung::NotStarted("The receipt store is unavailable".into());
     };
     let busy = Cell::new(false);
@@ -85,6 +87,7 @@ fn receipt(roots: &Roots, ring: &Ring, input: &[u8], code: i32, stderr: &[u8]) -
     };
     let (bytes, _evidence) = original_store::read(roots, &id, send::RECEIPT_BYTES, &|| {});
     match bytes {
+        Ok(bytes) if ring.agent == "dsh" => hosted_receipt(ring, input, &bytes),
         Ok(bytes) => match send::Outcome::from_receipt(&plan, &bytes) {
             Ok(_) => Rung::Submitted,
             Err(why) => Rung::Uncertain(why.into()),
@@ -96,6 +99,20 @@ fn receipt(roots: &Roots, ring: &Ring, input: &[u8], code: i32, stderr: &[u8]) -
             Rung::Uncertain(format!("The doorbell receipt is unavailable: {failure:?}"))
         }
     }
+}
+fn hosted_receipt(ring: &Ring, input: &[u8], bytes: &[u8]) -> Rung {
+    let parsed = serde_json::from_slice::<serde_json::Value>(input);
+    let receipt = serde_json::from_slice::<serde_json::Value>(bytes);
+    if let (Ok(input), Ok(receipt)) = (parsed, receipt) {
+        let digest = format!("{:x}", Sha256::digest(serde_json::json!([ring.name, input]).to_string().as_bytes()));
+        if receipt["request_id"] == ring.id && receipt["name"] == ring.name
+            && receipt["run_id"] == ring.run && receipt["conversation_id"] == ring.conversation
+            && receipt["digest"] == digest && receipt["status"] == "submitted"
+            && receipt["transport"] == "native_dsh" {
+            return Rung::Submitted;
+        }
+    }
+    Rung::Uncertain("The DeepSeek doorbell has no exact submitted native receipt; nothing is sent again".into())
 }
 /// The CLI's reason for a refused send: `hgs` writes a refused command as one
 /// `hgs: <reason>` line on stderr, last, after any warnings that start the same

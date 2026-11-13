@@ -12,6 +12,10 @@ impl Runtime {
             .plan
             .as_ref()
             .ok_or_else(|| invalid("Launch plan is missing"))?;
+        if let Err(problem) = effects.hosted_ready(plan, false) {
+            self.block(row, problem, now)?;
+            return Ok(true);
+        }
         match effects.worktree(plan, &row.original) {
             Effect::Submitted(Some(tree))
                 if !tree.path.is_empty() && !tree.ownership_nonce.is_empty() =>
@@ -95,6 +99,10 @@ impl Runtime {
             .plan
             .as_ref()
             .ok_or_else(|| invalid("Launch plan is missing"))?;
+        if let Err(problem) = effects.hosted_ready(plan, false) {
+            self.block(row, problem, now)?;
+            return Ok(true);
+        }
         let tree = row
             .worktree
             .as_ref()
@@ -141,6 +149,10 @@ impl Runtime {
             .plan
             .as_ref()
             .ok_or_else(|| invalid("Launch plan is missing"))?;
+        if let Err(problem) = effects.hosted_ready(plan, true) {
+            self.block_binding(store, team, row, problem, now)?;
+            return Ok(true);
+        }
         let read = match &row.observed {
             Some(s) => Ok(LaunchRead::Session(Box::new(s.clone()))),
             None => effects.observe(plan),

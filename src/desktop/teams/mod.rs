@@ -9,6 +9,8 @@ pub(crate) use child::adopt_custody;
 mod actor;
 pub(crate) use actor::presence;
 pub(crate) use actor::Ledger as ActorLedger;
+#[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
+pub(crate) use timers::native_doorbell_for_test;
 
 /// A command's own reason as a card or a team record shows it: control
 /// characters as spaces, whitespace collapsed, at most 512 characters

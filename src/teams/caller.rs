@@ -219,8 +219,8 @@ fn hosted_session(config: &Config, name: &str, run: &str, session: Option<&str>)
 /// (DeepSeek's host, OpenCode's shared service) rather than by an agent
 /// process of their own, and so cannot hold a team seat in this milestone.
 /// OpenCode's commands cannot be bound to their own session at all. A
-/// DeepSeek session's commands are proven by its host's per-call token, but a
-/// DeepSeek seat waits until the service can deliver to a hosted session.
+/// DeepSeek session's commands are proven by its host's per-call token;
+/// its seat also requires witnessed inputs and hosted lifecycle observations.
 /// Creating a team with such a member and launching one call this.
 pub(crate) fn host_served_agent(agent: &str) -> bool {
     matches!(agent, "dsh" | "opencode")

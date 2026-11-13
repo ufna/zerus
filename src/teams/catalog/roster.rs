@@ -12,7 +12,7 @@ pub(crate) fn validate_roster(bundle: &TemplateBundle) -> Result<(), Problem> {
         }),
     );
     for agent in agents {
-        if crate::teams::caller::host_served_agent(agent) {
+        if crate::teams::caller::host_served_agent(agent) && agent != "dsh" {
             return Err(Problem::new(
                 code::INVALID_STATE,
                 format!("A session of agent kind '{agent}' is served by a resident agent host and cannot be a team lead or member in this milestone."),
@@ -43,7 +43,8 @@ mod tests {
     }
     #[test]
     fn saving_a_template_refuses_host_served_leads_and_members() {
-        for agent in ["dsh", "opencode"] {
+        {
+            let agent = "opencode";
             for lead in [true, false] {
                 let dir = tempfile::tempdir().unwrap();
                 let problem = save(dir.path(), &catalog_with(agent, lead)).unwrap_err();
@@ -55,7 +56,8 @@ mod tests {
     }
     #[test]
     fn using_an_older_saved_template_refuses_a_host_served_roster() {
-        for agent in ["dsh", "opencode"] {
+        {
+            let agent = "opencode";
             for lead in [true, false] {
                 let dir = tempfile::tempdir().unwrap();
                 let file = path(dir.path());
@@ -81,6 +83,15 @@ mod tests {
                 assert!(!crate::teams::caller::host_served_agent(&role.agent));
             }
             export_bundle(&catalog, &template.id).unwrap();
+        }
+    }
+    #[test]
+    fn deepseek_leads_and_members_can_be_saved_and_selected() {
+        for lead in [true, false] {
+            let dir = tempfile::tempdir().unwrap();
+            save(dir.path(), &catalog_with("dsh", lead)).unwrap();
+            let catalog = load(dir.path()).unwrap();
+            export_bundle(&catalog, "bugfix").unwrap();
         }
     }
 }

@@ -187,9 +187,6 @@ fn record_outcome(
     kind: &str,
 ) -> Result<()> {
     let e = read_effect(ctx, id)?;
-    if matches!(outcome, HandoutOutcome::HandedBack { .. }) && kind != "reopen" {
-        return Err(invalid("Only a reopen is handed back to the lead."));
-    }
     if e.kind != kind || e.outcome.is_some() {
         return Err(invalid(
             "Effect kind differs or its outcome was already recorded.",
@@ -230,6 +227,13 @@ fn record_outcome(
         .map_err(storage)?;
     if let Some(why) = why {
         ctx.reply.item = Some(ctx.inbox(e.node, "delivery_uncertain", why)?);
+    }
+    if kind == "handout" {
+        if let HandoutOutcome::HandedBack { reason } = outcome {
+            let kind = format!("handout_handed_back:{id}");
+            ctx.reply.item = Some(super::members::hand_to_lead(ctx, e.node, &kind, reason)?);
+            return Ok(());
+        }
     }
     if kind == "reopen" && ctx.reopening(e.node)? {
         if let HandoutOutcome::HandedBack { reason } = outcome {

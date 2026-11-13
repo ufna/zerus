@@ -94,6 +94,13 @@ fn read(config: &Config, epoch: &str, team: &str, member: &Member, backfill: boo
             Some(id) => named.launch == id,
             None => true,
         };
+    if identity && member.agent == "dsh" {
+        match crate::state::dsh::team_live(named.name, named.run, named.conversation, Instant::now() + Duration::from_secs(2)) {
+            Ok(true) => (),
+            Ok(false) => return Ok(Read::Missing),
+            Err(_) => return Ok(Read::Unresolved(Unresolved::Unavailable)),
+        }
+    }
     Ok(if identity {
         Read::Row(value)
     } else {

@@ -33,6 +33,7 @@ struct FakeEffects {
     /// Verification fails for good: the row is Blocked.
     verify_uncertain: bool,
     launch_verification_unavailable: bool,
+    hosted_refusal: Option<bool>,
 }
 impl Default for FakeEffects {
     fn default() -> Self {
@@ -54,6 +55,7 @@ impl Default for FakeEffects {
             worktree_unverified: false,
             verify_uncertain: false,
             launch_verification_unavailable: false,
+            hosted_refusal: None,
         }
     }
 }
@@ -69,6 +71,12 @@ fn account(id: &str) -> AccountUsage {
     }
 }
 impl Effects for FakeEffects {
+    fn hosted_ready(&mut self, _: &Plan, bound: bool) -> Result<()> {
+        if self.hosted_refusal == Some(bound) {
+            return Err(invalid("The resident host cannot serve a team member"));
+        }
+        Ok(())
+    }
     fn placement(&mut self, _: &str, launch: &str) -> Result<Placement> {
         self.placements += 1;
         if self.placement_error {
@@ -245,6 +253,19 @@ fn branch_then_lead_then_members() {
     assert_eq!(e.plans[0].account, "a");
     assert_eq!(e.plans[1].account, "b");
     assert!(cards(&h).is_empty());
+}
+
+#[test]
+fn a_hosted_capability_refusal_prevents_checkout_creation_or_binding() {
+    for bound in [false, true] {
+        let mut h = Harness::new();
+        let mut e = FakeEffects { hosted_refusal: Some(bound), ..Default::default() };
+        let mut r = runtime(&h);
+        advance(&mut r, &mut h, &mut e, 30);
+        assert_eq!(row(&h, "lead").state, State::Blocked);
+        assert!(h.store.member(ops::tests::TEAM, "lead").unwrap().unwrap().session.is_none());
+        assert_eq!(e.events.iter().any(|event| event == "worktree:lead"), bound);
+    }
 }
 #[test]
 fn unknown_launch_opens_exactly_one_card_and_never_relaunches_after_restart() {
