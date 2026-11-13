@@ -1830,6 +1830,20 @@ member's terminal waits for input. The journal's hand-out outcome row says
 the outcome and the cleaned reason. A refusal of an effect the store has
 already settled, such as a removed member's, is no failure either.
 
+**A project limit's refusal is a fact about the team.** A hand-out refused
+by the project's own limits (`agents_other`, `agent_limit`) was counted as a
+failed hand-out of the task and repeated for every task and member
+(zerus-63rru.23, 2026-11-13). The command types the cause
+(`project_limit`); the actor reads it, never the sentence, and keeps one
+ledger row and one card per team, opened at the first refusal. While the
+fact stands nothing is delivered except probes at 1, 2, 4, 8 and 15
+minutes. One command answer is counted once, bound to the delivery's
+identity, so a replay after a crash does not count it again. The fact ends
+only on a command answer that is not `project_limit`: a submitted probe, or
+the command's own refusal for another cause, which is then handled as that
+cause. An uncertain probe and every non-start, the fifth that is converted
+included, keep the fact, and the next probe waits as usual.
+
 **A recovery removes only the row it owns.** The service's gate recovery
 closed its card and then removed whichever ledger row was current, so a
 second runtime that had failed the same check in between lost its fresh
