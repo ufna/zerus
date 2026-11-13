@@ -69,21 +69,7 @@ pub(super) fn save(row: &mut MergeRow, reply: MergeResult) -> Result<()> {
 }
 
 fn render_path(name: &str) -> String {
-    let name = cut(name, 4096);
-    if !name.trim().is_empty() && !name.chars().any(char::is_control) {
-        return name;
-    }
-    let mut rendered = String::from("\"");
-    for ch in name.chars() {
-        let quoted = serde_json::to_string(&ch.to_string()).expect("a character is JSON text");
-        let piece = &quoted[1..quoted.len() - 1];
-        if rendered.len() + piece.len() + 1 > 4096 {
-            break;
-        }
-        rendered.push_str(piece);
-    }
-    rendered.push('"');
-    rendered
+    crate::teams::clean::path(name, 4096)
 }
 pub(super) fn omit_refused_names(row: &mut MergeRow) -> Result<bool> {
     let Some(MergeResult::Conflict { files }) = &row.outcome else {

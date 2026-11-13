@@ -14,6 +14,7 @@ use zerus_team_plan::Problem;
 
 pub(crate) mod caller;
 pub(crate) mod catalog;
+pub(crate) mod clean;
 mod cli;
 pub(crate) mod integrate;
 pub(crate) mod ops;
