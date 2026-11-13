@@ -182,10 +182,12 @@ pub(super) fn change_settings(ctx: &mut Context<'_>) -> Result<()> {
     if settings.integration == Integration::Branch && ctx.team.integration_branch.is_empty() {
         return Err(invalid("An integration branch is required."));
     }
-    for table in ["nodes", "node_archive"] {
+    // The archive is history and keeps the value each node ended with; only
+    // live nodes follow the setting, and only when it actually changed.
+    if settings.integration != ctx.team.settings.integration {
         ctx.db
             .execute(
-                &format!("UPDATE {table} SET integration_required=?2 WHERE team=?1"),
+                "UPDATE nodes SET integration_required=?2 WHERE team=?1",
                 params![ctx.team.id, settings.integration == Integration::Branch],
             )
             .map_err(storage)?;
