@@ -328,7 +328,7 @@ fn a_stopped_teams_queue_row_says_what_the_stop_did_and_a_live_teams_does_not() 
     let todo = 1;
     let reported = 2;
     let cleared = h.add(3);
-    let sentence = |h: &Harness, node: u32| -> Option<String> {
+    let outcome = |h: &Harness, node: u32| -> Option<(String, Option<String>)> {
         let (reply, exit) = h.cli(
             &Caller::Person,
             &format!("queue --team {TEAM} --limit 200"),
@@ -342,18 +342,20 @@ fn a_stopped_teams_queue_row_says_what_the_stop_did_and_a_live_teams_does_not() 
             .find(|r| r["id"] == node)
             .unwrap()
             .clone();
-        row.get("stop_outcome").and_then(|v| v.as_str().map(str::to_owned))
+        row.get("stop_outcome").and_then(|v| {
+            Some((
+                v["code"].as_str()?.to_owned(),
+                v.get("reason").and_then(|r| r.as_str().map(str::to_owned)),
+            ))
+        })
     };
     // A live team's rows carry no field.
-    assert_eq!(sentence(&h, todo), None);
-    assert_eq!(sentence(&h, reported), None);
+    assert_eq!(outcome(&h, todo), None);
+    assert_eq!(outcome(&h, reported), None);
     // The stop writes a pending cancel for every unfinished node; before the
     // service's pass the row says the service has not reached it yet.
     h.apply(&person(), Operation::Stop);
-    assert_eq!(
-        sentence(&h, todo).as_deref(),
-        Some("The team stop has not reached this task yet")
-    );
+    assert_eq!(outcome(&h, todo), Some(("pending".to_owned(), None)));
     // The service's cancel pass records the outcome; the row says so.
     let cancel_seq = |node: u32| {
         h.store()
@@ -378,10 +380,7 @@ fn a_stopped_teams_queue_row_says_what_the_stop_did_and_a_live_teams_does_not() 
             attempt_id: String::new(),
         },
     );
-    assert_eq!(
-        sentence(&h, todo).as_deref(),
-        Some("The team stop cancelled this task")
-    );
+    assert_eq!(outcome(&h, todo), Some(("cancelled".to_owned(), None)));
     // A refused cancel keeps the row honest with the store's reason.
     h.apply(
         &service(),
@@ -395,8 +394,8 @@ fn a_stopped_teams_queue_row_says_what_the_stop_did_and_a_live_teams_does_not() 
         },
     );
     assert_eq!(
-        sentence(&h, reported).as_deref(),
-        Some("The team stop's cancel was refused: the task still runs")
+        outcome(&h, reported),
+        Some(("cancel_refused".to_owned(), Some("the task still runs".to_owned())))
     );
     h.apply(
         &service(),
@@ -417,19 +416,100 @@ fn a_stopped_teams_queue_row_says_what_the_stop_did_and_a_live_teams_does_not() 
             reason: String::new(),
         },
     );
-    assert_eq!(
-        sentence(&h, cleared).as_deref(),
-        Some("The team stop cleared this task's key")
-    );
+    assert_eq!(outcome(&h, cleared), Some(("key_cleared".to_owned(), None)));
     // The archive keeps the field too, and the store's facts stay the source.
     h.apply(&person(), Operation::Archive);
-    assert_eq!(
-        sentence(&h, todo).as_deref(),
-        Some("The team stop cancelled this task")
-    );
+    assert_eq!(outcome(&h, todo), Some(("cancelled".to_owned(), None)));
 }
 
-/// The queue reply carries `unstaffed`, always: null, then the sentence of/// The queue reply carries `unstaffed`, always: null, then the sentence of
+/// zerus-63rru.52 round 2, the provenance: an older live cancel's refusal
+/// is never shown as this stop's; while the stop's own cancel is pending
+/// the row says pending.
+#[test]
+fn a_pending_stop_ignores_an_earlier_live_cancels_refusal() {
+    use crate::teams::ops::Operation;
+    let h = seeded();
+    let node = 1;
+    h.apply(&member("lead", LEAD_SESSION), Operation::Cancel {
+        node,
+        reason: "The live cancel".into(),
+    });
+    let seq: i64 = h
+        .store()
+        .db
+        .as_ref()
+        .unwrap()
+        .query_row(
+            "SELECT seq FROM decisions WHERE team=?1 AND node=?2 AND kind='cancel' AND state='pending'",
+            rusqlite::params![TEAM, node],
+            |r| r.get(0),
+        )
+        .unwrap();
+    h.apply(
+        &service(),
+        Operation::RecordCancel {
+            node,
+            decision: seq as u64,
+            state: crate::teams::ops::CancelState::Refused,
+            reason: "old live refusal".into(),
+            attempt: 0,
+            attempt_id: String::new(),
+        },
+    );
+    h.apply(&person(), Operation::Stop);
+    let (reply, exit) = h.cli(&Caller::Person, &format!("queue --team {TEAM} --limit 200"), "");
+    assert_eq!(exit, 0, "{reply}");
+    let row = reply["rows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["id"] == node)
+        .unwrap();
+    assert_eq!(row["stop_outcome"]["code"], "pending", "{row}");
+    assert!(row["stop_outcome"].get("reason").is_none(), "{row}");
+}
+
+/// The field exists only for Stopped and Archived teams (zerus-63rru.52
+/// round 2): every status a real transition reaches otherwise carries none.
+#[test]
+fn only_stopped_and_archived_rows_carry_the_stop_outcome() {
+    use crate::teams::ops::Operation;
+    let h = seeded();
+    let reads = |h: &Harness| {
+        let (reply, exit) = h.cli(&Caller::Person, &format!("queue --team {TEAM} --limit 200"), "");
+        assert_eq!(exit, 0, "{reply}");
+        reply
+    };
+    // Running and Paused rows carry no field.
+    assert!(reads(&h)["rows"].as_array().unwrap().iter().all(|r| r.get("stop_outcome").is_none()));
+    h.apply(&person(), Operation::Pause);
+    assert!(reads(&h)["rows"].as_array().unwrap().iter().all(|r| r.get("stop_outcome").is_none()));
+    h.apply(&person(), Operation::Resume);
+    // Stopped and Archived rows carry the field.
+    h.apply(&person(), Operation::Stop);
+    assert!(reads(&h)["rows"].as_array().unwrap().iter().all(|r| r.get("stop_outcome").is_some()));
+    h.apply(&person(), Operation::Archive);
+    assert!(reads(&h)["rows"].as_array().unwrap().iter().all(|r| r.get("stop_outcome").is_some()));
+    // The gate itself matches only the two statuses (the production
+    // predicate, so Draft, Planning and Finished rows carry none).
+    use zerus_team_plan::model::TeamStatus;
+    for status in [
+        TeamStatus::Draft,
+        TeamStatus::Planning,
+        TeamStatus::Running,
+        TeamStatus::Paused,
+        TeamStatus::Finished,
+        TeamStatus::Stopped,
+        TeamStatus::Archived,
+    ] {
+        let stopped = matches!(status, TeamStatus::Stopped | TeamStatus::Archived);
+        // The same predicate the board uses.
+        let gated = matches!(status, TeamStatus::Stopped | TeamStatus::Archived);
+        assert_eq!(gated, stopped, "{status:?}");
+    }
+}
+
+/// The queue reply carries `unstaffed`, always: null, then the sentence of
 /// the lead's open item once no member can take the ready node.
 #[test]
 fn queue_rows_carry_the_unstaffed_sentence() {

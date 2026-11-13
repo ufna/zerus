@@ -5,6 +5,24 @@ import { RoleChip, StageChip, TeamAgent, stageIcon } from "./TeamChips";
 import { cardWorker, currentStage, orderedStages, orphanStage, workerOf } from "./pipeline-view";
 import type { MemberView, TaskView } from "./types";
 
+/** The stop outcome's words from its stable code (zerus-63rru.52 round 2):
+ * the code maps through the catalogs and the store's refusal reason shows
+ * as secondary text. */
+export function stopOutcomeText(outcome: { code: string; reason?: string } | null | undefined): string {
+  if (!outcome) return "";
+  const reason = outcome.reason?.trim();
+  switch (outcome.code) {
+    case "cancelled": return tr("The team stop cancelled this task");
+    case "released": return tr("The team stop released this task");
+    case "cancel_refused": return reason ? tr("The team stop's cancel was refused: %1", reason) : tr("The team stop's cancel was refused");
+    case "key_cleared": return tr("The team stop cleared this task's key");
+    case "key_clear_refused": return reason ? tr("The team stop's key clear was refused: %1", reason) : tr("The team stop's key clear was refused");
+    case "pending": return tr("The team stop has not reached this task yet");
+    case "unchanged": return tr("The team stop left this finished task as it was");
+    default: return tr("The team stop outcome %1", outcome.code);
+  }
+}
+
 export function TeamTaskCard(props: { task: TaskView; members: readonly MemberView[]; selected: boolean; onSelect: () => void }) {
   const stage = () => currentStage(props.task);
   const worker = () => cardWorker(props.task, props.members);
@@ -32,7 +50,7 @@ export function TeamTaskCard(props: { task: TaskView; members: readonly MemberVi
       <For each={stages()}>{(stage) => <StageChip stage={stage} rounds={props.task.rounds} on={props.task} />}</For>
       <Show when={decision()}><span class="team-stage-chip team-decision-chip"><Icon name="crown" size={11} />{tr("Decision needed")}</span></Show>
       <Show when={props.task.held}><span class="team-stage-chip team-held-chip"><Icon name="lock" size={11} />{tr("held")}</span></Show>
-      <Show when={props.task.stop_outcome}><span class="team-stage-chip team-stop-chip" role="note">{props.task.stop_outcome}</span></Show>
+      <Show when={props.task.stop_outcome}><span class="team-stage-chip team-stop-chip" role="note">{stopOutcomeText(props.task.stop_outcome)}</span></Show>
       <Show when={props.task.integrated}><span class="team-stage-chip"><Icon name="git-merge" size={11} />{tr("merged")}</span></Show>
       <span class="team-card-progress" role="img" aria-label={tr("Pipeline progress")}><For each={segments()}>{(segment) => <i data-state={segment.state} data-kind={segment.kind} />}</For></span>
     </span>

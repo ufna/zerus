@@ -431,11 +431,18 @@ pub struct QueueCard {
     /// operation's own predicate); false when nothing is pending, and when an
     /// older hgs does not say.
     pub pending_replaceable: bool,
-    /// What a stopped or archived team's stop did to this node, in the words
-    /// the store's facts yield (zerus-63rru.52); absent for a live team's
-    /// rows.
+    /// What a stopped or archived team's stop did to this node, as a
+    /// stable code plus the store's refusal reason as data (zerus-63rru.52
+    /// round 2); absent for a live team's rows.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub stop_outcome: Option<String>,
+    pub stop_outcome: Option<StopOutcomeCard>,
+}
+/// A stop outcome's code and reason (zerus-63rru.52 round 2).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct StopOutcomeCard {
+    pub code: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
 }
 
 /// One group of the board: its state and its cards.

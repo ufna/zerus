@@ -94,7 +94,12 @@ fn card(node: &Value) -> QueueCard {
         holder: holder(node),
         pending_decision: optional_name(node, "pending_decision"),
         pending_replaceable: flag(node, "pending_replaceable"),
-        stop_outcome: optional_name(node, "stop_outcome"),
+        stop_outcome: node.get("stop_outcome").filter(|v| v.is_object()).map(|v| {
+            crate::teams::view::StopOutcomeCard {
+                code: name(v, "code"),
+                reason: v.get("reason").and_then(Value::as_str).map(str::to_owned),
+            }
+        }),
     }
 }
 

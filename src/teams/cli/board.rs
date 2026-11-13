@@ -24,16 +24,17 @@ pub(super) fn queue(team: &Team, page: Page<QueueRow>) -> Result<Page<Value>, Pr
             // The lead's open item when no member can take the ready node:
             // its sentence, or null.
             value["unstaffed"] = json!(row.unstaffed);
-            // zerus-63rru.52: for a stopped or archived team the row says in
-            // plain words what the stop did to its node, read from the
-            // store's own stop facts, never from the node's state. A live
-            // team's rows carry no field.
-            if !matches!(
+            // zerus-63rru.52 round 2: only a stopped or archived team's row
+            // carries the stop outcome, as a stable code plus the store's
+            // refusal reason as data, never a sentence.
+            if matches!(
                 team.status,
-                zerus_team_plan::model::TeamStatus::Running
-                    | zerus_team_plan::model::TeamStatus::Paused
+                zerus_team_plan::model::TeamStatus::Stopped
+                    | zerus_team_plan::model::TeamStatus::Archived
             ) {
-                value["stop_outcome"] = json!(stop_sentence(row.stop.as_ref()));
+                if let Some(outcome) = stop_outcome(row.stop.as_ref()) {
+                    value["stop_outcome"] = json!(outcome);
+                }
             }
             value["kind"] = json!(if node.kind == NodeKind::Stage {
                 "stage"
@@ -60,26 +61,50 @@ pub(super) fn queue(team: &Team, page: Page<QueueRow>) -> Result<Page<Value>, Pr
         next: page.next,
     })
 }
-/// The stop's outcome for one node, in the words the queue row and the
-/// desktop show (zerus-63rru.52).
-fn stop_sentence(facts: Option<&crate::teams::store::StopFacts>) -> String {
-    let cancel = facts.and_then(|f| f.cancel.as_deref());
-    let key = facts.and_then(|f| f.key.as_deref());
-    // The newest recorded fact wins: the key clear follows the cancel, so
-    // its record supersedes the cancel's in the row's words.
-    match (key, facts.and_then(|f| f.key_reason.as_deref()), cancel, facts.and_then(|f| f.cancel_reason.as_deref()), facts.is_some_and(|f| f.pending_cancel)) {
-        (Some("refused"), Some(reason), _, _, _) => {
+/// The stop's outcome for one node, as the stable code plus the store's
+/// refusal reason as data (zerus-63rru.52 round 2): the desktop maps the
+/// code through the catalogs and shows the reason as secondary text; the
+/// CLI renders its English sentence from the same code.
+fn stop_outcome(facts: Option<&crate::teams::store::StopFacts>) -> Option<Value> {
+    let facts = facts?;
+    let code = match (facts.key.as_deref(), facts.cancel.as_deref(), facts.pending_cancel) {
+        (Some("refused"), _, _) => "key_clear_refused",
+        (Some("cleared"), _, _) => "key_cleared",
+        (_, Some("refused"), _) => "cancel_refused",
+        (_, Some("cancelled"), _) => "cancelled",
+        (_, Some("released"), _) => "released",
+        (None, None, true) => "pending",
+        (None, None, false) => "unchanged",
+        _ => "pending",
+    };
+    let reason = match code {
+        "key_clear_refused" => facts.key_reason.clone(),
+        "cancel_refused" => facts.cancel_reason.clone(),
+        _ => None,
+    };
+    let mut outcome = json!({"code": code});
+    if let Some(reason) = reason {
+        outcome["reason"] = json!(reason);
+    }
+    Some(outcome)
+}
+
+/// The CLI's English sentence for an outcome code and its reason
+/// (zerus-63rru.52 round 2); the desktop never renders this sentence.
+pub(super) fn stop_sentence(code: &str, reason: Option<&str>) -> String {
+    match (code, reason) {
+        ("key_clear_refused", Some(reason)) => {
             format!("The team stop's key clear was refused: {reason}")
         }
-        (Some("cleared"), _, _, _, _) => "The team stop cleared this task's key".to_owned(),
-        (_, _, Some("refused"), Some(reason), _) => {
+        ("key_cleared", _) => "The team stop cleared this task's key".to_owned(),
+        ("cancel_refused", Some(reason)) => {
             format!("The team stop's cancel was refused: {reason}")
         }
-        (_, _, Some("cancelled"), _, _) => "The team stop cancelled this task".to_owned(),
-        (_, _, Some("released"), _, _) => "The team stop released this task".to_owned(),
-        (None, _, None, _, true) => "The team stop has not reached this task yet".to_owned(),
-        (None, _, None, _, false) => "The team stop left this finished task as it was".to_owned(),
-        _ => "The team stop has not reached this task yet".to_owned(),
+        ("cancelled", _) => "The team stop cancelled this task".to_owned(),
+        ("released", _) => "The team stop released this task".to_owned(),
+        ("pending", _) => "The team stop has not reached this task yet".to_owned(),
+        ("unchanged", _) => "The team stop left this finished task as it was".to_owned(),
+        _ => format!("The team stop outcome {code}"),
     }
 }
 
