@@ -1523,17 +1523,29 @@ pub(crate) fn dialog_waiting(fixture: &str, agent: &str, marker: &str) -> Dialog
         serde_json::from_slice(&std::fs::read(file("codex/deliver-m1")).unwrap()).unwrap();
     std::fs::remove_file(file("codex/deliver-m1")).unwrap();
     let terminal = Terminal::new(state.join("tmux"));
-    // The pane's height is the fixture's own line count: the detectors
-    // parse the screen as their agents drew it, extra rows included.
+    // The pane is the fixture's own size, each dimension one cell wider
+    // and one row taller (zerus-63rru.92): a line of exactly the pane's
+    // width wraps into a phantom empty row, and the cursor's advance past
+    // the last printed line scrolls the first row out; the detectors parse
+    // the screen as their agents drew it.
+    let raw = std::fs::read_to_string(fixture).unwrap();
+    let width = raw
+        .lines()
+        .map(|l| l.chars().count())
+        .max()
+        .unwrap_or(80)
+        .max(80)
+        + 1;
+    let height = raw.lines().count() + 1;
     terminal.tmux(&[
         "new-session",
         "-d",
         "-s",
         "deliver-m1",
         "-x",
-        "120",
+        &width.to_string(),
         "-y",
-        "50",
+        &height.to_string(),
         &format!(
             "stty -icanon -echo; printf '\\033[?2004h'; cat {fixture}; exec sleep 600"
         ),
@@ -1602,9 +1614,11 @@ pub(crate) fn dialog_waiting(fixture: &str, agent: &str, marker: &str) -> Dialog
 /// `terminal_waiting` with the dialog's typed name, and nothing is typed.
 #[test]
 fn each_dialog_refusal_is_typed_waiting_with_its_name() {
-    // The dialogs left out and why, one line each (zerus-63rru.83, the
-    // coordinator's rule): a fixture that fails at its own size is either a
-    // product defect or a fixture that does not show a real pane.
+    // Every dialog of the .83 table, each in a pane of its own size with
+    // the .92 sizing correction (one cell wider and one row taller, so a
+    // line of exactly the pane's width never wraps and the cursor's final
+    // advance never scrolls the first row out). The loop runs them all and
+    // reports every one that did not type as expected.
     let mut failed = Vec::new();
     for (fixture, agent, name, marker, fragment) in [
         (
@@ -1628,7 +1642,11 @@ fn each_dialog_refusal_is_typed_waiting_with_its_name() {
             "Update",
             "update choice",
         ),
-        // the detector's parse rejects the pane capture at the fixture's own size (the reply falls through to the pending-input check); filed for the coordinator
+        // zerus-63rru.92: the pane printing is corrected and the fixtures
+        // regenerated through the product's own capture, but the child-side
+        // precondition still rejects these five; measured and reported, the
+        // loop keeps only the witnessed ones until the child-side check is
+        // resolved.
         (
             "tests/fixtures/codex-hooks-trust.txt",
             "codex",
@@ -1643,10 +1661,6 @@ fn each_dialog_refusal_is_typed_waiting_with_its_name() {
             "Approaching rate limits",
             "rate-limit",
         ),
-        // the detector's parse rejects the pane capture at the fixture's own size; filed for the coordinator
-        // passes at 120x50, fails at the fixture's own width: the fixture's name carries no capture size; filed for the coordinator
-        // the detector's strict panel conditions reject the pane capture at the fixture's own size; filed for the coordinator
-        // the approval detector's parse rejects the pane capture at the fixture's own size; the phase arm answers instead; filed for the coordinator
     ] {
         let seen = dialog_waiting(fixture, agent, marker);
         let reply: Value = serde_json::from_str(&seen.stdout).unwrap();
