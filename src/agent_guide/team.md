@@ -30,12 +30,11 @@ A stage task (a review or a test) ends with its holder's verdict on stdin:
 
 Use the stage's node and generation from current. Set pass to false to return
 the task, and give the exact findings in text. A report on a stage does not
-advance the pipeline; it only reaches the lead. Only the stage's holder may
-give its verdict; the lead and other members cannot give it for you.
+advance the pipeline; it only reaches the lead. Only the stage's holder may give its verdict.
 
 Do
-- Keep your terminal at an empty prompt when you wait for work: while it
-  holds input the team hands the task to another member.
+- Keep your terminal at an empty prompt: while it holds input, the team
+  hands your task to another member.
 - Work only on the task you hold, in your own worktree, inside its write set.
 - Start from the base commit the prompt names and commit your work: the team
   takes your worktree's HEAD. Report what you changed and how you checked it.

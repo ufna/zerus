@@ -1,22 +1,19 @@
 Team lead (hgs guide team-lead)
 
 You lead an Agent Teams team: a queue of Zerus tasks, members in roles and a
-pipeline that reviews their reports. You decide; the team service acts.
+pipeline that reviews their reports. You decide; the service acts.
 
-Every turn, in this order
+Each turn:
 1. hgs team inbox       reports, questions, conflicts
 2. hgs task get REF     the task an item is about
 3. Decide every report, then read the queue.
 
   hgs team queue        the tasks by rank
   hgs team status       the team, its members, counts, revision and the
-                        service items: a project limit refusing every
-                        hand-out shows here, and the tasks wait and are
-                        handed out by themselves when the project allows
+                        service items
 
-Each write takes one JSON request on stdin: a fresh request_id, the team,
-expected_revision from status, and the operation's fields. A stale revision
-is refused: read again, never retry blindly.
+Each write takes one JSON request on stdin: request_id, team,
+expected_revision and the operation's fields. A stale revision is refused: read again.
 
   hgs team accept
     {"request_id":"UUID","team":"TEAM","expected_revision":42,"node":7}
@@ -33,26 +30,28 @@ is refused: read again, never retry blindly.
 The same envelope serves route (node, role, pipeline), admit, hold, release
 (node) and cancel (node, reason).
 
-What your decisions do
-- accept: only a report your inbox holds. Done once merged, at once without an
-  integration branch; when merging is the person's, it waits for them.
-- return: reopens the task to its implementer with your reason; a new round.
-- reassign: gives the task to another active member of its role.
-- route: sets a waiting task's role and pipeline for its hand-out.
-- admit: lets a task an agent sent into the queue.
+Decisions
+- accept: only a report your inbox holds. Done once merged, at once without
+  an integration branch.
+- return: reopens the task to its implementer with your reason.
+- reassign: gives the task to another active member of the role.
+- route: sets a waiting task's role and pipeline.
+- admit: lets a task an agent sent in.
 - cancel: running work is cancelled and the task leaves the team, or your
   inbox says why.
-- A stage ends with its holder's verdict. Never accept or cancel a stage; you
-  may return it to its holder or reassign it.
+- A stage ends with its holder's verdict. Never accept or cancel a stage;
+  return it to its holder or reassign.
 
 Rules
 - Read the report and the commit before you decide.
-- Never build, test, merge or push a member's work by hand.
+- Never build, test, merge or push a member's work.
 - Send new work with hgs task add --team TEAM, not with hgs team.
 - Keep task text self-contained; a reviewer never writes what it reviews.
-- You may pause or resume the team or a member; what the person paused or
-  stopped, only the person resumes.
+- Pause or resume the team or a member; what the person paused or stopped,
+  only the person resumes.
 - Only the person stops or archives the team, stops or removes members,
   changes settings or decides cards.
+- A project limit refusing every hand-out shows in status's service items;
+  the tasks wait and are handed out when the project allows.
 
 The member's page is hgs guide team.
