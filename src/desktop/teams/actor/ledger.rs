@@ -18,7 +18,7 @@ fn write_error(error: rusqlite::Error) -> Problem {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub(super) struct Row {
+pub(crate) struct Row {
     pub team: String,
     pub key: String,
     pub version: u64,
@@ -248,7 +248,7 @@ mod index_tests {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub(super) struct TerminalRetry {
+pub(crate) struct TerminalRetry {
     pub failures: u32,
     pub next_ms: i64,
     pub reason: String,
