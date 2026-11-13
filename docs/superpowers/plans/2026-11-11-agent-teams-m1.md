@@ -1760,6 +1760,33 @@ reviewers takes the path a stage takes at its creation: it is retired and
 its parent goes to the lead with the kernel's reason. Nothing in stopped,
 archived or paused teams.
 
+**An unstaffed item stands for an episode, and the cap counts episodes.**
+The first head took "told" to mean "an open item exists", so an item the
+lead closed while its node stayed unstaffed was written again on every
+pass, an open item kept its first reason after the gap changed, and a
+store that head left with more than 500 closed items on one node refused
+every reconcile for ever (the reviews of zerus-63rru.45, 2026-11-12). An
+episode is a node, its generation and the kernel's reason, and the lead is
+told once per episode. Its item is the node's newest unstaffed item that
+the reconcile has not ended, by sequence and never by the clock. Only the
+reconcile ends an episode, with a reply that says why: the node left the
+set, or its reason or generation changed, and a changed reason then gets
+one new item. An item closed by the lead still stands for its episode and
+is not told again. The cap of 500 is judged on the current episodes, and a
+queue row's unstaffed sentence is the current episode's. An older unended
+item of a node stands for no episode: a service-only operation ends at
+most 200 of them a pass, oldest first, in a transaction of its own before
+the comparison, and its answer when none is left counts as no failure.
+More current episodes than the cap is a state the product cannot write,
+since a team admits at most 500 open tasks; the reconcile refuses it by
+name on every pass and nothing repairs it, which is the guard failing
+closed and is accepted as that. A person's Hold placed before the stage
+exists survives the stage's reconcile and its retirement: the stage path
+ends only the pipeline's own hand-back. A member whose row the service
+cannot read still counts as one who could take the node: readability is
+the service's fact, the unreadable member's card tells the person, and the
+lead's item does not say it (zerus-63rru.81).
+
 **A recovery removes only the row it owns.** The service's gate recovery
 closed its card and then removed whichever ledger row was current, so a
 second runtime that had failed the same check in between lost its fresh
@@ -1806,6 +1833,29 @@ DeepSeek seat until the service can reach such a member: the task delivery's
 final input is a terminal path with no DeepSeek route, and a hosted run's
 end writes no end record. OpenCode and platforms without the proof stay
 refused as before.
+
+**No other session is proven below a host.** A marked claim that is not a
+DeepSeek claim took the ancestry proof without asking whether the command
+ran below a recorded resident agent host, so a hosted call that carried
+another session's markers was accepted as that session: a host is a child
+of the command that launched it for as long as that command lives, and an
+older host keeps the markers it inherited (the independent review of the
+DeepSeek members' first commit, 2026-11-12). The rule: a command below a
+recorded host can only be a session that host serves, and only a DeepSeek
+claim's token proves one; any other marked claim there is refused with a
+sentence of its own. The person path and the marked branch ask one check,
+which reads the host records first (a computer that records none walks no
+process) and then walks the process table alone, matched by process ID and
+birth; it reads no environment and no marker, and when it cannot tell
+(records unreadable or over their bound, a birth unreadable, a walk past
+its bound) both refuse. Its limit is the hosted proof's own: the check
+stands on the host records, so a call that removes or edits its host's
+same-user records is no longer seen below that host. That is deliberate
+change of the state directory by a same-user process, which no proof built
+on records or ancestry can stop, and it is stated where the rule is
+stated. The function's body is replaced by the shared helper from main
+after the next sync, with a refusal of its own for a command inside a
+separate process namespace.
 
 **A held step's card follows the hold's age, not its reason.** A step the
 service holds back (a finish, a merge or a reopen it cannot carry out yet)
