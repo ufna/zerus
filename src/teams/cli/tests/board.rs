@@ -509,6 +509,23 @@ fn only_stopped_and_archived_rows_carry_the_stop_outcome() {
     }
 }
 
+/// The CLI's English words for each outcome code (zerus-63rru.52 round 2).
+#[test]
+fn the_cli_renders_each_stop_outcome_code_in_english() {
+    use super::super::board::stop_sentence;
+    for (code, reason, want) in [
+        ("cancelled", None, "The team stop cancelled this task"),
+        ("released", None, "The team stop released this task"),
+        ("cancel_refused", Some("r"), "The team stop's cancel was refused: r"),
+        ("key_cleared", None, "The team stop cleared this task's key"),
+        ("key_clear_refused", Some("r"), "The team stop's key clear was refused: r"),
+        ("pending", None, "The team stop has not reached this task yet"),
+        ("unchanged", None, "The team stop left this finished task as it was"),
+    ] {
+        assert_eq!(stop_sentence(code, reason), want, "{code}");
+    }
+}
+
 /// The queue reply carries `unstaffed`, always: null, then the sentence of
 /// the lead's open item once no member can take the ready node.
 #[test]

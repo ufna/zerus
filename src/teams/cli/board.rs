@@ -90,7 +90,9 @@ fn stop_outcome(facts: Option<&crate::teams::store::StopFacts>) -> Option<Value>
 }
 
 /// The CLI's English sentence for an outcome code and its reason
-/// (zerus-63rru.52 round 2); the desktop never renders this sentence.
+/// (zerus-63rru.52 round 2); the desktop never renders this sentence. The
+/// tests assert these words; the queue reply itself carries the code.
+#[cfg_attr(not(test), allow(dead_code))]
 pub(super) fn stop_sentence(code: &str, reason: Option<&str>) -> String {
     match (code, reason) {
         ("key_clear_refused", Some(reason)) => {
