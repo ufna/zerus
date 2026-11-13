@@ -12,6 +12,64 @@ use crate::catalog::{Catalog, TemplateBundle};
 use crate::model::{Acceptance, Caps};
 use crate::problem::{code, Problem};
 
+/// The characters a team name never contains (zerus-63rru.74): every
+/// control character, the two line separators, and the nine bidirectional
+/// embedding, override and isolate characters. The existing size limit
+/// still applies and reports its own problem.
+pub fn name_problem(name: &str, field: &str, limit: usize) -> Option<Problem> {
+    if name.len() > limit {
+        return Some(Problem::new(code::OVER_CAP, "Text exceeds its size limit."));
+    }
+    // One shared rule with the replica's title check (zerus-63rru.74).
+    if let Some(ch) = zerus_replica::forbidden_char(name) {
+        return Some(Problem::new(
+            code::INVALID_STATE,
+            format!("{field} contains U+{:04X}, which is not allowed.", ch as u32),
+        ));
+    }
+    None
+}
+
+/// A role or member ID (zerus-63rru.74): ASCII [a-z0-9] first, then
+/// [a-z0-9_-], at most 64 characters. No stricter rule existed before;
+/// this one is the only character-set rule and the length cap.
+pub fn id_problem(id: &str, field: &str) -> Option<Problem> {
+    if id.len() > 64 {
+        return Some(Problem::new(code::OVER_CAP, "Text exceeds its size limit."));
+    }
+    let mut chars = id.chars();
+    match chars.next() {
+        Some(ch) if ch.is_ascii_lowercase() || ch.is_ascii_digit() => {}
+        Some(ch) => {
+            let point = ch as u32;
+            return Some(Problem::new(
+                code::INVALID_STATE,
+                format!(
+                    "{field} contains U+{point:04X}, which is not allowed; IDs are [a-z0-9] then [a-z0-9_-], at most 64 characters."
+                ),
+            ));
+        }
+        None => {
+            return Some(Problem::new(
+                code::INVALID_STATE,
+                format!("{field} is empty; IDs are [a-z0-9] then [a-z0-9_-], at most 64 characters."),
+            ));
+        }
+    }
+    for ch in chars {
+        if !(ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '-' || ch == '_') {
+            let point = ch as u32;
+            return Some(Problem::new(
+                code::INVALID_STATE,
+                format!(
+                    "{field} contains U+{point:04X}, which is not allowed; IDs are [a-z0-9] then [a-z0-9_-], at most 64 characters."
+                ),
+            ));
+        }
+    }
+    None
+}
+
 /// Only the duplicated IDs of one catalog, for a partial catalog that is
 /// merged over another: a merge must not hide a duplicate before validation.
 pub fn validate_ids(catalog: &Catalog) -> Vec<Problem> {
@@ -35,6 +93,24 @@ pub fn validate_ids(catalog: &Catalog) -> Vec<Problem> {
 /// Everything wrong with a catalog, in catalog order. Empty means usable.
 pub fn validate_catalog(catalog: &Catalog) -> Vec<Problem> {
     let mut problems = validate_ids(catalog);
+    for template in &catalog.templates {
+        if let Some(problem) = name_problem(&template.name, "The template name", 256) {
+            problems.push(problem);
+        }
+        if let Some(problem) = id_problem(&template.id, "The template ID") {
+            problems.push(problem);
+        }
+    }
+    for role in &catalog.roles {
+        if let Some(problem) = id_problem(&role.id, "The role ID") {
+            problems.push(problem);
+        }
+    }
+    for pipeline in &catalog.pipelines {
+        if let Some(problem) = id_problem(&pipeline.id, "The pipeline ID") {
+            problems.push(problem);
+        }
+    }
     let roles: HashSet<&str> = catalog.roles.iter().map(|role| role.id.as_str()).collect();
     let pipelines: HashSet<&str> = catalog
         .pipelines
@@ -236,6 +312,27 @@ fn active_pipelines<'a>(
 /// Everything wrong with a bundle imported from elsewhere. `caps` is the
 /// widest a team on this computer may be.
 pub fn validate_bundle(bundle: &TemplateBundle, caps: &Caps) -> Vec<Problem> {
+    let mut problems = Vec::new();
+    if let Some(problem) = name_problem(&bundle.template.name, "The template name", 256) {
+        problems.push(problem);
+    }
+    if let Some(problem) = id_problem(&bundle.template.id, "The template ID") {
+        problems.push(problem);
+    }
+    for role in &bundle.roles {
+        if let Some(problem) = id_problem(&role.id, "The role ID") {
+            problems.push(problem);
+        }
+    }
+    for pipeline in &bundle.pipelines {
+        if let Some(problem) = id_problem(&pipeline.id, "The pipeline ID") {
+            problems.push(problem);
+        }
+    }
+    problems.extend(validate_bundle_inner(bundle, caps));
+    problems
+}
+fn validate_bundle_inner(bundle: &TemplateBundle, caps: &Caps) -> Vec<Problem> {
     let catalog = Catalog {
         roles: bundle.roles.clone(),
         pipelines: bundle.pipelines.clone(),

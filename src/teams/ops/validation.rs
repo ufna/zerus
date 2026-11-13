@@ -74,6 +74,9 @@ pub(super) fn validate_create(team: &Team) -> Result<()> {
         return Err(invalid("Owner, project and name are required."));
     }
     text(&team.name, 256)?;
+    if let Some(problem) = zerus_team_plan::name_problem(&team.name, "The team name", 256) {
+        return Err(problem);
+    }
     text(&team.project, 256)?;
     text(&team.goal, 16_384)?;
     text(&encode(&team.bundle)?, 131_072)?;

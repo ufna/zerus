@@ -186,6 +186,28 @@ mod tests {
         fs::write(file, text).unwrap();
     }
 
+    /// zerus-63rru.74: a template with a forbidden name or a role with a
+    /// forbidden ID is refused at the catalog save, with the sentence that
+    /// names the field and the code point.
+    #[test]
+    fn a_template_with_a_forbidden_name_or_role_id_is_refused_at_save() {
+        let dir = temp();
+        let mut catalog = builtin();
+        catalog.templates[0].name = "Template\u{202D}name".into();
+        let problem = save(dir.path(), &catalog).unwrap_err();
+        assert_eq!(problem.code, code::INVALID_STATE, "{problem:?}");
+        assert!(
+            problem.message.contains("The template name")
+                && problem.message.contains("U+202D"),
+            "{problem:?}"
+        );
+        let mut catalog = builtin();
+        catalog.roles[0].id = "role id".into();
+        let problem = save(dir.path(), &catalog).unwrap_err();
+        assert_eq!(problem.code, code::INVALID_STATE, "{problem:?}");
+        assert!(problem.message.contains("The role ID"), "{problem:?}");
+    }
+
     #[test]
     fn the_built_in_catalog_loads_when_the_person_has_no_file() {
         let dir = temp();

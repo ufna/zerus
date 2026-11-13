@@ -92,8 +92,12 @@ pub(crate) fn check_new_stage(stage: Stage) -> Result<()> {
 }
 
 pub(crate) fn check_title(title: &str) -> Result<()> {
-    if title.trim().is_empty() || title.len() > 512 || title.chars().any(char::is_control) {
-        return Err(Error::new("task title must be nonempty, at most 512 UTF-8 bytes and contain no control characters"));
+    // One shared rule: the nine bidirectional characters are refused as
+    // control characters are (zerus-63rru.75), in this one place.
+    if title.trim().is_empty() || title.len() > 512 || crate::forbidden_char(title).is_some() {
+        return Err(Error::new(
+            "task title must be nonempty, at most 512 UTF-8 bytes and contain no control or bidirectional characters",
+        ));
     }
     Ok(())
 }
@@ -122,6 +126,11 @@ impl TaskDoc {
         }
         if title.is_none() || !task.text.trim().is_empty() {
             check_text(task.text, "prompt")?;
+            // The plain card's title is the prompt's first line: the same
+            // title check covers it (zerus-63rru.75).
+            if title.is_none() {
+                check_title(task.text.lines().next().unwrap_or_default())?;
+            }
         } else if !task.text.is_empty() {
             return Err(Error::new(
                 "an empty description must contain no whitespace",
@@ -1840,6 +1849,43 @@ mod tests {
             session: "codex/api".into(),
             ..Default::default()
         }
+    }
+
+    /// zerus-63rru.75: each of the nine bidirectional characters is refused
+    /// in a title as a control character is, through the one title check.
+    #[test]
+    fn each_bidirectional_character_is_refused_in_a_title() {
+        for ch in [
+            '\u{202A}', '\u{202B}', '\u{202C}', '\u{202D}', '\u{202E}',
+            '\u{2066}', '\u{2067}', '\u{2068}', '\u{2069}',
+        ] {
+            let mut task = task(Stage::Todo);
+            let error = task
+                .set_title(&format!("Title{ch}name"), &Actor::Person, 2)
+                .unwrap_err();
+            assert!(
+                error.to_string().contains("no control or bidirectional"),
+                "{ch:?}: {error:?}"
+            );
+        }
+    }
+
+    /// zerus-63rru.75: a title with non-ASCII letters is accepted; a title
+    /// that already holds a forbidden character still loads and moves.
+    #[test]
+    fn a_non_ascii_title_is_accepted_and_an_old_one_still_moves() {
+        let mut named = task(Stage::Todo);
+        named
+            .set_title("Заголовок Ångström 東京", &Actor::Person, 2)
+            .unwrap();
+        assert_eq!(named.title(), "Заголовок Ångström 東京");
+        // The value an older build stored: it still loads and moves.
+        let mut old = task(Stage::Todo);
+        old.fields().insert("title", "Old\u{202D}title").unwrap();
+        old.doc.commit();
+        assert_eq!(old.view().unwrap().title, "Old\u{202D}title");
+        old.set_stage(Stage::Backlog, &Actor::Person, 2).unwrap();
+        assert_eq!(old.view().unwrap().title, "Old\u{202D}title");
     }
 
     #[test]
