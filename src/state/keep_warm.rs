@@ -320,19 +320,28 @@ pub(super) struct Eligibility {
     pub ttl: Option<u64>,
     pub source: &'static str,
     pub expires_at: Option<f64>,
+    /// The native usage read is still catching up: its scanned prefix is not
+    /// evidence of the cache lifetime, so no deadline is offered.
+    pub partial: bool,
 }
 
 impl Eligibility {
     fn refused(reason_code: &'static str, reason: &'static str) -> Self {
-        Self { supported: false, reason_code, reason, ttl: None, source: "", expires_at: None }
+        Self { supported: false, reason_code, reason, ttl: None, source: "", expires_at: None, partial: false }
     }
 
     fn waiting(reason: &'static str) -> Self {
-        Self { supported: true, reason_code: "no_cache_report", reason, ttl: None, source: "", expires_at: None }
+        Self { supported: true, reason_code: "no_cache_report", reason, ttl: None, source: "", expires_at: None, partial: false }
+    }
+
+    /// A native usage scan that has not finished: the lifetime is unknown, so
+    /// the round waits and only a complete read may name a deadline.
+    fn catching_up(reason: &'static str) -> Self {
+        Self { supported: true, reason_code: "usage_partial", reason, ttl: None, source: "", expires_at: None, partial: true }
     }
 
     fn known(ttl: u64, source: &'static str, expires_at: Option<f64>) -> Self {
-        Self { supported: true, reason_code: "", reason: "", ttl: Some(ttl), source, expires_at }
+        Self { supported: true, reason_code: "", reason: "", ttl: Some(ttl), source, expires_at, partial: false }
     }
 
     pub fn interval(&self) -> Option<u64> {
@@ -387,6 +396,13 @@ pub(super) fn eligibility(record: &Value, usage: &Value, last_turn_at: Option<f6
     match string(record, "agent") {
         "claude" => {
             let cache = &usage["prompt_cache"];
+            // A scan still catching up has read only a prefix of the transcript:
+            // an old cache write there is not evidence of the current lifetime.
+            // Only a complete read may name a deadline (and so let a round turn
+            // cold or ping). Codex and Kimi take their TTL elsewhere.
+            if usage["partial"].as_bool() == Some(true) {
+                return Eligibility::catching_up("The usage report is still catching up; waiting for it to finish.");
+            }
             match cache["ttl_seconds"].as_u64() {
                 None => Eligibility::waiting("Waiting for Claude to report its cache lifetime with its next reply."),
                 Some(ttl) if ttl < MIN_TTL => Eligibility::refused("claude_short_ttl",
@@ -603,6 +619,10 @@ fn submission_refusal(record: &Value, entry: Option<&Entry>, runtime: &Value, fa
         _ => {}
     }
     // Staging can take long: the cache must still be warm when the ping is typed.
+    // A usage scan still catching up gives no lifetime evidence at all.
+    if rule.partial {
+        return Some("The usage report is still catching up; nothing was submitted");
+    }
     if !rule.supported || rule.expires_at.is_none_or(|expires| expires - now < COLD_MARGIN) {
         return Some("The cache may already have expired; nothing was submitted");
     }
@@ -1288,6 +1308,72 @@ mod tests {
         // Before the first reply reports a cache, keep-warm can be on but waits.
         let waiting = eligibility(&json!({"agent":"claude"}), &json!({}), None);
         assert_eq!((waiting.supported, waiting.reason_code, waiting.due_at()), (true, "no_cache_report", None));
+        // A scan still catching up reads only a prefix: its old deadline is not
+        // the lifetime, so eligibility offers none.
+        let partial = eligibility(&record, &json!({"partial":true,
+            "prompt_cache":{"ttl_seconds":3600,"expires_at":NOW + 600.0}}), None);
+        assert_eq!((partial.supported, partial.reason_code, partial.ttl, partial.expires_at, partial.partial),
+            (true, "usage_partial", None, None, true));
+    }
+
+    /// A Claude transcript larger than one 32 MiB usage read: an old 1 h cache
+    /// write near its start and a recent one at its end.
+    fn large_claude_transcript(dir: &Path) -> PathBuf {
+        use std::io::Write;
+        let assistant = |at: f64, id: &str| {
+            let timestamp = chrono::DateTime::from_timestamp(at as i64, 0).unwrap().to_rfc3339();
+            json!({"type":"assistant","sessionId":"conversation-1","timestamp":timestamp,
+                "message":{"id":id,"model":"claude-opus-5-5","usage":{"input_tokens":10,
+                    "cache_read_input_tokens":331000,"cache_creation_input_tokens":200,"output_tokens":30,
+                    "cache_creation":{"ephemeral_1h_input_tokens":200}}}}).to_string()
+        };
+        let path = dir.join("transcript.jsonl");
+        let mut file = fs::File::create(&path).unwrap();
+        writeln!(file, "{}", assistant(NOW - 7000.0, "old")).unwrap();
+        let filler = json!({"type":"user","sessionId":"conversation-1",
+            "message":{"role":"user","content":"x".repeat(64 * 1024)}}).to_string();
+        for _ in 0..560 {
+            writeln!(file, "{filler}").unwrap();
+        }
+        writeln!(file, "{}", assistant(NOW - 3000.0, "recent")).unwrap();
+        path
+    }
+
+    #[test]
+    fn a_partial_usage_scan_waits_instead_of_turning_the_cache_cold() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = large_claude_transcript(dir.path());
+        let cache = dir.path().join("usage.json");
+        let mut session = idle();
+        session["agent"] = json!("claude");
+        session["model"] = json!("claude-opus-5-5");
+        session["conversation_id"] = json!("conversation-1");
+        let first = usage::scan(&path, &cache, "claude", "conversation-1").unwrap();
+        assert_eq!(first["partial"], true);
+        // The prefix still shows the old write, long past its 1 h deadline.
+        assert!(first["prompt_cache"]["expires_at"].as_f64().unwrap() < NOW);
+        let rule = eligibility(&session, &first, None);
+        let observed = Observed { record: &session, live: true, usage: first };
+        let step = decide(&enabled(), &Value::Null, Some(&observed), quiet, NOW);
+        assert!(matches!(&step, Step::Hold { state: "waiting", reason, .. } if reason.contains("still catching up")),
+            "a partial scan must wait, not turn cold: {step:?}");
+        // The last pre-input check refuses the unknown lifetime, even when a
+        // stale prefix deadline survives in the rule.
+        let mut store = Store::default();
+        update(&mut store, "owner", &record(), &request(json!({})), NOW, ok);
+        let runtime = json!({"state":"dispatching","request_id":"ping-1","revision":1});
+        let entry = store.sessions.get("owner");
+        assert_eq!(submission_refusal(&session, entry, &runtime, &quiet(), &rule, "ping-1", NOW),
+            Some("The usage report is still catching up; nothing was submitted"));
+        let stale = Eligibility { ttl: Some(3600), source: "native_usage", expires_at: Some(NOW + 600.0),
+            ..Eligibility::catching_up("") };
+        assert_eq!(submission_refusal(&session, entry, &runtime, &quiet(), &stale, "ping-1", NOW),
+            Some("The usage report is still catching up; nothing was submitted"));
+        // A complete read sees the recent 1 h write at the end and the ping is due.
+        let complete = usage::scan(&path, &cache, "claude", "conversation-1").unwrap();
+        assert_eq!(complete["partial"], false);
+        let observed = Observed { record: &session, live: true, usage: complete };
+        assert_eq!(decide(&enabled(), &Value::Null, Some(&observed), quiet, NOW), Step::Send);
     }
 
     #[test]
@@ -1306,6 +1392,10 @@ mod tests {
         assert!(eligibility(&launched, &json!({}), Some(NOW)).supported);
         let unknown = eligibility(&json!({"agent":"codex"}), &json!({}), Some(NOW));
         assert_eq!((unknown.supported, unknown.reason_code), (true, "no_cache_report"));
+        // Codex takes its TTL from the provider, not from the native usage scan:
+        // a partial scan of a large rollout does not make its lifetime unknown.
+        let partial = eligibility(&json!({"agent":"codex","model":"gpt-6.1-sol"}), &json!({"partial":true}), Some(NOW));
+        assert_eq!((partial.supported, partial.ttl, partial.source), (true, Some(1800), "provider_default"));
         // No finished turn yet: nothing to keep warm.
         assert_eq!(eligibility(&json!({"agent":"codex","model":"gpt-6.1-sol"}), &json!({}), None).due_at(), None);
     }

@@ -3039,7 +3039,10 @@ empty recognized composer, no terminal input in the last two minutes (a terminal
 that cannot report input times must have no attached client; unknown activity
 never admits a ping), and the session is not paused, archived or terminated.
 The last check before the first typed byte repeats these rules and the
-30-second cache margin, so a slow stage never types into a cold cache. It uses the
+30-second cache margin, so a slow stage never types into a cold cache. A
+partial native usage read is not evidence of expiry: while Claude's usage scan
+is still catching up, the cache lifetime is unknown, nothing is sent, and the
+cache is not called cold; only a complete read may decide either. It uses the
 guarded send path with its own origin and request ID, bound to the setting
 revision it was decided for (a change in between cancels it): a refusal before any input
 waits for the next round, and an unknown delivery is never sent again; keep-warm

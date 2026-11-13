@@ -251,7 +251,7 @@ fn output(state: &Value, provider: &str, partial: bool) -> Value {
         "cost_incomplete":state["cost_incomplete"],"extras":state["extras"]})
 }
 
-fn scan(path: &Path, cache_path: &Path, provider: &str, conversation: &str) -> Result<Value> {
+pub(super) fn scan(path: &Path, cache_path: &Path, provider: &str, conversation: &str) -> Result<Value> {
     let mut file = File::open(path).map_err(|e| e.to_string())?;
     let (identity, meta) =
         crate::platform::FileIdentity::with_metadata(&file).map_err(|e| e.to_string())?;

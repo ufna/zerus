@@ -198,7 +198,11 @@ under the input lock.
 1. The setting is enabled, not expired, and its revision is unchanged since the
    decision. At `until` the worker turns it off and records `expired`.
 2. The agent is supported, its TTL is known, the ping is due, and the estimated
-   cache expiry is still at least 30 seconds away.
+   cache expiry is still at least 30 seconds away. A partial native usage read,
+   the source of Claude's TTL, is not evidence of expiry: while its scan is
+   still catching up, the cache lifetime is unknown, the round holds `waiting`
+   with a plain reason and only a complete read may turn the state cold or
+   allow a ping.
 3. The exact verified process is live with the expected run and conversation;
    the session is not paused, pausing, launching, archived or terminated.
 4. The agent is settled (`telemetry::settled`), has no live background jobs
@@ -218,7 +222,8 @@ Delivery reuses the guarded path with a new submission origin, like the
 existing `recovery_id`: a fresh request ID, the receipt marked
 `"origin":"keep_warm"`, no cancellation of recovery, and the ping recorded on
 the session record as `keep_warm_pending`. A refusal proven before input keeps
-the state `waiting`. Any unknown outcome sets `uncertain`; keep-warm then waits
+the state `waiting`, including a refusal for the unknown lifetime of a partial
+usage read. Any unknown outcome sets `uncertain`; keep-warm then waits
 for the next real turn and never replays.
 
 ## Silent ping turns
