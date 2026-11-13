@@ -22,15 +22,8 @@ pub(super) fn pasted_text(text: &str) -> std::borrow::Cow<'_, str> {
     let (mut result, mut rest) = (String::with_capacity(text.len()), text);
     let (mut typed, mut lead) = (false, None);
     while let Some(start) = rest.find(OPEN) {
-        let Some((id, body)) = rest[start + OPEN.len()..].split_once("\">") else {
-            break;
-        };
-        if id.is_empty()
-            || id.len() > 64
-            || !id
-                .chars()
-                .all(|c| c.is_ascii_alphanumeric() || "-_".contains(c))
-        {
+        let Some((id, body)) = rest[start + OPEN.len()..].split_once("\">") else { break };
+        if id.is_empty() || id.len() > 64 || !id.chars().all(|c| c.is_ascii_alphanumeric() || "-_".contains(c)) {
             break;
         }
         let close = format!("</pasted_content id=\"{id}\">");
@@ -79,10 +72,8 @@ pub(super) fn system_prompt(text: &str) -> Option<Value> {
     // Keep Claude's native envelope parser below unchanged.
     if text.starts_with("<zerus-message") {
         let (sender, reference, body) = crate::session_reference::sender_message(text)?;
-        return Some(
-            json!({"kind":"peer_message","summary":"","status":"","report":body,
-            "agent_id":"","sender":sender,"sender_reference":reference}),
-        );
+        return Some(json!({"kind":"peer_message","summary":"","status":"","report":body,
+            "agent_id":"","sender":sender,"sender_reference":reference}));
     }
     fn envelope<'a>(body: &'a str, close: &str) -> Option<(&'a str, &'a str)> {
         match body.find(close) {
@@ -92,48 +83,24 @@ pub(super) fn system_prompt(text: &str) -> Option<Value> {
         }
     }
     let mut rest = text.trim();
-    let (mut summaries, mut status, mut reports, mut agent) =
-        (Vec::new(), String::new(), Vec::new(), String::new());
+    let (mut summaries, mut status, mut reports, mut agent) = (Vec::new(), String::new(), Vec::new(), String::new());
     let (mut messages, mut sender) = (Vec::new(), String::new());
     while !rest.is_empty() {
         if let Some(body) = rest.strip_prefix("<task-notification>") {
             let (inner, after) = envelope(body, "</task-notification>")?;
             let field = |tag: &str| {
-                let value = inner
-                    .split_once(&format!("<{tag}>"))?
-                    .1
-                    .split_once(&format!("</{tag}>"))?
-                    .0;
-                Some(
-                    ["&lt;", "&gt;", "&quot;", "&apos;", "&amp;"]
-                        .iter()
-                        .zip(["<", ">", "\"", "'", "&"])
-                        .fold(value.trim().to_owned(), |text, (from, to)| {
-                            text.replace(from, to)
-                        }),
-                )
+                let value = inner.split_once(&format!("<{tag}>"))?.1.split_once(&format!("</{tag}>"))?.0;
+                Some(["&lt;", "&gt;", "&quot;", "&apos;", "&amp;"].iter().zip(["<", ">", "\"", "'", "&"])
+                    .fold(value.trim().to_owned(), |text, (from, to)| text.replace(from, to)))
             };
             status = field("status").unwrap_or_default();
-            summaries.push(
-                field("summary")
-                    .filter(|s| !s.is_empty())
-                    .unwrap_or_else(|| {
-                        if status.is_empty() {
-                            "Background task finished".into()
-                        } else {
-                            format!("Background task {status}")
-                        }
-                    }),
-            );
+            summaries.push(field("summary").filter(|s| !s.is_empty()).unwrap_or_else(|| {
+                if status.is_empty() { "Background task finished".into() } else { format!("Background task {status}") }
+            }));
             rest = after;
         } else if let Some(body) = rest.strip_prefix("<agent-message from=\"") {
             let (from, body) = body.split_once("\">")?;
-            if from.is_empty()
-                || from.len() > 128
-                || !from
-                    .chars()
-                    .all(|c| c.is_ascii_alphanumeric() || "-_".contains(c))
-            {
+            if from.is_empty() || from.len() > 128 || !from.chars().all(|c| c.is_ascii_alphanumeric() || "-_".contains(c)) {
                 return None;
             }
             let (inner, after) = envelope(body, "</agent-message>")?;
@@ -145,58 +112,29 @@ pub(super) fn system_prompt(text: &str) -> Option<Value> {
                 Some(at) if inner.starts_with('[') => &inner[at + FRAME.len()..],
                 _ => inner,
             };
-            reports.push(
-                report
-                    .lines()
-                    .map(|line| line.strip_prefix("  ").unwrap_or(line))
-                    .collect::<Vec<_>>()
-                    .join("\n")
-                    .trim()
-                    .to_owned(),
-            );
-            if agent.is_empty() {
-                agent = from.to_owned();
-            }
+            reports.push(report.lines().map(|line| line.strip_prefix("  ").unwrap_or(line)).collect::<Vec<_>>().join("\n").trim().to_owned());
+            if agent.is_empty() { agent = from.to_owned(); }
             rest = after;
         } else {
             // Another local Claude session wrote to this one; the user did not.
             let body = rest.strip_prefix("<cross-session-message ")?;
             let (attributes, body) = body.split_once('>')?;
-            let attribute = |name: &str| {
-                attributes
-                    .split_once(&format!("{name}=\""))
-                    .and_then(|(_, value)| value.split_once('"'))
-                    .map(|(value, _)| value.trim())
-            };
-            let name = attribute("from-name")
-                .filter(|n| !n.is_empty())
-                .or_else(|| attribute("from"))
-                .unwrap_or_default();
+            let attribute = |name: &str| attributes.split_once(&format!("{name}=\""))
+                .and_then(|(_, value)| value.split_once('"')).map(|(value, _)| value.trim());
+            let name = attribute("from-name").filter(|n| !n.is_empty()).or_else(|| attribute("from")).unwrap_or_default();
             if name.is_empty() || name.len() > 200 {
                 return None;
             }
             let (inner, after) = envelope(body, "</cross-session-message>")?;
             messages.push(inner.trim().to_owned());
-            if sender.is_empty() {
-                sender = name.to_owned();
-            }
+            if sender.is_empty() { sender = name.to_owned(); }
             rest = after;
         }
     }
-    let kind = if !reports.is_empty() {
-        "subagent_report"
-    } else if !messages.is_empty() {
-        "peer_message"
-    } else if !summaries.is_empty() {
-        "task_notification"
-    } else {
-        return None;
-    };
+    let kind = if !reports.is_empty() { "subagent_report" } else if !messages.is_empty() { "peer_message" } else if !summaries.is_empty() { "task_notification" } else { return None };
     reports.extend(messages);
-    Some(
-        json!({"kind": kind, "summary": summaries.join("\n"), "status": status,
-        "report": reports.join("\n\n"), "agent_id": agent, "sender": sender}),
-    )
+    Some(json!({"kind": kind, "summary": summaries.join("\n"), "status": status,
+        "report": reports.join("\n\n"), "agent_id": agent, "sender": sender}))
 }
 
 /// Show background work handed to the agent as a notice rather than the
@@ -208,14 +146,8 @@ pub(super) fn mark_system_prompt(record: &Value, event: &mut Value, prompt: &str
     {
         return;
     }
-    let text = if prompt.is_empty() {
-        string(event, "detail")
-    } else {
-        prompt
-    };
-    let Some(notice) = system_prompt(text) else {
-        return;
-    };
+    let text = if prompt.is_empty() { string(event, "detail") } else { prompt };
+    let Some(notice) = system_prompt(text) else { return };
     let report = string(&notice, "report");
     let child = &record["subagents"][string(&notice, "agent_id")];
     // Name the subagent as Claude does in its terminal; older reports fall
@@ -227,12 +159,7 @@ pub(super) fn mark_system_prompt(record: &Value, event: &mut Value, prompt: &str
     } else if !string(child, "description").is_empty() {
         format!("Agent \"{}\" finished", string(child, "description"))
     } else {
-        report
-            .lines()
-            .map(|line| line.trim_start_matches('#').trim())
-            .find(|line| !line.is_empty())
-            .unwrap_or("Subagent report")
-            .to_owned()
+        report.lines().map(|line| line.trim_start_matches('#').trim()).find(|line| !line.is_empty()).unwrap_or("Subagent report").to_owned()
     };
     event["origin"] = notice["kind"].clone();
     event["detail"] = json!(clipped(&json!(summary), 1200));
@@ -263,11 +190,7 @@ pub(super) fn user_prompt(record: &Value) -> &Value {
     if record["keep_warm_quiet"].is_object() {
         return &record["keep_warm_quiet"]["prompt"];
     }
-    if system_prompt(string(record, "prompt")).is_some() {
-        &NONE
-    } else {
-        &record["prompt"]
-    }
+    if system_prompt(string(record, "prompt")).is_some() { &NONE } else { &record["prompt"] }
 }
 
 fn detail(event: &Value) -> String {
@@ -322,11 +245,7 @@ fn event_db_at(root: &Path) -> Result<Connection> {
     };
     #[cfg(not(unix))]
     crate::platform::private_open(
-        OpenOptions::new()
-            .create(true)
-            .truncate(false)
-            .read(true)
-            .write(true),
+        OpenOptions::new().create(true).truncate(false).read(true).write(true),
     )
     .open(&path)
     .map_err(|e| e.to_string())?;
@@ -356,14 +275,10 @@ fn turn_origin<'a>(record: &Value, event: &'a Value) -> Option<&'a str> {
 }
 
 fn kimi_turn_id(record: &Value, event: &Value) -> Option<u64> {
-    if string(record, "agent") != "kimi"
-        || !["TurnStarted", "Stop"].contains(&string(event, "hook_event_name"))
-    {
+    if string(record, "agent") != "kimi" || !["TurnStarted", "Stop"].contains(&string(event, "hook_event_name")) {
         return None;
     }
-    event["turn_id"]
-        .as_u64()
-        .filter(|id| *id <= i64::MAX as u64)
+    event["turn_id"].as_u64().filter(|id| *id <= i64::MAX as u64)
 }
 
 pub(super) fn log_event(record: &Value, event: &Value) -> Result<()> {
@@ -378,9 +293,7 @@ pub(super) fn log_event(record: &Value, event: &Value) -> Result<()> {
         data["at"] = event["at"].clone();
         data["activity_key"] = event["activity_key"].clone();
     }
-    if let Some(id) = processes::event_job(record, event) {
-        data["process_id"] = json!(id);
-    }
+    if let Some(id)=processes::event_job(record,event) {data["process_id"]=json!(id);}
     mark_system_prompt(record, &mut data, event["prompt"].as_str().unwrap_or(""));
     if string(record, "agent") == "kimi"
         && string(event, "agent_id") == "main"
@@ -401,7 +314,7 @@ pub(super) fn log_event(record: &Value, event: &Value) -> Result<()> {
     if let Some(id) = kimi_turn_id(record, event) {
         data["kimi_turn_id"] = json!(id);
         data["kimi_conversation_id"] = record["conversation_id"].clone();
-        if ["kimi_wire", "kimi_hook"].contains(&string(event, "turn_identity_source")) {
+        if ["kimi_wire","kimi_hook"].contains(&string(event,"turn_identity_source")) {
             data["turn_identity_source"] = event["turn_identity_source"].clone();
         }
     }
@@ -470,7 +383,9 @@ fn latest_reply(record: &Value, recurring_schedules: Option<u64>) -> Result<Valu
         return Ok(json!({}));
     }
     let db = event_db()?;
-    let reply = |seq: i64, at: Value, scheduled: bool| json!({"reply_id":format!("{}:{}", seq, at), "reply_at":at, "reply_scheduled":scheduled});
+    let reply = |seq: i64, at: Value, scheduled: bool| {
+        json!({"reply_id":format!("{}:{}", seq, at), "reply_at":at, "reply_scheduled":scheduled})
+    };
     if string(record, "agent") == "kimi" {
         let skip = recurring_schedules.is_some_and(|count| count > 0);
         return Ok(kimi_reply(&db, record, skip)?
@@ -498,11 +413,7 @@ fn latest_reply(record: &Value, recurring_schedules: Option<u64>) -> Result<Valu
 // opening before a Stop decides, so a prompt queued meanwhile is the person's.
 // While a recurring job remains, its routine ticks are not replies: they would
 // mark the conversation unread every few minutes. Returns (seq, at, scheduled).
-fn kimi_reply(
-    db: &Connection,
-    record: &Value,
-    skip_scheduled: bool,
-) -> Result<Option<(i64, Value, bool)>> {
+fn kimi_reply(db: &Connection, record: &Value, skip_scheduled: bool) -> Result<Option<(i64, Value, bool)>> {
     let mut statement = db
         .prepare(
             "SELECT seq, json_extract(payload, '$.type'), json_extract(payload, '$.turn_origin'), payload FROM events
@@ -515,14 +426,8 @@ fn kimi_reply(
     let rows = statement
         .query_map(
             params![journal_name(record), string(record, "conversation_id")],
-            |row| {
-                Ok((
-                    row.get::<_, i64>(0)?,
-                    row.get::<_, Option<String>>(1)?,
-                    row.get::<_, Option<String>>(2)?,
-                    row.get::<_, String>(3)?,
-                ))
-            },
+            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, Option<String>>(1)?,
+                row.get::<_, Option<String>>(2)?, row.get::<_, String>(3)?)),
         )
         .map_err(|e| e.to_string())?;
     let mut stop: Option<(i64, Value)> = None;
@@ -620,19 +525,9 @@ fn observed_summary(record: &Value, live_pane: bool) -> Value {
             .clone(),
     );
     let resumed = resume_input::summary_check(record, live_pane);
-    output.as_object_mut().unwrap().extend(
-        session_action::summary(record, live_pane, &resumed)
-            .as_object()
-            .unwrap()
-            .clone(),
-    );
-    output["terminal_supported"] =
-        json!(live_pane && string(record, "archive_id").is_empty() && process_alive(record));
-    output["terminal_reason"] = json!(if output["terminal_supported"] == true {
-        ""
-    } else {
-        backend::TERMINAL_NEEDS_PANE.text()
-    });
+    output.as_object_mut().unwrap().extend(session_action::summary(record,live_pane,&resumed).as_object().unwrap().clone());
+    output["terminal_supported"] = json!(live_pane && string(record,"archive_id").is_empty() && process_alive(record));
+    output["terminal_reason"] = json!(if output["terminal_supported"] == true { "" } else { backend::TERMINAL_NEEDS_PANE.text() });
     output["subagent_count"] = output["subagent_active_count"].clone();
     let account = account_binding(record);
     output["account_id"] = account["id"].clone();
@@ -645,8 +540,7 @@ fn observed_summary(record: &Value, live_pane: bool) -> Value {
             .map(|tools| tools.keys().cloned().collect::<Vec<_>>().join("\n"))
             .unwrap_or_default());
         if output["phase"] != "error" {
-            output["attention_started"] =
-                record.get("attention_started").cloned().unwrap_or(json!(0));
+            output["attention_started"] = record.get("attention_started").cloned().unwrap_or(json!(0));
         }
     }
     resume_input::enrich(&mut output, &resumed);
@@ -662,18 +556,11 @@ fn observed_summary(record: &Value, live_pane: bool) -> Value {
             output["status_detail"] = json!(detail);
         }
         // A resumed conversation reported this panel as an unknown terminal state.
-        if output["attention_id"]
-            .as_str()
-            .is_some_and(|id| id.starts_with("codex-goal-resume:"))
-        {
+        if output["attention_id"].as_str().is_some_and(|id| id.starts_with("codex-goal-resume:")) {
             output["activity_detail"] = output["status_detail"].clone();
             output["resume_message_reason"] = json!(codex_goal_resume::WAIT);
         }
-        let fallback = if recognized.is_some() {
-            None
-        } else {
-            startup_choice::current(record)
-        };
+        let fallback = if recognized.is_some() { None } else { startup_choice::current(record) };
         let shown = recognized.is_some() || fallback.is_some();
         if let Some(question) = fallback {
             output["activity"] = json!("busy");
@@ -695,10 +582,7 @@ fn observed_summary(record: &Value, live_pane: bool) -> Value {
 pub(super) fn notification_summary(record: &Value, live_pane: bool) -> Result<Value> {
     let mut output = summary(record, live_pane);
     let reply = latest_reply(record, output["schedules"]["recurring"].as_u64())?;
-    output
-        .as_object_mut()
-        .unwrap()
-        .extend(reply.as_object().unwrap().clone());
+    output.as_object_mut().unwrap().extend(reply.as_object().unwrap().clone());
     Ok(output)
 }
 
@@ -708,72 +592,22 @@ pub(super) fn notification_summary(record: &Value, live_pane: bool) -> Result<Va
 pub(super) fn terminal_chooser(record: &Value) -> Option<(Value, &'static str, &'static str)> {
     type Current = fn(&Value) -> Option<Value>;
     let choosers: [(Current, &str, &str); 12] = [
-        (
-            claude_approval::current,
-            "approval",
-            "Claude is waiting for your tool or safety approval",
-        ),
-        (
-            claude_resume::current,
-            "approval",
-            "Claude is waiting for your conversation resume choice",
-        ),
-        (
-            claude_usage_limit::current,
-            "input",
-            "Claude is waiting for your usage-limit choice",
-        ),
-        (
-            claude_permission::current,
-            "approval",
-            "Claude is waiting for your default permission mode choice",
-        ),
-        (
-            claude_trust::current,
-            "approval",
-            "Claude is waiting for folder trust approval",
-        ),
-        (
-            codex_trust::current,
-            "approval",
-            "Codex is waiting for folder trust approval",
-        ),
-        (
-            codex_hooks_trust::current,
-            "approval",
-            "Codex is waiting for hook trust review",
-        ),
-        (
-            codex_update::current,
-            "input",
-            "Codex is waiting for an update choice",
-        ),
-        (
-            codex_rate_limit::current,
-            "input",
-            "Codex is waiting for your rate-limit model choice; open Activity or Terminal",
-        ),
-        (
-            codex_goal_resume::current,
-            "input",
-            "Codex is waiting for your paused goal choice",
-        ),
-        (
-            kimi_trust::current,
-            "approval",
-            "Kimi is waiting for folder trust approval",
-        ),
-        (
-            kimi_cache_hint::current,
-            "input",
-            "Kimi is waiting for your context choice",
-        ),
+        (claude_approval::current, "approval", "Claude is waiting for your tool or safety approval"),
+        (claude_resume::current, "approval", "Claude is waiting for your conversation resume choice"),
+        (claude_usage_limit::current, "input", "Claude is waiting for your usage-limit choice"),
+        (claude_permission::current, "approval", "Claude is waiting for your default permission mode choice"),
+        (claude_trust::current, "approval", "Claude is waiting for folder trust approval"),
+        (codex_trust::current, "approval", "Codex is waiting for folder trust approval"),
+        (codex_hooks_trust::current, "approval", "Codex is waiting for hook trust review"),
+        (codex_update::current, "input", "Codex is waiting for an update choice"),
+        (codex_rate_limit::current, "input", "Codex is waiting for your rate-limit model choice; open Activity or Terminal"),
+        (codex_goal_resume::current, "input", "Codex is waiting for your paused goal choice"),
+        (kimi_trust::current, "approval", "Kimi is waiting for folder trust approval"),
+        (kimi_cache_hint::current, "input", "Kimi is waiting for your context choice"),
     ];
     choosers
         .into_iter()
-        .filter_map(|(current, phase, detail)| {
-            current(record).map(|question| (question, phase, detail))
-        })
+        .filter_map(|(current, phase, detail)| current(record).map(|question| (question, phase, detail)))
         .next_back()
 }
 
@@ -795,8 +629,7 @@ const MESSAGE_EVENTS_BYTES: usize = 256 * 1024;
 // Activity continues across confirmed clears: rows of the current conversation
 // and of the conversations it replaced. Sequence numbers are global, so a
 // reader's cursor stays valid when a clear changes the conversation.
-pub(super) const TIMELINE: &str =
-    "name=?1 AND (conversation IS ?2 OR conversation IN (SELECT value FROM json_each(?3)))";
+pub(super) const TIMELINE: &str = "name=?1 AND (conversation IS ?2 OR conversation IN (SELECT value FROM json_each(?3)))";
 
 // How many forks back a fork's Activity reaches into its sources (zerus-b4qk).
 const LINEAGE: usize = 4;
@@ -1063,42 +896,24 @@ fn mark_inherited(event: &mut Value, own: bool, name: &str) {
 // The activity tail includes tools and children. Keep main public messages in
 // a separate bounded window so a cold reader does not lose its newest prompt
 // merely because that turn has produced more than one hundred tool events.
-fn message_events(
-    db: &Connection,
-    name: &str,
-    conversation: Option<&str>,
-    scope: &str,
-    record: &Value,
-) -> Result<(Vec<Value>, bool)> {
+fn message_events(db: &Connection, name: &str, conversation: Option<&str>, scope: &str, record: &Value) -> Result<(Vec<Value>, bool)> {
     static QUERY: OnceLock<String> = OnceLock::new();
     let query = QUERY.get_or_init(|| activity_query(" AND COALESCE(json_extract(payload, '$.agent_id'), '') IN ('', 'main') \
         AND json_extract(payload, '$.type') IN ('SessionCleared','UserPromptSubmit','UserPromptQueued','UserMessage','TurnStarted','QuestionAnswered','AgentMessage','Stop')", true, "101"));
     let mut query = db.prepare(query).map_err(|e| e.to_string())?;
-    let rows = query
-        .query_map(params![name, conversation, scope], |row| {
-            Ok((
-                row.get::<_, i64>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, bool>(2)?,
-                row.get::<_, String>(3)?,
-            ))
+    let rows = query.query_map(params![name, conversation, scope], |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?, row.get::<_, bool>(2)?, row.get::<_, String>(3)?))
         })
         .map_err(|e| e.to_string())?;
     let (mut events, mut bytes, mut truncated) = (Vec::new(), 2, false);
     for row in rows {
         let (seq, payload, own, source) = row.map_err(|e| e.to_string())?;
-        if events.len() == MESSAGE_EVENTS_LIMIT {
-            truncated = true;
-            break;
-        }
+        if events.len() == MESSAGE_EVENTS_LIMIT { truncated = true; break; }
         let mut event: Value = serde_json::from_str(&payload).map_err(|e| e.to_string())?;
         event["seq"] = json!(seq);
         mark_inherited(&mut event, own, lineage_label(record, &source));
         let size = event.to_string().len() + usize::from(!events.is_empty());
-        if bytes + size > MESSAGE_EVENTS_BYTES {
-            truncated = true;
-            break;
-        }
+        if bytes + size > MESSAGE_EVENTS_BYTES { truncated = true; break; }
         bytes += size;
         events.push(event);
     }
@@ -1253,11 +1068,7 @@ pub(super) fn inspection_with(
             output["pending_questions_error"] = json!(error);
         }
     }
-    output["input_queue"] = if archive_id.is_none() {
-        input_queue::inspection(&record, panes.is_some()).unwrap_or(Value::Null)
-    } else {
-        Value::Null
-    };
+    output["input_queue"] = if archive_id.is_none() { input_queue::inspection(&record, panes.is_some()).unwrap_or(Value::Null) } else { Value::Null };
     output["session_usage"] = if clear_context::awaiting_start(&record) {
         json!({"status":"unavailable","source":record["agent"],"scope":"conversation"})
     } else {
@@ -1269,63 +1080,32 @@ pub(super) fn inspection_with(
     output["session_clear"] = clear_context::event(&record).unwrap_or(Value::Null);
     output["clear_context_request"] = record["clear_context_request"].clone();
     if include_processes {
-        output["processes"] = processes::snapshot(
-            &record,
-            archive_id.is_none() && panes.is_some() && process_alive(&record),
-        );
-        output["process_work"] = processes::WorkSample::default().summary(
-            &record,
-            archive_id.is_none()
-                && panes.is_some()
-                && output["activity"] == "idle"
-                && output["phase"] == "idle",
-        );
+        output["processes"] = processes::snapshot(&record, archive_id.is_none() && panes.is_some() && process_alive(&record));
+        output["process_work"] = processes::WorkSample::default().summary(&record,
+            archive_id.is_none() && panes.is_some() && output["activity"] == "idle" && output["phase"] == "idle");
     }
     // Each unavailable action names its reason; an older host omits it.
-    let context_reason = if archive_id.is_some() {
-        Some("Restore the archived session first".to_owned())
-    } else {
-        clear_context::unavailable_shown(&record, panes.is_some(), &output)
-    };
+    let context_reason = if archive_id.is_some() { Some("Restore the archived session first".to_owned()) }
+        else { clear_context::unavailable_shown(&record,panes.is_some(),&output) };
     output["compact_context_supported"] = json!(context_reason.is_none());
     output["compact_context_reason"] = json!(context_reason.clone().unwrap_or_default());
     output["compact_context_request"] = record["compact_context_request"].clone();
     // The summary above verified a pending resume once; its message and
     // actions reuse that result instead of checking the terminal again.
     // So did the summary of an interrupted Claude turn's prompt.
-    let interrupted = archive_id.is_none() && clear_context::interrupted(&record, panes.is_some());
-    let failed = archive_id.is_none() && clear_context::failed(&record, panes.is_some());
-    output["clear_context_supported"] = json!(
-        archive_id.is_none()
-            && (context_reason.is_none()
-                || clear_context::resumed_verified(
-                    &record,
-                    panes.is_some(),
-                    output["resume_message_can_send"] == true
-                )
-                || interrupted && output["interrupted_message_can_send"] == true
-                || failed)
-    );
-    output["clear_context_reason"] = json!(if output["clear_context_supported"] == true {
-        String::new()
-    } else if interrupted && !string(&output, "interrupted_message_reason").is_empty() {
-        string(&output, "interrupted_message_reason").to_owned()
-    } else {
-        context_reason.unwrap_or_default()
-    });
-    output["clear_context_dismiss"] = json!(
-        archive_id.is_none()
-            && output["clear_context_supported"] != true
-            && clear_context::dismissable(&record, panes.is_some())
-            && !clear_context::startup_choice(&output["pending_questions"])
-    );
-    output["interrupt_supported"] =
-        json!(archive_id.is_none() && interrupt::available(&record, panes.is_some()));
-    cache_hint::enrich(
-        &record,
-        &mut output,
-        archive_id.is_none() && panes.is_some(),
-    );
+    let interrupted = archive_id.is_none() && clear_context::interrupted(&record,panes.is_some());
+    let failed = archive_id.is_none() && clear_context::failed(&record,panes.is_some());
+    output["clear_context_supported"] = json!(archive_id.is_none() && (context_reason.is_none()
+        || clear_context::resumed_verified(&record,panes.is_some(),output["resume_message_can_send"] == true)
+        || interrupted && output["interrupted_message_can_send"] == true || failed));
+    output["clear_context_reason"] = json!(if output["clear_context_supported"] == true { String::new() }
+        else if interrupted && !string(&output,"interrupted_message_reason").is_empty() {
+            string(&output,"interrupted_message_reason").to_owned()
+        } else { context_reason.unwrap_or_default() });
+    output["clear_context_dismiss"] = json!(archive_id.is_none() && output["clear_context_supported"] != true
+        && clear_context::dismissable(&record,panes.is_some()) && !clear_context::startup_choice(&output["pending_questions"]));
+    output["interrupt_supported"] = json!(archive_id.is_none() && interrupt::available(&record,panes.is_some()));
+    cache_hint::enrich(&record,&mut output,archive_id.is_none()&&panes.is_some());
     #[cfg(test)]
     read_order::note("provider_messages");
     let messages = if string(&record, "agent") == "kimi" {
@@ -1334,9 +1114,7 @@ pub(super) fn inspection_with(
             output["kimi_turns_complete"] = json!(complete);
             messages
         })
-    } else {
-        provider_messages::read(&record)
-    };
+    } else { provider_messages::read(&record) };
     match messages {
         Ok(messages) => output["provider_messages"] = json!(messages),
         Err(error) => output["provider_messages_error"] = json!(error),
@@ -1344,20 +1122,10 @@ pub(super) fn inspection_with(
     // Optional-question indexing must never suppress successfully read replies.
     match codex_questions::messages(&record) {
         Ok(questions) => {
-            let mut messages = output["provider_messages"]
-                .as_array()
-                .cloned()
-                .unwrap_or_default();
+            let mut messages = output["provider_messages"].as_array().cloned().unwrap_or_default();
             messages.extend(questions);
-            messages.sort_by(|a, b| {
-                a["at"]
-                    .as_f64()
-                    .unwrap_or(0.)
-                    .total_cmp(&b["at"].as_f64().unwrap_or(0.))
-            });
-            if messages.len() > 100 {
-                messages.drain(..messages.len() - 100);
-            }
+            messages.sort_by(|a,b|a["at"].as_f64().unwrap_or(0.).total_cmp(&b["at"].as_f64().unwrap_or(0.)));
+            if messages.len()>100 { messages.drain(..messages.len()-100); }
             output["provider_messages"] = json!(messages);
         }
         Err(error) => output["pending_questions_error"] = json!(error),
@@ -1401,21 +1169,18 @@ pub(super) fn inspection_with(
         events.push(row.event(&record)?);
     }
     output["events"] = json!(events);
-    let (messages, truncated) = message_events(&db, journal_name, conversation, &scope, &record)?;
+    let (messages, truncated) =
+        message_events(&db, journal_name, conversation, &scope, &record)?;
     output["message_events"] = json!(messages);
     output["message_events_truncated"] = json!(truncated);
     output["message_events_limit"] = json!(MESSAGE_EVENTS_LIMIT);
     output["message_events_max_bytes"] = json!(MESSAGE_EVENTS_BYTES);
     output["attachment_messages"] = attachments::messages(&record, "");
-    output["voice_messages"] =
-        conversation_history::inspected_voice_messages(&record, &output, None);
+    output["voice_messages"] = conversation_history::inspected_voice_messages(&record, &output, None);
     // The lock was released after `snapshot`, so a rename may have landed since.
     // The pane folders go by the session IDs, which a rename keeps, to the name
     // this inspection reports (zerus-byyw, as in `merge_listing`).
-    workspace::enrich(
-        std::slice::from_mut(&mut output),
-        &workspace::snapshot_cwds(&names),
-    );
+    workspace::enrich(std::slice::from_mut(&mut output), &workspace::snapshot_cwds(&names));
     waits::decorate(std::slice::from_mut(&mut output));
     notifications::enrich(&mut output, notifications::load().as_ref(), journal_name);
     if archive_id.is_none() {
@@ -1498,9 +1263,7 @@ pub(super) fn journal_name(record: &Value) -> &str {
 }
 
 pub(super) fn update_activity(record: &mut Value, event: &Value) {
-    if stale_kimi_turn(record, event) {
-        return;
-    }
+    if stale_kimi_turn(record, event) { return; }
     repair_kimi_main(record);
     repair_claude_internal(record);
     let was_busy = record["activity"] == "busy";
@@ -1545,20 +1308,10 @@ pub(super) fn update_activity(record: &mut Value, event: &Value) {
         // Claude names a subagent by its Agent call's description. Keep it only
         // when one unclaimed Agent call can have started this subagent.
         if kind == "SubagentStart" && info.get("description").is_none() {
-            let claimed: Vec<Value> = record["subagents"]
-                .as_object()
-                .into_iter()
-                .flatten()
-                .filter_map(|(_, other)| other.get("agent_call").cloned())
-                .collect();
-            let calls: Vec<(&String, &Value)> = record["active_tools"]
-                .as_object()
-                .into_iter()
-                .flatten()
-                .filter(|(id, tool)| {
-                    ["Agent", "Task"].contains(&string(tool, "name"))
-                        && !claimed.contains(&json!(id))
-                })
+            let claimed: Vec<Value> = record["subagents"].as_object().into_iter().flatten()
+                .filter_map(|(_, other)| other.get("agent_call").cloned()).collect();
+            let calls: Vec<(&String, &Value)> = record["active_tools"].as_object().into_iter().flatten()
+                .filter(|(id, tool)| ["Agent", "Task"].contains(&string(tool, "name")) && !claimed.contains(&json!(id)))
                 .collect();
             if let [(id, tool)] = calls[..] {
                 info["agent_call"] = json!(id);
@@ -1587,13 +1340,11 @@ pub(super) fn update_activity(record: &mut Value, event: &Value) {
         // settled as an error, which never keeps its parent working. A newer
         // event of the same child resumes it as usual.
         let failed = kind == "StopFailure" && string(record, "agent") == "claude";
-        info["state"] = json!(
-            if failed || ["SubagentStop", "SessionEnd", "Stop"].contains(&kind) {
-                "finished"
-            } else {
-                "working"
-            }
-        );
+        info["state"] = json!(if failed || ["SubagentStop", "SessionEnd", "Stop"].contains(&kind) {
+            "finished"
+        } else {
+            "working"
+        });
         let snippet = detail(event);
         if !snippet.is_empty() {
             info["detail"] = json!(snippet);
@@ -1607,9 +1358,7 @@ pub(super) fn update_activity(record: &mut Value, event: &Value) {
         }
         // Any newer child event ends its pending request (hooks.rs sets a new one).
         info.as_object_mut().unwrap().remove("process_unknown");
-        info.as_object_mut()
-            .unwrap()
-            .remove("process_display_state");
+        info.as_object_mut().unwrap().remove("process_display_state");
         info.as_object_mut().unwrap().remove("attention_id");
         if kind == "PreToolUse" {
             info["current_tool"] = json!(clipped(&event["tool_name"], 120));
@@ -1650,19 +1399,13 @@ pub(super) fn update_activity(record: &mut Value, event: &Value) {
         if children.len() > 64 {
             let remove: Vec<String> = children
                 .iter()
-                .filter(|(_, child)| ["finished", "ended"].contains(&string(child, "state")))
+                .filter(|(_, child)| ["finished","ended"].contains(&string(child, "state")))
                 .take(children.len() - 64)
                 .map(|(key, _)| key.clone())
                 .collect();
             for key in remove {
-                let ended = children
-                    .remove(&key)
-                    .is_some_and(|child| child["state"] == "ended");
-                let count = if ended {
-                    "subagents_ended_pruned"
-                } else {
-                    "subagents_completed_pruned"
-                };
+                let ended = children.remove(&key).is_some_and(|child| child["state"] == "ended");
+                let count = if ended {"subagents_ended_pruned"} else {"subagents_completed_pruned"};
                 record[count] = json!(record[count].as_u64().unwrap_or(0) + 1);
             }
         }
@@ -1672,24 +1415,12 @@ pub(super) fn update_activity(record: &mut Value, event: &Value) {
     record["subagents"] = json!(children);
     if ["UserPromptSubmit", "UserPromptQueued"].contains(&kind) {
         record["recovery_user_at"] = json!(timestamp);
-        record["recovery_user_text"] = json!(event["prompt"]
-            .as_str()
-            .map(str::to_owned)
-            .unwrap_or_else(|| event["prompt"]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .filter(|v| v["type"] == "text")
-                .map(|v| string(v, "text"))
-                .collect::<Vec<_>>()
-                .join("\n")));
+        record["recovery_user_text"] = json!(event["prompt"].as_str().map(str::to_owned).unwrap_or_else(||
+            event["prompt"].as_array().into_iter().flatten().filter(|v|v["type"]=="text")
+                .map(|v|string(v,"text")).collect::<Vec<_>>().join("\n")));
     }
-    if kind == "Stop" {
-        record["recovery_success_at"] = json!(timestamp);
-    }
-    if ["Interrupt", "SessionEnd"].contains(&kind) {
-        record["recovery_cancel_at"] = json!(timestamp);
-    }
+    if kind == "Stop" { record["recovery_success_at"] = json!(timestamp); }
+    if ["Interrupt", "SessionEnd"].contains(&kind) { record["recovery_cancel_at"] = json!(timestamp); }
     if [
         "SessionStart",
         "UserPromptSubmit",
@@ -1763,9 +1494,7 @@ pub(super) fn update_activity(record: &mut Value, event: &Value) {
             }
             record["last_error"] = json!("");
             // Background work starts a turn, but it is not the person's request.
-            if !string(event, "prompt").is_empty()
-                && system_prompt(string(event, "prompt")).is_none()
-            {
+            if !string(event, "prompt").is_empty() && system_prompt(string(event, "prompt")).is_none() {
                 record["prompt"] = json!(clipped(&event["prompt"], 4000));
             }
         }
@@ -1795,13 +1524,11 @@ pub(super) fn update_activity(record: &mut Value, event: &Value) {
         "PermissionRequest" => {
             record["activity"] = json!("busy");
             // Claude routes AskUserQuestion through its permission prompt too.
-            record["phase"] = json!(
-                if claude_approval::question_tool(string(event, "tool_name")) {
-                    "input"
-                } else {
-                    "approval"
-                }
-            );
+            record["phase"] = json!(if claude_approval::question_tool(string(event, "tool_name")) {
+                "input"
+            } else {
+                "approval"
+            });
         }
         "PermissionResult" => {
             record["activity"] = json!("busy");
@@ -1884,12 +1611,8 @@ pub(super) fn update_activity(record: &mut Value, event: &Value) {
                 // would otherwise erase a permanent refusal during projection.
                 if provider_errors::rolling_rate_limit(&detail(event))
                     || (string(record, "agent") == "kimi"
-                        && string(event, "error_type") == provider_errors::KIMI_RATE_LIMIT_TYPE)
-                {
-                    for (source, target) in [
-                        ("error_type", "native_error_type"),
-                        ("error", "native_error_code"),
-                    ] {
+                        && string(event, "error_type") == provider_errors::KIMI_RATE_LIMIT_TYPE) {
+                    for (source, target) in [("error_type", "native_error_type"), ("error", "native_error_code")] {
                         failure[target] = match event.get(source) {
                             None => json!(""),
                             Some(value @ Value::String(_)) => json!(clipped(value, 1200)),
@@ -1899,31 +1622,23 @@ pub(super) fn update_activity(record: &mut Value, event: &Value) {
                         };
                     }
                 }
-                let category = provider_errors::native_kind(&failure).unwrap_or_else(|| {
-                    provider_errors::category(&format!(
-                        "{} {} {}",
-                        string(event, "error_type"),
-                        string(event, "error"),
-                        detail(event)
-                    ))
-                });
+                let category = provider_errors::native_kind(&failure).unwrap_or_else(|| provider_errors::category(&format!(
+                    "{} {} {}",
+                    string(event, "error_type"),
+                    string(event, "error"),
+                    detail(event)
+                )));
                 if category != "provider" || provider_errors::native_kind(&failure).is_some() {
                     failure["error_kind"] = json!(category);
                 }
                 if provider_errors::rolling_rate_error(&failure)
-                    && ["", "provider", "quota", "rate_limit"]
-                        .contains(&string(&failure, "error_kind"))
-                {
+                    && ["", "provider", "quota", "rate_limit"].contains(&string(&failure, "error_kind")) {
                     failure["error_kind"] = json!("rate_limit");
                 }
                 // Keep a provider deadline separate from the chosen backoff.
-                for (key, scale) in [
-                    ("retry_after", 1.0),
-                    ("retry_after_seconds", 1.0),
-                    ("retry_after_ms", 0.001),
-                ] {
-                    if let Some(delay) = event[key].as_f64().filter(|v| v.is_finite() && *v > 0.0) {
-                        failure["retry_not_before"] = json!(timestamp + delay * scale);
+                for (key,scale) in [("retry_after",1.0),("retry_after_seconds",1.0),("retry_after_ms",0.001)] {
+                    if let Some(delay)=event[key].as_f64().filter(|v|v.is_finite()&&*v>0.0) {
+                        failure["retry_not_before"]=json!(timestamp+delay*scale);
                     }
                 }
                 session_limits::enrich(&mut failure);
@@ -1965,15 +1680,11 @@ pub(super) fn update_activity(record: &mut Value, event: &Value) {
     // with the same native tool IDs, tool and input is that request again.
     let phase = string(record, "phase");
     if ["approval", "input"].contains(&phase) {
-        let native =
-            !tools.is_empty() && tools.iter().all(|(key, tool)| key != string(tool, "name"));
+        let native = !tools.is_empty() && tools.iter().all(|(key, tool)| key != string(tool, "name"));
         let request = if native {
             let mut ids: Vec<&String> = tools.keys().collect();
             ids.sort();
-            let input = format!(
-                "{:x}",
-                sha2::Sha256::digest(event["tool_input"].to_string().as_bytes())
-            );
+            let input = format!("{:x}", sha2::Sha256::digest(event["tool_input"].to_string().as_bytes()));
             json!([ids, string(event, "tool_name"), input])
         } else {
             Value::Null
@@ -2000,41 +1711,25 @@ pub(super) fn update_activity(record: &mut Value, event: &Value) {
 // receiving an old start must neither reopen a completed turn nor erase work
 // from a genuinely newer prompt. Other agents and unbound events are unchanged.
 fn stale_kimi_turn(record: &mut Value, event: &Value) -> bool {
-    if !["", "main"].contains(&string(event, "agent_id")) {
-        return false;
-    }
-    let Some(id) = kimi_turn_id(record, event) else {
-        return false;
-    };
+    if !["", "main"].contains(&string(event, "agent_id")) { return false; }
+    let Some(id) = kimi_turn_id(record, event) else { return false };
     let run = string(record, "run_id");
     let conversation = string(record, "conversation_id");
-    if run.is_empty() || conversation.is_empty() {
-        return false;
-    }
+    if run.is_empty() || conversation.is_empty() { return false; }
     let mut clock = record["kimi_turn_clock"].clone();
     if string(&clock, "run_id") != run || string(&clock, "conversation_id") != conversation {
         clock = json!({"run_id":run,"conversation_id":conversation});
     }
-    let stopped = clock["stopped"]
-        .as_u64()
-        .filter(|id| *id <= i64::MAX as u64);
-    let started = clock["started"]
-        .as_u64()
-        .filter(|id| *id <= i64::MAX as u64);
+    let stopped = clock["stopped"].as_u64().filter(|id| *id <= i64::MAX as u64);
+    let started = clock["started"].as_u64().filter(|id| *id <= i64::MAX as u64);
     let (key, stale) = if string(event, "hook_event_name") == "TurnStarted" {
-        (
-            "started",
-            stopped.is_some_and(|done| id <= done) || started.is_some_and(|active| id < active),
-        )
+        ("started", stopped.is_some_and(|done| id <= done)
+            || started.is_some_and(|active| id < active))
     } else {
-        (
-            "stopped",
-            started.is_some_and(|active| id < active) || stopped.is_some_and(|done| id < done),
-        )
+        ("stopped", started.is_some_and(|active| id < active)
+            || stopped.is_some_and(|done| id < done))
     };
-    if !stale {
-        clock[key] = json!(id);
-    }
+    if !stale { clock[key] = json!(id); }
     record["kimi_turn_clock"] = clock;
     stale
 }
@@ -2288,136 +1983,64 @@ mod attention_regressions {
 
     #[test]
     fn kimi_delayed_start_after_its_stop_keeps_the_completed_turn_idle_but_new_work_is_busy() {
-        let mut record = kimi_clock_record();
-        update_activity(
-            &mut record,
-            &json!({"hook_event_name":"UserPromptSubmit","prompt":"Follow-up after initial launch"}),
-        );
+        let mut record=kimi_clock_record();
+        update_activity(&mut record,&json!({"hook_event_name":"UserPromptSubmit","prompt":"Follow-up after initial launch"}));
         // Exact CI order: seq7 UserPromptSubmit, seq8 Stop, seq9 TurnStarted
         // native turn1. Stop's ID is bound from its awaited native wire prefix.
-        update_activity(
-            &mut record,
-            &json!({"hook_event_name":"Stop","turn_id":1,"turn_identity_source":"kimi_wire"}),
-        );
-        assert_eq!(
-            (&record["activity"], &record["phase"], &record["main_done"]),
-            (&json!("idle"), &json!("idle"), &json!(true))
-        );
-        let completed = record.clone();
-        update_activity(
-            &mut record,
-            &json!({"hook_event_name":"TurnStarted","agent_id":"main","turn_id":1,"origin_kind":"user","prompt":"Follow-up after initial launch"}),
-        );
-        assert_eq!(
-            record, completed,
-            "late start must not reset timers, main_done or prompt"
-        );
-        let mut continued = completed.clone();
-        update_activity(
-            &mut continued,
-            &json!({"hook_event_name":"PreToolUse","tool_use_id":"same-turn-call","tool_name":"Shell"}),
-        );
-        let working = continued.clone();
-        update_activity(
-            &mut continued,
-            &json!({"hook_event_name":"TurnStarted","turn_id":1}),
-        );
-        assert_eq!(
-            continued, working,
-            "a delayed start cannot erase fresh positive work either"
-        );
-        assert_eq!(continued["phase"], "tool");
-        update_activity(
-            &mut record,
-            &json!({"hook_event_name":"TurnStarted","turn_id":2,"prompt":"genuinely newer"}),
-        );
-        assert_eq!(
-            (&record["activity"], &record["phase"], &record["main_done"]),
-            (&json!("busy"), &json!("working"), &json!(false))
-        );
-        let newer = record.clone();
-        for kind in ["TurnStarted", "Stop"] {
-            update_activity(&mut record, &json!({"hook_event_name":kind,"turn_id":1}));
-            assert_eq!(record, newer, "old {kind} must not change newer work");
+        update_activity(&mut record,&json!({"hook_event_name":"Stop","turn_id":1,"turn_identity_source":"kimi_wire"}));
+        assert_eq!((&record["activity"],&record["phase"],&record["main_done"]),(&json!("idle"),&json!("idle"),&json!(true)));
+        let completed=record.clone();
+        update_activity(&mut record,&json!({"hook_event_name":"TurnStarted","agent_id":"main","turn_id":1,"origin_kind":"user","prompt":"Follow-up after initial launch"}));
+        assert_eq!(record,completed,"late start must not reset timers, main_done or prompt");
+        let mut continued=completed.clone();
+        update_activity(&mut continued,&json!({"hook_event_name":"PreToolUse","tool_use_id":"same-turn-call","tool_name":"Shell"}));
+        let working=continued.clone();
+        update_activity(&mut continued,&json!({"hook_event_name":"TurnStarted","turn_id":1}));
+        assert_eq!(continued,working,"a delayed start cannot erase fresh positive work either");
+        assert_eq!(continued["phase"],"tool");
+        update_activity(&mut record,&json!({"hook_event_name":"TurnStarted","turn_id":2,"prompt":"genuinely newer"}));
+        assert_eq!((&record["activity"],&record["phase"],&record["main_done"]),(&json!("busy"),&json!("working"),&json!(false)));
+        let newer=record.clone();
+        for kind in ["TurnStarted","Stop"] {
+            update_activity(&mut record,&json!({"hook_event_name":kind,"turn_id":1}));
+            assert_eq!(record,newer,"old {kind} must not change newer work");
         }
-        update_activity(&mut record, &json!({"hook_event_name":"Stop","turn_id":2}));
-        assert_eq!(record["phase"], "idle");
+        update_activity(&mut record,&json!({"hook_event_name":"Stop","turn_id":2}));
+        assert_eq!(record["phase"],"idle");
     }
 
     #[test]
     fn kimi_completion_clock_is_scoped_and_does_not_turn_unknown_or_other_agent_work_idle() {
-        let mut completed = kimi_clock_record();
-        update_activity(
-            &mut completed,
-            &json!({"hook_event_name":"Stop","turn_id":0}),
-        );
-        let snapshot = completed.clone();
-        update_activity(
-            &mut completed,
-            &json!({"hook_event_name":"TurnStarted","turn_id":0}),
-        );
-        assert_eq!(completed, snapshot, "native turn zero is a real identity");
-        for key in ["run_id", "conversation_id"] {
-            let mut changed = completed.clone();
-            changed[key] = json!("replacement");
-            update_activity(
-                &mut changed,
-                &json!({"hook_event_name":"TurnStarted","turn_id":0}),
-            );
-            assert_eq!(changed["phase"], "working", "{key}");
+        let mut completed=kimi_clock_record();
+        update_activity(&mut completed,&json!({"hook_event_name":"Stop","turn_id":0}));
+        let snapshot=completed.clone();
+        update_activity(&mut completed,&json!({"hook_event_name":"TurnStarted","turn_id":0}));
+        assert_eq!(completed,snapshot,"native turn zero is a real identity");
+        for key in ["run_id","conversation_id"] {
+            let mut changed=completed.clone();changed[key]=json!("replacement");
+            update_activity(&mut changed,&json!({"hook_event_name":"TurnStarted","turn_id":0}));
+            assert_eq!(changed["phase"],"working","{key}");
         }
-        for agent in ["claude", "codex", "opencode", "deepseek"] {
-            let mut other = completed.clone();
-            other["agent"] = json!(agent);
-            update_activity(
-                &mut other,
-                &json!({"hook_event_name":"TurnStarted","turn_id":0}),
-            );
-            assert_eq!(
-                other["phase"], "working",
-                "{agent} retains its own semantics"
-            );
+        for agent in ["claude","codex","opencode","deepseek"] {
+            let mut other=completed.clone();other["agent"]=json!(agent);
+            update_activity(&mut other,&json!({"hook_event_name":"TurnStarted","turn_id":0}));
+            assert_eq!(other["phase"],"working","{agent} retains its own semantics");
         }
-        for id in [
-            Value::Null,
-            json!(-1),
-            json!("0"),
-            json!(0.5),
-            json!(u64::MAX),
-        ] {
-            let mut unknown = completed.clone();
-            update_activity(
-                &mut unknown,
-                &json!({"hook_event_name":"TurnStarted","turn_id":id}),
-            );
-            assert_eq!(
-                unknown["phase"], "working",
-                "unknown identity is never declared complete"
-            );
+        for id in [Value::Null,json!(-1),json!("0"),json!(0.5),json!(u64::MAX)] {
+            let mut unknown=completed.clone();
+            update_activity(&mut unknown,&json!({"hook_event_name":"TurnStarted","turn_id":id}));
+            assert_eq!(unknown["phase"],"working","unknown identity is never declared complete");
         }
-        for invalid in [json!(u64::MAX), json!("0"), json!(-1)] {
-            let mut damaged = completed.clone();
-            damaged["kimi_turn_clock"]["stopped"] = invalid;
-            update_activity(
-                &mut damaged,
-                &json!({"hook_event_name":"TurnStarted","turn_id":0}),
-            );
-            assert_eq!(
-                damaged["phase"], "working",
-                "malformed persisted bounds cannot suppress work"
-            );
+        for invalid in [json!(u64::MAX),json!("0"),json!(-1)] {
+            let mut damaged=completed.clone();damaged["kimi_turn_clock"]["stopped"]=invalid;
+            update_activity(&mut damaged,&json!({"hook_event_name":"TurnStarted","turn_id":0}));
+            assert_eq!(damaged["phase"],"working","malformed persisted bounds cannot suppress work");
         }
-        let mut child = kimi_clock_record();
-        update_activity(
-            &mut child,
-            &json!({"hook_event_name":"Stop","agent_id":"child","turn_id":1}),
-        );
+        let mut child=kimi_clock_record();
+        update_activity(&mut child,&json!({"hook_event_name":"Stop","agent_id":"child","turn_id":1}));
         assert!(child.get("kimi_turn_clock").is_none());
-        update_activity(
-            &mut child,
-            &json!({"hook_event_name":"TurnStarted","turn_id":1}),
-        );
-        assert_eq!(child["phase"], "working");
+        update_activity(&mut child,&json!({"hook_event_name":"TurnStarted","turn_id":1}));
+        assert_eq!(child["phase"],"working");
     }
 
     #[test]
@@ -2428,239 +2051,95 @@ mod attention_regressions {
         record["base"] = json!(["kimi"]);
         let shown = |phase: &str| {
             let mut output = fork::summary(&record, true);
-            for part in [
-                session_action::summary(&record, true, &None),
-                json!({"phase":phase,"settings_apply_when":"now","effort_change_supported":true,"effort_change_reason":""}),
-            ] {
-                output
-                    .as_object_mut()
-                    .unwrap()
-                    .extend(part.as_object().unwrap().clone());
+            for part in [session_action::summary(&record, true, &None),
+                json!({"phase":phase,"settings_apply_when":"now","effort_change_supported":true,"effort_change_reason":""})] {
+                output.as_object_mut().unwrap().extend(part.as_object().unwrap().clone());
             }
             wait_for_chooser(&mut output);
             output
         };
         let ready = shown("idle");
-        assert_eq!(
-            (&ready["fork_supported"], &ready["fork_reason"]),
-            (&json!(true), &json!(""))
-        );
-        assert!(ready["allowed_actions"]
-            .as_array()
-            .unwrap()
-            .contains(&json!("fork")));
-        assert_eq!(
-            (
-                &ready["settings_apply_when"],
-                &ready["effort_change_supported"]
-            ),
-            (&json!("now"), &json!(true))
-        );
-        for (phase, reason) in [
-            ("input", "Wait until the agent's question is answered"),
-            (
-                "approval",
-                "Wait until the agent's approval request is answered",
-            ),
-        ] {
+        assert_eq!((&ready["fork_supported"], &ready["fork_reason"]), (&json!(true), &json!("")));
+        assert!(ready["allowed_actions"].as_array().unwrap().contains(&json!("fork")));
+        assert_eq!((&ready["settings_apply_when"], &ready["effort_change_supported"]), (&json!("now"), &json!(true)));
+        for (phase, reason) in [("input", "Wait until the agent's question is answered"),
+            ("approval", "Wait until the agent's approval request is answered")] {
             let output = shown(phase);
-            assert_eq!(
-                (&output["fork_supported"], &output["fork_reason"]),
-                (&json!(false), &json!(reason)),
-                "{phase}"
-            );
-            assert!(
-                !output["allowed_actions"]
-                    .as_array()
-                    .unwrap()
-                    .contains(&json!("fork")),
-                "{phase}"
-            );
+            assert_eq!((&output["fork_supported"], &output["fork_reason"]), (&json!(false), &json!(reason)), "{phase}");
+            assert!(!output["allowed_actions"].as_array().unwrap().contains(&json!("fork")), "{phase}");
             assert_eq!(output["action_reasons"]["fork"], reason, "{phase}");
             // The change is scheduled for Ready; `hgs effort` refuses it.
             assert_eq!(output["settings_apply_when"], "ready", "{phase}");
-            assert_eq!(
-                (
-                    &output["effort_change_supported"],
-                    &output["effort_change_reason"]
-                ),
-                (&json!(false), &json!(reason)),
-                "{phase}"
-            );
-            assert!(
-                output["allowed_actions"]
-                    .as_array()
-                    .unwrap()
-                    .contains(&json!("rename")),
-                "{phase}"
-            );
+            assert_eq!((&output["effort_change_supported"], &output["effort_change_reason"]), (&json!(false), &json!(reason)), "{phase}");
+            assert!(output["allowed_actions"].as_array().unwrap().contains(&json!("rename")), "{phase}");
         }
     }
 
     #[test]
     fn claude_pasted_content_keeps_only_the_text_the_person_sent() {
         let sent = "Activity misses replies\n\nInspect the attached image at \"/private/one.png\"";
-        assert_eq!(
-            pasted_text(&format!(
-                "<pasted_content id=\"1b93\">\n{sent}\n</pasted_content id=\"1b93\">"
-            )),
-            sent
-        );
+        assert_eq!(pasted_text(&format!("<pasted_content id=\"1b93\">\n{sent}\n</pasted_content id=\"1b93\">")), sent);
         assert_eq!(pasted_text("See <pasted_content id=\"a\">\none\n</pasted_content id=\"a\"> and <pasted_content id=\"b\">two</pasted_content id=\"b\">."),
             "See one and two.");
         // Claude 2.1.296 frames a prompt that is only a paste; the receipt has no framing.
-        assert_eq!(
-            pasted_text(&format!(
-                "\n\n<pasted_content id=\"c9a0\">\n{sent}\n</pasted_content id=\"c9a0\">\n"
-            )),
-            sent
-        );
-        assert_eq!(
-            pasted_text(&format!(
-                "\n\n<pasted_content id=\"c9a0\">\n\n{sent}\n\n</pasted_content id=\"c9a0\">\n"
-            )),
-            format!("\n{sent}\n")
-        );
+        assert_eq!(pasted_text(&format!("\n\n<pasted_content id=\"c9a0\">\n{sent}\n</pasted_content id=\"c9a0\">\n")), sent);
+        assert_eq!(pasted_text(&format!("\n\n<pasted_content id=\"c9a0\">\n\n{sent}\n\n</pasted_content id=\"c9a0\">\n")), format!("\n{sent}\n"));
         assert_eq!(pasted_text("\n<pasted_content id=\"a\">\none\n</pasted_content id=\"a\">\n\n<pasted_content id=\"b\">\ntwo\n</pasted_content id=\"b\">\n"),
             "one\n\ntwo");
         // Typed text keeps the exact layout around the paste.
-        assert_eq!(
-            pasted_text("Look:\n\n<pasted_content id=\"a\">\none\n</pasted_content id=\"a\">\n"),
-            "Look:\n\none\n"
-        );
-        assert_eq!(
-            pasted_text("\n\n<pasted_content id=\"a\">\none\n</pasted_content id=\"a\">\nThanks"),
-            "\n\none\nThanks"
-        );
+        assert_eq!(pasted_text("Look:\n\n<pasted_content id=\"a\">\none\n</pasted_content id=\"a\">\n"), "Look:\n\none\n");
+        assert_eq!(pasted_text("\n\n<pasted_content id=\"a\">\none\n</pasted_content id=\"a\">\nThanks"), "\n\none\nThanks");
         assert_eq!(pasted_text("\n\n<pasted_content id=\"a\">\none\n</pasted_content id=\"a\">\n<pasted_content id=\"b\">open"),
             "\n\none\n<pasted_content id=\"b\">open");
-        for unchanged in [
-            "plain text",
-            "<pasted_content id=\"a\">\nopen only",
-            "<pasted_content id=\"a\">x</pasted_content id=\"b\">",
-            "<pasted_content id=\"a b\">x</pasted_content id=\"a b\">",
-        ] {
-            assert!(
-                matches!(pasted_text(unchanged), std::borrow::Cow::Borrowed(text) if text == unchanged)
-            );
+        for unchanged in ["plain text", "<pasted_content id=\"a\">\nopen only", "<pasted_content id=\"a\">x</pasted_content id=\"b\">",
+            "<pasted_content id=\"a b\">x</pasted_content id=\"a b\">"] {
+            assert!(matches!(pasted_text(unchanged), std::borrow::Cow::Borrowed(text) if text == unchanged));
         }
     }
     fn message_db() -> Connection {
         let db = Connection::open_in_memory().unwrap();
-        db.execute_batch(
-            "CREATE TABLE events(seq INTEGER PRIMARY KEY,name TEXT,conversation TEXT,payload TEXT);
-            CREATE INDEX events_session ON events(name,conversation,seq);",
-        )
-        .unwrap();
+        db.execute_batch("CREATE TABLE events(seq INTEGER PRIMARY KEY,name TEXT,conversation TEXT,payload TEXT);
+            CREATE INDEX events_session ON events(name,conversation,seq);").unwrap();
         db
     }
-    fn insert_message(
-        db: &Connection,
-        name: &str,
-        conversation: Option<&str>,
-        event: Value,
-    ) -> i64 {
-        db.execute(
-            "INSERT INTO events(name,conversation,payload) VALUES(?,?,?)",
-            params![name, conversation, event.to_string()],
-        )
-        .unwrap();
+    fn insert_message(db: &Connection, name: &str, conversation: Option<&str>, event: Value) -> i64 {
+        db.execute("INSERT INTO events(name,conversation,payload) VALUES(?,?,?)", params![name, conversation, event.to_string()]).unwrap();
         db.last_insert_rowid()
     }
     #[test]
     fn replies_keep_their_full_text_and_other_details_stay_excerpts() {
         let reply = "Ж".repeat(5000);
-        assert_eq!(
-            detail(&json!({"hook_event_name":"Stop","last_assistant_message":reply})),
-            reply
-        );
-        assert_eq!(
-            detail(&json!({"hook_event_name":"SubagentStop","last_assistant_message":reply})),
-            reply
-        );
+        assert_eq!(detail(&json!({"hook_event_name":"Stop","last_assistant_message":reply})), reply);
+        assert_eq!(detail(&json!({"hook_event_name":"SubagentStop","last_assistant_message":reply})), reply);
         let long = "a".repeat(REPLY_LIMIT + 10);
-        assert_eq!(
-            detail(&json!({"hook_event_name":"Stop","last_assistant_message":long})),
-            format!("{}…", &long[..REPLY_LIMIT])
-        );
-        let command = detail(
-            &json!({"hook_event_name":"PreToolUse","tool_input":{"command":"x".repeat(5000)}}),
-        );
+        assert_eq!(detail(&json!({"hook_event_name":"Stop","last_assistant_message":long})), format!("{}…", &long[..REPLY_LIMIT]));
+        let command = detail(&json!({"hook_event_name":"PreToolUse","tool_input":{"command":"x".repeat(5000)}}));
         assert_eq!(command, format!("{}…", "x".repeat(1200)));
     }
     #[test]
     fn message_window_keeps_latest_user_prompt_after_tools_and_isolates_conversations() {
         let db = message_db();
-        let seq = insert_message(
-            &db,
-            "example",
-            Some("conversation"),
-            json!({"type":"UserPromptSubmit","agent_id":"","at":1,"detail":"Synthetic latest own message"}),
-        );
+        let seq = insert_message(&db, "example", Some("conversation"), json!({"type":"UserPromptSubmit","agent_id":"","at":1,"detail":"Synthetic latest own message"}));
         for index in 0..150 {
-            insert_message(
-                &db,
-                "example",
-                Some("conversation"),
-                json!({"type":"PostToolUse","agent_id":"","at":index+2,"detail":"Synthetic tool"}),
-            );
-            insert_message(
-                &db,
-                "example",
-                Some("conversation"),
-                json!({"type":"UserPromptSubmit","agent_id":"child","at":index+2,"detail":"Synthetic child message"}),
-            );
+            insert_message(&db, "example", Some("conversation"), json!({"type":"PostToolUse","agent_id":"","at":index+2,"detail":"Synthetic tool"}));
+            insert_message(&db, "example", Some("conversation"), json!({"type":"UserPromptSubmit","agent_id":"child","at":index+2,"detail":"Synthetic child message"}));
         }
-        insert_message(
-            &db,
-            "example",
-            Some("other"),
-            json!({"type":"UserPromptSubmit","agent_id":"","detail":"Other conversation"}),
-        );
-        insert_message(
-            &db,
-            "other",
-            Some("conversation"),
-            json!({"type":"UserPromptSubmit","agent_id":"","detail":"Other session"}),
-        );
+        insert_message(&db, "example", Some("other"), json!({"type":"UserPromptSubmit","agent_id":"","detail":"Other conversation"}));
+        insert_message(&db, "other", Some("conversation"), json!({"type":"UserPromptSubmit","agent_id":"","detail":"Other session"}));
         let answer = json!({"type":"QuestionAnswered","agent_id":"main","at":302,"detail":"Literal answer","question_id":"question","question_hash":"hash"});
         let answer_seq = insert_message(&db, "example", Some("conversation"), answer.clone());
-        let (messages, truncated) = message_events(
-            &db,
-            "example",
-            Some("conversation"),
-            r#"{"earlier":[]}"#,
-            &Value::Null,
-        )
-        .unwrap();
+        let (messages, truncated) = message_events(&db, "example", Some("conversation"), r#"{"earlier":[]}"#, &Value::Null).unwrap();
         assert!(!truncated);
         assert_eq!(messages.len(), 2);
         assert_eq!(messages[0]["seq"], seq);
         assert_eq!(messages[0]["detail"], "Synthetic latest own message");
-        let mut expected = answer;
-        expected["seq"] = json!(answer_seq);
+        let mut expected = answer; expected["seq"] = json!(answer_seq);
         assert_eq!(messages[1], expected);
         // A conversation replaced by a confirmed clear stays in the same
         // timeline, in journal order; another session's rows never join it.
-        let (messages, _) = message_events(
-            &db,
-            "example",
-            Some("conversation"),
-            r#"{"earlier":["other"]}"#,
-            &Value::Null,
-        )
-        .unwrap();
-        assert_eq!(
-            messages
-                .iter()
-                .map(|m| m["detail"].as_str().unwrap())
-                .collect::<Vec<_>>(),
-            [
-                "Synthetic latest own message",
-                "Other conversation",
-                "Literal answer"
-            ]
-        );
+        let (messages, _) = message_events(&db, "example", Some("conversation"), r#"{"earlier":["other"]}"#, &Value::Null).unwrap();
+        assert_eq!(messages.iter().map(|m| m["detail"].as_str().unwrap()).collect::<Vec<_>>(),
+            ["Synthetic latest own message", "Other conversation", "Literal answer"]);
     }
     /// zerus-b4qk: a fork's Activity is its sources' rows up to where it began,
     /// marked as inherited, then its own; search keeps the fork's own rows.
@@ -2733,14 +2212,8 @@ mod attention_regressions {
             ]
         );
         let scope = activity_scope(&db, &second);
-        let (messages, _) = message_events(
-            &db,
-            "codex/p/second",
-            Some("c-second"),
-            &scope,
-            &Value::Null,
-        )
-        .unwrap();
+        let (messages, _) =
+            message_events(&db, "codex/p/second", Some("c-second"), &scope, &Value::Null).unwrap();
         assert_eq!(
             messages
                 .iter()
@@ -2974,53 +2447,28 @@ mod attention_regressions {
     fn kimi_scheduled_ticks_are_not_replies_while_a_recurring_job_remains() {
         let kimi = json!({"agent":"kimi","name":"example","conversation_id":"conversation"});
         let started = |origin: Value| json!({"hook_event_name":"TurnStarted","agent_id":"main","origin_kind":origin});
-        assert_eq!(
-            turn_origin(&kimi, &started(json!("cron_job"))),
-            Some("cron_job")
-        );
+        assert_eq!(turn_origin(&kimi, &started(json!("cron_job"))), Some("cron_job"));
         assert_eq!(turn_origin(&kimi, &started(json!("user"))), Some("user"));
         for origin in [json!(""), json!("Cron"), json!(7), json!("x".repeat(41))] {
             assert_eq!(turn_origin(&kimi, &started(origin)), None);
         }
-        assert_eq!(
-            turn_origin(&json!({"agent":"claude"}), &started(json!("cron_job"))),
-            None
-        );
+        assert_eq!(turn_origin(&json!({"agent":"claude"}), &started(json!("cron_job"))), None);
 
         let db = message_db();
         let main = |event: Value| insert_message(&db, "example", Some("conversation"), event);
-        let reply = |skip: bool| {
-            kimi_reply(&db, &kimi, skip)
-                .unwrap()
-                .map(|(seq, _, scheduled)| (seq, scheduled))
-        };
+        let reply = |skip: bool| kimi_reply(&db, &kimi, skip).unwrap().map(|(seq, _, scheduled)| (seq, scheduled));
         assert_eq!(reply(true), None);
-        main(
-            json!({"type":"UserPromptSubmit","agent_id":"","detail":"Check the backup every 15 minutes"}),
-        );
+        main(json!({"type":"UserPromptSubmit","agent_id":"","detail":"Check the backup every 15 minutes"}));
         main(json!({"type":"TurnStarted","agent_id":"","turn_origin":"user"}));
         let prompted = main(json!({"type":"Stop","agent_id":"","at":1.5}));
         assert_eq!(reply(false), Some((prompted, false)));
-        assert_eq!(
-            kimi_reply(&db, &kimi, false).unwrap().unwrap().1,
-            json!(1.5)
-        );
+        assert_eq!(kimi_reply(&db, &kimi, false).unwrap().unwrap().1, json!(1.5));
         main(json!({"type":"TurnStarted","agent_id":"","turn_origin":"cron_job"}));
         main(json!({"type":"PreToolUse","agent_id":"","tool":"Bash"}));
         main(json!({"type":"TurnStarted","agent_id":"child","turn_origin":"user"}));
         main(json!({"type":"AgentMessage","agent_id":""}));
-        insert_message(
-            &db,
-            "example",
-            Some("other"),
-            json!({"type":"UserPromptSubmit","agent_id":""}),
-        );
-        insert_message(
-            &db,
-            "other",
-            Some("conversation"),
-            json!({"type":"UserPromptSubmit","agent_id":""}),
-        );
+        insert_message(&db, "example", Some("other"), json!({"type":"UserPromptSubmit","agent_id":""}));
+        insert_message(&db, "other", Some("conversation"), json!({"type":"UserPromptSubmit","agent_id":""}));
         main(json!({"type":"Stop","agent_id":""}));
         main(json!({"type":"TurnStarted","agent_id":"","turn_origin":"cron_missed"}));
         let missed = main(json!({"type":"Stop","agent_id":""}));
@@ -3045,57 +2493,27 @@ mod attention_regressions {
     fn message_window_limits_rows_and_actual_utf8_bytes_with_disclosure() {
         let db = message_db();
         for index in 0..105 {
-            insert_message(
-                &db,
-                "example",
-                None,
-                json!({"type":"UserMessage","at":index,"detail":"Synthetic repeated message"}),
-            );
+            insert_message(&db, "example", None, json!({"type":"UserMessage","at":index,"detail":"Synthetic repeated message"}));
         }
-        let (messages, truncated) =
-            message_events(&db, "example", None, r#"{"earlier":[]}"#, &Value::Null).unwrap();
-        assert!(truncated);
-        assert_eq!(messages.len(), MESSAGE_EVENTS_LIMIT);
-        assert_eq!(messages[0]["at"], 5);
-        assert_eq!(messages[99]["at"], 104);
+        let (messages, truncated) = message_events(&db, "example", None, r#"{"earlier":[]}"#, &Value::Null).unwrap();
+        assert!(truncated); assert_eq!(messages.len(), MESSAGE_EVENTS_LIMIT);
+        assert_eq!(messages[0]["at"], 5); assert_eq!(messages[99]["at"], 104);
         for _ in 0..10 {
-            insert_message(
-                &db,
-                "unicode",
-                Some("conversation"),
-                json!({"type":"UserMessage","detail":"🦀".repeat(20_000)}),
-            );
+            insert_message(&db, "unicode", Some("conversation"), json!({"type":"UserMessage","detail":"🦀".repeat(20_000)}));
         }
-        let (messages, truncated) = message_events(
-            &db,
-            "unicode",
-            Some("conversation"),
-            r#"{"earlier":[]}"#,
-            &Value::Null,
-        )
-        .unwrap();
-        assert!(truncated);
-        assert_eq!(messages.len(), 3);
+        let (messages, truncated) = message_events(&db, "unicode", Some("conversation"), r#"{"earlier":[]}"#, &Value::Null).unwrap();
+        assert!(truncated); assert_eq!(messages.len(), 3);
         assert!(json!(messages).to_string().len() <= MESSAGE_EVENTS_BYTES);
     }
     #[test]
     fn claude_hook_effort_object_sets_the_main_effort_only() {
         let mut record = json!({"agent":"claude","activity":"busy","phase":"tool","active_tools":{},"subagents":{}});
-        update_activity(
-            &mut record,
-            &json!({"hook_event_name":"PostToolUse","tool_name":"Read","tool_use_id":"t1","effort":{"level":"xhigh"}}),
-        );
+        update_activity(&mut record, &json!({"hook_event_name":"PostToolUse","tool_name":"Read","tool_use_id":"t1","effort":{"level":"xhigh"}}));
         assert_eq!(record["effort"], "xhigh");
         // A subagent's turn reports its own effort; it is not the session's.
-        update_activity(
-            &mut record,
-            &json!({"hook_event_name":"PostToolUse","agent_id":"child","agent_type":"general-purpose","effort":{"level":"low"}}),
-        );
+        update_activity(&mut record, &json!({"hook_event_name":"PostToolUse","agent_id":"child","agent_type":"general-purpose","effort":{"level":"low"}}));
         assert_eq!(record["effort"], "xhigh");
-        update_activity(
-            &mut record,
-            &json!({"hook_event_name":"Stop","effort":{"level":"turbo"}}),
-        );
+        update_activity(&mut record, &json!({"hook_event_name":"Stop","effort":{"level":"turbo"}}));
         assert_eq!(record["effort"], "xhigh");
     }
     #[test]
@@ -3106,10 +2524,7 @@ mod attention_regressions {
             "to_model":"claude-haiku-5-5","requested_model":"haiku","source":"command","context_tokens":0});
         update_activity(&mut record, &switch);
         assert_eq!(record["model"], "claude-haiku-5-5");
-        assert_eq!(
-            (&record["activity"], &record["phase"], &record["main_done"]),
-            (&json!("idle"), &json!("idle"), &json!(true))
-        );
+        assert_eq!((&record["activity"], &record["phase"], &record["main_done"]), (&json!("idle"), &json!("idle"), &json!(true)));
         assert!(record.get("last_main_progress_at").is_none());
         // A subagent's switch is not the session's.
         let mut child = switch.clone();
@@ -3166,8 +2581,7 @@ mod attention_regressions {
         let message = "You've reached your 5-hour usage limit. Your quota will reset when the current 5-hour window ends.";
         let event = json!({"hook_event_name":"StopFailure","error_type":"APIProviderRateLimitError","error_message":message});
         for (agent, expected) in [("kimi", "rate_limit"), ("claude", "quota")] {
-            let mut record =
-                json!({"agent":agent,"run_id":"original","active_tools":{},"subagents":{}});
+            let mut record = json!({"agent":agent,"run_id":"original","active_tools":{},"subagents":{}});
             update_activity(&mut record, &event);
             let failure = &record["provider_error"];
             assert_eq!(failure["error_kind"], expected);
@@ -3177,9 +2591,7 @@ mod attention_regressions {
                 let mut output = json!({});
                 provider_errors::apply(&mut output, failure);
                 assert_eq!(output["provider_error"], *failure);
-            } else {
-                assert!(failure.get("native_error_type").is_none());
-            }
+            } else { assert!(failure.get("native_error_type").is_none()); }
         }
     }
     #[test]
@@ -3243,74 +2655,32 @@ mod attention_regressions {
         // agent type. A lone tool call from one never keeps the session working.
         let mut record = json!({"agent":"claude","run_id":"run","main_done":false,"activity":"idle","phase":"idle",
             "active_tools":{},"subagents":{}});
-        update_activity(
-            &mut record,
-            &json!({"hook_event_name":"UserPromptSubmit","prompt":"Go"}),
-        );
-        update_activity(
-            &mut record,
-            &json!({"hook_event_name":"PreToolUse","agent_id":"a807","tool_name":"SubagentHandback"}),
-        );
-        update_activity(
-            &mut record,
-            &json!({"hook_event_name":"PreToolUse","agent_id":"a174","tool_name":"ToolSearch"}),
-        );
-        update_activity(
-            &mut record,
-            &json!({"hook_event_name":"Stop","last_assistant_message":"Done"}),
-        );
-        assert_eq!(
-            (record["activity"].clone(), record["phase"].clone()),
-            (json!("idle"), json!("idle"))
-        );
-        update_activity(
-            &mut record,
-            &json!({"hook_event_name":"SubagentStop","agent_id":"aba1","last_assistant_message":"Recap"}),
-        );
+        update_activity(&mut record, &json!({"hook_event_name":"UserPromptSubmit","prompt":"Go"}));
+        update_activity(&mut record, &json!({"hook_event_name":"PreToolUse","agent_id":"a807","tool_name":"SubagentHandback"}));
+        update_activity(&mut record, &json!({"hook_event_name":"PreToolUse","agent_id":"a174","tool_name":"ToolSearch"}));
+        update_activity(&mut record, &json!({"hook_event_name":"Stop","last_assistant_message":"Done"}));
+        assert_eq!((record["activity"].clone(), record["phase"].clone()), (json!("idle"), json!("idle")));
+        update_activity(&mut record, &json!({"hook_event_name":"SubagentStop","agent_id":"aba1","last_assistant_message":"Recap"}));
         assert_eq!(record["subagents"], json!({}));
         assert_eq!(record["phase"], "idle");
 
         // A started subagent still keeps the session working until it stops,
         // and so does a typed one whose start was missed.
-        update_activity(
-            &mut record,
-            &json!({"hook_event_name":"UserPromptSubmit","prompt":"Again"}),
-        );
-        update_activity(
-            &mut record,
-            &json!({"hook_event_name":"SubagentStart","agent_id":"a15","agent_type":"general-purpose"}),
-        );
-        update_activity(
-            &mut record,
-            &json!({"hook_event_name":"PreToolUse","agent_id":"a15","tool_name":"Bash"}),
-        );
-        update_activity(
-            &mut record,
-            &json!({"hook_event_name":"PreToolUse","agent_id":"a16","agent_type":"Explore","tool_name":"Read"}),
-        );
-        update_activity(
-            &mut record,
-            &json!({"hook_event_name":"Stop","last_assistant_message":"Waiting"}),
-        );
+        update_activity(&mut record, &json!({"hook_event_name":"UserPromptSubmit","prompt":"Again"}));
+        update_activity(&mut record, &json!({"hook_event_name":"SubagentStart","agent_id":"a15","agent_type":"general-purpose"}));
+        update_activity(&mut record, &json!({"hook_event_name":"PreToolUse","agent_id":"a15","tool_name":"Bash"}));
+        update_activity(&mut record, &json!({"hook_event_name":"PreToolUse","agent_id":"a16","agent_type":"Explore","tool_name":"Read"}));
+        update_activity(&mut record, &json!({"hook_event_name":"Stop","last_assistant_message":"Waiting"}));
         assert_eq!(record["phase"], "working");
         assert_eq!(record["subagents"]["a15"]["current_tool"], "Bash");
-        update_activity(
-            &mut record,
-            &json!({"hook_event_name":"SubagentStop","agent_id":"a15","agent_type":"general-purpose"}),
-        );
-        update_activity(
-            &mut record,
-            &json!({"hook_event_name":"SubagentStop","agent_id":"a16","agent_type":"Explore"}),
-        );
+        update_activity(&mut record, &json!({"hook_event_name":"SubagentStop","agent_id":"a15","agent_type":"general-purpose"}));
+        update_activity(&mut record, &json!({"hook_event_name":"SubagentStop","agent_id":"a16","agent_type":"Explore"}));
         assert_eq!(record["phase"], "idle");
 
         // Other providers name their children only by agent ID.
         let mut codex = json!({"agent":"codex","run_id":"run","main_done":false,"activity":"busy","phase":"working",
             "active_tools":{},"subagents":{}});
-        update_activity(
-            &mut codex,
-            &json!({"hook_event_name":"PreToolUse","agent_id":"c1","tool_name":"Bash"}),
-        );
+        update_activity(&mut codex, &json!({"hook_event_name":"PreToolUse","agent_id":"c1","tool_name":"Bash"}));
         assert_eq!(codex["subagents"]["c1"]["state"], "working");
     }
     #[test]
@@ -3322,18 +2692,8 @@ mod attention_regressions {
             "subagents":{"a807":stale,"aba1":{"name":"aba1","state":"finished","detail":"Recap"},
                 "a15":{"name":"general-purpose","state":"finished","started":1.0}}});
         repair_claude_internal(&mut record);
-        assert_eq!(
-            (record["activity"].clone(), record["phase"].clone()),
-            (json!("idle"), json!("idle"))
-        );
-        assert_eq!(
-            record["subagents"]
-                .as_object()
-                .unwrap()
-                .keys()
-                .collect::<Vec<_>>(),
-            vec!["a15"]
-        );
+        assert_eq!((record["activity"].clone(), record["phase"].clone()), (json!("idle"), json!("idle")));
+        assert_eq!(record["subagents"].as_object().unwrap().keys().collect::<Vec<_>>(), vec!["a15"]);
 
         // A started subagent that still works keeps the session working, and a
         // turn in progress is left alone.
@@ -3378,41 +2738,17 @@ mod attention_regressions {
     #[test]
     fn task_notifications_are_notices_not_the_persons_prompt() {
         const NOTICE: &str = "<task-notification>\n<task-id>b1</task-id>\n<tool-use-id>toolu_1</tool-use-id>\n<output-file>/tmp/b1.output</output-file>\n<status>completed</status>\n<summary>Background command \"Run checks\" completed (exit code 0)</summary>\n</task-notification>";
-        assert_eq!(
-            system_prompt(NOTICE).unwrap(),
-            json!({"kind":"task_notification","summary":"Background command \"Run checks\" completed (exit code 0)","status":"completed","report":"","agent_id":"","sender":""})
-        );
-        let pair = format!(
-            "{NOTICE}\n{}",
-            NOTICE.replace("completed", "failed").replace("&", "&amp;")
-        );
+        assert_eq!(system_prompt(NOTICE).unwrap(), json!({"kind":"task_notification","summary":"Background command \"Run checks\" completed (exit code 0)","status":"completed","report":"","agent_id":"","sender":""}));
+        let pair = format!("{NOTICE}\n{}", NOTICE.replace("completed", "failed").replace("&", "&amp;"));
         assert_eq!(system_prompt(&pair).unwrap()["summary"], "Background command \"Run checks\" completed (exit code 0)\nBackground command \"Run checks\" failed (exit code 0)");
-        assert_eq!(
-            system_prompt(
-                &NOTICE
-                    .replace("&quot;", "")
-                    .replace("\"Run checks\"", "&quot;A &amp; B&quot;")
-            )
-            .unwrap()["summary"],
-            "Background command \"A & B\" completed (exit code 0)"
-        );
+        assert_eq!(system_prompt(&NOTICE.replace("&quot;", "").replace("\"Run checks\"", "&quot;A &amp; B&quot;")).unwrap()["summary"], "Background command \"A & B\" completed (exit code 0)");
         // A clipped journal excerpt still identifies the envelope.
-        assert_eq!(
-            system_prompt(&format!("{}…", &NOTICE[..60])).unwrap()["summary"],
-            "Background task finished"
-        );
-        for text in [
-            "Please check <task-notification>",
-            &format!("{NOTICE}\nAnd one more thing"),
-            "<task-notification><status>done</status>",
-        ] {
+        assert_eq!(system_prompt(&format!("{}…", &NOTICE[..60])).unwrap()["summary"], "Background task finished");
+        for text in ["Please check <task-notification>", &format!("{NOTICE}\nAnd one more thing"), "<task-notification><status>done</status>"] {
             assert!(system_prompt(text).is_none(), "{text}");
         }
         let mut record = json!({"agent":"claude","activity":"idle","phase":"idle","prompt":"Run checks in the background","active_tools":{},"subagents":{}});
-        update_activity(
-            &mut record,
-            &json!({"hook_event_name":"UserPromptSubmit","prompt":NOTICE}),
-        );
+        update_activity(&mut record, &json!({"hook_event_name":"UserPromptSubmit","prompt":NOTICE}));
         assert_eq!(record["phase"], "working");
         assert_eq!(record["prompt"], "Run checks in the background");
         assert_eq!(user_prompt(&json!({"prompt":NOTICE})), &Value::Null);
@@ -3421,10 +2757,7 @@ mod attention_regressions {
         mark_system_prompt(&json!({}), &mut legacy, "");
         assert_eq!(legacy["origin"], "task_notification");
         assert_eq!(legacy["task_status"], "completed");
-        assert_eq!(
-            legacy["detail"],
-            "Background command \"Run checks\" completed (exit code 0)"
-        );
+        assert_eq!(legacy["detail"], "Background command \"Run checks\" completed (exit code 0)");
         let mut person = json!({"type":"UserPromptSubmit","agent_id":"","detail":"Hello"});
         mark_system_prompt(&json!({}), &mut person, "");
         assert!(person.get("origin").is_none());
@@ -3433,39 +2766,23 @@ mod attention_regressions {
     fn cross_session_messages_are_notices_from_the_sending_session() {
         let message = "<cross-session-message from=\"uds:/run/user/1000/cc-socks/1.sock\" from-name=\"zerus-19\" from-mode=\"prompting\">\nSessionsWindow.cpp is free again.\n\n- one\n</cross-session-message>";
         let parsed = system_prompt(message).unwrap();
-        assert_eq!(
-            (parsed["kind"].as_str(), parsed["sender"].as_str()),
-            (Some("peer_message"), Some("zerus-19"))
-        );
-        assert_eq!(
-            parsed["report"],
-            "SessionsWindow.cpp is free again.\n\n- one"
-        );
+        assert_eq!((parsed["kind"].as_str(), parsed["sender"].as_str()), (Some("peer_message"), Some("zerus-19")));
+        assert_eq!(parsed["report"], "SessionsWindow.cpp is free again.\n\n- one");
         let mut event = json!({"type":"UserPromptSubmit","agent_id":"","detail":""});
         mark_system_prompt(&json!({}), &mut event, message);
         assert_eq!(event["origin"], "peer_message");
         assert_eq!(event["detail"], "Message from zerus-19");
         assert_eq!(event["sender"], "zerus-19");
-        assert_eq!(
-            event["report"],
-            "SessionsWindow.cpp is free again.\n\n- one"
-        );
+        assert_eq!(event["report"], "SessionsWindow.cpp is free again.\n\n- one");
         // Without a session name, the address identifies the sender.
-        assert_eq!(
-            system_prompt("<cross-session-message from=\"uds:/s.sock\">Hi</cross-session-message>")
-                .unwrap()["sender"],
-            "uds:/s.sock"
-        );
+        assert_eq!(system_prompt("<cross-session-message from=\"uds:/s.sock\">Hi</cross-session-message>").unwrap()["sender"], "uds:/s.sock");
         // Clipped journal rows and the session prompt are recognized too.
         let mut legacy = json!({"type":"UserPromptSubmit","agent_id":"","detail":format!("{}…", &message[..140])});
         mark_system_prompt(&json!({}), &mut legacy, "");
         assert_eq!(legacy["origin"], "peer_message");
         assert_eq!(user_prompt(&json!({"prompt":message})), &Value::Null);
-        for text in [
-            "<cross-session-message>Hi</cross-session-message>",
-            "<cross-session-message from-name=\"\">Hi</cross-session-message>",
-            &format!("{message}\nPlus my own words"),
-        ] {
+        for text in ["<cross-session-message>Hi</cross-session-message>", "<cross-session-message from-name=\"\">Hi</cross-session-message>",
+                     &format!("{message}\nPlus my own words")] {
             assert!(system_prompt(text).is_none(), "{text}");
         }
     }
@@ -3473,22 +2790,16 @@ mod attention_regressions {
     fn notices_match_the_shared_activity_contract() {
         // Desktop, Android and iOS read the same cases for their presentation.
         let contract: Value = serde_json::from_str(include_str!(
-            "../../mobile/android/app/src/test/resources/activity-notice-contract.json"
-        ))
-        .unwrap();
+            "../../mobile/android/app/src/test/resources/activity-notice-contract.json")).unwrap();
         for case in contract["cases"].as_array().unwrap() {
             let name = string(case, "name");
-            let mut event =
-                json!({"type":"UserPromptSubmit","agent_id":"","detail":case["prompt"]});
+            let mut event = json!({"type":"UserPromptSubmit","agent_id":"","detail":case["prompt"]});
             mark_system_prompt(&json!({}), &mut event, "");
             for (key, value) in case["event"].as_object().unwrap() {
                 assert_eq!(&event[key], value, "{name}: {key}");
             }
             for key in ["origin", "report", "sender", "sender_reference"] {
-                assert!(
-                    case["event"].get(key).is_some() || event.get(key).is_none(),
-                    "{name}: unexpected {key}"
-                );
+                assert!(case["event"].get(key).is_some() || event.get(key).is_none(), "{name}: unexpected {key}");
             }
         }
     }
@@ -3498,36 +2809,16 @@ mod attention_regressions {
         let encoded = uri.replace('&', "&amp;");
         let message = format!("<zerus-message from=\"claude/p/review &amp; co\" host=\"arch\" reference=\"{encoded}\">\nThe patch is ready.\n\n- one\n</zerus-message>");
         let parsed = system_prompt(&message).unwrap();
-        assert_eq!(
-            (parsed["kind"].as_str(), parsed["sender"].as_str()),
-            (Some("peer_message"), Some("claude/p/review & co"))
-        );
-        assert_eq!(
-            (
-                parsed["report"].as_str(),
-                parsed["sender_reference"].as_str()
-            ),
-            (Some("The patch is ready.\n\n- one"), Some(uri))
-        );
+        assert_eq!((parsed["kind"].as_str(), parsed["sender"].as_str()), (Some("peer_message"), Some("claude/p/review & co")));
+        assert_eq!((parsed["report"].as_str(), parsed["sender_reference"].as_str()), (Some("The patch is ready.\n\n- one"), Some(uri)));
         let mut event = json!({"type":"UserPromptSubmit","agent_id":"","detail":""});
         mark_system_prompt(&json!({}), &mut event, &message);
-        assert_eq!(
-            (event["origin"].as_str(), event["detail"].as_str()),
-            (
-                Some("peer_message"),
-                Some("Message from claude/p/review & co")
-            )
-        );
+        assert_eq!((event["origin"].as_str(), event["detail"].as_str()), (Some("peer_message"), Some("Message from claude/p/review & co")));
         assert_eq!(event["sender_reference"], uri);
         assert_eq!(user_prompt(&json!({"prompt":message})), &Value::Null);
-        for text in [
-            "<zerus-message>Hi</zerus-message>",
-            "<zerus-message from=\"\">Hi</zerus-message>",
-            "<zerus-message from=\"x/y\">Hi</zerus-message>",
-            "<zerus-message host=\"arch\">Hi</zerus-message>",
-            &format!("Quoted: {message}"),
-            &format!("{message}\nPlus my own words"),
-        ] {
+        for text in ["<zerus-message>Hi</zerus-message>", "<zerus-message from=\"\">Hi</zerus-message>",
+                     "<zerus-message from=\"x/y\">Hi</zerus-message>", "<zerus-message host=\"arch\">Hi</zerus-message>",
+                     &format!("Quoted: {message}"), &format!("{message}\nPlus my own words")] {
             assert!(system_prompt(text).is_none(), "{text}");
         }
     }
@@ -3541,36 +2832,17 @@ mod attention_regressions {
         assert_eq!(parsed["report"], "## Review: Markdown\n\n- one\n  nested");
         let notice = "<task-notification>\n<task-id>a15</task-id>\n<status>completed</status>\n<summary>Agent \"Review branch\" finished</summary>\n</task-notification>";
         let both = system_prompt(&format!("{message}\n{notice}")).unwrap();
-        assert_eq!(
-            (both["kind"].as_str(), both["summary"].as_str()),
-            (
-                Some("subagent_report"),
-                Some("Agent \"Review branch\" finished")
-            )
-        );
+        assert_eq!((both["kind"].as_str(), both["summary"].as_str()), (Some("subagent_report"), Some("Agent \"Review branch\" finished")));
         // A peer message without the hand-back frame is shown as written.
-        assert_eq!(
-            system_prompt("<agent-message from=\"peer-1\">\nPlease rebase.\n</agent-message>")
-                .unwrap()["report"],
-            "Please rebase."
-        );
-        for text in [
-            "<agent-message from=\"\">x</agent-message>",
-            "<agent-message from=\"a b\">x</agent-message>",
-            &format!("{message}\nAnd also this"),
-        ] {
+        assert_eq!(system_prompt("<agent-message from=\"peer-1\">\nPlease rebase.\n</agent-message>").unwrap()["report"], "Please rebase.");
+        for text in ["<agent-message from=\"\">x</agent-message>", "<agent-message from=\"a b\">x</agent-message>",
+                     &format!("{message}\nAnd also this")] {
             assert!(system_prompt(text).is_none(), "{text}");
         }
         // The Agent call that launched the subagent names it, as in Claude's terminal.
         let mut record = json!({"agent":"claude","activity":"busy","phase":"working","active_tools":{},"subagents":{}});
-        update_activity(
-            &mut record,
-            &json!({"hook_event_name":"PreToolUse","tool_name":"Agent","tool_use_id":"call","tool_input":{"description":"Review branch","prompt":"Review it"}}),
-        );
-        update_activity(
-            &mut record,
-            &json!({"hook_event_name":"SubagentStart","agent_id":"a15","agent_type":"general-purpose"}),
-        );
+        update_activity(&mut record, &json!({"hook_event_name":"PreToolUse","tool_name":"Agent","tool_use_id":"call","tool_input":{"description":"Review branch","prompt":"Review it"}}));
+        update_activity(&mut record, &json!({"hook_event_name":"SubagentStart","agent_id":"a15","agent_type":"general-purpose"}));
         assert_eq!(record["subagents"]["a15"]["description"], "Review branch");
         let mut event = json!({"type":"UserPromptSubmit","agent_id":"","detail":""});
         mark_system_prompt(&record, &mut event, &message);
@@ -3585,10 +2857,7 @@ mod attention_regressions {
         // Two Agent calls in flight are ambiguous; neither name is guessed.
         let mut parallel = json!({"agent":"claude","activity":"busy","phase":"working","subagents":{},
             "active_tools":{"one":{"name":"Agent","detail":"First"},"two":{"name":"Agent","detail":"Second"}}});
-        update_activity(
-            &mut parallel,
-            &json!({"hook_event_name":"SubagentStart","agent_id":"b1","agent_type":"general-purpose"}),
-        );
+        update_activity(&mut parallel, &json!({"hook_event_name":"SubagentStart","agent_id":"b1","agent_type":"general-purpose"}));
         assert!(parallel["subagents"]["b1"].get("description").is_none());
     }
     #[test]
@@ -3602,10 +2871,7 @@ mod attention_regressions {
             update_activity(&mut record, &event);
         }
         assert_eq!(record["phase"], "approval");
-        update_activity(
-            &mut record,
-            &json!({"hook_event_name":"PostToolUse","tool_use_id":"read"}),
-        );
+        update_activity(&mut record, &json!({"hook_event_name":"PostToolUse","tool_use_id":"read"}));
         assert_eq!(record["phase"], "working");
         // A question uses the same prompt, but it asks for input.
         for event in [
@@ -3623,64 +2889,34 @@ mod attention_regressions {
         let pause = || std::thread::sleep(std::time::Duration::from_millis(2));
         let mut record = json!({"agent":"codex","activity":"busy","phase":"working","active_tools":{},"subagents":{}});
         // A permission prompt without a tool call has no native request identity.
-        update_activity(
-            &mut record,
-            &json!({"hook_event_name":"PermissionRequest","tool_name":"Bash"}),
-        );
+        update_activity(&mut record, &json!({"hook_event_name":"PermissionRequest","tool_name":"Bash"}));
         assert_eq!(record["phase"], "approval");
         let first = start(&record);
         assert!(first > 0.0);
         pause();
         // A repeated prompt notification and a child's progress keep the request.
-        for event in [
-            json!({"hook_event_name":"Notification","notification_type":"permission_prompt"}),
-            json!({"hook_event_name":"SubagentStart","agent_id":"worker","agent_type":"helper"}),
-        ] {
+        for event in [json!({"hook_event_name":"Notification","notification_type":"permission_prompt"}),
+            json!({"hook_event_name":"SubagentStart","agent_id":"worker","agent_type":"helper"})] {
             update_activity(&mut record, &event);
-            assert_eq!(
-                (record["phase"].clone(), start(&record)),
-                (json!("approval"), first),
-                "{event}"
-            );
+            assert_eq!((record["phase"].clone(), start(&record)), (json!("approval"), first), "{event}");
         }
         // The next prompt is a new request, also without a working state in between.
-        update_activity(
-            &mut record,
-            &json!({"hook_event_name":"PermissionRequest","tool_name":"Bash"}),
-        );
+        update_activity(&mut record, &json!({"hook_event_name":"PermissionRequest","tool_name":"Bash"}));
         let second = start(&record);
         assert!(second > first);
         pause();
-        update_activity(
-            &mut record,
-            &json!({"hook_event_name":"PostToolUse","tool_name":"Bash"}),
-        );
-        update_activity(
-            &mut record,
-            &json!({"hook_event_name":"Notification","notification_type":"agent_needs_input"}),
-        );
+        update_activity(&mut record, &json!({"hook_event_name":"PostToolUse","tool_name":"Bash"}));
+        update_activity(&mut record, &json!({"hook_event_name":"Notification","notification_type":"agent_needs_input"}));
         assert_eq!(record["phase"], "input");
         assert!(start(&record) > second);
         // A question tool and its permission prompt are one request.
         let mut claude = json!({"agent":"claude","activity":"busy","phase":"working","active_tools":{},"subagents":{}});
-        update_activity(
-            &mut claude,
-            &json!({"hook_event_name":"PreToolUse","tool_name":"AskUserQuestion","tool_use_id":"ask"}),
-        );
+        update_activity(&mut claude, &json!({"hook_event_name":"PreToolUse","tool_name":"AskUserQuestion","tool_use_id":"ask"}));
         let asked = start(&claude);
         pause();
-        update_activity(
-            &mut claude,
-            &json!({"hook_event_name":"PermissionRequest","tool_name":"AskUserQuestion"}),
-        );
-        update_activity(
-            &mut claude,
-            &json!({"hook_event_name":"Notification","notification_type":"permission_prompt"}),
-        );
-        assert_eq!(
-            (claude["phase"].clone(), start(&claude)),
-            (json!("input"), asked)
-        );
+        update_activity(&mut claude, &json!({"hook_event_name":"PermissionRequest","tool_name":"AskUserQuestion"}));
+        update_activity(&mut claude, &json!({"hook_event_name":"Notification","notification_type":"permission_prompt"}));
+        assert_eq!((claude["phase"].clone(), start(&claude)), (json!("input"), asked));
     }
     #[test]
     fn compaction_and_identical_prompt_repeats_keep_a_native_request_start() {
@@ -3689,10 +2925,7 @@ mod attention_regressions {
         let mut record = json!({"agent":"claude","activity":"busy","phase":"working","active_tools":{},"subagents":{}});
         // Two parallel tool calls with native IDs; each asks for permission in turn.
         for (id, command) in [("call-1", "make"), ("call-2", "make install")] {
-            update_activity(
-                &mut record,
-                &json!({"hook_event_name":"PreToolUse","tool_name":"Bash","tool_use_id":id,"tool_input":{"command":command}}),
-            );
+            update_activity(&mut record, &json!({"hook_event_name":"PreToolUse","tool_name":"Bash","tool_use_id":id,"tool_input":{"command":command}}));
         }
         let prompt = |command: &str| json!({"hook_event_name":"PermissionRequest","tool_name":"Bash","tool_input":{"command":command}});
         update_activity(&mut record, &prompt("make"));
@@ -3705,10 +2938,7 @@ mod attention_regressions {
         update_activity(&mut record, &json!({"hook_event_name":"PreCompact"}));
         pause();
         update_activity(&mut record, &json!({"hook_event_name":"PostCompact"}));
-        assert_eq!(
-            (record["phase"].clone(), start(&record)),
-            (json!("approval"), first)
-        );
+        assert_eq!((record["phase"].clone(), start(&record)), (json!("approval"), first));
         // The other call's prompt is a new request, although the same IDs are in flight.
         update_activity(&mut record, &prompt("make install"));
         assert!(start(&record) > first);
@@ -3745,35 +2975,18 @@ mod lock_regressions {
         // The second round is a restart: every earlier connection is gone.
         for round in 0..2 {
             let live = event_db_at(&root).unwrap();
-            live.execute(
-                "INSERT INTO events(name,conversation,payload) VALUES('n','c','{}')",
-                [],
-            )
-            .unwrap();
-            live.execute_batch("BEGIN").unwrap();
-            let _: i64 = live
-                .query_row("SELECT count(*) FROM events", [], |r| r.get(0))
+            live.execute("INSERT INTO events(name,conversation,payload) VALUES('n','c','{}')", [])
                 .unwrap();
-            assert!(
-                foreign_lock_refused(&path),
-                "round {round}: the reader holds its lock"
-            );
+            live.execute_batch("BEGIN").unwrap();
+            let _: i64 = live.query_row("SELECT count(*) FROM events", [], |r| r.get(0)).unwrap();
+            assert!(foreign_lock_refused(&path), "round {round}: the reader holds its lock");
             drop(event_db_at(&root).unwrap());
-            assert!(
-                foreign_lock_refused(&path),
-                "round {round}: another open kept the lock"
-            );
+            assert!(foreign_lock_refused(&path), "round {round}: another open kept the lock");
             live.execute_batch("COMMIT").unwrap();
             drop(live);
-            assert!(
-                !foreign_lock_refused(&path),
-                "round {round}: the lock went with its connection"
-            );
+            assert!(!foreign_lock_refused(&path), "round {round}: the lock went with its connection");
         }
-        let mode = std::fs::symlink_metadata(&path)
-            .unwrap()
-            .permissions()
-            .mode();
+        let mode = std::fs::symlink_metadata(&path).unwrap().permissions().mode();
         assert_eq!(mode & 0o777, 0o600, "created owner-only");
     }
 }

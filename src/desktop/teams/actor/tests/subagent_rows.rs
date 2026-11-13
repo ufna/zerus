@@ -86,11 +86,10 @@ fn produce() -> BTreeMap<&'static str, Value> {
             json!({"subagent_groups":groups,"subagent_groups_complete":true,"subagents":external}),
         ),
     );
-    // An unsettled count above zero, at the row level: a working child is
-    // still present, and presence must not be dropped because the count
-    // leaves something out. The producer row's own keys keep their values
-    // except the three this case is about; a live row with work above zero
-    // reads busy, and a busy row has no process sample to settle presence.
+    // An unsettled count above zero and a working child: presence is known,
+    // and must not be dropped with the count. The producer row's own keys keep
+    // their values except the three this case is about; a live row with work
+    // above zero reads busy, and a busy row has no process sample to settle it.
     let mut active = super::rows::producer_row("kimi");
     active["subagent_source"] = json!("mixed_hooks");
     active["subagent_counts_complete"] = json!(false);
@@ -264,21 +263,10 @@ fn a_subagent_count_is_settled_only_when_every_child_that_may_run_now_is_counted
     // An unsettled count above zero is busy, not unreadable, and its working
     // child is still seen: presence is not dropped along with the count.
     let active = Facts::of(&rows["mixed_hooks_unsettled_active"]);
+    assert_eq!(rows["mixed_hooks_unsettled_active"]["subagent_source"], "mixed_hooks");
+    assert_eq!(rows["mixed_hooks_unsettled_active"]["subagent_counts_complete"], false);
     assert_eq!(
-        rows["mixed_hooks_unsettled_active"]["subagent_source"],
-        "mixed_hooks"
-    );
-    assert_eq!(
-        rows["mixed_hooks_unsettled_active"]["subagent_counts_complete"],
-        false
-    );
-    assert_eq!(
-        (
-            active.children,
-            active.children_unsettled,
-            active.free(),
-            active.unknown()
-        ),
+        (active.children, active.children_unsettled, active.free(), active.unknown()),
         (Some(2), true, false, None)
     );
     assert_eq!(active.seen().map(|seen| seen.working), Some(true));
