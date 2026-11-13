@@ -311,7 +311,10 @@ fn a_stale_settle_revision_is_not_a_failure_gate() {
     a.tick(&mut h.store, &mut p, TEAM, T0 + MINUTE, false)
         .unwrap();
     assert!(
-        a.ledger.get(TEAM, "gate:handout:1").unwrap().is_none(),
+        a.ledger
+            .prefix_page(TEAM, "gate:delivery:", "")
+            .unwrap()
+            .is_empty(),
         "a stale loser opened a failure gate"
     );
     super::super::delivery::STALE_RACE.with(|c| c.set(false));
