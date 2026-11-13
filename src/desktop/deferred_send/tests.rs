@@ -302,6 +302,7 @@ fn legacy_history(
             } else {
                 String::new()
             },
+            cli_exit: None,
             outcome: (!unknown).then(|| wire::Outcome {
                 request_id: v.plan.request_id.clone(),
                 status: wire::SUBMITTED.into(),
@@ -461,6 +462,7 @@ fn budget_history_overflow_is_bounded_and_store_reports_null_not_zero() {
             phase: Phase::Unknown,
             drained: true,
             code: "deferred_send_interrupted".into(),
+            cli_exit: None,
             outcome: None,
         };
         tx.execute("INSERT INTO desktop_deferred_sends(request_id,session,fingerprint,source,checkpoint,plan,receipt,writer_epoch,phase,drained,created) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,'unknown',1,?9)",
@@ -1383,7 +1385,7 @@ mod actor {
                 plan.input_sha256
             );
             submitted(state, plan);
-            Ended::Exited { code: 0 }
+            Ended::Exited { code: 0, stderr: String::new() }
         });
         let original = f.original();
         let admission = f.admit(&original);
@@ -1412,26 +1414,26 @@ mod actor {
         }
         for (ended, record, phase, code) in [
             (
-                Ended::Exited { code: 0 },
+                Ended::Exited { code: 0, stderr: String::new() },
                 Record::None,
                 Phase::Unknown,
                 super::super::receipt::MISSING,
             ),
             (
-                Ended::Exited { code: 0 },
+                Ended::Exited { code: 0, stderr: String::new() },
                 Record::InProgress,
                 Phase::Unknown,
                 wire::RECEIPT_IN_PROGRESS,
             ),
             (
-                Ended::Exited { code: 1 },
+                Ended::Exited { code: 1, stderr: String::new() },
                 Record::OtherStdin,
                 Phase::Unknown,
                 wire::RECEIPT_MISMATCH,
             ),
             // The CLI's exact record, whatever the exit said.
             (
-                Ended::Exited { code: 2 },
+                Ended::Exited { code: 2, stderr: String::new() },
                 Record::Exact,
                 Phase::Recorded,
                 "",
@@ -1487,6 +1489,33 @@ mod actor {
             (Phase::Failed, wire::NOT_STARTED)
         );
         assert!(receipt.not_started(&original.plan));
+    }
+
+    #[test]
+    fn the_original_refusal_survives_drain_and_read_only_recovery_without_replay() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let sent = calls.clone();
+        let mut f = Fixture::new(move |_, _, _, input, lock, resources| {
+            sent.fetch_add(1, Ordering::SeqCst);
+            child::run(
+                Path::new("/bin/sh"),
+                &["-c".into(), "cat >/dev/null; printf 'hgs: agent busy: composer has a draft\\nprivate next line\\n' >&2; exit 1".into()],
+                input, lock, resources, Instant::now() + Duration::from_secs(5), |_| Ok(()),
+            )
+        });
+        let original = f.original();
+        assert!(f.admit(&original).accepted);
+        f.until("settled", |f| f.row(&original).receipt.drained);
+        let receipt = f.row(&original).receipt;
+        assert_eq!((receipt.phase, receipt.code.as_str()), (Phase::Unknown, super::super::receipt::MISSING));
+        assert_eq!(receipt.cli_exit, Some(wire::CliExit::new(1, "hgs: agent busy: composer has a draft")));
+        assert!(!receipt.not_started(&original.plan));
+        assert_eq!(receipt.result(&original.plan), None);
+        f.runtime.request_stop();
+        f.until("stopped", |f| f.runtime.drained());
+        ledger::startup(&mut f.store.db).unwrap();
+        assert_eq!(f.row(&original).receipt, receipt);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
     }
 
     /// The real original path, without an executor: the runtime's pinned
@@ -1833,7 +1862,7 @@ os._exit(0)"#;
         let count = sent.clone();
         let mut f = Fixture::new(move |_, _, _, _, _, _| {
             count.fetch_add(1, Ordering::SeqCst);
-            Ended::Exited { code: 0 }
+            Ended::Exited { code: 0, stderr: String::new() }
         });
         let original = f.original();
         f.revoke();
@@ -1951,7 +1980,7 @@ os._exit(0)"#;
             let mut f = Fixture::new(move |state, plan, _, _, _, _| {
                 count.fetch_add(1, Ordering::SeqCst);
                 submitted(state, plan);
-                Ended::Exited { code: 0 }
+                Ended::Exited { code: 0, stderr: String::new() }
             });
             change(&f.config.state);
             let original = f.original();
@@ -2050,7 +2079,7 @@ os._exit(0)"#;
         let released = std::sync::Mutex::new(released);
         let mut f = Fixture::new(|state, plan, _, _, _, _| {
             submitted(state, plan);
-            Ended::Exited { code: 0 }
+            Ended::Exited { code: 0, stderr: String::new() }
         });
         f.runtime.fixture_read(
             Some(Arc::new(move || {
@@ -2110,7 +2139,7 @@ os._exit(0)"#;
     fn a_receipt_read_past_its_deadline_is_unknown_however_exact() {
         let mut f = Fixture::new(|state, plan, _, _, _, _| {
             submitted(state, plan);
-            Ended::Exited { code: 0 }
+            Ended::Exited { code: 0, stderr: String::new() }
         });
         f.runtime.fixture_read(
             Some(Arc::new(|| std::thread::sleep(Duration::from_millis(300)))),
@@ -2131,7 +2160,7 @@ os._exit(0)"#;
     fn store_recovery_leaves_the_runtimes_own_original_to_it() {
         let mut f = Fixture::new(|state, plan, _, _, _, _| {
             submitted(state, plan);
-            Ended::Exited { code: 0 }
+            Ended::Exited { code: 0, stderr: String::new() }
         });
         let original = f.original();
         assert!(f.admit(&original).accepted);
@@ -2175,7 +2204,7 @@ os._exit(0)"#;
         let f = Fixture::new(move |state, plan, _, _, _, _| {
             count.fetch_add(1, Ordering::SeqCst);
             submitted(state, plan);
-            Ended::Exited { code: 0 }
+            Ended::Exited { code: 0, stderr: String::new() }
         });
         (sent, f)
     }
@@ -2390,7 +2419,7 @@ os._exit(0)"#;
                       _: &Arc<dyn Send + Sync>| {
                     sent.fetch_add(1, Ordering::SeqCst);
                     submitted(&state, plan);
-                    Ended::Exited { code: 0 }
+                    Ended::Exited { code: 0, stderr: String::new() }
                 }
             }),
         );
@@ -2876,7 +2905,7 @@ mod spent_deadline {
             soon(),
             |_| Ok(()),
         );
-        assert_eq!(ended, Ended::Exited { code: 0 });
+        assert_eq!(ended, Ended::Exited { code: 0, stderr: String::new() });
     }
 }
 

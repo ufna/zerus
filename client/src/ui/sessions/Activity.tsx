@@ -1,3 +1,4 @@
+import { sendErrorText } from "./send-error";
 import { nativeRoute } from "./native-entry";
 import { withoutHeld } from "./held-message";
 import { tr } from "../../i18n";
@@ -539,7 +540,7 @@ function ItemBody(props: { item: ActivityItem; scope?: AttachmentScope }) {
           )}</For>
         </Show>
       </Show>
-      <Show when={it().local?.error}><p class="act-error">{it().local!.error}</p></Show>
+      <Show when={it().local?.error}><p class="act-error">{sendErrorText(it().local!.error!)}</p></Show>
       <Show when={it().code}><pre class="act-code mono">{it().code}</pre></Show>
       <Show when={it().attachments}>
         <div class="act-attachments">

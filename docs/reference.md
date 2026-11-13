@@ -50,6 +50,11 @@ variables, in the environment it gives every later pane, and an agent starts
 without them even when a server already holds them. `hgs send` reads the agent's
 styled prompt; under `NO_COLOR` Claude Code's placeholder looks like a draft and
 every send is refused while it shows.
+Existing agents keep their launch environment. When a send refuses an unstyled
+Claude composer and the same verified agent process's readable environment
+contains `NO_COLOR`, the refusal explains that the session needs a restart.
+Unreadable or changed process evidence keeps the generic refusal. Zerus never
+restarts the session automatically or accepts unstyled hint text as an empty input.
 
 ### Session references
 
@@ -2342,6 +2347,11 @@ through that refusal. Deliberate send refusals keep only the latest private
 Each sample is at most 16 KiB: cursor coordinates, bounded cursor-row text and
 structural metadata for at most eight nearby rows. Text from other rows and the
 attempted message is omitted. Listing sessions does not create samples.
+For a desktop service deferred send, a completed nonzero `hgs send` exit also
+retains its exit code and at most 1024 UTF-8 bytes of the first stderr line in
+the original receipt, without control characters. The failed Activity row shows
+that diagnostic. It never proves that nothing was sent: a missing input receipt
+stays Unknown, with the existing check-Terminal caution and no automatic retry.
 For Claude and Kimi messages ending in a literal backslash, the paste includes a
 final newline so the single Enter submits the unchanged message instead of
 activating the agent's backslash-Enter line continuation. This is verified
