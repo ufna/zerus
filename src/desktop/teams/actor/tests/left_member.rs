@@ -8,11 +8,9 @@
 //! the lead is told in every case.
 use super::real_rows::Production;
 use super::rows::seed_row;
-use crate::desktop::teams::actor::ports::{DeliveryResult, Ports};
 use crate::teams::ops::tests::*;
-use crate::teams::ops::{Actor, HandoutOutcome, Operation};
+use crate::teams::ops::{Actor, Operation};
 use serde_json::{json, Value};
-use zerus_team_plan::model::{Member, Node, TaskRef, Team};
 
 const MINUTE: i64 = 60_000;
 const T0: i64 = 10_000_000;
@@ -115,7 +113,6 @@ fn reserved_then_left(
     );
     assert!(p.deliveries.is_empty(), "{how}: {:?}", p.deliveries);
     let id = effect_id(h);
-    drop(a);
     left(h, how);
     let machine = h.store.team(TEAM).unwrap().unwrap().home;
     (
@@ -198,7 +195,7 @@ fn a_reservation_for_a_member_that_left_the_active_set_is_settled_at_the_next_pa
         );
         assert!(
             a.ledger
-                .get(TEAM, &format!("gate:handout:1"))
+                .get(TEAM, "gate:handout:1")
                 .unwrap()
                 .is_none(),
             "{how}: no failure gate"
