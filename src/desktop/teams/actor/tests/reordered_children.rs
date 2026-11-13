@@ -106,7 +106,8 @@ const EXPECTED: [(
         true,
         false,
         None,
-        Some(true),
+        // A busy row has no process sample, so presence itself is unknown.
+        None,
     ),
     // One of two children reordered: the other one's history is unaffected.
     (
@@ -128,7 +129,7 @@ const EXPECTED: [(
         false,
         false,
         None,
-        Some(true),
+        None,
     ),
     // Nothing else changes: a real new child counts, a lone Stop stays history.
     (
@@ -139,7 +140,7 @@ const EXPECTED: [(
         false,
         false,
         None,
-        Some(true),
+        None,
     ),
     (
         "claude_stop_only",

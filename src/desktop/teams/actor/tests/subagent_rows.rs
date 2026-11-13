@@ -86,6 +86,16 @@ fn produce() -> BTreeMap<&'static str, Value> {
             json!({"subagent_groups":groups,"subagent_groups_complete":true,"subagents":external}),
         ),
     );
+    // An unsettled count above zero, at the row level: a working child is
+    // still present, and presence must not be dropped because the count
+    // leaves something out. The producer row's own keys keep their values
+    // except the three this case is about; a live row with work above zero
+    // reads busy, and a busy row has no process sample to settle presence.
+    let mut active = super::rows::producer_row("kimi");
+    active["subagent_source"] = json!("mixed_hooks");
+    active["subagent_counts_complete"] = json!(false);
+    active["subagent_active_count"] = json!(2);
+    rows.insert("mixed_hooks_unsettled_active", active);
     rows.insert("unavailable", live("claude", json!({"last_event_at":null})));
     let dsh = |settled: bool| {
         let record = with("dsh", &root, json!({}));
@@ -233,7 +243,7 @@ fn a_subagent_count_is_settled_only_when_every_child_that_may_run_now_is_counted
             Some(Background),
         ),
     ];
-    assert_eq!(rows.len(), expected.len());
+    assert_eq!(rows.len(), expected.len() + 1);
     for (name, source, complete, count, unsettled, free, fact) in expected {
         let row = &rows[name];
         assert_eq!(row["subagent_source"], source, "{name}");
@@ -251,6 +261,27 @@ fn a_subagent_count_is_settled_only_when_every_child_that_may_run_now_is_counted
             );
         }
     }
+    // An unsettled count above zero is busy, not unreadable, and its working
+    // child is still seen: presence is not dropped along with the count.
+    let active = Facts::of(&rows["mixed_hooks_unsettled_active"]);
+    assert_eq!(
+        rows["mixed_hooks_unsettled_active"]["subagent_source"],
+        "mixed_hooks"
+    );
+    assert_eq!(
+        rows["mixed_hooks_unsettled_active"]["subagent_counts_complete"],
+        false
+    );
+    assert_eq!(
+        (
+            active.children,
+            active.children_unsettled,
+            active.free(),
+            active.unknown()
+        ),
+        (Some(2), true, false, None)
+    );
+    assert_eq!(active.seen().map(|seen| seen.working), Some(true));
     // Every value the reader classifies has a producer-made row here.
     let made: std::collections::BTreeSet<&str> = rows
         .values()
@@ -274,40 +305,162 @@ fn an_unclassified_source_is_unknown() {
     }
 }
 
-/// Every `subagent_source` a producer writes anywhere under src/ is one the
-/// reader classifies, and every classified one is written: a producer that
-/// gains a value fails here before a member is read wrongly.
-#[test]
-fn every_subagent_source_a_producer_writes_is_classified() {
-    fn files(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
-        for entry in std::fs::read_dir(dir).unwrap().flatten() {
+/// A producer's `subagent_source` values, read from production code only,
+/// whatever form writes them: a JSON field, an index assignment with or
+/// without spaces, a match arm or an `if` inside the value, and in every
+/// crate that could produce a row. A value the guard cannot read statically
+/// (built by `format!`, held in a variable) is a failure, not a silent pass.
+mod source_text {
+    use std::path::{Path, PathBuf};
+
+    pub(super) fn files() -> Vec<PathBuf> {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let mut found = Vec::new();
+        for dir in ["src", "crates", "client/core/src"] {
+            read(&root.join(dir), &mut found);
+        }
+        found
+    }
+
+    fn read(dir: &Path, out: &mut Vec<PathBuf>) {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
             let path = entry.path();
             if path.is_dir() {
-                files(&path, out);
-            } else if path.extension().is_some_and(|e| e == "rs") {
-                out.push(path);
+                read(&path, out);
+            } else if path.extension().is_some_and(|extension| extension == "rs") {
+                let text = path.to_string_lossy();
+                if !text.contains("/tests/") && !text.ends_with("tests.rs") {
+                    out.push(path);
+                }
             }
         }
     }
-    let mut paths = Vec::new();
-    files(
-        &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src"),
-        &mut paths,
-    );
-    let mut written = std::collections::BTreeSet::new();
-    for path in paths {
-        let text = std::fs::read_to_string(&path).unwrap();
-        // The key followed by its string value in a JSON literal.
-        for (at, key) in text.match_indices("\"subagent_source\":\"") {
-            let rest = &text[at + key.len()..];
-            written.insert(rest[..rest.find('"').unwrap()].to_owned());
+
+    /// Each value expression that writes the key, with its line. Reading the
+    /// key (a lookup, a comparison, a key list) writes nothing and is skipped.
+    pub(super) fn written(production: &str) -> Vec<(usize, String)> {
+        let key = "\"subagent_source\"";
+        let mut found = Vec::new();
+        let mut search = 0;
+        while let Some(offset) = production[search..].find(key) {
+            let at = search + offset;
+            search = at + key.len();
+            let rest = &production[search..];
+            let bytes = rest.as_bytes();
+            let mut index = 0;
+            while index < bytes.len() && bytes[index].is_ascii_whitespace() {
+                index += 1;
+            }
+            let value = match bytes.get(index) {
+                Some(b':') => Some(index + 1),
+                Some(b']') => {
+                    let mut next = index + 1;
+                    while next < bytes.len() && bytes[next].is_ascii_whitespace() {
+                        next += 1;
+                    }
+                    (bytes.get(next) == Some(&b'=')).then_some(next + 1)
+                }
+                _ => None,
+            };
+            let Some(value) = value else {
+                continue;
+            };
+            let expression = expression(&rest[value..]);
+            let line = production[..at].matches('\n').count() + 1;
+            found.push((line, expression));
         }
-        // An assignment to the key's index: every literal up to its end.
-        for (at, key) in text.match_indices("[\"subagent_source\"] =") {
-            let rest = &text[at + key.len()..];
-            let statement = &rest[..rest.find(';').unwrap()];
-            for literal in statement.split('"').skip(1).step_by(2) {
-                written.insert(literal.to_owned());
+        found
+    }
+
+    /// Up to the value's own terminator, through nested calls and braces.
+    fn expression(text: &str) -> String {
+        let bytes = text.as_bytes();
+        let mut depth = 0i32;
+        let mut in_string = false;
+        let mut escaped = false;
+        for (index, byte) in bytes.iter().enumerate() {
+            if in_string {
+                if escaped {
+                    escaped = false;
+                } else if *byte == b'\\' {
+                    escaped = true;
+                } else if *byte == b'"' {
+                    in_string = false;
+                }
+                continue;
+            }
+            match *byte {
+                b'"' => in_string = true,
+                b'(' | b'[' | b'{' => depth += 1,
+                b')' | b']' | b'}' if depth == 0 => return text[..index].trim().to_owned(),
+                b')' | b']' | b'}' => depth -= 1,
+                b',' | b';' if depth == 0 => return text[..index].trim().to_owned(),
+                _ => {}
+            }
+        }
+        text.trim().to_owned()
+    }
+
+    /// The string literals in a value expression, unescaped for these
+    /// simple values.
+    pub(super) fn literals(expression: &str) -> Vec<String> {
+        let bytes = expression.as_bytes();
+        let mut found = Vec::new();
+        let mut index = 0;
+        while index < bytes.len() {
+            if bytes[index] != b'"' {
+                index += 1;
+                continue;
+            }
+            let start = index + 1;
+            index = start;
+            let mut literal = String::new();
+            while index < bytes.len() && bytes[index] != b'"' {
+                if bytes[index] == b'\\' && index + 1 < bytes.len() {
+                    index += 1;
+                }
+                literal.push(bytes[index] as char);
+                index += 1;
+            }
+            found.push(literal);
+            index += 1;
+        }
+        found
+    }
+}
+
+/// Every `subagent_source` a producer writes, in every form and crate, is one
+/// the reader classifies; every classified one is written. A producer that
+/// gains a value, or writes one the guard cannot read, fails here before a
+/// member is read wrongly.
+#[test]
+fn every_subagent_source_a_producer_writes_is_classified() {
+    let mut written = std::collections::BTreeSet::new();
+    for path in source_text::files() {
+        let text = std::fs::read_to_string(&path).unwrap();
+        // Production code only: every producer file below src/, crates/ and
+        // client/core/src writes before its first `#[cfg(test)]` section.
+        let production = match text.find("\n#[cfg(test)]") {
+            Some(at) => &text[..at],
+            None => &text[..],
+        };
+        for (line, expression) in source_text::written(production) {
+            let literals = source_text::literals(&expression);
+            assert!(
+                !literals.is_empty(),
+                "{}:{line}: a subagent_source value built at runtime cannot be classified: {expression}",
+                path.display()
+            );
+            for literal in literals {
+                assert!(
+                    !literal.contains('{'),
+                    "{}:{line}: a built subagent_source value cannot be classified: {expression}",
+                    path.display()
+                );
+                written.insert(literal);
             }
         }
     }
@@ -318,5 +471,4 @@ fn every_subagent_source_a_producer_writes_is_classified() {
     assert!(SOURCES
         .iter()
         .all(|(s, m)| m.is_some() || *s == "unavailable"));
-    let _ = Incomplete::History;
 }

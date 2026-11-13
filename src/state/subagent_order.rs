@@ -28,6 +28,9 @@ fn record(agent: &str) -> Value {
 
 fn apply(record: &mut Value, events: &[Value]) {
     for event in events {
+        // The hook writer's own order (`hooks::hook`): the profile counts
+        // first, then the child record.
+        telemetry::observe(record, event);
         journal::update_activity(record, event);
     }
 }
