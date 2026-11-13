@@ -513,7 +513,6 @@ fn a_merge_fact_then_a_rejection_opens_one_card_and_one_lead_item() {
         TEAM,
         node,
         seq,
-        COMMIT,
         &branch,
         &encode(&person()).unwrap(),
         1,

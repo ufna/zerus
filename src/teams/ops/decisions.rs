@@ -183,7 +183,6 @@ pub(super) fn integration(ctx: &mut Context<'_>) -> Result<()> {
             &ctx.team.id,
             *node,
             permit.decision,
-            commit,
             &ctx.team.integration_branch,
             &encode(ctx.actor)?,
             ctx.now,

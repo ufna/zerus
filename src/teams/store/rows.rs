@@ -290,11 +290,13 @@ pub(crate) fn rejected_merge(
     team: &str,
     id: u32,
     decision: u64,
-    commit: &str,
     branch: &str,
     actor: &str,
     now: i64,
 ) -> Result<bool> {
+    let Some(commit) = merged_commit(db, team, decision)? else {
+        return Ok(false);
+    };
     let exists: bool = db
         .query_row(
             "SELECT EXISTS(SELECT 1 FROM cards WHERE team=?1 AND kind='rejected_merge' AND node=?2 AND decision_seq=?3)",

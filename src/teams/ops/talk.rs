@@ -177,13 +177,12 @@ pub(super) fn decide_card(ctx: &mut Context<'_>) -> Result<()> {
     if kind == "integration" && decision == "reject" && !stale {
         let node = node.ok_or_else(missing)?;
         let seq = seq.ok_or_else(missing)?;
-        if let Some(commit) = rows::merged_commit(ctx.db, &ctx.team.id, seq)? {
+        if rows::merged_commit(ctx.db, &ctx.team.id, seq)?.is_some() {
             rows::rejected_merge(
                 ctx.db,
                 &ctx.team.id,
                 node,
                 seq,
-                &commit,
                 &ctx.team.integration_branch,
                 &encode(ctx.actor)?,
                 ctx.now,
