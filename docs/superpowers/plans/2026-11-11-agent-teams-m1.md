@@ -609,6 +609,10 @@ session of another team; a request that tries to name its actor is refused
 with `unknown_field`; with the preview off every command answers
 `teams_inactive`; page stability; the fixtures round-trip.
 
+**Known limits.** The template digest covers the template with its roles and
+pipelines, not the catalog's `planning_rules`; nothing reads the planning rules
+yet, and they will be bound into the digest when the lead starts to read them.
+
 ### Package 6: tasks and teams
 
 **Owns:** the optional `team` key in `crates/replica` task fields; in
