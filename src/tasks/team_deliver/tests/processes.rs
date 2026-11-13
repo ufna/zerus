@@ -1498,6 +1498,202 @@ fn a_dialog_refusals_answer_carries_the_typed_name_only_when_known() {
     assert!(unknown.get("dialog").is_none(), "{unknown}");
 }
 
+/// zerus-63rru.83: a hand-out refused by a dialog its own detector reads
+/// from the live screen. The pane shows the fixture's screen in a real
+/// private terminal; the command refuses before any key with the typed
+/// cause and the dialog's typed name.
+#[derive(Debug)]
+pub(crate) struct DialogSeen {
+    pub exit: i32,
+    pub stdout: String,
+    pub error: Option<String>,
+    pub before: String,
+    pub after: String,
+}
+
+pub(crate) fn dialog_waiting(fixture: &str, agent: &str, marker: &str) -> DialogSeen {
+    use sha2::{Digest, Sha256};
+    let f = Fixture::new();
+    let state = f.config.state.clone();
+    let file = |name: &str| state.join(format!("{:x}.json", Sha256::digest(name.as_bytes())));
+    // The .79 recipe: the fixture's own record for its member (the
+    // dispatch's run and conversation), edited to the family and the
+    // dialog's pane, written back under the member's session label.
+    let mut record: Value =
+        serde_json::from_slice(&std::fs::read(file("codex/deliver-m1")).unwrap()).unwrap();
+    std::fs::remove_file(file("codex/deliver-m1")).unwrap();
+    let terminal = Terminal::new(state.join("tmux"));
+    // The pane's height is the fixture's own line count: the detectors
+    // parse the screen as their agents drew it, extra rows included.
+    terminal.tmux(&[
+        "new-session",
+        "-d",
+        "-s",
+        "deliver-m1",
+        "-x",
+        "120",
+        "-y",
+        "50",
+        &format!(
+            "stty -icanon -echo; printf '\\033[?2004h'; cat {fixture}; exec sleep 600"
+        ),
+    ]);
+    let pane = terminal.tmux(&["display-message", "-p", "-t", "deliver-m1", "#{pane_id}"]);
+    let run = record["run_id"].as_str().unwrap().to_owned();
+    terminal.tmux(&["set-option", "-p", "-t", &pane, "@hgs_run", &run]);
+    let pid: u32 = terminal
+        .tmux(&["display-message", "-p", "-t", &pane, "#{pane_pid}"])
+        .parse()
+        .unwrap();
+    record["agent"] = json!(agent);
+    record["name"] = json!("claude/deliver-m1");
+    // The fields each detector's eligible() reads that the fixture's own
+    // record does not carry, as the product's producer writes them
+    // (zerus-63rru.83): run_identity_version 1 and an empty supervisor.
+    record["run_identity_version"] = json!(1);
+    record["supervisor"] = json!({});
+    record["activity"] = json!("idle");
+    record["phase"] = json!(if fixture.contains("approval") { "approval" } else { "idle" });
+    // The fields each family's detector reads, and no more: the codex and
+    // kimi dialogs need a conversation that has not begun.
+    if agent != "claude" {
+        // The first-message shape the codex and kimi detectors' eligible()
+        // read, as the product's producer writes a fresh session: no
+        // conversation, no pending identities, no events yet.
+        record["conversation_id"] = json!("");
+        record["expected_id"] = json!("");
+        record["requested_id"] = json!("");
+        record["fork_parent_id"] = json!("");
+        record["last_event_at"] = json!(0.0);
+        record["input_pending_at"] = json!(0.0);
+    }
+    record["pane"] = json!(pane);
+    record["terminal_name"] = json!("deliver-m1");
+    record["pid"] = json!(pid);
+    record["process_start"] = json!(crate::platform::process_start_time(pid).unwrap());
+    std::fs::write(file("claude/deliver-m1"), record.to_string()).unwrap();
+    let until = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let before = loop {
+        let screen = terminal.tmux(&["capture-pane", "-p", "-t", &pane]);
+        if screen.contains(marker) {
+            break screen;
+        }
+        assert!(
+            std::time::Instant::now() < until,
+            "the pane never showed the dialog within 10 seconds: {screen:?}"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    };
+    let mut args = vec!["task".to_owned(), "team-deliver".to_owned()];
+    args.extend(f.args(false));
+    let (exit, stdout, error) = f.cli(&args, &serde_json::to_string(&f.body).unwrap());
+    let after = terminal.tmux(&["capture-pane", "-p", "-t", &pane]);
+    drop(terminal);
+    DialogSeen {
+        exit,
+        stdout,
+        error,
+        before,
+        after,
+    }
+}
+
+/// Each dialog with a fixture, in a real private pane: refused as
+/// `terminal_waiting` with the dialog's typed name, and nothing is typed.
+#[test]
+fn each_dialog_refusal_is_typed_waiting_with_its_name() {
+    for (fixture, agent, name, marker, fragment) in [
+        (
+            "tests/fixtures/claude-resume.txt",
+            "claude",
+            "claude_resume",
+            "Resume",
+            "resume choice",
+        ),
+        (
+            "tests/fixtures/claude-usage-limit.txt",
+            "claude",
+            "claude_usage_limit",
+            "What do you want to do?",
+            "usage-limit choice",
+        ),
+        (
+            "tests/fixtures/codex-update-prompt.txt",
+            "codex",
+            "codex_update",
+            "Update",
+            "update choice",
+        ),
+        (
+            "tests/fixtures/codex-folder-trust.txt",
+            "codex",
+            "codex_trust",
+            "Continue only if you trust",
+            "folder trust approval",
+        ),
+        (
+            "tests/fixtures/codex-hooks-trust.txt",
+            "codex",
+            "codex_hooks_trust",
+            "Hooks need review",
+            "hook trust review",
+        ),
+        (
+            "tests/fixtures/codex-rate-limit.txt",
+            "codex",
+            "codex_rate_limit",
+            "Approaching rate limits",
+            "rate limit",
+        ),
+        (
+            "tests/fixtures/codex-goal-resume.txt",
+            "codex",
+            "codex_goal_resume",
+            "resume",
+            "goal resume",
+        ),
+        (
+            "tests/fixtures/kimi-folder-trust.txt",
+            "kimi",
+            "kimi_trust",
+            "Trust this folder?",
+            "folder trust approval",
+        ),
+        (
+            "tests/fixtures/claude-folder-trust.txt",
+            "claude",
+            "claude_trust",
+            "Quick safety check",
+            "folder trust approval",
+        ),
+        (
+            "tests/fixtures/claude-approval-running.txt",
+            "claude",
+            "claude_approval",
+            "Actualizing…",
+            "tool or safety approval",
+        ),
+    ] {
+        let seen = dialog_waiting(fixture, agent, marker);
+        assert_eq!(seen.exit, 0, "{fixture}: {seen:?}");
+        assert_eq!(seen.error, None, "{fixture}: {seen:?}");
+        let reply: Value = serde_json::from_str(&seen.stdout).unwrap();
+        assert_eq!(reply["state"], "refused", "{fixture}: {reply}");
+        assert_eq!(reply["cause"], "terminal_waiting", "{fixture}: {reply}");
+        if reply.get("dialog") != Some(&json!(name)) {
+            panic!(
+                "{fixture}: no typed dialog. before:\n{}\nafter:\n{}",
+                seen.before, seen.after
+            );
+        }
+        assert!(
+            reply["error"].as_str().unwrap().contains(fragment),
+            "{fixture}: {reply}"
+        );
+        assert_eq!(seen.before, seen.after, "{fixture}: nothing was typed");
+    }
+}
+
 /// One hand-out that cannot reach its reservation, as the service sees it
 /// (zerus-63rru.58).
 #[derive(Debug)]
