@@ -270,6 +270,77 @@ pub(crate) fn hand_back_item(
     .map_err(storage)?;
     Ok(db.last_insert_rowid() as u64)
 }
+/// The merge commit recorded for a decision, if a merge fact was written.
+pub(crate) fn merged_commit(db: &Connection, team: &str, decision: u64) -> Result<Option<String>> {
+    db.query_row(
+        "SELECT commit_id FROM integration_facts WHERE team=?1 AND decision=?2 AND commit_id IS NOT NULL LIMIT 1",
+        params![team, decision],
+        |r| r.get(0),
+    )
+    .optional()
+    .map_err(storage)
+}
+/// One owner card and one lead inbox item when a merge fact survives a
+/// rejected integration (zerus-63rru.25): the rejection did not undo the
+/// merge, and only a revert on the integration branch removes it. Keyed by
+/// the decision, so a replay opens nothing; the card takes acknowledged
+/// alone. Nothing else is written.
+pub(crate) fn rejected_merge(
+    db: &Connection,
+    team: &str,
+    id: u32,
+    decision: u64,
+    commit: &str,
+    branch: &str,
+    actor: &str,
+    now: i64,
+) -> Result<bool> {
+    let exists: bool = db
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM cards WHERE team=?1 AND kind='rejected_merge' AND node=?2 AND decision_seq=?3)",
+            params![team, id, decision],
+            |r| r.get(0),
+        )
+        .map_err(storage)?;
+    if exists {
+        return Ok(false);
+    }
+    let n = node(db, team, id)?.ok_or_else(|| {
+        Problem::new(code::INVALID_STATE, "The merged node is missing.")
+    })?;
+    let generation: u32 = db
+        .query_row(
+            "SELECT generation FROM nodes WHERE team=?1 AND id=?2 UNION ALL SELECT generation FROM node_archive WHERE team=?1 AND id=?2 LIMIT 1",
+            params![team, id],
+            |r| r.get(0),
+        )
+        .map_err(storage)?;
+    let task = n
+        .task
+        .as_ref()
+        .map(|task| format!("{}/{}", task.project, task.uuid))
+        .unwrap_or_default();
+    let facts = if task.is_empty() {
+        format!("{} (node {id})", n.title)
+    } else {
+        format!("{} (task {task}, node {id})", n.title)
+    };
+    let text = format!(
+        "{facts} was merged as {commit} into {branch} before this integration was rejected. The rejection did not undo the merge; only a revert on {branch} removes it."
+    );
+    db.execute(
+        "INSERT INTO cards(team,kind,node,actor,text,created_ms,decision_seq) VALUES(?1,'rejected_merge',?2,?3,?4,?5,?6)",
+        params![team, id, actor, text, now, decision],
+    )
+    .map_err(storage)?;
+    db.execute(
+        "INSERT INTO inbox(team,kind,node,generation,actor,text,created_ms) VALUES(?1,'rejected_merge',?2,?3,?4,?5,?6)",
+        params![team, id, generation, actor, text, now],
+    )
+    .map_err(storage)?;
+    Ok(true)
+}
+
 /// A node's settlement expires its integration cards; team settlement expires
 /// every open card, including proposals without a node.
 pub(crate) fn close_cards(

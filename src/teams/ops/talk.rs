@@ -172,6 +172,24 @@ pub(super) fn decide_card(ctx: &mut Context<'_>) -> Result<()> {
             ],
         )
         .map_err(storage)?;
+    // A merge recorded before this rejection is still in the integration
+    // branch: the person is told once, without changing the decision.
+    if kind == "integration" && decision == "reject" && !stale {
+        let node = node.ok_or_else(missing)?;
+        let seq = seq.ok_or_else(missing)?;
+        if let Some(commit) = rows::merged_commit(ctx.db, &ctx.team.id, seq)? {
+            rows::rejected_merge(
+                ctx.db,
+                &ctx.team.id,
+                node,
+                seq,
+                &commit,
+                &ctx.team.integration_branch,
+                &encode(ctx.actor)?,
+                ctx.now,
+            )?;
+        }
+    }
     Ok(())
 }
 fn decide_integration(ctx: &Context<'_>, node: u32, seq: u64, answer: &str) -> Result<bool> {
