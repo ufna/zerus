@@ -234,6 +234,11 @@ jobs:
       - name: Disk usage after replica tests
         if: ${{ !cancelled() }}
         run: python3 scripts/ci/ubuntu-disk.py report after-replica-tests
+      - name: Ordinary file lock crate (format, lints, owner and fork tests)
+        run: |
+          cargo +1.99.1 fmt --check --manifest-path crates/file-lock/Cargo.toml
+          cargo +1.99.1 clippy --locked --manifest-path crates/file-lock/Cargo.toml --target-dir target --all-targets -- -D warnings
+          cargo +1.99.1 test --locked --manifest-path crates/file-lock/Cargo.toml --target-dir target -- --test-threads=4
       - name: Watch protocol crate (format, lints, tests)
         run: |
           cargo +1.99.1 fmt --check --manifest-path crates/watch-protocol/Cargo.toml

@@ -63,24 +63,11 @@ struct Slot {
     lock_name: OsString,
 }
 /// Process-owned metadata exclusion, never an inherited native custody lease.
-struct MetadataLock {
-    file: File,
-    owner_pid: u32,
-}
+struct MetadataLock(zerus_file_lock::OwnedLock);
 impl std::ops::Deref for MetadataLock {
     type Target = File;
     fn deref(&self) -> &File {
-        &self.file
-    }
-}
-impl Drop for MetadataLock {
-    fn drop(&mut self) {
-        // Close alone lets an unrelated pre-exec child extend this exclusion.
-        // A fork child's copy must never unlock the original's live journal.
-        if self.owner_pid == std::process::id() {
-            // SAFETY: only this metadata flock; native custody is separate.
-            let _ = unsafe { libc::flock(self.file.as_raw_fd(), libc::LOCK_UN) };
-        }
+        self.0.file()
     }
 }
 impl Slot {
@@ -201,10 +188,7 @@ impl Slot {
                 Error::Unavailable
             });
         }
-        Ok(MetadataLock {
-            file,
-            owner_pid: std::process::id(),
-        })
+        Ok(MetadataLock(zerus_file_lock::OwnedLock::acquired(file)))
     }
 }
 struct Disk {
