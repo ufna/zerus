@@ -1,5 +1,9 @@
 {
-  "about": "Real input-witness answers of the bridge on the official harness (zerus-hfw2s), message and request IDs and the host generation normalised. Written by tests/test_dsh_native.py NativeInputWitness with ZERUS_REGENERATE_DSH_WITNESS_FACTS=1; read by src/state/dsh/witness.rs.",
+  "about": "Real input-witness answers of the bridge on the official harness (zerus-hfw2s), message and request IDs and the host generation normalised. Written by tests/test_dsh_native.py NativeInputWitness with ZERUS_REGENERATE_DSH_WITNESS_FACTS=1 on the pinned host; read by src/state/dsh/witness.rs.",
+  "host": {
+    "package": "@deepseek-ai/dsh",
+    "version": "0.2.1-rc.2"
+  },
   "scenarios": {
     "dropped_after_claim": {
       "digest": "18e99a318d1f6d65348c82820665440f66a2d80e0992125477f4f244909aeb5e",
@@ -95,6 +99,7 @@
           }
         ],
         "from": 16,
+        "frozen": true,
         "generation": "<generation>",
         "idle": true,
         "live": false,
@@ -180,14 +185,14 @@
             "type": "user/message"
           },
           {
-            "digest": "1d39a44df1b2b0a83f21472c2d25a02286f6bdc508f59de493630916d9937620",
+            "digest": "887bc5bd399e3c43468a9a288ec3fd52d16ff49246686e27c9dbc4208a4fdd1f",
             "id": "<message-1>",
             "rpcId": null,
             "seq": 12,
             "type": "user/message"
           },
           {
-            "digest": "6a471af1cdb7f96c1599ae369fa9707ac1261af225d941ff5735ea7a1492f37e",
+            "digest": "fd2fe277430f4913fdfd1ddfba032ed50da3600fb3675701ddffbaaf5e890e40",
             "id": "<message-2>",
             "rpcId": null,
             "seq": 13,

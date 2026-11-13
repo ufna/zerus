@@ -1343,6 +1343,9 @@ class NativeDefaultEffort(unittest.TestCase):
 WITNESS_FACTS = REPO / 'tests/fixtures/dsh-input-witness-facts.json'
 # Rewrites WITNESS_FACTS from this run's real input-witness answers.
 REGENERATE_WITNESS_FACTS = 'ZERUS_REGENERATE_DSH_WITNESS_FACTS'
+# WITNESS_FACTS comes from the pinned reviewed host only (zerus-hfw2s.9); the
+# Rust tests reading it require the same version.
+WITNESS_FACTS_HOST = '0.2.1-rc.2'
 # A bare session mention the host's SessionReferenceResolver cannot resolve:
 # the turn that claims it ends in error (probe C1, zerus-hfw2s).
 BAD_MENTION = 'dsh-session:session-00000000-0000-4000-8000-000000000000'
@@ -1451,6 +1454,12 @@ class NativeInputWitness(unittest.TestCase):
         self.assertTrue(canceled, facts)
         self.assertTrue(any(start <= canceled[-1]['seq'] < end for start, end in facts['disposals']), facts)
         self.assertEqual(self.delivered(facts), [])
+        # zerus-hfw2s.9: a frozen record pages from fromSeq like a live one.
+        paged = self.rpc('input-witness', {'sessionId': sid, 'requestId': rid, 'generation': self.generation(),
+                                           'waitMs': 0, 'fromSeq': canceled[-1]['seq']})
+        self.assertIs(paged.get('frozen'), True, paged)
+        self.assertEqual([e['seq'] for e in paged['events']], [e['seq'] for e in facts['events'] if e['seq'] >= canceled[-1]['seq']])
+        self.assertNotIn(facts['spliceSeq'], [e['seq'] for e in paged['events']])
         captured['host_disposed'] = (facts, rid, digest)
         # Claimed by a turn that fails on a bare session mention: dropped.
         sid = self.create()['conversation_id']
@@ -1458,14 +1467,26 @@ class NativeInputWitness(unittest.TestCase):
         facts = self.witness(sid, rid)
         self.assert_dropped(facts)
         captured['dropped_after_claim'] = (facts, rid, digest)
+        host = json.loads((fixture.package_root(DSH) / 'package.json').read_text())['version']
         if os.environ.get(REGENERATE_WITNESS_FACTS) == '1':
+            self.assertEqual(host, WITNESS_FACTS_HOST, 'Regenerate the witness facts on the pinned reviewed host only')
             WITNESS_FACTS.write_text(json.dumps({
                 'about': 'Real input-witness answers of the bridge on the official harness (zerus-hfw2s), message and '
                          'request IDs and the host generation normalised. Written by tests/test_dsh_native.py '
-                         f'NativeInputWitness with {REGENERATE_WITNESS_FACTS}=1; read by src/state/dsh/witness.rs.',
+                         f'NativeInputWitness with {REGENERATE_WITNESS_FACTS}=1 on the pinned host; read by '
+                         'src/state/dsh/witness.rs.',
+                'host': {'package': '@deepseek-ai/dsh', 'version': host},
                 'scenarios': {name: {'expected': name, 'request_id': '<request>', 'digest': digest,
                                      'facts': self.normalised(facts, rid)} for name, (facts, rid, digest) in captured.items()},
             }, indent=2, sort_keys=True) + '\n')
+        # On the pinned host the committed facts must still be what it answers:
+        # the same events, in order, with their outcome, reason and frozen state.
+        stored = json.loads(WITNESS_FACTS.read_text())
+        self.assertEqual(stored['host']['version'], WITNESS_FACTS_HOST)
+        if host == WITNESS_FACTS_HOST:
+            shape = lambda facts: (facts.get('frozen'), [(e['type'], e.get('outcome'), e.get('reason')) for e in facts['events']])
+            for name, (facts, rid, _) in captured.items():
+                self.assertEqual(shape(self.normalised(facts, rid)), shape(stored['scenarios'][name]['facts']), name)
 
     @staticmethod
     def normalised(facts, rid):
