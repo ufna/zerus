@@ -479,6 +479,7 @@ fn two_teams_keep_their_own_facts() {
                 previous_revision: String::new(),
                 stage: TaskStage::Todo,
                 cancelled: false,
+                current_cancelled: false,
                 rank: "a00000001".into(),
                 title: "Task 1".into(),
                 attempt: 0,
