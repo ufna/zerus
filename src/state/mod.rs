@@ -37,6 +37,7 @@ mod goals;
 mod hooks;
 pub(crate) mod hook_health;
 mod input;
+pub(crate) use input::dialog_clause;
 // Its only callers are the Teams actor's tests, which run on Linux and macOS.
 #[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
 pub(crate) mod listing_fixture;

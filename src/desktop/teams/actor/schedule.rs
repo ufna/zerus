@@ -57,7 +57,7 @@ impl Needs {
         for h in ready::handouts(&again) {
             if let Some((role, fact)) = self.unreadable.get(&h.member) {
                 self.needed
-                    .insert(h.member.clone(), (h.node, role.clone(), *fact));
+                    .insert(h.member.clone(), (h.node, role.clone(), fact.clone()));
             }
         }
     }
@@ -209,8 +209,10 @@ impl Runtime {
                 match self.terminal_state(ports, team, &m, now)? {
                     // Its terminal holds input (zerus-63rru.79): not free, and
                     // needed like a member that cannot be read.
-                    TerminalState::Standing => {
-                        Some(Availability::Unreadable(Fact::TerminalWaiting))
+                    TerminalState::Standing { dialog } => {
+                        Some(Availability::Unreadable(Fact::TerminalWaiting {
+                            dialog,
+                        }))
                     }
                     // Tried again: a card for it stays as it is this pass.
                     TerminalState::Lapsed => {
@@ -222,11 +224,11 @@ impl Runtime {
             } else {
                 Some(Availability::Busy)
             };
-            match answer {
+            match &answer {
                 Some(Availability::Unreadable(fact)) => {
                     needs
                         .unreadable
-                        .insert(m.id.clone(), (m.role.clone(), fact));
+                        .insert(m.id.clone(), (m.role.clone(), fact.clone()));
                 }
                 None => {
                     needs.unread.insert(m.id.clone());

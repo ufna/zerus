@@ -82,6 +82,7 @@ impl Delivery for Fake {
                 attempts::Delivered::NotAdmitted {
                     reason: "fixture closed before input".into(),
                     waiting: false,
+                    dialog: None,
                 }
             }
             _ => {
@@ -1459,6 +1460,42 @@ pub(crate) fn waiting_handout(activity: &str, phase: &str) -> WaitingHandout {
         after,
         reserved,
     }
+}
+
+/// The typed shape of a dialog refusal's answer (zerus-63rru.83): the cause
+/// stays `terminal_waiting`, and the dialog's typed name rides along only
+/// when the gate knew one. An older actor reads the answer as today.
+#[test]
+fn a_dialog_refusals_answer_carries_the_typed_name_only_when_known() {
+    let body = serde_json::from_value(json!({
+        "schema": 1,
+        "id": "example",
+        "team": "team",
+        "node": 1,
+        "member": "m1"
+    }))
+    .unwrap();
+    let known = crate::tasks::team_deliver::delivered_test_answer(
+        &body,
+        crate::tasks::attempts::Delivered::NotAdmitted {
+            reason: "Claude is waiting for a usage-limit choice. Choose an option in Activity or Terminal before sending a message.".into(),
+            waiting: true,
+            dialog: Some("claude_usage_limit".into()),
+        },
+    );
+    assert_eq!(known["cause"], "terminal_waiting");
+    assert_eq!(known["dialog"], "claude_usage_limit");
+    assert_eq!(known["state"], "refused");
+    let unknown = crate::tasks::team_deliver::delivered_test_answer(
+        &body,
+        crate::tasks::attempts::Delivered::NotAdmitted {
+            reason: "The member's terminal holds input".into(),
+            waiting: true,
+            dialog: None,
+        },
+    );
+    assert_eq!(unknown["cause"], "terminal_waiting");
+    assert!(unknown.get("dialog").is_none(), "{unknown}");
 }
 
 /// One hand-out that cannot reach its reservation, as the service sees it
