@@ -1829,3 +1829,28 @@ pub(crate) fn blocked_handout(
         inbox,
     }
 }
+
+/// The command's first store open waits at most the bounded time for a held
+/// task-store lock (zerus-63rru.72): past it, the open is a busy answer, not a
+/// wait until the actor's own deadline.
+#[test]
+fn a_held_task_store_is_busy_within_the_commands_bound() {
+    let f = Fixture::new();
+    let held = ProjectStore::open(&f.config.state.join("replica"), &f.task.project).unwrap();
+    let started = Instant::now();
+    let error = match crate::tasks::store_until(
+        &f.config,
+        &f.task.project,
+        Instant::now() + crate::tasks::attempts::STORE_WAIT,
+    ) {
+        Ok(_) => panic!("a held store opened"),
+        Err(error) => error,
+    };
+    let waited = started.elapsed();
+    drop(held);
+    assert!(error.message.contains("busy"), "{error:?}");
+    assert!(
+        waited >= std::time::Duration::from_secs(4) && waited < std::time::Duration::from_secs(8),
+        "the open waited {waited:?}"
+    );
+}

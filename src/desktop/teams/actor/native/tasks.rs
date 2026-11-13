@@ -52,7 +52,7 @@ impl Native {
             Some(&bytes),
             Some(original),
             false,
-            Instant::now() + Duration::from_secs(30),
+            Instant::now() + crate::tasks::attempts::CHILD_DEADLINE,
             &self.stop,
             admit,
         )
