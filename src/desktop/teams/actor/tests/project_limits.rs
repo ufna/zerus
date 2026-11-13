@@ -551,6 +551,9 @@ fn a_reopen_is_not_delivered_while_the_fact_stands() {
     let reported = h.add(&person(), 2);
     h.submit(reported, "m1");
     h.report(reported, "m1");
+    // The lead's Return decision stays pending: the reopen pass would
+    // deliver it. The fact stands, so the pass returns before the held-step
+    // machinery, no delivery is attempted and no hold gate is written.
     h.run(
         &lead,
         Operation::Return {
@@ -559,10 +562,6 @@ fn a_reopen_is_not_delivered_while_the_fact_stands() {
         },
     )
     .unwrap();
-    h.reopen(reported, "m1");
-    // The reopen pass itself: with the fact standing it returns before the
-    // held-step machinery, so no delivery is attempted and no hold gate is
-    // written for the pending reopen.
     let team = team(&h);
     a.reopens(&mut h.store, &mut p, &team, 1000 + 30_000).unwrap();
     assert_eq!(p.calls, 1, "no reopen delivery while the fact stands");
