@@ -4,7 +4,7 @@ mod unreadable;
 use super::*;
 use serde::{Deserialize, Serialize};
 #[derive(Default, Serialize, Deserialize)]
-struct Gate {
+pub(super) struct Gate {
     revision: String,
     failures: u32,
     #[serde(default)]
@@ -176,6 +176,27 @@ impl Runtime {
             } else {
                 event.map(String::from)
             };
+            // A changed sentence ends this key's card however it stood: a
+            // dismissal lasts while the sentence is the same
+            // (zerus-63rru.23).
+            if key == "project_limit" && g.card.is_some() {
+                let card = g.card.expect("checked");
+                if let Some(kept) = store.card(&team.id, card)? {
+                    if kept.state == "open" {
+                        write(
+                            store,
+                            &team.id,
+                            Operation::CloseCard {
+                                card,
+                                reason: "The project limit's sentence changed".into(),
+                            },
+                            now,
+                        )?;
+                    }
+                }
+                g.card = None;
+                g.notice = None;
+            }
         }
         let Some(mut row) = self.reserve_gate(&team.id, &name, row, &g)? else {
             return Ok(());
@@ -187,7 +208,7 @@ impl Runtime {
             if !self.current_gate_card(store, team, &mut row, &mut g, now)? {
                 return Ok(());
             }
-            if !(force || g.failures >= 3) || g.card.is_some() {
+            if !(force || g.failures >= 3 || key == "project_limit") || g.card.is_some() {
                 return Ok(());
             }
             if !self.open_gate_card(store, team, (key, e), &mut row, &mut g, now)? {
@@ -232,6 +253,37 @@ impl Runtime {
             boundary("recovery_removed");
         }
         Ok(())
+    }
+
+    /// A retry decision on `key`'s card, consumed once: the card reference
+    /// and its notice are forgotten and the gate moves to now, so the caller
+    /// reads it as lapsed and probes on the next pass (zerus-63rru.23).
+    pub(super) fn consume_gate_retry(
+        &mut self,
+        store: &Store,
+        team: &str,
+        key: &str,
+        now: i64,
+    ) -> Result<bool> {
+        let Some(mut row) = self.ledger.get(team, &format!("gate:{key}"))? else {
+            return Ok(false);
+        };
+        let mut g: Gate =
+            serde_json::from_value(row.data.clone()).map_err(crate::teams::store::storage)?;
+        let asked = match g.card {
+            Some(card) => store
+                .card(team, card)?
+                .is_some_and(|c| c.state != "open" && c.decision.as_deref() == Some("retry")),
+            None => false,
+        };
+        if asked {
+            g.card = None;
+            g.notice = None;
+            g.at = now;
+            row.data = serde_json::to_value(&g).map_err(crate::teams::store::storage)?;
+            self.ledger.save_if_current(&mut row)?;
+        }
+        Ok(asked)
     }
 }
 

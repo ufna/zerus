@@ -180,11 +180,14 @@ mod real_rows;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 mod removed_handout;
 mod retry_cards;
+mod project_limits;
 mod unstaffed;
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 mod retired_stage;
 
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+mod reordered_children;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub(in crate::desktop::teams) mod rows;
 #[cfg(any(target_os = "linux", target_os = "macos"))]

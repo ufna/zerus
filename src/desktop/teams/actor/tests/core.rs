@@ -755,7 +755,7 @@ fn an_unsaved_intent_error_preserves_the_original_reservation() {
     let n = h.store.node(TEAM, 1).unwrap().unwrap();
     let m = h.store.member(TEAM, "m1").unwrap().unwrap();
     assert!(a
-        .send(&mut h.store, &mut p, &t, (&n, &m), "handout", 100)
+        .send(&mut h.store, &mut p, &t, (&n, &m), "handout", false, 100)
         .is_err());
     assert_eq!(p.sends, 0);
     assert!(

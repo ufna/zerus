@@ -353,6 +353,26 @@ fn project_limit_refusals_keep_the_task_commands_stable_reason_unchanged() {
     }
 }
 
+/// The typed cause beside the refusal: the actor reads it, never the
+/// sentence (zerus-63rru.23); the store outcome stays a plain refusal.
+#[test]
+fn a_project_limits_answer_carries_the_typed_cause() {
+    use crate::desktop::teams::child::Ended;
+    let raw = serde_json::json!({"schema":1,"id":"effect","state":"refused","error":"project_agent_limit: The project's hourly agent start limit is reached.","cause":"project_limit"}).to_string().into_bytes();
+    match decode_delivery(&raw, "effect") {
+        HandoutOutcome::Refused { reason } => {
+            assert!(reason.starts_with("project_agent_limit:"), "{reason:?}")
+        }
+        outcome => panic!("the cause is beside the refusal: {outcome:?}"),
+    }
+    match delivery_result(Ended::Exited { code: 0, output: raw }, "effect") {
+        super::super::ports::DeliveryResult::ProjectLimit { reason } => {
+            assert!(reason.starts_with("project_agent_limit:"), "{reason:?}")
+        }
+        result => panic!("{result:?}"),
+    }
+}
+
 /// zerus-63rru.58: the real task command's answer for a hand-out kept from
 /// its reservation, read by the actor's own reader. Returns what the command
 /// did and what the actor read: its delivery result, and what it records.
@@ -393,6 +413,8 @@ fn a_hand_out_whose_member_session_is_gone_is_refused_with_its_reason() {
     let (seen, _) = blocked(crate::tasks::Blocked::ArchivedMember);
     assert_eq!((seen.exit, &seen.error), (0, &None), "{seen:?}");
     assert!(seen.stdout.contains(r#""state":"refused""#), "{seen:?}");
+    // Another refusal's answer carries no typed cause (zerus-63rru.23).
+    assert!(!seen.stdout.contains("project_limit"), "{seen:?}");
     assert_eq!(
         seen.outcome,
         Some(HandoutOutcome::Refused {
@@ -531,7 +553,7 @@ fn a_hand_out_to_a_member_that_waits_for_a_person_is_refused_with_its_typed_caus
             &seen.id,
         );
         assert!(
-            matches!(&read, super::super::ports::DeliveryResult::TerminalWaiting { reason }
+            matches!(&read, super::super::ports::DeliveryResult::TerminalWaiting { reason, .. }
                 if reason == sentence),
             "{phase}: {read:?}"
         );

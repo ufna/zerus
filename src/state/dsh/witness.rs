@@ -133,12 +133,40 @@ const DIGEST_SCOPE: &str = "text_and_block_types";
 /// unknown, never a refusal.
 const UNWITNESSED: &str =
     "An earlier send without a witness already offered exactly this input; it is never witnessed or sent again";
+/// The caller's deadline budgets the whole call (zerus-hfw2s.8).
+const DEADLINE: &str =
+    "The deadline passed before the input was offered; nothing was written or sent";
+const LOCK_BUSY: &str =
+    "Another call held this request until the deadline and may be offering it; this call sends nothing";
+/// An offer needs this much of the deadline left: the send and at least one read.
+const MIN_OFFER: Duration = Duration::from_secs(1);
+/// What a read leaves of its RPC timeout for the host's flush and answer.
+const READ_MARGIN: Duration = Duration::from_millis(500);
+
+/// The time left of the caller's deadline.
+struct Budget {
+    started: Instant,
+    deadline: Duration,
+}
+
+impl Budget {
+    fn remaining(&self) -> Duration {
+        self.deadline.saturating_sub(self.started.elapsed())
+    }
+    /// An RPC timeout: at most `cap` and what is left; None when nothing is.
+    fn timeout(&self, cap: Duration) -> Option<Duration> {
+        Some(self.remaining().min(cap)).filter(|left| !left.is_zero())
+    }
+}
+
 const MARKER_UNCERTAIN: &str =
     "The pending marker was recorded although its write reported a failure; nothing was sent, and it is never sent again";
 const UNREADABLE: &str =
     "The input's recorded outcome could not be read, so an earlier call may have offered it; it is never sent again";
 const NO_WITNESS: &str =
     "This DeepSeek host cannot witness a task input; it can after its next own start";
+const NOT_A_FILE: &str = "The receipt path holds no regular file";
+const INCOMPLETE: &str = "Session identity is incomplete";
 
 /// The digest both sides compute over message content: each block's type and,
 /// for a text block, its text. The host keeps images as attachment references,
@@ -362,7 +390,6 @@ enum Stored {
 /// `Conflict`.
 fn stored(binding: &Binding) -> Result<Stored> {
     use std::io::Read;
-    const NOT_A_FILE: &str = "The receipt path holds no regular file";
     let path = receipt_path(&binding.request_id);
     match fs::symlink_metadata(&path) {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Stored::Absent),
@@ -370,6 +397,12 @@ fn stored(binding: &Binding) -> Result<Stored> {
         Ok(meta) if !meta.file_type().is_file() => return Err(NOT_A_FILE.into()),
         Ok(_) => {}
     }
+    // Tests replace the path here, between the check above and the open.
+    #[cfg(test)]
+    if let Some(swap) = tests::BEFORE_OPEN.with(|hook| hook.take()) {
+        swap(&path);
+    }
+    // The opened descriptor is checked again: the path may have changed since.
     let mut file = crate::platform::no_follow(fs::OpenOptions::new().read(true))
         .open(&path)
         .map_err(|e| e.to_string())?;
@@ -406,6 +439,105 @@ fn unknown(code: UnknownCode, detail: &str) -> Witnessed {
     }
 }
 
+/// Exclusivity for one request ID (zerus-hfw2s.5): `dsh/witness-locks/<id>.lock`,
+/// held by a witnessed submit from before its store check until after its
+/// send, by `recorded`, and by an ordinary send around its receipt check,
+/// marker and send. Lock order is always the machine-wide bindings lock first,
+/// then a request lock; nothing takes the bindings lock while holding one, and
+/// the witness path never takes it at all.
+///
+/// The file is removed while still locked on release, so the number of files
+/// stays bounded; a waiter that locked the removed inode sees the path gone or
+/// replaced and retries. A crash leaves at most one empty file per in-flight
+/// request, removed by that request's next use.
+pub(crate) struct RequestLock {
+    #[cfg_attr(not(unix), allow(dead_code))]
+    path: PathBuf,
+    _guard: Guard,
+}
+
+impl Drop for RequestLock {
+    fn drop(&mut self) {
+        // Runs before the guard is released.
+        #[cfg(unix)]
+        let _ = fs::remove_file(&self.path);
+    }
+}
+
+pub(crate) fn request_lock(request_id: &str) -> Result<RequestLock> {
+    request_lock_until(request_id, None).map(|lock| lock.expect("an unbounded wait always locks"))
+}
+
+/// `request_lock`, waiting at most until `until`: None when another holder
+/// still has it then.
+fn request_lock_until(request_id: &str, until: Option<Instant>) -> Result<Option<RequestLock>> {
+    uuid::Uuid::parse_str(request_id).map_err(|_| "Invalid request ID".to_owned())?;
+    let directory = root().join("dsh/witness-locks");
+    private_dir(&directory)?;
+    let path = directory.join(format!("{request_id}.lock"));
+    loop {
+        let file = lock_file(&path)?;
+        let opened = file_identity(&file)?;
+        let guard = match until {
+            None => Guard::exclusive(file).map_err(|e| e.to_string())?,
+            Some(until) => loop {
+                match fs2::FileExt::try_lock_exclusive(&file) {
+                    Ok(()) => break Guard::held(file),
+                    Err(error) if crate::platform::lock_contended(&error) => {
+                        if Instant::now() >= until {
+                            return Ok(None);
+                        }
+                        std::thread::sleep(Duration::from_millis(20));
+                    }
+                    Err(error) => return Err(error.to_string()),
+                }
+            },
+        };
+        // Tests remove or replace the path here, as a racing release would.
+        #[cfg(test)]
+        if let Some(swap) = tests::AFTER_LOCK.with(|hook| hook.take()) {
+            swap(&path);
+        }
+        // A lock on a file a release removed, or one replaced since, retries.
+        if still_named(&path, opened)? {
+            return Ok(Some(RequestLock {
+                path,
+                _guard: guard,
+            }));
+        }
+    }
+}
+
+/// The device and inode of an opened lock file.
+#[cfg(unix)]
+fn file_identity(file: &fs::File) -> Result<(u64, u64)> {
+    use std::os::unix::fs::MetadataExt;
+    let meta = file.metadata().map_err(|e| e.to_string())?;
+    Ok((meta.dev(), meta.ino()))
+}
+
+/// Whether the lock path still names the file `opened` identifies.
+#[cfg(unix)]
+fn still_named(path: &Path, opened: (u64, u64)) -> Result<bool> {
+    use std::os::unix::fs::MetadataExt;
+    match fs::metadata(path) {
+        Ok(meta) => Ok((meta.dev(), meta.ino()) == opened),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(error.to_string()),
+    }
+}
+
+/// Elsewhere a lock file is never removed (`RequestLock`'s Drop), so its path
+/// always names the file that was locked.
+#[cfg(not(unix))]
+fn file_identity(_: &fs::File) -> Result<(u64, u64)> {
+    Ok((0, 0))
+}
+#[cfg(not(unix))]
+fn still_named(_: &Path, _: (u64, u64)) -> Result<bool> {
+    Ok(true)
+}
+
 /// What the receipt store holds for a request, for recovery (`recorded`).
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum Recorded {
@@ -420,7 +552,7 @@ pub(crate) enum Recorded {
 }
 
 /// The recorded outcome of `request` to `name`, for recovery. It reads the
-/// store under the same bindings lock `submit_witnessed` holds from before its
+/// store under the same request lock `submit_witnessed` holds from before its
 /// pending marker until after its send, so it never sees a submit between the
 /// two: only `Recorded::Absent` means that no witnessed submit offered, or is
 /// offering, this exact request. A lock or store that cannot be read is an
@@ -428,7 +560,7 @@ pub(crate) enum Recorded {
 pub(crate) fn recorded(name: &str, request: &Value) -> Result<Recorded> {
     let digest = request_digest(name, request);
     let binding = binding_of(name, request, &digest);
-    let _guard = lock(Some(&root().join("dsh/bindings.lock")))?;
+    let _guard = request_lock(&binding.request_id)?;
     Ok(match stored(&binding)? {
         Stored::Exact(receipt) => Recorded::Outcome(replay(&receipt, &binding)),
         Stored::Unwitnessed => Recorded::Outcome(unknown(UnknownCode::Unseen, UNWITNESSED)),
@@ -464,6 +596,7 @@ pub(super) fn submit_with(
     rpc: &mut Rpc,
 ) -> Witnessed {
     let started = Instant::now();
+    let budget = Budget { started, deadline };
     let digest = request_digest(name, request);
     let binding = binding_of(name, request, &digest);
     let refuse = |code: NotOfferedCode, reason: String| Witnessed::NotOffered {
@@ -471,13 +604,20 @@ pub(super) fn submit_with(
         binding: binding.clone(),
         reason,
     };
-    // Without the lock the receipt store cannot be read: an earlier call may
-    // have offered this input.
-    let guard = match lock(Some(&root().join("dsh/bindings.lock"))) {
-        Ok(guard) => guard,
+    // A request ID that is not a UUID was never offered by HGS.
+    if uuid::Uuid::parse_str(&binding.request_id).is_err() {
+        return refuse(NotOfferedCode::HostRefused, "Invalid request ID".into());
+    }
+    // Only this request's lock, held from before the store check until after
+    // the send; never the machine-wide bindings lock, so another session's
+    // slow host never delays this one. Without the lock the receipt store
+    // cannot be read: an earlier call may have offered this input.
+    let guard = match request_lock_until(&binding.request_id, Some(started + deadline)) {
+        Ok(Some(guard)) => guard,
+        Ok(None) => return unknown(UnknownCode::Unseen, LOCK_BUSY),
         Err(error) => return unknown(UnknownCode::Unseen, &format!("{UNREADABLE}: {error}")),
     };
-    let prepared = match prepare(name, request, &digest, rpc) {
+    let prepared = match prepare(name, request, &digest, &budget, rpc) {
         Ok(Prepared::Offer(prepared)) => prepared,
         Ok(Prepared::Recorded(receipt)) => return replay(&receipt, &binding),
         Ok(Prepared::Unknown(witnessed)) => return witnessed,
@@ -491,6 +631,10 @@ pub(super) fn submit_with(
         content_digest,
     } = prepared;
     let path = receipt_path(&binding.request_id);
+    // Too little of the deadline left to offer and read: nothing is written.
+    if budget.remaining() < MIN_OFFER {
+        return refuse(NotOfferedCode::HostRefused, DEADLINE.into());
+    }
     // The pending marker: from here nothing is refused by HGS and nothing is
     // ever sent again for this request.
     if let Err(error) = write_marker(&path, &receipt.to_string()) {
@@ -507,7 +651,7 @@ pub(super) fn submit_with(
         "send",
         json!({"sessionId":record["conversation_id"],"requestId":binding.request_id,
         "content":content,"mode":"steer"}),
-        Duration::from_secs(35),
+        budget.remaining().min(Duration::from_secs(35)),
     );
     drop(guard);
     let outcome = witness(
@@ -557,9 +701,22 @@ fn prepare(
     name: &str,
     request: &Value,
     digest: &str,
+    budget: &Budget,
     rpc: &mut Rpc,
 ) -> std::result::Result<Prepared, (NotOfferedCode, String)> {
     let host = |error: String| (NotOfferedCode::HostRefused, error);
+    // A host call bounded by what is left of the deadline; running out is the
+    // deadline's own refusal, with nothing written.
+    let mut ask = |record: &Value, method: &str, params: Value, cap: Duration| {
+        let timeout = budget.timeout(cap).ok_or_else(|| host(DEADLINE.into()))?;
+        rpc(record, method, params, timeout).map_err(|error| {
+            host(if budget.remaining().is_zero() {
+                DEADLINE.into()
+            } else {
+                error
+            })
+        })
+    };
     if uuid::Uuid::parse_str(string(request, "request_id")).is_err() {
         return Err(host("Invalid request ID".into()));
     }
@@ -583,6 +740,11 @@ fn prepare(
         Stored::Absent => {}
     }
     let record = binding(name).map_err(host)?;
+    // A receipt without the session's run and conversation would no longer
+    // read as well-formed, whatever the request expects.
+    if string(&record, "run_id").is_empty() || string(&record, "conversation_id").is_empty() {
+        return Err(host(INCOMPLETE.into()));
+    }
     if record["permissions_pending"] == true {
         return Err(host(
             "Resume this DeepSeek session to finish permission setup before sending".into(),
@@ -602,17 +764,16 @@ fn prepare(
     if unsafe_content(&content) {
         return Err((NotOfferedCode::UnsafeContent, "The task text mentions a native DeepSeek session (dsh-session:), which the host rewrites".into()));
     }
-    let ping = rpc(&record, "ping", json!({}), Duration::from_secs(10)).map_err(host)?;
+    let ping = ask(&record, "ping", json!({}), Duration::from_secs(10))?;
     if ping["inputWitness"] != true {
         return Err(host(NO_WITNESS.into()));
     }
-    let readiness = rpc(
+    let readiness = ask(
         &record,
         "inspect",
         json!({"sessionId":record["conversation_id"],"includeProcesses":false}),
         Duration::from_secs(35),
-    )
-    .map_err(host)?;
+    )?;
     if readiness["authRequired"] == true {
         return Err(host(
             "Sign in to DeepSeek in the native UI before sending a message".into(),
@@ -659,11 +820,18 @@ fn witness(
     let mut bound: Option<(Value, Value)> = None;
     let mut truncated = false;
     loop {
+        // Each read is bounded by what is left of the deadline (zerus-hfw2s.8).
         let remaining = deadline.saturating_sub(started.elapsed());
+        if remaining.is_zero() {
+            return Witnessed::Unknown {
+                code: UnknownCode::Pending,
+                detail: "DeepSeek has not recorded the input yet; it is never sent again".into(),
+            };
+        }
         let wait = if truncated {
             Duration::ZERO
         } else {
-            remaining.min(READ_WAIT)
+            remaining.saturating_sub(READ_MARGIN).min(READ_WAIT)
         };
         let mut params = json!({"sessionId":record["conversation_id"],"requestId":binding.request_id,
             "generation":generation,"waitMs":wait.as_millis() as u64});
@@ -671,12 +839,7 @@ fn witness(
             params["fromSeq"] = json!(from);
         }
         let asked = Instant::now();
-        let mut answer = match rpc(
-            record,
-            "input-witness",
-            params,
-            wait + Duration::from_secs(10),
-        ) {
+        let mut answer = match rpc(record, "input-witness", params, remaining) {
             Ok(answer) => answer,
             Err(error) => {
                 return Witnessed::Unknown {
@@ -1017,6 +1180,13 @@ mod tests {
         let path = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("tests/fixtures/dsh-input-witness-facts.json");
         let fixture: Value = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
+        // zerus-hfw2s.9: captured on the pinned reviewed host, with the disposed
+        // record answered from its frozen final facts.
+        assert_eq!(fixture["host"]["version"], "0.2.1-rc.2");
+        assert_eq!(
+            fixture["scenarios"]["host_disposed"]["facts"]["frozen"],
+            true
+        );
         let scenarios = fixture["scenarios"].as_object().unwrap();
         let expected = |code: &str| match code {
             "received" => None,
@@ -1178,6 +1348,59 @@ mod tests {
             "host_refused"
         );
         assert!(!receipt(&stale));
+        // A binding without its run ID, and a request expecting exactly that:
+        // refused before the host is asked, nothing written. The binding read
+        // itself refuses one without a conversation ID.
+        let incomplete = |label: &str, run: Value, conversation: Value, session: &str| {
+            let mut record = json!({"name":label,"backend":"dsh","agent":"dsh","conversation_id":conversation,"run_id":run,
+                "session_id":session,"agent_home":"/nonexistent/dsh-incomplete","cwd":"/nonexistent","created":1.0});
+            save(&mut record).unwrap();
+            let request = json!({"request_id":uuid::Uuid::new_v4().to_string(),"expected_run_id":record["run_id"],
+                "expected_conversation_id":record["conversation_id"],"text":"WITNESS"});
+            let mut calls = Vec::new();
+            let outcome = submit_with(
+                label,
+                &request,
+                Duration::from_secs(5),
+                &mut |_, method, _, _| {
+                    calls.push(method.to_owned());
+                    match method {
+                        "ping" => Ok(json!({"generation":"g1","inputWitness":true})),
+                        "inspect" => Ok(json!({"live":true})),
+                        "send" => Ok(json!({"accepted":true})),
+                        other => Err(format!("{other} was not expected")),
+                    }
+                },
+            );
+            assert!(calls.is_empty(), "{calls:?}");
+            assert!(!receipt(&request));
+            match outcome {
+                Witnessed::NotOffered {
+                    code: NotOfferedCode::HostRefused,
+                    reason,
+                    ..
+                } => reason,
+                other => panic!("{other:?}"),
+            }
+        };
+        assert_eq!(
+            incomplete(
+                "dsh/project/runless",
+                Value::Null,
+                json!("session-R"),
+                "44444444-5555-4666-8777-888888888888"
+            ),
+            INCOMPLETE
+        );
+        assert_ne!(
+            incomplete(
+                "dsh/project/conversationless",
+                json!("run-C"),
+                Value::Null,
+                "55555555-6666-4777-8888-999999999999"
+            ),
+            ""
+        );
         // Received: the receipt records the witness, and a repeat replays it unsent.
         let good = request("WITNESS");
         let delivered = vec![
@@ -1241,7 +1464,7 @@ mod tests {
             &queued,
             witnessing.clone(),
             tracked(vec![insert()]),
-            Duration::ZERO,
+            Duration::from_millis(1500),
         );
         assert_eq!(
             (
@@ -1359,11 +1582,11 @@ mod tests {
         let mut other = good.clone();
         other["text"] = json!("another input under the same request ID");
         assert_eq!(recorded(name, &other).unwrap(), Recorded::Conflict);
-        // A held bindings lock: recorded() waits for its holder and then sees the
+        // A held request lock: recorded() waits for its holder and then sees the
         // marker the holder wrote, never Absent in between (as submit_with holds
         // the lock from before its marker until after its send).
         let held = request("WITNESS");
-        let holder = lock(Some(&root().join("dsh/bindings.lock"))).unwrap();
+        let holder = request_lock(string(&held, "request_id")).unwrap();
         let (done, answered) = std::sync::mpsc::channel();
         let reader = {
             let (name, held) = (name.to_owned(), held.clone());
@@ -1423,12 +1646,14 @@ mod tests {
         unknown_unsent(&torn, UNREADABLE);
         assert!(recorded(name, &torn).is_err());
         // (b) A lock that cannot be taken: the store was never read.
-        let lock_path = root().join("dsh/bindings.lock");
-        fs::remove_file(&lock_path).unwrap();
-        fs::create_dir(&lock_path).unwrap();
-        unknown_unsent(&request("WITNESS"), UNREADABLE);
+        let blocked = request("WITNESS");
+        let lock_path = root()
+            .join("dsh/witness-locks")
+            .join(format!("{}.lock", string(&blocked, "request_id")));
+        fs::create_dir_all(&lock_path).unwrap();
+        unknown_unsent(&blocked, UNREADABLE);
         // recorded() without its lock is an error, never Absent.
-        assert!(recorded(name, &request("WITNESS")).is_err());
+        assert!(recorded(name, &blocked).is_err());
         fs::remove_dir(&lock_path).unwrap();
         // zerus-hfw2s.6: a link or another non-regular file at the receipt path, or
         // a parsed value that is no well-formed receipt of this request, cannot
@@ -1468,6 +1693,37 @@ mod tests {
         )
         .unwrap();
         unknown_unsent(&foreign, UNREADABLE);
+        // The opened descriptor is checked too: a regular file replaced by a
+        // directory after the path check is no receipt, by that same check.
+        let swapped = request("WITNESS");
+        let digest = request_digest(name, &swapped);
+        let swapped_path = receipt_path(string(&swapped, "request_id"));
+        atomic(
+            &swapped_path,
+            &json!({"request_id":swapped["request_id"],"name":name,"run_id":"run-W","conversation_id":"session-W",
+                "digest":digest,"witness_version":1,"status":"submitted"})
+            .to_string(),
+        )
+        .unwrap();
+        BEFORE_OPEN.with(|hook| {
+            hook.set(Some(Box::new(|path: &Path| {
+                fs::remove_file(path).unwrap();
+                fs::create_dir(path).unwrap();
+            })))
+        });
+        let (outcome, calls) = run(
+            &swapped,
+            witnessing.clone(),
+            Err("unreachable".into()),
+            Duration::from_secs(5),
+        );
+        assert!(
+            matches!(&outcome, Witnessed::Unknown { code: UnknownCode::Unseen, detail } if *detail == format!("{UNREADABLE}: {NOT_A_FILE}")),
+            "{outcome:?}"
+        );
+        assert!(calls.is_empty(), "{calls:?}");
+        assert!(swapped_path.is_dir());
+        fs::remove_dir(&swapped_path).unwrap();
         // zerus-hfw2s.7: a marker write that failed after its rename is answered by
         // the store (pending, nothing sent); one that wrote nothing is a refusal.
         let faulted = request("WITNESS");
@@ -1505,11 +1761,359 @@ mod tests {
         assert_eq!(calls, ["ping", "inspect"]);
         assert!(!receipt_path(string(&unwritten, "request_id")).exists());
         assert_eq!(recorded(name, &unwritten).unwrap(), Recorded::Absent);
+        // A crash's leftover lock file is used, then removed, by the next use.
+        let leftover = request("WITNESS");
+        let lock_path = root()
+            .join("dsh/witness-locks")
+            .join(format!("{}.lock", string(&leftover, "request_id")));
+        fs::write(&lock_path, b"").unwrap();
+        assert_eq!(recorded(name, &leftover).unwrap(), Recorded::Absent);
+        assert!(!lock_path.exists());
+        // A lock on a file that a racing release removed or replaced after this
+        // open is retried: the lock held is always on the file the path names.
+        for replace in [false, true] {
+            let raced = request("WITNESS");
+            let raced_path = root()
+                .join("dsh/witness-locks")
+                .join(format!("{}.lock", string(&raced, "request_id")));
+            AFTER_LOCK.with(|hook| {
+                hook.set(Some(Box::new(move |path: &Path| {
+                    fs::remove_file(path).unwrap();
+                    if replace {
+                        fs::write(path, b"").unwrap();
+                    }
+                })))
+            });
+            let held = request_lock(string(&raced, "request_id")).unwrap();
+            let other = fs::File::open(&raced_path).unwrap();
+            let error = fs2::FileExt::try_lock_exclusive(&other).unwrap_err();
+            assert!(crate::platform::lock_contended(&error), "{error}");
+            drop(other);
+            drop(held);
+            assert!(!raced_path.exists());
+        }
+        // Every lock taken above was released and removed.
+        assert_eq!(
+            fs::read_dir(root().join("dsh/witness-locks"))
+                .unwrap()
+                .count(),
+            0
+        );
+        // Before concurrency(): its last test rebinds the name to another session.
+        deadlines(name);
+        concurrency(name);
     }
+
+    /// zerus-hfw2s.8: the caller's deadline budgets the whole call.
+    fn deadlines(name: &str) {
+        let request = |text: &str| json!({"request_id":uuid::Uuid::new_v4().to_string(),"expected_run_id":"run-W","expected_conversation_id":"session-W","text":text});
+        let witnessing = json!({"generation":"g1","inputWitness":true});
+        // Another call holds this request: the wait ends at the deadline, unknown.
+        // The holder is another thread that lets go after 2 s, so a wait that
+        // ignored the deadline ends late instead of never.
+        let held = request("WITNESS");
+        let (taken, waiting) = std::sync::mpsc::channel();
+        let (outcome, calls, waited) = std::thread::scope(|scope| {
+            let id = string(&held, "request_id").to_owned();
+            scope.spawn(move || {
+                let holder = request_lock(&id).unwrap();
+                taken.send(()).unwrap();
+                std::thread::sleep(Duration::from_secs(2));
+                drop(holder);
+            });
+            waiting.recv().unwrap();
+            let (started, mut calls) = (Instant::now(), 0);
+            let outcome = submit_with(
+                name,
+                &held,
+                Duration::from_millis(300),
+                &mut |_, _, _, _| {
+                    calls += 1;
+                    Err("unreachable".into())
+                },
+            );
+            (outcome, calls, started.elapsed())
+        });
+        assert!(
+            matches!(&outcome, Witnessed::Unknown { code: UnknownCode::Unseen, detail } if detail == LOCK_BUSY),
+            "{outcome:?}"
+        );
+        assert_eq!(calls, 0);
+        assert!(
+            waited >= Duration::from_millis(300) && waited < Duration::from_secs(1),
+            "{waited:?}"
+        );
+        // A host slower than the deadline before the marker: the deadline's own
+        // refusal, every call bounded by it, nothing written.
+        let early = request("WITNESS");
+        let (started, mut timeouts) = (Instant::now(), Vec::new());
+        let outcome = submit_with(
+            name,
+            &early,
+            Duration::from_millis(300),
+            &mut |_, _, _, timeout| {
+                timeouts.push(timeout);
+                let delay = Duration::from_secs(2);
+                std::thread::sleep(delay.min(timeout));
+                if delay > timeout {
+                    return Err("read timed out".into());
+                }
+                Ok(json!({"generation":"g1","inputWitness":true}))
+            },
+        );
+        let waited = started.elapsed();
+        assert!(
+            matches!(&outcome, Witnessed::NotOffered { code: NotOfferedCode::HostRefused, reason, .. } if reason == DEADLINE),
+            "{outcome:?}"
+        );
+        assert!(waited < Duration::from_secs(1), "{waited:?}");
+        assert!(
+            timeouts
+                .iter()
+                .all(|timeout| *timeout <= Duration::from_millis(300)),
+            "{timeouts:?}"
+        );
+        assert!(!receipt_path(string(&early, "request_id")).exists());
+        assert_eq!(recorded(name, &early).unwrap(), Recorded::Absent);
+        // Too little left to offer and read once: refused, nothing written.
+        let short = request("WITNESS");
+        let mut calls = Vec::new();
+        let outcome = submit_with(
+            name,
+            &short,
+            Duration::from_millis(800),
+            &mut |_, method, _, _| {
+                calls.push(method.to_owned());
+                match method {
+                    "ping" => Ok(witnessing.clone()),
+                    "inspect" => Ok(json!({"live":true})),
+                    other => Err(format!("{other} was not expected")),
+                }
+            },
+        );
+        assert!(
+            matches!(&outcome, Witnessed::NotOffered { reason, .. } if reason == DEADLINE),
+            "{outcome:?}"
+        );
+        assert_eq!(calls, ["ping", "inspect"]);
+        assert!(!receipt_path(string(&short, "request_id")).exists());
+        // After the marker the send and the reads share what is left: pending at
+        // the deadline, one send, every timeout within the budget.
+        let later = request("WITNESS");
+        let (started, mut timeouts, mut sends) = (Instant::now(), Vec::new(), 0);
+        let outcome = submit_with(
+            name,
+            &later,
+            Duration::from_millis(1500),
+            &mut |_, method, _, timeout| {
+                timeouts.push(timeout);
+                match method {
+                    "ping" => Ok(witnessing.clone()),
+                    "inspect" => Ok(json!({"live":true})),
+                    "send" => {
+                        sends += 1;
+                        Ok(json!({"accepted":true}))
+                    }
+                    "input-witness" => Ok(
+                        json!({"generation":"g1","state":"tracked","messageId":"m1","spliceSeq":10,"through":20,
+                    "complete":true,"durable":true,"disposals":[],"events":[insert()]}),
+                    ),
+                    other => Err(format!("{other} was not expected")),
+                }
+            },
+        );
+        let waited = started.elapsed();
+        assert_eq!((outcome.code(), sends), ("pending", 1), "{outcome:?}");
+        assert!(waited < Duration::from_millis(2000), "{waited:?}");
+        assert!(
+            timeouts
+                .iter()
+                .all(|timeout| *timeout <= Duration::from_millis(1500)),
+            "{timeouts:?}"
+        );
+    }
+
+    /// Replaces a path in place (`BEFORE_OPEN`).
+    pub(super) type PathSwap = Box<dyn FnOnce(&Path)>;
 
     thread_local! {
         /// Makes the next pending-marker write fail: `true` after its rename,
         /// `false` before writing anything (`write_marker`).
         pub(super) static MARKER_FAULT: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) };
+        /// Runs once in `stored`, after its path check and before its open.
+        pub(super) static BEFORE_OPEN: std::cell::Cell<Option<PathSwap>> = const { std::cell::Cell::new(None) };
+        /// Runs once in `request_lock_until`, after its lock and before its path check.
+        pub(super) static AFTER_LOCK: std::cell::Cell<Option<PathSwap>> = const { std::cell::Cell::new(None) };
+    }
+
+    /// A scripted host answering every call after `delay`, delivering
+    /// `request`'s message, and counting the sends it receives.
+    fn host(
+        delay: Duration,
+        request: Value,
+        sends: &std::sync::atomic::AtomicUsize,
+    ) -> impl FnMut(&Value, &str, Value, Duration) -> Result<Value> + '_ {
+        let digest = content_digest(&[json!({"type":"text","text":string(&request, "text")})]);
+        let answer = json!({"generation":"g1","state":"tracked","messageId":"m1","spliceSeq":10,"through":20,"complete":true,
+            "durable":true,"disposals":[],"events":[insert(), claim(12), user(15, "m1", Some(string(&request, "request_id")), &digest)]});
+        move |_, method, _, _| {
+            std::thread::sleep(delay);
+            match method {
+                "ping" => Ok(json!({"generation":"g1","inputWitness":true})),
+                "inspect" => Ok(json!({"live":true})),
+                "send" => {
+                    sends.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    Ok(json!({"accepted":true}))
+                }
+                "input-witness" => Ok(answer.clone()),
+                other => Err(format!("{other} was not expected")),
+            }
+        }
+    }
+
+    /// zerus-hfw2s.5: exclusivity per request ID, never per machine.
+    fn concurrency(name: &str) {
+        let request = |text: &str| json!({"request_id":uuid::Uuid::new_v4().to_string(),"expected_run_id":"run-W","expected_conversation_id":"session-W","text":text});
+        let mut slow = json!({"name":"dsh/project/slow","backend":"dsh","agent":"dsh","conversation_id":"session-S","run_id":"run-S",
+            "session_id":"33333333-4444-4555-8666-777777777777","agent_home":"/nonexistent/dsh-slow","cwd":"/nonexistent","created":1.0});
+        save(&mut slow).unwrap();
+        let sends = std::sync::atomic::AtomicUsize::new(0);
+        // A slow host on session S does not delay a submit or recorded() on W.
+        let mut slow_request = request("SLOW");
+        slow_request["expected_run_id"] = json!("run-S");
+        slow_request["expected_conversation_id"] = json!("session-S");
+        std::thread::scope(|scope| {
+            let slow_host = host(Duration::from_secs(3), slow_request.clone(), &sends);
+            let slowly = scope.spawn(move || {
+                let mut rpc = slow_host;
+                submit_with(
+                    "dsh/project/slow",
+                    &slow_request,
+                    Duration::from_secs(20),
+                    &mut rpc,
+                )
+            });
+            std::thread::sleep(Duration::from_millis(300));
+            let fast = request("WITNESS");
+            let started = Instant::now();
+            assert_eq!(recorded(name, &fast).unwrap(), Recorded::Absent);
+            let mut fast_host = host(Duration::ZERO, fast.clone(), &sends);
+            assert_eq!(
+                submit_with(name, &fast, Duration::from_secs(5), &mut fast_host).code(),
+                "received"
+            );
+            assert!(
+                started.elapsed() < Duration::from_secs(1),
+                "waited {:?} behind another session's host",
+                started.elapsed()
+            );
+            assert_eq!(slowly.join().unwrap().code(), "received");
+        });
+        // The same request on two concurrent callers is offered exactly once.
+        let same = request("WITNESS");
+        let sends = std::sync::atomic::AtomicUsize::new(0);
+        let outcomes: Vec<&'static str> = std::thread::scope(|scope| {
+            let callers: Vec<_> = (0..2)
+                .map(|_| {
+                    let mut rpc = host(Duration::from_millis(300), same.clone(), &sends);
+                    let same = same.clone();
+                    scope.spawn(move || {
+                        submit_with(name, &same, Duration::from_secs(20), &mut rpc).code()
+                    })
+                })
+                .collect();
+            callers
+                .into_iter()
+                .map(|caller| caller.join().unwrap())
+                .collect()
+        });
+        assert_eq!(
+            sends.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "{outcomes:?}"
+        );
+        assert!(outcomes.contains(&"received"), "{outcomes:?}");
+        // recorded() waits for an in-flight submit of the same request and then
+        // sees its marker, never Absent while it is being offered.
+        let inflight = request("WITNESS");
+        let sends = std::sync::atomic::AtomicUsize::new(0);
+        std::thread::scope(|scope| {
+            let mut rpc = host(Duration::from_millis(600), inflight.clone(), &sends);
+            let offering = inflight.clone();
+            let submit = scope.spawn(move || {
+                submit_with(name, &offering, Duration::from_secs(20), &mut rpc).code()
+            });
+            std::thread::sleep(Duration::from_millis(300));
+            let answer = recorded(name, &inflight).unwrap();
+            assert!(matches!(answer, Recorded::Outcome(_)), "{answer:?}");
+            assert_eq!(submit.join().unwrap(), "received");
+        });
+        // A rename or forget racing the submit: the binding read before the
+        // marker is the gate, and the offer and its witness stay with the
+        // request's own conversation, never another session's.
+        let raced = request("WITNESS");
+        let mut calls = Vec::new();
+        let outcome = submit_with(
+            name,
+            &raced,
+            Duration::from_secs(5),
+            &mut |_, method, params, _| {
+                calls.push((method.to_owned(), params["sessionId"].clone()));
+                match method {
+                    "ping" => {
+                        // The name now binds another session, as a forget and new launch would.
+                        let mut other = json!({"name":name,"backend":"dsh","agent":"dsh","conversation_id":"session-OTHER","run_id":"run-OTHER",
+                        "session_id":"44444444-5555-4666-8777-888888888888","agent_home":"/nonexistent/dsh-home","cwd":"/nonexistent","created":2.0});
+                        save(&mut other).unwrap();
+                        Ok(json!({"generation":"g1","inputWitness":true}))
+                    }
+                    "inspect" => Ok(json!({"live":true})),
+                    "send" => Ok(json!({"accepted":true})),
+                    "input-witness" => Ok(
+                        json!({"generation":"g1","state":"tracked","messageId":"m1","spliceSeq":10,"through":20,"complete":true,
+                    "durable":false,"disposals":[[12,14]],"events":[insert(), splice(13, "next-step", 0, 2, Some("canceled"), &[])]}),
+                    ),
+                    other => Err(format!("{other} was not expected")),
+                }
+            },
+        );
+        assert_eq!(outcome.code(), "host_disposed", "{outcome:?}");
+        assert!(
+            calls
+                .iter()
+                .filter(|(method, _)| method != "ping")
+                .all(|(_, session)| session == "session-W"),
+            "{calls:?}"
+        );
+        // With the name already bound to the other session: refused before the marker.
+        let after = request("WITNESS");
+        let outcome = submit_with(name, &after, Duration::from_secs(5), &mut |_, _, _, _| {
+            Err("unreachable".into())
+        });
+        assert!(
+            matches!(&outcome, Witnessed::NotOffered { code: NotOfferedCode::HostRefused, reason, .. } if reason.contains("Session changed")),
+            "{outcome:?}"
+        );
+        assert!(!receipt_path(string(&after, "request_id")).exists());
+    }
+
+    /// Lock order (zerus-hfw2s.5): the witness path never takes the machine-wide
+    /// bindings lock, so it can never hold a request lock while waiting for it.
+    #[test]
+    fn the_witness_path_never_takes_the_bindings_lock() {
+        let production = include_str!("witness.rs")
+            .split("#[cfg(test)]")
+            .next()
+            .unwrap();
+        assert!(!production.contains("bindings.lock"));
+        assert!(!production.contains("lock(Some("));
+        // The ordinary send takes the request lock only inside the bindings lock.
+        let dispatch = include_str!("../dsh.rs");
+        let global = dispatch
+            .find("Some(lock(Some(&root().join(\"dsh/bindings.lock\")))?)")
+            .unwrap();
+        let request = dispatch.find("witness::request_lock(").unwrap();
+        assert!(global < request);
+        assert_eq!(dispatch.matches("witness::request_lock(").count(), 1);
     }
 }

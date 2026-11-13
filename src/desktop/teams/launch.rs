@@ -217,21 +217,86 @@ impl Runtime {
         Ok(())
     }
 }
-fn apply(store: &mut Store, team: &Team, operation: Operation, now: i64) -> Result<()> {
-    let current = store
-        .team(&team.id)?
-        .ok_or_else(|| invalid("Team disappeared"))?;
+/// One intended write through the store, with one request ID kept across
+/// every retry and a restart, persisted with the row (zerus-63rru.91, the
+/// task intake's and the actor's receipt rule). A success — including a
+/// replay the store answers from its saved receipt — clears the reservation,
+/// because the intent is settled and the row's next intent needs its own
+/// ID; a stale revision or another definitive answer also clears it, and
+/// only a storage failure keeps it, its commit unknown. A kept reservation
+/// whose operation differs from the current intent is replayed first to
+/// settle its unknown result, then cleared and the current intent is
+/// reserved and applied in the same call. If the process dies after the
+/// store's commit but before the row's save, the reservation is gone with
+/// the row; what then keeps the replay safe is the callers' pre-checks (the
+/// member's session is already the key, the card is no longer open), which
+/// see the committed write and make no second one — the persisted ID's own
+/// guarantee is the answer replay, never the crash.
+fn apply(
+    store: &mut Store,
+    team: &Team,
+    operation: Operation,
+    reserved: &mut Option<Request>,
+    now: i64,
+) -> Result<()> {
     let actor = Actor::Service {
         person: team.owner.clone(),
         team: team.id.clone(),
     };
-    let request = Request {
-        request_id: uuid::Uuid::new_v4().to_string(),
-        team: team.id.clone(),
-        expected_revision: current.revision,
-        operation,
-    };
-    ops::apply(store, &actor, &request, now).map(|_| ())
+    if let Some(kept) = reserved.as_ref().filter(|r| r.operation != operation) {
+        // Settle the kept intent first: a success or a definitive answer
+        // ends it; an unknown result leaves it reserved and blocks the
+        // current intent until the next pass. A stale revision means the
+        // kept write never applied: re-reserve its own operation against
+        // the current revision and apply it now, so the kept intent is not
+        // dropped and the current intent follows in the same call.
+        match ops::apply(store, &actor, kept, now) {
+            Ok(_) => *reserved = None,
+            Err(p) if p.code == code::STORAGE_FAILED => return Err(p),
+            Err(p) if p.code == code::STALE_REVISION => {
+                let current = store
+                    .team(&team.id)?
+                    .ok_or_else(|| invalid("Team disappeared"))?;
+                let fresh = Request {
+                    request_id: uuid::Uuid::new_v4().to_string(),
+                    team: team.id.clone(),
+                    expected_revision: current.revision,
+                    operation: kept.operation.clone(),
+                };
+                match ops::apply(store, &actor, &fresh, now) {
+                    Ok(_) => *reserved = None,
+                    Err(p) if p.code == code::STORAGE_FAILED => {
+                        *reserved = Some(fresh);
+                        return Err(p);
+                    }
+                    Err(_) => *reserved = None,
+                }
+            }
+            Err(_) => *reserved = None,
+        }
+    }
+    if reserved.is_none() {
+        let current = store
+            .team(&team.id)?
+            .ok_or_else(|| invalid("Team disappeared"))?;
+        *reserved = Some(Request {
+            request_id: uuid::Uuid::new_v4().to_string(),
+            team: team.id.clone(),
+            expected_revision: current.revision,
+            operation,
+        });
+    }
+    match ops::apply(store, &actor, reserved.as_ref().expect("reserved above"), now) {
+        Ok(_) => {
+            *reserved = None;
+            Ok(())
+        }
+        Err(p) if p.code == code::STORAGE_FAILED => Err(p),
+        Err(p) => {
+            *reserved = None;
+            Err(p)
+        }
+    }
 }
 pub(super) fn invalid(text: &str) -> Problem {
     Problem::new(code::INVALID_STATE, text)

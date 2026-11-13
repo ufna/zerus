@@ -221,6 +221,7 @@ impl Runtime {
                     worktree: tree.path.clone(),
                     ownership_nonce: tree.ownership_nonce.clone(),
                 },
+                &mut row.session_request,
                 now,
             )?;
         }
@@ -239,6 +240,10 @@ impl Runtime {
                     session_id: observed.session_id.clone(),
                     label_hint: observed.name.clone(),
                 },
+                // The handle's own write stays fire-and-forget: its guard
+                // (member_handle is none) makes a repeated write harmless,
+                // and the item's rule names SetMemberSession and CloseCard.
+                &mut None,
                 now,
             );
         }

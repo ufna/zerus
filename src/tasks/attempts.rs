@@ -104,7 +104,13 @@ pub(super) enum Delivered {
     /// for a person (`state::input::Gate::Waiting`, zerus-63rru.79): only the
     /// team route answers it, as a fact about the member; every other caller
     /// answers it as any refusal before input.
-    NotAdmitted { reason: String, waiting: bool },
+    NotAdmitted {
+        reason: String,
+        waiting: bool,
+        /// Which dialog the member's terminal waits on, when one is known
+        /// (zerus-63rru.83).
+        dialog: Option<String>,
+    },
     /// Whether the input arrived, or its receipt was recorded, is unknown:
     /// nothing is submitted again.
     Uncertain(String),
@@ -150,6 +156,7 @@ pub(super) fn deliver(
                 Ok(()) => Delivered::NotAdmitted {
                     reason: witness.reason,
                     waiting: witness.waiting,
+                    dialog: witness.dialog.map(str::to_owned),
                 },
                 Err(error) => Delivered::Uncertain(format!(
                     "{UNCONFIRMED} {} It was refused before any input, but that could not be recorded: {}.",

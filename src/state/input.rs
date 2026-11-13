@@ -346,37 +346,37 @@ fn checked_input_gate(
         return Err("the exact agent process is no longer running; resume it explicitly".into());
     }
     if claude_approval::current(&record).is_some() {
-        return Err("Claude is waiting for tool or safety approval. Review the request in Activity or Terminal before sending a message.".into());
+        return Err(Gate::Waiting { reason: "Claude is waiting for tool or safety approval. Review the request in Activity or Terminal before sending a message.".into(), dialog: Some(Dialog::ClaudeApproval) });
     }
     if claude_resume::current(&record).is_some() {
-        return Err("Claude is waiting for a conversation resume choice. Choose an option in Activity or Terminal before sending a message.".into());
+        return Err(Gate::Waiting { reason: "Claude is waiting for a conversation resume choice. Choose an option in Activity or Terminal before sending a message.".into(), dialog: Some(Dialog::ClaudeResume) });
     }
     if claude_usage_limit::current(&record).is_some() {
-        return Err("Claude is waiting for a usage-limit choice. Choose an option in Activity or Terminal before sending a message.".into());
+        return Err(Gate::Waiting { reason: "Claude is waiting for a usage-limit choice. Choose an option in Activity or Terminal before sending a message.".into(), dialog: Some(Dialog::ClaudeUsageLimit) });
     }
     if claude_permission::current(&record).is_some() {
         return Err("Claude is waiting for a permission mode choice. Choose an option in Activity or Terminal before sending a message.".into());
     }
     if claude_trust::current(&record).is_some() {
-        return Err("Claude is waiting for folder trust approval. Choose an option in Activity or Terminal before sending a message.".into());
+        return Err(Gate::Waiting { reason: "Claude is waiting for folder trust approval. Choose an option in Activity or Terminal before sending a message.".into(), dialog: Some(Dialog::ClaudeTrust) });
     }
     if codex_trust::current(&record).is_some() {
-        return Err("Codex is waiting for folder trust approval. Choose an option in Activity or Terminal before sending a message.".into());
+        return Err(Gate::Waiting { reason: "Codex is waiting for folder trust approval. Choose an option in Activity or Terminal before sending a message.".into(), dialog: Some(Dialog::CodexTrust) });
     }
     if codex_hooks_trust::current(&record).is_some() {
-        return Err("Codex is waiting for hook trust review. Choose an option in Activity or Terminal before sending a message.".into());
+        return Err(Gate::Waiting { reason: "Codex is waiting for hook trust review. Choose an option in Activity or Terminal before sending a message.".into(), dialog: Some(Dialog::CodexHooksTrust) });
     }
     if codex_update::current(&record).is_some() {
-        return Err("Codex is waiting for an update choice. Choose an option in Activity or Terminal before sending a message.".into());
+        return Err(Gate::Waiting { reason: "Codex is waiting for an update choice. Choose an option in Activity or Terminal before sending a message.".into(), dialog: Some(Dialog::CodexUpdate) });
     }
     if codex_rate_limit::current(&record).is_some() {
-        return Err(codex_rate_limit::WAIT.into());
+        return Err(Gate::Waiting { reason: codex_rate_limit::WAIT.into(), dialog: Some(Dialog::CodexRateLimit) });
     }
     if codex_goal_resume::current(&record).is_some() {
-        return Err(codex_goal_resume::WAIT.into());
+        return Err(Gate::Waiting { reason: codex_goal_resume::WAIT.into(), dialog: Some(Dialog::CodexGoalResume) });
     }
     if kimi_trust::current(&record).is_some() {
-        return Err("Kimi is waiting for folder trust approval. Choose an option in Activity or Terminal before sending a message.".into());
+        return Err(Gate::Waiting { reason: "Kimi is waiting for folder trust approval. Choose an option in Activity or Terminal before sending a message.".into(), dialog: Some(Dialog::KimiTrust) });
     }
     let first_message =
         allow_working && conversation_id.is_empty() && first_message_candidate(&record);
@@ -411,7 +411,10 @@ fn checked_input_gate(
         // does not say so.
         return Err(
             if matches!(string(&record, "phase"), "input" | "approval") {
-                Gate::Waiting(reason.into())
+                Gate::Waiting {
+                    reason: reason.into(),
+                    dialog: None,
+                }
             } else {
                 Gate::Other(reason.into())
             },
@@ -845,16 +848,98 @@ fn terminal_check_on(record: &Value, empty: bool, sending: bool, terminal: &dyn 
 /// an empty agent prompt (a question, a dialog or an unsent draft, or a
 /// prompt queued while the agent works). Every other refusal is `Other`.
 /// Nothing reads the cause from a sentence.
+///
+/// A dialog its own detector read from the live screen waits for a person
+/// too (zerus-63rru.83), and `Waiting` then carries which one: the typed
+/// name the task command's answer gives the actor, and the clause a card's
+/// sentence names. The name is the detector's typed result, never read from
+/// a sentence.
 #[derive(Debug)]
 pub(crate) enum Gate {
-    Waiting(String),
+    Waiting {
+        reason: String,
+        dialog: Option<Dialog>,
+    },
     Other(String),
 }
 impl Gate {
     pub(crate) fn reason(self) -> String {
         match self {
-            Gate::Waiting(reason) | Gate::Other(reason) => reason,
+            Gate::Waiting { reason, .. } | Gate::Other(reason) => reason,
         }
+    }
+    pub(crate) fn dialog(&self) -> Option<Dialog> {
+        match self {
+            Gate::Waiting { dialog, .. } => *dialog,
+            Gate::Other(_) => None,
+        }
+    }
+}
+
+/// The dialogs a waiting terminal shows, with a witness fixture for each
+/// (zerus-63rru.83). The ones without a fixture stay ordinary refusals and
+/// are listed in the report.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Dialog {
+    ClaudeApproval,
+    ClaudeResume,
+    ClaudeUsageLimit,
+    ClaudeTrust,
+    CodexTrust,
+    CodexHooksTrust,
+    CodexUpdate,
+    CodexRateLimit,
+    CodexGoalResume,
+    KimiTrust,
+}
+impl Dialog {
+    /// The typed name the task command's answer carries.
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            Dialog::ClaudeApproval => "claude_approval",
+            Dialog::ClaudeResume => "claude_resume",
+            Dialog::ClaudeUsageLimit => "claude_usage_limit",
+            Dialog::ClaudeTrust => "claude_trust",
+            Dialog::CodexTrust => "codex_trust",
+            Dialog::CodexHooksTrust => "codex_hooks_trust",
+            Dialog::CodexUpdate => "codex_update",
+            Dialog::CodexRateLimit => "codex_rate_limit",
+            Dialog::CodexGoalResume => "codex_goal_resume",
+            Dialog::KimiTrust => "kimi_trust",
+        }
+    }
+    /// The clause a card's sentence names, for a typed name.
+    pub(crate) fn clause(self) -> &'static str {
+        match self {
+            Dialog::ClaudeApproval => "a tool or safety approval",
+            Dialog::ClaudeResume => "a conversation resume choice",
+            Dialog::ClaudeUsageLimit => "a usage-limit choice",
+            Dialog::ClaudeTrust => "a folder trust approval",
+            Dialog::CodexTrust => "a folder trust approval",
+            Dialog::CodexHooksTrust => "a hook trust review",
+            Dialog::CodexUpdate => "an update choice",
+            Dialog::CodexRateLimit => "a rate limit choice",
+            Dialog::CodexGoalResume => "a goal resume choice",
+            Dialog::KimiTrust => "a folder trust approval",
+        }
+    }
+}
+
+/// The clause a known dialog's typed name says, for the actor's card
+/// sentence (zerus-63rru.83). Nothing parses a sentence.
+pub(crate) fn dialog_clause(name: &str) -> Option<&'static str> {
+    match name {
+        "claude_approval" => Some(Dialog::ClaudeApproval.clause()),
+        "claude_resume" => Some(Dialog::ClaudeResume.clause()),
+        "claude_usage_limit" => Some(Dialog::ClaudeUsageLimit.clause()),
+        "claude_trust" => Some(Dialog::ClaudeTrust.clause()),
+        "codex_trust" => Some(Dialog::CodexTrust.clause()),
+        "codex_hooks_trust" => Some(Dialog::CodexHooksTrust.clause()),
+        "codex_update" => Some(Dialog::CodexUpdate.clause()),
+        "codex_rate_limit" => Some(Dialog::CodexRateLimit.clause()),
+        "codex_goal_resume" => Some(Dialog::CodexGoalResume.clause()),
+        "kimi_trust" => Some(Dialog::KimiTrust.clause()),
+        _ => None,
     }
 }
 impl From<String> for Gate {
@@ -928,10 +1013,16 @@ fn terminal_gate_on(
                     && string(record, "activity") == "busy"
                     && matches!(string(record, "phase"), "idle" | "working" | "tool" | "compacting")
                 {
-                    return Err(Gate::Waiting("agent busy: terminal queue prompt is unrecognized or contains a draft; wait for the agent or open Terminal; nothing was submitted".into()));
+                    return Err(Gate::Waiting {
+                        reason: "agent busy: terminal queue prompt is unrecognized or contains a draft; wait for the agent or open Terminal; nothing was submitted".into(),
+                        dialog: None,
+                    });
                 }
             }
-            return Err(Gate::Waiting(DRAFT.into()));
+            return Err(Gate::Waiting {
+                reason: DRAFT.into(),
+                dialog: None,
+            });
         }
     }
     Ok(())
@@ -1325,6 +1416,10 @@ pub(crate) struct NotOffered {
     /// The terminal gate refused because the terminal holds input
     /// (`Gate::Waiting`; zerus-63rru.79).
     pub(crate) waiting: bool,
+    /// Which dialog the waiting terminal shows, when the refusal is a
+    /// dialog's and a witness exists for it (zerus-63rru.83). The typed
+    /// name, never read from a sentence.
+    pub(crate) dialog: Option<&'static str>,
 }
 
 impl NotOffered {
@@ -1452,7 +1547,7 @@ fn submit_core(
     // key and before the receipt marker witnesses that nothing was offered;
     // once pending settings may have been typed, it is unknown.
     let mut typed = false;
-    let witness = |reason: String, waiting: bool| NotOffered {
+    let witness = |reason: String, waiting: bool, dialog: Option<&'static str>| NotOffered {
         request_id: request_id.clone(),
         name: name.to_owned(),
         run_id: request.expected_run_id.clone(),
@@ -1461,12 +1556,14 @@ fn submit_core(
         receipts: receipt_path.clone(),
         reason,
         waiting,
+        dialog,
     };
-    let refused = |typed: bool, reason: String| before_input(typed, witness(reason, false));
+    let refused = |typed: bool, reason: String| before_input(typed, witness(reason, false, None));
     // The terminal gate's own refusal keeps its cause.
     let gated = |typed: bool, gate: Gate| {
-        let waiting = matches!(gate, Gate::Waiting(_));
-        before_input(typed, witness(gate.reason(), waiting))
+        let waiting = matches!(gate, Gate::Waiting { .. });
+        let dialog = gate.dialog().map(|d| d.name());
+        before_input(typed, witness(gate.reason(), waiting, dialog))
     };
     let record = checked_record_gate(name, &request).map_err(|gate| gated(typed, gate))?;
     if matches!(origin, Origin::Answer) && effort::pending_applies(&record) {
@@ -1823,6 +1920,7 @@ mod tests {
             receipts: PathBuf::from("state/input_receipts/id.json"),
             reason: "refused".into(),
             waiting: false,
+            dialog: None,
         };
         assert!(
             matches!(before_input(false, witness()), Failure::NotOffered(w) if w.binds("id", "n", "r", "c", "d"))

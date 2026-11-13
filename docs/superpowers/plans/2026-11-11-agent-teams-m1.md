@@ -1830,6 +1830,37 @@ member's terminal waits for input. The journal's hand-out outcome row says
 the outcome and the cleaned reason. A refusal of an effect the store has
 already settled, such as a removed member's, is no failure either.
 
+**A project limit's refusal is a fact about the team.** A hand-out refused
+by the project's own limits (`agents_other`, `agent_limit`) was counted as a
+failed hand-out of the task and repeated for every task and member
+(zerus-63rru.23, 2026-11-13). The command types the cause
+(`project_limit`); the actor reads it, never the sentence, and keeps one
+ledger row and one card per team, opened at the first refusal. While the
+fact stands nothing is delivered except probes at 1, 2, 4, 8 and 15
+minutes. One command answer is counted once, bound to the delivery's
+identity, so a replay after a crash does not count it again. The fact ends
+only on a command answer that is not `project_limit`: a submitted probe, or
+the command's own refusal for another cause, which is then handled as that
+cause. An uncertain probe and every non-start, the fifth that is converted
+included, keep the fact, and the next probe waits as usual.
+
+**A child's end is final for its ID.** Two hook processes race for a
+session's record, so a child's Start or tool event could be applied after
+its Stop and leave the session with one active child for ever: the member
+was never free and no card said why (zerus-63rru.78 and .88, 2026-11-13).
+A non-start event of an ended child is history only. Claude and Codex name
+every subagent invocation with a fresh ID, so nothing revives an ended
+child of theirs, a late Start included; a Kimi profile child resumes under
+its name, so only Kimi's own start revives it (the race of such a start
+after its own stop is zerus-63rru.93). An interrupted child is not an end,
+and its own tool events resume it. No stored process is adopted across a
+run boundary. A child whose process may still run but is unbound is counted
+in `subagent_process_unknown_count`, which only the Teams fleet reads: the
+member is not free and its presence reports nothing until a reconcile
+settles the process, while the shared listing row keeps its numeric counts,
+since unknown work never establishes current work for desktop and mobile
+status. Retirement clears the process projection as an ordinary exit does.
+
 **A recovery removes only the row it owns.** The service's gate recovery
 closed its card and then removed whichever ledger row was current, so a
 second runtime that had failed the same check in between lost its fresh

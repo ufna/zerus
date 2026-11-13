@@ -473,3 +473,26 @@ fn an_owned_gate_write_advances_only_its_own_successful_version() {
     f.runtime.ledger.remove(&owned).unwrap();
     assert_eq!(gate(&f), newer, "a stale removal is a harmless non-write");
 }
+
+/// A reason that ends with a period is not followed by another one
+/// (zerus-63rru.23): the sentence is built once, for every card.
+#[test]
+fn a_reason_that_ends_with_a_period_is_not_doubled() {
+    let mut f = fixture(false);
+    let team = f.h.store.team(TEAM).unwrap().unwrap();
+    for now in [1000i64, 1000 + 60_000, 1000 + 180_000] {
+        f.runtime
+            .force_failure(
+                &mut f.h.store,
+                &team,
+                &f.key,
+                "revision",
+                &super::super::problem("The task waits."),
+                now,
+            )
+            .unwrap();
+    }
+    let card = open(&f).remove(0);
+    assert!(card.text.contains("waits. Automatic checks"), "{:?}", card.text);
+    assert!(!card.text.contains("waits.. Automatic"), "{:?}", card.text);
+}

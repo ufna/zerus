@@ -553,7 +553,7 @@ impl ports::Ports for Named {
             ));
         }
         Ok(if m.id == "m1" {
-            Availability::Unreadable(self.0)
+            Availability::Unreadable(self.0.clone())
         } else {
             Availability::Busy
         })
@@ -580,13 +580,38 @@ fn each_fact_reads_its_sentence_on_the_card() {
         (Fact::StartedFresh, format!("its session was started fresh, and a new conversation does not take over its tasks. {last}")),
         (Fact::Unavailable, "its session record did not answer in time. Retry reads it again on the next pass.".to_owned()),
     ];
+    // The terminal fact's own sentence names the dialog its gate knew
+    // (zerus-63rru.83), in the card's own shape.
+    {
+        let mut h = Harness::new();
+        h.bind("m1");
+        h.add(&person(), 1);
+        let machine = h.store.team(TEAM).unwrap().unwrap().home;
+        let mut a = Runtime::open(h.temp.path(), &machine).unwrap();
+        let mut p = Named(
+            Fact::TerminalWaiting {
+                dialog: Some("claude_usage_limit".into()),
+            },
+            false,
+        );
+        for minute in 0..4 {
+            a.tick(&mut h.store, &mut p, TEAM, T0 + minute * MINUTE, false)
+                .unwrap();
+        }
+        let shown = open(&h, "m1");
+        assert_eq!(shown.len(), 1, "{shown:?}");
+        assert_eq!(
+            shown[0].text,
+            "Member m1 (developer) is needed by ready task 1, but its terminal is waiting for input (a usage-limit choice). Answer it or clear it in the member's terminal. This card closes when the member can take work again or no ready task needs it."
+        );
+    }
     for (fact, words) in cases {
         let mut h = Harness::new();
         h.bind("m1");
         h.add(&person(), 1);
         let machine = h.store.team(TEAM).unwrap().unwrap().home;
         let mut a = Runtime::open(h.temp.path(), &machine).unwrap();
-        let mut p = Named(fact, false);
+        let mut p = Named(fact.clone(), false);
         for minute in 0..4 {
             a.tick(&mut h.store, &mut p, TEAM, T0 + minute * MINUTE, false)
                 .unwrap();

@@ -160,7 +160,7 @@ pub(in crate::desktop::teams) trait Ports {
 }
 
 /// Whether a member can take a task now.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(in crate::desktop::teams) enum Availability {
     Free,
     /// Known not to be free: working, waiting, stopped or occupied.
@@ -172,7 +172,7 @@ pub(in crate::desktop::teams) enum Availability {
 
 /// What cannot be read about a member: an unknown count of its fleet row
 /// while it is otherwise free, or why its binding names no current run.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(in crate::desktop::teams) enum Fact {
     /// `process_work.count`: the process table could not be verified.
     Background,
@@ -195,8 +195,11 @@ pub(in crate::desktop::teams) enum Fact {
     Unavailable,
     /// Its terminal refused a hand-out because it holds input: a question,
     /// a dialog or an unsent draft (zerus-63rru.79). The member can be read;
-    /// its row says free, but its terminal is not.
-    TerminalWaiting,
+    /// its row says free, but its terminal is not. The dialog the gate
+    /// knew, when one did (zerus-63rru.83).
+    TerminalWaiting {
+        dialog: Option<String>,
+    },
 }
 
 /// Only a positive non-write permits another admission. NotStarted means
@@ -216,6 +219,15 @@ pub(in crate::desktop::teams) enum DeliveryResult {
     /// terminal holds input, by its answer's typed cause (zerus-63rru.79).
     /// Recorded as a refusal; a fact about the member, not a failed hand-out.
     TerminalWaiting {
+        reason: String,
+        /// Which dialog the member's terminal waits on, when the gate
+        /// knows one (zerus-63rru.83).
+        dialog: Option<String>,
+    },
+    /// The task command refused before any input because the project's own
+    /// limits refuse it, by its answer's typed cause (zerus-63rru.23).
+    /// Recorded as a refusal; a fact about the team, not a failed hand-out.
+    ProjectLimit {
         reason: String,
     },
 }

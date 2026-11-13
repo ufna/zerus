@@ -26,15 +26,20 @@ struct Waiting {
     stamp: Option<String>,
     refusals: u32,
     until: i64,
+    /// Which dialog the refusal's gate knew, when one did (zerus-63rru.83).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    dialog: Option<String>,
 }
 
 /// A member's terminal fact as a pass finds it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) enum TerminalState {
     /// None, or its row changed.
     None,
-    /// The member is not free.
-    Standing,
+    /// The member is not free; the dialog its gate knew, when one did.
+    Standing {
+        dialog: Option<String>,
+    },
     /// Its time passed: the member is tried again, and a ready task's card
     /// for it stays as it is until that try settles.
     Lapsed,
@@ -47,6 +52,7 @@ impl Runtime {
         team: &str,
         member: &str,
         stamp: Option<String>,
+        dialog: Option<String>,
         now: i64,
     ) -> Result<()> {
         let key = format!("{ROWS}{member}");
@@ -62,6 +68,7 @@ impl Runtime {
                 stamp,
                 refusals,
                 until,
+                dialog,
             },
         )?;
         Ok(())
@@ -93,7 +100,9 @@ impl Runtime {
             }
         }
         Ok(if now < w.until {
-            TerminalState::Standing
+            TerminalState::Standing {
+                dialog: w.dialog.clone(),
+            }
         } else {
             TerminalState::Lapsed
         })
@@ -106,7 +115,10 @@ impl Runtime {
         member: &Member,
         now: i64,
     ) -> Result<bool> {
-        Ok(self.terminal_state(ports, team, member, now)? == TerminalState::Standing)
+        Ok(matches!(
+            self.terminal_state(ports, team, member, now)?,
+            TerminalState::Standing { .. }
+        ))
     }
 
     /// A delivery to `member` was submitted: its terminal took input.

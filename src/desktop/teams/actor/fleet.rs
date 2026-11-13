@@ -14,7 +14,7 @@ use serde_json::Value;
 
 /// Every key path [`Facts::of`] reads, and whether every producer writes it
 /// (the guard test checks both against rows the producers made).
-pub(super) const READ: [(&str, bool); 14] = [
+pub(super) const READ: [(&str, bool); 15] = [
     ("name", true),
     ("run_id", true),
     ("launch_id", true),
@@ -28,6 +28,7 @@ pub(super) const READ: [(&str, bool); 14] = [
     ("subagent_active_count", true),
     ("subagent_source", true),
     ("subagent_counts_complete", true),
+    ("subagent_process_unknown_count", false),
     ("optional_questions.count", true),
 ];
 
@@ -94,10 +95,27 @@ pub(super) const SOURCES: [(&str, Option<Incomplete>); 6] = [
     ("dsh_native", Some(Incomplete::MayRunNow)),
 ];
 
+/// The producers that write `subagent_process_unknown_count`. A row from one
+/// of them without a number is unknown (an older or broken writer); any
+/// number above zero leaves the count unsettled.
+const PROCESS_UNKNOWN: [&str; 4] = ["hooks", "kimi_native", "hook_profiles", "mixed_hooks"];
+
+fn process_unknown(row: &Value) -> bool {
+    let writes = row
+        .get("subagent_source")
+        .and_then(Value::as_str)
+        .is_some_and(|source| PROCESS_UNKNOWN.contains(&source));
+    match row.get("subagent_process_unknown_count") {
+        Some(value) => value.as_u64().map_or(writes, |count| count > 0),
+        None => writes,
+    }
+}
+
 /// The subagent count, and whether it cannot be settled: it was reported,
 /// but its producer's flag says some child that may be running now is not
-/// in it, or the reader does not know the producer. A count that was never
-/// reported is None and settled (zerus-63rru.61).
+/// in it, a child may still run unbound, or the reader does not know the
+/// producer. A count that was never reported is None and settled
+/// (zerus-63rru.61).
 fn children(row: &Value) -> (Option<u64>, bool) {
     let Some(count) = row.get("subagent_active_count").and_then(Value::as_u64) else {
         return (None, false);
@@ -116,7 +134,7 @@ fn children(row: &Value) -> (Option<u64>, bool) {
         // cannot say what its count leaves out.
         Some(None) | None => true,
     };
-    (Some(count), unsettled)
+    (Some(count), unsettled || process_unknown(row))
 }
 
 /// What one fleet row says about its session.
