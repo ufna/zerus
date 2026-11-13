@@ -376,7 +376,7 @@ fn prepare(
                 })
                 || store
                     .pending_cancels(team, 200, 0)
-                    .map_or(false, |pending| {
+                    .is_ok_and(|pending| {
                         pending.iter().any(|pending| pending.node == *node)
                     })
         });
