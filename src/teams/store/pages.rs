@@ -297,6 +297,14 @@ impl Store {
             )
         }))
     }
+    /// The open `member_started` items of a member, for the actor's close
+    /// decision (zerus-63rru.86 round 3): the member's segment with its
+    /// delimiter, so a prefix of another member never matches.
+    pub fn open_member_started(&self, team: &str, member: &str) -> Result<i64> {
+        let db = self.db.as_ref().ok_or_else(|| storage("Teams storage is closed."))?;
+        rows::open_member_started(db, team, member)
+    }
+
     pub fn inbox(
         &self,
         team: &str,

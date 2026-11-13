@@ -341,18 +341,7 @@ impl Runtime {
         // the actor's ledger (zerus-63rru.86 round 3): a crash between the
         // apply and the ledger write cannot leave an open item unclosed,
         // and the ledger rows stay an optimization only.
-        let prefix = "member_started:";
-        let open: i64 = store
-            .db
-            .as_ref()
-            .unwrap()
-            .query_row(
-                "SELECT COUNT(*) FROM inbox WHERE team=?1 AND state='open' AND substr(kind,1,15)='member_started:' AND substr(kind,16+instr(substr(kind,16),':'),length(?2)+1)=?2||':'",
-                rusqlite::params![team.id, member],
-                |r| r.get(0),
-            )
-            .map_err(crate::teams::store::storage)?;
-        if open == 0 {
+        if store.open_member_started(&team.id, member)? == 0 {
             // Nothing to close: no ops call, so an unchanged pass stays a
             // no-op and its revision does not move.
             return Ok(());
@@ -365,9 +354,13 @@ impl Runtime {
             },
         )?;
         ops::apply(store, &actor, &request, now)?;
+        // The ledger rows are keyed paused_started:{member}:{node}; the
+        // cleanup's prefix carries the member's delimiter, so m1's return
+        // never removes m10's rows.
+        let ledger_prefix = format!("paused_started:{member}:");
         let mut after = String::new();
         for _ in 0..4 {
-            let rows = self.ledger.prefix_page(&team.id, prefix, &after)?;
+            let rows = self.ledger.prefix_page(&team.id, &ledger_prefix, &after)?;
             for row in &rows {
                 self.ledger.remove(row)?;
             }

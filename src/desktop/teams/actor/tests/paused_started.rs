@@ -273,12 +273,13 @@ fn the_close_is_exact_with_the_delimiter() {
     assert_eq!(items(&h).len(), 1, "{:?}", items(&h));
     // A second member's and a pattern member's items, written through the
     // store's own row writer.
+    let encoded = crate::teams::store::encode(&service()).unwrap();
     for kind in ["member_started:7:m10:1", "member_started:7:m_1:1"] {
         rows::hand_back_item(
             h.store.db.as_ref().unwrap(),
             TEAM,
             1,
-            "service",
+            &encoded,
             kind,
             "the item",
             T0,
@@ -301,8 +302,8 @@ fn the_close_is_exact_with_the_delimiter() {
         states,
         [
             ("member_started:1:m1:1".into(), "closed".into()),
-            ("member_started:7:m_1:1".into(), "open".into()),
             ("member_started:7:m10:1".into(), "open".into()),
+            ("member_started:7:m_1:1".into(), "open".into()),
         ],
         "the close touched the wrong items"
     );

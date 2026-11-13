@@ -232,6 +232,18 @@ pub(crate) fn settle_decisions(
 /// writer of that outcome: the step to layout 10, a member's removal, and a
 /// writer of a Return whose holder was removed. Each caller moves the team's
 /// revision once.
+/// The open `member_started` items of a member, for the actor's close
+/// decision (zerus-63rru.86 round 3): the member's segment with its
+/// delimiter, so a prefix of another member never matches.
+pub(crate) fn open_member_started(db: &Connection, team: &str, member: &str) -> Result<i64> {
+    db.query_row(
+        "SELECT COUNT(*) FROM inbox WHERE team=?1 AND state='open' AND substr(kind,1,15)='member_started:' AND substr(kind,16+instr(substr(kind,16),':'),length(?2)+1)=?2||':'",
+        params![team, member],
+        |r| r.get(0),
+    )
+    .map_err(storage)
+}
+
 pub(crate) fn hand_back(
     db: &Connection,
     team: &str,
