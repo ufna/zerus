@@ -157,6 +157,11 @@ impl TaskDoc {
             .unwrap_or_default();
         if team.is_some() {
             self.fields().insert("team", raw.as_str())?;
+            // A task that a team takes is not cancelled: the mark and its
+            // reason go with the binding, in the same commit
+            // (zerus-63rru.36). The ordinary send already clears them.
+            self.fields().delete("cancelled_at")?;
+            self.fields().delete("cancel_reason")?;
         } else {
             self.fields().delete("team")?;
         }

@@ -201,7 +201,49 @@ pub(crate) fn send(
         }
         _ => String::new(),
     };
-    let (header, who, view) = prepare(&store, caller, task, team, role, pipeline, &mut document)?;
+    let (mut header, who, view) = prepare(&store, caller, task, team, role, pipeline, &mut document)?;
+    // A send never answers queued on a node whose own attempt is cancelled:
+    // that node is about to end (zerus-63rru.36). Settle it with the same
+    // observation the actor would apply, so the AddTask below makes a new
+    // node and the answer names the new one.
+    if let Some((id, node)) = binding(&store, task)? {
+        if id == team
+            && view
+                .execution
+                .as_ref()
+                .filter(|e| !e.conflict)
+                .and_then(|e| e.current.as_ref())
+                .is_some_and(|current| {
+                    current.phase == zerus_replica::execution::Phase::Cancelled
+                })
+        {
+            let mut settlement = super::observation(&document, team, &header.home)?;
+            // The same previous-revision handshake the actor's record uses:
+            // the op refuses an observation that does not continue the
+            // node's stored one.
+            settlement.previous_revision = store
+                .task_observation(team, node)?
+                .map_or(String::new(), |o| o.revision);
+            let settle = request(&store, team, Operation::ObserveTask {
+                node,
+                observation: settlement,
+            })?;
+            // The observation is the service's own write, as in record().
+            ops::apply(
+                &mut store,
+                &ops::Actor::Service {
+                    person: header.owner.clone(),
+                    team: team.into(),
+                },
+                &settle,
+                now(),
+            )?;
+            // The settlement bumped the team's revision; the AddTask below
+            // starts from the fresh one.
+            header = header::read(&store, team)?
+                .ok_or_else(|| Problem::new(code::NOT_FOUND, "Team not found."))?;
+        }
+    }
     tasks.save(&mut document).map_err(storage)?;
     let add = request(
         &store,
@@ -284,13 +326,11 @@ fn prepare(
     )?;
     let view = document.view().map_err(storage)?;
     let duplicate = binding(store, task)?.is_some_and(|(id, _)| id == team);
-    // A cancelled task is never sent, also while it is still bound: between
-    // a cancel written to the task and the observation of that cancel. A
-    // document written by a build before the move-back clears the mark keeps
-    // it here.
-    if view.cancelled_at.is_some()
-        || (!duplicate && !matches!(view.stage, Stage::Backlog | Stage::Todo))
-    {
+    // A task in Backlog or To do is taken whatever its mark: the binding
+    // write below clears a stale one (zerus-63rru.36). A task in Review or
+    // Done is refused by its stage, as before; a repeat of a bound task
+    // keeps the shared-node contract.
+    if !duplicate && !matches!(view.stage, Stage::Backlog | Stage::Todo) {
         return Err(Problem::new(
             code::INVALID_STATE,
             "Send a task in Backlog or To do to a team.",

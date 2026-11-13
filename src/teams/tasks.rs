@@ -70,7 +70,7 @@ pub(crate) fn attempt(view: &zerus_replica::TaskView) -> (u64, String, bool) {
         .map_or_else(String::new, |current| current.id.clone());
     (highest, id, conflict)
 }
-fn observation(document: &TaskDoc, team: &str, home: &str) -> Result<TaskObservation> {
+pub(crate) fn observation(document: &TaskDoc, team: &str, home: &str) -> Result<TaskObservation> {
     let view = document.view().map_err(storage)?;
     let (attempt, attempt_id, attempt_conflict) = attempt(&view);
     let key = match document.team().map_err(storage)? {

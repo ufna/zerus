@@ -243,25 +243,22 @@ fn wp36_reproduction() {
         // cancel and never a refusal.
         assert_eq!(reply["reply"]["exit"], 0, "{reply}");
     }
-    // The resend while the old node is still live shares the node (the
-    // ops' existing_node reuse — the committed sends-twice contract): the
-    // old node and a new one never overlap because no new node is made.
-    let shared = intake(&f, &uuid_b, TEAM, "B resend while the old node is live");
-    assert_eq!(shared["queued"], true, "{shared}");
-    assert_eq!(shared["node"].as_u64(), Some(node_b as u64), "{shared}");
-    // The observation ends the old node from the attempt's phase (rule 2),
-    // so the next resend makes a new node.
-    crate::teams::tasks::observe(
-        &f.config.state,
-        &TaskRef {
-            project: "example-project".into(),
-            uuid: uuid_b.clone(),
-        },
-    )
-    .unwrap();
-    let admitted = intake(&f, &uuid_b, TEAM, "B resend after the node ended");
-    assert_eq!(admitted["queued"], true, "{admitted}");
-    assert_ne!(admitted["node"].as_u64(), Some(node_b as u64), "{admitted}");
+    // The resend with no further act by the person: the intake settles the
+    // old node (the same observation the actor would apply) and queues a
+    // new node in one answer; the old node ends exactly once.
+    let fresh = intake(&f, &uuid_b, TEAM, "B resend");
+    assert_eq!(fresh["queued"], true, "{fresh}");
+    let node_new = fresh["node"].as_u64().unwrap() as u32;
+    assert_ne!(node_new, node_b, "{fresh}");
+    assert!(
+        f.h.store
+            .team(TEAM)
+            .unwrap()
+            .unwrap()
+            .revision
+            >= 1,
+        "the settlement wrote"
+    );
     // The new node is live: another team refuses the same task, as before.
     let other_b = intake(
         &f,
@@ -307,20 +304,9 @@ fn a_started_attempt_is_ended_by_the_observation_after_the_move_back() {
         store.save(&mut doc).unwrap();
     }
     move_back(&f, &uuid, "started variant");
-    let shared = intake(&f, &uuid, TEAM, "started: resend while the node is live");
-    assert_eq!(shared["queued"], true, "{shared}");
-    assert_eq!(shared["node"].as_u64(), Some(node as u64), "{shared}");
-    crate::teams::tasks::observe(
-        &f.config.state,
-        &TaskRef {
-            project: "example-project".into(),
-            uuid: uuid.clone(),
-        },
-    )
-    .unwrap();
-    let admitted = intake(&f, &uuid, TEAM, "started: resend after the node ended");
-    assert_eq!(admitted["queued"], true, "{admitted}");
-    assert_ne!(admitted["node"].as_u64(), Some(node as u64), "{admitted}");
+    let fresh = intake(&f, &uuid, TEAM, "started: resend");
+    assert_eq!(fresh["queued"], true, "{fresh}");
+    assert_ne!(fresh["node"].as_u64(), Some(node as u64), "{fresh}");
     let _ = node;
 }
 
@@ -335,6 +321,28 @@ fn the_teams_cancel_ends_the_node_even_when_the_observation_comes_after_the_move
     team_cancel(&mut f, node);
     fields(&f, &uuid, "team variant: after the team cancel");
     move_back(&f, &uuid, "team variant");
+    let fresh = intake(&f, &uuid, TEAM, "team variant: resend");
+    assert_eq!(fresh["queued"], true, "{fresh}");
+    assert_ne!(fresh["node"].as_u64(), Some(node as u64), "{fresh}");
+}
+
+
+/// Round 2 B: a Review task with the mark is still refused by its stage
+/// (the mark no longer matters; the stage does).
+#[test]
+fn a_review_task_with_the_mark_is_refused_by_its_stage() {
+    let mut f = Fixture::new();
+    let (_id, uuid) = add(&mut f);
+    let node = deliver(&mut f, &uuid, "m2");
+    {
+        let store = crate::tasks::store(&f.config, "example-project").unwrap();
+        let mut doc = store.load(&uuid).unwrap();
+        doc.record_cancel("Obsolete", &zerus_replica::Actor::Person, now())
+            .unwrap();
+        store.save(&mut doc).unwrap();
+    }
+    // The observation ends the node on the mark, so the Review task has no
+    // live binding; the send is then refused by its stage.
     crate::teams::tasks::observe(
         &f.config.state,
         &TaskRef {
@@ -343,7 +351,74 @@ fn the_teams_cancel_ends_the_node_even_when_the_observation_comes_after_the_move
         },
     )
     .unwrap();
-    let admitted = intake(&f, &uuid, TEAM, "team variant: resend");
-    assert_eq!(admitted["queued"], true, "{admitted}");
+    let refused = intake(&f, &uuid, TEAM, "Review with the mark");
+    assert_eq!(
+        refused["error"]["message"], "Send a task in Backlog or To do to a team.",
+        "{refused}"
+    );
+    let _ = node;
 }
 
+/// Round 2 B: a cancel and a move-back merged on two replicas in both sync
+/// orders, then sent. Every merged state answers safely: a To do state is
+/// admitted and the binding write clears any surviving mark; a Review state
+/// is refused by its stage. Each order runs on a fresh fixture.
+#[test]
+fn a_cancel_and_move_back_merged_then_sent_in_both_orders() {
+    for order in 0..2 {
+        let mut f = Fixture::new();
+        let (_id, uuid) = add(&mut f);
+        deliver(&mut f, &uuid, "m2");
+        let base = {
+            let store = crate::tasks::store(&f.config, "example-project").unwrap();
+            let doc = store.load(&uuid).unwrap();
+            doc.snapshot().unwrap()
+        };
+        let mut cancelling = zerus_replica::TaskDoc::from_bytes(&base).unwrap();
+        let mut reviving = zerus_replica::TaskDoc::from_bytes(&base).unwrap();
+        cancelling
+            .record_cancel("Superseded", &zerus_replica::Actor::Person, 20)
+            .unwrap();
+        reviving
+            .record_cancel("Superseded", &zerus_replica::Actor::Person, 20)
+            .unwrap();
+        reviving
+            .set_stage(Stage::Todo, &zerus_replica::Actor::Person, 21)
+            .unwrap();
+        let (mut first, second) = if order == 0 {
+            (reviving, cancelling)
+        } else {
+            (cancelling, reviving)
+        };
+        assert!(first.import(&second.export_since(&first.version()).unwrap()).is_ok());
+        let view = first.view().unwrap();
+        eprintln!(
+            "WP36 merged order {order}: stage={} marked={}",
+            view.stage.as_str(),
+            view.cancelled_at.is_some()
+        );
+        {
+            let store = crate::tasks::store(&f.config, "example-project").unwrap();
+            store.save(&mut first).unwrap();
+        }
+        let answer = intake(&f, &uuid, TEAM, &format!("merged order {order} sent"));
+        match (view.stage, view.cancelled_at.is_some()) {
+            (Stage::Todo, _) => {
+                assert_eq!(answer["queued"], true, "{answer}");
+                {
+                    let store = crate::tasks::store(&f.config, "example-project").unwrap();
+                    let doc = store.load(&uuid).unwrap();
+                    assert_eq!(doc.view().unwrap().cancelled_at, None);
+                }
+            }
+            (Stage::Review, _) => {
+                assert_eq!(
+                    answer["error"]["message"],
+                    "Send a task in Backlog or To do to a team.",
+                    "{answer}"
+                );
+            }
+            other => panic!("unsafe merged stage: {other:?}"),
+        }
+    }
+}

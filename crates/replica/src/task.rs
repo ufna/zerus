@@ -1982,6 +1982,37 @@ mod tests {
         assert_eq!(doc.view().unwrap().cancelled_at, None);
     }
 
+    /// zerus-63rru.36 round 2: the team-binding write clears the cancelled
+    /// mark and its reason in the same commit, whatever the stage; the
+    /// other fields of the document are untouched.
+    #[test]
+    fn the_team_binding_write_clears_the_mark() {
+        let mut doc = task(Stage::Todo);
+        doc.fields().insert("cancelled_at", 2).unwrap();
+        doc.fields()
+            .insert("cancel_reason", "Superseded")
+            .unwrap();
+        let before = doc.view().unwrap();
+        doc.set_team_named(
+            Some(&crate::TaskTeam {
+                team: "00000000-0000-4000-8000-00000000beef".into(),
+                home: "00000000-0000-4000-8000-00000000beef".into(),
+            }),
+            "Example team",
+            &Actor::Person,
+            3,
+        )
+        .unwrap();
+        let view = doc.view().unwrap();
+        assert_eq!(view.cancelled_at, None, "{view:?}");
+        assert_eq!(view.cancel_reason, "", "{view:?}");
+        assert!(view.team.is_some());
+        // Nothing else new: the stage, the title and the author stay.
+        assert_eq!(view.stage, before.stage);
+        assert_eq!(view.title, before.title);
+        assert_eq!(view.author, before.author);
+    }
+
     #[test]
     fn message_intent_survives_dispatch_receipts_and_changed_stages() {
         let mut task = task(Stage::Todo);
