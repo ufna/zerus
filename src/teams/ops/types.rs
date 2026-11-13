@@ -368,6 +368,14 @@ pub enum Operation {
         #[serde(default)]
         attempt_id: String,
     },
+    /// A report that a removed member wrote after its removal took the task
+    /// back (zerus-63rru.77): not recorded as the team's, told to the lead
+    /// once per node and generation.
+    RecordLateReport {
+        node: NodeId,
+        generation: u32,
+        member: MemberId,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]

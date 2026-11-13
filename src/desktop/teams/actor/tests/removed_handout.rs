@@ -408,3 +408,100 @@ fn a_paused_members_hand_out_is_kept() {
     assert!(items(&h).is_empty());
     assert_eq!(p.deliveries.len(), 1);
 }
+
+/// zerus-63rru.77, C: m1 started task 1 and was then removed.
+fn started_then_removed() -> (Harness, super::super::Runtime, Production, Actor, String) {
+    let (mut h, mut a, mut p, lead) = team();
+    a.tick(&mut h.store, &mut p, TEAM, T0, false).unwrap();
+    let id = effect_id(&h);
+    h.observe(1, crate::teams::ops::TaskStage::InProgress);
+    row(&p, &h, "m2", &[]);
+    removed(&mut h);
+    (h, a, p, lead, id)
+}
+
+/// The removal takes the started task back; the old session later reports.
+/// The reports step tells the lead once and ends there: ten passes, one
+/// item, no report recorded, no retry gate, no failure, no card.
+#[test]
+fn a_report_written_after_the_removal_is_told_once_over_ten_passes() {
+    let (mut h, mut a, mut p, _, id) = started_then_removed();
+    assert_eq!(effects(&h), [("superseded".into(), "m1".into(), 1)]);
+    assert!(h.node(1).hold);
+    let path = h.store.member(TEAM, "m1").unwrap().unwrap().worktree;
+    let first = items(&h);
+    assert_eq!(first.len(), 1);
+    assert_eq!(first[0].0, format!("member_removed:{id}"));
+    assert!(first[0].1.contains(&format!("in the worktree at {path}")));
+    h.observe(1, crate::teams::ops::TaskStage::InReview);
+    passes(&mut h, &mut a, &mut p, T0 + MINUTE, 10);
+
+    let told: Vec<_> = items(&h)
+        .into_iter()
+        .filter(|(kind, _)| kind == "removed_report")
+        .collect();
+    assert_eq!(
+        told,
+        [(
+            "removed_report".to_owned(),
+            format!("Member m1 reported task 1 after it was removed; the team does not record that report. Its work is in the worktree at {path}.")
+        )]
+    );
+    assert_eq!(items(&h).len(), 2);
+    let generation = h.store.generation(TEAM, 1).unwrap().unwrap();
+    assert!(h.store.report(TEAM, 1, generation).unwrap().is_none());
+    assert!(a
+        .ledger
+        .prefix_page(TEAM, "gate:report:", "")
+        .unwrap()
+        .is_empty());
+    no_rows(&a);
+    assert_eq!(cards(&h), 0);
+    assert_eq!(p.deliveries.len(), 1);
+}
+
+/// From the held state the lead's Reassign reaches another member through
+/// the real pass: one delivery to m2, nothing more to m1.
+#[test]
+fn the_lead_reassigns_a_task_taken_back_while_in_progress() {
+    let (mut h, mut a, mut p, lead, _) = started_then_removed();
+    passes(&mut h, &mut a, &mut p, T0 + MINUTE, 3);
+    assert_eq!(p.deliveries.len(), 1);
+    h.run(
+        &lead,
+        Operation::Reassign {
+            node: 1,
+            member: "m2".into(),
+            reason: "Another member takes it".into(),
+        },
+    )
+    .unwrap();
+    passes(&mut h, &mut a, &mut p, T0 + 10 * MINUTE, 3);
+    assert_eq!(p.deliveries.len(), 2, "{:?}", p.deliveries);
+    assert!(
+        p.deliveries[1].starts_with("m2 -> Outcome(Submitted"),
+        "{:?}",
+        p.deliveries
+    );
+    assert_eq!(cards(&h), 0);
+}
+
+/// A paused member's started task is untouched: no hand-back, no item.
+#[test]
+fn a_paused_members_started_task_is_untouched() {
+    let (mut h, mut a, mut p, _) = team();
+    a.tick(&mut h.store, &mut p, TEAM, T0, false).unwrap();
+    h.observe(1, crate::teams::ops::TaskStage::InProgress);
+    h.run(
+        &person(),
+        Operation::PauseMember {
+            member: "m1".into(),
+        },
+    )
+    .unwrap();
+    passes(&mut h, &mut a, &mut p, T0 + MINUTE, 10);
+    assert_eq!(effects(&h), [("submitted".into(), "m1".into(), 1)]);
+    assert!(!h.node(1).hold);
+    assert!(items(&h).is_empty());
+    assert_eq!(cards(&h), 0);
+}

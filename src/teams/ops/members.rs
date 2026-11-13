@@ -194,15 +194,17 @@ pub(super) fn archive(ctx: &mut Context<'_>) -> Result<()> {
     }
     m.state = MemberState::Removed;
     save(ctx, &m)?;
-    hand_back(ctx, member)
+    hand_back(ctx, &m)
 }
 /// Removal settles the Returns and Reassigns aimed at the member that have
 /// not started, or whose reopen is only reserved, and hands each node back to
 /// the lead as a reopen that could not be delivered does: the decision
 /// settled, the node held, and one inbox item. Then it settles the member's
-/// open hand-out of a task that has not started (zerus-63rru.77). A stopped
-/// or busy member keeps them; that wait is intended.
-fn hand_back(ctx: &mut Context<'_>, member: &str) -> Result<()> {
+/// open hand-out of a task that has not started or is in progress
+/// (zerus-63rru.77). A stopped or busy member keeps them; that wait is
+/// intended.
+fn hand_back(ctx: &mut Context<'_>, removed: &Member) -> Result<()> {
+    let member = removed.id.as_str();
     let mut handed = std::collections::BTreeSet::new();
     for (seq, node, kind, state) in reopen_decisions(ctx)? {
         let reserved = state == DecisionState::EffectReserved.as_str();
@@ -226,7 +228,7 @@ fn hand_back(ctx: &mut Context<'_>, member: &str) -> Result<()> {
         hand_to_lead(ctx, node, &format!("member_removed:{seq}"), &body)?;
         handed.insert(node);
     }
-    settle_handout(ctx, member, &handed)
+    settle_handout(ctx, removed, &handed)
 }
 /// What a removal says about a delivery it settles: the store cannot know
 /// whether the prompt arrived, since a delivery child that passed its own
@@ -234,30 +236,64 @@ fn hand_back(ctx: &mut Context<'_>, member: &str) -> Result<()> {
 const UNKNOWN: &str =
     "the delivery's result is not known: the prompt may have reached a session that is now gone.";
 /// The member's open hand-out (reserved, submitted, uncertain or cutting
-/// over; there is at most one) of a live task that has not started is
-/// settled in the removal: the effect superseded, so no pass hands the task
-/// out again and nothing replays the delivery, and the node handed back to
-/// the lead with one item. An uncertain delivery keeps its outcome and its
-/// earlier item; this item does not repeat it as a second fact. A node with
-/// another unsettled decision keeps it: a Cancel still ends its task.
+/// over; there is at most one) of a live task that has not started, or is in
+/// progress, is settled in the removal: the effect superseded, so no pass
+/// hands the task out again, nothing replays the delivery and a later report
+/// of the member is not the team's, and the node handed back to the lead
+/// with one item. An uncertain delivery keeps its outcome and its earlier
+/// item; this item does not repeat it as a second fact. A task already in
+/// review stays as it is: its member's report was written before the
+/// removal. A node with another unsettled decision keeps it: a Cancel still
+/// ends its task.
 fn settle_handout(
     ctx: &mut Context<'_>,
-    member: &str,
+    removed: &Member,
     handed: &std::collections::BTreeSet<u32>,
 ) -> Result<()> {
-    let open: Option<(u32, String)> = ctx.db.query_row(&format!("SELECT e.node,e.request_id FROM effects e INDEXED BY effect_member JOIN nodes n ON n.team=e.team AND n.id=e.node WHERE e.team=?1 AND e.member=?2 AND e.state IN {OPEN_EFFECT_STATES} AND e.kind IN ('handout','reopen') AND n.node_state IN ('pending','waiting')"),params![ctx.team.id,member],|r|Ok((r.get(0)?,r.get(1)?))).optional().map_err(storage)?;
-    let Some((node, id)) = open else {
+    let member = removed.id.as_str();
+    let open: Option<(u32, String, String)> = ctx.db.query_row(&format!("SELECT e.node,e.request_id,n.node_state FROM effects e INDEXED BY effect_member JOIN nodes n ON n.team=e.team AND n.id=e.node WHERE e.team=?1 AND e.member=?2 AND e.state IN {OPEN_EFFECT_STATES} AND e.kind IN ('handout','reopen') AND n.node_state IN ('pending','waiting','in_progress')"),params![ctx.team.id,member],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional().map_err(storage)?;
+    let Some((node, id, state)) = open else {
         return Ok(());
     };
     if handed.contains(&node) || ctx.pending(node)?.is_some() {
         return Ok(());
     }
     supersede(ctx, node, member)?;
-    let body = format!(
-        "Member {member} was removed before task {node} started; {UNKNOWN} The task waits for the lead."
-    );
+    let body = if state == "in_progress" {
+        format!(
+            "Member {member} was removed while task {node} was in progress; the task is with the lead again. {} Reassign gives the task to another member, and a later report from that session will not move it; Cancel stops that session and ends the task.",
+            still_working(&removed.worktree)
+        )
+    } else {
+        format!(
+            "Member {member} was removed before task {node} started; {UNKNOWN} The task waits for the lead."
+        )
+    };
     hand_to_lead(ctx, node, &format!("member_removed:{id}"), &body)?;
     Ok(())
+}
+/// Where a removed member's work is, as far as the store knows it: the
+/// worktree path its members row has, and nothing else (no branch, no head).
+fn still_working(worktree: &str) -> String {
+    if worktree.is_empty() {
+        "Its session was not told and may still be working on it, in its worktree.".into()
+    } else {
+        format!(
+            "Its session was not told and may still be working on it, in the worktree at {worktree}."
+        )
+    }
+}
+/// The sentence for a report the removed member wrote after its removal: not
+/// the team's, so not recorded; the work stays where the store says it is.
+pub(super) fn late_report_text(member: &str, node: u32, worktree: &str) -> String {
+    let at = if worktree.is_empty() {
+        "in its worktree".to_owned()
+    } else {
+        format!("in the worktree at {worktree}")
+    };
+    format!(
+        "Member {member} reported task {node} after it was removed; the team does not record that report. Its work is {at}."
+    )
 }
 /// Closes the member's open effects of the node; a late outcome is still
 /// recorded as a fact and never reopens them.

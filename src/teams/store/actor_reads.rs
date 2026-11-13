@@ -41,6 +41,25 @@ impl Store {
         self.active()?;
         self.db.as_ref().map_or(Ok(false),|db|db.query_row("SELECT EXISTS(SELECT 1 FROM effects WHERE request_id=?1 AND team=?2 AND state='reserved' AND outcome IS NULL)",params![id,team],|r|r.get(0)).map_err(storage))
     }
+    /// The removed member whose hand-out of this exact generation its removal
+    /// settled: the generation's newest effect, superseded, of a member now
+    /// removed (zerus-63rru.77). A report it writes later is not the team's.
+    pub fn removed_reporter(
+        &self,
+        team: &str,
+        node: u32,
+        generation: u32,
+    ) -> Result<Option<String>> {
+        self.active()?;
+        let removed = encode(&MemberState::Removed)?;
+        self.db.as_ref().map_or(Ok(None),|db|db.query_row("SELECT e.member FROM (SELECT member,state FROM effects INDEXED BY effects_attempt WHERE team=?1 AND node=?2 AND generation=?3 ORDER BY seq DESC LIMIT 1) e JOIN members m ON m.team=?1 AND m.id=e.member WHERE e.state='superseded' AND m.state=?4",params![team,node,generation,removed],|r|r.get(0)).optional().map_err(storage))
+    }
+    /// Whether the lead was already told of that later report, once per node
+    /// and generation (the inbox's own unique key).
+    pub fn late_report_told(&self, team: &str, node: u32, generation: u32) -> Result<bool> {
+        self.active()?;
+        self.db.as_ref().map_or(Ok(false),|db|db.query_row("SELECT EXISTS(SELECT 1 FROM inbox WHERE team=?1 AND kind='removed_report' AND node=?2 AND generation=?3)",params![team,node,generation],|r|r.get(0)).map_err(storage))
+    }
     /// Only a saved refusal proves that this request was refused.
     pub fn request_refused(&self, team: &str, id: &str) -> Result<bool> {
         self.active()?;

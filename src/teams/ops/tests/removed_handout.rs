@@ -135,28 +135,25 @@ fn a_late_outcome_of_the_settled_hand_out_is_a_fact_and_reopens_nothing() {
 }
 
 #[test]
-fn removal_leaves_a_started_task_a_paused_member_and_a_pending_cancel_as_they_were() {
-    // A started task stays with its member (zerus-63rru.77's second commit
-    // takes it back).
-    let (mut h, node, id) = holding("submitted");
-    h.observe(node, TaskStage::InProgress);
-    h.run(&person(), removed("m1")).unwrap();
-    assert_eq!(effect(&h, &id).state, "submitted");
-    assert!(!h.node(node).hold);
-    assert!(items(&h, node).is_empty());
-
-    // A paused member keeps its hand-out; that wait is intended.
-    let (mut h, node, id) = holding("submitted");
-    h.run(
-        &person(),
-        Operation::PauseMember {
-            member: "m1".into(),
-        },
-    )
-    .unwrap();
-    assert_eq!(effect(&h, &id).state, "submitted");
-    assert!(!h.node(node).hold);
-    assert!(items(&h, node).is_empty());
+fn removal_leaves_a_paused_members_tasks_and_a_pending_cancel_as_they_were() {
+    // A paused member keeps its hand-out and its started task; that wait is
+    // intended.
+    for started in [false, true] {
+        let (mut h, node, id) = holding("submitted");
+        if started {
+            h.observe(node, TaskStage::InProgress);
+        }
+        h.run(
+            &person(),
+            Operation::PauseMember {
+                member: "m1".into(),
+            },
+        )
+        .unwrap();
+        assert_eq!(effect(&h, &id).state, "submitted", "{started}");
+        assert!(!h.node(node).hold, "{started}");
+        assert!(items(&h, node).is_empty(), "{started}");
+    }
 
     // A Cancel still ends its task: the removal leaves the node to it.
     let (mut h, node, id) = holding("submitted");
@@ -296,4 +293,186 @@ fn a_reopen_that_ends_refused_tells_the_lead_whoever_its_member_is() {
             }
         }
     }
+}
+
+fn worktree(h: &Harness, member: &str) -> String {
+    let m = h.store.member(TEAM, member).unwrap().unwrap();
+    assert!(!m.worktree.is_empty());
+    m.worktree
+}
+fn late(node: u32, generation: u32) -> Operation {
+    Operation::RecordLateReport {
+        node,
+        generation,
+        member: "m1".into(),
+    }
+}
+
+#[test]
+fn removal_takes_back_a_task_in_progress_and_says_what_is_not_done() {
+    let (mut h, node, id) = holding("submitted");
+    h.observe(node, TaskStage::InProgress);
+    let path = worktree(&h, "m1");
+    h.run(&person(), removed("m1")).unwrap();
+
+    assert_eq!(effect(&h, &id).state, "superseded");
+    let n = h.node(node);
+    assert!(n.hold);
+    assert_eq!(n.state, NodeState::InProgress);
+    let all = items(&h, node);
+    assert_eq!(all.len(), 1);
+    assert_eq!(all[0].kind, format!("member_removed:{id}"));
+    assert_eq!(
+        all[0].text,
+        format!("Member m1 was removed while task {node} was in progress; the task is with the lead again. Its session was not told and may still be working on it, in the worktree at {path}. Reassign gives the task to another member, and a later report from that session will not move it; Cancel stops that session and ends the task.")
+    );
+    // The lead decides from the held state: a Reassign waits for its reopen,
+    // and a Cancel (on another such team) waits for the task's cancellation.
+    let lead = person();
+    h.run(
+        &lead,
+        Operation::Reassign {
+            node,
+            member: "m2".into(),
+            reason: "Another member takes it".into(),
+        },
+    )
+    .unwrap();
+    let d = decision(&h, node);
+    assert_eq!(
+        (d.kind.as_str(), d.state),
+        ("reassign", DecisionState::Pending)
+    );
+    let (mut h, node, _) = holding("submitted");
+    h.observe(node, TaskStage::InProgress);
+    h.run(&person(), removed("m1")).unwrap();
+    let lead = person();
+    h.run(
+        &lead,
+        Operation::Cancel {
+            node,
+            reason: "Not needed".into(),
+        },
+    )
+    .unwrap();
+    let d = decision(&h, node);
+    assert_eq!(
+        (d.kind.as_str(), d.state),
+        ("cancel", DecisionState::Pending)
+    );
+}
+
+#[test]
+fn a_report_written_before_the_removal_stays_the_teams() {
+    // Recorded before the removal: untouched, and the lead can accept it.
+    let mut h = Harness::new();
+    let (node, lead) = h.reported();
+    h.bind("m2");
+    h.run(&person(), removed("m1")).unwrap();
+    assert!(!h.node(node).hold);
+    assert!(items(&h, node)
+        .iter()
+        .all(|i| !i.kind.starts_with("member_removed:")));
+    h.run(&lead, Operation::Accept { node }).unwrap();
+    assert_eq!(decision(&h, node).kind, "accept");
+
+    // Written at the task level (In review) but not yet recorded by the
+    // team when the removal lands: the removal leaves it, and the team
+    // records it as today.
+    let (mut h, node, id) = holding("submitted");
+    h.observe(node, TaskStage::InReview);
+    h.run(&person(), removed("m1")).unwrap();
+    assert_eq!(effect(&h, &id).state, "submitted");
+    assert!(!h.node(node).hold);
+    let generation = h.store.generation(TEAM, node).unwrap().unwrap();
+    h.run(
+        &service(),
+        Operation::RecordReport {
+            node,
+            generation,
+            member: "m1".into(),
+            text: "Implemented and checked".into(),
+            commit: COMMIT.into(),
+        },
+    )
+    .unwrap();
+    assert!(h.store.report(TEAM, node, generation).unwrap().is_some());
+}
+
+#[test]
+fn a_report_written_after_the_removal_is_told_once_and_never_recorded() {
+    let (mut h, node, _) = holding("submitted");
+    h.observe(node, TaskStage::InProgress);
+    let path = worktree(&h, "m1");
+    // Not yet: the task is still in progress.
+    h.run(&person(), removed("m1")).unwrap();
+    let generation = h.store.generation(TEAM, node).unwrap().unwrap();
+    assert_eq!(
+        h.store.removed_reporter(TEAM, node, generation).unwrap(),
+        Some("m1".into())
+    );
+    let early = h.run(&service(), late(node, generation)).unwrap_err();
+    assert_eq!(
+        early.message,
+        "No report of a removed member waits here after its removal."
+    );
+    // The old session reports: the task is In review at the task level.
+    h.observe(node, TaskStage::InReview);
+    let refused = h
+        .run(
+            &service(),
+            Operation::RecordReport {
+                node,
+                generation,
+                member: "m1".into(),
+                text: "Implemented and checked".into(),
+                commit: COMMIT.into(),
+            },
+        )
+        .unwrap_err();
+    assert_eq!(
+        refused.message,
+        "Report does not belong to the current reviewed attempt's holder."
+    );
+    assert!(!h.store.late_report_told(TEAM, node, generation).unwrap());
+    h.run(&service(), late(node, generation)).unwrap();
+    assert!(h.store.late_report_told(TEAM, node, generation).unwrap());
+    let told: Vec<InboxItem> = items(&h, node)
+        .into_iter()
+        .filter(|i| i.kind == "removed_report")
+        .collect();
+    assert_eq!(told.len(), 1);
+    assert_eq!(
+        told[0].text,
+        format!("Member m1 reported task {node} after it was removed; the team does not record that report. Its work is in the worktree at {path}.")
+    );
+    let again = h.run(&service(), late(node, generation)).unwrap_err();
+    assert_eq!(again.message, "This late report was already told.");
+    assert!(h.store.report(TEAM, node, generation).unwrap().is_none());
+    assert!(h.node(node).hold);
+}
+
+#[test]
+fn a_late_report_is_only_for_a_removed_members_settled_hand_out() {
+    // The member is not removed, or another member's hand-out is newest.
+    let (mut h, node, _) = holding("submitted");
+    h.observe(node, TaskStage::InProgress);
+    h.observe(node, TaskStage::InReview);
+    let generation = h.store.generation(TEAM, node).unwrap().unwrap();
+    assert_eq!(
+        h.store.removed_reporter(TEAM, node, generation).unwrap(),
+        None
+    );
+    let refused = h.run(&service(), late(node, generation)).unwrap_err();
+    assert_eq!(
+        refused.message,
+        "No report of a removed member waits here after its removal."
+    );
+    // A removed member's other late report: not this generation.
+    h.run(&person(), removed("m1")).unwrap();
+    let refused = h.run(&service(), late(node, generation + 1)).unwrap_err();
+    assert_eq!(
+        refused.message,
+        "No report of a removed member waits here after its removal."
+    );
 }
