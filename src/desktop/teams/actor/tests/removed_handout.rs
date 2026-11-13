@@ -591,3 +591,111 @@ fn a_report_written_before_the_removal_is_recorded_through_the_real_pass() {
         .is_empty());
     assert_eq!(cards(&h), 0);
 }
+
+/// zerus-63rru.77: the person's Cancel of a started stage of a removed
+/// reviewer, with the real `team-cancel` and the actor's own reading and
+/// recording of its reply; with the reviewer's session present, and gone.
+fn person_cancels_a_removed_reviewers_started_stage(
+    session_gone: bool,
+) -> crate::tasks::RealCancel {
+    use super::super::{cancel::Fact, native::Native, ports::TaskReply};
+    crate::tasks::removed_stage_cancel(session_gone, |store, reply, node| {
+        let team = store.team(TEAM).unwrap().unwrap();
+        let input = super::super::native::clear_request(&team, node);
+        let answer = super::super::native::cancel_answer(
+            crate::desktop::original_child::Ended::Exited {
+                code: 0,
+                output: reply.to_vec(),
+            },
+            &input,
+        )
+        .unwrap();
+        // As the actor does (`cancel_needs_observation`): a cancelled answer
+        // in a live team is recorded by the task's ordinary observation,
+        // which the harness runs next; only another answer is a fact.
+        if matches!(answer.reply, TaskReply::Cancelled)
+            && matches!(
+                team.status,
+                zerus_team_plan::model::TeamStatus::Running
+                    | zerus_team_plan::model::TeamStatus::Paused
+            )
+        {
+            return;
+        }
+        let pending = Native::pending_cancels(store, TEAM, node - 1)
+            .unwrap()
+            .into_iter()
+            .next()
+            .unwrap();
+        assert_eq!(pending.node, node);
+        let fact = Fact {
+            request_id: uuid::Uuid::new_v4().to_string(),
+            revision: team.revision,
+            pending,
+            attempt: answer.attempt.as_ref().map_or(0, |a| a.number),
+            attempt_id: answer
+                .attempt
+                .as_ref()
+                .map_or_else(String::new, |a| a.id.clone()),
+            refused: matches!(answer.reply, TaskReply::Refused { .. }),
+            released: matches!(answer.reply, TaskReply::Released),
+            reason: match &answer.reply {
+                TaskReply::Refused { reason } => reason.clone(),
+                _ => String::new(),
+            },
+        };
+        Native::save_cancel(store, &team, &fact, T0).unwrap();
+    })
+}
+
+/// It ends as a task's Cancel does: the real command cancels the stage's
+/// task and tells the reviewer's session to stop (when that session is gone,
+/// nothing is sent and nothing fails); the observation settles the pending
+/// cancel and ends the stage; the parent comes back to the lead with one
+/// report item. This is what the stage's item promises.
+#[test]
+fn the_persons_cancel_of_a_removed_reviewers_started_stage_ends_as_a_tasks_cancel() {
+    for gone in [false, true] {
+        let seen = person_cancels_a_removed_reviewers_started_stage(gone);
+        assert_eq!(seen.reply["state"], "cancelled", "{gone}: {seen:?}");
+        match &seen.notices {
+            Some(notice) => {
+                assert!(!gone, "{seen:?}");
+                let notice: Value = serde_json::from_str(notice.trim()).unwrap();
+                assert_eq!(notice["session"]["session"], "codex/deliver-m3");
+                assert!(notice["text"]
+                    .as_str()
+                    .unwrap()
+                    .contains("The person cancelled this task. Stop working on it."));
+            }
+            None => assert!(gone, "{seen:?}"),
+        }
+        assert_eq!(seen.cancel, ("cancel".into(), "Settled".into()), "{gone}");
+        assert_eq!(
+            seen.stage,
+            ("cancelled".into(), false, (false, None, false)),
+            "{gone}"
+        );
+        assert_eq!(seen.task, ("review".into(), true), "{gone}");
+        assert_eq!(
+            seen.parent,
+            ("reported".into(), (false, None, false)),
+            "{gone}"
+        );
+        assert_eq!(seen.run, "lead", "{gone}");
+        let open: Vec<_> = seen
+            .items
+            .iter()
+            .filter(|(_, _, state, _)| state == "open")
+            .collect();
+        assert_eq!(open.len(), 1, "{gone}: {:?}", seen.items);
+        assert_eq!((open[0].1.as_str(), open[0].0), ("report", 1), "{gone}");
+        assert!(
+            open[0]
+                .3
+                .ends_with("The person overrode the pipeline's stage task."),
+            "{gone}: {}",
+            open[0].3
+        );
+    }
+}

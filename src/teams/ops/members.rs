@@ -265,8 +265,15 @@ fn settle_handout(
         return Ok(());
     }
     let body = if state == "in_progress" {
+        // The decisions it names are the ones that work for its node kind,
+        // read from the node itself: only the person cancels a stage.
+        let decisions = if ctx.node(node)?.kind == NodeKind::Stage {
+            "Reassign gives the task to another member, and a later report from that session will not move it. The lead cannot cancel a stage; the person's Cancel stops that session and ends the task, and its parent comes back to the lead."
+        } else {
+            "Reassign gives the task to another member, and a later report from that session will not move it; Cancel stops that session and ends the task."
+        };
         format!(
-            "Member {member} was removed while task {node} was in progress; the task is with the lead again. {} Reassign gives the task to another member, and a later report from that session will not move it; Cancel stops that session and ends the task.",
+            "Member {member} was removed while task {node} was in progress; the task is with the lead again. {} {decisions}",
             still_working(&removed.worktree)
         )
     } else {

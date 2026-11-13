@@ -1098,6 +1098,7 @@ mod return_text_tests;
 mod attempt_tests;
 
 mod removal_tests;
+pub(crate) use removal_tests::{removed_stage_cancel, RealCancel};
 
 /// What keeps a hand-out from its reservation in [`blocked_handout`].
 #[derive(Clone, Copy, Debug)]

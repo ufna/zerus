@@ -328,7 +328,7 @@ fn removal_takes_back_a_task_in_progress_and_says_what_is_not_done() {
     );
     // The lead decides from the held state: a Reassign waits for its reopen,
     // and a Cancel (on another such team) waits for the task's cancellation.
-    let lead = person();
+    let lead = lead_actor();
     h.run(
         &lead,
         Operation::Reassign {
@@ -346,7 +346,7 @@ fn removal_takes_back_a_task_in_progress_and_says_what_is_not_done() {
     let (mut h, node, _) = holding("submitted");
     h.observe(node, TaskStage::InProgress);
     h.run(&person(), removed("m1")).unwrap();
-    let lead = person();
+    let lead = lead_actor();
     h.run(
         &lead,
         Operation::Cancel {
@@ -550,4 +550,20 @@ fn a_late_report_is_never_an_earlier_generations() {
         "No report of a removed member waits here after its removal."
     );
     assert!(items(&h, node).iter().all(|i| i.kind != "removed_report"));
+}
+
+/// The lead's own session actor, as `Harness::bind` made it when `holding`
+/// bound the lead: the item's reader, who makes the decisions it names.
+fn lead_actor() -> Actor {
+    let m = fixture()
+        .members
+        .into_iter()
+        .find(|m| m.id == "lead")
+        .unwrap();
+    Actor::Session {
+        person: "local".into(),
+        team: TEAM.into(),
+        member: "lead".into(),
+        session: m.session.unwrap(),
+    }
 }
