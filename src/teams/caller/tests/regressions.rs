@@ -579,7 +579,7 @@ fn a_host_id_without_a_birth_or_a_corrupt_record_refuses() {
         let text = tree.answer();
         assert!(text.contains("PROBE refused:invalid_state"), "{text}");
         assert!(
-            text.contains("Cannot verify a recorded agent host"),
+            text.contains("DeepSeek agent host record"),
             "{text}"
         );
     }
@@ -630,7 +630,7 @@ fn a_missing_state_or_host_folder_records_no_host() {
     let text = tree.answer();
     assert!(text.contains("PROBE refused:invalid_state"), "{text}");
     assert!(
-        text.contains("Cannot verify a recorded agent host"),
+        text.contains("DeepSeek agent host record"),
         "{text}"
     );
 }
@@ -663,7 +663,7 @@ fn a_link_in_place_of_a_host_folder_refuses() {
     let text = tree.answer();
     assert!(text.contains("PROBE refused:invalid_state"), "{text}");
     assert!(
-        text.contains("Cannot verify a recorded agent host"),
+        text.contains("DeepSeek agent host record"),
         "{text}"
     );
 }
@@ -719,7 +719,7 @@ fn a_state_folder_that_cannot_be_searched_refuses() {
     let text = tree.answer();
     assert!(text.contains("PROBE refused:invalid_state"), "{text}");
     assert!(
-        text.contains("Cannot verify a recorded agent host"),
+        text.contains("DeepSeek agent host record"),
         "{text}"
     );
 }
@@ -747,7 +747,7 @@ fn a_starting_record_names_its_previous_host_and_its_pid_file() {
     let text = tree.answer();
     assert!(text.contains("PROBE refused:invalid_state"), "{text}");
     assert!(
-        text.contains("Cannot verify a recorded agent host"),
+        text.contains("DeepSeek agent host record"),
         "{text}"
     );
 }

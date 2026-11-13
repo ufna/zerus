@@ -76,26 +76,36 @@ pub(in crate::desktop::teams) fn paths(value: &Value) -> std::collections::BTree
 /// children (`projections.values.subagentCatalog`, read by `dsh.rs`). It
 /// never carries `jobs` or `shellCalls`: only `inspect` answers with them.
 ///
-/// Follow-up zerus-yj7ef (pull request 2161): the bridge's own list answer,
-/// captured and guarded as `tests/fixtures/dsh-bridge-list-row.json`, whose
-/// rows carry `listJobs`. Once it reaches this branch through a main sync,
-/// [`deepseek_list`] returns that file's rows and these pins compare with it.
+/// The bridge's own answer is captured and guarded by `test_dsh_bridge` in
+/// `tests/fixtures/dsh-bridge-list-row.json`. Use its idle session here;
+/// subagent cases extend that same producer row with the pinned catalog keys.
 pub(in crate::desktop::teams) const DEEPSEEK_LIST_KEYS: [&str; 2] = ["generation", "items"];
-pub(in crate::desktop::teams) const DEEPSEEK_ROW_KEYS: [&str; 6] = [
+pub(in crate::desktop::teams) const DEEPSEEK_ROW_KEYS: [&str; 13] = [
     "sessionId",
     "parentSessionId",
     "origin",
     "running",
     "agentAvailable",
     "projections",
+    "accountStatus",
+    "authRequired",
+    "goal",
+    "listJobs",
+    "nativeRecovery",
+    "pendingQuestions",
+    "selection",
 ];
 pub(in crate::desktop::teams) const DEEPSEEK_CATALOG_KEYS: [&str; 3] = ["id", "label", "mode"];
 
-/// The DeepSeek host's `list` answer for one idle, available session: the
-/// seam the captured bridge answer replaces (see [`DEEPSEEK_ROW_KEYS`]).
+/// The captured bridge's idle, available session with this test's identity.
 pub(in crate::desktop::teams) fn deepseek_list(conversation: &str) -> Value {
-    json!({"generation":"generation-1","items":[{"sessionId":conversation,"agentAvailable":true,
-        "running":false}]})
+    let capture: Value = serde_json::from_str(include_str!(
+        "../../../../../tests/fixtures/dsh-bridge-list-row.json"
+    )).unwrap();
+    let mut row = capture["list"]["items"].as_array().unwrap().iter()
+        .find(|row| row["sessionId"] == "session-idle").unwrap().clone();
+    row["sessionId"] = json!(conversation);
+    json!({"generation":capture["list"]["generation"],"items":[row]})
 }
 
 /// Every key of a list answer is a pinned one.

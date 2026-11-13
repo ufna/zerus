@@ -396,6 +396,56 @@ class MobilePeers(unittest.TestCase):
         self.call('b', '__mobile-peer-local', '--json', data=request, ok=False)
         self.assertFalse((self.root / 'native-called').exists())
 
+    def test_an_agent_never_forwards_a_phone_request(self):
+        # zerus-ppd26.11: the peer's __mobile-peer-local runs the phone's request
+        # as the person, so an agent's process is refused at mobile-peer's
+        # entry, before any ssh. The connector's own call has no agent marker.
+        import hashlib
+        state = self.root / 'a' / 'state'
+        state.mkdir(exist_ok=True)
+
+        def started(pid):
+            return subprocess.check_output(['ps', '-p', str(pid), '-o', 'lstart='],
+                                           env=dict(self.env, LC_ALL='C', TZ='UTC'), text=True).strip()
+
+        def record(name, run, pid, conversation):
+            value = dict(version=1, name=name, agent='claude', run_id=run, conversation_id=conversation,
+                         session_id=str(uuid.uuid4()), pid=pid, process_start=started(pid), activity='idle',
+                         phase='idle', active_tools={}, subagents={})
+            (state / (hashlib.sha256(name.encode()).hexdigest() + '.json')).write_text(json.dumps(value))
+
+        record('claude/example/agent', 'run-agent', os.getpid(), str(uuid.uuid4()))
+        window = subprocess.Popen(['sleep', '60'])
+        self.addCleanup(window.wait)
+        self.addCleanup(window.kill)
+        conversation, job = str(uuid.uuid4()), str(uuid.uuid4())
+        record('claude/example/window', 'run-window', window.pid, conversation)
+        registry = self.root / 'claude/sessions'
+        registry.mkdir(parents=True)
+        (registry / f'{window.pid}.json').write_text(json.dumps(dict(pid=window.pid, kind='interactive', parkedJobId=job)))
+        (registry / f'{os.getpid()}.json').write_text(
+            json.dumps(dict(pid=os.getpid(), kind='bg', jobId=job, sessionId=conversation)))
+        agents = {
+            'proven': dict(HGS_SESSION='claude/example/agent', HGS_RUN_ID='run-agent'),
+            'unproven': dict(HGS_SESSION='claude/example/gone', HGS_RUN_ID='run-gone'),
+            'hosted': dict(HGS_AGENT='dsh'),
+            'background': dict(CLAUDE_PID=str(os.getpid()), CLAUDE_CODE_SESSION_ID=conversation,
+                               CLAUDE_CONFIG_DIR=str(self.root / 'claude')),
+        }
+        argv = ['task', 'mobile-send', '--json']
+        for spelling in (['mobile-peer', '--json'], ['swarm', 'mobile-peer', '--json']):
+            for name, extra in agents.items():
+                with self.subTest(spelling=spelling[0], agent=name):
+                    env = dict(self.env, HGS_CONFIG_DIR=str(self.root / 'a'), HGS_STATE_DIR=str(state), **extra)
+                    result = subprocess.run([str(HGS), *spelling], input=json.dumps(self.request(argv)), env=env,
+                                            capture_output=True, text=True, timeout=15)
+                    self.assertNotEqual(result.returncode, 0, result.stdout)
+                    self.assertIn('an agent never forwards one', result.stderr)
+                    self.assertEqual(self.calls(), [])
+        # The connector's own call, with no agent marker, still reaches the peer.
+        self.assertEqual(self.call('a', 'mobile-peer', '--json', data=self.request()).stdout, self.call('b', '--help').stdout)
+        self.assertNotEqual(self.calls(), [])
+
     def test_payload_reaches_existing_scoped_json_dispatch(self):
         payload = dict(request_id=str(uuid.uuid4()), expected_run_id='fixture-run', expected_conversation_id='fixture-conversation', action='snapshot')
         request = self.request(['terminal', 'codex/missing', '--json'], payload=payload)
@@ -550,7 +600,19 @@ time.sleep(10)
 
     def transport_envelope(self, helper, request, budget=77000):
         return dict(schema=1, via='b', helper=helper, request=request, parent_pid=os.getpid(),
-                    deadline_ms=int(time.monotonic()*1000)+budget)
+                    deadline_ms=time.clock_gettime_ns(time.CLOCK_MONOTONIC)//1_000_000+budget)
+
+    def test_transport_uses_the_wire_clock_when_python_monotonic_differs(self):
+        (self.root / 'repository-probe').touch()
+        local = self.request(self.repository_clone_argv())
+        del local['via']
+        # On a Mac that has slept, mach_absolute_time (Python's local elapsed
+        # clock) and the protocol's CLOCK_MONOTONIC have different origins.
+        with patch.object(time, 'monotonic', return_value=0):
+            valid = self.transport_envelope('local', local)
+        result = self.call('a', 'swarm', '__mobile-peer-transport', '--json', data=valid, ok=False)
+        self.assertEqual((result.returncode, result.stderr), (7, 'fixture'))
+        self.assertTrue(self.calls())
 
     @unittest.skipUnless(sys.platform.startswith('linux'), 'Linux-only short transport-budget control')
     def test_delayed_shell_discovery_cannot_outlive_the_original_transport_budget(self):
@@ -593,9 +655,9 @@ time.sleep(10)
         self.assertGreater(len(self.calls()), len(before))
 
     def test_supervisor_rejects_arbitrary_helpers_and_deadline_overrides(self):
-        original = dict(schema=1, via='b', helper='help', request=None, parent_pid=os.getpid(), deadline_ms=int(time.monotonic()*1000)+2000)
+        original = self.transport_envelope('help', None, 2000)
         for field, value in [('helper', 'sh -c fixture'), ('deadline_ms', 0),
-                             ('deadline_ms', int(time.monotonic()*1000)+60000), ('parent_pid', 1), ('command', 'fixture')]:
+                             ('deadline_ms', time.clock_gettime_ns(time.CLOCK_MONOTONIC)//1_000_000+60000), ('parent_pid', 1), ('command', 'fixture')]:
             request = {**original, field: value}
             self.call('a', 'swarm', '__mobile-peer-transport', '--json', data=request, ok=False)
         self.assertEqual(self.calls(), [])

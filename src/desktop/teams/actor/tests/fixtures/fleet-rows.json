@@ -87,13 +87,18 @@
       "process_work": {
         "command": "",
         "count": 0,
-        "sampled_at": 1794509443.9200027,
+        "sampled_at": 1794597965.6500163,
         "started_at": null
       },
       "project": "example",
       "prompt": "",
       "provider_errors": [],
       "provider_status_at": 0.0,
+      "question_routing": {
+        "person_off": false,
+        "revision": 0,
+        "send_to_parent": true
+      },
       "read": null,
       "recovery_capability": "continue_message",
       "recovery_error_class": "manual",
@@ -210,13 +215,18 @@
       "process_work": {
         "command": "",
         "count": 0,
-        "sampled_at": 1794509443.9773476,
+        "sampled_at": 1794597965.7070487,
         "started_at": null
       },
       "project": "example",
       "prompt": "",
       "provider_errors": [],
       "provider_status_at": 0.0,
+      "question_routing": {
+        "person_off": false,
+        "revision": 0,
+        "send_to_parent": true
+      },
       "read": null,
       "recovery_capability": "continue_message",
       "recovery_error_class": "manual",
@@ -250,7 +260,7 @@
     "dsh": {
       "account_home": "/fixture/.dsh",
       "account_id": "native-dsh",
-      "account_status": null,
+      "account_status": "unavailable",
       "activity": "idle",
       "activity_detail": null,
       "activity_summary": "Ready",
@@ -279,7 +289,7 @@
       "git_worktree_name": "",
       "goal": null,
       "goal_source": "dsh_goal_v1",
-      "host_generation": "generation-1",
+      "host_generation": "<generation>",
       "last_event_at": 0.0,
       "launch_id": "00000000-0000-4000-8000-0000000000d4",
       "model": null,
@@ -294,8 +304,8 @@
       "process_state": "running",
       "process_work": {
         "command": "",
-        "count": null,
-        "sampled_at": 1794509444.0528004,
+        "count": 0,
+        "sampled_at": 1794597965.7874453,
         "started_at": null
       },
       "project": "example",
@@ -409,13 +419,18 @@
       "process_work": {
         "command": "",
         "count": 0,
-        "sampled_at": 1794509444.0464795,
+        "sampled_at": 1794597965.77383,
         "started_at": null
       },
       "project": "example",
       "prompt": "",
       "provider_errors": [],
       "provider_status_at": 0.0,
+      "question_routing": {
+        "person_off": false,
+        "revision": 0,
+        "send_to_parent": true
+      },
       "read": null,
       "recovery_capability": "continue_message",
       "recovery_error_class": "manual",

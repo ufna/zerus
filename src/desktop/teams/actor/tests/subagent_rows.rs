@@ -102,8 +102,10 @@ fn produce() -> BTreeMap<&'static str, Value> {
         let mut list = super::rows::deepseek_list(&conversation);
         list["items"][0]["projections"] = json!({"values":{"subagentCatalog":[{"id":"child-1","label":"helper","mode":"subagent"}]}});
         if settled {
-            list["items"].as_array_mut().unwrap().push(json!({"sessionId":"child-1",
-                "parentSessionId":conversation,"origin":"subagent","running":false,"agentAvailable":true}));
+            let mut child = super::rows::deepseek_list("child-1")["items"][0].clone();
+            child["parentSessionId"] = json!(conversation);
+            child["origin"] = json!("subagent");
+            list["items"].as_array_mut().unwrap().push(child);
         }
         super::rows::assert_pinned_list(&list);
         listed_deepseek_row(&record, &list)
@@ -131,7 +133,7 @@ fn produced() -> BTreeMap<String, Value> {
 /// Each producer-made row: its source, its flag, and what the reader takes.
 #[test]
 fn a_subagent_count_is_settled_only_when_every_child_that_may_run_now_is_counted() {
-    use Fact::{Background, Children, ChildrenUnsettled};
+    use Fact::{Children, ChildrenUnsettled};
     let rows = produced();
     // (row, source, flag, count, unsettled, free, the fact an otherwise free member names)
     #[allow(clippy::type_complexity)]
@@ -221,16 +223,16 @@ fn a_subagent_count_is_settled_only_when_every_child_that_may_run_now_is_counted
             false,
             Some(Children),
         ),
-        // A DeepSeek list row's background is unknown today (no jobs in a
-        // list answer), named first; its children are read on their own.
+        // The captured bridge's complete idle listJobs summary proves zero
+        // background jobs. Unsettled children still prevent a free seat.
         (
             "dsh_settled_child",
             "dsh_native",
             true,
             Some(0),
             false,
-            false,
-            Some(Background),
+            true,
+            None,
         ),
         (
             "dsh_unsettled_child",
@@ -239,7 +241,7 @@ fn a_subagent_count_is_settled_only_when_every_child_that_may_run_now_is_counted
             Some(0),
             true,
             false,
-            Some(Background),
+            Some(ChildrenUnsettled),
         ),
     ];
     assert_eq!(rows.len(), expected.len() + 1);

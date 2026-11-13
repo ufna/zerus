@@ -31,10 +31,12 @@ pub(crate) fn listed_live_row(mut record: Value) -> Result<Value> {
     let marks = read_marks::load();
     let preferences = notifications::load();
     let keep_warm_settings = keep_warm::load();
+    let question_routing = question_routing::load();
     let shared = Shared {
         marks: &marks,
         preferences: preferences.as_ref(),
         keep_warm: keep_warm_settings.as_ref(),
+        question_routing: question_routing.as_ref(),
         budget: read_marks::question_budget(),
     };
     let mut process_work = processes::WorkSample::default();
@@ -207,4 +209,11 @@ pub(crate) fn age_launch(launch: &str, days: u64) {
     let file = std::fs::File::options().write(true).open(path).unwrap();
     file.set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(days * 86_400))
         .unwrap();
+}
+
+/// Complete this private fixture's native question/receipt index before an
+/// observation control that requires known questions. Ordinary inspections
+/// keep their bounded cold-index behavior.
+pub(crate) fn complete_questions(record: &Value) -> Result<()> {
+    codex_questions::current(record).map(|_| ())
 }

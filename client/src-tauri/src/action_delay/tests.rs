@@ -28,6 +28,54 @@ fn captured(tag: &str) -> Captured {
         state: "paused".into(),
     }
 }
+
+#[test]
+fn first_end_of_an_interrupted_codex_names_its_holder_and_accepts_after_release() {
+    let actions = actions();
+    let delays = Delays::default();
+    let row: zerus_client_core::ViewRow = serde_json::from_value(serde_json::json!({
+        "name":"codex/example/interrupted", "agent":"codex", "state":"running",
+        "phase":"interrupted", "pid":null, "run_id":"after-clear-run",
+        "conversation_id":"after-clear-conversation", "machine":"example-machine",
+        "tracked":true, "git_worktree":true
+    }))
+    .unwrap();
+    let c = Captured {
+        target: Target {
+            computer: String::new(),
+            name: row.name.clone(),
+            run_id: row.run_id.clone().unwrap(),
+            conversation_id: row.conversation_id.clone().unwrap(),
+        },
+        action: Action::Terminate,
+        state: row.state.clone(),
+    };
+    assert!(c.valid());
+    let clearing = Action::ClearContext {
+        dismiss_prompt: false,
+    };
+    let held = actions
+        .begin(Lane::key(&c.target, &clearing), &clearing)
+        .unwrap();
+    let refused = delays.begin(&actions, id(), vec![c.clone()]).unwrap_err();
+    assert!(
+        refused.contains("Clear session"),
+        "the refusal must name its actual holder: {refused}"
+    );
+    assert!(
+        refused.contains("started_utc"),
+        "the refusal must identify when that holder started: {refused}"
+    );
+    drop(held);
+    let end = id();
+    delays
+        .begin(&actions, end.clone(), vec![c.clone()])
+        .unwrap();
+    due(&delays, &end);
+    assert!(delays
+        .take(&Reference { id: end, index: 0 }, &c.target, &c.action)
+        .is_ok());
+}
 fn due(delays: &Delays, id: &str) {
     lock(&delays.0).groups.get_mut(id).unwrap().window = Window::new(Instant::now() - UNDO_WINDOW);
     assert!(delays.wait(id));
@@ -117,6 +165,99 @@ fn explicit_remove_delay_cannot_borrow_another_target_or_actions_claim() {
     assert!(delays
         .begin_with(&actions, id(), vec![capture], Some(running.claim()))
         .is_err());
+}
+
+#[test]
+fn an_abandoned_undo_window_releases_the_session_lane_for_the_next_end() {
+    // The frontend can lose its pending reference (a reloaded or crashed
+    // webview): the group then never takes or cancels, and without an expiry
+    // its claim blocks every later end for this session until the app exits.
+    let actions = actions();
+    let delays = Delays::default();
+    let c = captured("one");
+    let first = id();
+    delays
+        .begin(&actions, first.clone(), vec![c.clone()])
+        .unwrap();
+    due(&delays, &first);
+    lock(&delays.0).groups.get_mut(&first).unwrap().created =
+        Instant::now() - UNDO_WINDOW - STALE_GRACE - Duration::from_millis(1);
+    let second = id();
+    delays
+        .begin(&actions, second.clone(), vec![c.clone()])
+        .expect("an abandoned undo window must not hold the session lane");
+    assert!(
+        !lock(&delays.0).groups.contains_key(&first),
+        "the abandoned window is discarded"
+    );
+    assert!(
+        actions
+            .begin(Lane::key(&c.target, &Action::Pause), &Action::Pause)
+            .is_none(),
+        "the new end still holds the lane"
+    );
+    delays.cancel(&second);
+    assert!(actions
+        .begin(Lane::key(&c.target, &Action::Pause), &Action::Pause)
+        .is_some());
+}
+
+#[test]
+fn a_refused_end_names_the_running_lane_instead_of_bare_busy() {
+    let actions = actions();
+    let delays = Delays::default();
+    let c = captured("one");
+    let held = actions
+        .begin(Lane::key(&c.target, &Action::Pause), &Action::Pause)
+        .unwrap();
+    let error = delays.begin(&actions, id(), vec![c.clone()]).unwrap_err();
+    assert_ne!(error, "busy");
+    assert!(error.contains("Pause session"), "{error}");
+    drop(held);
+    delays.begin(&actions, id(), vec![c]).unwrap();
+}
+
+#[test]
+fn an_already_submitted_end_says_so() {
+    let actions = actions();
+    let delays = Delays::default();
+    let c = captured("one");
+    let id = id();
+    delays.begin(&actions, id.clone(), vec![c.clone()]).unwrap();
+    let error = delays.begin(&actions, id, vec![c]).unwrap_err();
+    assert_ne!(error, "busy");
+    assert!(error.contains("already submitted"), "{error}");
+}
+
+#[test]
+fn a_closed_delay_list_tells_the_person_to_restart() {
+    let actions = actions();
+    let delays = Delays::default();
+    delays.cancel_all(true);
+    let error = delays
+        .begin(&actions, id(), vec![captured("one")])
+        .unwrap_err();
+    assert_ne!(error, "busy");
+    assert!(error.contains("Restart the app"), "{error}");
+}
+
+#[test]
+fn an_exhausted_pending_id_list_tells_the_person_to_restart() {
+    let actions = actions();
+    let delays = Delays::default();
+    {
+        let mut model = lock(&delays.0);
+        for n in 0..REGISTRATIONS {
+            model
+                .seen
+                .insert(format!("{n:08}-0000-0000-0000-000000000000"));
+        }
+    }
+    let error = delays
+        .begin(&actions, id(), vec![captured("one")])
+        .unwrap_err();
+    assert_ne!(error, "busy");
+    assert!(error.contains("Restart the app"), "{error}");
 }
 
 #[test]
