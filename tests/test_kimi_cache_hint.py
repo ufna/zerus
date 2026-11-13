@@ -1,6 +1,12 @@
 #!/usr/bin/env python3
-"""Kimi cache chooser bridge: private terminal, no provider or paid requests."""
+"""Kimi cache chooser: synthetic 2.6.2 screen on a private terminal.
+
+The fixture matches cache-hint-dialog.ts embedded in the sealed official 2.6.2
+image (SHA-256 c2070d77947b000016d1bc9c189f2e258c51f29d5f9eb537388cc44fa61c5856).
+It contains no owner-session output; these tests make no provider/model request.
+"""
 import json, os, signal, subprocess, unittest, uuid
+from pathlib import Path
 import test_input as fixtures
 from test_questions import Questions
 FAKE = fixtures.SIGNAL_SAFE_READ + r'''
@@ -11,8 +17,11 @@ labels=['Compact and continue','Start a new session','Continue as-is',"Don't ask
 def render(*args):
  global selected
  if (root/'selection').exists(): selected=int((root/'selection').read_text());(root/'selection').unlink()
+ if (root/'screen').exists():
+  os.write(1,(root/'screen').read_bytes());return
  lines=['─'*96,' This session has been idle for 2h and is ~217k tokens.',' ↑↓ navigate · Enter select · Esc cancel','',' Cache expired — the next message re-sends the entire history at full price.']
- lines+=['  '+('❯' if selected==i else ' ')+' '+label for i,label in enumerate(labels)]
+ descriptions=['one-time compact cost · cheapest way to keep this topic','zero context cost · best for a new task','full history kept · highest cost per turn','']
+ lines+=['  '+('❯' if selected==i else ' ')+' '+label+(' '*(max(map(len,labels))-len(label)+4)+descriptions[i] if descriptions[i] else '') for i,label in enumerate(labels)]
  lines+=['','─'*96,' Ask When Needed K3 thinking: max [1 task running] /work/example main',' context: 22% (217k/1M)']
  os.write(1,b'\x1b[2J\x1b[H'+'\r\n'.join(lines).encode())
 signal.signal(signal.SIGUSR1,render);render();(root/'agent-pid').write_text(str(os.getpid()))
@@ -26,7 +35,11 @@ try:
    if buf.startswith((b'\x1b[A',b'\x1bOA')):selected=max(0,selected-1);buf=buf[3:];render()
    elif buf.startswith((b'\x1b[B',b'\x1bOB')):selected=min(3,selected+1);buf=buf[3:];render()
    elif buf.startswith(b'\r'):
-    buf=buf[1:];(root/'submitted').write_text(labels[selected])
+    buf=buf[1:]
+    if (root/'cache-on-submit').exists():
+     (root/'cache-on-submit').unlink()
+     (root/'screen').unlink(missing_ok=True);render();continue
+    (root/'submitted').write_text(labels[selected])
     if not (root/'hold-dialog').exists():os.write(1,b'\x1b[2J\x1b[HAgent working')
    elif buf[0]==27 and len(buf)<3:break
    else:buf=buf[1:]
@@ -39,7 +52,11 @@ class CacheHint(unittest.TestCase):
     received=fixtures.InputTransport.received
     write_record=fixtures.InputTransport.write_record
     tearDown=fixtures.InputTransport.tearDown
-    inspect=Questions.inspect
+    def inspect(self):
+        result=subprocess.run([str(fixtures.HGS),'inspect',self.name,'--current-read'],
+                              env=self.env,text=True,capture_output=True,timeout=12)
+        self.assertEqual(result.returncode,0,result.stderr)
+        return json.loads(result.stdout)
     answer=Questions.answer
     def setUp(self):
         original=fixtures.FAKE_AGENT
@@ -104,9 +121,166 @@ class CacheHint(unittest.TestCase):
         self.answer(self.payload(expected_run_id='other'),success=False)
         self.answer(self.payload(answers=[dict(question_id='cache',selected_option_ids=[],text='anything')]),success=False)
         self.assertEqual(self.received(),b'')
+    def test_local_agent_cannot_answer_the_context_choice(self):
+        self.env.update(HGS_SESSION='codex/fixture/agent',HGS_RUN_ID=str(uuid.uuid4()))
+        request=self.payload()
+        self.assertIn("person's answer",self.answer(request,success=False))
+        self.assertEqual(self.received(),b'')
+        self.assertFalse((self.state/'question_receipts'/(request['request_id']+'.json')).exists())
+
     def test_missing_acknowledgement_is_uncertain_and_never_retried(self):
         (self.root/'hold-dialog').touch();p=self.payload()
         self.assertIn('delivery uncertain',self.answer(p,success=False));before=self.received()
         self.assertIn('delivery uncertain',self.answer(p,success=False));self.assertEqual(self.received(),before)
+
+    def held_input(self):
+        # Actually deliver an original input once to this private raw terminal.
+        # On Enter the native stand-in stashes it behind the exact chooser.
+        self.redraw('\x1b[2J\x1b[H ╭──────────────╮\r\n │ >          │\r\n ╰──────────────╯\x1b[2;6H')
+        (self.root/'cache-on-submit').touch()
+        payload=fixtures.InputTransport.payload(self,text='Original held message')
+        receipt=fixtures.InputTransport.send(self,payload)
+        self.assertEqual(receipt['status'],'submitted')
+        self.wait_for(lambda:'Cache expired' in self.tmux('capture-pane','-p','-t',self.pane))
+        self.record=json.loads(self.record_path.read_text())
+        return payload,receipt
+
+    def redraw(self,text):
+        (self.root/'screen').write_text(text)
+        os.kill(self.record['pid'],signal.SIGUSR1)
+        # A title written after the screen is an output-order barrier.
+        title='cache-frame-'+uuid.uuid4().hex
+        (self.root/'screen').write_bytes(text.encode()+b'\x1b]2;'+title.encode()+b'\x1b\\')
+        os.kill(self.record['pid'],signal.SIGUSR1)
+        self.wait_for(lambda:self.tmux('display-message','-p','-t',self.pane,'#{pane_title}').strip()==title)
+
+    def test_submitted_and_uncertain_receipts_and_original_input_are_preserved(self):
+        payload,receipt=self.held_input()
+        self.assertEqual(self.record['input_pending_request'],payload['request_id'])
+        self.assertEqual(self.record['input_pending_at'],receipt['submitted_at'])
+        self.assertLessEqual(self.record['input_seen_at'],receipt['submitted_at'])
+        path=self.state/'input_receipts'/(payload['request_id']+'.json')
+        received=self.received();record=self.record_path.read_bytes()
+        self.assertEqual(received.count(b'Original held message'),1)
+        self.assertEqual(received.count(b'\r'),1)
+        for uncertain in (False,True):
+            if uncertain:
+                saved=json.loads(path.read_text());saved['status']='in_progress';saved['delivery']='uncertain'
+                path.write_text(json.dumps(saved))
+            before=path.read_bytes()
+            for _ in range(2):
+                info=self.inspect();self.assertEqual((info['activity'],info['phase']),('busy','input'))
+                self.assertTrue(info['current_read']['attention_signature'])
+                card=info['pending_questions'][0];self.assertTrue(card['can_answer'])
+                self.assertEqual(card['input_pending_request'],payload['request_id'])
+            # Same-UUID submitted replay returns its receipt; uncertain replay
+            # refuses. Neither repeats any terminal input or changes its receipt.
+            fixtures.InputTransport.send(self,payload,success=not uncertain)
+            self.assertEqual(path.read_bytes(),before)
+            self.assertEqual(self.record_path.read_bytes(),record)
+            self.assertEqual(self.received(),received)
+
+    def test_person_can_choose_once_without_retyping_the_original_pending_input(self):
+        payload,_=self.held_input();self.card=self.inspect()['pending_questions'][0]
+        receipt=self.state/'input_receipts'/(payload['request_id']+'.json')
+        original=receipt.read_bytes();request=self.payload(2)
+        result=self.answer(request);self.assertEqual(result['status'],'answered')
+        self.assertEqual((self.root/'submitted').read_text(),'Continue as-is')
+        received=self.received()
+        self.assertEqual(received.count(b'Original held message'),1)
+        self.assertEqual(received.count(b'\r'),2)  # original submit, explicit person selection
+        self.assertEqual(self.answer(request),result)
+        self.assertEqual(self.received(),received)
+        self.assertEqual(receipt.read_bytes(),original)
+        self.assertEqual(json.loads(self.record_path.read_text())['input_pending_request'],payload['request_id'])
+        self.assertEqual(self.inspect()['pending_questions'],[])
+
+    def test_mismatched_original_receipt_keeps_pending_input_without_claiming_a_chooser(self):
+        payload,_=self.held_input();received=self.received();record=self.record_path.read_bytes()
+        path=self.state/'input_receipts'/(payload['request_id']+'.json')
+        receipt=json.loads(path.read_text());receipt['submitted_at']-=1
+        path.write_text(json.dumps(receipt));before=path.read_bytes()
+        self.assertEqual(self.inspect()['pending_questions'],[])
+        self.assertEqual(path.read_bytes(),before)
+        self.assertEqual(self.record_path.read_bytes(),record)
+        self.assertEqual(self.received(),received)
+
+    def test_chooser_gone_clears_attention_without_accepting_or_retyping_input(self):
+        self.held_input();received=self.received();record=self.record_path.read_bytes()
+        self.redraw('\x1b[2J\x1b[HAgent working')
+        info=self.inspect();self.assertEqual(info['pending_questions'],[])
+        self.assertNotEqual(info['phase'],'input')
+        self.assertEqual(self.record_path.read_bytes(),record)
+        self.assertEqual(self.received(),received)
+
+    def test_earlier_native_turn_end_does_not_clear_the_held_message(self):
+        payload,receipt=self.held_input();received=self.received()
+        self.record.update(activity='busy',phase='working',main_done=False,
+                           recovery_user_at=receipt['submitted_at']-20,
+                           kimi_turn_clock=dict(run_id=self.run_id,conversation_id=self.conversation_id,started=0))
+        self.write_record();before=self.record_path.read_bytes()
+        wire=self.root/'.kimi-code/sessions/fixture'/self.conversation_id/'agents/main/wire.jsonl'
+        wire.parent.mkdir(parents=True)
+        wire.write_text(''.join(json.dumps(e)+'\n' for e in [
+            dict(type='turn.prompt',agentId='main',turnId=0,promptId='msg_old',time=int((receipt['submitted_at']-10)*1000)),
+            dict(type='turn.ended',agentId='main',turnId=0,reason='completed',time=int((receipt['submitted_at']-5)*1000))]))
+        info=self.inspect();self.assertEqual(info['phase'],'input')
+        self.assertEqual(info['pending_questions'][0]['input_pending_request'],payload['request_id'])
+        self.assertEqual(self.record_path.read_bytes(),before)
+        self.assertEqual(self.received(),received)
+
+    def test_changed_pending_request_refuses_an_old_answer_without_keys(self):
+        self.held_input();self.card=self.inspect()['pending_questions'][0]
+        request=self.payload();received=self.received()
+        self.record['input_pending_request']=str(uuid.uuid4());self.write_record()
+        self.answer(request,success=False)
+        self.assertEqual(self.received(),received)
+
+    def test_new_acceptance_clears_attention_even_before_the_old_screen_redraws(self):
+        self.held_input();received=self.received()
+        event=dict(hook_event_name='UserPromptSubmit',session_id=self.conversation_id,prompt='Original held message')
+        result=subprocess.run([str(fixtures.HGS),'__state','hook'],
+                              env=dict(self.env,HGS_SESSION=self.name,HGS_RUN_ID=self.run_id),
+                              input=json.dumps(event),text=True,capture_output=True,timeout=10)
+        self.assertEqual(result.returncode,0,result.stderr)
+        self.assertEqual(self.inspect()['pending_questions'],[])
+        self.assertEqual(self.received(),received)
+
+    def test_explicit_permission_attention_keeps_precedence(self):
+        self.held_input();received=self.received()
+        self.record.update(phase='approval',activity='busy',
+                           active_tools={'permission':dict(name='Shell',detail='fixture command')})
+        self.write_record()
+        info=self.inspect();self.assertEqual(info['phase'],'approval')
+        self.assertFalse(any(q['source']=='kimi_cache_hint' for q in info['pending_questions']))
+        self.assertEqual(self.received(),received)
+
+    def test_a_read_only_dialog_does_not_require_bracketed_paste_mode(self):
+        payload,_=self.held_input();received=self.received()
+        # Editor input is deliberately disabled while its replacement is shown.
+        screen=Path(__file__).with_name('fixtures').joinpath('kimi-cache-expired-2.6.2.txt').read_text()
+        self.tmux('resize-window','-t',self.name,'-x','120','-y','30')
+        self.redraw('\x1b[?2004l\x1b[2J\x1b[H'+screen.replace('\n','\r\n'))
+        self.assertEqual(self.tmux('display-message','-p','-t',self.pane,'#{bracket_paste_flag}').strip(),'0')
+        info=self.inspect();self.assertEqual(info['phase'],'input')
+        self.assertFalse(info['pending_questions'][0]['can_answer'])
+        self.assertEqual(info['pending_questions'][0]['input_pending_request'],payload['request_id'])
+        self.assertTrue(info['terminal_supported'])
+        listing=subprocess.run([str(fixtures.HGS),'ls','--local','--json'],env=self.env,
+                               text=True,capture_output=True,timeout=12)
+        self.assertEqual(listing.returncode,0,listing.stderr)
+        row=next(row for row in json.loads(listing.stdout)['sessions'] if row['name']==self.name)
+        self.assertEqual(row['phase'],'input');self.assertTrue(row['attention_signature'])
+        self.assertEqual(self.received(),received)
+
+    def test_partial_or_changed_panels_do_not_raise_attention(self):
+        self.tmux('resize-window','-t',self.name,'-x','120','-y','30')
+        screen=Path(__file__).with_name('fixtures').joinpath('kimi-cache-expired-2.6.2.txt').read_text()
+        for before,after in [('Start a new session','Start another session'),
+                             ('highest cost per turn','highest cost per turn…'),
+                             ("Don't ask me again",''),('260k','NaN')]:
+            self.redraw('\x1b[2J\x1b[H'+screen.replace(before,after).replace('\n','\r\n'))
+            self.assertEqual(self.inspect()['pending_questions'],[])
+        self.assertEqual(self.received(),b'')
 
 if __name__=='__main__':unittest.main()

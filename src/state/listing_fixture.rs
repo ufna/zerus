@@ -32,11 +32,13 @@ pub(crate) fn listed_live_row(mut record: Value) -> Result<Value> {
     let preferences = notifications::load();
     let keep_warm_settings = keep_warm::load();
     let question_routing = question_routing::load();
+    let route_outcomes = question_route_outcomes::Reader::load();
     let shared = Shared {
         marks: &marks,
         preferences: preferences.as_ref(),
         keep_warm: keep_warm_settings.as_ref(),
         question_routing: question_routing.as_ref(),
+        route_outcomes: route_outcomes.as_ref(),
         budget: read_marks::question_budget(),
     };
     let mut process_work = processes::WorkSample::default();
