@@ -1132,14 +1132,35 @@ pub(crate) enum Blocked {
 
 /// A private tmux server in the fixture's own existing socket directory,
 /// killed when dropped. Its one pane runs the member's terminal.
+/// A private tmux server of this fixture (zerus-63rru.89): its own
+/// directory, made private here, and every call, its Drop included, names
+/// its socket with -S, so no call can fall back to the machine's real server
+/// when a directory is missing. The socket is the one the product resolves
+/// from TMUX_TMPDIR=`dir` (`dir/tmux-UID/default`), which the hgs children
+/// keep.
 struct Terminal {
     dir: PathBuf,
 }
 impl Terminal {
+    fn new(dir: PathBuf) -> Self {
+        use std::os::unix::fs::PermissionsExt;
+        let terminal = Self { dir };
+        let sockets = terminal.socket().parent().unwrap().to_owned();
+        std::fs::create_dir_all(&sockets).unwrap();
+        for dir in [&terminal.dir, &sockets] {
+            std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        terminal
+    }
+    fn socket(&self) -> PathBuf {
+        let uid = unsafe { libc::getuid() };
+        self.dir.join(format!("tmux-{uid}")).join("default")
+    }
     fn tmux(&self, args: &[&str]) -> String {
         let out = Command::new("tmux")
+            .arg("-S")
+            .arg(self.socket())
             .args(args)
-            .env("TMUX_TMPDIR", &self.dir)
             .env_remove("TMUX")
             .env_remove("TMUX_PANE")
             .output()
@@ -1155,10 +1176,28 @@ impl Terminal {
 impl Drop for Terminal {
     fn drop(&mut self) {
         let _ = Command::new("tmux")
+            .arg("-S")
+            .arg(self.socket())
             .arg("kill-server")
-            .env("TMUX_TMPDIR", &self.dir)
             .env_remove("TMUX")
+            .env_remove("TMUX_PANE")
             .output();
+    }
+}
+
+/// The fixture terminal's socket is inside the fixture's temporary
+/// directory, in folders it made private itself (zerus-63rru.89).
+#[test]
+fn the_fixture_terminals_socket_is_inside_the_fixtures_directory() {
+    use std::os::unix::fs::PermissionsExt;
+    let temp = tempfile::tempdir().unwrap();
+    let terminal = Terminal::new(temp.path().join("state/tmux"));
+    let socket = terminal.socket();
+    assert!(socket.starts_with(temp.path()), "{socket:?}");
+    assert!(socket.starts_with(&terminal.dir), "{socket:?}");
+    for dir in [terminal.dir.as_path(), socket.parent().unwrap()] {
+        let mode = std::fs::metadata(dir).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o700, "{dir:?}");
     }
 }
 
@@ -1192,9 +1231,8 @@ impl Fixture {
         let mut record: Value =
             serde_json::from_slice(&std::fs::read(file("codex/deliver-m1")).unwrap()).unwrap();
         std::fs::remove_file(file("codex/deliver-m1")).unwrap();
-        let terminal = Terminal {
-            dir: state.join("tmux"),
-        };
+        let terminal = Terminal::new(state.join("tmux"));
+        assert!(terminal.socket().starts_with(&state));
         terminal.tmux(&[
             "new-session",
             "-d",
@@ -1341,9 +1379,8 @@ pub(crate) fn waiting_handout(activity: &str, phase: &str) -> WaitingHandout {
     let mut record: Value =
         serde_json::from_slice(&std::fs::read(file("codex/deliver-m1")).unwrap()).unwrap();
     std::fs::remove_file(file("codex/deliver-m1")).unwrap();
-    let terminal = Terminal {
-        dir: state.join("tmux"),
-    };
+    let terminal = Terminal::new(state.join("tmux"));
+    assert!(terminal.socket().starts_with(&state));
     terminal.tmux(&[
         "new-session",
         "-d",
@@ -1375,7 +1412,20 @@ pub(crate) fn waiting_handout(activity: &str, phase: &str) -> WaitingHandout {
     record["pid"] = json!(pid);
     record["process_start"] = json!(crate::platform::process_start_time(pid).unwrap());
     std::fs::write(file("claude/deliver-m1"), record.to_string()).unwrap();
-    let before = terminal.tmux(&["capture-pane", "-p", "-t", &pane]);
+    // The pane's program prints its draft after the pane starts: wait for it,
+    // bounded, so the command meets the terminal the case describes.
+    let until = Instant::now() + Duration::from_secs(10);
+    let before = loop {
+        let screen = terminal.tmux(&["capture-pane", "-p", "-t", &pane]);
+        if screen.contains("an unsent draft") {
+            break screen;
+        }
+        assert!(
+            Instant::now() < until,
+            "the pane never showed the draft within 10 seconds: {screen:?}"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    };
     let id = f.body.id.clone();
     let mut args = vec!["task".to_owned(), "team-deliver".to_owned()];
     args.extend(f.args(false));
