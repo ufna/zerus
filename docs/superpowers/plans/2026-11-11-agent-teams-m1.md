@@ -1807,6 +1807,29 @@ final input is a terminal path with no DeepSeek route, and a hosted run's
 end writes no end record. OpenCode and platforms without the proof stay
 refused as before.
 
+**No other session is proven below a host.** A marked claim that is not a
+DeepSeek claim took the ancestry proof without asking whether the command
+ran below a recorded resident agent host, so a hosted call that carried
+another session's markers was accepted as that session: a host is a child
+of the command that launched it for as long as that command lives, and an
+older host keeps the markers it inherited (the independent review of the
+DeepSeek members' first commit, 2026-11-12). The rule: a command below a
+recorded host can only be a session that host serves, and only a DeepSeek
+claim's token proves one; any other marked claim there is refused with a
+sentence of its own. The person path and the marked branch ask one check,
+which reads the host records first (a computer that records none walks no
+process) and then walks the process table alone, matched by process ID and
+birth; it reads no environment and no marker, and when it cannot tell
+(records unreadable or over their bound, a birth unreadable, a walk past
+its bound) both refuse. Its limit is the hosted proof's own: the check
+stands on the host records, so a call that removes or edits its host's
+same-user records is no longer seen below that host. That is deliberate
+change of the state directory by a same-user process, which no proof built
+on records or ancestry can stop, and it is stated where the rule is
+stated. The function's body is replaced by the shared helper from main
+after the next sync, with a refusal of its own for a command inside a
+separate process namespace.
+
 **A held step's card follows the hold's age, not its reason.** A step the
 service holds back (a finish, a merge or a reopen it cannot carry out yet)
 had its card keyed by the reason, so a change of reason closed the card and
