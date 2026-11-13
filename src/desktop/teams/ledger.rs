@@ -94,9 +94,11 @@ pub(super) struct Row {
     pub card_request: Option<Request>,
     /// One request ID per intended write, kept across every retry and a
     /// restart so a lost answer is replayed, never repeated (zerus-63rru.91).
-    #[serde(default)]
+    /// Skipped when none: a row with no pending reservation keeps the
+    /// previous build's layout.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_request: Option<Request>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub close_request: Option<Request>,
     pub card_done: bool,
     #[serde(default)]
