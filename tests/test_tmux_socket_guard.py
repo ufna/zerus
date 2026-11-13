@@ -30,7 +30,6 @@ INVOCATION = [
 # current round.
 ALLOWED = {
     "src/state/backend/tmux.rs": "the product's tmux backend resolves its socket from TMUX_TMPDIR",
-    "src/tasks/team_deliver/tests/processes.rs": "the Terminal harness; fixed in zerus-63rru.79's current round",
 }
 
 
@@ -54,11 +53,16 @@ def violations(files):
         )
         if rel in ALLOWED:
             continue
-        for number, line in enumerate(file.read_text(errors="ignore").splitlines(), 1):
+        lines = file.read_text(errors="ignore").splitlines()
+        for number, line in enumerate(lines, 1):
             # A version probe names no server and no socket.
             if '"tmux", "-V"' in line or '"-V"' in line:
                 continue
             if any(pattern.search(line) for pattern in INVOCATION) and "-S" not in line:
+                # A Rust Command::new chains its args on the following lines.
+                window = "\n".join(lines[number - 1 : number + 4])
+                if 'Command::new("tmux")' in line and "-S" in window:
+                    continue
                 found.append((rel, number, line.strip()))
     return found
 
