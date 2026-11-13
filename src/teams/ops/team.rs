@@ -139,6 +139,13 @@ pub(super) fn stop(ctx: &mut Context<'_>) -> Result<()> {
             params![ctx.team.id, encode(&TeamStatus::Stopped)?],
         )
         .map_err(storage)?;
+    // A new stop reopens the closed-key sweep (zerus-63rru.32 round 2).
+    ctx.db
+        .execute(
+            "DELETE FROM key_clear_finished WHERE team=?1",
+            [&ctx.team.id],
+        )
+        .map_err(storage)?;
     Ok(())
 }
 pub(super) fn archive(ctx: &mut Context<'_>) -> Result<()> {
@@ -153,6 +160,13 @@ pub(super) fn archive(ctx: &mut Context<'_>) -> Result<()> {
         .execute(
             "UPDATE teams SET status=?2 WHERE id=?1",
             params![ctx.team.id, encode(&TeamStatus::Archived)?],
+        )
+        .map_err(storage)?;
+    // A new archive reopens the closed-key sweep (zerus-63rru.32 round 2).
+    ctx.db
+        .execute(
+            "DELETE FROM key_clear_finished WHERE team=?1",
+            [&ctx.team.id],
         )
         .map_err(storage)?;
     Ok(())

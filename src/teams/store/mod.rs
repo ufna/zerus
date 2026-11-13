@@ -324,10 +324,11 @@ fn schema_extensions(db: &Connection) -> Result<()> {
 }
 
 /// The common batches: only `CREATE ... IF NOT EXISTS` statements.
-const COMMON_SCHEMA: [&str; 3] = [
+const COMMON_SCHEMA: [&str; 4] = [
     include_str!("pipeline-schema.sql"),
     include_str!("observation-schema.sql"),
     include_str!("read-indexes.sql"),
+    include_str!("key-clear-schema.sql"),
 ];
 /// The member handles' table and the triggers that end a handle with its
 /// membership (zerus-63rru.53). Like the common batches it moves no version

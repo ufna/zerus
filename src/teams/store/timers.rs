@@ -274,6 +274,30 @@ impl Store {
             })
         })
     }
+    /// Whether the team's closed-key sweep is recorded finished
+    /// (zerus-63rru.32 round 2); only a new stop or archive reopens it.
+    pub fn sweep_finished(&self, team: &str) -> Result<bool> {
+        self.read(|db| {
+            db.query_row(
+                "SELECT EXISTS(SELECT 1 FROM key_clear_finished WHERE team=?1)",
+                params![team],
+                |r| r.get(0),
+            )
+            .map_err(storage)
+        })
+    }
+    /// Records the sweep finished (zerus-63rru.32 round 2). The teams store
+    /// writes happen through the operations; this marker is a plain row.
+    pub fn mark_sweep_finished(&self, team: &str) -> Result<()> {
+        if let Some(db) = self.db.as_ref() {
+            db.execute(
+                "INSERT OR REPLACE INTO key_clear_finished(team) VALUES (?1)",
+                params![team],
+            )
+            .map_err(storage)?;
+        }
+        Ok(())
+    }
     /// A terminal team's nodes whose task key is neither released nor finally
     /// recorded, in node order after `after`.
     pub fn keyed_tasks(&self, team: &str, after: u32, page: u32) -> Result<Vec<KeyedTask>> {

@@ -16,6 +16,11 @@ impl Runtime {
         if !matches!(team.status, TeamStatus::Stopped | TeamStatus::Archived) {
             return Ok(false);
         }
+        // A finished sweep stays finished: no work on later passes, only a
+        // new stop or archive reopens it (zerus-63rru.32 round 2).
+        if store.sweep_finished(&id)? {
+            return Ok(true);
+        }
         let cursor: Option<(String, String, bool)> = self.load(&id, "key_clear_cursor")?;
 
         if cursor.as_ref().is_some_and(|c| c.2) {
@@ -26,9 +31,8 @@ impl Runtime {
 
         let done = page.len() < 200;
         let here = team.home.clone();
-        let name = team.name.clone();
         for task in &page {
-            if self.clear_one(store, &id, &here, &name, task)?.is_none() {
+            if self.clear_one(store, &id, &here, task)?.is_none() {
                 continue;
             }
         }
@@ -39,6 +43,7 @@ impl Runtime {
             if let Some(row) = self.ledger.get(&id, "key_clear_cursor")? {
                 self.ledger.remove(&row)?;
             }
+            store.mark_sweep_finished(&id)?;
         } else {
             let saved = page
                 .last()
@@ -56,7 +61,6 @@ impl Runtime {
         store: &Store,
         team: &str,
         home: &str,
-        name: &str,
         task: &TaskRef,
     ) -> Result<Option<()>> {
         let Ok(tasks) = ProjectStore::open(&store.state().join("replica"), &task.project) else {
@@ -77,13 +81,11 @@ impl Runtime {
         {
             return Ok(Some(()));
         }
+        // A closed task's history stays as it was: the clear writes only the
+        // key (zerus-63rru.32 round 2). The revision advances, which is how
+        // the clear reaches other computers.
         document
-            .set_team_named(
-                None,
-                name,
-                &zerus_replica::Actor::Person,
-                chrono::Utc::now().timestamp_millis(),
-            )
+            .clear_team_silent()
             .map_err(crate::teams::store::storage)?;
         tasks.save(&mut document).map_err(crate::teams::store::storage)?;
         Ok(Some(()))

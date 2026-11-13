@@ -240,3 +240,82 @@ fn the_other_computers_guard_no_longer_refuses_a_done_task_after_the_clear() {
         "the cleared task is still guarded"
     );
 }
+
+/// Round 2, P2: clearing the key of a closed task appends no history entry.
+/// The history entries are byte-identical before and after the clear; only
+/// the revision advances.
+#[test]
+fn clearing_a_closed_tasks_key_appends_no_history_entry() {
+    let mut h = Harness::new();
+    let home = h.store.team(TEAM).unwrap().unwrap().home;
+    let mut a = super::super::Runtime::open(h.temp.path(), &home).unwrap();
+    let uuid = bind(&h, 1, TEAM, &home);
+    let node = queue(&mut h, &uuid);
+    close_cancelled(&mut h, &uuid, node);
+    let (before, revision_before) = {
+        let tasks = ProjectStore::open(&h.temp.path().join("replica"), "example-project").unwrap();
+        let doc = tasks.load(&uuid).unwrap();
+        (
+            serde_json::to_string(&doc.view().unwrap().log).unwrap(),
+            doc.revision(),
+        )
+    };
+    h.run(&person(), Operation::Stop).unwrap();
+    passes(&mut h, &mut a, 6);
+    let tasks = ProjectStore::open(&h.temp.path().join("replica"), "example-project").unwrap();
+    let doc = tasks.load(&uuid).unwrap();
+    let view = doc.view().unwrap();
+    assert_eq!(view.team, None, "the key stayed");
+    let after = serde_json::to_string(&view.log).unwrap();
+    assert_eq!(before, after, "the history changed across the clear");
+    assert_ne!(doc.revision(), revision_before, "the revision did not advance");
+}
+
+/// Round 2, P3: a finished sweep is recorded finished and does no work on
+/// later passes; only a new stop or archive reopens it. A task closed after
+/// the finish keeps its key until the archive's re-sweep clears it.
+#[test]
+fn a_finished_sweep_does_no_work_until_a_new_archive() {
+    let mut h = Harness::new();
+    let home = h.store.team(TEAM).unwrap().unwrap().home;
+    let mut a = super::super::Runtime::open(h.temp.path(), &home).unwrap();
+    let first = bind(&h, 1, TEAM, &home);
+    let node = queue(&mut h, &first);
+    close_cancelled(&mut h, &first, node);
+    h.run(&person(), Operation::Stop).unwrap();
+    passes(&mut h, &mut a, 6);
+    assert_eq!(key_of(&h, &first), None, "the first key stayed");
+    assert!(
+        h.store.sweep_finished(TEAM).unwrap(),
+        "the finished sweep is not recorded"
+    );
+    // A task closed after the finish (its node's rows written the way a
+    // cross-computer merge leaves them; the stopped team admits no new node
+    // through the operations): the finished sweep does no work on later
+    // passes, so its key stays until a new archive reopens the sweep.
+    let later = bind(&h, 2, TEAM, &home);
+    let db = h.store.db.as_ref().unwrap();
+    let data = json!({"id": 2, "task": {"project": "example-project", "uuid": later}});
+    db.execute(
+        "INSERT INTO node_identity(team,id,task_project,task_uuid) VALUES(?1,?2,?3,?4)",
+        rusqlite::params![TEAM, 2u32, "example-project", later],
+    )
+    .unwrap();
+    db.execute(
+        "INSERT INTO nodes(team,id,data,rank,admitted,routed,task_revision,task_stage,task_cancelled,integration_required) VALUES(?1,?2,?3,'',0,0,'','done',1,0)",
+        rusqlite::params![TEAM, 2u32, data.to_string()],
+    )
+    .unwrap();
+    passes(&mut h, &mut a, 6);
+    assert!(
+        key_of(&h, &later).is_some(),
+        "the finished sweep ran without a new archive"
+    );
+    h.run(&person(), Operation::Archive).unwrap();
+    passes(&mut h, &mut a, 6);
+    assert_eq!(key_of(&h, &later), None, "the reopened sweep left the key");
+    assert!(
+        h.store.sweep_finished(TEAM).unwrap(),
+        "the reopened sweep is not recorded finished"
+    );
+}

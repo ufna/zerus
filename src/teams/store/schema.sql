@@ -101,6 +101,7 @@ CREATE TABLE integration_facts (decision INTEGER PRIMARY KEY REFERENCES decision
  commit_id TEXT, conflicts TEXT NOT NULL, created_ms INTEGER NOT NULL,
  FOREIGN KEY(team,node) REFERENCES node_identity(team,id));
 CREATE INDEX integration_node ON integration_facts(team,node,decision);
+CREATE TABLE key_clear_finished(team TEXT PRIMARY KEY);
 CREATE TABLE requests (id TEXT PRIMARY KEY, team TEXT NOT NULL, actor TEXT NOT NULL,
  content TEXT NOT NULL, result TEXT NOT NULL);
 PRAGMA user_version=2;
