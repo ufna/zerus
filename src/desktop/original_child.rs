@@ -26,7 +26,10 @@ use std::path::Path;
 use std::process::{Command, Stdio};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use zerus_client_core::run::custody::InheritedLock;
+use zerus_client_core::run::{
+    custody::InheritedLock,
+    original_input::{self, Owner as InputOwner},
+};
 
 /// Called first in `main` for each kind's variable `var`. A child started by
 /// a desktop actor holds the actor's close-only custody lock for exactly its
@@ -179,6 +182,9 @@ pub(in crate::desktop) enum Ended {
 }
 
 #[cfg(test)]
+type InputOwnerHook = Box<dyn FnOnce(&mut InputOwner)>;
+
+#[cfg(test)]
 thread_local! {
     /// Makes the next spawn on this thread fail inside `pre_exec`, as a custody
     /// refusal there would.
@@ -198,6 +204,8 @@ thread_local! {
     /// Runs once on this thread as part of an input read, after its bytes
     /// arrived: a slow source.
     pub(in crate::desktop) static INPUT_READ: std::cell::RefCell<Option<Box<dyn FnOnce()>>> = const { std::cell::RefCell::new(None) };
+    static INPUT_OWNER: std::cell::RefCell<Option<InputOwnerHook>> = const { std::cell::RefCell::new(None) };
+    static INPUT_FINISH: std::cell::RefCell<Option<InputOwnerHook>> = const { std::cell::RefCell::new(None) };
     /// How many input bytes the last child on this thread was offered.
     pub(in crate::desktop) static OFFERED: std::cell::Cell<Option<usize>> = const { std::cell::Cell::new(None) };
 }
@@ -319,27 +327,43 @@ fn start(
     }
     let spawned = {
         let _turn = platform::spawn_turn();
-        custody
-            .map_or(Ok(()), |custody| custody.inherit(&mut command))
-            .and_then(|()| final_check(&mut command))
-            .and_then(|()| {
-                #[cfg(test)]
-                if REFUSE_PRE_EXEC.with(|refuse| refuse.replace(false)) {
-                    // SAFETY: returns an error only; nothing else runs after fork.
-                    unsafe {
-                        command.pre_exec(|| Err(std::io::Error::from_raw_os_error(libc::EPERM)));
-                    }
+        input
+            .as_ref()
+            .map(|input| original_input::prepare(input.len() > 0))
+            .transpose()
+            .and_then(|input| {
+                let spawn = |command: &mut Command| {
+                    custody
+                        .map_or(Ok(()), |custody| custody.inherit(command))
+                        .and_then(|()| final_check(command))
+                        .and_then(|()| {
+                            #[cfg(test)]
+                            if REFUSE_PRE_EXEC.with(|refuse| refuse.replace(false)) {
+                                // SAFETY: returns an error only; nothing else runs after fork.
+                                unsafe {
+                                    command.pre_exec(|| {
+                                        Err(std::io::Error::from_raw_os_error(libc::EPERM))
+                                    });
+                                }
+                            }
+                            #[cfg(test)]
+                            if let Some(hook) =
+                                AFTER_FINAL_CHECK.with(|hook| hook.borrow_mut().take())
+                            {
+                                hook();
+                            }
+                            // The never-renewed deadline, last before the spawn: a budget
+                            // the checks or the wait for this turn spent starts nothing.
+                            if Instant::now() >= deadline {
+                                return Err(std::io::ErrorKind::TimedOut.into());
+                            }
+                            command.spawn()
+                        })
+                };
+                match input {
+                    Some(input) => input.spawn_with(&mut command, spawn),
+                    None => spawn(&mut command),
                 }
-                #[cfg(test)]
-                if let Some(hook) = AFTER_FINAL_CHECK.with(|hook| hook.borrow_mut().take()) {
-                    hook();
-                }
-                // The never-renewed deadline, last before the spawn: a budget
-                // the checks or the wait for this turn spent starts nothing.
-                if Instant::now() >= deadline {
-                    return Err(std::io::ErrorKind::TimedOut.into());
-                }
-                command.spawn()
             })
     };
     // Only these pre-child branches mean "not started"; once a child exists,
@@ -357,6 +381,28 @@ fn start(
     // so neither side can block the other and no writer outlives this call.
     let mut chunk = vec![0u8; if input.is_some() { 64 << 10 } else { 0 }];
     let mut stdin = child.stdin.take();
+    // Never duplicate a writer before the guarded spawn has accepted it.
+    // Failure after a child exists is Unknown, never permission to replay.
+    let mut input_failed = false;
+    let mut input_owner = match stdin
+        .as_ref()
+        .map(|writer| InputOwner::acquire(writer, input.as_ref().is_some_and(|i| i.len() > 0)))
+        .transpose()
+    {
+        Ok(owner) => owner,
+        Err(_) => {
+            input_failed = true;
+            stdin = None;
+            None
+        }
+    };
+    #[cfg(test)]
+    if let Some(owner) = &mut input_owner {
+        if let Some(hook) = INPUT_OWNER.with(|hook| hook.borrow_mut().take()) {
+            hook(owner);
+        }
+    }
+
     let mut written = 0;
     let stdout = child.stdout.take();
     let stderr_pipe = child.stderr.take();
@@ -389,15 +435,16 @@ fn start(
     let mut unreadable = false;
     let ended = loop {
         if let (Some(pipe), Some(input)) = (stdin.as_mut(), input.as_ref()) {
+            let mut finished = false;
             loop {
                 if written == input.len() {
-                    // All of it: close the input so the child sees its end.
-                    stdin = None;
+                    // All of it: finish the input so the child sees its end.
+                    finished = true;
                     break;
                 }
                 let Ok(next) = input.from(written, &mut chunk) else {
                     // An input that cannot be read is never complete.
-                    stdin = None;
+                    finished = true;
                     break;
                 };
                 #[cfg(test)]
@@ -413,17 +460,21 @@ fn start(
                 }
                 match pipe.write(next) {
                     Ok(0) => {
-                        stdin = None;
+                        finished = true;
                         break;
                     }
                     Ok(n) => written += n,
                     Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
                     Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
                     Err(_) => {
-                        stdin = None;
+                        finished = true;
                         break;
                     }
                 }
+            }
+            if finished {
+                input_failed |= finish_input(input_owner.take()).is_err();
+                stdin = None;
             }
         }
         for (index, slot) in pipes.iter_mut().enumerate() {
@@ -527,6 +578,9 @@ fn start(
         }
         std::thread::sleep(Duration::from_millis(5));
     };
+    // The loop has really ended, including on early exit or deadline. Never
+    // let an inherited alias keep this input live after its writer is done.
+    input_failed |= finish_input(input_owner.take()).is_err();
     drop(stdin);
     #[cfg(test)]
     OFFERED.with(|offered| offered.set(Some(written)));
@@ -538,12 +592,30 @@ fn start(
             retain(pipe, retain_with);
         }
     }
+    if input_failed {
+        return Ended::Unknown(unwritten);
+    }
     match ended {
         Ended::Exited { .. } if written < input.as_ref().map_or(0, Stdin::len) => {
             Ended::Unknown(unwritten)
         }
         ended => ended,
     }
+}
+
+/// End the actual writer once; a finish failure is never retried or treated
+/// as evidence that the frozen input was delivered.
+fn finish_input(owner: Option<InputOwner>) -> std::io::Result<()> {
+    let Some(owner) = owner else { return Ok(()) };
+    #[cfg(test)]
+    let owner = {
+        let mut owner = owner;
+        if let Some(hook) = INPUT_FINISH.with(|hook| hook.borrow_mut().take()) {
+            hook(&mut owner);
+        }
+        owner
+    };
+    owner.finish()
 }
 
 /// A last check in the spawn turn that `deadline` crosses: it notes whether
@@ -604,7 +676,7 @@ mod tests {
         timed_out: "test_timed_out",
         retained: "test_retained",
     };
-    fn spec(input: &[u8]) -> Spec<'_> {
+    pub(super) fn spec(input: &[u8]) -> Spec<'_> {
         Spec {
             custody_env: "HGS_TEST_ORIGINAL_CUSTODY_FD",
             input: Input::Frozen {
@@ -619,7 +691,7 @@ mod tests {
             retain: None,
         }
     }
-    fn custody() -> Arc<InheritedLock> {
+    pub(super) fn custody() -> Arc<InheritedLock> {
         InheritedLock::try_lock(tempfile::tempfile().unwrap()).unwrap()
     }
     fn cat(deadline: Instant, check: impl FnOnce(&mut Command) -> std::io::Result<()>) -> Ended {
@@ -746,3 +818,6 @@ mod tests {
         assert_eq!(OFFERED.with(|offered| offered.take()), Some(13));
     }
 }
+
+#[cfg(test)]
+mod fork_tests;
