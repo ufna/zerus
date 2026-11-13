@@ -2105,12 +2105,14 @@ or edit such a task until a person clears the key; a person is never
 stopped by it. Clearing every closed task of a long-lived team is a walk of
 its whole archive and is a tracked follow-up, not part of milestone 1.
 
-**Known limit.** A stage excludes the implementer of the target's current
-round. After a reassignment an earlier implementer could hold a stage of
-the same target where the stage's role equals the implementer's role; the
-built-in pipelines use a separate reviewing role. Excluding every earlier
-implementer needs a list on the stage node and in the kernel and is a
-tracked follow-up.
+**Known limit, now resolved.** A stage excludes the implementer of the
+target's current round and every earlier implementer of the target
+(zerus-63rru.20): the store records the implementers a target has had, in
+a bounded way (a cap of 16; past the cap the stage's staffing fails closed
+with a stated reason instead of handing to an unrecorded member silently),
+written by the service's own reassignment, round-change and report
+operations, and the hand-out and the kernel's staffing read those records.
+An older build ignores the table and reads the store exactly as before.
 
 ## Addendum: wave 3 (packages 8, 9, 10, 13, 14 and 17)
 
