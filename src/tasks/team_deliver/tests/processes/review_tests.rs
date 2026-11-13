@@ -619,6 +619,9 @@ fn project_limits_refuse_with_distinct_stable_codes() {
                 }),
             "{out}"
         );
+        // The typed cause beside the sentence (zerus-63rru.23): the actor
+        // reads it, never the sentence, and nothing parses the prefixes.
+        assert_eq!(out["reply"]["cause"], "project_limit", "{out}");
         assert_eq!(f.document().revision(), revision);
         assert_eq!(f.count(), count);
     }

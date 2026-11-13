@@ -560,7 +560,13 @@ fn a_reopen_is_not_delivered_while_the_fact_stands() {
     )
     .unwrap();
     h.reopen(reported, "m1");
-    // Its delivery is not attempted while the fact stands.
+    // Its delivery is not attempted while the fact stands: no call, and the
+    // reopen's hold gate is never even written (the pass returns before the
+    // held-step machinery).
     a.tick(&mut h.store, &mut p, TEAM, 1000 + 30_000, false).unwrap();
     assert_eq!(p.calls, 1, "no reopen delivery while the fact stands");
+    assert!(
+        a.ledger.get(TEAM, "gate:held:reopen:2").unwrap().is_none(),
+        "the reopen pass returns before the held step"
+    );
 }
