@@ -126,10 +126,16 @@ impl TaskDoc {
         }
         if title.is_none() || !task.text.trim().is_empty() {
             check_text(task.text, "prompt")?;
-            // The plain card's title is the prompt's first line: the same
-            // title check covers it (zerus-63rru.75).
-            if title.is_none() {
-                check_title(task.text.lines().next().unwrap_or_default())?;
+            // The plain card's title is the prompt's first line: the shared
+            // character rule covers it (zerus-63rru.75). The plain card's
+            // own size and shape limits stay its own; only the forbidden
+            // characters are refused here.
+            if title.is_none()
+                && crate::forbidden_char(task.text.lines().next().unwrap_or_default()).is_some()
+            {
+                return Err(Error::new(
+                    "task title must be nonempty, at most 512 UTF-8 bytes and contain no control or bidirectional characters",
+                ));
             }
         } else if !task.text.is_empty() {
             return Err(Error::new(
