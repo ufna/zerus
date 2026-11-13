@@ -200,7 +200,6 @@ mod cleanup_bound;
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 mod handed;
-mod late_child_event;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 mod unreadable;
 #[cfg(any(target_os = "linux", target_os = "macos"))]

@@ -1685,6 +1685,8 @@ pub fn dispatch(args: &[String]) -> Result<i32> {
 }
 
 #[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
+mod late_child_event;
+#[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
 mod subagent_order;
 
 #[cfg(test)]
