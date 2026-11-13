@@ -391,6 +391,35 @@ fn refused_same_child_registration_never_releases_original_input() {
     assert_eq!(ledger::totals(&f.store.db).unwrap().undrained, 0);
 }
 #[test]
+fn cancellation_after_original_registration_keeps_socket_input_withheld() {
+    let mut f = Fixture::new("reply");
+    let gate = Arc::new(AtomicBool::new(false));
+    f.runtime.input_gate = Some(gate.clone());
+    let helper = HELPER.replace(
+        "body=sys.stdin.buffer.read()",
+        "body=sys.stdin.buffer.read()\n(p/'registration-input').write_bytes(body)",
+    );
+    fs::write(f.runtime.image.as_ref().unwrap(), helper).unwrap();
+    f.request();
+    f.until(|f| registered_helper(f).is_some());
+    f.runtime.request_stop();
+    gate.store(true, Ordering::Release);
+    f.until(|f| f.runtime.work.is_none());
+    let received = match fs::read(f.path("registration-input")) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+        Err(error) => panic!("original helper input evidence unavailable: {error}"),
+    };
+    assert!(
+        received.is_empty(),
+        "cancelled binding released original input"
+    );
+    assert_eq!(f.state(), "unknown");
+    assert_eq!(f.counts(), (1, 1, 1));
+    assert_eq!(ledger::totals(&f.store.db).unwrap().undrained, 0);
+}
+
+#[test]
 fn revoked_worker_retains_same_ticket_and_finishes_unknown_without_another_child() {
     let mut f = Fixture::new("wait");
     f.request();
