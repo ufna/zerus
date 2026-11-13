@@ -414,6 +414,9 @@ pub(in crate::state) fn checked_bound_record(
     record: Value, run_id: &str, conversation_id: &str, allow_working: bool,
 ) -> Result<Value> {
     terminating::check_mutation(&record)?;
+    if kimi_expiry::active(&record).is_some() && !kimi_expiry::owned(&record) {
+        return Err("A message is waiting for pre-send compaction; wait for its delivery receipt".into());
+    }
     if string(&record, "run_id") != run_id || string(&record, "conversation_id") != conversation_id
     {
         return Err("session identity changed; refresh before sending".into());
@@ -491,7 +494,7 @@ pub(in crate::state) fn checked_bound_record(
     if !allow_working {
         idle_only(&record)?;
     }
-    if input_typing(&record).is_some() {
+    if ordinary_typing(&record).is_some() {
         return Err("previous input has not been confirmed yet: another message is being entered into this session; try again in a few seconds".into());
     }
     if input_unconfirmed(&record) {
@@ -1451,6 +1454,9 @@ const TYPING_SECONDS: f64 = settle::WINDOW.as_secs_f64() + 4.0;
 
 /// The request ID of the send typing into this session now, if any.
 pub(crate) fn input_typing(record: &Value) -> Option<&str> {
+    kimi_expiry::active(record).or_else(|| ordinary_typing(record))
+}
+fn ordinary_typing(record: &Value) -> Option<&str> {
     let marker = &record[TYPING];
     let left = marker["until"].as_f64()? - now();
     // Expired, or further ahead than any send's window: a clock stepped back.
@@ -1531,6 +1537,7 @@ fn submit_core(
     // once pending settings may have been typed, it is unknown.
     let mut typed = false;
     let refused = |typed: bool, reason: String| {
+        let reason = if typed { kimi_expiry::refused(&receipt_path, reason) } else { reason };
         before_input(
             typed,
             NotOffered {
@@ -1588,6 +1595,44 @@ fn submit_core(
         );
     }
     let text = attachments::terminal_text(request.text.trim(), &paths);
+    let mut attachments = Some(attachments);
+    let mut pre_send_compaction = Value::Null;
+    let decision = (matches!(origin, Origin::Person) && request.expected_compaction_id.is_empty())
+        .then(|| kimi_expiry::decision(&record)).flatten();
+    if let Some(decision) = decision {
+        // Reserve the ORIGINAL request and payload before the first compact
+        // byte. A duplicate UUID can only observe this receipt, never re-enter.
+        let mut reserved = json!({"request_id":request_id,"name":name,"run_id":request.expected_run_id,
+            "conversation_id":record["conversation_id"],"digest":digest,"status":"preparing",
+            "prepared_at":now(),"submitted_text":text,"text":request.text.trim(),"attachments":paths,
+            "transport":"terminal","pre_send_compaction":decision});
+        if let Some(target) = session_graph::target_receipt(&record) {
+            delivery::bind(&mut reserved, &record, &target); reserved["graph_target"] = target;
+        }
+        typed = true; // No NotOffered witness after a possible receipt publication.
+        let _ = attachments.take().map(tempfile::TempDir::keep);
+        receipt_index::persist(&receipt_path, &reserved).map_err(unknown)?;
+        record["last_send_compaction"] = reserved["pre_send_compaction"].clone();
+        record["last_send_compaction"]["kept_message"] = json!({"text":request.text.trim(),"attachments":paths,"request_id":request_id});
+        kimi_expiry::reserve(&mut record, &request_id).map_err(unknown)?;
+        drop(guard.take()); // Kimi's completion hooks must acquire Root.
+        let outcome = kimi_expiry::compact(&record, &request_id);
+        guard = Some(lock(None).map_err(unknown)?);
+        pre_send_compaction = reserved["pre_send_compaction"].clone();
+        pre_send_compaction["status"] = outcome["status"].clone();
+        pre_send_compaction["outcome"] = outcome;
+        reserved["pre_send_compaction"] = pre_send_compaction.clone();
+        receipt_index::persist(&receipt_path, &reserved).map_err(unknown)?;
+        // Rebind every native field before ordinary delivery. No force-paste,
+        // retry Enter, clearing, or automatic replay exists on this path.
+        let mut current = kimi_tui_choice::identity(&record).map_err(|e| refused(typed,e))?;
+        if !kimi_expiry::same_identity(&record,&current) {
+            return Err(refused(typed,"Session identity changed during pre-send compaction".into()));
+        }
+        kimi_expiry::release(&mut current, &request_id, &pre_send_compaction).map_err(unknown)?;
+        record = checked_record(name,&request).map_err(|e| refused(typed,e))?;
+        checked_send_terminal(&record).map_err(|e| refused(typed,e))?;
+    }
     // Claude and Kimi treat a trailing backslash plus the next Enter as line
     // continuation. Paste a final newline with the literal text so our single
     // Enter submits it; never retry Enter, which could answer a subsequently
@@ -1609,7 +1654,7 @@ fn submit_core(
     // A staging error may leave a buffer loaded: unknown, never a witness.
     if !terminal
         .stage(&buffer, pasted.as_bytes(), backend::StageErrors::Read)
-        .map_err(unknown)?
+        .map_err(|e| unknown(kimi_expiry::refused(&receipt_path,e)))?
     {
         return Err(refused(
             typed,
@@ -1639,6 +1684,7 @@ fn submit_core(
     let mut receipt = json!({"request_id":request_id,"name":name,"run_id":request.expected_run_id,
         "conversation_id":string(&record,"conversation_id"),"first_message":string(&record,"conversation_id").is_empty(),"digest":digest,"status":"in_progress",
         "submitted_at":submitted_at,"submitted_text":text,"text":request.text.trim(),"attachments":paths,"transport":"terminal"});
+    if pre_send_compaction.is_object() { receipt["pre_send_compaction"] = pre_send_compaction; }
     if let Some(target) = session_graph::target_receipt(&record) {
         delivery::bind(&mut receipt, &record, &target);
         receipt["graph_target"] = target;
@@ -1653,7 +1699,7 @@ fn submit_core(
         return Err(unknown(error));
     }
     // Preserve attachments after any possible input: the agent may read them later.
-    let _ = attachments.keep();
+    let _ = attachments.map(tempfile::TempDir::keep);
     record["input_pending_at"] = json!(submitted_at);
     // Clear input reads this send's receipt to tell an input still in its proof
     // window from one left uncertain or stuck (zerus-wkj9l.1).
