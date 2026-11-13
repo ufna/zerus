@@ -1,6 +1,16 @@
 use super::*;
 use crate::teams::{ops::HandoutOutcome, store::EffectIntent};
 use serde::{Deserialize, Serialize};
+use zerus_team_plan::model::MemberState;
+
+/// Whether `member`'s store row left the active set: paused, stopped, or
+/// unbound (zerus-63rru.85). A member that is Active with a session stays,
+/// and a missing member is gone too (a removal already settled its row).
+fn left_the_active_set(store: &Store, team: &Team, member: &str) -> Result<bool> {
+    Ok(store
+        .member(&team.id, member)?
+        .is_some_and(|m| m.state != MemberState::Active || m.session.is_none()))
+}
 #[derive(Serialize, Deserialize)]
 struct Delivery {
     node: u32,
@@ -259,6 +269,26 @@ impl Runtime {
             // row: a removal's hand-back (zerus-63rru.77), a reopen or an
             // override. No admission lets it out again, so the row ends now:
             // nothing is delivered, replayed or recorded, no failure stays.
+            self.recovered(store, team, key, now)?;
+            self.ledger.remove(&row)?;
+            return Ok(());
+        }
+        if d.outcome.is_none()
+            && store.effect_reserved(&team.id, &d.id)?
+            && left_the_active_set(store, team, &d.member)?
+        {
+            // A reservation for a member that left the active set (paused,
+            // stopped, unbound) is settled at the next pass instead of being
+            // replayed through the non-start tiers (zerus-63rru.85): the
+            // store supersedes the effect and hands the node back to the
+            // lead with one item, and nothing here delivers, replays or
+            // fails it.
+            let (actor, request) =
+                request(store, &team.id, Operation::SettleLeftHandout { node: d.node })?;
+            match ops::apply(store, &actor, &request, now) {
+                Ok(_) => {}
+                Err(error) => return Err(error),
+            }
             self.recovered(store, team, key, now)?;
             self.ledger.remove(&row)?;
             return Ok(());

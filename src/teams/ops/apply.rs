@@ -212,5 +212,6 @@ fn dispatch(ctx: &mut Context<'_>) -> Result<()> {
         Operation::RecordCancel { .. } => timers::record_cancel(ctx),
         Operation::ReconcileUnstaffed => unstaffed::reconcile(ctx),
         Operation::EndStaleUnstaffed => unstaffed::end_stale(ctx),
+        Operation::SettleLeftHandout { .. } => members::settle_left(ctx),
     }
 }

@@ -390,6 +390,13 @@ pub enum Operation {
     /// episodes. A call that finds none is refused with
     /// `unstaffed_unchanged`.
     EndStaleUnstaffed,
+    /// A hand-out reserved for a member that left the active set (paused,
+    /// stopped, unbound) is settled at the next pass (zerus-63rru.85): the
+    /// effect superseded, the node handed back to the lead with one item,
+    /// and the next pass can hand the task to another free member.
+    SettleLeftHandout {
+        node: NodeId,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]

@@ -346,6 +346,63 @@ pub(super) fn removed_holder(ctx: &Context<'_>, node: u32) -> Result<Option<Stri
 /// can no longer carry out, through the store's one writer of that outcome
 /// (`rows::hand_back`): its unsettled decision settled, the node held, one
 /// inbox item of the cause's own kind. The operation moves the revision.
+/// A hand-out reserved for a member that left the active set (paused,
+/// stopped, unbound) is settled at the next pass instead of being replayed
+/// through the non-start tiers (zerus-63rru.85): the effect is superseded,
+/// the node handed back to the lead with one item, and the next pass can
+/// hand the task to another free member. Whether the person paused the
+/// member is not stored, so the lead is told in every case. A member that
+/// is still in the active set is never settled here.
+pub(super) fn settle_left(ctx: &mut Context<'_>) -> Result<()> {
+    let Operation::SettleLeftHandout { node } = ctx.op else {
+        unreachable!()
+    };
+    let node = *node;
+    let open: Option<(String, String)> = ctx
+        .db
+        .query_row(
+            &format!(
+                "SELECT e.member,e.request_id FROM effects e WHERE e.team=?1 AND e.node=?2 AND e.state IN {OPEN_EFFECT_STATES} AND e.kind='handout'"
+            ),
+            params![ctx.team.id, node],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()
+        .map_err(storage)?;
+    let Some((member, id)) = open else {
+        return Ok(());
+    };
+    let m = ctx.member(&member)?;
+    if m.state == MemberState::Active && m.session.is_some() {
+        // The member is still in the active set: nothing settles.
+        return Ok(());
+    }
+    let how = if m.state == MemberState::Paused {
+        if ctx.person_stopped(&member)? {
+            "stopped"
+        } else {
+            "paused"
+        }
+    } else {
+        "unbound"
+    };
+    supersede(ctx, node, &member)?;
+    // The item without the hand-back's hold: the task stays in the queue,
+    // so the next pass can hand it to another free member.
+    rows::hand_back_item(
+        ctx.db,
+        &ctx.team.id,
+        node,
+        &encode(ctx.actor)?,
+        &format!("member_left:{id}"),
+        &format!(
+            "Member {member} was {how} before the hand-out of task {node} reached it; the task is offered to another member."
+        ),
+        ctx.now,
+    )?;
+    Ok(())
+}
+
 pub(super) fn hand_to_lead(
     ctx: &mut Context<'_>,
     node: u32,
