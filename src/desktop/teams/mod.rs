@@ -29,6 +29,31 @@ pub(in crate::desktop::teams) fn reason_text(raw: &str) -> String {
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 mod confirm;
 mod health;
+mod items;
+#[cfg(test)]
+pub(crate) use items::Item as ServiceItem;
+pub(crate) use items::Items as ServiceItems;
+/// The service items `hgs team status` shows for a team, read without
+/// creating the actor ledger; None from a service that does not write them.
+pub(crate) fn service_items(
+    state: &std::path::Path,
+    team: &str,
+    running: Option<bool>,
+    now: i64,
+) -> Option<ServiceItems> {
+    items::read(state, team, running, now)
+}
+/// The actor ledger of a state directory, as the service creates it, and a
+/// connection for a test's own service items.
+#[cfg(test)]
+pub(crate) fn test_actor_ledger(state: &std::path::Path) -> rusqlite::Connection {
+    actor::test_ledger(state)
+}
+/// The actor's real failing passes, for other components' tests.
+#[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
+pub(crate) use actor::failing_service_passes;
+#[cfg(test)]
+pub(crate) use items::{put as put_service_item, Failure as ServiceFailure};
 mod kept;
 mod launch;
 mod ledger;

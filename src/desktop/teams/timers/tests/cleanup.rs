@@ -152,3 +152,33 @@ fn pages_make_progress_over_500_nodes_past_nodes_that_never_answer() {
         vec![TEAM.to_owned()]
     );
 }
+
+/// A team's sweep that reaches the end of its keys is reported once: how many
+/// keys got no final answer (cutting over, or no answer), and the last of
+/// them; a later sweep that leaves none reports none.
+#[test]
+fn a_finished_sweep_reports_the_keys_that_got_no_final_answer() {
+    let mut w = World::new();
+    let n = stopped(&mut w);
+    w.effects.answers.insert(n[2], Answer::CuttingOver);
+    w.effects
+        .answers
+        .insert(n[3], Answer::None("Malformed reply".into()));
+    w.terminal(T0);
+    let first = w.timers.finished_sweeps();
+    assert_eq!(first.len(), 1);
+    assert_eq!(
+        (
+            first[0].team.as_str(),
+            first[0].unanswered,
+            first[0].last.clone()
+        ),
+        (TEAM, 2, Some((n[3], "Malformed reply".to_owned())))
+    );
+    assert!(w.timers.finished_sweeps().is_empty(), "taken once");
+    w.effects.answers.clear();
+    w.terminal(T0 + MINUTE);
+    let second = w.timers.finished_sweeps();
+    assert_eq!(second.len(), 1);
+    assert_eq!((second[0].unanswered, second[0].last.clone()), (0, None));
+}

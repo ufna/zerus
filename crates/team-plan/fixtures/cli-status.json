@@ -6,6 +6,7 @@
     "origin": "cli_interim",
     "person": "local"
   },
+  "cancel_refusals": null,
   "counts": {
     "cards": {
       "open": 0
@@ -30,6 +31,10 @@
     }
   },
   "health": null,
+  "key_refusals": {
+    "items": [],
+    "more": 0
+  },
   "members": [
     {
       "account": "account-example",
@@ -82,6 +87,7 @@
     }
   ],
   "ok": true,
+  "service_items": null,
   "service_running": null,
   "team": {
     "base_commit": "0123456789abcdef0123456789abcdef01234567",

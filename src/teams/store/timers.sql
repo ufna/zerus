@@ -31,6 +31,7 @@ CREATE TABLE IF NOT EXISTS key_clears (
  PRIMARY KEY(team,node), FOREIGN KEY(team,node) REFERENCES node_identity(team,id)
 );
 CREATE INDEX IF NOT EXISTS key_refusals ON key_clears(team,node) WHERE state='refused';
+CREATE INDEX IF NOT EXISTS key_refusals_newest ON key_clears(team,at_ms,node) WHERE state='refused';
 CREATE TABLE IF NOT EXISTS late_sessions (
  team TEXT NOT NULL, member TEXT NOT NULL, launch TEXT NOT NULL, machine TEXT NOT NULL,
  session_id TEXT NOT NULL, name TEXT NOT NULL, card INTEGER NOT NULL, created_ms INTEGER NOT NULL,
