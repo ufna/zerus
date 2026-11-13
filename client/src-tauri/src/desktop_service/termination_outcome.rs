@@ -763,7 +763,7 @@ impl Context {
             &invocation,
             &[],
             &self.cancel,
-            spawn_input,
+            spawn,
             resources,
             |error, _| self.trace.owned(error),
         );
