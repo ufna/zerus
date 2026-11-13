@@ -1332,10 +1332,22 @@ pub(super) fn update_activity(record: &mut Value, event: &Value) {
             && string(info, "display_state") == "unknown"
             && info["process_unknown"] != true;
         let ended = ["finished", "ended"].contains(&string(info, "state")) || interrupted;
-        if kind == "SubagentStart" && ended {
+        // A child's end is final for its ID (zerus-63rru.88). Claude and
+        // Codex name every subagent invocation with a fresh ID, so no event
+        // of theirs revives an ended child: a late Start is dropped here.
+        // A Kimi profile child really resumes under its profile name, so
+        // only its own start event revives it.
+        if kind == "SubagentStart" && ended && string(record, "agent") != "kimi" {
             record["subagents"] = json!(children);
             return;
         }
+        // The non-start events of an ended child are recorded as history
+        // only: nothing but its producer's own start event (the guard above
+        // admits only Kimi's) sets it working again. An interrupted child
+        // (working with the hook writer's unknown display) is not an end:
+        // its own tool events resume it as before.
+        let final_end = ["finished", "ended"].contains(&string(info, "state"));
+        let revives = !final_end || kind == "SubagentStart";
         if ["Stop", "SubagentStop"].contains(&kind) {
             let result = detail(event);
             if string(info, "state") != "finished"
@@ -1349,7 +1361,9 @@ pub(super) fn update_activity(record: &mut Value, event: &Value) {
         // settled as an error, which never keeps its parent working. Any newer
         // event of the same child but its Start resumes it as usual.
         let failed = kind == "StopFailure" && string(record, "agent") == "claude";
-        info["state"] = json!(if failed || ["SubagentStop", "SessionEnd", "Stop"].contains(&kind) {
+        info["state"] = json!(if !revives {
+            string(info, "state")
+        } else if failed || ["SubagentStop", "SessionEnd", "Stop"].contains(&kind) {
             "finished"
         } else {
             "working"
@@ -1362,7 +1376,7 @@ pub(super) fn update_activity(record: &mut Value, event: &Value) {
             info["display_state"] = json!("error");
         } else if ["StopFailure", "Interrupt"].contains(&kind) {
             info["display_state"] = json!("unknown");
-        } else {
+        } else if revives {
             info.as_object_mut().unwrap().remove("display_state");
         }
         // Any newer child event ends its pending request (hooks.rs sets a new one).
