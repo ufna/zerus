@@ -34,7 +34,7 @@ fn owner_card_text_is_bounded_by_bytes_at_a_utf8_boundary() {
 fn session_write(home: &str) -> (Operation, zerus_team_plan::model::SessionKey) {
     let key = zerus_team_plan::model::SessionKey {
         machine: home.into(),
-        session_id: format!("launch_id:00000000-0000-4000-8000-000000000009"),
+        session_id: "launch_id:00000000-0000-4000-8000-000000000009".to_string(),
     };
     (
         Operation::SetMemberSession {
@@ -144,7 +144,7 @@ fn a_restart_between_the_intent_and_the_write_replays_the_same_id() {
     // The restart reads the row and replays the persisted request.
     let mut r = Runtime::open(h.temp.path(), &machine, "epoch").unwrap();
     r.ledger = Some(Ledger::open(h.temp.path()).unwrap());
-    let mut loaded = r.ledger.as_mut().unwrap().get(&TEAM, "m2").unwrap().unwrap();
+    let mut loaded = r.ledger.as_mut().unwrap().get(TEAM, "m2").unwrap().unwrap();
     apply(&mut h.store, &t, op, &mut loaded.session_request, 1001).unwrap();
     assert_eq!(
         loaded.session_request.as_ref().unwrap().request_id, id,
