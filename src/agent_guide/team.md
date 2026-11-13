@@ -51,4 +51,4 @@ talks to you. Your lead reads hgs guide team-lead.
 ## A sandbox with its own process namespace
 
 Inside such a sandbox your team commands are refused with a sentence that
-names it. Run them outside it, or turn its private namespace off.
+names it. Run them outside, or turn its private namespace off.
