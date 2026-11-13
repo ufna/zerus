@@ -185,6 +185,10 @@ fn only_claudes_own_blocking_hook_question_routes() {
         ),
         ("optional", Box::new(|c| c["optional"] = json!(true))),
         (
+            "Kimi cache chooser",
+            Box::new(|c| c["source"] = json!("kimi_cache_hint")),
+        ),
+        (
             "already answered",
             Box::new(|c| c["answer_delivery"] = json!({"status": "submitted"})),
         ),
