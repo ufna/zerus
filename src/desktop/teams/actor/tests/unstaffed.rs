@@ -322,3 +322,54 @@ fn a_legacy_store_is_cleaned_a_page_per_pass_and_the_lead_is_told_once() {
     assert_eq!(open, [node], "told once");
     assert_eq!(p.sends, 0);
 }
+
+/// The review's u5 pin: the pass after the last stale page asks nothing — no
+/// request is written for the stale ending, and no failure row or card
+/// follows. The refused `unstaffed_unchanged` answer can only come from a
+/// race between the store read and the apply, which no test seam exists to
+/// build; this test pins the not-asked pass, which is what the actor really
+/// does after the last page.
+#[test]
+fn a_pass_after_the_last_stale_page_writes_no_request_and_no_failure() {
+    let (mut h, mut a, mut p, node) = stranded();
+    for episode in 0..3 {
+        if episode != 0 {
+            h.run(&person(), Operation::Release { node }).unwrap();
+        }
+        h.run(&service(), Operation::ReconcileUnstaffed).unwrap();
+        h.run(&person(), Operation::Hold { node }).unwrap();
+        h.run(&service(), Operation::ReconcileUnstaffed).unwrap();
+    }
+    let stripped = h
+        .store
+        .db
+        .as_ref()
+        .unwrap()
+        .execute(
+            "UPDATE inbox SET state='closed',reply=NULL,reply_actor=NULL WHERE team=?1 AND kind LIKE 'unstaffed:%'",
+            [TEAM],
+        )
+        .unwrap();
+    assert_eq!(stripped, 3);
+    // Pass 1 ends the two stale items in its one page, and the reconcile of
+    // the same pass ends the held node's current episode; pass 2 finds no
+    // stale item and asks nothing.
+    for minute in 0..2 {
+        tick(&mut h, &mut a, &mut p, 1_000 + minute * 60_000);
+    }
+    assert_eq!(unended(&h), 0, "the page and the reconcile ended them all");
+    let asked: u32 = h
+        .store
+        .db
+        .as_ref()
+        .unwrap()
+        .query_row(
+            "SELECT count(*) FROM requests WHERE team=?1 AND json_extract(content,'$.op')='end_stale_unstaffed'",
+            [TEAM],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(asked, 1, "the pass after the last page asked nothing");
+    assert!(a.ledger.get(TEAM, "gate:unstaffed_stale").unwrap().is_none());
+    assert!(h.store.cards(TEAM, 200, None).unwrap().rows.is_empty());
+}
