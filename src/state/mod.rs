@@ -52,6 +52,7 @@ mod journal;
 mod keep_warm;
 mod kimi_cache_hint;
 mod kimi_messages;
+mod kimi_completion;
 mod kimi_approval;
 mod kimi_goal;
 mod kimi_plan;
@@ -589,7 +590,7 @@ fn label_row(session: &mut Value, record: &Value) {
 
 fn live_row(session: &mut Value, record: Value, shared: &Shared, process_work: &mut processes::WorkSample) -> Result<()> {
     // An approval answered in Terminal sends no hook.
-    let record = claude_approval::reconcile(record);
+    let record = kimi_completion::reconcile(claude_approval::reconcile(record));
     session["resumable"] = json!(
         !string(&record, "conversation_id").is_empty()
             && string(&record, "error").is_empty()
@@ -1644,6 +1645,8 @@ pub fn dispatch(args: &[String]) -> Result<i32> {
     Ok(0)
 }
 
+#[cfg(all(test, unix))]
+mod hosted_ancestry_tests;
 #[cfg(test)]
 mod task_binding_tests {
     use super::*;

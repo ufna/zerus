@@ -1775,11 +1775,13 @@ async fn dispatch_reserved_original(
         return match Lane::of(&action) {
             Lane::Send => Ok(failed(ALREADY_SENDING)),
             Lane::Answer => Ok(failed(ALREADY_ANSWERING)),
+            _ if zerus_client_core::end_action::needs_capture(&action) => Err(END_BUSY.into()),
             _ => Err(BUSY.into()),
         };
     };
-    // The service case moves this SAME native claim into its I/O resources.
-    // Dropping the async future cannot release it while a helper/pipe survives.
+    // The service case moves this SAME native claim into a revocable hold.
+    // The bounded worker owns it even if the async future drops; later pipe
+    // custody can outlive that worker without keeping the session lane busy.
     let (_running, native_hold): (Option<Running>, Option<Arc<dyn Send + Sync>>) =
         if native.is_some() {
             (None, Some(Arc::new(running)))
@@ -2457,6 +2459,11 @@ pub const ACTIVITY_BUSY: &str = "busy";
 /// `dispatch`'s `Err` when the session's lane is taken: refused before any
 /// call ran, so a definite refusal, never an uncertain outcome.
 pub const BUSY: &str = "busy";
+/// The same refusal for an end action, where the person needs to know what
+/// holds the lane and what to do (zerus-ex66o).
+pub const END_BUSY: &str = zerus_client_core::source!(
+    "Another action on this session is still running. Wait for it to finish, or restart the app if it never does."
+);
 
 /// The recorded Activity of one archived session after cursor `after`
 /// (`hgs [@alias] inspect NAME --after N --skip-processes --archive ID`).
