@@ -32,6 +32,7 @@ export function TeamTaskCard(props: { task: TaskView; members: readonly MemberVi
       <For each={stages()}>{(stage) => <StageChip stage={stage} rounds={props.task.rounds} on={props.task} />}</For>
       <Show when={decision()}><span class="team-stage-chip team-decision-chip"><Icon name="crown" size={11} />{tr("Decision needed")}</span></Show>
       <Show when={props.task.held}><span class="team-stage-chip team-held-chip"><Icon name="lock" size={11} />{tr("held")}</span></Show>
+      <Show when={props.task.stop_outcome}><span class="team-stage-chip team-stop-chip" role="note">{props.task.stop_outcome}</span></Show>
       <Show when={props.task.integrated}><span class="team-stage-chip"><Icon name="git-merge" size={11} />{tr("merged")}</span></Show>
       <span class="team-card-progress" role="img" aria-label={tr("Pipeline progress")}><For each={segments()}>{(segment) => <i data-state={segment.state} data-kind={segment.kind} />}</For></span>
     </span>

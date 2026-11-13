@@ -317,7 +317,119 @@ fn queue_rows_say_whether_the_pending_decision_can_be_replaced() {
     assert_eq!(facts(&h), (json!("return"), json!(false)));
 }
 
-/// The queue reply carries `unstaffed`, always: null, then the sentence of
+/// zerus-63rru.52: a stopped or archived team's queue row says in plain
+/// words what the stop did to its node, read from the store's own stop
+/// facts; a live team's rows carry no field.
+#[test]
+fn a_stopped_teams_queue_row_says_what_the_stop_did_and_a_live_teams_does_not() {
+    use crate::teams::ops::Operation;
+    let h = seeded();
+    // The seed already holds a To do node (1) and a reported node (2).
+    let todo = 1;
+    let reported = 2;
+    let cleared = h.add(3);
+    let sentence = |h: &Harness, node: u32| -> Option<String> {
+        let (reply, exit) = h.cli(
+            &Caller::Person,
+            &format!("queue --team {TEAM} --limit 200"),
+            "",
+        );
+        assert_eq!(exit, 0, "{reply}");
+        let row = reply["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["id"] == node)
+            .unwrap()
+            .clone();
+        row.get("stop_outcome").and_then(|v| v.as_str().map(str::to_owned))
+    };
+    // A live team's rows carry no field.
+    assert_eq!(sentence(&h, todo), None);
+    assert_eq!(sentence(&h, reported), None);
+    // The stop writes a pending cancel for every unfinished node; before the
+    // service's pass the row says the service has not reached it yet.
+    h.apply(&person(), Operation::Stop);
+    assert_eq!(
+        sentence(&h, todo).as_deref(),
+        Some("The team stop has not reached this task yet")
+    );
+    // The service's cancel pass records the outcome; the row says so.
+    let cancel_seq = |node: u32| {
+        h.store()
+            .db
+            .as_ref()
+            .unwrap()
+            .query_row(
+                "SELECT seq FROM decisions WHERE team=?1 AND node=?2 AND kind='cancel' AND state='pending'",
+                rusqlite::params![TEAM, node],
+                |r| r.get::<_, i64>(0),
+            )
+            .unwrap()
+    };
+    h.apply(
+        &service(),
+        Operation::RecordCancel {
+            node: todo,
+            decision: cancel_seq(todo) as u64,
+            state: crate::teams::ops::CancelState::Cancelled,
+            reason: String::new(),
+            attempt: 0,
+            attempt_id: String::new(),
+        },
+    );
+    assert_eq!(
+        sentence(&h, todo).as_deref(),
+        Some("The team stop cancelled this task")
+    );
+    // A refused cancel keeps the row honest with the store's reason.
+    h.apply(
+        &service(),
+        Operation::RecordCancel {
+            node: reported,
+            decision: cancel_seq(reported) as u64,
+            state: crate::teams::ops::CancelState::Refused,
+            reason: "the task still runs".into(),
+            attempt: 0,
+            attempt_id: String::new(),
+        },
+    );
+    assert_eq!(
+        sentence(&h, reported).as_deref(),
+        Some("The team stop's cancel was refused: the task still runs")
+    );
+    h.apply(
+        &service(),
+        Operation::RecordCancel {
+            node: cleared,
+            decision: cancel_seq(cleared) as u64,
+            state: crate::teams::ops::CancelState::Cancelled,
+            reason: String::new(),
+            attempt: 0,
+            attempt_id: String::new(),
+        },
+    );
+    h.apply(
+        &service(),
+        Operation::RecordKeyClear {
+            node: cleared,
+            state: crate::teams::ops::KeyClearState::Cleared,
+            reason: String::new(),
+        },
+    );
+    assert_eq!(
+        sentence(&h, cleared).as_deref(),
+        Some("The team stop cleared this task's key")
+    );
+    // The archive keeps the field too, and the store's facts stay the source.
+    h.apply(&person(), Operation::Archive);
+    assert_eq!(
+        sentence(&h, todo).as_deref(),
+        Some("The team stop cancelled this task")
+    );
+}
+
+/// The queue reply carries `unstaffed`, always: null, then the sentence of/// The queue reply carries `unstaffed`, always: null, then the sentence of
 /// the lead's open item once no member can take the ready node.
 #[test]
 fn queue_rows_carry_the_unstaffed_sentence() {

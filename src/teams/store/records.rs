@@ -58,6 +58,20 @@ pub struct QueueRow {
     pub pending: Option<String>,
     pub pending_replaceable: bool,
     pub unstaffed: Option<String>,
+    /// The stop facts the store keeps for the node (zerus-63rru.52): the
+    /// newest recorded cancel, the key clear, and whether a cancel is still
+    /// pending. None until the page's query fills them.
+    pub stop: Option<StopFacts>,
+}
+/// What the stop's records say about a node, read from the store's own
+/// tables, never inferred from the node's state (zerus-63rru.52).
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
+pub struct StopFacts {
+    pub cancel: Option<String>,
+    pub cancel_reason: Option<String>,
+    pub key: Option<String>,
+    pub key_reason: Option<String>,
+    pub pending_cancel: bool,
 }
 /// A member row with whether the person stopped the member.
 #[derive(Clone, Debug, PartialEq, Eq)]

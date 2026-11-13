@@ -22,7 +22,13 @@ fn row_facts(table: &str) -> String {
     } else {
         "NULL".to_owned()
     };
-    format!("{holder},(SELECT d.kind FROM decisions d WHERE d.team={table}.team AND d.node={table}.id AND d.state<>'settled'),(SELECT d.state FROM decisions d WHERE d.team={table}.team AND d.node={table}.id AND d.state<>'settled'),(SELECT i.text FROM inbox i WHERE i.team={table}.team AND i.node={table}.id AND i.kind LIKE 'unstaffed:%' AND i.reply IS NULL ORDER BY i.seq DESC LIMIT 1)")
+    // The stop facts, read from the store's own records (zerus-63rru.52):
+    // the newest recorded cancel, the key clear, and whether a cancel is
+    // still pending. Additive columns; the plain node pages ignore them.
+    format!(
+        "{holder},(SELECT d.kind FROM decisions d WHERE d.team={table}.team AND d.node={table}.id AND d.state<>'settled'),(SELECT d.state FROM decisions d WHERE d.team={table}.team AND d.node={table}.id AND d.state<>'settled'),(SELECT i.text FROM inbox i WHERE i.team={table}.team AND i.node={table}.id AND i.kind LIKE 'unstaffed:%' AND i.reply IS NULL ORDER BY i.seq DESC LIMIT 1),(SELECT o.state FROM cancel_outcomes o WHERE o.team={table}.team AND o.node={table}.id ORDER BY o.decision DESC LIMIT 1),(SELECT o.reason FROM cancel_outcomes o WHERE o.team={table}.team AND o.node={table}.id ORDER BY o.decision DESC LIMIT 1),(SELECT k.state FROM key_clears k WHERE k.team={table}.team AND k.node={table}.id),(SELECT k.reason FROM key_clears k WHERE k.team={table}.team AND k.node={table}.id),(SELECT EXISTS(SELECT 1 FROM decisions d WHERE d.team={table}.team AND d.node={table}.id AND d.kind='cancel' AND d.state='pending'))",
+        table = table
+    )
 }
 
 fn start(
@@ -273,6 +279,13 @@ impl Store {
                                 .is_some_and(|(kind, state)| state.replaceable(kind)),
                             pending,
                             unstaffed: r.get(10)?,
+                            stop: Some(StopFacts {
+                                cancel: r.get(11)?,
+                                cancel_reason: r.get(12)?,
+                                key: r.get(13)?,
+                                key_reason: r.get(14)?,
+                                pending_cancel: r.get::<_, bool>(15)?,
+                            }),
                         })
                     },
                 )

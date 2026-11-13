@@ -94,6 +94,7 @@ fn card(node: &Value) -> QueueCard {
         holder: holder(node),
         pending_decision: optional_name(node, "pending_decision"),
         pending_replaceable: flag(node, "pending_replaceable"),
+        stop_outcome: optional_name(node, "stop_outcome"),
     }
 }
 
