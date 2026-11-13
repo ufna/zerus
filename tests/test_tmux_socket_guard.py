@@ -25,9 +25,7 @@ INVOCATION = [
 ]
 
 # Files that may invoke tmux without an explicit -S on the line: the
-# product's own backend resolves its socket from TMUX_TMPDIR (never -S),
-# and the team-deliver Terminal harness is fixed in zerus-63rru.79's
-# current round.
+# product's own backend resolves its socket from TMUX_TMPDIR (never -S).
 ALLOWED = {
     "src/state/backend/tmux.rs": "the product's tmux backend resolves its socket from TMUX_TMPDIR",
 }

@@ -18,8 +18,6 @@ import test_claude_questions_native as native
 
 
 @unittest.skipUnless(native.CLAUDE, "Set HGS_CLAUDE_TEST_BIN for isolated native trust coverage")
-
-
 class NativeClaudeTrust(unittest.TestCase):
     script = fixtures.InputTransport.script
     tmux = fixtures.InputTransport.tmux
