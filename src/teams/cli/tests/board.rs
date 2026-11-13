@@ -316,3 +316,44 @@ fn queue_rows_say_whether_the_pending_decision_can_be_replaced() {
     );
     assert_eq!(facts(&h), (json!("return"), json!(false)));
 }
+
+/// The queue reply carries `unstaffed`, always: null, then the sentence of
+/// the lead's open item once no member can take the ready node.
+#[test]
+fn queue_rows_carry_the_unstaffed_sentence() {
+    use crate::teams::ops::Operation;
+    let h = seeded();
+    let node = h.add(1);
+    let unstaffed = |h: &Harness| {
+        let (reply, exit) = h.cli(
+            &Caller::Person,
+            &format!("queue --team {TEAM} --limit 200"),
+            "",
+        );
+        assert_eq!(exit, 0, "{reply}");
+        reply["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["id"] == node)
+            .unwrap()["unstaffed"]
+            .clone()
+    };
+    assert_eq!(unstaffed(&h), json!(null));
+    for member in ["m1", "m2"] {
+        h.apply(
+            &person(),
+            Operation::ArchiveMember {
+                member: member.into(),
+            },
+        );
+    }
+    h.apply(&service(), Operation::ReconcileUnstaffed);
+    let text = unstaffed(&h);
+    assert!(
+        text.as_str()
+            .unwrap()
+            .contains("No member of the team has the role developer."),
+        "{text}"
+    );
+}

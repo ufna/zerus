@@ -20,6 +20,8 @@ mod native_work;
 mod observe;
 mod ports;
 mod presence;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+mod sweep_items;
 pub(crate) use presence::presence;
 mod reports;
 mod retry;
@@ -28,6 +30,15 @@ mod tasks;
 mod terminal;
 #[cfg(test)]
 mod tests;
+#[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
+pub(crate) use tests::producers::failing_service_passes;
+/// The actor ledger of a state directory, created as the service creates
+/// it, and a plain connection to it for a test's own writes.
+#[cfg(test)]
+pub(in crate::desktop::teams) fn test_ledger(state: &std::path::Path) -> rusqlite::Connection {
+    drop(ledger::Ledger::open(state).unwrap());
+    rusqlite::Connection::open(state.join("teams/actor-v1.sqlite3")).unwrap()
+}
 use crate::teams::{
     ops::{self, Actor, Operation, Request},
     store::{Store, TeamRow},
@@ -46,6 +57,8 @@ pub(super) struct Runtime {
     row_failure: bool,
     hints: BTreeMap<String, observe::Hint>,
     cancel_after: String,
+    /// The orphan pass's cursor over the service items.
+    items_after: super::items::Key,
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     auxiliary: auxiliary::State,
 }
@@ -64,6 +77,7 @@ impl Runtime {
             row_failure: false,
             hints: BTreeMap::new(),
             cancel_after: String::new(),
+            items_after: Default::default(),
             #[cfg(any(target_os = "linux", target_os = "macos"))]
             auxiliary: auxiliary::State::new(state, &epoch),
         })
@@ -170,6 +184,7 @@ impl Runtime {
         result
     }
     pub fn maintain(&mut self, store: &Store) -> Result<()> {
+        self.prune_items(store)?;
         for _ in 0..16 {
             if self.maintenance_team.is_none() {
                 let page = store.teams(1, self.maintenance.as_ref())?;

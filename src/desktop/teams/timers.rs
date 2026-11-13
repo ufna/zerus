@@ -14,6 +14,7 @@ mod native;
 mod ports;
 #[cfg(test)]
 mod tests;
+pub(super) use clear::Finished;
 pub(super) use ledger::Ledger;
 #[allow(unused_imports)] // The tick of package 8 wires the production effects.
 pub(super) use native::Native;
@@ -138,6 +139,10 @@ impl Timers {
         let keys = clear::step(store, effects, &mut self.keys, now);
         let late = late::step(store, ledger, effects, &mut self.late, now);
         keys.and(late)
+    }
+    /// The teams whose key sweep reached its end since the last call.
+    pub fn finished_sweeps(&mut self) -> Vec<Finished> {
+        self.keys.take_finished()
     }
 }
 /// The roster within the caps' bound, read in pages.

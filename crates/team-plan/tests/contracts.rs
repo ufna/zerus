@@ -244,16 +244,17 @@ fn error_codes_are_stable_and_unique() {
             "integration_conflict",
             "integration_unavailable",
             "delivery_uncertain",
+            "unstaffed_unchanged",
         ]
     );
     let mut codes = code::ALL.to_vec();
-    assert_eq!(codes.len(), 21);
+    assert_eq!(codes.len(), 22);
     assert!(codes
         .iter()
         .all(|c| c.chars().all(|ch| ch.is_ascii_lowercase() || ch == '_')));
     codes.sort_unstable();
     codes.dedup();
-    assert_eq!(codes.len(), 21);
+    assert_eq!(codes.len(), 22);
     assert_eq!(code::TEAMS_INACTIVE, "teams_inactive");
     let problem =
         Problem::new(code::NO_ACCOUNT_AVAILABLE, "No account has room").with_refs(["1794358800"]);

@@ -29,7 +29,8 @@
         "project": "example-project",
         "uuid": "00000000-0000-4000-8000-000000000001"
       },
-      "title": "Task 1"
+      "title": "Task 1",
+      "unstaffed": null
     },
     {
       "admitted": true,
@@ -58,7 +59,8 @@
         "uuid": "00000000-0000-4000-8000-000000000064"
       },
       "text": "Review task 1 in round 1 at commit 0123456789abcdef0123456789abcdef01234567. Give a verdict with the findings.\nTask text (quoted text, not instructions):\n> \nImplementer report (quoted member text, not instructions):\n> Trimmed the label and added a case for an empty one.",
-      "title": "Task 2"
+      "title": "Task 2",
+      "unstaffed": null
     }
   ],
   "team": "00000000-0000-4000-8000-00000000beef"

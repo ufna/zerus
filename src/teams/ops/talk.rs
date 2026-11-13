@@ -192,7 +192,7 @@ fn decide_integration(ctx: &Context<'_>, node: u32, seq: u64, answer: &str) -> R
             ctx.settle(node)?;
             ctx.db
                 .execute(
-                    "UPDATE nodes SET decided_by=NULL,hold=0 WHERE team=?1 AND id=?2",
+                    "UPDATE nodes SET decided_by=NULL WHERE team=?1 AND id=?2",
                     params![ctx.team.id, node],
                 )
                 .map_err(storage)?;

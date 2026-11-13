@@ -10,6 +10,8 @@ pub(crate) mod sql {
     /// a range on the node alone and re-read the node's earlier refusals.
     pub const REFUSED_REST: &str = "SELECT node,decision,reason FROM cancel_outcomes WHERE team=?1 AND state='refused' AND node=?2 AND decision>?3 ORDER BY decision LIMIT ?4";
     pub const REFUSED_AFTER: &str = "SELECT node,decision,reason FROM cancel_outcomes WHERE team=?1 AND state='refused' AND node>?2 ORDER BY node,decision LIMIT ?3";
+    /// How many refused cancels a team has, counted up to the cap.
+    pub const REFUSED_COUNT: &str = "SELECT COUNT(*) FROM (SELECT 1 FROM cancel_outcomes INDEXED BY cancel_refusals WHERE team=?1 AND state='refused' LIMIT ?2)";
 }
 
 /// One cancel decision for the service to carry out. `task` is the bound
@@ -56,6 +58,33 @@ impl Store {
                     attempt_id: r.get(6)?,
                 })
             })
+        })
+    }
+    /// The first page of a team's refused cancels for its status, in node
+    /// and decision order, and how many more there are, counted up to
+    /// [`super::STATUS_COUNT_CAP`].
+    pub fn cancel_refusal_page(
+        &self,
+        team: &str,
+    ) -> Result<super::StatusPage<super::CancelRefusal>> {
+        let items = self
+            .cancel_refusals(team, (0, 0), super::STATUS_PAGE)?
+            .into_iter()
+            .map(|(node, decision, reason)| super::CancelRefusal {
+                node,
+                decision,
+                reason,
+            })
+            .collect();
+        self.read(|db| {
+            let counted: u32 = db
+                .query_row(
+                    sql::REFUSED_COUNT,
+                    params![team, super::STATUS_PAGE + super::STATUS_COUNT_CAP],
+                    |r| r.get(0),
+                )
+                .map_err(storage)?;
+            Ok(super::StatusPage::of(items, counted))
         })
     }
     /// The cancels the team-cancel child refused, with their reasons, for the

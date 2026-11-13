@@ -106,7 +106,9 @@ pub(in crate::teams::ops) fn take_over(
         return Ok(());
     }
     ctx.advance(node, n)?;
-    ctx.db.execute("UPDATE nodes SET requested=NULL,decided_by=NULL,integrated=0,integration_commit=NULL,hold=0 WHERE team=?1 AND id=?2",params![ctx.team.id,node]).map_err(storage)?;
+    // A person's run taken over ends a hand-back's hold; an explicit hold
+    // stays.
+    ctx.db.execute("UPDATE nodes SET requested=NULL,decided_by=NULL,integrated=0,integration_commit=NULL,hand_back=0 WHERE team=?1 AND id=?2",params![ctx.team.id,node]).map_err(storage)?;
     ctx.event = Some("person_override");
     Ok(())
 }

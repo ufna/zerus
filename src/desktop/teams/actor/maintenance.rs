@@ -161,8 +161,52 @@ impl Runtime {
             self.maintenance_team = Some((id, rows.last().unwrap().key.clone()));
             Ok(false)
         } else {
+            // The team's rows are reclaimed: its service items go with them.
+            self.ledger.clear_team_items(&id)?;
             self.maintenance_team = None;
             Ok(true)
         }
     }
 }
+
+/// Service items checked in one pass, against the rows they mirror.
+const ITEM_PAGE: u32 = 64;
+impl Runtime {
+    /// One page of the service items, in key order: an item whose mirrored
+    /// row is gone is removed, so a writer that missed its clear leaves no
+    /// item that reads "as of" for ever. The cursor wraps; every item is
+    /// checked within `rows / 64` passes.
+    pub(super) fn prune_items(&mut self, store: &Store) -> Result<()> {
+        let keys = self.ledger.item_page(&self.items_after, ITEM_PAGE)?;
+        self.items_after = if keys.len() == ITEM_PAGE as usize {
+            keys.last().expect("full page").clone()
+        } else {
+            Default::default()
+        };
+        for key in keys {
+            if !self.item_mirrored(store, &key)? {
+                self.ledger.clear_item(&key.team, &key.kind, &key.subject)?;
+            }
+        }
+        Ok(())
+    }
+    /// Whether the row an item mirrors is still there: the cancel row of its
+    /// decision, the terminal page's retry record, a key of its team that
+    /// still waits for a final record, or, for the full table's marker, a
+    /// table without room. An unknown kind is kept.
+    fn item_mirrored(&self, store: &Store, key: &items::Key) -> Result<bool> {
+        Ok(match key.kind.as_str() {
+            CANCEL_RETRY | CANCEL_HALTED => self
+                .ledger
+                .has_row(&key.team, &format!("cancel:{}", key.subject))?,
+            TERMINAL_PAGE => self.ledger.terminal_retry()?.is_some(),
+            KEY_CLEAR => !store.keyed_tasks(&key.team, 0, 1)?.is_empty(),
+            items::UNLISTED => !self.ledger.item_room()?,
+            _ => true,
+        })
+    }
+}
+use super::super::items::{
+    self,
+    kind::{CANCEL_HALTED, CANCEL_RETRY, KEY_CLEAR, TERMINAL_PAGE},
+};

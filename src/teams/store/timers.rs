@@ -7,6 +7,46 @@ use zerus_team_plan::model::{MemberState, SessionKey, TaskRef};
 
 const TERMINAL: &str = "('\"stopped\"','\"archived\"')";
 
+/// Rows in one page of a team's status.
+pub const STATUS_PAGE: u32 = 20;
+/// The count of the rest stops here and reads as "1000 or more".
+pub const STATUS_COUNT_CAP: u32 = 1000;
+/// One page of a team's status list and how many more rows follow it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct StatusPage<T> {
+    pub items: Vec<T>,
+    /// Rows after this page, counted up to [`STATUS_COUNT_CAP`].
+    pub more: u32,
+}
+impl<T> Default for StatusPage<T> {
+    fn default() -> Self {
+        Self {
+            items: Vec::new(),
+            more: 0,
+        }
+    }
+}
+impl<T> StatusPage<T> {
+    fn of(items: Vec<T>, counted: u32) -> Self {
+        let more = counted.saturating_sub(items.len() as u32);
+        Self { items, more }
+    }
+}
+/// A task key the team-clear child refused: final for the service.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct KeyRefusal {
+    pub node: u32,
+    pub reason: String,
+    pub at_ms: i64,
+}
+/// A cancel the team-cancel child refused.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct CancelRefusal {
+    pub node: u32,
+    pub decision: u64,
+    pub reason: String,
+}
+
 /// One open inbox item, as a timer reads it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct OpenItem {
@@ -125,6 +165,10 @@ pub(crate) mod sql {
     /// A refused request is proved only by its saved receipt.
     pub const SAVED_REFUSAL: &str = "SELECT EXISTS(SELECT 1 FROM requests WHERE id=?1 AND team=?2 AND json_type(result,'$.Refused') IS NOT NULL)";
     pub const REFUSALS: &str = "SELECT node,reason FROM key_clears WHERE team=?1 AND state='refused' AND node>?2 ORDER BY node LIMIT ?3";
+    /// A team's key refusals for its status, newest first.
+    pub const REFUSALS_NEWEST: &str = "SELECT node,reason,at_ms FROM key_clears INDEXED BY key_refusals_newest WHERE team=?1 AND state='refused' ORDER BY at_ms DESC,node DESC LIMIT ?2";
+    /// How many key refusals a team has, counted up to the cap.
+    pub const REFUSALS_COUNT: &str = "SELECT COUNT(*) FROM (SELECT 1 FROM key_clears INDEXED BY key_refusals WHERE team=?1 AND state='refused' LIMIT ?2)";
     pub const WAITING: &str =
         "SELECT EXISTS(SELECT 1 FROM inbox WHERE team=?1 AND state='open' AND seq>?2)";
 }
@@ -230,6 +274,27 @@ impl Store {
             })
         })
     }
+    /// The newest key refusals of `team` for its status, and how many more
+    /// there are, counted up to [`STATUS_COUNT_CAP`].
+    pub fn key_refusal_page(&self, team: &str) -> Result<StatusPage<KeyRefusal>> {
+        self.read(|db| {
+            let items = rows(db, sql::REFUSALS_NEWEST, params![team, STATUS_PAGE], |r| {
+                Ok(KeyRefusal {
+                    node: r.get(0)?,
+                    reason: r.get(1)?,
+                    at_ms: r.get(2)?,
+                })
+            })?;
+            let counted: u32 = db
+                .query_row(
+                    sql::REFUSALS_COUNT,
+                    params![team, STATUS_PAGE + STATUS_COUNT_CAP],
+                    |r| r.get(0),
+                )
+                .map_err(storage)?;
+            Ok(StatusPage::of(items, counted))
+        })
+    }
     /// Whether `request` of `team` was refused, by its saved receipt: an
     /// error code alone never proves it, because a failed write carries the
     /// same code.
@@ -329,7 +394,7 @@ mod schema;
 #[allow(unused_imports)] // The actor's cancel step (package 8) reads this.
 pub use cancels::PendingCancel;
 #[cfg(test)]
-pub(super) use schema::after_fence;
+pub(super) use schema::{after_fence, EXTENSION};
 pub(super) use schema::{extend, fence};
 #[cfg(test)]
 mod tests;

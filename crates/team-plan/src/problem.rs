@@ -83,9 +83,12 @@ pub mod code {
     pub const INTEGRATION_CONFLICT: &str = "integration_conflict";
     pub const INTEGRATION_UNAVAILABLE: &str = "integration_unavailable";
     pub const DELIVERY_UNCERTAIN: &str = "delivery_uncertain";
+    /// A reconcile of the unstaffed nodes found the store already as the
+    /// kernel reads it; nothing was written. A race, settled, never a failure.
+    pub const UNSTAFFED_UNCHANGED: &str = "unstaffed_unchanged";
 
     /// Every code, for tests that pin the list.
-    pub const ALL: [&str; 21] = [
+    pub const ALL: [&str; 22] = [
         TEAMS_INACTIVE,
         NOT_FOUND,
         STALE_REVISION,
@@ -107,5 +110,6 @@ pub mod code {
         INTEGRATION_CONFLICT,
         INTEGRATION_UNAVAILABLE,
         DELIVERY_UNCERTAIN,
+        UNSTAFFED_UNCHANGED,
     ];
 }

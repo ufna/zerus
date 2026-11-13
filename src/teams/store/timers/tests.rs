@@ -1,4 +1,5 @@
 use super::*;
+mod legacy_holds;
 mod upgrade;
 mod work;
 use crate::teams::ops::{tests::*, Actor, Operation};
@@ -105,10 +106,16 @@ fn every_timer_read_searches_an_index() {
     let queue = crate::teams::store::pages::node_page_sql("nodes", false);
     let live = crate::teams::store::pages::node_page_sql("nodes", true);
     let archived = crate::teams::store::pages::node_page_sql("node_archive", true);
+    let effect_nodes = crate::teams::store::unstaffed::open_effect_nodes_sql();
     for (name, sql) in [
         ("QUEUE_PAGE", queue.as_str()),
         ("NODES_BY_STATE_PAGE", live.as_str()),
         ("ARCHIVE_BY_STATE_PAGE", archived.as_str()),
+        (
+            "UNSTAFFED_TOLD_ITEMS",
+            crate::teams::store::unstaffed::TOLD_ITEMS,
+        ),
+        ("OPEN_EFFECT_NODES", effect_nodes.as_str()),
         ("MEMBER_PAGE", crate::teams::store::pages::MEMBER_PAGE_SQL),
         ("NEWEST", sql::NEWEST),
         ("OPEN", sql::OPEN),
@@ -122,10 +129,13 @@ fn every_timer_read_searches_an_index() {
         ("SETTLE", sql::SETTLE),
         ("LATE", sql::LATE),
         ("REFUSALS", sql::REFUSALS),
+        ("KEY_REFUSALS_NEWEST", sql::REFUSALS_NEWEST),
+        ("KEY_REFUSALS_COUNT", sql::REFUSALS_COUNT),
         ("SAVED_REFUSAL", sql::SAVED_REFUSAL),
         ("PENDING_CANCELS", super::cancels::sql::PENDING),
         ("CANCEL_REFUSALS_REST", super::cancels::sql::REFUSED_REST),
         ("CANCEL_REFUSALS_AFTER", super::cancels::sql::REFUSED_AFTER),
+        ("CANCEL_REFUSALS_COUNT", super::cancels::sql::REFUSED_COUNT),
         ("RELEASED_STAGES", sql::RELEASED_STAGES),
         ("QUESTIONS", super::answers::sql::QUESTIONS),
         ("ANSWER_MARKS", super::answers::sql::MARKS),
