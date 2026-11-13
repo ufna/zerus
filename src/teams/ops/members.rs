@@ -376,6 +376,30 @@ pub(super) fn tell_paused_started(ctx: &mut Context<'_>) -> Result<()> {
         // No started work of this member on this task.
         return Ok(());
     }
+    // The store's own once-only (zerus-63rru.86 round 2): the kind family
+    // is member_started:{node}:{member}:{n}, n being the count of earlier
+    // items of the family for that member and node plus one. The exact
+    // prefix comparison never treats the member's characters as wildcards.
+    let prefix = format!("member_started:{node}:{member}:");
+    let told: i64 = ctx
+        .db
+        .query_row(
+            "SELECT COUNT(*) FROM inbox WHERE team=?1 AND node=?2 AND state='open' AND substr(kind,1,?3)=?4",
+            params![ctx.team.id, node, prefix.len() as i64, prefix],
+            |r| r.get(0),
+        )
+        .map_err(storage)?;
+    if told > 0 {
+        return Ok(());
+    }
+    let n: i64 = ctx
+        .db
+        .query_row(
+            "SELECT COUNT(*) FROM inbox WHERE team=?1 AND node=?2 AND substr(kind,1,?3)=?4",
+            params![ctx.team.id, node, prefix.len() as i64, prefix],
+            |r| r.get(0),
+        )
+        .map_err(storage)?;
     let how = if m.state == MemberState::Paused {
         if ctx.person_stopped(member)? {
             "stopped"
@@ -390,9 +414,7 @@ pub(super) fn tell_paused_started(ctx: &mut Context<'_>) -> Result<()> {
         &ctx.team.id,
         node,
         &encode(ctx.actor)?,
-        // The kind carries the team's revision, so a later leave opens a
-        // fresh item instead of colliding with the closed one.
-        &format!("member_left:{node}:{member}:{}", ctx.team.revision),
+        &format!("{prefix}{}", n + 1),
         &format!(
             "Member {member} was {how} while task {node} is in progress; the work stays with the member until it is resumed or the person moves the task."
         ),
@@ -409,7 +431,7 @@ pub(super) fn close_paused_started(ctx: &mut Context<'_>) -> Result<()> {
     };
     ctx.db
         .execute(
-            "UPDATE inbox SET state='closed' WHERE team=?1 AND state='open' AND kind LIKE ('member_left:%:' || ?2)",
+            "UPDATE inbox SET state='closed' WHERE team=?1 AND state='open' AND substr(kind,1,15)='member_started:' AND substr(kind,16+instr(substr(kind,16),':'),length(?2))=?2",
             params![ctx.team.id, member],
         )
         .map_err(storage)?;

@@ -7,6 +7,7 @@
 use super::real_rows::Production;
 use super::rows::seed_row;
 use crate::teams::ops::tests::*;
+use crate::teams::store::rows;
 use crate::teams::ops::{Actor, Operation};
 use serde_json::{json, Value};
 
@@ -112,7 +113,7 @@ fn a_paused_or_stopped_member_holding_a_started_task_is_told_once() {
         let told = items(&h);
         assert_eq!(told.len(), 1, "{how}: {told:?}");
         assert!(
-            told[0].0.starts_with("member_left:1:m1:"),
+            told[0].0.starts_with("member_started:1:m1:1"),
             "{how}: {:?}",
             told[0].0
         );
@@ -141,6 +142,8 @@ fn a_paused_or_stopped_member_holding_a_started_task_is_told_once() {
         a.tick(&mut h.store, &mut p, TEAM, T0 + 20 * MINUTE, false)
             .unwrap();
         assert_eq!(items(&h).len(), 1, "{how}: the return tells nothing");
+        let inbox = h.store.inbox(TEAM, 200, None).unwrap();
+        assert_eq!(inbox.rows[0].state, "closed", "{how}");
         match how {
             "paused" => {
                 h.run(
@@ -165,7 +168,7 @@ fn a_paused_or_stopped_member_holding_a_started_task_is_told_once() {
         a.tick(&mut h.store, &mut p, TEAM, T0 + 21 * MINUTE, false)
             .unwrap();
         assert_eq!(items(&h).len(), 2, "{how}: the second leave tells again");
-        assert!(items(&h)[1].0.starts_with("member_left:1:m1:"), "{how}");
+        assert!(items(&h)[1].0.starts_with("member_started:1:m1:2"), "{how}");
     }
 }
 
@@ -214,6 +217,36 @@ fn a_tell_for_a_member_without_started_work_writes_nothing() {
     );
     crate::teams::ops::apply(&mut h.store, &service(), &request, T0).unwrap();
     assert!(items(&h).is_empty(), "{:?}", items(&h));
+}
+
+/// The store's own once-only: a replayed request writes nothing, and a
+/// lost actor row (a crash between the apply and the row) tells the lead
+/// only once.
+#[test]
+fn a_replayed_request_and_a_lost_row_tell_once() {
+    let (mut h, mut a, mut p, lead) = team();
+    a.tick(&mut h.store, &mut p, TEAM, T0, false).unwrap();
+    h.run(&lead, Operation::PauseMember { member: "m1".into() }).unwrap();
+    a.tick(&mut h.store, &mut p, TEAM, T0 + MINUTE, false).unwrap();
+    assert_eq!(items(&h).len(), 1);
+    // The replayed request: the same op again writes nothing.
+    let request = request(
+        h.store.team(TEAM).unwrap().unwrap().revision,
+        Operation::TellPausedStarted {
+            member: "m1".into(),
+            node: 1,
+        },
+    );
+    crate::teams::ops::apply(&mut h.store, &service(), &request, T0 + MINUTE).unwrap();
+    assert_eq!(items(&h).len(), 1, "the replayed request told twice");
+    // The crash between the apply and the actor's row: the row is lost,
+    // and the next pass still tells once.
+    let rows = a.ledger.prefix_page(TEAM, "paused_started:m1:", "").unwrap();
+    for row in &rows {
+        a.ledger.remove(row).unwrap();
+    }
+    a.tick(&mut h.store, &mut p, TEAM, T0 + 2 * MINUTE, false).unwrap();
+    assert_eq!(items(&h).len(), 1, "the lost row told twice");
 }
 
 /// A removed member keeps the removal's path: the removal's own item, never
