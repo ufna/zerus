@@ -52,6 +52,9 @@ METHODS = (
 # api.kimi.com); everything after the choice is the real Kimi image.
 TEAMS_METHODS = (
     'test_teams_native.NativeTeamsKimi.test_1_launch_and_identity',
+    'test_teams_native.NativeTeamsKimi.test_2_delivery_and_member_shell',
+    'test_teams_native.NativeTeamsKimi.test_3_lead_doorbell',
+    'test_teams_native.NativeTeamsKimi.test_4_cancel_notice',
     'test_teams_native.NativeTeamsKimi.test_5_stop_and_terminate',
 )
 TEAMS_CASE_SECONDS = 2400
@@ -338,7 +341,7 @@ def record_roots(case, destination):
             continue
         if path.is_file():
             path = path.parent
-        if not path.name.startswith(('hgs-pause-', 'hgs-kimi-image-', 'hgs-kimi-native-', 'hgs-teams-native-')):
+        if not path.name.startswith(('hgs-pause-', 'hgs-kimi-image-', 'hgs-kimi-native-', 'hgs-tn-')):
             raise ValueError('fixture root is not a declared private temporary root')
         info = path.lstat()
         if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:

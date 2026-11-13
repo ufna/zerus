@@ -2104,7 +2104,9 @@ class PullRequestRunCancellationTests(unittest.TestCase):
             with self.subTest(job=name):
                 self.assertEqual(field(job(text, name), "if"), guard.removeprefix("if: "))
         self.assertIn("actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0", job(text, "teams"))
-        self.assertIn("zerus-63rru.51", text, "the header names what a green run does not cover yet")
+        # The header names the fixes the waiting cases wait for; which ones is checked
+        # against the waiting list by test_teams_native.TeamsWaitingList.
+        self.assertRegex(text.split("\non:", 1)[0], r"zerus-63rru\.\d+", "the header names what a green run does not cover yet")
         # One Rust toolchain for both jobs, the one the hosted Kimi workflow installs.
         kimi = (self.WORKFLOWS / "kimi-native.yml").read_text()
         def toolchains(workflow):
