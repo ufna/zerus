@@ -2939,3 +2939,25 @@ mod tests {
         assert!(matches!(try_lock(&lock, &own), LockAttempt::Taken(_)));
     }
 }
+
+#[cfg(all(test, target_os = "linux"))]
+#[test]
+#[ignore = "opt-in before/after synthetic pidfd spawn cost measurement"]
+fn unix_spawn_cost_pidfd() {
+    let mut samples = Vec::new();
+    for n in 0..72 {
+        let before = Instant::now();
+        let Some((mut child, output)) = spawn_held("/bin/true", &[]) else {
+            println!("SPAWN_COST {{\"family\":\"tauri-pidfd\",\"available\":false}}");
+            return;
+        };
+        let elapsed = before.elapsed().as_micros();
+        drop(output);
+        assert!(child.wait().unwrap().success());
+        if n >= 8 { samples.push(elapsed); }
+    }
+    samples.sort_unstable();
+    println!("SPAWN_COST {}", serde_json::json!({"family":"tauri-pidfd", "samples":samples.len(),
+        "median_us":samples[samples.len()/2], "p95_us":samples[samples.len()*95/100],
+        "min_us":samples[0], "phase":std::env::var("ZERUS_SPAWN_COST_PHASE").unwrap_or_default()}));
+}

@@ -827,3 +827,6 @@ mod tests {
 mod admission_tests;
 #[cfg(test)]
 mod fork_tests;
+
+#[cfg(test)]
+mod spawn_cost;
