@@ -531,7 +531,7 @@ fn a_hand_out_to_a_member_that_waits_for_a_person_is_refused_with_its_typed_caus
             &seen.id,
         );
         assert!(
-            matches!(&read, super::super::ports::DeliveryResult::TerminalWaiting { reason }
+            matches!(&read, super::super::ports::DeliveryResult::TerminalWaiting { reason, .. }
                 if reason == sentence),
             "{phase}: {read:?}"
         );

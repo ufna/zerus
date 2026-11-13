@@ -313,6 +313,7 @@ pub(super) fn delivery_result(ended: Ended, id: &str) -> ports::DeliveryResult {
                             } else {
                                 said
                             },
+                            dialog: v["dialog"].as_str().map(str::to_owned),
                         };
                     }
                     // The task command reserved and sent nothing, for a cause
