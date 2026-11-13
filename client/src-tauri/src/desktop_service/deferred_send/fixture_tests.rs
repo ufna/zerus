@@ -216,7 +216,12 @@ fn the_admission_or_the_lookup_settles_and_an_unsettled_send_is_pending() {
                 .unwrap()
         };
         assert_eq!(checked, Checked::InProgress);
-        let mut refused = receipt(&v, wire::Phase::Unknown, true, "deferred_send_receipt_missing");
+        let mut refused = receipt(
+            &v,
+            wire::Phase::Unknown,
+            true,
+            "deferred_send_receipt_missing",
+        );
         refused["cli_exit"] = json!({"code":1,"stderr":"hgs: private send refusal"});
         answers(&f.0, None, &[refused]);
         let checked = {
