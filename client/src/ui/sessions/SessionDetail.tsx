@@ -159,8 +159,8 @@ function Header() {
         </Show>
         <Show when={s().worktree}><span class="dh-chip ell" title={tr("Linked worktree %1", s().worktree!)}><Icon name="folder-git-2" size={13} />{tr("worktree %1", s().worktree!)}</span></Show>
         <span class="grow" />
-        <KeepWarmChip session={s()} />
         <span class="dh-model ell">{s().model} {s().effort ?? ""}</span>
+        <KeepWarmChip session={s()} />
       </div>
     </header>
   );

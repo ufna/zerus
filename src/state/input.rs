@@ -1121,6 +1121,18 @@ fn terminal_gate_on(
         ) {
             if sending {
                 diagnostic::save(record, screen, cursor_x, cursor_y, stable);
+                if stable && string(record, "agent") == "claude"
+                    && matches!(composer::read(record, screen, cursor_x, cursor_y), composer::Composer::Text(_))
+                    && screen.lines().nth(cursor_y).is_some_and(|row| {
+                        !styled_cells(row, &mut TerminalStyle::default()).iter().any(|(_, style)| style.dim)
+                    })
+                    && diagnostic::no_color(record)
+                {
+                    return Err(Gate::Waiting {
+                        reason: zerus_client_core::send::NO_COLOR.into(),
+                        dialog: None,
+                    });
+                }
                 if matches!(string(record, "agent"), "codex" | "claude")
                     && string(record, "activity") == "busy"
                     && matches!(string(record, "phase"), "idle" | "working" | "tool" | "compacting")
@@ -2649,6 +2661,34 @@ mod tests {
         // composer keeps its status footer, so it is not the startup frame.
         let late_banner = "  ⠋ Preparing Kimi Code…\n\n ╭────────────╮\n │ >          │\n ╰────────────╯\n Never Ask  fixture  ~/project with spaces\n                          context: 0% (0/32k)\n";
         assert!(composer_empty("kimi", late_banner, 5, 3));
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    #[ignore = "run by the private typed-gate deferred-send control"]
+    fn no_color_gate_fixture() {
+        assert_eq!(std::env::var("ZERUS_TEST_NO_COLOR_GATE").unwrap(), "1");
+        assert!(std::env::var_os("NO_COLOR").is_some());
+        struct Frame;
+        impl backend::TerminalBackend for Frame {
+            fn input_state(&self, _: &backend::InputClaim) -> Result<backend::InputState> {
+                Ok(backend::InputState { cursor_x: "2".into(), cursor_y: "1".into() })
+            }
+            fn capture(&self, _: &str, _: backend::Capture) -> Result<Vec<u8>> {
+                let border = "─".repeat(40);
+                Ok(format!("{border}\n❯\u{a0}Press up to edit queued messages\n{border}").into_bytes())
+            }
+        }
+        let pid = std::process::id();
+        let record = json!({"name":"claude/private-send","agent":"claude",
+            "run_id":"run-1","conversation_id":"conversation-1","pane":"%1",
+            "pid":pid,"process_start":storage::process_start(pid),
+            "activity":"busy","phase":"tool"});
+        let gate = terminal_gate_on(&record, true, true, &Frame).unwrap_err();
+        assert!(matches!(&gate, Gate::Waiting { dialog: None, .. }), "{gate:?}");
+        let reason = gate.reason();
+        assert_eq!(reason, zerus_client_core::send::NO_COLOR);
+        println!("TYPED_GATE_REASON {reason}");
     }
 
     /// zerus-vg4mm: a Kimi decision read must not pair the cursor of one frame

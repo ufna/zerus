@@ -269,16 +269,30 @@ describe("the header's keep-warm mark (zerus-yacns)", () => {
   const on = (until: number | null, revision = 2) => ({ enabled: true, until, revision, state: "waiting", next_at: null, reason: "", turn_active: false });
   const mark = () => host.querySelector<HTMLButtonElement>(".detail-head .dh-row2 .dh-warm");
 
-  it("shows the bolt and the time left, or an infinity sign for Always, next to the model label", async () => {
-    const row = warmRow(on(now() + 2 * 3600 - 30)); await open(row);
+  it("shows the bolt and the time left, or an infinity sign for Always, directly after the model and effort", async () => {
+    const row = { ...warmRow(on(now() + 2 * 3600 - 30)), model: "claude-opus-5-5", effort: "xhigh" }; await open(row);
     const shown = mark()!;
     expect(shown.textContent).toBe("1 h 59 m");
     expect(shown.getAttribute("aria-label")).toBe("Keep cache warm: 1 h 59 m left");
     expect(shown.title.split("\n")[0]).toBe("Keep cache warm: 1 h 59 m left");
-    expect(shown.nextElementSibling?.classList.contains("dh-model")).toBe(true);
+    expect(shown.previousElementSibling).toBe(host.querySelector(".detail-head .dh-model"));
+    expect(shown.previousElementSibling?.textContent).toBe("claude-opus-5-5 xhigh");
     put({ ...row, keep_warm: on(null, 3) }); await flush();
     expect(mark()).toBe(shown);
     expect([mark()!.textContent, mark()!.getAttribute("aria-label")]).toEqual(["∞", "Keep cache warm: Always"]);
+  });
+
+  it("keeps the remote session's mark directly after its model and effort (zerus-63zvg)", async () => {
+    const row = { ...warmRow(on(null)), model: "claude-opus-5-5", effort: "xhigh", machine: "Remote fixture" };
+    const computer = "warm-remote", key = `run:${row.run_id}`;
+    receive({ ...emptyBatch(), computers: [{ computer, status: "live", attempt: 0 }], upserts: [{ computer, key, row }] });
+    setSelectedKey(`${computer}\n${key}`); await vi.dynamicImportSettled(); await flush();
+    expect(selected()?.computer).toBe(computer);
+    const model = host.querySelector(".detail-head .dh-model")!;
+    expect(model.textContent).toBe("claude-opus-5-5 xhigh");
+    expect(model.nextElementSibling).toBe(mark());
+    expect(mark()?.getAttribute("aria-label")).toBe("Keep cache warm: Always");
+    receive({ ...emptyBatch(), replaces: [{ computer, rows: [] }] });
   });
 
   it("shows nothing while keep-warm is off or not reported", async () => {

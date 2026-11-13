@@ -680,7 +680,7 @@ fn owned(
         call,
         &[],
         &shared.stopped,
-        |command| command.spawn(),
+        |command, input_spawn| input_spawn.spawn(command),
         resources,
     )
     .map_err(|_| "frontend_transport_unavailable")
@@ -820,8 +820,8 @@ fn execute(
             &call,
             &[],
             &shared.stopped,
-            move |command| {
-                let child = command.spawn()?;
+            move |command, input_spawn| {
+                let child = input_spawn.spawn(command)?;
                 original.store(true, Ordering::Release);
                 // ALWAYS return the original Child, including when binding
                 // refuses. The maintained owner must still stop/wait/drain it.

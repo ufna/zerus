@@ -446,6 +446,7 @@ pub(super) fn admit(
         drained: false,
         code: String::new(),
         outcome: None,
+        cli_exit: None,
     };
     ensure!(receipt.valid(), "invalid original deferred send");
     let encoded_receipt = encoded(&receipt, wire::REPLY_BYTES)?;
@@ -689,6 +690,18 @@ pub(super) fn ended(tx: &Transaction<'_>, row: &Row, code: &str) -> Result<()> {
     record(tx, row, code)
 }
 
+/// Keep the original child's exit for diagnosis only; the CLI receipt at drain
+/// remains the sole evidence of submission.
+pub(super) fn exited(tx: &Transaction<'_>, row: &Row, code: i32, stderr: &str) -> Result<()> {
+    ensure!(!row.receipt.drained, "deferred send is already drained");
+    let mut next = row.receipt.clone();
+    next.phase = Phase::Unknown;
+    next.revision += 1;
+    next.code = AWAITING_DRAIN.into();
+    next.cli_exit = (code != 0).then(|| wire::CliExit::new(code, stderr));
+    state(tx, row, &next)
+}
+
 /// Records the closed pre-child result: the original child never started.
 /// The receipt stays Unknown until the custody drain settles it.
 pub(super) fn not_started(tx: &Transaction<'_>, row: &Row) -> Result<()> {
@@ -733,6 +746,7 @@ pub(super) fn drained(
         Observed::Submitted(outcome) if outcome.matches(&row.verified.plan) => {
             next.phase = Phase::Recorded;
             next.code.clear();
+            next.cli_exit = None;
             next.outcome = Some(outcome.clone());
         }
         // The closed pre-child result, confirmed by the absence of any
