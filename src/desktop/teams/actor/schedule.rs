@@ -367,7 +367,7 @@ impl Runtime {
         ops::apply(store, &actor, &request, now)?;
         let mut after = String::new();
         for _ in 0..4 {
-            let rows = self.ledger.prefix_page(&team.id, prefix.as_str(), &after)?;
+            let rows = self.ledger.prefix_page(&team.id, prefix, &after)?;
             for row in &rows {
                 self.ledger.remove(row)?;
             }
