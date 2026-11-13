@@ -84,6 +84,24 @@ it("disables the row while hgs is unavailable, with the reason", () => {
   expect(host.querySelector("[data-teams-unavailable]")?.textContent).toContain("hgs is unavailable");
 });
 
+it("explains an unknown state and can read it again without changing the preview", async () => {
+  const host = setup(undefined);
+  expect(toggle(host).disabled).toBe(true);
+  const notice = host.querySelector("[data-teams-unknown]")!;
+  expect(notice.textContent).toContain("The preview state is unknown.");
+  const retry = notice.querySelector("button")!;
+  expect(retry.textContent).toBe("Read again");
+  expect(retry.disabled).toBe(false);
+  f.recheck.mockImplementationOnce(async () => { f.setAvailable(false); f.setOff("inactive"); });
+  retry.click();
+  await wait();
+  expect(f.recheck).toHaveBeenCalledTimes(1);
+  expect(f.preview).not.toHaveBeenCalled();
+  expect(host.querySelector("[data-teams-unknown]")).toBeNull();
+  expect(toggle(host).disabled).toBe(false);
+  expect(toggle(host).getAttribute("aria-checked")).toBe("false");
+});
+
 it("shows a refusal's reason in the row", async () => {
   f.preview.mockResolvedValueOnce({ outcome: "failed", detail: "not_allowed: Only a person turns the Teams preview on or off." });
   const host = setup(false, "inactive");
