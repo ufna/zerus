@@ -378,7 +378,7 @@ struct Host {
 /// Why [`hosted_ancestor`] cannot tell whether a recorded host is above this
 /// command. Each cause is its own.
 #[derive(Clone, Debug, PartialEq, Eq)]
-enum Refusal {
+pub(crate) enum Refusal {
     /// The shared DeepSeek check retains its exact cause and recovery text.
     #[cfg(unix)]
     DeepSeek(crate::state::dsh::Refusal),

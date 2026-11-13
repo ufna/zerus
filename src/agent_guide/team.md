@@ -50,11 +50,5 @@ talks to you. Your lead reads hgs guide team-lead.
 
 ## A sandbox with its own process namespace
 
-If your session's shell runs inside a sandbox with a private process
-namespace (a bubblewrap or `unshare --pid` sandbox, or a rootless
-container), hgs cannot see the agent host above it, so your report and
-every team command from that shell are refused with a sentence that names
-the separate process namespace. Run the team commands outside the
-sandbox, or turn the sandbox's private process namespace off. The lead is
-told when a report never arrives; the person and the lead see the same
-limit in the team's page.
+Inside such a sandbox your team commands are refused with a sentence that
+names it. Run them outside it, or turn its private namespace off.
