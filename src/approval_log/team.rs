@@ -64,7 +64,9 @@ fn folder_answers(payload: &Value) -> Option<Value> {
     let items = q["questions"].as_array()?;
     if items.len() != 1
         || items[0]["id"] != "trust"
-        || items[0]["question"] != "Trust this folder?"
+        || (items[0]["question"] != "Trust this folder?"
+            && !(q["source"] == "codex_folder_trust"
+                && items[0]["question"] == "Trust this Git repository?"))
         || items[0]["multi_select"] == true
         || items[0]["allow_other"] == true
     {

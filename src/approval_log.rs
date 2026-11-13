@@ -259,6 +259,12 @@ fn reserve(
     if let Some(categories) = categories(&payload["categories"]) {
         saved["categories"] = categories;
     }
+    // The granted scope, as the standing confirmation states it
+    // (zerus-63rru.66): the repository's main checkout path next to the
+    // card's folder.
+    if let Some(scope) = payload.get("scope").and_then(Value::as_str) {
+        saved["scope"] = json!(scope.chars().take(4096).collect::<String>());
+    }
     let transaction = db
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(bad)?;

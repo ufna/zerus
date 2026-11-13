@@ -143,6 +143,7 @@ pub(super) fn trust(b: &Binding, s: &Snapshot) -> Result<Value, String> {
         expected.2,
         expected.3,
         b.agent == "kimi",
+        b.agent == "codex",
     )?;
     Ok(q.clone())
 }
@@ -173,15 +174,53 @@ fn provider(
     })
 }
 
+/// The granted scope for the audit row and the texts: the repository's
+/// main checkout when the folder is a linked worktree of one, else the
+/// folder itself (zerus-63rru.66).
+pub(super) fn scope_for(folder: &str) -> String {
+    main_checkout(folder).unwrap_or_else(|| folder.to_owned())
+}
+
+/// The repository's main checkout a linked worktree belongs to, resolved
+/// from Git, never from the card's text: the worktree's common Git dir is
+/// the main checkout's `.git`, whose parent is the checkout itself
+/// (zerus-63rru.66). A folder that is not a linked worktree resolves to
+/// itself.
+pub(super) fn main_checkout(folder: &str) -> Option<String> {
+    let out = std::process::Command::new("git")
+        .arg("-C")
+        .arg(folder)
+        .args(["-c", "core.hooksPath=/dev/null", "-c", "commit.gpgSign=false"])
+        .args(["rev-parse", "--path-format=absolute", "--git-common-dir"])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let common = String::from_utf8(out.stdout).ok()?;
+    let common = common.trim();
+    if common == ".git" {
+        // The folder is its own repository root, not a linked worktree.
+        return Some(folder.to_owned());
+    }
+    // The linked worktree's common dir: <main checkout>/.git.
+    let git_dir = std::path::Path::new(common);
+    let checkout = git_dir.parent()?.to_str()?;
+    Some(checkout.to_owned())
+}
+
 fn folder_item(
     item: &Value,
     folder: &str,
     option: &str,
     label: &str,
     kimi: bool,
+    repository_ok: bool,
 ) -> Result<(), String> {
+    let repository = item["question"] == "Trust this Git repository?";
     need(
-        item["id"] == "trust" && item["question"] == "Trust this folder?",
+        item["id"] == "trust"
+            && (item["question"] == "Trust this folder?" || repository && repository_ok),
         "The prompt grants a different scope",
     )?;
     need(
@@ -189,11 +228,31 @@ fn folder_item(
         "The prompt has other answer modes",
     )?;
     let body = item["body"].as_str().ok_or("The prompt names no folder")?;
+    let mut paragraphs = body.split("\n\n");
     need(
-        body.split_once("\n\n")
-            .is_some_and(|(path, text)| path == folder && !text.is_empty()),
+        paragraphs
+            .next()
+            .is_some_and(|path| path == folder),
         "The prompt names a different folder",
     )?;
+    // The repository card names the root it would grant, in the note its
+    // producer writes: the member's folder itself, or the repository's main
+    // checkout as Git resolves it. Anything else stays the person's.
+    if repository {
+        // The note's own line names the root the grant would cover; the
+        // disclosure may wrap it, so each line is read, never the prose.
+        let root = body
+            .lines()
+            .map(str::trim)
+            .find(|line| line.starts_with('/') && *line != folder)
+            .map(str::to_owned);
+        if let Some(root) = root {
+            need(
+                main_checkout(folder).as_deref() == Some(root.as_str()),
+                "The prompt grants a different repository",
+            )?;
+        }
+    }
     let choices = item["options"]
         .as_array()
         .ok_or("The prompt has no choices")?;

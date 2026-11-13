@@ -114,7 +114,9 @@ impl Ports for Native<'_> {
         self.ledger.save(row)
     }
     fn audit_begin(&mut self, plan: &Plan) -> Result<Audit> {
-        let payload = json!({"host":self.machine,"session":plan.snapshot.name,"provider":plan.binding.agent,"question":plan.question});
+        // The granted scope, as the policy states it (zerus-63rru.66).
+        let scope = super::policy::scope_for(&plan.binding.folder);
+        let payload = json!({"host":self.machine,"session":plan.snapshot.name,"provider":plan.binding.agent,"question":plan.question,"scope":scope});
         let kind = if plan.kind == Kind::Trust {
             crate::approval_log::TeamKind::FolderTrust
         } else {
@@ -240,6 +242,17 @@ mod tests {
         let audit = native.audit_begin(&plan).unwrap();
         assert!(audit.fresh);
         let db = crate::approval_log::open(&config.state.join("approval-audit")).unwrap();
+        let saved: String = db
+            .query_row("SELECT question FROM attempts WHERE id=?1", [audit.id], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        let saved: serde_json::Value = serde_json::from_str(&saved).unwrap();
+        assert_eq!(
+            saved["scope"],
+            super::super::policy::scope_for(&b.folder),
+            "{saved}"
+        );
         let status: String = db
             .query_row("SELECT status FROM attempts WHERE id=?1", [audit.id], |r| {
                 r.get(0)

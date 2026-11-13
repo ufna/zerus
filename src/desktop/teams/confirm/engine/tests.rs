@@ -736,6 +736,84 @@ fn a_question_that_is_not_a_folder_trust_prompt_plans_nothing() {
     }
 }
 
+/// A Codex repository card whose note names the member's own folder is the
+/// same grant as the folder card (zerus-63rru.66).
+#[test]
+fn a_codex_repository_card_naming_the_members_folder_is_answered() {
+    let mut f = Fake::new();
+    at_startup(&mut f, "codex");
+    let folder = crate::state::trust_fixture::FOLDER;
+    let q = &mut f.snapshot.questions[0];
+    let item = &mut q["questions"][0];
+    item["question"] = json!("Trust this Git repository?");
+    item["body"] = json!(format!(
+        "{folder}\n\nNote: You are in a subdirectory of a Git project. Trusting will apply to the repository root:\n{folder}"
+    ));
+    f.run("epoch-1", 100).unwrap();
+    assert_eq!(f.answers, 1, "the repository card is answered");
+}
+
+/// A Codex repository card whose note names the repository's main checkout
+/// as Git resolves it is answered; a note naming another repository is the
+/// person's (zerus-63rru.66).
+#[test]
+fn a_codex_repository_card_naming_the_main_checkout_is_answered_and_another_is_refused() {
+    // A real scratch repository with a linked worktree, through the product's
+    // own git: the policy resolves the main checkout from Git, never from the
+    // card's text.
+    let temp = tempfile::tempdir().unwrap();
+    let main = temp.path().join("repo");
+    std::fs::create_dir_all(&main).unwrap();
+    let run = |args: &[&str], at: &std::path::Path| {
+        std::process::Command::new("git")
+            .arg("-C")
+            .arg(at)
+            .args(args)
+            .output()
+            .unwrap()
+    };
+    run(&["init", "-q"], &main);
+    run(&["config", "user.email", "review@example.invalid"], &main);
+    run(&["config", "user.name", "review"], &main);
+    std::fs::write(main.join("file.txt"), "fixture").unwrap();
+    run(&["add", "file.txt"], &main);
+    run(&["commit", "-qm", "fixture"], &main);
+    run(&["worktree", "add", "-q", "--detach", "../member-wt"], &main);
+    let worktree = temp.path().join("member-wt");
+    let checkout = main.to_str().unwrap();
+    for (root, answered) in [(checkout.to_owned(), true), ("/another/repository".to_owned(), false)] {
+        let mut f = Fake::new();
+        at_startup(&mut f, "codex");
+        f.binding.folder = worktree.to_str().unwrap().to_owned();
+        f.snapshot.folder = f.binding.folder.clone();
+        f.owner.folder = f.binding.folder.clone();
+        f.facts.member.worktree = f.binding.folder.clone();
+        f.facts.binding = f.binding.clone();
+        f.snapshot.questions[0]["questions"][0]["question"] = json!("Trust this Git repository?");
+        f.snapshot.questions[0]["questions"][0]["body"] = json!(format!(
+            "{}\n\nNote: You are in a subdirectory of a Git project. Trusting will apply to the repository root:\n{root}",
+            worktree.display()
+        ));
+        f.run("epoch-1", 100).unwrap();
+        assert_eq!(f.answers, usize::from(answered), "root {root}");
+    }
+}
+
+/// The repository card is Codex's own: Claude's policy refuses it
+/// (zerus-63rru.66).
+#[test]
+fn a_repository_card_for_claude_is_refused() {
+    let mut f = Fake::new();
+    at_startup(&mut f, "claude");
+    let folder = crate::state::trust_fixture::FOLDER;
+    let q = &mut f.snapshot.questions[0];
+    let item = &mut q["questions"][0];
+    item["question"] = json!("Trust this Git repository?");
+    item["body"] = json!(format!("{folder}\n\nNote: repository root:\n{folder}"));
+    f.run("epoch-1", 100).unwrap();
+    assert_eq!(f.answers, 0, "Claude keeps its own card");
+}
+
 #[test]
 fn a_startup_trust_prompt_is_answered_as_before_and_a_later_question_plans_nothing() {
     for agent in ["claude", "codex", "kimi"] {
