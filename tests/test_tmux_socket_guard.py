@@ -86,8 +86,8 @@ class TmuxSocketGuard(unittest.TestCase):
             path = Path(temp) / "reverted.py"
             path.write_text('#!/bin/sh\nexec /usr/bin/tmux "$@"\n')
             self.assertEqual(
-                violations([path]),
-                [(path.name, 2, 'exec /usr/bin/tmux "$@"')],
+                [(number, text) for _, number, text in violations([path])],
+                [(2, 'exec /usr/bin/tmux "$@"')],
                 "the guard must fail on a reverted helper",
             )
 

@@ -19,9 +19,6 @@ from tests import test_tasks
 REPO = Path(__file__).resolve().parents[1]
 HGS = Path(os.environ.get("HGS_TEST_BIN", REPO / "target/debug/hgs")).resolve()
 TMUX = shutil.which("tmux")
-# The private socket's directory: every tmux call names -S inside it, and the
-# machine guard (zerus-63rru.89) admits only this prefix's children.
-PRIVATE_TMP = os.environ.get("ZERUS_TEST_SHORT_TMPDIR") or f"/tmp/claude-{os.getuid()}"
 SSH = '''#!/usr/bin/env python3
 import json, os, pathlib, shlex, subprocess, sys
 root = pathlib.Path(os.environ['ROUTING_ROOT'])
@@ -58,8 +55,7 @@ os.execve(os.environ['ROUTING_HGS'], [os.environ['ROUTING_HGS'], *args], env)
 @unittest.skipUnless(TMUX, "tmux is required for delivery")
 class TaskRouting(unittest.TestCase):
     def setUp(self):
-        os.makedirs(PRIVATE_TMP, exist_ok=True)
-        temp = tempfile.TemporaryDirectory(prefix="hgs-routing-", dir=PRIVATE_TMP)
+        temp = tempfile.TemporaryDirectory(prefix="hgs-routing-")
         self.addCleanup(temp.cleanup)
         self.root = Path(temp.name)
         ssh = self.root / "ssh"; ssh.write_text(SSH); ssh.chmod(0o755)

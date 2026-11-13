@@ -17,9 +17,6 @@ import test_questions as questions
 import test_claude_questions_native as native
 
 
-PRIVATE_TMP = os.environ.get("ZERUS_TEST_SHORT_TMPDIR") or f"/tmp/claude-{os.getuid()}"
-
-
 @unittest.skipUnless(native.CLAUDE, "Set HGS_CLAUDE_TEST_BIN for isolated native trust coverage")
 
 
@@ -34,8 +31,7 @@ class NativeClaudeTrust(unittest.TestCase):
     answer = questions.Questions.answer
 
     def setUp(self):
-        os.makedirs(PRIVATE_TMP, exist_ok=True)
-        self.temp = tempfile.TemporaryDirectory(prefix="hgs-claude-trust-native-", dir=PRIVATE_TMP)
+        self.temp = tempfile.TemporaryDirectory(prefix="hgs-claude-trust-native-")
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name).resolve()
         self.bin = self.root / ".local/bin"

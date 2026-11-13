@@ -34,9 +34,6 @@ import unittest
 REPO = Path(__file__).resolve().parents[1]
 HGS = Path(os.environ.get("HGS_TEST_BIN", REPO / "target/debug/hgs")).resolve()
 TMUX = shutil.which("tmux")
-# The private socket's directory: every tmux call names -S inside it, and the
-# machine guard (zerus-63rru.89) admits only this prefix's children.
-PRIVATE_TMP = os.environ.get("ZERUS_TEST_SHORT_TMPDIR") or f"/tmp/claude-{os.getuid()}"
 FIXTURES = REPO / "tests/fixtures"
 RECORDED = FIXTURES / "screen-streams"
 # U+110000, one past the last code point: glibc tmux keeps it as a character,
@@ -548,8 +545,7 @@ class ScreenModelDifferential(unittest.TestCase):
             raise unittest.SkipTest("build hgs first (cargo build)")
         # Before the server starts: a misnamed recording must not leave it running.
         cls.cases = corpus()
-        os.makedirs(PRIVATE_TMP, exist_ok=True)
-        cls.temp = tempfile.TemporaryDirectory(prefix="hgs-screen-", dir=PRIVATE_TMP)
+        cls.temp = tempfile.TemporaryDirectory(prefix="hgs-screen-")
         cls.root = Path(cls.temp.name)
         cls.socket = cls.root / "socket"
         cls.env = dict(os.environ, TMUX_TMPDIR=str(cls.root))

@@ -83,9 +83,7 @@ def isolated_environment(home, sockets, inherited):
 def main():
     if os.geteuid() == 0:
         raise SystemExit("Run the installed-package check as an unprivileged user.")
-    private_tmp = os.environ.get("ZERUS_TEST_SHORT_TMPDIR") or f"/tmp/claude-{os.getuid()}"
-    os.makedirs(private_tmp, exist_ok=True)
-    with tempfile.TemporaryDirectory(prefix="zerus-installed-test-", dir=private_tmp) as temporary:
+    with tempfile.TemporaryDirectory(prefix="zerus-installed-test-") as temporary:
         home = Path(temporary)
         sockets, project = home / "tmux", home / "project"
         sockets.mkdir(mode=0o700)

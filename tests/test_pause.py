@@ -54,9 +54,6 @@ HGS = Path(os.environ.get("HGS_TEST_BIN", REPO / "hgs")).resolve()
 LEGACY_STATE = os.environ.get("HGS_TEST_LEGACY_STATE")
 LEGACY_BIN = os.environ.get("HGS_TEST_LEGACY_BIN")
 TMUX = shutil.which("tmux")
-# The private socket's directory: every tmux call names -S inside it, and the
-# machine guard (zerus-63rru.89) admits only this prefix's children.
-PRIVATE_TMP = os.environ.get("ZERUS_TEST_SHORT_TMPDIR") or f"/tmp/claude-{os.getuid()}"
 
 AGENT = r'''#!/usr/bin/env python3
 import json, os, pathlib, shlex, signal, subprocess, sys, time, tomllib, uuid
@@ -627,8 +624,7 @@ class MacPauseProbe:
 @unittest.skipUnless(TMUX, "tmux is required")
 class Harness(unittest.TestCase):
     def setUp(self):
-        os.makedirs(PRIVATE_TMP, exist_ok=True)
-        self.root = Path(tempfile.mkdtemp(prefix="hgs-pause-", dir=PRIVATE_TMP))
+        self.root = Path(tempfile.mkdtemp(prefix="hgs-pause-"))
         self.bin = self.root / ".local/bin"
         self.bin.mkdir(parents=True)
         self.project = self.root / "project with spaces"

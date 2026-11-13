@@ -18,9 +18,6 @@ import uuid
 REPO = Path(__file__).resolve().parents[1]
 HGS = Path(os.environ.get("HGS_TEST_BIN", REPO / "target/debug/hgs")).resolve()
 TMUX = shutil.which("tmux")
-# The private socket's directory: every tmux call names -S inside it, and the
-# machine guard (zerus-63rru.89) admits only this prefix's children.
-PRIVATE_TMP = os.environ.get("ZERUS_TEST_SHORT_TMPDIR") or f"/tmp/claude-{os.getuid()}"
 
 # Records every byte the pane receives; never echoes, so the composer stays empty.
 AGENT = r'''
@@ -85,8 +82,7 @@ def join(env, project_id, name):
 
 class Fixture(unittest.TestCase):
     def setUp(self):
-        os.makedirs(PRIVATE_TMP, exist_ok=True)
-        temp = tempfile.TemporaryDirectory(prefix="hgs-tasks-", dir=PRIVATE_TMP)
+        temp = tempfile.TemporaryDirectory(prefix="hgs-tasks-")
         self.addCleanup(temp.cleanup)
         self.root = Path(temp.name)
         self.bin = self.root / ".local/bin"
