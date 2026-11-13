@@ -1,6 +1,6 @@
 use super::*;
 use header::Header;
-use zerus_replica::{Target, TaskTeam};
+use zerus_replica::{Stage, Target, TaskTeam};
 use zerus_team_plan::{
     catalog::TemplateBundle,
     model::{MemberState, SessionKey},
@@ -207,23 +207,57 @@ pub(crate) fn send(
     // observation the actor would apply, so the AddTask below makes a new
     // node and the answer names the new one.
     if let Some((id, node)) = binding(&store, task)? {
-        if id == team
-            && view
-                .execution
-                .as_ref()
-                .filter(|e| !e.conflict)
-                .and_then(|e| e.current.as_ref())
-                .is_some_and(|current| {
-                    current.phase == zerus_replica::execution::Phase::Cancelled
-                })
-        {
-            let mut settlement = super::observation(&document, team, &header.home)?;
+        // The node is dying either way: the document's current attempt is
+        // cancelled, or the team holds a pending cancel decision for it.
+        let attempt_cancelled = view
+            .execution
+            .as_ref()
+            .filter(|e| !e.conflict)
+            .and_then(|e| e.current.as_ref())
+            .is_some_and(|current| current.phase == zerus_replica::execution::Phase::Cancelled);
+        let pending_cancel = store
+            .pending_cancels(team, 200, 0)?
+            .iter()
+            .any(|pending| pending.node == node);
+
+        if id == team && (attempt_cancelled || pending_cancel) {
+            // Built from the pre-binding view: the prepare's binding write
+            // may clear the mark, but the node being settled is the one the
+            // cancelled document produced.
+            let (attempt, attempt_id, attempt_conflict) = super::attempt(&view);
+            let mut settlement = TaskObservation {
+                key: ops::KeyState::Ours,
+                revision: document.revision(),
+                previous_revision: String::new(),
+                stage: match view.stage {
+                    Stage::Backlog => TaskStage::Backlog,
+                    Stage::Todo => TaskStage::Todo,
+                    Stage::Active => TaskStage::InProgress,
+                    Stage::Review => TaskStage::InReview,
+                    Stage::Done => TaskStage::Done,
+                },
+                cancelled: view.cancelled_at.is_some(),
+                current_cancelled: view
+                    .execution
+                    .as_ref()
+                    .filter(|e| !e.conflict)
+                    .and_then(|e| e.current.as_ref())
+                    .is_some_and(|current| {
+                        current.phase == zerus_replica::execution::Phase::Cancelled
+                    }),
+                rank: view.rank.clone(),
+                title: view.title.clone(),
+                attempt,
+                attempt_id,
+                attempt_conflict,
+            };
             // The same previous-revision handshake the actor's record uses:
             // the op refuses an observation that does not continue the
             // node's stored one.
             settlement.previous_revision = store
                 .task_observation(team, node)?
                 .map_or(String::new(), |o| o.revision);
+
             let settle = request(&store, team, Operation::ObserveTask {
                 node,
                 observation: settlement,

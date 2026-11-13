@@ -146,6 +146,10 @@ impl TaskDoc {
             return Err(Error::new("invalid team display name"));
         }
         if !self.team_invalid() && self.team()?.as_ref() == team {
+            // An unchanged binding still clears a stale mark: the team takes
+            // the task anew (zerus-63rru.36 round 2).
+            self.fields().delete("cancelled_at")?;
+            self.fields().delete("cancel_reason")?;
             return Ok(());
         }
         if self.content_len() + 1024 > MAX_DOCUMENT {

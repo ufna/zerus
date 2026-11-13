@@ -627,8 +627,9 @@ fn edit(h: &Harness, reference: &TaskRef, change: impl FnOnce(&mut TaskDoc)) {
 /// The shape end to end, through the service's own observer: the command
 /// answers cancelled; that answer is refused for the bound live node and
 /// writes nothing; the service observes the task, and the observation of the
-/// cancelled task ends the node and settles the decision. Until then the
-/// cancelled task is still bound and cannot be sent to the team again.
+/// cancelled task ends the node and settles the decision. A resend while the
+/// node is still live settles it first and queues a new node in one answer
+/// (zerus-63rru.36 round 2).
 #[test]
 fn a_cancelled_task_is_ended_by_its_observation() {
     let mut h = Harness::new();
@@ -692,15 +693,23 @@ fn a_cancelled_task_is_ended_by_its_observation() {
         TEAM,
         None,
         None,
-    );
-    assert_eq!(again.unwrap_err().code, code::INVALID_STATE);
-    assert_eq!(
-        task(&h, &reference).team().unwrap().unwrap().team,
-        TEAM,
-        "the refused send leaves the key"
-    );
-    observe(h.temp.path(), &reference).unwrap();
+    )
+    .unwrap();
+    assert_eq!(again.queued, true, "{again:?}");
+    let new_node = again.node.expect("the new node");
+    assert_ne!(new_node, node, "the settled node is never reused");
+    // The settlement ended the old node exactly once: the pending cancel is
+    // gone and the binding moved to the new node.
     assert_eq!(h.node(node).state, NodeState::Cancelled);
     assert!(h.store.pending_cancels(TEAM, 200, 0).unwrap().is_empty());
-    assert_eq!(binding(&h.store, &reference).unwrap(), None);
+    assert_eq!(
+        binding(&h.store, &reference).unwrap(),
+        Some((TEAM.to_owned(), new_node))
+    );
+    // The new node's own observation (already recorded by the intake's
+    // answer) is a fresh one: the binding stays on the new node.
+    assert_eq!(
+        binding(&h.store, &reference).unwrap(),
+        Some((TEAM.to_owned(), new_node))
+    );
 }
