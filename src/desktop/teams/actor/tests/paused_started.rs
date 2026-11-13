@@ -274,6 +274,10 @@ fn the_close_is_exact_with_the_delimiter() {
     // A second member's and a pattern member's items, written through the
     // store's own row writer.
     let encoded = crate::teams::store::encode(&service()).unwrap();
+    // A second member's ledger row, so the cleanup's delimiter matters.
+    a.ledger
+        .reserve(TEAM, "paused_started:m10:1", serde_json::json!({}))
+        .unwrap();
     for kind in ["member_started:7:m10:1", "member_started:7:m_1:1"] {
         rows::hand_back_item(
             h.store.db.as_ref().unwrap(),
@@ -306,6 +310,12 @@ fn the_close_is_exact_with_the_delimiter() {
             ("member_started:7:m_1:1".into(), "open".into()),
         ],
         "the close touched the wrong items"
+    );
+    // The ledger cleanup kept m10's row: the delimiter'd prefix never
+    // removes another member's rows.
+    assert!(
+        a.ledger.get(TEAM, "paused_started:m10:1").unwrap().is_some(),
+        "m1's return removed m10's ledger row"
     );
 }
 
