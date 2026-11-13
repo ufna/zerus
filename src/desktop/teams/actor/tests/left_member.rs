@@ -83,8 +83,6 @@ fn left(h: &mut Harness, state: &std::path::Path, how: &str) {
             // actor's own availability read resolves Gone (zerus-63rru.85
             // round 2, zerus-63rru.87). Only the session's record file is
             // removed; no member state is written by hand.
-            let m = h.store.member(TEAM, "m1").unwrap().unwrap();
-            use sha2::{Digest, Sha256};
             // The handle's label is the session's record name; its record's
             // absence is the observation's Gone.
             let handle = h.store.member_handle(TEAM, "m1").unwrap().unwrap();
