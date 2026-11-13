@@ -5060,8 +5060,11 @@ only a report its pipeline handed to it, and a stage node is accepted or
 cancelled only by the person, since a stage ends by its holder's verdict. A
 node has one unsettled decision at a time. `return` needs a reported task with
 a holder; `reassign` needs an active member of the node's role that is not the
-lead and, for a stage, not its implementer. The lead does not resume a team the
-person paused or a member the person stopped. `decide` takes `approve` or
+lead and, for a stage, not its implementer. `route` refuses a stage: its role
+is the pipeline's and its member is chosen by the hand-out. Removing a member
+puts its open work back to the lead. A task already handed out stays held
+until its observation moves; it takes no free member. The lead does not resume
+a team the person paused or a member the person stopped. `decide` takes `approve` or
 `reject` for the `integration` and `pipeline_acceptance` cards and any
 non-empty word for the others, which closes the card. `create` records the
 team as `running` with every member `not_created` and launches nothing; the
@@ -5078,8 +5081,11 @@ the template as the catalog holds it.
 `{id, project, name, status, lead, home, revision, lead_session}`),
 `cli-waiting.json` (`waiting`: open cards of every team, oldest first, each
 with its `team`), `cli-status.json` (`status`: `{ok, actor, team, members,
-counts, service_running, health}`; the team without its `bundle` unless
-`--bundle`), `cli-queue.json`,
+counts, service_running, health, service_items}`; the team without its
+`bundle` unless `--bundle`). `service_items` lists the team's named service
+conditions, each with its kind, sentence, count and next try; a refusal of
+every hand-out by the project's own limits appears here as
+`kind: "project_limit"` for as long as the fact stands, `cli-queue.json`,
 `cli-inbox.json`, `cli-cards.json` and `cli-journal.json` (`{ok, actor, team,
 rows, next}`). A queue row carries `kind` (`task` or `stage`) and `rounds`; a
 stage row adds `stage: {kind, target, round}` with the kind `review`, `test` or
@@ -5118,7 +5124,7 @@ at most three pages of the queue.
 | Member `state` | `not_created`, `active`, `paused`, `removed` |
 | Queue row `state` | `waiting` (not admitted or not routed), `pending` (To do), `in_progress`, `reported` (In review), `accepted` (Done), `cancelled` |
 | Stage `kind` | `review`, `test`, `land` |
-| Inbox item | `state` `open` or `closed`; `kind` `report`, `question:N` (with `reply` and `reply_actor` once answered), `integration_conflict`, `delivery_uncertain`, `cancel_refused:N`, and from the timers `no_report`, `not_started`, `report_reminder` |
+| Inbox item | `state` `open` or `closed`; `kind` `report`, `question:N` (with `reply` and `reply_actor` once answered), `integration_conflict`, `delivery_uncertain`, `cancel_refused:N`, `unstaffed:` with the kernel's reason (no member can take a ready task; one item per episode, at most 500 current episodes, and an item the lead closes is not told again), and from the timers `no_report`, `not_started`, `report_reminder` |
 | Card | `state` `open` or `closed`; `decision` null while open, then the person's word or `stale` when the card was overtaken; `kind` `integration` and `pipeline_acceptance` (approve or reject), `launch_blocked`, `launch_uncertain`, `launch_capacity`, `standing_confirmation`, `team_actor_blocked`, and from the timers and the stop `report_waiting`, `silent_lead`, `late_session` |
 | Journal entry | `kind` is the operation, with `seq`, `at_ms`, `actor`, `refs`, `request_id` and `text` |
 
@@ -5166,6 +5172,20 @@ message `Task REF exists and was not queued (CODE): REASON`. After a refusal or
 a first send, the same team for a repeat. After `storage_failed` the key stays,
 because the team may hold the task; sending it again finds that entry by the
 task's identity and never queues it twice.
+
+**Facts about the team and its members.** A hand-out refused by the project's
+own limits (`agents_other` or the hourly `agent_limit`) is a fact about the
+team: the service records it with the command's sentence and the count, hands
+nothing out and no reopen while it stands, and opens one `team_actor_blocked`
+card per team, bound to no task, at the first refusal, with the decisions
+`retry` (a probe on the next pass) and `acknowledged`. One hand-out is tried
+as a probe after the retry table's 1, 2, 4, 8 and 15 minute delays; a probe
+the project admits ends the fact, closes the card and the queue goes on. The
+lead reads the fact among the `service_items` of `status`. A member whose
+terminal holds input, or one the service cannot read, is likewise a fact: the
+member is not free, another member is tried, and the member is tried again on
+the same delays; a ready task that only such a member can take gets a
+`team_actor_blocked` card after the wait.
 
 **Service commands.** Five `hgs task` commands belong to the desktop service on
 the team's home computer: `team-deliver` (a hand-out or a reopen), `team-done`

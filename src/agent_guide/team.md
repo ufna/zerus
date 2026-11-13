@@ -34,6 +34,8 @@ advance the pipeline; it only reaches the lead. Only the stage's holder may
 give its verdict; the lead and other members cannot give it for you.
 
 Do
+- Keep your terminal at an empty prompt when you wait for work: while it
+  holds input the team hands the task to another member.
 - Work only on the task you hold, in your own worktree, inside its write set.
 - Start from the base commit the prompt names and commit your work: the team
   takes your worktree's HEAD. Report what you changed and how you checked it.

@@ -145,11 +145,22 @@ actions ask for confirmation first.
 **Members** lists each member with its role, what it works on ("Working on
 #%1", "Reviewing #%1", "Testing #%1") and whether its session is linked. A
 member's actions are **Pause**, **Resume**, **Stop** and **Remove**; the lead
-cannot be removed.
+cannot be removed. Removing a member puts its open work back to the lead.
+
+A member whose terminal holds input, such as an open question or an unsent
+draft, takes no task: it is a fact about the member, not a failure. The
+service hands the task to another free member, and tries the member again
+after one, two, four, eight and then fifteen minutes; a ready task that only
+that member can take gets a card after the wait. A member the service cannot
+read at all counts the same way, and a ready task that needs only such a
+member gets one card that names it.
 
 The **Board** groups the team's tasks, with the queue as its own group:
 **Queue**, **In work**, **Submitted** for reported work, a group for each stage
-such as **In review** or **In test**, **Accepted** and **Cancelled**. A card
+such as **In review** or **In test**, **Accepted** and **Cancelled**. A task
+already handed out stays held until its observation moves; it takes no free
+member from a task that waits. When no member can take a ready task, the lead
+gets one inbox item for the episode, and no second one while it lasts. A card
 shows the task's role, pipeline, member, round and stages; a stage card says
 which task it checks ("checks the work of %1"), and a card that waits for a
 decision says "Decision needed".
@@ -157,7 +168,8 @@ decision says "Decision needed".
 A card's decisions are **Admit** for a task that waits for admission,
 **Accept** and **Return** for reported work, **Hold** or **Release**, and
 **Cancel task**. Return and Cancel task ask for a reason. Reassign and Route
-are commands (`hgs team reassign`, `hgs team route`). **Add task** opens the
+are commands (`hgs team reassign`, `hgs team route`); Route cannot move a
+stage, whose member is chosen by the hand-out. **Add task** opens the
 project's task board.
 
 ## Sending a task to a team
@@ -205,7 +217,9 @@ changes nothing else.
 | **Start not confirmed** | Whether a member started is not known; Zerus checks before it starts anything again |
 | **No room for members** | New members wait until there is room for another session or account |
 | **Member needs you** | A member's session asks for something Zerus does not confirm on your behalf |
-| **Team service blocked** | A step of the service failed three times, for example a hand-out a project limit refuses or a merge that cannot run, and is tried again |
+| **Unreadable member** | A member a ready task needs cannot be read, so it takes no task; one card names it |
+| **Project limit** | The project's own settings refuse every hand-out; one card per team, at the first refusal, and the queue waits until the project allows it |
+| **Team service blocked** | A step of the service failed three times, for example a merge that cannot run, and is tried again |
 | **Report waiting** | A member's report has waited for the lead's decision longer than the team allows, an hour by default |
 | **Lead not working** | The lead has not worked for a while, 20 minutes by default, although items wait in its inbox |
 | **Late session** | A member's session started after the team stopped or the member was removed; Zerus does not stop it |
@@ -362,11 +376,18 @@ resumed. Use Stop on the member instead.
 
 A hand-out is written with the lead as its actor and the member as the
 executor, so the project's task settings for agents apply to it as to any
-agent. With **Agents may start and cancel tasks in other sessions** off, the
-service can hand out no task at all. With a limit of tasks started by agents
-per hour, a hand-out over the limit is refused. A refused hand-out is never
-forced: the task waits in the queue, the service tries again later, and the
-third refusal opens a card in Waiting for you.
+agent. With **Agents may start and cancel tasks in other sessions** off, or
+with the hourly limit of agent starts reached, the refusal is a fact about the
+team, not about a task or a member: the whole queue waits. One card in Waiting
+for you, bound to no task, opens at the first refusal and says that the team's
+tasks wait and are handed out by themselves when the project allows it; its
+decisions are **Retry**, which checks on the next service pass, and
+**Acknowledge**. While the fact stands the service hands nothing out, and it
+tries one hand-out as a probe after one, two, four, eight and then fifteen
+minutes; a probe the project admits ends the fact and the queue goes on. The
+lead sees the fact among the service items of `hgs team status`. An hourly
+limit hands the task out by itself at the first probe after the hour passes,
+nobody doing anything. A refused hand-out is never forced.
 
 ## What the service confirms by itself
 

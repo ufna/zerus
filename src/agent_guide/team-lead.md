@@ -9,7 +9,10 @@ Every turn, in this order
 3. Decide every report, then read the queue.
 
   hgs team queue        the tasks by rank
-  hgs team status       the team, its members, counts and revision
+  hgs team status       the team, its members, counts, revision and the
+                        service items: a project limit refusing every
+                        hand-out shows here, and the tasks wait and are
+                        handed out by themselves when the project allows
 
 Each write takes one JSON request on stdin: a fresh request_id, the team,
 expected_revision from status, and the operation's fields. A stale revision
