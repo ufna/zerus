@@ -27,6 +27,7 @@ mod reports;
 mod retry;
 mod schedule;
 mod tasks;
+mod project_limit;
 mod terminal;
 #[cfg(test)]
 mod tests;

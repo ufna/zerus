@@ -22,11 +22,24 @@ struct Delivery {
     /// Which dialog the gate knew, when one did (zerus-63rru.83).
     #[serde(default)]
     dialog: Option<String>,
+    /// The refusal is the project's own limit: a fact about the team
+    /// (zerus-63rru.23). An older build reads a plain refusal.
+    #[serde(default)]
+    project: bool,
+    /// This delivery is the probe that may end the team's project fact.
+    #[serde(default)]
+    probe: bool,
+    /// The outcome came from the command's own decoded answer (never from a
+    /// recovery fabrication), which is what decides whether a probe ends the
+    /// fact (zerus-63rru.23, the review's P2).
+    #[serde(default)]
+    command: bool,
     /// The stamp of the member's row when that refusal was observed.
     #[serde(default)]
     stamp: Option<String>,
 }
 impl Runtime {
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn send(
         &mut self,
         store: &mut Store,
@@ -34,6 +47,7 @@ impl Runtime {
         team: &Team,
         assignment: (&Node, &Member),
         kind: &str,
+        probe: bool,
         now: i64,
     ) -> Result<()> {
         let (node, member) = assignment;
@@ -66,6 +80,9 @@ impl Runtime {
             waiting: false,
             dialog: None,
             stamp: None,
+            project: false,
+            probe,
+            command: false,
         };
         let key = format!("delivery:{id}");
         self.ledger.reserve(
@@ -115,6 +132,7 @@ impl Runtime {
             }
             ports::DeliveryResult::Outcome(outcome) => {
                 d.outcome = Some(outcome);
+                d.command = true;
                 self.put(&team.id, key, &d)?;
                 boundary("outcome");
                 self.settle(store, team, key, d, now)
@@ -126,12 +144,25 @@ impl Runtime {
                 d.stamp = ports.row_stamp(team, assignment.1).ok().flatten();
                 d.waiting = true;
                 d.dialog = dialog;
+                d.command = true;
+                d.outcome = Some(HandoutOutcome::Refused { reason });
+                self.put(&team.id, key, &d)?;
+                boundary("outcome");
+                self.settle(store, team, key, d, now)
+            }
+            // Refused before any input because the project's own limits
+            // refuse it: recorded as a refusal, with that cause, both kept
+            // before anything settles.
+            ports::DeliveryResult::ProjectLimit { reason } => {
+                d.project = true;
+                d.command = true;
                 d.outcome = Some(HandoutOutcome::Refused { reason });
                 self.put(&team.id, key, &d)?;
                 boundary("outcome");
                 self.settle(store, team, key, d, now)
             }
             ports::DeliveryResult::NotStarted { reason } => {
+                d.command = true;
                 d.not_started = true;
                 d.nonstarts = d.nonstarts.saturating_add(1);
                 if d.nonstarts >= 5 {
@@ -299,10 +330,13 @@ impl Runtime {
             // A refusal of an effect the store has already settled (a
             // removal's hand-back, which told the lead) is no failure of the
             // node's hand-out (zerus-63rru.77), and neither is a refusal of
-            // the terminal gate (zerus-63rru.79).
+            // the terminal gate (zerus-63rru.79) nor of the project's own
+            // limit (zerus-63rru.23).
             let refused = match &d.outcome {
                 Some(HandoutOutcome::Refused { reason })
-                    if !d.waiting && store.effect_reserved(&team.id, &d.id)? =>
+                    if !d.waiting
+                        && !d.project
+                        && store.effect_reserved(&team.id, &d.id)? =>
                 {
                     Some(reason)
                 }
@@ -331,6 +365,30 @@ impl Runtime {
                     d.dialog.clone(),
                     now,
                 )?;
+            }
+            // A refusal of the project's own limit is not a failed hand-out:
+            // it is a fact about the team (zerus-63rru.23).
+            if d.project {
+                let reason = match &d.outcome {
+                    Some(HandoutOutcome::Refused { reason }) => reason.clone(),
+                    _ => String::new(),
+                };
+                self.project_limit_refused(store, team, &d.id, &reason, now)?;
+            } else if d.probe
+                && d.command
+                && !d.not_started
+                && matches!(
+                    d.outcome,
+                    Some(HandoutOutcome::Submitted { .. } | HandoutOutcome::Refused { .. })
+                )
+                && self.ledger.get(&team.id, super::project_limit::KEY)?.is_some()
+            {
+                // The probe's own answer, and the project admitted: only a
+                // submitted delivery or the command's own refusal with
+                // another cause ends the fact (zerus-63rru.23, the review's
+                // P2). An uncertain probe and any non-start, the converted
+                // fifth included, keep it; the next probe waits as usual.
+                self.project_limit_ended(store, team, now)?;
             }
             // A submitted delivery: the member's terminal took input.
             if matches!(d.outcome, Some(HandoutOutcome::Submitted { .. })) {
@@ -452,6 +510,9 @@ impl Delivery {
             waiting: false,
             dialog: None,
             stamp: None,
+            project: false,
+            probe: false,
+            command: false,
         }
     }
 }

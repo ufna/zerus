@@ -55,10 +55,17 @@ const CUTTING_OVER: i32 = 3;
 const STALE: i32 = 4;
 const NOT_STARTED: i32 = 5;
 const HANDED_BACK: i32 = 6;
+/// A rule refusal of the project's own limit: the answer carries its typed
+/// cause (zerus-63rru.23).
+const PROJECT_LIMIT_CODE: i32 = 7;
 /// The typed cause of a refused hand-out whose member's terminal holds input
 /// (zerus-63rru.79): the reply's `cause`. A reader that does not know the
 /// field reads a plain refusal, as before it.
 pub(crate) const TERMINAL_WAITING: &str = "terminal_waiting";
+/// The typed cause of a refused hand-out refused by the project's own limits
+/// (zerus-63rru.23): the reply's `cause`. The sentence keeps its prefixes;
+/// nothing parses them.
+pub(crate) const PROJECT_LIMIT: &str = "project_limit";
 /// The lead's sentence when a reopen's member no longer has the task's
 /// conversation (zerus-63rru.64).
 fn handed_back(member: &str) -> String {
@@ -77,7 +84,7 @@ fn rule(message: impl std::fmt::Display) -> Error {
 fn not_started(error: Error) -> Error {
     if matches!(
         error.code,
-        RULE | STALE | CUTTING_OVER | NOT_STARTED | HANDED_BACK
+        RULE | STALE | CUTTING_OVER | NOT_STARTED | HANDED_BACK | PROJECT_LIMIT_CODE
     ) {
         error
     } else {
@@ -294,10 +301,14 @@ fn session(machines: &Machines, member: &Member) -> Result<SessionKey> {
 fn project_policy(settings: &Settings, starts: usize, who: &Actor, to: &SessionKey) -> Result<()> {
     if let Actor::Agent(own) = who {
         if !settings.agents_other && own != to {
-            return Err(rule("project_agents_other: This project allows agents to start tasks only in their own session."));
+            return Err(Error::new(
+                PROJECT_LIMIT_CODE,
+                "project_agents_other: This project allows agents to start tasks only in their own session.",
+            ));
         }
         if settings.agent_limit > 0 && starts as i64 >= settings.agent_limit {
-            return Err(rule(
+            return Err(Error::new(
+                PROJECT_LIMIT_CODE,
                 "project_agent_limit: The project's hourly agent start limit is reached.",
             ));
         }
@@ -514,7 +525,7 @@ pub(super) fn dispatch(config: &Config, args: &[String]) -> Result<i32> {
             println!("{reply}");
             Ok(0)
         }
-        Err(error) if error.code != RULE => Err(error),
+        Err(error) if error.code != RULE && error.code != PROJECT_LIMIT_CODE => Err(error),
         Err(error) => {
             println!(
                 "{}",
@@ -546,6 +557,13 @@ fn execute(config: &Config, args: &[String], delivery: &dyn Delivery) -> Result<
     match run(config, args, &body, delivery, deadline) {
         Ok(reply) => Ok(reply),
         Err(error) if error.code == RULE => Ok(body.reply("refused", &error.message, None)),
+        // A refusal of the project's own limit carries its typed cause; the
+        // sentence keeps its prefixes and nothing parses them (zerus-63rru.23).
+        Err(error) if error.code == PROJECT_LIMIT_CODE => {
+            let mut reply = body.reply("refused", &error.message, None);
+            reply["cause"] = json!(PROJECT_LIMIT);
+            Ok(reply)
+        }
         Err(error) if error.code == STALE => Ok(body.reply("stale", &error.message, None)),
         Err(error) if error.code == NOT_STARTED => {
             Ok(body.reply("not_started", &error.message, None))

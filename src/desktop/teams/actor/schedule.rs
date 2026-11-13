@@ -1,5 +1,6 @@
 use super::ports::{Availability, Fact};
 use super::terminal::TerminalState;
+use super::project_limit::ProjectState;
 use super::*;
 use crate::teams::store::EffectIntent;
 use std::collections::{BTreeMap, BTreeSet};
@@ -144,6 +145,14 @@ impl Runtime {
         team: &Team,
         now: i64,
     ) -> Result<()> {
+        // The team's project fact (zerus-63rru.23): while it stands the
+        // pass delivers nothing. Once its time passed, the first ready task
+        // is the probe; the check below stops the pass unless the probe
+        // ended the fact.
+        let lapsed = self.project_limit_state(store, team, now)? == ProjectState::Lapsed;
+        if self.project_limit_state(store, team, now)? == ProjectState::Standing {
+            return Ok(());
+        }
         // One readiness read: uncooled for the unstaffed comparison, then
         // cooled for the hand-outs. Members and open effects are read once,
         // and only when a node is ready.
@@ -259,6 +268,7 @@ impl Runtime {
             needs.select(&view, &handed);
         }
         self.unreadable_members(store, team, &needs, now)?;
+        let mut first = true;
         for h in ready::handouts(&view).into_iter().take(8) {
             let key = format!("handout:{}", h.node);
             let revision = store
@@ -267,9 +277,17 @@ impl Runtime {
             if !self.due(store, team, &key, &revision, now)? {
                 continue;
             }
-            let result = self.handout(store, ports, team, h, now);
+            let result = self.handout(store, ports, team, h, lapsed && first, now);
+            first = false;
             if let Err(e) = result {
                 self.failure(store, team, &key, &revision, &e, now)?;
+            }
+            // A refusal of the project's limit stops this pass at once,
+            // whether this hand-out was the probe or the one that found it
+            // (zerus-63rru.23): one refused effect per probe, and nothing
+            // more while the fact exists.
+            if self.project_limit_state(store, team, now)? != ProjectState::None {
+                return Ok(());
             }
         }
         Ok(())
@@ -370,6 +388,7 @@ impl Runtime {
         ports: &mut impl Ports,
         team: &Team,
         h: ready::Handout,
+        probe: bool,
         now: i64,
     ) -> Result<()> {
         if self.ledger.pending_node(&team.id, h.node)? {
@@ -405,7 +424,7 @@ impl Runtime {
         if m.state != MemberState::Active || !ports.free(team, &m)? {
             return Ok(());
         }
-        self.send(store, ports, team, (&node, &m), "handout", now)
+        self.send(store, ports, team, (&node, &m), "handout", probe, now)
     }
     pub(super) fn reopens(
         &mut self,
@@ -414,6 +433,11 @@ impl Runtime {
         team: &Team,
         now: i64,
     ) -> Result<()> {
+        // While the team's project fact exists, no reopen is delivered
+        // whatever the member (zerus-63rru.23).
+        if self.project_limit_state(store, team, now)? != ProjectState::None {
+            return Ok(());
+        }
         let mut cursor = None;
         for _ in 0..4 {
             let page = store.pending_reopens(&team.id, 200, cursor.as_ref())?;
@@ -482,7 +506,7 @@ impl Runtime {
         {
             return Ok(());
         }
-        self.send(store, ports, team, (&node, &m), "reopen", now)?;
+        self.send(store, ports, team, (&node, &m), "reopen", false, now)?;
         self.recovered(store, team, &format!("reopen:{}", d.seq), now)
     }
 }

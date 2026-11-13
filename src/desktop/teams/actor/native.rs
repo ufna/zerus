@@ -318,6 +318,20 @@ pub(super) fn delivery_result(ended: Ended, id: &str) -> ports::DeliveryResult {
                     }
                     // The task command reserved and sent nothing, for a cause
                     // that may pass (zerus-63rru.58): retry the same delivery.
+                    // The project's own limits refuse it, by the answer's
+                    // typed cause, never its sentence (zerus-63rru.23).
+                    (Some("refused"), Some(reason))
+                        if v["cause"] == crate::tasks::PROJECT_LIMIT =>
+                    {
+                        let said = super::cancel::reason::spoken(&cut(reason, 2048));
+                        return ports::DeliveryResult::ProjectLimit {
+                            reason: if said.is_empty() {
+                                "The project's own limit refused the hand-out".to_owned()
+                            } else {
+                                said
+                            },
+                        };
+                    }
                     (Some("not_started"), Some(reason)) => {
                         // Cleaned as the other delivery sentences are.
                         let said = super::cancel::reason::spoken(&cut(reason, 2048));
