@@ -79,6 +79,9 @@ pub fn save(config_dir: &Path, catalog: &Catalog) -> Result<(), Problem> {
     first_problem(validate_ids(catalog))?;
     let merged = merge(&builtin(), catalog);
     first_problem(validate_catalog(&merged))?;
+    // The character rules apply at admission (zerus-63rru.74 round 2): the
+    // save and the import refuse, the load stays open.
+    first_problem(zerus_team_plan::admission_problems(&merged))?;
     for template in &merged.templates {
         export_bundle(&merged, &template.id)?;
     }
@@ -88,7 +91,14 @@ pub fn save(config_dir: &Path, catalog: &Catalog) -> Result<(), Problem> {
 /// Adds a bundle's template, roles and pipelines to the person's catalog.
 /// Writes nothing when the bundle is incomplete or over this computer's cap.
 pub fn import_bundle(config_dir: &Path, bundle: &TemplateBundle) -> Result<(), Problem> {
+    // The import is an admission (zerus-63rru.74 round 2).
     first_problem(validate_bundle(bundle, &Caps::default()))?;
+    first_problem(zerus_team_plan::admission_problems(&Catalog {
+        roles: bundle.roles.clone(),
+        pipelines: bundle.pipelines.clone(),
+        templates: vec![bundle.template.clone()],
+        planning_rules: Vec::new(),
+    }))?;
     let mut person = person(config_dir)?;
     first_problem(validate_ids(&person))?;
     person.templates = merge_by_id(
@@ -206,6 +216,33 @@ mod tests {
         let problem = save(dir.path(), &catalog).unwrap_err();
         assert_eq!(problem.code, code::INVALID_STATE, "{problem:?}");
         assert!(problem.message.contains("The role ID"), "{problem:?}");
+    }
+
+    /// Round 2, P2-ID: a catalog stored before the rule still loads, lists
+    /// and runs; the next save refuses it with the sentence naming the
+    /// template and the field.
+    #[test]
+    fn an_older_catalog_with_an_id_outside_the_set_loads_and_is_refused_on_save() {
+        let dir = temp();
+        write(
+            dir.path(),
+            r#"{"roles":[{"id":"role id","name":"Old role","agent":"codex"}]}"#,
+        );
+        let loaded = load(dir.path()).unwrap();
+        let old = loaded
+            .roles
+            .iter()
+            .find(|role| role.id == "role id")
+            .expect("the stored role");
+        assert_eq!(old.name, "Old role");
+        let problem = save(dir.path(), &loaded).unwrap_err();
+        assert_eq!(problem.code, code::INVALID_STATE, "{problem:?}");
+        let template = loaded.templates[0].name.clone();
+        assert!(
+            problem.message.contains(&template)
+                && problem.message.contains("role ID"),
+            "{problem:?}"
+        );
     }
 
     #[test]

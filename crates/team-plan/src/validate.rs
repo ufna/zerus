@@ -14,20 +14,70 @@ use crate::problem::{code, Problem};
 
 /// The characters a team name never contains (zerus-63rru.74): every
 /// control character, the two line separators, and the nine bidirectional
+/// embedding, override and isolate characters. The plan kernel keeps its
+/// own copy so it stays light: no dependency on the replica, whose Loro
+/// tree stays behind crates/replica (zerus-63rru.75 round 2). A root-crate
+/// test asserts this list and the replica's agree for every character.
+pub fn forbidden_char(value: &str) -> Option<char> {
+    value.chars().find(|ch| {
+        let point = *ch as u32;
+        ch.is_control()
+            || matches!(point, 0x2028 | 0x2029 | 0x202A..=0x202E | 0x2066..=0x2069)
+    })
+}
+
+/// The characters a team name never contains (zerus-63rru.74): every
+/// control character, the two line separators, and the nine bidirectional
 /// embedding, override and isolate characters. The existing size limit
 /// still applies and reports its own problem.
 pub fn name_problem(name: &str, field: &str, limit: usize) -> Option<Problem> {
     if name.len() > limit {
         return Some(Problem::new(code::OVER_CAP, "Text exceeds its size limit."));
     }
-    // One shared rule with the replica's title check (zerus-63rru.74).
-    if let Some(ch) = zerus_replica::forbidden_char(name) {
+    // The same list as the replica's title check (zerus-63rru.74).
+    if let Some(ch) = forbidden_char(name) {
         return Some(Problem::new(
             code::INVALID_STATE,
             format!("{field} contains U+{:04X}, which is not allowed.", ch as u32),
         ));
     }
     None
+}
+
+/// The character rules at admission (zerus-63rru.74 round 2): the save, the
+/// import and the creation refuse a name or an ID outside the set, with the
+/// sentence naming the template and the field. Reading stays open: a
+/// catalog stored by an older build still loads, lists and runs; the next
+/// save or import refuses it.
+pub fn admission_problems(catalog: &Catalog) -> Vec<Problem> {
+    let mut problems = Vec::new();
+    let template = catalog
+        .templates
+        .first()
+        .map(|t| t.name.as_str())
+        .unwrap_or_default();
+    for entry in &catalog.templates {
+        if let Some(problem) = name_problem(&entry.name, "The template name", 256) {
+            problems.push(problem);
+        }
+        if let Some(mut problem) = id_problem(&entry.id, "The template ID") {
+            problem.message = format!("Template {template}: {}", problem.message);
+            problems.push(problem);
+        }
+    }
+    for role in &catalog.roles {
+        if let Some(mut problem) = id_problem(&role.id, "The role ID") {
+            problem.message = format!("Template {template}: {}", problem.message);
+            problems.push(problem);
+        }
+    }
+    for pipeline in &catalog.pipelines {
+        if let Some(mut problem) = id_problem(&pipeline.id, "The pipeline ID") {
+            problem.message = format!("Template {template}: {}", problem.message);
+            problems.push(problem);
+        }
+    }
+    problems
 }
 
 /// A role or member ID (zerus-63rru.74): ASCII [a-z0-9] first, then
@@ -93,24 +143,6 @@ pub fn validate_ids(catalog: &Catalog) -> Vec<Problem> {
 /// Everything wrong with a catalog, in catalog order. Empty means usable.
 pub fn validate_catalog(catalog: &Catalog) -> Vec<Problem> {
     let mut problems = validate_ids(catalog);
-    for template in &catalog.templates {
-        if let Some(problem) = name_problem(&template.name, "The template name", 256) {
-            problems.push(problem);
-        }
-        if let Some(problem) = id_problem(&template.id, "The template ID") {
-            problems.push(problem);
-        }
-    }
-    for role in &catalog.roles {
-        if let Some(problem) = id_problem(&role.id, "The role ID") {
-            problems.push(problem);
-        }
-    }
-    for pipeline in &catalog.pipelines {
-        if let Some(problem) = id_problem(&pipeline.id, "The pipeline ID") {
-            problems.push(problem);
-        }
-    }
     let roles: HashSet<&str> = catalog.roles.iter().map(|role| role.id.as_str()).collect();
     let pipelines: HashSet<&str> = catalog
         .pipelines
@@ -313,19 +345,23 @@ fn active_pipelines<'a>(
 /// widest a team on this computer may be.
 pub fn validate_bundle(bundle: &TemplateBundle, caps: &Caps) -> Vec<Problem> {
     let mut problems = Vec::new();
+    let template = bundle.template.name.as_str();
     if let Some(problem) = name_problem(&bundle.template.name, "The template name", 256) {
         problems.push(problem);
     }
-    if let Some(problem) = id_problem(&bundle.template.id, "The template ID") {
+    if let Some(mut problem) = id_problem(&bundle.template.id, "The template ID") {
+        problem.message = format!("Template {template}: {}", problem.message);
         problems.push(problem);
     }
     for role in &bundle.roles {
-        if let Some(problem) = id_problem(&role.id, "The role ID") {
+        if let Some(mut problem) = id_problem(&role.id, "The role ID") {
+            problem.message = format!("Template {template}: {}", problem.message);
             problems.push(problem);
         }
     }
     for pipeline in &bundle.pipelines {
-        if let Some(problem) = id_problem(&pipeline.id, "The pipeline ID") {
+        if let Some(mut problem) = id_problem(&pipeline.id, "The pipeline ID") {
+            problem.message = format!("Template {template}: {}", problem.message);
             problems.push(problem);
         }
     }

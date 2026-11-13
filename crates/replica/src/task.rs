@@ -126,12 +126,22 @@ impl TaskDoc {
         }
         if title.is_none() || !task.text.trim().is_empty() {
             check_text(task.text, "prompt")?;
-            // The plain card's title is the prompt's first line: the shared
-            // character rule covers it (zerus-63rru.75). The plain card's
-            // own size and shape limits stay its own; only the forbidden
-            // characters are refused here.
+            // The plain card's title is the prompt's first line: it refuses
+            // only the line separators and the nine bidirectional characters
+            // (zerus-63rru.75 round 2). The prompt check already owns the
+            // tabs and the other control characters, so a pasted table or
+            // code keeps working; the explicit title keeps the full rule.
             if title.is_none()
-                && crate::forbidden_char(task.text.lines().next().unwrap_or_default()).is_some()
+                && task
+                    .text
+                    .lines()
+                    .next()
+                    .unwrap_or_default()
+                    .chars()
+                    .any(|ch| {
+                        let point = ch as u32;
+                        matches!(point, 0x2028 | 0x2029 | 0x202A..=0x202E | 0x2066..=0x2069)
+                    })
             {
                 return Err(Error::new(
                     "task title must be nonempty, at most 512 UTF-8 bytes and contain no control or bidirectional characters",
@@ -1874,6 +1884,63 @@ mod tests {
                 "{ch:?}: {error:?}"
             );
         }
+    }
+
+    /// zerus-63rru.75 round 2: the plain card's first line refuses only the
+    /// line separators and the nine bidirectional characters; a tab (a
+    /// pasted table or code) stays accepted there, while the explicit title
+    /// keeps the full rule.
+    #[test]
+    fn a_plain_cards_first_line_refuses_only_the_separators_and_bidirectionals() {
+        let plain = TaskDoc::create(NewTask {
+            project: "p1",
+            id: "T-tabbed",
+            text: "Column\twith\ta\ttab",
+            stage: Stage::Todo,
+            target: Target::Any,
+            author: Actor::Person,
+            rank: "V",
+            now: 1,
+        })
+        .unwrap();
+        assert_eq!(plain.title(), "");
+        let error = TaskDoc::create(NewTask {
+            project: "p1",
+            id: "T-202e01",
+            text: "First\u{202E}line",
+            stage: Stage::Todo,
+            target: Target::Any,
+            author: Actor::Person,
+            rank: "V",
+            now: 1,
+        })
+        .err()
+        .unwrap();
+        assert!(
+            error.to_string().contains("no control or bidirectional"),
+            "{error:?}"
+        );
+        // The explicit title keeps the full rule: the tab is refused there.
+        let error = TaskDoc::create_named(
+            NewTask {
+                project: "p1",
+                id: "T-ttab01",
+                text: "",
+                stage: Stage::Todo,
+                target: Target::Any,
+                author: Actor::Person,
+                rank: "V",
+                now: 1,
+            },
+            "Explicit\u{0009}title",
+            None,
+        )
+        .err()
+        .unwrap();
+        assert!(
+            error.to_string().contains("no control or bidirectional"),
+            "{error:?}"
+        );
     }
 
     /// zerus-63rru.75: a title with non-ASCII letters is accepted; a title

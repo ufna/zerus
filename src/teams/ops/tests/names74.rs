@@ -100,3 +100,19 @@ fn an_existing_team_with_such_a_name_keeps_working() {
     let node = h.add(&person(), 1);
     assert_eq!(h.store.node(TEAM, node).unwrap().unwrap().id, node);
 }
+
+/// Round 2, P2: the plan kernel's own list and the replica's agree for
+/// every character from U+0000 to U+10FFFF, so the two rules never drift.
+#[test]
+fn the_replica_and_the_plan_kernel_agree_for_every_character() {
+    for point in 0u32..=0x10FFFF {
+        let Some(ch) = char::from_u32(point) else {
+            continue;
+        };
+        assert_eq!(
+            zerus_replica::forbidden_char(&ch.to_string()).is_some(),
+            zerus_team_plan::forbidden_char(&ch.to_string()).is_some(),
+            "U+{point:04X}"
+        );
+    }
+}
