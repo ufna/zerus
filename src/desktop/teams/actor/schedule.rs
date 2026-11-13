@@ -200,6 +200,11 @@ impl Runtime {
         let mut members = Vec::new();
         let mut needs = Needs::default();
         for m in all_members {
+            // The member is in the active set: a later leave tells the lead
+            // again (zerus-63rru.86).
+            if m.state == MemberState::Active && m.session.is_some() {
+                self.forget_paused_started(store, team, &m.id, now)?;
+            }
             let answer = if m.id != team.lead
                 && m.state == MemberState::Active
                 && m.session.is_some()
@@ -220,6 +225,11 @@ impl Runtime {
                     TerminalState::None => self.member_free(store, ports, team, &m, now)?,
                 }
             } else {
+                // A member out of the active set that holds started work is
+                // told to the lead once (zerus-63rru.86).
+                if m.state != MemberState::Active || m.session.is_none() {
+                    self.tell_paused_started(store, team, &m, now)?;
+                }
                 Some(Availability::Busy)
             };
             match answer {
@@ -279,6 +289,89 @@ impl Runtime {
     /// so a restart replays it by its request ID and gets its saved reply. A
     /// race (`unstaffed_unchanged`, or a revision that moved) is settled,
     /// never a gate failure or a card.
+    /// The lead is told once per member and task while a member out of the
+    /// active set holds started work (zerus-63rru.86). The actor's ledger
+    /// rows `paused_started:<member>:<node>` are the once-only memory; the
+    /// member's return removes them, so a later leave tells the lead again.
+    fn tell_paused_started(
+        &mut self,
+        store: &mut Store,
+        team: &Team,
+        m: &Member,
+        now: i64,
+    ) -> Result<()> {
+        // The member's started work: its submitted hand-outs of tasks in
+        // progress, read from the store's own effects.
+        let mut started = std::collections::BTreeSet::new();
+        let mut cursor = None;
+        for _ in 0..4 {
+            let page = store.effects(&team.id, 200, cursor.as_ref())?;
+            for e in page.rows {
+                if e.member == m.id && e.state == "submitted" {
+                    started.insert(e.node);
+                }
+            }
+            cursor = page.next;
+            if cursor.is_none() {
+                break;
+            }
+        }
+        for node in started {
+            let key = format!("paused_started:{}:{}", m.id, node);
+            if self.ledger.get(&team.id, &key)?.is_some() {
+                continue;
+            }
+            let (actor, request) = request(
+                store,
+                &team.id,
+                Operation::TellPausedStarted {
+                    member: m.id.clone(),
+                    node,
+                },
+            )?;
+            ops::apply(store, &actor, &request, now)?;
+            self.ledger.reserve(&team.id, &key, serde_json::json!({}))?;
+        }
+        Ok(())
+    }
+
+    /// The member is in the active set again: its once-only memory ends, so
+    /// a later leave tells the lead again (zerus-63rru.86).
+    fn forget_paused_started(
+        &mut self,
+        store: &mut Store,
+        team: &Team,
+        member: &str,
+        now: i64,
+    ) -> Result<()> {
+        let prefix = format!("paused_started:{member}:");
+        if self.ledger.prefix_page(&team.id, &prefix, "")?.is_empty() {
+            // Nothing was told: no ops call, so an unchanged pass stays a
+            // no-op and its revision does not move.
+            return Ok(());
+        }
+        let (actor, request) = request(
+            store,
+            &team.id,
+            Operation::ClosePausedStarted {
+                member: member.to_owned(),
+            },
+        )?;
+        ops::apply(store, &actor, &request, now)?;
+        let mut after = String::new();
+        for _ in 0..4 {
+            let rows = self.ledger.prefix_page(&team.id, &prefix, &after)?;
+            for row in &rows {
+                self.ledger.remove(row)?;
+            }
+            match rows.last() {
+                Some(last) if rows.len() == 200 => after = last.key.clone(),
+                _ => break,
+            }
+        }
+        Ok(())
+    }
+
     fn unstaffed(
         &mut self,
         store: &mut Store,

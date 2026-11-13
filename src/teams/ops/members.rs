@@ -353,6 +353,91 @@ pub(super) fn removed_holder(ctx: &Context<'_>, node: u32) -> Result<Option<Stri
 /// hand the task to another free member. Whether the person paused the
 /// member is not stored, so the lead is told in every case. A member that
 /// is still in the active set is never settled here.
+/// The lead is told once that a member out of the active set holds a
+/// started task (zerus-63rru.86): one member_left item per member and
+/// task, naming the member, the task, and that the work stays with the
+/// member until it is resumed or the person moves the task. The task
+/// stays with the member; nothing else changes. A call that finds no
+/// such task, or a member that is in the active set again, writes
+/// nothing.
+pub(super) fn tell_paused_started(ctx: &mut Context<'_>) -> Result<()> {
+    let Operation::TellPausedStarted { member, node } = ctx.op else {
+        unreachable!()
+    };
+    let member = member.as_str();
+    let node = *node;
+    let m = ctx.member(member)?;
+    if m.state == MemberState::Active && m.session.is_some() {
+        // The member is back in the active set: nothing to tell.
+        return Ok(());
+    }
+    let holder = handout::holder(ctx, node)?;
+    if holder.as_deref() != Some(member) {
+        // No started work of this member on this task.
+        return Ok(());
+    }
+    // The store's own once-only (zerus-63rru.86 round 2): the kind family
+    // is member_started:{node}:{member}:{n}, n being the count of earlier
+    // items of the family for that member and node plus one. The exact
+    // prefix comparison never treats the member's characters as wildcards.
+    let prefix = format!("member_started:{node}:{member}:");
+    let told: i64 = ctx
+        .db
+        .query_row(
+            "SELECT COUNT(*) FROM inbox WHERE team=?1 AND node=?2 AND state='open' AND substr(kind,1,?3)=?4",
+            params![ctx.team.id, node, prefix.len() as i64, prefix],
+            |r| r.get(0),
+        )
+        .map_err(storage)?;
+    if told > 0 {
+        return Ok(());
+    }
+    let n: i64 = ctx
+        .db
+        .query_row(
+            "SELECT COUNT(*) FROM inbox WHERE team=?1 AND node=?2 AND substr(kind,1,?3)=?4",
+            params![ctx.team.id, node, prefix.len() as i64, prefix],
+            |r| r.get(0),
+        )
+        .map_err(storage)?;
+    let how = if m.state == MemberState::Paused {
+        if ctx.person_stopped(member)? {
+            "stopped"
+        } else {
+            "paused"
+        }
+    } else {
+        "unbound"
+    };
+    rows::hand_back_item(
+        ctx.db,
+        &ctx.team.id,
+        node,
+        &encode(ctx.actor)?,
+        &format!("{prefix}{}", n + 1),
+        &format!(
+            "Member {member} was {how} while task {node} is in progress; the work stays with the member until it is resumed or the person moves the task."
+        ),
+        ctx.now,
+    )?;
+    Ok(())
+}
+
+/// The member is back in the active set: its open paused-started items
+/// close, so a later leave tells the lead again (zerus-63rru.86).
+pub(super) fn close_paused_started(ctx: &mut Context<'_>) -> Result<()> {
+    let Operation::ClosePausedStarted { member } = ctx.op else {
+        unreachable!()
+    };
+    ctx.db
+        .execute(
+            "UPDATE inbox SET state='closed' WHERE team=?1 AND state='open' AND substr(kind,1,15)='member_started:' AND substr(kind,16+instr(substr(kind,16),':'),length(?2))=?2",
+            params![ctx.team.id, member],
+        )
+        .map_err(storage)?;
+    Ok(())
+}
+
 pub(super) fn settle_left(ctx: &mut Context<'_>) -> Result<()> {
     let Operation::SettleLeftHandout { node, reason } = ctx.op else {
         unreachable!()

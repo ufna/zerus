@@ -213,5 +213,7 @@ fn dispatch(ctx: &mut Context<'_>) -> Result<()> {
         Operation::ReconcileUnstaffed => unstaffed::reconcile(ctx),
         Operation::EndStaleUnstaffed => unstaffed::end_stale(ctx),
         Operation::SettleLeftHandout { .. } => members::settle_left(ctx),
+        Operation::TellPausedStarted { .. } => members::tell_paused_started(ctx),
+        Operation::ClosePausedStarted { .. } => members::close_paused_started(ctx),
     }
 }
