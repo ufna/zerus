@@ -178,6 +178,7 @@ mod handles;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 mod real_rows;
 mod retry_cards;
+mod project_limits;
 mod unstaffed;
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
