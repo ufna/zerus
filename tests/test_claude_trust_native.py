@@ -18,6 +18,8 @@ import test_claude_questions_native as native
 
 
 @unittest.skipUnless(native.CLAUDE, "Set HGS_CLAUDE_TEST_BIN for isolated native trust coverage")
+
+
 class NativeClaudeTrust(unittest.TestCase):
     script = fixtures.InputTransport.script
     tmux = fixtures.InputTransport.tmux
@@ -55,6 +57,7 @@ class NativeClaudeTrust(unittest.TestCase):
         # Record only fixture input; the private wrapper cannot reach a resident server.
         self.script("tmux", "#!" + sys.executable + "\n" +
                     "import json,pathlib,subprocess,sys\n" +
+                    f"if not pathlib.Path({str(self.socket.parent)!r}).is_dir(): print('private tmux socket directory is gone', file=sys.stderr); sys.exit(97)\n" +
                     "args=sys.argv[1:]\n" +
                     "if args and args[0]=='send-keys':\n" +
                     " with pathlib.Path(" + repr(str(self.root / "sent-keys")) +
