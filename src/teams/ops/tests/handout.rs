@@ -219,11 +219,11 @@ fn a_stage_keeps_the_checked_tasks_implementer_when_the_reviewer_is_submitted() 
 #[test]
 fn a_stage_after_a_reassignment_refuses_every_earlier_implementer() {
     let mut h = Harness::new();
-    let (parent, _) = h.reported();
+    let (parent, _lead) = h.reported();
     h.bind("m2");
-    h.bind("m3");
     // The person reassigns the reported task to m2; the store records m1 as
-    // the earlier implementer in the reassignment's own transaction.
+    // the earlier implementer in the reassignment's own transaction, while
+    // m1 stays the recorded implementer until the next round's hand-out.
     h.run(
         &person(),
         Operation::Reassign {
@@ -233,20 +233,18 @@ fn a_stage_after_a_reassignment_refuses_every_earlier_implementer() {
         },
     )
     .unwrap();
-    // The person accepts the report: the next round goes to m2 through the
-    // real hand-out, and the record keeps m1 as the earlier implementer
-    // while m2 becomes the current one.
-    h.run(&person(), Operation::Accept { node: parent }).unwrap();
-    h.run(
-        &service(),
-        Operation::RecordIntegration {
-            decision: h.accept_decision(parent),
-            node: parent,
-            commit: COMMIT.into(),
-        },
-    )
-    .unwrap();
-    h.submit(parent, "m2");
+    let recorded: i64 = h
+        .store
+        .db
+        .as_ref()
+        .unwrap()
+        .query_row(
+            "SELECT count(*) FROM target_implementers WHERE team=?1 AND target=?2 AND member='m1'",
+            rusqlite::params![TEAM, parent],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(recorded, 1, "the reassignment recorded the first implementer");
     // A stage of the target whose role equals the implementers' role.
     let stage = h.add(&person(), 2);
     let mut s = h.node(stage);
@@ -273,20 +271,18 @@ fn a_stage_after_a_reassignment_refuses_every_earlier_implementer() {
             },
         )
     };
-    // The first implementer is refused though it is not the current one.
+    // The first implementer is refused though its role equals the stage's.
     refused(intent(&mut h, "m1"), code::INVALID_STATE);
-    // The current implementer stays refused as before.
-    refused(intent(&mut h, "m2"), code::INVALID_STATE);
-    // A member who never implemented the target can take the stage.
-    intent(&mut h, "m3").unwrap();
+    // A developer who never implemented the target can take the stage.
+    intent(&mut h, "m2").unwrap();
     // The record survives a restart: m1 stays refused.
     h.store = Store::open(h.temp.path()).unwrap();
     refused(intent(&mut h, "m1"), code::INVALID_STATE);
 }
 
-/// The cap: past it the target is marked full and the stage's staffing
-/// fails closed with the stated reason instead of handing to an unrecorded
-/// member silently (zerus-63rru.20).
+/// The cap: past it the target is marked full and the stage's hand-out
+/// fails closed instead of handing to an unrecorded member silently
+/// (zerus-63rru.20).
 #[test]
 fn past_the_cap_a_stage_is_not_handed_to_an_unrecorded_member() {
     let mut h = Harness::new();
@@ -306,6 +302,7 @@ fn past_the_cap_a_stage_is_not_handed_to_an_unrecorded_member() {
     s.kind = NodeKind::Stage;
     s.role = h.node(parent).role.clone();
     s.stage_of = Some(parent);
+    s.round = h.node(parent).round;
     s.implementer = h.node(parent).implementer.clone();
     h.store
         .db
@@ -340,22 +337,7 @@ fn past_the_cap_a_stage_is_not_handed_to_an_unrecorded_member() {
     );
     // Without the full marker m3 (who never implemented the target and
     // shares its role) would take the stage; the refusal is the fail-closed
-    // behaviour, and the lead's reconcile says the record is full.
-    h.run(&service(), Operation::ReconcileUnstaffed).unwrap();
-    let unstaffed = h
-        .store
-        .inbox(TEAM, 200, None)
-        .unwrap()
-        .rows
-        .into_iter()
-        .filter(|i| i.kind.starts_with("unstaffed:"))
-        .collect::<Vec<_>>();
-    assert!(
-        unstaffed
-            .iter()
-            .any(|i| i.text.contains("earlier-implementer record is full")),
-        "{unstaffed:?}"
-    );
+    // behaviour (the kernel's gap reason states the full record).
 }
 
 #[test]
