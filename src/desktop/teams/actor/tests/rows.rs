@@ -321,3 +321,22 @@ fn the_deepseek_list_answer_carries_only_the_pinned_keys() {
         "session-00000000-0000-4000-8000-0000000000d5",
     ));
 }
+
+/// zerus-63rru.93 round 3: the fleet's own free read over the real listed
+/// row — a quiet revived Kimi profile child leaves no active child and no
+/// unsettled count, so the member reads free.
+#[test]
+fn a_quiet_revived_kimi_child_reads_free_in_the_fleet() {
+    let mut record = record("kimi", "/fixture");
+    record["subagents"] = json!({"profile-1": {
+        "name":"profile-1","started":1793000000.0,"state":"working",
+        "revived_at":1793000060.0,"updated":1792999940.0}});
+    record["subagent_groups"] = json!({"profile-1": {
+        "label":"profile-1","active_count":1,"completed_count":1,"total_count":2,
+        "updated":1792999940.0}});
+    record["subagent_groups_complete"] = json!(true);
+    let row = crate::state::listing_fixture::listed_live_row(record).unwrap();
+    assert_eq!(row["subagent_active_count"], 0, "{row}");
+    let facts = super::super::fleet::Facts::of(&row);
+    assert!(facts.free(), "{facts:?}");
+}
