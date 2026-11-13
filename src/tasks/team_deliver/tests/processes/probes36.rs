@@ -226,6 +226,22 @@ fn wp36_reproduction() {
     fields(&f, &uuid_b, "B after person cancel");
     move_back(&f, &uuid_b, "B");
     fields(&f, &uuid_b, "B moved back to To do");
+    // The team-cancel command on the revived task: no mark, no live
+    // attempt of the team — it answers released, never a second cancel.
+    {
+        f.body.node = node_b;
+        let mut args = vec!["task".to_string(), "team-cancel".to_string()];
+        args.extend(f.args(false));
+        let body = json!({"schema":1,"team":TEAM,"node":node_b});
+        let (child, path) = f.spawn("cli", &args, &body.to_string(), false);
+        let result = f.wait(child);
+        let reply: Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+        eprintln!(
+            "WP36 B team-cancel on the revived task: {reply} {}",
+            String::from_utf8_lossy(&result.stdout)
+        );
+        assert_eq!(reply["reply"]["exit"], 1, "{reply}");
+    }
     // The resend while the old node is still live: refused with the true
     // sentence (zerus-63rru.36 rule 3)...
     let refused = intake(&f, &uuid_b, TEAM, "B resend while the old node is live");
