@@ -7,11 +7,13 @@ struct Fake {
     sends: usize,
     free: BTreeSet<String>,
     reply: HandoutOutcome,
+    stale: bool,
     driven: bool,
     busy_on_recheck: bool,
     free_reads: usize,
     documents: BTreeSet<String>,
     failed_task: Option<String>,
+    fail_observation_after_send: bool,
     lock_after_send: Option<std::path::PathBuf>,
     held: Option<rusqlite::Connection>,
     pause_on_recheck: Option<std::path::PathBuf>,
@@ -26,11 +28,13 @@ impl Fake {
             reply: HandoutOutcome::Submitted {
                 receipt: "submitted".into(),
             },
+            stale: false,
             driven: false,
             busy_on_recheck: false,
             free_reads: 0,
             documents: BTreeSet::new(),
             failed_task: None,
+            fail_observation_after_send: false,
             lock_after_send: None,
             held: None,
             pause_on_recheck: None,
@@ -103,17 +107,24 @@ impl super::super::ports::Ports for Fake {
     fn deliver(
         &mut self,
         _: &Team,
-        _: &Node,
+        node: &Node,
         _: &Member,
         _: &str,
     ) -> super::super::ports::DeliveryResult {
         self.sends += 1;
+        if self.fail_observation_after_send {
+            self.failed_task = node.task.as_ref().map(|t| t.uuid.clone());
+        }
         if let Some(path) = self.lock_after_send.take() {
             let db = rusqlite::Connection::open(path).unwrap();
             db.execute_batch("BEGIN IMMEDIATE").unwrap();
             self.held = Some(db);
         }
-        self.reply.clone().into()
+        if self.stale {
+            super::super::ports::DeliveryResult::Stale
+        } else {
+            self.reply.clone().into()
+        }
     }
 }
 fn setup(n: u32) -> (Harness, super::super::Runtime, Fake) {
@@ -366,6 +377,11 @@ fn retry_decision_runs_the_row_early_and_its_next_failure_opens_one_new_card() {
     }
     let cards = h.store.cards(TEAM, 200, None).unwrap().rows;
     assert_eq!(cards.len(), 1);
+    assert_eq!(
+        cards[0].decisions,
+        ["retry", "acknowledged"],
+        "the decision the gate reads, then the one that only closes the card"
+    );
     let first = cards[0].seq;
     h.run(
         &person(),
@@ -388,6 +404,74 @@ fn retry_decision_runs_the_row_early_and_its_next_failure_opens_one_new_card() {
         .rows
         .iter()
         .all(|c| c.state != "open"));
+}
+/// The gate's card lists retry, then acknowledged. Acknowledged closes it:
+/// the gate keeps the closed card, so no card opens again while the gate
+/// stays, and the automatic checks go on by their backoff. After the gate
+/// recovers, a later failure opens a new card whose Retry is read as before.
+#[test]
+fn an_acknowledged_gate_card_stays_closed_while_the_gate_backs_off() {
+    let (mut h, mut a, mut p) = setup(1);
+    p.free.clear();
+    p.failed_task = Some(h.node(1).task.unwrap().uuid);
+    for now in [100, 60_100, 180_100] {
+        tick(&mut h, &mut a, &mut p, now, false);
+    }
+    let cards = h.store.cards(TEAM, 200, None).unwrap().rows;
+    assert_eq!(cards.len(), 1);
+    let first = cards[0].seq;
+    h.run(
+        &person(),
+        Operation::DecideCard {
+            card: first,
+            decision: "acknowledged".into(),
+        },
+    )
+    .unwrap();
+    let card = h.store.card(TEAM, first).unwrap().unwrap();
+    assert_eq!(
+        (card.state.as_str(), card.decision.as_deref()),
+        ("closed", Some("acknowledged"))
+    );
+    // Not run early: the third failure backs off four minutes.
+    let reads = p.reads;
+    tick(&mut h, &mut a, &mut p, 180_101, false);
+    tick(&mut h, &mut a, &mut p, 420_099, false);
+    assert_eq!(p.reads, reads, "acknowledged is not a retry");
+    // The automatic checks go on, and no card opens again.
+    tick(&mut h, &mut a, &mut p, 420_100, false);
+    assert_eq!(p.reads, reads + 1, "the backoff's check");
+    tick(&mut h, &mut a, &mut p, 900_100, false);
+    assert_eq!(p.reads, reads + 2, "the next check");
+    let cards = h.store.cards(TEAM, 200, None).unwrap().rows;
+    assert_eq!(cards.len(), 1, "no card opens again while the gate stays");
+    assert_eq!(cards[0].decision.as_deref(), Some("acknowledged"));
+    // The gate recovers; the acknowledged card stays as it was.
+    p.failed_task = None;
+    tick(&mut h, &mut a, &mut p, 1_800_100, false);
+    let cards = h.store.cards(TEAM, 200, None).unwrap().rows;
+    assert_eq!(cards.len(), 1);
+    assert_eq!(cards[0].decision.as_deref(), Some("acknowledged"));
+    // A later failure opens a new card, and its Retry is read as before.
+    p.failed_task = Some(h.node(1).task.unwrap().uuid);
+    for now in [1_800_101, 1_860_101, 1_980_101] {
+        p.documents.insert(h.node(1).task.unwrap().uuid);
+        tick(&mut h, &mut a, &mut p, now, false);
+    }
+    let cards = h.store.cards(TEAM, 200, None).unwrap().rows;
+    assert_eq!(cards.len(), 2, "a later failure opens a new card");
+    let second = cards.iter().find(|c| c.state == "open").unwrap().seq;
+    h.run(
+        &person(),
+        Operation::DecideCard {
+            card: second,
+            decision: "retry".into(),
+        },
+    )
+    .unwrap();
+    let reads = p.reads;
+    tick(&mut h, &mut a, &mut p, 1_980_102, false);
+    assert_eq!(p.reads, reads + 1, "the retry runs the row early");
 }
 #[test]
 fn an_uncertain_reopen_is_not_sent_twice_and_stays_in_its_new_generation() {
@@ -711,4 +795,210 @@ fn a_reopen_waits_while_its_holder_is_busy_outside_the_team() {
     p.free.clear();
     tick(&mut h, &mut a, &mut p, 101, false);
     assert_eq!(p.sends, 1, "a busy holder was sent the reopen");
+}
+
+#[test]
+fn stale_delivery_observes_then_backs_off_across_restart_without_a_refusal_or_card() {
+    let (mut h, mut a, mut p) = setup(1);
+    p.stale = true;
+    tick(&mut h, &mut a, &mut p, 100, false);
+    let reads = p.reads;
+    assert_eq!(p.sends, 1);
+    assert!(h.store.effects(TEAM, 16, None).unwrap().rows[0]
+        .outcome
+        .is_none());
+    assert!(h.store.cards(TEAM, 16, None).unwrap().rows.is_empty());
+    let machine = a.machine.clone();
+    drop(a);
+    let mut a = super::super::Runtime::open(h.temp.path(), &machine).unwrap();
+    tick(&mut h, &mut a, &mut p, 101, false);
+    assert_eq!(p.sends, 1);
+    let after_epoch_observation = p.reads;
+    assert!(after_epoch_observation >= reads);
+    tick(&mut h, &mut a, &mut p, 60_100, false);
+    assert_eq!(p.sends, 2);
+    assert!(
+        p.reads > after_epoch_observation,
+        "stale answer did not observe its task"
+    );
+    tick(&mut h, &mut a, &mut p, 120_100, false);
+    assert_eq!(
+        p.sends, 2,
+        "the second stale answer did not increase its backoff"
+    );
+    assert!(h.store.cards(TEAM, 16, None).unwrap().rows.is_empty());
+    assert!(h.store.effects(TEAM, 16, None).unwrap().rows[0]
+        .outcome
+        .is_none());
+}
+
+#[test]
+fn a_failed_observation_after_stale_delivery_still_keeps_the_delivery_backoff() {
+    let (mut h, mut a, mut p) = setup(1);
+    p.stale = true;
+    p.fail_observation_after_send = true;
+    tick(&mut h, &mut a, &mut p, 100, false);
+    assert_eq!(p.sends, 1);
+    assert!(h.store.effects(TEAM, 16, None).unwrap().rows[0]
+        .outcome
+        .is_none());
+    tick(&mut h, &mut a, &mut p, 101, false);
+    assert_eq!(
+        p.sends, 1,
+        "failed observation bypassed the delivery's backoff"
+    );
+    p.failed_task = None;
+    p.fail_observation_after_send = false;
+    tick(&mut h, &mut a, &mut p, 60_100, false);
+    assert_eq!(p.sends, 2);
+}
+
+#[test]
+fn person_override_closing_an_interrupted_effect_never_resends_or_binds_the_old_outcome() {
+    for point in ["effect", "outcome"] {
+        let (mut h, mut a, mut p) = setup(1);
+        super::super::delivery::CRASH.with(|s| s.set(Some(point)));
+        assert!(
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| tick(
+                &mut h, &mut a, &mut p, 100, false
+            )))
+            .is_err()
+        );
+        assert_eq!(p.sends, 1);
+        let mut observation = h.observation(1, TaskStage::InProgress);
+        observation.attempt = 2;
+        observation.attempt_id = "person-started-elsewhere".into();
+        h.run(
+            &service(),
+            Operation::ObserveTask {
+                node: 1,
+                observation,
+            },
+        )
+        .unwrap();
+        assert_eq!(h.store.generation(TEAM, 1).unwrap(), Some(2));
+        assert!(h
+            .store
+            .open_effects(TEAM, 200, None)
+            .unwrap()
+            .rows
+            .is_empty());
+        let home = a.machine.clone();
+        drop(a);
+        let mut a = super::super::Runtime::open(h.temp.path(), &home).unwrap();
+        let team = h.store.team(TEAM).unwrap().unwrap();
+        for now in [101, 60_100] {
+            a.recover(&mut h.store, &mut p, &team, now).unwrap();
+        }
+        assert_eq!(p.sends, 1);
+        assert_eq!(h.store.generation(TEAM, 1).unwrap(), Some(2));
+        assert!(h.node(1).assignee.is_none());
+        assert!(!a
+            .ledger
+            .page(TEAM, "")
+            .unwrap()
+            .iter()
+            .any(|r| r.key.starts_with("delivery:")));
+    }
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[test]
+fn a_terminal_settle_error_after_the_live_page_is_a_row_fault_not_sweep_health() {
+    let (mut h, mut a, mut p) = setup(1);
+    p.stale = true;
+    tick(&mut h, &mut a, &mut p, 100, false);
+    let page = h.store.live_teams(16, None).unwrap().rows;
+    assert!(
+        a.ledger.prefix_page(TEAM, "delivery:", "").unwrap()[0].data["not_started"]
+            .as_bool()
+            .unwrap()
+    );
+    h.run(&person(), Operation::Stop).unwrap();
+    h.store.db.as_ref().unwrap().execute_batch("CREATE TRIGGER fail_settle BEFORE INSERT ON requests BEGIN SELECT RAISE(ABORT,'fixture settle storage failed'); END;").unwrap();
+    a.page(&mut h.store, &mut p, &page, 101, false).unwrap();
+    assert_eq!(p.sends, 1);
+    assert!(a.ledger.terminal_retry().unwrap().is_some());
+    assert!(crate::desktop::teams::health(h.temp.path()).is_none());
+}
+
+/// What the actor leaves once it settled a reopen delivery's outcome
+/// (zerus-63rru.64): the failure gate of its node, the sends, the effect's
+/// state and the inbox, after later passes too.
+#[derive(Debug)]
+pub(super) struct SettledReopen {
+    pub(super) gate: Option<serde_json::Value>,
+    pub(super) sends: usize,
+    pub(super) effect: String,
+    pub(super) inbox: Vec<String>,
+}
+
+/// The actor delivers a reopen of node 1 to m1 that answers `outcome`, then
+/// makes two later passes, past the first retry delay.
+pub(super) fn settle_reopen(outcome: HandoutOutcome) -> SettledReopen {
+    let (mut h, mut a, mut p) = setup(1);
+    tick(&mut h, &mut a, &mut p, 100, false);
+    assert_eq!(p.sends, 1, "the hand-out of node 1 to m1");
+    h.observe(1, TaskStage::InReview);
+    h.run(
+        &service(),
+        Operation::RecordReport {
+            node: 1,
+            generation: 1,
+            member: "m1".into(),
+            text: "Report".into(),
+            commit: COMMIT.into(),
+        },
+    )
+    .unwrap();
+    let lead = h.bind("lead");
+    h.run(
+        &lead,
+        Operation::Return {
+            node: 1,
+            reason: "Revise".into(),
+        },
+    )
+    .unwrap();
+    p.reply = outcome;
+    for now in [101, 60_101, 600_101] {
+        tick(&mut h, &mut a, &mut p, now, false);
+    }
+    let effect = h
+        .store
+        .effects(TEAM, 200, None)
+        .unwrap()
+        .rows
+        .into_iter()
+        .rev()
+        .find(|e| e.kind == "reopen")
+        .map(|e| e.state)
+        .expect("the reopen effect");
+    SettledReopen {
+        gate: a
+            .ledger
+            .get(TEAM, "gate:handout:1")
+            .unwrap()
+            .map(|row| row.data),
+        sends: p.sends,
+        effect,
+        inbox: h
+            .store
+            .inbox(TEAM, 200, None)
+            .unwrap()
+            .rows
+            .into_iter()
+            .map(|item| item.kind)
+            .collect(),
+    }
+}
+
+/// The helper's own control: a reopen the member refuses opens the node's
+/// failure gate, which `settle_reopen` reads.
+#[test]
+fn a_refused_reopen_opens_the_failure_gate_the_hand_back_witness_reads() {
+    let settled = settle_reopen(HandoutOutcome::Refused {
+        reason: "Busy elsewhere".into(),
+    });
+    assert!(settled.gate.is_some(), "{settled:?}");
 }

@@ -8,12 +8,23 @@ mod sends;
 pub(super) use sends::target_receipt;
 pub(crate) use sends::{
     caller_agent_for, caller_hosted_backend, caller_hosts, caller_machine, caller_record,
-    caller_record_for, forward_send, send_origin, Hosts, Unread,
+    caller_record_for, forward_send, hosted_agent_call, hosted_claim, hosted_proof_refusal,
+    send_origin, Hosts, Unread, HOSTED_LIMIT,
 };
+// The host check of the Teams member launch (zerus-63rru.28).
+#[cfg(unix)]
+pub(crate) use sends::caller_host_for_home;
 #[cfg(all(test, unix))]
 pub(crate) use sends::{caller_host_folder, written_boot};
 #[cfg(test)]
 pub(crate) use sends::{caller_binding_reads, caller_host_reads, Named, Registered};
+// The hosted DeepSeek caller proof (zerus-ppd26 Part B), which the Teams
+// caller proof calls for a DeepSeek claim (zerus-63rru.28); main's send and
+// task attribution reach it through `caller_record`.
+pub(crate) use sends::hosted_caller;
+// Read by the desktop's ancestor environment check, which exists there only.
+#[cfg(any(target_os = "linux", target_os = "macos", test))]
+pub(crate) use sends::HOSTED_AGENT;
 
 use super::*;
 use anyhow::{ensure, Result as GraphResult};

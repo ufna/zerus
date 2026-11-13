@@ -207,6 +207,15 @@ pub(super) fn route(ctx: &mut Context<'_>) -> Result<()> {
     ctx.active()?;
     ctx.undecided(*node)?;
     let mut n = ctx.live_node(*node)?;
+    // Route places a task for the lead; a stage's role is its pipeline's
+    // and its member is chosen by the hand-out (zerus-63rru.84). Whatever
+    // its state, the stage's own paths are Reassign and the person's
+    // decisions.
+    if n.kind == NodeKind::Stage {
+        return Err(invalid(
+            "Route cannot move a stage; its role is the pipeline's and its member is chosen by the hand-out. Reassign the stage to another member of its role, or the person can decide.",
+        ));
+    }
     if !matches!(n.state, NodeState::Waiting | NodeState::Pending) {
         return Err(invalid("Only waiting or pending tasks may be routed."));
     }
@@ -264,37 +273,53 @@ fn validate_deps(ctx: &Context<'_>, node: u32, deps: &[Dep]) -> Result<()> {
     }
     Ok(())
 }
+/// An explicit hold belongs to who set it, the person or the lead: no
+/// decision, settlement, outcome or hand-back clears it, and the node still
+/// takes decisions under it. It can be set while a decision is pending.
 pub(super) fn hold(ctx: &mut Context<'_>) -> Result<()> {
     let Operation::Hold { node } = ctx.op else {
         unreachable!()
     };
     ctx.active()?;
-    let n = ctx.live_node(*node)?;
-    if n.hold {
+    ctx.live_node(*node)?;
+    if rows::hold_owner(ctx.db, &ctx.team.id, *node)?.is_some() {
         return Err(invalid("Task is already held."));
     }
-    set_hold(ctx, *node, true)
+    let owner = if is_person(ctx.actor) {
+        "person"
+    } else {
+        "lead"
+    };
+    rows::set_explicit_hold(ctx.db, &ctx.team.id, *node, Some(owner))
 }
+/// Release ends an explicit hold and a hand-back's hold; a pending
+/// decision's hold ends only with the decision. A person's hold is released
+/// only by the person.
 pub(super) fn release(ctx: &mut Context<'_>) -> Result<()> {
     let Operation::Release { node } = ctx.op else {
         unreachable!()
     };
     ctx.active()?;
     ctx.undecided(*node)?;
-    let n = ctx.live_node(*node)?;
-    if !n.hold {
+    ctx.live_node(*node)?;
+    let owner = rows::hold_owner(ctx.db, &ctx.team.id, *node)?;
+    let handed_back = rows::handed_back(ctx.db, &ctx.team.id, *node)?;
+    if owner.is_none() && !handed_back {
         return Err(invalid("Task is not held."));
     }
-    set_hold(ctx, *node, false)
+    if owner.as_deref() == Some("person") && !is_person(ctx.actor) {
+        return Err(Problem::new(
+            code::NOT_ALLOWED,
+            "The person holds this task, and only the person releases that hold; a hold kept from before holds had owners counts as the person's unless it was a hand-back to the lead.",
+        ));
+    }
+    rows::set_explicit_hold(ctx.db, &ctx.team.id, *node, None)?;
+    hand_back(ctx, *node, false)
 }
-pub(super) fn set_hold(ctx: &Context<'_>, node: u32, value: bool) -> Result<()> {
-    ctx.db
-        .execute(
-            "UPDATE nodes SET hold=?3 WHERE team=?1 AND id=?2",
-            params![ctx.team.id, node, value],
-        )
-        .map_err(storage)?;
-    Ok(())
+/// Holds a node for the team's next step, or ends that hold, through the
+/// store's one writer of a hand-back's hold.
+pub(super) fn hand_back(ctx: &Context<'_>, node: u32, value: bool) -> Result<()> {
+    rows::set_hand_back(ctx.db, &ctx.team.id, node, value)
 }
 pub(super) fn observe(ctx: &mut Context<'_>) -> Result<()> {
     let Operation::ObserveTask {
@@ -306,7 +331,7 @@ pub(super) fn observe(ctx: &mut Context<'_>) -> Result<()> {
     };
     let mut n = ctx.node(*node)?;
     let table = ctx.node_table(*node)?;
-    let (stage, was_terminal) = validate_observation(ctx, *node, o)?;
+    let (stage, observed_end) = validate_observation(ctx, *node, o)?;
     let released =
         rows::released(ctx.db, &ctx.team.id, *node)? || pipeline::released_stage(ctx, &n)?;
     let left = o.key != KeyState::Ours;
@@ -327,7 +352,23 @@ pub(super) fn observe(ctx: &mut Context<'_>) -> Result<()> {
         }
         return Ok(());
     }
+    // A conflict of attempts of a task that runs or waits decides nothing: it
+    // is recorded as it came. An ended task's conflict is applied below.
+    if timers::conflict(o) {
+        return rows::record_observation(ctx.db, &ctx.team.id, *node, o, false);
+    }
+    // The node's own end counts as well as the stored observation's: a
+    // conflict is recorded without ending or restoring anything, so after a
+    // conflict on a finished node the stored observation no longer shows
+    // the end its node keeps.
+    let ended = node_ended(ctx, table, *node)?;
+    let was_terminal = observed_end || ended;
     let active = matches!(ctx.team.status, TeamStatus::Running | TeamStatus::Paused);
+    // A finished node takes today's restore below; a live one a person sent
+    // again between two observations ends its attempt and is restored here.
+    if active && table == "nodes" && !was_terminal && timers::person_attempt(ctx, *node, o)? {
+        timers::take_over(ctx, *node, &mut n)?;
+    }
     pipeline::before_observation(ctx, &mut n, o, table == "nodes" && !was_terminal)?;
     if !active && table == "nodes" {
         archive_inactive(ctx, *node)?;
@@ -355,8 +396,26 @@ pub(super) fn observe(ctx: &mut Context<'_>) -> Result<()> {
         *node,
         o,
         n.kind == NodeKind::Stage && (o.cancelled || o.stage == TaskStage::Done),
-    )
+    )?;
+    timers::remember(ctx, *node, o)?;
+    // A task back in To do without a reopen of its generation (a person's
+    // run has no pipeline run to reopen), or a settled conflict: a waiting
+    // Return or Reassign that lost its reason is settled here.
+    handout::settle_without_reason(ctx, *node)
 }
+/// Whether the node's own projection shows its task ended, cancelled or done.
+fn node_ended(ctx: &Context<'_>, table: &str, node: u32) -> Result<bool> {
+    ctx.db
+        .query_row(
+            &format!(
+                "SELECT task_cancelled OR task_stage='done' FROM {table} WHERE team=?1 AND id=?2"
+            ),
+            params![ctx.team.id, node],
+            |r| r.get(0),
+        )
+        .map_err(storage)
+}
+/// The stage's text and whether the stored observation shows the task ended.
 fn validate_observation(
     ctx: &Context<'_>,
     node: u32,
@@ -367,6 +426,7 @@ fn validate_observation(
     text(&o.previous_revision, 256)?;
     text(&o.rank, 256)?;
     text(&o.title, 1024)?;
+    text(&o.attempt_id, 256)?;
     let old = rows::observation(ctx.db, &ctx.team.id, node)?;
     let stage = encode(&o.stage)?.trim_matches('"').to_owned();
     if let Some(old) = &old {
@@ -377,6 +437,7 @@ fn validate_observation(
             && old.key == o.key;
         if (old.revision != o.revision && old.revision != o.previous_revision)
             || (old.revision == o.revision && !same)
+            || o.attempt < old.attempt
         {
             return Err(stale());
         }
@@ -417,7 +478,8 @@ fn restore(ctx: &mut Context<'_>, node: u32, n: &mut Node) -> Result<()> {
     }
     ctx.settle_override(node)?;
     ctx.advance(node, n)?;
-    ctx.db.execute("UPDATE nodes SET requested=NULL,decided_by=NULL,integrated=0,integration_commit=NULL,hold=0 WHERE team=?1 AND id=?2",params![ctx.team.id,node]).map_err(storage)?;
+    // A person's restore ends a hand-back's hold; an explicit hold stays.
+    ctx.db.execute("UPDATE nodes SET requested=NULL,decided_by=NULL,integrated=0,integration_commit=NULL,hand_back=0 WHERE team=?1 AND id=?2",params![ctx.team.id,node]).map_err(storage)?;
     ctx.event = Some("person_override");
     Ok(())
 }
@@ -439,9 +501,10 @@ fn restore_row(ctx: &Context<'_>, node: u32) -> Result<()> {
         .map_err(storage)?;
     Ok(())
 }
-fn finish_observation(ctx: &Context<'_>, node: u32, cancelled: bool) -> Result<()> {
+pub(super) fn finish_observation(ctx: &Context<'_>, node: u32, cancelled: bool) -> Result<()> {
     ctx.db.execute(&format!("UPDATE effects SET state='observed_done' WHERE team=?1 AND node=?2 AND state IN {OPEN_EFFECT_STATES}"),params![ctx.team.id,node]).map_err(storage)?;
     ctx.close_inbox(node)?;
+    timers::drop_marks(ctx, node)?;
     if cancelled || ctx.node(node)?.kind == NodeKind::Stage {
         ctx.db
             .execute(
@@ -488,9 +551,10 @@ fn leave_team(ctx: &mut Context<'_>, node: u32) -> Result<()> {
             params![ctx.team.id, node],
         )
         .map_err(storage)?;
+    // A node that left the team stays held: nothing hands it out again.
     ctx.db
         .execute(
-            "UPDATE nodes SET hold=1 WHERE team=?1 AND id=?2",
+            "UPDATE nodes SET hand_back=1 WHERE team=?1 AND id=?2",
             params![ctx.team.id, node],
         )
         .map_err(storage)?;

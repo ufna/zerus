@@ -194,6 +194,13 @@ pub(crate) fn send(
     let mut document = load(&tasks, &task.uuid)?;
     foreign(caller, &document)?;
     let mut store = Store::open(caller.state)?;
+    let previous_team = document.team().map_err(storage)?;
+    let previous_name = match &previous_team {
+        Some(key) if key.team != team => {
+            header::read(&store, &key.team)?.map_or_else(|| key.team.clone(), |old| old.name)
+        }
+        _ => String::new(),
+    };
     let (header, who, view) = prepare(&store, caller, task, team, role, pipeline, &mut document)?;
     tasks.save(&mut document).map_err(storage)?;
     let add = request(
@@ -204,8 +211,13 @@ pub(crate) fn send(
             role: role.map(str::to_owned),
             pipeline: pipeline.map(str::to_owned),
         },
-    )?;
-    match ops::apply(&mut store, &who, &add, now()) {
+    );
+    #[cfg(test)]
+    super::tests::intake_errors::before_apply();
+    let result = add.and_then(|add| ops::apply(&mut store, &who, &add, now()));
+    #[cfg(test)]
+    let result = super::tests::intake_errors::after_apply(result);
+    match result {
         Ok(reply) => {
             let node = reply.node.expect("AddTask node");
             let observation_pending = record(&mut store, team, node, &document).err();
@@ -217,15 +229,31 @@ pub(crate) fn send(
             })
         }
         Err(error) => {
-            document
-                .set_team_named(None, &header.name, &caller.actor, now())
-                .map_err(storage)?;
-            if document.view().map_err(storage)?.target != view.target {
-                document
-                    .set_target(&view.target, &caller.actor, now())
-                    .map_err(storage)?;
+            // A storage failure may have committed. Keep the prepared key
+            // and target so observation and a repeat can find that identity.
+            if error.code != code::STORAGE_FAILED {
+                let mut restored = false;
+                if document.team().map_err(storage)? != previous_team {
+                    let name = if previous_name.is_empty() {
+                        &header.name
+                    } else {
+                        &previous_name
+                    };
+                    document
+                        .set_team_named(previous_team.as_ref(), name, &caller.actor, now())
+                        .map_err(storage)?;
+                    restored = true;
+                }
+                if document.view().map_err(storage)?.target != view.target {
+                    document
+                        .set_target(&view.target, &caller.actor, now())
+                        .map_err(storage)?;
+                    restored = true;
+                }
+                if restored {
+                    tasks.save(&mut document).map_err(storage)?;
+                }
             }
-            tasks.save(&mut document).map_err(storage)?;
             Ok(Intake {
                 queued: false,
                 node: None,
@@ -256,8 +284,10 @@ fn prepare(
     )?;
     let view = document.view().map_err(storage)?;
     let duplicate = binding(store, task)?.is_some_and(|(id, _)| id == team);
-    if !duplicate
-        && (!matches!(view.stage, Stage::Backlog | Stage::Todo) || view.cancelled_at.is_some())
+    // A cancelled task is never sent, also while it is still bound: between
+    // a cancel written to the task and the observation of that cancel.
+    if view.cancelled_at.is_some()
+        || (!duplicate && !matches!(view.stage, Stage::Backlog | Stage::Todo))
     {
         return Err(Problem::new(
             code::INVALID_STATE,

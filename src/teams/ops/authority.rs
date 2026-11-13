@@ -26,12 +26,20 @@ pub fn authority(actor: &Actor, op: &Operation, team: &Team) -> Result<()> {
         | Operation::ReopenIntent { .. }
         | Operation::ReopenOutcome { .. }
         | Operation::SetMemberSession { .. }
+        | Operation::SetMemberHandle { .. }
         | Operation::SetMemberState { .. }
         | Operation::RecordReport { .. }
         | Operation::StageTaskIntent { .. }
         | Operation::StageTaskOutcome { .. }
         | Operation::RecordIntegration { .. }
-        | Operation::RecordIntegrationConflict { .. } => service,
+        | Operation::RecordIntegrationConflict { .. }
+        | Operation::FireTimer { .. }
+        | Operation::RecordKeyClear { .. }
+        | Operation::RecordLateSession { .. }
+        | Operation::RecordLateReport { .. }
+        | Operation::RecordCancel { .. }
+        | Operation::ReconcileUnstaffed
+        | Operation::EndStaleUnstaffed => service,
         Operation::Create { .. }
         | Operation::Stop
         | Operation::Archive

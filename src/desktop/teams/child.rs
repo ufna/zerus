@@ -41,6 +41,9 @@ pub(crate) fn adopt_custody() -> Result<(), String> {
 #[cfg(test)]
 std::thread_local! {
     pub(super) static FIXTURE_EXIT: std::cell::RefCell<Option<Vec<u8>>> = const { std::cell::RefCell::new(None) };
+    /// The argv each fixture child was given, so a test can run what the
+    /// service spawns through the real CLI.
+    pub(super) static FIXTURE_ARGS: std::cell::RefCell<Vec<Vec<String>>> = const { std::cell::RefCell::new(Vec::new()) };
 }
 pub(super) fn run(
     config: &Config,
@@ -74,6 +77,7 @@ pub(super) fn run_guarded<T>(
 ) -> Ended {
     #[cfg(test)]
     if let Some(output) = FIXTURE_EXIT.with(|slot| slot.borrow_mut().take()) {
+        FIXTURE_ARGS.with(|slot| slot.borrow_mut().push(args.to_vec()));
         let mut command = std::process::Command::new("fixture");
         return match configure(config, &mut command, stop, admit) {
             Ok(guard) => {
@@ -170,7 +174,10 @@ fn configure<T>(
     Ok(guard)
 }
 
-fn custody(config: &Config, id: &str) -> Option<(Arc<InheritedLock>, PathBuf, (u64, u64))> {
+pub(super) fn custody(
+    config: &Config,
+    id: &str,
+) -> Option<(Arc<InheritedLock>, PathBuf, (u64, u64))> {
     if !uuid::Uuid::parse_str(id).is_ok_and(|u| !u.is_nil() && u.to_string() == id) {
         return None;
     }
@@ -231,7 +238,7 @@ pub(super) fn admission(
     Ok(())
 }
 
-fn remove_custody(path: &Path, identity: (u64, u64)) {
+pub(super) fn remove_custody(path: &Path, identity: (u64, u64)) {
     if std::fs::symlink_metadata(path).is_ok_and(|m| m.is_file() && (m.dev(), m.ino()) == identity)
     {
         let _ = std::fs::remove_file(path);

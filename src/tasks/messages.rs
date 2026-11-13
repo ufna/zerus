@@ -227,7 +227,14 @@ pub(super) fn execute(config: &Config, args: &[String]) -> Result<Value> {
             .map(serde_json::to_value)
             .collect::<std::result::Result<Vec<_>, _>>()
             .map_err(fail)?;
-        match crate::state::prepare_task_reply(to, dispatch, id, &delivery.prompt, &attachments) {
+        match crate::state::prepare_task_reply(
+            to,
+            dispatch,
+            id,
+            &delivery.prompt,
+            &attachments,
+            crate::state::Continuation::SameRun,
+        ) {
             Ok(request) => {
                 delivery.run_id = request["expected_run_id"].as_str().unwrap_or_default().into();
                 delivery.conversation_id = request["expected_conversation_id"].as_str().unwrap_or_default().into();

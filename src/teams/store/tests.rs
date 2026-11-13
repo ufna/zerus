@@ -516,6 +516,7 @@ fn card_lookup_is_scoped_and_reads_the_persons_decision_by_primary_key() {
                 kind: "proposal".into(),
                 text: "Wait for a person".into(),
                 node: None,
+                decisions: None,
             },
         )
         .unwrap()
@@ -527,12 +528,12 @@ fn card_lookup_is_scoped_and_reads_the_persons_decision_by_primary_key() {
         &person(),
         Operation::DecideCard {
             card,
-            decision: "Wait until tomorrow".into(),
+            decision: "acknowledged".into(),
         },
     )
     .unwrap();
     let c = h.store.card(TEAM, card).unwrap().unwrap();
-    assert_eq!(c.decision.as_deref(), Some("Wait until tomorrow"));
+    assert_eq!(c.decision.as_deref(), Some("acknowledged"));
     assert_eq!(c.decided_actor.unwrap()["kind"], "person");
     assert!(h.store.card(TEAM, 9_999_999).unwrap().is_none());
     refused(h.store.card(ops::tests::TEAM_B, card), code::INVALID_STATE);
@@ -603,4 +604,45 @@ fn observations_upgrade_version_two_and_keep_departures_released_after_reopen() 
             .unwrap(),
         2
     );
+}
+
+/// zerus-63rru.53 (c): `member_handles` is a common batch of `CREATE ... IF
+/// NOT EXISTS` objects. It moves neither the core version nor the layout
+/// mark, the two values an older build refuses on, so an older build opens
+/// the store as before and never reads or writes the table; a store from
+/// before the table gains it at its next open by this build.
+#[test]
+fn member_handles_move_neither_the_version_nor_the_mark_an_older_build_checks() {
+    use crate::teams::ops::tests::{Harness, TEAM};
+    let h = Harness::new();
+    let path = h.temp.path().join("teams/teams-v1.sqlite3");
+    let read = |db: &rusqlite::Connection| -> (u32, u32, bool) {
+        (
+            db.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap(),
+            db.query_row("SELECT version FROM timers_extension WHERE id=1", [], |r| r.get(0))
+                .unwrap(),
+            db.query_row(
+                "SELECT count(*)=3 FROM sqlite_master WHERE name IN ('member_handles','member_handles_terminal_v1','member_handles_removed_v1')",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap(),
+        )
+    };
+    // The values this build writes: the core version and its current
+    // layout mark (`timers::EXTENSION`, which later changes move on).
+    let current = (2, super::timers::EXTENSION, true);
+    let db = rusqlite::Connection::open(&path).unwrap();
+    assert_eq!(read(&db), current);
+    // A store as an older build leaves it: without the table.
+    db.execute_batch(
+        "DROP TRIGGER member_handles_terminal_v1; DROP TRIGGER member_handles_removed_v1; DROP TABLE member_handles;",
+    )
+    .unwrap();
+    drop(db);
+    let store = Store::open(h.temp.path()).unwrap();
+    assert_eq!(store.member_handle(TEAM, "m1").unwrap(), None);
+    drop(store);
+    let db = rusqlite::Connection::open(&path).unwrap();
+    assert_eq!(read(&db), current);
 }

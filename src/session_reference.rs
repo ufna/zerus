@@ -244,16 +244,29 @@ fn print(reference: &Reference, as_json: bool, extra: Value) -> cli::Result<i32>
 }
 
 /// `hgs self`: the reference of the agent whose process runs this CLI, under
-/// its current name. Only verified native ancestry identifies the caller.
+/// its current name. Native shell claims are explicitly distinguished from
+/// process proof and never enter caller(), the send/graph attribution path.
 pub(crate) fn current(config: &Config, args: &[String]) -> cli::Result<i32> {
     let as_json = match args {
         [] => false,
         [flag] if flag == "--json" => true,
         _ => return Err(Error::new(1, "usage: hgs self [--json]")),
     };
-    let (reference, provider) = caller(config)?
-        .ok_or_else(|| Error::new(1, "hgs self: no live Zerus session owns this process"))?;
-    print(&reference, as_json, json!({"provider": provider}))
+    let (record, source) = match state::session_graph::caller_record() {
+        // zerus-ppd26: a hosted DeepSeek call is proven by its host's per-call
+        // token under the host's ancestry, never by an agent process of its own.
+        Some(record) if record["caller_proof"]["kind"] == "hosted_call" => (record, "hosted_call"),
+        Some(record) => (record, "process"),
+        None => (state::parent_link::native_self().map_err(|e| Error::new(1, e))?
+            .ok_or_else(|| Error::new(1, "hgs self: no live Zerus session owns this process"))?, "claimed"),
+    };
+    let (reference, provider) = from_record(config, &record)?;
+    let parent = json!({"session_id":record["session_id"],"name":record["name"],"run_id":record["run_id"],"conversation_id":record["conversation_id"]});
+    let mut fields = json!({"provider":provider,"identity_source":source,"session_id":record["session_id"],"parent_identity":parent});
+    if source == "hosted_call" {
+        fields["proof_limit"] = json!(state::session_graph::HOSTED_LIMIT);
+    }
+    print(&reference, as_json, fields)
 }
 
 /// The reference and provider of the live agent whose process runs this CLI,
@@ -262,6 +275,10 @@ fn caller(config: &Config) -> cli::Result<Option<(Reference, String)>> {
     let Some(record) = state::session_graph::caller_record() else {
         return Ok(None);
     };
+    from_record(config, &record).map(Some)
+}
+
+fn from_record(config: &Config, record: &Value) -> cli::Result<(Reference, String)> {
     let text = |key: &str| record[key].as_str().unwrap_or_default().to_owned();
     let reference = Reference {
         machine: swarm::local_node_id(config).map_err(|e| Error::new(1, e.to_string()))?,
@@ -271,9 +288,11 @@ fn caller(config: &Config) -> cli::Result<Option<(Reference, String)>> {
         run: text("run_id"),
         archive: String::new(),
         agent: String::new(),
-        session: emitted_session(config, &record),
+        session: emitted_session(config, record),
     };
-    Ok(Some((reference, text("agent"))))
+    let provider = record["agent"].as_str().filter(|s| !s.is_empty())
+        .or_else(|| record["backend"].as_str()).unwrap_or_default().to_owned();
+    Ok((reference, provider))
 }
 
 /// The text a guarded send of the calling agent delivers: `text` inside one

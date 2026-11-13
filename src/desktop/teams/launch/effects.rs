@@ -224,6 +224,24 @@ impl Runtime {
                 now,
             )?;
         }
+        // The durable handle (zerus-63rru.53): the session ID of the record
+        // this binding just verified, which outlives the launch's evidence.
+        // A refusal or a crash before it leaves the actor's backfill to take
+        // it from this ledger row's observation.
+        if crate::state::session_id::canonical(&observed.session_id)
+            && store.member_handle(&team.id, &row.member)?.is_none()
+        {
+            let _ = apply(
+                store,
+                team,
+                Operation::SetMemberHandle {
+                    member: row.member.clone(),
+                    session_id: observed.session_id.clone(),
+                    label_hint: observed.name.clone(),
+                },
+                now,
+            );
+        }
         self.close_stale(store, team, row, now)?;
         row.observed = Some(observed);
         row.problem = None;

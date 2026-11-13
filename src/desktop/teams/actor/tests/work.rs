@@ -7,6 +7,9 @@ use crate::teams::{
 #[derive(Default)]
 struct Work {
     text: Option<String>,
+    fail_observe: bool,
+    allow_delivery: bool,
+    deliveries: u32,
     start_ms: Option<i64>,
     clock_check: Option<std::path::PathBuf>,
     dirty: bool,
@@ -49,10 +52,13 @@ impl Ports for Work {
     }
     fn observe(&mut self, _: &mut Store, _: &TaskRef) -> Result<()> {
         self.phase.push("observe");
+        if self.fail_observe {
+            return Err(super::super::problem("Fixture task observation failed"));
+        }
         Ok(())
     }
     fn free(&mut self, _: &Team, _: &Member) -> Result<bool> {
-        Ok(false)
+        Ok(self.allow_delivery)
     }
     fn deliver(
         &mut self,
@@ -61,7 +67,12 @@ impl Ports for Work {
         _: &Member,
         _: &str,
     ) -> super::super::ports::DeliveryResult {
-        panic!("work fixture must not deliver")
+        assert!(self.allow_delivery, "work fixture must not deliver");
+        self.deliveries += 1;
+        HandoutOutcome::Submitted {
+            receipt: "fixture hand-over".into(),
+        }
+        .into()
     }
     fn report(&mut self, _: &TaskRef) -> Result<Option<String>> {
         self.phase.push("report");
@@ -202,6 +213,54 @@ fn report_waits_for_text_and_records_the_owned_head_with_a_dirty_note_once() {
     let mut a = actor(&h);
     run(&mut h, &mut a, &mut p, 103);
     assert_eq!(p.heads, 1);
+}
+/// A member's report keeps its lines and tabs and loses every other control
+/// character before it is bounded and recorded (zerus-63rru.59); the lead's
+/// items carry it the same way.
+#[test]
+fn a_reports_control_characters_are_removed_and_its_lines_and_tabs_kept() {
+    let mut h = Harness::new();
+    h.bind("m1");
+    let node = h.add(&person(), 1);
+    h.submit(node, "m1");
+    h.observe(node, TaskStage::InReview);
+    let mut a = actor(&h);
+    let mut p = Work {
+        text: Some("Done:\r\n- one\tok\u{1b}[2J\u{7}\n- two\u{2028}- three\u{9b}31m\u{0}".into()),
+        ..Default::default()
+    };
+    run(&mut h, &mut a, &mut p, 100);
+    let report = h.store.report(TEAM, node, 1).unwrap().unwrap();
+    assert_eq!(report.text, "Done:\n- one\tok[2J\n- two\n- three31m");
+    for item in h.store.inbox(TEAM, 200, None).unwrap().rows {
+        assert!(
+            !item
+                .text
+                .chars()
+                .any(|c| c.is_control() && c != '\n' && c != '\t'),
+            "{:?}",
+            item.text
+        );
+    }
+}
+/// A report that ends inside a right-to-left override would reorder the line
+/// the service appends after it; the override is removed (zerus-63rru.59).
+#[test]
+fn a_report_cannot_reorder_the_line_the_service_adds_after_it() {
+    let mut h = Harness::new();
+    h.bind("m1");
+    let node = h.add(&person(), 1);
+    h.submit(node, "m1");
+    h.observe(node, TaskStage::InReview);
+    let mut a = actor(&h);
+    let mut p = Work {
+        text: Some("All done\u{202E}".into()),
+        dirty: true,
+        ..Default::default()
+    };
+    run(&mut h, &mut a, &mut p, 100);
+    let report = h.store.report(TEAM, node, 1).unwrap().unwrap();
+    assert_eq!(report.text, "All done\nWorktree has uncommitted changes.");
 }
 #[test]
 fn integration_records_the_exact_decision_before_finishing() {
@@ -1102,3 +1161,37 @@ fn a_failed_conflict_fact_write_keeps_its_known_outcome_until_the_store_recovers
 }
 
 mod r2;
+
+mod r3;
+
+mod reviewed;
+
+mod finish_backoff;
+
+mod held;
+
+/// A finish command's own sentence, refused or cutting over, reaches the
+/// retry card cleaned, whichever step carries it.
+#[test]
+fn a_finish_commands_sentence_reaches_its_card_clean() {
+    for refused in [false, true] {
+        let mut h = Harness::new();
+        h.settings(|s| s.integration = Integration::None);
+        let (node, lead) = h.reported();
+        h.run(&lead, Operation::Accept { node }).unwrap();
+        let mut a = actor(&h);
+        let sentence = super::hostile_sentence();
+        let mut p = Work {
+            finish_reply: Some(if refused {
+                Finish::Refused(sentence)
+            } else {
+                Finish::CuttingOver(sentence)
+            }),
+            ..Default::default()
+        };
+        for now in [100, 60_100, 180_100, 420_100] {
+            run(&mut h, &mut a, &mut p, now);
+        }
+        super::assert_clean(&super::blocked_cards(&h), &format!("refused={refused}"));
+    }
+}

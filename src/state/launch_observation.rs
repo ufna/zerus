@@ -64,6 +64,44 @@ pub(crate) fn observe_team_launch(
 ) -> TeamObservation {
     team::observe(state, launch, deadline)
 }
+/// What a team member's durable handle, its session's own `session_id`,
+/// resolves to now (zerus-63rru.53). Unlike the launch's evidence, which is
+/// gone once the first run ends or after a week, the handle lasts as long
+/// as the session's record.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum TeamSession {
+    /// The live or saved record that carries the handle and the bound launch.
+    Record(TeamRecord),
+    /// No live or saved session carries the handle: it was archived or
+    /// forgotten, or an older hgs rewrote its record without the ID.
+    Gone,
+    /// The session that carries the handle names another launch's ID, or
+    /// none without having started fresh.
+    LaunchChanged,
+    /// The session started fresh (`hgs resume --fresh`): its record keeps
+    /// the session ID but no launch ID. A fresh conversation is another
+    /// executor of tasks, so the binding ends here.
+    StartedFresh,
+    /// A fault, a bound or the deadline; another read may answer.
+    Unavailable,
+}
+/// The session whose durable ID is `session`, bound to launch `launch`:
+/// its own record in the ID layout, else the ID index's label, else the
+/// label `hint` (the name at binding) with at most three rename hops. Every
+/// record read must carry the ID; the answer is a record only when it also
+/// carries `launch`. Bounded and pinned like [`observe_team_launch`].
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub(crate) fn observe_team_session(
+    state: &Path,
+    session: &str,
+    launch: &str,
+    agent: &str,
+    hint: &str,
+    deadline: Instant,
+) -> TeamSession {
+    team::session(state, session, launch, agent, hint, deadline)
+}
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 mod team;
 #[cfg(any(target_os = "linux", target_os = "macos"))]

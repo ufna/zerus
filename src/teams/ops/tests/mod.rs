@@ -11,10 +11,13 @@ mod observations;
 mod pipeline;
 mod queue;
 mod readiness;
+mod removed_handout;
+mod replace;
 mod roster;
 mod storage;
 mod talk;
 mod team;
+mod unstaffed;
 
 pub(crate) const TEAM: &str = "00000000-0000-4000-8000-00000000beef";
 pub(crate) const TEAM_B: &str = "00000000-0000-4000-8000-00000000beee";
@@ -166,20 +169,25 @@ impl Harness {
     pub fn node(&self, n: u32) -> Node {
         self.store.node(TEAM, n).unwrap().unwrap()
     }
+    /// The next observation of the task; its attempt stays the one the store
+    /// holds, as the task document keeps reporting it.
     pub fn observation(&mut self, node: u32, stage: TaskStage) -> TaskObservation {
         self.clock += 1;
+        let previous = self.store.task_observation(TEAM, node).unwrap();
+        let (attempt, attempt_id) = previous
+            .as_ref()
+            .map_or((0, String::new()), |o| (o.attempt, o.attempt_id.clone()));
         TaskObservation {
             key: KeyState::Ours,
             revision: format!("token-{}", self.clock),
-            previous_revision: self
-                .store
-                .task_observation(TEAM, node)
-                .unwrap()
-                .map_or(String::new(), |o| o.revision),
+            previous_revision: previous.map_or(String::new(), |o| o.revision),
             stage,
             cancelled: false,
             rank: format!("a{node:08}"),
             title: format!("Task {node}"),
+            attempt,
+            attempt_id,
+            attempt_conflict: false,
         }
     }
     pub fn observe(&mut self, node: u32, stage: TaskStage) {
@@ -291,6 +299,31 @@ impl Harness {
             Operation::ReopenOutcome {
                 effect_request_id: id.into(),
                 outcome,
+            },
+        )
+        .unwrap();
+    }
+    /// The cancel answer a retired stage gets from the cancel command when
+    /// its bound task has nothing running: released, recorded as the service
+    /// records it. The stage then ends, is archived, and its key waits for
+    /// the clear in the released-stage frontier.
+    pub fn release_retired(&mut self, stage: u32) {
+        let row = self
+            .store
+            .pending_cancels(TEAM, 200, 0)
+            .unwrap()
+            .into_iter()
+            .find(|r| r.node == stage)
+            .expect("the retired stage keeps one pending cancel");
+        self.run(
+            &service(),
+            Operation::RecordCancel {
+                node: stage,
+                decision: row.decision,
+                state: crate::teams::ops::CancelState::Released,
+                reason: String::new(),
+                attempt: row.attempt,
+                attempt_id: row.attempt_id,
             },
         )
         .unwrap();

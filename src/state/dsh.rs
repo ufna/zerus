@@ -16,6 +16,13 @@ use std::{
 
 #[cfg(unix)]
 pub(in crate::state) mod host_identity;
+#[cfg(unix)]
+mod shell_identity;
+pub(crate) mod witness;
+#[cfg(all(test, unix))]
+pub(super) use host_identity::record_running_for_test;
+#[cfg(all(test, unix))]
+pub(crate) use host_identity::record_this_boot_for_test;
 
 #[cfg(unix)]
 // Resident bridge identity is independent of the installed harness release.
@@ -39,7 +46,26 @@ const PROVIDER: provider_binding::Provider = provider_binding::Provider::DeepSee
 pub(crate) fn exists(name: &str) -> bool { PROVIDER.exists(name) }
 pub(super) fn binding(name: &str) -> Result<Value> { PROVIDER.read(name) }
 pub(super) fn read_id(id: &str) -> Result<Value> { PROVIDER.read_id(id) }
-pub(super) fn save(record: &mut Value) -> Result<()> { PROVIDER.save(record) }
+/// Saves the binding, then the identity its hosted tool calls carry
+/// (`shell_identity`). Every path that starts a run ends here, so the file
+/// names the run this save established. A file that cannot be written
+/// leaves that session's tool calls without session markers, never with
+/// another session's, and is reported without undoing the saved binding.
+pub(super) fn save(record: &mut Value) -> Result<()> {
+    PROVIDER.save(record)?;
+    #[cfg(unix)]
+    if let Err(error) = shell_identity::write(record) {
+        eprintln!("hgs: {}'s tool calls carry no session markers until its identity can be written: {error}", string(record, "name"));
+    }
+    Ok(())
+}
+/// Forgets the binding and the identity its tool calls carried.
+fn remove(record: &Value) -> Result<()> {
+    PROVIDER.remove(record)?;
+    #[cfg(unix)]
+    shell_identity::remove(record);
+    Ok(())
+}
 fn native_home() -> PathBuf {
     nonempty_env("DSH_HOME")
         .map(PathBuf::from)
@@ -64,12 +90,211 @@ pub(crate) fn account_ui_url(home: &Path) -> Result<String> {
         .ok_or_else(|| "Native DeepSeek UI is unavailable.".into())
 }
 fn host_dir(record: &Value) -> PathBuf {
-    root().join("dsh/hosts").join(
-        &format!(
-            "{:x}",
-            Sha256::digest(string(record, "agent_home").as_bytes())
-        )[..16],
-    )
+    root()
+        .join("dsh/hosts")
+        .join(host_key(string(record, "agent_home")))
+}
+/// The name of the host folder of one agent home, the same for every reader.
+pub(crate) fn host_key(agent_home: &str) -> String {
+    format!("{:x}", Sha256::digest(agent_home.as_bytes()))[..16].to_owned()
+}
+/// The conversation whose live tool call holds `token`, asked of the host of
+/// `agent_home` (zerus-ppd26 Part B). `host` is the recorded host process and
+/// birth that the caller proved as its own ancestor: each connection's peer
+/// credentials, which name the process that created the listening socket,
+/// must be that same process, so the answering socket is the host's (the host
+/// never hands its listener to a child). One deadline, `within` from the start, bounds every connect, write
+/// and read together, so a peer that answers a byte at a time cannot hold the
+/// command longer. An adapter that does not advertise call tokens, no answer
+/// in time, a malformed reply or an unknown token is an error, never an answer.
+#[cfg(unix)]
+pub(crate) fn call_token_conversation(
+    agent_home: &str,
+    token: &str,
+    host: (u32, &str),
+    within: Duration,
+) -> std::result::Result<String, &'static str> {
+    const NO_ANSWER: &str = "The DeepSeek host did not confirm this tool call in time.";
+    const OLDER: &str =
+        "The running DeepSeek host predates per-call tokens; its tool calls cannot be proven.";
+    const UNKNOWN: &str = "The DeepSeek host knows no live tool call with this token.";
+    const OTHER_PEER: &str =
+        "The DeepSeek host socket is not served by the host this command runs under.";
+    let deadline = Instant::now() + within;
+    let ask = |method: &str, params: Value| {
+        host_request(agent_home, host, deadline, method, params).map_err(|unanswered| {
+            match unanswered {
+                Unanswered::NoAnswer => NO_ANSWER,
+                Unanswered::OtherPeer => OTHER_PEER,
+            }
+        })
+    };
+    let ping = ask("ping", json!({}))?;
+    if ping["protocol"] != 1 || ping["callTokens"] != true {
+        return Err(OLDER);
+    }
+    let answer = ask("call-token", json!({"token":token}))?;
+    if answer["known"] != true {
+        return Err(UNKNOWN);
+    }
+    answer["conversation"]
+        .as_str()
+        .filter(|conversation| !conversation.is_empty())
+        .map(str::to_owned)
+        .ok_or(UNKNOWN)
+}
+/// Why one request to a recorded host has no answer.
+#[cfg(unix)]
+enum Unanswered {
+    /// No connection, write, read or well-formed `ok` reply within the deadline.
+    NoAnswer,
+    /// The socket's peer is not the recorded host process with its birth.
+    OtherPeer,
+}
+
+/// One request to the host of `agent_home`, answered only through a socket
+/// whose peer credentials name `host`, the recorded process and birth (the
+/// exchange of zerus-ppd26 Part B). `deadline` bounds every connect, write and
+/// read together, so a peer that answers a byte at a time cannot hold the
+/// caller longer; an answer is one line of at most 64 KiB.
+#[cfg(unix)]
+fn host_request(
+    agent_home: &str,
+    host: (u32, &str),
+    deadline: Instant,
+    method: &str,
+    params: Value,
+) -> std::result::Result<Value, Unanswered> {
+    use std::io::Read;
+    let remaining = || {
+        deadline
+            .checked_duration_since(Instant::now())
+            .filter(|left| !left.is_zero())
+            .ok_or(Unanswered::NoAnswer)
+    };
+    let socket = root()
+        .join("dsh/hosts")
+        .join(host_key(agent_home))
+        .join("host.sock");
+    let mut stream =
+        crate::platform::connect_unix(&socket, remaining()?).map_err(|_| Unanswered::NoAnswer)?;
+    let peer = host_peer(&stream).ok_or(Unanswered::OtherPeer)?;
+    if peer != host.0
+        || crate::platform::process_identity(peer).is_none_or(|process| process.birth != host.1)
+    {
+        return Err(Unanswered::OtherPeer);
+    }
+    let request = format!("{}\n", json!({"method":method,"params":params}));
+    let mut written = 0;
+    while written < request.len() {
+        stream
+            .set_write_timeout(Some(remaining()?))
+            .map_err(|_| Unanswered::NoAnswer)?;
+        match stream.write(&request.as_bytes()[written..]) {
+            Ok(0) => return Err(Unanswered::NoAnswer),
+            Ok(count) => written += count,
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+            Err(_) => return Err(Unanswered::NoAnswer),
+        }
+    }
+    let mut response = Vec::new();
+    let mut chunk = [0u8; 4096];
+    let line = loop {
+        stream
+            .set_read_timeout(Some(remaining()?))
+            .map_err(|_| Unanswered::NoAnswer)?;
+        match stream.read(&mut chunk) {
+            Ok(0) => return Err(Unanswered::NoAnswer),
+            Ok(count) => response.extend_from_slice(&chunk[..count]),
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+            Err(_) => return Err(Unanswered::NoAnswer),
+        }
+        if let Some(end) = response.iter().position(|byte| *byte == b'\n') {
+            break &response[..end];
+        }
+        if response.len() > 64 * 1024 {
+            return Err(Unanswered::NoAnswer);
+        }
+    };
+    let reply: Value = serde_json::from_slice(line).map_err(|_| Unanswered::NoAnswer)?;
+    if reply["ok"] != true {
+        return Err(Unanswered::NoAnswer);
+    }
+    Ok(reply["value"].clone())
+}
+
+/// Whether the host of `agent_home`, the recorded process and birth `host`,
+/// advertises per-call tokens (zerus-63rru.28): its `ping` answers protocol 1
+/// with `callTokens` true, through the same peer-checked exchange as
+/// [`call_token_conversation`] and within one deadline of `within`. Nothing
+/// else advertises the capability: the host record holds none and the adapter
+/// version did not change with it.
+#[cfg(unix)]
+pub(crate) fn host_advertises_call_tokens(
+    agent_home: &str,
+    host: (u32, &str),
+    within: Duration,
+) -> std::result::Result<bool, &'static str> {
+    let ping = host_request(agent_home, host, Instant::now() + within, "ping", json!({})).map_err(
+        |unanswered| match unanswered {
+            Unanswered::NoAnswer => "The DeepSeek host did not answer in time.",
+            Unanswered::OtherPeer => "The DeepSeek host socket is not served by the recorded host.",
+        },
+    )?;
+    Ok(ping["protocol"] == 1 && ping["callTokens"] == true)
+}
+
+/// The process serving a connected host socket, as the kernel recorded it,
+/// and only when it runs as this user.
+#[cfg(target_os = "linux")]
+fn host_peer(stream: &UnixStream) -> Option<u32> {
+    use std::os::fd::AsRawFd;
+    let mut credentials: libc::ucred = unsafe { std::mem::zeroed() };
+    let mut size = std::mem::size_of_val(&credentials) as libc::socklen_t;
+    // SAFETY: a live socket and exactly sized writable credentials.
+    let read = unsafe {
+        libc::getsockopt(
+            stream.as_raw_fd(),
+            libc::SOL_SOCKET,
+            libc::SO_PEERCRED,
+            (&mut credentials as *mut libc::ucred).cast(),
+            &mut size,
+        )
+    };
+    (read == 0
+        && size as usize == std::mem::size_of_val(&credentials)
+        && credentials.pid > 0
+        && credentials.uid == unsafe { libc::geteuid() })
+    .then_some(credentials.pid as u32)
+}
+#[cfg(target_os = "macos")]
+fn host_peer(stream: &UnixStream) -> Option<u32> {
+    use std::os::fd::AsRawFd;
+    let (mut uid, mut gid): (libc::uid_t, libc::gid_t) = (0, 0);
+    // SAFETY: a connected Unix socket and two writable identifiers.
+    if unsafe { libc::getpeereid(stream.as_raw_fd(), &mut uid, &mut gid) } != 0
+        || uid != unsafe { libc::geteuid() }
+    {
+        return None;
+    }
+    let mut pid: libc::pid_t = 0;
+    let mut size = std::mem::size_of_val(&pid) as libc::socklen_t;
+    // SAFETY: a connected Unix socket and one writable pid_t.
+    let read = unsafe {
+        libc::getsockopt(
+            stream.as_raw_fd(),
+            libc::SOL_LOCAL,
+            libc::LOCAL_PEERPID,
+            (&mut pid as *mut libc::pid_t).cast(),
+            &mut size,
+        )
+    };
+    (read == 0 && size as usize == std::mem::size_of_val(&pid) && pid > 0).then_some(pid as u32)
+}
+/// No other Unix reads a socket peer's process here: nothing is proven.
+#[cfg(all(unix, not(any(target_os = "linux", target_os = "macos"))))]
+fn host_peer(_: &UnixStream) -> Option<u32> {
+    None
 }
 /// The native host listens on a Unix socket; DeepSeek is a Phase 2 non-goal on
 /// Windows, so nothing there starts or reaches a host.
@@ -82,6 +307,10 @@ fn rpc(_: &Value, _: &str, _: Value) -> Result<Value> {
 }
 #[cfg(not(unix))]
 fn search_rpc(_: &Value, _: Value) -> Result<Value> {
+    Err(UNSUPPORTED.into())
+}
+#[cfg(not(unix))]
+fn rpc_within(_: &Value, _: &str, _: Value, _: std::time::Duration) -> Result<Value> {
     Err(UNSUPPORTED.into())
 }
 #[cfg(not(unix))]
@@ -116,7 +345,17 @@ fn rpc_within(record: &Value, method: &str, params: Value, read_timeout: Duratio
 }
 #[cfg(unix)]
 fn rpc_at(path: &Path, method: &str, params: Value, read_timeout: Duration) -> Result<Value> {
-    let mut socket = UnixStream::connect(path).map_err(|_| HOST_UNAVAILABLE)?;
+    let socket = crate::platform::connect_unix(path, read_timeout).map_err(|_| HOST_UNAVAILABLE)?;
+    exchange(socket, method, params, read_timeout)
+}
+/// One request over a connected host socket.
+#[cfg(unix)]
+fn exchange(
+    mut socket: UnixStream,
+    method: &str,
+    params: Value,
+    read_timeout: Duration,
+) -> Result<Value> {
     // The request's last byte is its newline, and the compact JSON holds no
     // other, so a failed write never wrote it and the host never ran it.
     (|| -> io::Result<()> {
@@ -135,6 +374,50 @@ fn rpc_at(path: &Path, method: &str, params: Value, read_timeout: Duration) -> R
         return Err(string(&response, "error").into());
     }
     Ok(response["value"].clone())
+}
+/// A refused connect is ECONNREFUSED, or ECONNRESET on some BSD paths: the
+/// host's socket is there but the connect was not queued (zerus-xt6re).
+#[cfg(unix)]
+fn refused(error: &io::Error) -> bool {
+    matches!(
+        error.kind(),
+        io::ErrorKind::ConnectionRefused | io::ErrorKind::ConnectionReset
+    )
+}
+/// The claim's connect, with a test-only refusal so the BSD full-queue answer
+/// (ECONNREFUSED at once) can be exercised on Linux (zerus-xt6re).
+#[cfg(unix)]
+fn claim_connect(path: &Path, limit: Duration) -> io::Result<UnixStream> {
+    #[cfg(test)]
+    if let Some(kind) = injected_refusal() {
+        return Err(io::Error::new(kind, "injected connect refusal"));
+    }
+    crate::platform::connect_unix(path, limit)
+}
+#[cfg(all(test, unix))]
+thread_local! {
+    static INJECTED_REFUSAL: std::cell::Cell<Option<io::ErrorKind>> =
+        const { std::cell::Cell::new(None) };
+}
+#[cfg(all(test, unix))]
+fn injected_refusal() -> Option<io::ErrorKind> {
+    INJECTED_REFUSAL.with(std::cell::Cell::get)
+}
+#[cfg(all(test, unix))]
+pub(super) fn refuse_connect_for_test(kind: io::ErrorKind) {
+    INJECTED_REFUSAL.with(|refused| refused.set(Some(kind)));
+}
+#[cfg(all(test, unix))]
+pub(super) fn allow_connect_for_test() {
+    INJECTED_REFUSAL.with(|refused| refused.set(None));
+}
+/// A socket path exists and its verified recorded owner process is alive:
+/// a refused connect to it means the host is saturated, not gone.
+#[cfg(unix)]
+fn live_owner_socket(dir: &Path) -> bool {
+    use std::os::unix::fs::FileTypeExt;
+    fs::symlink_metadata(dir.join("host.sock")).is_ok_and(|meta| meta.file_type().is_socket())
+        && host_identity::owner_alive(dir)
 }
 #[cfg(unix)]
 fn ensure_host(record: &Value) -> Result<()> {
@@ -173,14 +456,53 @@ fn ensure_host(record: &Value) -> Result<()> {
         fs::remove_file(&socket).map_err(|e| e.to_string())?;
     }
     let overlay = dir.join("hgs.patch.json");
+    // The bridge reads each hosted session's own markers from here, one
+    // file per native conversation that `save` writes (zerus-ppd26).
+    let identities = shell_identity::folder(record);
+    private_dir(&identities)?;
     atomic(
         &overlay,
-        &json!([{"insert":[{"id":"hgs-native-dsh","name":script,"config":{"socket":socket,"recoveryPolicy":recovery::policy_path()}}]}])
+        &json!([{"insert":[{"id":"hgs-native-dsh","name":script,"config":{"socket":socket,
+            "recoveryPolicy":recovery::policy_path(),"shellIdentities":identities}}]}])
             .to_string(),
     )?;
     let log = crate::platform::private_open(OpenOptions::new().create(true).truncate(true).write(true))
         .open(dir.join("host.log"))
         .map_err(|e| e.to_string())?;
+    let mut command = host_command(record, &overlay);
+    command
+        .stdin(Stdio::null())
+        .stdout(log.try_clone().map_err(|e| e.to_string())?)
+        .stderr(log);
+    // Detach only the dedicated native host. Closing its launching terminal or
+    // HGS process must not stop conversations.
+    let mut child = host_identity::spawn(&dir, &mut command)?;
+    let deadline = Instant::now() + Duration::from_secs(35);
+    while Instant::now() < deadline {
+        if let Ok(value) = rpc(record, "ping", json!({})) {
+            if value["protocol"] == 1 {
+                return Ok(());
+            }
+        }
+        if child.try_wait().map_err(|e| e.to_string())?.is_some() {
+            return Err(format!(
+                "Official DeepSeek host failed to start. Private log: {}",
+                dir.join("host.log").display()
+            ));
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    Err("DeepSeek host is still starting; retry opening the session".into())
+}
+
+/// The variables a native host never takes from the process that starts it:
+/// those of the session that process runs in (`host::SESSION_CONTEXT`, which
+/// the Windows session host also drops) and its terminal's name. One host
+/// serves every DeepSeek session of its agent home, so whichever session
+/// happened to start it is not the session of any hosted agent; each hosted
+/// tool call carries its own session's markers instead (`shell_identity`).
+#[cfg(unix)]
+fn host_command(record: &Value, overlay: &Path) -> Command {
     let mut command = Command::new("dsh");
     #[cfg(target_os = "linux")]
     {
@@ -219,29 +541,14 @@ fn ensure_host(record: &Value) -> Result<()> {
         .arg(overlay)
         .args(["--no-open", "--host", "127.0.0.1", "--port", "0"])
         .env("DSH_HOME", string(record, "agent_home"))
-        .current_dir(home())
-        .stdin(Stdio::null())
-        .stdout(log.try_clone().map_err(|e| e.to_string())?)
-        .stderr(log);
-    // Detach only the dedicated native host. Closing its launching terminal or
-    // HGS process must not stop conversations.
-    let mut child = host_identity::spawn(&dir, &mut command)?;
-    let deadline = Instant::now() + Duration::from_secs(35);
-    while Instant::now() < deadline {
-        if let Ok(value) = rpc(record, "ping", json!({})) {
-            if value["protocol"] == 1 {
-                return Ok(());
-            }
-        }
-        if child.try_wait().map_err(|e| e.to_string())?.is_some() {
-            return Err(format!(
-                "Official DeepSeek host failed to start. Private log: {}",
-                dir.join("host.log").display()
-            ));
-        }
-        std::thread::sleep(Duration::from_millis(100));
+        .current_dir(home());
+    for name in crate::state::backend::host::SESSION_CONTEXT
+        .iter()
+        .chain(&["HGS_TERMINAL_NAME"])
+    {
+        command.env_remove(name);
     }
-    Err("DeepSeek host is still starting; retry opening the session".into())
+    command
 }
 
 pub(crate) fn native_ui_url(name: &str) -> Result<String> {
@@ -363,7 +670,9 @@ fn permission_plan(record: &Value) -> Result<PermissionPlan> {
     Ok(plan)
 }
 
-fn create_session(record: &mut Value) -> Result<()> {
+/// Returns the host generation the session was created or resumed under and
+/// the account permission mode it used.
+fn create_session(record: &mut Value) -> Result<(Value, String)> {
     // Deterministic capability/account checks precede persistence; identities
     // still precede native creation so an uncertain reply cannot duplicate it.
     let plan = permission_plan(record)?;
@@ -384,6 +693,107 @@ fn create_session(record: &mut Value) -> Result<()> {
         }
     }
     record.as_object_mut().ok_or("Invalid DeepSeek binding")?.remove("permissions_pending");
+    save(record)?;
+    Ok((plan.generation, plan.mode))
+}
+
+/// Whether an RPC error leaves the request possibly executed by the host.
+fn delivery_uncertain(error: &str) -> bool {
+    error.contains("delivery uncertain")
+}
+
+/// Account launch defaults (zerus-v7tqa) reach only the session this launch
+/// just created, through the host's existing scoped `settings` method and
+/// before any prompt, so a resident older bridge needs no reload. The binding
+/// records `pending` first, then `applied`, `failed` (never executed) or
+/// `uncertain` (may have executed). The launch still succeeds and nothing is
+/// retried; the returned text is the warning to report.
+fn apply_account_defaults_with(
+    record: &mut Value,
+    (generation, mode): (&Value, &str),
+    model: &str,
+    effort: &str,
+    mut call: impl FnMut(&str, Value) -> Result<Value>,
+    mut persist: impl FnMut(&mut Value) -> Result<()>,
+) -> Option<String> {
+    let mut outcome = json!({"model":model,"effort":effort,"status":"pending","at":now()});
+    record["account_defaults"] = outcome.clone();
+    if let Err(error) = persist(record) {
+        record["account_defaults"]["status"] = json!("failed");
+        record["account_defaults"]["detail"] = json!(error);
+        return Some(format!("DeepSeek session started with its native model; account defaults were not applied: {error}"));
+    }
+    let attempt = (|| -> std::result::Result<Value, (bool, String)> {
+        let (provider, id) = model
+            .split_once('/')
+            .ok_or((false, "Invalid account model default".to_owned()))?;
+        let ping = call("ping", json!({})).map_err(|e| (false, e))?;
+        if ping["generation"] != *generation {
+            return Err((false, "DeepSeek host changed after creating the session".into()));
+        }
+        // The mode matters only if the session was paused natively meanwhile:
+        // the method then resumes it, as a scoped resume would.
+        let mut params = json!({"sessionId":record["conversation_id"],"provider":provider,
+            "model":id,"generation":generation,"permissionMode":mode});
+        if !effort.is_empty() {
+            params["reasoningEffort"] = json!(effort);
+        }
+        let applied = call("settings", params).map_err(|e| (delivery_uncertain(&e), e))?;
+        if applied["scope"] != "session" {
+            return Err((true, "DeepSeek did not confirm the session selection".into()));
+        }
+        Ok(applied["selected"].clone())
+    })();
+    let warning = match attempt {
+        Ok(selected) => {
+            outcome["status"] = json!("applied");
+            outcome["selected"] = selected;
+            None
+        }
+        Err((uncertain, detail)) => {
+            outcome["status"] = json!(if uncertain { "uncertain" } else { "failed" });
+            outcome["detail"] = json!(detail);
+            Some(if uncertain {
+                format!("DeepSeek may have applied the account defaults; check this session's model and effort: {detail}")
+            } else {
+                format!("DeepSeek session started with its native model; account defaults were not applied: {detail}")
+            })
+        }
+    };
+    record["account_defaults"] = outcome;
+    match persist(record) {
+        Ok(()) => warning,
+        Err(error) => Some(warning.map_or_else(
+            || format!("DeepSeek applied the account defaults, but recording that failed: {error}"),
+            |w| format!("{w}; recording the outcome also failed: {error}"),
+        )),
+    }
+}
+
+/// The binding a new session starts with, before its host creates it.
+fn new_binding(name: &str, cwd: &Path, launch_id: Option<&str>) -> Value {
+    json!({"backend":"dsh","name":name,"agent":"dsh","agent_home":native_home(),"cwd":cwd,
+        "conversation_id":format!("session-{}",uuid::Uuid::new_v4()),"run_id":uuid::Uuid::new_v4().to_string(),
+        "created":now(),"launch_id":launch_id,"paused":false})
+}
+
+/// A new session's binding exactly as `launch` builds and saves it, with no
+/// host started or asked: the Teams caller proof's tests take their binding
+/// from this component (zerus-63rru.28).
+#[cfg(all(test, unix))]
+pub(crate) fn launched_binding_for_test(
+    name: &str,
+    cwd: &Path,
+    launch_id: Option<&str>,
+) -> Result<Value> {
+    let mut record = new_binding(name, cwd, launch_id);
+    save(&mut record)?;
+    Ok(record)
+}
+
+/// Saves a binding through this component's own `save`, for the same tests.
+#[cfg(all(test, unix))]
+pub(crate) fn save_binding_for_test(record: &mut Value) -> Result<()> {
     save(record)
 }
 
@@ -398,8 +808,10 @@ pub(crate) fn launch(
         println!("Create official dsh session {name} in {cwd}");
         return Ok(());
     }
+    let parent = parent_link::launcher_link()?;
     let _guard = lock(Some(&root().join("dsh/bindings.lock")))?;
     if let Some(mut record) = PROVIDER.existing_for_launch(name)? {
+        if parent_link::claimed_launch() { return Err("--parent applies only to new sessions; use hgs parent adopt for an existing session".into()); }
         if new_only {
             return Err("This DeepSeek session name already exists".into());
         }
@@ -411,12 +823,45 @@ pub(crate) fn launch(
         return Ok(());
     }
     let cwd = crate::platform::canonical(cwd).map_err(|e| e.to_string())?;
-    let mut record = json!({"backend":"dsh","name":name,"agent":"dsh","agent_home":native_home(),"cwd":cwd,
-        "conversation_id":format!("session-{}",uuid::Uuid::new_v4()),"run_id":uuid::Uuid::new_v4().to_string(),
-        "created":now(),"launch_id":launch_id,"paused":false});
+    // Only a session created here takes the account defaults; relaunching an
+    // existing name above resumes it with its own stored selection.
+    let config = crate::config::Config::load().map_err(|e| e.message)?;
+    let defaults = crate::accounts::launch_selection(&config, "dsh").map_err(|e| e.message)?;
+    let mut record = new_binding(name, &cwd, launch_id);
+    if let Some(parent) = parent { record["parent"] = parent; }
     ensure_host(&record)?;
-    create_session(&mut record)?;
-    if let Ok(config) = crate::config::Config::load() {
+    let (generation, mode) = create_session(&mut record)?;
+    if let Some((model, effort)) = defaults {
+        let host = record.clone();
+        if let Some(warning) = apply_account_defaults_with(
+            &mut record,
+            (&generation, &mode),
+            &model,
+            &effort,
+            |method, params| rpc(&host, method, params),
+            save,
+        ) {
+            eprintln!("hgs: {warning}");
+        }
+    }
+    // A child its proven parent launched starts in the parent's project,
+    // written after the bindings lock is released, like a fork (zerus-d5twt).
+    if let Some(parent) = record
+        .get("parent")
+        .filter(|link| crate::swarm::placing_parent(link))
+    {
+        drop(_guard);
+        if let Ok(config) = crate::config::Config::load() {
+            crate::swarm::place_child_session(
+                &config,
+                name,
+                &cwd,
+                string(&record, "run_id"),
+                &record["conversation_id"],
+                parent,
+            );
+        }
+    } else if let Ok(config) = crate::config::Config::load() {
         crate::swarm::infer_new_session(&config, name, &cwd);
     }
     Ok(())
@@ -442,10 +887,56 @@ pub(crate) fn snapshots() -> Result<Vec<Value>> {
 /// The host's existing list RPC and its generation semantics are unchanged.
 pub(super) fn snapshot(name: &str) -> Result<Value> {
     let record = binding(name)?;
-    let list = rpc(&record, "list", json!({})).unwrap_or(Value::Null);
-    Ok(snapshot_from(&record, &list))
+    snapshot_record(&record)
+}
+fn snapshot_record(record: &Value) -> Result<Value> {
+    let list = rpc(record, "list", json!({})).unwrap_or(Value::Null);
+    Ok(snapshot_from(record, &list))
+}
+/// Whether a claimed parent runs now, asking the host for at most `limit`.
+/// No host is a definite no; a host that has not answered by then is busy,
+/// never live.
+#[cfg(unix)]
+pub(super) fn claim_live(record: &Value, limit: Duration) -> Result<bool> {
+    let started = std::time::Instant::now();
+    let dir = host_dir(record);
+    let socket = match claim_connect(&dir.join("host.sock"), limit) {
+        Ok(socket) => socket,
+        // BSD refuses a connect on a full listen queue at once (ECONNREFUSED,
+        // sometimes ECONNRESET). The recorded owner decides: while it is alive
+        // the host is saturated, not gone, so the claim is busy; a dead owner
+        // or a missing socket stays a definite no. A refusal is never live
+        // (zerus-xt6re).
+        Err(error) if refused(&error) => {
+            return if live_owner_socket(&dir) {
+                Err(parent_link::CLAIM_BUSY.into())
+            } else {
+                Ok(false)
+            };
+        }
+        Err(_) if started.elapsed() >= limit => return Err(parent_link::CLAIM_BUSY.into()),
+        Err(_) => return Ok(false),
+    };
+    match exchange(socket, "list", json!({}), limit) {
+        Ok(list) => {
+            let row = snapshot_from(record, &list);
+            Ok(row["state"] == "running" && row["process_state"] == "running")
+        }
+        Err(_) if started.elapsed() >= limit => Err(parent_link::CLAIM_BUSY.into()),
+        Err(_) => Ok(false),
+    }
+}
+#[cfg(not(unix))]
+pub(super) fn claim_live(_: &Value, _: std::time::Duration) -> Result<bool> {
+    Ok(false)
 }
 
+/// The listing projection of `record` from a host's `list` answer, for the
+/// fleet-row fixtures of the Teams actor's tests (zerus-63rru.51).
+#[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
+pub(super) fn listed_for_fixture(record: &Value, list: &Value) -> Value {
+    snapshot_from(record, list)
+}
 fn snapshot_from(record: &Value, list: &Value) -> Value {
     let row = list["items"].as_array().and_then(|items| {
         items
@@ -657,6 +1148,7 @@ fn normalize(record: &Value, row: &Value, inspected: &Value) -> Value {
     if !string(record, "session_id").is_empty() {
         value["session_id"] = record["session_id"].clone();
     }
+    if let Some(parent) = parent_link::listed(record) { value["parent"] = parent; }
     if pending {
         // Native question IDs distinguish one request from the next for read
         // marks and notifications; their generation-bound hashes do not.
@@ -1227,13 +1719,44 @@ fn inspect_with_processes(name: &str, agent_id: Option<&str>, include_processes:
             string(&result, "model_provider"),
             string(&result, "model")
         ));
-        result["model_options"]=json!(catalog["groups"].as_array().into_iter().flatten().flat_map(|g|g["models"].as_array().into_iter().flatten().map(|m|json!({"id":format!("{}/{}",string(g,"id"),string(m,"id")),"label":format!("{} ({})",string(m,"name"),string(g,"name")),"effort_options":m["reasoning"]["efforts"].as_array().into_iter().flatten().map(|e|e["id"].clone()).collect::<Vec<_>>()}))).collect::<Vec<_>>());
+        result["model_options"] = json!(model_options(&catalog));
+    }
+    if agent_id.is_none() && record.get("account_defaults").is_some() {
+        result["account_defaults"] = record["account_defaults"].clone();
     }
     if agent_id.is_none() { notifications::enrich(&mut result, notifications::load().as_ref(), journal::journal_name(&record)); }
     Ok(result)
 }
 
 /// Read-only resident host methods; never ensure_host or a lifecycle RPC.
+/// Native catalog choices as `provider/model`, labelled "Model (Provider)".
+fn model_options(catalog: &Value) -> Vec<Value> {
+    catalog["groups"].as_array().into_iter().flatten().flat_map(|g| {
+        g["models"].as_array().into_iter().flatten().map(move |m| json!({
+            "id":format!("{}/{}",string(g,"id"),string(m,"id")),
+            "label":format!("{} ({})",string(m,"name"),string(g,"name")),
+            "effort_options":m["reasoning"]["efforts"].as_array().into_iter().flatten().map(|e|e["id"].clone()).collect::<Vec<_>>()}))
+    }).collect()
+}
+
+/// Settings > Accounts: the resident host's catalog through its read-only
+/// `catalog` method. Never starts, restarts or reloads a host; without one
+/// the list is empty. The native default (agent-default-model) comes along.
+pub(crate) fn account_models(home: &Path) -> Value {
+    let catalog = rpc(&json!({"agent_home":home}), "catalog", json!({})).unwrap_or(Value::Null);
+    account_models_from(&catalog)
+}
+fn account_models_from(catalog: &Value) -> Value {
+    let models = model_options(catalog);
+    let default = &catalog["default"];
+    let model = match (string(default, "provider"), string(default, "model")) {
+        (provider, model) if !provider.is_empty() && !model.is_empty() => format!("{provider}/{model}"),
+        _ => String::new(),
+    };
+    json!({"models":models.iter().take(64).collect::<Vec<_>>(),"truncated":models.len()>64,
+        "provider_defaults":{"model":model,"effort":string(default,"reasoningEffort")}})
+}
+
 pub(super) fn notification_snapshot(record: &Value) -> Result<(Value, Option<Vec<Value>>)> {
     notification_snapshot_with(record, |method, params| rpc(record, method, params))
 }
@@ -1332,6 +1855,49 @@ fn interrupt_refusal(error: String) -> String {
     }
 }
 
+/// The native content of a message request: its text, interleaved with its
+/// image attachments and their references, in order.
+fn message_content(request: &Value) -> Result<Vec<Value>> {
+    let text = string(request, "text");
+    if text.len() > 65536 {
+        return Err("Message exceeds 64 KiB".into());
+    }
+    let files = request["attachments"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    let references = files
+        .iter()
+        .map(|f| string(f, "reference"))
+        .collect::<Vec<_>>();
+    attachments::validate_references(&references)?;
+    for file in &files {
+        if !["image/png", "image/jpeg", "image/webp", "image/gif"].contains(&string(file, "mime")) {
+            return Err("This DeepSeek composer supports image attachments; use the native UI for other files".into());
+        }
+    }
+    let mut content = Vec::new();
+    for part in attachments::ordered_parts(text, &references) {
+        match part {
+            attachments::MessagePart::Text(value) => {
+                if !value.trim().is_empty() {
+                    content.push(json!({"type":"text","text":value}));
+                }
+            }
+            attachments::MessagePart::Attachment(index) => {
+                let file = &files[index];
+                if !references[index].is_empty() && !text.contains(references[index]) {
+                    content.push(json!({"type":"text","text":references[index]}));
+                }
+                content.push(json!({"type":"image","mediaType":file["mime"],"data":file["data_base64"],"name":file["name"]}));
+            }
+        }
+    }
+    if content.is_empty() {
+        return Err("Message is empty".into());
+    }
+    Ok(content)
+}
 fn checked_request(record: &Value) -> Result<Value> {
     let mut bytes = Vec::new();
     io::stdin()
@@ -1385,7 +1951,7 @@ pub(super) fn session_action(name: &str, action: &str, new_name: Option<&str>, s
         "pause"=>record["paused"]=json!(true),
         "resume"=>{record["paused"]=json!(false);record["run_id"]=json!(uuid::Uuid::new_v4().to_string());record.as_object_mut().unwrap().remove("permissions_pending");},
         "rename"=>{notifications::anchor(&mut record);if storage::in_id_layout(&record) { recovery::rename_job_in_place(&record,new_name.unwrap())?; } else { recovery::rename_job(name,new_name.unwrap(),string(&record,"run_id"))?; } record["name"]=json!(new_name.unwrap());},
-        "forget"=>{PROVIDER.remove(&record)?;return Ok(());},
+        "forget"=>{remove(&record)?;return Ok(());},
         _=>unreachable!(),
     }
     save(&mut record)?;
@@ -1430,45 +1996,7 @@ pub(crate) fn dispatch(command: &str, args: &[String]) -> Result<i32> {
             if command == "send" {
                 let agent_id = string(&request, "agent_id");
                 let text = string(&request, "text");
-                if text.len() > 65536 {
-                    return Err("Message exceeds 64 KiB".into());
-                }
-                let files = request["attachments"]
-                    .as_array()
-                    .cloned()
-                    .unwrap_or_default();
-                let references = files
-                    .iter()
-                    .map(|f| string(f, "reference"))
-                    .collect::<Vec<_>>();
-                attachments::validate_references(&references)?;
-                for file in &files {
-                    if !["image/png", "image/jpeg", "image/webp", "image/gif"]
-                        .contains(&string(file, "mime"))
-                    {
-                        return Err("This DeepSeek composer supports image attachments; use the native UI for other files".into());
-                    }
-                }
-                let mut content = Vec::new();
-                for part in attachments::ordered_parts(text, &references) {
-                    match part {
-                        attachments::MessagePart::Text(value) => {
-                            if !value.trim().is_empty() {
-                                content.push(json!({"type":"text","text":value}));
-                            }
-                        }
-                        attachments::MessagePart::Attachment(index) => {
-                            let file = &files[index];
-                            if !references[index].is_empty() && !text.contains(references[index]) {
-                                content.push(json!({"type":"text","text":references[index]}));
-                            }
-                            content.push(json!({"type":"image","mediaType":file["mime"],"data":file["data_base64"],"name":file["name"]}));
-                        }
-                    }
-                }
-                if content.is_empty() {
-                    return Err("Message is empty".into());
-                }
+                let content = message_content(&request)?;
                 let receipt_path = root()
                     .join("dsh/receipts")
                     .join(format!("{}.json", string(&request, "request_id")));
@@ -1548,7 +2076,9 @@ pub(crate) fn dispatch(command: &str, args: &[String]) -> Result<i32> {
                 let (provider, model) = selected
                     .split_once('/')
                     .ok_or("Choose a native provider and model")?;
-                let mut params = json!({"sessionId":record["conversation_id"],"provider":provider,"model":model});
+                // A paused session resumes under the account permission mode.
+                let mode = crate::accounts::permission_mode(&crate::config::Config::load().map_err(|e|e.message)?,"native-dsh","dsh").map_err(|e|e.message)?;
+                let mut params = json!({"sessionId":record["conversation_id"],"provider":provider,"model":model,"permissionMode":mode});
                 if !string(&request, "effort").is_empty() {
                     params["reasoningEffort"] = request["effort"].clone();
                 }
@@ -1680,7 +2210,7 @@ pub(crate) fn dispatch(command: &str, args: &[String]) -> Result<i32> {
                 "pause",
                 json!({"sessionId":record["conversation_id"]}),
             )?;
-            PROVIDER.remove(&record)?;
+            remove(&record)?;
         }
         "exists" => return Ok(0),
         "schedules" => println!("{}", schedules(name, &record, &args[1..])?),
@@ -1697,6 +2227,80 @@ pub(crate) fn dispatch(command: &str, args: &[String]) -> Result<i32> {
 #[cfg(all(test, unix))]
 mod provider_failure_tests {
     use super::*;
+    #[test]
+    fn account_defaults_reach_only_the_created_generation_once() {
+        type Calls = Vec<(String, Value)>;
+        let run = |answer: &dyn Fn(&str) -> Result<Value>, persist_ok: bool| {
+            let mut record = json!({"conversation_id":"session-fixture"});
+            let (mut calls, mut saved): (Calls, Vec<Value>) = (Vec::new(), Vec::new());
+            let warning = apply_account_defaults_with(
+                &mut record,
+                (&json!("generation-a"), "bypass"),
+                "route/model",
+                "max",
+                |method, params| {
+                    calls.push((method.into(), params));
+                    answer(method)
+                },
+                |r| {
+                    saved.push(r["account_defaults"]["status"].clone());
+                    if persist_ok { Ok(()) } else { Err("read-only binding".into()) }
+                },
+            );
+            (record, calls, saved, warning)
+        };
+        let selected = json!({"provider":"route","model":"model","reasoningEffort":"max"});
+        let applied = |method: &str| Ok(if method == "ping" { json!({"generation":"generation-a"}) }
+            else { json!({"scope":"session","selected":selected}) });
+        // Pending is durable before the one scoped settings call on the same generation.
+        let (record, calls, saved, warning) = run(&applied, true);
+        assert!(warning.is_none());
+        assert_eq!(saved, [json!("pending"), json!("applied")]);
+        assert_eq!(calls.iter().map(|c| c.0.as_str()).collect::<Vec<_>>(), ["ping", "settings"]);
+        assert_eq!(calls[1].1, json!({"sessionId":"session-fixture","provider":"route","model":"model",
+            "generation":"generation-a","permissionMode":"bypass","reasoningEffort":"max"}));
+        assert_eq!(record["account_defaults"]["selected"], selected);
+        // A replaced host never receives settings: that would resume the session.
+        let moved = |_: &str| Ok(json!({"generation":"generation-b"}));
+        let (record, calls, saved, warning) = run(&moved, true);
+        assert_eq!(calls.len(), 1);
+        assert_eq!(saved, [json!("pending"), json!("failed")]);
+        assert!(warning.unwrap().contains("not applied"));
+        assert!(record["account_defaults"]["detail"].as_str().unwrap().contains("host changed"));
+        // A refusal is definite; a lost reply may have applied. Neither retries.
+        for (error, status) in [
+            ("This model is unavailable for the native account", "failed"),
+            (HOST_UNAVAILABLE, "failed"),
+            ("Native request delivery uncertain: timed out", "uncertain"),
+        ] {
+            let answer = |method: &str| if method == "ping" { Ok(json!({"generation":"generation-a"})) } else { Err(error.to_owned()) };
+            let (record, calls, saved, warning) = run(&answer, true);
+            assert_eq!(calls.len(), 2, "{error}");
+            assert_eq!(saved, [json!("pending"), json!(status)]);
+            assert_eq!(record["account_defaults"]["status"], status);
+            assert!(warning.is_some());
+        }
+        // Without a durable pending record nothing is sent.
+        let (_, calls, saved, warning) = run(&applied, false);
+        assert!(calls.is_empty());
+        assert_eq!(saved, [json!("pending")]);
+        assert!(warning.unwrap().contains("not applied"));
+    }
+
+    #[test]
+    fn account_catalog_lists_native_routes_and_the_native_default() {
+        let catalog = json!({"default":{"provider":"deepseek-official","model":"deepseek-flash"},
+            "groups":[{"id":"deepseek-official","name":"DeepSeek","models":[{"id":"deepseek-flash","name":"DeepSeek-V4.1-Flash",
+            "reasoning":{"efforts":[{"id":"off"},{"id":"low"},{"id":"high"},{"id":"max"}],"defaultEffort":"high"}}]}]});
+        let models = account_models_from(&catalog);
+        assert_eq!(models["models"], json!([{"id":"deepseek-official/deepseek-flash","label":"DeepSeek-V4.1-Flash (DeepSeek)",
+            "effort_options":["off","low","high","max"]}]));
+        assert_eq!(models["provider_defaults"], json!({"model":"deepseek-official/deepseek-flash","effort":""}));
+        let empty = account_models_from(&Value::Null);
+        assert_eq!(empty["models"], json!([]));
+        assert_eq!(empty["provider_defaults"], json!({"model":"","effort":""}));
+    }
+
     #[test]
     fn child_summaries_require_own_identity_and_one_host_generation() {
         let record=json!({"conversation_id":"parent"});
@@ -1866,6 +2470,41 @@ mod notification_tests {
 #[cfg(all(test, unix))]
 mod compatibility_tests {
     use super::*;
+
+    /// zerus-ppd26: the session that happens to start a native host is not
+    /// the session of any hosted agent, so the host never takes its markers.
+    #[test]
+    fn a_native_host_never_takes_the_markers_of_the_session_that_starts_it() {
+        let record = json!({"agent_home":"/nonexistent/hgs-native-home"});
+        let command = host_command(&record, Path::new("/nonexistent/hgs.patch.json"));
+        let envs: BTreeMap<String, Option<String>> = command
+            .get_envs()
+            .map(|(key, value)| {
+                (
+                    key.to_string_lossy().into_owned(),
+                    value.map(|v| v.to_string_lossy().into_owned()),
+                )
+            })
+            .collect();
+        for name in crate::state::backend::host::SESSION_CONTEXT.iter().chain(&[
+            "HGS_TERMINAL_NAME",
+            "HGS_SESSION",
+            "HGS_SESSION_ID",
+            "HGS_RUN_ID",
+            "HGS_AGENT",
+            "HGS_ACCOUNT_ID",
+        ]) {
+            assert_eq!(envs.get(*name), Some(&None), "{name} must be removed");
+        }
+        assert_eq!(
+            envs.get("DSH_HOME"),
+            Some(&Some("/nonexistent/hgs-native-home".to_owned()))
+        );
+        // The host belongs to this state root and configuration.
+        for kept in ["HGS_STATE_DIR", "HGS_CONFIG_DIR"] {
+            assert!(!envs.contains_key(kept), "{kept} must be inherited");
+        }
+    }
 
     #[test]
     fn startup_accepts_only_the_explicitly_reviewed_harness_releases() {

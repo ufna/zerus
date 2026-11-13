@@ -40,7 +40,8 @@ pub(in crate::teams::ops) fn observe_override(ctx: &mut Context<'_>, n: &Node) -
                         params![ctx.team.id, n.id],
                     )
                     .map_err(storage)?;
-                retire_stage(ctx, n.id)?;
+                // The current stage's own task ended: it ends here.
+                end_stage(ctx, n.id)?;
                 let target = ctx.node(target)?;
                 to_lead(
                     ctx,
@@ -105,21 +106,38 @@ pub(in crate::teams::ops) fn before_observation(
         )
         && observed_reopen(ctx, n.id)?
         && !ctx.reopening(n.id)?;
-    if (o.cancelled || o.stage == TaskStage::Done || reopened) && !team_ended_stage(ctx, n, o)? {
+    if o.cancelled || o.stage == TaskStage::Done {
+        task_ended(ctx, n, o.cancelled)?;
+    } else if reopened {
         observe_override(ctx, n)?;
     }
     if reopened {
         ctx.settle_override(n.id)?;
         ctx.advance(n.id, n)?;
         ctx.db.execute(&format!("UPDATE effects SET state='superseded' WHERE team=?1 AND node=?2 AND state IN {OPEN_EFFECT_STATES}"),params![ctx.team.id,n.id]).map_err(storage)?;
-        queue::set_hold(ctx, n.id, false)?;
+        queue::hand_back(ctx, n.id, false)?;
         ctx.event = Some("person_override");
     }
     Ok(())
 }
 
-fn team_ended_stage(ctx: &Context<'_>, n: &Node, o: &TaskObservation) -> Result<bool> {
-    if n.kind != NodeKind::Stage || (!o.cancelled && o.stage != TaskStage::Done) {
+/// What the end of a node's task does to its pipeline, whether the store
+/// learns it from an observation or from a recorded answer: a person's end
+/// overrides it (a stage hands its parent back to the lead, a task leaves
+/// its pipeline); a writer-produced end of a stage does not.
+pub(in crate::teams::ops) fn task_ended(
+    ctx: &mut Context<'_>,
+    n: &Node,
+    cancelled: bool,
+) -> Result<()> {
+    if !team_ended_stage(ctx, n, cancelled)? {
+        observe_override(ctx, n)?;
+    }
+    Ok(())
+}
+
+fn team_ended_stage(ctx: &Context<'_>, n: &Node, cancelled: bool) -> Result<bool> {
+    if n.kind != NodeKind::Stage {
         return Ok(false);
     }
     // A writer-produced end is not a person's override. Inspect only the
@@ -134,6 +152,6 @@ fn team_ended_stage(ctx: &Context<'_>, n: &Node, o: &TaskObservation) -> Result<
         return Ok(false);
     };
     Ok(generation == ctx.generation(n.id)?
-        && kind == if o.cancelled { "cancel" } else { "accept" }
+        && kind == if cancelled { "cancel" } else { "accept" }
         && !person)
 }

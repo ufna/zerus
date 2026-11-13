@@ -191,6 +191,7 @@ pub fn merge_admitted<T>(
 #[cfg(test)]
 thread_local! {
     pub(crate) static BEFORE_ADMISSION: std::cell::RefCell<Option<Box<dyn FnOnce()>>> = const {std::cell::RefCell::new(None)};
+    pub(crate) static BEFORE_REF_TURN: std::cell::RefCell<Option<Box<dyn FnOnce()>>> = const {std::cell::RefCell::new(None)};
     pub(crate) static BEFORE_REF_WRITE: std::cell::RefCell<Option<Box<dyn FnOnce()>>> = const {std::cell::RefCell::new(None)};
 }
 
@@ -330,9 +331,20 @@ fn merge_git<T>(
     before_update();
     git.available(&reference)?;
     let reflog = format!("Zerus: merge {incoming}: {message}");
+    // Reserve the process turn before taking the store's write fence.
+    // A failed turn wait is a proven non-start with its own retry outcome.
+    #[cfg(test)]
+    if let Some(hook) = BEFORE_REF_TURN.with(|s| s.borrow_mut().take()) {
+        hook();
+    }
+    #[cfg(unix)]
+    let turn = crate::platform::spawn_turn_before(
+        git.deadline
+            .min(Instant::now() + git.ref_budget.unwrap_or(Duration::from_secs(30))),
+        &|| false,
+    )
+    .map_err(|error| unavailable(format!("Git ref writer did not start: {error:?}")))?;
     let admission = admit()?;
-    // Only the admitted ref writer gets this short bound. Plain merge and
-    // sync callers keep their existing shared Git deadline.
     let ref_deadline = git
         .ref_budget
         .map(|budget| git.deadline.min(Instant::now() + budget))
@@ -341,7 +353,7 @@ fn merge_git<T>(
     if let Some(hook) = BEFORE_REF_WRITE.with(|s| s.borrow_mut().take()) {
         hook();
     }
-    let output = git.run_until(
+    let output = git.run_prepared(
         &[
             "update-ref",
             "--no-deref",
@@ -352,6 +364,8 @@ fn merge_git<T>(
             &old,
         ],
         ref_deadline,
+        #[cfg(unix)]
+        Some(turn),
     );
     drop(admission);
     let output = output?;
@@ -380,14 +394,21 @@ pub fn sync_base(repo: &Repo, branch: &str, base_branch: &str) -> Result<Merge, 
     )
 }
 
+/// The outer deadline of one Git: every command of a report, a merge or a
+/// sync shares it. Tests open Git with the same value unless a fixture's
+/// budget lengthens it for one deliberately huge case.
+const GIT_BUDGET: Duration = Duration::from_secs(30);
+
 fn unavailable(message: impl Into<String>) -> Problem {
     Problem::new(code::INTEGRATION_UNAVAILABLE, message)
 }
 
+/// Git's own words, which can quote a branch, a path or a hook's output:
+/// cleaned to one bounded line before they reach any card (zerus-63rru.59).
 fn git_failure(output: &Output) -> Problem {
     unavailable(format!(
         "Git refused integration: {}",
-        String::from_utf8_lossy(&output.stderr).trim()
+        super::clean::sentence(&String::from_utf8_lossy(&output.stderr), 1024)
     ))
 }
 
@@ -461,7 +482,18 @@ impl Git {
             overrides: Vec::new(),
             filters: BTreeSet::new(),
             repository_drivers: false,
-            deadline: Instant::now() + Duration::from_secs(30),
+            // One deadline covers every command of this Git. Only a test
+            // fixture can lengthen it, for a deliberately huge case.
+            deadline: Instant::now() + {
+                #[cfg(test)]
+                {
+                    tests::budget()
+                }
+                #[cfg(not(test))]
+                {
+                    GIT_BUDGET
+                }
+            },
             ref_budget: None,
         };
         if !supported_version(&git.read(&["--version"])?) {
@@ -574,12 +606,14 @@ impl Git {
         self.run_until(args, self.deadline)
     }
     fn run_until(&self, args: &[&str], deadline: Instant) -> Result<Output, Problem> {
-        // A deadline already elapsed is proof that no writer was launched.
-        if Instant::now() >= deadline {
-            return Err(unavailable(
-                "Git deadline passed before starting the command",
-            ));
-        }
+        self.run_prepared(
+            args,
+            deadline,
+            #[cfg(unix)]
+            None,
+        )
+    }
+    fn command(&self, args: &[&str]) -> Command {
         let mut command = Command::new(&self.program);
         for (key, _) in std::env::vars_os() {
             if key.to_string_lossy().starts_with("GIT_")
@@ -626,13 +660,48 @@ impl Git {
             .env("SSH_ASKPASS_REQUIRE", "never");
         #[cfg(test)]
         tests::configure(&mut command, args.first().copied());
-        let (status, stdout, stderr) = crate::platform::run_bounded(
+        command
+    }
+    fn run_prepared(
+        &self,
+        args: &[&str],
+        deadline: Instant,
+        #[cfg(unix)] turn: Option<std::sync::MutexGuard<'static, ()>>,
+    ) -> Result<Output, Problem> {
+        if Instant::now() >= deadline {
+            return Err(unavailable(
+                "Git deadline passed before starting the command",
+            ));
+        }
+        let mut command = self.command(args);
+        #[cfg(all(test, unix))]
+        let cancelled = tests::driver_clock::timed_out;
+        #[cfg(not(all(test, unix)))]
+        let cancelled = || false;
+        #[cfg(unix)]
+        let result = match turn {
+            Some(turn) => crate::platform::run_bounded_in_turn(
+                &mut command,
+                [8 * 1024 * 1024, 64 * 1024],
+                deadline,
+                &cancelled,
+                turn,
+            ),
+            None => crate::platform::run_bounded(
+                &mut command,
+                [8 * 1024 * 1024, 64 * 1024],
+                deadline,
+                &cancelled,
+            ),
+        };
+        #[cfg(not(unix))]
+        let result = crate::platform::run_bounded(
             &mut command,
             [8 * 1024 * 1024, 64 * 1024],
             deadline,
-            &|| false,
-        )
-        .map_err(|error| {
+            &cancelled,
+        );
+        let (status, stdout, stderr) = result.map_err(|error| {
             // Spawn proves non-start. Stopped is opaque: on Unix it also
             // covers time spent waiting for the spawn turn. Do not infer that
             // a writer started, or permit retry, from that unknown outcome.
@@ -859,6 +928,8 @@ fn protects_branch(admin: &Path, reference: &str, deadline: Instant) -> Result<b
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
+    mod r3;
     use super::*;
     use sha2::{Digest, Sha256};
     use std::cell::{Cell, RefCell};
@@ -889,12 +960,33 @@ mod tests {
     }
 
     thread_local! { static PROGRAM: RefCell<Option<PathBuf>> = const {RefCell::new(None)}; }
+    thread_local! { static BUDGET: Cell<Option<Duration>> = const { Cell::new(None) }; }
+    /// The outer deadline of a Git opened on this thread: the production
+    /// [`GIT_BUDGET`] unless a fixture's [`Budget`] lengthens it.
+    pub(super) fn budget() -> Duration {
+        BUDGET.with(|budget| budget.get()).unwrap_or(GIT_BUDGET)
+    }
+    /// A longer outer Git deadline for this thread while the guard lives.
+    struct Budget(Option<Duration>);
+    impl Budget {
+        fn set(budget: Duration) -> Self {
+            Self(BUDGET.with(|slot| slot.replace(Some(budget))))
+        }
+    }
+    impl Drop for Budget {
+        fn drop(&mut self) {
+            BUDGET.with(|slot| slot.set(self.0));
+        }
+    }
     pub(super) fn program() -> PathBuf {
         PROGRAM
             .with(|p| p.borrow().clone())
             .unwrap_or_else(|| PathBuf::from("git"))
     }
     thread_local! { static CONFIG: RefCell<Option<Config>> = const { RefCell::new(None) }; }
+
+    #[cfg(unix)]
+    pub(super) mod driver_clock;
 
     struct ConfigGuard(Option<Config>);
 
@@ -1891,30 +1983,36 @@ mod tests {
         let cwd = f.root.path().join("driver-cwd");
         let primary_temps = f.root.path().join("primary-temps");
         let own_temps = f.root.path().join("driver-temps");
+        let ready = f.root.path().join("driver-ready");
         let driver = f.root.path().join("driver");
         let finish = if timeout {
             "exec sleep 5\n"
         } else {
             "cat \"$3\" > \"$2\"\n"
         };
-        executable(&driver, &format!("#!/bin/sh\npwd -P > '{}'\nfor file in '{}'/.merge_file_*; do\n if [ -e \"$file\" ]; then printf found >> '{}'; fi\ndone\nfor file in .merge_file_*; do\n if [ -e \"$file\" ]; then printf found >> '{}'; fi\ndone\nprintf temporary > driver-output\n{finish}", cwd.display(), f.main.display(), primary_temps.display(), own_temps.display()));
+        executable(&driver, &format!("#!/bin/sh\npwd -P > '{}'\nfor file in '{}'/.merge_file_*; do\n if [ -e \"$file\" ]; then printf found >> '{}'; fi\ndone\nfor file in .merge_file_*; do\n if [ -e \"$file\" ]; then printf found >> '{}'; fi\ndone\nprintf temporary > driver-output\nprintf ready > '{}'\n{finish}", cwd.display(), f.main.display(), primary_temps.display(), own_temps.display(), ready.display()));
         f.personal(
             &f.config.global,
             "merge.personal.driver",
             &format!("'{}' %O %A %B", driver.display()),
         );
         let before = (f.refs(), snapshot(&f.main));
-        let mut git = Git::repo(&f.repo).unwrap();
-        if timeout {
-            git.deadline = Instant::now() + Duration::from_secs(1);
-        }
+        let git = Git::repo(&f.repo).unwrap();
+        // Startup keeps Git's normal outer bound; this test's stop clock
+        // starts only after the driver has written all its evidence.
+        let clock = timeout.then(|| driver_clock::Clock::arm(ready));
         let result = merge_git(&git, "integrate/team", &member, "Accept", || {}, || Ok(()));
         if timeout {
+            assert!(
+                clock.as_ref().unwrap().expired(),
+                "the driver must start and time out"
+            );
             assert_eq!(result.unwrap_err().code, "integration_unavailable");
             assert_eq!(f.refs(), before.0);
         } else {
             assert!(matches!(result.unwrap(), Merge::Merged { .. }));
         }
+        drop(clock);
         let actual = PathBuf::from(fs::read_to_string(cwd).unwrap().trim_end());
         assert_ne!(actual, f.main.canonicalize().unwrap());
         assert!(
@@ -2005,6 +2103,11 @@ mod tests {
             &["update-ref", "refs/heads/main", &commit, &f.base],
         );
         git(&f.main, &["config", "filter.unused.clean", "cat"]);
+        // Each report below runs about 440 Git processes under one outer
+        // deadline: 7 seconds of the production 30 on an idle machine, all of
+        // it on a loaded one. This case is about the batches, not the
+        // machine's speed, so its deadline is one no slow machine reaches.
+        let _budget = Budget::set(Duration::from_secs(600));
         let before = (f.refs(), snapshot(&f.main));
         assert_eq!(
             reported_commit(&f.main).unwrap(),
@@ -2028,6 +2131,21 @@ mod tests {
             "integration_unavailable"
         );
         assert_eq!(before, (f.refs(), snapshot(&f.main)));
+    }
+
+    /// A Git opened through the product path, with no fixture budget, has
+    /// the production thirty seconds.
+    #[test]
+    fn a_git_without_a_fixture_budget_has_the_production_thirty_seconds() {
+        let f = Fixture::new();
+        let before = Instant::now();
+        let git = Git::repo(&f.repo).unwrap();
+        let after = Instant::now();
+        let thirty = Duration::from_secs(30);
+        assert!(
+            git.deadline >= before + thirty && git.deadline <= after + thirty,
+            "the outer deadline is not thirty seconds from the opening"
+        );
     }
 
     #[test]
@@ -2379,6 +2497,19 @@ mod tests {
         );
     }
     #[cfg(unix)]
+    struct TimedAdmission<'a>(
+        Option<crate::teams::store::actor_reads::Admission>,
+        Instant,
+        &'a Cell<Option<Duration>>,
+    );
+    #[cfg(unix)]
+    impl Drop for TimedAdmission<'_> {
+        fn drop(&mut self) {
+            drop(self.0.take());
+            self.2.set(Some(self.1.elapsed()));
+        }
+    }
+    #[cfg(unix)]
     #[test]
     fn an_admitted_ref_update_releases_the_store_within_its_five_second_budget() {
         let f = Fixture::new();
@@ -2396,13 +2527,14 @@ mod tests {
                 seen.set(true);
             }))
         });
-        let started = Instant::now();
+        let held = Cell::new(None);
         let result = with_fixture_git(&f, "hung-ref", || {
             merge_admitted(&f.repo, "teams/held", &incoming, "Admitted fixture", || {
-                crate::teams::store::Store::open(h.temp.path())?.admission()
+                let guard = crate::teams::store::Store::open(h.temp.path())?.admission()?;
+                Ok(TimedAdmission(Some(guard), Instant::now(), &held))
             })
         });
-        let elapsed = started.elapsed();
+        let elapsed = held.get().expect("the admission was taken and released");
         assert!(mark.get());
         assert_eq!(result.unwrap_err().code, code::DELIVERY_UNCERTAIN);
         let db = rusqlite::Connection::open(h.temp.path().join("teams/teams-v1.sqlite3")).unwrap();
@@ -2416,5 +2548,45 @@ mod tests {
             elapsed < Duration::from_secs(8),
             "the store remained held for {elapsed:?}"
         );
+    }
+
+    /// Git's error output quotes what it was given: a name with terminal
+    /// control sequences and a line break reaches the message as one clean,
+    /// bounded line (zerus-63rru.59).
+    #[test]
+    fn gits_own_words_reach_a_failure_as_one_clean_line() {
+        let f = Fixture::new();
+        let git = Git::repo(&f.repo).unwrap();
+        let hostile = format!("nope\u{1b}[31m\u{7}\nforged line{}", "x".repeat(3000));
+        let output = git.run(&["cat-file", "-t", &hostile]).unwrap();
+        assert!(!output.status.success());
+        // Git turns the name's escape and bell into "?" but keeps its line
+        // break: the message would carry a second line.
+        let raw = String::from_utf8_lossy(&output.stderr);
+        assert!(raw.contains("\nforged line"), "{raw:?}");
+        let message = success(output).unwrap_err().message;
+        assert!(
+            message.starts_with("Git refused integration: "),
+            "{message}"
+        );
+        assert!(!message.chars().any(char::is_control), "{message:?}");
+        assert!(message.contains(" forged line"), "{message}");
+        assert!(message.len() <= "Git refused integration: ".len() + 1024);
+    }
+
+    /// A name with a right-to-left override, as Git echoes it: the override
+    /// is gone from the failure's sentence (zerus-63rru.59).
+    #[test]
+    fn gits_words_lose_a_bidirectional_override() {
+        let f = Fixture::new();
+        let git = Git::repo(&f.repo).unwrap();
+        let output = git
+            .run(&["cat-file", "-t", "invoice_\u{202E}fdp.exe"])
+            .unwrap();
+        assert!(!output.status.success());
+        assert!(String::from_utf8_lossy(&output.stderr).contains("\u{202E}"));
+        let message = success(output).unwrap_err().message;
+        assert!(!message.contains("\u{202E}"), "{message:?}");
+        assert!(message.contains("invoice_fdp.exe"), "{message}");
     }
 }

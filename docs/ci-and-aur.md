@@ -404,6 +404,11 @@ model and effort in a fresh session, accepts Claude's own cache
 notice in a resumed conversation, and requires the session-only transcript
 receipt while `settings.json` stays unchanged. A session-only change made in
 Terminal must reach hgs through `PostModelSwitch` with the exact model ID.
+The served-catalog cases use a private TLS proxy that never forwards traffic,
+fixture credentials and a temporary process-local CA. They cover a hidden model
+under **More models**, full-name picker rows, ordinary and effort-only changes,
+failure cleanup and existing-ID cancellation without replay. Every settings or
+effort request checks that the complete account `settings.json` is unchanged.
 `tests/test_claude_statusline_native.py` starts the real TUI through a tracked
 `hgs claude` launch, with the private home, state folder and socket and the
 loopback API of `tests/model_api_fixture.py`. Claude 2.1.296 and 2.1.308 coverage requires the
@@ -1340,6 +1345,213 @@ Windows target, which is clean today; Linux-only modules are not linted.
 Logs are under ignored
 `artifacts/test-results/`; packaging outputs are under ignored `artifacts/` and
 `dist/`.
+
+### Agent Teams real agents
+
+`tests/test_teams_native.py` checks the Agent Teams milestone 1 against the real
+agents. It is selected separately: `scripts/ci/agent-compatibility.py --contract teams`
+runs it for Claude Code and Codex, and `scripts/ci/kimi-native.py --teams` runs its
+Kimi class. Both run in the **Agent Teams real agents** workflow (`teams-native.yml`)
+on pull requests and main pushes that change a component the contract can catch
+drifting (`src/**`, `crates/**`, `client/core/**`, the Cargo files) or a script, test
+or fixture it runs, and on demand, on the public repository only. The workflow is not
+part of the Dev gate or of Nightly: a red run is visible and holds nothing back.
+
+- **Selection.** Each agent gets the same one latest official release as ordinary
+  CI, with the same checked fetch. There is no Effort seed and no
+  terminal-geometry matrix, and no other job's timing changes.
+- **Static tests.** Run the suite's static parts from the repository root with the
+  tests folder on the path, as `scripts/ci/python-tests.py` does:
+  `PYTHONPATH=tests python3 -m unittest test_ci_security test_kimi_native_ci
+  test_agent_compatibility test_teams_native`. The native classes skip without a pinned
+  agent.
+- **Setup.** Each class creates one private root (`hgs-tn-*` in `TMPDIR`)
+  with:
+  - `HOME`, every XDG folder and a 0700 `XDG_RUNTIME_DIR`;
+  - `HGS_STATE_DIR` and `HGS_CONFIG_DIR`;
+  - the agents' account homes;
+  - an existing 0700 `TMUX_TMPDIR`;
+  - a D-Bus address naming a missing socket;
+  - `PATH` limited to the root's wrappers and the system folders.
+
+  It then starts a private `hgs desktop serve --background` with the Teams preview
+  turned on by the person, and creates one team: a lead and one member of the agent
+  under test. The service launches both.
+- **Model.** A keyless loopback fixture (`tests/model_api_fixture.py`) answers text,
+  or a scripted shell step for a delivered task prompt or a typed `ZT-RUN <step>`.
+  No account and no model quota are used, and only fixture keys exist in the root.
+
+It runs these steps in order:
+
+1. **Launch and identity.** The launch binds by launch ID, and the session record
+   carries the store's ownership nonce and worktree. The native process is the
+   pinned image under the production supervisor. The role's model and effort reach
+   its argv. The service writes the member's parent link once the lead has a
+   conversation. Codex starts its conversation at the first message, so for Codex the
+   person's first message to each session comes before this check.
+2. **Delivery and the member's shell.** `team-deliver` puts the prompt into the
+   member exactly once. The prompt pins `report-attempt` exactly once and
+   `begin-attempt` at most once (only while the product's task controls are on; off
+   today), and the case records which form it met. The member's own tool shell runs
+   every pinned command: it acknowledges with `begin-attempt` when one is pinned,
+   passes the caller proof (`hgs team current` names the member), is refused the
+   lead's inbox, and reports with `report-attempt`.
+3. **The lead's doorbell.** The lead gets one message naming the inbox, with none
+   of the item's text, and its own shell reads the inbox as the lead.
+4. **The cancel notice.** The lead cancels a delivered task from its shell, and the
+   member gets the existing notice once.
+5. **Stop and Terminate.** Unless a task is still unfinished, the step adds one, so
+   the stop has an unfinished node. The person's team stop ends no agent, while the service cancels the stopped
+   team's nodes. Terminate ends the member's process and
+   archives its run.
+
+The person answers each startup card the way the product offers it:
+
+- Claude's and Kimi's folder trust, and Codex's Folder access, through `hgs answer`;
+- Codex's hooks review through `hgs answer`. It shows once per account: after "Trust
+  all and continue", a second session on the same account does not show it.
+
+Further classes repeat the same bring-up with one of the team's delegations on:
+
+- **Codex folder trust by the standing confirmation** (`NativeTeamsTrustCodex`,
+  `confirm_trust`, selected). Every member worktree is a linked worktree, so Codex's
+  Folder access panel carries its Git-root note and asks "Trust this Git
+  repository?". The standing confirmation refuses that scope: it records no grant
+  and leaves a card naming the member, and the person then answers the panel through
+  `hgs answer`. The case reads which panel the pane showed (a folder of up to 76
+  columns fills one row): a hosted runner, whose root in `/tmp` is short, must show
+  the one-row panel and a local run the wrapped one.
+- **Resume of an exited member** (`NativeTeamsResumeClaude` and
+  `NativeTeamsResumeCodex`, `resume_exited`, selected; the person answers folder
+  trust). The member works once
+  (the person's message and its answer), so its conversation is persisted. When its
+  agent then exits by itself (`/exit`; Codex `/quit`), the service resumes it in a new run of the same
+  launch and conversation, it gets its brief once, and the audit records `team_resume`. A member
+  the person terminates is refused with a card and no audit row, and no run of its
+  launch is live.
+- **A Claude Code member that exits before any message**
+  (`NativeTeamsResumeUnworkedClaude`, `resume_exited`, selected). It has no persisted
+  conversation, so the service's restore is refused before launch. Nothing of its
+  launch starts, and the person's card carries the command's own reason ("persisted
+  conversation is missing or empty"). The person's own Restore of that archive is
+  recorded beside it.
+
+Written and waiting: `WAITING` in the module lists these, and the contract does not
+select them until their fixes land.
+
+| Case | Waits for |
+|---|---|
+| Claude Code folder trust by the standing confirmation (`NativeTeamsTrustClaude`, two members pinned to one account): the service answers each member's startup folder trust with one audit grant. What Claude Code 2.1.322 records is pinned as observed: the account holds exactly the main checkout as trusted and no worktree key, and the later worktree on the same account still shows its card. Then each member asks an ordinary question: it stays pending for the person, with no card and no grant, and its member is not free while it is open | `zerus-63rru.66` (the owner's decision on the scope Claude Code records) and `zerus-63rru.73` (an ordinary question is taken as a trust candidate today) |
+| An ordinary question after no startup card (`NativeTeamsQuestionAfterTrustClaude`): the person has trusted the main checkout on both Claude accounts first; the question plans nothing, no card and no grant | `zerus-63rru.73` (today it opens one notice card) |
+| A member whose agent runs its shell in a private PID namespace (`waiting_6_a_member_shell_in_a_private_pid_namespace`, written down, not built): its report and team commands are refused with the refusal that names the separate process namespace and its remedy, no report is recorded, and the lead is told | `zerus-63rru.76` (the caller proof cannot see the agent's recorded process; the named refusal comes with the other stream's next sync to main) |
+
+#### Isolation
+
+Each class checks its own isolation and fails rather than skipping:
+
+- **tmux.** A `tmux` wrapper first on `PATH` logs every call and refuses any call
+  that names no server inside the root. It resolves symbolic links before judging:
+  an existing socket path must resolve inside the root, and a path that does not
+  exist yet is judged by its nearest existing ancestor. A link from the private
+  folder to another server therefore never reaches tmux.
+- **Account name.** The suite's children never see the runner's account name:
+  `USER` and `LOGNAME` are the fixture value `teams-fixture`, and the preflight fails
+  if the real name is the value of any variable.
+- **Shims.** `ssh`, `scp`, `systemd-run` and `hgs` are refusing shims: nothing
+  reaches another computer, the user manager or an installed hgs. The build under
+  test runs only by its absolute path.
+- **Preflight.** Before anything starts, a preflight checks every path, the absent
+  session and display variables and the wrappers' resolution.
+- **Account homes.** Every account home that the launch inspects is configured,
+  including the always-listed native ones (`HOME/.claude`, `HOME/.codex`,
+  `HOME/.kimi-code`): auto-update off, plugins off and the provider's base URL on
+  loopback where the agent allows it.
+- **Teardown.** It terminates the team's sessions as the person, stops the service
+  (exit 0 on SIGTERM) and ends the private tmux server. It then requires that no
+  process refers to the root by its working folder, executable or environment.
+  Otherwise the root is kept and the class fails.
+- **A killed run.** A run killed after a session started (the row's bound, a
+  cancelled job) runs no teardown. What remains is the evidence written as it goes:
+  the calls, waits, census, model requests, account inspection, preflight, and the
+  tmux and shim logs, which the wrappers write straight into the uploaded evidence
+  folder. There is no archive of the private root. The hosted Kimi runner records the
+  root in its custody file as soon as it exists, but its retention refuses the
+  sockets a killed session leaves behind, which is that campaign's reviewed rule. The
+  Claude Code and Codex job uploads only the evidence folder. A runner killed directly
+  (SIGKILL) also leaves the private desktop service and its tmux server running, since
+  the suite has no handler for it: locally the transient user unit's cgroup ends them
+  when the unit stops, and on a hosted runner the runner's end does.
+- **Network census.** Once a second, a census lists the TCP and UDP peers of the
+  class's own processes: the descendants of the test process and of the private
+  tmux server. Any peer that is neither loopback nor an address of an allow-listed
+  host fails the class. The census is sampled: a connection opened and closed
+  between two samples is not seen.
+
+| Agent | Allowed host | Contacted with these switches set |
+|---|---|---|
+| Claude Code | `downloads.claude.ai` | `DISABLE_AUTOUPDATER=1` and `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1` in its environment and settings, `autoUpdates: false`; once per session start |
+| Codex | `raw.githubusercontent.com`, `ab.chatgpt.com` | `check_for_update_on_startup=false`, `[features] plugins=false`, `chatgpt_base_url` on loopback |
+| Kimi Code | none | `KIMI_CODE_NO_AUTO_UPDATE=1`, `KIMI_DISABLE_TELEMETRY=1`, `tui.toml` `auto_install=false`, platform URL on loopback |
+
+#### Kimi account inspection
+
+Kimi signs an account in only through `api.kimi.com`. The Kimi class therefore puts
+an expiring fixture token in the account home and a logged `node` stand-in on `PATH`
+for the one call `hgs account inspect` makes to refresh it. The stand-in prints a
+value its producer, `src/accounts/kimi-read.mjs`, writes: a signed-in profile with no
+usage windows, built from the producer's starting object by changing named keys
+only. `TeamsFixtureProducers` compares it with that file, so a key the producer does
+not write fails. Kimi's account choice is
+not evidence here (a loopback inspection seam is a follow-up for the accounts owner); everything after it
+is the real Kimi image. `kimi-native.py --teams` runs only on a disposable
+GitHub-hosted runner. It runs the class in a child of its own under a 2400-second
+bound and sets the `ZERUS_TEAMS_KIMI_HOSTED` marker, without which the class skips.
+A skip is reported as no evidence.
+Kimi Code's steps 2 to 4 (delivery and the member's shell, the doorbell, the cancel
+notice) are selected but not yet proven: no hosted run has carried them yet, and their
+first proof is the first hosted run. Until then they count as no evidence.
+
+#### Bounds
+
+Every wait names what it waits for and has its own bound, about three times the
+duration measured on a loaded development host; the upstream canary has no Teams
+step yet. Measured on 2026-11-12 with Claude Code 2.1.322 and Codex 0.167.2, over
+seven passing runs:
+
+| Wait | Measured | Bound |
+|---|---|---|
+| Lead and member bound by launch ID | 129–141 s | 420 s |
+| Ready after the person's startup answers | 3.5–11 s | 360 s |
+| A Codex conversation started by its first message | 0.8–3 s | 180 s |
+| Parent link written by the service | 26–53 s | 200 s |
+| The service's cancel and key clear after a stop | 2 s | 180 s |
+| One whole run | 215–230 s | 2400 s (the row) |
+ Each wait logs its measured duration as a `ZERUS_TEAMS_WAIT=` line and in
+`waits.jsonl`, so a bound can be tightened from evidence. The row's bound is 2400
+seconds. Locally, run the contract outside any agent session, for example in a
+`systemd-run --user` unit with `env -i` and `USER=teams-fixture LOGNAME=teams-fixture`:
+the Teams caller proof refuses a person command below a live agent.
+
+#### Not covered in milestone 1
+
+- **DeepSeek and OpenCode members:** a resident host serves those sessions, so the
+  caller proof cannot bind their commands to them. Team creation refuses them until
+  the per-call token lands.
+- **macOS:** not run in this milestone. The Mac is not used for packages, Codex has
+  no darwin package in the runner, and the marked path with the hardened release
+  `hgs` is unobserved on a Mac.
+- **Windows:** the caller proof refuses every caller there, so the preview cannot be
+  turned on.
+- **Uncertain outcomes** (unknown delivery, answer or launch): a real agent cannot
+  produce them honestly. They are not agent behaviour and stay with the package
+  fakes.
+- **Timers past their first firing:** they are agent-independent and stay with the
+  package fakes.
+- **The waiting cases:** Claude Code folder trust by the standing confirmation, for
+  the owner's decision `zerus-63rru.66` and for `zerus-63rru.73`, and an ordinary
+  question after no startup card, for `zerus-63rru.73`. The cases exist and are not
+  selected. A member shell in a private PID namespace (`zerus-63rru.76`) is written
+  down as a waiting case and not yet built.
 
 ## Automatic nightly publication
 

@@ -151,6 +151,32 @@ fn deepseek() -> std::result::Result<Vec<Named>, Unread> {
     Err(Unread::Unreadable)
 }
 
+/// What the host folder of one agent home names, by the same record rules
+/// and reads as [`hosts`] (zerus-ppd26 Part B): the hosted caller proof reads
+/// only the host its session's binding selects. A state folder, `dsh`,
+/// `hosts` or host folder that does not exist names no host; one that exists
+/// but cannot be read refuses.
+#[cfg(unix)]
+pub(super) fn deepseek_home(agent_home: &str) -> std::result::Result<Vec<Named>, &'static str> {
+    let state_root = match std::fs::canonicalize(storage::root()) {
+        Ok(root) => root,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(_) => return Err(UNREADABLE),
+    };
+    let root = Directory::open(&state_root).map_err(|_| UNREADABLE)?;
+    let Some(dsh) = optional_child(&root, "dsh").map_err(|_| UNREADABLE)? else {
+        return Ok(Vec::new());
+    };
+    let Some(hosts) = optional_child(&dsh, "hosts").map_err(|_| UNREADABLE)? else {
+        return Ok(Vec::new());
+    };
+    let key = crate::state::dsh::host_key(agent_home);
+    let Some(folder) = optional_child(&hosts, &key).map_err(|_| UNREADABLE)? else {
+        return Ok(Vec::new());
+    };
+    host(&folder, boot().as_deref())
+}
+
 /// This boot's identity through the very read that stamps the records,
 /// `dsh/host_identity.rs`'s own, so the reader and the writer cannot drift
 /// apart. A read that fails sets nothing aside.

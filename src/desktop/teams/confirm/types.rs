@@ -42,6 +42,11 @@ pub(super) struct Snapshot {
     pub exit_identity: String,
     pub archive: Option<String>,
     pub receipt_at: Option<i64>,
+    /// When the archive's own inspection does not offer a restore, its reason
+    /// (zerus-63rru.62). Absent otherwise; a stored row without it reads as
+    /// absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub restore_refusal: Option<String>,
     pub questions: Vec<Value>,
 }
 

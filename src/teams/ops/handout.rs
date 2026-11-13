@@ -8,8 +8,28 @@ pub(super) struct Effect {
     pub state: String,
     pub outcome: Option<String>,
 }
+/// Who holds the node's attempt, by the store's one rule (the attempt
+/// holder that the queue row shows): a hand-out that was only reserved, or
+/// was refused or superseded, holds nothing.
 pub(super) fn holder(ctx: &Context<'_>, node: u32) -> Result<Option<String>> {
-    ctx.db.query_row("SELECT member FROM effects WHERE team=?1 AND node=?2 AND generation=?3 ORDER BY seq DESC LIMIT 1",params![ctx.team.id,node,ctx.generation(node)?],|r|r.get(0)).optional().map_err(storage)
+    Ok(crate::teams::store::holder_of(ctx.db, &ctx.team.id, node)?.map(|h| h.member))
+}
+/// The member the newest effect of the current generation went to, unless
+/// that effect is known refused or superseded (the store's `NOT_RECEIVED`).
+/// A member's own report or question proves the delivery and may arrive
+/// before the hand-out's outcome is recorded, so it is admitted against
+/// this, not against the holder: the two differ in a reserved effect alone.
+pub(super) fn recipient(ctx: &Context<'_>, node: u32) -> Result<Option<String>> {
+    ctx.db.query_row(&format!("SELECT CASE WHEN state IN {} THEN NULL ELSE member END FROM (SELECT member,state FROM effects WHERE team=?1 AND node=?2 AND generation=?3 ORDER BY seq DESC LIMIT 1)",crate::teams::store::NOT_RECEIVED),params![ctx.team.id,node,ctx.generation(node)?],|r|r.get::<_,Option<String>>(0)).optional().map(Option::flatten).map_err(storage)
+}
+/// The member a Return or Reassign reopens the node for: a Reassign's
+/// assignee, a Return's holder.
+pub(super) fn reopen_target(ctx: &Context<'_>, node: u32, kind: &str) -> Result<Option<String>> {
+    if kind == "reassign" {
+        Ok(ctx.node(node)?.assignee)
+    } else {
+        holder(ctx, node)
+    }
 }
 pub(super) fn intent(ctx: &mut Context<'_>) -> Result<()> {
     let Operation::HandoutIntent {
@@ -107,8 +127,10 @@ pub(super) fn reopen_intent(ctx: &mut Context<'_>) -> Result<()> {
         unreachable!()
     };
     let n = ctx.live_node(*node)?;
-    if !has_attempt(ctx, *node)? {
-        return Err(invalid("Reopen requires a recorded earlier attempt."));
+    if !in_hands(ctx, *node)? {
+        return Err(invalid(
+            "Reopen requires a task in somebody's hands; the hand-out follows instead.",
+        ));
     }
     let (seq, kind, state) = ctx
         .pending(*node)?
@@ -116,11 +138,7 @@ pub(super) fn reopen_intent(ctx: &mut Context<'_>) -> Result<()> {
     if !matches!(kind.as_str(), "return" | "reassign") || state != DecisionState::Pending {
         return Err(invalid("Reopen was already reserved or is not requested."));
     }
-    let target = if kind == "reassign" {
-        n.assignee.clone()
-    } else {
-        holder(ctx, *node)?
-    };
+    let target = reopen_target(ctx, *node, &kind)?;
     if target.as_deref() != Some(member) {
         return Err(invalid(
             "Reopen recipient differs from the decision's holder.",
@@ -169,6 +187,9 @@ fn record_outcome(
     kind: &str,
 ) -> Result<()> {
     let e = read_effect(ctx, id)?;
+    if matches!(outcome, HandoutOutcome::HandedBack { .. }) && kind != "reopen" {
+        return Err(invalid("Only a reopen is handed back to the lead."));
+    }
     if e.kind != kind || e.outcome.is_some() {
         return Err(invalid(
             "Effect kind differs or its outcome was already recorded.",
@@ -192,6 +213,7 @@ fn record_outcome(
             params![ctx.team.id, id, encode(outcome)?],
         )
         .map_err(storage)?;
+    timers::outcome_time(ctx, id)?;
     // A late receipt is still a fact. It never resurrects a superseded,
     // reported or observed-done slot and never settles a newer decision.
     if current && e.state != "superseded" && state == "submitted" {
@@ -210,11 +232,41 @@ fn record_outcome(
         ctx.reply.item = Some(ctx.inbox(e.node, "delivery_uncertain", why)?);
     }
     if kind == "reopen" && ctx.reopening(e.node)? {
+        if let HandoutOutcome::HandedBack { reason } = outcome {
+            // At once, never retried: the decision settled, the node held and
+            // one inbox item for the lead (zerus-63rru.64).
+            let kind = format!("reopen_handed_back:{id}");
+            ctx.reply.item = Some(super::members::hand_to_lead(ctx, e.node, &kind, reason)?);
+            return Ok(());
+        }
         ctx.settle(e.node)?;
-        queue::set_hold(ctx, e.node, state != "submitted")?;
+        // A reopen that was not delivered hands the node back to the lead;
+        // a delivered one ends the decision's hold with the decision.
+        if state != "submitted" {
+            queue::hand_back(ctx, e.node, true)?;
+        }
         if state == "submitted" {
             ctx.close_inbox(e.node)?;
+        } else if let HandoutOutcome::Refused { reason } = outcome {
+            // A held node with nobody told is the fault zerus-63rru.77
+            // closes: an uncertain end already wrote its item above.
+            let reason = reason.trim_end();
+            let stop = if reason.ends_with(['.', '!', '?']) {
+                ""
+            } else {
+                "."
+            };
+            let text = format!(
+                "The reopen of task {} for member {} was not delivered: {reason}{stop} The decision is settled and the task waits for the lead.",
+                e.node, e.member
+            );
+            ctx.reply.item = Some(ctx.inbox(e.node, &format!("reopen_refused:{id}"), &text)?);
         }
+    }
+    // A refused delivery may have been the only reason a Return or Reassign
+    // waits for a hand-over; a proven non-start is recorded the same way.
+    if state == "refused" {
+        settle_without_reason(ctx, e.node)?;
     }
     Ok(())
 }
@@ -224,7 +276,7 @@ fn outcome_state(outcome: &HandoutOutcome) -> Result<(&'static str, Option<&str>
             reason(receipt)?;
             ("submitted", None)
         }
-        HandoutOutcome::Refused { reason: r } => {
+        HandoutOutcome::Refused { reason: r } | HandoutOutcome::HandedBack { reason: r } => {
             reason(r)?;
             ("refused", None)
         }
@@ -272,13 +324,13 @@ pub(super) fn report(ctx: &mut Context<'_>) -> Result<()> {
     let mut n = ctx.live_node(*node)?;
     if n.state != NodeState::Reported
         || *generation != ctx.generation(*node)?
-        || holder(ctx, *node)?.as_deref() != Some(member)
+        || recipient(ctx, *node)?.as_deref() != Some(member)
     {
         return Err(invalid(
             "Report does not belong to the current reviewed attempt's holder.",
         ));
     }
-    let recorded:bool=ctx.db.query_row("SELECT EXISTS(SELECT 1 FROM effects WHERE team=?1 AND node=?2 AND generation=?3 AND state NOT IN ('refused','superseded'))",params![ctx.team.id,node,generation],|r|r.get(0)).map_err(storage)?;
+    let recorded:bool=ctx.db.query_row(&format!("SELECT EXISTS(SELECT 1 FROM effects WHERE team=?1 AND node=?2 AND generation=?3 AND state NOT IN {})",crate::teams::store::NOT_RECEIVED),params![ctx.team.id,node,generation],|r|r.get(0)).map_err(storage)?;
     if !recorded {
         return Err(invalid("No current effect is available to report."));
     }
@@ -310,9 +362,66 @@ pub(super) fn report(ctx: &mut Context<'_>) -> Result<()> {
     ctx.db.execute(&format!("UPDATE effects SET state='reported' WHERE team=?1 AND node=?2 AND generation=?3 AND state IN {OPEN_EFFECT_STATES}"),params![ctx.team.id,node,generation]).map_err(storage)?;
     if ctx.reopening(*node)? {
         ctx.settle(*node)?;
-        queue::set_hold(ctx, *node, false)?;
     }
     pipeline::reported(ctx, &n, body)
+}
+/// A report the removed member wrote after its removal took the task back
+/// (zerus-63rru.77). The team does not record it: the lead is told once per
+/// node and generation, with where the work is, and a second telling is a
+/// duplicate. Only for the generation whose newest effect the removal
+/// settled.
+pub(super) fn late_report(ctx: &mut Context<'_>) -> Result<()> {
+    let Operation::RecordLateReport {
+        node,
+        generation,
+        member,
+    } = ctx.op
+    else {
+        unreachable!()
+    };
+    ctx.active()?;
+    let n = ctx.live_node(*node)?;
+    let m = ctx.member(member)?;
+    let newest: Option<(String, String)> = ctx.db.query_row("SELECT member,state FROM effects INDEXED BY effects_attempt WHERE team=?1 AND node=?2 AND generation=?3 ORDER BY seq DESC LIMIT 1",params![ctx.team.id,node,generation],|r|Ok((r.get(0)?,r.get(1)?))).optional().map_err(storage)?;
+    let recorded: bool = ctx
+        .db
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM reports WHERE team=?1 AND node=?2 AND generation=?3)",
+            params![ctx.team.id, node, generation],
+            |r| r.get(0),
+        )
+        .map_err(storage)?;
+    if n.state != NodeState::Reported
+        || *generation != ctx.generation(*node)?
+        || m.state != MemberState::Removed
+        || recorded
+        || newest
+            .as_ref()
+            .map(|(who, state)| (who.as_str(), state.as_str()))
+            != Some((member.as_str(), "superseded"))
+    {
+        return Err(invalid(
+            "No report of a removed member waits here after its removal.",
+        ));
+    }
+    let told: bool = ctx
+        .db
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM inbox WHERE team=?1 AND kind='removed_report' AND node=?2 AND generation=?3)",
+            params![ctx.team.id, node, generation],
+            |r| r.get(0),
+        )
+        .map_err(storage)?;
+    if told {
+        return Err(Problem::new(
+            code::DUPLICATE,
+            "This late report was already told.",
+        ));
+    }
+    let text = super::members::late_report_text(member, *node, &m.worktree);
+    ctx.reply.node = Some(*node);
+    ctx.reply.item = Some(ctx.inbox(*node, "removed_report", &text)?);
+    Ok(())
 }
 
 fn require_ready(db: &Connection, team: &Team, node: u32) -> Result<()> {
@@ -337,12 +446,58 @@ pub(super) fn kernel_nodes(ctx: &Context<'_>) -> Result<Vec<Node>> {
     readiness::nodes(ctx.db, &ctx.team.id)
 }
 
-pub(super) fn has_attempt(ctx: &Context<'_>, node: u32) -> Result<bool> {
+/// Whether the task may be in somebody's hands, so that a Reassign or a
+/// Return goes the hand-over route: the newest observation shows the task In
+/// progress, In review or Done (not cancelled, whoever executes it, a
+/// recorded conflict of attempts included), or an effect of the node's
+/// current generation is still open. Every open state counts: a reservation
+/// is no proof that its child never started, and an observation lags the
+/// send it follows. Otherwise the task is To do, Backlog or unobserved and
+/// nothing of its generation is open, and the ordinary hand-out follows the
+/// node's assignee. The attempt the node remembers is not read: it is never
+/// cleared, and a task is To do again only after its run reported or was
+/// done, or after a send that never started.
+pub(super) fn in_hands(ctx: &Context<'_>, node: u32) -> Result<bool> {
     ctx.db
         .query_row(
-            "SELECT EXISTS(SELECT 1 FROM effects WHERE team=?1 AND node=?2 AND generation<=?3 AND state<>'refused')",
+            &format!("SELECT EXISTS(SELECT 1 FROM task_observations WHERE team=?1 AND node=?2 AND NOT json_extract(data,'$.cancelled') AND (json_extract(data,'$.stage') IN ('in_progress','in_review','done') OR attempt_conflict)) OR EXISTS(SELECT 1 FROM effects WHERE team=?1 AND node=?2 AND generation=?3 AND state IN {OPEN_EFFECT_STATES})"),
             params![ctx.team.id, node, ctx.generation(node)?],
             |r| r.get(0),
         )
         .map_err(storage)
+}
+/// A Pending Return or Reassign does not outlive its reason: otherwise no
+/// hand-over would carry it out, and it would refuse every other decision of
+/// its node and block the ordinary hand-out. In the operation that took the
+/// reason away:
+/// - a Return whose holder reads nobody is handed back to the lead, as a
+///   refused reopen is (settled, the node held, one item for the lead);
+/// - a Return or a Reassign whose task is in nobody's hands any more is
+///   settled, and the decision's hold ends with it; the ordinary hand-out
+///   then follows the node's assignee unless an explicit hold remains, which
+///   only its owner's Release ends.
+///
+/// A decision whose reopen is reserved has started and waits for its
+/// outcome.
+pub(super) fn settle_without_reason(ctx: &mut Context<'_>, node: u32) -> Result<()> {
+    let Some((seq, kind, DecisionState::Pending)) = ctx.pending(node)? else {
+        return Ok(());
+    };
+    match kind.as_str() {
+        "return" if holder(ctx, node)?.is_none() => {
+            let actor = encode(ctx.actor)?;
+            ctx.reply.item = Some(crate::teams::store::hand_back_return(
+                ctx.db,
+                &ctx.team.id,
+                node,
+                seq,
+                &actor,
+                ctx.now,
+            )?);
+        }
+        // The decision's hold ends with it; an explicit hold stays.
+        "return" | "reassign" if !in_hands(ctx, node)? => ctx.settle(node)?,
+        _ => (),
+    }
+    Ok(())
 }

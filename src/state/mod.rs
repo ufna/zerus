@@ -37,6 +37,9 @@ mod goals;
 mod hooks;
 pub(crate) mod hook_health;
 mod input;
+// Its only callers are the Teams actor's tests, which run on Linux and macOS.
+#[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
+pub(crate) mod listing_fixture;
 pub(crate) use input::task_refusal;
 pub(crate) use input::{Lookup as ReceiptLookup, Submission};
 // The session resume actor's readiness rule (zerus-5wmh.66.4.9), on its
@@ -126,7 +129,12 @@ mod git_status;
 pub(crate) mod repositories;
 mod launch_observation;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
-pub(crate) use launch_observation::{observe_team_launch, TeamObservation};
+pub(crate) use launch_observation::{
+    observe_team_launch, observe_team_session, TeamObservation, TeamRecord, TeamSession,
+};
+pub(crate) use questions::native_identity;
+#[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
+pub(crate) use questions::read_answer_request;
 /// The maintained ownership reader; Teams supplies the exact generated path.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub(crate) fn team_worktree_ownership(
@@ -176,6 +184,10 @@ mod worktree_maintenance;
 /// Read the selected account's native catalog without starting an agent.
 pub(crate) fn account_models(provider: &str, home: &std::path::Path) -> serde_json::Value {
     effort::account_models(provider, home)
+}
+/// The DeepSeek account's model catalog from its resident host, read only.
+pub(crate) fn dsh_account_models(home: &std::path::Path) -> serde_json::Value {
+    dsh::account_models(home)
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -829,7 +841,7 @@ pub(crate) fn resolve_reference(reference: &crate::session_reference::Reference)
     Ok(string(first, "name").to_owned())
 }
 
-/// Effort resolves metadata before its keeper; ordinary reference resolution
+/// Effort and Settings resolve metadata before their keeper; ordinary reference resolution
 /// acquires Root and refreshes presentation data, so it is not this lane.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub(crate) fn resolve_effort_reference(
@@ -992,9 +1004,21 @@ pub(crate) fn submit_task_message(session: &zerus_replica::SessionKey, text: &st
     input::submit_task(session, text, attachments)
 }
 
-pub(crate) fn prepare_task_reply(session: &zerus_replica::SessionKey, dispatch: &str, id: &str, text: &str, attachments: &[Value]) -> Result<Value> {
+/// The terminal gate's sentence for a terminal that holds input, for the
+/// Teams tests that answer as the task command does (zerus-63rru.79).
+#[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
+pub(crate) use input::DRAFT as TERMINAL_DRAFT;
+pub(crate) use input::{Continuation, CONVERSATION_GONE};
+pub(crate) fn prepare_task_reply(
+    session: &zerus_replica::SessionKey,
+    dispatch: &str,
+    id: &str,
+    text: &str,
+    attachments: &[Value],
+    continuation: Continuation,
+) -> Result<Value> {
     local_sessions()?;
-    input::task_reply(session, dispatch, id, text, attachments)
+    input::task_reply(session, dispatch, id, text, attachments, continuation)
 }
 pub(crate) fn submit_task_reply(name: &str, request: &Value) -> Result<Value> {
     input::submit(name, request.to_string().as_bytes(), None)
@@ -1048,6 +1072,36 @@ impl Unresolved {
     fn ambiguous((text, value): (String, Value)) -> Self {
         Self { text, value: Some(value), code: session_id::AMBIGUOUS }
     }
+}
+
+/// The real `hgs inspect` reply for `record`, after this component's own
+/// writer saved it: the Teams confirmation's tests read inspections from here
+/// (zerus-63rru.56).
+#[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
+pub(crate) fn inspection_for_test(record: &mut Value) -> Result<Value> {
+    storage::write(record)?;
+    journal::inspection(string(record, "name"), 0, None, false)
+}
+/// `record` as a completed pause leaves it, saved by this component.
+#[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
+pub(crate) fn pause_for_test(record: &mut Value) -> Result<()> {
+    let _guard = lock(None)?;
+    lifecycle::mark_paused(record);
+    storage::write(record)
+}
+/// Archives `record` through this component's own archive, as an exit's
+/// archive does, and returns the archive ID.
+#[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
+pub(crate) fn archive_for_test(record: &Value) -> Result<String> {
+    let _guard = lock(None)?;
+    archive::save(record)
+}
+/// The real `hgs inspect NAME --archive ID` reply, as the Teams confirmation
+/// reads an exited member's archive (zerus-63rru.62): after every event,
+/// without processes.
+#[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
+pub(crate) fn archive_inspection_for_test(name: &str, id: &str) -> Result<Value> {
+    journal::inspection_with(name, i64::MAX, Some(id), false, false)
 }
 
 /// zerus-ucck P3a: a label a command names without a selection, resolved
@@ -1401,7 +1455,7 @@ pub(crate) fn task_bindings_in(root: &Path) -> Result<Vec<Value>> {
 pub fn dispatch(args: &[String]) -> Result<i32> {
     // Fixed self-image owner, before any provider lookup or local writer. Its
     // inherited endpoint/frame are synchronization and cancellation only; the
-    // dormant Effort/Settings operation remains explicitly unadmitted.
+    // fixed Effort/Settings operation preserves its original native authority.
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     if args.first().map(String::as_str)==Some("native-picker-custodian-v1") {
         if args.len()!=1 {return Err("Unexpected picker custodian arguments".into());}
@@ -1532,16 +1586,18 @@ pub fn dispatch(args: &[String]) -> Result<i32> {
         "inspect" => {
             let name = args
                 .first()
-                .ok_or("usage: hgs inspect <session> [--archive ID] [--after cursor] [--skip-processes] [--read-observation]")?;
+                .ok_or("usage: hgs inspect <session> [--archive ID] [--after cursor] [--skip-processes] [--read-observation] [--current-read]")?;
             let mut after = 0;
             let mut archive_id = None;
             let mut agent_id = None;
             let mut include_processes = true;
             let mut read_observation = false;
+            let mut current_read = false;
             let mut index = 1;
             while index < args.len() {
                 if args[index] == "--skip-processes" { include_processes = false; index += 1; continue; }
                 if args[index] == "--read-observation" { read_observation = true; index += 1; continue; }
+                if args[index] == "--current-read" { current_read = true; index += 1; continue; }
                 let value = args.get(index + 1).ok_or("missing inspect option value")?;
                 match args[index].as_str() {
                     "--after" => {
@@ -1561,7 +1617,7 @@ pub fn dispatch(args: &[String]) -> Result<i32> {
             let mut output = if let Some(id) = agent_id {
                 subagents::inspection(name, id, archive_id)?
             } else {
-                journal::inspection(name, after, archive_id, include_processes)?
+                journal::inspection_with(name, after, archive_id, include_processes, current_read)?
             };
             if read_observation && archive_id.is_none() && agent_id.is_none() {
                 read_marks::observation::enrich(&mut output);
@@ -1787,3 +1843,6 @@ mod control_console_tests {
         );
     }
 }
+
+#[cfg(test)]
+pub(crate) mod trust_fixture;

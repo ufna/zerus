@@ -18,7 +18,7 @@ pub(crate) fn member(db: &Connection, team: &str, id: &str) -> Result<Option<Mem
     .optional()
     .map_err(storage)
 }
-pub(crate) const NODE_COLUMNS: &str = "team,id,data,rank,admitted,routed,hold,task_revision,task_stage,task_cancelled,generation,decided_by,integrated,integration_commit,requested,integration_required";
+pub(crate) const NODE_COLUMNS: &str = "team,id,data,rank,admitted,routed,hold,hold_owner,hand_back,task_revision,task_stage,task_cancelled,generation,decided_by,integrated,integration_commit,requested,integration_required";
 
 pub(crate) fn node_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<Node> {
     let mut node: Node = sql_json(r, 0)?;
@@ -38,7 +38,80 @@ pub(crate) fn node_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<Node> {
     node.integrated = r.get(6)?;
     Ok(node)
 }
-pub(crate) const NODE_SELECT: &str = "data,rank,admitted,hold,node_state,decided_by,integrated";
+/// The node columns every node read takes, from `table` (`nodes` or
+/// `node_archive`), its hold given by [`held`].
+pub(crate) fn node_select(table: &str) -> String {
+    format!(
+        "{table}.data,{table}.rank,{table}.admitted,{},{table}.node_state,{table}.decided_by,{table}.integrated",
+        held(table)
+    )
+}
+/// Whether a node of `table` is held: the one answer readiness, the rows and
+/// every operation take (the plan, "A hold has an owner"). A node is held by
+/// an explicit hold (`hold`, owned by the person or the lead in
+/// `hold_owner`), by a hand-back to the team's next step (`hand_back`), or
+/// by an unsettled decision of its own, whose hold is the decision's and is
+/// never stored: it ends with the decision, however the decision ends.
+pub(crate) fn held(table: &str) -> String {
+    format!("({table}.hold OR {table}.hand_back OR EXISTS(SELECT 1 FROM decisions d WHERE d.team={table}.team AND d.node={table}.id AND d.state<>'settled'))")
+}
+/// Who set a node's explicit hold: `person`, `lead`, or nobody.
+pub(crate) fn hold_owner(db: &Connection, team: &str, node: u32) -> Result<Option<String>> {
+    db.query_row(
+        "SELECT hold_owner FROM nodes WHERE team=?1 AND id=?2 AND hold",
+        params![team, node],
+        |r| r.get(0),
+    )
+    .optional()
+    .map_err(storage)
+    .map(Option::flatten)
+}
+/// The one writer of an explicit hold: set with its owner, or released.
+pub(crate) fn set_explicit_hold(
+    db: &Connection,
+    team: &str,
+    node: u32,
+    owner: Option<&str>,
+) -> Result<()> {
+    db.execute(
+        "UPDATE nodes SET hold=?3 IS NOT NULL,hold_owner=?3 WHERE team=?1 AND id=?2",
+        params![team, node, owner],
+    )
+    .map_err(storage)?;
+    Ok(())
+}
+/// Ends every hand-back of a team: the stop's Cancel is each node's next
+/// decision, and takes the hold over while it is pending. An explicit hold
+/// stays.
+pub(crate) fn end_hand_backs(db: &Connection, team: &str) -> Result<()> {
+    db.execute(
+        "UPDATE nodes SET hand_back=0 WHERE team=?1 AND hand_back",
+        [team],
+    )
+    .map_err(storage)?;
+    Ok(())
+}
+/// Whether a node is held for the team's next step.
+pub(crate) fn handed_back(db: &Connection, team: &str, node: u32) -> Result<bool> {
+    db.query_row(
+        "SELECT EXISTS(SELECT 1 FROM nodes WHERE team=?1 AND id=?2 AND hand_back)",
+        params![team, node],
+        |r| r.get(0),
+    )
+    .map_err(storage)
+}
+/// The one writer of a hand-back's hold: a node held for the team's next
+/// step, the lead's decision after a hand-back or a pipeline's own step (a
+/// stage in review, the person's acceptance). That next decision takes it
+/// over or ends it; an explicit hold is never touched here.
+pub(crate) fn set_hand_back(db: &Connection, team: &str, node: u32, value: bool) -> Result<()> {
+    db.execute(
+        "UPDATE nodes SET hand_back=?3 WHERE team=?1 AND id=?2",
+        params![team, node, value],
+    )
+    .map_err(storage)?;
+    Ok(())
+}
 
 pub(crate) fn deps(db: &Connection, team: &str, id: u32) -> Result<Vec<Dep>> {
     let mut statement=db.prepare("SELECT dependency,kind FROM dependencies WHERE team=?1 AND node=?2 ORDER BY dependency LIMIT 201").map_err(storage)?;
@@ -58,7 +131,11 @@ pub(crate) fn deps(db: &Connection, team: &str, id: u32) -> Result<Vec<Dep>> {
     Ok(deps)
 }
 pub(crate) fn node(db: &Connection, team: &str, id: u32) -> Result<Option<Node>> {
-    let sql=format!("SELECT {NODE_SELECT} FROM nodes WHERE team=?1 AND id=?2 UNION ALL SELECT {NODE_SELECT} FROM node_archive WHERE team=?1 AND id=?2 LIMIT 1");
+    let sql = format!(
+        "SELECT {} FROM nodes WHERE team=?1 AND id=?2 UNION ALL SELECT {} FROM node_archive WHERE team=?1 AND id=?2 LIMIT 1",
+        node_select("nodes"),
+        node_select("node_archive")
+    );
     let mut node = db
         .query_row(&sql, params![team, id], node_row)
         .optional()
@@ -89,9 +166,22 @@ pub(crate) fn node_payload(node: &Node) -> Result<String> {
     encode(&value)
 }
 
+/// A decided node, accepted or cancelled, leaves the live queue. One whose
+/// task is bound leaves it only when the newest observation agrees: the
+/// task has ended (cancelled or Done) and its attempts do not conflict.
+/// Otherwise what was decided stays recorded on the node, and the next
+/// observation decides; the service observes only the live queue. A node
+/// whose cancel is still pending stays where the cancel step finds it, in
+/// a live and in a stopped team: that cancel is settled by its own answer
+/// or by an observation, never by this archive.
+const LEAVES: &str = "team=?1 AND node_state IN ('accepted','cancelled') AND (NOT EXISTS(SELECT 1 FROM live_tasks l WHERE l.team=nodes.team AND l.node=nodes.id) OR EXISTS(SELECT 1 FROM task_observations o WHERE o.team=nodes.team AND o.node=nodes.id AND NOT o.attempt_conflict AND (json_extract(o.data,'$.cancelled') OR json_extract(o.data,'$.stage')='done'))) AND NOT EXISTS(SELECT 1 FROM decisions d WHERE d.team=nodes.team AND d.node=nodes.id AND d.state<>'settled' AND d.kind='cancel')";
 pub(crate) fn archive_decided(db: &Connection, team: &str, actor: &str) -> Result<()> {
     let ids = {
-        let mut statement=db.prepare("SELECT id FROM nodes WHERE team=?1 AND node_state IN ('accepted','cancelled') ORDER BY id LIMIT 601").map_err(storage)?;
+        let mut statement = db
+            .prepare(&format!(
+                "SELECT id FROM nodes WHERE {LEAVES} ORDER BY id LIMIT 601"
+            ))
+            .map_err(storage)?;
         let mapped = statement
             .query_map([team], |r| r.get::<_, u32>(0))
             .map_err(storage)?;
@@ -107,16 +197,19 @@ pub(crate) fn archive_decided(db: &Connection, team: &str, actor: &str) -> Resul
         settle_decisions(db, team, Some(node), actor, true)?;
     }
     db.execute(
-        "UPDATE nodes SET requested=NULL WHERE team=?1 AND node_state IN ('accepted','cancelled')",
+        &format!("UPDATE nodes SET requested=NULL WHERE {LEAVES}"),
         [team],
     )
     .map_err(storage)?;
-    db.execute(&format!("INSERT INTO node_archive({NODE_COLUMNS}) SELECT {NODE_COLUMNS} FROM nodes WHERE team=?1 AND node_state IN ('accepted','cancelled')"),[team]).map_err(storage)?;
     db.execute(
-        "DELETE FROM nodes WHERE team=?1 AND node_state IN ('accepted','cancelled')",
+        &format!(
+            "INSERT INTO node_archive({NODE_COLUMNS}) SELECT {NODE_COLUMNS} FROM nodes WHERE {LEAVES}"
+        ),
         [team],
     )
     .map_err(storage)?;
+    db.execute(&format!("DELETE FROM nodes WHERE {LEAVES}"), [team])
+        .map_err(storage)?;
     Ok(())
 }
 
@@ -134,6 +227,49 @@ pub(crate) fn settle_decisions(
     close_cards(db, team, node, actor)?;
     Ok(())
 }
+/// Hands a node back to the lead: its unsettled decision settles, the node is
+/// held, and the lead gets one inbox item of the cause's own kind. The one
+/// writer of that outcome: the step to layout 10, a member's removal, and a
+/// writer of a Return whose holder was removed. Each caller moves the team's
+/// revision once.
+pub(crate) fn hand_back(
+    db: &Connection,
+    team: &str,
+    node: u32,
+    actor: &str,
+    kind: &str,
+    text: &str,
+    now: i64,
+) -> Result<u64> {
+    settle_decisions(db, team, Some(node), actor, false)?;
+    set_hand_back(db, team, node, true)?;
+    hand_back_item(db, team, node, actor, kind, text, now)
+}
+/// The lead's inbox item of a hand-back, of the cause's own kind, in the
+/// node's current generation.
+pub(crate) fn hand_back_item(
+    db: &Connection,
+    team: &str,
+    node: u32,
+    actor: &str,
+    kind: &str,
+    text: &str,
+    now: i64,
+) -> Result<u64> {
+    let generation: u32 = db
+        .query_row(
+            "SELECT generation FROM nodes WHERE team=?1 AND id=?2 UNION ALL SELECT generation FROM node_archive WHERE team=?1 AND id=?2 LIMIT 1",
+            params![team, node],
+            |r| r.get(0),
+        )
+        .map_err(storage)?;
+    db.execute(
+        "INSERT INTO inbox(team,kind,node,generation,actor,text,created_ms) VALUES(?1,?2,?3,?4,?5,?6,?7)",
+        params![team, kind, node, generation, actor, text, now],
+    )
+    .map_err(storage)?;
+    Ok(db.last_insert_rowid() as u64)
+}
 /// A node's settlement expires its integration cards; team settlement expires
 /// every open card, including proposals without a node.
 pub(crate) fn close_cards(
@@ -147,7 +283,10 @@ pub(crate) fn close_cards(
 }
 pub(crate) fn archived_leaf(db: &Connection, team: &str, id: u32) -> Result<Option<Node>> {
     db.query_row(
-        &format!("SELECT {NODE_SELECT} FROM node_archive WHERE team=?1 AND id=?2"),
+        &format!(
+            "SELECT {} FROM node_archive WHERE team=?1 AND id=?2",
+            node_select("node_archive")
+        ),
         params![team, id],
         node_row,
     )
@@ -156,9 +295,10 @@ pub(crate) fn archived_leaf(db: &Connection, team: &str, id: u32) -> Result<Opti
 }
 
 pub(crate) fn card_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<Card> {
+    let kind: String = r.get(1)?;
     Ok(Card {
         seq: r.get(0)?,
-        kind: r.get(1)?,
+        kind: kind.clone(),
         node: r.get(2)?,
         actor: sql_json(r, 3)?,
         text: r.get(4)?,
@@ -170,14 +310,40 @@ pub(crate) fn card_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<Card> {
             .transpose()
             .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?,
         created_ms: r.get(8)?,
+        decisions: match r.get::<_, Option<String>>(9)? {
+            Some(list) => serde_json::from_str(&list).map_err(|e| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    9,
+                    rusqlite::types::Type::Text,
+                    Box::new(e),
+                )
+            })?,
+            None => default_decisions(&kind),
+        },
     })
+}
+/// A card's decisions: the stored list, or by its kind. An integration card
+/// and a pipeline acceptance card take approve and reject; any other card
+/// opened without a list takes acknowledged alone.
+pub(crate) fn card_decisions(kind: &str, stored: Option<&str>) -> Result<Vec<String>> {
+    match stored {
+        Some(list) => serde_json::from_str(list).map_err(storage),
+        None => Ok(default_decisions(kind)),
+    }
+}
+pub(crate) fn default_decisions(kind: &str) -> Vec<String> {
+    if matches!(kind, "integration" | "pipeline_acceptance") {
+        vec!["approve".into(), "reject".into()]
+    } else {
+        vec!["acknowledged".into()]
+    }
 }
 
 /// A single indexed lookup; scope is checked before returning any card data.
-pub(crate) const CARD_BY_SEQ_SQL: &str = "SELECT seq,kind,node,actor,text,state,decision,decided_actor,created_ms,team FROM cards WHERE seq=?1";
+pub(crate) const CARD_BY_SEQ_SQL: &str = "SELECT seq,kind,node,actor,text,state,decision,decided_actor,created_ms,decisions,team FROM cards WHERE seq=?1";
 pub(crate) fn card(db: &Connection, team: &str, seq: u64) -> Result<Option<Card>> {
     let row: Option<(String, Card)> = db
-        .query_row(CARD_BY_SEQ_SQL, [seq], |r| Ok((r.get(9)?, card_row(r)?)))
+        .query_row(CARD_BY_SEQ_SQL, [seq], |r| Ok((r.get(10)?, card_row(r)?)))
         .optional()
         .map_err(storage)?;
     row.map(|(owner, card)| {
@@ -231,6 +397,9 @@ fn legacy_observation(db: &Connection, team: &str, node: u32) -> Result<Option<T
                 rank,
                 title,
                 key: KeyState::Ours,
+                attempt: 0,
+                attempt_id: String::new(),
+                attempt_conflict: false,
             })
         })
         .transpose()
@@ -253,6 +422,9 @@ pub(crate) fn record_observation(
     o: &TaskObservation,
     released: bool,
 ) -> Result<()> {
-    db.execute("INSERT INTO task_observations(team,node,data,released) VALUES(?1,?2,?3,?4) ON CONFLICT(team,node) DO UPDATE SET data=excluded.data,released=MAX(task_observations.released,excluded.released)",params![team,node,encode(o)?,released]).map_err(storage)?;
+    // The newest observation's attempt pair as it came, a conflict's empty ID
+    // included. The attempt the node runs under is remembered apart, only
+    // when the node takes an execution in (ops::timers::remember).
+    db.execute("INSERT INTO task_observations(team,node,data,released,attempt,attempt_id,attempt_conflict) VALUES(?1,?2,?3,?4,?5,?6,?7) ON CONFLICT(team,node) DO UPDATE SET data=excluded.data,released=MAX(task_observations.released,excluded.released),attempt=excluded.attempt,attempt_id=excluded.attempt_id,attempt_conflict=excluded.attempt_conflict",params![team,node,encode(o)?,released,o.attempt,o.attempt_id,o.attempt_conflict]).map_err(storage)?;
     Ok(())
 }

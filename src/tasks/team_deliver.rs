@@ -52,8 +52,37 @@ impl Input {
 
 const RULE: i32 = 2;
 const CUTTING_OVER: i32 = 3;
+const STALE: i32 = 4;
+const NOT_STARTED: i32 = 5;
+const HANDED_BACK: i32 = 6;
+/// The typed cause of a refused hand-out whose member's terminal holds input
+/// (zerus-63rru.79): the reply's `cause`. A reader that does not know the
+/// field reads a plain refusal, as before it.
+pub(crate) const TERMINAL_WAITING: &str = "terminal_waiting";
+/// The lead's sentence when a reopen's member no longer has the task's
+/// conversation (zerus-63rru.64).
+fn handed_back(member: &str) -> String {
+    format!(
+        "Member {member} no longer has this task's conversation (it was cleared or replaced since the task was handed to it), so this reopen cannot continue it; the task is held for you to hand out again or reassign."
+    )
+}
 fn rule(message: impl std::fmt::Display) -> Error {
     Error::new(RULE, message.to_string())
+}
+/// A failure after this command saw, under the task admission, that no
+/// attempt exists for its ID, and before its reservation: nothing was
+/// reserved or sent. A rule's refusal, a stale observation or a cutover keeps
+/// its own answer; any other failure (a busy store, a failed read) is a
+/// non-start the caller may retry (zerus-63rru.58).
+fn not_started(error: Error) -> Error {
+    if matches!(
+        error.code,
+        RULE | STALE | CUTTING_OVER | NOT_STARTED | HANDED_BACK
+    ) {
+        error
+    } else {
+        Error::new(NOT_STARTED, error.message)
+    }
 }
 fn cutting_over() -> Error {
     Error::new(CUTTING_OVER, BUSY)
@@ -67,6 +96,42 @@ fn replica(error: zerus_replica::Error) -> Error {
 }
 
 const UNCONFIRMED_WRITE: &str = "Unconfirmed team task write:";
+
+/// Every writer rechecks the number, current ID and conflict flag under project
+/// admission and the team transaction. Only the pair is a cancellation reply fact.
+fn observed_attempt(
+    store: &Store,
+    team: &str,
+    node: u32,
+    view: &zerus_replica::TaskView,
+) -> Result<(u64, String)> {
+    let current = crate::teams::tasks::attempt(view);
+    let observation = store.task_observation(team, node).map_err(problem)?;
+    let observed = observation.as_ref().map_or_else(
+        || (0, String::new(), false),
+        |o| (o.attempt, o.attempt_id.clone(), o.attempt_conflict),
+    );
+    if current.0 < observed.0 {
+        return Err(rule(format!(
+            "Task document attempt {} ({}) is older than the team's observed attempt {} ({}).",
+            current.0, current.1, observed.0, observed.1
+        )));
+    }
+    if current != observed {
+        return Err(Error::new(STALE,format!("Task document attempt {} ({}, conflict={}) differs from the team's observed attempt {} ({}, conflict={}); observe the task before trying again.",current.0,current.1,current.2,observed.0,observed.1,observed.2)));
+    }
+    // A reservation can be observed before it runs. Let the next running
+    // observation judge that execution before any service command drives it.
+    let running = view.stage == Stage::Active && view.cancelled_at.is_none();
+    if running
+        && !observation
+            .as_ref()
+            .is_some_and(|o| o.stage == crate::teams::ops::TaskStage::InProgress)
+    {
+        return Err(Error::new(STALE, "The task's execution start has not been observed; observe the task before trying again."));
+    }
+    Ok((current.0, current.1))
+}
 
 struct Permit {
     team: Team,
@@ -256,7 +321,7 @@ fn request(
     project_policy(settings, starts, &who, &to)?;
     let view = task.view().map_err(fail)?;
     let handover = permit.kind == "reopen" && view.session.as_ref() != Some(&to);
-    let base = if handover {
+    if handover {
         if view.cancelled_at.is_some()
             || !matches!(view.stage, Stage::Active | Stage::Review | Stage::Done)
         {
@@ -264,16 +329,37 @@ fn request(
                 "Task no longer has a delivered execution to hand over.",
             ));
         }
-        attempts::render(settings, starts, task, name, &to, true, &who, &body.id)?
     } else if permit.kind == "handout" {
         task.check_attempt_send().map_err(replica)?;
-        attempts::render(settings, starts, task, name, &to, false, &who, &body.id)?
-    } else {
-        let view = task.view().map_err(fail)?;
-        if !matches!(view.stage, Stage::Review | Stage::Done) || view.session.as_ref() != Some(&to)
-        {
-            return Err(rule("Reopen no longer names this task's executor."));
+    } else if !matches!(view.stage, Stage::Review | Stage::Done)
+        || view.session.as_ref() != Some(&to)
+    {
+        return Err(rule("Reopen no longer names this task's executor."));
+    }
+    observed_attempt(store, &body.team, body.node, &view)?;
+    if view.execution.as_ref().is_some_and(|e| e.conflict) {
+        return Err(rule(
+            "Task execution is conflicting; the person must settle it.",
+        ));
+    }
+    // A member session's refusal of the prepared input is a rule here, in its
+    // base request as in the final one below (zerus-63rru.58).
+    let refused = |message: String| {
+        if message == crate::state::CONVERSATION_GONE {
+            Error::new(HANDED_BACK, message)
+        } else {
+            rule(message)
         }
+    };
+    let base = if handover {
+        attempts::render(
+            settings, starts, task, name, &to, true, &who, &body.id, refused,
+        )?
+    } else if permit.kind == "handout" {
+        attempts::render(
+            settings, starts, task, name, &to, false, &who, &body.id, refused,
+        )?
+    } else {
         let dispatch = view
             .execution_id()
             .ok_or_else(|| rule("Task has no dispatch to reopen."))?;
@@ -304,6 +390,10 @@ fn request(
             &to,
             &dispatch,
             Some(&notice),
+            refused,
+            // The team route continues a resumed member's conversation
+            // (zerus-63rru.64); the general route keeps the dispatch's run.
+            crate::state::Continuation::SameConversation,
         )?
     };
     let earlier = view
@@ -358,8 +448,18 @@ fn request(
     } else {
         String::new()
     };
-    let frozen =
-        crate::state::prepare_task_reply(&to, &dispatch, &body.id, &text, files).map_err(fail)?;
+    // The member's session refuses this input as prepared: its identity, or
+    // the run or conversation the task was dispatched to, changed. A rule
+    // says no; nothing was reserved (zerus-63rru.58).
+    let frozen = crate::state::prepare_task_reply(
+        &to,
+        &dispatch,
+        &body.id,
+        &text,
+        files,
+        crate::state::Continuation::SameConversation,
+    )
+    .map_err(refused)?;
     if frozen["expected_run_id"] != base["expected_run_id"]
         || frozen["expected_conversation_id"] != base["expected_conversation_id"]
     {
@@ -380,6 +480,12 @@ trait Delivery {
     fn before_reserve(&self) {}
 }
 struct Native;
+#[cfg(test)]
+type NativeInputFixture = Box<dyn Fn(&Value, &SessionKey) -> Value>;
+#[cfg(test)]
+thread_local! {
+    pub(crate) static FIXTURE_NATIVE_INPUT: std::cell::RefCell<Option<NativeInputFixture>> = const {std::cell::RefCell::new(None)};
+}
 impl Delivery for Native {
     fn deliver(
         &self,
@@ -389,6 +495,15 @@ impl Delivery for Native {
         to: &SessionKey,
         request: &Value,
     ) -> attempts::Delivered {
+        #[cfg(test)]
+        if let Some(receipt) =
+            FIXTURE_NATIVE_INPUT.with(|slot| slot.borrow().as_ref().map(|input| input(request, to)))
+        {
+            return match attempts::settle(config, &task.project, &task.uuid, &body.id, &receipt) {
+                Ok(()) => attempts::Delivered::Submitted(receipt),
+                Err(error) => attempts::Delivered::Uncertain(error.message),
+            };
+        }
         attempts::deliver(config, &task.project, &task.uuid, &body.id, to, request)
     }
 }
@@ -431,6 +546,17 @@ fn execute(config: &Config, args: &[String], delivery: &dyn Delivery) -> Result<
     match run(config, args, &body, delivery, deadline) {
         Ok(reply) => Ok(reply),
         Err(error) if error.code == RULE => Ok(body.reply("refused", &error.message, None)),
+        Err(error) if error.code == STALE => Ok(body.reply("stale", &error.message, None)),
+        Err(error) if error.code == NOT_STARTED => {
+            Ok(body.reply("not_started", &error.message, None))
+        }
+        // The member no longer has the task's conversation: a final refusal,
+        // which the service hands back to the lead (zerus-63rru.64).
+        Err(error) if error.code == HANDED_BACK => {
+            let mut reply = body.reply("refused", &handed_back(&body.member), None);
+            reply["final"] = json!(true);
+            Ok(reply)
+        }
         Err(error) => Err(error),
     }
 }
@@ -602,44 +728,53 @@ fn run(
             None,
         ));
     }
-    let state: String = teams_store
-        .db
-        .as_ref()
-        .unwrap()
-        .query_row(
-            "SELECT state FROM effects WHERE team=?1 AND request_id=?2",
-            params![body.team, body.id],
-            |r| r.get(0),
-        )
-        .map_err(fail)?;
-    if !matches!(
-        state.as_str(),
-        "reserved" | "uncertain" | "submitted" | "cutting_over"
-    ) {
-        return Err(rule("Effect is closed or belongs to another generation."));
-    }
-    if state != "reserved" {
+    // From here to the reservation nothing is reserved or sent: every failure
+    // is a refusal or a non-start, never unknown (zerus-63rru.58).
+    let prepared = (|| -> Result<Option<_>> {
+        let state: String = teams_store
+            .db
+            .as_ref()
+            .unwrap()
+            .query_row(
+                "SELECT state FROM effects WHERE team=?1 AND request_id=?2",
+                params![body.team, body.id],
+                |r| r.get(0),
+            )
+            .map_err(fail)?;
+        if !matches!(
+            state.as_str(),
+            "reserved" | "uncertain" | "submitted" | "cutting_over"
+        ) {
+            return Err(rule("Effect is closed or belongs to another generation."));
+        }
+        if state != "reserved" {
+            return Ok(None);
+        }
+        let permit = permit(&teams_store, body, &here)?;
+        marker(&task, &body.team, &here)?;
+        let machines = machines_for(config, here.clone())?;
+        let settings = tasks.project().map_err(fail)?.settings();
+        let (frozen, to, who) = request(
+            &settings,
+            0,
+            &task,
+            &r.project.1,
+            body,
+            &permit,
+            &machines,
+            &teams_store,
+        )?;
+        let bound = task.view().map_err(fail)?;
+        Ok(Some((permit, machines, frozen, to, who, bound)))
+    })()
+    .map_err(not_started)?;
+    let Some((permit, machines, frozen, to, who, bound)) = prepared else {
         return Ok(body.reply(
             "uncertain",
             "Effect already has an outcome; no delivery was repeated.",
             None,
         ));
-    }
-    let permit = permit(&teams_store, body, &here)?;
-    marker(&task, &body.team, &here)?;
-    let machines = machines_for(config, here.clone())?;
-    let settings = tasks.project().map_err(fail)?.settings();
-    let (frozen, to, who) = request(
-        &settings,
-        0,
-        &task,
-        &r.project.1,
-        body,
-        &permit,
-        &machines,
-        &teams_store,
-    )?;
-    let bound = task.view().map_err(fail)?;
+    };
     drop(tasks);
     drop(teams_store);
     delivery.before_reserve();
@@ -670,7 +805,9 @@ fn run(
                     .as_ref()
                     .ok_or_else(|| fail("Team store disappeared."))?
                     .execute_batch("BEGIN IMMEDIATE")
-                    .map_err(fail)?;
+                    .map_err(|e| {
+                        fail(format!("The team store is busy; nothing was sent ({e})."))
+                    })?;
                 let fresh = permit_for_reservation(&store, body, &here, &permit, &bound, task)?;
                 #[cfg(test)]
                 locked_test_pause(config, "deliver");
@@ -702,8 +839,10 @@ fn run(
                     Ok(Ok(()))
                 }
                 Err(error) => {
+                    // Nothing was saved: a failure before the reservation is a
+                    // refusal or a non-start (zerus-63rru.58).
                     if error.code != RULE {
-                        *fatal.borrow_mut() = Some(error);
+                        *fatal.borrow_mut() = Some(not_started(error));
                         return Ok(Err(Closed {
                             node: None,
                             reason: "read_failed",
@@ -850,13 +989,25 @@ fn reserve(
 fn delivered(body: &Input, result: attempts::Delivered) -> Value {
     match result {
         attempts::Delivered::Submitted(receipt) => body.reply("submitted", "", Some(receipt)),
-        attempts::Delivered::NotAdmitted(error) => body.reply("refused", &error, None),
+        attempts::Delivered::NotAdmitted { reason, waiting } => {
+            let mut reply = body.reply("refused", &reason, None);
+            // The member waits for a person: the typed cause the service
+            // reads instead of the sentence (zerus-63rru.79).
+            if waiting {
+                reply["cause"] = json!(TERMINAL_WAITING);
+            }
+            reply
+        }
         attempts::Delivered::Uncertain(error) => body.reply("uncertain", &error, None),
     }
 }
 
 #[cfg(test)]
 mod tests;
+#[cfg(all(test, unix))]
+pub(crate) use tests::processes::{
+    blocked_handout, removed_stage_cancel, waiting_handout, Blocked, RealCancel, RealHandout,
+};
 
 #[cfg(test)]
 fn locked_test_pause(config: &Config, phase: &str) {

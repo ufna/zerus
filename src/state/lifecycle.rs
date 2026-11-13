@@ -162,7 +162,7 @@ pub(super) fn run(args: &[String]) -> Result<i32> {
     let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
     // The launch's binding is written under the state lock; a fork's inherited
     // project waits until after it.
-    let (fork_project, session_id) = {
+    let (fork_project, child_project, session_id) = {
         let _guard = lock(None)?;
         let actual_name = backend::current()
             .pane_info(
@@ -213,14 +213,21 @@ pub(super) fn run(args: &[String]) -> Result<i32> {
         };
         let infer_project = startup_kind == "new" && replaced.is_none()
             && nonempty_env("HGS_FORK_PARENT_ID").is_none();
-        let mut record = json!({"version": 1, "run_identity_version": 1, "name": name, "agent": agent, "run_id": token, "pane": pane,
-            "cwd": cwd, "launch_dir": cwd, "base": base, "hgs": required_env("HGS_EXECUTABLE")?,
-            "shell": nonempty_env("SHELL").unwrap_or_else(|| "/bin/bash".into()), "created": now() as i64,
-            "activity": "unknown", "phase": "unknown", "conversation_state": "unknown", "conversation_id": null,
-            "transcript": null, "startup_kind":startup_kind,"launch_id":nonempty_env("HGS_LAUNCH_ID"), "account_id": nonempty_env("HGS_ACCOUNT_ID"), "agent_home": nonempty_env(home_var(&agent)?), "pid": std::process::id(),
-            "process_start": process_start(std::process::id()),
-            "supervisor": {"pid": std::process::id(), "start": process_start(std::process::id())}});
-        if let Some(allocation)=&allocation {record["session_id"]=json!(allocation.session());}
+        let mut record = started_record(Started {
+            name: &name,
+            agent: &agent,
+            run: &token,
+            pane: &pane,
+            cwd: &cwd,
+            base: &base,
+            hgs: required_env("HGS_EXECUTABLE")?,
+            shell: nonempty_env("SHELL").unwrap_or_else(|| "/bin/bash".into()),
+            startup_kind,
+            launch: nonempty_env("HGS_LAUNCH_ID"),
+            account: nonempty_env("HGS_ACCOUNT_ID"),
+            home: nonempty_env(home_var(&agent)?),
+            session: allocation.as_ref().map(|allocation| allocation.session()),
+        });
         // The live tracked agent that launched this new session, proven by the
         // launching hgs (zerus-sa9qn.2). A resume never adopts its launcher.
         if startup_kind == "new" || nonempty_env("HGS_FORK_PARENT_ID").is_some() {
@@ -284,32 +291,7 @@ pub(super) fn run(args: &[String]) -> Result<i32> {
             record["expected_id"] = json!(expected);
             record["conversation_id"] = json!(expected);
             record["transcript"] = previous["transcript"].clone();
-            for key in [
-                "prompt",
-                "launch_id",
-                "last_message",
-                "model",
-                "effort",
-                "effort_source_path",
-                "effort_source_offset",
-                "resume_settings",
-                "pending_settings",
-                "fork_parent_id",
-                "fork_source_name",
-                "fork_lineage",
-                "fork_lineage_labels",
-                "cleared_conversations",
-                "session_id",
-                "worktree_protection",
-                "layout_transition",
-                "launch_label",
-                "layout",
-                "parent",
-            ] {
-                if let Some(value) = previous.get(key) {
-                    record[key] = value.clone();
-                }
-            }
+            carry_resumed(&previous, &mut record);
             if record["pending_settings"].is_object() {
                 record["pending_settings"]["run_id"] = json!(token);
             }
@@ -352,10 +334,16 @@ pub(super) fn run(args: &[String]) -> Result<i32> {
                 eprintln!("hgs: {name}: the replaced session stays in the ID layout: {error}");
             }
         }
+        // A child its proven parent launched is placed after the state lock
+        // is released, like a fork (zerus-d5twt).
+        let child_project = record
+            .get("parent")
+            .filter(|link| infer_project && crate::swarm::placing_parent(link))
+            .map(|link| (link.clone(), record["conversation_id"].clone()));
         // Keep this exact newly-created binding pinned during optional initial
         // placement. A removal/replacement must not inherit the old folder's
         // inference. The swarm lock is nonblocking and Git shares one 3s cap.
-        if infer_project {
+        if infer_project && child_project.is_none() {
             if let Ok(config) = crate::config::Config::load() {
                 crate::swarm::infer_new_session(&config, &name, &cwd);
             }
@@ -363,8 +351,19 @@ pub(super) fn run(args: &[String]) -> Result<i32> {
         let fork_project = fork_source
             .filter(|(source, _)| !source.is_empty())
             .map(|(source, archive)| (source, archive, record["conversation_id"].clone()));
-        (fork_project, string(&record, "session_id").to_owned())
+        (
+            fork_project,
+            child_project,
+            string(&record, "session_id").to_owned(),
+        )
     };
+    // A child starts in its parent's project, waiting for a busy catalog
+    // outside the state lock while this run still holds its binding.
+    if let Some((parent, conversation)) = child_project {
+        if let Ok(config) = crate::config::Config::load() {
+            crate::swarm::place_child_session(&config, &name, &cwd, &token, &conversation, &parent);
+        }
+    }
     // A fork's inherited project waits for a busy catalog outside the state
     // lock, writing only while this run still holds its binding (zerus-wx3k).
     if let Some((source, archive, conversation)) = fork_project {
@@ -644,8 +643,7 @@ fn pause_one(record: &Value, scope: Option<&session_action::Scope>) -> Result<()
         if current["run_id"] != record["run_id"] {
             return Err("session changed while pausing".into());
         }
-        current["paused"] = json!(true);
-        current.as_object_mut().unwrap().remove("pausing");
+        mark_paused(&mut current);
         write(&mut current)?;
     }
     if remaining {
@@ -954,6 +952,70 @@ fn print_resume(spec: &backend::LaunchSpec) {
 /// continues that attempt's journal as before, the label's or its ID journal,
 /// and its launch label. hgs v0.47.0 and later read `journal_name` and keep it
 /// on resume, rename, Clear, Start fresh and restore.
+/// A new run's record as the supervisor first builds it, before anything is
+/// carried into it from an earlier record of the session. Also the source of
+/// the records that tests of record readers write (zerus-63rru.53).
+pub(super) struct Started<'a> {
+    pub name: &'a str,
+    pub agent: &'a str,
+    pub run: &'a str,
+    pub pane: &'a str,
+    pub cwd: &'a Path,
+    pub base: &'a [String],
+    pub hgs: String,
+    pub shell: String,
+    pub startup_kind: &'a str,
+    pub launch: Option<String>,
+    pub account: Option<String>,
+    pub home: Option<String>,
+    pub session: Option<&'a str>,
+}
+pub(super) fn started_record(s: Started<'_>) -> Value {
+    let pid = std::process::id();
+    let mut record = json!({"version": 1, "run_identity_version": 1, "name": s.name, "agent": s.agent, "run_id": s.run, "pane": s.pane,
+        "cwd": s.cwd, "launch_dir": s.cwd, "base": s.base, "hgs": s.hgs,
+        "shell": s.shell, "created": now() as i64,
+        "activity": "unknown", "phase": "unknown", "conversation_state": "unknown", "conversation_id": null,
+        "transcript": null, "startup_kind":s.startup_kind,"launch_id":s.launch, "account_id": s.account, "agent_home": s.home, "pid": pid,
+        "process_start": process_start(pid),
+        "supervisor": {"pid": pid, "start": process_start(pid)}});
+    if let Some(session) = s.session {
+        record["session_id"] = json!(session);
+    }
+    record
+}
+/// What a resume carries from the record it resumes, beside its transcript,
+/// journal and agent hint.
+const RESUMED: [&str; 20] = [
+    "prompt",
+    "launch_id",
+    "last_message",
+    "model",
+    "effort",
+    "effort_source_path",
+    "effort_source_offset",
+    "resume_settings",
+    "pending_settings",
+    "fork_parent_id",
+    "fork_source_name",
+    "fork_lineage",
+    "fork_lineage_labels",
+    "cleared_conversations",
+    "session_id",
+    "worktree_protection",
+    "layout_transition",
+    "launch_label",
+    "layout",
+    "parent",
+];
+/// Carries [`RESUMED`] from `previous`, the record a resume continues.
+pub(super) fn carry_resumed(previous: &Value, record: &mut Value) {
+    for key in RESUMED {
+        if let Some(value) = previous.get(key) {
+            record[key] = value.clone();
+        }
+    }
+}
 fn journal_identity(record: &mut Value, name: &str, retried: Option<&Value>) {
     match retried {
         None => {
@@ -1217,6 +1279,14 @@ fn verify_requested(record: &Value, snapshot: &Snapshot, requested: &str) -> Res
         ));
     }
     Ok(())
+}
+
+/// What a completed pause records on the session: paused, no longer pausing.
+pub(super) fn mark_paused(record: &mut Value) {
+    record["paused"] = json!(true);
+    if let Some(fields) = record.as_object_mut() {
+        fields.remove("pausing");
+    }
 }
 
 #[cfg(all(test, unix))]

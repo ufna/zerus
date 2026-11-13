@@ -127,6 +127,15 @@ impl Harness {
         self.apply_for(TEAM, actor, operation)
     }
 
+    /// One operation on the first team at `now`.
+    /// Only the stopped status fixture uses it, made where the service runs.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    pub fn apply_at(&self, actor: &Actor, operation: Operation, now: i64) -> Reply {
+        let request = self.request_for(TEAM, operation);
+        let mut store = self.store();
+        ops::apply(&mut store, actor, &request, now).expect("the seed operation succeeds")
+    }
+
     /// One operation on `team`.
     pub fn apply_for(&self, team: &str, actor: &Actor, operation: Operation) -> Reply {
         let request = self.request_for(team, operation);
@@ -285,6 +294,9 @@ impl Harness {
             cancelled: false,
             rank: format!("a{node:02}"),
             title: format!("Task {node}"),
+            attempt: 0,
+            attempt_id: String::new(),
+            attempt_conflict: false,
         };
         self.apply(&service(), Operation::ObserveTask { node, observation });
     }
@@ -332,6 +344,7 @@ pub(super) fn seeded() -> Harness {
             kind: "note".into(),
             text: "Tell the team the release moved to Monday.".into(),
             node: None,
+            decisions: None,
         },
     );
     let asked = harness.apply(

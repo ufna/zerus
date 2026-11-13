@@ -13,6 +13,15 @@ struct Delivery {
     gated: bool,
     #[serde(default)]
     not_started: bool,
+    #[serde(default)]
+    nonstarts: u32,
+    /// The refusal is the terminal gate's: the member's terminal holds
+    /// input (zerus-63rru.79). An older build reads a plain refusal.
+    #[serde(default)]
+    waiting: bool,
+    /// The stamp of the member's row when that refusal was observed.
+    #[serde(default)]
+    stamp: Option<String>,
 }
 impl Runtime {
     pub(super) fn send(
@@ -50,6 +59,9 @@ impl Runtime {
             receipt: None,
             gated: false,
             not_started: false,
+            nonstarts: 0,
+            waiting: false,
+            stamp: None,
         };
         let key = format!("delivery:{id}");
         self.ledger.reserve(
@@ -94,19 +106,69 @@ impl Runtime {
         let result = ports.deliver(team, assignment.0, assignment.1, &d.id);
         boundary("effect");
         match result {
+            ports::DeliveryResult::Stale => {
+                self.defer_delivery(store, ports, team, (key, assignment.0), d, now)
+            }
             ports::DeliveryResult::Outcome(outcome) => {
                 d.outcome = Some(outcome);
                 self.put(&team.id, key, &d)?;
                 boundary("outcome");
                 self.settle(store, team, key, d, now)
             }
+            // Refused before any input because the member's terminal holds
+            // input: recorded as a refusal, with that cause and the member's
+            // row as it is now, both kept before anything settles.
+            ports::DeliveryResult::TerminalWaiting { reason } => {
+                d.stamp = ports.row_stamp(team, assignment.1).ok().flatten();
+                d.waiting = true;
+                d.outcome = Some(HandoutOutcome::Refused { reason });
+                self.put(&team.id, key, &d)?;
+                boundary("outcome");
+                self.settle(store, team, key, d, now)
+            }
             ports::DeliveryResult::NotStarted { reason } => {
                 d.not_started = true;
+                d.nonstarts = d.nonstarts.saturating_add(1);
+                if d.nonstarts >= 5 {
+                    // Five non-starts reach the retry table's fifteen-minute
+                    // tier (0, 1, 3, 7, 15 minutes). Free the reservation so
+                    // the kernel can choose another member on a later pass.
+                    d.outcome = Some(HandoutOutcome::Refused {
+                        reason: reason.clone(),
+                    });
+                }
                 self.put(&team.id, key, &d)?;
                 boundary("not_started");
-                self.failure(store, team, key, "", &problem(&reason), now)
+                if d.outcome.is_some() {
+                    self.settle(store, team, key, d, now)
+                } else {
+                    self.failure(store, team, key, "", &problem(&reason), now)
+                }
             }
         }
+    }
+    fn defer_delivery(
+        &mut self,
+        store: &mut Store,
+        ports: &mut impl Ports,
+        team: &Team,
+        target: (&str, &Node),
+        mut d: Delivery,
+        now: i64,
+    ) -> Result<()> {
+        // The CLI ran, but proved no delivery started. Persist that proof
+        // before observing; an uncertain original never gets it.
+        let (key, node) = target;
+        d.not_started = true;
+        self.put(&team.id, key, &d)?;
+        let task = node
+            .task
+            .as_ref()
+            .ok_or_else(|| problem("Stale delivery has no task"))?;
+        let observed = ports.observe(store, task);
+        // Even a failed read must not leave the delivery itself ungated.
+        self.defer(store, team, key, "", now)?;
+        observed
     }
     pub(super) fn recover(
         &mut self,
@@ -192,6 +254,15 @@ impl Runtime {
                 }
             }
         }
+        if d.outcome.is_none() && !store.effect_reserved(&team.id, &d.id)? {
+            // The store settled this effect before any outcome reached the
+            // row: a removal's hand-back (zerus-63rru.77), a reopen or an
+            // override. No admission lets it out again, so the row ends now:
+            // nothing is delivered, replayed or recorded, no failure stays.
+            self.recovered(store, team, key, now)?;
+            self.ledger.remove(&row)?;
+            return Ok(());
+        }
         if d.not_started && d.outcome.is_none() {
             if *budget == 0 || ports.stopped() || team.status != TeamStatus::Running {
                 return Ok(());
@@ -220,7 +291,19 @@ impl Runtime {
         now: i64,
     ) -> Result<()> {
         if !d.gated {
-            if let Some(HandoutOutcome::Refused { reason }) = &d.outcome {
+            // A refusal of an effect the store has already settled (a
+            // removal's hand-back, which told the lead) is no failure of the
+            // node's hand-out (zerus-63rru.77), and neither is a refusal of
+            // the terminal gate (zerus-63rru.79).
+            let refused = match &d.outcome {
+                Some(HandoutOutcome::Refused { reason })
+                    if !d.waiting && store.effect_reserved(&team.id, &d.id)? =>
+                {
+                    Some(reason)
+                }
+                _ => None,
+            };
+            if let Some(reason) = refused {
                 let revision = store
                     .task_observation(&team.id, d.node)?
                     .map_or(String::new(), |o| o.revision);
@@ -233,7 +316,20 @@ impl Runtime {
                     now,
                 )?;
             }
+            // A refusal of the terminal gate is not a failed hand-out: the
+            // member's terminal is not free (zerus-63rru.79).
+            if d.waiting {
+                self.terminal_refused(&team.id, &d.member, d.stamp.clone(), now)?;
+            }
+            // A submitted delivery: the member's terminal took input.
             if matches!(d.outcome, Some(HandoutOutcome::Submitted { .. })) {
+                self.terminal_free(&team.id, &d.member)?;
+            }
+            // A hand-back is settled by the store at once; nothing retries it.
+            if matches!(
+                d.outcome,
+                Some(HandoutOutcome::Submitted { .. } | HandoutOutcome::HandedBack { .. })
+            ) {
                 self.recovered(store, team, &format!("handout:{}", d.node), now)?;
             }
             d.gated = true;
@@ -262,7 +358,9 @@ impl Runtime {
         match ops::apply(store, &actor, d.receipt.as_ref().expect("reserved"), now) {
             Ok(_) => {
                 boundary("recorded");
-                self.recovered(store, team, key, now)?;
+                if matches!(team.status, TeamStatus::Running | TeamStatus::Paused) {
+                    self.recovered(store, team, key, now)?;
+                }
                 if let Some(row) = self.ledger.get(&team.id, key)? {
                     self.ledger.remove(&row)?;
                 }
@@ -274,6 +372,44 @@ impl Runtime {
             Err(e) => return Err(e),
         }
         Ok(())
+    }
+    /// Settle only durable proof that no child started, before terminal
+    /// cancellation. Unknown originals remain evidence and are never retried.
+    pub(super) fn terminal_deliveries(
+        &mut self,
+        store: &mut Store,
+        team: &Team,
+        now: i64,
+    ) -> Result<bool> {
+        if !matches!(team.status, TeamStatus::Stopped | TeamStatus::Archived) {
+            return Ok(true);
+        }
+        let after = self
+            .load::<String>(&team.id, "terminal_delivery_cursor")?
+            .unwrap_or_default();
+        let rows = self.ledger.prefix_page(&team.id, "delivery:", &after)?;
+        let next = if rows.len() == 200 {
+            rows.last().unwrap().key.clone()
+        } else {
+            String::new()
+        };
+        for row in rows {
+            let mut d: Delivery =
+                serde_json::from_value(row.data).map_err(crate::teams::store::storage)?;
+            if !d.not_started {
+                continue;
+            }
+            if d.outcome.is_none() {
+                d.outcome = Some(HandoutOutcome::Refused {
+                    reason: "Delivery did not start before the team ended".into(),
+                });
+                d.gated = true;
+                self.put(&team.id, &row.key, &d)?;
+            }
+            self.settle(store, team, &row.key, d, now)?;
+        }
+        self.put(&team.id, "terminal_delivery_cursor", &next)?;
+        Ok(next.is_empty())
     }
     pub(super) fn open_effects(&self, store: &Store, team: &str) -> Result<Vec<EffectIntent>> {
         let mut out = Vec::new();
@@ -301,6 +437,9 @@ impl Delivery {
             receipt: None,
             gated: false,
             not_started: false,
+            nonstarts: 0,
+            waiting: false,
+            stamp: None,
         }
     }
 }

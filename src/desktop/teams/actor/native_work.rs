@@ -173,6 +173,9 @@ impl Native {
         if store.generation(&plan.team, plan.node)? != Some(plan.generation) {
             return Err(problem("Integration generation changed"));
         }
+        if !store.accepted_task_current(&plan.team, plan.node, plan.generation)? {
+            return Err(problem("The accepted task's reviewed attempt changed"));
+        }
         let report = store
             .report(&plan.team, plan.node, plan.generation)?
             .ok_or_else(|| problem("Pinned report disappeared"))?;

@@ -100,7 +100,11 @@ pub(super) enum Delivered {
     /// The exact submission witnessed that its payload was never offered,
     /// and the attempt was settled as not admitted: the task can be sent
     /// again, by a new explicit action with a new ID.
-    NotAdmitted(String),
+    /// `waiting` when the refusal was the typed one for a session that waits
+    /// for a person (`state::input::Gate::Waiting`, zerus-63rru.79): only the
+    /// team route answers it, as a fact about the member; every other caller
+    /// answers it as any refusal before input.
+    NotAdmitted { reason: String, waiting: bool },
     /// Whether the input arrived, or its receipt was recorded, is unknown:
     /// nothing is submitted again.
     Uncertain(String),
@@ -143,7 +147,10 @@ pub(super) fn deliver(
                 return Delivered::Uncertain(format!("{UNCONFIRMED} {}", witness.reason));
             }
             match not_admitted(config, project, uuid, id) {
-                Ok(()) => Delivered::NotAdmitted(witness.reason),
+                Ok(()) => Delivered::NotAdmitted {
+                    reason: witness.reason,
+                    waiting: witness.waiting,
+                },
                 Err(error) => Delivered::Uncertain(format!(
                     "{UNCONFIRMED} {} It was refused before any input, but that could not be recorded: {}.",
                     witness.reason, error.message
@@ -321,7 +328,17 @@ pub(super) fn freeze(
     // The hourly limit is counted in the final admission only: no scan of
     // the project's tasks here, outside every bound (#1519 R2).
     let id = uuid::Uuid::new_v4().to_string();
-    let request = render(&settings, 0, task, project_name, to, pin, who, &id)?;
+    let request = render(
+        &settings,
+        0,
+        task,
+        project_name,
+        to,
+        pin,
+        who,
+        &id,
+        prepare_failed,
+    )?;
     let view = task.view().map_err(fail)?;
     Ok(Frozen {
         id,
@@ -344,6 +361,7 @@ pub(super) fn render(
     pin: bool,
     who: &Actor,
     id: &str,
+    refused: fn(String) -> Error,
 ) -> Result<Value> {
     settings.check_agent(who, to, true, starts).map_err(fail)?;
     let mut view = task.view().map_err(fail)?;
@@ -354,7 +372,15 @@ pub(super) fn render(
     let (mut prompt, attachments) =
         super::dispatch_content(settings, &view, project_name, subagent)?;
     super::controls::pin_dispatch(&mut prompt, project_name, &view.id, id);
-    crate::state::prepare_task_reply(to, "", id, &prompt, &attachments).map_err(fail)
+    crate::state::prepare_task_reply(
+        to,
+        "",
+        id,
+        &prompt,
+        &attachments,
+        crate::state::Continuation::SameRun,
+    )
+    .map_err(refused)
 }
 
 /// A `task send` or `task handoff` through the attempt admission. `Some`
@@ -443,6 +469,7 @@ pub(super) fn send(
             pin,
             who,
             &frozen.id,
+            prepare_failed,
         ) {
             Ok(request) if request == frozen.request => {}
             Ok(_) => return refuse("changed", super::dispatch::CHANGED.into()),
@@ -462,7 +489,7 @@ pub(super) fn send(
         Admission::Reserved { .. } => {
             match deliver(config, project, uuid, &frozen.id, to, &frozen.request) {
                 Delivered::Submitted(receipt) => Ok(Some(receipt)),
-                Delivered::NotAdmitted(reason) => Err(fail(reason)),
+                Delivered::NotAdmitted { reason, .. } => Err(fail(reason)),
                 Delivered::Uncertain(text) => Err(fail(format!("delivery uncertain: {text}"))),
             }
         }
@@ -570,7 +597,25 @@ pub(super) fn reopen_request(
     to: &SessionKey,
     dispatch: &str,
 ) -> Result<Value> {
-    reopen_request_from(project_name, view, id, text, files, to, dispatch, None)
+    reopen_request_from(
+        project_name,
+        view,
+        id,
+        text,
+        files,
+        to,
+        dispatch,
+        None,
+        prepare_failed,
+        crate::state::Continuation::SameRun,
+    )
+}
+
+/// How the task commands other than a team's delivery answer a member
+/// session's refusal of a prepared input: a plain failure, as before. The
+/// team delivery passes its own rule refusal (zerus-63rru.58).
+pub(super) fn prepare_failed(message: String) -> Error {
+    fail(message)
 }
 
 /// The service has proved the stored return's author under its team lock.
@@ -584,6 +629,8 @@ pub(super) fn reopen_request_from(
     to: &SessionKey,
     dispatch: &str,
     notice: Option<&str>,
+    refused: fn(String) -> Error,
+    continuation: crate::state::Continuation,
 ) -> Result<Value> {
     let mut prompt = super::messages::prompt_from(
         project_name,
@@ -600,7 +647,8 @@ pub(super) fn reopen_request_from(
         .map(serde_json::to_value)
         .collect::<std::result::Result<Vec<_>, _>>()
         .map_err(fail)?;
-    crate::state::prepare_task_reply(to, dispatch, id, &prompt, &attachments).map_err(fail)
+    crate::state::prepare_task_reply(to, dispatch, id, &prompt, &attachments, continuation)
+        .map_err(refused)
 }
 
 /// A fresh reopen through the attempt admission (desktop-u's (b)). In the
@@ -703,7 +751,7 @@ pub(super) fn reopen(
     let (state, error) = match admission {
         Admission::Reserved { .. } => match deliver(config, &project.0, uuid, id, to, frozen) {
             Delivered::Submitted(_) => ("submitted", String::new()),
-            Delivered::NotAdmitted(reason) => ("refused", reason),
+            Delivered::NotAdmitted { reason, .. } => ("refused", reason),
             Delivered::Uncertain(text) => ("uncertain", text),
         },
         Admission::Legacy(_) => return Ok(None),

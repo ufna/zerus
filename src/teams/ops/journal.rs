@@ -39,16 +39,34 @@ pub(super) fn append(ctx: &Context<'_>, request: &Request) -> Result<()> {
         .event
         .map(str::to_owned)
         .map_or_else(|| kind(ctx.op), Ok)?;
-    let body = match ctx.op {
+    let mut body = match ctx.op {
         Operation::CloseCard { reason, .. } => reason.clone(),
         Operation::ObserveTask { node, observation }
             if ctx.event == Some("person_override") && observation.key != KeyState::Ours =>
         {
             format!("Task {node} left the team.")
         }
+        // What the hand-out came to, and a refusal's reason, in the row's
+        // own text (zerus-63rru.79): an intent that typed nothing must not
+        // read like a hand-out that happened.
+        Operation::HandoutOutcome { outcome, .. } => format!(
+            "{kind} at revision {}: {}",
+            ctx.reply.revision,
+            outcome_text(outcome)
+        ),
         _ => format!("{kind} at revision {}", ctx.reply.revision),
     };
-    ctx.db.execute("INSERT INTO journal(team,at_ms,actor,kind,request_id,text,refs) VALUES(?1,?2,?3,?4,?5,?6,?7)",params![ctx.team.id,ctx.now,encode(ctx.actor)?,kind,request.request_id,body,encode(&references(request)?)?]).map_err(storage)?;
+    let mut refs = references(request)?;
+    if let Some(earlier) = ctx.superseded {
+        let (old, new) = replacement(ctx, earlier)?;
+        body.push_str(&format!(
+            "; decision {earlier} ({old}) superseded by decision {} ({})",
+            new.0, new.1
+        ));
+        refs.push(format!("decision:{earlier}"));
+        refs.push(format!("decision:{}", new.0));
+    }
+    ctx.db.execute("INSERT INTO journal(team,at_ms,actor,kind,request_id,text,refs) VALUES(?1,?2,?3,?4,?5,?6,?7)",params![ctx.team.id,ctx.now,encode(ctx.actor)?,kind,request.request_id,body,encode(&refs)?]).map_err(storage)?;
     let cutoff: Option<u64> = ctx
         .db
         .query_row(
@@ -67,6 +85,45 @@ pub(super) fn append(ctx: &Context<'_>, request: &Request) -> Result<()> {
         archive(ctx, None)?;
     }
     Ok(())
+}
+/// A hand-out's outcome as the journal says it: its name, then its reason,
+/// cleaned as outside text is where the service takes it
+/// (`teams::clean::sentence`, zerus-63rru.59), when it has one.
+fn outcome_text(outcome: &HandoutOutcome) -> String {
+    let (name, reason) = match outcome {
+        HandoutOutcome::Submitted { .. } => ("submitted", ""),
+        HandoutOutcome::Refused { reason } => ("refused", reason.as_str()),
+        HandoutOutcome::Uncertain { reason } => ("uncertain", reason.as_str()),
+        HandoutOutcome::CuttingOver { reason } => ("cutting over", reason.as_str()),
+        HandoutOutcome::HandedBack { reason } => ("handed back", reason.as_str()),
+    };
+    let reason = crate::teams::clean::sentence(reason, 512);
+    if reason.is_empty() {
+        name.to_owned()
+    } else {
+        format!("{name}: {reason}")
+    }
+}
+/// The superseded decision's kind, and the decision that replaced it: the
+/// node's newest, recorded by this operation.
+fn replacement(ctx: &Context<'_>, earlier: u64) -> Result<(String, (u64, String))> {
+    let (node, kind): (u32, String) = ctx
+        .db
+        .query_row(
+            "SELECT node,kind FROM decisions WHERE seq=?1 AND team=?2",
+            params![earlier, ctx.team.id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .map_err(storage)?;
+    let new = ctx
+        .db
+        .query_row(
+            "SELECT seq,kind FROM decisions WHERE team=?1 AND node=?2 ORDER BY seq DESC LIMIT 1",
+            params![ctx.team.id, node],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .map_err(storage)?;
+    Ok((kind, new))
 }
 fn archive(ctx: &Context<'_>, cutoff: Option<u64>) -> Result<()> {
     ctx.db.execute("INSERT INTO journal_archive SELECT * FROM journal WHERE team=?1 AND (?2 IS NULL OR seq<=?2)",params![ctx.team.id,cutoff]).map_err(storage)?;

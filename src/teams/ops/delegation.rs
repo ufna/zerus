@@ -1,7 +1,7 @@
 use super::*;
 
 // At most 500 admitted and 100 unadmitted live nodes, one open decision each.
-const MAX_OPEN_DECISIONS: usize = 600;
+pub(super) const MAX_OPEN_DECISIONS: usize = 600;
 
 pub(super) fn revoke_merges(ctx: &Context<'_>) -> Result<()> {
     for (seq, node) in delegated_accepts(ctx)? {
@@ -17,6 +17,7 @@ pub(super) fn revoke_merges(ctx: &Context<'_>) -> Result<()> {
             "Approve integration of the accepted result.",
             Some(node),
             Some(seq),
+            &["approve", "reject"],
         )?;
     }
     Ok(())

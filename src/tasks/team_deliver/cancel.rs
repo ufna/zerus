@@ -20,7 +20,83 @@ fn authority(store: &Store, body: &Input, team: &Team, node: &Node) -> Result<St
         .ok_or_else(||rule("No Pending cancel decision for this generation."))
 }
 
-pub(super) fn write(config: &Config, args: &[String], body: &Input) -> Result<&'static str> {
+/// The team's own execution always has an attempt, its effect's ID. A running
+/// document with no current attempt and no conflict was started by a person
+/// outside the team (a legacy-route send records none): a cancel acts on one
+/// attempt, and this execution has none of the team's to act on.
+fn runs_without_attempt(view: &zerus_replica::TaskView) -> bool {
+    let (_, id, conflict) = crate::teams::tasks::attempt(view);
+    view.stage == Stage::Active && view.cancelled_at.is_none() && id.is_empty() && !conflict
+}
+
+// A terminal team cannot observe again. Its last observation or a delivered
+// effect of this generation proves what it still owns; another execution
+// belongs to the person and must never be cancelled by retrying this decision.
+fn current_attempt(
+    store: &Store,
+    body: &Input,
+    team: &Team,
+    view: &zerus_replica::TaskView,
+) -> Result<(u64, String)> {
+    // In every team state, before any observation is consulted: no later
+    // observation can give this execution an attempt of the team.
+    if runs_without_attempt(view) {
+        return Err(rule(
+            "no_team_attempt: The task runs without an attempt of the team: a person started it, and the team's cancel acts only on the team's own attempt.",
+        ));
+    }
+    if matches!(team.status, TeamStatus::Running | TeamStatus::Paused) {
+        return observed_attempt(store, &body.team, body.node, view);
+    }
+    let current = crate::teams::tasks::attempt(view);
+    let observation = store
+        .task_observation(&body.team, body.node)
+        .map_err(problem)?;
+    let observed_running = observation
+        .as_ref()
+        .is_some_and(|o| o.stage == crate::teams::ops::TaskStage::InProgress);
+    let observed = observation.as_ref().map_or_else(
+        || (0, String::new(), false),
+        |o| (o.attempt, o.attempt_id.clone(), o.attempt_conflict),
+    );
+    let running = view.stage == Stage::Active && view.cancelled_at.is_none();
+    if current == observed && (!running || observed_running) {
+        return Ok((current.0, current.1));
+    }
+    let delivered = view
+        .execution
+        .as_ref()
+        .filter(|e| !e.conflict && e.unknown.is_empty())
+        .and_then(|e| e.current.as_ref())
+        .is_some_and(|a| {
+            matches!(
+                a.phase,
+                Phase::Submitted | Phase::Running | Phase::Ready | Phase::Cancelled
+            )
+        });
+    let own: bool = store.db.as_ref().expect("bound store").query_row(
+        "SELECT EXISTS(SELECT 1 FROM effects WHERE request_id=?1 AND team=?2 AND node=?3 AND generation=(SELECT generation FROM nodes WHERE team=?2 AND id=?3 UNION ALL SELECT generation FROM node_archive WHERE team=?2 AND id=?3 LIMIT 1) AND kind IN ('handout','reopen'))",
+        params![current.1, body.team, body.node], |row| row.get(0),
+    ).map_err(fail)?;
+    let equal_unseen_start = current == observed && running && !observed_running;
+    if delivered
+        && own
+        && current.0 >= observed.0
+        && (current.1 != observed.1 || equal_unseen_start)
+    {
+        return Ok((current.0, current.1));
+    }
+    Err(rule(format!(
+        "attempt_changed: Task attempt {} ({}, conflict={}) is not the terminal team's judged execution from observation {} ({}, conflict={}) or its delivered effect.",
+        current.0, current.1, current.2, observed.0, observed.1, observed.2
+    )))
+}
+
+pub(super) fn write(
+    config: &Config,
+    args: &[String],
+    body: &Input,
+) -> Result<(&'static str, u64, String)> {
     let deadline = Instant::now() + attempts::BUDGET;
     let here = identity(config)?;
     let teams = Store::open(&config.state).map_err(problem)?;
@@ -56,19 +132,27 @@ pub(super) fn write(config: &Config, args: &[String], body: &Input) -> Result<&'
         return Err(rule("REF is not this node's task."));
     }
     let view = doc.view().map_err(fail)?;
+    let absent = doc.team().map_err(fail)?.is_none() && !doc.team_invalid();
+    if !absent || view.stage == Stage::Active {
+        marker(&doc, &body.team, &here)?;
+    }
+    let (attempt, attempt_id) = current_attempt(&teams, body, &team, &view)?;
     if view.stage == Stage::Done {
         return Err(rule("A Done task cannot be cancelled or released."));
     }
-    if doc.team().map_err(fail)?.is_none() && !doc.team_invalid() && view.stage != Stage::Active {
-        return Ok(if view.cancelled_at.is_some() {
-            "cancelled"
-        } else {
-            "released"
-        });
+    if absent && view.stage != Stage::Active {
+        return Ok((
+            if view.cancelled_at.is_some() {
+                "cancelled"
+            } else {
+                "released"
+            },
+            attempt,
+            attempt_id,
+        ));
     }
-    marker(&doc, &body.team, &here)?;
     if view.cancelled_at.is_some() {
-        return Ok("cancelled");
+        return Ok(("cancelled", attempt, attempt_id));
     }
     if view
         .execution
@@ -151,5 +235,9 @@ pub(super) fn write(config: &Config, args: &[String], body: &Input) -> Result<&'
     if std::env::var_os("HGS_TEST_TEAM_COMPLETION_AFTER_SAVE").is_some() {
         std::process::exit(79);
     }
-    Ok(if active { "cancelled" } else { "released" })
+    Ok((
+        if active { "cancelled" } else { "released" },
+        attempt,
+        attempt_id,
+    ))
 }

@@ -75,6 +75,7 @@ def cases():
     yield "waiting_unknown_reclaimed", BASE + "ledger.rs", LEDGER + "tests::a_recorded_nonstart", ("row.state == \"waiting\" && row.plan == *plan", "matches!(row.state.as_str(), \"waiting\" | \"unknown\") && row.plan == *plan")
     yield "waiting_quota_ignored", BASE + "ledger.rs", LEDGER + "tests::a_nonstart_reclaim", ("fresh && plan.kind == Kind::Resume && quota(tx, &plan.binding, now, &plan.key)?", "false")
     yield "waiting_opens_card", BASE + "engine.rs", "desktop::teams::confirm::engine::tests::busy_admission", ("if row.state == \"waiting\" {\n        return Ok(());", "if false {\n        return Ok(());")
+    yield "startup_conversation_null", BASE + "policy.rs", "desktop::teams::confirm::policy::tests::a_real_startup_card", ("        Value::Null => Some(\"\"),", "        Value::Null => None,")
     yield "retry_outcome_detail", BASE + "engine.rs", DELIVERY + "retry::wp17_own_successful_retry_must_not_journal_a_nonstart", ('            row.detail = "The exact native receipt confirmed the original request".into();', "")
 
 

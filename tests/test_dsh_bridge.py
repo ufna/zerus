@@ -1,7 +1,10 @@
 """Adapter controls; the native suites separately exercise the real engine."""
+import json
+import os
 from pathlib import Path
 import shutil
 import subprocess
+import tempfile
 import unittest
 
 BRIDGE = Path(__file__).resolve().parents[1] / 'src/dsh/bridge.mjs'
@@ -195,6 +198,306 @@ assert.deepEqual(calls, [
 ]);
 await assert.rejects(manageSchedule({ update() {}, view() {}, edit() {} }, { ...p, action: 'delete' }), /incompatible official/);
 """)
+
+
+@unittest.skipUnless(shutil.which('node'), 'Node.js required')
+class ShellIdentity(unittest.TestCase):
+    """zerus-ppd26: each tool call's processes carry HGS_AGENT=dsh and exactly
+    the calling session's own markers, or none of them."""
+
+    def run_js(self, body):
+        script = """
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { AsyncLocalStorage } from 'node:async_hooks';
+const { callEnvironment, parseIdentity, identitySession, readIdentity, wrapSpawns, callTokens, CALL_TOKEN, HIDDEN_TOKEN } = await import(process.argv[2]);
+const conversation = 'session-91250d76-ca68-48b6-87f8-3a0e4400c314';
+const file = { version: 1, conversation, session: 'dsh/project/a', run: 'run-1',
+               session_id: '6a4c5887-557a-4f31-b1c8-ad0a94c3c705', account: 'native-dsh' };
+const markers = ['HGS_SESSION', 'HGS_RUN_ID', 'HGS_SESSION_ID', 'HGS_ACCOUNT_ID'];
+""" + body
+        result = subprocess.run(['node', '--input-type=module', '-', BRIDGE.as_uri()],
+                                input=script, text=True, capture_output=True, timeout=10)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_a_call_carries_its_own_markers_or_removes_all_of_them(self):
+        self.run_js("""
+const none = callEnvironment(undefined);
+assert.equal(none.HGS_AGENT, 'dsh');
+// Explicit undefined entries are the subprocess service's tombstones.
+for (const key of markers) { assert.ok(Object.hasOwn(none, key), key); assert.equal(none[key], undefined); }
+assert.ok(Object.isFrozen(none));
+assert.deepEqual({ ...callEnvironment(parseIdentity(JSON.stringify(file), conversation)) }, {
+  HGS_AGENT: 'dsh', HGS_SESSION: 'dsh/project/a', HGS_RUN_ID: 'run-1',
+  HGS_SESSION_ID: '6a4c5887-557a-4f31-b1c8-ad0a94c3c705', HGS_ACCOUNT_ID: 'native-dsh' });
+""")
+
+    def test_only_a_complete_identity_of_the_exact_conversation_is_accepted(self):
+        self.run_js("""
+assert.deepEqual(parseIdentity(JSON.stringify(file), conversation),
+  { session: 'dsh/project/a', run: 'run-1', session_id: file.session_id, account: 'native-dsh' });
+const other = 'session-00000000-0000-4000-8000-000000000001';
+for (const text of ['', 'not json', 'null', JSON.stringify({ ...file, version: 2 }),
+    JSON.stringify({ ...file, conversation: other }), JSON.stringify({ ...file, session: '' }),
+    JSON.stringify({ ...file, run: 7 }), JSON.stringify({ ...file, session_id: undefined }),
+    JSON.stringify({ ...file, account: 'a'.repeat(2049) }), JSON.stringify({ ...file, session: 'a' + String.fromCharCode(10) + 'b' }),
+    JSON.stringify({ ...file, session: 'a' + String.fromCharCode(0x85) })])
+  assert.equal(parseIdentity(text, conversation), undefined, text);
+""")
+
+    def test_a_child_call_carries_its_top_level_sessions_identity(self):
+        self.run_js("""
+const parent = conversation, child = 'session-00000000-0000-4000-8000-000000000002';
+assert.equal(identitySession({ session: { id: parent, header: { id: parent, origin: 'user' } } }), parent);
+assert.equal(identitySession({ session: { id: child, header: { id: child, origin: 'subagent', parentSession: parent } } }), parent);
+for (const agent of [undefined, {}, { session: { id: '../escape', header: {} } },
+    { session: { id: child, header: { origin: 'subagent', parentSession: 'webhook-x' } } }])
+  assert.equal(identitySession(agent), undefined);
+""")
+
+    def test_the_identity_is_read_bounded_without_following_a_link(self):
+        self.run_js("""
+const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hgs-identity-'));
+try {
+  const target = path.join(dir, conversation + '.json');
+  fs.writeFileSync(target, JSON.stringify(file));
+  assert.equal(readIdentity(dir, conversation).run, 'run-1');
+  assert.equal(readIdentity(null, conversation), undefined);
+  assert.equal(readIdentity(dir, undefined), undefined);
+  fs.writeFileSync(target, JSON.stringify({ ...file, run: 'r'.repeat(5000) }));
+  assert.equal(readIdentity(dir, conversation), undefined);
+  fs.rmSync(target);
+  assert.equal(readIdentity(dir, conversation), undefined);
+  fs.writeFileSync(path.join(dir, 'real.json'), JSON.stringify(file));
+  fs.symlinkSync(path.join(dir, 'real.json'), target);
+  assert.equal(readIdentity(dir, conversation), undefined);
+} finally { fs.rmSync(dir, { recursive: true, force: true }); }
+""")
+
+    def test_processes_started_during_a_call_carry_its_environment(self):
+        self.run_js("""
+const store = new AsyncLocalStorage(), seen = [];
+const service = { spawn(spec) { seen.push(['spawn', spec]); return spec; },
+                  spawnTerminal(spec) { seen.push(['terminal', spec]); return spec; } };
+const original = service.spawn;
+const wrap = wrapSpawns(service, () => store.getStore());
+assert.equal(wrap.installed, true);
+assert.ok(wrap.current());
+const outside = { argv: ['true'], env: { HGS_SESSION: 'caller' } };
+assert.equal(service.spawn(outside), outside);
+const env = callEnvironment(undefined);
+await store.run(env, async () => {
+  await new Promise(resolve => setTimeout(resolve, 1));
+  const spec = service.spawn({ argv: ['bash'], env: { NO_COLOR: '1', HGS_SESSION: 'inherited', HGS_AGENT: 'claude' } });
+  assert.deepEqual(spec.env, { NO_COLOR: '1', ...env });
+  assert.equal(service.spawnTerminal({ argv: ['bash'] }).env.HGS_AGENT, 'dsh');
+});
+assert.equal(seen.length, 3);
+service.spawn = function replaced() {};
+assert.equal(wrap.current(), false);
+wrap.restore();
+assert.equal(service.spawn.name, 'replaced');
+const fresh = { spawn: original };
+const again = wrapSpawns(fresh, () => env);
+again.restore();
+assert.equal(fresh.spawn, original);
+assert.equal(wrapSpawns({}, () => env).installed, false);
+""")
+
+    def test_a_call_token_names_its_conversation_while_the_call_or_its_jobs_live(self):
+        self.run_js("""
+assert.equal(CALL_TOKEN, 'HGS_DSH_CALL_TOKEN');
+const tokens = callTokens(3);
+const call = tokens.open(conversation);
+assert.match(call, /^[0-9a-f]{64}$/);
+assert.notEqual(tokens.open(conversation), call, 'every call has its own token');
+assert.equal(tokens.conversation(call), conversation);
+// A job the call started keeps the token after the call returns, until it settles.
+tokens.job(call, 'job-1');
+tokens.close(call);
+assert.equal(tokens.conversation(call), conversation);
+tokens.settled('job-1');
+assert.equal(tokens.conversation(call), undefined);
+// Without a job, the token ends with its call; a settled job of another call is no release.
+const plain = tokens.open(conversation);
+tokens.settled('job-1');
+assert.equal(tokens.conversation(plain), conversation);
+tokens.close(plain);
+assert.equal(tokens.conversation(plain), undefined);
+for (const bad of [undefined, '', 'X'.repeat(64), call.toUpperCase(), call + '0', 7]) assert.equal(tokens.conversation(bad), undefined);
+// Bounded: a full table recycles only the opener's own oldest token, so
+// another conversation's live token stays (zerus-ppd26.13).
+const first = tokens.open('session-00000000-0000-4000-8000-000000000001');
+const own = [];
+for (let n = 0; n < 3; n++) own.push(tokens.open(conversation));
+assert.equal(tokens.conversation(first), 'session-00000000-0000-4000-8000-000000000001');
+assert.equal(tokens.conversation(own[0]), undefined);
+assert.equal(tokens.conversation(own[2]), conversation);
+assert.equal(tokens.size, 3);
+""")
+
+    def test_one_conversation_never_pushes_out_anothers_tokens_and_live_ones_stay_hidden(self):
+        # zerus-ppd26.5: a conversation evicts only its own oldest tokens, and
+        # what the host serves never carries a live token.
+        self.run_js("""
+const tokens = callTokens(10, 3);
+const other = 'session-00000000-0000-4000-8000-000000000001';
+const theirs = tokens.open(other);
+const mine = [];
+for (let n = 0; n < 6; n++) mine.push(tokens.open(conversation));
+assert.equal(tokens.conversation(theirs), other, 'another conversation keeps its token');
+assert.deepEqual(mine.map(token => tokens.conversation(token) !== undefined), [false, false, false, true, true, true]);
+assert.equal(tokens.size, 4);
+const ended = mine[0], live = mine[5], unrelated = 'ab'.repeat(32);
+const served = JSON.stringify({ output: `HGS_DSH_CALL_TOKEN=${live}\\nother ${unrelated} ended ${ended}` });
+const hidden = tokens.redact(served);
+assert.ok(!hidden.includes(live));
+assert.ok(hidden.includes(`HGS_DSH_CALL_TOKEN=${HIDDEN_TOKEN}`));
+assert.ok(hidden.includes(unrelated) && hidden.includes(ended), 'only live tokens are hidden');
+tokens.close(live);
+assert.ok(tokens.redact(served).includes(live), 'an ended token is no longer live');
+""")
+
+    def test_every_copy_of_a_live_token_is_hidden_whatever_precedes_it(self):
+        # zerus-ppd26.13: each 64-character window of a hex run is tested, so a
+        # token after a hex digit or a JSON-escaped control character is hidden,
+        # and every copy in one reply (U1).
+        self.run_js("""
+const tokens = callTokens();
+const live = tokens.open(conversation), other = tokens.open(conversation);
+for (const text of [live, 'c' + live, 'deadbeef' + live, live + live, live + ' and again ' + live,
+    String.fromCharCode(27) + live, String.fromCharCode(0) + live, String.fromCharCode(8) + live,
+    String.fromCharCode(12) + live, 'x' + live + 'cafe', other + live]) {
+  const served = tokens.redact(JSON.stringify({ output: text }));
+  assert.ok(!served.includes(live), JSON.stringify(text.slice(0, 12)));
+  assert.ok(!served.includes(other));
+  assert.ok(served.includes(HIDDEN_TOKEN));
+}
+const twice = tokens.redact(JSON.stringify({ output: live + ' then ' + live }));
+assert.equal(twice.split(HIDDEN_TOKEN).length - 1, 2, 'both copies');
+// Hex around a token stays as it was.
+assert.ok(tokens.redact('deadbeef' + live + 'cafe').startsWith('deadbeef' + HIDDEN_TOKEN + 'cafe'));
+const unrelated = 'a'.repeat(200);
+assert.equal(tokens.redact(unrelated), unrelated);
+""")
+
+    def test_a_full_table_never_takes_another_conversations_live_token(self):
+        # zerus-ppd26.13: a conversation makes room only from its own tokens; a
+        # newcomer facing a full table gets none and its call stays unproven.
+        self.run_js("""
+const tokens = callTokens(4, 3);
+const a = 'session-00000000-0000-4000-8000-00000000000a', b = 'session-00000000-0000-4000-8000-00000000000b';
+const c = 'session-00000000-0000-4000-8000-00000000000c';
+const mine = [tokens.open(a), tokens.open(a), tokens.open(a)], theirs = tokens.open(b);
+assert.equal(tokens.size, 4);
+assert.equal(tokens.open(c), undefined, 'a newcomer takes no token of another conversation');
+assert.ok(mine.every(token => tokens.conversation(token) === a) && tokens.conversation(theirs) === b);
+const next = tokens.open(a);
+assert.equal(tokens.conversation(mine[0]), undefined, 'a recycles its own oldest');
+assert.equal(tokens.conversation(next), a);
+assert.equal(tokens.conversation(theirs), b);
+const again = tokens.open(b);
+assert.equal(tokens.conversation(theirs), undefined);
+assert.equal(tokens.conversation(again), b);
+assert.ok(mine.slice(1).every(token => tokens.conversation(token) === a));
+""")
+
+
+# The real bridge's apply() over a stand-in host whose prompt inserts scripted
+# messages, as the harness does, before it resolves (zerus-hfw2s.2).
+WITNESS_HARNESS = r"""
+import net from 'node:net';
+const [bridgeUrl, socket, scenario] = process.argv.slice(2);
+const { apply } = await import(bridgeUrl);
+const listeners = {}, effects = [];
+const session = id => {
+  const log = [];
+  return { id, header: { origin: 'user' }, log, get seq() { return log.length; },
+    snapshotEvents(from = 0, to = log.length) { return log.slice(from, to); } };
+};
+const agent = id => ({ id, session: session(id), status: 'idle', inbox: { nextStep: [], nextTurn: [] },
+  model: { current: () => ({ provider: 'fixture', model: 'm' }), select() {} } });
+const agents = new Map(['S1', 'S2'].map(id => [id, agent(id)]));
+const insert = (target, message) => {
+  const log = target.session.log;
+  log.push({ seq: log.length, type: 'agent/inbox/spliced',
+    data: { target: 'next-step', start: target.inbox.nextStep.length, inserted: [message] } });
+  target.inbox.nextStep.push(message);
+  for (const listener of listeners['agent/inbox/inserted'] ?? []) listener({ agent: target, message });
+};
+const prompt = async p => {
+  const message = id => ({ id, role: 'user', source: { kind: 'user', rpcId: p.requestId }, content: p.content });
+  if (scenario === 'refused') throw new Error('Scripted refusal before any insert');
+  // Another session's message with the same request ID comes first.
+  if (scenario === 'other-session-first') insert(agents.get('S2'), message('foreign'));
+  insert(agents.get(p.sessionId), message('m1'));
+  // A later message with the same request ID on the same session.
+  if (scenario === 'later-insert') insert(agents.get(p.sessionId), message('m2'));
+  if (scenario === 'inserted-then-throws') throw new Error('Scripted failure after the insert');
+  return { accepted: true };
+};
+const ctx = new Proxy({
+  sessionController: { prompt, list: async () => ({ items: [] }), projections: async () => ({ values: {} }),
+    agents: { composeAgent: async () => ({}), presetForObservation() {}, serializeImageAdmission() {} } },
+  agents: { get: id => agents.get(id), roots: () => [...agents.values()] },
+  goals: { get: () => null },
+  get: name => (name === 'sessions' ? { flush: async () => true } : undefined),
+  on: (name, listener) => { (listeners[name] ??= []).push(listener); return () => {}; },
+  effect: run => { effects.push(run()); },
+}, { get: (target, key) => (key in target ? target[key] : undefined) });
+apply(ctx, { socket });
+await Promise.all(effects);
+const call = (method, params = {}) => new Promise((resolve, reject) => {
+  const client = net.connect(socket);
+  let data = '';
+  client.on('data', chunk => { data += chunk; });
+  client.on('end', () => resolve(JSON.parse(data)));
+  client.on('error', reject);
+  client.write(JSON.stringify({ method, params }) + '\n');
+});
+const { value: { generation } } = await call('ping');
+const sent = await call('send', { sessionId: 'S1', requestId: 'R', content: [{ type: 'text', text: 'X' }], mode: 'steer' });
+const witness = sessionId => call('input-witness', { sessionId, requestId: 'R', generation, waitMs: 0 });
+process.stdout.write(JSON.stringify({ sent, s1: await witness('S1'), s2: await witness('S2') }));
+process.exit(0);
+"""
+
+
+@unittest.skipUnless(shutil.which('node'), 'Node.js required')
+class InputWitnessBinding(unittest.TestCase):
+    """zerus-hfw2s.2: a request is bound to the FIRST message the harness inserts
+    for it on the sending session, never to another session's or a later one."""
+
+    def answers(self, scenario):
+        with tempfile.TemporaryDirectory(prefix='hgs-dsh-witness-', dir=os.environ.get('ZERUS_TEST_SHORT_TMPDIR', '/tmp')) as root:
+            result = subprocess.run(['node', '--input-type=module', '-', BRIDGE.as_uri(), str(Path(root) / 'host.sock'), scenario],
+                                    input=WITNESS_HARNESS, text=True, capture_output=True, timeout=20)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return json.loads(result.stdout)
+
+    def bound(self, answer):
+        self.assertTrue(answer['ok'], answer)
+        value = answer['value']
+        return value['state'], value.get('messageId'), value.get('spliceSeq')
+
+    def test_a_later_insert_with_the_same_request_id_never_rebinds(self):
+        answers = self.answers('later-insert')
+        self.assertEqual(self.bound(answers['s1']), ('tracked', 'm1', 0))
+
+    def test_another_sessions_insert_never_binds(self):
+        answers = self.answers('other-session-first')
+        self.assertEqual(self.bound(answers['s1']), ('tracked', 'm1', 0))
+        self.assertEqual(self.bound(answers['s2']), ('unseen', None, None))
+
+    def test_only_a_request_with_no_insert_is_refused(self):
+        refused = self.answers('refused')
+        self.assertFalse(refused['sent']['ok'])
+        self.assertEqual(refused['s1']['value']['state'], 'refused')
+        inserted = self.answers('inserted-then-throws')
+        self.assertFalse(inserted['sent']['ok'])
+        self.assertEqual(self.bound(inserted['s1']), ('tracked', 'm1', 0))
 
 
 if __name__ == '__main__':

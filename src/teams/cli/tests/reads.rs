@@ -15,6 +15,25 @@ fn unbound_caller() -> Caller {
     Caller::Session(key(OTHER_SESSION))
 }
 
+/// A person's actor view names every limit of the caller proofs in the one
+/// composed text; a session's view carries no proof kind (zerus-63rru.28).
+#[test]
+fn a_persons_view_states_every_limit_and_no_view_names_a_proof_kind() {
+    let view = super::super::actor::view(&person());
+    assert_eq!(view["note"], crate::teams::caller::limits());
+    assert!(view["note"]
+        .as_str()
+        .unwrap()
+        .contains(crate::state::session_graph::HOSTED_LIMIT));
+    for actor in [member("m1", M1_SESSION), other()] {
+        let view = super::super::actor::view(&actor);
+        assert!(
+            view.get("note").is_none() && !view.to_string().contains("proof"),
+            "{view}"
+        );
+    }
+}
+
 fn status(harness: &Harness, caller: &Caller) -> Value {
     let (reply, exit) = harness.cli(caller, &format!("status --team {TEAM}"), "");
     assert_eq!(exit, 0, "{reply}");
@@ -178,6 +197,30 @@ fn the_inbox_and_the_journal_name_the_report_and_the_answer() {
 }
 
 #[test]
+fn a_members_current_work_shows_its_own_questions_with_the_answer() {
+    let harness = seeded();
+    let (reply, exit) = harness.cli(&Caller::Session(key(M1_SESSION)), "current", "");
+    assert_eq!(exit, 0, "{reply}");
+    let node = &reply["nodes"][0];
+    let question = &node["questions"][0];
+    assert_eq!(
+        question["question"],
+        "Should the empty case keep its old width?"
+    );
+    assert_eq!(question["state"], "answered");
+    assert_eq!(
+        question["answer"],
+        "Keep it, and say so in the commit message."
+    );
+    assert_eq!(node["questions_more"], false);
+    let (lead, _) = harness.cli(&Caller::Session(key(LEAD_SESSION)), "current", "");
+    assert!(
+        lead["nodes"].as_array().unwrap().is_empty(),
+        "nobody else's"
+    );
+}
+
+#[test]
 fn only_a_session_reads_the_current_work() {
     let harness = seeded();
     let (reply, exit) = harness.cli(&Caller::Session(key(LEAD_SESSION)), "current", "");
@@ -302,6 +345,7 @@ fn waiting_lists_every_open_owner_card_oldest_first_and_only_for_the_person() {
             kind: "note".into(),
             text: "Decide the release date.".into(),
             node: None,
+            decisions: None,
         },
     );
     let (reply, exit) = harness.cli(&person_caller(), "waiting", "");

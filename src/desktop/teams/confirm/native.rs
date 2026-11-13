@@ -53,9 +53,17 @@ impl<'a> Native<'a> {
     fn read(&self, args: Vec<String>, input: Option<&[u8]>) -> Result<Value> {
         let mut scoped = vec!["--expect-machine".into(), self.machine.into()];
         scoped.extend(args);
+        self.run(&scoped, input)
+    }
+    /// The send's effect-free observation of a resumed Codex member, run as
+    /// exactly the argv the CLI's own gate admits ([`observation`]).
+    fn observe_send(&self, name: &str, input: &[u8]) -> Result<Value> {
+        self.run(&observation(name), Some(input))
+    }
+    fn run(&self, args: &[String], input: Option<&[u8]>) -> Result<Value> {
         match super::super::child::run(
             self.config,
-            &scoped,
+            args,
             input,
             None,
             false,
@@ -68,6 +76,20 @@ impl<'a> Native<'a> {
             _ => Err("The bounded member observation is unavailable".into()),
         }
     }
+}
+/// The argv of the send's effect-free observation (zerus-63rru.54): exactly
+/// `send NAME --observe --json`, the only argv `cli::observe_gate` admits.
+/// That gate runs before any machine guard and refuses every other argv with
+/// `send` and `--observe`, a leading `--expect-machine` included, with exit
+/// 2. No guard is lost: the view this observation follows was read under the
+/// machine guard on this computer, and the gate refuses a remote name.
+pub(super) fn observation(name: &str) -> Vec<String> {
+    vec![
+        "send".into(),
+        name.into(),
+        "--observe".into(),
+        "--json".into(),
+    ]
 }
 impl Ports for Native<'_> {
     fn facts(&mut self, b: &Binding) -> Result<Facts> {
@@ -160,6 +182,8 @@ impl Native<'_> {
                         row.detail.chars().take(2048).collect::<String>()
                     ),
                     node: None,
+                    // Nothing reads its decision: acknowledged alone.
+                    decisions: None,
                 },
             };
             self.ledger.save_card(&row.plan.key, Some(&request))?;

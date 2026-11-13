@@ -29,13 +29,28 @@ pub(super) fn status(config: &Config, caller: &Caller, args: &[String]) -> Resul
             object.remove("bundle");
         }
     }
-    let members = store.members(&team, crate::teams::store::MAX_PAGE, None)?;
+    let members = store.member_rows(&team, crate::teams::store::MAX_PAGE, None)?;
+    let running = crate::desktop::teams::presence(config);
+    // A stopped or archived team takes no cards: its service conditions and
+    // refused cancels are shown here. A live team's cancels refused have the
+    // lead's inbox item, and its failing work its cards.
+    let terminal = matches!(row.status, TeamStatus::Stopped | TeamStatus::Archived);
+    let cancel_refusals = if terminal {
+        Some(store.cancel_refusal_page(&team)?)
+    } else {
+        None
+    };
     Ok(json!({
         "ok": true,
         "actor": actor::view(&identity.actor),
         "team": view,
         "members": super::board::members(&row,members.rows)?,
         "counts": counts(&store, &team)?,
+        "service_running": running,
+        "health": crate::desktop::teams::health(&config.state),
+        "service_items": crate::desktop::teams::service_items(&config.state, &team, running, input::now_ms()),
+        "key_refusals": store.key_refusal_page(&team)?,
+        "cancel_refusals": cancel_refusals,
     }))
 }
 
@@ -63,7 +78,7 @@ pub(super) fn list(
             page(
                 &identity,
                 &team,
-                super::board::queue(&pinned, store.queue(&team, limit, cursor)?)?,
+                super::board::queue(&pinned, store.queue_rows(&team, limit, cursor)?)?,
             )
         }
         "inbox" => page(&identity, &team, store.inbox(&team, limit, cursor)?),
@@ -238,7 +253,8 @@ fn held(store: &Store, team: &str, member: &str) -> Result<Vec<Value>, Problem> 
         for node in rows.drain(..) {
             if let Some(holder) = store.attempt_holder(team, node.id)? {
                 if holder.member == member {
-                    found.push(held_view(node, holder.generation)?);
+                    let questions = store.questions(team, node.id, holder.generation, member)?;
+                    found.push(held_view(node, holder.generation, questions)?);
                 }
             }
         }
@@ -250,11 +266,18 @@ fn held(store: &Store, team: &str, member: &str) -> Result<Vec<Value>, Problem> 
 }
 
 /// A held node with the attempt generation `ask` and a verdict need. The node
-/// itself does not store it; the store keeps it beside the row.
-fn held_view(node: Node, generation: u32) -> Result<Value, Problem> {
+/// itself does not store it; the store keeps it beside the row. The member's
+/// own questions of this attempt follow, newest first, with the lead's answer.
+fn held_view(
+    node: Node,
+    generation: u32,
+    questions: crate::teams::store::timers::Questions,
+) -> Result<Value, Problem> {
     let mut value = serde_json::to_value(&node).map_err(storage)?;
     if let Some(object) = value.as_object_mut() {
         object.insert("generation".into(), json!(generation));
+        object.insert("questions".into(), json!(questions.rows));
+        object.insert("questions_more".into(), json!(questions.more));
     }
     Ok(value)
 }

@@ -5,6 +5,8 @@ use crate::teams::cli::actor::Caller;
 use serde_json::Value;
 
 const STATUS: &str = include_str!("../../../../crates/team-plan/fixtures/cli-status.json");
+const STATUS_STOPPED: &str =
+    include_str!("../../../../crates/team-plan/fixtures/cli-status-stopped.json");
 const QUEUE: &str = include_str!("../../../../crates/team-plan/fixtures/cli-queue.json");
 const INBOX: &str = include_str!("../../../../crates/team-plan/fixtures/cli-inbox.json");
 const CARDS: &str = include_str!("../../../../crates/team-plan/fixtures/cli-cards.json");
@@ -17,12 +19,15 @@ const STORAGE_FAILED: &str =
 const CATALOG: &str = include_str!("../../../../crates/team-plan/fixtures/cli-catalog.json");
 const CHANGED: &str =
     include_str!("../../../../crates/team-plan/fixtures/cli-template-changed.json");
+const CURRENT: &str = include_str!("../../../../crates/team-plan/fixtures/cli-current.json");
 
 fn lead() -> Caller {
     Caller::Session(key(LEAD_SESSION))
 }
 
-fn replies() -> [(&'static str, Value); 10] {
+/// Each fixture's reply. The stopped team's status carries the items the
+/// service's own passes wrote, which it runs only on Linux and macOS.
+fn replies() -> Vec<(&'static str, Value)> {
     let harness = seeded();
     let (board, _) = super::verdict::configured_stage(
         zerus_team_plan::catalog::StageKind::Review,
@@ -39,7 +44,9 @@ fn replies() -> [(&'static str, Value); 10] {
         assert_eq!(exit, 0, "{line}: {reply}");
         reply
     };
-    [
+    // Only Linux and macOS add the stopped team's reply below.
+    #[cfg_attr(not(any(target_os = "linux", target_os = "macos")), allow(unused_mut))]
+    let mut replies = vec![
         (
             "cli-status.json",
             board_read(&Caller::Person, &format!("status --team {TEAM}")),
@@ -71,13 +78,29 @@ fn replies() -> [(&'static str, Value); 10] {
             "cli-template-changed.json",
             super::create_binding::changed_refusal_fixture(),
         ),
-    ]
+        (
+            "cli-current.json",
+            read(&Caller::Session(key(M1_SESSION)), "current"),
+        ),
+    ];
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    replies.insert(
+        1,
+        ("cli-status-stopped.json", {
+            let stopped = super::status_items::stopped_with_conditions();
+            let (reply, exit) = stopped.cli(&Caller::Person, &format!("status --team {TEAM}"), "");
+            assert_eq!(exit, 0, "{reply}");
+            reply
+        }),
+    );
+    replies
 }
 
 #[test]
 fn the_read_fixtures_are_the_replies_the_cli_prints() {
     let pinned = [
         ("cli-status.json", STATUS),
+        ("cli-status-stopped.json", STATUS_STOPPED),
         ("cli-queue.json", QUEUE),
         ("cli-inbox.json", INBOX),
         ("cli-cards.json", CARDS),
@@ -87,10 +110,25 @@ fn the_read_fixtures_are_the_replies_the_cli_prints() {
         ("cli-storage-failed.json", STORAGE_FAILED),
         ("cli-catalog.json", CATALOG),
         ("cli-template-changed.json", CHANGED),
+        ("cli-current.json", CURRENT),
     ];
     let replies = replies();
-    for ((name, actual), (pinned_name, text)) in replies.iter().zip(pinned) {
-        assert_eq!(*name, pinned_name);
+    let produced: Vec<&str> = replies.iter().map(|(name, _)| *name).collect();
+    let expected_names: Vec<&str> = pinned
+        .iter()
+        .map(|(name, _)| *name)
+        .filter(|name| {
+            cfg!(any(target_os = "linux", target_os = "macos"))
+                || *name != "cli-status-stopped.json"
+        })
+        .collect();
+    assert_eq!(produced, expected_names);
+    for (name, actual) in &replies {
+        let text = pinned
+            .iter()
+            .find(|(pinned_name, _)| pinned_name == name)
+            .map(|(_, text)| *text)
+            .unwrap();
         let expected: Value =
             serde_json::from_str(text).unwrap_or_else(|error| panic!("{name}: {error}"));
         assert_eq!(actual, &expected, "{name} is not the reply this hgs prints");

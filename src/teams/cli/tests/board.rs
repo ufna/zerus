@@ -269,3 +269,91 @@ fn row_kind_uses_the_node_kind_for_a_reviewer_task_and_developer_stage() {
     assert_eq!(stage["kind"], "stage");
     assert_eq!(stage["stage"]["kind"], "review");
 }
+
+/// The queue reply carries `pending_replaceable` beside `pending_decision`,
+/// always: false with nothing pending, true for a Return that has not
+/// started, false once its reopen is reserved.
+#[test]
+fn queue_rows_say_whether_the_pending_decision_can_be_replaced() {
+    use crate::teams::ops::Operation;
+    let h = seeded();
+    let node = h.reported(1);
+    let facts = |h: &Harness| {
+        let (reply, exit) = h.cli(
+            &Caller::Person,
+            &format!("queue --team {TEAM} --limit 200"),
+            "",
+        );
+        assert_eq!(exit, 0, "{reply}");
+        let row = reply["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["id"] == node)
+            .unwrap()
+            .clone();
+        (
+            row["pending_decision"].clone(),
+            row["pending_replaceable"].clone(),
+        )
+    };
+    assert_eq!(facts(&h), (json!(null), json!(false)));
+    h.apply(
+        &person(),
+        Operation::Return {
+            node,
+            reason: "Revise the label".into(),
+        },
+    );
+    assert_eq!(facts(&h), (json!("return"), json!(true)));
+    h.apply(
+        &service(),
+        Operation::ReopenIntent {
+            node,
+            member: "m1".into(),
+            effect_request_id: uid(0x9001),
+        },
+    );
+    assert_eq!(facts(&h), (json!("return"), json!(false)));
+}
+
+/// The queue reply carries `unstaffed`, always: null, then the sentence of
+/// the lead's open item once no member can take the ready node.
+#[test]
+fn queue_rows_carry_the_unstaffed_sentence() {
+    use crate::teams::ops::Operation;
+    let h = seeded();
+    let node = h.add(1);
+    let unstaffed = |h: &Harness| {
+        let (reply, exit) = h.cli(
+            &Caller::Person,
+            &format!("queue --team {TEAM} --limit 200"),
+            "",
+        );
+        assert_eq!(exit, 0, "{reply}");
+        reply["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["id"] == node)
+            .unwrap()["unstaffed"]
+            .clone()
+    };
+    assert_eq!(unstaffed(&h), json!(null));
+    for member in ["m1", "m2"] {
+        h.apply(
+            &person(),
+            Operation::ArchiveMember {
+                member: member.into(),
+            },
+        );
+    }
+    h.apply(&service(), Operation::ReconcileUnstaffed);
+    let text = unstaffed(&h);
+    assert!(
+        text.as_str()
+            .unwrap()
+            .contains("No member of the team has the role developer."),
+        "{text}"
+    );
+}

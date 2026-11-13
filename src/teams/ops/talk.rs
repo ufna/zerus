@@ -11,7 +11,7 @@ pub(super) fn ask(ctx: &mut Context<'_>) -> Result<()> {
     };
     ctx.active()?;
     let n = ctx.live_node(*node)?;
-    let holder = handout::holder(ctx, *node)?;
+    let holder = handout::recipient(ctx, *node)?;
     if let Actor::Session { member, .. } = ctx.actor {
         if holder.as_ref() != Some(member) {
             return Err(Problem::new(
@@ -47,10 +47,16 @@ pub(super) fn reply(ctx: &mut Context<'_>) -> Result<()> {
     if changed != 1 {
         return Err(invalid("Question is missing or already answered."));
     }
-    Ok(())
+    timers::mark_answer(ctx, *item)
 }
 pub(super) fn open_card(ctx: &mut Context<'_>) -> Result<()> {
-    let Operation::OpenCard { kind, text, node } = ctx.op else {
+    let Operation::OpenCard {
+        kind,
+        text,
+        node,
+        decisions,
+    } = ctx.op
+    else {
         unreachable!()
     };
     ctx.active()?;
@@ -62,39 +68,83 @@ pub(super) fn open_card(ctx: &mut Context<'_>) -> Result<()> {
     if let Some(node) = node {
         ctx.node(*node)?;
     }
-    ctx.reply.item = Some(card(ctx, kind, text, *node, None)?);
+    let listed: Vec<&str> = match decisions {
+        Some(list) => {
+            listed(list)?;
+            list.iter().map(String::as_str).collect()
+        }
+        None => Vec::new(),
+    };
+    ctx.reply.item = Some(card(ctx, kind, text, *node, None, &listed)?);
     Ok(())
 }
+/// The decisions an opener lists: one to four distinct tokens of at most 32
+/// bytes, lower-case ASCII letters and underscores, starting with a letter.
+/// The internal stale mark is never one of them.
+fn listed(list: &[String]) -> Result<()> {
+    let token = |d: &String| {
+        (1..=32).contains(&d.len())
+            && d.starts_with(|c: char| c.is_ascii_lowercase())
+            && d.chars().all(|c| c.is_ascii_lowercase() || c == '_')
+            && d != "stale"
+    };
+    let distinct = list.iter().enumerate().all(|(i, d)| !list[..i].contains(d));
+    if list.is_empty() || list.len() > 4 || !distinct || !list.iter().all(token) {
+        return Err(invalid(
+            "A card lists one to four distinct decisions, each a short lower-case word with underscores.",
+        ));
+    }
+    Ok(())
+}
+/// Open a card. `decisions` are the ones something acts on; an empty list
+/// stores none, and the card answers by the rule of its kind.
 pub(super) fn card(
     ctx: &Context<'_>,
     kind: &str,
     body: &str,
     node: Option<u32>,
     decision: Option<u64>,
+    decisions: &[&str],
 ) -> Result<u64> {
     reason(kind)?;
     text(kind, 128)?;
     reason(body)?;
-    ctx.db.execute("INSERT INTO cards(team,kind,node,actor,text,created_ms,decision_seq) VALUES(?1,?2,?3,?4,?5,?6,?7)",params![ctx.team.id,kind,node,encode(ctx.actor)?,body,ctx.now,decision]).map_err(storage)?;
+    let listed = if decisions.is_empty() {
+        None
+    } else {
+        Some(encode(&decisions)?)
+    };
+    ctx.db.execute("INSERT INTO cards(team,kind,node,actor,text,created_ms,decision_seq,decisions) VALUES(?1,?2,?3,?4,?5,?6,?7,?8)",params![ctx.team.id,kind,node,encode(ctx.actor)?,body,ctx.now,decision,listed]).map_err(storage)?;
     Ok(ctx.db.last_insert_rowid() as u64)
 }
+/// An open card's kind, node, decision sequence and stored decisions.
+type OpenCardRow = (String, Option<u32>, Option<u64>, Option<String>);
 pub(super) fn decide_card(ctx: &mut Context<'_>) -> Result<()> {
     let Operation::DecideCard { card, decision } = ctx.op else {
         unreachable!()
     };
     reason(decision)?;
-    let row: Option<(String, Option<u32>, Option<u64>)> = ctx
+    let row: Option<OpenCardRow> = ctx
         .db
         .query_row(
-            "SELECT kind,node,decision_seq FROM cards WHERE team=?1 AND seq=?2 AND state='open'",
+            "SELECT kind,node,decision_seq,decisions FROM cards WHERE team=?1 AND seq=?2 AND state='open'",
             params![ctx.team.id, card],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
         )
         .optional()
         .map_err(storage)?;
-    let Some((kind, node, seq)) = row else {
+    let Some((kind, node, seq, listed)) = row else {
         return Err(unavailable_card(ctx, *card)?);
     };
+    // A card takes only the decisions it lists, with the code of a wrong
+    // integration answer; nothing is written.
+    let takes = rows::card_decisions(&kind, listed.as_deref())?;
+    if !takes.iter().any(|d| d == decision) {
+        return Err(invalid(&format!(
+            "This card takes {}, not {decision}.",
+            takes.join(" or ")
+        )));
+    }
     let stale = if kind == "integration" {
         decide_integration(
             ctx,
@@ -142,7 +192,7 @@ fn decide_integration(ctx: &Context<'_>, node: u32, seq: u64, answer: &str) -> R
             ctx.settle(node)?;
             ctx.db
                 .execute(
-                    "UPDATE nodes SET decided_by=NULL,hold=0 WHERE team=?1 AND id=?2",
+                    "UPDATE nodes SET decided_by=NULL WHERE team=?1 AND id=?2",
                     params![ctx.team.id, node],
                 )
                 .map_err(storage)?;

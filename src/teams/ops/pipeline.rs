@@ -11,10 +11,10 @@ mod overrides;
 mod stages;
 pub(super) use overrides::{
     before_decision, before_observation, decide_card, observe_override, override_task,
-    released_stage,
+    released_stage, task_ended,
 };
 use stages::want_stage;
-pub(super) use stages::{current_stage, retire_stage};
+pub(super) use stages::{current_stage, end_stage, retire_stage};
 
 fn spec<'a>(ctx: &'a Context<'_>, n: &Node) -> Result<&'a Pipeline> {
     ctx.team
@@ -98,13 +98,14 @@ fn step(ctx: &mut Context<'_>, n: &Node, next: kernel::Step, findings: &str) -> 
         }
         kernel::Step::ToPerson => {
             state(ctx, n.id, "person", None)?;
-            queue::set_hold(ctx, n.id, true)?;
+            queue::hand_back(ctx, n.id, true)?;
             ctx.reply.item = Some(talk::card(
                 ctx,
                 "pipeline_acceptance",
                 findings,
                 Some(n.id),
                 None,
+                &["approve", "reject"],
             )?);
             Ok(())
         }
@@ -113,6 +114,17 @@ fn step(ctx: &mut Context<'_>, n: &Node, next: kernel::Step, findings: &str) -> 
                 return Err(invalid("Pipeline return has the wrong round."));
             }
             state(ctx, n.id, "returned", None)?;
+            // The verdict stays recorded; a Return to a removed implementer
+            // could never be carried out, so the lead decides instead.
+            if let Some(member) = members::removed_holder(ctx, n.id)? {
+                let text = format!(
+                    "Member {member} was removed from the team; the stage's failing verdict on task {} is recorded and nobody can take the task back, so it waits for the lead to reassign or cancel it.\n{findings}",
+                    n.id
+                );
+                let kind = format!("verdict_holder_removed:{round}");
+                ctx.reply.item = Some(members::hand_to_lead(ctx, n.id, &kind, &text)?);
+                return Ok(());
+            }
             ctx.decision(n.id, "return", findings, DecisionState::Pending)?;
             Ok(())
         }
@@ -182,7 +194,7 @@ fn require_holder(ctx: &Context<'_>, n: &Node) -> Result<()> {
 }
 pub(super) fn to_lead(ctx: &mut Context<'_>, n: &Node, why: &str) -> Result<()> {
     state(ctx, n.id, "lead", None)?;
-    queue::set_hold(ctx, n.id, false)?;
+    queue::hand_back(ctx, n.id, false)?;
     report_item(ctx, n, why)
 }
 fn report_item(ctx: &mut Context<'_>, n: &Node, why: &str) -> Result<()> {

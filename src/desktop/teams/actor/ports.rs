@@ -7,6 +7,88 @@ pub(in crate::desktop::teams) trait Ports {
         fallback
     }
 
+    fn cancels(
+        &mut self,
+        _store: &Store,
+        _team: &str,
+        _after: u32,
+    ) -> Result<Vec<super::cancel::Pending>> {
+        Ok(vec![])
+    }
+    fn cancel(
+        &mut self,
+        _team: &Team,
+        _pending: &super::cancel::Pending,
+        _original: &str,
+    ) -> Result<super::cancel::Answer> {
+        Err(unavailable())
+    }
+    fn record_cancel(
+        &mut self,
+        _store: &mut Store,
+        _team: &Team,
+        _fact: &super::cancel::Fact,
+        _now: i64,
+    ) -> Result<()> {
+        Err(unavailable())
+    }
+    fn cancel_fact_outcome(
+        &mut self,
+        store: &mut Store,
+        team: &Team,
+        fact: &super::cancel::Fact,
+        now: i64,
+    ) -> Result<super::cancel::FactOutcome> {
+        match self.record_cancel(store, team, fact, now) {
+            Ok(()) => Ok(super::cancel::FactOutcome::Recorded),
+            Err(error) => super::cancel::settle::classify(store, self, team, fact, error),
+        }
+    }
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn team_timers(
+        &mut self,
+        _state: &mut super::auxiliary::State,
+        _store: &mut Store,
+        _team: &Team,
+        _now: i64,
+    ) -> Result<()> {
+        Ok(())
+    }
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn answer_timers(
+        &mut self,
+        _state: &mut super::auxiliary::State,
+        _store: &mut Store,
+        _team: &Team,
+        _now: i64,
+    ) -> Result<()> {
+        Ok(())
+    }
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn terminal_timers(
+        &mut self,
+        _state: &mut super::auxiliary::State,
+        _store: &mut Store,
+        _now: i64,
+    ) -> Result<()> {
+        Ok(())
+    }
+    fn stage(
+        &mut self,
+        _team: &Team,
+        _effect: &crate::teams::store::StageTaskEffect,
+        _original: &str,
+    ) -> Result<TaskReply> {
+        Err(unavailable())
+    }
+    fn clear_stage(
+        &mut self,
+        _team: &Team,
+        _keyed: &crate::teams::store::timers::KeyedTask,
+        _original: &str,
+    ) -> Result<TaskReply> {
+        Err(unavailable())
+    }
     fn stopped(&self) -> bool {
         false
     }
@@ -21,6 +103,24 @@ pub(in crate::desktop::teams) trait Ports {
     fn observe(&mut self, store: &mut Store, task: &TaskRef) -> Result<()>;
     /// Both a current native fleet row and the session's task index must agree.
     fn free(&mut self, team: &Team, member: &Member) -> Result<bool>;
+    /// The same answer as [`Ports::free`] from the same read, and when the
+    /// member cannot be read, why (zerus-63rru.55). An adapter that cannot
+    /// tell keeps `free`'s answer: free or busy, never unreadable.
+    fn availability(&mut self, team: &Team, member: &Member) -> Result<Availability> {
+        Ok(if self.free(team, member)? {
+            Availability::Free
+        } else {
+            Availability::Busy
+        })
+    }
+    /// A stamp of what the member's current fleet row says, by the values
+    /// the actor reads (`fleet::stamp`), or None when it has no row now
+    /// (zerus-63rru.79). A changed stamp is a changed row. An adapter that
+    /// cannot tell has none, and a member's terminal fact then ends only
+    /// with its time.
+    fn row_stamp(&mut self, _team: &Team, _member: &Member) -> Result<Option<String>> {
+        Ok(None)
+    }
     fn report(&mut self, _task: &TaskRef) -> Result<Option<String>> {
         Ok(None)
     }
@@ -59,12 +159,65 @@ pub(in crate::desktop::teams) trait Ports {
     fn deliver(&mut self, team: &Team, node: &Node, member: &Member, id: &str) -> DeliveryResult;
 }
 
-/// NotStarted is positive proof that the original child never began. A lost
-/// result or a possible submission must be an Outcome(Uncertain), never this.
+/// Whether a member can take a task now.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(in crate::desktop::teams) enum Availability {
+    Free,
+    /// Known not to be free: working, waiting, stopped or occupied.
+    Busy,
+    /// Not free because the fact named here cannot be read; unknown is never
+    /// free.
+    Unreadable(Fact),
+}
+
+/// What cannot be read about a member: an unknown count of its fleet row
+/// while it is otherwise free, or why its binding names no current run.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(in crate::desktop::teams) enum Fact {
+    /// `process_work.count`: the process table could not be verified.
+    Background,
+    /// `subagent_active_count`: no hook event has reported it yet.
+    Children,
+    /// `subagent_active_count` was reported, but the state of some subagent
+    /// that may be running now cannot be settled (zerus-63rru.61).
+    ChildrenUnsettled,
+    /// `optional_questions.count`: the question index could not be read.
+    Questions,
+    /// Bound before session handles, with no source left that names it.
+    NoHandle,
+    /// No live or saved session carries its handle.
+    Gone,
+    /// Its session names another launch, agent or folder.
+    Changed,
+    /// The person started its session fresh.
+    StartedFresh,
+    /// The store, the record or the deadline did not answer.
+    Unavailable,
+    /// Its terminal refused a hand-out because it holds input: a question,
+    /// a dialog or an unsent draft (zerus-63rru.79). The member can be read;
+    /// its row says free, but its terminal is not.
+    TerminalWaiting,
+}
+
+/// Only a positive non-write permits another admission. NotStarted means
+/// no original CLI child ran, or the task command answered that it reserved
+/// and sent nothing for a cause that may pass; Stale is its explicit
+/// non-write answer when the team's observation of the task is behind.
+/// A lost result or possible submission is always Outcome(Uncertain).
 #[derive(Clone, Debug)]
 pub(in crate::desktop::teams) enum DeliveryResult {
+    /// The task writer proved it wrote nothing because observation is behind.
+    Stale,
     Outcome(HandoutOutcome),
-    NotStarted { reason: String },
+    NotStarted {
+        reason: String,
+    },
+    /// The task command refused before any input because the member's
+    /// terminal holds input, by its answer's typed cause (zerus-63rru.79).
+    /// Recorded as a refusal; a fact about the member, not a failed hand-out.
+    TerminalWaiting {
+        reason: String,
+    },
 }
 impl From<HandoutOutcome> for DeliveryResult {
     fn from(value: HandoutOutcome) -> Self {
@@ -72,9 +225,21 @@ impl From<HandoutOutcome> for DeliveryResult {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub(in crate::desktop::teams) enum TaskReply {
+    Stale,
+    Cancelled,
+    Released,
+    Created,
+    Cleared,
+    Refused { reason: String },
+    CuttingOver { reason: String },
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(in crate::desktop::teams) enum Finish {
     Done,
+    Stale,
     Refused(String),
     CuttingOver(String),
 }

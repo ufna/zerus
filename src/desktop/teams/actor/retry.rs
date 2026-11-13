@@ -1,14 +1,22 @@
+mod card;
+mod held;
+mod unreadable;
 use super::*;
 use serde::{Deserialize, Serialize};
 #[derive(Default, Serialize, Deserialize)]
 struct Gate {
     revision: String,
     failures: u32,
+    #[serde(default)]
+    deferrals: u32,
     at: i64,
     card: Option<u64>,
     notice: Option<Request>,
     #[serde(default)]
     event: Option<String>,
+    /// Held steps only: the hold's age and its newest reason.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    hold: Option<held::Hold>,
 }
 impl Runtime {
     pub(super) fn due(
@@ -88,6 +96,34 @@ impl Runtime {
             Ok(())
         })
     }
+    /// A stale task is an answer, not a fault. Observe before calling this;
+    /// keep the normal bounded backoff without an error count or a new card.
+    pub(super) fn defer(
+        &mut self,
+        store: &mut Store,
+        team: &Team,
+        key: &str,
+        revision: &str,
+        now: i64,
+    ) -> Result<()> {
+        self.for_row(|a| {
+            let deferrals = a
+                .load::<Gate>(&team.id, &format!("gate:{key}"))?
+                .map_or(1, |g| g.deferrals.saturating_add(1));
+            a.recover_gate(store, team, key, now)?;
+            a.put(
+                &team.id,
+                &format!("gate:{key}"),
+                &Gate {
+                    revision: revision.into(),
+                    deferrals,
+                    at: now.saturating_add(delay(deferrals)),
+                    ..Default::default()
+                },
+            )?;
+            Ok(())
+        })
+    }
     fn due_read(
         &mut self,
         store: &mut Store,
@@ -124,64 +160,60 @@ impl Runtime {
     ) -> Result<()> {
         let (key, revision, event) = scope;
         let name = format!("gate:{key}");
-        let mut g = self.load::<Gate>(&team.id, &name)?.unwrap_or_default();
+        let row = self.ledger.get(&team.id, &name)?;
+        let mut g: Gate = row
+            .as_ref()
+            .map(|r| serde_json::from_value(r.data.clone()))
+            .transpose()
+            .map_err(crate::teams::store::storage)?
+            .unwrap_or_default();
         if event.is_none() || g.event.as_deref() != event {
             g.failures = g.failures.saturating_add(1);
             g.revision = revision.into();
-            g.at =
-                now.saturating_add(60_000 * (1i64 << g.failures.saturating_sub(1).min(4)).min(15));
-            g.event = event.map(String::from);
-        }
-        self.put(&team.id, &name, &g)?;
-        if (force || g.failures >= 3) && g.card.is_none() {
-            if g.notice.is_none() {
-                let timing = if key.starts_with("finish_refused:") {
-                    "The service waits for this task's observation or acceptance to change before another finish attempt. Retry checks that state on the next pass."
-                } else {
-                    "Automatic checks use a backoff from one to fifteen minutes. Choosing Retry checks on the next service pass (60-second safety interval)."
-                };
-                g.notice = Some(
-                    request(
-                        store,
-                        &team.id,
-                        Operation::OpenCard {
-                            kind: "team_actor_blocked".into(),
-                            node: None,
-                            text: format!(
-                                "{}: {}. {}",
-                                cut(key, 200),
-                                cut(&e.message, 2000),
-                                timing
-                            ),
-                        },
-                    )?
-                    .1,
-                );
-                self.put(&team.id, &name, &g)?;
-            }
-            let actor = Actor::Service {
-                person: team.owner.clone(),
-                team: team.id.clone(),
+            g.at = now.saturating_add(delay(g.failures));
+            g.event = if key.starts_with("held:") {
+                Some(e.message.clone())
+            } else {
+                event.map(String::from)
             };
-            match ops::apply(store, &actor, g.notice.as_ref().expect("reserved"), now) {
-                Ok(reply) => g.card = reply.item,
-                Err(e) if e.code == code::STALE_REVISION => g.notice = None,
-                Err(e) => return Err(e),
+        }
+        let Some(mut row) = self.reserve_gate(&team.id, &name, row, &g)? else {
+            return Ok(());
+        };
+        boundary("gate_saved");
+        // A pending pre-upgrade opener must first replay its own receipt;
+        // the second iteration can replace its now-outdated decision list.
+        for _ in 0..2 {
+            if !self.current_gate_card(store, team, &mut row, &mut g, now)? {
+                return Ok(());
             }
-            self.put(&team.id, &name, &g)?;
+            if !(force || g.failures >= 3) || g.card.is_some() {
+                return Ok(());
+            }
+            if !self.open_gate_card(store, team, (key, e), &mut row, &mut g, now)? {
+                return Ok(());
+            }
         }
         Ok(())
     }
     fn recover_gate(&mut self, store: &mut Store, team: &Team, key: &str, now: i64) -> Result<()> {
         let name = format!("gate:{key}");
-        if let Some(row) = self.ledger.get(&team.id, &name)? {
-            let g: Gate =
+        if let Some(mut row) = self.ledger.get(&team.id, &name)? {
+            let mut g: Gate =
                 serde_json::from_value(row.data.clone()).map_err(crate::teams::store::storage)?;
+            // Settle an interrupted opener before forgetting its receipt.
+            if g.card.is_none()
+                && g.notice.is_some()
+                && !self.apply_gate_notice(store, team, &mut row, &mut g, now)?
+            {
+                return Ok(());
+            }
             if let Some(card) = g.card {
                 if store
                     .card(&team.id, card)?
                     .is_some_and(|c| c.state == "open")
                 {
+                    boundary("recovery_before_close");
                     write(
                         store,
                         &team.id,
@@ -191,10 +223,49 @@ impl Runtime {
                         },
                         now,
                     )?;
+                    boundary("recovery_closed");
                 }
             }
+            // This is the entry version, advanced only by our own notice
+            // replay. A newer writer's version is never adopted for removal.
             self.ledger.remove(&row)?;
+            boundary("recovery_removed");
         }
         Ok(())
     }
+}
+
+pub(super) fn delay(failures: u32) -> i64 {
+    60_000 * (1i64 << failures.saturating_sub(1).min(4)).min(15)
+}
+
+#[cfg(test)]
+pub(super) type Interleave = (&'static str, Box<dyn FnOnce()>);
+#[cfg(test)]
+thread_local! {
+    pub(super) static CRASH: std::cell::Cell<Option<&'static str>> = const { std::cell::Cell::new(None) };
+    pub(super) static INTERLEAVE: std::cell::RefCell<Option<Interleave>> = const { std::cell::RefCell::new(None) };
+}
+fn boundary(point: &str) {
+    #[cfg(test)]
+    {
+        let action = INTERLEAVE.with(|slot| {
+            if slot.borrow().as_ref().is_some_and(|(at, _)| *at == point) {
+                slot.borrow_mut().take()
+            } else {
+                None
+            }
+        });
+        if let Some((_, action)) = action {
+            action();
+        }
+        CRASH.with(|slot| {
+            if slot.get() == Some(point) {
+                slot.set(None);
+                panic!("fixture card restart at {point}");
+            }
+        });
+    }
+    #[cfg(not(test))]
+    let _ = point;
 }

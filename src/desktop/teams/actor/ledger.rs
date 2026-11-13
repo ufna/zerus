@@ -53,6 +53,8 @@ impl Ledger {
         }
         db.execute_batch(include_str!("ledger.sql"))
             .map_err(storage)?;
+        db.execute_batch(super::super::items::SCHEMA)
+            .map_err(storage)?;
         Ok(Self(db))
     }
     pub fn get(&self, team: &str, key: &str) -> Result<Option<Row>> {
@@ -94,12 +96,18 @@ impl Ledger {
         Ok(row)
     }
     pub fn save(&mut self, row: &mut Row) -> Result<()> {
-        let changed = self.0.execute("UPDATE actor_rows SET version=version+1,data=?4 WHERE team=?1 AND key=?2 AND version=?3",params![row.team,row.key,row.version,Self::encode(row)?]).map_err(write_error)?;
-        if changed != 1 {
+        if !self.save_if_current(row)? {
             return Err(storage("Actor row changed"));
         }
-        row.version += 1;
         Ok(())
+    }
+    /// A moved row belongs to its newer writer; do not adopt its version.
+    pub fn save_if_current(&mut self, row: &mut Row) -> Result<bool> {
+        let changed = self.0.execute("UPDATE actor_rows SET version=version+1,data=?4 WHERE team=?1 AND key=?2 AND version=?3",params![row.team,row.key,row.version,Self::encode(row)?]).map_err(write_error)?;
+        if changed == 1 {
+            row.version += 1;
+        }
+        Ok(changed == 1)
     }
     fn encode(row: &Row) -> Result<String> {
         let raw = serde_json::to_string(&row.data).map_err(storage)?;
@@ -187,7 +195,7 @@ fn connection(path: &Path) -> Result<Connection> {
             return Err(storage("Actor ledger is not private"));
         }
     }
-    #[cfg(unix)]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     let identity = {
         crate::sqlite_file::create(path).map_err(storage)?;
         crate::sqlite_file::private(path).map_err(storage)?
@@ -197,7 +205,7 @@ fn connection(path: &Path) -> Result<Connection> {
         OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NOFOLLOW,
     )
     .map_err(storage)?;
-    #[cfg(unix)]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     crate::sqlite_file::bind_private(&db, path, identity).map_err(storage)?;
     Ok(db)
 }
@@ -233,4 +241,123 @@ mod index_tests {
             );
         }
     }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(super) struct TerminalRetry {
+    pub failures: u32,
+    pub next_ms: i64,
+    pub reason: String,
+}
+impl Ledger {
+    pub fn terminal_retry(&self) -> Result<Option<TerminalRetry>> {
+        terminal_retry(&self.0)
+    }
+    pub fn terminal_failed(&mut self, now: i64, reason: &str) -> Result<()> {
+        let tx = self
+            .0
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .map_err(storage)?;
+        let failures = terminal_retry(&tx)?
+            .unwrap_or_default()
+            .failures
+            .saturating_add(1);
+        let delay = super::retry::delay(failures);
+        tx.execute("INSERT INTO actor_terminal_retry VALUES(1,?1,?2,?3) ON CONFLICT(id) DO UPDATE SET failures=excluded.failures,next_ms=excluded.next_ms,reason=excluded.reason",params![failures,now.saturating_add(delay),super::cut(reason,2048)]).map_err(storage)?;
+        // The person sees the terminal page's fault as a service-wide item.
+        items::put(
+            &tx,
+            &items::Failure {
+                team: "",
+                kind: TERMINAL_PAGE,
+                subject: "",
+                node: None,
+                reason,
+                failures,
+                now,
+                next_ms: Some(now.saturating_add(delay)),
+            },
+        )?;
+        tx.commit().map_err(storage)
+    }
+    pub fn terminal_succeeded(&mut self) -> Result<()> {
+        let tx = self
+            .0
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .map_err(storage)?;
+        tx.execute("DELETE FROM actor_terminal_retry WHERE id=1", [])
+            .map_err(storage)?;
+        items::clear(&tx, "", TERMINAL_PAGE, "")?;
+        tx.commit().map_err(storage)
+    }
+    /// Opens one immediate transaction for a row's write and the service
+    /// item that mirrors it; [`Ledger::end`] commits it, or rolls it back on
+    /// an error, so the two never part.
+    pub fn begin(&mut self) -> Result<()> {
+        self.0.execute_batch("BEGIN IMMEDIATE").map_err(storage)
+    }
+    /// Ends the transaction [`Ledger::begin`] opened: committed when `result`
+    /// is Ok and the commit succeeds, rolled back otherwise.
+    pub fn end<T>(&mut self, result: Result<T>) -> Result<T> {
+        let committed = result.and_then(|value| {
+            self.0
+                .execute_batch("COMMIT")
+                .map(|()| value)
+                .map_err(storage)
+        });
+        if committed.is_err() && !self.0.is_autocommit() {
+            let _ = self.0.execute_batch("ROLLBACK");
+        }
+        committed
+    }
+    /// Records or refreshes a service item, inside the row's transaction.
+    pub fn put_item(&self, failure: &items::Failure<'_>) -> Result<()> {
+        items::put(&self.0, failure)
+    }
+    /// Removes a service item, inside the transaction that ends its row.
+    pub fn clear_item(&self, team: &str, kind: &str, subject: &str) -> Result<()> {
+        items::clear(&self.0, team, kind, subject)
+    }
+    /// The failures an item already counts, when it exists.
+    pub fn item_failures(&self, team: &str, kind: &str, subject: &str) -> Result<Option<u32>> {
+        items::failures(&self.0, team, kind, subject)
+    }
+    /// Whether the item table has room for a new item.
+    pub fn item_room(&self) -> Result<bool> {
+        items::has_room(&self.0)
+    }
+    /// Removes every service item of a team whose rows are reclaimed.
+    pub fn clear_team_items(&self, team: &str) -> Result<()> {
+        items::clear_team(&self.0, team)
+    }
+    /// One page of service items after `after`, for the orphan pass.
+    pub fn item_page(&self, after: &items::Key, limit: u32) -> Result<Vec<items::Key>> {
+        items::keys(&self.0, after, limit)
+    }
+    /// Whether the actor row `key` of `team` exists.
+    pub fn has_row(&self, team: &str, key: &str) -> Result<bool> {
+        self.0
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM actor_rows WHERE team=?1 AND key=?2)",
+                params![team, key],
+                |r| r.get(0),
+            )
+            .map_err(storage)
+    }
+}
+use super::super::items::{self, kind::TERMINAL_PAGE};
+fn terminal_retry(db: &Connection) -> Result<Option<TerminalRetry>> {
+    db.query_row(
+        "SELECT failures,next_ms,reason FROM actor_terminal_retry WHERE id=1",
+        [],
+        |r| {
+            Ok(TerminalRetry {
+                failures: r.get(0)?,
+                next_ms: r.get(1)?,
+                reason: r.get(2)?,
+            })
+        },
+    )
+    .optional()
+    .map_err(storage)
 }

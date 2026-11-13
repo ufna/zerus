@@ -41,6 +41,7 @@ pub fn apply(store: &mut Store, actor: &Actor, request: &Request, now: i64) -> R
             item: None,
         },
         event: None,
+        superseded: None,
     };
     let result = run(&mut ctx, request, current.is_some());
     // A storage failure is not a saved decision. Dropping the transaction
@@ -173,6 +174,7 @@ fn dispatch(ctx: &mut Context<'_>) -> Result<()> {
         Operation::Archive => team::archive(ctx),
         Operation::ChangeSettings { .. } => team::change_settings(ctx),
         Operation::SetMemberSession { .. } => members::set_session(ctx),
+        Operation::SetMemberHandle { .. } => members::set_handle(ctx),
         Operation::SetMemberState { .. } => members::set_state(ctx),
         Operation::PauseMember { .. } => members::pause(ctx),
         Operation::ResumeMember { .. } => members::resume(ctx),
@@ -203,5 +205,12 @@ fn dispatch(ctx: &mut Context<'_>) -> Result<()> {
         Operation::OpenCard { .. } => talk::open_card(ctx),
         Operation::CloseCard { .. } => talk::close_card(ctx),
         Operation::DecideCard { .. } => talk::decide_card(ctx),
+        Operation::FireTimer { .. } => timers::fire(ctx),
+        Operation::RecordKeyClear { .. } => timers::key_clear(ctx),
+        Operation::RecordLateSession { .. } => timers::late_session(ctx),
+        Operation::RecordLateReport { .. } => handout::late_report(ctx),
+        Operation::RecordCancel { .. } => timers::record_cancel(ctx),
+        Operation::ReconcileUnstaffed => unstaffed::reconcile(ctx),
+        Operation::EndStaleUnstaffed => unstaffed::end_stale(ctx),
     }
 }

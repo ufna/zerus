@@ -122,6 +122,11 @@ impl Worker {
         self.poll();
         self.work.is_none()
     }
+    /// A fixture's own computer, as an applied fleet event would set it.
+    #[cfg(test)]
+    pub(in crate::desktop) fn fixture_machine(&mut self, id: &str) {
+        self.machine = Some(Machine::fixture(id));
+    }
 }
 #[cfg(test)]
 type PassObserver = Box<dyn FnMut(&Store) + Send>;
@@ -142,6 +147,10 @@ fn run(
     stop: Arc<AtomicBool>,
     receive: mpsc::Receiver<()>,
 ) {
+    #[cfg(test)]
+    if entry_hold::pause(&config.state) {
+        return;
+    }
     let Ok(mut launcher) = launch::Runtime::open(&config.state, &machine, &epoch) else {
         return;
     };
@@ -361,5 +370,9 @@ fn page(
     store.live_teams(16, cursor)
 }
 
+#[cfg(test)]
+pub(in crate::desktop) mod entry_hold;
+#[cfg(test)]
+mod owner_tests;
 #[cfg(test)]
 mod revision_tests;

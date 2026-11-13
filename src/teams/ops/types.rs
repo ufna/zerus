@@ -78,6 +78,17 @@ pub struct TaskObservation {
     pub rank: String,
     #[serde(default)]
     pub title: String,
+    /// The highest generation any attempt of the task claims; 0 without one.
+    #[serde(default)]
+    pub attempt: u64,
+    /// The ID of the task's current attempt; empty without one. An attempt
+    /// the team hands out has its effect's request ID. At most 256 bytes.
+    #[serde(default)]
+    pub attempt_id: String,
+    /// Two attempts claim the highest generation; the ID is then empty. An
+    /// empty ID without this flag is an ordinary pair: no current attempt.
+    #[serde(default)]
+    pub attempt_conflict: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -90,6 +101,9 @@ pub enum TaskStage {
     Done,
 }
 
+/// A hand-out's or reopen's outcome. `HandedBack` is a reopen refused for good
+/// because its member no longer has the task's conversation: handed back to
+/// the lead at once, never retried (zerus-63rru.64).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "status", rename_all = "snake_case", deny_unknown_fields)]
 pub enum HandoutOutcome {
@@ -97,6 +111,7 @@ pub enum HandoutOutcome {
     Refused { reason: String },
     CuttingOver { reason: String },
     Uncertain { reason: String },
+    HandedBack { reason: String },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -105,6 +120,39 @@ pub enum StageTaskOutcome {
     Created { task: TaskRef },
     Refused { reason: String },
     Uncertain { reason: String },
+}
+
+/// A service timer of package 10; each fires at most once per key.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TimerKind {
+    NoReport,
+    NotStarted,
+    RemindLead,
+    RemindPerson,
+    SilentLead,
+}
+
+/// The final answer of the team-clear child for one task key.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum KeyClearState {
+    Cleared,
+    Refused,
+}
+
+/// The service's record of a cancel decision it carried out.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CancelState {
+    /// The task was cancelled under that attempt. In a live team a bound
+    /// task's end is recorded by its observation, so there this answer is
+    /// refused; it ends a node without a task and settles after a stop.
+    Cancelled,
+    Refused,
+    /// The key was already gone from the task: in every team state the
+    /// answer is recorded and the node's binding goes with it.
+    Released,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -129,6 +177,14 @@ pub enum Operation {
         account: String,
         worktree: String,
         ownership_nonce: String,
+    },
+    /// A launch-bound member's durable handle: the session ID of the record
+    /// its binding verified (zerus-63rru.53). Written once, by the service.
+    SetMemberHandle {
+        member: String,
+        session_id: String,
+        #[serde(default)]
+        label_hint: String,
     },
     SetMemberState {
         member: String,
@@ -260,6 +316,12 @@ pub enum Operation {
         text: String,
         #[serde(default)]
         node: Option<NodeId>,
+        /// The decisions the card takes: at most four short tokens of
+        /// lower-case ASCII and underscores. Without it, acknowledged alone.
+        /// Left out when absent, so that a request saved before the list
+        /// existed replays byte for byte.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        decisions: Option<Vec<String>>,
     },
     CloseCard {
         card: u64,
@@ -272,6 +334,62 @@ pub enum Operation {
     ChangeSettings {
         settings: Settings,
     },
+    FireTimer {
+        timer: TimerKind,
+        node: NodeId,
+        generation: u32,
+        #[serde(default)]
+        item: u64,
+        #[serde(default)]
+        since_ms: i64,
+    },
+    RecordKeyClear {
+        node: NodeId,
+        state: KeyClearState,
+        #[serde(default)]
+        reason: String,
+    },
+    RecordLateSession {
+        member: MemberId,
+        launch_id: String,
+        session: SessionKey,
+        name: String,
+    },
+    RecordCancel {
+        node: NodeId,
+        decision: u64,
+        state: CancelState,
+        #[serde(default)]
+        reason: String,
+        /// The task attempt the team-cancel child acted on: its generation
+        /// and its ID (at most 256 bytes).
+        #[serde(default)]
+        attempt: u64,
+        #[serde(default)]
+        attempt_id: String,
+    },
+    /// A report that a removed member wrote after its removal took the task
+    /// back (zerus-63rru.77): not recorded as the team's, told to the lead
+    /// once per node and generation.
+    RecordLateReport {
+        node: NodeId,
+        generation: u32,
+        member: MemberId,
+    },
+    /// The service saw the kernel's unstaffed nodes differ from the lead's
+    /// open items. The store recomputes the set itself, from its own view, and
+    /// tells the lead of each new node once and closes the items of the nodes
+    /// that left it; an unstaffed stage is retired and its parent handed to the
+    /// lead, as at the stage's creation. A call that finds nothing to change is
+    /// refused with `unstaffed_unchanged`.
+    ReconcileUnstaffed,
+    /// The service saw unended unstaffed items older than their node's
+    /// newest one: stale items an earlier layout left, which stand for no
+    /// episode. It ends at most a page of them, oldest first, in its own
+    /// operation, before the reconcile judges the cap on the current
+    /// episodes. A call that finds none is refused with
+    /// `unstaffed_unchanged`.
+    EndStaleUnstaffed,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]

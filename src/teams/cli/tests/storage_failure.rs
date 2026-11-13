@@ -124,7 +124,11 @@ fn a_storage_read_reports_its_cause_without_a_request_id_instruction() {
         reply["error"]["detail"]
             .as_str()
             .unwrap()
-            .contains("no such table: members"),
+            .contains("no such table: ")
+            && reply["error"]["detail"]
+                .as_str()
+                .unwrap()
+                .contains("members"),
         "{reply}"
     );
 }

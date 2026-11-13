@@ -415,8 +415,11 @@ fn read_failures_are_no_answer_for_every_service_command() {
     }
 }
 
+/// zerus-63rru.58: nothing was reserved or sent, so a busy team store is a
+/// non-start the actor retries, never an unanswered failure it must read as
+/// uncertain.
 #[test]
-fn a_busy_team_store_is_no_answer_without_a_task_write() {
+fn a_busy_team_store_is_a_non_start_without_a_task_write() {
     let f = Fixture::new();
     floor(&f);
     let revision = f.document().revision();
@@ -430,7 +433,9 @@ fn a_busy_team_store_is_no_answer_without_a_task_write() {
     );
     let out = f.finish(child, path);
     db.execute_batch("ROLLBACK").unwrap();
-    assert_eq!(out["ok"], false, "{out}");
+    assert_eq!(out["reply"]["state"], "not_started", "{out}");
+    let reason = out["reply"]["error"].as_str().unwrap();
+    assert!(reason.starts_with("The team store is busy"), "{out}");
     assert_eq!(f.document().revision(), revision);
     assert_eq!(f.count(), 0);
 }

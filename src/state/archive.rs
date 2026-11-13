@@ -113,6 +113,10 @@ pub(super) fn save(record: &Value) -> Result<String> {
         archived.as_object_mut().unwrap().remove("layout");
         archived.as_object_mut().unwrap().remove("terminal_name");
         atomic_record(&path(&id)?, &mut archived)?;
+        // The catalog above was refreshed before this file existed. Refresh it
+        // again so a reader by name and run finds this archive as soon as it is
+        // durable (zerus-63rru.56); a failure leaves that to the next reader.
+        let _ = archive_catalog::catalog();
         id
     };
     // The archived session's own record goes, never its label's holder: a

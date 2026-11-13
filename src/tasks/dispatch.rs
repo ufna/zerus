@@ -204,8 +204,15 @@ fn rendered(
         request_id,
         acknowledgement_mode,
     );
-    let request =
-        crate::state::prepare_task_reply(to, "", request_id, &prompt, &files).map_err(fail)?;
+    let request = crate::state::prepare_task_reply(
+        to,
+        "",
+        request_id,
+        &prompt,
+        &files,
+        crate::state::Continuation::SameRun,
+    )
+    .map_err(fail)?;
     if request["expected_run_id"].as_str() != Some(selection.run_id.as_str())
         || request["expected_conversation_id"].as_str() != Some(selection.conversation_id.as_str())
     {
@@ -615,7 +622,7 @@ fn delivered_result(
     let task = super::store(config, project)?.load(uuid).map_err(fail)?;
     match delivered {
         super::attempts::Delivered::Submitted(_) => result("submitted", "", &task),
-        super::attempts::Delivered::NotAdmitted(reason) => result("refused", &reason, &task),
+        super::attempts::Delivered::NotAdmitted { reason, .. } => result("refused", &reason, &task),
         super::attempts::Delivered::Uncertain(text) => result("uncertain", &text, &task),
     }
 }

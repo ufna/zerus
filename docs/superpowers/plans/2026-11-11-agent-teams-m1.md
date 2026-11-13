@@ -1296,6 +1296,23 @@ carries the attempt's holder and the kind of a pending decision, and a
 member row carries whether the person stopped it; all three are additive
 fields of the pinned replies.
 
+What the review of the card decisions added (2026-11-12). A card's list
+is true for as long as the card is open: its opener keeps an open card
+only while the list it would give now equals the card's own, and
+otherwise closes that card and opens the current one in the same step; an
+open card's list is never changed in place. The case that showed it: a
+launch waiting on its backoff opened a card with retry, the launch then
+failed for good, and the kept card went on offering a Retry that nothing
+read. The holder a row shows is the holder the store's own decisions use,
+one definition: a hand-out that was only reserved, or was refused or
+superseded, gives nobody to return to, and a Return there is refused,
+with Reassign and Cancel still open to the lead. And an optional field
+that is added to a stored operation is left out when it is absent, so
+that a request saved before the field existed replays byte for byte: the
+list's field was first written as null, and a card request saved by an
+earlier build was then answered as a different request instead of with
+its saved reply.
+
 **A timer fires once and only while its condition holds (package 10).**
 The store writes a timer's inbox item or owner card in one operation that
 rechecks the condition from stored facts in the same transaction, under a
@@ -1331,7 +1348,11 @@ state, reason}`: `cancelled` and `released` both end the node as
 cancelled in the team, exactly as the observation of a cancelled task
 does; `refused` settles the decision and, in a live team, files one lead
 inbox item. The read is `Store::pending_cancels(team, limit, after)`. It
-ends no agent.
+ends no agent. Two later paragraphs of this section change this one: the
+command also answers `stale` ("A cancel acts on one attempt"), and in a
+live team a `cancelled` answer writes nothing to the store, because the
+task's observation ends the node ("In a live team a task's end is recorded
+by its observation alone").
 
 **After a stop Zerus cancels the unfinished tasks, releases them and ends
 no agent (package 10).** For each node the cancel comes first and the
@@ -1476,7 +1497,44 @@ archived team no observation follows either, so `team-cancel` never
 answers `stale` there: it acts when the document's current attempt is the
 one the store last observed or is the node's own effect that was delivered
 and not yet observed, and otherwise it refuses with a reason that begins
-`attempt_changed:`, because a person took the task after the stop. Once
+`attempt_changed:`, because a person took the task after the stop. The
+store takes the answer by the same rule, or the two disagree for ever: in
+a stopped or archived team a cancelled or a released answer is recorded
+when its pair is the newest observation's, or when it names an effect of
+that node's current generation, a hand-out or a reopen, with a number not
+below the observed one. After a stop a cancelled answer is not held
+back by a conflict of the newest observation either: the command answers
+cancelled for a conflicting document only when that document is already
+cancelled, and refuses one that is not; a task's end does not depend on
+who executed it; and nothing observes again. The first version compared
+with the observation alone and kept the conflict gate. A team stopped
+between a hand-out and the observation of its start kept its cancel
+pending for ever, the service replayed the refused record every fifteen
+minutes and the cleanup never reached the task's key; and a conflicted
+task that the person cancelled around a stop got a new cancel command on
+every pass, because the service took the conflict for a visit that an
+observation would settle (the review of the actor, 2026-11-12). The
+service has its own exits as well, for any refusal a later rule may
+bring. A visit of a stopped or archived team ends only with a recorded
+outcome: a saved refusal of a cancel's record there is recorded once as a
+refused outcome, with what the command answered and what the store said,
+and is never replayed; in a live team that holds for a visit that did not
+change. A saved refusal that only says "ask again", a stale revision, is
+not a refusal by a rule: the request's ID is spent and nothing was
+decided, so the same record is made again under a new ID; taking it for a
+rule's refusal recorded a true answer as refused after one lost write
+(the delta review, the same day). And a live team's cancel that keeps
+answering stale although its observation changes nothing is given up
+after three such answers, as a refused outcome that reaches the lead. The
+count is of answers that teach nothing new, not of attempts: an answer
+that says "ask again" for a reason that ends by itself (a project's
+cutover hold), a command that provably did not start, and an answer whose
+observation failed are retried with a backoff and a card while they last,
+and never become a refusal by repetition; the first version counted
+attempts and gave up on a stopped team's task seven minutes into a
+cutover, clearing its key while it still ran. A row that has halted is
+its own state: its siblings and the other teams are served in the same
+pass. Once
 the store has observed a task cancelled, the team has let it go. Giving
 such a task back to a team is not possible yet: a task keeps its cancelled
 mark when it is moved back to To do, until it is sent, started or reopened,
@@ -1503,7 +1561,18 @@ store while its task ran again, created the cancel, released the binding,
 and the archiving step then settled that cancel with the rest, so the
 service never asked for the task to be cancelled and the cleanup passed it
 without an answer (the same confirmation). A node with a pending cancel
-stays where the cancel step finds it.
+stays where the cancel step finds it. One merged path does not follow this
+yet: when a lead's Return, Reassign or Cancel of a parent retires its stage,
+the retirement settles every decision of the stage, a person's pending
+Cancel of it included, and the stage's task only loses its key, so work
+that runs is released and not cancelled (found by the delta confirmation of
+2026-11-12, tracked). The rule it will follow: a retirement leaves a pending
+cancel pending; a stage that is retired while its task runs gets the
+service's own cancel, as a stop gives a node, and is archived and cleared
+after the answer; a stage with nothing running is released as today. And a
+kept node can wait for a lead's earlier Cancel as well as for a stop's: a
+node that is Reported with its task Done before the merge takes a Cancel,
+and is kept as accepted when the integration is then switched off.
 
 **The service carries out an acceptance only while the newest observation
 agrees with it (packages 8 and 10).** The rule above keeps an accepted node
@@ -1516,9 +1585,21 @@ store, and the store owns the answer through two reads of one shape.
 `reviewed_task_current(team, node, generation)` is true while the
 generation is current and the newest observation has the key ours, the
 stage In review, no cancellation, no conflict of attempts, and as its
-current attempt the execution the node took in; the finishing step and a
-reopen use it. `accepted_task_current` is true in the same cases and also
-when that observation shows the task Done, and a new merge uses it. With
+current attempt the execution the node took in; the finishing step uses
+it. `accepted_task_current` is true in the same cases and also when that
+observation shows the task Done, and a new merge uses it. A reopen and a
+hand-over ask a third, `own_task_current`: the same without the stage, and
+true also while the task has no current attempt. The stage is the
+command's business there, because the command hands over a task that
+runs, is In review or is Done and reopens one that is In review or Done,
+and its refusal is recorded and seen. The first version sent reopens
+through the In-review read: a lead's Reassign of a running task, which is
+delivered as a hand-over, was then never carried out, and its pending
+decision refused every other decision of that node (the review of the
+actor, 2026-11-12). A step that a read holds back is not a success: when
+the read stays false for several passes the step's row fails with a
+sentence that names the node and what the newest observation shows, and
+recovers when the read turns true. With
 integration by branch the finishing step waits for the merge, so an
 ordinary merge finds the task In review; but a task that a person closed on
 the board after the accept is observed Done before its merge, its node
@@ -1532,6 +1613,42 @@ observed running (the service was down for the whole of a person's run) is
 neither finished nor merged, and an accepted node takes no Cancel; the
 person's own move on the board (closing, cancelling or starting the task
 again) resolves it.
+
+**A decision that has not started can be replaced (after the review of
+the actor).** The rule that a node takes one unsettled decision at a time
+protects a decision the service is carrying out. It also locked a node
+whenever the service could not start one: a Return to a member that the
+person then stopped or removed, a Return to a member busy elsewhere for
+hours, a reopen held by a conflict of the task's executions. Four findings
+of 2026-11-12 were this one lock. A lead or the person may therefore give
+a node a new Return, Reassign or Cancel while its earlier Return or
+Reassign is still pending and nothing of it has started, that is, no
+reopen has been reserved for it; the earlier decision is settled as
+superseded in the same operation and the journal says so. The member's
+own earlier hand-out may still be open then, its report not yet recorded:
+that is not the decision's start. A decision that has started is not
+replaced: the new one is refused as before until the outcome is recorded.
+A Return that replaces a Reassign makes its own target the node's
+assignee, so that the superseded Reassign leaves nothing behind. A Return
+or a Reassign aimed at a member that was already removed is refused when
+it is decided. An acceptance is not replaced in
+this milestone. And removing a member settles the Returns and Reassigns
+aimed at it that have not started and hands their nodes back to the lead
+with one inbox item each, as a reopen that could not be delivered does. A
+member that is stopped or busy keeps them: that wait is intended, and the
+lead can now decide otherwise. The same holds for the Returns the store
+writes itself, after an integration conflict or a stage's failed verdict:
+when their holder was already removed the fact or the verdict is recorded
+and the node goes to the lead instead. And a Return that has not started
+and whose holder reads as nobody is handed back in the operation that
+makes it so; the service is never asked, because it makes no reopen for a
+task without a member. There are three such operations: a member's
+removal, which finds its Returns by the newest effect's member whatever
+that effect's state (a reading used only to hand back, never to deliver);
+an outcome recorded as refused that leaves nobody holding the task; and,
+once, the upgrade to the layout in which only a delivered hand-out gives a
+holder, for a Return that an earlier build admitted while the hand-out was
+only reserved.
 
 **A reader of a reply ignores what it does not know.** The contract's types
 refuse unknown fields, and that stays the rule for what a person or a
@@ -1565,6 +1682,387 @@ set. Clearing it on every error made a failed repeat look like a person
 taking the task out of the team: the observer released the node, and the
 next send queued the task a second time (the desktop's review,
 2026-11-12).
+
+**A row says whether its pending decision can be replaced.** The queue and
+board rows carry `pending_decision`, and a view that disabled every
+decision while it is set would lock the person out of the very way out the
+replacement rule gives. The row therefore also carries
+`pending_replaceable`, always written and false when nothing is pending,
+computed by the rule the operations use (`DecisionState::replaceable`: a
+Return or a Reassign that is still pending, never an acceptance, never a
+decision whose reopen is reserved). A view keeps Return and Cancel offered
+when it is true, says that the new decision replaces the pending one, and
+reads an absent field as false (2026-11-12, with the desktop's card lists).
+
+**A hold has an owner.** `nodes.hold` was one flag written by an explicit
+Hold, by a pending Return or Reassign and by a hand-back to the lead, and
+cleared by whichever of them ended next. Two reviews of 2026-11-12 found
+the same fault from two sides: a Reassign's later settlement released a
+hold the person had set before it, and a replacing Reassign that settled at
+once kept the hold of the decision it superseded. The rule: an explicit
+hold belongs to who set it and ends only by an explicit Release, a person's
+hold only by the person's; no decision, settlement, outcome or hand-back
+clears it. A pending decision's hold belongs to that decision and ends with
+it, however it ends: delivered, settled without its reason, or superseded
+by a decision that settles at once; a replacing decision that stays pending
+takes the hold over. A hand-back's hold belongs to the lead's next
+decision, which takes it over or ends it. A node under an explicit hold
+still takes decisions and stays held when they end. One function answers
+whether a node is held and one place writes each kind.
+
+**An older store's holds are classified without a clock.** A store written
+before a hold had an owner carries one flag per node and no record of who
+set it. The first classification read event times, and two honest
+sequences read the wrong way round (the second review of the reassign
+route, 2026-11-12). The step that gives each held node its owner reads no
+clock and no archive. An unsettled decision comes first. Otherwise the
+last exactly recorded event of the node decides, in the order of the
+journal's own sequence, in one bounded pass over the team's live journal:
+a Hold is its actor's, a Release ends it, a current hand-back is a
+hand-back. A saved reply names a row by number alone and the number can
+belong to several tables, so a trace is placed only by the reply of the
+kind of operation that files it. Whatever cannot be placed exactly is the
+person's hold, even where an earlier record was the lead's: a removed
+member's item, a pipeline active on a stage, and the item the step to
+layout 10 wrote itself. The person may then have to release a hold a lead
+once set; the step never gives a lead a hold that could be the person's.
+
+**Status shows what the service keeps retrying where no card can.** A
+stopped or archived team takes no cards, so a cancel that keeps failing
+there, a halted row, the terminal page's fault at its retry cap and a stop
+cleanup that cannot finish were visible only as the service's own rows.
+`hgs team status` lists them as `service_items`: one item per failing
+subject, written and cleared in the transaction of the row it mirrors,
+with its reason, failure count and times; a page of 20 and a capped count.
+Items exist for stopped and archived teams and for service-wide conditions
+only: a live team's rows have their cards and nothing is shown twice. An
+item is current only while the service runs and is not overdue; otherwise
+it reads as of its last try. The service's cleanup pass removes an item
+whose row is gone. A reason is bounded at 512 bytes and has its control
+characters removed where it is written. Key refusals are listed for the
+team's life; cancel refusals only while the team is stopped or archived,
+because in a live team the lead has the inbox item.
+
+**A ready task that no member can take goes to the lead.** The plan
+kernel names such nodes (`ready::unstaffed`: no member who is not removed
+could take it; a busy, paused or not yet created member still counts), and
+nothing read it: a task whose assignee was removed, or whose role nobody
+has, waited in To do and nobody was told. The service's hand-out step
+compares the kernel's set over the uncooled readiness view with the
+store's open items and calls one store operation only when they differ;
+the store recomputes the set itself and opens and closes the items in one
+transaction. One item per node, to the lead, quoting the kernel's reason;
+it closes when the node leaves the set and is told again once if it
+returns. A pass with nothing changed writes nothing, and a race between
+the two answers with its own code that counts as no failure. No card: the
+`silent_lead` timer is the path to the person. A stage that loses its
+reviewers takes the path a stage takes at its creation: it is retired and
+its parent goes to the lead with the kernel's reason. Nothing in stopped,
+archived or paused teams.
+
+**An unstaffed item stands for an episode, and the cap counts episodes.**
+The first head took "told" to mean "an open item exists", so an item the
+lead closed while its node stayed unstaffed was written again on every
+pass, an open item kept its first reason after the gap changed, and a
+store that head left with more than 500 closed items on one node refused
+every reconcile for ever (the reviews of zerus-63rru.45, 2026-11-12). An
+episode is a node, its generation and the kernel's reason, and the lead is
+told once per episode. Its item is the node's newest unstaffed item that
+the reconcile has not ended, by sequence and never by the clock. Only the
+reconcile ends an episode, with a reply that says why: the node left the
+set, or its reason or generation changed, and a changed reason then gets
+one new item. An item closed by the lead still stands for its episode and
+is not told again. The cap of 500 is judged on the current episodes, and a
+queue row's unstaffed sentence is the current episode's. An older unended
+item of a node stands for no episode: a service-only operation ends at
+most 200 of them a pass, oldest first, in a transaction of its own before
+the comparison, and its answer when none is left counts as no failure.
+More current episodes than the cap is a state the product cannot write,
+since a team admits at most 500 open tasks; the reconcile refuses it by
+name on every pass and nothing repairs it, which is the guard failing
+closed and is accepted as that. A person's Hold placed before the stage
+exists survives the stage's reconcile and its retirement: the stage path
+ends only the pipeline's own hand-back. A member whose row the service
+cannot read still counts as one who could take the node: readability is
+the service's fact, the unreadable member's card tells the person, and the
+lead's item does not say it (zerus-63rru.81).
+
+**A removed member's work goes back to the lead.** A task handed to a
+member that was then removed (ArchiveMember, the only removal) was held for
+ever and nobody was told (zerus-63rru.77, 2026-11-13). The removal settles
+the member's open effect of a task that has not started (reserved,
+submitted, uncertain, cutting over, and a reopen already reserved): the
+effect is superseded, the node is held by the hand-back and the lead gets
+one item per node that says the delivery's result is not known, since a
+delivery child past its reservation still types once. A started task is
+handed back too, with an item saying the session was not told and may still
+work in its worktree, and what Reassign and Cancel do; the removal requests
+no cancel, because a Stop's cancel ends the whole task. A report the removed
+member writes later is not recorded; the lead is told once, by a
+service-only operation, with no retry and no card. A reopen that ends
+refused now tells the lead for any member. One rule for every node kind: a
+pipeline stage is handed back like a task and, held, is not ready, so the
+unstaffed reconcile leaves it alone until the lead decides; for a stage the
+item says that the lead cannot cancel it and what the person's Cancel does.
+The actor ends the ledger row of a delivery whose effect the store no
+longer holds and does not count the refusal of a superseded effect as a
+failed hand-out. Left open: a reservation for a paused, stopped or unbound
+member (zerus-63rru.85), a paused member's started task (.86), an unbound
+member's open effect (.87), and Route of a stage (.84).
+
+**A terminal that holds input is a fact about the member.** The hand-out
+command's terminal gate refuses to type into a terminal that shows a draft,
+a dialog or a question, and the service counted that refusal as a failed
+hand-out of the task: a failure row, retries of the same member, in the end
+a card about the task (zerus-63rru.79, 2026-11-13). The command now types
+the cause: a refusal because the composer is not an empty prompt, or
+because the record's phase is a question or an approval, answers
+`terminal_waiting`; every other refusal stays an ordinary one, the dialogs
+read by their own detectors included (zerus-63rru.83). The actor reads the
+cause, never the sentence, and records a fact about the member in its
+ledger: while it stands the member is not free and the task goes to another
+free member; it ends on a submitted delivery, when the member's row says
+another session or no longer waiting (its run, launch and conversation, its
+phase and its open-question count), or by the retry table's growing delay.
+Work counts and activity are not part of that stamp, since they change
+while a terminal waits. Past the unreadable-member period the card says the
+member's terminal waits for input. The journal's hand-out outcome row says
+the outcome and the cleaned reason. A refusal of an effect the store has
+already settled, such as a removed member's, is no failure either.
+
+**A recovery removes only the row it owns.** The service's gate recovery
+closed its card and then removed whichever ledger row was current, so a
+second runtime that had failed the same check in between lost its fresh
+row and its card was tracked by nothing. A recovery removes the row only at
+the version it owns, the entry version or the version its own notice
+replay wrote; if another writer has moved the row it removes nothing and
+does not fail the pass (the actor's cards delta, 2026-11-12).
+
+**A test row of another component's value comes from that component.** Two
+defects of 2026-11-12 passed their reviews and every mutant because the
+tests read hand-written values the product never writes: the standing
+folder-trust confirmation compared a card's conversation with an empty
+string where a real Claude startup card carries null, and the service's
+availability and presence read the fleet row keys `subagents_active` and
+`state`, while a live terminal row carries `subagent_active_count` and no
+`state` at all, so with a real service no member was ever free. A mutant
+shows that a test notices a change of the code, never that its fixture is
+what another component writes. The rule for everything the Teams service
+reads from elsewhere (fleet rows, inspect views, task and launch
+observations, DeepSeek records): a test's value is built by the real
+producer, or from a fixture shared with it, through one helper that changes
+named keys only; a guard test fails when a seeded value carries a key the
+producer does not write, and when a reader's key list names one no producer
+has. A reviewer traces each such key to the line that writes it and builds
+its probes from what that line writes. Unknown stays unknown: a null or
+missing count is not zero.
+
+**A hosted DeepSeek tool call proves its own session; a DeepSeek seat waits
+until it can be reached.** One DeepSeek host process serves every session of
+its agent home, so process ancestry reaches only the host. The hosted caller
+proof (`state::session_graph::caller_hosted`, zerus-ppd26 Part B, merged
+2026-11-12) ties a tool call to its session through the host's per-call
+token. For Teams: a `dsh/` claim takes that proof only; its refusal refuses
+the team command with the proof's own sentence, an archived binding
+refuses, and nothing falls back to another proof or to the person. A child
+agent's command is its top-level session's, as an in-process subagent's is
+elsewhere; a fork is its own session. A host started before the proof
+existed has no tokens and proves nothing until its next own start; no host
+is restarted or reloaded for it. Whether the host of an agent home can
+prove its calls is asked at the member launch in the desktop, before the
+worktree and again before the session is bound, and not at team creation:
+the command line may see another agent home. The roster keeps refusing a
+DeepSeek seat until the service can reach such a member: the task delivery's
+final input is a terminal path with no DeepSeek route, and a hosted run's
+end writes no end record. OpenCode and platforms without the proof stay
+refused as before.
+
+**No other session is proven below a host.** A marked claim that is not a
+DeepSeek claim took the ancestry proof without asking whether the command
+ran below a recorded resident agent host, so a hosted call that carried
+another session's markers was accepted as that session: a host is a child
+of the command that launched it for as long as that command lives, and an
+older host keeps the markers it inherited (the independent review of the
+DeepSeek members' first commit, 2026-11-12). The rule: a command below a
+recorded host can only be a session that host serves, and only a DeepSeek
+claim's token proves one; any other marked claim there is refused with a
+sentence of its own. The person path and the marked branch ask one check,
+which reads the host records first (a computer that records none walks no
+process) and then walks the process table alone, matched by process ID and
+birth; it reads no environment and no marker, and when it cannot tell
+(records unreadable or over their bound, a birth unreadable, a walk past
+its bound) both refuse. Its limit is the hosted proof's own: the check
+stands on the host records, so a call that removes or edits its host's
+same-user records is no longer seen below that host. That is deliberate
+change of the state directory by a same-user process, which no proof built
+on records or ancestry can stop, and it is stated where the rule is
+stated. The function's body is replaced by the shared helper from main
+after the next sync, with a refusal of its own for a command inside a
+separate process namespace.
+
+**A held step's card follows the hold's age, not its reason.** A step the
+service holds back (a finish, a merge or a reopen it cannot carry out yet)
+had its card keyed by the reason, so a change of reason closed the card and
+restarted the count, and a reason that alternated every minute never opened
+one (the second review of the actor, 2026-11-12). A hold is a decision and
+its generation. It is silent for its first period, three one-minute checks,
+whatever its reasons do; the first card opens when the hold's age passes
+the period, with the sentence of that pass. A change of reason neither
+restarts the age nor closes the card: the card is replaced when the new
+reason has stood for the period. A dismissal lasts while the reason is the
+same, Retry checks again on the next pass, and the card closes when the
+hold ends or another decision or generation takes the row.
+
+**One reader of a fleet row, and its keys are the producers'.** The actor
+read a member's row by names no producer writes (`subagents_active`, and a
+`state` that a live terminal row never carries) in tests whose rows were
+written by hand, so a real idle member was never free and never handed a
+task; the first run against real agents found it (2026-11-12). One module
+reads a fleet row (`actor/fleet.rs`) and lists every key it reads. A member
+is live when its `process_state` is `running`, its `runtime_state` is `live`
+and its `state` is absent or `running`; it is free when it is live, ready
+and idle and its three counts (active children, background work, open
+questions) are zero. A count that is null, absent or of another type is
+unknown: the member is never free and its presence reports nothing. The
+tests' rows come from the listing's own steps through test-only seams; one
+guard compares the committed fixture's key paths with them and another
+fails when the reader names a key no producer writes.
+
+**A member is found by its session, not by its launch's evidence.** A
+member is bound to the launch that started it, and every later read of the
+member (is it free, which run is current, who is its parent) went through
+that launch's start file, which the product removes when the launch is
+confirmed finished and after seven days at the latest. A member whose start
+file was gone could not be read and was never handed a task (found by
+tracing the producer, 2026-11-12). The store keeps a durable handle beside
+the binding: the session's own ID, written once by the service when the
+binding is verified, in a companion table that an older build ignores, so
+the layout does not move. Every later read resolves the session's current
+record through the handle with bounded point reads and requires that
+record to carry the bound launch and the member's agent and folder. What
+does not resolve is named and never free: `Gone` (archived, forgotten, or
+rewritten without its ID), `Changed` (the record carries another launch),
+`StartedFresh`, `Unavailable` (a fault or a bound) and `NoHandle`. A fresh
+start ends the binding: it does not carry the launch's identity to the new
+conversation, because that identity is also the task executor's key and
+carrying it would change what a fresh start means for every task; that is
+the owner's decision and is not taken here. One session is one member's. A
+member bound before the handle existed gets it on its first verified free
+check, from the launch ledger, a completed resume or the evidence while it
+lasts.
+
+**A member a ready task needs and that cannot be read gets one card.** A
+member whose state could not be read (its session record gone or changed, a
+count never reported, a fault) was never free, and nobody was told: a ready
+task waited behind it without a word (2026-11-12). The reader gives one of
+three answers, `Free`, `Busy` or `Unreadable` with its fact. A count names
+the member unreadable only when the member is live, ready and idle, every
+known count is zero and this one is unknown; a working member with an
+unknown count is busy, and so is a member with no row. Whether anybody
+needs the member is the kernel's own selection run once more, with the
+unreadable members counted as free and placed after every known member and
+with tasks already handed out held, so the card never names a task another
+member is taking. The row uses the held steps' period: silent for the
+period, then one card with the sentence alone and the decisions Retry and
+Acknowledged; a changed fact or task replaces the card only when it has
+stood for the period. The row ends on the first pass in which nobody needs
+the member: no ready task, a paused team, the member readable again,
+another member taking the task, the member stopped or archived. A team's
+Stop closes the card in the Stop itself.
+
+**A hand-out that fails before its reservation says that nothing was
+sent.** The task command that hands a team's task to a member answered
+every failure alike, with an error exit that the actor reads as uncertain.
+So a failure that provably came before anything durable (a team store that
+was busy, a setting that could not be read) raised a card and was never
+tried again (2026-11-12). The window is exact: it opens when the command
+has seen, under the task's admission, that no attempt exists for its ID,
+and closes at the reservation's save; nothing in it is durable. Inside it a
+rule's refusal stays a refusal and a stale observation stays stale; every
+other failure answers `not_started` with its cause, exit 0 and the echoed
+ID, which the actor reads as nothing sent and tries again with its
+backoff. A member session that refuses the prepared input (its identity,
+run or conversation changed) is a refusal, not an uncertainty. Outside the
+window nothing changes: a failure before the attempt read or after the
+reservation is still unknown, and a recovery never sends.
+
+**A reopen is checked by the member's launch and conversation, not by its
+run.** A reopen sends a member a short message for a task it already has.
+Before sending, the task command required the run and the conversation the
+task had been handed to. A member resumed since the hand-out has a new run
+and the same conversation: it still holds the task's whole context, but its
+reopen was refused, retried and ended as a card. A member that cleared its
+conversation was refused too, but only after retries and without its
+reason (2026-11-12). On the team route the check compares the member's
+launch identity and the conversation; every caller outside a team keeps
+the same-run comparison, and a source guard lists every use of the new
+one. A resumed member's reopen goes through. A member that cleared its
+conversation no longer has the task: its reopen is refused and final,
+nothing is sent, and the task goes back to the lead at once with a
+sentence that says why, without a failure gate or a retry. A new execution
+for the same member with the full prompt is not part of this.
+
+**A subagent count is settled only when every child that may run now is
+counted.** A fleet row carries a member's active subagents as a count with
+a flag beside it, and the reader ignored the flag. The flag does not mean
+one thing: for the hook-fed sources of Claude, Codex and Kimi's own roster
+it only says that ended, interrupted or pruned children are no longer
+listed, which is history; for Kimi's profile groups and for a DeepSeek
+session's catalog it says that children which may be running now could not
+be counted (2026-11-12). The reader decides by the row's `subagent_source`.
+History never keeps a member. An incomplete count about children that may
+run now is unknown: the member is not free and gives no presence, and when
+a ready task needs it the unreadable-member card says that the state of
+some of its subagents cannot be settled. A count above zero is work,
+settled or not. A source the reader does not know is unknown, and a guard
+fails when a producer writes one the reader has not classified. A DeepSeek
+member is never free until the host's list carries a complete job summary:
+the tests' list answer holds only the keys the host sends.
+
+**A task already handed out is held out of the hand-out pass.** A task
+whose hand-out has been submitted stays ready in the plan kernel's view
+until its observation moves, and the store refuses a second intent for it.
+The pass chose a free member for it all the same: that member got no other
+task in that pass, and the refused intent was counted as a hand-out that
+failed (2026-11-12). Before members are chosen the pass now holds every
+ready task that has an open effect or a delivery pending in the actor's
+ledger, as it holds a cooling task. The pending-delivery half matters
+after a crash between the ledger's row and the store's intent: without it
+a free member loses that pass. The hold costs one indexed point read of
+the ledger for each ready task without an open effect, and ready tasks are
+bounded by the team's limit of open tasks.
+
+**Only the member's own folder-trust prompt is a candidate for the
+standing confirmation.** The confirmation's engine planned a trust step
+whenever a member had any pending question and took the first one, so an
+ordinary question the agent asked later was refused by the policy and
+became a card and a row (the first real-agent run of the trust cases,
+2026-11-12). The policy decides the candidate once, by the producer's
+source: the folder-trust source of the member's own agent. Each source is
+a fixed literal of its producer; nothing an agent, a hook payload or a
+terminal's text writes can carry it. Every other pending question is the
+person's, through the session's ordinary attention, and plans nothing
+here: no row, no card, no audit reservation. Beside another question the
+folder-trust prompt is still refused by the policy, with its notice. A
+trust row written before this change is settled history and is never
+repeated.
+
+**Outside text is cleaned where it is taken.** Git's words, file paths, a
+member's report and the team-clear refusal entered the service's
+sentences, cards and inbox items as they came: a control character, a line
+or paragraph separator or a bidirectional override could start a line of
+its own, act on a terminal or reorder what is displayed (2026-11-12). Each
+is cleaned at the place it is taken, by one module with three forms. A
+sentence loses control characters, separators and the nine bidirectional
+embedding, override and isolate characters, and is bounded. A report keeps
+its line feeds and tabs and loses the rest, before the service appends its
+own lines. A path is shown as it is when it is clean, and quoted with
+every such character escaped when it is blank, holds one, starts with a
+double quote or is longer than its limit, so that two different names
+never read the same while both are shown whole; a quoted form cut at the
+limit is marked after its closing quote. The marks U+200E and U+200F and
+right-to-left letters stay. A team's name and IDs and task titles are not
+covered here.
 
 **Known limit: the key of a task that was closed before the stop.** After a
 stop the service clears the team key of the tasks that were open at the
@@ -1731,7 +2229,8 @@ card operations it needs in `src/teams/ops/`.
 - Pause and resume: a paused team hands out nothing; a paused member takes
   nothing; a team paused by the person is not resumed by the lead.
 - Stop and archive: the keys of the team's open tasks are cleared in
-  bounded pages through `clear_team_key`; a launch that completes after a
+  bounded pages through the service command `team-clear` (this brief first
+  called it `clear_team_key`); a launch that completes after a
   stop is recorded as provenance (tracker item `zerus-63rru.11`).
 
 **Tests:** each timer firing once and not after its condition passed; the

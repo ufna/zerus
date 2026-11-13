@@ -51,6 +51,65 @@ pub(super) fn set_session(ctx: &mut Context<'_>) -> Result<()> {
     m.state = MemberState::Active;
     save(ctx, &m)
 }
+/// The longest session name a handle keeps as its label hint.
+const HINT_BYTES: usize = 512;
+/// Records the durable handle of a member bound to a launch: once, while the
+/// member and its team are live, and only for a session no other member's
+/// handle holds. A member bound by run has no launch and gets none.
+pub(super) fn set_handle(ctx: &mut Context<'_>) -> Result<()> {
+    let Operation::SetMemberHandle {
+        member,
+        session_id,
+        label_hint,
+    } = ctx.op
+    else {
+        unreachable!()
+    };
+    ctx.active()?;
+    let m = ctx.member(member)?;
+    let Some((machine, launch)) = m
+        .session
+        .as_ref()
+        .filter(|_| m.state != MemberState::Removed)
+        .and_then(|s| Some((&s.machine, s.session_id.strip_prefix("launch_id:")?)))
+    else {
+        return Err(invalid("Only a member bound to a launch has a handle."));
+    };
+    uuid(session_id)?;
+    text(label_hint, HINT_BYTES)?;
+    let own: bool = ctx
+        .db
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM member_handles WHERE team=?1 AND member=?2)",
+            params![ctx.team.id, member],
+            |r| r.get(0),
+        )
+        .map_err(storage)?;
+    if own {
+        return Err(Problem::new(
+            code::DUPLICATE,
+            "The member already has a handle.",
+        ));
+    }
+    let held: bool = ctx
+        .db
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM member_handles WHERE machine=?1 AND session_id=?2)",
+            params![machine, session_id],
+            |r| r.get(0),
+        )
+        .map_err(storage)?;
+    if held {
+        return Err(invalid("The session is another member's."));
+    }
+    ctx.db
+        .execute(
+            "INSERT INTO member_handles(team,member,machine,session_id,launch,label_hint,created_ms) VALUES(?1,?2,?3,?4,?5,?6,?7)",
+            params![ctx.team.id, member, machine, session_id, launch, label_hint, ctx.now],
+        )
+        .map_err(storage)?;
+    Ok(())
+}
 pub(super) fn set_state(ctx: &mut Context<'_>) -> Result<()> {
     let Operation::SetMemberState { member, state } = ctx.op else {
         unreachable!()
@@ -134,7 +193,191 @@ pub(super) fn archive(ctx: &mut Context<'_>) -> Result<()> {
         return Err(invalid("The member cannot be removed."));
     }
     m.state = MemberState::Removed;
-    save(ctx, &m)
+    save(ctx, &m)?;
+    hand_back(ctx, &m)
+}
+/// Removal settles the Returns and Reassigns aimed at the member that have
+/// not started, or whose reopen is only reserved, and hands each node back to
+/// the lead as a reopen that could not be delivered does: the decision
+/// settled, the node held, and one inbox item. Then it settles the member's
+/// open hand-out of a task that has not started or is in progress
+/// (zerus-63rru.77). A stopped or busy member keeps them; that wait is
+/// intended.
+fn hand_back(ctx: &mut Context<'_>, removed: &Member) -> Result<()> {
+    let member = removed.id.as_str();
+    let mut handed = std::collections::BTreeSet::new();
+    for (seq, node, kind, state) in reopen_decisions(ctx)? {
+        let reserved = state == DecisionState::EffectReserved.as_str();
+        if (!reserved && ctx.unstarted(node)?.map(|(s, _)| s) != Some(seq))
+            || aimed_at(ctx, node, &kind)?.as_deref() != Some(member)
+        {
+            continue;
+        }
+        let body = if reserved {
+            // Its delivery may already be under way: the reopen is settled
+            // with the decision, so nothing delivers or replays it.
+            supersede(ctx, node, member)?;
+            format!(
+                "Member {member} was removed while the {kind} of task {node} was being delivered; {UNKNOWN} The decision is settled and the task waits for a new one."
+            )
+        } else {
+            format!(
+                "Member {member} was removed before the {kind} of task {node} started; the decision is settled and the task waits for a new one."
+            )
+        };
+        hand_to_lead(ctx, node, &format!("member_removed:{seq}"), &body)?;
+        handed.insert(node);
+    }
+    settle_handout(ctx, removed, &handed)
+}
+/// What a removal says about a delivery it settles: the store cannot know
+/// whether the prompt arrived, since a delivery child that passed its own
+/// last check before the removal still types it.
+const UNKNOWN: &str =
+    "the delivery's result is not known: the prompt may have reached a session that is now gone.";
+/// The member's open hand-out (reserved, submitted, uncertain or cutting
+/// over; there is at most one) of a live task that has not started, or is in
+/// progress, is settled in the removal: the effect superseded, so no pass
+/// hands the task out again, nothing replays the delivery and a later report
+/// of the member is not the team's, and the node handed back to the lead
+/// with one item. An uncertain delivery keeps its outcome and its earlier
+/// item; this item does not repeat it as a second fact. A task already in
+/// review stays as it is: its member's report was written before the
+/// removal. A node with another unsettled decision keeps it: a Cancel still
+/// ends its task.
+fn settle_handout(
+    ctx: &mut Context<'_>,
+    removed: &Member,
+    handed: &std::collections::BTreeSet<u32>,
+) -> Result<()> {
+    let member = removed.id.as_str();
+    let open: Option<(u32, String, String)> = ctx.db.query_row(&format!("SELECT e.node,e.request_id,n.node_state FROM effects e INDEXED BY effect_member JOIN nodes n ON n.team=e.team AND n.id=e.node WHERE e.team=?1 AND e.member=?2 AND e.state IN {OPEN_EFFECT_STATES} AND e.kind IN ('handout','reopen') AND n.node_state IN ('pending','waiting','in_progress')"),params![ctx.team.id,member],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional().map_err(storage)?;
+    let Some((node, id, state)) = open else {
+        return Ok(());
+    };
+    if ctx.pending(node)?.is_some() {
+        return Ok(());
+    }
+    supersede(ctx, node, member)?;
+    // A node the decision loop handed back keeps that one item; its open
+    // hand-out is settled all the same, so no timer speaks of it later.
+    if handed.contains(&node) {
+        return Ok(());
+    }
+    let body = if state == "in_progress" {
+        // The decisions it names are the ones that work for its node kind,
+        // read from the node itself: only the person cancels a stage.
+        let decisions = if ctx.node(node)?.kind == NodeKind::Stage {
+            "Reassign gives the task to another member, and a later report from that session will not move it. The lead cannot cancel a stage; the person's Cancel stops that session and ends the task, and its parent comes back to the lead."
+        } else {
+            "Reassign gives the task to another member, and a later report from that session will not move it; Cancel stops that session and ends the task."
+        };
+        format!(
+            "Member {member} was removed while task {node} was in progress; the task is with the lead again. {} {decisions}",
+            still_working(&removed.worktree)
+        )
+    } else {
+        format!(
+            "Member {member} was removed before task {node} started; {UNKNOWN} The task waits for the lead."
+        )
+    };
+    hand_to_lead(ctx, node, &format!("member_removed:{id}"), &body)?;
+    Ok(())
+}
+/// Where a removed member's work is, as far as the store knows it: the
+/// worktree path its members row has, and nothing else (no branch, no head).
+fn still_working(worktree: &str) -> String {
+    if worktree.is_empty() {
+        "Its session was not told and may still be working on it, in its worktree.".into()
+    } else {
+        format!(
+            "Its session was not told and may still be working on it, in the worktree at {worktree}."
+        )
+    }
+}
+/// The sentence for a report the removed member wrote after its removal: not
+/// the team's, so not recorded; the work stays where the store says it is.
+pub(super) fn late_report_text(member: &str, node: u32, worktree: &str) -> String {
+    let at = if worktree.is_empty() {
+        "in its worktree".to_owned()
+    } else {
+        format!("in the worktree at {worktree}")
+    };
+    format!(
+        "Member {member} reported task {node} after it was removed; the team does not record that report. Its work is {at}."
+    )
+}
+/// Closes the member's open effects of the node; a late outcome is still
+/// recorded as a fact and never reopens them.
+fn supersede(ctx: &Context<'_>, node: u32, member: &str) -> Result<()> {
+    ctx.db.execute(&format!("UPDATE effects SET state='superseded' WHERE team=?1 AND node=?2 AND member=?3 AND state IN {OPEN_EFFECT_STATES}"),params![ctx.team.id,node,member]).map_err(storage)?;
+    Ok(())
+}
+/// The member a pending Return or Reassign is aimed at, read only to hand
+/// its node back when that member is removed: a Reassign's assignee, and for
+/// a Return the member of the newest effect of the node's current
+/// generation, whatever that effect's state. That is wider than the holder a
+/// reopen is delivered to (`handout::reopen_target`), so that a Return
+/// admitted while its member's hand-out was only reserved is still found. It
+/// never chooses a recipient for a delivery.
+fn aimed_at(ctx: &Context<'_>, node: u32, kind: &str) -> Result<Option<String>> {
+    if kind == "reassign" {
+        return Ok(ctx.node(node)?.assignee);
+    }
+    ctx.db
+        .query_row(
+            "SELECT member FROM effects WHERE team=?1 AND node=?2 AND generation=?3 ORDER BY seq DESC LIMIT 1",
+            params![ctx.team.id, node, ctx.generation(node)?],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(storage)
+}
+/// The member a Return of the node would go back to, its holder, when that
+/// member was removed from the team: such a Return could never be carried
+/// out. Every writer of a Return asks it.
+pub(super) fn removed_holder(ctx: &Context<'_>, node: u32) -> Result<Option<String>> {
+    let Some(holder) = handout::holder(ctx, node)? else {
+        return Ok(None);
+    };
+    Ok((ctx.member(&holder)?.state == MemberState::Removed).then_some(holder))
+}
+/// Hands a node to the lead instead of a Return or Reassign that its member
+/// can no longer carry out, through the store's one writer of that outcome
+/// (`rows::hand_back`): its unsettled decision settled, the node held, one
+/// inbox item of the cause's own kind. The operation moves the revision.
+pub(super) fn hand_to_lead(
+    ctx: &mut Context<'_>,
+    node: u32,
+    kind: &str,
+    text: &str,
+) -> Result<u64> {
+    rows::hand_back(
+        ctx.db,
+        &ctx.team.id,
+        node,
+        &encode(ctx.actor)?,
+        kind,
+        text,
+        ctx.now,
+    )
+}
+/// The team's unsettled Returns and Reassigns with their states, from the
+/// partial index of open decisions and within its bound.
+fn reopen_decisions(ctx: &Context<'_>) -> Result<Vec<(u64, u32, String, String)>> {
+    let mut s = ctx.db.prepare("SELECT seq,node,kind,state FROM decisions INDEXED BY decision_pending WHERE team=?1 AND state<>'settled' AND kind IN ('return','reassign') ORDER BY node LIMIT ?2").map_err(storage)?;
+    let rows = s
+        .query_map(
+            params![ctx.team.id, delegation::MAX_OPEN_DECISIONS + 1],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        )
+        .map_err(storage)?
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(storage)?;
+    if rows.len() > delegation::MAX_OPEN_DECISIONS {
+        return Err(over("Too many open decisions to settle for the member."));
+    }
+    Ok(rows)
 }
 fn save(ctx: &Context<'_>, m: &Member) -> Result<()> {
     ctx.db

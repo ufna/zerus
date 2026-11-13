@@ -64,11 +64,41 @@ fn from_caller(
     )
 }
 
+/// This command and its ancestors up to the top of the user's tree, by the
+/// process table alone: the walk of [`ancestors`], with its bound and births,
+/// reading no environment, so no row carries a claim. A marked claim's host
+/// check needs only process IDs and births (zerus-63rru.28), and a marked
+/// command reads no ancestor's environment.
+pub(super) fn processes() -> Result<Vec<Ancestor>, Problem> {
+    #[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
+    WALKS.with(|n| n.set(n.get() + 1));
+    walk_reading(std::process::id(), inspect, None)
+}
+
+#[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
+thread_local! { static WALKS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
+/// How many times this thread walked [`processes`].
+#[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
+pub(super) fn walks() -> usize {
+    WALKS.with(|n| n.get())
+}
+
 /// A replacement, unknown parent, loop or cap is never a successful end.
 pub(super) fn walk(
+    pid: u32,
+    inspect: impl FnMut(u32) -> Result<Inspection, Problem>,
+    mut environment: impl FnMut(u32) -> std::io::Result<Vec<u8>>,
+) -> Result<Vec<Ancestor>, Problem> {
+    walk_reading(pid, inspect, Some(&mut environment))
+}
+
+/// The walk, with each process's environment read by `environment`, or none
+/// read at all. Without a reader no row carries a claim, and a birth is
+/// still required below the top.
+fn walk_reading(
     mut pid: u32,
     mut inspect: impl FnMut(u32) -> Result<Inspection, Problem>,
-    mut environment: impl FnMut(u32) -> std::io::Result<Vec<u8>>,
+    mut environment: Option<&mut dyn FnMut(u32) -> std::io::Result<Vec<u8>>>,
 ) -> Result<Vec<Ancestor>, Problem> {
     let mut chain: Vec<Ancestor> = Vec::new();
     let mut current = inspect(pid)?;
@@ -82,16 +112,17 @@ pub(super) fn walk(
         }
         let next = inspect(parent)?;
         let top = matches!(next, Inspection::Foreign);
-        let claim = match environment(pid) {
-            Ok(bytes) => {
+        let claim = match environment.as_mut().map(|read| read(pid)) {
+            None => None,
+            Some(Ok(bytes)) => {
                 if identity.birth.is_none() {
                     return Err(unreadable());
                 }
                 claim(&bytes)?
             }
-            Err(_) if top => None,
-            Err(error) if is_withheld(&error) => return Err(withheld_below_top()),
-            Err(_) => return Err(unreadable()),
+            Some(Err(_)) if top => None,
+            Some(Err(error)) if is_withheld(&error) => return Err(withheld_below_top()),
+            Some(Err(_)) => return Err(unreadable()),
         };
         if !top && identity.birth.is_none() {
             return Err(unreadable());

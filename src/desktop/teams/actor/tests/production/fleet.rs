@@ -43,15 +43,34 @@ pub(super) fn seed(h: &Harness, n: &native::Native) {
         seed_member(n, &db, &m);
     }
 }
+/// The seeded session ID of `member`: fixed, so a test can find its record.
+pub(in crate::desktop::teams::actor) fn session_of(member: &str) -> String {
+    let n = member
+        .bytes()
+        .fold(0u64, |a, b| a.wrapping_mul(31).wrapping_add(u64::from(b)));
+    format!("00000000-0000-4000-8000-{:012x}", n & 0xffff_ffff_ffff)
+}
 fn seed_member(n: &native::Native, db: &rusqlite::Connection, m: &Member) {
     let Some(binding) = &m.session else { return };
     let Some(launch) = binding.session_id.strip_prefix("launch_id:") else {
         return;
     };
-    let sid = uuid::Uuid::new_v4().to_string();
+    let sid = session_of(&m.id);
     let run = format!("fixture-{}", m.id);
     let name = format!("{}/fixture/{}", m.agent, m.id);
-    let record = json!({"version":1,"layout":"id","session_id":sid,"name":name,"launch_id":launch,"agent":m.agent,"account_id":m.account,"cwd":m.worktree,"run_id":run,"conversation_id":format!("conversation-{}",m.id)});
+    // The supervisor's own record for this launch (zerus-63rru.53), placed in
+    // the ID layout, where a session that reuses a label lives.
+    let mut record = crate::state::listing_fixture::launched_record(
+        &m.agent,
+        &name,
+        launch,
+        &sid,
+        &run,
+        &m.worktree,
+        &m.account,
+    );
+    crate::state::listing_fixture::confirmed(&mut record, &format!("conversation-{}", m.id));
+    record["layout"] = json!("id");
     write(
         &n.config.state.join("sessions").join(format!("{sid}.json")),
         record,
@@ -63,7 +82,17 @@ fn seed_member(n: &native::Native, db: &rusqlite::Connection, m: &Member) {
             .join(format!("{launch}.json")),
         json!({"launch_id":launch,"session_id":sid,"name":name,"started_at":1.0}),
     );
-    let row=json!({"name":name,"agent":m.agent,"cmd":m.agent,"state":"running","process_state":"running","activity":"idle","phase":"idle","run_id":run,"launch_id":launch,"conversation_id":format!("conversation-{}",m.id),"conversation_state":"active","process_work":{"count":0},"subagents_active":0,"optional_questions":{"count":0}}).to_string();
+    // The producer's idle row of the member's agent kind, with its identity.
+    let row = super::super::rows::seed_row(
+        &m.agent,
+        &[
+            ("name", json!(name)),
+            ("run_id", json!(run)),
+            ("launch_id", json!(launch)),
+            ("conversation_id", json!(format!("conversation-{}", m.id))),
+        ],
+    )
+    .to_string();
     db.execute(
         "INSERT OR REPLACE INTO desktop_catalog_rows(generation,key,json,bytes) VALUES(1,?1,?2,?3)",
         params![format!("run:{run}"), row, row.len()],
@@ -90,6 +119,7 @@ pub(super) fn change(n: &native::Native, mode: &str) {
                 "fleet pending" => ("$.optional_questions.count", json!(1)),
                 "fleet background" => ("$.process_work.count", json!(1)),
                 "fleet run" => ("$.run_id", json!("other-run")),
+                "fleet launch" => ("$.launch_id", json!("another-launch")),
                 _ => panic!("unknown fleet mutation"),
             };
             db.execute(

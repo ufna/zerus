@@ -15,6 +15,17 @@ pub struct MemberSession {
     pub session_id: String,
 }
 
+/// A launch-bound member's durable handle (zerus-63rru.53): the session ID
+/// of the record its binding verified, the launch it was bound to and the
+/// session's name at binding, a route for when the ID index misses.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MemberHandle {
+    pub machine: String,
+    pub session_id: String,
+    pub launch: String,
+    pub label_hint: String,
+}
+
 /// Snapshot high-water mark excludes additions while the person turns pages.
 /// The scope binds the cursor to the team, list and filter that issued it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -32,6 +43,27 @@ pub struct Cursor {
 pub struct Page<T> {
     pub rows: Vec<T>,
     pub next: Option<Cursor>,
+}
+/// A queue row with what a view needs to foresee a refusal: the member
+/// holding the attempt (none when no one does), the kind of a pending
+/// decision (none when nothing is pending), and whether a new Return,
+/// Reassign or Cancel would replace that decision instead of being refused
+/// (`DecisionState::replaceable`; false when nothing is pending), and the
+/// sentence of the lead's open item when no member can take the ready node
+/// (none otherwise).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct QueueRow {
+    pub node: zerus_team_plan::model::Node,
+    pub holder: Option<String>,
+    pub pending: Option<String>,
+    pub pending_replaceable: bool,
+    pub unstaffed: Option<String>,
+}
+/// A member row with whether the person stopped the member.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MemberRow {
+    pub member: zerus_team_plan::model::Member,
+    pub person_stopped: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -60,6 +92,11 @@ pub struct Card {
     pub decision: Option<String>,
     pub decided_actor: Option<Value>,
     pub created_ms: i64,
+    /// The decisions the card takes: those its opener listed, or for a card
+    /// opened without a list (and every row from before lists existed) the
+    /// rule of its kind.
+    #[serde(default)]
+    pub decisions: Vec<String>,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

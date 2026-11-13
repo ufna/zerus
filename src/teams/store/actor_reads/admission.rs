@@ -51,6 +51,15 @@ impl Admission {
         )
     }
 
+    pub fn stage_task_effect(
+        &self,
+        team: &str,
+        node: u32,
+        id: &str,
+    ) -> Result<Option<StageTaskEffect>> {
+        self.active()?;
+        super::super::stage::effect(self.0.db.as_ref().expect("admitted store"), team, node, id)
+    }
     /// The enclosing admission already supplies the snapshot/archival fence;
     /// unlike the standalone read, this must not start a nested transaction.
     pub fn node(&self, team: &str, node: NodeId) -> Result<Option<Node>> {
@@ -90,18 +99,15 @@ mod tests {
             },
         )
         .unwrap();
-        // Isolate the decision predicate from the hold that also protects
-        // ordinary cancellation. The ready projection carries no decisions.
-        h.store
-            .db
-            .as_ref()
-            .unwrap()
-            .execute(
-                "UPDATE nodes SET hold=0 WHERE team=?1 AND id=?2",
-                params![TEAM, node],
-            )
-            .unwrap();
-        let r = crate::teams::ops::readiness(&h.store, TEAM).unwrap();
+        // The decision's hold is read from the decision in every node read
+        // (the plan, "A hold has an owner"), so the current projection shows
+        // the node held. Isolate the decision predicate from that hold: the
+        // projection is taken as a pass that read it before the Cancel saw
+        // it, unheld.
+        let mut r = crate::teams::ops::readiness(&h.store, TEAM).unwrap();
+        let projected = r.nodes.iter_mut().find(|n| n.id == node).unwrap();
+        assert!(projected.hold, "the pending decision holds the node");
+        projected.hold = false;
         let team = h.store.team(TEAM).unwrap().unwrap();
         let view = zerus_team_plan::ready::PlanView {
             phases: &r.phases,
@@ -113,6 +119,30 @@ mod tests {
         assert!(zerus_team_plan::ready::ready(&view).contains(&node));
         let guard = Store::open(h.temp.path()).unwrap().admission().unwrap();
         assert!(guard.handout_admissible(&team, node, "m1").is_err());
+    }
+    #[test]
+    fn stage_effect_is_read_through_the_held_admission_snapshot() {
+        let mut h = Harness::empty();
+        h.run(&person(), create()).unwrap();
+        h.bind("m1");
+        h.bind("m3");
+        let target = h.add(&person(), 1);
+        h.submit(target, "m1");
+        h.report(target, "m1");
+        let node = h.store.stage_tasks(TEAM, 1, None).unwrap().rows[0].node;
+        let id = uuid::Uuid::new_v4().to_string();
+        h.run(
+            &service(),
+            crate::teams::ops::Operation::StageTaskIntent {
+                node,
+                effect_request_id: id.clone(),
+            },
+        )
+        .unwrap();
+        let expected = h.store.stage_task_effect(TEAM, node, &id).unwrap();
+        assert!(expected.is_some());
+        let held = Store::open(h.temp.path()).unwrap().admission().unwrap();
+        assert_eq!(held.stage_task_effect(TEAM, node, &id).unwrap(), expected);
     }
     #[test]
     fn admission_keeps_facts_and_excludes_writers_until_dropped() {

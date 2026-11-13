@@ -39,6 +39,20 @@ impl Delivery for Fake {
         if self.mode == "crash-reserved" {
             std::process::exit(73);
         }
+        if self.mode == "type-after-pause" {
+            // After the reservation and its save, before the first key: a
+            // test acts on the store here, then lets the child type.
+            std::fs::write(
+                self.root.join(format!("typing-{}", std::process::id())),
+                b"typing",
+            )
+            .unwrap();
+            let until = Instant::now() + Duration::from_secs(8);
+            while !self.root.join("release-typing").exists() && Instant::now() < until {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            assert!(self.root.join("release-typing").exists());
+        }
         let mut count = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
@@ -65,7 +79,10 @@ impl Delivery for Fake {
                     )
                     .unwrap();
                 store.save(&mut document).unwrap();
-                attempts::Delivered::NotAdmitted("fixture closed before input".into())
+                attempts::Delivered::NotAdmitted {
+                    reason: "fixture closed before input".into(),
+                    waiting: false,
+                }
             }
             _ => {
                 let receipt = json!({"request_id":body.id,"name":to.session,"run_id":request["expected_run_id"],"conversation_id":request["expected_conversation_id"],"first_message":false,"digest":attempts::digest(request),"status":"submitted"});
@@ -102,6 +119,8 @@ fn entry() {
             "HGS_TEST_TEAM_LOCK_AT",
             if phase == "team-done" {
                 "done"
+            } else if phase == "cancel-reply-command" {
+                "cancel_reply"
             } else if phase == "cancel-command" {
                 "cancel"
             } else {
@@ -111,6 +130,52 @@ fn entry() {
     }
     let result = if mode == "init" {
         crate::swarm::dispatch(&config, &["initialize".into()], false).map(|_| json!({}))
+    } else if mode == "tmux-env" {
+        // What a tmux started by this child would choose its server by.
+        let dir = std::env::var_os("TMUX_TMPDIR").map(PathBuf::from);
+        Ok(json!({
+            "tmux": std::env::var_os("TMUX").map(|v| v.to_string_lossy().into_owned()),
+            "tmux_tmpdir": dir.as_ref().map(|d| d.display().to_string()),
+            "exists": dir.as_ref().is_some_and(|d| d.is_dir()),
+        }))
+    } else if mode == "cli" {
+        // The real `hgs ARGS`. Main exits with an error's code and writes its
+        // message as one `hgs: ` line on stderr; its stdout is what is printed
+        // between the markers.
+        let args: Vec<String> =
+            serde_json::from_str(&std::env::var("HGS_TEAM_DELIVER_ARGS").unwrap()).unwrap();
+        println!("<<<hgs");
+        let result = crate::cli::dispatch_at(args, Instant::now());
+        println!("hgs>>>");
+        Ok(match result {
+            Ok(exit) => json!({ "exit": exit }),
+            Err(error) => json!({ "exit": error.code, "error": error.message }),
+        })
+    } else if mode == "general-reply" {
+        // A reopen's preparation as the general route makes it, for the
+        // member SESSION with key SESSION_ID against the task's DISPATCH
+        // (zerus-63rru.64): the request, or the sentence that refuses it.
+        let args: Vec<String> =
+            serde_json::from_str(&std::env::var("HGS_TEAM_DELIVER_ARGS").unwrap()).unwrap();
+        let to = zerus_replica::SessionKey {
+            machine: String::new(),
+            session: args[0].clone(),
+            session_id: args[1].clone(),
+        };
+        let id = uuid::Uuid::new_v4().to_string();
+        Ok(
+            match crate::state::prepare_task_reply(
+                &to,
+                &args[2],
+                &id,
+                "Continue.",
+                &[],
+                crate::state::Continuation::SameRun,
+            ) {
+                Ok(request) => json!({ "prepared": request }),
+                Err(error) => json!({ "refused": error.to_string() }),
+            },
+        )
     } else {
         let args: Vec<String> =
             serde_json::from_str(&std::env::var("HGS_TEAM_DELIVER_ARGS").unwrap()).unwrap();
@@ -119,9 +184,13 @@ fn entry() {
         }
         if matches!(
             mode.as_str(),
-            "command" | "cancel-command" | "crash-cancel-command" | "lock-cancel-command"
+            "command"
+                | "cancel-command"
+                | "crash-cancel-command"
+                | "lock-cancel-command"
+                | "lock-cancel-reply-command"
         ) {
-            if mode.contains("cancel-command") {
+            if mode.contains("cancel") {
                 std::env::set_var(
                     "HGS_TEST_TASK_CANCEL_NOTICE",
                     config.state.join("cancel-notices"),
@@ -310,10 +379,25 @@ impl Fixture {
         key
     }
     fn spawn(&self, mode: &str, args: &[String], input: &str, barrier: bool) -> (Child, PathBuf) {
+        self.spawn_with(mode, args, input, barrier, &[])
+    }
+    /// `spawn` with `extra` variables set for the child.
+    fn spawn_with(
+        &self,
+        mode: &str,
+        args: &[String],
+        input: &str,
+        barrier: bool,
+        extra: &[(&str, &str)],
+    ) -> (Child, PathBuf) {
         let reply = self
             .config
             .state
             .join(format!("reply-{}.json", uuid::Uuid::new_v4()));
+        // The cleared environment would leave tmux on its default socket
+        // directory, the real server; every child gets this test's own.
+        let tmux = self.config.state.join("tmux");
+        std::fs::create_dir_all(&tmux).unwrap();
         let mut cmd = Command::new(std::env::current_exe().unwrap());
         cmd.args([
             "--exact",
@@ -322,6 +406,7 @@ impl Fixture {
         ])
         .env_clear()
         .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+        .env("TMUX_TMPDIR", &tmux)
         .env("HOME", &self.config.home)
         .env("HGS_CONFIG_DIR", &self.config.dir)
         .env("HGS_STATE_DIR", &self.config.state)
@@ -350,6 +435,7 @@ impl Fixture {
         if barrier {
             cmd.env("HGS_TEAM_DELIVER_BARRIER", "1");
         }
+        cmd.envs(extra.iter().copied());
         let mut child = cmd.spawn().unwrap();
         child
             .stdin
@@ -359,7 +445,26 @@ impl Fixture {
             .unwrap();
         (child, reply)
     }
-    fn finish(&self, mut child: Child, reply: PathBuf) -> Value {
+    fn finish(&self, child: Child, reply: PathBuf) -> Value {
+        let result = self.wait(child);
+        let mut reply: Value = serde_json::from_slice(&std::fs::read(reply).unwrap()).unwrap();
+        if let Some(exit) = reply["reply"]["exit"].as_i64() {
+            let mut values: Vec<Value> = String::from_utf8_lossy(&result.stdout)
+                .lines()
+                .filter_map(|line| serde_json::from_str(line).ok())
+                .collect();
+            assert_eq!(
+                values.len(),
+                1,
+                "{}",
+                String::from_utf8_lossy(&result.stdout)
+            );
+            reply["exit"] = json!(exit);
+            reply["reply"] = values.pop().unwrap();
+        }
+        reply
+    }
+    fn wait(&self, mut child: Child) -> std::process::Output {
         let until = Instant::now() + Duration::from_secs(18);
         while child.try_wait().unwrap().is_none() {
             if Instant::now() >= until {
@@ -380,22 +485,36 @@ impl Fixture {
             String::from_utf8_lossy(&result.stdout),
             String::from_utf8_lossy(&result.stderr)
         );
-        let mut reply: Value = serde_json::from_slice(&std::fs::read(reply).unwrap()).unwrap();
-        if let Some(exit) = reply["reply"]["exit"].as_i64() {
-            let mut values: Vec<Value> = String::from_utf8_lossy(&result.stdout)
-                .lines()
-                .filter_map(|line| serde_json::from_str(line).ok())
-                .collect();
-            assert_eq!(
-                values.len(),
-                1,
-                "{}",
-                String::from_utf8_lossy(&result.stdout)
-            );
-            reply["exit"] = json!(exit);
-            reply["reply"] = values.pop().unwrap();
-        }
-        reply
+        result
+    }
+    /// The real `hgs ARGS` with `input` on stdin, in this fixture's private
+    /// child: its exit status, its stdout, and its error, which main writes as
+    /// one `hgs: ` line on stderr.
+    fn cli(&self, args: &[String], input: &str) -> (i32, String, Option<String>) {
+        self.cli_with(args, input, &[])
+    }
+    /// `cli` with `extra` variables set for the child.
+    fn cli_with(
+        &self,
+        args: &[String],
+        input: &str,
+        extra: &[(&str, &str)],
+    ) -> (i32, String, Option<String>) {
+        let (child, path) = self.spawn_with("cli", args, input, false, extra);
+        let result = self.wait(child);
+        let reply: Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+        let text = String::from_utf8_lossy(&result.stdout);
+        let stdout = text
+            .split_once("<<<hgs\n")
+            .and_then(|(_, rest)| rest.split_once("hgs>>>"))
+            .map(|(stdout, _)| stdout.to_owned())
+            .unwrap_or_else(|| panic!("{text}"));
+        let exit = i32::try_from(reply["reply"]["exit"].as_i64().unwrap()).unwrap();
+        (
+            exit,
+            stdout,
+            reply["reply"]["error"].as_str().map(str::to_owned),
+        )
     }
     fn args(&self, recover: bool) -> Vec<String> {
         let mut args = vec![
@@ -443,6 +562,26 @@ impl Fixture {
             .load(&self.task.uuid)
             .unwrap()
     }
+}
+
+/// Every child runs with this test's own existing tmux directory and no
+/// inherited server. The cleared environment alone would leave tmux on its
+/// default socket directory, which is the developer's real server.
+#[test]
+fn every_child_chooses_a_private_tmux_server() {
+    let f = Fixture::new();
+    let (child, reply) = f.spawn("tmux-env", &[], "", false);
+    let out = f.finish(child, reply);
+    let reply = &out["reply"];
+    assert!(reply["tmux"].is_null(), "{out}");
+    let dir = PathBuf::from(
+        reply["tmux_tmpdir"]
+            .as_str()
+            .unwrap_or_else(|| panic!("the child has no TMUX_TMPDIR: {out}")),
+    );
+    assert_eq!(dir, f.config.state.join("tmux"));
+    assert!(dir.starts_with(f.h.temp.path()), "{out}");
+    assert_eq!(reply["exists"], true, "{out}");
 }
 
 #[test]
@@ -983,3 +1122,490 @@ mod review_tests;
 mod cancel_tests;
 
 mod return_text_tests;
+
+mod attempt_tests;
+
+mod removal_tests;
+pub(crate) use removal_tests::{removed_stage_cancel, RealCancel};
+
+/// What keeps a hand-out from its reservation in [`blocked_handout`].
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum Blocked {
+    /// The person archived the member's stopped session with the real
+    /// `hgs archive`.
+    ArchivedMember,
+    /// Another connection holds a write transaction on the team store for the
+    /// whole command, as a busy writer does.
+    BusyTeamStore,
+    /// This computer's session bindings cannot be read: one of their
+    /// directories cannot be listed (mode 000), as any failed read before the
+    /// admission.
+    UnlistableBindings,
+    /// A reopen, after the member, a Claude session in a private tmux pane,
+    /// cleared its conversation: the real SessionStart hook of a `/clear` gave
+    /// its session a new conversation since the hand-out.
+    ClearedMember,
+}
+
+/// A private tmux server in the fixture's own existing socket directory,
+/// killed when dropped. Its one pane runs the member's terminal.
+/// A private tmux server of this fixture (zerus-63rru.89): its own
+/// directory, made private here, and every call, its Drop included, names
+/// its socket with -S, so no call can fall back to the machine's real server
+/// when a directory is missing. The socket is the one the product resolves
+/// from TMUX_TMPDIR=`dir` (`dir/tmux-UID/default`), which the hgs children
+/// keep.
+struct Terminal {
+    dir: PathBuf,
+}
+impl Terminal {
+    fn new(dir: PathBuf) -> Self {
+        use std::os::unix::fs::PermissionsExt;
+        let terminal = Self { dir };
+        let sockets = terminal.socket().parent().unwrap().to_owned();
+        std::fs::create_dir_all(&sockets).unwrap();
+        for dir in [&terminal.dir, &sockets] {
+            std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        terminal
+    }
+    fn socket(&self) -> PathBuf {
+        let uid = unsafe { libc::getuid() };
+        self.dir.join(format!("tmux-{uid}")).join("default")
+    }
+    fn tmux(&self, args: &[&str]) -> String {
+        let out = Command::new("tmux")
+            .arg("-S")
+            .arg(self.socket())
+            .args(args)
+            .env_remove("TMUX")
+            .env_remove("TMUX_PANE")
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "tmux {args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8(out.stdout).unwrap().trim().to_owned()
+    }
+}
+impl Drop for Terminal {
+    fn drop(&mut self) {
+        let _ = Command::new("tmux")
+            .arg("-S")
+            .arg(self.socket())
+            .arg("kill-server")
+            .env_remove("TMUX")
+            .env_remove("TMUX_PANE")
+            .output();
+    }
+}
+
+/// The fixture terminal's socket is inside the fixture's temporary
+/// directory, in folders it made private itself (zerus-63rru.89).
+#[test]
+fn the_fixture_terminals_socket_is_inside_the_fixtures_directory() {
+    use std::os::unix::fs::PermissionsExt;
+    let temp = tempfile::tempdir().unwrap();
+    let terminal = Terminal::new(temp.path().join("state/tmux"));
+    let socket = terminal.socket();
+    assert!(socket.starts_with(temp.path()), "{socket:?}");
+    assert!(socket.starts_with(&terminal.dir), "{socket:?}");
+    for dir in [terminal.dir.as_path(), socket.parent().unwrap()] {
+        let mode = std::fs::metadata(dir).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o700, "{dir:?}");
+    }
+}
+
+impl Fixture {
+    /// Witness b of zerus-63rru.58. m1 becomes a Claude session whose pane runs
+    /// in a private tmux server; its task is handed out, reported and returned
+    /// by the lead, and `self.body` becomes the reopen effect. Then the member
+    /// clears: the real `hgs __state hook` receives a Claude SessionStart with
+    /// `source: clear` and a new session ID, as a `/clear` sends it. Returns
+    /// the terminal and the conversation before and after.
+    /// The general route's preparation of a reopen of member `name` against
+    /// the task's dispatch `dispatch`, in a child with this store's state.
+    fn general_reply(&self, name: &str, dispatch: &str) -> Value {
+        use sha2::{Digest, Sha256};
+        let path = self
+            .config
+            .state
+            .join(format!("{:x}.json", Sha256::digest(name.as_bytes())));
+        let record: Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+        let key = format!("launch_id:{}", record["launch_id"].as_str().unwrap());
+        let args = [name.to_owned(), key, dispatch.to_owned()];
+        let (child, reply) = self.spawn("general-reply", &args, "", false);
+        let reply = self.finish(child, reply);
+        assert_eq!(reply["ok"], true, "{reply}");
+        reply["reply"].clone()
+    }
+    fn cleared_member(&mut self) -> (Terminal, String, String, (Value, Value)) {
+        use sha2::{Digest, Sha256};
+        let state = self.config.state.clone();
+        let file = |name: &str| state.join(format!("{:x}.json", Sha256::digest(name.as_bytes())));
+        let mut record: Value =
+            serde_json::from_slice(&std::fs::read(file("codex/deliver-m1")).unwrap()).unwrap();
+        std::fs::remove_file(file("codex/deliver-m1")).unwrap();
+        let terminal = Terminal::new(state.join("tmux"));
+        assert!(terminal.socket().starts_with(&state));
+        terminal.tmux(&[
+            "new-session",
+            "-d",
+            "-s",
+            "deliver-m1",
+            "-x",
+            "80",
+            "-y",
+            "24",
+            "sleep 600",
+        ]);
+        let pane = terminal.tmux(&["display-message", "-p", "-t", "deliver-m1", "#{pane_id}"]);
+        let run = record["run_id"].as_str().unwrap().to_owned();
+        terminal.tmux(&["set-option", "-p", "-t", &pane, "@hgs_run", &run]);
+        let before = uuid::Uuid::new_v4().to_string();
+        record["agent"] = json!("claude");
+        record["name"] = json!("claude/deliver-m1");
+        record["conversation_id"] = json!(before);
+        record["pane"] = json!(pane);
+        record["terminal_name"] = json!("deliver-m1");
+        std::fs::write(file("claude/deliver-m1"), record.to_string()).unwrap();
+        assert_eq!(self.run("submitted", false)["reply"]["state"], "submitted");
+        self.h.outcome(
+            &self.body.id.clone(),
+            ops::HandoutOutcome::Submitted {
+                receipt: "fixture".into(),
+            },
+        );
+        crate::teams::tasks::observe(&self.config.state, &self.task).unwrap();
+        {
+            let store = crate::tasks::store(&self.config, &self.task.project).unwrap();
+            let mut task = store.load(&self.task.uuid).unwrap();
+            task.report_attempt(
+                &self.body.id,
+                "Ready",
+                zerus_replica::execution::ReportKind::Ready,
+                None,
+                &Actor::Person,
+                now(),
+            )
+            .unwrap();
+            store.save(&mut task).unwrap();
+        }
+        crate::teams::tasks::observe(&self.config.state, &self.task).unwrap();
+        let generation = self
+            .h
+            .store
+            .generation(TEAM, self.body.node)
+            .unwrap()
+            .unwrap();
+        self.h
+            .run(
+                &ops::tests::service(),
+                ops::Operation::RecordReport {
+                    node: self.body.node,
+                    generation,
+                    member: "m1".into(),
+                    text: "Ready".into(),
+                    commit: ops::tests::COMMIT.into(),
+                },
+            )
+            .unwrap();
+        let lead = ops::Actor::Session {
+            person: "local".into(),
+            team: TEAM.into(),
+            member: "lead".into(),
+            session: zerus_team_plan::model::SessionKey {
+                machine: self.lead.machine.clone(),
+                session_id: self.lead.session_id.clone(),
+            },
+        };
+        self.h
+            .run(
+                &lead,
+                ops::Operation::Return {
+                    node: self.body.node,
+                    reason: "Fix the missing edge case".into(),
+                },
+            )
+            .unwrap();
+        let dispatch = self.body.id.clone();
+        self.body.id = self.h.reopen(self.body.node, "m1");
+        let general_before = self.general_reply("claude/deliver-m1", &dispatch);
+        let claude = state.join("claude-home");
+        let after = uuid::Uuid::new_v4().to_string();
+        let transcript = claude
+            .join("projects/-fixture")
+            .join(format!("{after}.jsonl"));
+        let event = json!({"hook_event_name":"SessionStart","source":"clear","session_id":after,
+            "transcript_path":transcript,"cwd":state});
+        let claude = claude.display().to_string();
+        let (exit, stdout, error) = self.cli_with(
+            &["__state".into(), "hook".into()],
+            &event.to_string(),
+            &[
+                ("HGS_SESSION", "claude/deliver-m1"),
+                ("HGS_RUN_ID", &run),
+                ("HGS_AGENT", "claude"),
+                ("CLAUDE_CONFIG_DIR", &claude),
+            ],
+        );
+        assert_eq!((exit, error), (0, None), "{stdout}");
+        let record: Value =
+            serde_json::from_slice(&std::fs::read(file("claude/deliver-m1")).unwrap()).unwrap();
+        assert_eq!(record["run_id"], json!(run), "the clear keeps the run");
+        (
+            terminal,
+            before,
+            record["conversation_id"].as_str().unwrap().to_owned(),
+            (
+                general_before,
+                self.general_reply("claude/deliver-m1", &dispatch),
+            ),
+        )
+    }
+}
+
+/// A hand-out to a member that waits for a person, through the real
+/// `hgs task team-deliver` (zerus-63rru.79): the member's record names a real
+/// pane of this harness's private tmux server, whose process stands for the
+/// agent's and whose screen is not an empty agent prompt. With `activity`
+/// and `phase` "idle" the record says the agent is ready and the terminal's
+/// composer refuses; with "busy" and "working" it refuses as a prompt queued
+/// while the agent works; with phase "input" the record already shows its
+/// question. What the command answered, and the pane's screen before and
+/// after it.
+#[derive(Debug)]
+pub(crate) struct WaitingHandout {
+    pub exit: i32,
+    pub stdout: String,
+    pub error: Option<String>,
+    pub id: String,
+    pub before: String,
+    pub after: String,
+    /// Whether the task document holds an attempt for the ID.
+    pub reserved: bool,
+}
+
+pub(crate) fn waiting_handout(activity: &str, phase: &str) -> WaitingHandout {
+    use sha2::{Digest, Sha256};
+    let f = Fixture::new();
+    let state = f.config.state.clone();
+    let file = |name: &str| state.join(format!("{:x}.json", Sha256::digest(name.as_bytes())));
+    let mut record: Value =
+        serde_json::from_slice(&std::fs::read(file("codex/deliver-m1")).unwrap()).unwrap();
+    std::fs::remove_file(file("codex/deliver-m1")).unwrap();
+    let terminal = Terminal::new(state.join("tmux"));
+    assert!(terminal.socket().starts_with(&state));
+    terminal.tmux(&[
+        "new-session",
+        "-d",
+        "-s",
+        "deliver-m1",
+        "-x",
+        "80",
+        "-y",
+        "24",
+        // The pane's program takes its terminal as an agent's prompt does
+        // (raw input, bracketed paste on), shows an unsent draft and keeps
+        // its process ID.
+        "stty -icanon -echo; printf '\\033[?2004han unsent draft'; exec sleep 600",
+    ]);
+    let pane = terminal.tmux(&["display-message", "-p", "-t", "deliver-m1", "#{pane_id}"]);
+    let run = record["run_id"].as_str().unwrap().to_owned();
+    terminal.tmux(&["set-option", "-p", "-t", &pane, "@hgs_run", &run]);
+    // The pane's own process stands for the live agent process.
+    let pid: u32 = terminal
+        .tmux(&["display-message", "-p", "-t", &pane, "#{pane_pid}"])
+        .parse()
+        .unwrap();
+    record["agent"] = json!("claude");
+    record["name"] = json!("claude/deliver-m1");
+    record["activity"] = json!(activity);
+    record["phase"] = json!(phase);
+    record["pane"] = json!(pane);
+    record["terminal_name"] = json!("deliver-m1");
+    record["pid"] = json!(pid);
+    record["process_start"] = json!(crate::platform::process_start_time(pid).unwrap());
+    std::fs::write(file("claude/deliver-m1"), record.to_string()).unwrap();
+    // The pane's program prints its draft after the pane starts: wait for it,
+    // bounded, so the command meets the terminal the case describes.
+    let until = Instant::now() + Duration::from_secs(10);
+    let before = loop {
+        let screen = terminal.tmux(&["capture-pane", "-p", "-t", &pane]);
+        if screen.contains("an unsent draft") {
+            break screen;
+        }
+        assert!(
+            Instant::now() < until,
+            "the pane never showed the draft within 10 seconds: {screen:?}"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    let id = f.body.id.clone();
+    let mut args = vec!["task".to_owned(), "team-deliver".to_owned()];
+    args.extend(f.args(false));
+    let (exit, stdout, error) = f.cli(&args, &serde_json::to_string(&f.body).unwrap());
+    let after = terminal.tmux(&["capture-pane", "-p", "-t", &pane]);
+    drop(terminal);
+    let reserved = f.document().attempt(&id).unwrap().is_some();
+    WaitingHandout {
+        exit,
+        stdout,
+        error,
+        id,
+        before,
+        after,
+        reserved,
+    }
+}
+
+/// One hand-out that cannot reach its reservation, as the service sees it
+/// (zerus-63rru.58).
+#[derive(Debug)]
+pub(crate) struct RealHandout {
+    /// The real `hgs task team-deliver`: its exit status and stdout, and the
+    /// error main writes on stderr.
+    pub exit: i32,
+    pub stdout: String,
+    pub error: Option<String>,
+    /// For a cleared member: its conversation before and after the clear.
+    pub conversation: Option<(String, String)>,
+    /// For a cleared member: the general route's preparation of a reopen
+    /// against the task's dispatch, before and after the clear.
+    pub general: Option<(Value, Value)>,
+    /// What the command left behind: whether the task document changed, an
+    /// attempt exists for the ID, the team store changed, and an input
+    /// receipt exists for the ID.
+    pub task_changed: bool,
+    pub reserved: bool,
+    pub team_changed: bool,
+    pub offered: bool,
+    /// The outcome the caller's reader made of them, recorded as the service
+    /// records a hand-out's outcome; none for a non-start, which records none.
+    pub outcome: Option<ops::HandoutOutcome>,
+    /// The effect's state and the team's inbox items afterwards.
+    pub effect: String,
+    pub inbox: Vec<String>,
+}
+
+/// The real task command's answer for a hand-out that `blocked` keeps from
+/// its reservation, in the process harness's private store. The real
+/// `hgs task team-deliver` runs in a private child; nothing may be reserved,
+/// written or offered. `read` is the actor's reading of the child's exit and
+/// stdout: an outcome to record, or none.
+pub(crate) fn blocked_handout(
+    blocked: Blocked,
+    read: impl FnOnce(i32, &[u8], &str) -> Option<ops::HandoutOutcome>,
+) -> RealHandout {
+    use sha2::{Digest, Sha256};
+    let mut f = Fixture::new();
+    let name = "codex/deliver-m1";
+    // A first admission writes the task's execution floor before it reserves
+    // (`fence::floor_within`); write it first, with the task's own `floor()`,
+    // so that any change to the task below is this command's.
+    {
+        let store = crate::tasks::store(&f.config, &f.task.project).unwrap();
+        let mut doc = store.load(&f.task.uuid).unwrap();
+        assert!(doc.floor().unwrap());
+        store.save(&mut doc).unwrap();
+    }
+    let mut closed = None;
+    let mut terminal = None;
+    let mut conversation = None;
+    let mut general = None;
+    let held = match blocked {
+        Blocked::ArchivedMember => {
+            let (exit, stdout, error) = f.cli(&["archive".into(), name.into()], "");
+            assert_eq!((exit, error), (0, None), "{stdout}");
+            let record = format!("{:x}.json", Sha256::digest(name.as_bytes()));
+            assert!(
+                !f.sessions().contains_key(&record),
+                "the record is archived"
+            );
+            None
+        }
+        Blocked::BusyTeamStore => {
+            let db =
+                rusqlite::Connection::open(f.config.state.join("teams/teams-v1.sqlite3")).unwrap();
+            db.execute_batch("BEGIN IMMEDIATE").unwrap();
+            Some(db)
+        }
+        Blocked::UnlistableBindings => {
+            use std::os::unix::fs::PermissionsExt;
+            let bindings = f.config.state.join("bindings");
+            std::fs::create_dir_all(&bindings).unwrap();
+            std::fs::set_permissions(&bindings, std::fs::Permissions::from_mode(0o000)).unwrap();
+            closed = Some(bindings);
+            None
+        }
+        Blocked::ClearedMember => {
+            let (pane, before, after, prepared) = f.cleared_member();
+            general = Some(prepared);
+            terminal = Some(pane);
+            conversation = Some((before, after));
+            None
+        }
+    };
+    let id = f.body.id.clone();
+    let before = f.document().revision();
+    let team = f.h.store.team(TEAM).unwrap().unwrap().revision;
+    let mut args = vec!["task".to_owned(), "team-deliver".to_owned()];
+    args.extend(f.args(false));
+    let (exit, stdout, error) = f.cli(&args, &serde_json::to_string(&f.body).unwrap());
+    drop(held);
+    if let Some(path) = closed {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    let task_changed = f.document().revision() != before;
+    let reserved = f.document().attempt(&id).unwrap().is_some();
+    let team_changed = f.h.store.team(TEAM).unwrap().unwrap().revision != team;
+    let offered = f
+        .config
+        .state
+        .join("input_receipts")
+        .join(format!("{id}.json"))
+        .exists();
+    drop(terminal);
+    let outcome = read(exit, stdout.as_bytes(), &id);
+    match (&outcome, blocked) {
+        (Some(outcome), Blocked::ClearedMember) => f.h.reopen_outcome(&id, outcome.clone()),
+        (Some(outcome), _) => f.h.outcome(&id, outcome.clone()),
+        (None, _) => {}
+    }
+    let effect =
+        f.h.store
+            .db
+            .as_ref()
+            .unwrap()
+            .query_row(
+                "SELECT state FROM effects WHERE team=?1 AND request_id=?2",
+                params![TEAM, id],
+                |r| r.get(0),
+            )
+            .unwrap();
+    let inbox =
+        f.h.store
+            .inbox(TEAM, 200, None)
+            .unwrap()
+            .rows
+            .into_iter()
+            .map(|item| item.kind)
+            .collect();
+    RealHandout {
+        exit,
+        stdout,
+        error,
+        conversation,
+        general,
+        task_changed,
+        reserved,
+        team_changed,
+        offered,
+        outcome,
+        effect,
+        inbox,
+    }
+}

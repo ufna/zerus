@@ -1,15 +1,23 @@
-//! Original local CLI effects; missing part-C readers fail closed.
+//! Original local CLI effects with exact stored admissions.
 //! Occupancy is a scheduling hint read just before admission, outside the
 //! process-wide spawn turn because it starts child readers. A task a person
 //! assigns in the remaining race can reach the member alongside this hand-out.
 //! The exact current fleet row is checked last inside the store admission.
+
+mod tasks;
+#[cfg(test)]
+#[allow(unused_imports)]
+pub(super) use tasks::{clear_request, stage_arguments, stage_request, task_reply};
 mod admission;
+mod cancels;
 use super::*;
 use crate::{
     config::Config,
     desktop::teams::child::{self, Ended},
     teams::ops::HandoutOutcome,
 };
+#[cfg(test)]
+pub(super) use cancels::answer as cancel_answer;
 use serde_json::{json, Value};
 use std::{
     sync::{atomic::AtomicBool, Arc},
@@ -93,11 +101,9 @@ impl Native {
             }
         }
         let args = task_arguments(task, action);
-        let input = if let Some(m) = member {
-            json!({"schema":1,"id":id,"team":team.id,"node":node.id,"member":m.id})
-        } else {
-            json!({"schema":1,"team":team.id,"node":node.id})
-        };
+        let input = task_request(team, node, member, id);
+        #[cfg(test)]
+        capture_child(&args, &input);
         let input = input.to_string();
         let mut retry = None;
         let ended = child::run_guarded(
@@ -124,8 +130,76 @@ impl Native {
     }
 }
 impl Ports for Native {
+    fn cancels(
+        &mut self,
+        store: &Store,
+        team: &str,
+        after: u32,
+    ) -> Result<Vec<super::cancel::Pending>> {
+        Self::pending_cancels(store, team, after)
+    }
+    fn cancel(
+        &mut self,
+        team: &Team,
+        pending: &super::cancel::Pending,
+        original: &str,
+    ) -> Result<super::cancel::Answer> {
+        self.run_cancel(team, pending, original)
+    }
+    fn record_cancel(
+        &mut self,
+        store: &mut Store,
+        team: &Team,
+        fact: &super::cancel::Fact,
+        now: i64,
+    ) -> Result<()> {
+        Self::save_cancel(store, team, fact, now)
+    }
+
     fn clock_ms(&self, _: i64) -> i64 {
         chrono::Utc::now().timestamp_millis()
+    }
+    fn team_timers(
+        &mut self,
+        state: &mut super::auxiliary::State,
+        store: &mut Store,
+        team: &Team,
+        now: i64,
+    ) -> Result<()> {
+        state.team(self, store, team, now)
+    }
+    fn answer_timers(
+        &mut self,
+        state: &mut super::auxiliary::State,
+        store: &mut Store,
+        team: &Team,
+        now: i64,
+    ) -> Result<()> {
+        state.answers(self, store, team, now)
+    }
+    fn terminal_timers(
+        &mut self,
+        state: &mut super::auxiliary::State,
+        store: &mut Store,
+        now: i64,
+    ) -> Result<()> {
+        state.terminal(self, store, now)
+    }
+    fn stage(
+        &mut self,
+        team: &Team,
+        effect: &crate::teams::store::StageTaskEffect,
+        original: &str,
+    ) -> Result<super::ports::TaskReply> {
+        self.create_task(team, effect, original)
+    }
+    fn clear_stage(
+        &mut self,
+        team: &Team,
+        keyed: &crate::teams::store::timers::KeyedTask,
+        original: &str,
+    ) -> Result<super::ports::TaskReply> {
+        self.clear_task(team, keyed, original)
     }
     fn stopped(&self) -> bool {
         self.stop.load(std::sync::atomic::Ordering::Acquire)
@@ -143,19 +217,40 @@ impl Ports for Native {
             offset,
         ))
     }
-    fn observe(&mut self, _: &mut Store, _: &TaskRef) -> Result<()> {
-        Err(problem("Team task observation is not available yet"))
+    fn observe(&mut self, _: &mut Store, task: &TaskRef) -> Result<()> {
+        crate::teams::tasks::observe(&self.config.state, task)
+    }
+    fn report(&mut self, task: &TaskRef) -> Result<Option<String>> {
+        crate::teams::tasks::report(&self.config.state, task)
     }
     fn free(&mut self, team: &Team, m: &Member) -> Result<bool> {
+        Ok(self.availability(team, m)? == ports::Availability::Free)
+    }
+    /// One read: the fleet row's answer, then the session's task index for a
+    /// member that row calls free.
+    fn row_stamp(&mut self, team: &Team, m: &Member) -> Result<Option<String>> {
         let Some(session) = m.session.as_ref() else {
-            return Ok(false);
+            return Ok(None);
         };
-        if session.machine != self.machine
-            || !super::availability::free(&self.config, &self.epoch, &team.id, m)?
-        {
-            return Ok(false);
+        if session.machine != self.machine {
+            return Ok(None);
         }
-        self.unoccupied(m)
+        Ok(
+            super::availability::record(&self.config, &self.epoch, &team.id, m, false)?
+                .map(|row| super::fleet::stamp(&row)),
+        )
+    }
+    fn availability(&mut self, team: &Team, m: &Member) -> Result<ports::Availability> {
+        let Some(session) = m.session.as_ref() else {
+            return Ok(ports::Availability::Busy);
+        };
+        if session.machine != self.machine {
+            return Ok(ports::Availability::Busy);
+        }
+        match super::availability::availability(&self.config, &self.epoch, &team.id, m, true)? {
+            ports::Availability::Free if !self.unoccupied(m)? => Ok(ports::Availability::Busy),
+            answer => Ok(answer),
+        }
     }
     fn repository(&mut self, team: &Team) -> Result<String> {
         self.work_repository(team)
@@ -193,23 +288,62 @@ impl Ports for Native {
         id: &str,
     ) -> ports::DeliveryResult {
         match self.command(team, node, Some(member), id, "team-deliver", None) {
-            Ok(ended) => delivery_reply(ended, id).into(),
+            Ok(ended) => delivery_result(ended, id),
             Err(error) => ports::DeliveryResult::NotStarted {
                 reason: error.message,
             },
         }
     }
 }
+pub(super) fn delivery_result(ended: Ended, id: &str) -> ports::DeliveryResult {
+    if let Ended::Exited { code: 0, output } = &ended {
+        if let Ok(v) = serde_json::from_slice::<Value>(output) {
+            if v["schema"] == 1 && v["id"] == id {
+                match (v["state"].as_str(), v["error"].as_str()) {
+                    (Some("stale"), Some(_)) => return ports::DeliveryResult::Stale,
+                    // The member's terminal holds input, by the answer's
+                    // typed cause, never its sentence (zerus-63rru.79).
+                    (Some("refused"), Some(reason))
+                        if v["cause"] == crate::tasks::TERMINAL_WAITING =>
+                    {
+                        let said = super::cancel::reason::spoken(&cut(reason, 2048));
+                        return ports::DeliveryResult::TerminalWaiting {
+                            reason: if said.is_empty() {
+                                "The member's terminal holds input".to_owned()
+                            } else {
+                                said
+                            },
+                        };
+                    }
+                    // The task command reserved and sent nothing, for a cause
+                    // that may pass (zerus-63rru.58): retry the same delivery.
+                    (Some("not_started"), Some(reason)) => {
+                        // Cleaned as the other delivery sentences are.
+                        let said = super::cancel::reason::spoken(&cut(reason, 2048));
+                        return ports::DeliveryResult::NotStarted {
+                            reason: if said.is_empty() {
+                                "The task writer did not start delivery".to_owned()
+                            } else {
+                                said
+                            },
+                        };
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+    delivery_reply(ended, id).into()
+}
 pub(super) fn delivery_reply(ended: Ended, id: &str) -> HandoutOutcome {
     match ended {
         Ended::Exited { code, output } => {
-            let reply = decode_delivery(&output, id);
-            if code != 0 && matches!(reply, HandoutOutcome::Submitted { .. }) {
+            if code != 0 {
                 HandoutOutcome::Uncertain {
-                    reason: "A failed child cannot confirm delivery".into(),
+                    reason: "A failed child cannot confirm a delivery result".into(),
                 }
             } else {
-                reply
+                decode_delivery(&output, id)
             }
         }
         Ended::NotStarted => HandoutOutcome::Refused {
@@ -233,19 +367,24 @@ pub(super) fn decode_delivery(raw: &[u8], id: &str) -> HandoutOutcome {
     if v["schema"].as_u64() != Some(1) {
         return bad();
     }
-    let Some(error) = v["error"].as_str() else {
-        return bad();
+    let error = match v.get("error") {
+        Some(Value::String(error)) => error.as_str(),
+        None if v["state"] == "submitted" => "",
+        _ => return bad(),
     };
-    let reason = cut(
-        if error.trim().is_empty() {
-            "The task writer did not complete delivery"
-        } else {
-            error
-        },
-        2048,
-    );
+    // The command's own words, cleaned before they are recorded; a sentence
+    // with nothing readable left keeps the fixed one.
+    let said = super::cancel::reason::spoken(&cut(error, 2048));
+    let reason = if said.is_empty() {
+        "The task writer did not complete delivery".to_owned()
+    } else {
+        said
+    };
     match v["state"].as_str() {
         Some("submitted") => HandoutOutcome::Submitted { receipt: id.into() },
+        // Final only from the exact reply: the reopen's member no longer has
+        // the task's conversation (zerus-63rru.64).
+        Some("refused") if v["final"] == true => HandoutOutcome::HandedBack { reason },
         Some("refused") => HandoutOutcome::Refused { reason },
         Some("uncertain") => HandoutOutcome::Uncertain { reason },
         Some("cutting_over") => HandoutOutcome::CuttingOver { reason },
@@ -279,6 +418,7 @@ pub(super) fn decode_finish(raw: &[u8], team: &str, node: u32) -> Result<super::
         .ok_or_else(|| problem("Finishing reply has no error field"))?;
     Ok(match v["state"].as_str() {
         Some("done") => Finish::Done,
+        Some("stale") => Finish::Stale,
         Some("refused") => Finish::Refused(cut(reason, 2048)),
         Some("cutting_over") => Finish::CuttingOver(cut(reason, 2048)),
         _ => return Err(problem("Unknown finishing reply state")),
@@ -314,3 +454,25 @@ pub(super) fn task_arguments(task: &TaskRef, action: &str) -> Vec<String> {
 
 #[cfg(test)]
 thread_local! {pub(super) static TEST_INVENTORY: std::cell::RefCell<Option<Value>> = const {std::cell::RefCell::new(None)};}
+
+pub(super) fn task_request(
+    team: &Team,
+    node: &Node,
+    member: Option<&Member>,
+    id: &str,
+) -> serde_json::Value {
+    if let Some(m) = member {
+        json!({"schema":1,"id":id,"team":team.id,"node":node.id,"member":m.id})
+    } else {
+        json!({"schema":1,"team":team.id,"node":node.id})
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    pub(super) static CAPTURED_CHILD: std::cell::RefCell<Option<(Vec<String>, Value)>> = const {std::cell::RefCell::new(None)};
+}
+#[cfg(test)]
+pub(super) fn capture_child(args: &[String], input: &Value) {
+    CAPTURED_CHILD.with(|s| *s.borrow_mut() = Some((args.to_vec(), input.clone())));
+}
