@@ -137,6 +137,7 @@ class InputTransport(unittest.TestCase):
         self.record_path.write_text(json.dumps(self.record))
 
     def tmux(self, *args, check=True):
+        assert self.socket.parent.is_dir(), "the private tmux socket directory is gone"
         result = subprocess.run([str(self.bin / "tmux"), *args], env=self.env,
                                 capture_output=True, text=True, timeout=5)
         if check: self.assertEqual(result.returncode, 0, result.stderr)

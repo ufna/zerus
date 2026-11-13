@@ -116,6 +116,7 @@ class Tmux:
         test.env["SHELL"] = str(test.bin / "shell")
 
     def command(self, *args):
+        assert self.socket.parent.is_dir(), "the private tmux socket directory is gone"
         return subprocess.run([TMUX, "-S", str(self.socket), "-f", os.devnull, *args], capture_output=True,
                               text=True, timeout=10)
 
