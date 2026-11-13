@@ -2531,6 +2531,18 @@ offers neither action. A changed question, session or draft cancels consent.
 Kimi's native cold-cache chooser already provides the explicit cost and context
 choices. Its selected row is submitted directly, without a second full-context
 confirmation; the same identity and durable delivery checks still apply.
+While that complete chooser holds a submitted message, the session shows
+**Needs you**, with the four native options and **Open terminal**. Recognition
+requires the exact title, explanation, navigation hint, descriptions, selection
+and complete frame, bound to the pending input request, process, pane, run and
+conversation. Inspection never selects, presses Enter or retypes the held input;
+its original submitted or uncertain receipt is retained. A newer native input
+acceptance or the chooser disappearing clears this observation; an earlier turn
+ending does not accept the held message. The person's existing answer path stays
+available only with verified writable terminal mode; otherwise the options are
+read-only. Local agent callers cannot answer this source, and automatic approvals
+and question routing exclude it. Remote CLI answers retain their existing generic
+authority; a person-only remote boundary remains separate follow-up work.
 App-owned desktop and Android dialog action rows place **Cancel**, **Close** or
 the equivalent dismissal at the far right, after the available actions. Long
 Android rows wrap, keeping dismissal last and visible with larger text. Destructive

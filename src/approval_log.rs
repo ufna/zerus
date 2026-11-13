@@ -644,6 +644,20 @@ mod tests {
     }
 
     #[test]
+    fn kimi_cache_choice_never_reserves_an_automatic_answer() {
+        let mut q = question();
+        q["source"] = json!("kimi_cache_hint");
+        q["answer_transport"] = json!("kimi_tui");
+        assert!(answers(&q).is_none());
+        let directory = tempfile::tempdir().unwrap();
+        let mut db = open(&directory.path().join("audit")).unwrap();
+        for provider in ["kimi", "claude", "opencode", "dsh"] {
+            let p = json!({"host":"desktop-a","session":"kimi/sample/review","provider":provider,"question":q});
+            assert_eq!(begin(&mut db, &p).unwrap()["eligible"], false);
+        }
+    }
+
+    #[test]
     fn refuses_wrong_provider_and_malformed_identities_without_a_reservation() {
         let directory = tempfile::tempdir().unwrap();
         let mut db = open(&directory.path().join("audit")).unwrap();
