@@ -150,10 +150,7 @@ fn an_unopenable_items_file_leaves_the_success_saved_and_the_next_pass_clears_th
 }
 
 /// Round 2: the bind's own success path behaves the same.
-struct Never {
-    observed: super::super::ports::ObservedSession,
-    plan: super::super::ports::Plan,
-}
+struct Never;
 impl super::super::ports::Effects for Never {
     fn placement(&mut self, _: &str, _: &str) -> super::super::ports::Result<super::super::ports::Placement> {
         unreachable!("the observed session is already set")
@@ -240,10 +237,7 @@ fn an_unopenable_items_file_leaves_the_bind_successful_and_saved() {
     let _ = std::fs::create_dir_all(h.temp.path().join("teams"));
     let items_path = h.temp.path().join("teams").join("actor-v1.sqlite3");
     std::fs::create_dir(&items_path).unwrap();
-    let mut effects = Never {
-        observed: row.observed.clone().unwrap(),
-        plan: row.plan.clone().unwrap(),
-    };
+    let mut effects = Never;
     let bound = r.bind(&mut h.store, &mut effects, &t, &mut row, 1000).unwrap();
     assert!(bound, "the bind did not report its success");
     let saved = r
