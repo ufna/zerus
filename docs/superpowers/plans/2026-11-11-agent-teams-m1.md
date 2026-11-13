@@ -1787,6 +1787,29 @@ cannot read still counts as one who could take the node: readability is
 the service's fact, the unreadable member's card tells the person, and the
 lead's item does not say it (zerus-63rru.81).
 
+**A removed member's work goes back to the lead.** A task handed to a
+member that was then removed (ArchiveMember, the only removal) was held for
+ever and nobody was told (zerus-63rru.77, 2026-11-13). The removal settles
+the member's open effect of a task that has not started (reserved,
+submitted, uncertain, cutting over, and a reopen already reserved): the
+effect is superseded, the node is held by the hand-back and the lead gets
+one item per node that says the delivery's result is not known, since a
+delivery child past its reservation still types once. A started task is
+handed back too, with an item saying the session was not told and may still
+work in its worktree, and what Reassign and Cancel do; the removal requests
+no cancel, because a Stop's cancel ends the whole task. A report the removed
+member writes later is not recorded; the lead is told once, by a
+service-only operation, with no retry and no card. A reopen that ends
+refused now tells the lead for any member. One rule for every node kind: a
+pipeline stage is handed back like a task and, held, is not ready, so the
+unstaffed reconcile leaves it alone until the lead decides; for a stage the
+item says that the lead cannot cancel it and what the person's Cancel does.
+The actor ends the ledger row of a delivery whose effect the store no
+longer holds and does not count the refusal of a superseded effect as a
+failed hand-out. Left open: a reservation for a paused, stopped or unbound
+member (zerus-63rru.85), a paused member's started task (.86), an unbound
+member's open effect (.87), and Route of a stage (.84).
+
 **A recovery removes only the row it owns.** The service's gate recovery
 closed its card and then removed whichever ledger row was current, so a
 second runtime that had failed the same check in between lost its fresh

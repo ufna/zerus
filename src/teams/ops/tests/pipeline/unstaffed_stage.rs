@@ -152,10 +152,19 @@ fn an_unstaffed_stage_is_retired_and_its_parent_handed_to_the_lead_as_at_creatio
 
 /// A stage that is pending a cancel, held, still has a member who could take
 /// it (paused, or Active and busy), or has an open effect is never in the
-/// set, so the reconcile never retires it.
+/// set, so the reconcile never retires it. A stage whose hand-out belonged to
+/// a removed member is handed back to the lead like any task (zerus-63rru.77):
+/// held by the hand-back, so not ready, and the lead decides.
 #[test]
 fn a_stage_that_is_not_ready_or_still_staffed_is_never_retired() {
-    for case in ["pending_cancel", "held", "paused", "busy", "open_effect"] {
+    for case in [
+        "pending_cancel",
+        "held",
+        "paused",
+        "busy",
+        "open_effect",
+        "removed",
+    ] {
         let (mut h, parent, _) = wanted();
         let stage = created_stage(&mut h, parent);
         match case {
@@ -184,7 +193,7 @@ fn a_stage_that_is_not_ready_or_still_staffed_is_never_retired() {
                 .unwrap();
             }
             "busy" => {}
-            _ => {
+            "open_effect" => {
                 h.run(
                     &service(),
                     Operation::HandoutIntent {
@@ -194,9 +203,89 @@ fn a_stage_that_is_not_ready_or_still_staffed_is_never_retired() {
                     },
                 )
                 .unwrap();
-                remove(&mut h, "m3");
+                // zerus-63rru.84: revisit when Route of a stage is fixed.
+                // A removal no longer leaves the effect open (zerus-63rru.77);
+                // a route of the stage to the parent's implementer does: no
+                // member may take it while m3's hand-out stays open.
+                let pipeline = h.node(stage).pipeline.clone();
+                h.run(
+                    &person(),
+                    Operation::Route {
+                        node: stage,
+                        role: "developer".into(),
+                        pipeline,
+                        deps: vec![],
+                        writes: vec![],
+                        assignee: Some("m1".into()),
+                    },
+                )
+                .unwrap();
                 // The kernel alone would name it; the open effect keeps it out.
                 assert_eq!(kernel_set(&h), vec![stage], "{case}");
+            }
+            _ => {
+                let id = uuid::Uuid::new_v4().to_string();
+                h.run(
+                    &service(),
+                    Operation::HandoutIntent {
+                        node: stage,
+                        member: "m3".into(),
+                        effect_request_id: id.clone(),
+                    },
+                )
+                .unwrap();
+                let parent_before = (hold_columns(&h, parent), h.node(parent).state);
+                let parent_items = h
+                    .store
+                    .inbox(TEAM, 200, None)
+                    .unwrap()
+                    .rows
+                    .into_iter()
+                    .filter(|i| i.node == parent)
+                    .count();
+                remove(&mut h, "m3");
+                let effect = h
+                    .store
+                    .effects(TEAM, 200, None)
+                    .unwrap()
+                    .rows
+                    .into_iter()
+                    .find(|e| e.request_id == id)
+                    .unwrap();
+                assert_eq!(effect.state, "superseded", "{case}");
+                // Held by the hand-back to the lead, and by nobody's explicit hold.
+                assert_eq!(hold_columns(&h, stage), (false, None, true), "{case}");
+                let told: Vec<_> = h
+                    .store
+                    .inbox(TEAM, 200, None)
+                    .unwrap()
+                    .rows
+                    .into_iter()
+                    .filter(|i| i.node == stage)
+                    .map(|i| (i.kind, i.state))
+                    .collect();
+                assert_eq!(
+                    told,
+                    [(format!("member_removed:{id}"), "open".to_owned())],
+                    "{case}"
+                );
+                assert!(kernel_set(&h).is_empty(), "{case}: held, so not ready");
+                assert_eq!(
+                    (hold_columns(&h, parent), h.node(parent).state),
+                    parent_before,
+                    "{case}"
+                );
+                assert_eq!(
+                    h.store
+                        .inbox(TEAM, 200, None)
+                        .unwrap()
+                        .rows
+                        .into_iter()
+                        .filter(|i| i.node == parent)
+                        .count(),
+                    parent_items,
+                    "{case}"
+                );
             }
         }
         let e = reconcile(&mut h).unwrap_err();
