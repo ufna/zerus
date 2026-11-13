@@ -90,6 +90,7 @@ mod read_marks;
 mod notifications;
 /// The per-child switch of the owner-approved question route (zerus-sa9qn.32).
 pub(crate) mod question_routing;
+pub(crate) mod question_route_outcomes;
 pub(crate) mod parent_link;
 mod recipes;
 mod rename;
@@ -450,6 +451,7 @@ pub fn merge_listing_archives(mut box_value: Value, ids: &BTreeMap<String, Strin
     let notification_preferences = notifications::load();
     let keep_warm_settings = keep_warm::load();
     let question_routing = question_routing::load();
+    let route_outcomes = question_route_outcomes::Reader::load();
     let sessions = box_value
         .get_mut("sessions")
         .and_then(Value::as_array_mut)
@@ -493,7 +495,7 @@ pub fn merge_listing_archives(mut box_value: Value, ids: &BTreeMap<String, Strin
             .extend(telemetry::unavailable().as_object().unwrap().clone());
     }
     // Bounds question indexing for the whole listing.
-    let shared = Shared { marks: &marks, preferences: notification_preferences.as_ref(), keep_warm: keep_warm_settings.as_ref(), question_routing: question_routing.as_ref(), budget: read_marks::question_budget() };
+    let shared = Shared { marks: &marks, preferences: notification_preferences.as_ref(), keep_warm: keep_warm_settings.as_ref(), question_routing: question_routing.as_ref(), route_outcomes: route_outcomes.as_ref(), budget: read_marks::question_budget() };
     let mut process_work = processes::WorkSample::default();
     for record in bindings {
         if archive::equivalent(&record, &archived) {
@@ -567,6 +569,7 @@ struct Shared<'a> {
     preferences: Option<&'a notifications::Store>,
     keep_warm: Option<&'a keep_warm::Store>,
     question_routing: Option<&'a question_routing::Store>,
+    route_outcomes: Option<&'a question_route_outcomes::Reader>,
     /// Bounds question indexing for the whole listing.
     budget: std::time::Instant,
 }
@@ -606,7 +609,8 @@ fn live_row(session: &mut Value, record: Value, shared: &Shared, process_work: &
         .as_ref()
         .ok()
         .and_then(|questions| questions.as_deref());
-    parent_link::mark_human_request(session, pending, false);
+    let escalated = shared.route_outcomes.is_some_and(|outcomes| outcomes.escalated(session, pending));
+    parent_link::mark_human_request(session, pending, escalated);
     read_marks::enrich_listing(session, shared.marks, journal::journal_name(&record), questions);
     notifications::enrich(session, shared.preferences, journal::journal_name(&record));
     keep_warm::enrich(session, shared.keep_warm, &record);
