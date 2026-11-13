@@ -294,14 +294,14 @@ fn backfilled_from_the_ledger_child() {
         run_id: run("m1"),
         conversation_id: "conversation-m1".into(),
     };
-    // A ledger value no session carries is never recorded. Its name has no
-    // archive catalog row either, so the read names the missing archive rather
-    // than claiming the session never existed (zerus-63rru.67).
+    // A ledger value no session carries is never recorded. With no durable
+    // archive on disk either, the read is the ordinary Gone (zerus-63rru.67
+    // round 2): only an archive that exists may name the missing catalog row.
     let mut row = Row::new(&t, "m1", "epoch", State::Done);
     row.observed = Some(observed(OTHER_SESSION));
     let mut ledger = Ledger::open(w.h.temp.path()).unwrap();
     assert!(ledger.insert(&row, 1).unwrap());
-    assert_eq!(now(&w, "m1"), Current::Unresolved(Unresolved::Archive));
+    assert_eq!(now(&w, "m1"), Current::Unresolved(Unresolved::Gone));
     assert!(!free(&mut w, "m1"));
     assert_eq!(w.h.store.member_handle(TEAM, "m1").unwrap(), None);
     // The value the launcher saw at binding.
