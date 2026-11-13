@@ -31,6 +31,16 @@ pub(super) fn run(
     actor::person_only(&identity, "create")?;
     let mut fields = input::object(&request_input(provided)?)?;
     super::commands::refuse_operation_word(&fields)?;
+    // The field is a digest when it is there, or it is left out. Present but
+    // empty (null or "") is its own refusal, never an unknown field.
+    if let Some(value) = fields.get("expected_template") {
+        if !value.as_str().is_some_and(|text| !text.is_empty()) {
+            return Err(input::invalid(
+                "expected_template must be a template digest, or left out.",
+            )
+            .with_refs(["expected_template"]));
+        }
+    }
     complete_delegations(&fields)?;
     let (bundle, replay) = snapshot(&store, config, template, &fields)?;
     fields.insert("op".into(), json!("create"));
