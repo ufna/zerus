@@ -31,16 +31,30 @@ pub(super) const READ: [(&str, bool); 14] = [
     ("optional_questions.count", true),
 ];
 
-/// A stamp of what `row` says by every value [`Facts::of`] reads ([`READ`]):
-/// two rows with one stamp say the same to the actor. The catalog keeps no
+/// The [`READ`] paths a member's terminal fact is stamped with
+/// (zerus-63rru.79): which session this is (its run, launch and
+/// conversation) and whether it waits for a person (its phase and its
+/// open-question count). The work counts, activity, liveness and the name are
+/// left out: they change while a terminal still waits (a DeepSeek member's
+/// polled count, a background job, a busy turn), and a fact that ended on
+/// them would never let its delay grow.
+pub(super) const STAMPED: [&str; 5] = [
+    "run_id",
+    "launch_id",
+    "conversation_id",
+    "phase",
+    "optional_questions.count",
+];
+
+/// A stamp of what `row` says by the [`STAMPED`] values: two rows with one
+/// stamp are the same session, waiting or not alike. The catalog keeps no
 /// version of one row (a generation is a whole snapshot, and deltas change
-/// rows in place), so a member's terminal fact (zerus-63rru.79) ends when
-/// this stamp changes.
+/// rows in place), so a member's terminal fact ends when this stamp changes.
 pub(super) fn stamp(row: &Value) -> String {
     use sha2::{Digest, Sha256};
     static NULL: Value = Value::Null;
     let mut hash = Sha256::new();
-    for (path, _) in READ {
+    for path in STAMPED {
         let value = path
             .split('.')
             .fold(row, |value, part| value.get(part).unwrap_or(&NULL));

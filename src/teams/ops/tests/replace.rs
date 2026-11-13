@@ -404,17 +404,28 @@ fn a_reserved_reopen_is_not_replaced_and_its_outcome_settles_it() {
             assert_eq!(reserved.state, DecisionState::EffectReserved);
             assert_not_replaced(&mut h, &lead, node, &reserved);
             assert_not_replaced(&mut h, &person(), node, &reserved);
+            // Its member's removal hands it back like an unreserved one
+            // (zerus-63rru.77): settled, with one item.
             h.run(&person(), removed(member)).unwrap();
-            assert_eq!(decision(&h, earlier.seq), reserved, "removal keeps it");
-            assert!(open_items(&h, node)
-                .iter()
-                .all(|k| !k.starts_with("member_removed:")));
+            assert_eq!(decision(&h, earlier.seq).state, DecisionState::Settled);
+            let told = |h: &Harness| {
+                open_items(h, node)
+                    .into_iter()
+                    .filter(|k| {
+                        k.starts_with("member_removed:")
+                            || k.starts_with("reopen_refused:")
+                            || k == "delivery_uncertain"
+                    })
+                    .collect::<Vec<_>>()
+            };
+            assert_eq!(told(&h), vec![format!("member_removed:{}", earlier.seq)]);
             let Some(outcome) = outcome.clone() else {
                 continue;
             };
+            // A late outcome is a recorded fact; it tells nobody again.
             h.reopen_outcome(&id, outcome);
             assert_eq!(decision(&h, earlier.seq).state, DecisionState::Settled);
-            assert!(!last_entry(&h).text.contains("superseded"));
+            assert_eq!(told(&h), vec![format!("member_removed:{}", earlier.seq)]);
             // The lead meets a node with no unsettled decision.
             let next_member = if member == "m1" { "m2" } else { "m1" };
             let next = decide(&mut h, &lead, reassigned(node, next_member));
@@ -537,8 +548,9 @@ fn a_return_to_a_removed_holder_and_a_reassign_to_a_removed_member_are_refused()
     assert_eq!(h.node(node).assignee.as_deref(), Some("m2"));
 }
 
-/// Removal settles only the unstarted Returns and Reassigns aimed at the
-/// member: a reserved reopen, another member's Return and a Cancel stay.
+/// Removal settles only the Returns and Reassigns aimed at the member, those
+/// not started and, since zerus-63rru.77, a reopen already reserved for it:
+/// another member's Return and a Cancel stay.
 #[test]
 fn removal_settles_only_the_unstarted_decisions_aimed_at_the_member() {
     let mut h = Harness::new();
@@ -564,7 +576,7 @@ fn removal_settles_only_the_unstarted_decisions_aimed_at_the_member() {
     let cancel_e = decide(&mut h, &lead, cancelled(e));
     h.run(&person(), removed("m1")).unwrap();
 
-    for (node, settled) in [(a, &return_a), (b, &reassign_b)] {
+    for (node, settled) in [(a, &return_a), (b, &reassign_b), (d, &reserved_d)] {
         assert_eq!(decision(&h, settled.seq).state, DecisionState::Settled);
         assert_eq!(
             open_items(&h, node)
@@ -575,10 +587,9 @@ fn removal_settles_only_the_unstarted_decisions_aimed_at_the_member() {
         );
     }
     assert_eq!(decision(&h, return_c.seq), return_c);
-    assert_eq!(decision(&h, reserved_d.seq), reserved_d);
     assert_eq!(decision(&h, cancel_e.seq), cancel_e);
     assert_eq!(reopens(&h), vec![return_c.seq]);
-    for node in [c, d, e] {
+    for node in [c, e] {
         assert!(open_items(&h, node)
             .iter()
             .all(|k| !k.starts_with("member_removed:")));

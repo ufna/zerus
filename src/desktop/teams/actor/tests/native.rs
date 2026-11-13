@@ -466,7 +466,10 @@ fn a_failed_read_before_the_admission_is_a_non_start_the_actor_retries() {
 /// would land in a conversation that never had the task. The task command
 /// refuses it for good before any reservation (zerus-63rru.64), the actor
 /// reads that as a hand-back, and the store hands the task to the lead at
-/// once: the effect refused and one inbox item that says why.
+/// once: the effect refused and one inbox item that says why. The actor,
+/// settling that outcome, opens no failure gate. The real clear keeps the run,
+/// so only the conversation tells the general route that the dispatch's
+/// conversation is gone.
 #[test]
 fn a_reopen_after_the_member_cleared_its_conversation_is_handed_back_to_the_lead() {
     let (seen, _) = blocked(crate::tasks::Blocked::ClearedMember);
@@ -488,6 +491,29 @@ fn a_reopen_after_the_member_cleared_its_conversation_is_handed_back_to_the_lead
             .iter()
             .any(|kind| kind.starts_with("reopen_handed_back:")),
         "{seen:?}"
+    );
+    // The general route, as for a session outside a team, keeps the
+    // dispatch's conversation as well as its run: it prepares the reopen
+    // before the clear and refuses it after, although the real clear kept
+    // the run.
+    let (before_clear, after_clear) = seen.general.clone().unwrap();
+    assert!(before_clear["prepared"].is_object(), "{before_clear}");
+    assert_eq!(
+        after_clear,
+        serde_json::json!({"refused": "the task's dispatched run or conversation changed; refresh or hand off the task explicitly"})
+    );
+    // The actor settles that very outcome: it opens no failure gate, and no
+    // later pass sends anything again.
+    let settled = super::core::settle_reopen(seen.outcome.clone().unwrap());
+    assert_eq!(settled.gate, None, "{settled:?}");
+    assert_eq!(settled.sends, 2, "the hand-out and the reopen: {settled:?}");
+    assert_eq!(settled.effect, "refused", "{settled:?}");
+    assert!(
+        settled
+            .inbox
+            .iter()
+            .any(|kind| kind.starts_with("reopen_handed_back:")),
+        "{settled:?}"
     );
 }
 

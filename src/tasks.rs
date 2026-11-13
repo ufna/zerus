@@ -45,6 +45,10 @@ pub(crate) use team_deliver::FIXTURE_NATIVE_INPUT;
 /// uncertain, and the phone's receipt says so.
 const SENT_UNRECORDED: &str = "the prompt was sent, but the task could not record it";
 
+// The Teams actor's measurement of a removed reviewer's stage (zerus-63rru.77).
+#[cfg(all(test, unix))]
+pub(crate) use team_deliver::{removed_stage_cancel, RealCancel};
+
 /// Whether a failed send may have pasted its prompt: it was sent but not
 /// recorded, or its delivery is uncertain (the paste began, Enter or the
 /// receipt did not follow). Never "nothing was sent" then.

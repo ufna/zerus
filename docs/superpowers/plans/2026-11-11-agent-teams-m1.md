@@ -1787,6 +1787,49 @@ cannot read still counts as one who could take the node: readability is
 the service's fact, the unreadable member's card tells the person, and the
 lead's item does not say it (zerus-63rru.81).
 
+**A removed member's work goes back to the lead.** A task handed to a
+member that was then removed (ArchiveMember, the only removal) was held for
+ever and nobody was told (zerus-63rru.77, 2026-11-13). The removal settles
+the member's open effect of a task that has not started (reserved,
+submitted, uncertain, cutting over, and a reopen already reserved): the
+effect is superseded, the node is held by the hand-back and the lead gets
+one item per node that says the delivery's result is not known, since a
+delivery child past its reservation still types once. A started task is
+handed back too, with an item saying the session was not told and may still
+work in its worktree, and what Reassign and Cancel do; the removal requests
+no cancel, because a Stop's cancel ends the whole task. A report the removed
+member writes later is not recorded; the lead is told once, by a
+service-only operation, with no retry and no card. A reopen that ends
+refused now tells the lead for any member. One rule for every node kind: a
+pipeline stage is handed back like a task and, held, is not ready, so the
+unstaffed reconcile leaves it alone until the lead decides; for a stage the
+item says that the lead cannot cancel it and what the person's Cancel does.
+The actor ends the ledger row of a delivery whose effect the store no
+longer holds and does not count the refusal of a superseded effect as a
+failed hand-out. Left open: a reservation for a paused, stopped or unbound
+member (zerus-63rru.85), a paused member's started task (.86), an unbound
+member's open effect (.87), and Route of a stage (.84).
+
+**A terminal that holds input is a fact about the member.** The hand-out
+command's terminal gate refuses to type into a terminal that shows a draft,
+a dialog or a question, and the service counted that refusal as a failed
+hand-out of the task: a failure row, retries of the same member, in the end
+a card about the task (zerus-63rru.79, 2026-11-13). The command now types
+the cause: a refusal because the composer is not an empty prompt, or
+because the record's phase is a question or an approval, answers
+`terminal_waiting`; every other refusal stays an ordinary one, the dialogs
+read by their own detectors included (zerus-63rru.83). The actor reads the
+cause, never the sentence, and records a fact about the member in its
+ledger: while it stands the member is not free and the task goes to another
+free member; it ends on a submitted delivery, when the member's row says
+another session or no longer waiting (its run, launch and conversation, its
+phase and its open-question count), or by the retry table's growing delay.
+Work counts and activity are not part of that stamp, since they change
+while a terminal waits. Past the unreadable-member period the card says the
+member's terminal waits for input. The journal's hand-out outcome row says
+the outcome and the cleaned reason. A refusal of an effect the store has
+already settled, such as a removed member's, is no failure either.
+
 **A recovery removes only the row it owns.** The service's gate recovery
 closed its card and then removed whichever ledger row was current, so a
 second runtime that had failed the same check in between lost its fresh

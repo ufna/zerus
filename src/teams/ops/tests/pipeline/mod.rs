@@ -3,6 +3,7 @@ mod creation;
 mod delegation;
 mod overrides;
 mod removed_holder;
+mod removed_stage;
 mod review;
 mod review2;
 mod unstaffed_stage;

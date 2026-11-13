@@ -39,6 +39,20 @@ impl Delivery for Fake {
         if self.mode == "crash-reserved" {
             std::process::exit(73);
         }
+        if self.mode == "type-after-pause" {
+            // After the reservation and its save, before the first key: a
+            // test acts on the store here, then lets the child type.
+            std::fs::write(
+                self.root.join(format!("typing-{}", std::process::id())),
+                b"typing",
+            )
+            .unwrap();
+            let until = Instant::now() + Duration::from_secs(8);
+            while !self.root.join("release-typing").exists() && Instant::now() < until {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            assert!(self.root.join("release-typing").exists());
+        }
         let mut count = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
@@ -137,6 +151,31 @@ fn entry() {
             Ok(exit) => json!({ "exit": exit }),
             Err(error) => json!({ "exit": error.code, "error": error.message }),
         })
+    } else if mode == "general-reply" {
+        // A reopen's preparation as the general route makes it, for the
+        // member SESSION with key SESSION_ID against the task's DISPATCH
+        // (zerus-63rru.64): the request, or the sentence that refuses it.
+        let args: Vec<String> =
+            serde_json::from_str(&std::env::var("HGS_TEAM_DELIVER_ARGS").unwrap()).unwrap();
+        let to = zerus_replica::SessionKey {
+            machine: String::new(),
+            session: args[0].clone(),
+            session_id: args[1].clone(),
+        };
+        let id = uuid::Uuid::new_v4().to_string();
+        Ok(
+            match crate::state::prepare_task_reply(
+                &to,
+                &args[2],
+                &id,
+                "Continue.",
+                &[],
+                crate::state::Continuation::SameRun,
+            ) {
+                Ok(request) => json!({ "prepared": request }),
+                Err(error) => json!({ "refused": error.to_string() }),
+            },
+        )
     } else {
         let args: Vec<String> =
             serde_json::from_str(&std::env::var("HGS_TEAM_DELIVER_ARGS").unwrap()).unwrap();
@@ -1086,6 +1125,9 @@ mod return_text_tests;
 
 mod attempt_tests;
 
+mod removal_tests;
+pub(crate) use removal_tests::{removed_stage_cancel, RealCancel};
+
 /// What keeps a hand-out from its reservation in [`blocked_handout`].
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum Blocked {
@@ -1107,14 +1149,35 @@ pub(crate) enum Blocked {
 
 /// A private tmux server in the fixture's own existing socket directory,
 /// killed when dropped. Its one pane runs the member's terminal.
+/// A private tmux server of this fixture (zerus-63rru.89): its own
+/// directory, made private here, and every call, its Drop included, names
+/// its socket with -S, so no call can fall back to the machine's real server
+/// when a directory is missing. The socket is the one the product resolves
+/// from TMUX_TMPDIR=`dir` (`dir/tmux-UID/default`), which the hgs children
+/// keep.
 struct Terminal {
     dir: PathBuf,
 }
 impl Terminal {
+    fn new(dir: PathBuf) -> Self {
+        use std::os::unix::fs::PermissionsExt;
+        let terminal = Self { dir };
+        let sockets = terminal.socket().parent().unwrap().to_owned();
+        std::fs::create_dir_all(&sockets).unwrap();
+        for dir in [&terminal.dir, &sockets] {
+            std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        terminal
+    }
+    fn socket(&self) -> PathBuf {
+        let uid = unsafe { libc::getuid() };
+        self.dir.join(format!("tmux-{uid}")).join("default")
+    }
     fn tmux(&self, args: &[&str]) -> String {
         let out = Command::new("tmux")
+            .arg("-S")
+            .arg(self.socket())
             .args(args)
-            .env("TMUX_TMPDIR", &self.dir)
             .env_remove("TMUX")
             .env_remove("TMUX_PANE")
             .output()
@@ -1130,10 +1193,28 @@ impl Terminal {
 impl Drop for Terminal {
     fn drop(&mut self) {
         let _ = Command::new("tmux")
+            .arg("-S")
+            .arg(self.socket())
             .arg("kill-server")
-            .env("TMUX_TMPDIR", &self.dir)
             .env_remove("TMUX")
+            .env_remove("TMUX_PANE")
             .output();
+    }
+}
+
+/// The fixture terminal's socket is inside the fixture's temporary
+/// directory, in folders it made private itself (zerus-63rru.89).
+#[test]
+fn the_fixture_terminals_socket_is_inside_the_fixtures_directory() {
+    use std::os::unix::fs::PermissionsExt;
+    let temp = tempfile::tempdir().unwrap();
+    let terminal = Terminal::new(temp.path().join("state/tmux"));
+    let socket = terminal.socket();
+    assert!(socket.starts_with(temp.path()), "{socket:?}");
+    assert!(socket.starts_with(&terminal.dir), "{socket:?}");
+    for dir in [terminal.dir.as_path(), socket.parent().unwrap()] {
+        let mode = std::fs::metadata(dir).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o700, "{dir:?}");
     }
 }
 
@@ -1144,16 +1225,31 @@ impl Fixture {
     /// clears: the real `hgs __state hook` receives a Claude SessionStart with
     /// `source: clear` and a new session ID, as a `/clear` sends it. Returns
     /// the terminal and the conversation before and after.
-    fn cleared_member(&mut self) -> (Terminal, String, String) {
+    /// The general route's preparation of a reopen of member `name` against
+    /// the task's dispatch `dispatch`, in a child with this store's state.
+    fn general_reply(&self, name: &str, dispatch: &str) -> Value {
+        use sha2::{Digest, Sha256};
+        let path = self
+            .config
+            .state
+            .join(format!("{:x}.json", Sha256::digest(name.as_bytes())));
+        let record: Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+        let key = format!("launch_id:{}", record["launch_id"].as_str().unwrap());
+        let args = [name.to_owned(), key, dispatch.to_owned()];
+        let (child, reply) = self.spawn("general-reply", &args, "", false);
+        let reply = self.finish(child, reply);
+        assert_eq!(reply["ok"], true, "{reply}");
+        reply["reply"].clone()
+    }
+    fn cleared_member(&mut self) -> (Terminal, String, String, (Value, Value)) {
         use sha2::{Digest, Sha256};
         let state = self.config.state.clone();
         let file = |name: &str| state.join(format!("{:x}.json", Sha256::digest(name.as_bytes())));
         let mut record: Value =
             serde_json::from_slice(&std::fs::read(file("codex/deliver-m1")).unwrap()).unwrap();
         std::fs::remove_file(file("codex/deliver-m1")).unwrap();
-        let terminal = Terminal {
-            dir: state.join("tmux"),
-        };
+        let terminal = Terminal::new(state.join("tmux"));
+        assert!(terminal.socket().starts_with(&state));
         terminal.tmux(&[
             "new-session",
             "-d",
@@ -1234,7 +1330,9 @@ impl Fixture {
                 },
             )
             .unwrap();
+        let dispatch = self.body.id.clone();
         self.body.id = self.h.reopen(self.body.node, "m1");
+        let general_before = self.general_reply("claude/deliver-m1", &dispatch);
         let claude = state.join("claude-home");
         let after = uuid::Uuid::new_v4().to_string();
         let transcript = claude
@@ -1261,6 +1359,10 @@ impl Fixture {
             terminal,
             before,
             record["conversation_id"].as_str().unwrap().to_owned(),
+            (
+                general_before,
+                self.general_reply("claude/deliver-m1", &dispatch),
+            ),
         )
     }
 }
@@ -1294,9 +1396,8 @@ pub(crate) fn waiting_handout(activity: &str, phase: &str) -> WaitingHandout {
     let mut record: Value =
         serde_json::from_slice(&std::fs::read(file("codex/deliver-m1")).unwrap()).unwrap();
     std::fs::remove_file(file("codex/deliver-m1")).unwrap();
-    let terminal = Terminal {
-        dir: state.join("tmux"),
-    };
+    let terminal = Terminal::new(state.join("tmux"));
+    assert!(terminal.socket().starts_with(&state));
     terminal.tmux(&[
         "new-session",
         "-d",
@@ -1328,7 +1429,20 @@ pub(crate) fn waiting_handout(activity: &str, phase: &str) -> WaitingHandout {
     record["pid"] = json!(pid);
     record["process_start"] = json!(crate::platform::process_start_time(pid).unwrap());
     std::fs::write(file("claude/deliver-m1"), record.to_string()).unwrap();
-    let before = terminal.tmux(&["capture-pane", "-p", "-t", &pane]);
+    // The pane's program prints its draft after the pane starts: wait for it,
+    // bounded, so the command meets the terminal the case describes.
+    let until = Instant::now() + Duration::from_secs(10);
+    let before = loop {
+        let screen = terminal.tmux(&["capture-pane", "-p", "-t", &pane]);
+        if screen.contains("an unsent draft") {
+            break screen;
+        }
+        assert!(
+            Instant::now() < until,
+            "the pane never showed the draft within 10 seconds: {screen:?}"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    };
     let id = f.body.id.clone();
     let mut args = vec!["task".to_owned(), "team-deliver".to_owned()];
     args.extend(f.args(false));
@@ -1358,6 +1472,9 @@ pub(crate) struct RealHandout {
     pub error: Option<String>,
     /// For a cleared member: its conversation before and after the clear.
     pub conversation: Option<(String, String)>,
+    /// For a cleared member: the general route's preparation of a reopen
+    /// against the task's dispatch, before and after the clear.
+    pub general: Option<(Value, Value)>,
     /// What the command left behind: whether the task document changed, an
     /// attempt exists for the ID, the team store changed, and an input
     /// receipt exists for the ID.
@@ -1397,6 +1514,7 @@ pub(crate) fn blocked_handout(
     let mut closed = None;
     let mut terminal = None;
     let mut conversation = None;
+    let mut general = None;
     let held = match blocked {
         Blocked::ArchivedMember => {
             let (exit, stdout, error) = f.cli(&["archive".into(), name.into()], "");
@@ -1423,7 +1541,8 @@ pub(crate) fn blocked_handout(
             None
         }
         Blocked::ClearedMember => {
-            let (pane, before, after) = f.cleared_member();
+            let (pane, before, after, prepared) = f.cleared_member();
+            general = Some(prepared);
             terminal = Some(pane);
             conversation = Some((before, after));
             None
@@ -1480,6 +1599,7 @@ pub(crate) fn blocked_handout(
         stdout,
         error,
         conversation,
+        general,
         task_changed,
         reserved,
         team_changed,

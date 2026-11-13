@@ -177,6 +177,8 @@ mod cancel_recovery;
 mod handles;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 mod real_rows;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+mod removed_handout;
 mod retry_cards;
 mod project_limits;
 mod unstaffed;

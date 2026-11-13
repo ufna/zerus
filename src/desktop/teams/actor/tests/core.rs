@@ -921,3 +921,84 @@ fn a_terminal_settle_error_after_the_live_page_is_a_row_fault_not_sweep_health()
     assert!(a.ledger.terminal_retry().unwrap().is_some());
     assert!(crate::desktop::teams::health(h.temp.path()).is_none());
 }
+
+/// What the actor leaves once it settled a reopen delivery's outcome
+/// (zerus-63rru.64): the failure gate of its node, the sends, the effect's
+/// state and the inbox, after later passes too.
+#[derive(Debug)]
+pub(super) struct SettledReopen {
+    pub(super) gate: Option<serde_json::Value>,
+    pub(super) sends: usize,
+    pub(super) effect: String,
+    pub(super) inbox: Vec<String>,
+}
+
+/// The actor delivers a reopen of node 1 to m1 that answers `outcome`, then
+/// makes two later passes, past the first retry delay.
+pub(super) fn settle_reopen(outcome: HandoutOutcome) -> SettledReopen {
+    let (mut h, mut a, mut p) = setup(1);
+    tick(&mut h, &mut a, &mut p, 100, false);
+    assert_eq!(p.sends, 1, "the hand-out of node 1 to m1");
+    h.observe(1, TaskStage::InReview);
+    h.run(
+        &service(),
+        Operation::RecordReport {
+            node: 1,
+            generation: 1,
+            member: "m1".into(),
+            text: "Report".into(),
+            commit: COMMIT.into(),
+        },
+    )
+    .unwrap();
+    let lead = h.bind("lead");
+    h.run(
+        &lead,
+        Operation::Return {
+            node: 1,
+            reason: "Revise".into(),
+        },
+    )
+    .unwrap();
+    p.reply = outcome;
+    for now in [101, 60_101, 600_101] {
+        tick(&mut h, &mut a, &mut p, now, false);
+    }
+    let effect = h
+        .store
+        .effects(TEAM, 200, None)
+        .unwrap()
+        .rows
+        .into_iter()
+        .rev()
+        .find(|e| e.kind == "reopen")
+        .map(|e| e.state)
+        .expect("the reopen effect");
+    SettledReopen {
+        gate: a
+            .ledger
+            .get(TEAM, "gate:handout:1")
+            .unwrap()
+            .map(|row| row.data),
+        sends: p.sends,
+        effect,
+        inbox: h
+            .store
+            .inbox(TEAM, 200, None)
+            .unwrap()
+            .rows
+            .into_iter()
+            .map(|item| item.kind)
+            .collect(),
+    }
+}
+
+/// The helper's own control: a reopen the member refuses opens the node's
+/// failure gate, which `settle_reopen` reads.
+#[test]
+fn a_refused_reopen_opens_the_failure_gate_the_hand_back_witness_reads() {
+    let settled = settle_reopen(HandoutOutcome::Refused {
+        reason: "Busy elsewhere".into(),
+    });
+    assert!(settled.gate.is_some(), "{settled:?}");
+}
