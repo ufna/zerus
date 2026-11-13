@@ -92,6 +92,14 @@ pub(super) struct Row {
     pub worktree: Option<Worktree>,
     pub problem: Option<Problem>,
     pub card_request: Option<Request>,
+    /// One request ID per intended write, kept across every retry and a
+    /// restart so a lost answer is replayed, never repeated (zerus-63rru.91).
+    /// Skipped when none: a row with no pending reservation keeps the
+    /// previous build's layout.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_request: Option<Request>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub close_request: Option<Request>,
     pub card_done: bool,
     #[serde(default)]
     pub card_id: Option<u64>,
@@ -127,6 +135,8 @@ impl Row {
             worktree: None,
             problem: None,
             card_request: None,
+            session_request: None,
+            close_request: None,
             card_done: false,
             card_id: None,
             retry_at: 0,

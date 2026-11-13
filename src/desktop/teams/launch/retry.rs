@@ -89,6 +89,7 @@ impl Runtime {
                         card,
                         reason: "The launch precondition recovered; this card is stale.".into(),
                     },
+                    &mut row.close_request,
                     now,
                 )?;
             }
