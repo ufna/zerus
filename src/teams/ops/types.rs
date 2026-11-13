@@ -374,6 +374,14 @@ pub enum Operation {
         #[serde(default)]
         attempt_id: String,
     },
+    /// A report that a removed member wrote after its removal took the task
+    /// back (zerus-63rru.77): not recorded as the team's, told to the lead
+    /// once per node and generation.
+    RecordLateReport {
+        node: NodeId,
+        generation: u32,
+        member: MemberId,
+    },
     /// The service saw the kernel's unstaffed nodes differ from the lead's
     /// open items. The store recomputes the set itself, from its own view, and
     /// tells the lead of each new node once and closes the items of the nodes

@@ -495,6 +495,98 @@ fn a_reopen_after_the_member_cleared_its_conversation_is_handed_back_to_the_lead
     );
 }
 
+/// A hand-out to a member that waits for a person, through the real task
+/// command (zerus-63rru.79). The command refuses before any key, by the
+/// terminal's composer when the record says the agent is ready, and by the
+/// record when it already shows the question. The answer is a refusal with
+/// the typed cause, and the actor reads that cause, not the sentence. Nothing
+/// is typed into the pane; the attempt was reserved and settled as not
+/// admitted.
+#[test]
+fn a_hand_out_to_a_member_that_waits_for_a_person_is_refused_with_its_typed_cause() {
+    use crate::desktop::teams::child::Ended;
+    const STATE: &str =
+        "agent is waiting for input, approval, or has an unknown state; open Terminal";
+    const BUSY: &str = "agent busy: terminal queue prompt is unrecognized or contains a draft; wait for the agent or open Terminal; nothing was submitted";
+    for (activity, phase, sentence) in [
+        ("idle", "idle", crate::state::TERMINAL_DRAFT),
+        ("busy", "working", BUSY),
+        ("idle", "input", STATE),
+        ("idle", "approval", STATE),
+    ] {
+        let seen = crate::tasks::waiting_handout(activity, phase);
+        eprintln!("the real command, record activity {activity} phase {phase}: {seen:?}");
+        assert_eq!((seen.exit, &seen.error), (0, &None), "{seen:?}");
+        let reply: serde_json::Value = serde_json::from_str(&seen.stdout).unwrap();
+        assert_eq!(reply["state"], "refused", "{seen:?}");
+        assert_eq!(reply["cause"], crate::tasks::TERMINAL_WAITING, "{seen:?}");
+        assert_eq!(reply["error"], sentence, "{seen:?}");
+        assert_eq!(seen.before, seen.after, "nothing was typed: {seen:?}");
+        assert!(seen.reserved, "{seen:?}");
+        let read = delivery_result(
+            Ended::Exited {
+                code: seen.exit,
+                output: seen.stdout.clone().into_bytes(),
+            },
+            &seen.id,
+        );
+        assert!(
+            matches!(&read, super::super::ports::DeliveryResult::TerminalWaiting { reason, .. }
+                if reason == sentence),
+            "{phase}: {read:?}"
+        );
+        // The same answer without its cause, as an older command gives it, is
+        // a plain refusal, as before.
+        let mut older = reply.clone();
+        older.as_object_mut().unwrap().remove("cause");
+        let read = delivery_result(
+            Ended::Exited {
+                code: 0,
+                output: older.to_string().into_bytes(),
+            },
+            &seen.id,
+        );
+        assert!(
+            matches!(
+                &read,
+                super::super::ports::DeliveryResult::Outcome(HandoutOutcome::Refused { .. })
+            ),
+            "{phase}: {read:?}"
+        );
+    }
+}
+
+/// A record whose state is unknown says nothing of a person it waits for:
+/// the same sentence, refused without the cause, a failed hand-out as before.
+#[test]
+fn a_record_in_an_unknown_state_is_refused_without_the_cause() {
+    use crate::desktop::teams::child::Ended;
+    let seen = crate::tasks::waiting_handout("idle", "");
+    let reply: serde_json::Value = serde_json::from_str(&seen.stdout).unwrap();
+    assert_eq!(reply["state"], "refused", "{seen:?}");
+    assert_eq!(
+        reply["error"],
+        "agent is waiting for input, approval, or has an unknown state; open Terminal",
+        "{seen:?}"
+    );
+    assert!(reply.get("cause").is_none(), "{seen:?}");
+    assert_eq!(seen.before, seen.after, "nothing was typed: {seen:?}");
+    let read = delivery_result(
+        Ended::Exited {
+            code: seen.exit,
+            output: seen.stdout.clone().into_bytes(),
+        },
+        &seen.id,
+    );
+    assert!(
+        matches!(
+            &read,
+            super::super::ports::DeliveryResult::Outcome(HandoutOutcome::Refused { .. })
+        ),
+        "{read:?}"
+    );
+}
+
 /// A hand-out command's own sentence is recorded cleaned: decoded by the
 /// production deliver, recorded through the outcome operation the actor
 /// applies, read back from the store.

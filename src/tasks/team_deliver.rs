@@ -55,6 +55,10 @@ const CUTTING_OVER: i32 = 3;
 const STALE: i32 = 4;
 const NOT_STARTED: i32 = 5;
 const HANDED_BACK: i32 = 6;
+/// The typed cause of a refused hand-out whose member's terminal holds input
+/// (zerus-63rru.79): the reply's `cause`. A reader that does not know the
+/// field reads a plain refusal, as before it.
+pub(crate) const TERMINAL_WAITING: &str = "terminal_waiting";
 /// The lead's sentence when a reopen's member no longer has the task's
 /// conversation (zerus-63rru.64).
 fn handed_back(member: &str) -> String {
@@ -985,15 +989,40 @@ fn reserve(
 fn delivered(body: &Input, result: attempts::Delivered) -> Value {
     match result {
         attempts::Delivered::Submitted(receipt) => body.reply("submitted", "", Some(receipt)),
-        attempts::Delivered::NotAdmitted(error) => body.reply("refused", &error, None),
+        attempts::Delivered::NotAdmitted {
+            reason,
+            waiting,
+            dialog,
+        } => {
+            let mut reply = body.reply("refused", &reason, None);
+            // The member waits for a person: the typed cause the service
+            // reads instead of the sentence (zerus-63rru.79).
+            if waiting {
+                reply["cause"] = json!(TERMINAL_WAITING);
+                // Which dialog, when the gate knows one: the actor's card
+                // names it (zerus-63rru.83). An older actor reads the
+                // answer as today; the field is additive.
+                if let Some(dialog) = dialog {
+                    reply["dialog"] = json!(dialog);
+                }
+            }
+            reply
+        }
         attempts::Delivered::Uncertain(error) => body.reply("uncertain", &error, None),
     }
+}
+
+#[cfg(all(test, unix))]
+fn delivered_test_answer(body: &Input, result: attempts::Delivered) -> Value {
+    delivered(body, result)
 }
 
 #[cfg(test)]
 mod tests;
 #[cfg(all(test, unix))]
-pub(crate) use tests::processes::{blocked_handout, Blocked, RealHandout};
+pub(crate) use tests::processes::{
+    blocked_handout, removed_stage_cancel, waiting_handout, Blocked, RealCancel, RealHandout,
+};
 
 #[cfg(test)]
 fn locked_test_pause(config: &Config, phase: &str) {

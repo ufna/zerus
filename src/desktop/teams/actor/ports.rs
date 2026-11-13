@@ -113,6 +113,14 @@ pub(in crate::desktop::teams) trait Ports {
             Availability::Busy
         })
     }
+    /// A stamp of what the member's current fleet row says, by the values
+    /// the actor reads (`fleet::stamp`), or None when it has no row now
+    /// (zerus-63rru.79). A changed stamp is a changed row. An adapter that
+    /// cannot tell has none, and a member's terminal fact then ends only
+    /// with its time.
+    fn row_stamp(&mut self, _team: &Team, _member: &Member) -> Result<Option<String>> {
+        Ok(None)
+    }
     fn report(&mut self, _task: &TaskRef) -> Result<Option<String>> {
         Ok(None)
     }
@@ -152,7 +160,7 @@ pub(in crate::desktop::teams) trait Ports {
 }
 
 /// Whether a member can take a task now.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(in crate::desktop::teams) enum Availability {
     Free,
     /// Known not to be free: working, waiting, stopped or occupied.
@@ -164,7 +172,7 @@ pub(in crate::desktop::teams) enum Availability {
 
 /// What cannot be read about a member: an unknown count of its fleet row
 /// while it is otherwise free, or why its binding names no current run.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(in crate::desktop::teams) enum Fact {
     /// `process_work.count`: the process table could not be verified.
     Background,
@@ -185,6 +193,13 @@ pub(in crate::desktop::teams) enum Fact {
     StartedFresh,
     /// The store, the record or the deadline did not answer.
     Unavailable,
+    /// Its terminal refused a hand-out because it holds input: a question,
+    /// a dialog or an unsent draft (zerus-63rru.79). The member can be read;
+    /// its row says free, but its terminal is not. The dialog the gate
+    /// knew, when one did (zerus-63rru.83).
+    TerminalWaiting {
+        dialog: Option<String>,
+    },
 }
 
 /// Only a positive non-write permits another admission. NotStarted means
@@ -199,6 +214,15 @@ pub(in crate::desktop::teams) enum DeliveryResult {
     Outcome(HandoutOutcome),
     NotStarted {
         reason: String,
+    },
+    /// The task command refused before any input because the member's
+    /// terminal holds input, by its answer's typed cause (zerus-63rru.79).
+    /// Recorded as a refusal; a fact about the member, not a failed hand-out.
+    TerminalWaiting {
+        reason: String,
+        /// Which dialog the member's terminal waits on, when the gate
+        /// knows one (zerus-63rru.83).
+        dialog: Option<String>,
     },
 }
 impl From<HandoutOutcome> for DeliveryResult {

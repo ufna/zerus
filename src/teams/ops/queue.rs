@@ -207,6 +207,15 @@ pub(super) fn route(ctx: &mut Context<'_>) -> Result<()> {
     ctx.active()?;
     ctx.undecided(*node)?;
     let mut n = ctx.live_node(*node)?;
+    // Route places a task for the lead; a stage's role is its pipeline's
+    // and its member is chosen by the hand-out (zerus-63rru.84). Whatever
+    // its state, the stage's own paths are Reassign and the person's
+    // decisions.
+    if n.kind == NodeKind::Stage {
+        return Err(invalid(
+            "Route cannot move a stage; its role is the pipeline's and its member is chosen by the hand-out. Reassign the stage to another member of its role, or the person can decide.",
+        ));
+    }
     if !matches!(n.state, NodeState::Waiting | NodeState::Pending) {
         return Err(invalid("Only waiting or pending tasks may be routed."));
     }

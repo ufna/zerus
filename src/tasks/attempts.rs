@@ -100,7 +100,17 @@ pub(super) enum Delivered {
     /// The exact submission witnessed that its payload was never offered,
     /// and the attempt was settled as not admitted: the task can be sent
     /// again, by a new explicit action with a new ID.
-    NotAdmitted(String),
+    /// `waiting` when the refusal was the typed one for a session that waits
+    /// for a person (`state::input::Gate::Waiting`, zerus-63rru.79): only the
+    /// team route answers it, as a fact about the member; every other caller
+    /// answers it as any refusal before input.
+    NotAdmitted {
+        reason: String,
+        waiting: bool,
+        /// Which dialog the member's terminal waits on, when one is known
+        /// (zerus-63rru.83).
+        dialog: Option<String>,
+    },
     /// Whether the input arrived, or its receipt was recorded, is unknown:
     /// nothing is submitted again.
     Uncertain(String),
@@ -143,7 +153,11 @@ pub(super) fn deliver(
                 return Delivered::Uncertain(format!("{UNCONFIRMED} {}", witness.reason));
             }
             match not_admitted(config, project, uuid, id) {
-                Ok(()) => Delivered::NotAdmitted(witness.reason),
+                Ok(()) => Delivered::NotAdmitted {
+                    reason: witness.reason,
+                    waiting: witness.waiting,
+                    dialog: witness.dialog.map(str::to_owned),
+                },
                 Err(error) => Delivered::Uncertain(format!(
                     "{UNCONFIRMED} {} It was refused before any input, but that could not be recorded: {}.",
                     witness.reason, error.message
@@ -482,7 +496,7 @@ pub(super) fn send(
         Admission::Reserved { .. } => {
             match deliver(config, project, uuid, &frozen.id, to, &frozen.request) {
                 Delivered::Submitted(receipt) => Ok(Some(receipt)),
-                Delivered::NotAdmitted(reason) => Err(fail(reason)),
+                Delivered::NotAdmitted { reason, .. } => Err(fail(reason)),
                 Delivered::Uncertain(text) => Err(fail(format!("delivery uncertain: {text}"))),
             }
         }
@@ -744,7 +758,7 @@ pub(super) fn reopen(
     let (state, error) = match admission {
         Admission::Reserved { .. } => match deliver(config, &project.0, uuid, id, to, frozen) {
             Delivered::Submitted(_) => ("submitted", String::new()),
-            Delivered::NotAdmitted(reason) => ("refused", reason),
+            Delivered::NotAdmitted { reason, .. } => ("refused", reason),
             Delivered::Uncertain(text) => ("uncertain", text),
         },
         Admission::Legacy(_) => return Ok(None),

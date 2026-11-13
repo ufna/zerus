@@ -31,7 +31,7 @@ impl ports::Ports for Named {
     }
     fn availability(&mut self, _: &Team, m: &Member) -> ports::Result<Availability> {
         Ok(if m.id == "m1" {
-            Availability::Unreadable(self.0)
+            Availability::Unreadable(self.0.clone())
         } else {
             Availability::Busy
         })
@@ -73,7 +73,7 @@ fn the_members_own_stop_or_archive_closes_its_card_on_the_next_pass() {
             h.add(&person(), 1);
             let machine = h.store.team(TEAM).unwrap().unwrap().home;
             let mut a = Runtime::open(h.temp.path(), &machine).unwrap();
-            let mut p = Named(fact);
+            let mut p = Named(fact.clone());
             let mut tick = |h: &mut Harness, a: &mut Runtime, minute: i64| {
                 a.tick(&mut h.store, &mut p, TEAM, T0 + minute * MINUTE, false)
                     .unwrap()

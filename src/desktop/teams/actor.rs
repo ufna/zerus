@@ -27,6 +27,7 @@ mod reports;
 mod retry;
 mod schedule;
 mod tasks;
+mod terminal;
 #[cfg(test)]
 mod tests;
 #[cfg(all(test, any(target_os = "linux", target_os = "macos")))]

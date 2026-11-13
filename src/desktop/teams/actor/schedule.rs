@@ -1,4 +1,5 @@
 use super::ports::{Availability, Fact};
+use super::terminal::TerminalState;
 use super::*;
 use crate::teams::store::EffectIntent;
 use std::collections::{BTreeMap, BTreeSet};
@@ -56,7 +57,7 @@ impl Needs {
         for h in ready::handouts(&again) {
             if let Some((role, fact)) = self.unreadable.get(&h.member) {
                 self.needed
-                    .insert(h.member.clone(), (h.node, role.clone(), *fact));
+                    .insert(h.member.clone(), (h.node, role.clone(), fact.clone()));
             }
         }
     }
@@ -205,15 +206,29 @@ impl Runtime {
                 && !self.ledger.pending_member(&team.id, &m.id)?
                 && !effects.iter().any(|e| e.member == m.id)
             {
-                self.member_free(store, ports, team, &m, now)?
+                match self.terminal_state(ports, team, &m, now)? {
+                    // Its terminal holds input (zerus-63rru.79): not free, and
+                    // needed like a member that cannot be read.
+                    TerminalState::Standing { dialog } => {
+                        Some(Availability::Unreadable(Fact::TerminalWaiting {
+                            dialog,
+                        }))
+                    }
+                    // Tried again: a card for it stays as it is this pass.
+                    TerminalState::Lapsed => {
+                        needs.unread.insert(m.id.clone());
+                        self.member_free(store, ports, team, &m, now)?
+                    }
+                    TerminalState::None => self.member_free(store, ports, team, &m, now)?,
+                }
             } else {
                 Some(Availability::Busy)
             };
-            match answer {
+            match &answer {
                 Some(Availability::Unreadable(fact)) => {
                     needs
                         .unreadable
-                        .insert(m.id.clone(), (m.role.clone(), fact));
+                        .insert(m.id.clone(), (m.role.clone(), fact.clone()));
                 }
                 None => {
                     needs.unread.insert(m.id.clone());
@@ -461,7 +476,10 @@ impl Runtime {
         else {
             return Ok(());
         };
-        if m.state != MemberState::Active || !ports.free(team, &m)? {
+        if m.state != MemberState::Active
+            || self.terminal_standing(ports, team, &m, now)?
+            || !ports.free(team, &m)?
+        {
             return Ok(());
         }
         self.send(store, ports, team, (&node, &m), "reopen", now)?;

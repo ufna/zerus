@@ -39,6 +39,20 @@ impl Delivery for Fake {
         if self.mode == "crash-reserved" {
             std::process::exit(73);
         }
+        if self.mode == "type-after-pause" {
+            // After the reservation and its save, before the first key: a
+            // test acts on the store here, then lets the child type.
+            std::fs::write(
+                self.root.join(format!("typing-{}", std::process::id())),
+                b"typing",
+            )
+            .unwrap();
+            let until = Instant::now() + Duration::from_secs(8);
+            while !self.root.join("release-typing").exists() && Instant::now() < until {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            assert!(self.root.join("release-typing").exists());
+        }
         let mut count = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
@@ -65,7 +79,11 @@ impl Delivery for Fake {
                     )
                     .unwrap();
                 store.save(&mut document).unwrap();
-                attempts::Delivered::NotAdmitted("fixture closed before input".into())
+                attempts::Delivered::NotAdmitted {
+                    reason: "fixture closed before input".into(),
+                    waiting: false,
+                    dialog: None,
+                }
             }
             _ => {
                 let receipt = json!({"request_id":body.id,"name":to.session,"run_id":request["expected_run_id"],"conversation_id":request["expected_conversation_id"],"first_message":false,"digest":attempts::digest(request),"status":"submitted"});
@@ -1108,6 +1126,9 @@ mod return_text_tests;
 
 mod attempt_tests;
 
+mod removal_tests;
+pub(crate) use removal_tests::{removed_stage_cancel, RealCancel};
+
 /// What keeps a hand-out from its reservation in [`blocked_handout`].
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum Blocked {
@@ -1129,14 +1150,35 @@ pub(crate) enum Blocked {
 
 /// A private tmux server in the fixture's own existing socket directory,
 /// killed when dropped. Its one pane runs the member's terminal.
+/// A private tmux server of this fixture (zerus-63rru.89): its own
+/// directory, made private here, and every call, its Drop included, names
+/// its socket with -S, so no call can fall back to the machine's real server
+/// when a directory is missing. The socket is the one the product resolves
+/// from TMUX_TMPDIR=`dir` (`dir/tmux-UID/default`), which the hgs children
+/// keep.
 struct Terminal {
     dir: PathBuf,
 }
 impl Terminal {
+    fn new(dir: PathBuf) -> Self {
+        use std::os::unix::fs::PermissionsExt;
+        let terminal = Self { dir };
+        let sockets = terminal.socket().parent().unwrap().to_owned();
+        std::fs::create_dir_all(&sockets).unwrap();
+        for dir in [&terminal.dir, &sockets] {
+            std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        terminal
+    }
+    fn socket(&self) -> PathBuf {
+        let uid = unsafe { libc::getuid() };
+        self.dir.join(format!("tmux-{uid}")).join("default")
+    }
     fn tmux(&self, args: &[&str]) -> String {
         let out = Command::new("tmux")
+            .arg("-S")
+            .arg(self.socket())
             .args(args)
-            .env("TMUX_TMPDIR", &self.dir)
             .env_remove("TMUX")
             .env_remove("TMUX_PANE")
             .output()
@@ -1152,10 +1194,28 @@ impl Terminal {
 impl Drop for Terminal {
     fn drop(&mut self) {
         let _ = Command::new("tmux")
+            .arg("-S")
+            .arg(self.socket())
             .arg("kill-server")
-            .env("TMUX_TMPDIR", &self.dir)
             .env_remove("TMUX")
+            .env_remove("TMUX_PANE")
             .output();
+    }
+}
+
+/// The fixture terminal's socket is inside the fixture's temporary
+/// directory, in folders it made private itself (zerus-63rru.89).
+#[test]
+fn the_fixture_terminals_socket_is_inside_the_fixtures_directory() {
+    use std::os::unix::fs::PermissionsExt;
+    let temp = tempfile::tempdir().unwrap();
+    let terminal = Terminal::new(temp.path().join("state/tmux"));
+    let socket = terminal.socket();
+    assert!(socket.starts_with(temp.path()), "{socket:?}");
+    assert!(socket.starts_with(&terminal.dir), "{socket:?}");
+    for dir in [terminal.dir.as_path(), socket.parent().unwrap()] {
+        let mode = std::fs::metadata(dir).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o700, "{dir:?}");
     }
 }
 
@@ -1189,9 +1249,8 @@ impl Fixture {
         let mut record: Value =
             serde_json::from_slice(&std::fs::read(file("codex/deliver-m1")).unwrap()).unwrap();
         std::fs::remove_file(file("codex/deliver-m1")).unwrap();
-        let terminal = Terminal {
-            dir: state.join("tmux"),
-        };
+        let terminal = Terminal::new(state.join("tmux"));
+        assert!(terminal.socket().starts_with(&state));
         terminal.tmux(&[
             "new-session",
             "-d",
@@ -1307,6 +1366,305 @@ impl Fixture {
             ),
         )
     }
+}
+
+/// A hand-out to a member that waits for a person, through the real
+/// `hgs task team-deliver` (zerus-63rru.79): the member's record names a real
+/// pane of this harness's private tmux server, whose process stands for the
+/// agent's and whose screen is not an empty agent prompt. With `activity`
+/// and `phase` "idle" the record says the agent is ready and the terminal's
+/// composer refuses; with "busy" and "working" it refuses as a prompt queued
+/// while the agent works; with phase "input" the record already shows its
+/// question. What the command answered, and the pane's screen before and
+/// after it.
+#[derive(Debug)]
+pub(crate) struct WaitingHandout {
+    pub exit: i32,
+    pub stdout: String,
+    pub error: Option<String>,
+    pub id: String,
+    pub before: String,
+    pub after: String,
+    /// Whether the task document holds an attempt for the ID.
+    pub reserved: bool,
+}
+
+pub(crate) fn waiting_handout(activity: &str, phase: &str) -> WaitingHandout {
+    use sha2::{Digest, Sha256};
+    let f = Fixture::new();
+    let state = f.config.state.clone();
+    let file = |name: &str| state.join(format!("{:x}.json", Sha256::digest(name.as_bytes())));
+    let mut record: Value =
+        serde_json::from_slice(&std::fs::read(file("codex/deliver-m1")).unwrap()).unwrap();
+    std::fs::remove_file(file("codex/deliver-m1")).unwrap();
+    let terminal = Terminal::new(state.join("tmux"));
+    assert!(terminal.socket().starts_with(&state));
+    terminal.tmux(&[
+        "new-session",
+        "-d",
+        "-s",
+        "deliver-m1",
+        "-x",
+        "80",
+        "-y",
+        "24",
+        // The pane's program takes its terminal as an agent's prompt does
+        // (raw input, bracketed paste on), shows an unsent draft and keeps
+        // its process ID.
+        "stty -icanon -echo; printf '\\033[?2004han unsent draft'; exec sleep 600",
+    ]);
+    let pane = terminal.tmux(&["display-message", "-p", "-t", "deliver-m1", "#{pane_id}"]);
+    let run = record["run_id"].as_str().unwrap().to_owned();
+    terminal.tmux(&["set-option", "-p", "-t", &pane, "@hgs_run", &run]);
+    // The pane's own process stands for the live agent process.
+    let pid: u32 = terminal
+        .tmux(&["display-message", "-p", "-t", &pane, "#{pane_pid}"])
+        .parse()
+        .unwrap();
+    record["agent"] = json!("claude");
+    record["name"] = json!("claude/deliver-m1");
+    record["activity"] = json!(activity);
+    record["phase"] = json!(phase);
+    record["pane"] = json!(pane);
+    record["terminal_name"] = json!("deliver-m1");
+    record["pid"] = json!(pid);
+    record["process_start"] = json!(crate::platform::process_start_time(pid).unwrap());
+    std::fs::write(file("claude/deliver-m1"), record.to_string()).unwrap();
+    // The pane's program prints its draft after the pane starts: wait for it,
+    // bounded, so the command meets the terminal the case describes.
+    let until = Instant::now() + Duration::from_secs(10);
+    let before = loop {
+        let screen = terminal.tmux(&["capture-pane", "-p", "-t", &pane]);
+        if screen.contains("an unsent draft") {
+            break screen;
+        }
+        assert!(
+            Instant::now() < until,
+            "the pane never showed the draft within 10 seconds: {screen:?}"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    let id = f.body.id.clone();
+    let mut args = vec!["task".to_owned(), "team-deliver".to_owned()];
+    args.extend(f.args(false));
+    let (exit, stdout, error) = f.cli(&args, &serde_json::to_string(&f.body).unwrap());
+    let after = terminal.tmux(&["capture-pane", "-p", "-t", &pane]);
+    drop(terminal);
+    let reserved = f.document().attempt(&id).unwrap().is_some();
+    WaitingHandout {
+        exit,
+        stdout,
+        error,
+        id,
+        before,
+        after,
+        reserved,
+    }
+}
+
+/// The typed shape of a dialog refusal's answer (zerus-63rru.83): the cause
+/// stays `terminal_waiting`, and the dialog's typed name rides along only
+/// when the gate knew one. An older actor reads the answer as today.
+#[test]
+fn a_dialog_refusals_answer_carries_the_typed_name_only_when_known() {
+    let body = serde_json::from_value(json!({
+        "schema": 1,
+        "id": "example",
+        "team": "team",
+        "node": 1,
+        "member": "m1"
+    }))
+    .unwrap();
+    let known = crate::tasks::team_deliver::delivered_test_answer(
+        &body,
+        crate::tasks::attempts::Delivered::NotAdmitted {
+            reason: "Claude is waiting for a usage-limit choice. Choose an option in Activity or Terminal before sending a message.".into(),
+            waiting: true,
+            dialog: Some("claude_usage_limit".into()),
+        },
+    );
+    assert_eq!(known["cause"], "terminal_waiting");
+    assert_eq!(known["dialog"], "claude_usage_limit");
+    assert_eq!(known["state"], "refused");
+    let unknown = crate::tasks::team_deliver::delivered_test_answer(
+        &body,
+        crate::tasks::attempts::Delivered::NotAdmitted {
+            reason: "The member's terminal holds input".into(),
+            waiting: true,
+            dialog: None,
+        },
+    );
+    assert_eq!(unknown["cause"], "terminal_waiting");
+    assert!(unknown.get("dialog").is_none(), "{unknown}");
+}
+
+/// zerus-63rru.83: a hand-out refused by a dialog its own detector reads
+/// from the live screen. The pane shows the fixture's screen in a real
+/// private terminal; the command refuses before any key with the typed
+/// cause and the dialog's typed name.
+#[derive(Debug)]
+pub(crate) struct DialogSeen {
+    pub exit: i32,
+    pub stdout: String,
+    pub error: Option<String>,
+    pub before: String,
+    pub after: String,
+}
+
+pub(crate) fn dialog_waiting(fixture: &str, agent: &str, marker: &str) -> DialogSeen {
+    use sha2::{Digest, Sha256};
+    let f = Fixture::new();
+    let state = f.config.state.clone();
+    let file = |name: &str| state.join(format!("{:x}.json", Sha256::digest(name.as_bytes())));
+    // The .79 recipe: the fixture's own record for its member (the
+    // dispatch's run and conversation), edited to the family and the
+    // dialog's pane, written back under the member's session label.
+    let mut record: Value =
+        serde_json::from_slice(&std::fs::read(file("codex/deliver-m1")).unwrap()).unwrap();
+    std::fs::remove_file(file("codex/deliver-m1")).unwrap();
+    let terminal = Terminal::new(state.join("tmux"));
+    // The pane's height is the fixture's own line count: the detectors
+    // parse the screen as their agents drew it, extra rows included.
+    terminal.tmux(&[
+        "new-session",
+        "-d",
+        "-s",
+        "deliver-m1",
+        "-x",
+        "120",
+        "-y",
+        "50",
+        &format!(
+            "stty -icanon -echo; printf '\\033[?2004h'; cat {fixture}; exec sleep 600"
+        ),
+    ]);
+    let pane = terminal.tmux(&["display-message", "-p", "-t", "deliver-m1", "#{pane_id}"]);
+    let run = record["run_id"].as_str().unwrap().to_owned();
+    terminal.tmux(&["set-option", "-p", "-t", &pane, "@hgs_run", &run]);
+    let pid: u32 = terminal
+        .tmux(&["display-message", "-p", "-t", &pane, "#{pane_pid}"])
+        .parse()
+        .unwrap();
+    record["agent"] = json!(agent);
+    record["name"] = json!("claude/deliver-m1");
+    // The fields each detector's eligible() reads that the fixture's own
+    // record does not carry, as the product's producer writes them
+    // (zerus-63rru.83): run_identity_version 1 and an empty supervisor.
+    record["run_identity_version"] = json!(1);
+    record["supervisor"] = json!({});
+    record["activity"] = json!("idle");
+    record["phase"] = json!(if fixture.contains("approval") { "approval" } else { "idle" });
+    // The fields each family's detector reads, and no more: the codex and
+    // kimi dialogs need a conversation that has not begun.
+    if agent != "claude" {
+        // The first-message shape the codex and kimi detectors' eligible()
+        // read, as the product's producer writes a fresh session: no
+        // conversation, no pending identities, no events yet.
+        record["conversation_id"] = json!("");
+        record["expected_id"] = json!("");
+        record["requested_id"] = json!("");
+        record["fork_parent_id"] = json!("");
+        record["last_event_at"] = json!(0.0);
+        record["input_pending_at"] = json!(0.0);
+    }
+    record["pane"] = json!(pane);
+    record["terminal_name"] = json!("deliver-m1");
+    record["pid"] = json!(pid);
+    record["process_start"] = json!(crate::platform::process_start_time(pid).unwrap());
+    std::fs::write(file("claude/deliver-m1"), record.to_string()).unwrap();
+    let until = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let before = loop {
+        let screen = terminal.tmux(&["capture-pane", "-p", "-t", &pane]);
+        if screen.contains(marker) {
+            break screen;
+        }
+        assert!(
+            std::time::Instant::now() < until,
+            "the pane never showed the dialog within 10 seconds: {screen:?}"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    };
+    let mut args = vec!["task".to_owned(), "team-deliver".to_owned()];
+    args.extend(f.args(false));
+    let (exit, stdout, error) = f.cli(&args, &serde_json::to_string(&f.body).unwrap());
+    let after = terminal.tmux(&["capture-pane", "-p", "-t", &pane]);
+    drop(terminal);
+    DialogSeen {
+        exit,
+        stdout,
+        error,
+        before,
+        after,
+    }
+}
+
+/// Each dialog with a fixture, in a real private pane: refused as
+/// `terminal_waiting` with the dialog's typed name, and nothing is typed.
+#[test]
+fn each_dialog_refusal_is_typed_waiting_with_its_name() {
+    // The dialogs left out and why, one line each (zerus-63rru.83, the
+    // coordinator's rule): a fixture that fails at its own size is either a
+    // product defect or a fixture that does not show a real pane.
+    let mut failed = Vec::new();
+    for (fixture, agent, name, marker, fragment) in [
+        (
+            "tests/fixtures/claude-resume.txt",
+            "claude",
+            "claude_resume",
+            "Resume",
+            "resume choice",
+        ),
+        (
+            "tests/fixtures/claude-usage-limit.txt",
+            "claude",
+            "claude_usage_limit",
+            "What do you want to do?",
+            "usage-limit choice",
+        ),
+        (
+            "tests/fixtures/codex-update-prompt.txt",
+            "codex",
+            "codex_update",
+            "Update",
+            "update choice",
+        ),
+        // the detector's parse rejects the pane capture at the fixture's own size (the reply falls through to the pending-input check); filed for the coordinator
+        (
+            "tests/fixtures/codex-hooks-trust.txt",
+            "codex",
+            "codex_hooks_trust",
+            "Hooks need review",
+            "hook trust review",
+        ),
+        (
+            "tests/fixtures/codex-rate-limit.txt",
+            "codex",
+            "codex_rate_limit",
+            "Approaching rate limits",
+            "rate-limit",
+        ),
+        // the detector's parse rejects the pane capture at the fixture's own size; filed for the coordinator
+        // passes at 120x50, fails at the fixture's own width: the fixture's name carries no capture size; filed for the coordinator
+        // the detector's strict panel conditions reject the pane capture at the fixture's own size; filed for the coordinator
+        // the approval detector's parse rejects the pane capture at the fixture's own size; the phase arm answers instead; filed for the coordinator
+    ] {
+        let seen = dialog_waiting(fixture, agent, marker);
+        let reply: Value = serde_json::from_str(&seen.stdout).unwrap();
+        let typed = seen.exit == 0
+            && seen.error.is_none()
+            && reply["state"] == "refused"
+            && reply["cause"] == "terminal_waiting"
+            && reply.get("dialog") == Some(&json!(name))
+            && reply["error"].as_str().is_some_and(|e| e.contains(fragment))
+            && seen.before == seen.after;
+        if !typed {
+            failed.push(format!(
+                "{fixture}: reply={reply} before={:?} after={:?}",
+                seen.before, seen.after
+            ));
+        }
+    }
+    assert!(failed.is_empty(), "{}", failed.join("\n\n"));
 }
 
 /// One hand-out that cannot reach its reservation, as the service sees it

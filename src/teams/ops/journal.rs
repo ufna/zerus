@@ -46,6 +46,14 @@ pub(super) fn append(ctx: &Context<'_>, request: &Request) -> Result<()> {
         {
             format!("Task {node} left the team.")
         }
+        // What the hand-out came to, and a refusal's reason, in the row's
+        // own text (zerus-63rru.79): an intent that typed nothing must not
+        // read like a hand-out that happened.
+        Operation::HandoutOutcome { outcome, .. } => format!(
+            "{kind} at revision {}: {}",
+            ctx.reply.revision,
+            outcome_text(outcome)
+        ),
         _ => format!("{kind} at revision {}", ctx.reply.revision),
     };
     let mut refs = references(request)?;
@@ -77,6 +85,24 @@ pub(super) fn append(ctx: &Context<'_>, request: &Request) -> Result<()> {
         archive(ctx, None)?;
     }
     Ok(())
+}
+/// A hand-out's outcome as the journal says it: its name, then its reason,
+/// cleaned as outside text is where the service takes it
+/// (`teams::clean::sentence`, zerus-63rru.59), when it has one.
+fn outcome_text(outcome: &HandoutOutcome) -> String {
+    let (name, reason) = match outcome {
+        HandoutOutcome::Submitted { .. } => ("submitted", ""),
+        HandoutOutcome::Refused { reason } => ("refused", reason.as_str()),
+        HandoutOutcome::Uncertain { reason } => ("uncertain", reason.as_str()),
+        HandoutOutcome::CuttingOver { reason } => ("cutting over", reason.as_str()),
+        HandoutOutcome::HandedBack { reason } => ("handed back", reason.as_str()),
+    };
+    let reason = crate::teams::clean::sentence(reason, 512);
+    if reason.is_empty() {
+        name.to_owned()
+    } else {
+        format!("{name}: {reason}")
+    }
 }
 /// The superseded decision's kind, and the decision that replaced it: the
 /// node's newest, recorded by this operation.

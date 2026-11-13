@@ -33,8 +33,10 @@ mod history;
 mod index;
 mod teams;
 mod team_deliver;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub(crate) use team_deliver::TERMINAL_WAITING;
 #[cfg(all(test, unix))]
-pub(crate) use team_deliver::{blocked_handout, Blocked, RealHandout};
+pub(crate) use team_deliver::{blocked_handout, waiting_handout, Blocked, RealHandout};
 #[cfg(test)]
 #[allow(unused_imports)] // The Teams actor's isolated CLI fixture supplies native input.
 pub(crate) use team_deliver::FIXTURE_NATIVE_INPUT;
@@ -42,6 +44,10 @@ pub(crate) use team_deliver::FIXTURE_NATIVE_INPUT;
 /// A send that pasted the prompt but could not record it: its outcome is
 /// uncertain, and the phone's receipt says so.
 const SENT_UNRECORDED: &str = "the prompt was sent, but the task could not record it";
+
+// The Teams actor's measurement of a removed reviewer's stage (zerus-63rru.77).
+#[cfg(all(test, unix))]
+pub(crate) use team_deliver::{removed_stage_cancel, RealCancel};
 
 /// Whether a failed send may have pasted its prompt: it was sent but not
 /// recorded, or its delivery is uncertain (the paste began, Enter or the

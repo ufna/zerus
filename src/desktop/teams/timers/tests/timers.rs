@@ -71,6 +71,38 @@ fn a_hand_out_not_started_reaches_the_lead_after_its_timeout() {
     assert_eq!(w.items("not_started").len(), 1);
 }
 
+/// zerus-63rru.77: the same hand-out, its member removed before the timeout.
+/// The removal settled the effect and told the lead why; the timer never
+/// adds a "has not started" item without the cause.
+#[test]
+fn a_removed_members_settled_hand_out_never_says_it_has_not_started() {
+    let mut w = World::new();
+    w.h.bind("lead");
+    w.h.bind("m1");
+    let node = w.h.add(&person(), 1);
+    let id = w.h.intent(node, "m1");
+    w.h.outcome(
+        &id,
+        HandoutOutcome::Submitted {
+            receipt: "receipt-example".into(),
+        },
+    );
+    w.pass(T0 + 60_000);
+    w.h.run(
+        &person(),
+        Operation::ArchiveMember {
+            member: "m1".into(),
+        },
+    )
+    .unwrap();
+    for minute in 3..=30 {
+        w.pass(T0 + minute * MINUTE);
+    }
+    assert!(w.items("not_started").is_empty());
+    assert_eq!(w.items(&format!("member_removed:{id}")).len(), 1);
+    assert!(w.h.node(node).hold);
+}
+
 #[test]
 fn an_undecided_report_reminds_the_lead_then_the_person_once() {
     let mut w = World::new();
