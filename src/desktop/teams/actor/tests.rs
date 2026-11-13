@@ -165,6 +165,11 @@ mod cancel_refusal;
 
 mod terminal_pruning;
 
+mod service_items;
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub(super) mod producers;
+
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 mod cancel_recovery;
 
@@ -175,6 +180,10 @@ mod real_rows;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 mod removed_handout;
 mod retry_cards;
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+mod retired_stage;
+
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub(in crate::desktop::teams) mod rows;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -184,13 +193,13 @@ mod subagent_rows;
 mod cleanup_bound;
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
+mod handed;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 mod unreadable;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 mod unreadable_handles;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 mod unreadable_stop;
-#[cfg(any(target_os = "linux", target_os = "macos"))]
-mod handed;
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 mod cancel_progress;

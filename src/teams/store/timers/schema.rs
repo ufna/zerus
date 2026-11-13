@@ -16,17 +16,24 @@
 //! meanwhile waits for it, up to a minute, instead of the usual two seconds.
 use super::*;
 use std::time::Duration;
+mod legacy_holds;
+use legacy_holds::legacy_owners;
 
 /// The layout the whole transition builds before any step: the first that
 /// reached the integration branch, with the timers. Every lower value was
 /// written only by unmerged development builds of this package.
 pub(crate) const BASE: u32 = 8;
 /// The current layout: the base and the steps after it.
-pub(crate) const EXTENSION: u32 = 10;
+pub(crate) const EXTENSION: u32 = 12;
 /// Each layout that reached the integration branch, with the step that
 /// brings a store marked with it to the next; the steps run in order up to
 /// the current layout, after the base for a store from before the extension.
-const STEPS: &[(u32, Step)] = &[(8, answers), (9, card_decisions)];
+const STEPS: &[(u32, Step)] = &[
+    (8, answers),
+    (9, card_decisions),
+    (10, hold_owners),
+    (11, key_refusal_order),
+];
 /// One step from a merged layout to the next, inside the transition.
 type Step = fn(&Connection) -> Result<()>;
 /// Layout 8 to 9: the lead's answers reach their members.
@@ -50,6 +57,86 @@ fn card_decisions(db: &Connection) -> Result<()> {
             .map_err(storage)?;
     }
     unheld_returns(db)
+}
+/// Layout 10 to 11: a hold has an owner (the plan, "A hold has an owner").
+/// An explicit hold keeps its owner beside its flag, a hand-back has a flag
+/// of its own, and a pending decision's hold is read from the decision and
+/// never stored. A held node of an earlier layout belongs to whatever set its
+/// hold last, as the store itself recorded it in order; where the store has
+/// no exact record, the hold is the person's ([`legacy_owners`]):
+/// - with an unsettled decision: the hold was the decision's, and the stored
+///   flag goes;
+/// - otherwise the last of its recorded events decides: an explicit Hold
+///   makes the hold explicit, owned by its actor (the person or the lead); a
+///   hand-back of its current generation makes it a hand-back, which the
+///   lead's next decision or Release ends;
+/// - a Release last, nothing recorded, or a hand-back that cannot be placed
+///   among the records: the person's, which only the person's Release ends;
+///   the lead's Release is refused with a sentence that says so.
+///
+/// The step reads no clock: only sequence numbers order the events.
+fn hold_owners(db: &Connection) -> Result<()> {
+    for table in ["nodes", "node_archive"] {
+        for (column, definition) in [
+            ("hold_owner", "TEXT"),
+            ("hand_back", "INTEGER NOT NULL DEFAULT 0"),
+        ] {
+            let present: bool = db
+                .query_row(
+                    &format!("SELECT EXISTS(SELECT 1 FROM pragma_table_info('{table}') WHERE name='{column}')"),
+                    [],
+                    |r| r.get(0),
+                )
+                .map_err(storage)?;
+            if !present {
+                db.execute_batch(&format!(
+                    "ALTER TABLE {table} ADD COLUMN {column} {definition}"
+                ))
+                .map_err(storage)?;
+            }
+        }
+        db.execute_batch(&format!(
+            "UPDATE {table} SET hold=0 WHERE hold AND hold_owner IS NULL AND EXISTS(SELECT 1 FROM decisions d WHERE d.team={table}.team AND d.node={table}.id AND d.state<>'settled');"
+        ))
+        .map_err(storage)?;
+    }
+    legacy_owners(db)?;
+    for table in ["nodes", "node_archive"] {
+        db.execute_batch(&format!(
+            "UPDATE {table} SET hold_owner='person' WHERE hold AND hold_owner IS NULL;"
+        ))
+        .map_err(storage)?;
+    }
+    Ok(())
+}
+/// Layout 11 to 12: a team's key refusals are read newest first, for the
+/// team's status, through their own partial index.
+fn key_refusal_order(db: &Connection) -> Result<()> {
+    db.execute_batch("CREATE INDEX IF NOT EXISTS key_refusals_newest ON key_clears(team,at_ms,node) WHERE state='refused';")
+        .map_err(storage)
+}
+/// The hand-back of a Return without a holder as layout 10 records it: the
+/// decision settled, the node's one hold flag set, and the lead's item. The
+/// step to layout 11 cannot place that item by an exact record, so the hold
+/// becomes the person's (`legacy_holds`). The current writer
+/// (`rows::hand_back`) writes a column this layout lacks.
+fn hand_back_at_layout_10(
+    db: &Connection,
+    team: &str,
+    node: u32,
+    seq: u64,
+    actor: &str,
+    now: i64,
+) -> Result<()> {
+    rows::settle_decisions(db, team, Some(node), actor, false)?;
+    db.execute(
+        "UPDATE nodes SET hold=1 WHERE team=?1 AND id=?2",
+        params![team, node],
+    )
+    .map_err(storage)?;
+    let (kind, text) = return_without_holder(node, seq);
+    rows::hand_back_item(db, team, node, actor, &kind, &text, now)?;
+    Ok(())
 }
 /// Earlier layouts admitted a Return while its hand-out was only reserved.
 /// Under the narrowed attempt holder ([`holder_of`]) such a Return has
@@ -113,7 +200,7 @@ fn unheld_returns_of(db: &Connection, team: &str) -> Result<()> {
             if holder_of(db, team, *node)?.is_some() {
                 continue;
             }
-            hand_back_return(db, team, *node, *seq, &actor, now)?;
+            hand_back_at_layout_10(db, team, *node, *seq, &actor, now)?;
             moved = true;
         }
         match rows.last() {

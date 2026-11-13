@@ -1,4 +1,5 @@
 use super::*;
+mod legacy_holds;
 mod upgrade;
 mod work;
 use crate::teams::ops::{tests::*, Actor, Operation};
@@ -122,10 +123,13 @@ fn every_timer_read_searches_an_index() {
         ("SETTLE", sql::SETTLE),
         ("LATE", sql::LATE),
         ("REFUSALS", sql::REFUSALS),
+        ("KEY_REFUSALS_NEWEST", sql::REFUSALS_NEWEST),
+        ("KEY_REFUSALS_COUNT", sql::REFUSALS_COUNT),
         ("SAVED_REFUSAL", sql::SAVED_REFUSAL),
         ("PENDING_CANCELS", super::cancels::sql::PENDING),
         ("CANCEL_REFUSALS_REST", super::cancels::sql::REFUSED_REST),
         ("CANCEL_REFUSALS_AFTER", super::cancels::sql::REFUSED_AFTER),
+        ("CANCEL_REFUSALS_COUNT", super::cancels::sql::REFUSED_COUNT),
         ("RELEASED_STAGES", sql::RELEASED_STAGES),
         ("QUESTIONS", super::answers::sql::QUESTIONS),
         ("ANSWER_MARKS", super::answers::sql::MARKS),

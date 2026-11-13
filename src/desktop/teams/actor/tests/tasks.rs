@@ -260,6 +260,7 @@ fn a_released_stage_is_cleared_once_and_the_store_removes_it_from_the_outbox() {
         },
     )
     .unwrap();
+    h.release_retired(stage);
     assert_eq!(h.store.released_stages(TEAM, 16, 0).unwrap()[0].node, stage);
     tick(&mut h, &mut a, &mut p, 101);
     assert_eq!(p.clears, vec![stage]);
@@ -357,6 +358,7 @@ fn clearing_restarts_before_and_after_each_effect_keep_the_final_receipt() {
             },
         )
         .unwrap();
+        h.release_retired(stage);
         super::super::tasks::CRASH.with(|s| s.set(Some(point)));
         assert!(
             std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| tick(
@@ -398,6 +400,7 @@ fn clearing_no_answer_backs_off_and_a_refusal_is_final() {
         },
     )
     .unwrap();
+    h.release_retired(stage);
     tick(&mut h, &mut a, &mut p, 101);
     tick(&mut h, &mut a, &mut p, 102);
     assert_eq!(p.clears, vec![stage]);

@@ -71,6 +71,10 @@ impl State {
             now,
         )
     }
+    /// The teams whose key sweep reached its end since the last call.
+    pub fn finished_sweeps(&mut self) -> Vec<timers::Finished> {
+        self.engine.finished_sweeps()
+    }
 }
 struct SessionRows<'a>(&'a Native);
 impl timers::Sessions for SessionRows<'_> {
@@ -165,7 +169,8 @@ impl Runtime {
         }
         let cancelled = self.terminal_cancels(store, ports, now);
         let timers = ports.terminal_timers(&mut self.auxiliary, store, now);
-        match cancelled.and(timers) {
+        let swept = self.sweep_items(now);
+        match cancelled.and(timers).and(swept) {
             Ok(()) => self.ledger.terminal_succeeded(),
             Err(error) => {
                 eprintln!("hgs: Teams terminal page will retry: {}", error.code);

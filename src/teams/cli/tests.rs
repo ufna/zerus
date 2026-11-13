@@ -9,6 +9,7 @@ mod guides;
 mod harness;
 mod member_sessions;
 mod reads;
+mod status_items;
 mod storage_failure;
 mod verdict;
 mod writes;
