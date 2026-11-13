@@ -201,6 +201,8 @@ mod handed;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 mod left_member;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
+mod paused_started;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 mod unreadable;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 mod unreadable_handles;

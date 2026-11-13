@@ -397,6 +397,19 @@ pub enum Operation {
     SettleLeftHandout {
         node: NodeId,
     },
+    /// The lead is told once that a member out of the active set holds a
+    /// started task (zerus-63rru.86): one member_left item per member and
+    /// task; the task stays with the member. A call that finds no such
+    /// task writes nothing.
+    TellPausedStarted {
+        member: MemberId,
+        node: NodeId,
+    },
+    /// The member is back in the active set: its paused-started items
+    /// close, so a later leave tells the lead again (zerus-63rru.86).
+    ClosePausedStarted {
+        member: MemberId,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
