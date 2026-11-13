@@ -236,7 +236,7 @@ fn the_other_computers_guard_no_longer_refuses_a_done_task_after_the_clear() {
     let tasks = ProjectStore::open(&h.temp.path().join("replica"), "example-project").unwrap();
     let doc = tasks.load(&uuid).unwrap();
     assert!(
-        !crate::teams::tasks::guarded(&h.temp.path(), &home, &doc).unwrap(),
+        !crate::teams::tasks::guarded(h.temp.path(), &home, &doc).unwrap(),
         "the cleared task is still guarded"
     );
 }
