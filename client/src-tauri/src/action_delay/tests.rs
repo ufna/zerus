@@ -28,6 +28,54 @@ fn captured(tag: &str) -> Captured {
         state: "paused".into(),
     }
 }
+
+#[test]
+fn first_end_of_an_interrupted_codex_names_its_holder_and_accepts_after_release() {
+    let actions = actions();
+    let delays = Delays::default();
+    let row: zerus_client_core::ViewRow = serde_json::from_value(serde_json::json!({
+        "name":"codex/example/interrupted", "agent":"codex", "state":"running",
+        "phase":"interrupted", "pid":null, "run_id":"after-clear-run",
+        "conversation_id":"after-clear-conversation", "machine":"example-machine",
+        "tracked":true, "git_worktree":true
+    }))
+    .unwrap();
+    let c = Captured {
+        target: Target {
+            computer: String::new(),
+            name: row.name.clone(),
+            run_id: row.run_id.clone().unwrap(),
+            conversation_id: row.conversation_id.clone().unwrap(),
+        },
+        action: Action::Terminate,
+        state: row.state.clone(),
+    };
+    assert!(c.valid());
+    let clearing = Action::ClearContext {
+        dismiss_prompt: false,
+    };
+    let held = actions
+        .begin(Lane::key(&c.target, &clearing), &clearing)
+        .unwrap();
+    let refused = delays.begin(&actions, id(), vec![c.clone()]).unwrap_err();
+    assert!(
+        refused.contains("Clear session"),
+        "the refusal must name its actual holder: {refused}"
+    );
+    assert!(
+        refused.contains("started_utc"),
+        "the refusal must identify when that holder started: {refused}"
+    );
+    drop(held);
+    let end = id();
+    delays
+        .begin(&actions, end.clone(), vec![c.clone()])
+        .unwrap();
+    due(&delays, &end);
+    assert!(delays
+        .take(&Reference { id: end, index: 0 }, &c.target, &c.action)
+        .is_ok());
+}
 fn due(delays: &Delays, id: &str) {
     lock(&delays.0).groups.get_mut(id).unwrap().window = Window::new(Instant::now() - UNDO_WINDOW);
     assert!(delays.wait(id));
@@ -164,10 +212,7 @@ fn a_refused_end_names_the_running_lane_instead_of_bare_busy() {
         .unwrap();
     let error = delays.begin(&actions, id(), vec![c.clone()]).unwrap_err();
     assert_ne!(error, "busy");
-    assert!(
-        error.contains("Another action on this session is still running"),
-        "{error}"
-    );
+    assert!(error.contains("Pause session"), "{error}");
     drop(held);
     delays.begin(&actions, id(), vec![c]).unwrap();
 }
