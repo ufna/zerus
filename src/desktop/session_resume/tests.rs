@@ -1056,7 +1056,10 @@ mod actor {
             .unwrap()
         }
         fn until(&mut self, what: &str, done: impl Fn(&Self) -> bool) {
-            let until = Instant::now() + Duration::from_secs(8);
+            // A generous ceiling, not a budget: the loop exits the moment
+            // the condition holds, and the ceiling only caps a true failure.
+            // Eight seconds ran out under a loaded suite (zerus-63rru.21).
+            let until = Instant::now() + Duration::from_secs(60);
             while !done(self) {
                 assert!(
                     Instant::now() < until,
