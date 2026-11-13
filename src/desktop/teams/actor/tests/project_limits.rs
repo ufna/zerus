@@ -12,6 +12,10 @@ struct ProjectRefused {
     calls: u32,
     /// From this call on, the delivery is submitted (the project admits).
     submit_now: bool,
+    /// From this call on, the delivery's answer is uncertain.
+    uncertain: bool,
+    /// From this call on, the delivery never started.
+    not_started: bool,
 }
 impl Ports for ProjectRefused {
     fn changes(&mut self, _: &str, _: &str, _: u64) -> super::super::ports::Result<zerus_replica::Changes> {
@@ -34,6 +38,17 @@ impl Ports for ProjectRefused {
                 receipt: "fixture hand-over".into(),
             }
             .into();
+        }
+        if self.uncertain {
+            return HandoutOutcome::Uncertain {
+                reason: "The original result is unknown".into(),
+            }
+            .into();
+        }
+        if self.not_started {
+            return DeliveryResult::NotStarted {
+                reason: "No input was started".into(),
+            };
         }
         DeliveryResult::ProjectLimit {
             reason: self.reason.clone(),
@@ -75,6 +90,8 @@ fn a_project_limit_refusal_opens_the_team_card_and_probes_on_the_delay() {
         reason: "project_agents_other: This project allows agents to start tasks only in their own session.".into(),
         calls: 0,
         submit_now: false,
+        uncertain: false,
+        not_started: false,
     };
     // The first pass refuses once and opens the card at once.
     a.tick(&mut h.store, &mut p, TEAM, 1000, false).unwrap();
@@ -138,6 +155,8 @@ fn a_probe_the_project_admits_ends_the_fact_and_the_pass_goes_on() {
         reason: "project_agent_limit: The project's hourly agent start limit is reached.".into(),
         calls: 0,
         submit_now: false,
+        uncertain: false,
+        not_started: false,
     };
     a.tick(&mut h.store, &mut p, TEAM, 1000, false).unwrap();
     assert_eq!(p.calls, 1);
@@ -168,6 +187,8 @@ fn a_dismissal_lasts_for_the_same_sentence_and_retry_probes_at_once() {
         reason: "project_agents_other: This project allows agents to start tasks only in their own session.".into(),
         calls: 0,
         submit_now: false,
+        uncertain: false,
+        not_started: false,
     };
     a.tick(&mut h.store, &mut p, TEAM, 1000, false).unwrap();
     let card = open_cards(&h).remove(0);
@@ -197,6 +218,8 @@ fn a_dismissal_lasts_for_the_same_sentence_and_retry_probes_at_once() {
         reason: "project_agents_other: This project allows agents to start tasks only in their own session.".into(),
         calls: 0,
         submit_now: false,
+        uncertain: false,
+        not_started: false,
     };
     a.tick(&mut h.store, &mut p, TEAM, 1000, false).unwrap();
     let card = open_cards(&h).remove(0);
@@ -279,6 +302,8 @@ fn a_restart_keeps_the_fact_and_its_card() {
         reason: "project_agents_other: This project allows agents to start tasks only in their own session.".into(),
         calls: 0,
         submit_now: false,
+        uncertain: false,
+        not_started: false,
     };
     a.tick(&mut h.store, &mut p, TEAM, 1000, false).unwrap();
     assert_eq!(p.calls, 1);
@@ -306,6 +331,8 @@ fn a_crash_at_the_outcome_boundary_keeps_the_fact() {
         reason: "project_agents_other: This project allows agents to start tasks only in their own session.".into(),
         calls: 0,
         submit_now: false,
+        uncertain: false,
+        not_started: false,
     };
     super::super::delivery::CRASH.with(|s| s.set(Some("outcome")));
     let result = catch_unwind(AssertUnwindSafe(|| {
@@ -335,6 +362,8 @@ fn a_terminal_fact_and_the_project_fact_coexist() {
         reason: "project_agents_other: This project allows agents to start tasks only in their own session.".into(),
         calls: 0,
         submit_now: false,
+        uncertain: false,
+        not_started: false,
     };
     a.tick(&mut h.store, &mut p, TEAM, 1000, false).unwrap();
     assert_eq!(p.calls, 1);
@@ -358,6 +387,8 @@ fn the_lead_reads_the_fact_among_the_status_items() {
         reason: "project_agent_limit: The project's hourly agent start limit is reached.".into(),
         calls: 0,
         submit_now: false,
+        uncertain: false,
+        not_started: false,
     };
     a.tick(&mut h.store, &mut p, TEAM, 1000, false).unwrap();
     let items = crate::desktop::teams::service_items(h.temp.path(), TEAM, Some(true), 1000)
@@ -463,6 +494,8 @@ fn two_teams_keep_their_own_facts() {
         reason: "project_agents_other: This project allows agents to start tasks only in their own session.".into(),
         calls: 0,
         submit_now: false,
+        uncertain: false,
+        not_started: false,
     };
     a.tick(&mut h.store, &mut p, TEAM, 1000, false).unwrap();
     assert_eq!(p.calls, 1);
@@ -495,6 +528,8 @@ fn two_hundred_ready_tasks_leave_one_row_and_one_card() {
         reason: "project_agents_other: This project allows agents to start tasks only in their own session.".into(),
         calls: 0,
         submit_now: false,
+        uncertain: false,
+        not_started: false,
     };
     a.tick(&mut h.store, &mut p, TEAM, 1000, false).unwrap();
     assert_eq!(p.calls, 1, "one refused effect, not eight");
@@ -529,6 +564,8 @@ fn a_reopen_is_not_delivered_while_the_fact_stands() {
         reason: "project_agents_other: This project allows agents to start tasks only in their own session.".into(),
         calls: 0,
         submit_now: false,
+        uncertain: false,
+        not_started: false,
     };
     a.tick(&mut h.store, &mut p, TEAM, 1000, false).unwrap();
     assert_eq!(p.calls, 1);
@@ -569,4 +606,146 @@ fn a_reopen_is_not_delivered_while_the_fact_stands() {
         a.ledger.get(TEAM, "gate:held:reopen:2").unwrap().is_none(),
         "the reopen pass returns before the held step"
     );
+}
+
+/// Round 2, the reviewer's P2: a crash after the fact and card are written
+/// but before the delivery saved `gated` must not count the same command
+/// refusal again when the recovery settles the same delivery.
+#[test]
+fn a_replayed_settle_counts_the_same_refusal_once() {
+    let mut h = Harness::new();
+    h.bind("m1");
+    h.bind("m2");
+    h.add(&person(), 1);
+    let machine = team(&h).home;
+    let mut a = Runtime::open(h.temp.path(), &machine).unwrap();
+    let mut p = ProjectRefused {
+        reason: "project_agents_other: This project allows agents to start tasks only in their own session.".into(),
+        calls: 0,
+        submit_now: false,
+        uncertain: false,
+        not_started: false,
+    };
+    super::super::retry::CRASH.with(|s| s.set(Some("notice_saved")));
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        a.tick(&mut h.store, &mut p, TEAM, 1000, false).unwrap();
+    }));
+    let remaining = super::super::retry::CRASH.with(|s| s.replace(None));
+    assert!(result.is_err() && remaining.is_none(), "the crash point was not visited");
+    assert_eq!(fact_row(&h, &a).unwrap()["refusals"], 1);
+    drop(a);
+    let mut a = Runtime::open(h.temp.path(), &machine).unwrap();
+    a.tick(&mut h.store, &mut p, TEAM, 1000, false).unwrap();
+    let row = fact_row(&h, &a).unwrap();
+    assert_eq!(
+        row["refusals"], 1,
+        "one command refusal was counted again after the recovery: {row}"
+    );
+    assert_eq!(row["until"], 61_000, "{row}");
+    assert_eq!(open_cards(&h).len(), 1);
+}
+
+/// Round 2, the reviewer's P2: an uncertain probe keeps the fact; nothing
+/// proves the project admitted anything.
+#[test]
+fn an_uncertain_probe_keeps_the_fact() {
+    let mut h = Harness::new();
+    h.bind("m1");
+    h.bind("m2");
+    h.add(&person(), 1);
+    let machine = team(&h).home;
+    let mut a = Runtime::open(h.temp.path(), &machine).unwrap();
+    let mut p = ProjectRefused {
+        reason: "project_agents_other: This project allows agents to start tasks only in their own session.".into(),
+        calls: 0,
+        submit_now: false,
+        uncertain: false,
+        not_started: false,
+    };
+    a.tick(&mut h.store, &mut p, TEAM, 1000, false).unwrap();
+    assert_eq!(p.calls, 1);
+    p.uncertain = true;
+    a.tick(&mut h.store, &mut p, TEAM, 1000 + 60_000, false).unwrap();
+    assert!(fact_row(&h, &a).is_some(), "an uncertain probe ended the fact");
+    assert_eq!(open_cards(&h).len(), 1);
+}
+
+/// Round 2, the reviewer's P2: non-starts keep the fact, the fifth (which
+/// the actor converts into an ordinary refusal) included.
+#[test]
+fn nonstarts_keep_the_fact_even_after_the_fifth() {
+    let mut h = Harness::new();
+    h.bind("m1");
+    h.bind("m2");
+    h.add(&person(), 1);
+    let machine = team(&h).home;
+    let mut a = Runtime::open(h.temp.path(), &machine).unwrap();
+    let mut p = ProjectRefused {
+        reason: "project_agents_other: This project allows agents to start tasks only in their own session.".into(),
+        calls: 0,
+        submit_now: false,
+        uncertain: false,
+        not_started: false,
+    };
+    a.tick(&mut h.store, &mut p, TEAM, 1000, false).unwrap();
+    assert_eq!(p.calls, 1);
+    p.not_started = true;
+    for now in [60_000, 120_000, 180_000, 240_000, 300_000, 360_000, 420_000, 480_000, 540_000, 600_000, 660_000, 720_000, 780_000, 840_000, 900_000, 960_000, 1_200_000, 1_800_000] {
+        a.tick(&mut h.store, &mut p, TEAM, 1000 + now, false).unwrap();
+    }
+    assert!(p.calls >= 6, "one project refusal and at least five non-starts");
+    assert!(fact_row(&h, &a).is_some(), "a converted non-start ended the fact");
+}
+
+/// Round 2: the command's own refusal with another cause ends the fact and
+/// is handled as that cause (the task's own gate).
+#[test]
+fn the_commands_own_other_refusal_ends_the_fact() {
+    let mut h = Harness::new();
+    h.bind("m1");
+    h.bind("m2");
+    let node = h.add(&person(), 1);
+    let machine = team(&h).home;
+    let mut a = Runtime::open(h.temp.path(), &machine).unwrap();
+    let mut p = ProjectRefused {
+        reason: "project_agents_other: This project allows agents to start tasks only in their own session.".into(),
+        calls: 0,
+        submit_now: false,
+        uncertain: false,
+        not_started: false,
+    };
+    a.tick(&mut h.store, &mut p, TEAM, 1000, false).unwrap();
+    assert_eq!(p.calls, 1);
+    // The probe answers a plain refusal without the typed cause.
+    struct Plain {
+        calls: u32,
+    }
+    impl Ports for Plain {
+        fn changes(&mut self, _: &str, _: &str, _: u64) -> super::super::ports::Result<zerus_replica::Changes> {
+            Ok(zerus_replica::Changes {
+                generation: "journal".into(),
+                offset: 0,
+                documents: Some(Default::default()),
+            })
+        }
+        fn observe(&mut self, _: &mut Store, _: &TaskRef) -> super::super::ports::Result<()> {
+            Ok(())
+        }
+        fn free(&mut self, _: &Team, m: &Member) -> super::super::ports::Result<bool> {
+            Ok(m.id == "m1" || m.id == "m2")
+        }
+        fn deliver(&mut self, _: &Team, _: &Node, _: &Member, _: &str) -> DeliveryResult {
+            self.calls += 1;
+            HandoutOutcome::Refused {
+                reason: "The member's session is gone.".into(),
+            }
+            .into()
+        }
+    }
+    let mut q = Plain { calls: 0 };
+    a.tick(&mut h.store, &mut q, TEAM, 1000 + 60_000, false).unwrap();
+    assert_eq!(q.calls, 1);
+    assert!(fact_row(&h, &a).is_none(), "the other-cause refusal did not end the fact");
+    assert!(open_cards(&h).is_empty(), "the card stayed after the fact ended");
+    let _ = node;
 }

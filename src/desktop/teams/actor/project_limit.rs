@@ -30,6 +30,11 @@ pub(super) struct Waiting {
     pub(super) sentence: String,
     pub(super) refusals: u32,
     pub(super) until: i64,
+    /// The delivery whose command answer was counted last, so a replayed
+    /// settle of the same delivery counts nothing again (zerus-63rru.23,
+    /// the review's P2). An older row reads as none.
+    #[serde(default)]
+    pub(super) last: Option<String>,
 }
 
 /// A team's project fact as a pass finds it.
@@ -52,13 +57,22 @@ impl Runtime {
         &mut self,
         store: &mut Store,
         team: &Team,
+        delivery: &str,
         sentence: &str,
         now: i64,
     ) -> Result<()> {
-        let refusals = self
-            .load::<Waiting>(&team.id, KEY)?
-            .map_or(0, |w| w.refusals)
-            .saturating_add(1);
+        // One command answer is counted once: a recovery replay of the same
+        // delivery's settle finds its identity here and changes nothing
+        // (the review's P2; the count, the sentence, the until and the card
+        // were all written by the first pass).
+        let previous = self.load::<Waiting>(&team.id, KEY)?;
+        if previous
+            .as_ref()
+            .is_some_and(|w| w.last.as_deref() == Some(delivery))
+        {
+            return Ok(());
+        }
+        let refusals = previous.map_or(0, |w| w.refusals).saturating_add(1);
         let until = now.saturating_add(retry::delay(refusals));
         self.put(
             &team.id,
@@ -67,6 +81,7 @@ impl Runtime {
                 sentence: sentence.into(),
                 refusals,
                 until,
+                last: Some(delivery.into()),
             },
         )?;
         self.ledger.put_item(&items::Failure {
