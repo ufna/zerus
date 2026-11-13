@@ -14,7 +14,7 @@ use serde_json::Value;
 
 /// Every key path [`Facts::of`] reads, and whether every producer writes it
 /// (the guard test checks both against rows the producers made).
-pub(super) const READ: [(&str, bool); 12] = [
+pub(super) const READ: [(&str, bool); 14] = [
     ("name", true),
     ("run_id", true),
     ("launch_id", true),
@@ -26,8 +26,63 @@ pub(super) const READ: [(&str, bool); 12] = [
     ("phase", true),
     ("process_work.count", true),
     ("subagent_active_count", true),
+    ("subagent_source", true),
+    ("subagent_counts_complete", true),
     ("optional_questions.count", true),
 ];
+
+/// What an incomplete subagent count means, by the producer that wrote it
+/// (`subagent_source`; zerus-63rru.61). Every value a producer writes is
+/// here; a guard fails when a producer gains one that is not.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Incomplete {
+    /// The flag counts only history: children that ended without a
+    /// completion, were interrupted or failed, or were pruned. An unknown
+    /// child never establishes current work (`telemetry::child_working`): a
+    /// running one sends its next event and is counted working again. So the
+    /// active count is the whole truth about children running now.
+    History,
+    /// The flag counts children that may be running now and cannot be told:
+    /// Kimi profile groups the hooks could not complete, or a DeepSeek child
+    /// the host's list cannot settle. An incomplete count is unknown.
+    MayRunNow,
+}
+/// The producers' sources, each with what its flag means: `telemetry::children`
+/// writes the first five, `dsh::normalize` the last. `unavailable` writes a
+/// null count, which is unknown already.
+pub(super) const SOURCES: [(&str, Option<Incomplete>); 6] = [
+    ("hooks", Some(Incomplete::History)),
+    ("kimi_native", Some(Incomplete::History)),
+    ("hook_profiles", Some(Incomplete::MayRunNow)),
+    ("mixed_hooks", Some(Incomplete::MayRunNow)),
+    ("unavailable", None),
+    ("dsh_native", Some(Incomplete::MayRunNow)),
+];
+
+/// The subagent count, and whether it cannot be settled: it was reported,
+/// but its producer's flag says some child that may be running now is not
+/// in it, or the reader does not know the producer. A count that was never
+/// reported is None and settled (zerus-63rru.61).
+fn children(row: &Value) -> (Option<u64>, bool) {
+    let Some(count) = row.get("subagent_active_count").and_then(Value::as_u64) else {
+        return (None, false);
+    };
+    let meaning = row
+        .get("subagent_source")
+        .and_then(Value::as_str)
+        .and_then(|source| SOURCES.iter().find(|(name, _)| *name == source))
+        .map(|(_, meaning)| *meaning);
+    let unsettled = match meaning {
+        Some(Some(Incomplete::History)) => false,
+        Some(Some(Incomplete::MayRunNow)) => {
+            row.get("subagent_counts_complete") != Some(&Value::Bool(true))
+        }
+        // `unavailable` writes no count; a source the reader does not know
+        // cannot say what its count leaves out.
+        Some(None) | None => true,
+    };
+    (Some(count), unsettled)
+}
 
 /// What one fleet row says about its session.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -43,8 +98,13 @@ pub(super) struct Facts {
     pub phase: Option<String>,
     /// `process_work.count`: the session's own background jobs.
     pub background: Option<u64>,
-    /// `subagent_active_count`: its children that work now.
+    /// `subagent_active_count`: its children that work now; None only when
+    /// no count was reported.
     pub children: Option<u64>,
+    /// The count was reported but cannot be settled: some child that may be
+    /// running now is not in it (a DeepSeek child the host's list cannot
+    /// settle, incomplete Kimi profile groups). History never sets this.
+    pub children_unsettled: bool,
     /// `optional_questions.count`: questions that wait for an answer.
     pub questions: Option<u64>,
 }
@@ -66,6 +126,7 @@ impl Facts {
             Some(value) => value.as_str() == Some("running"),
         };
         let count = |value: Option<&Value>| value.and_then(Value::as_u64);
+        let (children, children_unsettled) = children(row);
         Self {
             live: state
                 && text("process_state") == Some("running")
@@ -74,7 +135,8 @@ impl Facts {
             activity: text("activity").map(str::to_owned),
             phase: text("phase").map(str::to_owned),
             background: count(row.get("process_work").and_then(|w| w.get("count"))),
-            children: count(row.get("subagent_active_count")),
+            children,
+            children_unsettled,
             questions: count(row.get("optional_questions").and_then(|q| q.get("count"))),
         }
     }
@@ -87,6 +149,7 @@ impl Facts {
             && self.phase.as_deref() == Some("idle")
             && self.background == Some(0)
             && self.children == Some(0)
+            && !self.children_unsettled
             && self.questions == Some(0)
     }
 
@@ -101,9 +164,15 @@ impl Facts {
             && self.ready
             && self.activity.as_deref() == Some("idle")
             && self.phase.as_deref() == Some("idle");
+        // An unsettled count of no working child is unknown, and named apart
+        // from a count never reported; one with a working child is busy.
+        let children = match (self.children, self.children_unsettled) {
+            (Some(0), true) => (None, Fact::ChildrenUnsettled),
+            (count, _) => (count, Fact::Children),
+        };
         let counts = [
             (self.background, Fact::Background),
-            (self.children, Fact::Children),
+            children,
             (self.questions, Fact::Questions),
         ];
         if !idle || counts.iter().any(|(count, _)| count.is_some_and(|n| n > 0)) {
@@ -122,7 +191,12 @@ impl Facts {
             return None;
         }
         let phase = self.phase.as_deref()?;
-        let working = activity != "idle" || self.children? > 0;
+        let children = self.children?;
+        // An unsettled count says nothing about a child it leaves out.
+        if self.children_unsettled && activity == "idle" && children == 0 {
+            return None;
+        }
+        let working = activity != "idle" || children > 0;
         Some(Seen {
             live: self.live,
             working,

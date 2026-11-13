@@ -2,6 +2,7 @@
 //! team's status; the terminal page may name the same node, and a second
 //! record is refused without changing the first.
 use super::*;
+use crate::teams::ops::CancelState;
 use crate::teams::store::timers::KeyedTask;
 
 fn op(value: serde_json::Value) -> Operation {
@@ -61,6 +62,29 @@ fn cancel(h: &mut Harness, parent: u32) {
     )
     .unwrap();
 }
+/// The answer to a retired stage's cancel for a task with nothing running:
+/// released, which ends the stage and archives it into the frontier.
+fn released(h: &mut Harness, stage: u32) {
+    let row = h
+        .store
+        .pending_cancels(TEAM, 200, 0)
+        .unwrap()
+        .into_iter()
+        .find(|r| r.node == stage)
+        .unwrap();
+    h.run(
+        &service(),
+        Operation::RecordCancel {
+            node: stage,
+            decision: row.decision,
+            state: CancelState::Released,
+            reason: String::new(),
+            attempt: row.attempt,
+            attempt_id: row.attempt_id,
+        },
+    )
+    .unwrap();
+}
 fn clear(node: u32, state: KeyClearState, reason: &str) -> Operation {
     Operation::RecordKeyClear {
         node,
@@ -94,6 +118,7 @@ fn stages() -> Stages {
         serde_json::json!({"status":"created","task":task(1001)}),
     );
     cancel(&mut h, p1);
+    released(&mut h, bound);
     let (_, unbound) = staged(&mut h, 2, "m2");
     let id = creation(
         &mut h,

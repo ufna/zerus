@@ -13,6 +13,8 @@ fn released() -> Fixture {
         },
     )
     .unwrap();
+    // The retired stage's task runs nothing: its cancel is answered released.
+    f.h.release_retired(stage);
     f.task = task;
     f
 }

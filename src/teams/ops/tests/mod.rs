@@ -16,6 +16,7 @@ mod roster;
 mod storage;
 mod talk;
 mod team;
+mod unstaffed;
 
 pub(crate) const TEAM: &str = "00000000-0000-4000-8000-00000000beef";
 pub(crate) const TEAM_B: &str = "00000000-0000-4000-8000-00000000beee";
@@ -297,6 +298,31 @@ impl Harness {
             Operation::ReopenOutcome {
                 effect_request_id: id.into(),
                 outcome,
+            },
+        )
+        .unwrap();
+    }
+    /// The cancel answer a retired stage gets from the cancel command when
+    /// its bound task has nothing running: released, recorded as the service
+    /// records it. The stage then ends, is archived, and its key waits for
+    /// the clear in the released-stage frontier.
+    pub fn release_retired(&mut self, stage: u32) {
+        let row = self
+            .store
+            .pending_cancels(TEAM, 200, 0)
+            .unwrap()
+            .into_iter()
+            .find(|r| r.node == stage)
+            .expect("the retired stage keeps one pending cancel");
+        self.run(
+            &service(),
+            Operation::RecordCancel {
+                node: stage,
+                decision: row.decision,
+                state: crate::teams::ops::CancelState::Released,
+                reason: String::new(),
+                attempt: row.attempt,
+                attempt_id: row.attempt_id,
             },
         )
         .unwrap();

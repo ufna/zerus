@@ -315,3 +315,41 @@ fn an_unavailable_native_birth_is_only_tolerated_for_an_unreadable_verified_top(
     assert!(walk(2, table, empty).is_err());
     assert!(walk(2, table, denied).is_ok());
 }
+
+/// The marked claim's host check walks the process table alone: no row
+/// carries a claim, a top without a birth is kept as the person path keeps
+/// it, and a birth is still required below the top.
+#[test]
+fn a_walk_without_an_environment_reader_carries_no_claim_and_keeps_the_births() {
+    let birthless = |parent| {
+        Inspection::Own(Process {
+            parent,
+            birth: None,
+        })
+    };
+    let table = |pid| {
+        Ok(match pid {
+            4 => own(3),
+            3 => birthless(2),
+            _ => Inspection::Foreign,
+        })
+    };
+    let chain = walk_reading(4, table, None).unwrap();
+    assert_eq!(
+        chain
+            .iter()
+            .map(|row| (row.pid, row.top))
+            .collect::<Vec<_>>(),
+        [(4, false), (3, true)]
+    );
+    assert!(chain.iter().all(|row| row.claim.is_none()));
+    let middle = |pid| {
+        Ok(match pid {
+            4 => own(3),
+            3 => birthless(2),
+            2 => own(1),
+            _ => Inspection::Foreign,
+        })
+    };
+    assert_eq!(walk_reading(4, middle, None).unwrap_err(), unreadable());
+}

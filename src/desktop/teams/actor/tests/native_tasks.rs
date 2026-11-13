@@ -74,6 +74,8 @@ fn released() -> (Harness, crate::teams::store::timers::KeyedTask) {
         },
     )
     .unwrap();
+    // The retired stage's task runs nothing: its cancel is answered released.
+    h.release_retired(e.node);
     let keyed = h.store.released_stages(TEAM, 1, 0).unwrap().remove(0);
     (h, keyed)
 }

@@ -50,6 +50,7 @@ fn check(creation: bool) {
             },
         )
         .unwrap();
+        h.release_retired(stage);
     }
     let key = format!(
         "task_command:{}:{stage}",

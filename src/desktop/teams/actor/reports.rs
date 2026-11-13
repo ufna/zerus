@@ -76,6 +76,9 @@ impl Runtime {
             .ok_or_else(|| problem("Report holder disappeared"))?;
         let head = ports.reported(team, &member)?;
         boundary("read");
+        // The member's own words: they keep their line feeds and tabs and lose
+        // every other control character before they are bounded and recorded.
+        let text = crate::teams::clean::lines(&text);
         let mut bounded = cut(&text, 15_000);
         if bounded.len() < text.len() {
             bounded.push_str("\n[Report text shortened.]");

@@ -61,6 +61,10 @@ pub(in crate::desktop::teams::actor) fn sentence(
             "its session has reported no subagent count; its hooks have sent no event yet",
             "Wait for its first hook event. If its hooks never report, stop or archive the member.",
         ),
+        Fact::ChildrenUnsettled => (
+            "the state of some of its subagents cannot be settled",
+            "If this lasts, stop or archive the member.",
+        ),
         Fact::Questions => (
             "its question index cannot be read",
             "If this lasts, stop or archive the member.",

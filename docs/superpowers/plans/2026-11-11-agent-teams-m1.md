@@ -1710,6 +1710,23 @@ decision, which takes it over or ends it. A node under an explicit hold
 still takes decisions and stays held when they end. One function answers
 whether a node is held and one place writes each kind.
 
+**An older store's holds are classified without a clock.** A store written
+before a hold had an owner carries one flag per node and no record of who
+set it. The first classification read event times, and two honest
+sequences read the wrong way round (the second review of the reassign
+route, 2026-11-12). The step that gives each held node its owner reads no
+clock and no archive. An unsettled decision comes first. Otherwise the
+last exactly recorded event of the node decides, in the order of the
+journal's own sequence, in one bounded pass over the team's live journal:
+a Hold is its actor's, a Release ends it, a current hand-back is a
+hand-back. A saved reply names a row by number alone and the number can
+belong to several tables, so a trace is placed only by the reply of the
+kind of operation that files it. Whatever cannot be placed exactly is the
+person's hold, even where an earlier record was the lead's: a removed
+member's item, a pipeline active on a stage, and the item the step to
+layout 10 wrote itself. The person may then have to release a hold a lead
+once set; the step never gives a lead a hold that could be the person's.
+
 **Status shows what the service keeps retrying where no card can.** A
 stopped or archived team takes no cards, so a cancel that keeps failing
 there, a halted row, the terminal page's fault at its retry cap and a stop
@@ -1742,6 +1759,33 @@ the two answers with its own code that counts as no failure. No card: the
 reviewers takes the path a stage takes at its creation: it is retired and
 its parent goes to the lead with the kernel's reason. Nothing in stopped,
 archived or paused teams.
+
+**An unstaffed item stands for an episode, and the cap counts episodes.**
+The first head took "told" to mean "an open item exists", so an item the
+lead closed while its node stayed unstaffed was written again on every
+pass, an open item kept its first reason after the gap changed, and a
+store that head left with more than 500 closed items on one node refused
+every reconcile for ever (the reviews of zerus-63rru.45, 2026-11-12). An
+episode is a node, its generation and the kernel's reason, and the lead is
+told once per episode. Its item is the node's newest unstaffed item that
+the reconcile has not ended, by sequence and never by the clock. Only the
+reconcile ends an episode, with a reply that says why: the node left the
+set, or its reason or generation changed, and a changed reason then gets
+one new item. An item closed by the lead still stands for its episode and
+is not told again. The cap of 500 is judged on the current episodes, and a
+queue row's unstaffed sentence is the current episode's. An older unended
+item of a node stands for no episode: a service-only operation ends at
+most 200 of them a pass, oldest first, in a transaction of its own before
+the comparison, and its answer when none is left counts as no failure.
+More current episodes than the cap is a state the product cannot write,
+since a team admits at most 500 open tasks; the reconcile refuses it by
+name on every pass and nothing repairs it, which is the guard failing
+closed and is accepted as that. A person's Hold placed before the stage
+exists survives the stage's reconcile and its retirement: the stage path
+ends only the pipeline's own hand-back. A member whose row the service
+cannot read still counts as one who could take the node: readability is
+the service's fact, the unreadable member's card tells the person, and the
+lead's item does not say it (zerus-63rru.81).
 
 **A recovery removes only the row it owns.** The service's gate recovery
 closed its card and then removed whichever ledger row was current, so a
@@ -1789,6 +1833,29 @@ DeepSeek seat until the service can reach such a member: the task delivery's
 final input is a terminal path with no DeepSeek route, and a hosted run's
 end writes no end record. OpenCode and platforms without the proof stay
 refused as before.
+
+**No other session is proven below a host.** A marked claim that is not a
+DeepSeek claim took the ancestry proof without asking whether the command
+ran below a recorded resident agent host, so a hosted call that carried
+another session's markers was accepted as that session: a host is a child
+of the command that launched it for as long as that command lives, and an
+older host keeps the markers it inherited (the independent review of the
+DeepSeek members' first commit, 2026-11-12). The rule: a command below a
+recorded host can only be a session that host serves, and only a DeepSeek
+claim's token proves one; any other marked claim there is refused with a
+sentence of its own. The person path and the marked branch ask one check,
+which reads the host records first (a computer that records none walks no
+process) and then walks the process table alone, matched by process ID and
+birth; it reads no environment and no marker, and when it cannot tell
+(records unreadable or over their bound, a birth unreadable, a walk past
+its bound) both refuse. Its limit is the hosted proof's own: the check
+stands on the host records, so a call that removes or edits its host's
+same-user records is no longer seen below that host. That is deliberate
+change of the state directory by a same-user process, which no proof built
+on records or ancestry can stop, and it is stated where the rule is
+stated. The function's body is replaced by the shared helper from main
+after the next sync, with a refusal of its own for a command inside a
+separate process namespace.
 
 **A held step's card follows the hold's age, not its reason.** A step the
 service holds back (a finish, a merge or a reopen it cannot carry out yet)
@@ -1891,6 +1958,68 @@ conversation no longer has the task: its reopen is refused and final,
 nothing is sent, and the task goes back to the lead at once with a
 sentence that says why, without a failure gate or a retry. A new execution
 for the same member with the full prompt is not part of this.
+
+**A subagent count is settled only when every child that may run now is
+counted.** A fleet row carries a member's active subagents as a count with
+a flag beside it, and the reader ignored the flag. The flag does not mean
+one thing: for the hook-fed sources of Claude, Codex and Kimi's own roster
+it only says that ended, interrupted or pruned children are no longer
+listed, which is history; for Kimi's profile groups and for a DeepSeek
+session's catalog it says that children which may be running now could not
+be counted (2026-11-12). The reader decides by the row's `subagent_source`.
+History never keeps a member. An incomplete count about children that may
+run now is unknown: the member is not free and gives no presence, and when
+a ready task needs it the unreadable-member card says that the state of
+some of its subagents cannot be settled. A count above zero is work,
+settled or not. A source the reader does not know is unknown, and a guard
+fails when a producer writes one the reader has not classified. A DeepSeek
+member is never free until the host's list carries a complete job summary:
+the tests' list answer holds only the keys the host sends.
+
+**A task already handed out is held out of the hand-out pass.** A task
+whose hand-out has been submitted stays ready in the plan kernel's view
+until its observation moves, and the store refuses a second intent for it.
+The pass chose a free member for it all the same: that member got no other
+task in that pass, and the refused intent was counted as a hand-out that
+failed (2026-11-12). Before members are chosen the pass now holds every
+ready task that has an open effect or a delivery pending in the actor's
+ledger, as it holds a cooling task. The pending-delivery half matters
+after a crash between the ledger's row and the store's intent: without it
+a free member loses that pass. The hold costs one indexed point read of
+the ledger for each ready task without an open effect, and ready tasks are
+bounded by the team's limit of open tasks.
+
+**Only the member's own folder-trust prompt is a candidate for the
+standing confirmation.** The confirmation's engine planned a trust step
+whenever a member had any pending question and took the first one, so an
+ordinary question the agent asked later was refused by the policy and
+became a card and a row (the first real-agent run of the trust cases,
+2026-11-12). The policy decides the candidate once, by the producer's
+source: the folder-trust source of the member's own agent. Each source is
+a fixed literal of its producer; nothing an agent, a hook payload or a
+terminal's text writes can carry it. Every other pending question is the
+person's, through the session's ordinary attention, and plans nothing
+here: no row, no card, no audit reservation. Beside another question the
+folder-trust prompt is still refused by the policy, with its notice. A
+trust row written before this change is settled history and is never
+repeated.
+
+**Outside text is cleaned where it is taken.** Git's words, file paths, a
+member's report and the team-clear refusal entered the service's
+sentences, cards and inbox items as they came: a control character, a line
+or paragraph separator or a bidirectional override could start a line of
+its own, act on a terminal or reorder what is displayed (2026-11-12). Each
+is cleaned at the place it is taken, by one module with three forms. A
+sentence loses control characters, separators and the nine bidirectional
+embedding, override and isolate characters, and is bounded. A report keeps
+its line feeds and tabs and loses the rest, before the service appends its
+own lines. A path is shown as it is when it is clean, and quoted with
+every such character escaped when it is blank, holds one, starts with a
+double quote or is longer than its limit, so that two different names
+never read the same while both are shown whole; a quoted form cut at the
+limit is marked after its closing quote. The marks U+200E and U+200F and
+right-to-left letters stay. A team's name and IDs and task titles are not
+covered here.
 
 **Known limit: the key of a task that was closed before the stop.** After a
 stop the service clears the team key of the tasks that were open at the

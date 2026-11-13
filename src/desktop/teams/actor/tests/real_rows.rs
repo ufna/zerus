@@ -394,6 +394,10 @@ fn presence_reads_the_same_facts_and_unknown_counts_give_none() {
             "{path}"
         );
     }
+    // A DeepSeek list row's job count is unknown (zerus-63rru.61): no
+    // presence, whatever its liveness.
+    assert_eq!(Facts::of(&seed_row("dsh", &[])).seen(), None);
     let stopped = Facts::of(&seed_row("dsh", &[("state", json!("stopped"))]));
-    assert!(!stopped.seen().unwrap().live);
+    assert!(!stopped.live);
+    assert_eq!(stopped.seen(), None);
 }

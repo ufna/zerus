@@ -50,7 +50,7 @@ pub(super) fn nodes(db: &Connection, team: &str) -> Result<Vec<Node>> {
         let mut statement = db
             .prepare(&format!(
                 "SELECT {} FROM nodes WHERE team=?1 AND id>?2 ORDER BY id LIMIT 200",
-                rows::NODE_SELECT
+                rows::node_select("nodes")
             ))
             .map_err(storage)?;
         let mut count = 0;

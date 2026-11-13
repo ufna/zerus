@@ -87,7 +87,7 @@
       "process_work": {
         "command": "",
         "count": 0,
-        "sampled_at": 1794494707.8373933,
+        "sampled_at": 1794509443.9200027,
         "started_at": null
       },
       "project": "example",
@@ -209,7 +209,7 @@
       "process_work": {
         "command": "",
         "count": 0,
-        "sampled_at": 1794494707.8949487,
+        "sampled_at": 1794509443.9773476,
         "started_at": null
       },
       "project": "example",
@@ -278,7 +278,7 @@
       "goal": null,
       "goal_source": "dsh_goal_v1",
       "host_generation": "generation-1",
-      "last_event_at": 1793000001.0,
+      "last_event_at": 0.0,
       "launch_id": "00000000-0000-4000-8000-0000000000d4",
       "model": null,
       "model_provider": null,
@@ -292,8 +292,8 @@
       "process_state": "running",
       "process_work": {
         "command": "",
-        "count": 0,
-        "sampled_at": 1794494707.9695199,
+        "count": null,
+        "sampled_at": 1794509444.0528004,
         "started_at": null
       },
       "project": "example",
@@ -407,7 +407,7 @@
       "process_work": {
         "command": "",
         "count": 0,
-        "sampled_at": 1794494707.9630454,
+        "sampled_at": 1794509444.0464795,
         "started_at": null
       },
       "project": "example",

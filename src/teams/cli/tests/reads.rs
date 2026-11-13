@@ -15,6 +15,25 @@ fn unbound_caller() -> Caller {
     Caller::Session(key(OTHER_SESSION))
 }
 
+/// A person's actor view names every limit of the caller proofs in the one
+/// composed text; a session's view carries no proof kind (zerus-63rru.28).
+#[test]
+fn a_persons_view_states_every_limit_and_no_view_names_a_proof_kind() {
+    let view = super::super::actor::view(&person());
+    assert_eq!(view["note"], crate::teams::caller::limits());
+    assert!(view["note"]
+        .as_str()
+        .unwrap()
+        .contains(crate::state::session_graph::HOSTED_LIMIT));
+    for actor in [member("m1", M1_SESSION), other()] {
+        let view = super::super::actor::view(&actor);
+        assert!(
+            view.get("note").is_none() && !view.to_string().contains("proof"),
+            "{view}"
+        );
+    }
+}
+
 fn status(harness: &Harness, caller: &Caller) -> Value {
     let (reply, exit) = harness.cli(caller, &format!("status --team {TEAM}"), "");
     assert_eq!(exit, 0, "{reply}");

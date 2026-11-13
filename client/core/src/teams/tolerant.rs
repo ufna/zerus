@@ -335,6 +335,9 @@ mod tests {
             "catalog" => include_str!("../../../../crates/team-plan/fixtures/cli-catalog.json"),
             "list" => include_str!("../../../../crates/team-plan/fixtures/cli-list.json"),
             "status" => include_str!("../../../../crates/team-plan/fixtures/cli-status.json"),
+            "status-stopped" => {
+                include_str!("../../../../crates/team-plan/fixtures/cli-status-stopped.json")
+            }
             "queue" => include_str!("../../../../crates/team-plan/fixtures/cli-queue.json"),
             "cards" => include_str!("../../../../crates/team-plan/fixtures/cli-cards.json"),
             "waiting" => include_str!("../../../../crates/team-plan/fixtures/cli-waiting.json"),
@@ -468,6 +471,34 @@ mod tests {
         same_read(TeamRead::Status { team: TEAM.into() }, "status", |value| {
             serde_json::to_value(team(value, &queue)).unwrap()
         });
+    }
+
+    /// A stopped team's status with the service's items and the store's
+    /// refusals (zerus-63rru.40): this client reads the team as it did, with
+    /// or without those fields and with unknown fields at every level.
+    #[test]
+    fn a_stopped_teams_status_with_service_items_reads_as_before() {
+        let queue = fixture("queue");
+        same_read(
+            TeamRead::Status { team: TEAM.into() },
+            "status-stopped",
+            |value| serde_json::to_value(team(value, &queue)).unwrap(),
+        );
+        let stopped = fixture("status-stopped");
+        assert!(stopped["service_items"]["items"]
+            .as_array()
+            .is_some_and(|i| !i.is_empty()));
+        let mut without = stopped.clone();
+        for key in ["service_items", "key_refusals", "cancel_refusals"] {
+            without.as_object_mut().unwrap().remove(key);
+        }
+        let read = TeamRead::Status { team: TEAM.into() };
+        let with = decode(&read, reply(&stopped)).unwrap();
+        let without = decode(&read, reply(&without)).unwrap();
+        assert_eq!(
+            serde_json::to_value(team(&with, &queue)).unwrap(),
+            serde_json::to_value(team(&without, &queue)).unwrap()
+        );
     }
 
     #[test]

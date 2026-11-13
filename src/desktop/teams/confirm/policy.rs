@@ -84,6 +84,17 @@ pub(super) fn ownership(b: &Binding, o: &Ownership) -> Result<(), String> {
     )
 }
 
+/// The member's pending folder-trust prompt: the only question the standing
+/// confirmation considers (zerus-63rru.73). It is decided here, once, by the
+/// producer's source: the folder-trust source of the member's own agent
+/// ([`provider`]). Every other pending question is the person's, through the
+/// session's ordinary attention, and plans nothing here: the agent's own
+/// question, a permission prompt, another startup or terminal choice.
+pub(super) fn trust_candidate<'a>(b: &Binding, s: &'a Snapshot) -> Option<&'a Value> {
+    let (source, ..) = provider(&b.agent).ok()?;
+    s.questions.iter().find(|q| q["source"] == source)
+}
+
 pub(super) fn trust(b: &Binding, s: &Snapshot) -> Result<Value, String> {
     session(b, s)?;
     need(

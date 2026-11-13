@@ -1,5 +1,9 @@
 //! A cancellation repeats an idempotent task command, never a delivery.
 //! Known answers stay durable until their exact decision is settled.
+use super::super::items::{
+    self,
+    kind::{CANCEL_HALTED, CANCEL_RETRY},
+};
 use super::*;
 use ports::TaskReply;
 use serde::{Deserialize, Serialize};
@@ -189,25 +193,66 @@ impl Runtime {
         {
             return Ok(());
         }
-        if let Err(error) = self.advance_cancel(store, p, t, key, &mut row, now, budget) {
-            row.failures = row.failures.saturating_add(1);
-            row.next_ms = now.saturating_add(retry::delay(row.failures));
-            row.reason = cut(&error.message, 2048);
-            self.put(&t.id, key, &row)?;
-            let live = store
-                .team(&t.id)?
-                .is_some_and(|t| matches!(t.status, TeamStatus::Running | TeamStatus::Paused));
-            if live {
-                if row.halted {
-                    self.force_failure(store, t, key, "", &error, now)?;
-                } else {
-                    self.failure(store, t, key, "", &error, now)?;
+        match self.advance_cancel(store, p, t, key, &mut row, now, budget) {
+            // An Ok step is not proof of progress (a spent budget returns Ok
+            // too): the item stays until its row ends or fails again.
+            Ok(()) => (),
+            Err(error) => {
+                row.failures = row.failures.saturating_add(1);
+                row.next_ms = now.saturating_add(retry::delay(row.failures));
+                row.reason = cut(&error.message, 2048);
+                let live = store
+                    .team(&t.id)?
+                    .is_some_and(|t| matches!(t.status, TeamStatus::Running | TeamStatus::Paused));
+                // A live team's failure has its card; a stopped or archived
+                // team's is the person's service item, written with its row.
+                self.ledger.begin()?;
+                let written = self.put(&t.id, key, &row).and_then(|_| {
+                    if live {
+                        Ok(())
+                    } else {
+                        self.cancel_item(&t.id, &row, now)
+                    }
+                });
+                self.ledger.end(written)?;
+                if live {
+                    if row.halted {
+                        self.force_failure(store, t, key, "", &error, now)?;
+                    } else {
+                        self.failure(store, t, key, "", &error, now)?;
+                    }
                 }
+                // A terminal halt owns this row's durable failure and backoff.
+                // It is not a page fault: siblings and other teams still run.
             }
-            // A terminal halt owns this row's durable failure and backoff.
-            // It is not a page fault: siblings and other teams still run.
         }
         Ok(())
+    }
+    /// The service item of a failing cancel row: halted or still retried,
+    /// never both, with the row's reason, count and next try.
+    fn cancel_item(&self, team: &str, row: &Entry, now: i64) -> Result<()> {
+        let subject = row.pending.decision.to_string();
+        let (kind, other) = if row.halted {
+            (CANCEL_HALTED, CANCEL_RETRY)
+        } else {
+            (CANCEL_RETRY, CANCEL_HALTED)
+        };
+        self.ledger.clear_item(team, other, &subject)?;
+        self.ledger.put_item(&items::Failure {
+            team,
+            kind,
+            subject: &subject,
+            node: Some(row.pending.node),
+            reason: &row.reason,
+            failures: row.failures,
+            now,
+            next_ms: Some(row.next_ms),
+        })
+    }
+    fn clear_cancel_items(&self, team: &str, decision: u64) -> Result<()> {
+        let subject = decision.to_string();
+        self.ledger.clear_item(team, CANCEL_RETRY, &subject)?;
+        self.ledger.clear_item(team, CANCEL_HALTED, &subject)
     }
     #[allow(clippy::too_many_arguments)]
     fn advance_cancel(
@@ -398,10 +443,19 @@ impl Runtime {
         if matches!(t.status, TeamStatus::Running | TeamStatus::Paused) {
             self.recovered(store, t, key, now)?;
         }
+        // The row and its service item end together.
+        self.ledger.begin()?;
+        let removed = self.remove_cancel_rows(&t.id, key);
+        self.ledger.end(removed)
+    }
+    fn remove_cancel_rows(&mut self, team: &str, key: &str) -> Result<()> {
         for name in [key.to_owned(), format!("gate:{key}")] {
-            if let Some(row) = self.ledger.get(&t.id, &name)? {
+            if let Some(row) = self.ledger.get(team, &name)? {
                 self.ledger.remove(&row)?;
             }
+        }
+        if let Some(decision) = key.strip_prefix("cancel:").and_then(|d| d.parse().ok()) {
+            self.clear_cancel_items(team, decision)?;
         }
         Ok(())
     }

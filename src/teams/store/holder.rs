@@ -34,8 +34,9 @@ pub(crate) fn holder_of(db: &Connection, team: &str, node: u32) -> Result<Option
 /// Hands a Return that has nobody to go to back to the lead, through the
 /// store's one writer of that outcome (`rows::hand_back`): the decision
 /// settles, the node is held, and the lead gets one inbox item of its own
-/// kind, `return_without_holder:<seq>`. Used by the step to layout 10 for
-/// Returns an earlier layout admitted. Returns the item.
+/// kind, `return_without_holder:<seq>`. Used by a refused outcome that
+/// leaves a waiting Return without its holder; the step to layout 10 writes
+/// the same outcome in that layout's own form. Returns the item.
 pub(crate) fn hand_back_return(
     db: &Connection,
     team: &str,
@@ -44,11 +45,17 @@ pub(crate) fn hand_back_return(
     actor: &str,
     now: i64,
 ) -> Result<u64> {
-    let text = format!(
-        "The return of task {node} had nobody to go to: no member holds its attempt (its hand-out was only reserved, refused or superseded). The task is held; decide again."
-    );
-    let kind = format!("return_without_holder:{seq}");
+    let (kind, text) = return_without_holder(node, seq);
     rows::hand_back(db, team, node, actor, &kind, &text, now)
+}
+/// The lead's item for a Return that had nobody to go to: its kind and text.
+pub(crate) fn return_without_holder(node: u32, seq: u64) -> (String, String) {
+    (
+        format!("return_without_holder:{seq}"),
+        format!(
+            "The return of task {node} had nobody to go to: no member holds its attempt (its hand-out was only reserved, refused or superseded). The task is held; decide again."
+        ),
+    )
 }
 
 impl Store {
