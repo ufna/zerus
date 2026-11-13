@@ -51,8 +51,5 @@ Rules
 
 The member's page is hgs guide team.
 
-## A member inside a sandbox with its own process namespace
-
-Such a member cannot report or run team commands; you are told through
-the ordinary path. The member runs them outside the sandbox or turns its
-private namespace off.
+A member in a sandbox with its own process namespace cannot report; its
+team commands must run outside it.
