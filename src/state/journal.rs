@@ -1318,6 +1318,24 @@ pub(super) fn update_activity(record: &mut Value, event: &Value) {
                 info["description"] = json!(clipped(&tool["detail"], 160));
             }
         }
+        // A Start for a child the record already holds as ended or interrupted
+        // is that child's own Stop or Interrupt that arrived first: the two hook
+        // processes race. Counting it working again would leave a child no later
+        // Stop ever ends, so the record keeps the end it already has. Nothing
+        // else about the child changes, and a late announcement is still kept.
+        // This is the one exception to "a later event resumes the child": a
+        // later Start of the same ID is not counted until its next event.
+        // "Interrupted" is the hook writer's own shape, never process
+        // uncertainty, which a fresh Start must clear: only the lifecycle
+        // projection sets process_unknown.
+        let interrupted = string(info, "state") == "working"
+            && string(info, "display_state") == "unknown"
+            && info["process_unknown"] != true;
+        let ended = ["finished", "ended"].contains(&string(info, "state")) || interrupted;
+        if kind == "SubagentStart" && ended {
+            record["subagents"] = json!(children);
+            return;
+        }
         if ["Stop", "SubagentStop"].contains(&kind) {
             let result = detail(event);
             if string(info, "state") != "finished"
@@ -1328,8 +1346,8 @@ pub(super) fn update_activity(record: &mut Value, event: &Value) {
         }
         // A Claude child's StopFailure ends its turn with a provider error, such
         // as a usage limit; Claude sends no SubagentStop after it. The child is
-        // settled as an error, which never keeps its parent working. A newer
-        // event of the same child resumes it as usual.
+        // settled as an error, which never keeps its parent working. Any newer
+        // event of the same child but its Start resumes it as usual.
         let failed = kind == "StopFailure" && string(record, "agent") == "claude";
         info["state"] = json!(if failed || ["SubagentStop", "SessionEnd", "Stop"].contains(&kind) {
             "finished"

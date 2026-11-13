@@ -142,6 +142,7 @@ fn children(record: &Value) -> Value {
                 .sum::<u64>());
         }
         result["subagent_previews"] = json!(previews);
+        result["subagent_process_unknown_count"] = json!(0);
         return result;
     }
     if !observed && children.is_none_or(|children| children.is_empty()) {
@@ -209,6 +210,16 @@ fn children(record: &Value) -> Value {
     result["subagent_total_count"] = json!(active + completed + unknown);
     result["subagent_previews"] = json!(previews);
     result["subagents"] = json!(roster);
+    // The counts stay numeric for every reader; this separate number says how
+    // many listed children may still run but cannot be bound, which the Teams
+    // reader treats as unsettled. Other readers ignore it.
+    let unbound = children.map_or(0, |children| {
+        children
+            .values()
+            .filter(|child| listed(record, child) && child["process_unknown"] == true)
+            .count()
+    });
+    result["subagent_process_unknown_count"] = json!(unbound);
     result
 }
 

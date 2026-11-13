@@ -3,7 +3,7 @@
 //! with the children its producers record, in a child test process with a
 //! private state root. A count whose incompleteness is history counts; one
 //! about children that may be running now is unknown.
-use super::super::fleet::{Facts, Incomplete, SOURCES};
+use super::super::fleet::{Facts, SOURCES};
 use super::super::ports::Fact;
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
@@ -86,6 +86,15 @@ fn produce() -> BTreeMap<&'static str, Value> {
             json!({"subagent_groups":groups,"subagent_groups_complete":true,"subagents":external}),
         ),
     );
+    // An unsettled count above zero and a working child: presence is known,
+    // and must not be dropped with the count. The producer row's own keys keep
+    // their values except the three this case is about; a live row with work
+    // above zero reads busy, and a busy row has no process sample to settle it.
+    let mut active = super::rows::producer_row("kimi");
+    active["subagent_source"] = json!("mixed_hooks");
+    active["subagent_counts_complete"] = json!(false);
+    active["subagent_active_count"] = json!(2);
+    rows.insert("mixed_hooks_unsettled_active", active);
     rows.insert("unavailable", live("claude", json!({"last_event_at":null})));
     let dsh = |settled: bool| {
         let record = with("dsh", &root, json!({}));
@@ -233,7 +242,7 @@ fn a_subagent_count_is_settled_only_when_every_child_that_may_run_now_is_counted
             Some(Background),
         ),
     ];
-    assert_eq!(rows.len(), expected.len());
+    assert_eq!(rows.len(), expected.len() + 1);
     for (name, source, complete, count, unsettled, free, fact) in expected {
         let row = &rows[name];
         assert_eq!(row["subagent_source"], source, "{name}");
@@ -251,6 +260,27 @@ fn a_subagent_count_is_settled_only_when_every_child_that_may_run_now_is_counted
             );
         }
     }
+    // An unsettled count above zero is busy, not unreadable, and its working
+    // child is still seen: presence is not dropped along with the count.
+    let active = Facts::of(&rows["mixed_hooks_unsettled_active"]);
+    assert_eq!(
+        rows["mixed_hooks_unsettled_active"]["subagent_source"],
+        "mixed_hooks"
+    );
+    assert_eq!(
+        rows["mixed_hooks_unsettled_active"]["subagent_counts_complete"],
+        false
+    );
+    assert_eq!(
+        (
+            active.children,
+            active.children_unsettled,
+            active.free(),
+            active.unknown()
+        ),
+        (Some(2), true, false, None)
+    );
+    assert_eq!(active.seen().map(|seen| seen.working), Some(true));
     // Every value the reader classifies has a producer-made row here.
     let made: std::collections::BTreeSet<&str> = rows
         .values()
@@ -274,40 +304,332 @@ fn an_unclassified_source_is_unknown() {
     }
 }
 
-/// Every `subagent_source` a producer writes anywhere under src/ is one the
-/// reader classifies, and every classified one is written: a producer that
-/// gains a value fails here before a member is read wrongly.
-#[test]
-fn every_subagent_source_a_producer_writes_is_classified() {
-    fn files(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
-        for entry in std::fs::read_dir(dir).unwrap().flatten() {
+/// A producer's `subagent_source` values, read from production code only,
+/// whatever form writes them: a JSON field, an index assignment with or
+/// without spaces, a match arm or an `if` inside the value, and in every
+/// crate that could produce a row. A value whose alternatives are not all
+/// literals — built by `format!`, held in a variable, or mixed with one — is
+/// a failure, not a silent pass.
+mod source_text {
+    use std::path::{Path, PathBuf};
+
+    pub(super) fn files() -> Vec<PathBuf> {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let mut found = Vec::new();
+        for dir in ["src", "crates", "client/core/src"] {
+            read(&root.join(dir), &mut found);
+        }
+        found
+    }
+
+    fn read(dir: &Path, out: &mut Vec<PathBuf>) {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
             let path = entry.path();
             if path.is_dir() {
-                files(&path, out);
-            } else if path.extension().is_some_and(|e| e == "rs") {
-                out.push(path);
+                read(&path, out);
+            } else if path.extension().is_some_and(|extension| extension == "rs") {
+                let text = path.to_string_lossy();
+                if !text.contains("/tests/") && !text.ends_with("tests.rs") {
+                    out.push(path);
+                }
             }
         }
     }
-    let mut paths = Vec::new();
-    files(
-        &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src"),
-        &mut paths,
-    );
-    let mut written = std::collections::BTreeSet::new();
-    for path in paths {
-        let text = std::fs::read_to_string(&path).unwrap();
-        // The key followed by its string value in a JSON literal.
-        for (at, key) in text.match_indices("\"subagent_source\":\"") {
-            let rest = &text[at + key.len()..];
-            written.insert(rest[..rest.find('"').unwrap()].to_owned());
+
+    /// Each value expression that writes the key, with its line. Reading the
+    /// key (a lookup, a comparison, a key list) writes nothing and is skipped.
+    pub(super) fn written(production: &str) -> Vec<(usize, String)> {
+        let key = "\"subagent_source\"";
+        let mut found = Vec::new();
+        let mut search = 0;
+        while let Some(offset) = production[search..].find(key) {
+            let at = search + offset;
+            search = at + key.len();
+            let rest = &production[search..];
+            let bytes = rest.as_bytes();
+            let mut index = 0;
+            while index < bytes.len() && bytes[index].is_ascii_whitespace() {
+                index += 1;
+            }
+            let value = match bytes.get(index) {
+                Some(b':') => Some(index + 1),
+                Some(b']') => {
+                    let mut next = index + 1;
+                    while next < bytes.len() && bytes[next].is_ascii_whitespace() {
+                        next += 1;
+                    }
+                    (bytes.get(next) == Some(&b'=')).then_some(next + 1)
+                }
+                _ => None,
+            };
+            let Some(value) = value else {
+                continue;
+            };
+            let expression = expression(&rest[value..]);
+            let line = production[..at].matches('\n').count() + 1;
+            found.push((line, expression));
         }
-        // An assignment to the key's index: every literal up to its end.
-        for (at, key) in text.match_indices("[\"subagent_source\"] =") {
-            let rest = &text[at + key.len()..];
-            let statement = &rest[..rest.find(';').unwrap()];
-            for literal in statement.split('"').skip(1).step_by(2) {
-                written.insert(literal.to_owned());
+        found
+    }
+
+    /// Up to the value's own terminator, through nested calls and braces.
+    fn expression(text: &str) -> String {
+        let bytes = text.as_bytes();
+        let mut depth = 0i32;
+        let mut in_string = false;
+        let mut escaped = false;
+        for (index, byte) in bytes.iter().enumerate() {
+            if in_string {
+                if escaped {
+                    escaped = false;
+                } else if *byte == b'\\' {
+                    escaped = true;
+                } else if *byte == b'"' {
+                    in_string = false;
+                }
+                continue;
+            }
+            match *byte {
+                b'"' => in_string = true,
+                b'(' | b'[' | b'{' => depth += 1,
+                b')' | b']' | b'}' if depth == 0 => return text[..index].trim().to_owned(),
+                b')' | b']' | b'}' => depth -= 1,
+                b',' | b';' if depth == 0 => return text[..index].trim().to_owned(),
+                _ => {}
+            }
+        }
+        text.trim().to_owned()
+    }
+
+    /// The string literals of a value whose every alternative is a literal, or
+    /// why the guard cannot settle it.
+    pub(super) fn settled(value: &str) -> Result<Vec<String>, String> {
+        let value = wrapped(value.trim());
+        if let Some(literal) = literal(value) {
+            return Ok(vec![literal]);
+        }
+        if plain(value) {
+            return Ok(Vec::new());
+        }
+        if value.starts_with("if ") {
+            return branches(value);
+        }
+        if value.starts_with("match ") {
+            return arms(value);
+        }
+        Err(format!("an alternative the guard cannot settle: {value}"))
+    }
+
+    /// The inside of the wrappers a value is written through.
+    fn wrapped(mut value: &str) -> &str {
+        loop {
+            let inner = if let Some(rest) = value.strip_prefix("json!") {
+                rest.trim_start()
+            } else if let Some(rest) = value.strip_prefix("String::from(") {
+                return rest.strip_suffix(')').map(str::trim).unwrap_or(value);
+            } else if let Some(rest) = value.strip_prefix("Some(") {
+                return rest.strip_suffix(')').map(str::trim).unwrap_or(value);
+            } else if value.starts_with('(') || value.starts_with('{') {
+                value
+            } else {
+                return value;
+            };
+            if !inner.starts_with('(') && !inner.starts_with('{') {
+                return value;
+            }
+            let close = if inner.starts_with('(') { ')' } else { '}' };
+            if inner.ends_with(close)
+                && matching(inner, 0).is_some_and(|end| end + 1 == inner.len())
+            {
+                value = &inner[1..inner.len() - 1];
+                continue;
+            }
+            return inner;
+        }
+    }
+
+    /// A complete literal, or one followed only by a value-preserving
+    /// conversion. Any other suffix transforms the value: it is a failure.
+    fn literal(value: &str) -> Option<String> {
+        let mut chars = value.char_indices();
+        if chars.next().map(|(_, character)| character) != Some('"') {
+            return None;
+        }
+        let mut literal = String::new();
+        let mut escaped = false;
+        for (index, character) in chars {
+            if escaped {
+                literal.push(character);
+                escaped = false;
+            } else if character == '\\' {
+                escaped = true;
+            } else if character == '"' {
+                let rest = value[index + 1..].trim();
+                return (rest.is_empty()
+                    || matches!(rest, ".to_owned()" | ".to_string()" | ".into()"))
+                .then_some(literal);
+            } else {
+                literal.push(character);
+            }
+        }
+        None
+    }
+
+    fn plain(value: &str) -> bool {
+        matches!(value, "true" | "false" | "None")
+            || (!value.is_empty()
+                && value.chars().all(|character| {
+                    character.is_ascii_digit() || character == '.' || character == '-'
+                }))
+    }
+
+    fn branches(value: &str) -> Result<Vec<String>, String> {
+        let body = value
+            .strip_prefix("if")
+            .and_then(|rest| block(rest))
+            .ok_or_else(|| format!("an if whose body is not a block: {value}"))?;
+        let mut literals = settled(body)?;
+        let rest =
+            &value[block_end(value).ok_or_else(|| format!("an if without its body: {value}"))?..];
+        let rest = rest.trim_start();
+        if let Some(rest) = rest.strip_prefix("else") {
+            let rest = rest.trim_start();
+            literals.extend(if rest.starts_with("if ") {
+                branches(rest)?
+            } else {
+                let body = rest
+                    .strip_prefix('{')
+                    .and_then(|inner| inner.strip_suffix('}'))
+                    .ok_or_else(|| format!("an else whose body is not a block: {value}"))?;
+                settled(body)?
+            });
+        }
+        Ok(literals)
+    }
+
+    fn arms(value: &str) -> Result<Vec<String>, String> {
+        let open = value
+            .find('{')
+            .ok_or_else(|| format!("a match without arms: {value}"))?;
+        let end = matching(value, open).ok_or_else(|| format!("unclosed match: {value}"))?;
+        let mut literals = Vec::new();
+        let body = &value[open + 1..end];
+        let mut rest = body;
+        loop {
+            rest = rest.trim_start();
+            if rest.is_empty() {
+                break;
+            }
+            let arrow = rest
+                .find("=>")
+                .ok_or_else(|| format!("a match arm without =>: {value}"))?;
+            let arm = rest[arrow + 2..].trim_start();
+            let (arm, after) = split_arm(arm);
+            literals.extend(settled(arm)?);
+            rest = after;
+        }
+        Ok(literals)
+    }
+
+    /// One match arm's value and the rest after its comma.
+    fn split_arm(arm: &str) -> (&str, &str) {
+        let mut depth = 0i32;
+        let mut in_string = false;
+        let mut escaped = false;
+        for (index, byte) in arm.bytes().enumerate() {
+            if in_string {
+                if escaped {
+                    escaped = false;
+                } else if byte == b'\\' {
+                    escaped = true;
+                } else if byte == b'"' {
+                    in_string = false;
+                }
+                continue;
+            }
+            match byte {
+                b'"' => in_string = true,
+                b'(' | b'[' | b'{' => depth += 1,
+                b')' | b']' | b'}' => depth -= 1,
+                b',' if depth == 0 => {
+                    return (arm[..index].trim_end(), &arm[index + 1..]);
+                }
+                _ => {}
+            }
+        }
+        (arm.trim_end(), "")
+    }
+
+    /// The block an `if` or `match` head is followed by.
+    fn block(rest: &str) -> Option<&str> {
+        let open = rest.find('{')?;
+        let end = matching(rest, open)?;
+        Some(&rest[open + 1..end])
+    }
+
+    /// The byte just after the block that follows an `if`.
+    fn block_end(value: &str) -> Option<usize> {
+        let open = value.find('{')?;
+        matching(value, open).map(|end| end + 1)
+    }
+
+    /// The index of the bracket that closes the one at `open`, through strings
+    /// and nested brackets.
+    fn matching(text: &str, open: usize) -> Option<usize> {
+        let bytes = text.as_bytes();
+        let mut depth = 0i32;
+        let mut in_string = false;
+        let mut escaped = false;
+        for (offset, byte) in bytes[open..].iter().enumerate() {
+            if in_string {
+                if escaped {
+                    escaped = false;
+                } else if *byte == b'\\' {
+                    escaped = true;
+                } else if *byte == b'"' {
+                    in_string = false;
+                }
+                continue;
+            }
+            match *byte {
+                b'"' => in_string = true,
+                b'(' | b'[' | b'{' => depth += 1,
+                b')' | b']' | b'}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return Some(open + offset);
+                    }
+                }
+                _ => {}
+            }
+        }
+        None
+    }
+}
+
+/// Every `subagent_source` a producer writes, in every form and crate, is one
+/// the reader classifies; every classified one is written. A producer that
+/// gains a value, or writes an alternative the guard cannot settle, fails
+/// here before a member is read wrongly.
+#[test]
+fn every_subagent_source_a_producer_writes_is_classified() {
+    let mut written = std::collections::BTreeSet::new();
+    for path in source_text::files() {
+        let text = std::fs::read_to_string(&path).unwrap();
+        // Production code only: every producer file below src/, crates/ and
+        // client/core/src writes before its first `#[cfg(test)]` section.
+        let production = match text.find("\n#[cfg(test)]") {
+            Some(at) => &text[..at],
+            None => &text[..],
+        };
+        for (line, expression) in source_text::written(production) {
+            let literals = source_text::settled(&expression)
+                .unwrap_or_else(|why| panic!("{}:{line}: {why}", path.display()));
+            for literal in literals {
+                written.insert(literal);
             }
         }
     }
@@ -318,5 +640,64 @@ fn every_subagent_source_a_producer_writes_is_classified() {
     assert!(SOURCES
         .iter()
         .all(|(s, m)| m.is_some() || *s == "unavailable"));
-    let _ = Incomplete::History;
+}
+
+/// The forms the review kept apart: a read writes nothing; the four write
+/// forms are read or refused, never accepted silently.
+#[test]
+fn the_source_guard_reads_every_form_and_refuses_an_alternative_it_cannot_settle() {
+    use source_text::{settled, written};
+    let value = |source: &str| {
+        let found = written(source);
+        assert_eq!(found.len(), 1, "{source}");
+        found[0].1.clone()
+    };
+    // A read of the key, not a value.
+    assert!(
+        written(r#"if string(session, "subagent_source") != "hook_profiles" { return; }"#)
+            .is_empty()
+    );
+    // A JSON field, a spaced and an unspaced index assignment, a match arm.
+    for (source, expected) in [
+        (
+            r#"result = json!({"subagent_source":"hooks"});"#,
+            vec!["hooks"],
+        ),
+        (
+            r#"result["subagent_source"] = json!("hook_profiles");"#,
+            vec!["hook_profiles"],
+        ),
+        (
+            r#"result["subagent_source"]=json!("dsh_native");"#,
+            vec!["dsh_native"],
+        ),
+        (
+            r#"result["subagent_source"] = json!(match kind { "a" => "hooks", _ => "kimi_native" });"#,
+            vec!["hooks", "kimi_native"],
+        ),
+        (
+            r#"result["subagent_source"] = json!(if native { "hooks" } else { "mixed_hooks" });"#,
+            vec!["hooks", "mixed_hooks"],
+        ),
+    ] {
+        assert_eq!(settled(&value(source)).unwrap(), expected, "{source}");
+    }
+    // The three forms the guard must refuse: mixed, dynamic, interpolated.
+    for source in [
+        r#"result["subagent_source"] = json!(if known { "hooks" } else { runtime_source });"#,
+        r#"result["subagent_source"] = json!(source);"#,
+        r#"result["subagent_source"] = json!(format!("hook_{}", kind));"#,
+        // A literal followed by a transforming suffix is not the literal.
+        r#"result["subagent_source"] = json!("hooks".to_uppercase());"#,
+    ] {
+        let why = settled(&value(source)).expect_err(source);
+        assert!(why.contains("cannot settle"), "{source}: {why}");
+    }
+    // The conversions that keep the literal's value are settled.
+    for source in [
+        r#"result["subagent_source"] = json!("hooks".to_owned());"#,
+        r#"result["subagent_source"] = json!(String::from("hooks"));"#,
+    ] {
+        assert_eq!(settled(&value(source)).unwrap(), vec!["hooks"], "{source}");
+    }
 }
