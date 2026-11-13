@@ -1680,6 +1680,9 @@ pub fn dispatch(args: &[String]) -> Result<i32> {
 }
 
 #[cfg(test)]
+mod subagent_order;
+
+#[cfg(test)]
 mod task_binding_tests {
     use super::*;
     use std::fs;
