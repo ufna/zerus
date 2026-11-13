@@ -143,6 +143,10 @@ pub(crate) struct Work<'a> {
     pub assignee: Option<&'a str>,
     /// Members who implemented what a stage checks; they never take it.
     pub implementers: Vec<&'a str>,
+    /// The target's earlier-implementer record reached its cap: the stage
+    /// fails closed instead of handing to an unrecorded member silently
+    /// (zerus-63rru.20).
+    pub record_full: bool,
 }
 
 /// Which members may ever take a piece of work, whatever their load.
@@ -157,6 +161,7 @@ impl Staffing<'_> {
             && !member.role.is_empty()
             && member.role == work.role
             && work.assignee.is_none_or(|assignee| assignee == member.id)
+            && !work.record_full
             && !work.implementers.contains(&member.id.as_str())
     }
 
@@ -169,6 +174,12 @@ impl Staffing<'_> {
             return None;
         }
         let role = work.role;
+        if work.record_full {
+            return Some(
+                "The task's earlier-implementer record is full, and the stage waits for the person."
+                    .to_owned(),
+            );
+        }
         if role.is_empty() {
             return Some("The task names no role.".to_owned());
         }
@@ -438,15 +449,21 @@ impl<'a> Index<'a> {
     /// implemented the node it checks, by its own record or the node's.
     fn work(&self, node: &'a Node) -> Work<'a> {
         let mut implementers = Vec::new();
+        let mut record_full = false;
         if node.kind == NodeKind::Stage {
             implementers.extend(node.implementer.as_deref());
             let target = node.stage_of.and_then(|id| self.nodes.get(&id));
             implementers.extend(target.and_then(|target| target.implementer.as_deref()));
+            if let Some(target) = target {
+                implementers.extend(target.earlier_implementers.iter().map(|m| m.as_str()));
+                record_full = target.implementer_record_full;
+            }
         }
         Work {
             role: &node.role,
             assignee: node.assignee.as_deref(),
             implementers,
+            record_full,
         }
     }
 }

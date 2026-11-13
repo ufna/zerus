@@ -211,6 +211,153 @@ fn a_stage_keeps_the_checked_tasks_implementer_when_the_reviewer_is_submitted() 
     assert_eq!(effect.member, "m3");
 }
 
+/// zerus-63rru.20: after a reassignment, a stage of the target never goes
+/// to any member who implemented an earlier round, whatever the stage's
+/// role; a member who never implemented it can take it; the record
+/// survives a restart. Driven by the real reassignment and round
+/// operations, then the kernel's hand-out over the stored rows.
+#[test]
+fn a_stage_after_a_reassignment_refuses_every_earlier_implementer() {
+    let mut h = Harness::new();
+    let (parent, _) = h.reported();
+    h.bind("m2");
+    h.bind("m3");
+    // The person reassigns the reported task to m2; the store records m1 as
+    // the earlier implementer in the reassignment's own transaction.
+    h.run(
+        &person(),
+        Operation::Reassign {
+            node: parent,
+            member: "m2".into(),
+            reason: "Take the next round over".into(),
+        },
+    )
+    .unwrap();
+    // The person accepts the report: the next round goes to m2 through the
+    // real hand-out, and the record keeps m1 as the earlier implementer
+    // while m2 becomes the current one.
+    h.run(&person(), Operation::Accept { node: parent }).unwrap();
+    h.run(
+        &service(),
+        Operation::RecordIntegration {
+            decision: h.accept_decision(parent),
+            node: parent,
+            commit: COMMIT.into(),
+        },
+    )
+    .unwrap();
+    h.submit(parent, "m2");
+    // A stage of the target whose role equals the implementers' role.
+    let stage = h.add(&person(), 2);
+    let mut s = h.node(stage);
+    s.kind = NodeKind::Stage;
+    s.role = h.node(parent).role.clone();
+    s.stage_of = Some(parent);
+    s.implementer = h.node(parent).implementer.clone();
+    h.store
+        .db
+        .as_ref()
+        .unwrap()
+        .execute(
+            "UPDATE nodes SET data=?3 WHERE team=?1 AND id=?2",
+            params![TEAM, stage, rows::node_payload(&s).unwrap()],
+        )
+        .unwrap();
+    let intent = |h: &mut Harness, member: &str| {
+        h.run(
+            &service(),
+            Operation::HandoutIntent {
+                node: stage,
+                member: member.into(),
+                effect_request_id: uuid::Uuid::new_v4().to_string(),
+            },
+        )
+    };
+    // The first implementer is refused though it is not the current one.
+    refused(intent(&mut h, "m1"), code::INVALID_STATE);
+    // The current implementer stays refused as before.
+    refused(intent(&mut h, "m2"), code::INVALID_STATE);
+    // A member who never implemented the target can take the stage.
+    intent(&mut h, "m3").unwrap();
+    // The record survives a restart: m1 stays refused.
+    h.store = Store::open(h.temp.path()).unwrap();
+    refused(intent(&mut h, "m1"), code::INVALID_STATE);
+}
+
+/// The cap: past it the target is marked full and the stage's staffing
+/// fails closed with the stated reason instead of handing to an unrecorded
+/// member silently (zerus-63rru.20).
+#[test]
+fn past_the_cap_a_stage_is_not_handed_to_an_unrecorded_member() {
+    let mut h = Harness::new();
+    let (parent, _) = h.reported();
+    h.bind("m2");
+    h.bind("m3");
+    let db = h.store.db.as_ref().unwrap();
+    for i in 0..(super::super::handout::EARLIER_IMPLEMENTERS_CAP as usize) {
+        db.execute(
+            "INSERT OR IGNORE INTO target_implementers(team,target,member,round) VALUES(?1,?2,?3,1)",
+            params![TEAM, parent, format!("member-{i}")],
+        )
+        .unwrap();
+    }
+    let stage = h.add(&person(), 2);
+    let mut s = h.node(stage);
+    s.kind = NodeKind::Stage;
+    s.role = h.node(parent).role.clone();
+    s.stage_of = Some(parent);
+    s.implementer = h.node(parent).implementer.clone();
+    h.store
+        .db
+        .as_ref()
+        .unwrap()
+        .execute(
+            "UPDATE nodes SET data=?3 WHERE team=?1 AND id=?2",
+            params![TEAM, stage, rows::node_payload(&s).unwrap()],
+        )
+        .unwrap();
+    // One more implementer: the service's recording marks the target full
+    // and the hand-out refuses an unrecorded member with the stated reason.
+    h.run(
+        &person(),
+        Operation::Reassign {
+            node: parent,
+            member: "m2".into(),
+            reason: "Another round".into(),
+        },
+    )
+    .unwrap();
+    refused(
+        h.run(
+            &service(),
+            Operation::HandoutIntent {
+                node: stage,
+                member: "m3".into(),
+                effect_request_id: uuid::Uuid::new_v4().to_string(),
+            },
+        ),
+        code::INVALID_STATE,
+    );
+    // Without the full marker m3 (who never implemented the target and
+    // shares its role) would take the stage; the refusal is the fail-closed
+    // behaviour, and the lead's reconcile says the record is full.
+    h.run(&service(), Operation::ReconcileUnstaffed).unwrap();
+    let unstaffed = h
+        .store
+        .inbox(TEAM, 200, None)
+        .unwrap()
+        .rows
+        .into_iter()
+        .filter(|i| i.kind.starts_with("unstaffed:"))
+        .collect::<Vec<_>>();
+    assert!(
+        unstaffed
+            .iter()
+            .any(|i| i.text.contains("earlier-implementer record is full")),
+        "{unstaffed:?}"
+    );
+}
+
 #[test]
 fn service_handout_requires_kernel_ready_and_reads_archived_dependencies() {
     let mut h = Harness::new();

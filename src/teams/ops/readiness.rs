@@ -74,6 +74,45 @@ pub(super) fn nodes(db: &Connection, team: &str) -> Result<Vec<Node>> {
     if map.len() > 600 {
         return Err(over("Live readiness rows exceed their cap."));
     }
+    // The earlier implementers each target recorded (zerus-63rru.20): one
+    // bounded read of the team's records, then each kernel node carries
+    // them, so a stage's staffing excludes every implementer of any round.
+    {
+        let mut records: std::collections::BTreeMap<u32, Vec<String>> =
+            std::collections::BTreeMap::new();
+        let mut full = std::collections::BTreeSet::new();
+        {
+            let mut statement = db
+                .prepare("SELECT target,member FROM target_implementers WHERE team=?1")
+                .map_err(storage)?;
+            for row in statement
+                .query_map([team], |r| Ok((r.get::<_, u32>(0)?, r.get::<_, String>(1)?)))
+                .map_err(storage)?
+            {
+                let (target, member) = row.map_err(storage)?;
+                records.entry(target).or_default().push(member);
+            }
+        }
+        {
+            let mut statement = db
+                .prepare("SELECT target FROM target_implementer_full WHERE team=?1")
+                .map_err(storage)?;
+            for row in statement
+                .query_map([team], |r| r.get::<_, u32>(0))
+                .map_err(storage)?
+            {
+                full.insert(row.map_err(storage)?);
+            }
+        }
+        for (id, node) in map.iter_mut() {
+            if let Some(list) = records.remove(id) {
+                node.earlier_implementers = list;
+            }
+            if full.contains(id) {
+                node.implementer_record_full = true;
+            }
+        }
+    }
     while let Some(id) = pending.pop() {
         if map.contains_key(&id) {
             continue;

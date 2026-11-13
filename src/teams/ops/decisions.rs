@@ -116,6 +116,9 @@ pub(super) fn reassign(ctx: &mut Context<'_>) -> Result<()> {
         return Err(invalid("Replacement member cannot take this task."));
     }
     pipeline::override_task(ctx, *node)?;
+    if let Some(previous) = n.implementer.as_deref().filter(|p| *p != member) {
+        super::handout::record_earlier(ctx, *node, previous)?;
+    }
     n.assignee = Some(member.clone());
     ctx.db
         .execute(
