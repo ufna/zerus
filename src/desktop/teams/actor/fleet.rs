@@ -14,7 +14,7 @@ use serde_json::Value;
 
 /// Every key path [`Facts::of`] reads, and whether every producer writes it
 /// (the guard test checks both against rows the producers made).
-pub(super) const READ: [(&str, bool); 14] = [
+pub(super) const READ: [(&str, bool); 15] = [
     ("name", true),
     ("run_id", true),
     ("launch_id", true),
@@ -28,6 +28,7 @@ pub(super) const READ: [(&str, bool); 14] = [
     ("subagent_active_count", true),
     ("subagent_source", true),
     ("subagent_counts_complete", true),
+    ("subagent_process_unknown_count", false),
     ("optional_questions.count", true),
 ];
 
