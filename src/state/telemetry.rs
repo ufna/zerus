@@ -3,15 +3,38 @@ use super::*;
 
 pub(super) fn grouped_active(record: &Value) -> u64 {
     if record["kimi_native_roster"] == true { return 0; }
+    let now = super::now();
     record["subagent_groups"]
         .as_object()
         .map(|groups| {
             groups
-                .values()
-                .map(|group| group["active_count"].as_u64().unwrap_or(0))
+                .iter()
+                .map(|(profile, group)| {
+                    // zerus-63rru.93 round 2: a revived Kimi profile child
+                    // quiet for the settle period counts as ended at read
+                    // time, with no write; the member reads free.
+                    if quiet_revived(record, profile, now) {
+                        0
+                    } else {
+                        group["active_count"].as_u64().unwrap_or(0)
+                    }
+                })
                 .sum()
         })
         .unwrap_or(0)
+}
+
+/// A Kimi profile child revived by a racing start that has had no event of
+/// its own for the settle period (zerus-63rru.93 round 2): read as ended.
+pub(super) fn quiet_revived(record: &Value, profile: &str, now: f64) -> bool {
+    record["subagents"]
+        .get(profile)
+        .is_some_and(|child| {
+            child["revived_at"].as_f64().is_some()
+                && child["updated"]
+                    .as_f64()
+                    .is_some_and(|at| now - at >= super::journal::REVIVED_KIMI_SETTLE_SECONDS)
+        })
 }
 
 /// An unknown child never establishes current work: listings count it as
@@ -125,7 +148,8 @@ fn children(record: &Value) -> Value {
         let Some(groups) = groups else {
             return result;
         };
-        let mut previews:Vec<_>=groups.iter().filter(|(_,group)|group["active_count"].as_u64().unwrap_or(0)>0)
+        let now = super::now();
+        let mut previews:Vec<_>=groups.iter().filter(|(profile,group)|group["active_count"].as_u64().unwrap_or(0)>0 && !quiet_revived(record, profile, now))
             .map(|(profile,group)|json!({"id":format!("profile:{profile}"),"label":profile,
                 "state":"working","detail":journal::clipped(&group["detail"],240),"current_tool":"","group":true,
                 "active_count":group["active_count"],"completed_count":group["completed_count"],
@@ -137,8 +161,17 @@ fn children(record: &Value) -> Value {
             ("total_count", "subagent_total_count"),
         ] {
             result[field] = json!(groups
-                .values()
-                .map(|g| g[key].as_u64().unwrap_or(0))
+                .iter()
+                .map(|(profile, g)| {
+                    let settled = quiet_revived(record, profile, now);
+                    match key {
+                        "active_count" if settled => 0,
+                        "completed_count" if settled => {
+                            g[key].as_u64().unwrap_or(0).saturating_add(1)
+                        }
+                        _ => g[key].as_u64().unwrap_or(0),
+                    }
+                })
                 .sum::<u64>());
         }
         result["subagent_previews"] = json!(previews);

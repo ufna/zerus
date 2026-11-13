@@ -1446,44 +1446,7 @@ pub(super) fn update_activity(record: &mut Value, event: &Value) {
                 record[count] = json!(record[count].as_u64().unwrap_or(0) + 1);
             }
         }
-        // zerus-63rru.93: a revived Kimi profile child that has had no
-        // event of its own for the settle period is ended by this
-        // profile-group event, with no new timer; the member is free again
-        // from the next read.
-        if ["SubagentStart", "SubagentStop"].contains(&kind) {
-            let quiet: Vec<String> = children
-                .iter()
-                .filter(|(_, child)| {
-                    child["revived_at"].as_f64().is_some()
-                        && child["updated"].as_f64().is_some_and(|at| {
-                            timestamp - at >= REVIVED_KIMI_SETTLE_SECONDS
-                        })
-                })
-                .map(|(id, _)| id.clone())
-                .collect();
-            for id in quiet {
-                let Some(child) = children.get_mut(&id) else {
-                    continue;
-                };
-                child["state"] = json!("ended");
-                child["detail"] = json!("Revived by a racing start and quiet since; the next profile event settled the child.");
-                child.as_object_mut().unwrap().remove("revived_at");
-                // The profile group's counts follow the settle: the listing
-                // the fleet reads takes its active count from the group.
-                if let Some(groups) = record["subagent_groups"].as_object_mut() {
-                    if let Some(group) = groups.get_mut(&id) {
-                        group["active_count"] = json!(group["active_count"]
-                            .as_u64()
-                            .unwrap_or(1)
-                            .saturating_sub(1));
-                        group["completed_count"] = json!(group["completed_count"]
-                            .as_u64()
-                            .unwrap_or(0)
-                            .saturating_add(1));
-                    }
-                }
-            }
-        }
+        settle_quiet_revivals(record, &mut children, timestamp);
         record["subagents"] = json!(children);
         return;
     }
@@ -1779,6 +1742,48 @@ pub(super) fn update_activity(record: &mut Value, event: &Value) {
         }
     }
     record["active_tools"] = json!(tools);
+    // zerus-63rru.93 round 2: the persisted settle also rides the session's
+    // next event of any kind (the main's Stop or turn end included), so a
+    // last invocation whose Start lost the race cannot keep the member busy
+    // for ever.
+    settle_quiet_revivals(record, &mut record["subagents"].as_object().cloned().unwrap_or_default(), timestamp);
+}
+
+/// zerus-63rru.93: a revived Kimi profile child that has had no event of its
+/// own for the settle period is ended, with no new timer; its group's counts
+/// follow so the listing the fleet reads shows no active child for it.
+fn settle_quiet_revivals(record: &mut Value, children: &mut serde_json::Map<String, Value>, timestamp: f64) {
+    let quiet: Vec<String> = children
+        .iter()
+        .filter(|(_, child)| {
+            child["revived_at"].as_f64().is_some()
+                && child["updated"].as_f64().is_some_and(|at| {
+                    timestamp - at >= REVIVED_KIMI_SETTLE_SECONDS
+                })
+        })
+        .map(|(id, _)| id.clone())
+        .collect();
+    for id in quiet {
+        let Some(child) = children.get_mut(&id) else {
+            continue;
+        };
+        child["state"] = json!("ended");
+        child["detail"] = json!("Revived by a racing start and quiet since; the next event settled the child.");
+        child.as_object_mut().unwrap().remove("revived_at");
+        if let Some(groups) = record["subagent_groups"].as_object_mut() {
+            if let Some(group) = groups.get_mut(&id) {
+                group["active_count"] = json!(group["active_count"]
+                    .as_u64()
+                    .unwrap_or(1)
+                    .saturating_sub(1));
+                group["completed_count"] = json!(group["completed_count"]
+                    .as_u64()
+                    .unwrap_or(0)
+                    .saturating_add(1));
+            }
+        }
+    }
+    record["subagents"] = json!(children.clone());
 }
 
 // Native turn IDs are monotonic, but the observation-only TurnStarted hook can

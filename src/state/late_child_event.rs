@@ -229,3 +229,53 @@ fn a_settled_revival_frees_the_member_in_the_teams_fleet() {
     let row = listed_live_row(record.clone()).expect("a listed row");
     assert_eq!(row["subagent_active_count"], 0, "the member is not free: {row}");
 }
+
+/// Round 2: the settle needs no later event at all — the read-time rule in
+/// the listing's count producer shows the member free after the period, and
+/// the main's own next event persists the end.
+#[test]
+fn the_race_followed_by_no_further_event_reads_free_after_the_period() {
+    let mut record = record("kimi");
+    apply(
+        &mut record,
+        &[
+            kimi("SubagentStart", "profile-1"),
+            kimi("SubagentStop", "profile-1"),
+            kimi("SubagentStart", "profile-1"),
+        ],
+    );
+    assert_eq!(child(&record, "profile-1")["state"], "working");
+    quiet(&mut record);
+    // No further event at all: the listing the fleet reads shows no active
+    // child and the member reads free, with no write.
+    let row = listed_live_row(record.clone()).expect("a listed row");
+    assert_eq!(
+        row["subagent_active_count"], 0,
+        "the revived child kept the member busy: {row}"
+    );
+    // The persisted row is untouched by the read: only the read counts it.
+    assert_eq!(child(&record, "profile-1")["state"], "working");
+}
+
+#[test]
+fn the_main_agents_turn_end_persists_the_settle() {
+    let mut record = record("kimi");
+    apply(
+        &mut record,
+        &[
+            kimi("SubagentStart", "profile-1"),
+            kimi("SubagentStop", "profile-1"),
+            kimi("SubagentStart", "profile-1"),
+        ],
+    );
+    quiet(&mut record);
+    // The main's own Stop (no subagent event) persists the end.
+    apply(
+        &mut record,
+        &[json!({"hook_event_name":"Stop","agent_id":"main"})],
+    );
+    let ended = child(&record, "profile-1");
+    assert_eq!(ended["state"], "ended", "{ended}");
+    let row = listed_live_row(record.clone()).expect("a listed row");
+    assert_eq!(row["subagent_active_count"], 0, "{row}");
+}
