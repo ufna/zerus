@@ -190,7 +190,7 @@ fn open_card(h: &mut Harness, n: u32) -> u64 {
         },
         Operation::OpenCard {
             kind: "launch_blocked".into(),
-            text: format!("card {n}").into(),
+            text: format!("card {n}"),
             node: None,
             decisions: Some(vec!["retry".into(), "acknowledged".into()]),
         },
@@ -233,7 +233,7 @@ fn a_relaunch_into_the_same_row_writes_the_new_session() {
                     key: zerus_team_plan::model::SessionKey|
      -> Operation {
         Operation::SetMemberSession {
-            member: member.into(),
+            member: member.to_owned(),
             session: key,
             account: "dev".into(),
             worktree: "/tmp/claude-1000/launch-ids".into(),
