@@ -385,12 +385,12 @@ pub(super) fn observe(ctx: &mut Context<'_>) -> Result<()> {
         }
     }
     n.title = o.title.clone();
-    let target = ctx.node_table(*node)?;
-    ctx.db.execute(&format!("UPDATE {target} SET data=?3,task_revision=?4,task_stage=?5,task_cancelled=?6,rank=?7 WHERE team=?1 AND id=?2"),params![ctx.team.id,node,rows::node_payload(&n)?,o.revision,stage,o.cancelled,o.rank]).map_err(storage)?;
     // Rule 1 cleared the mark when the person moved the task back; the
     // team's own cancel is still read from its attempt (zerus-63rru.36):
     // the node whose open effect carries that attempt ends, a newer node
-    // for the same task does not.
+    // for the same task does not. The same column the cancel mark sets
+    // carries it, so node_state is cancelled and the node leaves the
+    // hand-out's reach (zerus-63rru.36 round 4).
     let own_cancelled = o.current_cancelled
         && !o.attempt_id.is_empty()
         && ctx
@@ -401,6 +401,8 @@ pub(super) fn observe(ctx: &mut Context<'_>) -> Result<()> {
                 |r| r.get::<_, bool>(0),
             )
             .map_err(storage)?;
+    let target = ctx.node_table(*node)?;
+    ctx.db.execute(&format!("UPDATE {target} SET data=?3,task_revision=?4,task_stage=?5,task_cancelled=?6,rank=?7 WHERE team=?1 AND id=?2"),params![ctx.team.id,node,rows::node_payload(&n)?,o.revision,stage,o.cancelled || own_cancelled,o.rank]).map_err(storage)?;
     if o.cancelled || own_cancelled || o.stage == TaskStage::Done {
         finish_observation(ctx, *node, o.cancelled || own_cancelled)?;
     }

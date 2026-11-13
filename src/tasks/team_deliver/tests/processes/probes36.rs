@@ -72,6 +72,29 @@ fn add(f: &mut Fixture) -> (String, String) {
     tasks.save(&mut task).unwrap();
     (id, uuid)
 }
+fn deliver_without_observation(f: &mut Fixture, uuid: &str, member: &str) -> (u32, String) {
+    let out = intake(f, uuid, TEAM, "send to the team");
+    assert_eq!(out["queued"], true, "{out}");
+    let node = out["node"].as_u64().unwrap() as u32;
+    if f.h
+        .store
+        .member(TEAM, member)
+        .unwrap()
+        .unwrap()
+        .session
+        .is_none()
+    {
+        f.bind(member, &crate::swarm::local_node_id(&f.config).unwrap());
+    }
+    let intent = f.h.intent(node, member);
+    f.body.node = node;
+    f.body.member = member.to_string();
+    f.body.id = intent.clone();
+    f.task.uuid = uuid.to_string();
+    let delivered = f.run("submitted", false);
+    assert_eq!(delivered["reply"]["state"], "submitted");
+    (node, intent)
+}
 fn deliver(f: &mut Fixture, uuid: &str, member: &str) -> u32 {
     let out = intake(f, uuid, TEAM, "send to the team");
     assert_eq!(out["queued"], true, "{out}");
@@ -107,8 +130,9 @@ fn deliver(f: &mut Fixture, uuid: &str, member: &str) -> u32 {
     node
 }
 fn team_cancel(f: &mut Fixture, node: u32) -> Value {
+    let owner = f.h.store.team(TEAM).unwrap().unwrap().owner.clone();
     let lead = ops::Actor::Session {
-        person: "local".into(),
+        person: owner,
         team: TEAM.into(),
         member: "lead".into(),
         session: zerus_team_plan::model::SessionKey {
@@ -459,6 +483,153 @@ fn the_production_observation_ends_the_old_node_after_the_move_back() {
         )
         .unwrap();
     assert_eq!(live, 0, "the old node stayed live");
+    // Round 4: the same column ends the node as cancelled, so the generated
+    // node_state is cancelled and a hand-out of the old node is refused.
+    let ended = f.h.store.node(TEAM, node).unwrap().unwrap();
+    assert_eq!(
+        ended.state,
+        zerus_team_plan::model::NodeState::Cancelled,
+        "the old node's state: {ended:?}"
+    );
+    let owner = f.h.store.team(TEAM).unwrap().unwrap().owner.clone();
+    let service = ops::Actor::Service {
+        person: owner,
+        team: TEAM.into(),
+    };
+    let refusal = f
+        .h
+        .run(
+            &service,
+            ops::Operation::HandoutIntent {
+                node,
+                member: "m2".into(),
+                effect_request_id: String::new(),
+            },
+        )
+        .unwrap_err();
+    assert_eq!(refusal.code, "invalid_state", "{refusal:?}");
+}
+
+/// The own-cancelled end reads only an OPEN effect of the attempt
+/// (zerus-63rru.36 round 4): an effect the observation already closed stays
+/// closed, and the node is not ended again by a later observation of the
+/// same cancelled attempt. The reviewer's open-state-filter-dropped mutant
+/// kills this test.
+#[test]
+fn an_observed_closed_effect_is_not_ended_by_the_later_cancel() {
+    let mut f = Fixture::new();
+    let (_id, uuid) = add(&mut f);
+    let (node, intent) = deliver_without_observation(&mut f, &uuid, "m2");
+    // The outcome closes the effect (observed_done); the cancel then comes
+    // from the attempt phase only, and a closed effect must not end the
+    // node again.
+    let owner = f.h.store.team(TEAM).unwrap().unwrap().owner.clone();
+    f.h.run(
+        &ops::Actor::Service {
+            person: owner,
+            team: TEAM.into(),
+        },
+        ops::Operation::HandoutOutcome {
+            effect_request_id: intent,
+            outcome: ops::HandoutOutcome::Refused {
+                reason: "handed back".into(),
+            },
+        },
+    )
+    .unwrap();
+    {
+        let store = crate::tasks::store(&f.config, "example-project").unwrap();
+        let mut doc = store.load(&uuid).unwrap();
+        doc.record_cancel("Obsolete", &zerus_replica::Actor::Person, now())
+            .unwrap();
+        store.save(&mut doc).unwrap();
+    }
+    move_back(&f, &uuid, "closed effect");
+    crate::teams::tasks::observe(
+        &f.config.state,
+        &TaskRef {
+            project: "example-project".into(),
+            uuid: uuid.clone(),
+        },
+    )
+    .unwrap();
+    // The own-cancelled write does not fire for a closed effect: the column
+    // stays 0 (the decision's own state may already read cancelled).
+    let db = rusqlite::Connection::open(f.config.state.join("teams").join("teams-v1.sqlite3"))
+        .unwrap();
+    let column: i64 = db
+        .query_row(
+            "SELECT task_cancelled FROM nodes WHERE team=?1 AND id=?2",
+            rusqlite::params![TEAM, node],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(column, 0, "the closed effect was ended by the own path");
+}
+
+/// A conflicting cancelled attempt is never the node's own cancel
+/// (zerus-63rru.36 round 4): the person's review decides a conflict. The
+/// reviewer's conflict-filter-dropped mutant kills this test.
+#[test]
+fn a_conflicting_cancelled_attempt_is_not_the_nodes_own_cancel() {
+    let mut f = Fixture::new();
+    let (_id, uuid) = add(&mut f);
+    // The pre-deliver document, for the other computer's conflicting send.
+    let before = {
+        let store = crate::tasks::store(&f.config, "example-project").unwrap();
+        let doc = store.load(&uuid).unwrap();
+        doc.snapshot().unwrap()
+    };
+    let (node, _) = deliver_without_observation(&mut f, &uuid, "m2");
+    {
+        // The other computer sent the same task to its own session and
+        // cancelled that attempt; the merge leaves the execution conflicted,
+        // with no current identity the team can safely act on.
+        let other = zerus_replica::SessionKey {
+            machine: "other-machine".into(),
+            session: "codex/other".into(),
+            session_id: String::new(),
+        };
+        let mut twin = zerus_replica::TaskDoc::from_bytes(&before).unwrap();
+        twin.record_send(
+            &other,
+            "request-2",
+            &zerus_replica::Actor::Agent(other.clone()),
+            now(),
+        )
+        .unwrap();
+        twin.record_cancel("Superseded", &zerus_replica::Actor::Agent(other), now())
+            .unwrap();
+        let store = crate::tasks::store(&f.config, "example-project").unwrap();
+        let imported = store
+            .import_updates(vec![zerus_replica::Update {
+                document: zerus_replica::Document::Task(uuid.clone()),
+                bytes: twin.snapshot().unwrap(),
+            }])
+            .unwrap();
+        assert_eq!(imported.changed, 1, "{imported:?}");
+    }
+    move_back(&f, &uuid, "conflicting cancel");
+    crate::teams::tasks::observe(
+        &f.config.state,
+        &TaskRef {
+            project: "example-project".into(),
+            uuid: uuid.clone(),
+        },
+    )
+    .unwrap();
+    // The conflicted projection's cancel is not the node's own: the column
+    // stays 0.
+    let db = rusqlite::Connection::open(f.config.state.join("teams").join("teams-v1.sqlite3"))
+        .unwrap();
+    let column: i64 = db
+        .query_row(
+            "SELECT task_cancelled FROM nodes WHERE team=?1 AND id=?2",
+            rusqlite::params![TEAM, node],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(column, 0, "the conflicting cancel ended the node");
 }
 
 /// Decision 3: the older build's document — To do with the mark it left —
