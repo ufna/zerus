@@ -1909,6 +1909,51 @@ fails when a producer writes one the reader has not classified. A DeepSeek
 member is never free until the host's list carries a complete job summary:
 the tests' list answer holds only the keys the host sends.
 
+**A task already handed out is held out of the hand-out pass.** A task
+whose hand-out has been submitted stays ready in the plan kernel's view
+until its observation moves, and the store refuses a second intent for it.
+The pass chose a free member for it all the same: that member got no other
+task in that pass, and the refused intent was counted as a hand-out that
+failed (2026-11-12). Before members are chosen the pass now holds every
+ready task that has an open effect or a delivery pending in the actor's
+ledger, as it holds a cooling task. The pending-delivery half matters
+after a crash between the ledger's row and the store's intent: without it
+a free member loses that pass. The hold costs one indexed point read of
+the ledger for each ready task without an open effect, and ready tasks are
+bounded by the team's limit of open tasks.
+
+**Only the member's own folder-trust prompt is a candidate for the
+standing confirmation.** The confirmation's engine planned a trust step
+whenever a member had any pending question and took the first one, so an
+ordinary question the agent asked later was refused by the policy and
+became a card and a row (the first real-agent run of the trust cases,
+2026-11-12). The policy decides the candidate once, by the producer's
+source: the folder-trust source of the member's own agent. Each source is
+a fixed literal of its producer; nothing an agent, a hook payload or a
+terminal's text writes can carry it. Every other pending question is the
+person's, through the session's ordinary attention, and plans nothing
+here: no row, no card, no audit reservation. Beside another question the
+folder-trust prompt is still refused by the policy, with its notice. A
+trust row written before this change is settled history and is never
+repeated.
+
+**Outside text is cleaned where it is taken.** Git's words, file paths, a
+member's report and the team-clear refusal entered the service's
+sentences, cards and inbox items as they came: a control character, a line
+or paragraph separator or a bidirectional override could start a line of
+its own, act on a terminal or reorder what is displayed (2026-11-12). Each
+is cleaned at the place it is taken, by one module with three forms. A
+sentence loses control characters, separators and the nine bidirectional
+embedding, override and isolate characters, and is bounded. A report keeps
+its line feeds and tabs and loses the rest, before the service appends its
+own lines. A path is shown as it is when it is clean, and quoted with
+every such character escaped when it is blank, holds one, starts with a
+double quote or is longer than its limit, so that two different names
+never read the same while both are shown whole; a quoted form cut at the
+limit is marked after its closing quote. The marks U+200E and U+200F and
+right-to-left letters stay. A team's name and IDs and task titles are not
+covered here.
+
 **Known limit: the key of a task that was closed before the stop.** After a
 stop the service clears the team key of the tasks that were open at the
 stop and of released stages. A task accepted or cancelled earlier keeps its
