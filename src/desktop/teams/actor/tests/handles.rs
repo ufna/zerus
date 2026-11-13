@@ -231,6 +231,22 @@ fn gone_without_an_archive_child() {
     assert_eq!(now(&w, "m1"), Current::Unresolved(Unresolved::Gone));
 }
 #[test]
+#[ignore = "run by its isolated wrapper"]
+fn member_refresh_child() {
+    let mut w = world(&["m1"]);
+    bound(&mut w);
+    producer::archive(&w.records["m1"]).unwrap();
+    // The archive is durable; the catalog that indexes it is missing, as a
+    // failed refresh leaves it (zerus-63rru.67 round 2).
+    std::fs::remove_file(w.h.temp.path().join("archive-catalog-v1.sqlite3")).unwrap();
+    crate::state::archive_catalog::reset_refreshes();
+    assert_eq!(now(&w, "m1"), Current::Unresolved(Unresolved::Gone));
+}
+#[test]
+fn a_member_read_refreshes_a_missing_catalog_row() {
+    isolated(&format!("{CHILD}member_refresh_child"));
+}
+#[test]
 fn a_session_gone_without_an_archive_stays_gone() {
     isolated(&format!("{CHILD}gone_without_an_archive_child"));
 }
