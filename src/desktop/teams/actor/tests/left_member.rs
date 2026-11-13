@@ -286,9 +286,13 @@ fn a_crash_at_the_outcome_boundary_records_the_outcome_and_settles_nothing() {
     let mut a = super::super::Runtime::open(h.temp.path(), &home).unwrap();
     a.tick(&mut h.store, &mut p, TEAM, T0 + MINUTE, false)
         .unwrap();
+    // No .85 settlement item for a recorded outcome; the .86 member_started
+    // item is that rule's own, correct telling.
     assert!(
-        items(&h).is_empty(),
-        "no member_left item for a recorded outcome: {:?}",
+        items(&h)
+            .iter()
+            .all(|(kind, _)| !kind.starts_with("member_left:")),
+        "no .85 item for a recorded outcome: {:?}",
         items(&h)
     );
     assert_eq!(effects(&h), [("submitted".into(), "m1".into(), 1)]);
