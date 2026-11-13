@@ -55,6 +55,46 @@ fn unstaffed_items(h: &Harness) -> usize {
         .filter(|i| i.kind.starts_with("unstaffed:"))
         .count()
 }
+/// A node's hold columns as stored: the explicit hold, its owner, and the
+/// hand-back's hold.
+fn hold_columns(h: &Harness, node: u32) -> (bool, Option<String>, bool) {
+    h.store
+        .db
+        .as_ref()
+        .unwrap()
+        .query_row(
+            "SELECT hold,hold_owner,hand_back FROM nodes WHERE team=?1 AND id=?2",
+            rusqlite::params![TEAM, node],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .unwrap()
+}
+/// The stage's unsettled cancels, as the cancel step reads them.
+fn pending_cancels(h: &Harness, stage: u32) -> usize {
+    h.store
+        .pending_cancels(TEAM, 200, 0)
+        .unwrap()
+        .into_iter()
+        .filter(|r| r.node == stage)
+        .count()
+}
+/// A retired stage whose task is bound waits for its cancel; the task's
+/// observation, cancelled, ends it (zerus-63rru.38).
+fn end_retired(h: &mut Harness, parent: u32, stage: u32) {
+    assert_eq!(
+        pending_cancels(h, stage),
+        1,
+        "the stage waits for one cancel"
+    );
+    assert_eq!(
+        stages(h, parent).iter().map(|n| n.id).collect::<Vec<_>>(),
+        vec![stage],
+        "the retired stage waits for its cancel"
+    );
+    h.cancel_fact(stage);
+    assert!(stages(h, parent).is_empty(), "the retired stage ended");
+}
+
 /// The kernel's set before the open-effect rule, as the store reads it.
 fn kernel_set(h: &Harness) -> Vec<u32> {
     let team = h.store.team(TEAM).unwrap().unwrap();
@@ -69,7 +109,9 @@ fn kernel_set(h: &Harness) -> Vec<u32> {
 /// The stage's reviewer is removed after its creation: the reconcile
 /// retires the stage and hands the parent to the lead with the kernel's
 /// reason, exactly as a reviewer removed before the creation does: the same
-/// run state, the same report item and text, no unstaffed item.
+/// run state, the same report item and text, no unstaffed item. The stage's
+/// task is bound, so the retirement leaves it one pending cancel
+/// (zerus-63rru.38); its end hands nothing more to the lead.
 #[test]
 fn an_unstaffed_stage_is_retired_and_its_parent_handed_to_the_lead_as_at_creation() {
     // At creation: the reviewer is removed before the report.
@@ -90,14 +132,22 @@ fn an_unstaffed_stage_is_retired_and_its_parent_handed_to_the_lead_as_at_creatio
     remove(&mut h, "m3");
     assert_eq!(kernel_set(&h), vec![stage]);
     reconcile(&mut h).unwrap();
-    assert!(stages(&h, parent).is_empty(), "the stage is retired");
-    assert_eq!(run_state(&h, parent), "lead");
-    assert!(!h.node(parent).hold);
-    assert_eq!(report_items(&h, parent), expected);
+    for when in ["retired", "ended"] {
+        if when == "ended" {
+            end_retired(&mut h, parent, stage);
+        }
+        assert_eq!(run_state(&h, parent), "lead", "{when}");
+        assert!(!h.node(parent).hold, "{when}");
+        assert_eq!(report_items(&h, parent), expected, "{when}");
+        assert_eq!(
+            unstaffed_items(&h),
+            0,
+            "{when}: no unstaffed item for a stage"
+        );
+        let e = reconcile(&mut h).unwrap_err();
+        assert_eq!(e.code, code::UNSTAFFED_UNCHANGED, "{when}");
+    }
     assert!(expected[0].contains("No member of the team has the role reviewer."));
-    assert_eq!(unstaffed_items(&h), 0, "no unstaffed item for a stage");
-    let e = reconcile(&mut h).unwrap_err();
-    assert_eq!(e.code, code::UNSTAFFED_UNCHANGED);
 }
 
 /// A stage that is pending a cancel, held, still has a member who could take
@@ -161,28 +211,47 @@ fn a_stage_that_is_not_ready_or_still_staffed_is_never_retired() {
     }
 }
 
-/// A hold has an owner. While its stage runs the parent is held by the
-/// pipeline itself (`want_stage`), so a person's Hold is refused as already
-/// held; when the stage is retired and the run handed to the lead, that hold
-/// ends with it, as at the stage's creation.
+/// A hold has an owner (the hold rule of teams/wp10). While its stage runs
+/// the parent is held by the pipeline's own hand-back (`want_stage`);
+/// retiring the stage and handing the run to the lead ends that hand-back,
+/// as at the stage's creation. A person's Hold set during the run is the
+/// person's own: it is accepted, and it stays through the retirement and
+/// the stage's end.
 #[test]
 fn the_pipelines_hold_on_the_parent_ends_with_its_retired_stage() {
-    let (mut h, parent, _) = wanted();
-    created_stage(&mut h, parent);
-    assert!(h.node(parent).hold, "the pipeline holds the parent");
-    refused(
-        h.run(&person(), Operation::Hold { node: parent }),
-        code::INVALID_STATE,
-    );
-    remove(&mut h, "m3");
-    reconcile(&mut h).unwrap();
-    assert!(stages(&h, parent).is_empty(), "the stage is retired");
-    assert_eq!(run_state(&h, parent), "lead");
-    assert!(
-        !h.node(parent).hold,
-        "the pipeline's hold ended with its run"
-    );
-    assert_eq!(report_items(&h, parent).len(), 1);
+    for persons in [false, true] {
+        let (mut h, parent, _) = wanted();
+        let stage = created_stage(&mut h, parent);
+        assert!(h.node(parent).hold, "the pipeline holds the parent");
+        assert_eq!(hold_columns(&h, parent), (false, None, true), "{persons}");
+        if persons {
+            h.run(&person(), Operation::Hold { node: parent }).unwrap();
+            assert_eq!(
+                hold_columns(&h, parent),
+                (true, Some("person".into()), true)
+            );
+        }
+        remove(&mut h, "m3");
+        reconcile(&mut h).unwrap();
+        let expected = if persons {
+            (true, Some("person".into()), false)
+        } else {
+            (false, None, false)
+        };
+        for when in ["retired", "ended"] {
+            if when == "ended" {
+                end_retired(&mut h, parent, stage);
+            }
+            assert_eq!(run_state(&h, parent), "lead", "{persons} {when}");
+            assert_eq!(
+                hold_columns(&h, parent),
+                expected,
+                "{persons} {when}: the pipeline's hand-back ended with its run, a person's Hold stays"
+            );
+            assert_eq!(h.node(parent).hold, persons, "{persons} {when}");
+            assert_eq!(report_items(&h, parent).len(), 1, "{persons} {when}");
+        }
+    }
 }
 
 /// A stage's parent, handed to the lead when its stage was retired: the lead
@@ -215,11 +284,10 @@ fn the_lead_closing_a_retired_stages_parent_item_is_not_told_again() {
 }
 
 /// Review 45, P1 (the reviewer's reproducer): a person's Hold set before the
-/// report survives the reconcile that retires the stage. It holds once the
-/// rule "A hold has an owner" (teams/wp10-reassign-route) is merged and the
-/// stage path ends only the pipeline's own hold.
+/// report survives the reconcile that retires the stage. Under the rule "A
+/// hold has an owner" the stage path ends only the pipeline's own hold, the
+/// hand-back (`pipeline::to_lead`).
 #[test]
-#[ignore = "needs the hold owner rule of teams/wp10-reassign-route"]
 fn a_persons_hold_from_before_the_report_survives_the_stage_reconcile() {
     let mut h = pipeline_harness("reviewed");
     h.bind("m1");
@@ -235,11 +303,15 @@ fn a_persons_hold_from_before_the_report_survives_the_stage_reconcile() {
     let stage = created_stage(&mut h, parent);
     remove(&mut h, "m3");
     reconcile(&mut h).unwrap();
-    assert!(stages(&h, parent).is_empty());
+    end_retired(&mut h, parent, stage);
     assert_ne!(stage, parent);
     assert_eq!(run_state(&h, parent), "lead");
     assert!(
         h.node(parent).hold,
         "the stage reconcile released the person's pre-report hold"
+    );
+    assert_eq!(
+        hold_columns(&h, parent),
+        (true, Some("person".into()), false)
     );
 }

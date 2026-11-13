@@ -227,8 +227,9 @@ fn stage_to_lead(ctx: &mut Context<'_>, stage: u32, reason: &str) -> Result<()> 
     if current {
         let parent = ctx.node(parent)?;
         // The parent's hold while its stage runs is the pipeline's own
-        // (`want_stage`); handing the run to the lead ends it, as at the
-        // stage's creation.
+        // hand-back (`want_stage`); handing the run to the lead ends that
+        // hand-back, as at the stage's creation, and never an explicit
+        // hold: a person's or the lead's Hold stays its owner's.
         pipeline::to_lead(ctx, &parent, reason)?;
     }
     Ok(())
