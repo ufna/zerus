@@ -367,7 +367,7 @@ fn a_terminal_fact_and_the_project_fact_coexist() {
     };
     a.tick(&mut h.store, &mut p, TEAM, 1000, false).unwrap();
     assert_eq!(p.calls, 1);
-    a.terminal_refused(TEAM, "m1", None, 1000).unwrap();
+    a.terminal_refused(TEAM, "m1", None, None, 1000).unwrap();
     a.tick(&mut h.store, &mut p, TEAM, 1000 + 30_000, false).unwrap();
     assert_eq!(p.calls, 1, "the project fact gates the pass");
     assert!(a.ledger.get(TEAM, "terminal:m1").unwrap().is_some());
