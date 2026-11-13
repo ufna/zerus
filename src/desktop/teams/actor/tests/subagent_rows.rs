@@ -307,8 +307,9 @@ fn an_unclassified_source_is_unknown() {
 /// A producer's `subagent_source` values, read from production code only,
 /// whatever form writes them: a JSON field, an index assignment with or
 /// without spaces, a match arm or an `if` inside the value, and in every
-/// crate that could produce a row. A value the guard cannot read statically
-/// (built by `format!`, held in a variable) is a failure, not a silent pass.
+/// crate that could produce a row. A value whose alternatives are not all
+/// literals — built by `format!`, held in a variable, or mixed with one — is
+/// a failure, not a silent pass.
 mod source_text {
     use std::path::{Path, PathBuf};
 
@@ -403,38 +404,210 @@ mod source_text {
         text.trim().to_owned()
     }
 
-    /// The string literals in a value expression, unescaped for these
-    /// simple values.
-    pub(super) fn literals(expression: &str) -> Vec<String> {
-        let bytes = expression.as_bytes();
-        let mut found = Vec::new();
-        let mut index = 0;
-        while index < bytes.len() {
-            if bytes[index] != b'"' {
-                index += 1;
+    /// The string literals of a value whose every alternative is a literal, or
+    /// why the guard cannot settle it.
+    pub(super) fn settled(value: &str) -> Result<Vec<String>, String> {
+        let value = wrapped(value.trim());
+        if let Some(literal) = literal(value) {
+            return Ok(vec![literal]);
+        }
+        if plain(value) {
+            return Ok(Vec::new());
+        }
+        if value.starts_with("if ") {
+            return branches(value);
+        }
+        if value.starts_with("match ") {
+            return arms(value);
+        }
+        Err(format!("an alternative the guard cannot settle: {value}"))
+    }
+
+    /// The inside of the wrappers a value is written through.
+    fn wrapped(mut value: &str) -> &str {
+        loop {
+            let inner = if let Some(rest) = value.strip_prefix("json!") {
+                rest.trim_start()
+            } else if let Some(rest) = value.strip_prefix("Some(") {
+                return rest.strip_suffix(')').map(str::trim).unwrap_or(value);
+            } else if value.starts_with('(') || value.starts_with('{') {
+                value
+            } else {
+                return value;
+            };
+            if !inner.starts_with('(') && !inner.starts_with('{') {
+                return value;
+            }
+            let close = if inner.starts_with('(') { ')' } else { '}' };
+            if inner.ends_with(close)
+                && matching(inner, 0).is_some_and(|end| end + 1 == inner.len())
+            {
+                value = &inner[1..inner.len() - 1];
                 continue;
             }
-            let start = index + 1;
-            index = start;
-            let mut literal = String::new();
-            while index < bytes.len() && bytes[index] != b'"' {
-                if bytes[index] == b'\\' && index + 1 < bytes.len() {
-                    index += 1;
-                }
-                literal.push(bytes[index] as char);
-                index += 1;
-            }
-            found.push(literal);
-            index += 1;
+            return inner;
         }
-        found
+    }
+
+    fn literal(value: &str) -> Option<String> {
+        let mut chars = value.chars();
+        if chars.next() != Some('"') {
+            return None;
+        }
+        let mut literal = String::new();
+        let mut escaped = false;
+        for character in chars {
+            if escaped {
+                literal.push(character);
+                escaped = false;
+            } else if character == '\\' {
+                escaped = true;
+            } else if character == '"' {
+                return Some(literal);
+            } else {
+                literal.push(character);
+            }
+        }
+        None
+    }
+
+    fn plain(value: &str) -> bool {
+        matches!(value, "true" | "false" | "None")
+            || (!value.is_empty()
+                && value.chars().all(|character| {
+                    character.is_ascii_digit() || character == '.' || character == '-'
+                }))
+    }
+
+    fn branches(value: &str) -> Result<Vec<String>, String> {
+        let body = value
+            .strip_prefix("if")
+            .and_then(|rest| block(rest))
+            .ok_or_else(|| format!("an if whose body is not a block: {value}"))?;
+        let mut literals = settled(body)?;
+        let rest =
+            &value[block_end(value).ok_or_else(|| format!("an if without its body: {value}"))?..];
+        let rest = rest.trim_start();
+        if let Some(rest) = rest.strip_prefix("else") {
+            let rest = rest.trim_start();
+            literals.extend(if rest.starts_with("if ") {
+                branches(rest)?
+            } else {
+                let body = rest
+                    .strip_prefix('{')
+                    .and_then(|inner| inner.strip_suffix('}'))
+                    .ok_or_else(|| format!("an else whose body is not a block: {value}"))?;
+                settled(body)?
+            });
+        }
+        Ok(literals)
+    }
+
+    fn arms(value: &str) -> Result<Vec<String>, String> {
+        let open = value
+            .find('{')
+            .ok_or_else(|| format!("a match without arms: {value}"))?;
+        let end = matching(value, open).ok_or_else(|| format!("unclosed match: {value}"))?;
+        let mut literals = Vec::new();
+        let body = &value[open + 1..end];
+        let mut rest = body;
+        loop {
+            rest = rest.trim_start();
+            if rest.is_empty() {
+                break;
+            }
+            let arrow = rest
+                .find("=>")
+                .ok_or_else(|| format!("a match arm without =>: {value}"))?;
+            let arm = rest[arrow + 2..].trim_start();
+            let (arm, after) = split_arm(arm);
+            literals.extend(settled(arm)?);
+            rest = after;
+        }
+        Ok(literals)
+    }
+
+    /// One match arm's value and the rest after its comma.
+    fn split_arm(arm: &str) -> (&str, &str) {
+        let mut depth = 0i32;
+        let mut in_string = false;
+        let mut escaped = false;
+        for (index, byte) in arm.bytes().enumerate() {
+            if in_string {
+                if escaped {
+                    escaped = false;
+                } else if byte == b'\\' {
+                    escaped = true;
+                } else if byte == b'"' {
+                    in_string = false;
+                }
+                continue;
+            }
+            match byte {
+                b'"' => in_string = true,
+                b'(' | b'[' | b'{' => depth += 1,
+                b')' | b']' | b'}' => depth -= 1,
+                b',' if depth == 0 => {
+                    return (arm[..index].trim_end(), &arm[index + 1..]);
+                }
+                _ => {}
+            }
+        }
+        (arm.trim_end(), "")
+    }
+
+    /// The block an `if` or `match` head is followed by.
+    fn block<'a>(rest: &'a str) -> Option<&'a str> {
+        let open = rest.find('{')?;
+        let end = matching(rest, open)?;
+        Some(&rest[open + 1..end])
+    }
+
+    /// The byte just after the block that follows an `if`.
+    fn block_end(value: &str) -> Option<usize> {
+        let open = value.find('{')?;
+        matching(value, open).map(|end| end + 1)
+    }
+
+    /// The index of the bracket that closes the one at `open`, through strings
+    /// and nested brackets.
+    fn matching(text: &str, open: usize) -> Option<usize> {
+        let bytes = text.as_bytes();
+        let mut depth = 0i32;
+        let mut in_string = false;
+        let mut escaped = false;
+        for index in open..bytes.len() {
+            let byte = bytes[index];
+            if in_string {
+                if escaped {
+                    escaped = false;
+                } else if byte == b'\\' {
+                    escaped = true;
+                } else if byte == b'"' {
+                    in_string = false;
+                }
+                continue;
+            }
+            match byte {
+                b'"' => in_string = true,
+                b'(' | b'[' | b'{' => depth += 1,
+                b')' | b']' | b'}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return Some(index);
+                    }
+                }
+                _ => {}
+            }
+        }
+        None
     }
 }
 
 /// Every `subagent_source` a producer writes, in every form and crate, is one
 /// the reader classifies; every classified one is written. A producer that
-/// gains a value, or writes one the guard cannot read, fails here before a
-/// member is read wrongly.
+/// gains a value, or writes an alternative the guard cannot settle, fails
+/// here before a member is read wrongly.
 #[test]
 fn every_subagent_source_a_producer_writes_is_classified() {
     let mut written = std::collections::BTreeSet::new();
@@ -447,18 +620,9 @@ fn every_subagent_source_a_producer_writes_is_classified() {
             None => &text[..],
         };
         for (line, expression) in source_text::written(production) {
-            let literals = source_text::literals(&expression);
-            assert!(
-                !literals.is_empty(),
-                "{}:{line}: a subagent_source value built at runtime cannot be classified: {expression}",
-                path.display()
-            );
+            let literals = source_text::settled(&expression)
+                .unwrap_or_else(|why| panic!("{}:{line}: {why}", path.display()));
             for literal in literals {
-                assert!(
-                    !literal.contains('{'),
-                    "{}:{line}: a built subagent_source value cannot be classified: {expression}",
-                    path.display()
-                );
                 written.insert(literal);
             }
         }
@@ -470,4 +634,55 @@ fn every_subagent_source_a_producer_writes_is_classified() {
     assert!(SOURCES
         .iter()
         .all(|(s, m)| m.is_some() || *s == "unavailable"));
+}
+
+/// The forms the review kept apart: a read writes nothing; the four write
+/// forms are read or refused, never accepted silently.
+#[test]
+fn the_source_guard_reads_every_form_and_refuses_an_alternative_it_cannot_settle() {
+    use source_text::{settled, written};
+    let value = |source: &str| {
+        let found = written(source);
+        assert_eq!(found.len(), 1, "{source}");
+        found[0].1.clone()
+    };
+    // A read of the key, not a value.
+    assert!(
+        written(r#"if string(session, "subagent_source") != "hook_profiles" { return; }"#)
+            .is_empty()
+    );
+    // A JSON field, a spaced and an unspaced index assignment, a match arm.
+    for (source, expected) in [
+        (
+            r#"result = json!({"subagent_source":"hooks"});"#,
+            vec!["hooks"],
+        ),
+        (
+            r#"result["subagent_source"] = json!("hook_profiles");"#,
+            vec!["hook_profiles"],
+        ),
+        (
+            r#"result["subagent_source"]=json!("dsh_native");"#,
+            vec!["dsh_native"],
+        ),
+        (
+            r#"result["subagent_source"] = json!(match kind { "a" => "hooks", _ => "kimi_native" });"#,
+            vec!["hooks", "kimi_native"],
+        ),
+        (
+            r#"result["subagent_source"] = json!(if native { "hooks" } else { "mixed_hooks" });"#,
+            vec!["hooks", "mixed_hooks"],
+        ),
+    ] {
+        assert_eq!(settled(&value(source)).unwrap(), expected, "{source}");
+    }
+    // The three forms the guard must refuse: mixed, dynamic, interpolated.
+    for source in [
+        r#"result["subagent_source"] = json!(if known { "hooks" } else { runtime_source });"#,
+        r#"result["subagent_source"] = json!(source);"#,
+        r#"result["subagent_source"] = json!(format!("hook_{}", kind));"#,
+    ] {
+        let why = settled(&value(source)).expect_err(source);
+        assert!(why.contains("cannot settle"), "{source}: {why}");
+    }
 }

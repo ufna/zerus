@@ -2498,7 +2498,7 @@ unknown counts remain unknown. An unknown child never keeps its parent from Read
 A Claude child that stops on a provider error, such as a usage limit, gets no
 SubagentStop: its StopFailure, or a `failed` entry for its current start in the
 workflow journal with no newer child event, settles it as **Error** with that
-message, and a later event of the same child resumes it. Ordinary child
+message, and any later event of the same child but its Start resumes it. Ordinary child
 results/errors stay out of the attention count, while explicit input/approval
 requests remain visible. DeepSeek
 continuable children can receive messages through the native API with parent

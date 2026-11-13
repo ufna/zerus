@@ -17,8 +17,7 @@ fn produced() -> Value {
         .lines()
         .find_map(|line| line.split_once("SUBAGENT-ORDER ").map(|(_, rows)| rows))
         .expect("the child printed its rows");
-    let value: Value = serde_json::from_str(line).expect("the rows are one JSON object");
-    value["rows"].clone()
+    serde_json::from_str(line).expect("the rows are one JSON object")
 }
 
 /// (row, source, complete flag, count, unsettled, free, unknown fact, seen working)
@@ -32,7 +31,7 @@ const EXPECTED: [(
     bool,
     Option<Fact>,
     Option<bool>,
-); 11] = [
+); 18] = [
     // Claude Code: both orders of one child's events leave it ended.
     (
         "claude_start_stop",
@@ -64,6 +63,28 @@ const EXPECTED: [(
         None,
         Some(false),
     ),
+    // A Claude StopFailure ends the child as an error; its late Start keeps it.
+    (
+        "claude_stop_failure_start",
+        "hooks",
+        true,
+        Some(0),
+        false,
+        true,
+        None,
+        Some(false),
+    ),
+    // A child already working is untouched by another Start.
+    (
+        "claude_working_start",
+        "hooks",
+        true,
+        Some(1),
+        false,
+        false,
+        None,
+        None,
+    ),
     // Codex: its events name only the child's ID; the same holds.
     (
         "codex_start_stop",
@@ -79,6 +100,38 @@ const EXPECTED: [(
         "codex_stop_start",
         "hooks",
         true,
+        Some(0),
+        false,
+        true,
+        None,
+        Some(false),
+    ),
+    // An Interrupt leaves a working child whose display is unknown, which is
+    // history; its late Start keeps that, while another event resumes it.
+    (
+        "codex_interrupt_start",
+        "hooks",
+        false,
+        Some(0),
+        false,
+        true,
+        None,
+        Some(false),
+    ),
+    (
+        "codex_interrupt_tool",
+        "hooks",
+        true,
+        Some(1),
+        false,
+        false,
+        None,
+        None,
+    ),
+    (
+        "codex_stop_failure_start",
+        "hooks",
+        false,
         Some(0),
         false,
         true,
@@ -120,6 +173,30 @@ const EXPECTED: [(
         None,
         Some(false),
     ),
+    // A verified process exit ends the child with no hook; its late Start
+    // keeps that end and its provenance (an unknown count is history here).
+    (
+        "external_process_end_start",
+        "hooks",
+        false,
+        Some(0),
+        false,
+        true,
+        None,
+        Some(false),
+    ),
+    // The Kimi catalog's removal writes `unknown`, not an end; a raw Start
+    // turns it working (no supported Kimi hook names a native ID).
+    (
+        "kimi_removed_start",
+        "kimi_native",
+        true,
+        Some(1),
+        false,
+        false,
+        None,
+        None,
+    ),
     // A Start for a child pruned above the cap has no ended entry to meet.
     (
         "claude_pruned_start",
@@ -156,7 +233,9 @@ const EXPECTED: [(
 
 #[test]
 fn a_start_for_an_ended_child_never_counts_as_active_again() {
-    let rows = produced();
+    let produced = produced();
+    let rows = &produced["rows"];
+    let evidence = &produced["evidence"];
     for (name, source, complete, count, unsettled, free, unknown, seen) in EXPECTED {
         let row = &rows[name];
         assert_eq!(row["subagent_source"], source, "{name}");
@@ -168,9 +247,40 @@ fn a_start_for_an_ended_child_never_counts_as_active_again() {
         assert_eq!(facts.unknown(), unknown, "{name}");
         assert_eq!(facts.seen().map(|seen| seen.working), seen, "{name}");
     }
+    // The late announcement is written back, and an end keeps its display and
+    // its provenance.
+    assert_eq!(evidence["claude_stop_start"]["announced"], true);
+    assert_eq!(evidence["claude_stop_start"]["state"], "finished");
+    assert_eq!(evidence["claude_stop_failure_start"]["state"], "finished");
+    assert_eq!(
+        evidence["claude_stop_failure_start"]["display_state"],
+        "error"
+    );
+    assert_eq!(evidence["codex_interrupt_start"]["state"], "working");
+    assert_eq!(
+        evidence["codex_interrupt_start"]["display_state"],
+        "unknown"
+    );
+    assert_eq!(
+        evidence["codex_stop_failure_start"]["display_state"],
+        "unknown"
+    );
+    assert_eq!(
+        evidence["external_process_end_start"]["before"]["state"],
+        "ended"
+    );
+    assert_eq!(
+        evidence["external_process_end_start"]["after"]["state"],
+        "ended"
+    );
+    assert_eq!(
+        evidence["external_process_end_start"]["after"]["completion_source"],
+        "original_process_exit"
+    );
+    assert_eq!(evidence["kimi_removed_start"]["before"]["state"], "unknown");
+    assert_eq!(evidence["kimi_removed_start"]["after"]["state"], "working");
     // The two orders of one child are indistinguishable to the member: both
     // leave it free, which is what hands it its next task.
-    let rows = &rows;
     assert_eq!(
         Facts::of(&rows["claude_stop_start"]).free(),
         Facts::of(&rows["claude_start_stop"]).free(),
