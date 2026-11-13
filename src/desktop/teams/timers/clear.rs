@@ -19,8 +19,41 @@ pub(super) struct Sweep {
     team: Option<String>,
     after_team: String,
     after_node: u32,
+    /// Keys of the current team's sweep that got no final answer.
+    unanswered: u32,
+    /// The last of them, with its reason.
+    last: Option<(u32, String)>,
+    /// Teams whose sweep reached its end since the actor last took them.
+    finished: Vec<Finished>,
+}
+/// One team's sweep that reached the end of its keys: how many got no
+/// final answer (cutting over, or no answer), and the last of them. The
+/// actor writes or clears the team's service item from it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(in crate::desktop::teams) struct Finished {
+    pub team: String,
+    pub unanswered: u32,
+    pub last: Option<(u32, String)>,
 }
 impl Sweep {
+    /// The finished sweeps, taken once.
+    pub(super) fn take_finished(&mut self) -> Vec<Finished> {
+        std::mem::take(&mut self.finished)
+    }
+    fn miss(&mut self, node: u32, why: &str) {
+        self.unanswered = self.unanswered.saturating_add(1);
+        self.last = Some((node, why.into()));
+    }
+    fn finish(&mut self, team: String) {
+        let unanswered = std::mem::take(&mut self.unanswered);
+        let last = self.last.take();
+        self.finished.push(Finished {
+            team,
+            unanswered,
+            last,
+        });
+        self.next_team();
+    }
     fn current(&mut self, store: &Store) -> Result<Option<String>> {
         if self.team.is_none() {
             let mut next = store.keyed_teams(&self.after_team, 1)?.into_iter().next();
@@ -37,6 +70,8 @@ impl Sweep {
     fn next_team(&mut self) {
         self.team = None;
         self.after_node = 0;
+        self.unanswered = 0;
+        self.last = None;
     }
 }
 
@@ -67,7 +102,17 @@ pub(super) fn step(
         let (state, reason) = match effects.clear(&keyed.task, &request) {
             Answer::Cleared => (KeyClearState::Cleared, String::new()),
             Answer::Refused(why) => (KeyClearState::Refused, refusal(&why)),
-            Answer::CuttingOver | Answer::None(_) => continue,
+            Answer::CuttingOver => {
+                s.miss(
+                    keyed.node,
+                    "The task's project is being moved; the key is cleared on a later sweep.",
+                );
+                continue;
+            }
+            Answer::None(why) => {
+                s.miss(keyed.node, &why);
+                continue;
+            }
         };
         let op = Operation::RecordKeyClear {
             node: keyed.node,
@@ -78,7 +123,7 @@ pub(super) fn step(
     }
     if page.len() < PAGE as usize {
         store.settle_keyed(&id)?;
-        s.next_team();
+        s.finish(id);
     }
     Ok(())
 }

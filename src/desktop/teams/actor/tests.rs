@@ -165,6 +165,11 @@ mod cancel_refusal;
 
 mod terminal_pruning;
 
+mod service_items;
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub(super) mod producers;
+
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 mod cancel_recovery;
 
@@ -173,6 +178,10 @@ mod handles;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 mod real_rows;
 mod retry_cards;
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+mod retired_stage;
+
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub(in crate::desktop::teams) mod rows;
 #[cfg(any(target_os = "linux", target_os = "macos"))]

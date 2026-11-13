@@ -287,6 +287,22 @@ fn a_store_marked_before_the_card_decisions_gains_their_column() {
     assert_eq!(marker(&h), Some(EXTENSION));
 }
 
+/// A store marked by the hold owners' layout (version 11) gains the index
+/// that reads its key refusals newest first in one step.
+#[test]
+fn a_store_marked_before_the_key_refusal_order_gains_its_index() {
+    let mut h = stopped();
+    let full = schema(&h);
+    db(&h)
+        .execute_batch("DROP INDEX key_refusals_newest; UPDATE timers_extension SET version=11;")
+        .unwrap();
+    let before = transitions();
+    reopen(&mut h);
+    assert_eq!(transitions(), before + 1);
+    assert_eq!(schema(&h), full, "the index, as a new store has it");
+    assert_eq!(marker(&h), Some(EXTENSION));
+}
+
 #[test]
 fn a_marker_newer_than_this_program_refuses_the_open_and_writes_nothing() {
     let h = stopped();
@@ -657,4 +673,215 @@ fn the_step_to_layout_10_leaves_a_held_or_started_return_alone() {
         assert_ne!(state(&h), DecisionState::Settled, "{case}");
         assert!(handed_back(&h).is_empty(), "{case}");
     }
+}
+
+/// The step to layout 11 gives each stored hold an owner: a held node with
+/// an unsettled decision held for that decision, which now holds it by being
+/// pending; any other held node, live or archived, the person's.
+#[test]
+fn the_step_to_layout_11_gives_each_stored_hold_its_owner() {
+    let mut h = Harness::new();
+    let lead = h.bind("lead");
+    h.bind("m1");
+    let decided = h.add(&person(), 1);
+    h.run(
+        &lead,
+        Operation::Cancel {
+            node: decided,
+            reason: "Not needed".into(),
+        },
+    )
+    .unwrap();
+    let held = h.add(&person(), 2);
+    let archived = h.add(&person(), 3);
+    h.cancel_fact(archived);
+    let stored = |h: &Harness, table: &str, node: u32| -> (bool, Option<String>, bool) {
+        db(h)
+            .query_row(
+                &format!("SELECT hold,hold_owner,hand_back FROM {table} WHERE team=?1 AND id=?2"),
+                params![TEAM, node],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap()
+    };
+    let in_archive: bool = db(&h)
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM node_archive WHERE team=?1 AND id=?2)",
+            params![TEAM, archived],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(in_archive);
+    db(&h)
+        .execute_batch(&format!(
+            "UPDATE nodes SET hold=1 WHERE team='{TEAM}' AND id IN ({decided},{held});
+             UPDATE node_archive SET hold=1 WHERE team='{TEAM}' AND id={archived};
+             ALTER TABLE nodes DROP COLUMN hand_back; ALTER TABLE node_archive DROP COLUMN hand_back;
+             ALTER TABLE nodes DROP COLUMN hold_owner; ALTER TABLE node_archive DROP COLUMN hold_owner;
+             UPDATE timers_extension SET version=10;"
+        ))
+        .unwrap();
+    let before = transitions();
+    reopen(&mut h);
+    assert_eq!(transitions(), before + 1);
+    assert_eq!(marker(&h), Some(EXTENSION));
+    assert_eq!(stored(&h, "nodes", decided), (false, None, false));
+    assert!(h.node(decided).hold, "held by its pending Cancel");
+    assert_eq!(
+        stored(&h, "nodes", held),
+        (true, Some("person".into()), false)
+    );
+    assert_eq!(
+        stored(&h, "node_archive", archived),
+        (true, Some("person".into()), false)
+    );
+    refused_release(&mut h, &lead, held);
+}
+fn refused_release(h: &mut Harness, lead: &Actor, node: u32) {
+    let error = h.run(lead, Operation::Release { node }).unwrap_err();
+    assert_eq!(error.code, zerus_team_plan::problem::code::NOT_ALLOWED);
+    h.run(&person(), Operation::Release { node }).unwrap();
+    assert!(!h.node(node).hold);
+}
+
+/// A trace alone proves nothing: a hand-back's item, effect or pipeline step
+/// that no journal record places (here none of them has the operation's row
+/// that made it) leaves the hold the person's, whatever the trace's kind or
+/// generation, and the lead's Release says why it is refused. The stores the
+/// old commits wrote are in `legacy_holds`.
+#[test]
+fn a_hand_back_trace_without_its_record_leaves_the_hold_the_persons() {
+    let mut h = Harness::new();
+    let lead = h.bind("lead");
+    for member in ["m1", "m2", "m3"] {
+        h.bind(member);
+    }
+    let mut nodes = Vec::new();
+    for n in 1..=15 {
+        nodes.push(h.add(&person(), n));
+    }
+    let kinds = [
+        "return_without_holder:91",
+        "member_removed:92",
+        "conflict_holder_removed:93",
+        "verdict_holder_removed:94",
+        "cancel_refused:95",
+    ];
+    let actor = r#"{"kind":"service","person":"local","team":"t"}"#;
+    for (node, kind) in nodes.iter().zip(kinds) {
+        db(&h)
+            .execute(
+                "INSERT INTO inbox(team,kind,node,generation,actor,text,created_ms) VALUES(?1,?2,?3,1,?4,'Handed back',1)",
+                params![TEAM, kind, node, actor],
+            )
+            .unwrap();
+    }
+    // A reopen that was not delivered; the delivered one (node 12) is no trace.
+    for (node, member, state) in [
+        (nodes[5], "m1", "refused"),
+        (nodes[6], "m1", "uncertain"),
+        (nodes[7], "m2", "cutting_over"),
+        (nodes[12], "m3", "submitted"),
+    ] {
+        db(&h)
+            .execute(
+                "INSERT INTO effects(team,node,member,generation,request_id,actor,kind,created_ms,state) VALUES(?1,?2,?3,1,?4,?5,'reopen',1,?6)",
+                params![TEAM, node, member, uuid::Uuid::new_v4().to_string(), actor, state],
+            )
+            .unwrap();
+    }
+    // A pipeline waiting on the person or on a stage; one active without a
+    // stage (node 13) is no trace.
+    for (node, state, stage) in [
+        (nodes[8], "person", None),
+        (nodes[9], "active", Some(nodes[14])),
+        (nodes[13], "active", None),
+    ] {
+        db(&h)
+            .execute(
+                "INSERT INTO pipeline_runs(team,node,generation,state,stage) VALUES(?1,?2,1,?3,?4)",
+                params![TEAM, node, state, stage],
+            )
+            .unwrap();
+    }
+    // An earlier generation's item is no trace of the hold it has now, and
+    // an uncertain delivery's item is filed by ordinary hand-outs too.
+    db(&h)
+        .execute_batch(&format!(
+            "UPDATE nodes SET generation=2 WHERE team='{TEAM}' AND id={};
+             INSERT INTO inbox(team,kind,node,generation,actor,text,created_ms) VALUES('{TEAM}','cancel_refused:96',{},1,'{actor}','Old',1);
+             INSERT INTO inbox(team,kind,node,generation,actor,text,created_ms) VALUES('{TEAM}','delivery_uncertain',{},1,'{actor}','Unknown',1);",
+            nodes[11], nodes[11], nodes[14]
+        ))
+        .unwrap();
+    db(&h)
+        .execute_batch(&format!(
+            "UPDATE nodes SET hold=1 WHERE team='{TEAM}';
+             ALTER TABLE nodes DROP COLUMN hand_back; ALTER TABLE node_archive DROP COLUMN hand_back;
+             ALTER TABLE nodes DROP COLUMN hold_owner; ALTER TABLE node_archive DROP COLUMN hold_owner;
+             UPDATE timers_extension SET version=10;"
+        ))
+        .unwrap();
+    reopen(&mut h);
+    assert_eq!(marker(&h), Some(EXTENSION));
+    let stored = |h: &Harness, node: u32| -> (bool, Option<String>, bool) {
+        db(h)
+            .query_row(
+                "SELECT hold,hold_owner,hand_back FROM nodes WHERE team=?1 AND id=?2",
+                params![TEAM, node],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap()
+    };
+    let persons = (true, Some("person".to_owned()), false);
+    for (i, node) in nodes.iter().enumerate() {
+        assert_eq!(stored(&h, *node), persons, "node {i}");
+        assert!(h.node(*node).hold, "node {i}");
+    }
+    let error = h
+        .run(&lead, Operation::Release { node: nodes[0] })
+        .unwrap_err();
+    assert!(
+        error.message.contains("before holds had owners"),
+        "{}",
+        error.message
+    );
+}
+
+/// A store that is really at layout 9 (no hold owner, no hand-back column)
+/// with a Return its holder no longer reads: the step to 10 hands it back in
+/// that layout's own form, which no journal row records, so the step to 11
+/// leaves it the person's: the lead's Release is refused, the person's ends
+/// it.
+#[test]
+fn a_layout_9_store_with_a_stranded_return_opens_and_its_hold_is_the_persons() {
+    let mut h = Harness::new();
+    let (node, seq, lead) = old_return(&mut h, true);
+    db(&h)
+        .execute_batch(
+            "ALTER TABLE cards DROP COLUMN decisions;
+             ALTER TABLE nodes DROP COLUMN hand_back; ALTER TABLE node_archive DROP COLUMN hand_back;
+             ALTER TABLE nodes DROP COLUMN hold_owner; ALTER TABLE node_archive DROP COLUMN hold_owner;
+             UPDATE timers_extension SET version=9;",
+        )
+        .unwrap();
+    reopen(&mut h);
+    assert_eq!(marker(&h), Some(EXTENSION));
+    assert_eq!(handed_back(&h), [format!("return_without_holder:{seq}")]);
+    let stored: (bool, Option<String>, bool) = db(&h)
+        .query_row(
+            "SELECT hold,hold_owner,hand_back FROM nodes WHERE team=?1 AND id=?2",
+            params![TEAM, node],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        stored,
+        (true, Some("person".to_owned()), false),
+        "the person's"
+    );
+    let error = h.run(&lead, Operation::Release { node }).unwrap_err();
+    assert_eq!(error.code, code::NOT_ALLOWED);
+    h.run(&person(), Operation::Release { node }).unwrap();
+    assert!(!h.node(node).hold);
 }

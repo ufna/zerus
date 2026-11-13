@@ -113,6 +113,9 @@ fn a_late_observation_never_restores_a_retired_pipeline_stage() {
         }
         h.observe(parent, TaskStage::Todo);
         h.observe(stage, TaskStage::InProgress);
+        // A retired stage whose task is bound waits where the cancel step
+        // finds it, with one pending cancel; its late observation restores
+        // nothing of its pipeline.
         assert_eq!(
             h.store
                 .queue(TEAM, 200, None)
@@ -121,9 +124,17 @@ fn a_late_observation_never_restores_a_retired_pipeline_stage() {
                 .iter()
                 .map(|n| n.id)
                 .collect::<Vec<_>>(),
-            vec![parent]
+            vec![parent, stage]
         );
-        let bound: bool = h
+        let cancels: Vec<u32> = h
+            .store
+            .pending_cancels(TEAM, 200, 0)
+            .unwrap()
+            .iter()
+            .map(|r| r.node)
+            .collect();
+        assert_eq!(cancels, vec![stage]);
+        let still_bound: bool = h
             .store
             .db
             .as_ref()
@@ -134,7 +145,8 @@ fn a_late_observation_never_restores_a_retired_pipeline_stage() {
                 |r| r.get(0),
             )
             .unwrap();
-        assert!(!bound);
+        assert!(still_bound);
+        assert!(stages(&h, parent).iter().all(|n| n.id == stage));
         assert_eq!(
             h.store
                 .task_observation(TEAM, stage)

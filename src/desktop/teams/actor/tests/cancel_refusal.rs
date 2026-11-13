@@ -14,6 +14,8 @@ struct Adapter {
     facts: Vec<Fact>,
     pair: Attempt,
     reject_exit: bool,
+    /// The next team-cancel child replies with output that is no answer.
+    garbled: bool,
     cleared: Vec<u32>,
 }
 impl Ports for Adapter {
@@ -34,8 +36,12 @@ impl Ports for Adapter {
     }
     fn cancel(&mut self, t: &Team, pending: &Pending, original: &str) -> Result<Answer> {
         self.children += 1;
-        crate::desktop::teams::child::FIXTURE_EXIT.with(|slot| *slot.borrow_mut() = Some(
-            json!({"schema":1,"team":t.id,"node":pending.node,"state":"cancelled","error":"","attempt":self.pair.number,"attempt_id":self.pair.id}).to_string().into_bytes()));
+        let reply = if std::mem::take(&mut self.garbled) {
+            b"not a reply".to_vec()
+        } else {
+            json!({"schema":1,"team":t.id,"node":pending.node,"state":"cancelled","error":"","attempt":self.pair.number,"attempt_id":self.pair.id}).to_string().into_bytes()
+        };
+        crate::desktop::teams::child::FIXTURE_EXIT.with(|slot| *slot.borrow_mut() = Some(reply));
         self.native.run_cancel(t, pending, original)
     }
     fn record_cancel(&mut self, s: &mut Store, t: &Team, fact: &Fact, now: i64) -> Result<()> {
@@ -107,6 +113,7 @@ fn terminal(archived: bool) -> (Harness, Runtime, Adapter) {
             id: effect,
         },
         reject_exit: false,
+        garbled: false,
         cleared: vec![],
     };
     (h, runtime, p)
@@ -261,4 +268,73 @@ fn terminal_own_delivery_unobserved_is_recorded_as_cancelled_without_the_exit() 
         assert!(h.store.pending_cancels(TEAM, 16, 0).unwrap().is_empty());
         assert_eq!(p.cleared, vec![1]);
     }
+}
+
+/// A stopped team's cancel that halts is its own service item: it replaces
+/// the cancel's earlier retry item, and goes with its row once the decision
+/// no longer waits.
+#[test]
+fn a_halted_stopped_cancel_is_its_own_service_item_until_its_row_ends() {
+    let (mut h, mut runtime, mut p) = refused(false);
+    let row = h.store.pending_cancels(TEAM, 16, 0).unwrap().remove(0);
+    let subject = row.decision.to_string();
+    let read = |h: &Harness, now: i64| {
+        crate::desktop::teams::service_items(h.temp.path(), TEAM, Some(true), now)
+            .unwrap()
+            .items
+    };
+    // An earlier pass whose child gave no answer: the cancel's retry item.
+    p.garbled = true;
+    runtime.page(&mut h.store, &mut p, &[], 50, false).unwrap();
+    let earlier = read(&h, 50);
+    let kinds: Vec<(&str, &str, Option<u32>)> = earlier
+        .iter()
+        .map(|i| (i.kind.as_str(), i.subject.as_str(), i.node))
+        .collect();
+    assert_eq!(kinds, [("cancel_retry", subject.as_str(), Some(row.node))]);
+    // After its backoff the cancel is refused and its fact refused too.
+    p.reject_exit = true;
+    runtime
+        .page(&mut h.store, &mut p, &[], 60_100, false)
+        .unwrap();
+    let key = format!("cancel:{}", row.decision);
+    assert_eq!(
+        runtime.ledger.get(TEAM, &key).unwrap().unwrap().data["halted"],
+        true
+    );
+    let items = read(&h, 60_100);
+    let kinds: Vec<(&str, &str)> = items
+        .iter()
+        .map(|i| (i.kind.as_str(), i.subject.as_str()))
+        .collect();
+    assert_eq!(kinds, [("cancel_halted", subject.as_str())]);
+    assert!(
+        items[0].reason.contains("refused too"),
+        "{}",
+        items[0].reason
+    );
+    // The decision stops waiting through the store: a later service records
+    // the refusal with its reason.
+    h.run(
+        &service(),
+        Operation::RecordCancel {
+            node: row.node,
+            decision: row.decision,
+            state: crate::teams::ops::CancelState::Refused,
+            reason: "Refused under a later rule".into(),
+            attempt: row.attempt,
+            attempt_id: row.attempt_id.clone(),
+        },
+    )
+    .unwrap();
+    assert!(h.store.pending_cancels(TEAM, 16, 0).unwrap().is_empty());
+    // The cancel step alone, without the cleanup pass that would also
+    // remove an orphaned item: only the row's own end clears it here.
+    for pass in 0..20 {
+        runtime
+            .terminal_cancels(&mut h.store, &mut p, 60_100 + pass * 900_000)
+            .unwrap();
+    }
+    assert!(runtime.ledger.get(TEAM, &key).unwrap().is_none());
+    assert!(read(&h, 60_100).is_empty());
 }

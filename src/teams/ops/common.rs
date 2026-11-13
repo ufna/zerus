@@ -167,11 +167,16 @@ impl Context<'_> {
         if state != DecisionState::Settled {
             self.db
                 .execute(
-                    "UPDATE nodes SET requested=?3,hold=1 WHERE team=?1 AND id=?2",
+                    "UPDATE nodes SET requested=?3 WHERE team=?1 AND id=?2",
                     params![self.team.id, node, kind],
                 )
                 .map_err(storage)?;
         }
+        // A pending decision's hold is the decision's, read from it and never
+        // stored. A hand-back's hold belongs to this next decision, which
+        // takes it over (pending) or ends it (settled at once). An explicit
+        // hold stays.
+        rows::set_hand_back(self.db, &self.team.id, node, false)?;
         Ok(seq)
     }
     pub fn inbox(&self, node: u32, kind: &str, text: &str) -> Result<u64> {

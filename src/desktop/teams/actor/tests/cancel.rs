@@ -700,3 +700,60 @@ fn a_new_observation_is_progress_for_a_cached_stale_answer_even_when_the_pair_ma
     assert_eq!(p.facts.len(), 1);
     assert!(!p.facts[0].refused);
 }
+
+/// The service items of the team, as `hgs team status` reads them.
+fn service_items(h: &Harness, now: i64) -> Vec<crate::desktop::teams::ServiceItem> {
+    crate::desktop::teams::service_items(h.temp.path(), TEAM, Some(true), now)
+        .expect("the actor ledger writes service items")
+        .items
+}
+/// A stopped team's cancel that keeps failing is a service item, written
+/// with its failing row and cleared when the row ends; a live team's has
+/// its card instead and no item.
+#[test]
+fn a_stopped_teams_failing_cancel_is_a_service_item_until_its_row_ends() {
+    let (mut h, mut a, mut p) = setup();
+    h.run(&person(), crate::teams::ops::Operation::Stop)
+        .unwrap();
+    p.reply = Some(TaskReply::CuttingOver {
+        reason: "cutting\nover".into(),
+    });
+    a.terminal_cancels(&mut h.store, &mut p, 100).unwrap();
+    let items = service_items(&h, 100);
+    assert_eq!(items.len(), 1);
+    let item = &items[0];
+    assert_eq!(
+        (
+            item.kind.as_str(),
+            item.subject.as_str(),
+            item.node,
+            item.failures
+        ),
+        ("cancel_retry", "1", Some(1), 1)
+    );
+    assert_eq!(item.next_ms, Some(60_100));
+    assert!(item.current);
+    assert!(!item.reason.contains('\n'), "{}", item.reason);
+    let row = a.ledger.get(TEAM, "cancel:1").unwrap().unwrap();
+    assert_eq!(row.data["failures"], 1, "the item mirrors its row");
+    p.reply = Some(TaskReply::Refused {
+        reason: "delivery is unknown".into(),
+    });
+    a.terminal_cancels(&mut h.store, &mut p, 60_100).unwrap();
+    assert!(p.pending.is_empty());
+    assert!(a.ledger.get(TEAM, "cancel:1").unwrap().is_none());
+    assert!(service_items(&h, 60_100).is_empty(), "cleared with its row");
+}
+/// A live team's failing cancel has its card, never an item.
+#[test]
+fn a_live_teams_failing_cancel_writes_no_service_item() {
+    let (mut h, mut a, mut p) = setup();
+    p.reply = Some(TaskReply::CuttingOver {
+        reason: "cutting over".into(),
+    });
+    for now in [100, 60_100, 180_100] {
+        a.cancels(&mut h.store, &mut p, &h_team(), now).unwrap();
+    }
+    assert!(a.ledger.get(TEAM, "cancel:1").unwrap().is_some());
+    assert!(service_items(&h, 180_100).is_empty());
+}
