@@ -25,6 +25,7 @@ const TABLE: Record<string, { label: string; icon: string }> = {
   report_waiting: { label: "Report waiting", icon: "clock" },
   silent_lead: { label: "Lead not working", icon: "bell" },
   late_session: { label: "Late session", icon: "timer" },
+  rejected_merge: { label: "Rejected result is merged", icon: "git-branch" },
 };
 const PINNED = [...new Set([...waiting.rows, ...cards.rows].map((row) => row.kind))];
 

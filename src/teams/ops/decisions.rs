@@ -177,6 +177,17 @@ pub(super) fn integration(ctx: &mut Context<'_>) -> Result<()> {
         ));
     }
     integration::record(ctx, &permit, *node, Some(commit), &[])?;
+    if permit.provenance_only {
+        rows::rejected_merge(
+            ctx.db,
+            &ctx.team.id,
+            *node,
+            permit.decision,
+            &ctx.team.integration_branch,
+            &encode(ctx.actor)?,
+            ctx.now,
+        )?;
+    }
     integration::complete_merge(ctx, &permit)?;
     // The fact belongs to the accepted generation. A person's restore starts
     // a new round whose completion must not inherit this older merge.

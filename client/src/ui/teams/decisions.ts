@@ -23,6 +23,7 @@ export interface WaitingDecision {
 export const KNOWN_KINDS = [
   "note", "integration", "pipeline_acceptance", "launch_blocked", "launch_uncertain", "launch_capacity",
   "standing_confirmation", "team_actor_blocked", "report_waiting", "silent_lead", "late_session",
+  "rejected_merge",
 ] as const;
 
 /** The card's kind in words, keyed by the exact kind the store sends. A kind
@@ -41,6 +42,7 @@ export function waitingKindLabel(item: Pick<WaitingItem, "kind">): string {
     case "report_waiting": return tr("Report waiting");
     case "silent_lead": return tr("Lead not working");
     case "late_session": return tr("Late session");
+    case "rejected_merge": return tr("Rejected result is merged");
     default: return tr("Card: %1", item.kind);
   }
 }
@@ -59,6 +61,7 @@ export function waitingKindSentence(item: Pick<WaitingItem, "kind">): string {
     case "report_waiting": return tr("A member's report has waited for the lead's decision longer than the team allows.");
     case "silent_lead": return tr("The lead has not worked for a while although items wait in its inbox.");
     case "late_session": return tr("A member's session started after the team stopped or the member was removed; Zerus does not stop it.");
+    case "rejected_merge": return tr("The rejection did not undo the merge; only a revert on the integration branch removes it.");
     default: return tr("A card of a kind this version does not describe.");
   }
 }
@@ -78,6 +81,7 @@ export function waitingKindIcon(kind: string): string {
     case "report_waiting": return "clock";
     case "silent_lead": return "bell";
     case "late_session": return "timer";
+    case "rejected_merge": return "git-branch";
     default: return "info";
   }
 }

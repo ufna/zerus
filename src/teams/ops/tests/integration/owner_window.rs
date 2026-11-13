@@ -161,7 +161,11 @@ fn a_receipt_after_owner_rejection_is_only_late_provenance() {
         assert_eq!(h.store.card(TEAM, card).unwrap().unwrap(), rejected);
         assert_eq!(rejected.decision.as_deref(), Some("reject"));
         assert_eq!(journal(&h).len(), before + 1);
-        assert!(h.store.waiting(200, None).unwrap().rows.is_empty());
+        // The late fact is provenance, but the person is now told once: the
+        // only waiting card is the acknowledgement the merge deserves.
+        let waiting = h.store.waiting(200, None).unwrap().rows;
+        assert_eq!(waiting.len(), 1);
+        assert_eq!(waiting[0].card.kind, "rejected_merge");
         no_writes(&h);
         refused(h.run(&service(), receipt(node, seq)), code::INVALID_STATE);
     }
@@ -402,4 +406,202 @@ fn the_exact_card_lookup_is_indexed_and_an_older_v2_file_gains_the_index() {
     );
     h.run(&service(), receipt(node, seq)).unwrap();
     assert_fact(&h, seq, Some(COMMIT), &[]);
+}
+
+/// The owner cards opened for a merge that survived a rejection.
+fn rejected_merge_cards(h: &Harness) -> Vec<store::Card> {
+    h.store
+        .cards(TEAM, 200, None)
+        .unwrap()
+        .rows
+        .into_iter()
+        .filter(|card| card.kind == "rejected_merge")
+        .collect()
+}
+
+fn rejected_merge_items(h: &Harness) -> u32 {
+    h.store
+        .db
+        .as_ref()
+        .unwrap()
+        .query_row(
+            "SELECT count(*) FROM inbox WHERE team=?1 AND kind LIKE 'rejected_merge%'",
+            [TEAM],
+            |r| r.get(0),
+        )
+        .unwrap()
+}
+
+/// The integration card a rejected decision has: the merge fact keeps it open.
+fn open_integration_card(h: &Harness, node: u32, decision: u64) -> u64 {
+    let db = h.store.db.as_ref().unwrap();
+    db.execute(
+        "UPDATE decisions SET state='awaiting_owner',stopped_ready=1 WHERE seq=?1",
+        [decision],
+    )
+    .unwrap();
+    db.execute(
+        "INSERT INTO cards(team,kind,node,actor,text,state,created_ms,decision_seq,decisions)
+         VALUES(?1,'integration',?2,?3,'Approve integration of the accepted result.','open',1,?4,?5)",
+        params![TEAM, node, encode(&person()).unwrap(), decision, encode(&["approve", "reject"]).unwrap()],
+    )
+    .unwrap();
+    db.last_insert_rowid() as u64
+}
+
+#[test]
+fn a_merge_fact_then_a_rejection_opens_one_card_and_one_lead_item() {
+    let mut h = Harness::new();
+    let (node, _, seq) = accepted(&mut h);
+    // The merge was written while the delegation was active; the person's card
+    // then waits for an answer that keeps the merge fact.
+    h.run(&service(), receipt(node, seq)).unwrap();
+    let card = open_integration_card(&h, node, seq);
+    let integrated = h.node(node).integrated;
+    h.run(
+        &person(),
+        Operation::DecideCard {
+            card,
+            decision: "reject".into(),
+        },
+    )
+    .unwrap();
+    let branch = h.store.team(TEAM).unwrap().unwrap().integration_branch;
+    let cards = rejected_merge_cards(&h);
+    assert_eq!(cards.len(), 1);
+    let told = &cards[0];
+    assert_eq!(told.node, Some(node));
+    assert_eq!(told.decisions, ["acknowledged"]);
+    for fact in [COMMIT, &branch, &format!("node {node}")] {
+        assert!(told.text.contains(fact), "{}", told.text);
+    }
+    assert!(told.text.contains("did not undo the merge"));
+    assert!(told.text.contains(&format!("only a revert on {branch}")));
+    assert_eq!(rejected_merge_items(&h), 1);
+    assert_eq!(
+        h.store
+            .inbox(TEAM, 200, None)
+            .unwrap()
+            .rows
+            .into_iter()
+            .find(|item| item.kind == format!("rejected_merge:{seq}"))
+            .unwrap()
+            .text,
+        told.text
+    );
+    // Nothing else moved: the decision settles and the merge stays.
+    assert_eq!(decision(&h, seq).state, DecisionState::Settled);
+    assert_eq!(h.node(node).integrated, integrated);
+    // Acknowledge closes the card and changes nothing else.
+    let before = h.node(node);
+    h.run(
+        &person(),
+        Operation::DecideCard {
+            card: told.seq,
+            decision: "acknowledged".into(),
+        },
+    )
+    .unwrap();
+    assert_eq!(h.store.card(TEAM, told.seq).unwrap().unwrap().state, "closed");
+    assert_eq!(h.node(node), before);
+    assert_eq!(rejected_merge_cards(&h).len(), 1);
+    assert_eq!(rejected_merge_items(&h), 1);
+    assert_eq!(decision(&h, seq).state, DecisionState::Settled);
+    // A replay of the same fact opens nothing.
+    let replayed = rows::rejected_merge(
+        h.store.db.as_ref().unwrap(),
+        TEAM,
+        node,
+        seq,
+        &branch,
+        &encode(&person()).unwrap(),
+        1,
+    )
+    .unwrap();
+    assert!(!replayed);
+    assert_eq!(rejected_merge_cards(&h).len(), 1);
+    assert_eq!(rejected_merge_items(&h), 1);
+}
+
+#[test]
+fn a_rejection_then_the_late_merge_fact_opens_one_card_and_one_lead_item() {
+    let mut h = Harness::new();
+    let (node, _, seq) = accepted(&mut h);
+    let card = revoke(&mut h, node);
+    h.run(
+        &person(),
+        Operation::DecideCard {
+            card,
+            decision: "reject".into(),
+        },
+    )
+    .unwrap();
+    assert!(rejected_merge_cards(&h).is_empty());
+    let settled = decision(&h, seq);
+    let integrated = h.node(node).integrated;
+    h.run(&service(), receipt(node, seq)).unwrap();
+    let branch = h.store.team(TEAM).unwrap().unwrap().integration_branch;
+    let cards = rejected_merge_cards(&h);
+    assert_eq!(cards.len(), 1);
+    assert_eq!(cards[0].node, Some(node));
+    assert!(cards[0].text.contains(COMMIT));
+    assert!(cards[0].text.contains(&branch));
+    assert_eq!(rejected_merge_items(&h), 1);
+    // The fact stays provenance: the decision and the node do not move.
+    assert_eq!(decision(&h, seq), settled);
+    assert_eq!(h.node(node).integrated, integrated);
+    // A replay of the receipt is refused and opens nothing.
+    refused(h.run(&service(), receipt(node, seq)), code::INVALID_STATE);
+    assert_eq!(rejected_merge_cards(&h).len(), 1);
+    assert_eq!(rejected_merge_items(&h), 1);
+}
+
+#[test]
+fn a_rejection_without_a_merge_opens_nothing() {
+    let mut h = Harness::new();
+    let (node, _, seq) = accepted(&mut h);
+    let card = revoke(&mut h, node);
+    h.run(
+        &person(),
+        Operation::DecideCard {
+            card,
+            decision: "reject".into(),
+        },
+    )
+    .unwrap();
+    assert!(rejected_merge_cards(&h).is_empty());
+    assert_eq!(rejected_merge_items(&h), 0);
+    assert_eq!(decision(&h, seq).state, DecisionState::Settled);
+}
+
+#[test]
+fn two_rejected_decisions_of_one_node_and_generation_each_get_a_card_and_item() {
+    let mut h = Harness::new();
+    let (node, _, first) = accepted(&mut h);
+    h.run(&service(), receipt(node, first)).unwrap();
+    let db = h.store.db.as_ref().unwrap();
+    let generation: u32 = db
+        .query_row("SELECT generation FROM decisions WHERE seq=?1", [first], |r| r.get(0))
+        .unwrap();
+    // The first decision is settled, so the node can take another one in the
+    // same generation; the two must not collide on the inbox key.
+    db.execute(
+        "INSERT INTO decisions(team,node,generation,actor,kind,text,state,stopped_ready)
+         VALUES(?1,?2,?3,?4,'accept','A second acceptance',?5,1)",
+        params![TEAM, node, generation, encode(&person()).unwrap(), DecisionState::Settled],
+    )
+    .unwrap();
+    let second = db.last_insert_rowid() as u64;
+    db.execute(
+        "INSERT INTO integration_facts(decision,team,node,actor,commit_id,conflicts,created_ms)
+         VALUES(?1,?2,?3,?4,?5,?6,0)",
+        params![second, TEAM, node, encode(&service()).unwrap(), NEW_COMMIT, encode(&Vec::<String>::new()).unwrap()],
+    )
+    .unwrap();
+    let branch = h.store.team(TEAM).unwrap().unwrap().integration_branch;
+    let actor = encode(&person()).unwrap();
+    assert!(rows::rejected_merge(db, TEAM, node, first, &branch, &actor, 1).unwrap());
+    assert!(rows::rejected_merge(db, TEAM, node, second, &branch, &actor, 2).unwrap());
+    assert_eq!(rejected_merge_cards(&h).len(), 2);
+    assert_eq!(rejected_merge_items(&h), 2);
 }
