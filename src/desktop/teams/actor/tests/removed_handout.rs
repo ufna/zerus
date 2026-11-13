@@ -408,7 +408,7 @@ fn a_paused_members_hand_out_is_kept() {
     // zerus-63rru.86: the lead is told once that the paused member holds
     // started work; nothing else is sent.
     assert_eq!(items(&h).len(), 1, "{:?}", items(&h));
-    assert!(items(&h)[0].0.starts_with("member_left:1:m1:"));
+    assert!(items(&h)[0].0.starts_with("member_started:1:m1:"));
     assert_eq!(p.deliveries.len(), 1);
 }
 
