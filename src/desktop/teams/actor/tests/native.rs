@@ -366,7 +366,7 @@ fn a_project_limits_answer_carries_the_typed_cause() {
         outcome => panic!("the cause is beside the refusal: {outcome:?}"),
     }
     match delivery_result(Ended::Exited { code: 0, output: raw }, "effect") {
-        ports::DeliveryResult::ProjectLimit { reason } => {
+        super::super::ports::DeliveryResult::ProjectLimit { reason } => {
             assert!(reason.starts_with("project_agent_limit:"), "{reason:?}")
         }
         result => panic!("{result:?}"),
