@@ -245,6 +245,15 @@ fn insert(tx: &Connection, record: &Record, at: i64, state: &str, code: &str) ->
     Ok(())
 }
 
+/// The same three switches gate a final pre-admission refusal as well as a
+/// reservation. Off writes no outcome and cannot escalate a quiet question.
+fn allowed(tx: &Transaction<'_>, record: &Record, state: &Path) -> Result<bool> {
+    Ok(super::policy::enabled(tx)?
+        && !super::latch::latched(tx, &record.identity.session_id)?
+        && crate::state::question_routing::send_to_parent_at(state, &record.identity.session_id)
+            == Some(true))
+}
+
 /// The reservation, in the actor's admission transaction. The person's
 /// switches come first, read in this transaction: the global one and the
 /// person's latch on this child in the Store (zerus-sa9qn.50), and the
@@ -259,11 +268,7 @@ pub(super) fn reserve(
     at: i64,
     state: &Path,
 ) -> Result<Reservation> {
-    if !super::policy::enabled(tx)?
-        || super::latch::latched(tx, &record.identity.session_id)?
-        || crate::state::question_routing::send_to_parent_at(state, &record.identity.session_id)
-            != Some(true)
-    {
+    if !allowed(tx, record, state)? {
         return Ok(Reservation::Off);
     }
     if !room(tx, at)? {
@@ -285,8 +290,17 @@ pub(super) fn reserve(
 
 /// A final refusal before any admission: the route's fixed text or send is
 /// not valid, so it never routes.
-pub(super) fn refuse(db: &mut Connection, record: &Record, at: i64, code: &str) -> Result<()> {
+pub(super) fn refuse(
+    db: &mut Connection,
+    record: &Record,
+    at: i64,
+    code: &str,
+    state: &Path,
+) -> Result<bool> {
     let tx = db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    if !allowed(&tx, record, state)? {
+        return Ok(false);
+    }
     let mut recorded = true;
     if !known(&tx, &record.identity.key())? {
         recorded = room(&tx, at)?;
@@ -297,7 +311,7 @@ pub(super) fn refuse(db: &mut Connection, record: &Record, at: i64, code: &str) 
     // A full ledger keeps only its retention pass.
     tx.commit()?;
     ensure!(recorded, "question route ledger is full");
-    Ok(())
+    Ok(true)
 }
 
 /// What the actor's receipt says about a reserved route; `None` while it is

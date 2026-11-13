@@ -7,12 +7,11 @@ import org.json.JSONObject
  * No receipt, answer, retry or outgoing identity is created here. */
 object QuestionRouteActivity {
     const val source = "question_route_outcome"
-    private fun exact(value: JSONObject, vararg keys: String) = value.keySet() == keys.toSet()
+    private fun exact(value: JSONObject, vararg keys: String) = value.keys().asSequence().toSet() == keys.toSet()
     private fun uuid(value: Any?) = value is String && value != "00000000-0000-0000-0000-000000000000" &&
         value.matches(Regex("[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"))
     private fun text(value: Any?, bytes: Int) = value is String && value.isNotEmpty() && value.toByteArray(Charsets.UTF_8).size <= bytes
-    private fun number(value: Any?, min: Long, max: Long): Boolean = value is Number &&
-        value.toDouble().isFinite() && value.toDouble() == value.toLong().toDouble() && value.toLong() in min..max
+    private fun number(value: Any?, min: Long, max: Long): Boolean = (value is Int || value is Long) && (value as Number).toLong() in min..max
 
     fun label(line: JSONObject, sessionId: String): String? {
         if (!exact(line,"request_id","at","role","child","parent","question","outcome") || line.opt("role") != "child" ||
@@ -36,6 +35,17 @@ object QuestionRouteActivity {
         }
     }
 
+    private fun submitted(line: JSONObject, sessionId: String): Boolean {
+        val normalized = JSONObject(line.toString()).put("outcome","not_sent")
+        if (line.opt("role") == "parent") {
+            if (line.optJSONObject("parent")?.opt("session_id") != sessionId || !text(line.opt("text"),2048)) return false
+            normalized.remove("text")
+            normalized.put("role","child")
+            return label(normalized,line.optJSONObject("child")?.string("session_id").orEmpty()) != null
+        }
+        return label(normalized,sessionId) != null
+    }
+
     fun events(raw: JSONObject): List<Event> {
         if (raw.string("agent_id") !in listOf("","main") || raw.string("archive_id").isNotEmpty()) return emptyList()
         val lines = raw.optJSONArray("question_route_activity") ?: return emptyList()
@@ -44,11 +54,14 @@ object QuestionRouteActivity {
             val line = lines.optJSONObject(i) ?: return emptyList()
             // Submitted routes keep their existing presentation; these are the
             // new failure outcomes only, never another session's message.
-            if (!line.has("outcome")) return@map null
+            if (!line.has("outcome")) {
+                if (!submitted(line,raw.string("session_id"))) return emptyList()
+                return@map null
+            }
             val label = label(line,raw.string("session_id")) ?: return emptyList()
             val at = line.getDouble("at")/1000
             Event("route-${line.string("request_id")}", "System", listOf(label,line.getJSONObject("question").string("preview"),
-                line.getJSONObject("child").string("reference")).filter(String::isNotEmpty).joinToString("\n"), "", at, source=source)
+                line.getJSONObject("child").string("reference")).filter(String::isNotEmpty).joinToString("\n"), at.toString(), at, source=source)
         }
         return parsed.filterNotNull()
     }

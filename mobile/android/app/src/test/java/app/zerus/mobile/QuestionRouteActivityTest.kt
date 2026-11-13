@@ -31,6 +31,13 @@ class QuestionRouteActivityTest {
             }
         }
     }
+    @Test fun failedRoutesLeaveSupervisionAndNeedThePerson() {
+        val cases = contract.getJSONArray("decisions")
+        for (i in 0 until cases.length()) {
+            val case = cases.getJSONObject(i)
+            assertEquals(case.getString("state"),case.getBoolean("quiet"),ChildSessions.quiet(case.getJSONObject("row")))
+        }
+    }
     @Test fun noPartialListOrMoreThanTwentyLinesIsShown() {
         val good = contract.getJSONArray("activity").getJSONObject(0).getJSONObject("line")
         fun raw(lines: JSONArray) = JSONObject().put("session_id",contract.getString("session_id")).put("question_route_activity",lines)

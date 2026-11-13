@@ -156,6 +156,29 @@ pub(super) fn scan(root: &Path) -> Scan {
 mod tests {
     use super::*;
 
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn only_a_route_failure_revision_changes_the_watch_input() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let missing = scan(root);
+        assert!(!root.join("desktop").exists(), "a read never creates service state");
+        fs::create_dir(root.join("desktop")).unwrap();
+        let path = root.join("desktop/state.sqlite3");
+        let db = rusqlite::Connection::open(&path).unwrap();
+        fs::set_permissions(&path,fs::Permissions::from_mode(0o600)).unwrap();
+        db.execute_batch("CREATE TABLE desktop_question_route_outcome_revision(id INTEGER PRIMARY KEY,revision INTEGER);
+            INSERT INTO desktop_question_route_outcome_revision VALUES(1,0);
+            CREATE TABLE unrelated(value INTEGER); INSERT INTO unrelated VALUES(0);").unwrap();
+        let before = scan(root);
+        assert_ne!(before.global,missing.global);
+        db.execute("UPDATE unrelated SET value=1",[]).unwrap();
+        assert_eq!(scan(root),before,"ordinary Store writes never refresh the catalog");
+        db.execute("UPDATE desktop_question_route_outcome_revision SET revision=1",[]).unwrap();
+        assert_ne!(scan(root).global,before.global,"a settled failure refreshes the human request");
+    }
+
     /// zerus-ucck P3a: a session in the ID layout, and the label index, are
     /// inputs of `hgs watch` too.
     #[test]

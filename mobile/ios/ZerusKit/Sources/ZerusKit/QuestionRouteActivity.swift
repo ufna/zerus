@@ -37,17 +37,31 @@ public enum QuestionRouteActivity {
         default: return nil
         }
     }
+    private static func submitted(_ line: JSONObject, sessionId: String) -> Bool {
+        var normalized = line
+        normalized["outcome"] = .string("not_sent")
+        if line["role"] == .string("parent") {
+            guard line.object("parent")?["session_id"] == .string(sessionId), text(line["text"],2048) else { return false }
+            normalized.removeValue(forKey: "text")
+            normalized["role"] = .string("child")
+            return label(normalized,sessionId: line.object("child")?.string("session_id") ?? "") != nil
+        }
+        return label(normalized,sessionId: sessionId) != nil
+    }
     public static func events(_ raw: JSONObject) -> [Event] {
         guard ["","main"].contains(raw.string("agent_id")), raw.string("archive_id").isEmpty,
               let lines = raw["question_route_activity"]?.array, lines.count <= 20 else { return [] }
         var events: [Event] = []
         for value in lines {
             guard let line = value.object else { return [] }
-            if line["outcome"] == nil { continue }
+            if line["outcome"] == nil {
+                guard submitted(line,sessionId: raw.string("session_id")) else { return [] }
+                continue
+            }
             guard let label = label(line,sessionId: raw.string("session_id")) else { return [] }
             let body = [label,line.object("question")?.string("preview") ?? "",line.object("child")?.string("reference") ?? ""]
                 .filter { !$0.isEmpty }.joined(separator: "\n")
-            events.append(Event(id: "route-\(line.string("request_id"))",role: "System",text: body,time: "",
+            events.append(Event(id: "route-\(line.string("request_id"))",role: "System",text: body,time: String(Double(line.int64("at"))/1000),
                                 at: Double(line.int64("at"))/1000,source: source))
         }
         return events

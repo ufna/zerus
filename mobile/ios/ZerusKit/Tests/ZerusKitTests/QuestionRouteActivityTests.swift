@@ -24,6 +24,12 @@ final class QuestionRouteActivityTests: XCTestCase {
             }
         }
     }
+    func testFailedRoutesLeaveSupervisionAndNeedThePerson() throws {
+        let contract = try XCTUnwrap(SharedFixture.json("question-route-outcome-contract.json").object)
+        for item in contract.objects("decisions") {
+            XCTAssertEqual(ChildSessions.quiet(try XCTUnwrap(item.object("row"))),item.bool("quiet"),item.string("state"))
+        }
+    }
     func testNoPartialListOrMoreThanTwentyLinesIsShown() throws {
         let contract = try XCTUnwrap(SharedFixture.json("question-route-outcome-contract.json").object)
         let good = try XCTUnwrap(contract.objects("activity").first?.object("line"))

@@ -68,6 +68,18 @@ export function parseRouteActivity(value: unknown, sessionId: string): RouteActi
   return lines.every((l): l is RouteActivity => !!l) ? lines : [];
 }
 
+/** Bounded inspection outcomes also work for a remote computer. The shown
+ * session must match exactly; the service's local poll wins over an older
+ * inspection of the same immutable route. Nothing is retained per session. */
+export function inspectionRouteActivity(summary: Record<string, unknown> | undefined, sessionId: string | undefined,
+  polled: readonly RouteActivity[] = []): RouteActivity[] {
+  const inspected = sessionId && summary?.session_id === sessionId
+    ? parseRouteActivity({ routes: summary.question_route_activity }, sessionId) : [];
+  const byId = new Map(inspected.map((route) => [route.requestId, route]));
+  for (const route of polled) byId.set(route.requestId, route);
+  return [...byId.values()].sort((a, b) => b.at - a.at).slice(0, ROUTE_LIMIT);
+}
+
 /**
  * The durable ID whose lines the Activity shows: the live main Activity of a
  * session on this computer that the follow targets, never a subagent's, an

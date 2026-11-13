@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const calls = vi.hoisted(() => ({ invoke: vi.fn(), enabled: vi.fn(() => true) }));
 vi.mock("@tauri-apps/api/core", () => ({ invoke: calls.invoke }));
 vi.mock("./desktopService", () => ({ desktopService: { enabled: calls.enabled } }));
-import { ROUTE_FOLLOW_MS, ROUTE_LIMIT, ROUTE_REFRESH_MS, parseRouteActivity, refreshRouteActivity, routeActivityOf, routeSessionOf } from "./questionRouteActivity";
+import { ROUTE_FOLLOW_MS, ROUTE_LIMIT, ROUTE_REFRESH_MS, inspectionRouteActivity, parseRouteActivity, refreshRouteActivity, routeActivityOf, routeSessionOf } from "./questionRouteActivity";
 
 const CHILD = "00000000-0000-4000-8000-000000000001";
 const PARENT = "00000000-0000-4000-8000-000000000002";
@@ -163,4 +163,17 @@ it("the settled outcomes follow the shared mobile contract at real millisecond t
     expect(routes.length, c.name).toBe(c.accepted ? 1 : 0);
     if (c.accepted) expect(routes[0]).toMatchObject({ outcome: c.line.outcome, at: 1794599000 });
   }
+});
+
+it("uses bounded exact-session inspection outcomes on remote desktops and deduplicates a local poll", () => {
+  const line = outcomeContract.activity[0].line;
+  const summary = { session_id: CHILD, question_route_activity: [line] };
+  const inspected = inspectionRouteActivity(summary, CHILD);
+  expect(inspected).toHaveLength(1);
+  expect(inspectionRouteActivity(summary, OTHER)).toEqual([]);
+  expect(inspectionRouteActivity(summary, undefined)).toEqual([]);
+  expect(inspectionRouteActivity(undefined, CHILD)).toEqual([]);
+  expect(inspectionRouteActivity(summary, CHILD, inspected)).toHaveLength(1);
+  expect(inspectionRouteActivity({ ...summary, question_route_activity: [] }, CHILD, inspected)).toEqual(inspected);
+  expect(inspectionRouteActivity({ ...summary, question_route_activity: Array(ROUTE_LIMIT + 1).fill(line) }, CHILD)).toEqual([]);
 });

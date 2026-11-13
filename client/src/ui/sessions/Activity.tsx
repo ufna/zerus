@@ -38,7 +38,7 @@ import { DELETE_TEXT, DELETE_TITLE, retryReason, routeInspect } from "./local-ac
 import { NOT_DELIVERED_HINT } from "./inbox-actions";
 import { createInboxRemoveScope, InboxRemove, RemoveQueuedDialog, type InboxRemovePorts, type InboxRemoveScope } from "./InboxRemove";
 import { emptyActivity } from "./activity-empty";
-import { refreshRouteActivity, routeActivityOf, routeSessionOf } from "../../store/questionRouteActivity";
+import { inspectionRouteActivity, refreshRouteActivity, routeActivityOf, routeSessionOf } from "../../store/questionRouteActivity";
 import { markdownReady } from "./markdown";
 import { ActivitySession, Body, HighlightQuery } from "./MarkdownBody";
 import { searchHitItems } from "./search-hit";
@@ -789,7 +789,8 @@ export function ActivityView(props: { source?: ActivitySource }) {
     onCleanup(() => refreshRouteActivity(undefined));
   }
   const built = createMemo(() => project(!!subagentOpen(), displayTarget(), source().events(), source().transcriptSummary?.() ?? source().summary(), local(),
-    subagentOpen() ? [] : routeActivityOf(routeSession())));
+    subagentOpen() || props.source || source().target()?.id !== s()?.key ? []
+      : inspectionRouteActivity(source().summary(), s()?.sessionId, routeActivityOf(routeSession()))));
   createEffect(() => {
     const items = built(), loaded = source().loaded();
     const expired = source().olderDone() && source().events().length > 0 && source().summary()?.history_truncated === true;

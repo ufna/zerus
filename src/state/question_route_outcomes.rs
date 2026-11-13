@@ -2,8 +2,8 @@
 //! One connection per listing, indexed exact-question lookups (not an Activity
 //! window), and a bounded Activity window for inspection. No send or retry.
 use super::*;
-use rusqlite::{params, Connection, OpenFlags};
-use zerus_client_core::desktop::question_route::{escalates, Record};
+use rusqlite::{Connection, OpenFlags, OptionalExtension};
+use zerus_client_core::desktop::question_route::{escalates, Identity};
 
 pub(crate) struct Reader {
     db: Connection,
@@ -61,38 +61,32 @@ impl Reader {
         {
             return Some(false);
         }
-        let mut query = self.db.prepare_cached(
-            "SELECT key,state,record FROM desktop_question_routes INDEXED BY desktop_question_routes_question
-             WHERE child_session_id=?1 AND run_id=?2 AND question_id=?3
-             AND json_extract(record,'$.identity.conversation_id')=?4
-             AND json_extract(record,'$.identity.question_hash')=?5 LIMIT 2"
-        ).ok()?;
-        let rows = query
-            .query_map(
-                params![
-                    string(row, "session_id"),
-                    string(row, "run_id"),
-                    string(q, "question_id"),
-                    string(row, "conversation_id"),
-                    string(q, "question_hash")
-                ],
-                |r| {
-                    Ok((
-                        r.get::<_, String>(0)?,
-                        r.get::<_, String>(1)?,
-                        r.get::<_, String>(2)?,
-                    ))
-                },
-            )
-            .ok()?
-            .collect::<std::result::Result<Vec<_>, _>>()
-            .ok()?;
-        let [(key, state, raw)] = rows.as_slice() else {
-            return Some(false);
+        // A live supervised parent is on this same computer. Its validated
+        // link carries that machine ID, so this reconstructs the ORIGINAL full
+        // routing key, including hash, without needing a saved send original.
+        // This also covers pre-admission refusals from older ledgers.
+        let identity = Identity {
+            machine: string(&row["parent"], "machine").into(),
+            session_id: string(row, "session_id").into(),
+            run_id: string(row, "run_id").into(),
+            conversation_id: string(row, "conversation_id").into(),
+            question_id: string(q, "question_id").into(),
+            question_hash: string(q, "question_hash").into(),
         };
-        let record: Record = serde_json::from_str(raw).ok()?;
-        Some(record.displayable() && record.identity.key() == *key && escalates(state))
+        if !identity.complete() {
+            return Some(false);
+        }
+        self.db
+            .query_row(
+                "SELECT state FROM desktop_question_routes WHERE key=?1",
+                [identity.key()],
+                |r| r.get::<_, String>(0),
+            )
+            .optional()
+            .ok()
+            .map(|state| state.is_some_and(|s| escalates(&s)))
     }
+
     pub(crate) fn inspect(&self, row: &mut Value) {
         if !string(row, "agent_id").is_empty() && row["agent_id"] != "main" {
             return;

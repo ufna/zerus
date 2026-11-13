@@ -1107,13 +1107,16 @@ changing the person-only latch does not retry, cancel or erase an outcome.
 The shared fixture is `question-route-outcome-contract.json` beside the Android
 test resources; every client tests the same outcomes and wording. The local
 listing and inspection read the service ledger without creating or migrating it,
-using an indexed exact session/run/conversation/question/hash lookup, independently
+using the exact machine/session/run/conversation/question/hash ledger key, independently
 of the Activity window. A later question never inherits escalation. A constant-size
 failure revision makes watch refresh the listing, without reacting to unrelated
 service writes. Store schema 41 retains immutable metadata even for a refusal
 before send admission; upgrades recover existing originals' metadata. A historical
-refusal with no saved original has no recoverable full identity and is not guessed.
-Inspection carries at most 20 lines in `question_route_activity` for the phones.
+refusal with no saved original has no recoverable Activity metadata; its exact
+still-pending question can nevertheless escalate by the ledger key.
+Inspection carries at most 20 lines in `question_route_activity` for the phones
+and remote desktop views; local desktop polling and inspection lines deduplicate
+by the immutable route request ID.
 The desktop lines come from the background service's read-only
 `question_route_activity` request (`request_id` and the session's durable
 `session_id`, exactly): at most the 20 newest outcomes for the child or

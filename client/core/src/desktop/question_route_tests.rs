@@ -751,5 +751,9 @@ fn failures_escalate_immediately_without_replay_against_the_shared_contract() {
             super::escalates(case["state"].as_str().unwrap()),
             case["human_request"].as_bool().unwrap()
         );
+        assert_eq!(
+            crate::view::row(&case["row"]).quiet,
+            case["quiet"].as_bool().unwrap()
+        );
     }
 }

@@ -47,8 +47,6 @@ pub(super) fn migrate_outcomes(tx: &Transaction<'_>) -> anyhow::Result<()> {
         SELECT RAISE(ABORT,'immutable question route metadata'); END;
         CREATE INDEX desktop_question_routes_child_outcomes ON desktop_question_routes(child_session_id,created,request_id)
         WHERE state IN('submitted','refused','unknown');
-        CREATE INDEX desktop_question_routes_question ON desktop_question_routes(child_session_id,run_id,question_id,
-        json_extract(record,'$.identity.conversation_id'),json_extract(record,'$.identity.question_hash'));
         CREATE TABLE desktop_question_route_outcome_revision(id INTEGER PRIMARY KEY CHECK(id=1), revision INTEGER NOT NULL);
         INSERT INTO desktop_question_route_outcome_revision VALUES(1,0);
         CREATE TRIGGER desktop_question_route_failure_insert AFTER INSERT ON desktop_question_routes
@@ -68,7 +66,6 @@ pub(super) fn remove_outcomes_fixture(db: &Connection) {
         DROP TRIGGER desktop_question_route_failure_settle;
         DROP TABLE desktop_question_route_outcome_revision;
         DROP INDEX desktop_question_routes_child_outcomes;
-        DROP INDEX desktop_question_routes_question;
         ALTER TABLE desktop_question_routes DROP COLUMN record;",
     )
     .unwrap();

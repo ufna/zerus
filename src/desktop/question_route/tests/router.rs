@@ -1759,7 +1759,7 @@ fn exact_previous_store_upgrade_adds_only_the_activity_indexes() {
     // retention counter and the settled index (schema 40).
     assert_eq!(
         objects(&store.db),
-        (tables + 2 + 1 + 1, indexes + 2 + 3 + 1 + 2)
+        (tables + 2 + 1 + 1, indexes + 2 + 3 + 1 + 1)
     );
     // The route settled before the upgrade is indexed and shown.
     let reply = super::super::activity_request(
@@ -2529,7 +2529,14 @@ fn reserved_unknown_recent_and_readable_rows_are_never_pruned() {
         assert!(!ledger::known(&f.store.db, &record.identity.key()).unwrap());
         // The invalid route's final refusal finds no room either.
         assert!(
-            ledger::refuse(&mut f.store.db, &record, now, ledger::INVALID).is_err(),
+            ledger::refuse(
+                &mut f.store.db,
+                &record,
+                now,
+                ledger::INVALID,
+                &f.config.state
+            )
+            .is_err(),
             "{case}"
         );
         assert_eq!(ledger_rows(&f), ledger::ROWS, "{case}");
@@ -2646,7 +2653,14 @@ fn an_invalid_route_refusal_prunes_like_a_reservation() {
     f.snapshot(vec![child_row(), parent_row()]);
     let now = chrono::Utc::now().timestamp_millis();
     fill_ledger(&f, "0", ledger::ROWS, "submitted", 0, (GONE, Some("old")));
-    ledger::refuse(&mut f.store.db, &record(), now, ledger::INVALID).unwrap();
+    ledger::refuse(
+        &mut f.store.db,
+        &record(),
+        now,
+        ledger::INVALID,
+        &f.config.state,
+    )
+    .unwrap();
     assert_eq!(ledger_rows(&f), ledger::ROWS - ledger::PRUNE + 1);
     assert!(ledger::known(&f.store.db, &record().identity.key()).unwrap());
 }
@@ -2731,7 +2745,7 @@ fn exact_previous_store_upgrade_adds_only_the_retention_leaf() {
         crate::desktop::store::SCHEMA
     );
     // The counter table and the settled index.
-    assert_eq!(objects(&store.db), (tables + 1 + 1, indexes + 1 + 2));
+    assert_eq!(objects(&store.db), (tables + 1 + 1, indexes + 1 + 1));
     assert_eq!(ledger::count(&store.db).unwrap(), 2);
     let runs: i64 = store
         .db
@@ -2816,7 +2830,7 @@ fn invalid_route_metadata_is_kept_without_admitting_a_send() {
     r.identity.question_id = "tool:unprintable'".into();
     assert!(!r.valid());
     assert!(r.displayable());
-    ledger::refuse(&mut f.store.db, &r, 1, ledger::INVALID).unwrap();
+    ledger::refuse(&mut f.store.db, &r, 1, ledger::INVALID, &f.config.state).unwrap();
     assert_eq!(lines(&f, CHILD_ID)[0]["outcome"], "not_sent");
     assert!(lines(&f, PARENT_ID).is_empty());
     let mut q = card(&r.identity.question_id);
@@ -2824,4 +2838,66 @@ fn invalid_route_metadata_is_kept_without_admitting_a_send() {
     let outcomes = crate::state::question_route_outcomes::Reader::at(&f.config.state).unwrap();
     assert!(outcomes.escalated(&child_row(), Some(&[q])));
     assert_eq!(f.sent(), 0);
+}
+
+#[test]
+fn a_pre_admission_refusal_does_not_override_any_persons_off_switch() {
+    for switch in ["global", "child", "latch"] {
+        let mut f = Fixture::new();
+        f.snapshot(vec![child_row(), parent_row()]);
+        match switch {
+            "global" => {
+                super::super::policy::set(
+                    &mut f.store.db,
+                    &uuid::Uuid::new_v4().to_string(),
+                    false,
+                    1,
+                )
+                .unwrap();
+            }
+            "child" => child_switch(&f, false),
+            _ => {
+                latch(
+                    &mut f,
+                    &latch_request(&uuid::Uuid::new_v4().to_string(), true, 0),
+                );
+            }
+        }
+        let mut r = record();
+        r.identity.question_id = "tool:unprintable'".into();
+        assert!(
+            !ledger::refuse(&mut f.store.db, &r, 1, ledger::INVALID, &f.config.state).unwrap(),
+            "{switch}"
+        );
+        assert!(!ledger::known(&f.store.db, &r.identity.key()).unwrap());
+        assert!(lines(&f, CHILD_ID).is_empty());
+        assert_eq!(f.sent(), 0);
+    }
+}
+
+#[test]
+fn an_older_failure_without_metadata_still_escalates_only_its_exact_question() {
+    let f = Fixture::new();
+    let r = record();
+    f.store.db.execute("INSERT INTO desktop_question_routes(key,request_id,child_session_id,parent_session_id,
+        question_id,created,state,code) VALUES(?1,?2,?3,?4,?5,1,'refused','question_route_invalid')",
+        rusqlite::params![r.identity.key(),r.request_id(),CHILD_ID,PARENT_ID,r.identity.question_id]).unwrap();
+    let reader = crate::state::question_route_outcomes::Reader::at(&f.config.state).unwrap();
+    let q = card("tool:toolu_1");
+    assert!(reader.escalated(&child_row(), Some(std::slice::from_ref(&q))));
+    for key in ["session_id", "run_id", "conversation_id"] {
+        let mut row = child_row();
+        row[key] = json!("different");
+        assert!(
+            !reader.escalated(&row, Some(std::slice::from_ref(&q))),
+            "{key}"
+        );
+    }
+    let mut row = child_row();
+    row["parent"]["machine"] = json!(PARENT_ID);
+    assert!(!reader.escalated(&row, Some(&[q])));
+    assert!(
+        lines(&f, CHILD_ID).is_empty(),
+        "historical text is not reconstructed"
+    );
 }
