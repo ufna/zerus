@@ -546,6 +546,7 @@ fn a_member_inside_a_private_pid_namespace_gets_the_named_refusal() {
 /// namespace cause keeps its own sentence through the Teams caller's
 /// refusal; it is never flattened into the generic one.
 #[test]
+#[cfg(unix)]
 fn the_isolated_pid_namespace_cause_keeps_its_own_sentence() {
     let problem = crate::teams::caller::host_refusal(
         crate::teams::caller::Refusal::DeepSeek(
