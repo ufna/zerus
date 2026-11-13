@@ -149,7 +149,6 @@ fn move_back(f: &Fixture, uuid: &str, step: &str) {
 }
 
 #[test]
-#[test]
 fn wp36_reproduction() {
     let mut f = Fixture::new();
     // The proof's refusal in a real child, captured for the record: under
