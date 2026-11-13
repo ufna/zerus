@@ -629,9 +629,11 @@ fn member_handles_move_neither_the_version_nor_the_mark_an_older_build_checks() 
             .unwrap(),
         )
     };
-    // The values at the integration head this change is built on.
+    // The values this build writes: the core version and its current
+    // layout mark (`timers::EXTENSION`, which later changes move on).
+    let current = (2, super::timers::EXTENSION, true);
     let db = rusqlite::Connection::open(&path).unwrap();
-    assert_eq!(read(&db), (2, 10, true));
+    assert_eq!(read(&db), current);
     // A store as an older build leaves it: without the table.
     db.execute_batch(
         "DROP TRIGGER member_handles_terminal_v1; DROP TRIGGER member_handles_removed_v1; DROP TABLE member_handles;",
@@ -642,5 +644,5 @@ fn member_handles_move_neither_the_version_nor_the_mark_an_older_build_checks() 
     assert_eq!(store.member_handle(TEAM, "m1").unwrap(), None);
     drop(store);
     let db = rusqlite::Connection::open(&path).unwrap();
-    assert_eq!(read(&db), (2, 10, true));
+    assert_eq!(read(&db), current);
 }
