@@ -282,3 +282,10 @@ fn the_busy_store_answer_is_not_started_with_its_typed_cause() {
         "The task store was busy; nothing was reserved or sent."
     );
 }
+
+#[test]
+fn a_busy_store_code_is_never_a_refusal() {
+    assert!(!refusal(&Error::new(STORE_BUSY_CODE, "busy")));
+    assert!(refusal(&Error::new(RULE, "rule")));
+    assert!(refusal(&Error::new(PROJECT_LIMIT_CODE, "limit")));
+}

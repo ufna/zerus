@@ -524,19 +524,22 @@ impl Delivery for Native {
     }
 }
 
+/// Whether an error's code is a refusal the command answers with `refused`
+/// in its own JSON. A busy task store is never one (zerus-63rru.72).
+fn refusal(error: &Error) -> bool {
+    matches!(error.code, RULE | PROJECT_LIMIT_CODE)
+}
+
 pub(super) fn dispatch(config: &Config, args: &[String]) -> Result<i32> {
     match execute(config, args, &Native) {
         Ok(reply) => {
             println!("{reply}");
             Ok(0)
         }
-        Err(error)
-            if error.code != RULE
-                && error.code != PROJECT_LIMIT_CODE
-                && error.code != STORE_BUSY_CODE =>
-        {
-            Err(error)
-        }
+        // Only a rule refusal prints a final refusal. A busy store's own code
+        // must never reach this arm: it is a non-start, whether execute has
+        // already built its reply or a later path returns the code itself.
+        Err(error) if !refusal(&error) => Err(error),
         Err(error) => {
             println!(
                 "{}",
