@@ -127,8 +127,10 @@ pub(super) fn reopen_intent(ctx: &mut Context<'_>) -> Result<()> {
         unreachable!()
     };
     let n = ctx.live_node(*node)?;
-    if !has_attempt(ctx, *node)? {
-        return Err(invalid("Reopen requires a recorded earlier attempt."));
+    if !in_hands(ctx, *node)? {
+        return Err(invalid(
+            "Reopen requires a task in somebody's hands; the hand-out follows instead.",
+        ));
     }
     let (seq, kind, state) = ctx
         .pending(*node)?
@@ -238,10 +240,19 @@ fn record_outcome(
             return Ok(());
         }
         ctx.settle(e.node)?;
-        queue::set_hold(ctx, e.node, state != "submitted")?;
+        // A reopen that was not delivered hands the node back to the lead;
+        // a delivered one ends the decision's hold with the decision.
+        if state != "submitted" {
+            queue::hand_back(ctx, e.node, true)?;
+        }
         if state == "submitted" {
             ctx.close_inbox(e.node)?;
         }
+    }
+    // A refused delivery may have been the only reason a Return or Reassign
+    // waits for a hand-over; a proven non-start is recorded the same way.
+    if state == "refused" {
+        settle_without_reason(ctx, e.node)?;
     }
     Ok(())
 }
@@ -337,7 +348,6 @@ pub(super) fn report(ctx: &mut Context<'_>) -> Result<()> {
     ctx.db.execute(&format!("UPDATE effects SET state='reported' WHERE team=?1 AND node=?2 AND generation=?3 AND state IN {OPEN_EFFECT_STATES}"),params![ctx.team.id,node,generation]).map_err(storage)?;
     if ctx.reopening(*node)? {
         ctx.settle(*node)?;
-        queue::set_hold(ctx, *node, false)?;
     }
     pipeline::reported(ctx, &n, body)
 }
@@ -364,12 +374,58 @@ pub(super) fn kernel_nodes(ctx: &Context<'_>) -> Result<Vec<Node>> {
     readiness::nodes(ctx.db, &ctx.team.id)
 }
 
-pub(super) fn has_attempt(ctx: &Context<'_>, node: u32) -> Result<bool> {
+/// Whether the task may be in somebody's hands, so that a Reassign or a
+/// Return goes the hand-over route: the newest observation shows the task In
+/// progress, In review or Done (not cancelled, whoever executes it, a
+/// recorded conflict of attempts included), or an effect of the node's
+/// current generation is still open. Every open state counts: a reservation
+/// is no proof that its child never started, and an observation lags the
+/// send it follows. Otherwise the task is To do, Backlog or unobserved and
+/// nothing of its generation is open, and the ordinary hand-out follows the
+/// node's assignee. The attempt the node remembers is not read: it is never
+/// cleared, and a task is To do again only after its run reported or was
+/// done, or after a send that never started.
+pub(super) fn in_hands(ctx: &Context<'_>, node: u32) -> Result<bool> {
     ctx.db
         .query_row(
-            "SELECT EXISTS(SELECT 1 FROM effects WHERE team=?1 AND node=?2 AND generation<=?3 AND state<>'refused')",
+            &format!("SELECT EXISTS(SELECT 1 FROM task_observations WHERE team=?1 AND node=?2 AND NOT json_extract(data,'$.cancelled') AND (json_extract(data,'$.stage') IN ('in_progress','in_review','done') OR attempt_conflict)) OR EXISTS(SELECT 1 FROM effects WHERE team=?1 AND node=?2 AND generation=?3 AND state IN {OPEN_EFFECT_STATES})"),
             params![ctx.team.id, node, ctx.generation(node)?],
             |r| r.get(0),
         )
         .map_err(storage)
+}
+/// A Pending Return or Reassign does not outlive its reason: otherwise no
+/// hand-over would carry it out, and it would refuse every other decision of
+/// its node and block the ordinary hand-out. In the operation that took the
+/// reason away:
+/// - a Return whose holder reads nobody is handed back to the lead, as a
+///   refused reopen is (settled, the node held, one item for the lead);
+/// - a Return or a Reassign whose task is in nobody's hands any more is
+///   settled, and the decision's hold ends with it; the ordinary hand-out
+///   then follows the node's assignee unless an explicit hold remains, which
+///   only its owner's Release ends.
+///
+/// A decision whose reopen is reserved has started and waits for its
+/// outcome.
+pub(super) fn settle_without_reason(ctx: &mut Context<'_>, node: u32) -> Result<()> {
+    let Some((seq, kind, DecisionState::Pending)) = ctx.pending(node)? else {
+        return Ok(());
+    };
+    match kind.as_str() {
+        "return" if holder(ctx, node)?.is_none() => {
+            let actor = encode(ctx.actor)?;
+            ctx.reply.item = Some(crate::teams::store::hand_back_return(
+                ctx.db,
+                &ctx.team.id,
+                node,
+                seq,
+                &actor,
+                ctx.now,
+            )?);
+        }
+        // The decision's hold ends with it; an explicit hold stays.
+        "return" | "reassign" if !in_hands(ctx, node)? => ctx.settle(node)?,
+        _ => (),
+    }
+    Ok(())
 }
