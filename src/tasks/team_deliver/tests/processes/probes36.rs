@@ -422,3 +422,135 @@ fn a_cancel_and_move_back_merged_then_sent_in_both_orders() {
         }
     }
 }
+/// Decision 3: the production observer path itself ends the old node after
+/// the move-back — no intake settlement involved. The phase-dropped mutant
+/// (the observation's current_cancelled forced to false) leaves the node
+/// live and kills this test.
+#[test]
+fn the_production_observation_ends_the_old_node_after_the_move_back() {
+    let mut f = Fixture::new();
+    let (_id, uuid) = add(&mut f);
+    let node = deliver(&mut f, &uuid, "m2");
+    {
+        let store = crate::tasks::store(&f.config, "example-project").unwrap();
+        let mut doc = store.load(&uuid).unwrap();
+        doc.record_cancel("Obsolete", &zerus_replica::Actor::Person, now())
+            .unwrap();
+        store.save(&mut doc).unwrap();
+    }
+    move_back(&f, &uuid, "observer path");
+    crate::teams::tasks::observe(
+        &f.config.state,
+        &TaskRef {
+            project: "example-project".into(),
+            uuid: uuid.clone(),
+        },
+    )
+    .unwrap();
+    // The old node's live binding is gone: the observation read the cancel
+    // from the bound attempt's phase.
+    let db = rusqlite::Connection::open(f.config.state.join("teams").join("teams-v1.sqlite3"))
+        .unwrap();
+    let live: i64 = db
+        .query_row(
+            "SELECT COUNT(*) FROM live_tasks WHERE team=?1 AND node=?2",
+            rusqlite::params![TEAM, node],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(live, 0, "the old node stayed live");
+}
+
+/// Decision 3: the older build's document — To do with the mark it left —
+/// is queued and the binding write clears the mark; the mark-check-restored
+/// mutant (the intake refuses on the mark again) kills this test.
+#[test]
+fn an_older_builds_marked_todo_task_is_queued_and_cleared() {
+    let mut f = Fixture::new();
+    let (_id, uuid) = add(&mut f);
+    deliver(&mut f, &uuid, "m2");
+    {
+        let store = crate::tasks::store(&f.config, "example-project").unwrap();
+        let mut doc = store.load(&uuid).unwrap();
+        doc.record_cancel("Obsolete", &zerus_replica::Actor::Person, now())
+            .unwrap();
+        doc.set_stage(Stage::Todo, &zerus_replica::Actor::Person, now())
+            .unwrap();
+        // The older build's leftover: its set_stage kept the mark.
+        doc.set_cancelled_for_test(now(), "Obsolete");
+        store.save(&mut doc).unwrap();
+    }
+    let queued = intake(&f, &uuid, TEAM, "older-build marked To do");
+    assert_eq!(queued["queued"], true, "{queued}");
+    {
+        let store = crate::tasks::store(&f.config, "example-project").unwrap();
+        let doc = store.load(&uuid).unwrap();
+        let view = doc.view().unwrap();
+        assert_eq!(view.cancelled_at, None, "the binding write clears the mark");
+        assert_eq!(view.cancel_reason, "");
+    }
+}
+
+/// Decision 2: every observation the build writes through
+/// rows::record_observation parses with the base build's exact field set
+/// (deny_unknown_fields, no current_cancelled), including one for a
+/// cancelled attempt.
+#[test]
+fn stored_observations_parse_with_the_base_field_set() {
+    #[derive(serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
+    #[allow(dead_code)]
+    struct BaseObservation {
+        revision: String,
+        #[serde(default, skip_serializing_if = "crate::teams::ops::KeyState::is_ours")]
+        key: crate::teams::ops::KeyState,
+        #[serde(default)]
+        previous_revision: String,
+        stage: crate::teams::ops::TaskStage,
+        #[serde(default)]
+        cancelled: bool,
+        rank: String,
+        #[serde(default)]
+        title: String,
+        #[serde(default)]
+        attempt: u64,
+        #[serde(default)]
+        attempt_id: String,
+        #[serde(default)]
+        attempt_conflict: bool,
+    }
+    let mut f = Fixture::new();
+    let (_id, uuid) = add(&mut f);
+    deliver(&mut f, &uuid, "m2");
+    {
+        let store = crate::tasks::store(&f.config, "example-project").unwrap();
+        let mut doc = store.load(&uuid).unwrap();
+        doc.record_cancel("Obsolete", &zerus_replica::Actor::Person, now())
+            .unwrap();
+        store.save(&mut doc).unwrap();
+    }
+    move_back(&f, &uuid, "stored-layout");
+    crate::teams::tasks::observe(
+        &f.config.state,
+        &TaskRef {
+            project: "example-project".into(),
+            uuid: uuid.clone(),
+        },
+    )
+    .unwrap();
+    let db = rusqlite::Connection::open(f.config.state.join("teams").join("teams-v1.sqlite3"))
+        .unwrap();
+    let rows: Vec<String> = db
+        .prepare("SELECT data FROM task_observations")
+        .unwrap()
+        .query_map([], |r| r.get::<_, String>(0))
+        .unwrap()
+        .collect::<std::result::Result<_, _>>()
+        .unwrap();
+    assert!(!rows.is_empty());
+    for row in rows {
+        serde_json::from_str::<BaseObservation>(&row).unwrap_or_else(|e| {
+            panic!("the base field set rejected a stored observation: {e}: {row}")
+        });
+    }
+}

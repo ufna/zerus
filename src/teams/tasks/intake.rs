@@ -359,12 +359,33 @@ fn prepare(
         Some(&task.uuid),
     )?;
     let view = document.view().map_err(storage)?;
-    let duplicate = binding(store, task)?.is_some_and(|(id, _)| id == team);
-    // A task in Backlog or To do is taken whatever its mark: the binding
-    // write below clears a stale one (zerus-63rru.36). A task in Review or
-    // Done is refused by its stage, as before; a repeat of a bound task
-    // keeps the shared-node contract.
-    if !duplicate && !matches!(view.stage, Stage::Backlog | Stage::Todo) {
+    let bound = binding(store, task)?;
+    let duplicate = bound.as_ref().is_some_and(|(id, _)| *id == team);
+    // The bound node is dying either way: the document's current attempt is
+    // cancelled, or the team holds a pending cancel decision for it.
+    let dying = bound
+        .as_ref()
+        .filter(|(id, _)| *id == team)
+        .is_some_and(|(_, node)| {
+            view.execution
+                .as_ref()
+                .filter(|e| !e.conflict)
+                .and_then(|e| e.current.as_ref())
+                .is_some_and(|current| {
+                    current.phase == zerus_replica::execution::Phase::Cancelled
+                })
+                || store
+                    .pending_cancels(team, 200, 0)
+                    .map_or(false, |pending| {
+                        pending.iter().any(|pending| pending.node == *node)
+                    })
+        });
+    // A send that creates a node passes the Backlog/To do check, always.
+    // Only a repeat that creates nothing (the same team's live node stays)
+    // skips it. A dying node's resend creates a new node, so it is refused
+    // here unless the task is in Backlog or To do; nothing is written
+    // (zerus-63rru.36 round 3).
+    if (!duplicate || dying) && !matches!(view.stage, Stage::Backlog | Stage::Todo) {
         return Err(Problem::new(
             code::INVALID_STATE,
             "Send a task in Backlog or To do to a team.",

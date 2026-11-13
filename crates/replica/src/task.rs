@@ -362,6 +362,16 @@ impl TaskDoc {
         self.doc.commit();
     }
 
+    /// Writes the cancelled mark and its reason exactly as an older build's
+    /// set_stage left them, for tests of the stale-mark intake and the
+    /// binding write's clear (zerus-63rru.36 round 3).
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn set_cancelled_for_test(&mut self, at: i64, reason: &str) {
+        self.fields().insert("cancelled_at", at).unwrap();
+        self.fields().insert("cancel_reason", reason).unwrap();
+        self.doc.commit();
+    }
+
     pub fn id(&self) -> String {
         string(&self.meta(), "id").unwrap_or_default()
     }
