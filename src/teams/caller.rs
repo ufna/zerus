@@ -416,7 +416,7 @@ fn opencode_ancestor_read(
 }
 
 /// A check that cannot tell refuses, retaining the shared check's cause.
-fn host_refusal(refusal: Refusal) -> Problem {
+pub(crate) fn host_refusal(refusal: Refusal) -> Problem {
     match refusal {
         #[cfg(unix)]
         Refusal::DeepSeek(cause) => Problem::new(code::INVALID_STATE, cause.sentence()),

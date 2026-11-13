@@ -50,3 +50,12 @@ Rules
   archives the team.
 
 The member's page is hgs guide team.
+
+## A member inside a sandbox with its own process namespace
+
+A member whose shell runs inside a sandbox with a private process
+namespace cannot report or run team commands: its attempts are refused
+with the member's own named sentence, no report is stored, and you are
+told through the ordinary path. The remedy is the member's: run the team
+commands outside that sandbox, or turn the sandbox's private process
+namespace off.

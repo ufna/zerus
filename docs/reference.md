@@ -6105,7 +6105,13 @@ task reads included, when:
 Each cause has its own refusal. A record's refusal names the exact path and how
 to clear it: close the DeepSeek sessions of that agent home, then remove the
 record. The desktop shows it. Agent Teams' caller proof uses the same check,
-`state::dsh::hosted_ancestor`.
+`state::dsh::hosted_ancestor`. The Teams caller surfaces this cause with
+its own sentence: the member's report or team command inside such a
+sandbox is refused with the named sentence (the separate process
+namespace, and the remedy: run outside the sandbox, or turn its private
+process namespace off); no report is stored, and the lead is told through
+the existing path. The person and the lead see the same limit in
+`hgs guide teams` and `hgs guide team-lead`.
 Records of an earlier boot never block anyone. A host's records are written
 atomically (a synced temporary file renamed into place, then the folder synced),
 so a crash leaves the previous record or the new one. Outside this check:

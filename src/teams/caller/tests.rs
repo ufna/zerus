@@ -471,3 +471,91 @@ fn macos_admits_both_callers_to_the_real_process_proof() {
     assert_eq!(context::available(), Ok(()));
     assert_eq!(context::admission(), Ok(()));
 }
+
+/// The child that prints what the caller proof decides inside a private
+/// PID namespace (zerus-63rru.76). It does nothing unless the parent asks.
+#[test]
+fn isolated_probe() {
+    if std::env::var("HGS_ISOLATED_PROBE").as_deref() != Ok("1") {
+        return;
+    }
+    let config = crate::config::Config::load().expect("the probe's configuration");
+    match crate::teams::caller::caller(&config) {
+        crate::teams::caller::Caller::Refused(problem) => {
+            println!("REFUSAL {}", problem.message)
+        }
+        other => println!("OTHER {other:?}"),
+    }
+}
+
+/// zerus-63rru.76: a member whose shell runs inside a private PID
+/// namespace (an agent's sandbox) cannot be proven; the Teams caller names
+/// the separate process namespace and the remedy, never the generic
+/// refusal. The real caller proof runs in the unshared child; this is the
+/// process-level case the real-agent suite cannot host without a real
+/// agent account.
+#[test]
+#[cfg(target_os = "linux")]
+fn a_member_inside_a_private_pid_namespace_gets_the_named_refusal() {
+    let exe = std::env::current_exe().expect("this test binary");
+    let temp = tempfile::tempdir().expect("a temporary folder");
+    let state = temp.path().join("state");
+    let config = temp.path().join("config");
+    std::fs::create_dir_all(&state).unwrap();
+    std::fs::create_dir_all(&config).unwrap();
+    let output = std::process::Command::new("unshare")
+        .args([
+            "--pid",
+            "--fork",
+            "--mount-proc",
+            "--",
+            exe.to_str().unwrap(),
+            "--exact",
+            "teams::caller::tests::isolated_probe",
+            "--nocapture",
+        ])
+        .env("HGS_ISOLATED_PROBE", "1")
+        .env("HGS_SESSION", "claude/sandboxed-member")
+        .env("HGS_RUN_ID", "run-sandboxed")
+        .env("HGS_STATE_DIR", &state)
+        .env("HGS_CONFIG_DIR", &config)
+        .env_remove("HGS_SESSION_ID")
+        .output()
+        .expect("the unshared child");
+    if !output.status.success()
+        && String::from_utf8_lossy(&output.stderr).contains("Operation not permitted")
+    {
+        // This environment cannot create a private PID namespace without
+        // privileges; the real-agent suite hosts the fixture.
+        return;
+    }
+    let text = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        text.contains("separate process namespace"),
+        "the refusal does not name the namespace: {text} / {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        text.contains("run outside that sandbox")
+            && text.contains("private process namespace turned off"),
+        "the refusal does not name the remedy: {text}"
+    );
+}
+
+/// The mapping's pin at the unit level (zerus-63rru.76): the isolated PID
+/// namespace cause keeps its own sentence through the Teams caller's
+/// refusal; it is never flattened into the generic one.
+#[test]
+fn the_isolated_pid_namespace_cause_keeps_its_own_sentence() {
+    let problem = crate::teams::caller::host_refusal(
+        crate::teams::caller::Refusal::DeepSeek(
+            crate::state::dsh::Refusal::IsolatedPidNamespace,
+        ),
+    );
+    assert!(
+        problem.message.contains("separate process namespace")
+            && problem.message.contains("private process namespace turned off"),
+        "{:?}",
+        problem.message
+    );
+}
