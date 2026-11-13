@@ -160,6 +160,23 @@ export function wrapSpawns(service, current) {
 }
 export const inject = ['sessionController', 'agents', 'goals', 'llm', 'agentDefaultModel', 'sessionQuery', 'userQuestions', 'workspaceRegistry', 'subagents', 'permissionPresets', 'approval', 'commands'];
 
+export const AGENT_HINT_SECTION = 'hgs:agent-hint';
+export function registerAgentHint(ctx, hint, owned) {
+  if (!(owned instanceof Map) || typeof hint !== 'string' || !hint) return false;
+  try {
+    const prompts = ctx.get('systemPrompt');
+    if (typeof prompts?.section !== 'function') return false;
+    ctx.effect(() => prompts.section({
+      name: AGENT_HINT_SECTION, order: 10300, interpolate: false,
+      text: context => owned.has(context.agent?.session?.id) ? hint : '',
+    }));
+    return true;
+  } catch (error) {
+    console.warn('hgs: optional agent hint registration failed: ' + String(error?.message ?? error));
+    return false;
+  }
+}
+
 // 0.2.2 moved selection from the controller's WeakMap to the Agent's native
 // model object. Both reads are side-effect-free; never use selectionFor or
 // public selectModel (which also saves the profile default) as a fallback.
@@ -299,6 +316,7 @@ export function apply(ctx, config) {
   const control = api.agents;
   const models = modelSelectionAdapter(control);
   const owned = new Map(), opening = new Map(), questions = new Map();
+  registerAgentHint(ctx, config?.agentHint, owned);
   const generation = randomUUID();
   // An end is the host's own lifecycle event, never a failed list/inspect
   // or a turn that finished while its Agent remains alive. Keep bounded
@@ -831,24 +849,51 @@ export function apply(ctx, config) {
     try { durable = Boolean(await ctx.get('sessions')?.flush(record.session)); } catch {}
     return { generation, state: 'tracked', durable, ...witnessFacts(record, through, p.fromSeq) };
   }
+  // zerus-yj7ef: every list row carries `listJobs`, a bounded summary of the
+  // session's running bash jobs, its own and its listed subagents', read from
+  // the same job registry as inspect. Contract (docs/reference.md):
+  //   {complete: true, count: N, jobs: [N jobs]} when N <= LIST_JOB_LIMIT;
+  //   {complete: false, count: null, jobs: []} without a registry or over it.
+  // ping advertises listJobs: true. A host without both is unknown, never idle.
+  // Kept apart from the rest of the list builder.
+  const LIST_JOB_LIMIT = 32;
+  const runningJob = job => job.kind === 'bash' && ['starting', 'running', 'stopping'].includes(job.status);
+  function listJobs(items) {
+    const registry = ctx.get('jobs');
+    const owners = new Map(items.map(row => [row.sessionId, [row.sessionId]]));
+    for (const row of items) {
+      if (row.origin === 'subagent' && row.parentSessionId !== row.sessionId) owners.get(row.parentSessionId)?.push(row.sessionId);
+    }
+    const summaries = new Map();
+    for (const [sessionId, ids] of owners) {
+      const jobs = typeof registry?.list === 'function'
+        ? ids.flatMap(owner => registry.list(owner).filter(job => job.owner === owner && runningJob(job))) : null;
+      summaries.set(sessionId, !jobs || jobs.length > LIST_JOB_LIMIT ? { complete: false, count: null, jobs: [] }
+        : { complete: true, count: jobs.length, jobs: jobs.map(job => ({ id: job.id, kind: job.kind, owner: job.owner,
+          status: job.status, startedAt: job.startedAt, label: String(job.label ?? '').slice(0, 240), callId: jobCalls.get(job.id)?.callId ?? null })) });
+    }
+    return summaries;
+  }
   async function execute(request) {
     if (closing) throw new Error('Native host is stopping');
     const p = request.params ?? {};
     switch (request.method) {
-      case 'ping': return { protocol: 1, version: '0.2.1-rc.2', generation, accountPermissions: true, sessionActions: true, inputWitness: true, teamLifecycle: true,
+      case 'ping': return { protocol: 1, version: '0.2.1-rc.2', generation, accountPermissions: true, sessionActions: true, inputWitness: true, listJobs: true, teamLifecycle: true,
         shellIdentity: callEnvironmentInstalled(), callTokens: callEnvironmentInstalled(),
         nativeOperations: ['fork', 'history-search', 'schedules'], schedule: Boolean(scheduleService()) };
       case 'list': {
         const list = await api.list({}, new AbortController().signal);
         const status = await accountStatus();
         const scheduled = await scheduleSummaries();
+        const jobSummaries = listJobs(list.items);
         return { ...list, generation, items: list.items.map(row => {
           const agent = ctx.agents.get(row.sessionId);
           const selection = agent ? selectionOf(agent, row.projections?.values) : null;
           return { ...row, selection, accountStatus: status, authRequired: needsSignIn(selection, status),
             goal: agent ? ctx.goals.get(agent) ?? null : row.projections?.values.goal ?? null,
             pendingQuestions: publicQuestions(row.sessionId), nativeRecovery: recoveryPublic(row.sessionId),
-            ...(scheduled ? { schedules: scheduled.get(row.sessionId) ?? { count: 0, recurring: 0, nextAt: null } } : {}) };
+            ...(scheduled ? { schedules: scheduled.get(row.sessionId) ?? { count: 0, recurring: 0, nextAt: null } } : {}),
+            listJobs: jobSummaries.get(row.sessionId) };
         }) };
       }
       case 'inspect': return inspect(p);

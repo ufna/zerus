@@ -289,6 +289,15 @@ class Hosted:
                 ('add', [hgs, 'task', 'add', '--project', 'orchard', '--title', 'from a hosted call'], 'text'),
                 ('comment', [hgs, 'task', 'comment', ref], 'a hosted comment')]
 
+    def forwarded(self, ref):
+        """A command another computer would forward for its agent (`--agent`)."""
+        agent = str(uuid.uuid4()) + '/claude/elsewhere'
+        return ('forwarded', [str(HGS), 'task', 'send', ref, '--agent', agent], None)
+
+    def assertNotForwarded(self, result):
+        self.assertNotEqual(result['code'], 0, result)
+        self.assertIn('an agent acts as its own session', result['stderr'], result)
+
     def assertNeverThePerson(self, runs, ref):
         for name, result in runs.items():
             self.assertNotEqual(result['code'], 0, (name, result))
@@ -454,14 +463,32 @@ class HostStartedByHgs(Hosted, unittest.TestCase):
             refused_sends.append(request)
             return json.dumps(request)
 
+        # A private peer stand-in proves that the attributed child crosses
+        # the local found-host gate without clearing its hosted proof. It
+        # never connects to an actual peer or runs a peer session.
+        peer_log = self.root / 'proven-peer.json'
+        peer_ssh = self.root / 'proven-peer-ssh'
+        peer_ssh.write_text("""#!/usr/bin/env python3
+import json, os, pathlib, sys
+if 'hgs-remote-v2' in sys.argv[-1]:
+    print('hgs-remote-v2|%OS%|%SystemRoot%|:OS|:SystemRoot'); sys.exit(0)
+request = json.load(sys.stdin)
+pathlib.Path(os.environ['PROVEN_PEER_LOG']).write_text(json.dumps(dict(argv=sys.argv[1:], request=request)))
+print(json.dumps(dict(request_id=request['request_id'], run_id=request['expected_run_id'],
+                     conversation_id=request['expected_conversation_id'], status='submitted')))
+""")
+        peer_ssh.chmod(0o700)
         orphan = 'orphan-' + uuid.uuid4().hex[:8]
         send = {'request_id': str(uuid.uuid4()), 'expected_run_id': other['run_id'],
                 'expected_conversation_id': other['conversation_id'], 'text': 'from a hosted call'}
+        remote_send = dict(send, request_id=str(uuid.uuid4()), text='from a hosted call to the private peer')
         result = self.shell(own, runs=[
             ('start', [hgs, 'task', 'start', ref], None),
             ('report', [hgs, 'task', 'report', ref], 'reported from the hosted call'),
             ('self', [hgs, 'self', '--json'], None),
             ('send', [hgs, 'send', other['name'], '--json'], json.dumps(send)),
+            ('send_proven_peer', [hgs, '@peer', 'send', other['name'], '--json'], json.dumps(remote_send),
+             {'HGS_PEERS': 'peer', 'HGS_SSH': str(peer_ssh), 'PROVEN_PEER_LOG': str(peer_log)}),
             ('impersonate', [hgs, 'task', 'comment', ref], 'as the other session',
              {'HGS_SESSION': other['name'], 'HGS_RUN_ID': other['run_id'], 'HGS_SESSION_ID': other['session_id']}),
             ('forged', [hgs, 'task', 'comment', ref], 'with a forged token', {'HGS_DSH_CALL_TOKEN': '0' * 64}),
@@ -480,8 +507,13 @@ class HostStartedByHgs(Hosted, unittest.TestCase):
         runs = result['runs']
         token = result['env']['HGS_DSH_CALL_TOKEN']
         self.assertRegex(token, '^[0-9a-f]{64}$')
-        for name in ('start', 'report', 'self', 'send'):
+        for name in ('start', 'report', 'self', 'send', 'send_proven_peer'):
             self.assertEqual(runs[name]['code'], 0, (name, runs[name]))
+        received = json.loads(peer_log.read_text())
+        self.assertIn('__state send', received['argv'][-1])
+        self.assertEqual(received['request']['request_id'], remote_send['request_id'])
+        self.assertEqual(received['request']['text'].count('<zerus-message '), 1)
+        self.assertIn(own['name'], received['request']['text'])
         identity = json.loads(runs['self']['stdout'])
         self.assertEqual((identity['identity_source'], identity['session_id']), ('hosted_call', own['session_id']))
         self.assertIn('One DeepSeek host process serves every session of its agent home', identity['proof_limit'])
@@ -555,11 +587,118 @@ class HostStartedByHgs(Hosted, unittest.TestCase):
                     identity.unlink()
                 else:
                     identity.write_text('{"version":1,"conversation":"' + session['conversation_id'] + '","session":""}')
-                result = self.shell(session, runs=self.person_actions(ref))
+                result = self.shell(session, runs=self.person_actions(ref) + [self.forwarded(ref)])
                 self.assertNoMarkers(result['env'])
+                self.assertNotForwarded(result['runs'].pop('forwarded'))
                 self.assertNeverThePerson(result['runs'], ref)
         # The person outside the host still acts as the person.
         self.call('task', 'comment', ref, input='from the person')
+
+    def test_a_hosted_call_cannot_switch_question_routing(self):
+        # zerus-ppd26.1: with or without its identity file a hosted call is
+        # refused before anything changes; the person outside the host is not.
+        session = self.launch()
+        identity = self.host_dir / 'shells' / (session['conversation_id'] + '.json')
+        launcher = self.launcher
+        request = json.dumps(dict(expected_run_id=launcher['run_id'], expected_conversation_id=launcher['conversation_id'],
+                                  expected_revision=0, send_to_parent=False))
+        routing = ('routing', [str(HGS), 'question-routing', launcher['name'], '--json'], request)
+        for state in ('identity', 'missing'):
+            with self.subTest(state):
+                if state == 'missing':
+                    identity.unlink()
+                result = self.shell(session, runs=[routing])['runs']['routing']
+                self.assertEqual(result['code'], 1, result)
+                self.assertEqual(json.loads(result['stdout']), {'ok': False, 'error': 'agent_refused'})
+        self.assertFalse((self.state / 'question-routing.json').exists())
+        person = self.call('question-routing', launcher['name'], '--json', input=request)
+        self.assertEqual(json.loads(person.stdout)['question_routing'], {'send_to_parent': False, 'revision': 1, 'person_off': False})
+
+
+# The launching agent: a child subreaper that runs the launch itself, so the
+# host it starts stays below it as it does while the launching hgs lives.
+LAUNCHER = r"""
+import ctypes, json, subprocess, sys
+assert ctypes.CDLL(None, use_errno=True).prctl(36, 1, 0, 0, 0) == 0  # PR_SET_CHILD_SUBREAPER
+for line in sys.stdin:
+    request = json.loads(line)
+    r = subprocess.run(request['argv'], env=request['env'], text=True, capture_output=True, timeout=120,
+                       cwd=request['cwd'])
+    print(json.dumps({'code': r.returncode, 'stdout': r.stdout, 'stderr': r.stderr}), flush=True)
+"""
+
+
+@unittest.skipUnless(sys.platform == 'linux' and (fixture.required() or DSH and HGS.exists()),
+                     'official dsh, Linux /proc and built hgs required')
+class LaunchingAgentAboveItsHost(Hosted, unittest.TestCase):
+    """zerus-ppd26.15, the no-forgery window: the host is a child of the
+    launching hgs, which is the launching agent's descendant, so the agent is
+    an ancestor of every hosted tool call while that hgs lives. Here the
+    launching agent keeps the host below it for the whole test."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.prepare()
+        try:
+            cls.stand_in.kill()
+            cls.stand_in.wait(timeout=5)
+            cls.stand_in = subprocess.Popen([sys.executable, '-I', '-c', LAUNCHER], stdin=subprocess.PIPE,
+                                            stdout=subprocess.PIPE, text=True)
+            start = subprocess.check_output(['ps', '-p', str(cls.stand_in.pid), '-o', 'lstart='],
+                                            env={'LC_ALL': 'C', 'TZ': 'UTC', 'PATH': '/usr/bin:/bin'},
+                                            text=True).strip()
+            cls.launcher.update(pid=cls.stand_in.pid, process_start=start)
+            (cls.state / (hashlib.sha256(cls.launcher['name'].encode()).hexdigest() + '.json')).write_text(
+                json.dumps(cls.launcher))
+            request = {'argv': [str(HGS), 'dsh', str(cls.root / 'ws'), '--new', '-n', 'window', '-d'],
+                       'env': cls.launcher_env, 'cwd': str(cls.root / 'ws')}
+            cls.stand_in.stdin.write(json.dumps(request) + '\n')
+            cls.stand_in.stdin.flush()
+            launched = json.loads(cls.stand_in.stdout.readline())
+            assert launched['code'] == 0, launched['stderr']
+            cls.first = cls.binding('window')
+        except BaseException:
+            cls.finish()
+            raise
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.finish()
+
+    def ancestors(self, pid):
+        chain = []
+        while pid > 1 and len(chain) < 64:
+            chain.append(pid)
+            pid = int(Path(f'/proc/{pid}/stat').read_text().rsplit(')', 1)[1].split()[1])
+        return chain
+
+    def test_a_hosted_call_is_never_the_launching_agent_or_the_person(self):
+        host = json.loads((self.host_dir / 'host.identity.json').read_text())['pid']
+        self.assertIn(self.stand_in.pid, self.ancestors(host), 'the launching agent must stay above the host')
+        ref = self.task()
+        hgs = str(HGS)
+        launcher = [f'HGS_SESSION={self.launcher["name"]}', f'HGS_RUN_ID={self.launcher["run_id"]}',
+                    f'HGS_SESSION_ID={self.launcher["session_id"]}', 'HGS_AGENT=claude']
+        bare = ['-u', 'HGS_AGENT', '-u', 'HGS_SESSION', '-u', 'HGS_RUN_ID', '-u', 'HGS_SESSION_ID',
+                '-u', 'HGS_ACCOUNT_ID']
+        runs = [('self', [hgs, 'self', '--json'], None),
+                ('forged_self', ['/usr/bin/env', *launcher, hgs, 'self', '--json'], None),
+                ('forged_comment', ['/usr/bin/env', *launcher, hgs, 'task', 'comment', ref], 'as the launcher'),
+                ('person_comment', ['/usr/bin/env', *bare, hgs, 'task', 'comment', ref], 'as the person')]
+        result = self.shell(self.first, runs=runs)
+        self.assertOwnMarkers(result['env'], self.first)
+        for name in ('self', 'forged_self'):
+            run = result['runs'][name]
+            if run['code'] == 0:
+                answer = json.loads(run['stdout'])
+                self.assertNotEqual(answer['name'], self.launcher['name'], (name, run))
+                self.assertNotEqual(answer['identity_source'], 'process', (name, run))
+        for name in ('forged_comment', 'person_comment'):
+            run = result['runs'][name]
+            self.assertNotEqual(run['code'], 0, (name, run))
+            self.assertIn('This command runs under a DeepSeek agent host', run['stderr'], (name, run))
+        history = json.loads(self.call('task', 'get', ref, '--history-limit', '20').stdout)['task']['log']
+        self.assertEqual([entry['kind'] for entry in history], ['created'])
 
 
 class DirectlyStarted(Hosted):

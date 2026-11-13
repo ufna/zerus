@@ -1,37 +1,12 @@
-//! The resident agent hosts that serve several sessions from one long-lived
-//! process, read for the caller proof. No session's own agent is an ancestor
-//! of a hosted session's shell; only the host is. These reads are bounded,
-//! follow no link and repair nothing.
+//! Per-home DeepSeek records for the hosted-call token proof, and OpenCode's
+//! refusal-only service registration. The global DeepSeek ancestor check is
+//! `state::dsh::hosted_ancestor`; Teams and the main caller paths share it.
 //!
-//! DeepSeek hosts are this computer's own records: one folder per agent home
-//! under `dsh/hosts`, each naming the host's process ID and its birth as
-//! `platform::process_identity` reads it. A state folder, `dsh` or `hosts`
-//! that does not exist records no host. Only directories are host folders,
-//! and a plain file beside them, such as `.DS_Store`, is ignored. Any other
-//! entry refuses like an unreadable record: a link in place of a host folder
-//! may lead to a live host. More than [`HOST_FOLDERS`] directories, or more
-//! than [`HOST_ENTRIES`] entries of any kind, refuse with a sentence of their
-//! own, since these folders are kept per agent home and nothing removes them.
-//! A folder or record that exists but cannot be read, or is malformed,
-//! refuses.
-//!
-//! A running record names its host with its birth. A starting record names
-//! the previous host with its birth and a PID file without one; its launcher
-//! is the `hgs` that started the attempt, not a host. An older `host.pid`
-//! names a process ID without a birth, unless the record publishes that same
-//! ID. A record that carries the identity of another boot, in the very form
-//! the writer stamps, names no process of this boot; this boot is read by the
-//! writer's own function, so the two cannot drift apart, and a record whose
-//! boot is in any other form, or a boot that cannot be read, sets nothing
-//! aside. A host spawned by an attempt
-//! that ended unconfirmed, before its running record, is named nowhere and
-//! passes as a person: the stated limit.
-//!
-//! OpenCode's shared service is registered only in OpenCode's own service
-//! file, which holds a process ID and no birth. It is someone else's file, read
-//! as untrusted data: it can only add a refusal, and a missing, unreadable or
-//! malformed file adds nothing. An OpenCode service that runs without being
-//! registered there is therefore not detected.
+//! A hosted call selects only its binding's agent home. Its record names a
+//! PID and birth for this boot; an older PID file without a birth proves
+//! no hosted call. Reads are bounded, follow no link and repair nothing.
+//! OpenCode's service file is untrusted: it can only add a refusal, and a
+//! missing, unreadable or malformed registration proves nothing.
 #[cfg(unix)]
 use super::caller_binding::optional_child;
 use super::*;
@@ -39,32 +14,12 @@ use crate::state::provider_binding::Provider;
 #[cfg(unix)]
 use crate::state::{repositories::directory::Directory, storage};
 
-/// At most this many DeepSeek host folders, one per agent home.
-#[cfg_attr(not(unix), allow(dead_code))]
-pub(crate) const HOST_FOLDERS: usize = 64;
-/// At most this many entries of any kind are listed in `dsh/hosts`, so that
-/// stray files cannot make the listing unbounded.
-#[cfg_attr(not(unix), allow(dead_code))]
-pub(crate) const HOST_ENTRIES: usize = 1024;
 #[cfg(unix)]
 const UNREADABLE: &str = "Cannot verify a recorded agent host.";
 
-/// Why the recorded hosts were not read.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Unread {
-    /// A folder or record that exists cannot be read, is malformed, or is
-    /// neither a folder nor a plain file.
-    Unreadable,
-    /// More host folders than [`HOST_FOLDERS`].
-    #[cfg_attr(not(unix), allow(dead_code))]
-    TooManyFolders,
-    /// More entries of any kind than [`HOST_ENTRIES`].
-    #[cfg_attr(not(unix), allow(dead_code))]
-    TooManyEntries,
-}
-
 /// A process that a host record names, with the birth it recorded, or none
 /// when the record holds only a process ID.
+#[cfg(unix)]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Named {
     pub(crate) pid: u32,
@@ -79,12 +34,6 @@ pub(crate) struct Registered {
     pub(crate) written: f64,
 }
 
-#[derive(Clone, Debug, Default, PartialEq)]
-pub(crate) struct Hosts {
-    pub(crate) deepseek: Vec<Named>,
-    pub(crate) opencode: Option<Registered>,
-}
-
 #[cfg(test)]
 thread_local! { static READS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
 #[cfg(test)]
@@ -92,67 +41,8 @@ pub(super) fn reads() -> usize {
     READS.with(|n| n.get())
 }
 
-pub(super) fn hosts() -> std::result::Result<Hosts, Unread> {
-    Ok(Hosts {
-        deepseek: deepseek()?,
-        opencode: opencode(),
-    })
-}
-
-#[cfg(unix)]
-fn deepseek() -> std::result::Result<Vec<Named>, Unread> {
-    let state_root = match std::fs::canonicalize(storage::root()) {
-        Ok(root) => root,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(_) => return Err(Unread::Unreadable),
-    };
-    let root = Directory::open(&state_root).map_err(|_| Unread::Unreadable)?;
-    let Some(dsh) = optional_child(&root, "dsh").map_err(|_| Unread::Unreadable)? else {
-        return Ok(Vec::new());
-    };
-    let Some(hosts) = optional_child(&dsh, "hosts").map_err(|_| Unread::Unreadable)? else {
-        return Ok(Vec::new());
-    };
-    let mut folders = Vec::new();
-    for (count, entry) in std::fs::read_dir(&hosts.path)
-        .map_err(|_| Unread::Unreadable)?
-        .enumerate()
-    {
-        if count == HOST_ENTRIES {
-            return Err(Unread::TooManyEntries);
-        }
-        let entry = entry.map_err(|_| Unread::Unreadable)?;
-        let kind = entry.file_type().map_err(|_| Unread::Unreadable)?;
-        if kind.is_file() {
-            continue;
-        }
-        if !kind.is_dir() {
-            return Err(Unread::Unreadable);
-        }
-        if folders.len() == HOST_FOLDERS {
-            return Err(Unread::TooManyFolders);
-        }
-        let name = entry.file_name();
-        folders.push(name.into_string().map_err(|_| Unread::Unreadable)?);
-    }
-    hosts.verify().map_err(|_| Unread::Unreadable)?;
-    let boot = boot();
-    let mut named = Vec::new();
-    for folder in folders {
-        let folder = hosts.child(&folder).map_err(|_| Unread::Unreadable)?;
-        named.extend(host(&folder, boot.as_deref()).map_err(|_| Unread::Unreadable)?);
-    }
-    hosts.verify().map_err(|_| Unread::Unreadable)?;
-    Ok(named)
-}
-
-#[cfg(not(unix))]
-fn deepseek() -> std::result::Result<Vec<Named>, Unread> {
-    Err(Unread::Unreadable)
-}
-
 /// What the host folder of one agent home names, by the same record rules
-/// and reads as [`hosts`] (zerus-ppd26 Part B): the hosted caller proof reads
+/// and reads as the hosted proof (zerus-ppd26 Part B): the hosted caller proof reads
 /// only the host its session's binding selects. A state folder, `dsh`,
 /// `hosts` or host folder that does not exist names no host; one that exists
 /// but cannot be read refuses.
@@ -321,7 +211,7 @@ fn small(
 
 /// OpenCode's own service file, where `service::registration_path` looks
 /// for it. Untrusted: any failure names nothing.
-fn opencode() -> Option<Registered> {
+pub(super) fn opencode() -> Option<Registered> {
     use std::io::Read;
     let path = nonempty_env("XDG_STATE_HOME")
         .map(PathBuf::from)

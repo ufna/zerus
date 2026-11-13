@@ -23,7 +23,9 @@ use std::sync::{Arc, Condvar, Mutex, OnceLock, PoisonError};
 use std::time::Duration;
 
 use tauri::State;
+pub(crate) mod busy;
 mod local_read_capture;
+pub(crate) use busy::is_busy;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 mod program_termination;
 mod read_barrier;
@@ -52,8 +54,8 @@ type LockKey = (String, String, Lane, String);
 
 #[derive(Default)]
 struct Claimed {
-    names: HashSet<LockKey>,
-    runs: HashSet<LockKey>,
+    names: HashMap<LockKey, Arc<busy::Holder>>,
+    runs: HashMap<LockKey, Arc<busy::Holder>>,
 }
 
 /// Hears that this device's marks changed: the menu bar's desk reads them
@@ -89,6 +91,8 @@ pub enum Lane {
     Notifications,
     /// A Keep cache warm change.
     KeepWarm,
+    /// A change of where a child's questions go (zerus-sa9qn.32).
+    QuestionRouting,
     Send,
     Process,
     Queue,
@@ -141,30 +145,41 @@ pub struct Claim {
     name_key: LockKey,
     run_key: Option<LockKey>,
     active: AtomicBool,
+    holder: Arc<busy::Holder>,
 }
 
 impl InFlight {
     /// None while an action already runs for that session.
+    #[cfg(test)]
     pub fn claim(&self, key: Key) -> Option<Claim> {
+        self.claim_for(key, busy::GENERIC).ok()
+    }
+    fn claim_for(&self, key: Key, label: &'static str) -> Result<Claim, String> {
         let mut keys = self.keys.lock().unwrap_or_else(PoisonError::into_inner);
         let name_key = (key.0.clone(), key.1.clone(), key.2, key.3.clone());
         let run_key =
             (!key.4.is_empty()).then(|| (key.0.clone(), key.4.clone(), key.2, key.3.clone()));
-        if keys.names.contains(&name_key)
-            || run_key.as_ref().is_some_and(|run| keys.runs.contains(run))
+        if let Some(holder) = keys
+            .names
+            .get(&name_key)
+            .or_else(|| run_key.as_ref().and_then(|run| keys.runs.get(run)))
         {
-            return None;
+            // Snapshot the actual conflicting holder under the same lock as
+            // admission; a later lookup could name a replacement or no holder.
+            return Err(holder.refusal());
         }
-        keys.names.insert(name_key.clone());
+        let holder = Arc::new(busy::Holder::new(label));
+        keys.names.insert(name_key.clone(), holder.clone());
         if let Some(run) = &run_key {
-            keys.runs.insert(run.clone());
+            keys.runs.insert(run.clone(), holder.clone());
         }
-        Some(Claim {
+        Ok(Claim {
             keys: Arc::clone(&self.keys),
             key,
             name_key,
             run_key,
             active: AtomicBool::new(false),
+            holder,
         })
     }
 }
@@ -239,6 +254,10 @@ pub(crate) struct Running {
     _claim: Arc<Claim>,
 }
 impl Running {
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    pub(crate) fn describe(&self, label: &'static str) {
+        self._claim.holder.label(label);
+    }
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     pub(crate) fn claim(&self) -> Arc<Claim> {
         self._claim.clone()
@@ -401,16 +420,33 @@ impl Actions {
     /// it. A message-blocking write, and a context reset for its own
     /// session, also marks its kind (`write_kind`) under the claimed
     /// computer and name.
+    #[cfg(test)]
     pub(crate) fn begin(&self, key: Key, action: &Action) -> Option<Running> {
-        let claim = Arc::new(self.flight.claim(key)?);
-        self.activate(claim, action)
+        self.begin_named(key, action, busy::action(action)).ok()
+    }
+    pub(crate) fn begin_named(
+        &self,
+        key: Key,
+        action: &Action,
+        label: &'static str,
+    ) -> Result<Running, String> {
+        let claim = Arc::new(self.flight.claim_for(key, label)?);
+        self.activate_named(claim, action, label)
     }
 
     /// Reserve only the existing write lane. Pending Undo is not an active
     /// write, so it never publishes a composer block or prevents a send.
+    #[cfg(test)]
     pub(crate) fn reserve_end(&self, target: &Target) -> Option<Arc<Claim>> {
+        self.reserve_end_for(target, &Action::Archive).ok()
+    }
+    pub(crate) fn reserve_end_for(
+        &self,
+        target: &Target,
+        action: &Action,
+    ) -> Result<Arc<Claim>, String> {
         self.flight
-            .claim(Lane::key(target, &Action::Archive))
+            .claim_for(Lane::key(target, &Action::Archive), busy::action(action))
             .map(Arc::new)
     }
 
@@ -420,21 +456,32 @@ impl Actions {
             && claim.active.load(Ordering::Acquire)
     }
 
+    #[cfg(test)]
     fn activate(&self, claim: Arc<Claim>, action: &Action) -> Option<Running> {
+        self.activate_named(claim, action, busy::action(action))
+            .ok()
+    }
+    fn activate_named(
+        &self,
+        claim: Arc<Claim>,
+        action: &Action,
+        label: &'static str,
+    ) -> Result<Running, String> {
         if !Arc::ptr_eq(&claim.keys, &self.flight.keys) || claim.key.2 != Lane::of(action) {
-            return None;
+            return Err(zerus_client_core::end_action::STATE_CHANGED.into());
         }
         if claim
             .active
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
             .is_err()
         {
-            return None;
+            return Err(claim.holder.refusal());
         }
+        claim.holder.label(label);
         let (computer, name) = (&claim.key.0, &claim.key.1);
         let marked = blocks_messages(action) || WriteKind::of(action) == WriteKind::Clear;
         let write = marked.then(|| self.mark_write(computer, name, &claim.key.4, action));
-        Some(Running {
+        Ok(Running {
             _write: write,
             _claim: claim,
         })
@@ -652,13 +699,19 @@ impl Actions {
 
     /// The session's lane, None while an action runs in it.
     pub(crate) fn claim_lane(&self, computer: &str, name: &str, lane: Lane) -> Option<Claim> {
-        self.flight.claim((
-            computer.to_owned(),
-            name.to_owned(),
-            lane,
-            String::new(),
-            String::new(),
-        ))
+        self.claim_lane_checked(computer, name, lane).ok()
+    }
+    fn claim_lane_checked(&self, computer: &str, name: &str, lane: Lane) -> Result<Claim, String> {
+        self.flight.claim_for(
+            (
+                computer.to_owned(),
+                name.to_owned(),
+                lane,
+                String::new(),
+                String::new(),
+            ),
+            busy::lane(lane),
+        )
     }
 
     /// A mark as `run_action` saves it, without `queue_read_marks`' cleanup.
@@ -1178,6 +1231,9 @@ pub async fn run_action(
     delay: Option<crate::action_delay::Reference>,
 ) -> Result<ActionReply, String> {
     use tauri::Manager;
+    // Without a delay reference an Archive, Terminate, Kill or Forget is
+    // refused at the dispatcher's entry, before any lane, probe or hgs call
+    // (`uncaptured_end`, zerus-sa9qn.25).
     let ending = matches!(action, Action::Archive | Action::Terminate);
     let machine = if ending {
         crate::worktree_cleanup::machine(&source, &target.computer).unwrap_or_default()
@@ -1198,8 +1254,6 @@ pub async fn run_action(
             None,
         )
         .await?
-    } else if ending && !machine.is_empty() {
-        dispatch_guarded_end(&state, target.clone(), action, machine.clone()).await?
     } else {
         (dispatch(&state, target.clone(), action).await?, false)
     };
@@ -1212,28 +1266,42 @@ pub async fn run_action(
     })
 }
 
-async fn dispatch_guarded_end(
-    state: &Actions,
-    target: Target,
-    action: Action,
-    machine: String,
-) -> Result<(Outcome, bool), String> {
-    dispatch_end_with(state, target, action, machine, run).await
+/// zerus-sa9qn.25: Archive, Terminate, Kill and Forget run only from a
+/// capture: their undo window's, a confirmed worktree cleanup's or a native
+/// termination confirmation's. Without one the dispatcher refuses them at its
+/// entry, for run_action and every other caller alike: no lane, probe, hgs
+/// call or cleanup observation. `actions::invocation` refuses them as well.
+fn uncaptured_end(action: &Action) -> Option<Outcome> {
+    zerus_client_core::end_action::needs_capture(action)
+        .then(|| failed(zerus_client_core::end_action::UNDELAYED))
 }
 
-/// Legacy peers retain their original end action. Only a successful probe
-/// explicitly lacking the marker permits that fallback; transport failures
-/// never authorize a second attempt or a weaker Restore.
-pub(crate) async fn dispatch_end_with(
+/// A captured end through the reserved lane, as its undo window runs it, for
+/// the guard-probe fixtures. A legacy peer keeps its original call without
+/// `--expect-machine` only when a successful probe explicitly lacks the
+/// marker; transport failures never authorize a second attempt or a weaker
+/// Restore.
+#[cfg(test)]
+pub(crate) async fn dispatch_captured_end_with(
     state: &Actions,
-    target: Target,
-    action: Action,
+    captured: zerus_client_core::end_action::Captured,
     machine: String,
     runner: impl Fn(&std::path::Path, &zerus_client_core::Invocation) -> zerus_client_core::Exit
         + Send
         + 'static,
 ) -> Result<(Outcome, bool), String> {
-    dispatch_end_reserved_with(state, target, action, machine, runner, None, None).await
+    let claim = state.reserve_end_for(&captured.target, &captured.action)?;
+    let (target, action) = (captured.target.clone(), captured.action.clone());
+    dispatch_end_reserved_with(
+        state,
+        target,
+        action,
+        machine,
+        runner,
+        Some((captured, claim)),
+        None,
+    )
+    .await
 }
 
 async fn dispatch_end_reserved_with(
@@ -1337,7 +1405,7 @@ pub(crate) async fn restore_captured(
 /// The one dispatcher of session actions, for `run_action` and for commands
 /// that build an action in Rust (a message from the held draft). A message
 /// already in flight to the same agent fails with Qt's text; any other lane
-/// answers `Err("busy")`.
+/// answers an attributed, definite busy refusal.
 pub async fn dispatch(state: &Actions, target: Target, action: Action) -> Result<Outcome, String> {
     dispatch_as(state, target, action, uuid::Uuid::new_v4().to_string()).await
 }
@@ -1464,7 +1532,11 @@ pub(crate) async fn terminal_image_test_dispatch(
 }
 
 /// `dispatch_as` past its replay guard, with the runner that starts `hgs`:
-/// the core's `run`, or in tests a stand-in that starts no process.
+/// the core's `run`, or in tests a stand-in that starts no process. Archive,
+/// Terminate, Kill and Forget run only from a capture (zerus-sa9qn.25), so
+/// they run here as their undo window runs them: the stand-in's own answer
+/// to the fresh metadata read is the captured source, and its successful
+/// exit becomes the exact completed receipt of the scoped call.
 #[cfg(test)]
 async fn dispatch_with(
     state: &Actions,
@@ -1475,6 +1547,48 @@ async fn dispatch_with(
         + Send
         + 'static,
 ) -> Result<Outcome, String> {
+    if zerus_client_core::end_action::needs_capture(&action) {
+        use zerus_client_core::Exit;
+        let lifecycle = if matches!(action, Action::Terminate | Action::Kill) {
+            "running"
+        } else {
+            "paused"
+        };
+        let captured = zerus_client_core::end_action::Captured {
+            target: target.clone(),
+            action,
+            state: lifecycle.into(),
+        };
+        let source = target;
+        return dispatch_captured_end_with(state, captured, String::new(), move |hgs, inv| {
+            if inv.args.iter().any(|s| s == "inspect") {
+                let value = serde_json::json!({"name":source.name,"run_id":source.run_id,
+                    "conversation_id":source.conversation_id,"state":lifecycle});
+                return Exit::Code {
+                    code: 0,
+                    stdout: serde_json::to_vec(&value).unwrap(),
+                    stderr: String::new(),
+                };
+            }
+            match runner(hgs, inv) {
+                Exit::Code { code: 0, stderr, .. } => {
+                    let body: serde_json::Value =
+                        serde_json::from_slice(inv.stdin.as_deref().unwrap_or_default())
+                            .unwrap_or_default();
+                    let receipt = serde_json::json!({"request_id":body["request_id"],"name":source.name,
+                        "run_id":source.run_id,"conversation_id":source.conversation_id,"status":"completed"});
+                    Exit::Code {
+                        code: 0,
+                        stdout: serde_json::to_vec(&receipt).unwrap(),
+                        stderr,
+                    }
+                }
+                other => other,
+            }
+        })
+        .await
+        .map(|(outcome, _)| outcome);
+    }
     dispatch_with_plan(
         state,
         target,
@@ -1681,6 +1795,11 @@ async fn dispatch_reserved_original(
     if let Some(refusal) = refused_before_claim(&target, &action) {
         return Ok(failed(refusal));
     }
+    if delayed.is_none() && cleanup.is_none() && native.is_none() {
+        if let Some(refused) = uncaptured_end(&action) {
+            return Ok(refused);
+        }
+    }
     // Pause all and Resume all are computer-wide: one per computer at a time,
     // whatever session name the caller sent.
     let mut key = Lane::key(&target, &action);
@@ -1699,19 +1818,23 @@ async fn dispatch_reserved_original(
             {
                 return Ok(failed(zerus_client_core::end_action::STATE_CHANGED));
             }
-            state.activate(Arc::clone(claim), &action)
+            state.activate_named(Arc::clone(claim), &action, busy::action(&action))
         }
-        None => state.begin(key, &action),
+        None => state.begin_named(key, &action, busy::action(&action)),
     };
-    let Some(running) = running else {
-        return match Lane::of(&action) {
-            Lane::Send => Ok(failed(ALREADY_SENDING)),
-            Lane::Answer => Ok(failed(ALREADY_ANSWERING)),
-            _ => Err(BUSY.into()),
-        };
+    let running = match running {
+        Ok(running) => running,
+        Err(refusal) => {
+            return match Lane::of(&action) {
+                Lane::Send => Ok(failed(ALREADY_SENDING)),
+                Lane::Answer => Ok(failed(ALREADY_ANSWERING)),
+                _ => Err(refusal),
+            };
+        }
     };
-    // The service case moves this SAME native claim into its I/O resources.
-    // Dropping the async future cannot release it while a helper/pipe survives.
+    // The service case moves this SAME native claim into a revocable hold.
+    // The bounded worker owns it even if the async future drops; later pipe
+    // custody can outlive that worker without keeping the session lane busy.
     let (_running, native_hold): (Option<Running>, Option<Arc<dyn Send + Sync>>) =
         if native.is_some() {
             (None, Some(Arc::new(running)))
@@ -1910,9 +2033,7 @@ pub async fn set_notifications(
     if blocked() {
         return Err(REPLAY_NEEDS_HGS.into());
     }
-    let Some(_claim) = state.claim_lane(&target.computer, &target.name, Lane::Notifications) else {
-        return Err("busy".into());
-    };
+    let _claim = state.claim_lane_checked(&target.computer, &target.name, Lane::Notifications)?;
     let hgs = default_hgs();
     let call_target = target.clone();
     let projection = app.notification_projection(target);
@@ -1937,12 +2058,38 @@ pub async fn set_keep_warm(
     if blocked() {
         return Err(REPLAY_NEEDS_HGS.into());
     }
-    let Some(_claim) = state.claim_lane(&target.computer, &target.name, Lane::KeepWarm) else {
-        return Err("busy".into());
-    };
+    let _claim = state.claim_lane_checked(&target.computer, &target.name, Lane::KeepWarm)?;
     let hgs = default_hgs();
     tauri::async_runtime::spawn_blocking(move || {
         zerus_client_core::keep_warm::change(&hgs, &target, choice, expected_revision)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+/// Sets where a child's blocking questions go (zerus-sa9qn.32): to its parent
+/// session or not. The person's switch, kept on the child's host; one change
+/// per session at a time, in its own lane (`Err("busy")` otherwise). The core
+/// probes `hgs --help` first and returns the host's confirmed value.
+#[tauri::command]
+pub async fn set_question_routing(
+    state: State<'_, Actions>,
+    target: Target,
+    send_to_parent: bool,
+    expected_revision: i64,
+) -> Result<serde_json::Value, String> {
+    if blocked() {
+        return Err(REPLAY_NEEDS_HGS.into());
+    }
+    let _claim = state.claim_lane_checked(&target.computer, &target.name, Lane::QuestionRouting)?;
+    let hgs = default_hgs();
+    tauri::async_runtime::spawn_blocking(move || {
+        zerus_client_core::question_routing::change(
+            &hgs,
+            &target,
+            send_to_parent,
+            expected_revision,
+        )
     })
     .await
     .map_err(|error| error.to_string())?
@@ -1960,9 +2107,7 @@ pub async fn set_parent(
     if blocked() {
         return Err(REPLAY_NEEDS_HGS.into());
     }
-    let Some(_claim) = state.claim_lane(&target.computer, &target.name, Lane::Write) else {
-        return Err("busy".into());
-    };
+    let _claim = state.claim_lane_checked(&target.computer, &target.name, Lane::Write)?;
     let hgs = default_hgs();
     tauri::async_runtime::spawn_blocking(move || {
         zerus_client_core::parent_change::change(&hgs, &target, &change)
@@ -1996,6 +2141,59 @@ pub async fn inspect_session(target: Target, archive_id: Option<String>) -> Opti
         .await
         .ok()?;
     parse_details(&target, exit)
+}
+
+/// Terminal's Clear input read (zerus-wkj9l): the composer of the session's
+/// live terminal, or None when it could not be read.
+#[tauri::command]
+pub async fn composer_state(
+    target: Target,
+) -> Option<zerus_client_core::clear_input::ComposerState> {
+    if blocked() {
+        return None;
+    }
+    let id = uuid::Uuid::new_v4().to_string();
+    let inv = zerus_client_core::clear_input::composer_invocation(&target, &id)?;
+    let hgs = default_hgs();
+    let exit = tauri::async_runtime::spawn_blocking(move || run(&hgs, &inv))
+        .await
+        .ok()?;
+    zerus_client_core::clear_input::parse_composer(&exit, &target, &id)
+}
+
+/// Clears exactly the text the person confirmed (zerus-wkj9l): their explicit
+/// action, never automatic and never retried. A lost answer is uncertain.
+#[tauri::command]
+pub async fn clear_input(
+    target: Target,
+    binding: String,
+    text: String,
+) -> zerus_client_core::clear_input::ClearOutcome {
+    use zerus_client_core::clear_input::{clear_invocation, parse_clear, ClearOutcome};
+    let outcome = |status: &str, error: &str| ClearOutcome {
+        status: status.into(),
+        error: error.into(),
+        composer: None,
+    };
+    if blocked() {
+        return outcome("failed", "Clear input is not available here.");
+    }
+    let id = uuid::Uuid::new_v4().to_string();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_secs_f64())
+        .unwrap_or(0.0);
+    let Some(inv) = clear_invocation(&target, &id, &binding, &text, now) else {
+        return outcome("failed", "Read the input again before clearing.");
+    };
+    let hgs = default_hgs();
+    match tauri::async_runtime::spawn_blocking(move || run(&hgs, &inv)).await {
+        Ok(exit) => parse_clear(&exit, &target, &id),
+        Err(_) => outcome(
+            "uncertain",
+            "The clear did not report its outcome. Check Terminal.",
+        ),
+    }
 }
 
 /// Read once on opening a child; no timer or separate subscription.
@@ -2302,8 +2500,8 @@ impl Drop for ActivitySlot<'_> {
 /// The text the frontend ignores: a read of that row is already running.
 pub const ACTIVITY_BUSY: &str = "busy";
 
-/// `dispatch`'s `Err` when the session's lane is taken: refused before any
-/// call ran, so a definite refusal, never an uncertain outcome.
+/// Legacy capacity refusal for internal callers. Session lane conflicts
+/// carry busy::Holder metadata and remain definite refusals before delivery.
 pub const BUSY: &str = "busy";
 
 /// The recorded Activity of one archived session after cursor `after`
@@ -2483,7 +2681,7 @@ mod tests {
             || true,
             |_, _| panic!("busy cannot run"),
         ));
-        assert_eq!(out, Err(BUSY.into()));
+        assert!(out.as_ref().is_err_and(|error| is_busy(error)));
         drop(held);
         let out = tauri::async_runtime::block_on(dispatch_terminal_image_with(
             &actions,
@@ -2680,6 +2878,104 @@ mod tests {
                 matches!(out, Outcome::Done { cleanup: None, .. }),
                 scenario == "exact"
             );
+        }
+    }
+
+    /// zerus-sa9qn.25: an end action without its capture runs nothing. The
+    /// dispatcher refuses it at its entry, before any lane, probe or hgs call,
+    /// and the core builds no call for it either. This computer's sessions
+    /// are refused there as a peer's are (zerus-sa9qn.30).
+    #[test]
+    fn an_end_action_without_its_capture_runs_nothing() {
+        use zerus_client_core::{end_action::UNDELAYED, Exit};
+        let local = Target {
+            computer: String::new(),
+            ..review()
+        };
+        let ends = [
+            Action::Archive,
+            Action::Terminate,
+            Action::Kill,
+            Action::Forget,
+        ];
+        for (target, action) in [local, review()]
+            .into_iter()
+            .flat_map(|target| ends.clone().map(|action| (target.clone(), action)))
+        {
+            let computer = target.computer.clone();
+            assert_eq!(
+                uncaptured_end(&action),
+                Some(failed(UNDELAYED)),
+                "{action:?}"
+            );
+            // Refused at the dispatcher's entry, before its lane: a lane another
+            // call holds still reads as refused, not busy.
+            let held = Actions::new(std::env::temp_dir().join(format!(
+                "zerus-undelayed-held-{}.json",
+                uuid::Uuid::new_v4()
+            )));
+            let holder = held.begin(Lane::key(&target, &action), &action).unwrap();
+            let refused = tauri::async_runtime::block_on(dispatch_with_plan(
+                &held,
+                target.clone(),
+                action.clone(),
+                uuid::Uuid::new_v4().to_string(),
+                |_, _, _| unreachable!("an uncaptured end runs nothing"),
+                None,
+            ));
+            assert_eq!(
+                refused,
+                Ok(failed(UNDELAYED)),
+                "{action:?} on {computer:?}: refused before the lane"
+            );
+            drop(holder);
+            let actions = Actions::new(
+                std::env::temp_dir()
+                    .join(format!("zerus-undelayed-end-{}.json", uuid::Uuid::new_v4())),
+            );
+            let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let c = Arc::clone(&calls);
+            let out = tauri::async_runtime::block_on(dispatch_with_plan(
+                &actions,
+                target.clone(),
+                action.clone(),
+                uuid::Uuid::new_v4().to_string(),
+                move |_, _, _| {
+                    c.fetch_add(1, Ordering::Relaxed);
+                    Exit::Code {
+                        code: 0,
+                        stdout: Vec::new(),
+                        stderr: String::new(),
+                    }
+                },
+                None,
+            ))
+            .unwrap();
+            assert_eq!(out, failed(UNDELAYED), "{action:?} on {computer:?}");
+            assert_eq!(
+                calls.load(Ordering::Relaxed),
+                0,
+                "{action:?} on {computer:?}: no probe and no hgs call"
+            );
+            assert!(
+                actions
+                    .begin(Lane::key(&target, &action), &action)
+                    .is_some(),
+                "{action:?} on {computer:?}: no lane is left held"
+            );
+        }
+        // The other actions keep their own calls, delayed or not.
+        for action in [
+            Action::Pause,
+            Action::ForgetBinding,
+            Action::ForgetArchive {
+                archive_id: "20000000-0000-4000-8000-000000000001".into(),
+            },
+            Action::ClearContext {
+                dismiss_prompt: false,
+            },
+        ] {
+            assert_eq!(uncaptured_end(&action), None, "{action:?}");
         }
     }
 

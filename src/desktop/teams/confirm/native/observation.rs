@@ -397,7 +397,12 @@ mod tests {
         let roots = Roots::open(&config.state, "question_receipts").unwrap();
         let name = record["name"].as_str().unwrap();
         let (id, raw) = archive(&config.state, &roots, &b, name).unwrap();
+        // An inspection only requests the background receipt worker. This
+        // Rust test executable does not run CLI worker commands; complete
+        // the private fixture through the same explicit native index read.
+        crate::state::listing_fixture::complete_questions(&record).unwrap();
         let view = crate::state::archive_inspection_for_test(name, &id).unwrap();
+        assert!(view["pending_questions_error"].is_null(), "{view}");
         let allowed = view["allowed_actions"].as_array().unwrap();
         assert!(!allowed.iter().any(|action| action == "restore"), "{view}");
         let reason = view["action_reasons"]["restore"]

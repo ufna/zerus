@@ -18,6 +18,7 @@ the copy in the same process with exactly those. A child's environment is then t
 proven byte for byte by that process's argument area, read between two
 identical samples of its PID, start, image and supervisor; anything else fails.
 """
+import base64
 import hashlib
 import http.server
 import json
@@ -541,10 +542,22 @@ class Model(http.server.BaseHTTPRequestHandler):
             self.wfile.write(error)
             self.wfile.flush()
             return
+        # A test may hold the turn busy until it releases it (zerus-iitw8).
+        hold = getattr(self.server, 'hold', None)
+        if hold is not None and len(self.server.requests) == 1:
+            hold.wait(120)
         self.send_response(200)
         self.send_header('Content-Type', 'text/event-stream')
         self.end_headers()
-        for delta, finish in (({'role': 'assistant', 'content': 'Fixture complete.'}, None), ({}, 'stop')):
+        response = (({'role': 'assistant', 'content': 'Fixture complete.'}, None), ({}, 'stop'))
+        background = getattr(self.server, 'background_command', None)
+        if background is not None and len(self.server.requests) == 1:
+            assert any(tool.get('function', {}).get('name') == 'Bash' for tool in body.get('tools', []))
+            response = ((dict(role='assistant', content=None, tool_calls=[dict(index=0,
+                id='call_background_fixture', type='function', function=dict(name='Bash', arguments=json.dumps(
+                    dict(command=background, description='Private completion fixture', run_in_background=True))))]), None),
+                ({}, 'tool_calls'))
+        for delta, finish in response:
             chunk = {'id': 'chat_fixture', 'object': 'chat.completion.chunk', 'model': 'fixture',
                      'choices': [{'index': 0, 'delta': delta, 'finish_reason': finish}]}
             if finish:
@@ -839,12 +852,15 @@ class NativeKimi(lifecycle.Harness):
 
     def held(self, text):
         """How often the newest model request's conversation holds `text` as a
-        user message of its own. Kimi adds its reminders as separate messages."""
+        user message of its own. Kimi adds reminders as separate messages and
+        hook results as parts, so only the hook envelope is excluded."""
         found = []
         for message in (self.requests[-1].get('messages', []) if self.requests else []):
             content = message.get('content')
             if isinstance(content, list):
-                content = ''.join(part.get('text', '') for part in content if isinstance(part, dict))
+                content = ''.join(part.get('text', '') for part in content if isinstance(part, dict)
+                                  and not re.fullmatch(r'<hook_result hook_event="[^"]+">\n.*</hook_result>',
+                                                       part.get('text', ''), re.S))
             if message.get('role') == 'user':
                 found.append(content)
         return found.count(text)
@@ -869,6 +885,32 @@ class NativeKimi(lifecycle.Harness):
         self.assertEqual(config.read_bytes(), before)
         self.assertEqual(len(self.requests), requests, 'settings submitted a first model turn')
         self.assertFalse(legacy.exists())
+
+    def test_id_unprimed_pending_settings_then_message_makes_one_model_call_and_keeps_defaults(self):
+        import native_effort_id as identity
+        config = self.home / 'config.toml'
+        text = config.read_text()
+        self.assertEqual(text.count('max_context_size = 32768\n'), 1)
+        text = text.replace('max_context_size = 32768\n',
+                            'max_context_size = 32768\ncapabilities = ["thinking"]\n')
+        text += ('\n[models.fixture_next]\nprovider = "fixture"\nmodel = "fixture-next"\n'
+                 'max_context_size = 32768\ncapabilities = ["thinking"]\n')
+        config.write_text(text)
+        name = self.launch()
+        record = self.binding(name)
+        self.assertFalse(record.get('conversation_id'), 'never prime an unconfirmed native CID')
+        before, requests = config.read_bytes(), len(self.requests)
+        record, path, _ = identity.moved_record(self, name, record, existing_machine=True)
+        attempts = identity.key_log(self)
+        message = getattr(self, 'pending_message', 'Continue the unprimed pending fixture\\')
+        receipt = identity.pending_then_message(self, name, record, path,
+                                                'fixture_next', 'on', message, attempts)
+        self.until(lambda: self.held(message), name)
+        self.until(lambda: self.settled(name, receipt), name)
+        self.assertEqual(self.held(message), 1)
+        self.assertEqual(len(self.requests), requests + 1)
+        self.assertEqual(config.read_bytes(), before)
+        self.assertNotIn('Select a model', self.screen(name))
 
     def test_id_effort_preserves_raw_request_identity_and_shared_defaults(self):
         import native_effort_id as contract
@@ -1011,6 +1053,242 @@ class NativeKimi(lifecycle.Harness):
             time.sleep(1)
             self.assertEqual(len(self.requests), requests)
             self.assertEqual(self.held(text), 1)
+
+    def test_background_task_completion_settles_its_own_main_turn(self):
+        started, release, finished = [self.root / name for name in ('bg-started', 'bg-release', 'bg-finished')]
+        self.model_server.background_command = (
+            'printf started > ' + shlex.quote(str(started)) +
+            '; while [ ! -f ' + shlex.quote(str(release)) + ' ]; do sleep 0.1; done' +
+            '; printf completed > ' + shlex.quote(str(finished)))
+        name = self.launch()
+        payload = self.payload(name, 'Run the private background fixture.')
+        def wire_rows():
+            cid = self.binding(name).get('conversation_id')
+            if not cid:
+                return []
+            paths = list((self.home / 'sessions').glob('*/' + cid + '/agents/main/wire.jsonl'))
+            if not paths:
+                return []
+            self.assertEqual(len(paths), 1)
+            with paths[0].open('rb') as source:
+                data = source.read((8 << 20) + 1)
+            self.assertLessEqual(len(data), 8 << 20)
+            if not data.endswith(b'\n'):
+                return []
+            return [json.loads(line) for line in data.splitlines()]
+        try:
+            receipt = self.send(name, payload)
+            self.assertEqual(receipt['status'], 'submitted')
+            self.until(started.exists, name)
+            def main_finished():
+                ends = [row for row in wire_rows() if row.get('type') == 'turn.ended'
+                        and row.get('agentId') == 'main' and row.get('reason') == 'completed']
+                return ends[0] if len(self.requests) == 2 and len(ends) == 1 else None
+            first = self.until(main_finished, name)
+            initial = first['turnId']
+            state = self.inspect(name)
+            self.assertTrue(state['active_tools'], 'the held Bash must remain outstanding')
+            self.assertNotEqual(state['activity'], 'idle', 'a wire end must not erase the running tool')
+            bound = self.binding(name)
+            if bound['kimi_turn_clock'].get('stopped') == initial:
+                self.assertGreater(bound.get('hook_observation', {}).get('events', {}).get('Stop', {}).get('count', 0), 0,
+                                   'only a real primary Stop can precede the outstanding-tool barrier')
+            self.assertFalse(finished.exists(), 'the task ended before the main turn became idle')
+        finally:
+            release.touch()
+        self.until(finished.exists, name)
+        def completed():
+            state = self.inspect(name)
+            clock = self.binding(name).get('kimi_turn_clock', {})
+            return (clock.get('started', -1) > initial and clock.get('stopped') == clock['started']
+                    and settled_turn(state, receipt))
+        state = self.until(completed, name)
+        task_record = self.binding(name)
+        rows = wire_rows()
+        task_turns = [row['turnId'] for row in rows if row.get('type') == 'turn.prompt'
+                      and row.get('agentId') == 'main' and row.get('origin', {}).get('kind') == 'task']
+        self.assertEqual(task_turns, [task_record['kimi_turn_clock']['started']])
+        self.assertTrue(any(row.get('type') == 'turn.ended' and row.get('agentId') == 'main'
+                            and row.get('turnId') == task_turns[0] and row.get('reason') == 'completed' for row in rows))
+        self.assertLessEqual(sum(event.get('type') == 'Stop' and event.get('kimi_turn_id') == initial
+                                 for event in state['events']), 1)
+        self.assertEqual(sum(event.get('type') == 'Stop' and event.get('kimi_turn_id') == task_turns[0]
+                             for event in state['events']), 1)
+        calls = len(self.requests)
+        self.assertEqual(calls, 3)
+        followup = self.payload(name, 'Typed follow-up after the background task.')
+        followup_receipt = self.send(name, followup)
+        final = self.until(lambda: self.binding(name)['kimi_turn_clock']['started'] > task_turns[0]
+                           and settled_recorded_turn(self.inspect(name), followup_receipt, followup['text']), name)
+        final_record = self.binding(name)
+        self.assertEqual(final_record['kimi_turn_clock']['stopped'], final_record['kimi_turn_clock']['started'])
+        self.assertEqual(len(self.requests), 4)
+        self.assertEqual(self.send(name, payload), receipt)
+        self.assertEqual(self.send(name, followup), followup_receipt)
+        time.sleep(1)
+        self.assertEqual(len(self.requests), 4, 'replaying input created another turn')
+        print('ZERUS_KIMI_BG_COMPLETION=' + json.dumps(dict(version=self.version, initial_turn=initial,
+            task_turns=task_turns, typed_turn=final_record['kimi_turn_clock']['started'], model_calls=4,
+            task_submission=task_record.get('kimi_submission'), typed_submission=final_record.get('kimi_submission'),
+            wire_task=[row for row in rows if row.get('type') == 'turn.prompt' and row.get('turnId') in task_turns],
+            replay_model_calls=0)))
+
+    def test_busy_attachment_send_is_typed_once_and_delivered_once(self):
+        # zerus-iitw8: Kimi shows pasted image paths as text and its paste
+        # placeholder at once (no asynchronous attachment as in Claude), so a
+        # busy-time send keeps its single Enter and its submitted receipt.
+        name = self.launch()
+        hold = threading.Event()
+        self.model_server.hold = hold
+        self.addCleanup(hold.set)
+        first = 'Start the held fixture turn.'
+        self.send(name, self.payload(name, first))
+        self.until(lambda: self.inspect(name).get('activity') == 'busy' and len(self.requests) >= 1, name)
+        image = base64.b64encode(b'\x89PNG\r\n\x1a\n' + bytes(64)).decode()
+        text = 'Peer report while busy.\n' + '\n'.join('- Line %d of the report.' % n for n in range(1, 26))
+        payload = dict(self.payload(name, text), attachments=[dict(name='row-dark.png', mime='image/png', data_base64=image),
+                                                              dict(name='row-light.png', mime='image/png', data_base64=image)])
+        receipt = self.send(name, payload)
+        self.assertEqual(receipt['status'], 'submitted')
+        self.assertEqual(self.send(name, payload), receipt)
+        hold.set()
+        submitted = receipt['submitted_text']
+        def delivered():
+            return sum(any(m.get('role') == 'user' and submitted in str(m.get('content')) for m in request.get('messages', []))
+                       for request in self.requests[-1:])
+        self.until(delivered, name)
+        self.until(lambda: self.settled(name, receipt), name)
+        self.assertEqual(self.held(submitted), 1)
+
+    def test_clear_input_discards_a_residue_and_kimi_keeps_running(self):
+        # zerus-wkj9l: Terminal's Clear input. End and Ctrl+U clear Kimi's boxed
+        # composer; Ctrl+C is never sent.
+        name = self.launch()
+        def terminal(action, **fields):
+            state = self.inspect(name)
+            request = dict(request_id=str(uuid.uuid4()), action=action, expected_run_id=state['run_id'],
+                           expected_conversation_id=state.get('conversation_id') or '', **fields)
+            p = subprocess.run([str(lifecycle.HGS), 'terminal', name, '--json'], env=self.env, input=json.dumps(request),
+                               capture_output=True, text=True, timeout=60)
+            self.assertEqual(p.returncode, 0, p.stderr + self.screen(name))
+            return json.loads(p.stdout)
+        residue = 'Peer report left behind.\n' + '\n'.join('- Line %d of the report.' % n for n in range(1, 30))
+        self.t('set-buffer', '-b', 'residue', residue)
+        self.t('paste-buffer', '-p', '-r', '-d', '-b', 'residue', '-t', '=' + name + ':')
+        self.until(lambda: terminal('composer')['composer']['state'] == 'text', name)
+        state = terminal('composer')
+        self.assertEqual((state['composer']['clearable'], state['composer']['reason']), (True, ''), state)
+        shown = state['composer']['text']
+        self.assertTrue(shown.startswith('[paste #'), shown)
+        receipt = terminal('clear-input', terminal_binding_id=state['terminal_binding_id'], expires_at=time.time() + 5, text=shown)
+        self.assertEqual((receipt['status'], receipt['discarded']), ('cleared', shown), receipt)
+        self.assertEqual(terminal('composer')['composer']['state'], 'empty')
+        text = 'After the cleared residue.'
+        receipt = self.send(name, self.payload(name, text))
+        self.until(lambda: self.held(text), name)
+        self.until(lambda: self.settled(name, receipt), name)
+
+    def test_hint_reaches_model_through_real_hgs_hook(self):
+        name = self.launch()
+        record = self.binding(name)
+        launched = self.environment(record['pid'], {}, record)
+        self.assertEqual(launched.get('HGS_AGENT_HINT'), '1')
+        self.assertEqual(launched.get('HGS_AGENT_HINT_OFF'), '')
+        receipt = self.send(name, self.payload(name, 'Verify the production hgs hint path'))
+        self.until(lambda: self.settled(name, receipt), name)
+        record = self.binding(name)
+        self.assertEqual(record.get('agent_hint'), {'conversation_id': record['conversation_id'], 'revision': 1})
+        hint = ('This agent runs in a Zerus session: the hgs CLI reads, messages, launches and stops other agent '
+                'sessions on this and other computers. Run hgs guide before using it.')
+        copies = sum(json.dumps(message).count(hint) for request in self.requests
+                     for message in request.get('messages', []))
+        self.assertEqual(copies, 1)
+        before = record
+        self.hgs('pause', name)
+        self.hgs('resume', name, '-d')
+        self.until(lambda: self.binding(name).get('run_id') != before['run_id'] and
+                   self.inspect(name).get('activity') == 'idle', name)
+        self.assertEqual(self.binding(name).get('agent_hint'), record['agent_hint'])
+        receipt = self.send(name, self.payload(name, 'Verify the resumed hgs hint path'))
+        self.until(lambda: self.settled(name, receipt), name)
+        copies = [sum(json.dumps(message).count(hint) for message in request.get('messages', []))
+                  for request in self.requests]
+        self.assertEqual(copies, [1, 1])
+        self.assertEqual(self.binding(name).get('agent_hint'), record['agent_hint'])
+
+        def control(command):
+            state = self.binding(name)
+            payload = dict(request_id=str(uuid.uuid4()), expected_run_id=state['run_id'],
+                           expected_conversation_id=state['conversation_id'])
+            result = subprocess.run([str(lifecycle.HGS), command, name, '--json'], env=self.env,
+                                    input=json.dumps(payload), text=True, capture_output=True, timeout=60)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            return payload
+
+        compacted = (self.binding(name).get('hook_observation', {}).get('events', {})
+                     .get('PostCompact', {}).get('count', 0))
+        self.t('set-buffer', '--', '/compact')
+        self.t('paste-buffer', '-t', '=' + name + ':')
+        time.sleep(.2)
+        self.t('send-keys', '-t', '=' + name + ':', 'Enter')
+        self.until(lambda: (self.binding(name).get('hook_observation', {}).get('events', {})
+                            .get('PostCompact', {}).get('count', 0)) > compacted
+                   and len(self.requests) >= 3 and self.inspect(name).get('activity') == 'idle', name)
+        receipt = self.send(name, self.payload(name, 'Verify the compacted hgs hint path'))
+        self.until(lambda: self.settled(name, receipt), name)
+        previous = record['conversation_id']
+        control('clear-context')
+        self.until(lambda: self.binding(name).get('conversation_id') not in (None, previous)
+                   and self.inspect(name).get('activity') == 'idle', name)
+        receipt = self.send(name, self.payload(name, 'Verify the cleared hgs hint path'))
+        self.until(lambda: self.settled(name, receipt), name)
+        copies = [sum(json.dumps(message).count(hint) for message in request.get('messages', []))
+                  for request in self.requests]
+        self.assertEqual(copies, [1, 1, 1, 1, 1])
+        record = self.binding(name)
+        self.assertEqual(record.get('agent_hint'), {'conversation_id': record['conversation_id'], 'revision': 1})
+        destination = os.environ.get('HGS_KIMI_EVIDENCE_DIR')
+        if destination:
+            path = Path(destination)
+            path.mkdir(parents=True, exist_ok=True)
+            (path / 'kimi-real-hgs-lifecycle.json').write_text(json.dumps(dict(
+                version=self.version, image_sha256=self.image_digest,
+                requests=self.requests, binding=record), indent=2))
+
+    def test_manual_compaction_reaches_native_hooks(self):
+        name = self.launch()
+        for text in ('Start the native compaction fixture', 'Resume the native compaction fixture'):
+            receipt = self.send(name, self.payload(name, text))
+            self.until(lambda: self.settled(name, receipt), name)
+            if text.startswith('Start'):
+                before = self.binding(name)
+                self.hgs('pause', name)
+                self.hgs('resume', name, '-d')
+                self.until(lambda: self.binding(name).get('run_id') != before['run_id'] and
+                           self.inspect(name).get('activity') == 'idle', name)
+        before = self.binding(name)
+        observed = before.get('hook_observation', {}).get('events', {}).get('PostCompact', {}).get('count', 0)
+        request = dict(request_id=str(uuid.uuid4()), expected_run_id=before['run_id'],
+                       expected_conversation_id=before['conversation_id'])
+        result = subprocess.run([str(lifecycle.HGS), 'compact-context', name, '--json'], env=self.env,
+                                input=json.dumps(request), text=True, capture_output=True, timeout=60)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr + '\n' + self.screen(name))
+        self.assertEqual(json.loads(result.stdout)['request_id'], request['request_id'])
+
+        def completed():
+            state = self.inspect(name)
+            compact = state.get('compact_context_request', {})
+            count = self.binding(name).get('hook_observation', {}).get('events', {}).get('PostCompact', {}).get('count', 0)
+            return state if compact.get('request_id') == request['request_id'] and compact.get('status') == 'completed' \
+                and count > observed and state.get('activity') == 'idle' else None
+
+        state = self.until(completed, name)
+        self.assertEqual((state['run_id'], state['conversation_id']), (before['run_id'], before['conversation_id']))
+        self.assertEqual(len(self.requests), 3, 'two normal turns and one native compaction request')
+        repeated = subprocess.run([str(lifecycle.HGS), 'compact-context', name, '--json'], env=self.env,
+                                  input=json.dumps(request), text=True, capture_output=True, timeout=60)
+        self.assertNotEqual(repeated.returncode, 0)
+        self.assertEqual(len(self.requests), 3, 'the same request must never type or compact again')
 
     def test_pause_and_resume_keep_the_conversation(self):
         name = self.launch()

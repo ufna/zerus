@@ -52,8 +52,9 @@
 //! process ID and birth like a recorded agent and never by a program name;
 //! at most 64 host folders are read, and on macOS, where launchd adopts the
 //! host as the top, no environment needs to be read. A host spawned by an
-//! attempt that ended unconfirmed, before its running record, is named
-//! nowhere and passes as a person: the stated limit. OpenCode registers its
+//! attempt that ended unconfirmed, before its running record, is also
+//! recognized by its own exact host arguments beneath this state directory.
+//! An unrecorded host with a different argument shape remains outside the check. OpenCode registers its
 //! service only in its own file, read as untrusted data: the process it
 //! names counts when that ancestor is not younger than the file, so the file
 //! can only add a refusal. The check does not see a service that is not
@@ -84,15 +85,17 @@
 //! Any other marked claim below a recorded resident agent host is refused
 //! with a sentence of its own: a command there can only be a session that
 //! host serves, and only a DeepSeek claim's token proves one. The person path
-//! and such a claim ask one check, [`hosted_ancestor`]: the host records
-//! first, so a computer that records none walks no process, then one walk of
-//! the process table alone, reading no environment, matched by process ID and
-//! birth; never `HGS_AGENT` or another marker. When it cannot tell (records
-//! unreadable or over their bound, a birth unreadable, a walk past its
-//! bound), both refuse with the person path's sentences. The check stands on
-//! the host records: a call that removes or edits its host's own same-user
-//! records is no longer seen below that host, which is the hosted proof's
-//! stated exclusion and this guard's limit too (zerus-63rru.28's review).
+//! and such a claim ask one check, [`hosted_ancestor`], which calls the shared
+//! `state::dsh::hosted_ancestor`. It reads the bounded records, then the process
+//! table alone and each ancestor's own argument vector, never `HGS_AGENT` or
+//! another caller-set marker. Without records it still recognizes a live
+//! host by its own exact arguments, but does not adopt walk refusals. With
+//! records, an unreadable record or birth and a walk past its bound refuse
+//! with the shared check's exact cause and recovery text. Deleting a host's
+//! same-user records does not conceal an ancestor whose own arguments still
+//! identify it; reparenting or a host with neither record nor matching argv
+//! remains outside this interim proof. OpenCode keeps its separate service
+//! file check described above.
 //! [`limits`] is the one text that states every limit of these proofs.
 //!
 //! With a session-ID hint, ids/<ID>.json selects one verified record.
@@ -247,25 +250,6 @@ fn claim_inside_host() -> Problem {
         "This command runs inside an agent host's process tree, where a command can only be a session that host serves; session markers that name another session cannot be proven here.")
 }
 
-/// The recorded host folders are kept per DeepSeek agent home and nothing
-/// removes them, so more than the bound is named as its own cause.
-fn too_many_hosts() -> Problem {
-    Problem::new(code::INVALID_STATE,
-        "This computer records more DeepSeek agent host folders than the check reads (64, one per agent home); this interim check cannot establish a person as caller.")
-}
-
-/// The listing stops at 1024 entries of any kind; past that the cause is
-/// stray entries beside the host folders, and the sentence says so.
-fn too_many_entries() -> Problem {
-    Problem::new(code::INVALID_STATE,
-        "The DeepSeek agent host records of this computer hold more than 1024 entries, most of them stray files beside the host folders; this interim check cannot establish a person as caller.")
-}
-
-fn host_unreadable() -> Problem {
-    Problem::new(code::INVALID_STATE,
-        "Cannot verify a recorded agent host of this computer; this interim check cannot establish a person as caller.")
-}
-
 /// A marked command carries the lead's or the member's shell environment, so
 /// its refusal must name the sandbox rather than the person proof.
 fn sandboxed() -> Problem {
@@ -393,14 +377,11 @@ struct Host {
 
 /// Why [`hosted_ancestor`] cannot tell whether a recorded host is above this
 /// command. Each cause is its own.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 enum Refusal {
-    /// More host folders than the reader's bound.
-    TooManyFolders,
-    /// More entries in the host records than the listing's bound.
-    TooManyEntries,
-    /// A host record that exists cannot be read, or is malformed.
-    Unreadable,
+    /// The shared DeepSeek check retains its exact cause and recovery text.
+    #[cfg(unix)]
+    DeepSeek(crate::state::dsh::Refusal),
     /// A recorded process ID is an ancestor's, but the birth that would tell
     /// the two apart cannot be read on one side.
     Birth,
@@ -409,50 +390,44 @@ enum Refusal {
     Walk,
 }
 
-/// Whether a recorded resident agent host is an ancestor of this command:
-/// `Ok(None)` when none is, `Ok(Some(host))` when one is, and `Err` with its
-/// cause when the check cannot tell. Both the person path and a marked claim
-/// that is not a DeepSeek claim ask it (zerus-63rru.28): a command below a
-/// host can be only a session that host serves. The records are read first,
-/// so a computer that records no host walks no process; then one walk of the
-/// process table alone, at most 64 steps to the top of the user's tree,
-/// matched by process ID and birth. No marker is read.
+/// DeepSeek uses the same recorded-host and live-argv proof as send, tasks
+/// and question routing. OpenCode retains its separate, refusal-only service
+/// registration check; it never proves a hosted session.
 fn hosted_ancestor() -> Result<Option<Host>, Refusal> {
-    hosted_ancestor_read(
-        crate::state::session_graph::caller_hosts,
+    #[cfg(unix)]
+    if let Some(host) = crate::state::dsh::hosted_ancestor().map_err(Refusal::DeepSeek)? {
+        return Ok(Some(Host { pid: host.pid, birth: host.birth }));
+    }
+    opencode_ancestor_read(
+        crate::state::session_graph::caller_opencode_host,
         ancestry::processes,
         native_start,
     )
 }
 
-fn hosted_ancestor_read(
-    hosts: impl FnOnce() -> Result<
-        crate::state::session_graph::Hosts,
-        crate::state::session_graph::Unread,
-    >,
+fn opencode_ancestor_read(
+    service: impl FnOnce() -> Option<crate::state::session_graph::Registered>,
     walk: impl FnOnce() -> Result<Vec<ancestry::Ancestor>, Problem>,
     native: impl Fn(u32) -> Option<(String, f64)>,
 ) -> Result<Option<Host>, Refusal> {
-    let hosts = hosts().map_err(|unread| match unread {
-        crate::state::session_graph::Unread::TooManyFolders => Refusal::TooManyFolders,
-        crate::state::session_graph::Unread::TooManyEntries => Refusal::TooManyEntries,
-        crate::state::session_graph::Unread::Unreadable => Refusal::Unreadable,
-    })?;
-    if hosts.deepseek.is_empty() && hosts.opencode.is_none() {
-        return Ok(None);
-    }
+    let Some(service) = service() else { return Ok(None); };
     let chain = walk().map_err(|_| Refusal::Walk)?;
-    hosted(&chain, &hosts, native)
+    hosted(&chain, &service, native)
 }
 
-/// A check that cannot tell refuses, in the person path's own words.
+/// A check that cannot tell refuses, retaining the shared check's cause.
 fn host_refusal(refusal: Refusal) -> Problem {
     match refusal {
-        Refusal::TooManyFolders => too_many_hosts(),
-        Refusal::TooManyEntries => too_many_entries(),
-        Refusal::Unreadable | Refusal::Birth => host_unreadable(),
+        #[cfg(unix)]
+        Refusal::DeepSeek(cause) => Problem::new(code::INVALID_STATE, cause.sentence()),
+        Refusal::Birth => host_unreadable(),
         Refusal::Walk => unreadable(),
     }
+}
+
+fn host_unreadable() -> Problem {
+    Problem::new(code::INVALID_STATE,
+        "Cannot verify a recorded agent host of this computer; this interim check cannot establish a person as caller.")
 }
 
 /// A process's birth and start, as [`hosted`] matches OpenCode's service.
@@ -460,51 +435,22 @@ fn native_start(pid: u32) -> Option<(String, f64)> {
     crate::platform::process_identity(pid).map(|native| (native.birth, native.started))
 }
 
-/// Whether a recorded resident agent host is one of these ancestors.
-///
-/// A DeepSeek host matches by process ID and birth. A birth that differs is
-/// not that host: the record's birth is the walk's own `process_identity`
-/// value, so the recorded host itself always matches, and a different birth
-/// means it has exited and its ID was reused. A recorded ID without a birth
-/// on either side cannot be told apart and refuses. OpenCode's service file
-/// is untrusted and names no birth: its ID counts when that ancestor is not
-/// younger than the file, which the service writes after it starts, allowing
-/// one second for clock granularity and steps. A reused ID can only cause a
-/// false refusal. An ancestor whose start cannot be read refuses.
+/// OpenCode's service file is untrusted and names no birth: its ID counts
+/// when that ancestor is not younger than the file, with one second for clock
+/// granularity. A reused ID can only add a refusal. Unreadable birth refuses.
 fn hosted(
     chain: &[ancestry::Ancestor],
-    hosts: &crate::state::session_graph::Hosts,
+    service: &crate::state::session_graph::Registered,
     native: impl Fn(u32) -> Option<(String, f64)>,
 ) -> Result<Option<Host>, Refusal> {
-    for ancestor in chain {
-        for named in hosts
-            .deepseek
-            .iter()
-            .filter(|named| named.pid == ancestor.pid)
-        {
-            match (&named.birth, &ancestor.identity.birth) {
-                (Some(recorded), Some(birth)) if recorded == birth => {
-                    return Ok(Some(Host {
-                        pid: ancestor.pid,
-                        birth: birth.clone(),
-                    }))
+    for ancestor in chain.iter().filter(|ancestor| ancestor.pid == service.pid) {
+        match native(ancestor.pid) {
+            Some((birth, started)) if Some(&birth) == ancestor.identity.birth.as_ref() => {
+                if started <= service.written + 1.0 {
+                    return Ok(Some(Host { pid: ancestor.pid, birth }));
                 }
-                (Some(_), Some(_)) => (),
-                _ => return Err(Refusal::Birth),
             }
-        }
-        if let Some(service) = hosts.opencode.as_ref().filter(|s| s.pid == ancestor.pid) {
-            match native(ancestor.pid) {
-                Some((birth, started)) if Some(&birth) == ancestor.identity.birth.as_ref() => {
-                    if started <= service.written + 1.0 {
-                        return Ok(Some(Host {
-                            pid: ancestor.pid,
-                            birth,
-                        }));
-                    }
-                }
-                _ => return Err(Refusal::Birth),
-            }
+            _ => return Err(Refusal::Birth),
         }
     }
     Ok(None)

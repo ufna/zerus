@@ -128,13 +128,14 @@ fn needed(task: u32, fact: &str) -> String {
 /// anything known that keeps it busy makes it busy.
 #[test]
 fn the_reader_names_an_unknown_count_only_of_an_otherwise_free_member() {
-    // A DeepSeek host's list answer names no jobs (only inspect does), so a
-    // listed DeepSeek row's background is unknown today and is named
-    // (zerus-63rru.61). The bridge's captured list answer with listJobs
-    // (zerus-yj7ef, pull request 2161) is what will give it a free row.
+    // The captured bridge reports complete, empty background work. A
+    // legacy or incomplete summary still names the unknown background fact.
     let dsh = Facts::of(&seed_row("dsh", &[]));
-    assert!(!dsh.free());
-    assert_eq!(dsh.unknown(), Some(Fact::Background));
+    assert!(dsh.free());
+    assert_eq!(dsh.unknown(), None);
+    let unknown = Facts::of(&seed_row("dsh", &[("process_work.count", Value::Null)]));
+    assert!(!unknown.free());
+    assert_eq!(unknown.unknown(), Some(Fact::Background));
     // A reported count that cannot be settled is named apart from a count
     // never reported; one with a working child is busy, not unreadable.
     for kind in ["claude", "codex", "kimi"] {

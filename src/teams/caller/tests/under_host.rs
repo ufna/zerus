@@ -269,11 +269,10 @@ fn no_host_above() {
     }
 }
 
-/// The host records are read first: a computer that records no host walks no
-/// process for a marked claim, and a claim refused below a host reads no
-/// binding.
+/// The shared host check reads no Teams ancestor environment. A claim
+/// refused below a host never enters the claimed binding proof.
 #[test]
-fn a_marked_claim_walks_its_processes_only_when_a_host_is_recorded() {
+fn a_marked_claim_uses_the_shared_host_proof_without_reading_a_binding_under_it() {
     isolated("teams::caller::tests::under_host::reads_in_order");
 }
 
@@ -288,13 +287,13 @@ fn reads_in_order() {
     let _elsewhere = Elsewhere::record();
     let other = claim(claimed);
     assert_eq!(other.answer, session(claimed.3));
-    assert_eq!((other.host_reads, other.walks), (1, 1), "a host elsewhere");
+    assert_eq!((other.host_reads, other.walks), (1, 0), "the shared walk, no Teams environment walk");
     let _host = Host::start();
     let under = claim(claimed);
     assert_eq!(under.answer, below_host());
     assert_eq!(
         (under.host_reads, under.walks, under.binding_reads),
-        (2, 1, 0),
+        (2, 0, 0),
         "below a host"
     );
 }
@@ -317,20 +316,25 @@ fn fail_closed() {
     let corrupt = hosts.join("corrupt");
     crate::platform::private_dir(&corrupt).unwrap();
     std::fs::write(corrupt.join("host.identity.json"), "{").unwrap();
-    assert_eq!(claim(claimed).answer, refused(host_unreadable()));
+    let answer = claim(claimed).answer;
+    assert!(answer.starts_with("refused:invalid_state:"), "{answer}");
+    assert!(answer.contains("DeepSeek agent host record"), "{answer}");
     std::fs::remove_dir_all(&corrupt).unwrap();
     // A host that names its process ID without a birth, as its own
     // `host.pid` does, and is above the command: no birth can tell it apart.
     let legacy = hosts.join("legacy");
     crate::platform::private_dir(&legacy).unwrap();
     std::fs::write(legacy.join("host.pid"), std::process::id().to_string()).unwrap();
-    assert_eq!(claim(claimed).answer, refused(host_unreadable()));
+    let answer = claim(claimed).answer;
+    assert!(answer.starts_with("refused:invalid_state:"), "{answer}");
+    assert!(answer.contains("DeepSeek agent host record"), "{answer}");
     std::fs::remove_dir_all(&legacy).unwrap();
     // One host folder more than the 64 the check reads.
     for n in 0..=64 {
         std::fs::create_dir(hosts.join(format!("folder-{n}"))).unwrap();
     }
-    assert_eq!(claim(claimed).answer, refused(too_many_hosts()));
+    let answer = claim(claimed).answer;
+    assert!(answer.contains("more DeepSeek agent host folders than the check reads"), "{answer}");
     for n in 0..=64 {
         std::fs::remove_dir(hosts.join(format!("folder-{n}"))).unwrap();
     }
@@ -338,7 +342,8 @@ fn fail_closed() {
     for n in 0..=1024 {
         std::fs::write(hosts.join(format!("stray-{n}")), b"").unwrap();
     }
-    assert_eq!(claim(claimed).answer, refused(too_many_entries()));
+    let answer = claim(claimed).answer;
+    assert!(answer.contains("more than 1024 entries"), "{answer}");
     for n in 0..=1024 {
         std::fs::remove_file(hosts.join(format!("stray-{n}"))).unwrap();
     }
@@ -385,5 +390,5 @@ fn environment_unread() {
     let below = parse(&text);
     println!("CLAIM {agent} below an oversized shell {below:?}");
     assert_eq!(below.answer, session(id));
-    assert_eq!(below.walks, 1, "the walk was made");
+    assert_eq!(below.walks, 0, "the shared process-only walk reads no Teams environment");
 }
