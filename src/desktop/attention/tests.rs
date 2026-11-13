@@ -1642,3 +1642,25 @@ fn a_supervised_childs_reply_and_question_raise_nothing_until_the_parent_is_gone
     approval["human_request"] = json!(true);
     assert!(project(&approval).candidates.iter().any(|c| !c.consumed));
 }
+
+#[test]
+fn a_failed_route_promoted_to_human_notifies_once_with_the_same_pending_question() {
+    let mut f = Fixture::new();
+    let mut raw = row();
+    raw["reply_id"] = Value::Null;
+    raw["phase"] = json!("input");
+    raw["activity"] = json!("waiting");
+    raw["attention_id"] = json!("question-1");
+    raw["attention_signature"] = json!("question-signature");
+    raw["parent"] = json!({"schema":1,"machine":"11111111-1111-4111-8111-111111111111","host":"box",
+        "session_id":"22222222-2222-4222-8222-222222222222","name":"claude/example/lead",
+        "conversation_id":"c","run_id":"r","source":"launch","at":1,"state":"live"});
+    raw["human_request"] = json!(false);
+    f.save(&raw, false);
+    assert_eq!(f.intents(), 0, "the supervised question was quiet");
+    raw["human_request"] = json!(true);
+    f.save(&raw, false);
+    assert_eq!(f.intents(), 1, "F3/F4 becomes the person's existing question notification");
+    f.save(&raw, false);
+    assert_eq!(f.intents(), 1, "no duplicate notification");
+}

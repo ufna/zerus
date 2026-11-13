@@ -1254,7 +1254,7 @@ private data class ReadViewport(val ids:Set<String>,val first:Pair<String,Int>?,
                         }
                     } }
                 } else if (event.text.isNotBlank()) {
-                    if(own) SelectionContainer { Text(event.text, style = conversationTextStyle()) }
+                    if(own || event.source == QuestionRouteActivity.source) SelectionContainer { Text(event.text, style = conversationTextStyle()) }
                     else ProvideTextStyle(conversationTextStyle()) {
                         MarkdownText(event.text, fileScope = target.key) { reference ->
                             model.computerFiles.show(target, reference, model.machines.find {

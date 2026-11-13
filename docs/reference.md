@@ -1094,12 +1094,35 @@ parent's name, or **Question from a child session** with the child's name,
 then the route's own preview of at most 300 characters as plain text and the
 child's reference with Copy. The parent's own message of exactly the routed
 text folds into its line, behind **Show the received message**; any other
-line is placed by its time. Refused, reserved and unknown routes show nothing
-in this version. The lines come from the background service's read-only
+line is placed by its time. A refused or unknown route shows a line only in
+the child's Activity on desktop, Android and iOS (zerus-sa9qn.52): **Question
+not sent to PARENT** or **Question delivery to PARENT uncertain**, with the
+parent's display name, the literal preview and the child's reference. Reserved
+routes stay pending until settled or recovered. A settled refusal (including
+invalid text, the per-parent bound and not started) or unknown result immediately
+makes that exact still-pending question a human request: **Needs you**, with the
+existing question notification. The person can still answer it. There is no F3
+retry and an unknown result is never replayed. Turning either switch off or
+changing the person-only latch does not retry, cancel or erase an outcome.
+The shared fixture is `question-route-outcome-contract.json` beside the Android
+test resources; every client tests the same outcomes and wording. The local
+listing and inspection read the service ledger without creating or migrating it,
+using the exact machine/session/run/conversation/question/hash ledger key, independently
+of the Activity window. A later question never inherits escalation. A constant-size
+failure revision makes watch refresh the listing, without reacting to unrelated
+service writes. Store schema 41 retains immutable metadata even for a refusal
+before send admission; upgrades recover existing originals' metadata. A historical
+refusal with no saved original has no recoverable Activity metadata; its exact
+still-pending question can nevertheless escalate by the ledger key.
+Inspection carries at most 20 lines in `question_route_activity` for the phones
+and remote desktop views; local desktop polling and inspection lines deduplicate
+by the immutable route request ID.
+The desktop lines come from the background service's read-only
 `question_route_activity` request (`request_id` and the session's durable
-`session_id`, exactly): at most the 20 newest submitted routes where the
-session is the child or the parent, read by two partial indexes of the route
-ledger (Store schema 38) and each route's own saved original. The read sends,
+`session_id`, exactly): at most the 20 newest outcomes for the child or
+submitted routes for the parent, read by partial indexes of the route ledger.
+Submitted routes still require their exact saved send original; failed routes
+never claim that the parent received their text. The read sends,
 settles and grants nothing. The desktop reads it for a local session in
 background service mode: once when the session is shown, then at most every
 3 s while its Activity changes, and a shown child every 15 s.
@@ -2531,6 +2554,18 @@ offers neither action. A changed question, session or draft cancels consent.
 Kimi's native cold-cache chooser already provides the explicit cost and context
 choices. Its selected row is submitted directly, without a second full-context
 confirmation; the same identity and durable delivery checks still apply.
+While that complete chooser holds a submitted message, the session shows
+**Needs you**, with the four native options and **Open terminal**. Recognition
+requires the exact title, explanation, navigation hint, descriptions, selection
+and complete frame, bound to the pending input request, process, pane, run and
+conversation. Inspection never selects, presses Enter or retypes the held input;
+its original submitted or uncertain receipt is retained. A newer native input
+acceptance or the chooser disappearing clears this observation; an earlier turn
+ending does not accept the held message. The person's existing answer path stays
+available only with verified writable terminal mode; otherwise the options are
+read-only. Local agent callers cannot answer this source, and automatic approvals
+and question routing exclude it. Remote CLI answers retain their existing generic
+authority; a person-only remote boundary remains separate follow-up work.
 App-owned desktop and Android dialog action rows place **Cancel**, **Close** or
 the equivalent dismissal at the far right, after the available actions. Long
 Android rows wrap, keeping dismissal last and visible with larger text. Destructive

@@ -166,6 +166,10 @@ QUESTION_ROUTE_ACTIVITY_FILES = ("ZerusViewModel.kt",)
 QUESTION_ROUTE_PERSON_UPDATES = ROOT / "tests/fixtures/question-availability-question-route-person-updates.patch"
 QUESTION_ROUTE_PERSON_UPDATES_SHA = "ae38ac771fedaae89acc2df2dee19fc331b4d9c3c98c4eda531b40dedb40da23"
 QUESTION_ROUTE_PERSON_FILES = ("ZerusViewModel.kt",)
+# Exact presentation-only delta for zerus-sa9qn.52: outcome text is literal.
+QUESTION_ROUTE_OUTCOME_UPDATES = ROOT / "tests/fixtures/question-availability-question-route-outcome-updates.patch"
+QUESTION_ROUTE_OUTCOME_UPDATES_SHA = "4978e3979d98ac4f62ec9433a9c2936d95cdac11f2de22ab9c6ebcc83966526c"
+QUESTION_ROUTE_OUTCOME_FILES = ("MainActivity.kt",)
 WORKSPACE_BASE_SHA = {
     "ZerusViewModel.kt": "5932d92ca74ccf37da9595a580bcb1457c93c83951976606c8defa8d1ee83326",
     "MainActivity.kt": "f68902349d1e0ac939582e9e139548663f5763c430a3c566f8823d9f045645f0",
@@ -174,6 +178,7 @@ BOTH_FILES = ("ZerusViewModel.kt", "MainActivity.kt")
 # Every reviewed update, newest first: reverse_reviewed_updates reverses them in
 # this order, and each fixture's duplicated-hunk check reverses the newer ones.
 REVIEWED_CHAIN = (
+    (QUESTION_ROUTE_OUTCOME_UPDATES, QUESTION_ROUTE_OUTCOME_UPDATES_SHA, QUESTION_ROUTE_OUTCOME_FILES),
     (QUESTION_ROUTE_PERSON_UPDATES, QUESTION_ROUTE_PERSON_UPDATES_SHA, QUESTION_ROUTE_PERSON_FILES),
     (QUESTION_ROUTE_ACTIVITY_UPDATES, QUESTION_ROUTE_ACTIVITY_UPDATES_SHA, QUESTION_ROUTE_ACTIVITY_FILES),
     (OUTBOX_RETENTION_UPDATES, OUTBOX_RETENTION_UPDATES_SHA, OUTBOX_RETENTION_FILES),
@@ -308,6 +313,9 @@ class QuestionAvailabilityProbeSourceTests(unittest.TestCase):
         for name, digest in WORKSPACE_BASE_SHA.items():
             with self.subTest(source=name):
                 current = reverse_reviewed_patch(name, (MAIN / name).read_text(),
+                                                QUESTION_ROUTE_OUTCOME_UPDATES, QUESTION_ROUTE_OUTCOME_UPDATES_SHA,
+                                                QUESTION_ROUTE_OUTCOME_FILES)
+                current = reverse_reviewed_patch(name, current,
                                                 QUESTION_ROUTE_PERSON_UPDATES, QUESTION_ROUTE_PERSON_UPDATES_SHA,
                                                 QUESTION_ROUTE_PERSON_FILES)
                 current = reverse_reviewed_patch(name, current,
