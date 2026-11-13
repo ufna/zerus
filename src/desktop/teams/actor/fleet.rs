@@ -31,6 +31,27 @@ pub(super) const READ: [(&str, bool); 14] = [
     ("optional_questions.count", true),
 ];
 
+/// A stamp of what `row` says by every value [`Facts::of`] reads ([`READ`]):
+/// two rows with one stamp say the same to the actor. The catalog keeps no
+/// version of one row (a generation is a whole snapshot, and deltas change
+/// rows in place), so a member's terminal fact (zerus-63rru.79) ends when
+/// this stamp changes.
+pub(super) fn stamp(row: &Value) -> String {
+    use sha2::{Digest, Sha256};
+    static NULL: Value = Value::Null;
+    let mut hash = Sha256::new();
+    for (path, _) in READ {
+        let value = path
+            .split('.')
+            .fold(row, |value, part| value.get(part).unwrap_or(&NULL));
+        hash.update(path.as_bytes());
+        hash.update([0]);
+        hash.update(value.to_string().as_bytes());
+        hash.update([0]);
+    }
+    format!("{:x}", hash.finalize())[..16].to_owned()
+}
+
 /// What an incomplete subagent count means, by the producer that wrote it
 /// (`subagent_source`; zerus-63rru.61). Every value a producer writes is
 /// here; a guard fails when a producer gains one that is not.

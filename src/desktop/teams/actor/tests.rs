@@ -177,6 +177,9 @@ mod retry_cards;
 pub(in crate::desktop::teams) mod rows;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 mod subagent_rows;
+// A member whose terminal holds input (zerus-63rru.79).
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+mod terminal_busy;
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 mod cleanup_bound;

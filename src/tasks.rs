@@ -33,8 +33,10 @@ mod history;
 mod index;
 mod teams;
 mod team_deliver;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub(crate) use team_deliver::TERMINAL_WAITING;
 #[cfg(all(test, unix))]
-pub(crate) use team_deliver::{blocked_handout, Blocked, RealHandout};
+pub(crate) use team_deliver::{blocked_handout, waiting_handout, Blocked, RealHandout};
 #[cfg(test)]
 #[allow(unused_imports)] // The Teams actor's isolated CLI fixture supplies native input.
 pub(crate) use team_deliver::FIXTURE_NATIVE_INPUT;

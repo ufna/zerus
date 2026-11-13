@@ -65,7 +65,10 @@ impl Delivery for Fake {
                     )
                     .unwrap();
                 store.save(&mut document).unwrap();
-                attempts::Delivered::NotAdmitted("fixture closed before input".into())
+                attempts::Delivered::NotAdmitted {
+                    reason: "fixture closed before input".into(),
+                    waiting: false,
+                }
             }
             _ => {
                 let receipt = json!({"request_id":body.id,"name":to.session,"run_id":request["expected_run_id"],"conversation_id":request["expected_conversation_id"],"first_message":false,"digest":attempts::digest(request),"status":"submitted"});
@@ -1259,6 +1262,88 @@ impl Fixture {
             before,
             record["conversation_id"].as_str().unwrap().to_owned(),
         )
+    }
+}
+
+/// A hand-out to a member that waits for a person, through the real
+/// `hgs task team-deliver` (zerus-63rru.79): the member's record names a real
+/// pane of this harness's private tmux server, whose process stands for the
+/// agent's and whose screen is not an empty agent prompt. With `activity`
+/// and `phase` "idle" the record says the agent is ready and the terminal's
+/// composer refuses; with "busy" and "working" it refuses as a prompt queued
+/// while the agent works; with phase "input" the record already shows its
+/// question. What the command answered, and the pane's screen before and
+/// after it.
+#[derive(Debug)]
+pub(crate) struct WaitingHandout {
+    pub exit: i32,
+    pub stdout: String,
+    pub error: Option<String>,
+    pub id: String,
+    pub before: String,
+    pub after: String,
+    /// Whether the task document holds an attempt for the ID.
+    pub reserved: bool,
+}
+
+pub(crate) fn waiting_handout(activity: &str, phase: &str) -> WaitingHandout {
+    use sha2::{Digest, Sha256};
+    let f = Fixture::new();
+    let state = f.config.state.clone();
+    let file = |name: &str| state.join(format!("{:x}.json", Sha256::digest(name.as_bytes())));
+    let mut record: Value =
+        serde_json::from_slice(&std::fs::read(file("codex/deliver-m1")).unwrap()).unwrap();
+    std::fs::remove_file(file("codex/deliver-m1")).unwrap();
+    let terminal = Terminal {
+        dir: state.join("tmux"),
+    };
+    terminal.tmux(&[
+        "new-session",
+        "-d",
+        "-s",
+        "deliver-m1",
+        "-x",
+        "80",
+        "-y",
+        "24",
+        // The pane's program takes its terminal as an agent's prompt does
+        // (raw input, bracketed paste on), shows an unsent draft and keeps
+        // its process ID.
+        "stty -icanon -echo; printf '\\033[?2004han unsent draft'; exec sleep 600",
+    ]);
+    let pane = terminal.tmux(&["display-message", "-p", "-t", "deliver-m1", "#{pane_id}"]);
+    let run = record["run_id"].as_str().unwrap().to_owned();
+    terminal.tmux(&["set-option", "-p", "-t", &pane, "@hgs_run", &run]);
+    // The pane's own process stands for the live agent process.
+    let pid: u32 = terminal
+        .tmux(&["display-message", "-p", "-t", &pane, "#{pane_pid}"])
+        .parse()
+        .unwrap();
+    record["agent"] = json!("claude");
+    record["name"] = json!("claude/deliver-m1");
+    record["activity"] = json!(activity);
+    record["phase"] = json!(phase);
+    record["pane"] = json!(pane);
+    record["terminal_name"] = json!("deliver-m1");
+    record["pid"] = json!(pid);
+    record["process_start"] = json!(crate::platform::process_start_time(pid).unwrap());
+    std::fs::write(file("claude/deliver-m1"), record.to_string()).unwrap();
+    let before = terminal.tmux(&["capture-pane", "-p", "-t", &pane]);
+    let id = f.body.id.clone();
+    let mut args = vec!["task".to_owned(), "team-deliver".to_owned()];
+    args.extend(f.args(false));
+    let (exit, stdout, error) = f.cli(&args, &serde_json::to_string(&f.body).unwrap());
+    let after = terminal.tmux(&["capture-pane", "-p", "-t", &pane]);
+    drop(terminal);
+    let reserved = f.document().attempt(&id).unwrap().is_some();
+    WaitingHandout {
+        exit,
+        stdout,
+        error,
+        id,
+        before,
+        after,
+        reserved,
     }
 }
 

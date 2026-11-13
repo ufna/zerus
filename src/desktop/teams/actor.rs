@@ -25,6 +25,7 @@ mod reports;
 mod retry;
 mod schedule;
 mod tasks;
+mod terminal;
 #[cfg(test)]
 mod tests;
 use crate::teams::{

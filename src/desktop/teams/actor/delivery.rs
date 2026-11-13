@@ -15,6 +15,13 @@ struct Delivery {
     not_started: bool,
     #[serde(default)]
     nonstarts: u32,
+    /// The refusal is the terminal gate's: the member's terminal holds
+    /// input (zerus-63rru.79). An older build reads a plain refusal.
+    #[serde(default)]
+    waiting: bool,
+    /// The stamp of the member's row when that refusal was observed.
+    #[serde(default)]
+    stamp: Option<String>,
 }
 impl Runtime {
     pub(super) fn send(
@@ -53,6 +60,8 @@ impl Runtime {
             gated: false,
             not_started: false,
             nonstarts: 0,
+            waiting: false,
+            stamp: None,
         };
         let key = format!("delivery:{id}");
         self.ledger.reserve(
@@ -102,6 +111,17 @@ impl Runtime {
             }
             ports::DeliveryResult::Outcome(outcome) => {
                 d.outcome = Some(outcome);
+                self.put(&team.id, key, &d)?;
+                boundary("outcome");
+                self.settle(store, team, key, d, now)
+            }
+            // Refused before any input because the member's terminal holds
+            // input: recorded as a refusal, with that cause and the member's
+            // row as it is now, both kept before anything settles.
+            ports::DeliveryResult::TerminalWaiting { reason } => {
+                d.stamp = ports.row_stamp(team, assignment.1).ok().flatten();
+                d.waiting = true;
+                d.outcome = Some(HandoutOutcome::Refused { reason });
                 self.put(&team.id, key, &d)?;
                 boundary("outcome");
                 self.settle(store, team, key, d, now)
@@ -262,7 +282,7 @@ impl Runtime {
         now: i64,
     ) -> Result<()> {
         if !d.gated {
-            if let Some(HandoutOutcome::Refused { reason }) = &d.outcome {
+            if let (Some(HandoutOutcome::Refused { reason }), false) = (&d.outcome, d.waiting) {
                 let revision = store
                     .task_observation(&team.id, d.node)?
                     .map_or(String::new(), |o| o.revision);
@@ -274,6 +294,15 @@ impl Runtime {
                     &problem(reason),
                     now,
                 )?;
+            }
+            // A refusal of the terminal gate is not a failed hand-out: the
+            // member's terminal is not free (zerus-63rru.79).
+            if d.waiting {
+                self.terminal_refused(&team.id, &d.member, d.stamp.clone(), now)?;
+            }
+            // A submitted delivery: the member's terminal took input.
+            if matches!(d.outcome, Some(HandoutOutcome::Submitted { .. })) {
+                self.terminal_free(&team.id, &d.member)?;
             }
             // A hand-back is settled by the store at once; nothing retries it.
             if matches!(
@@ -388,6 +417,8 @@ impl Delivery {
             gated: false,
             not_started: false,
             nonstarts: 0,
+            waiting: false,
+            stamp: None,
         }
     }
 }

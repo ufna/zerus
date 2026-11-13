@@ -160,8 +160,10 @@ pub(super) fn first_message_summary(record: &Value, live_pane: bool) -> Value {
     json!({"first_message_can_send":reason.is_empty(),"first_message_reason":reason})
 }
 
-fn checked_record(name: &str, request: &Request) -> Result<Value> {
-    let record = checked_input(
+/// The record's checks before a task input, with their typed refusal
+/// (zerus-63rru.79).
+fn checked_record_gate(name: &str, request: &Request) -> std::result::Result<Value, Gate> {
+    let record = checked_input_gate(
         name,
         &request.expected_run_id,
         &request.expected_conversation_id,
@@ -318,6 +320,19 @@ fn checked_input(
     conversation_id: &str,
     allow_working: bool,
 ) -> Result<Value> {
+    checked_input_gate(name, run_id, conversation_id, allow_working).map_err(Gate::reason)
+}
+
+/// `checked_input` with its typed refusal (zerus-63rru.79): a record whose
+/// agent waits for a question's answer or an approval (its phase) is
+/// `Gate::Waiting`; every other refusal is `Gate::Other`, the dialogs that
+/// their own detectors read from the screen among them.
+fn checked_input_gate(
+    name: &str,
+    run_id: &str,
+    conversation_id: &str,
+    allow_working: bool,
+) -> std::result::Result<Value, Gate> {
     // zerus-ucck P3c: the request's identities select among sessions that
     // share the label.
     expect(name, run_id, conversation_id)?;
@@ -391,8 +406,15 @@ fn checked_input(
     let interrupted = record["phase"] == "interrupted";
     if allow_working && !ready && !working && !provider_failed && !interrupted && !first_message && !resumed_message
     {
+        let reason = "agent is waiting for input, approval, or has an unknown state; open Terminal";
+        // A question or an approval waits for a person; an unknown state
+        // does not say so.
         return Err(
-            "agent is waiting for input, approval, or has an unknown state; open Terminal".into(),
+            if matches!(string(&record, "phase"), "input" | "approval") {
+                Gate::Waiting(reason.into())
+            } else {
+                Gate::Other(reason.into())
+            },
         );
     }
     // Text can be submitted to a working agent's native composer. The terminal
@@ -797,8 +819,9 @@ pub(super) fn checked_terminal(record: &Value, empty: bool) -> Result<()> {
     terminal_check(record, empty, false)
 }
 
-fn checked_send_terminal(record: &Value) -> Result<()> {
-    terminal_check(record, true, true)
+/// The gate before a task input's first byte, with its typed refusal.
+fn checked_send_gate(record: &Value) -> std::result::Result<(), Gate> {
+    terminal_gate_on(record, true, true, backend::current())
 }
 
 fn terminal_check(record: &Value, empty: bool, sending: bool) -> Result<()> {
@@ -812,6 +835,45 @@ pub(super) fn checked_terminal_on(record: &Value, empty: bool, terminal: &dyn ba
 }
 
 fn terminal_check_on(record: &Value, empty: bool, sending: bool, terminal: &dyn backend::TerminalBackend) -> Result<()> {
+    terminal_gate_on(record, empty, sending, terminal).map_err(Gate::reason)
+}
+
+/// Why a task input was refused before its first byte (zerus-63rru.79): its
+/// sentence, and whether the session waits for a person. `Waiting` is set
+/// only where the check finds that: the record's phase says the agent waits
+/// for a question's answer or an approval, or the terminal's composer is not
+/// an empty agent prompt (a question, a dialog or an unsent draft, or a
+/// prompt queued while the agent works). Every other refusal is `Other`.
+/// Nothing reads the cause from a sentence.
+#[derive(Debug)]
+pub(crate) enum Gate {
+    Waiting(String),
+    Other(String),
+}
+impl Gate {
+    pub(crate) fn reason(self) -> String {
+        match self {
+            Gate::Waiting(reason) | Gate::Other(reason) => reason,
+        }
+    }
+}
+impl From<String> for Gate {
+    fn from(reason: String) -> Self {
+        Gate::Other(reason)
+    }
+}
+impl From<&str> for Gate {
+    fn from(reason: &str) -> Self {
+        Gate::Other(reason.to_owned())
+    }
+}
+
+fn terminal_gate_on(
+    record: &Value,
+    empty: bool,
+    sending: bool,
+    terminal: &dyn backend::TerminalBackend,
+) -> std::result::Result<(), Gate> {
     terminating::check_mutation(record)?;
     let pane = string(record, "pane");
     if !pane
@@ -866,10 +928,10 @@ fn terminal_check_on(record: &Value, empty: bool, sending: bool, terminal: &dyn 
                     && string(record, "activity") == "busy"
                     && matches!(string(record, "phase"), "idle" | "working" | "tool" | "compacting")
                 {
-                    return Err("agent busy: terminal queue prompt is unrecognized or contains a draft; wait for the agent or open Terminal; nothing was submitted".into());
+                    return Err(Gate::Waiting("agent busy: terminal queue prompt is unrecognized or contains a draft; wait for the agent or open Terminal; nothing was submitted".into()));
                 }
             }
-            return Err(DRAFT.into());
+            return Err(Gate::Waiting(DRAFT.into()));
         }
     }
     Ok(())
@@ -903,7 +965,7 @@ fn stable_frame(
     Err("the terminal redrew while its prompt was read; nothing was submitted".into())
 }
 
-const DRAFT: &str = "terminal has a draft, dialog, or unrecognized prompt; open Terminal and return to an empty agent prompt";
+pub(crate) const DRAFT: &str = "terminal has a draft, dialog, or unrecognized prompt; open Terminal and return to an empty agent prompt";
 /// The send-block reason while Codex's input holds exactly the follow-ups Stop returned.
 const RETURNED_FOLLOW_UPS: &str =
     "The queued follow-ups are back in Codex's input as an unsent draft. Submit or clear them in Terminal.";
@@ -1260,6 +1322,9 @@ pub(crate) struct NotOffered {
     digest: String,
     receipts: PathBuf,
     pub(crate) reason: String,
+    /// The terminal gate refused because the terminal holds input
+    /// (`Gate::Waiting`; zerus-63rru.79).
+    pub(crate) waiting: bool,
 }
 
 impl NotOffered {
@@ -1387,21 +1452,23 @@ fn submit_core(
     // key and before the receipt marker witnesses that nothing was offered;
     // once pending settings may have been typed, it is unknown.
     let mut typed = false;
-    let refused = |typed: bool, reason: String| {
-        before_input(
-            typed,
-            NotOffered {
-                request_id: request_id.clone(),
-                name: name.to_owned(),
-                run_id: request.expected_run_id.clone(),
-                conversation_id: request.expected_conversation_id.clone(),
-                digest: digest.clone(),
-                receipts: receipt_path.clone(),
-                reason,
-            },
-        )
+    let witness = |reason: String, waiting: bool| NotOffered {
+        request_id: request_id.clone(),
+        name: name.to_owned(),
+        run_id: request.expected_run_id.clone(),
+        conversation_id: request.expected_conversation_id.clone(),
+        digest: digest.clone(),
+        receipts: receipt_path.clone(),
+        reason,
+        waiting,
     };
-    let record = checked_record(name, &request).map_err(|e| refused(typed, e))?;
+    let refused = |typed: bool, reason: String| before_input(typed, witness(reason, false));
+    // The terminal gate's own refusal keeps its cause.
+    let gated = |typed: bool, gate: Gate| {
+        let waiting = matches!(gate, Gate::Waiting(_));
+        before_input(typed, witness(gate.reason(), waiting))
+    };
+    let record = checked_record_gate(name, &request).map_err(|gate| gated(typed, gate))?;
     if matches!(origin, Origin::Answer) && effort::pending_applies(&record) {
         return Err(refused(
             typed,
@@ -1420,7 +1487,7 @@ fn submit_core(
         Origin::KeepWarm(id) => keep_warm::check_submission(&record, id).map_err(|e| refused(typed, e))?,
         Origin::Person | Origin::Answer => {}
     }
-    checked_send_terminal(&record).map_err(|e| refused(typed, e))?;
+    checked_send_gate(&record).map_err(|gate| gated(typed, gate))?;
     let attachments_root = root.join("attachments");
     private_dir(&attachments_root).map_err(|e| refused(typed, e))?;
     let attachments = tempfile::Builder::new()
@@ -1476,9 +1543,9 @@ fn submit_core(
     let cleanup = || terminal.discard(&buffer);
     // Recheck immediately before the first input byte. All concurrent hgs writes
     // share this lock; a crash/exit can still race the PTY, so receipts are durable.
-    if let Err(error) = checked_record(name, &request).and_then(|r| checked_send_terminal(&r)) {
+    if let Err(gate) = checked_record_gate(name, &request).and_then(|r| checked_send_gate(&r)) {
         cleanup();
-        return Err(refused(typed, error));
+        return Err(gated(typed, gate));
     }
     let checked = match origin {
         Origin::Recovery(id) => read(name).and_then(|record| recovery::check_submission(&record, id)),
@@ -1755,6 +1822,7 @@ mod tests {
             digest: "d".into(),
             receipts: PathBuf::from("state/input_receipts/id.json"),
             reason: "refused".into(),
+            waiting: false,
         };
         assert!(
             matches!(before_input(false, witness()), Failure::NotOffered(w) if w.binds("id", "n", "r", "c", "d"))
