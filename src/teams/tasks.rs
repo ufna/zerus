@@ -131,7 +131,7 @@ fn record(store: &mut Store, team: &str, node: u32, document: &TaskDoc) -> Resul
     )?;
     Ok(())
 }
-fn binding(store: &Store, task: &TaskRef) -> Result<Option<(String, u32)>> {
+pub(crate) fn binding(store: &Store, task: &TaskRef) -> Result<Option<(String, u32)>> {
     store.db.as_ref().map_or(Ok(None), |db| {
         db.query_row(
             "SELECT team,node FROM live_tasks WHERE task_project=?1 AND task_uuid=?2",

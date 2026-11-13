@@ -63,6 +63,11 @@ pub(crate) fn sql_json<T: DeserializeOwned>(
 }
 
 impl Store {
+    /// The state directory this store was opened on, for the actor's
+    /// document-side maintenance (zerus-63rru.32).
+    pub(crate) fn state(&self) -> &Path {
+        &self.state
+    }
     pub fn open(state: &Path) -> Result<Self> {
         if !super::enabled(state) {
             return Err(Problem::new(code::TEAMS_INACTIVE, "Teams preview is off."));

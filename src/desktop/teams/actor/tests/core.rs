@@ -1,7 +1,7 @@
 use super::*;
 use crate::teams::ops::{self, HandoutOutcome, Operation, TaskStage};
 use std::collections::BTreeSet;
-struct Fake {
+pub(super) struct Fake {
     reads: usize,
     journals: usize,
     sends: usize,
@@ -19,7 +19,7 @@ struct Fake {
     pause_on_recheck: Option<std::path::PathBuf>,
 }
 impl Fake {
-    fn new() -> Self {
+    pub(super) fn new() -> Self {
         Self {
             reads: 0,
             journals: 0,

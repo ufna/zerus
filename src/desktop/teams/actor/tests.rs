@@ -207,3 +207,4 @@ mod unreadable_stop;
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 mod cancel_progress;
+mod closed_keys;
