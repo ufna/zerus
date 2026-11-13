@@ -36,6 +36,7 @@ fn the_desktop_list_and_detail_carry_the_recorded_scope() {
     assert_eq!(detail["result"]["scope"], "/work/repository", "{detail}");
 }
 
+#[cfg(unix)]
 #[test]
 fn reader_drop_keeps_the_live_writer_lock_on_fresh_open_and_restart() {
     let mut f = Fixture::new();
@@ -56,6 +57,7 @@ fn reader_drop_keeps_the_live_writer_lock_on_fresh_open_and_restart() {
     }
 }
 
+#[cfg(unix)]
 #[cfg(unix)]
 #[test]
 fn a_failed_reader_check_keeps_the_live_writer_lock_after_restart() {
