@@ -327,6 +327,10 @@ impl Runtime {
                     reason,
                 },
             )?;
+            #[cfg(test)]
+            if STALE_RACE.with(|c| c.get()) {
+                return Err(Problem::new(code::STALE_REVISION, "stale"));
+            }
             match ops::apply(store, &actor, &request, now) {
                 Ok(_) => {}
                 Err(error) => return Err(error),
@@ -518,6 +522,8 @@ impl Delivery {
 
 #[cfg(test)]
 thread_local! {pub(super) static CRASH: std::cell::Cell<Option<&'static str>> = const { std::cell::Cell::new(None) };}
+#[cfg(test)]
+thread_local! {pub(super) static STALE_RACE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };}
 fn boundary(name: &str) {
     #[cfg(test)]
     CRASH.with(|c| {

@@ -305,30 +305,25 @@ fn a_crash_at_the_outcome_boundary_records_the_outcome_and_settles_nothing() {
 fn a_stale_settle_revision_is_not_a_failure_gate() {
     let (mut h, mut a, mut p, _lead) = team();
     let (mut a, _id) = reserved_then_left(&mut h, &mut a, &mut p, "paused");
-    let rev = h.store.team(TEAM).unwrap().unwrap().revision;
-    let loser = request(
-        rev,
-        Operation::SettleLeftHandout {
-            node: 1,
-            reason: None,
-        },
-    );
-    // The actor's own pass settles first, bumping the revision.
+    // The settle's apply loses its race: the injected stale revision must
+    // not open a failure gate, and the next pass re-reads and settles.
+    super::super::delivery::STALE_RACE.with(|c| c.set(true));
     a.tick(&mut h.store, &mut p, TEAM, T0 + MINUTE, false)
         .unwrap();
-    assert_eq!(items(&h).len(), 1);
-    // The loser's apply now returns stale; the pass must not treat it as a
-    // failure.
-    let stale = crate::teams::ops::apply(&mut h.store, &service(), &loser, T0 + MINUTE);
-    assert!(stale.is_err(), "the losing request must be refused");
-    for minute in 2..6 {
-        a.tick(&mut h.store, &mut p, TEAM, T0 + minute * MINUTE, false)
-            .unwrap();
-    }
-    assert_eq!(items(&h).len(), 1, "no second item");
     assert!(
         a.ledger.get(TEAM, "gate:handout:1").unwrap().is_none(),
-        "no failure gate from the stale loser"
+        "a stale loser opened a failure gate"
+    );
+    super::super::delivery::STALE_RACE.with(|c| c.set(false));
+    a.tick(&mut h.store, &mut p, TEAM, T0 + 2 * MINUTE, false)
+        .unwrap();
+    assert_eq!(items(&h).len(), 1, "one item after the re-read");
+    assert!(
+        effects(&h)
+            .iter()
+            .any(|(s, m, n)| s == "superseded" && m == "m1" && *n == 1),
+        "{:?}",
+        effects(&h)
     );
 }
 
@@ -336,12 +331,16 @@ fn a_stale_settle_revision_is_not_a_failure_gate() {
 /// live binding and no actor-read departure writes nothing.
 #[test]
 fn a_settle_for_an_active_member_writes_nothing() {
-    let mut h = Harness::new();
-    let lead = h.bind("lead");
-    h.bind("m1");
-    h.bind("m2");
-    h.add(&person(), 1);
+    let (mut h, mut a, mut p, lead) = team();
+    super::super::delivery::CRASH.with(|c| c.set(Some("intent")));
+    let crashed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        a.tick(&mut h.store, &mut p, TEAM, T0, false)
+    }));
+    assert!(crashed.is_err());
+    drop(a);
     let _ = lead;
+    // The reservation exists and the member is still Active with a live
+    // binding: the ops' own guard writes nothing.
     let request = request(
         h.store.team(TEAM).unwrap().unwrap().revision,
         Operation::SettleLeftHandout {
