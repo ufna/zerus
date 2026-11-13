@@ -12,17 +12,23 @@ fn the_desktop_list_and_detail_carry_the_recorded_scope() {
     // the desktop service's own readers, carries the granted scope; the
     // list stays bounded on an oversized row.
     let mut f = Fixture::new();
+    let reserved;
     {
         let mut db = crate::approval_log::open(&f.reader.root).unwrap();
         let question = crate::state::trust_fixture::startup_card("codex");
         let payload = json!({"host":"a.example","session":"agent/project/fixture","provider":"codex",
             "question":question,"scope":"/work/repository"});
-        let reserved = crate::approval_log::begin_team(&mut db, &payload, crate::approval_log::TeamKind::FolderTrust).unwrap();
+        reserved = crate::approval_log::begin_team(&mut db, &payload, crate::approval_log::TeamKind::FolderTrust).unwrap();
         assert_eq!(reserved["eligible"], true, "{reserved}");
         db.execute("INSERT INTO attempts(identity,request_id,at,host,session,provider,prompt,question) VALUES('big','big',99,'a.example','agent/project/fixture','codex','big',?1)", [json!({"question":{"padding":"x".repeat(4 << 20)},"answers":[],"scope":"/work/repository"}).to_string()]).unwrap();
     }
+    // The writer is closed before the first read, as the reviewer's probe
+    // ran it: the first page then contains both rows, and the trust row's
+    // scope is reachable in the list itself (zerus-63rru.66 round 4).
     let list = f.reader.request(&f.query());
     let entries = list["result"]["entries"].as_array().unwrap();
+    let trust_row = entries.iter().find(|e| e["id"] == reserved["id"]).unwrap();
+    assert_eq!(trust_row["scope"], "/work/repository", "{list}");
     // The oversized row's scope stays unparsed: the reader extracts it in
     // SQLite under the byte bound (zerus-63rru.66 round 3).
     let big = entries.iter().find(|e| e["prompt"] == "big").unwrap();

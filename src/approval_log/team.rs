@@ -3,6 +3,7 @@
 use super::*;
 
 #[derive(Clone, Copy)]
+#[derive(PartialEq)]
 pub(crate) enum TeamKind {
     FolderTrust,
     Resume,

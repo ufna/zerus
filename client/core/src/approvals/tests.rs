@@ -116,9 +116,38 @@ fn a_detail_shows_the_question_and_the_answer_chosen() {
     );
     let bare = json!({"status": "failed", "detail": ""});
     assert_eq!(detail(bare.as_object().unwrap()), "Failed");
+    // zerus-63rru.66 round 4: the sentence distinguishes the record's kind
+    // and outcome — a confirmed folder-trust grant claims the trust, an
+    // unconfirmed, unknown or refused one only says trust was requested,
+    // and a non-trust record shows nothing even with an old row's scope.
+    for status in [Some("failed"), Some("unknown"), Some("cancelled"), None] {
+        assert_eq!(
+            trust_sentence(Some("/fixture/main"), &json!(["team_folder_trust"]), status),
+            Some(
+                "Trust was requested for /fixture/main and its subfolders; it was not confirmed"
+                    .to_owned()
+            ),
+            "{status:?}"
+        );
+    }
+    assert_eq!(
+        trust_sentence(Some("/fixture/main"), &json!(["team_folder_trust"]), Some("approved")),
+        Some("Trusted for /fixture/main and its subfolders on this account".to_owned())
+    );
+    assert_eq!(
+        trust_sentence(Some("/fixture/main"), &json!(["team_resume"]), Some("approved")),
+        None,
+        "a resume record shows no trust sentence"
+    );
+    assert_eq!(
+        trust_sentence(Some("/fixture/main"), &Value::Null, Some("approved")),
+        None,
+        "a record without the trust category shows no trust sentence"
+    );
     // The granted scope's sentence (zerus-63rru.66 round 3): present when the
     // reply carries it, absent for a row without one.
-    let scoped = json!({"status": "approved", "detail": "", "scope": "/fixture/main"});
+    let scoped = json!({"status": "approved", "detail": "", "scope": "/fixture/main",
+        "categories": ["team_folder_trust"]});
     assert_eq!(
         detail(scoped.as_object().unwrap()),
         "Approved once\n\nTrusted for /fixture/main and its subfolders on this account"

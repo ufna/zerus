@@ -263,6 +263,30 @@ fn known_categories(value: &Value) -> Vec<String> {
 /// A detail reply as Qt shows it: the outcome, the approval categories when
 /// recorded, each question with its body and the answers chosen for it, then
 /// the outcome's detail.
+/// The trust sentence a record's scope yields, only for a FolderTrust
+/// record and by its outcome (zerus-63rru.66 round 4): a confirmed grant
+/// claims the trust; an unconfirmed, unknown or refused record only says
+/// trust was requested; a non-trust record shows nothing even when an
+/// older row carries a scope.
+pub fn trust_sentence(
+    scope: Option<&str>,
+    categories: &Value,
+    status: Option<&str>,
+) -> Option<String> {
+    let scope = scope.filter(|s| !s.is_empty())?;
+    let trust = categories
+        .as_array()
+        .is_some_and(|ids| ids.iter().any(|id| id == "team_folder_trust"));
+    if !trust {
+        return None;
+    }
+    Some(if status == Some("approved") {
+        format!("Trusted for {scope} and its subfolders on this account")
+    } else {
+        format!("Trust was requested for {scope} and its subfolders; it was not confirmed")
+    })
+}
+
 pub fn detail(reply: &Map<String, Value>) -> String {
     let mut parts = vec![status_text(
         reply
@@ -272,8 +296,12 @@ pub fn detail(reply: &Map<String, Value>) -> String {
     )
     .to_owned()];
     let categories = known_categories(reply.get("categories").unwrap_or(&Value::Null));
-    if let Some(scope) = reply.get("scope").and_then(Value::as_str).filter(|s| !s.is_empty()) {
-        parts.push(format!("Trusted for {scope} and its subfolders on this account"));
+    if let Some(sentence) = trust_sentence(
+        reply.get("scope").and_then(Value::as_str),
+        reply.get("categories").unwrap_or(&Value::Null),
+        reply.get("status").and_then(Value::as_str),
+    ) {
+        parts.push(sentence);
     }
     if !categories.is_empty() {
         let set = categories
