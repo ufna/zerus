@@ -6,6 +6,12 @@ use std::fs;
 use std::io::{Read, Seek, SeekFrom};
 
 const MAX_BYTES: u64 = 8 * 1024 * 1024;
+// Bump if terminal parsing changes. This cache contains only negative verdicts:
+// an entry can never supply completion evidence, prompt IDs or a native clock.
+const NO_END_CACHE: &str = "kimi-no-main-terminal-v1";
+
+#[cfg(test)]
+thread_local! { static SCANNED: std::cell::Cell<(u64,u64)> = const { std::cell::Cell::new((0,0)) }; }
 
 #[derive(Debug, PartialEq)]
 struct End {
@@ -298,10 +304,30 @@ struct Proof {
 }
 impl Proof {
     fn current(&self) -> bool {
-        crate::platform::FileIdentity::at(&self.path).is_ok_and(|(version, metadata)| {
-            version == self.version && metadata.is_file() && metadata.len() == self.len
-        })
+        wire_current(&self.path, self.version, self.len)
     }
+}
+
+fn wire_current(path: &Path, version: crate::platform::FileIdentity, len: u64) -> bool {
+    crate::platform::FileIdentity::at(path).is_ok_and(|(current, metadata)| {
+        current == version && metadata.is_file() && metadata.len() == len
+    })
+}
+
+fn scan_wire(file: &mut fs::File, len: u64) -> Option<Option<End>> {
+    let offset = len.saturating_sub(MAX_BYTES);
+    file.seek(SeekFrom::Start(offset)).ok()?;
+    let mut bytes = Vec::new();
+    (&mut *file).take(MAX_BYTES).read_to_end(&mut bytes).ok()?;
+    #[cfg(test)]
+    SCANNED.with(|count| {
+        let (scans, total) = count.get();
+        count.set((scans + 1, total + bytes.len() as u64));
+    });
+    if bytes.len() as u64 != len - offset {
+        return None;
+    }
+    Some(terminal(&bytes, offset > 0))
 }
 
 fn proof(record: &Value) -> Option<Proof> {
@@ -323,14 +349,34 @@ fn proof(record: &Value) -> Option<Proof> {
         return None;
     }
     let len = metadata.len();
-    let offset = len.saturating_sub(MAX_BYTES);
-    file.seek(SeekFrom::Start(offset)).ok()?;
-    let mut bytes = Vec::new();
-    file.take(MAX_BYTES).read_to_end(&mut bytes).ok()?;
-    if bytes.len() as u64 != len - offset {
-        return None;
+    let marker = json!([
+        "no_terminal",
+        version.device,
+        version.inode,
+        version.modified,
+        version.modified_nanos,
+        len
+    ]);
+    let mut native_end = None;
+    let cached = scan_cache::cached(NO_END_CACHE, path, "", || {
+        let verdict = scan_wire(&mut file, len)?;
+        if !wire_current(path, version, len) {
+            return None;
+        }
+        match verdict {
+            Some(end) => {
+                native_end = Some(end);
+                None
+            }
+            None => Some(marker.clone()),
+        }
+    });
+    // Advisory/edited caches cannot provide an End. Unknown values fall back
+    // to native bytes; even a positive native result is never persisted here.
+    if cached.as_ref().is_some_and(|value| value != &marker) {
+        native_end = scan_wire(&mut file, len).flatten();
     }
-    let end = terminal(&bytes, offset > 0)?;
+    let end = native_end?;
     if !matches(record, &end) {
         return None;
     }
@@ -407,6 +453,219 @@ mod tests {
             "activity":"busy","phase":"working","active_tools":{},"main_done":false,
             "kimi_turn_clock":{"run_id":"run","conversation_id":"session_test","started":0},
             "recovery_user_at":0.9,"input_pending_at":0.8})
+    }
+    struct ScanFixture {
+        _private: tempfile::TempDir,
+        wire: PathBuf,
+        record: Value,
+    }
+    impl ScanFixture {
+        fn new() -> Self {
+            let private = tempfile::tempdir().unwrap();
+            let native = private.path().join("native");
+            let wire = native.join("sessions/workspace/session_test/agents/main/wire.jsonl");
+            fs::create_dir_all(wire.parent().unwrap()).unwrap();
+            let line = format!(
+                "{}\n",
+                json!({"type":"fixture.history","text":"x".repeat(1000)})
+            );
+            let mut history = line
+                .repeat((MAX_BYTES as usize / line.len()) + 2)
+                .into_bytes();
+            history.extend(bytes(&[prompt(0)]));
+            fs::write(&wire, history).unwrap();
+            let mut record = record();
+            record["agent_home"] = json!(native);
+            scan_cache::DIR.with(|dir| *dir.borrow_mut() = Some(private.path().join("cache")));
+            SCANNED.with(|count| count.set((0, 0)));
+            Self {
+                _private: private,
+                wire,
+                record,
+            }
+        }
+    }
+    impl Drop for ScanFixture {
+        fn drop(&mut self) {
+            scan_cache::DIR.with(|dir| *dir.borrow_mut() = None);
+        }
+    }
+    fn append(path: &Path, body: &[u8]) {
+        use std::io::Write;
+        fs::OpenOptions::new()
+            .append(true)
+            .open(path)
+            .unwrap()
+            .write_all(body)
+            .unwrap();
+    }
+    #[test]
+    fn negative_cache_invalidates_and_positive_evidence_is_always_read_fresh() {
+        let fixture = ScanFixture::new();
+        assert!(proof(&fixture.record).is_none());
+        let original = fs::read(&fixture.wire).unwrap();
+        fs::write(&fixture.wire, &original).unwrap();
+        fs::OpenOptions::new()
+            .write(true)
+            .open(&fixture.wire)
+            .unwrap()
+            .set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(10))
+            .unwrap();
+        assert!(proof(&fixture.record).is_none());
+        assert_eq!(
+            SCANNED.with(|count| count.get().0),
+            2,
+            "same-length rewrite"
+        );
+        let replacement = fixture.wire.with_extension("replacement");
+        fs::write(&replacement, &original).unwrap();
+        fs::OpenOptions::new()
+            .write(true)
+            .open(&replacement)
+            .unwrap()
+            .set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(10))
+            .unwrap();
+        fs::remove_file(&fixture.wire).unwrap();
+        fs::rename(replacement, &fixture.wire).unwrap();
+        assert!(proof(&fixture.record).is_none());
+        assert_eq!(
+            SCANNED.with(|count| count.get().0),
+            3,
+            "same-size/time replacement"
+        );
+        fs::write(&fixture.wire, bytes(&[prompt(0)])).unwrap();
+        assert!(proof(&fixture.record).is_none());
+        assert_eq!(SCANNED.with(|count| count.get().0), 4, "truncation");
+        let ending = bytes(&[end(0)]);
+        let half = ending.len() / 2;
+        append(&fixture.wire, &ending[..half]);
+        assert!(proof(&fixture.record).is_none());
+        append(&fixture.wire, &ending[half..]);
+        assert_eq!(
+            proof(&fixture.record).unwrap().end.turn,
+            0,
+            "a completed append invalidates the negative verdict"
+        );
+        let scanned = SCANNED.with(|count| count.get().0);
+        let mut pending = fixture.record.clone();
+        pending["input_pending_at"] = json!(1.05);
+        assert!(
+            proof(&pending).is_none(),
+            "a current wire end cannot bypass newer pending input"
+        );
+        assert!(
+            proof(&fixture.record).is_some(),
+            "positive native evidence is never replaced by a negative cache marker"
+        );
+        assert_eq!(SCANNED.with(|count| count.get().0), scanned + 2);
+        let cache = fixture._private.path().join("cache");
+        assert_eq!(
+            fs::read_dir(cache).unwrap().count(),
+            1,
+            "one entry per wire, not per turn/version"
+        );
+    }
+    #[test]
+    fn forged_cache_data_never_proves_a_native_completion() {
+        let fixture = ScanFixture::new();
+        let forged =
+            json!({"turn":0,"prompt_at":1.0,"at":1.1,"prompts":["msg_0"],"prompt_id":"msg_0"});
+        assert!(scan_cache::cached(NO_END_CACHE, &fixture.wire, "", || Some(forged)).is_some());
+        assert!(proof(&fixture.record).is_none());
+        assert_eq!(
+            SCANNED.with(|count| count.get().0),
+            1,
+            "unexpected cache values require a native scan"
+        );
+        for entry in fs::read_dir(fixture._private.path().join("cache")).unwrap() {
+            fs::write(entry.unwrap().path(), "{").unwrap();
+        }
+        assert!(proof(&fixture.record).is_none());
+        let count = SCANNED.with(|count| count.get().0);
+        assert!(proof(&fixture.record).is_none());
+        assert_eq!(SCANNED.with(|count| count.get().0), count);
+    }
+    #[test]
+    fn negative_verdict_is_reused_across_listing_processes() {
+        let fixture = ScanFixture::new();
+        let record = fixture._private.path().join("record.json");
+        fs::write(&record, fixture.record.to_string()).unwrap();
+        for expected in [1, 0] {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .env_clear()
+                .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+                .env("ZERUS_KIMI_CACHE_PROBE", fixture._private.path())
+                .args([
+                    "--exact",
+                    "state::kimi_completion::tests::private_cache_probe",
+                    "--ignored",
+                    "--nocapture",
+                    "--test-threads=1",
+                ])
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert!(String::from_utf8_lossy(&output.stdout)
+                .contains(&format!("NATIVE_SCANS={expected}")));
+        }
+    }
+    #[test]
+    #[ignore = "run by the cross-process cache control"]
+    fn private_cache_probe() {
+        let private = PathBuf::from(std::env::var_os("ZERUS_KIMI_CACHE_PROBE").unwrap());
+        let record: Value =
+            serde_json::from_slice(&fs::read(private.join("record.json")).unwrap()).unwrap();
+        scan_cache::DIR.with(|dir| *dir.borrow_mut() = Some(private.join("cache")));
+        SCANNED.with(|count| count.set((0, 0)));
+        assert!(proof(&record).is_none());
+        println!("NATIVE_SCANS={}", SCANNED.with(|count| count.get().0));
+    }
+    #[test]
+    fn repeated_working_wire_reads_do_not_rescan_the_same_snapshot() {
+        let fixture = ScanFixture::new();
+        for _ in 0..12 {
+            assert!(proof(&fixture.record).is_none());
+        }
+        assert_eq!(
+            SCANNED.with(|count| count.get()),
+            (1, MAX_BYTES),
+            "an unchanged active row must parse its bounded wire once"
+        );
+    }
+    #[cfg(target_os = "linux")]
+    #[test]
+    #[ignore = "explicit before/after CPU and I/O measurement"]
+    fn benchmark_unchanged_working_wire() {
+        fn cpu_ns() -> u64 {
+            let mut time = libc::timespec {
+                tv_sec: 0,
+                tv_nsec: 0,
+            };
+            assert_eq!(
+                unsafe { libc::clock_gettime(libc::CLOCK_THREAD_CPUTIME_ID, &mut time) },
+                0
+            );
+            time.tv_sec as u64 * 1_000_000_000 + time.tv_nsec as u64
+        }
+        for trial in 0..3 {
+            let fixture = ScanFixture::new();
+            let wall = std::time::Instant::now();
+            let cpu = cpu_ns();
+            for _ in 0..20 {
+                assert!(proof(&fixture.record).is_none());
+            }
+            let elapsed = cpu_ns() - cpu;
+            let (scans, read) = SCANNED.with(|count| count.get());
+            println!(
+                "KIMI_COMPLETION_BENCH {}",
+                json!({"trial":trial,"polls":20,"wire_bytes":MAX_BYTES,"native_scans":scans,"native_bytes":read,"cpu_ns":elapsed,"wall_us":wall.elapsed().as_micros()})
+            );
+        }
     }
     #[test]
     fn only_typed_main_terminal_evidence_completes_the_exact_latest_turn() {
