@@ -373,6 +373,20 @@ fn a_project_limits_answer_carries_the_typed_cause() {
     }
 }
 
+/// The command's task-store-busy answer is the actor's non-start, by its
+/// state, never a kill read as uncertain (zerus-63rru.72).
+#[test]
+fn a_task_store_busy_answer_is_a_non_start_the_actor_retries() {
+    use crate::desktop::teams::child::Ended;
+    let raw = serde_json::json!({"schema":1,"id":"effect","state":"not_started","error":"The task store was busy; nothing was reserved or sent.","cause":"task_store_busy"}).to_string().into_bytes();
+    match delivery_result(Ended::Exited { code: 0, output: raw }, "effect") {
+        super::super::ports::DeliveryResult::NotStarted { reason } => {
+            assert!(reason.contains("task store was busy"), "{reason:?}")
+        }
+        result => panic!("{result:?}"),
+    }
+}
+
 /// zerus-63rru.58: the real task command's answer for a hand-out kept from
 /// its reservation, read by the actor's own reader. Returns what the command
 /// did and what the actor read: its delivery result, and what it records.

@@ -1830,3 +1830,45 @@ pub(crate) fn blocked_handout(
     }
 }
 mod probes36;
+
+/// The command's first store open waits at most the bounded time for a held
+/// task-store lock (zerus-63rru.72): past it, the open is a busy answer, not a
+/// wait until the actor's own deadline.
+#[test]
+fn a_held_task_store_is_busy_within_the_commands_bound() {
+    let f = Fixture::new();
+    let held = ProjectStore::open(&f.config.state.join("replica"), &f.task.project).unwrap();
+    let started = Instant::now();
+    let error = match crate::tasks::store_until(
+        &f.config,
+        &f.task.project,
+        Instant::now() + crate::tasks::attempts::STORE_WAIT,
+    ) {
+        Ok(_) => panic!("a held store opened"),
+        Err(error) => error,
+    };
+    let waited = started.elapsed();
+    drop(held);
+    assert!(error.message.contains("busy"), "{error:?}");
+    assert!(
+        waited >= std::time::Duration::from_secs(4) && waited < std::time::Duration::from_secs(8),
+        "the open waited {waited:?}"
+    );
+}
+
+/// The command's own printed answer through the real dispatch while another
+/// process holds the task store: not_started with its typed cause, exit 0,
+/// never a refusal (zerus-63rru.72 round 2).
+#[test]
+fn a_busy_store_prints_not_started_through_dispatch() {
+    let f = Fixture::new();
+    let held = ProjectStore::open(&f.config.state.join("replica"), &f.task.project).unwrap();
+    let mut args = vec!["task".to_owned(), "team-deliver".to_owned()];
+    args.extend(f.args(false));
+    let (exit, stdout, error) = f.cli(&args, &serde_json::to_string(&f.body).unwrap());
+    drop(held);
+    assert_eq!((exit, &error), (0, &None), "{stdout}");
+    let reply: Value = serde_json::from_str(stdout.trim()).unwrap();
+    assert_eq!(reply["state"], "not_started", "{reply}");
+    assert_eq!(reply["cause"], crate::tasks::team_deliver::TASK_STORE_BUSY, "{reply}");
+}

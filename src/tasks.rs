@@ -20,7 +20,7 @@ use zerus_replica::{
 mod answers;
 mod reports;
 pub(crate) mod controls;
-mod attempts;
+pub(crate) mod attempts;
 mod cancellation;
 mod cutover;
 mod copy_review;

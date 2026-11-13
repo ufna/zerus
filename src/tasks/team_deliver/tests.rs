@@ -259,3 +259,33 @@ fn only_the_team_route_reaches_the_conversation_comparison() {
     );
     assert_eq!(found[1].1, 2, "team-deliver's two reopen preparations");
 }
+
+#[test]
+fn the_first_open_is_bounded_well_below_the_actors_child_deadline() {
+    let now = Instant::now();
+    let open_by = first_open_by(now + attempts::CHILD_DEADLINE);
+    assert!(attempts::STORE_WAIT < attempts::CHILD_DEADLINE);
+    assert!(
+        open_by <= now + attempts::STORE_WAIT + std::time::Duration::from_millis(100),
+        "the first open waited past its bound"
+    );
+}
+
+#[test]
+fn the_busy_store_answer_is_not_started_with_its_typed_cause() {
+    let (_h, body) = setup();
+    let reply = store_busy_reply(&body);
+    assert_eq!(reply["state"], "not_started");
+    assert_eq!(reply["cause"], TASK_STORE_BUSY);
+    assert_eq!(
+        reply["error"],
+        "The task store was busy; nothing was reserved or sent."
+    );
+}
+
+#[test]
+fn a_busy_store_code_is_never_a_refusal() {
+    assert!(!refusal(&Error::new(STORE_BUSY_CODE, "busy")));
+    assert!(refusal(&Error::new(RULE, "rule")));
+    assert!(refusal(&Error::new(PROJECT_LIMIT_CODE, "limit")));
+}

@@ -16,6 +16,18 @@ use zerus_replica::Settlement;
 /// One admission's whole budget, counted once from the command's entry and
 /// never renewed (desktop-u's condition 1).
 pub(super) const BUDGET: Duration = Duration::from_secs(15);
+/// The actor's deadline for one hand-out child
+/// (desktop/teams/actor/native/tasks.rs).
+#[cfg_attr(
+    not(any(target_os = "linux", target_os = "macos")),
+    allow(dead_code)
+)]
+pub(crate) const CHILD_DEADLINE: Duration = Duration::from_secs(30);
+/// The hand-out command's first wait for the project's task-store lock
+/// (zerus-63rru.72). It must stay well below [`CHILD_DEADLINE`]: a held lock
+/// then answers not_started, instead of the actor killing the child at its
+/// deadline and reading the kill as an uncertain delivery.
+pub(super) const STORE_WAIT: Duration = Duration::from_secs(5);
 
 /// The digest a native receipt records for `request`: SHA-256 of its exact
 /// JSON, as `state::submit_task_reply` submits it.

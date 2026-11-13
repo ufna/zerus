@@ -58,6 +58,11 @@ const HANDED_BACK: i32 = 6;
 /// A rule refusal of the project's own limit: the answer carries its typed
 /// cause (zerus-63rru.23).
 const PROJECT_LIMIT_CODE: i32 = 7;
+/// The first task-store open waited past its own bound: nothing was reserved
+/// or sent (zerus-63rru.72).
+const STORE_BUSY_CODE: i32 = 8;
+/// The typed cause of that answer, beside its plain sentence.
+pub(crate) const TASK_STORE_BUSY: &str = "task_store_busy";
 /// The typed cause of a refused hand-out whose member's terminal holds input
 /// (zerus-63rru.79): the reply's `cause`. A reader that does not know the
 /// field reads a plain refusal, as before it.
@@ -519,13 +524,22 @@ impl Delivery for Native {
     }
 }
 
+/// Whether an error's code is a refusal the command answers with `refused`
+/// in its own JSON. A busy task store is never one (zerus-63rru.72).
+fn refusal(error: &Error) -> bool {
+    matches!(error.code, RULE | PROJECT_LIMIT_CODE)
+}
+
 pub(super) fn dispatch(config: &Config, args: &[String]) -> Result<i32> {
     match execute(config, args, &Native) {
         Ok(reply) => {
             println!("{reply}");
             Ok(0)
         }
-        Err(error) if error.code != RULE && error.code != PROJECT_LIMIT_CODE => Err(error),
+        // Only a rule refusal prints a final refusal. A busy store's own code
+        // must never reach this arm: it is a non-start, whether execute has
+        // already built its reply or a later path returns the code itself.
+        Err(error) if !refusal(&error) => Err(error),
         Err(error) => {
             println!(
                 "{}",
@@ -568,6 +582,7 @@ fn execute(config: &Config, args: &[String], delivery: &dyn Delivery) -> Result<
         Err(error) if error.code == NOT_STARTED => {
             Ok(body.reply("not_started", &error.message, None))
         }
+        Err(error) if error.code == STORE_BUSY_CODE => Ok(store_busy_reply(&body)),
         // The member no longer has the task's conversation: a final refusal,
         // which the service hands back to the lead (zerus-63rru.64).
         Err(error) if error.code == HANDED_BACK => {
@@ -697,6 +712,23 @@ fn recover(
     }
 }
 
+/// The bound of the first task-store open: the command's own wait, never past
+/// the caller's deadline.
+fn first_open_by(deadline: Instant) -> Instant {
+    deadline.min(Instant::now() + attempts::STORE_WAIT)
+}
+/// The task-store-busy answer: not_started, with the typed cause beside the
+/// plain sentence the lead reads (zerus-63rru.72).
+fn store_busy_reply(body: &Input) -> Value {
+    let mut reply = body.reply(
+        "not_started",
+        "The task store was busy; nothing was reserved or sent.",
+        None,
+    );
+    reply["cause"] = json!(TASK_STORE_BUSY);
+    reply
+}
+
 fn run(
     config: &Config,
     args: &[String],
@@ -718,7 +750,19 @@ fn run(
     if !super::store_dir(config, &reference.project).is_dir() {
         return Err(fail("Task store is unavailable."));
     }
-    let tasks = super::store_until(config, &reference.project, deadline)?;
+    // The first open waits at most STORE_WAIT (well below the actor's child
+    // deadline): a held lock is a non-start, never a killed child.
+    let open_by = first_open_by(deadline);
+    let tasks = super::store_until(config, &reference.project, open_by).map_err(|error| {
+        if error.message == super::BUSY {
+            Error::new(
+                STORE_BUSY_CODE,
+                "The task store was busy; nothing was reserved or sent.",
+            )
+        } else {
+            error
+        }
+    })?;
     let task = tasks
         .admit_until(deadline)
         .ok_or_else(|| fail(BUSY))?
