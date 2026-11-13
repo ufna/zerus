@@ -203,21 +203,27 @@ fn a_stage_that_is_not_ready_or_still_staffed_is_never_retired() {
                     },
                 )
                 .unwrap();
-                // zerus-63rru.84: revisit when Route of a stage is fixed.
-                // A removal no longer leaves the effect open (zerus-63rru.77);
-                // a route of the stage to the parent's implementer does: no
+                // zerus-63rru.84 refuses Route of a stage, so the premise
+                // the route used to build is written by SQL as a store
+                // fixture: everything up to the last step is the product's
+                // own operations (the stage and its open hand-out), and the
+                // last step is the role rewrite Route used to write. No
                 // member may take it while m3's hand-out stays open.
-                let pipeline = h.node(stage).pipeline.clone();
-                h.run(
-                    &person(),
-                    Operation::Route {
-                        node: stage,
-                        role: "developer".into(),
-                        pipeline,
-                        deps: vec![],
-                        writes: vec![],
-                        assignee: Some("m1".into()),
-                    },
+                let db = h.store.db.as_ref().unwrap();
+                let data: String = db
+                    .query_row(
+                        "SELECT data FROM nodes WHERE team=?1 AND id=?2",
+                        rusqlite::params![TEAM, stage],
+                        |r| r.get(0),
+                    )
+                    .unwrap();
+                let mut node: serde_json::Value = serde_json::from_str(&data).unwrap();
+                node["role"] = serde_json::json!("developer");
+                node["pipeline"] = serde_json::json!("reviewed");
+                node["assignee"] = serde_json::json!("m1");
+                db.execute(
+                    "UPDATE nodes SET data=?3 WHERE team=?1 AND id=?2",
+                    rusqlite::params![TEAM, stage, node.to_string()],
                 )
                 .unwrap();
                 // The kernel alone would name it; the open effect keeps it out.
