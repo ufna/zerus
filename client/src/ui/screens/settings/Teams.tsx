@@ -85,6 +85,12 @@ export function TeamsSection() {
         <Show when={state() === "unavailable"}>
           <p class="set-group-hint" role="note" data-teams-unavailable>{tr("hgs is unavailable on this computer, so the preview cannot be changed.")}</p>
         </Show>
+        <Show when={state() === "unknown"}>
+          <p class="set-group-hint" role="status" data-teams-unknown>
+            {tr("The preview state is unknown.")}{" "}
+            <button type="button" class="btn small" disabled={busy()} onClick={() => { void teams.recheck(); }}>{tr("Read again")}</button>
+          </p>
+        </Show>
         <Show when={error()}>
           <p class="set-group-hint" role="alert" data-teams-error>{withoutCode(error())}</p>
         </Show>

@@ -527,7 +527,7 @@ export function createTeams(transport: TeamsTransport = tauriTeams()) {
 
   /** Asks whether Teams exist and follows the list, the waiting read and the
    * open tab's team. Only the application's availability owner calls it: the
-   * start, the preview switch, an explicit "read again" and a long-hidden
+   * start, opening Settings, the preview switch, an explicit "read again" and a long-hidden
    * window's return. */
   async function recheck() {
     if (probing) return;
