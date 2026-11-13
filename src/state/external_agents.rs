@@ -175,6 +175,12 @@ pub(super) fn route(record: &mut Value, event: &Value) -> Option<Value> {
     };
     let provider = string(&record["subagents"][&id], "provider").to_owned();
     let starting = event["hook_event_name"] == "SessionStart";
+    // A Start from the child itself proves the same process is active; a parent
+    // binding that went stale (a resumed record) is refreshed from that process,
+    // so the process projection cannot hide real work from a fresh event.
+    if event["hook_event_name"] == "SubagentStart" {
+        subagent_lifecycle::refresh(record, &id);
+    }
     let ended = record["subagents"][&id]["state"] == "ended";
     let previous = record["subagents"][&id].get("original_process");
     let original = if starting || ended || previous.is_none() {

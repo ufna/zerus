@@ -1325,8 +1325,14 @@ pub(super) fn update_activity(record: &mut Value, event: &Value) {
         // else about the child changes, and a late announcement is still kept.
         // This is the one exception to "a later event resumes the child": a
         // later Start of the same ID is not counted until its next event.
-        let ended = ["finished", "ended"].contains(&string(info, "state"))
-            || (string(info, "state") == "working" && string(info, "display_state") == "unknown");
+        // "Interrupted" is the hook writer's own shape, never process
+        // uncertainty, which a fresh Start must clear.
+        let interrupted = string(info, "state") == "working"
+            && string(info, "display_state") == "unknown"
+            && info["process_unknown"] != true
+            && string(&info["tracking_evidence"], "source") == "hook"
+            && ["Interrupt", "StopFailure"].contains(&string(&info["tracking_evidence"], "kind"));
+        let ended = ["finished", "ended"].contains(&string(info, "state")) || interrupted;
         if kind == "SubagentStart" && ended {
             record["subagents"] = json!(children);
             return;

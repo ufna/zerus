@@ -126,6 +126,98 @@ fn kimi_catalog_removed() -> (Value, Value, Value) {
     (listed, removed, record["subagents"][ID].clone())
 }
 
+/// A live external child whose parent binding is stale: process uncertainty
+/// (not an end), then a fresh routed Start, with or without the hook entry's
+/// following reconcile.
+fn external_process_uncertain(reconciled: bool) -> (Value, Value) {
+    const ID: &str = "external:codex:22222222-2222-4222-8222-222222222222";
+    let mut child = Command::new("sleep")
+        .arg("30")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("a sleeping child");
+    let mut record = record("claude");
+    let pid = std::process::id();
+    record["pid"] = json!(pid);
+    record["process_start"] = json!(storage::process_start(pid));
+    record["subagents"][ID] = json!({"external":true,"provider":"codex","conversation_id":"child",
+        "name":"external child","state":"working","started":1.0,"updated":2.0,
+        "reply_id":"original-reply"});
+    record["subagents"][ID]["original_process"] =
+        subagent_lifecycle::capture(&record, child.id()).expect("the child's process identity");
+    record["subagents"][ID]["original_process"]["parent_start"] = json!("stale-parent-start");
+    subagent_lifecycle::reconcile(&mut record);
+    assert_eq!(record["subagents"][ID]["process_state"], "unknown");
+    assert_eq!(record["subagents"][ID]["display_state"], "unknown");
+    assert_eq!(record["subagents"][ID]["process_unknown"], true);
+    assert!(child.try_wait().expect("the child").is_none());
+    let before = record["subagents"][ID].clone();
+    let event = json!({"hook_event_name":"SubagentStart","session_id":"child",
+        "agent_id":"grandchild-1","agent_type":"general-purpose"});
+    let scoped = external_agents::route(&mut record, &event).expect("the external child route");
+    telemetry::observe(&mut record, &scoped);
+    journal::update_activity(&mut record, &scoped);
+    if reconciled {
+        subagent_lifecycle::reconcile(&mut record);
+    }
+    let after = record["subagents"][ID].clone();
+    assert!(child.try_wait().expect("the child").is_none());
+    let listed = row(record);
+    child.kill().expect("kill the child");
+    child.wait().expect("reap the child");
+    (
+        listed,
+        json!({"before":before,"after":after,"reconciled_after":reconciled}),
+    )
+}
+
+/// An external child interrupted, then its lifecycle uncertainty, then a
+/// fresh Start: which record survives.
+fn external_interrupt_uncertain() -> (Value, Value) {
+    const ID: &str = "external:codex:22222222-2222-4222-8222-222222222222";
+    let mut child = Command::new("sleep")
+        .arg("30")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("a sleeping child");
+    let mut record = record("claude");
+    let pid = std::process::id();
+    record["pid"] = json!(pid);
+    record["process_start"] = json!(storage::process_start(pid));
+    record["subagents"][ID] = json!({"external":true,"provider":"codex","conversation_id":"child",
+        "name":"external child","state":"working","started":1.0,"updated":2.0,
+        "reply_id":"original-reply"});
+    record["subagents"][ID]["original_process"] =
+        subagent_lifecycle::capture(&record, child.id()).expect("the child's process identity");
+    let interrupt = json!({"hook_event_name":"Interrupt","session_id":"child",
+        "agent_id":"grandchild-0"});
+    let scoped = external_agents::route(&mut record, &interrupt).expect("the external child route");
+    telemetry::observe(&mut record, &scoped);
+    journal::update_activity(&mut record, &scoped);
+    let interrupted = record["subagents"][ID].clone();
+    record["subagents"][ID]["original_process"]["parent_start"] = json!("stale-parent-start");
+    subagent_lifecycle::reconcile(&mut record);
+    let uncertain = record["subagents"][ID].clone();
+    let start = json!({"hook_event_name":"SubagentStart","session_id":"child",
+        "agent_id":"grandchild-1","agent_type":"general-purpose"});
+    let scoped = external_agents::route(&mut record, &start).expect("the external child route");
+    telemetry::observe(&mut record, &scoped);
+    journal::update_activity(&mut record, &scoped);
+    subagent_lifecycle::reconcile(&mut record);
+    let after = record["subagents"][ID].clone();
+    let listed = row(record);
+    child.kill().expect("kill the child");
+    child.wait().expect("reap the child");
+    (
+        listed,
+        json!({"interrupted":interrupted,"uncertain":uncertain,"after_start":after}),
+    )
+}
+
 fn produce() -> Value {
     let mut rows = serde_json::Map::new();
     let mut evidence = serde_json::Map::new();
@@ -273,6 +365,22 @@ fn produce() -> Value {
     evidence.insert(
         "kimi_removed_start".into(),
         json!({"before":removed_before,"after":removed_after}),
+    );
+    for reconciled in [false, true] {
+        let name = if reconciled {
+            "external_uncertain_start_reconciled"
+        } else {
+            "external_uncertain_start"
+        };
+        let (uncertain_row, uncertain_evidence) = external_process_uncertain(reconciled);
+        rows.insert(name.into(), uncertain_row);
+        evidence.insert(name.into(), uncertain_evidence);
+    }
+    let (interrupt_row, interrupt_evidence) = external_interrupt_uncertain();
+    rows.insert("external_interrupt_uncertain_start".into(), interrupt_row);
+    evidence.insert(
+        "external_interrupt_uncertain_start".into(),
+        interrupt_evidence,
     );
     json!({"rows":rows,"evidence":evidence})
 }

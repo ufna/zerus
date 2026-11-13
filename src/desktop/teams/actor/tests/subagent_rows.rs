@@ -428,6 +428,8 @@ mod source_text {
         loop {
             let inner = if let Some(rest) = value.strip_prefix("json!") {
                 rest.trim_start()
+            } else if let Some(rest) = value.strip_prefix("String::from(") {
+                return rest.strip_suffix(')').map(str::trim).unwrap_or(value);
             } else if let Some(rest) = value.strip_prefix("Some(") {
                 return rest.strip_suffix(')').map(str::trim).unwrap_or(value);
             } else if value.starts_with('(') || value.starts_with('{') {
@@ -449,21 +451,26 @@ mod source_text {
         }
     }
 
+    /// A complete literal, or one followed only by a value-preserving
+    /// conversion. Any other suffix transforms the value: it is a failure.
     fn literal(value: &str) -> Option<String> {
-        let mut chars = value.chars();
-        if chars.next() != Some('"') {
+        let mut chars = value.char_indices();
+        if chars.next().map(|(_, character)| character) != Some('"') {
             return None;
         }
         let mut literal = String::new();
         let mut escaped = false;
-        for character in chars {
+        for (index, character) in chars {
             if escaped {
                 literal.push(character);
                 escaped = false;
             } else if character == '\\' {
                 escaped = true;
             } else if character == '"' {
-                return Some(literal);
+                let rest = value[index + 1..].trim();
+                return (rest.is_empty()
+                    || matches!(rest, ".to_owned()" | ".to_string()" | ".into()"))
+                .then_some(literal);
             } else {
                 literal.push(character);
             }
@@ -680,8 +687,17 @@ fn the_source_guard_reads_every_form_and_refuses_an_alternative_it_cannot_settle
         r#"result["subagent_source"] = json!(if known { "hooks" } else { runtime_source });"#,
         r#"result["subagent_source"] = json!(source);"#,
         r#"result["subagent_source"] = json!(format!("hook_{}", kind));"#,
+        // A literal followed by a transforming suffix is not the literal.
+        r#"result["subagent_source"] = json!("hooks".to_uppercase());"#,
     ] {
         let why = settled(&value(source)).expect_err(source);
         assert!(why.contains("cannot settle"), "{source}: {why}");
+    }
+    // The conversions that keep the literal's value are settled.
+    for source in [
+        r#"result["subagent_source"] = json!("hooks".to_owned());"#,
+        r#"result["subagent_source"] = json!(String::from("hooks"));"#,
+    ] {
+        assert_eq!(settled(&value(source)).unwrap(), vec!["hooks"], "{source}");
     }
 }

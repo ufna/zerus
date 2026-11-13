@@ -31,7 +31,7 @@ const EXPECTED: [(
     bool,
     Option<Fact>,
     Option<bool>,
-); 18] = [
+); 21] = [
     // Claude Code: both orders of one child's events leave it ended.
     (
         "claude_start_stop",
@@ -185,6 +185,40 @@ const EXPECTED: [(
         None,
         Some(false),
     ),
+    // A live external child whose parent binding went stale is not an end:
+    // the fresh Start resumes it, with or without the hook entry's reconcile.
+    (
+        "external_uncertain_start",
+        "hooks",
+        true,
+        Some(1),
+        false,
+        false,
+        None,
+        None,
+    ),
+    (
+        "external_uncertain_start_reconciled",
+        "hooks",
+        true,
+        Some(1),
+        false,
+        false,
+        None,
+        None,
+    ),
+    // An Interrupt, then the lifecycle's uncertainty, then a Start: the hook's
+    // interrupted evidence is the last end and the Start stays out.
+    (
+        "external_interrupt_uncertain_start",
+        "hooks",
+        false,
+        Some(0),
+        false,
+        true,
+        None,
+        Some(false),
+    ),
     // The Kimi catalog's removal writes `unknown`, not an end; a raw Start
     // turns it working (no supported Kimi hook names a native ID).
     (
@@ -279,6 +313,30 @@ fn a_start_for_an_ended_child_never_counts_as_active_again() {
     );
     assert_eq!(evidence["kimi_removed_start"]["before"]["state"], "unknown");
     assert_eq!(evidence["kimi_removed_start"]["after"]["state"], "working");
+    // Process uncertainty is not an end: the fresh Start clears it, keeps the
+    // same live process, and the member is busy again.
+    let uncertain = &evidence["external_uncertain_start_reconciled"];
+    assert_eq!(uncertain["before"]["state"], "working");
+    assert_eq!(uncertain["before"]["display_state"], "unknown");
+    assert_eq!(uncertain["before"]["process_unknown"], true);
+    assert_eq!(uncertain["after"]["state"], "working");
+    assert_eq!(uncertain["after"]["display_state"], Value::Null);
+    assert_eq!(uncertain["after"]["process_unknown"], false);
+    assert_eq!(uncertain["after"]["process_state"], "live");
+    // The earlier Interrupt wins: the lifecycle's uncertainty does not replace
+    // its evidence, and the later Start stays history.
+    let interrupt = &evidence["external_interrupt_uncertain_start"];
+    assert_eq!(
+        interrupt["interrupted"]["tracking_evidence"]["kind"],
+        "Interrupt"
+    );
+    assert_eq!(interrupt["uncertain"]["process_state"], "unknown");
+    assert_eq!(interrupt["after_start"]["display_state"], "unknown");
+    assert_eq!(
+        interrupt["after_start"]["tracking_evidence"]["kind"],
+        "Interrupt"
+    );
+    assert_eq!(interrupt["after_start"]["process_state"], "live");
     // The two orders of one child are indistinguishable to the member: both
     // leave it free, which is what hands it its next task.
     assert_eq!(
