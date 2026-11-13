@@ -110,6 +110,12 @@ fn delegations_override_the_template_and_are_reported_in_status() {
     );
     assert_eq!(exit, 0, "{status}");
     assert_eq!(status["team"]["settings"]["delegations"], delegations);
+    assert!(
+        status["team"]["bundle"]["template"]["settings"]
+            .get("delegations")
+            .is_none(),
+        "the source template's delegations are not shown twice: {status}"
+    );
     let team = h.store().team(TEAM).unwrap().unwrap();
     assert!(
         team.bundle.template.settings.delegations.merge_accepted,
@@ -274,4 +280,39 @@ pub(super) fn changed_refusal_fixture() -> Value {
 fn the_changed_template_reply_is_the_command_reply() {
     let r = changed_refusal_fixture();
     assert_eq!(code(&r), "template_changed");
+}
+
+
+#[test]
+fn a_request_id_replayed_with_another_template_is_refused() {
+    let h = Harness::new();
+    let request = input(1);
+    let (first, exit) = create(&h, "bugfix", &request);
+    assert_eq!(exit, 0, "{first}");
+    let (replay, exit) = create(&h, "feature-delivery", &request);
+    assert_eq!(exit, 1, "{replay}");
+    assert_eq!(code(&replay), "duplicate", "{replay}");
+    assert_eq!(
+        replay["error"]["message"],
+        "Request ID was used with a different operation or template."
+    );
+    assert_eq!(h.store().journal(TEAM, 200, None).unwrap().rows.len(), 1);
+}
+
+#[test]
+fn a_null_or_empty_expected_template_is_its_own_refusal() {
+    for value in [Value::Null, json!("")] {
+        let h = Harness::new();
+        let mut request = input(1);
+        request["expected_template"] = value;
+        let (reply, exit) = create(&h, "bugfix", &request);
+        assert_eq!(exit, 1, "{reply}");
+        assert_eq!(code(&reply), "invalid_state", "{reply}");
+        assert_eq!(
+            reply["error"]["message"],
+            "expected_template must be a template digest, or left out."
+        );
+        assert_eq!(reply["error"]["refs"][0], "expected_template");
+        assert!(!h.state().join("teams/teams-v1.sqlite3").exists());
+    }
 }

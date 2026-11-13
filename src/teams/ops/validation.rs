@@ -76,7 +76,7 @@ pub(super) fn validate_create(team: &Team) -> Result<()> {
     text(&team.name, 256)?;
     text(&team.project, 256)?;
     text(&team.goal, 16_384)?;
-    text(&encode(&team.bundle)?, 131_072)?;
+    text(&encode(&team.bundle)?, crate::teams::catalog::CREATE_BUNDLE_LIMIT)?;
     if team.settings.integration == Integration::Branch && team.integration_branch.trim().is_empty()
     {
         return Err(invalid("An integration branch is required."));

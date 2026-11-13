@@ -646,3 +646,27 @@ fn member_handles_move_neither_the_version_nor_the_mark_an_older_build_checks() 
     let db = rusqlite::Connection::open(&path).unwrap();
     assert_eq!(read(&db), current);
 }
+
+#[test]
+fn an_oversized_saved_request_is_refused_before_it_is_read() {
+    let mut h = Harness::empty();
+    h.run(&person(), create()).unwrap();
+    let mut saved = request(0, create());
+    if let Operation::Create { goal, .. } = &mut saved.operation {
+        *goal = "x".repeat(300_000);
+    }
+    let id = saved.request_id.clone();
+    let content = serde_json::to_string(&saved).unwrap();
+    assert!(content.len() > 262_144);
+    h.store
+        .db
+        .as_ref()
+        .unwrap()
+        .execute(
+            "INSERT INTO requests(id,team,actor,content,result) VALUES(?1,?2,'{}',?3,'{}')",
+            rusqlite::params![id, TEAM, content],
+        )
+        .unwrap();
+    let error = h.store.creation_request(&id).unwrap_err();
+    assert_eq!(error.code, code::OVER_CAP);
+}

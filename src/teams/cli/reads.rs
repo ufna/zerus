@@ -28,6 +28,14 @@ pub(super) fn status(config: &Config, caller: &Caller, args: &[String]) -> Resul
         if let Some(object) = view.as_object_mut() {
             object.remove("bundle");
         }
+    } else if let Some(settings) = view
+        .pointer_mut("/bundle/template/settings")
+        .and_then(Value::as_object_mut)
+    {
+        // The team's own settings (including the delegations chosen at create)
+        // are authoritative. The pinned template in the bundle is only the
+        // source it came from, so its delegations are not shown a second time.
+        settings.remove("delegations");
     }
     let members = store.member_rows(&team, crate::teams::store::MAX_PAGE, None)?;
     let running = crate::desktop::teams::presence(config);

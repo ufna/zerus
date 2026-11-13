@@ -113,23 +113,29 @@ impl Store {
     pub fn creation_request(&self, id: &str) -> Result<Option<super::ops::Request>> {
         self.active()?;
         self.db.as_ref().map_or(Ok(None), |db| {
+            // Measure before reading the row: an oversized saved request is
+            // refused from its length, without materializing it in memory.
+            let length: Option<i64> = db
+                .query_row(
+                    "SELECT length(CAST(content AS BLOB)) FROM requests WHERE id=?1",
+                    [id],
+                    |r| r.get(0),
+                )
+                .optional()
+                .map_err(storage)?;
+            if length.is_some_and(|length| length > 262_144) {
+                return Err(Problem::new(
+                    code::OVER_CAP,
+                    "The saved request exceeds its bound.",
+                ));
+            }
             let content: Option<String> = db
                 .query_row("SELECT content FROM requests WHERE id=?1", [id], |r| {
                     r.get(0)
                 })
                 .optional()
                 .map_err(storage)?;
-            content
-                .map(|text| {
-                    if text.len() > 262_144 {
-                        return Err(Problem::new(
-                            code::OVER_CAP,
-                            "The saved request exceeds its bound.",
-                        ));
-                    }
-                    decode(&text)
-                })
-                .transpose()
+            content.map(|text| decode(&text)).transpose()
         })
     }
     pub fn team(&self, id: &str) -> Result<Option<Team>> {
