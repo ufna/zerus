@@ -57,7 +57,7 @@ fn team() -> (Harness, super::super::Runtime, Production, Actor) {
 }
 
 /// The member's store state as the ops' own operations leave it.
-fn left(h: &mut Harness, how: &str) {
+fn left(h: &mut Harness, state: &std::path::Path, how: &str) {
     match how {
         "paused" => {
             h.run(
@@ -78,17 +78,23 @@ fn left(h: &mut Harness, how: &str) {
             .unwrap();
         }
         "unbound" => {
+            // The real binding observation's decisive end: the member's
+            // durable handle names a session whose record is gone, so the
+            // actor's own availability read resolves Gone (zerus-63rru.85
+            // round 2, zerus-63rru.87). Only the session's record file is
+            // removed; no member state is written by hand.
             let m = h.store.member(TEAM, "m1").unwrap().unwrap();
-            let session = m.session.unwrap();
-            let launch = session.session_id["launch_id:".len()..].to_owned();
-            crate::state::observe_team_session(
-                &h.temp.path().join("state"),
-                "gone-session",
-                &launch,
-                &m.agent,
-                "the binding ended",
-                std::time::Instant::now() + std::time::Duration::from_secs(5),
-            );
+            use sha2::{Digest, Sha256};
+            // The handle's label is the session's record name; its record's
+            // absence is the observation's Gone.
+            let handle = h.store.member_handle(TEAM, "m1").unwrap().unwrap();
+            eprintln!("DBG85r2 handle: {:?}", handle);
+            // The session's record lives in the ID layout: removing it is
+            // the observation's Gone.
+            let path = state
+                .join("sessions")
+                .join(format!("{}.json", handle.session_id));
+            std::fs::remove_file(path).unwrap();
         }
         other => panic!("{other}"),
     }
@@ -113,7 +119,7 @@ fn reserved_then_left(
     );
     assert!(p.deliveries.is_empty(), "{how}: {:?}", p.deliveries);
     let id = effect_id(h);
-    left(h, how);
+    left(h, &p.native.config.state, how);
     let machine = h.store.team(TEAM).unwrap().unwrap().home;
     (
         super::super::Runtime::open(h.temp.path(), &machine).unwrap(),
@@ -194,10 +200,7 @@ fn a_reservation_for_a_member_that_left_the_active_set_is_settled_at_the_next_pa
             effects(&h)
         );
         assert!(
-            a.ledger
-                .get(TEAM, "gate:handout:1")
-                .unwrap()
-                .is_none(),
+            a.ledger.get(TEAM, "gate:handout:1").unwrap().is_none(),
             "{how}: no failure gate"
         );
         let _ = lead;
@@ -227,32 +230,127 @@ fn a_settled_reservation_with_no_other_member_leaves_the_task_in_the_queue() {
     );
 }
 
-/// An unbound member's reservation: the binding observation already
-/// records the outcome as uncertain (zerus-63rru.55's path, before the
-/// .85 settlement can see a reserved effect); the delivery row ends with
-/// no failure row and nothing replays it.
+/// zerus-63rru.87 through the real binding observation (round 2): a
+/// member whose binding ended while it holds an open hand-out is settled
+/// at the next pass like a paused one, with one member_left item naming
+/// why, and the task goes to another member on the following pass.
 #[test]
-fn an_unbound_members_reservation_is_settled_by_the_binding_observation() {
+fn an_unbound_members_reservation_is_settled_with_one_item_and_reassigned() {
     let (mut h, mut a, mut p, _lead) = team();
-    let (mut a, _id) = reserved_then_left(&mut h, &mut a, &mut p, "unbound");
+    let (mut a, id) = reserved_then_left(&mut h, &mut a, &mut p, "unbound");
     a.tick(&mut h.store, &mut p, TEAM, T0 + MINUTE, false)
         .unwrap();
-    assert_eq!(effects(&h), [("uncertain".into(), "m1".into(), 1)]);
+    assert_eq!(
+        items(&h),
+        [(
+            format!("member_left:{id}"),
+            "Member m1 was unbound before the hand-out of task 1 reached it; the task is offered to another member.".into()
+        )]
+    );
     assert!(
         a.ledger.get(TEAM, "gate:handout:1").unwrap().is_none(),
         "no failure gate"
     );
+    row(&p, &h, "m2", &[("activity", json!("idle"))]);
+    a.tick(&mut h.store, &mut p, TEAM, T0 + 2 * MINUTE, false)
+        .unwrap();
+    assert!(
+        effects(&h)
+            .iter()
+            .any(|(s, m, n)| s == "submitted" && m == "m2" && *n == 1),
+        "{:?}",
+        effects(&h)
+    );
+}
+
+/// zerus-63rru.94: a crash after the ledger's outcome save and before the
+/// store's outcome write leaves the ledger outcome set while the store
+/// effect is still reserved. Recovery records the saved outcome and
+/// settles nothing: no member_left item and no duplicate delivery.
+#[test]
+fn a_crash_at_the_outcome_boundary_records_the_outcome_and_settles_nothing() {
+    let (mut h, mut a, mut p, lead) = team();
+    super::super::delivery::CRASH.with(|c| c.set(Some("outcome")));
+    let crashed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        a.tick(&mut h.store, &mut p, TEAM, T0, false)
+    }));
+    assert!(crashed.is_err(), "the outcome boundary was not exercised");
+    assert_eq!(p.deliveries.len(), 1, "one delivery");
+    drop(a);
+    h.run(
+        &lead,
+        Operation::PauseMember {
+            member: "m1".into(),
+        },
+    )
+    .unwrap();
+    let home = h.store.team(TEAM).unwrap().unwrap().home;
+    let mut a = super::super::Runtime::open(h.temp.path(), &home).unwrap();
+    a.tick(&mut h.store, &mut p, TEAM, T0 + MINUTE, false)
+        .unwrap();
+    assert!(
+        items(&h).is_empty(),
+        "no member_left item for a recorded outcome: {:?}",
+        items(&h)
+    );
+    assert_eq!(effects(&h), [("submitted".into(), "m1".into(), 1)]);
+    assert_eq!(p.deliveries.len(), 1, "no duplicate delivery");
+}
+
+/// zerus-63rru.96: a settle request that loses its race (a distinct
+/// request at the same revision already settled the row) returns
+/// `stale_revision`, which is not a failure gate: the next pass re-reads
+/// and nothing fails.
+#[test]
+fn a_stale_settle_revision_is_not_a_failure_gate() {
+    let (mut h, mut a, mut p, _lead) = team();
+    let (mut a, _id) = reserved_then_left(&mut h, &mut a, &mut p, "paused");
+    let rev = h.store.team(TEAM).unwrap().unwrap().revision;
+    let loser = request(
+        rev,
+        Operation::SettleLeftHandout {
+            node: 1,
+            reason: None,
+        },
+    );
+    // The actor's own pass settles first, bumping the revision.
+    a.tick(&mut h.store, &mut p, TEAM, T0 + MINUTE, false)
+        .unwrap();
+    assert_eq!(items(&h).len(), 1);
+    // The loser's apply now returns stale; the pass must not treat it as a
+    // failure.
+    let stale = crate::teams::ops::apply(&mut h.store, &service(), &loser, T0 + MINUTE);
+    assert!(stale.is_err(), "the losing request must be refused");
     for minute in 2..6 {
         a.tick(&mut h.store, &mut p, TEAM, T0 + minute * MINUTE, false)
             .unwrap();
     }
+    assert_eq!(items(&h).len(), 1, "no second item");
     assert!(
-        a.ledger
-            .prefix_page(TEAM, "delivery:", "")
-            .unwrap()
-            .is_empty(),
-        "the row ended"
+        a.ledger.get(TEAM, "gate:handout:1").unwrap().is_none(),
+        "no failure gate from the stale loser"
     );
+}
+
+/// The ops' own Active guard: a settle for a member that is Active with a
+/// live binding and no actor-read departure writes nothing.
+#[test]
+fn a_settle_for_an_active_member_writes_nothing() {
+    let mut h = Harness::new();
+    let lead = h.bind("lead");
+    h.bind("m1");
+    h.bind("m2");
+    h.add(&person(), 1);
+    let _ = lead;
+    let request = request(
+        h.store.team(TEAM).unwrap().unwrap().revision,
+        Operation::SettleLeftHandout {
+            node: 1,
+            reason: None,
+        },
+    );
+    crate::teams::ops::apply(&mut h.store, &service(), &request, T0).unwrap();
+    assert!(items(&h).is_empty(), "{:?}", items(&h));
 }
 
 /// A member that comes back before the next pass keeps its reservation:
@@ -279,7 +377,9 @@ fn a_member_that_returns_before_the_next_pass_keeps_its_reservation() {
         .any(|(s, m, n)| s == "uncertain" && m == "m1" && *n == 1));
     // Nothing settles through the .85 rule: no member_left item; the
     // uncertain delivery's own notice may appear.
-    assert!(items(&h).iter().all(|(kind, _)| !kind.starts_with("member_left:")));
+    assert!(items(&h)
+        .iter()
+        .all(|(kind, _)| !kind.starts_with("member_left:")));
 }
 
 /// A crash between the reservation and the pass: the restarted pass settles

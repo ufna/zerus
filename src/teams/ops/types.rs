@@ -396,6 +396,11 @@ pub enum Operation {
     /// and the next pass can hand the task to another free member.
     SettleLeftHandout {
         node: NodeId,
+        /// Why the actor read the member as departed, when the store's own
+        /// member state does not say it (a binding ended): the item names
+        /// the cause (zerus-63rru.85 round 2).
+        #[serde(default)]
+        reason: Option<String>,
     },
 }
 

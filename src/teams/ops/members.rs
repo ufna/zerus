@@ -354,10 +354,11 @@ pub(super) fn removed_holder(ctx: &Context<'_>, node: u32) -> Result<Option<Stri
 /// member is not stored, so the lead is told in every case. A member that
 /// is still in the active set is never settled here.
 pub(super) fn settle_left(ctx: &mut Context<'_>) -> Result<()> {
-    let Operation::SettleLeftHandout { node } = ctx.op else {
+    let Operation::SettleLeftHandout { node, reason } = ctx.op else {
         unreachable!()
     };
     let node = *node;
+    let reason = reason.clone();
     let open: Option<(String, String)> = ctx
         .db
         .query_row(
@@ -373,19 +374,24 @@ pub(super) fn settle_left(ctx: &mut Context<'_>) -> Result<()> {
         return Ok(());
     };
     let m = ctx.member(&member)?;
-    if m.state == MemberState::Active && m.session.is_some() {
-        // The member is still in the active set: nothing settles.
+    if m.state == MemberState::Active && m.session.is_some() && reason.is_none() {
+        // The member is still in the active set and the actor read no
+        // departure: nothing settles.
         return Ok(());
     }
-    let how = if m.state == MemberState::Paused {
-        if ctx.person_stopped(&member)? {
-            "stopped"
-        } else {
-            "paused"
-        }
-    } else {
-        "unbound"
-    };
+    let how = reason
+        .filter(|r| !r.is_empty())
+        .unwrap_or_else(|| {
+            if m.state == MemberState::Paused {
+                if ctx.person_stopped(&member).unwrap_or(false) {
+                    "stopped".into()
+                } else {
+                    "paused".into()
+                }
+            } else {
+                "unbound".into()
+            }
+        });
     supersede(ctx, node, &member)?;
     // The item without the hand-back's hold: the task stays in the queue,
     // so the next pass can hand it to another free member.

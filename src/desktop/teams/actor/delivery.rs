@@ -1,15 +1,44 @@
 use super::*;
 use crate::teams::{ops::HandoutOutcome, store::EffectIntent};
+use super::ports::{Availability, Fact};
 use serde::{Deserialize, Serialize};
 use zerus_team_plan::model::MemberState;
 
-/// Whether `member`'s store row left the active set: paused, stopped, or
-/// unbound (zerus-63rru.85). A member that is Active with a session stays,
-/// and a missing member is gone too (a removal already settled its row).
-fn left_the_active_set(store: &Store, team: &Team, member: &str) -> Result<bool> {
-    Ok(store
-        .member(&team.id, member)?
-        .is_some_and(|m| m.state != MemberState::Active || m.session.is_none()))
+/// Why `member` left the active set, when it did (zerus-63rru.85, round 2
+/// answers zerus-63rru.87): `Some("paused"/"stopped")` for the store's
+/// member state, `Some("unbound")` for a binding the actor's own
+/// observation read as decisively ended (Gone, Changed, StartedFresh),
+/// and `None` while the member is Active with a live binding. An
+/// observation that cannot decide (NoHandle, Unavailable) is unknown and
+/// stays the unreadable-member way, so it is not a departure.
+/// Why `member` left the active set, when it did (zerus-63rru.85, round 2
+/// answers zerus-63rru.87): the store's member state (paused or stopped,
+/// named by the ops' own knowledge) or a binding the actor's observation
+/// read as decisively ended (Gone, Changed, StartedFresh — the ops cannot
+/// see that, so the reason rides along as "unbound"). `None` while the
+/// member is Active with a live binding; an observation that cannot
+/// decide (NoHandle, Unavailable) is unknown and stays the
+/// unreadable-member way.
+fn left_reason(
+    store: &Store,
+    ports: &mut impl Ports,
+    team: &Team,
+    member: &str,
+) -> Result<Option<String>> {
+    let Some(m) = store.member(&team.id, member)? else {
+        // A missing member is gone too: a removal already settled its row.
+        return Ok(Some("unbound".into()));
+    };
+    if m.state != MemberState::Active || m.session.is_none() {
+        // The ops name the state case (paused or stopped); the reason stays
+        // empty for it.
+        return Ok(Some(String::new()));
+    }
+    Ok(matches!(
+        ports.availability(team, &m)?,
+        Availability::Unreadable(Fact::Gone | Fact::Changed | Fact::StartedFresh)
+    )
+    .then(|| "unbound".into()))
 }
 #[derive(Serialize, Deserialize)]
 struct Delivery {
@@ -229,6 +258,12 @@ impl Runtime {
             return Ok(());
         }
         if let Err(error) = self.recover_delivery(store, ports, team, key, now, budget) {
+            // A stale revision is a lost race, not a failure: another
+            // request settled the row first, and the next pass re-reads
+            // (zerus-63rru.96).
+            if error.code == code::STALE_REVISION {
+                return Ok(());
+            }
             self.failure(store, team, key, "", &error, now)?;
         }
         Ok(())
@@ -275,7 +310,7 @@ impl Runtime {
         }
         if d.outcome.is_none()
             && store.effect_reserved(&team.id, &d.id)?
-            && left_the_active_set(store, team, &d.member)?
+            && left_reason(store, ports, team, &d.member)?.is_some()
         {
             // A reservation for a member that left the active set (paused,
             // stopped, unbound) is settled at the next pass instead of being
@@ -283,8 +318,15 @@ impl Runtime {
             // store supersedes the effect and hands the node back to the
             // lead with one item, and nothing here delivers, replays or
             // fails it.
-            let (actor, request) =
-                request(store, &team.id, Operation::SettleLeftHandout { node: d.node })?;
+            let reason = left_reason(store, ports, team, &d.member)?;
+            let (actor, request) = request(
+                store,
+                &team.id,
+                Operation::SettleLeftHandout {
+                    node: d.node,
+                    reason,
+                },
+            )?;
             match ops::apply(store, &actor, &request, now) {
                 Ok(_) => {}
                 Err(error) => return Err(error),
