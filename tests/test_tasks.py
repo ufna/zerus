@@ -18,6 +18,9 @@ import uuid
 REPO = Path(__file__).resolve().parents[1]
 HGS = Path(os.environ.get("HGS_TEST_BIN", REPO / "target/debug/hgs")).resolve()
 TMUX = shutil.which("tmux")
+# The private socket's directory: every tmux call names -S inside it, and the
+# machine guard (zerus-63rru.89) admits only this prefix's children.
+PRIVATE_TMP = os.environ.get("ZERUS_TEST_SHORT_TMPDIR") or f"/tmp/claude-{os.getuid()}"
 
 # Records every byte the pane receives; never echoes, so the composer stays empty.
 AGENT = r'''
@@ -82,7 +85,8 @@ def join(env, project_id, name):
 
 class Fixture(unittest.TestCase):
     def setUp(self):
-        temp = tempfile.TemporaryDirectory(prefix="hgs-tasks-")
+        os.makedirs(PRIVATE_TMP, exist_ok=True)
+        temp = tempfile.TemporaryDirectory(prefix="hgs-tasks-", dir=PRIVATE_TMP)
         self.addCleanup(temp.cleanup)
         self.root = Path(temp.name)
         self.bin = self.root / ".local/bin"
@@ -101,7 +105,7 @@ class Fixture(unittest.TestCase):
         # Each test stops its own private server, never another one.
         if TMUX:
             self.addCleanup(lambda: subprocess.run([TMUX, "-S", str(self.socket), "kill-server"], capture_output=True))
-            self.script("tmux", '#!/bin/sh\nexec ' + TMUX + ' -S "' + str(self.socket) + '" -f /dev/null "$@"\n')
+            self.script("tmux", '#!/bin/sh\n[ -d "' + str(self.socket.parent) + '" ] || { echo "private tmux socket directory is gone" >&2; exit 97; }\nexec ' + TMUX + ' -S "' + str(self.socket) + '" -f /dev/null "$@"\n')
         else:
             self.script("tmux", "#!/bin/sh\nexit 1\n")
         catalog = {"projects": [{"id": "project-1", "name": "orchard", "color": "#123456", "folders": [], "sessions": []},

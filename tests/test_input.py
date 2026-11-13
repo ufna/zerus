@@ -15,6 +15,9 @@ import uuid
 REPO = Path(__file__).resolve().parents[1]
 HGS = Path(os.environ.get("HGS_TEST_BIN", REPO / "target/debug/hgs")).resolve()
 TMUX = shutil.which("tmux")
+# The private socket's directory: every tmux call names -S inside it, and the
+# machine guard (zerus-63rru.89) admits only this prefix's children.
+PRIVATE_TMP = os.environ.get("ZERUS_TEST_SHORT_TMPDIR") or f"/tmp/claude-{os.getuid()}"
 
 # Fixture agents redraw from Python signal handlers, which run between
 # bytecodes. A signal that lands after the agent last checked for one and
@@ -73,7 +76,8 @@ finally:
 
 class InputTransport(unittest.TestCase):
     def setUp(self):
-        self.temp = tempfile.TemporaryDirectory(prefix="hgs-input-")
+        os.makedirs(PRIVATE_TMP, exist_ok=True)
+        self.temp = tempfile.TemporaryDirectory(prefix="hgs-input-", dir=PRIVATE_TMP)
         self.root = Path(self.temp.name)
         self.bin = self.root / ".local/bin"
         self.bin.mkdir(parents=True)
@@ -137,6 +141,7 @@ class InputTransport(unittest.TestCase):
         self.record_path.write_text(json.dumps(self.record))
 
     def tmux(self, *args, check=True):
+        assert self.socket.parent.is_dir(), "the private tmux socket directory is gone"
         result = subprocess.run([str(self.bin / "tmux"), *args], env=self.env,
                                 capture_output=True, text=True, timeout=5)
         if check: self.assertEqual(result.returncode, 0, result.stderr)

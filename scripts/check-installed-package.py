@@ -83,7 +83,9 @@ def isolated_environment(home, sockets, inherited):
 def main():
     if os.geteuid() == 0:
         raise SystemExit("Run the installed-package check as an unprivileged user.")
-    with tempfile.TemporaryDirectory(prefix="zerus-installed-test-") as temporary:
+    private_tmp = os.environ.get("ZERUS_TEST_SHORT_TMPDIR") or f"/tmp/claude-{os.getuid()}"
+    os.makedirs(private_tmp, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="zerus-installed-test-", dir=private_tmp) as temporary:
         home = Path(temporary)
         sockets, project = home / "tmux", home / "project"
         sockets.mkdir(mode=0o700)
@@ -118,6 +120,7 @@ def main():
         finally:
             socket = sockets / f"tmux-{os.getuid()}" / "default"
             if socket.exists():
+                assert sockets.is_dir(), "the private tmux socket directory is gone"
                 run("tmux", "-S", str(socket), "kill-server")
     print("Installed system binaries, idempotent user setup and isolated terminal session verified.")
 

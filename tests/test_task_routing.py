@@ -19,6 +19,9 @@ from tests import test_tasks
 REPO = Path(__file__).resolve().parents[1]
 HGS = Path(os.environ.get("HGS_TEST_BIN", REPO / "target/debug/hgs")).resolve()
 TMUX = shutil.which("tmux")
+# The private socket's directory: every tmux call names -S inside it, and the
+# machine guard (zerus-63rru.89) admits only this prefix's children.
+PRIVATE_TMP = os.environ.get("ZERUS_TEST_SHORT_TMPDIR") or f"/tmp/claude-{os.getuid()}"
 SSH = '''#!/usr/bin/env python3
 import json, os, pathlib, shlex, subprocess, sys
 root = pathlib.Path(os.environ['ROUTING_ROOT'])
@@ -55,7 +58,8 @@ os.execve(os.environ['ROUTING_HGS'], [os.environ['ROUTING_HGS'], *args], env)
 @unittest.skipUnless(TMUX, "tmux is required for delivery")
 class TaskRouting(unittest.TestCase):
     def setUp(self):
-        temp = tempfile.TemporaryDirectory(prefix="hgs-routing-")
+        os.makedirs(PRIVATE_TMP, exist_ok=True)
+        temp = tempfile.TemporaryDirectory(prefix="hgs-routing-", dir=PRIVATE_TMP)
         self.addCleanup(temp.cleanup)
         self.root = Path(temp.name)
         ssh = self.root / "ssh"; ssh.write_text(SSH); ssh.chmod(0o755)
@@ -67,7 +71,7 @@ class TaskRouting(unittest.TestCase):
             (self.root / node / "state").mkdir()
             socket = self.root / node / "socket"
             # hgs puts $HOME/.local/bin first on PATH: each node's tmux stays private.
-            shim = home / "tmux"; shim.write_text(f'#!/bin/sh\nexec {TMUX} -S "{socket}" -f /dev/null "$@"\n'); shim.chmod(0o755)
+            shim = home / "tmux"; shim.write_text(f'#!/bin/sh\n[ -d "{socket.parent}" ] || {{ echo "private tmux socket directory is gone" >&2; exit 97; }}\nexec {TMUX} -S "{socket}" -f /dev/null "$@"\n'); shim.chmod(0o755)
             self.addCleanup(lambda socket=socket: subprocess.run([TMUX, "-S", str(socket), "kill-server"], capture_output=True))
             config = self.root / node / "config"; config.mkdir()
             (config / "config").write_text(f'HGS_SELF="{node}"\nHGS_PEERS="{peer}"\n')

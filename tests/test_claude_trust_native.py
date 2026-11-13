@@ -17,7 +17,12 @@ import test_questions as questions
 import test_claude_questions_native as native
 
 
+PRIVATE_TMP = os.environ.get("ZERUS_TEST_SHORT_TMPDIR") or f"/tmp/claude-{os.getuid()}"
+
+
 @unittest.skipUnless(native.CLAUDE, "Set HGS_CLAUDE_TEST_BIN for isolated native trust coverage")
+
+
 class NativeClaudeTrust(unittest.TestCase):
     script = fixtures.InputTransport.script
     tmux = fixtures.InputTransport.tmux
@@ -29,7 +34,8 @@ class NativeClaudeTrust(unittest.TestCase):
     answer = questions.Questions.answer
 
     def setUp(self):
-        self.temp = tempfile.TemporaryDirectory(prefix="hgs-claude-trust-native-")
+        os.makedirs(PRIVATE_TMP, exist_ok=True)
+        self.temp = tempfile.TemporaryDirectory(prefix="hgs-claude-trust-native-", dir=PRIVATE_TMP)
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name).resolve()
         self.bin = self.root / ".local/bin"
@@ -55,6 +61,7 @@ class NativeClaudeTrust(unittest.TestCase):
         # Record only fixture input; the private wrapper cannot reach a resident server.
         self.script("tmux", "#!" + sys.executable + "\n" +
                     "import json,pathlib,subprocess,sys\n" +
+                    f"if not pathlib.Path({str(self.socket.parent)!r}).is_dir(): print('private tmux socket directory is gone', file=sys.stderr); sys.exit(97)\n" +
                     "args=sys.argv[1:]\n" +
                     "if args and args[0]=='send-keys':\n" +
                     " with pathlib.Path(" + repr(str(self.root / "sent-keys")) +

@@ -47,6 +47,9 @@ HGS = Path(os.environ.get("HGS_TEST_BIN", REPO / f"target/debug/hgs{EXE}")).reso
 BYPASS = ["--permission-mode", "bypassPermissions"]
 FAKE_AGENT = Path(os.environ.get("HGS_TEST_FAKE_AGENT", REPO / f"target/debug/examples/fake_agent{EXE}")).resolve()
 TMUX = shutil.which("tmux")
+# The private socket's directory: every tmux call names -S inside it, and the
+# machine guard (zerus-63rru.89) admits only this prefix's children.
+PRIVATE_TMP = os.environ.get("ZERUS_TEST_SHORT_TMPDIR") or f"/tmp/claude-{os.getuid()}"
 # Windows: no console window for any hgs the tests start (docs/windows-host-testing.md).
 HIDDEN = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 # What an agent may receive, by operation: Unix signals and Windows console events. On
@@ -116,6 +119,7 @@ class Tmux:
         test.env["SHELL"] = str(test.bin / "shell")
 
     def command(self, *args):
+        assert self.socket.parent.is_dir(), "the private tmux socket directory is gone"
         return subprocess.run([TMUX, "-S", str(self.socket), "-f", os.devnull, *args], capture_output=True,
                               text=True, timeout=10)
 
@@ -425,7 +429,8 @@ class Contract(unittest.TestCase):
             self.skipTest(reason)
         if not FAKE_AGENT.is_file():
             self.fail(f"{FAKE_AGENT} is missing; run cargo build --locked --example fake_agent")
-        self.root = Path(tempfile.mkdtemp(prefix="hgs-contract-")).resolve()
+        os.makedirs(PRIVATE_TMP, exist_ok=True)
+        self.root = Path(tempfile.mkdtemp(prefix="hgs-contract-", dir=PRIVATE_TMP)).resolve()
         self.addCleanup(shutil.rmtree, self.root, ignore_errors=True)
         # hgs puts $HOME/.local/bin first on PATH, ahead of Homebrew and /usr/local/bin
         # (on Windows %USERPROFILE%\.local\bin, ahead of %APPDATA%\npm), so the wrappers

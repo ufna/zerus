@@ -18,6 +18,9 @@ import unittest
 
 REPO = Path(__file__).resolve().parents[1]
 TMUX = shutil.which("tmux")
+# The private socket's directory: every tmux call names -S inside it, and the
+# machine guard (zerus-63rru.89) admits only this prefix's children.
+PRIVATE_TMP = os.environ.get("ZERUS_TEST_SHORT_TMPDIR") or f"/tmp/claude-{os.getuid()}"
 FAKE_AGENT = Path(os.environ.get("HGS_TEST_FAKE_AGENT", REPO / "target/debug/examples/fake_agent")).resolve()
 
 
@@ -31,7 +34,8 @@ class Fixture(unittest.TestCase):
     def setUp(self):
         if not FAKE_AGENT.is_file():
             raise AssertionError(f"{FAKE_AGENT} is missing; run cargo build --locked --example fake_agent")
-        self.temp = tempfile.TemporaryDirectory(prefix="hgs-fake-agent-")
+        os.makedirs(PRIVATE_TMP, exist_ok=True)
+        self.temp = tempfile.TemporaryDirectory(prefix="hgs-fake-agent-", dir=PRIVATE_TMP)
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
         self.record = self.root / "record.jsonl"
@@ -215,6 +219,7 @@ class TerminalAgent(Fixture):
         self.addCleanup(self.stop_server)
 
     def tmux(self, *args, check=True):
+        assert self.socket.parent.is_dir(), "the private tmux socket directory is gone"
         result = subprocess.run([TMUX, "-S", str(self.socket), "-f", os.devnull, *args], env=self.env,
                                 capture_output=True, text=True, timeout=5)
         if check:
