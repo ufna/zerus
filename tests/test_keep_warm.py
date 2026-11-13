@@ -581,6 +581,30 @@ class KeepWarm(unittest.TestCase):
         self.assertFalse(usage["partial"])
         self.assertGreater(usage["prompt_cache"]["expires_at"], time.time())
 
+    def test_a_record_straddling_the_scan_budget_does_not_turn_a_tick_cold(self):
+        path = self.transcript()
+        old = self.assistant(time.time() - 7000, "old")
+        path.write_text(old)
+        self.change(always=True)
+        # An ordinary row fills the scan to 50 bytes before its budget; the
+        # recent assistant row is longer than that, so it straddles the end.
+        opening = ('{"type":"user","sessionId":"%s","message":{"content":"'
+                   % self.conversation_id)
+        closing = '"}}\n'
+        target = 32 * 1024 * 1024 - 50 - len(old)
+        filler = target - len(opening) - len(closing)
+        self.assertGreater(filler, 64 * 1024)
+        with path.open("a") as out:
+            out.write(opening)
+            out.write("x" * filler)
+            out.write(closing)
+            out.write(self.assistant(time.time() - 30, "recent"))
+        self.tick()
+        after = self.inspect()
+        self.assertNotEqual(after["keep_warm"]["state"], "cold")
+        self.assertFalse(after["session_usage"]["partial"])
+        self.assertGreater(after["session_usage"]["prompt_cache"]["expires_at"], time.time())
+
     def test_a_really_expired_cache_still_turns_cold(self):
         path = self.transcript()
         path.write_text(self.assistant(time.time() - 7000, "old"))

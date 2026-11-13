@@ -368,10 +368,11 @@ pub(super) fn scan(path: &Path, cache_path: &Path, provider: &str, conversation:
             }
             continue;
         }
-        // No newline within the remaining budget. A short read is an
-        // unterminated tail at EOF: leave it unread. A full budget ended
-        // inside this record, so persist the discard point for the next scan.
-        if count as u64 == remaining {
+        // No newline within the remaining budget. A record is oversized only
+        // when a full MAX_READ read from its own start finds no newline. If
+        // only this scan's remaining budget ran out inside it, stop before the
+        // record: the next scan reads it from its start with a full budget.
+        if count as u64 == remaining && remaining == MAX_READ {
             offset += count as u64;
             skipping = true;
         }
@@ -735,15 +736,20 @@ mod tests {
         file.write_all(b"\"}}\n").unwrap();
         file.write_all(line(at - 3000.0, "recent").as_bytes()).unwrap();
         drop(file);
-        // The oversized record is skipped to its newline; the following record
-        // is read by the next round, so the scan converges instead of stalling.
-        let first = scan(&path, &cache, "claude", "one").unwrap();
-        assert_eq!(first["partial"], true);
-        let second = scan(&path, &cache, "claude", "one").unwrap();
-        assert_eq!(second["partial"], false);
+        // The oversized record is discarded; the following record is read by
+        // a later round, so the scan converges instead of stalling.
+        let mut complete = None;
+        for _ in 0..4 {
+            let value = scan(&path, &cache, "claude", "one").unwrap();
+            if value["partial"] == false {
+                complete = Some(value);
+                break;
+            }
+        }
+        let complete = complete.expect("the oversized record did not converge");
         assert!(
-            second["prompt_cache"]["expires_at"].as_f64().unwrap() > at,
-            "the oversized record did not stall the scan: {second}"
+            complete["prompt_cache"]["expires_at"].as_f64().unwrap() > at,
+            "the oversized record did not stall the scan: {complete}"
         );
     }
 
@@ -805,11 +811,12 @@ mod tests {
                 "cache_creation":{"ephemeral_1h_input_tokens":20}}}}).to_string() + "\n";
         let old = line(at - 7000.0, "old");
         let inner = line(at - 3000.0, "mid");
-        // Byte-for-byte, the oversized line puts a valid assistant record
-        // exactly at the read bound, so a lost skipping flag would parse it.
+        // Byte-for-byte, a full read bound starting at the oversized record's
+        // own start ends exactly at a valid assistant record, so a lost
+        // skipping flag would parse that suffix on the next scan.
         let open = b"{\"type\":\"user\",\"message\":{\"content\":\"";
         let close = b"\"}}";
-        let target = MAX_READ - old.len() as u64;
+        let target = MAX_READ;
         let filler_len = target - open.len() as u64 - close.len() as u64;
         let mut file = fs::File::create(&path).unwrap();
         file.write_all(old.as_bytes()).unwrap();
@@ -824,18 +831,72 @@ mod tests {
         file.write_all(close).unwrap();
         file.write_all(inner.as_bytes()).unwrap();
         drop(file);
+        // The first scan stops before the oversized record; the second reads a
+        // full bound from its start and persists the discard point.
+        let first = scan(&path, &cache, "claude", "one").unwrap();
+        assert_eq!(first["partial"], true);
+        let first_state: Value = serde_json::from_slice(&fs::read(&cache).unwrap()).unwrap();
+        assert_eq!(first_state["skipping"], json!(false));
+        assert_eq!(first_state["offset"], json!(old.len()));
+        let second = scan(&path, &cache, "claude", "one").unwrap();
+        assert_eq!(second["partial"], true);
+        let second_state: Value = serde_json::from_slice(&fs::read(&cache).unwrap()).unwrap();
+        assert_eq!(second_state["skipping"], json!(true));
+        assert_eq!(second_state["offset"], json!(old.len() + MAX_READ as usize));
+        // A restart inside the record continues the discard; it does not parse
+        // the assistant-shaped suffix that begins at the stored offset.
+        let third = scan(&path, &cache, "claude", "one").unwrap();
+        assert_eq!(third["partial"], false);
+        assert!(third["prompt_cache"]["expires_at"].as_f64().unwrap() < at,
+            "a record was parsed from the middle of the discarded one: {third}");
+        assert_eq!(third["requests"], 1);
+    }
+
+    #[test]
+    fn a_record_straddling_the_scan_budget_is_read_by_the_next_scan() {
+        use std::io::Write;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("transcript.jsonl");
+        let cache = dir.path().join("cache.json");
+        let at = now();
+        let line = |at: f64, id: &str| json!({"type":"assistant","sessionId":"one","timestamp":at,
+            "message":{"id":id,"model":"claude-opus-5-5","usage":{"input_tokens":10,
+                "cache_read_input_tokens":100,"cache_creation_input_tokens":20,"output_tokens":3,
+                "cache_creation":{"ephemeral_1h_input_tokens":20}}}}).to_string() + "\n";
+        let old = line(at - 7000.0, "old");
+        let recent = line(at - 3000.0, "recent");
+        assert!(recent.len() > 50);
+        // An ordinary row leaves exactly 50 bytes of this scan's budget; the
+        // recent assistant row is longer than that, so it straddles the end.
+        let open = b"{\"type\":\"user\",\"sessionId\":\"one\",\"message\":{\"content\":\"";
+        let close = b"\"}}";
+        let target = MAX_READ - 50 - old.len() as u64;
+        let filler_len = target - open.len() as u64 - close.len() as u64 - 1;
+        let mut file = fs::File::create(&path).unwrap();
+        file.write_all(old.as_bytes()).unwrap();
+        file.write_all(open).unwrap();
+        let chunk = [b'z'; 64 * 1024];
+        let mut written = 0u64;
+        while written < filler_len {
+            let count = chunk.len().min((filler_len - written) as usize);
+            file.write_all(&chunk[..count]).unwrap();
+            written += count as u64;
+        }
+        file.write_all(close).unwrap();
+        file.write_all(b"\n").unwrap();
+        file.write_all(recent.as_bytes()).unwrap();
+        drop(file);
         let first = scan(&path, &cache, "claude", "one").unwrap();
         assert_eq!(first["partial"], true);
         let state: Value = serde_json::from_slice(&fs::read(&cache).unwrap()).unwrap();
-        // A restart inside the record continues the discard; it does not parse
-        // the assistant-shaped suffix that begins at the stored offset.
+        assert_eq!(state["skipping"], json!(false), "a straddling record is not oversized");
+        assert_eq!(state["offset"], json!(MAX_READ - 50));
+        // The next scan reads the whole record from its start with a full budget.
         let second = scan(&path, &cache, "claude", "one").unwrap();
         assert_eq!(second["partial"], false);
-        assert!(second["prompt_cache"]["expires_at"].as_f64().unwrap() < at,
-            "a record was parsed from the middle of the discarded one: {second}");
-        assert_eq!(second["requests"], 1);
-        assert_eq!(state["skipping"], json!(true));
-        assert_eq!(state["offset"], json!(MAX_READ));
+        assert!(second["prompt_cache"]["expires_at"].as_f64().unwrap() > at,
+            "the straddling record was discarded: {second}");
+        assert_eq!(second["requests"], 2);
     }
 
     #[test]
