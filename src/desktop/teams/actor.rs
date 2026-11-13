@@ -44,7 +44,8 @@ use crate::teams::{
     ops::{self, Actor, Operation, Request},
     store::{Store, TeamRow},
 };
-use ledger::{Ledger, Row};
+use ledger::Row;
+pub(crate) use ledger::Ledger;
 use ports::{Ports, Result};
 use std::{collections::BTreeMap, path::Path};
 use zerus_team_plan::{model::*, problem::code, Problem};

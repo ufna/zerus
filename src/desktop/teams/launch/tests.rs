@@ -357,3 +357,226 @@ fn a_row_with_no_reservation_serializes_without_the_keys() {
     assert!(!object.contains_key("session_request"), "{value}");
     assert!(!object.contains_key("close_request"), "{value}");
 }
+
+/// zerus-63rru.24 and zerus-63rru.63: a stopped team's launch row whose
+/// failures are at the retry cap gets one service item, visible in
+/// `hgs team status`, and the row's successful pass ends it.
+fn failing_row(h: &mut Harness, member: &str, times: u32) -> Runtime {
+    let t = h.store.team(TEAM).unwrap().unwrap();
+    let machine = t.home.clone();
+    let mut r = Runtime::open(h.temp.path(), &machine, "epoch").unwrap();
+    let mut row = Row::new(&t, member, "epoch", State::Retry);
+    r.ledger = Some(Ledger::open(h.temp.path()).unwrap());
+    r.ledger.as_mut().unwrap().insert(&row, 1).unwrap();
+    for n in 0..times {
+        r.failure(
+            &mut h.store,
+            &mut row,
+            Problem::new(zerus_team_plan::problem::code::INVALID_STATE, "The launch keeps failing"),
+            1000 + i64::from(n) * 60_000,
+            false,
+        )
+        .unwrap();
+    }
+    r
+}
+fn status_items(h: &Harness, now: i64) -> Vec<(String, String, String, u32)> {
+    crate::desktop::teams::service_items(h.temp.path(), TEAM, Some(true), now)
+        .unwrap()
+        .items
+        .into_iter()
+        .map(|i| (i.kind.to_owned(), i.subject, i.reason, i.failures))
+        .collect()
+}
+
+#[test]
+fn a_terminal_cleanup_item_appears_only_at_the_retry_cap_and_goes_on_success() {
+    let mut h = Harness::new();
+    let t = h.store.team(TEAM).unwrap().unwrap();
+    // One row below the cap and one at it, failed while the team runs.
+    let _ = failing_row(&mut h, "m2", 1);
+    let mut at_cap = failing_row(&mut h, "m3", 5);
+    h.run(&crate::teams::ops::tests::person(), Operation::Stop).unwrap();
+    // The first pass after the stop writes the cap row's item, once, and
+    // nothing for the row below the cap.
+    at_cap.note_late(&t, 400_000).unwrap();
+    let items = status_items(&h, 400_000);
+    assert_eq!(items.len(), 1, "{items:?}");
+    assert_eq!(
+        (items[0].0.as_str(), items[0].1.as_str(), items[0].3),
+        ("launch_failing", "m3", 5)
+    );
+    assert!(items[0].2.contains("The launch keeps failing"), "{items:?}");
+    // The row's successful pass clears the item.
+    let mut row = at_cap
+        .ledger
+        .as_mut()
+        .unwrap()
+        .get(TEAM, "m3")
+        .unwrap()
+        .unwrap();
+    at_cap.close_stale(&mut h.store, &t, &mut row, 460_000).unwrap();
+    assert!(status_items(&h, 460_000).is_empty());
+}
+
+#[test]
+fn a_stopped_teams_failing_row_is_visible_on_the_first_pass_and_never_written_twice() {
+    let mut h = Harness::new();
+    let t = h.store.team(TEAM).unwrap().unwrap();
+    let mut r = failing_row(&mut h, "m3", 5);
+    h.run(&crate::teams::ops::tests::person(), Operation::Stop).unwrap();
+    for now in [400_000, 460_000, 520_000, 580_000] {
+        r.note_late(&t, now).unwrap();
+        let items = status_items(&h, now);
+        assert_eq!(items.len(), 1, "pass at {now}: {items:?}");
+        assert_eq!(items[0].3, 5, "the pass at {now} wrote the item again");
+    }
+}
+
+/// Round 2: the item's clear never blocks the row's success, and the next
+/// pass's sweep removes an item that outlived a failed clear.
+fn break_items_file(h: &Harness) {
+    let path = h.temp.path().join("teams").join("actor-v1.sqlite3");
+    let _ = std::fs::remove_file(&path);
+    std::fs::create_dir(&path).unwrap();
+}
+fn repair_items_file(h: &Harness) {
+    let path = h.temp.path().join("teams").join("actor-v1.sqlite3");
+    let _ = std::fs::remove_dir_all(&path);
+}
+
+#[test]
+fn an_unopenable_items_file_leaves_the_success_saved_and_the_next_pass_clears_the_item() {
+    let mut h = Harness::new();
+    let t = h.store.team(TEAM).unwrap().unwrap();
+    let mut r = failing_row(&mut h, "m3", 5);
+    h.run(&crate::teams::ops::tests::person(), Operation::Stop).unwrap();
+    r.note_late(&t, 400_000).unwrap();
+    assert_eq!(status_items(&h, 400_000).len(), 1);
+    break_items_file(&h);
+    // The row's successful pass is saved; the failed clear is swallowed.
+    let mut row = r
+        .ledger
+        .as_mut()
+        .unwrap()
+        .get(TEAM, "m3")
+        .unwrap()
+        .unwrap();
+    r.close_stale(&mut h.store, &t, &mut row, 460_000).unwrap();
+    r.ledger.as_mut().unwrap().save(&mut row, 460_000).unwrap();
+    let saved = r
+        .ledger
+        .as_mut()
+        .unwrap()
+        .get(TEAM, "m3")
+        .unwrap()
+        .unwrap();
+    assert_eq!(saved.failures, 0, "the success was not saved");
+    repair_items_file(&h);
+    // The next pass removes the lingering item.
+    r.note_late(&t, 520_000).unwrap();
+    assert!(status_items(&h, 520_000).is_empty());
+}
+
+/// Round 2: the bind's own success path behaves the same.
+struct Never;
+impl super::super::ports::Effects for Never {
+    fn placement(&mut self, _: &str, _: &str) -> super::super::ports::Result<super::super::ports::Placement> {
+        unreachable!("the observed session is already set")
+    }
+    fn branch_exists(&mut self, _: &super::super::ledger::BranchPlan) -> super::super::ports::Result<bool> {
+        unreachable!("the observed session is already set")
+    }
+    fn create_branch(&mut self, _: &super::super::ledger::BranchPlan) -> super::super::ports::Effect<()> {
+        unreachable!("the observed session is already set")
+    }
+    fn accounts(&mut self, _: &str) -> super::super::ports::Result<Vec<zerus_team_plan::accounts::AccountUsage>> {
+        unreachable!("the observed session is already set")
+    }
+    fn worktree(&mut self, _: &super::super::ports::Plan, _: &str) -> super::super::ports::Effect<Option<super::super::ports::Worktree>> {
+        unreachable!("the observed session is already set")
+    }
+    fn verify_worktree(&mut self, _: &super::super::ports::Plan) -> super::super::ports::Result<super::super::ports::Worktree> {
+        unreachable!("the observed session is already set")
+    }
+    fn launch(&mut self, _: &super::super::ports::Plan, _: &super::super::ports::Worktree, _: &str) -> super::super::ports::Effect<()> {
+        unreachable!("the observed session is already set")
+    }
+    fn observe(&mut self, _: &super::super::ports::Plan) -> super::super::ports::Result<super::super::ports::LaunchRead> {
+        unreachable!("the observed session is already set")
+    }
+    fn parent(&mut self, _: &super::super::ports::Plan, _: &super::super::ports::ObservedSession, _: &str) -> String {
+        unreachable!("the observed session is already set")
+    }
+}
+
+#[test]
+fn an_unopenable_items_file_leaves_the_bind_successful_and_saved() {
+    use super::super::ports::{Placement, Worktree};
+    let mut h = Harness::new();
+    let t = h.store.team(TEAM).unwrap().unwrap();
+    let machine = t.home.clone();
+    let mut r = Runtime::open(h.temp.path(), &machine, "epoch").unwrap();
+    r.ledger = Some(Ledger::open(h.temp.path()).unwrap());
+    let tree = Worktree {
+        path: "/tmp/claude-1000/launch-ids".into(),
+        ownership_nonce: "nonce".into(),
+    };
+    let plan = super::super::ports::Plan {
+        id: "plan".into(),
+        team: TEAM.into(),
+        person: "local".into(),
+        machine: machine.clone(),
+        project: "project".into(),
+        member: "m2".into(),
+        role: "developer".into(),
+        agent: "claude".into(),
+        account: "dev".into(),
+        model: "model".into(),
+        effort: "1x".into(),
+        base_commit: "base".into(),
+        placement: Placement {
+            source: "source".into(),
+            git_dir: "git".into(),
+            branch: "branch".into(),
+            destination: "destination".into(),
+        },
+        parent: None,
+        launch_id: "00000000-0000-4000-8000-000000000009".into(),
+    };
+    let observed = super::super::ports::ObservedSession {
+        machine: machine.clone(),
+        launch_id: "00000000-0000-4000-8000-000000000009".into(),
+        agent: "claude".into(),
+        account: "dev".into(),
+        worktree: tree.clone(),
+        parent: None,
+        name: "member".into(),
+        session_id: "not-a-canonical-id".into(),
+        run_id: String::new(),
+        conversation_id: String::new(),
+    };
+    let mut row = Row::new(&t, "m2", "epoch", State::Submitted);
+    row.plan = Some(plan);
+    row.worktree = Some(tree);
+    row.observed = Some(observed);
+    row.failures = 5;
+    r.ledger.as_mut().unwrap().insert(&row, 1).unwrap();
+    // The items file is a directory: every items write answers an error.
+    let _ = std::fs::create_dir_all(h.temp.path().join("teams"));
+    let items_path = h.temp.path().join("teams").join("actor-v1.sqlite3");
+    std::fs::create_dir(&items_path).unwrap();
+    let mut effects = Never;
+    let bound = r.bind(&mut h.store, &mut effects, &t, &mut row, 1000).unwrap();
+    assert!(bound, "the bind did not report its success");
+    let saved = r
+        .ledger
+        .as_mut()
+        .unwrap()
+        .get(TEAM, "m2")
+        .unwrap()
+        .unwrap();
+    assert_eq!(saved.state, State::Bound, "the bind's success was not saved");
+    assert_eq!(saved.failures, 0);
+    std::fs::remove_dir_all(&items_path).unwrap();
+}

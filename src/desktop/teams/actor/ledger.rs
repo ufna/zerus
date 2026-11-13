@@ -18,15 +18,15 @@ fn write_error(error: rusqlite::Error) -> Problem {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub(super) struct Row {
+pub(crate) struct Row {
     pub team: String,
     pub key: String,
     pub version: u64,
     pub data: Value,
 }
-pub(super) struct Ledger(Connection);
+pub(crate) struct Ledger(Connection);
 impl Ledger {
-    pub fn open(state: &Path) -> Result<Self> {
+    pub(crate) fn open(state: &Path) -> Result<Self> {
         let dir = state.join("teams");
         platform::private_dir(&dir).map_err(storage)?;
         if !platform::verify_private(&dir, platform::Private::Directory).map_err(storage)? {
@@ -56,6 +56,10 @@ impl Ledger {
         db.execute_batch(super::super::items::SCHEMA)
             .map_err(storage)?;
         Ok(Self(db))
+    }
+    /// The raw connection, for the items module's writers outside the actor.
+    pub(crate) fn connection(self) -> Connection {
+        self.0
     }
     pub fn get(&self, team: &str, key: &str) -> Result<Option<Row>> {
         self.0
@@ -244,7 +248,7 @@ mod index_tests {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub(super) struct TerminalRetry {
+pub(crate) struct TerminalRetry {
     pub failures: u32,
     pub next_ms: i64,
     pub reason: String,
