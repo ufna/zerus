@@ -1710,6 +1710,23 @@ decision, which takes it over or ends it. A node under an explicit hold
 still takes decisions and stays held when they end. One function answers
 whether a node is held and one place writes each kind.
 
+**An older store's holds are classified without a clock.** A store written
+before a hold had an owner carries one flag per node and no record of who
+set it. The first classification read event times, and two honest
+sequences read the wrong way round (the second review of the reassign
+route, 2026-11-12). The step that gives each held node its owner reads no
+clock and no archive. An unsettled decision comes first. Otherwise the
+last exactly recorded event of the node decides, in the order of the
+journal's own sequence, in one bounded pass over the team's live journal:
+a Hold is its actor's, a Release ends it, a current hand-back is a
+hand-back. A saved reply names a row by number alone and the number can
+belong to several tables, so a trace is placed only by the reply of the
+kind of operation that files it. Whatever cannot be placed exactly is the
+person's hold, even where an earlier record was the lead's: a removed
+member's item, a pipeline active on a stage, and the item the step to
+layout 10 wrote itself. The person may then have to release a hold a lead
+once set; the step never gives a lead a hold that could be the person's.
+
 **Status shows what the service keeps retrying where no card can.** A
 stopped or archived team takes no cards, so a cancel that keeps failing
 there, a halted row, the terminal page's fault at its retry cap and a stop

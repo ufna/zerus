@@ -117,8 +117,9 @@ fn key_refusal_order(db: &Connection) -> Result<()> {
 }
 /// The hand-back of a Return without a holder as layout 10 records it: the
 /// decision settled, the node's one hold flag set, and the lead's item. The
-/// step to layout 11 then reads that flag with its item as a hand-back. The
-/// current writer (`rows::hand_back`) writes a column this layout lacks.
+/// step to layout 11 cannot place that item by an exact record, so the hold
+/// becomes the person's (`legacy_holds`). The current writer
+/// (`rows::hand_back`) writes a column this layout lacks.
 fn hand_back_at_layout_10(
     db: &Connection,
     team: &str,
