@@ -51,6 +51,7 @@ mod input_queue;
 mod journal;
 mod keep_warm;
 mod kimi_cache_hint;
+mod kimi_expiry;
 mod kimi_messages;
 mod kimi_completion;
 mod kimi_approval;

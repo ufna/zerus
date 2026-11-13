@@ -5850,6 +5850,32 @@ starts on demand and exits after a minute idle. A logged-in desktop session is
 required; screen lock differs from logout. If Keychain is actually locked in that
 session, unlock it there. Authentication diagnostics distinguish these cases.
 
+### Kimi cache expiry before sending
+
+Kimi accounts default to **Compact after cache expiry: On** in Settings > Accounts.
+The account option applies to existing sessions on their next ordinary message,
+including agent sends. Change it with the account controls or
+`hgs account compact-on-expiry ID --enabled false --revision REV`.
+
+Zerus reads Kimi's fresh `estimated_cache_duration` cache, the exact upstream
+model resolved for the current native profile alias, the conversation's context
+token count and its last confirmed provider activity. It uses Kimi's rule:
+idle strictly longer than `cache_duration` seconds, with at least `min_tokens_to_hint`
+tokens. Missing, stale or ambiguous inputs skip compaction; Zerus does not fetch
+configuration or guess a TTL. Other agents and keep-warm pings keep their existing
+behavior.
+
+An expired-cache send reserves its original request receipt and payload before
+using the same native `/compact` path as Compact context. It waits up to 20
+seconds for matching completion hooks, then uses the ordinary guarded send once.
+The receipt and inspection include the rule and compaction result. Failure,
+timeout or unknown completion never permits a replay or a second compaction for
+that request. If the native composer or identity is unsafe, the delivery remains
+unconfirmed and its original text and attachments remain available for a manual
+send after the person clears Terminal. Inspection's `pre_send_compaction` also
+keeps the bounded original message. Compaction summarizes older context and
+itself uses provider tokens.
+
 <a id="local-models"></a>
 
 ## Local models and OpenCode

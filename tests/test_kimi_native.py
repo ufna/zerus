@@ -1255,6 +1255,29 @@ class NativeKimi(lifecycle.Harness):
                 version=self.version, image_sha256=self.image_digest,
                 requests=self.requests, binding=record), indent=2))
 
+    def test_expired_cache_compacts_before_delivering_one_original_message(self):
+        tui=self.home/"tui.toml"
+        tui.write_text("cache_expiry_hint = false\n"+tui.read_text())
+        name = self.launch()
+        for text in ('Seed the native cache-expiry fixture','Add a second native context turn'):
+            seed = self.send(name,self.payload(name,text))
+            self.until(lambda:self.settled(name,seed),name)
+        before = self.binding(name)
+        cache = self.home/'cache/client-configs/mainland-cn%3A%2Fclient_configs%3Aestimated_cache_duration.json'
+        cache.parent.mkdir(parents=True,exist_ok=True)
+        cache.write_text(json.dumps(dict(version=1,fetchedAt=time.time()*1000,
+            config=dict(version=1,config={'fixture':dict(cache_duration=0.01,min_tokens_to_hint=1)}))))
+        time.sleep(.05)
+        payload = self.payload(name,'Deliver this once after automatic compaction')
+        receipt = self.send(name,payload)
+        self.assertEqual(receipt['pre_send_compaction']['outcome']['status'],'completed')
+        self.until(lambda:self.settled(name,receipt),name)
+        self.assertEqual((receipt['run_id'],receipt['conversation_id']),(before['run_id'],before['conversation_id']))
+        self.assertEqual(self.held(payload['text']),1)
+        self.assertEqual(len(self.requests),4,'two seed turns, one native compaction, one original message')
+        self.assertEqual(self.send(name,payload),receipt)
+        self.assertEqual(len(self.requests),4,'no compact or message replay')
+
     def test_manual_compaction_reaches_native_hooks(self):
         name = self.launch()
         for text in ('Start the native compaction fixture', 'Resume the native compaction fixture'):
