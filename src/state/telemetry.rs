@@ -166,7 +166,8 @@ fn children(record: &Value) -> Value {
     let external = children.is_some_and(|c| c.values().any(|v| v["external"] == true));
     if profiles && !external {
         result["subagent_source"] = json!("hook_profiles");
-        result["subagent_counts_complete"] = json!(record["subagent_groups_complete"] == true);
+        result["subagent_counts_complete"] = json!(true);
+        result["subagent_groups_complete"] = json!(record["subagent_groups_complete"] == true);
         let Some(groups) = groups else {
             return result;
         };
@@ -255,9 +256,13 @@ fn children(record: &Value) -> Value {
     } else {
         "hooks"
     });
-    result["subagent_counts_complete"] = json!(
-        unknown == 0
-            && (!profiles || groups.is_none() || record["subagent_groups_complete"] == true)
+    // zerus-63rru.68: the two facts apart. The counts' completeness is the
+    // children's own (an unknown child), the History fact; the groups'
+    // completeness is the profile groups' own (an incomplete group), the
+    // MayRunNow fact. An older reader ignores the new field.
+    result["subagent_counts_complete"] = json!(unknown == 0);
+    result["subagent_groups_complete"] = json!(
+        !profiles || groups.is_none() || record["subagent_groups_complete"] == true
     );
     result["subagent_active_count"] = json!(active);
     result["subagent_completed_count"] = json!(completed);

@@ -340,3 +340,55 @@ fn a_quiet_revived_kimi_child_reads_free_in_the_fleet() {
     let facts = super::super::fleet::Facts::of(&row);
     assert!(facts.free(), "{facts:?}");
 }
+
+/// zerus-63rru.68: the mixed-hooks row's two facts apart — the groups'
+/// completeness has its own field, so an unknown external child does not
+/// keep a member with complete groups unsettled.
+fn mixed_record(groups_complete: bool) -> Value {
+    let mut record = record("kimi", "/fixture");
+    record["subagents"] = json!({
+        "profile-1": {
+            "name":"profile-1","started":1793000000.0,"state":"finished",
+            "updated":1793000000.0
+        },
+        "ext-1": {
+            "name":"ext","started":1793000000.0,"state":"ended",
+            "display_state":"unknown","external":true,"updated":1793000000.0
+        },
+    });
+    record["subagent_groups"] = json!({"profile-1": {
+        "label":"profile-1","active_count":0,"completed_count":1,"total_count":1,
+        "updated":1793000000.0
+    }});
+    record["subagent_groups_complete"] = json!(groups_complete);
+    record
+}
+
+#[test]
+fn a_mixed_row_with_an_unknown_external_child_and_complete_groups_reads_settled() {
+    let row = crate::state::listing_fixture::listed_live_row(mixed_record(true)).unwrap();
+    assert_eq!(row["subagent_source"], "mixed_hooks", "{row}");
+    assert_eq!(row["subagent_counts_complete"], false, "{row}");
+    assert_eq!(row["subagent_groups_complete"], true, "{row}");
+    let facts = super::super::fleet::Facts::of(&row);
+    assert!(facts.free(), "{facts:?}");
+}
+
+#[test]
+fn incomplete_groups_stay_unsettled() {
+    let row = crate::state::listing_fixture::listed_live_row(mixed_record(false)).unwrap();
+    assert_eq!(row["subagent_source"], "mixed_hooks", "{row}");
+    assert_eq!(row["subagent_groups_complete"], false, "{row}");
+    let facts = super::super::fleet::Facts::of(&row);
+    assert!(!facts.free(), "{facts:?}");
+}
+
+#[test]
+fn an_older_row_without_the_group_field_reads_as_today() {
+    let mut row = crate::state::listing_fixture::listed_live_row(mixed_record(true)).unwrap();
+    row.as_object_mut().unwrap().remove("subagent_groups_complete");
+    // The fallback reads the old combined flag, which is false for the
+    // unknown external child: unsettled, exactly as before the split.
+    let facts = super::super::fleet::Facts::of(&row);
+    assert!(!facts.free(), "{facts:?}");
+}

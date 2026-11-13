@@ -93,6 +93,7 @@ fn produce() -> BTreeMap<&'static str, Value> {
     let mut active = super::rows::producer_row("kimi");
     active["subagent_source"] = json!("mixed_hooks");
     active["subagent_counts_complete"] = json!(false);
+    active["subagent_groups_complete"] = json!(false);
     active["subagent_active_count"] = json!(2);
     rows.insert("mixed_hooks_unsettled_active", active);
     rows.insert("unavailable", live("claude", json!({"last_event_at":null})));
@@ -146,18 +147,18 @@ fn a_subagent_count_is_settled_only_when_every_child_that_may_run_now_is_counted
             "hooks",
             false,
             Some(0),
-            false,
             true,
-            None,
+            false,
+            Some(ChildrenUnsettled),
         ),
         (
             "hooks_interrupted_child",
             "hooks",
             false,
             Some(0),
-            false,
             true,
-            None,
+            false,
+            Some(ChildrenUnsettled),
         ),
         (
             "hooks_working_child",
@@ -173,15 +174,15 @@ fn a_subagent_count_is_settled_only_when_every_child_that_may_run_now_is_counted
             "kimi_native",
             false,
             Some(0),
-            false,
             true,
-            None,
+            false,
+            Some(ChildrenUnsettled),
         ),
         // Children that may be running now and are not counted: unsettled.
         (
             "hook_profiles_incomplete",
             "hook_profiles",
-            false,
+            true,
             Some(0),
             true,
             false,
@@ -199,7 +200,7 @@ fn a_subagent_count_is_settled_only_when_every_child_that_may_run_now_is_counted
         (
             "mixed_hooks_incomplete",
             "mixed_hooks",
-            false,
+            true,
             Some(0),
             true,
             false,
