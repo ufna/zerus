@@ -21,6 +21,9 @@ pub(super) fn queue(team: &Team, page: Page<QueueRow>) -> Result<Page<Value>, Pr
             value["holder"] = json!(row.holder);
             value["pending_decision"] = json!(row.pending);
             value["pending_replaceable"] = json!(row.pending_replaceable);
+            // The lead's open item when no member can take the ready node:
+            // its sentence, or null.
+            value["unstaffed"] = json!(row.unstaffed);
             value["kind"] = json!(if node.kind == NodeKind::Stage {
                 "stage"
             } else {
