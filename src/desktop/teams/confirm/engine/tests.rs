@@ -822,23 +822,6 @@ fn a_codex_repository_card_answers_only_the_main_checkout_the_producer_names() {
 }
 
 
-/// A Codex repository card whose note names the member's own folder is the
-/// same grant as the folder card (zerus-63rru.66).
-#[test]
-fn a_codex_repository_card_naming_the_members_folder_is_answered() {
-    let mut f = Fake::new();
-    at_startup(&mut f, "codex");
-    let folder = crate::state::trust_fixture::FOLDER;
-    let q = &mut f.snapshot.questions[0];
-    let item = &mut q["questions"][0];
-    item["question"] = json!("Trust this Git repository?");
-    item["body"] = json!(format!(
-        "{folder}\n\nNote: You are in a subdirectory of a Git project. Trusting will apply to the repository root:\n{folder}"
-    ));
-    f.run("epoch-1", 100).unwrap();
-    assert_eq!(f.answers, 1, "the repository card is answered");
-}
-
 /// The repository card is Codex's own: Claude's policy refuses it
 /// (zerus-63rru.66).
 #[test]

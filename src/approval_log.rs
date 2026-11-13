@@ -321,6 +321,15 @@ pub(crate) const CATEGORIES: &str = "CASE WHEN length(CAST(question AS BLOB))>19
     THEN json_extract(question,'$.categories') END";
 /// The granted scope the row recorded, when it has one (zerus-63rru.66
 /// round 2); rows written before it carry none and stay valid.
+/// The detail reader's entry, shared with the tests (zerus-63rru.66 round
+/// 2): the scope the row recorded reaches the person; a row without one
+/// stays valid.
+fn detail_entry(id: i64, saved: &Value, status: &str, detail: &str) -> Value {
+    json!({"id":id,"question":saved["question"],"answers":saved["answers"],"status":status,"detail":detail,
+        "categories":categories(&saved["categories"]),
+        "scope":saved.get("scope").and_then(Value::as_str)})
+}
+
 pub(crate) fn saved_scope(raw: &str) -> Value {
     serde_json::from_str::<Value>(raw)
         .ok()
@@ -440,8 +449,7 @@ pub fn dispatch(config: &Config, target: &str, args: &[String], dry: bool) -> Re
             let (question, status, detail) =
                 row.ok_or_else(|| bad("Approval journal entry is unavailable"))?;
             let saved = serde_json::from_str::<Value>(&question).map_err(bad)?;
-            json!({"id":id,"question":saved["question"],"answers":saved["answers"],"status":status,"detail":detail,
-                "categories":categories(&saved["categories"])})
+            detail_entry(id, &saved, &status, &detail)
         }
     };
     println!("{result}");
@@ -470,6 +478,20 @@ fn the_journal_list_and_detail_carry_the_recorded_scope() {
     let entries = page["entries"].as_array().unwrap();
     assert_eq!(entries.len(), 1);
     assert_eq!(entries[0]["scope"], "/work/repository", "{page}");
+    let id = reserved["id"].as_i64().unwrap();
+    let saved: String = db
+        .query_row("SELECT question FROM attempts WHERE id=?1", [id], |r| r.get(0))
+        .unwrap();
+    let saved: Value = serde_json::from_str(&saved).unwrap();
+    assert_eq!(
+        detail_entry(id, &saved, "approved", "delivered")["scope"],
+        "/work/repository",
+        "the detail reader carries the recorded scope"
+    );
+    assert!(
+        detail_entry(id, &json!({"question":{},"answers":[]}), "approved", "")["scope"].is_null(),
+        "an old row without a scope stays valid"
+    );
 }
 
 #[test]
