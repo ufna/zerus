@@ -1715,7 +1715,7 @@ mod actor {
             std::fs::write(
                 &path,
                 format!(
-                    "#!/usr/bin/env python3\nimport json,os,pathlib,stat,sys\npathlib.Path({:?}).with_suffix('.fifo').write_text(str(stat.S_ISFIFO(os.fstat(0).st_mode)))\npathlib.Path({:?}).write_bytes(sys.stdin.buffer.read())\na=sys.argv\nprint(json.dumps({{'task':{{'uuid':a[a.index('message')+1],'project':a[a.index('--project')+1]}},'message':{{'kind':'message','request_id':a[a.index('--request-id')+1],'session':None,'delivery':{{'mode':a[a.index('--mode')+1],'state':'queued','stage':'todo','stage_at':7}}}}}}))\n",
+                    "#!/usr/bin/env python3\nimport json,os,pathlib,socket,sys\nwith socket.socket(fileno=os.dup(0)) as channel:\n pathlib.Path({:?}).with_suffix('.local-stream').write_text(str(channel.family == socket.AF_UNIX and channel.getsockopt(socket.SOL_SOCKET,socket.SO_TYPE) == socket.SOCK_STREAM))\npathlib.Path({:?}).write_bytes(sys.stdin.buffer.read())\na=sys.argv\nprint(json.dumps({{'task':{{'uuid':a[a.index('message')+1],'project':a[a.index('--project')+1]}},'message':{{'kind':'message','request_id':a[a.index('--request-id')+1],'session':None,'delivery':{{'mode':a[a.index('--mode')+1],'state':'queued','stage':'todo','stage_at':7}}}}}}))\n",
                     seen.to_str().unwrap(),
                     seen.to_str().unwrap()
                 ),
@@ -1749,9 +1749,9 @@ mod actor {
                 (Phase::Recorded, "")
             );
             assert_eq!(std::fs::read_to_string(&seen).unwrap(), stdin);
-            // The child read a pipe, never the custody input's descriptor.
+            // The child read a local stream, never the custody input's descriptor.
             assert_eq!(
-                std::fs::read_to_string(seen.with_extension("fifo")).unwrap(),
+                std::fs::read_to_string(seen.with_extension("local-stream")).unwrap(),
                 "True"
             );
             f.until("input removed", |f| f.state(&original) == "removed");
