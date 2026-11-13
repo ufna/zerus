@@ -591,6 +591,18 @@ fn a_conflicting_cancelled_attempt_is_not_the_nodes_own_cancel() {
             session_id: String::new(),
         };
         let mut twin = zerus_replica::TaskDoc::from_bytes(&before).unwrap();
+        // The twin's writes stay causally ahead of the deliver's concurrent
+        // path, so the merged stage is deterministically the cancel's Review
+        // and the later move back is allowed: the scenario's rule, not the
+        // Loro operation counters, decides the test.
+        for n in 0..50 {
+            twin.comment(
+                &format!("pad {n}"),
+                &zerus_replica::Actor::Agent(other.clone()),
+                now(),
+            )
+            .unwrap();
+        }
         twin.record_send(
             &other,
             "request-2",
@@ -608,6 +620,12 @@ fn a_conflicting_cancelled_attempt_is_not_the_nodes_own_cancel() {
             }])
             .unwrap();
         assert_eq!(imported.changed, 1, "{imported:?}");
+        let merged = store.load(&uuid).unwrap();
+        let view = merged.view().unwrap();
+        assert!(
+            view.execution.as_ref().is_some_and(|e| e.conflict),
+            "the merged execution is not conflicted: {view:?}"
+        );
     }
     move_back(&f, &uuid, "conflicting cancel");
     crate::teams::tasks::observe(
