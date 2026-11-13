@@ -301,30 +301,96 @@ fn with_no_other_member_the_task_waits_the_member_is_retried_by_a_growing_delay_
     assert_eq!(failure_gate(&a), None);
 }
 
-/// A member's row that changes ends its fact at once, before its time.
-#[test]
-fn a_changed_row_ends_the_members_fact_at_once() {
-    let (mut h, mut a, mut p) = setup(&["m1"]);
-    p.answers.insert("m1".into(), Answer::Waiting);
-    pass(&mut h, &mut a, &mut p, 100);
-    pass(&mut h, &mut a, &mut p, 1_000);
-    assert_eq!(sent(&p), [(100, "m1", "waiting")]);
+/// The member's committed fleet rows, one value changed in place.
+fn set(p: &Terminal, path: &str, value: &Value) {
     let db =
         rusqlite::Connection::open(p.native.config.state.join("desktop/state.sqlite3")).unwrap();
     let changed = db
         .execute(
-            "UPDATE desktop_catalog_rows SET json=json_set(json,'$.conversation_id','conversation-after')",
-            [],
+            "UPDATE desktop_catalog_rows SET json=json_set(json,?1,json(?2))",
+            rusqlite::params![path, value.to_string()],
         )
         .unwrap();
-    assert_eq!(changed, 1);
-    p.answers.insert("m1".into(), Answer::Submitted);
-    pass(&mut h, &mut a, &mut p, 2_000);
-    assert_eq!(
-        sent(&p),
-        [(100, "m1", "waiting"), (2_000, "m1", "submitted")]
-    );
-    assert_eq!(terminal_row(&a, "m1"), None);
+    assert!(changed > 0);
+}
+
+/// The stamp's paths are values the reader reads.
+#[test]
+fn the_stamped_paths_are_read_paths() {
+    use super::super::fleet::{READ, STAMPED};
+    for path in STAMPED {
+        assert!(READ.iter().any(|(read, _)| *read == path), "{path}");
+    }
+}
+
+/// A changed conversation, phase or question count ends the member's fact
+/// at once, before its time: it says another session, or one that waits.
+#[test]
+fn a_changed_row_ends_the_members_fact_at_once() {
+    for (path, during, after) in [
+        ("$.conversation_id", json!("conversation-after"), None),
+        ("$.phase", json!("input"), Some(json!("idle"))),
+        ("$.optional_questions.count", json!(1), Some(json!(0))),
+    ] {
+        let (mut h, mut a, mut p) = setup(&["m1"]);
+        p.answers.insert("m1".into(), Answer::Waiting);
+        pass(&mut h, &mut a, &mut p, 100);
+        pass(&mut h, &mut a, &mut p, 500);
+        assert_eq!(sent(&p), [(100, "m1", "waiting")], "{path}");
+        set(&p, path, &during);
+        p.answers.insert("m1".into(), Answer::Submitted);
+        pass(&mut h, &mut a, &mut p, 1_000);
+        if let Some(after) = &after {
+            assert_eq!(terminal_row(&a, "m1"), None, "{path}: ended at once");
+            set(&p, path, after);
+            pass(&mut h, &mut a, &mut p, 2_000);
+        }
+        let at = if after.is_some() { 2_000 } else { 1_000 };
+        assert_eq!(
+            sent(&p),
+            [(100, "m1", "waiting"), (at, "m1", "submitted")],
+            "{path}"
+        );
+        assert_eq!(terminal_row(&a, "m1"), None, "{path}");
+    }
+}
+
+/// Values that change while a terminal still waits do not end the fact: a
+/// member whose children count, background-work count or activity changes
+/// on every pass is tried again only by the growing delay (1, then 2
+/// minutes), one refused intent per delay, and the card opens after the
+/// period.
+#[test]
+fn work_counts_and_activity_that_change_while_the_terminal_waits_keep_the_fact() {
+    for (path, busy, free) in [
+        ("$.subagent_active_count", json!(1), json!(0)),
+        ("$.process_work.count", json!(1), json!(0)),
+        ("$.activity", json!("busy"), json!("idle")),
+    ] {
+        let (mut h, mut a, mut p) = setup(&["m1"]);
+        p.answers.insert("m1".into(), Answer::Waiting);
+        for (i, now) in [
+            100, 1_000, 30_000, 59_000, 60_100, 61_000, 120_000, 179_000, 180_100, 181_000, 200_000,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            set(&p, path, if i % 2 == 0 { &free } else { &busy });
+            pass(&mut h, &mut a, &mut p, now);
+        }
+        assert_eq!(
+            sent(&p),
+            [
+                (100, "m1", "waiting"),
+                (60_100, "m1", "waiting"),
+                (180_100, "m1", "waiting")
+            ],
+            "{path}"
+        );
+        assert_eq!(terminal_row(&a, "m1").unwrap()["refusals"], 3, "{path}");
+        assert_eq!(open_cards(&h), [CARD], "{path}");
+        assert_eq!(failure_gate(&a), None, "{path}");
+    }
 }
 
 /// Every other refusal is still a failed hand-out, as before: a failure row,
