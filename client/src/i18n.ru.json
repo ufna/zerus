@@ -1712,6 +1712,7 @@
   "Mark current replies across all machines as read, including hidden sessions. Pending approvals, questions and errors stay highlighted. Sessions you marked as needing attention keep their reply unread.": "Отметить текущие ответы на всех компьютерах как прочитанные, включая скрытые сессии. Ожидающие одобрения, вопросы и ошибки остаются выделенными. Сессии, отмеченные вами как требующие внимания, сохраняют ответ непрочитанным.",
   "Mark needs attention": "Пометить как требующее внимания",
   "Mark session read": "Отметить сессию прочитанной",
+  "Mark sessions as read": "Отметить прочитанными",
   "Mark this session's current notification as read. This does not answer a pending question.": "Отметить текущее уведомление этой сессии как прочитанное. Это не ответ на ожидающий вопрос.",
   "Marked for later. Mark as read to clear this reminder.": "Отмечено на будущее. Отметьте как прочитанное, чтобы удалить это напоминание.",
   "Marked needs attention: review later": "Отмечено, требует внимания: просмотрите позже",

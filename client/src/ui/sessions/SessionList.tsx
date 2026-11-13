@@ -8,7 +8,7 @@ import { For, Show, Suspense, createMemo, createEffect, createSignal, lazy, on, 
 import { createVirtualizer } from "@tanstack/solid-virtual";
 import { Icon } from "../lib/icons";
 import { tr, trNoop } from "../../i18n";
-import { listRows, rowHeight, shownSummary, machineChoices, projectChoices, filterCounts as counts, pickerCounts, type Container, type Row } from "./model";
+import { listRows, membersByGroup, rowHeight, shownSummary, machineChoices, projectChoices, filterCounts as counts, pickerCounts, type Container, type Row } from "./model";
 import {
   SessionCard, ChildCard, CompactCard, ContainerCard, teamSummary, AgentBadge, StatusBadge, badgeKind, statusCaption, stripCaption,
   emphasis, childStatus, captionText, gitTooltip, paletteIndex, folderOf, ProviderGlyph,
@@ -28,7 +28,7 @@ import { grouping, headerOf, moveProject, setProjectCollapsed, setProjectToShow,
 import { TOOL_WIDTH, clearArchiveMenuEntry, machineMenu, moveRefusal, runSelection, selectedRows, selectionContextMenu, selectionCount } from "./selection-live";
 import { anyUnmuted, barTools, splitTools, toolEntry } from "./selection-ui";
 import { actionEntries, copyEntries, freshActionEntry, muteEntry } from "./ActionDialogs";
-import { markAllEntry, markAllTip, markEntry, runMarkAll } from "./mark-entries";
+import { markAllEntry, markAllTip, markEntry, markProjectEntry, runMarkAll } from "./mark-entries";
 import { moveEntry, openCreateProjectDialog, openDeleteProjectDialog, openRenameProjectDialog } from "./OrganizationDialogs";
 import { backgroundEntries } from "./background-menu";
 import { chipColor, headerEntries, projectColor, type FilterChip } from "./organization-ui";
@@ -302,6 +302,7 @@ function headerMenu(project: string): MenuEntry[] {
   return headerEntries(grouping(), project, {
     newSession: () => newSessionForProject(project),
     filter: () => setProjectFilter([project]),
+    markRead: () => markProjectEntry(project, membersByGroup().get(project) ?? []),
     collapse: (collapsed) => setProjectCollapsed(project, collapsed),
     rename: () => openRenameProjectDialog(project),
     settings: () => { setProjectToShow(project); setPage("projects"); },
