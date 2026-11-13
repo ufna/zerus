@@ -53,7 +53,7 @@ fn open_cards(h: &Harness) -> Vec<crate::teams::store::Card> {
         .filter(|c| c.state == "open")
         .collect()
 }
-fn fact_row(h: &Harness, a: &Runtime) -> Option<serde_json::Value> {
+fn fact_row(_h: &Harness, a: &Runtime) -> Option<serde_json::Value> {
     a.ledger
         .get(TEAM, "project_limit")
         .unwrap()
