@@ -248,6 +248,13 @@ impl Runtime {
         row.retry_at = 0;
         row.failures = 0;
         row.state = State::Bound;
+        // The row's successful pass ends its failing item (zerus-63rru.24).
+        crate::desktop::teams::items::clear_at(
+            &self.state,
+            &row.team,
+            crate::desktop::teams::items::kind::LAUNCH_FAILING,
+            &row.member,
+        )?;
         self.save(row, now)?;
         self.admitted = None;
         Ok(true)

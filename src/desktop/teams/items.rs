@@ -53,6 +53,11 @@ pub(crate) mod kind {
     pub const KEY_CLEAR: &str = "key_clear";
     /// The terminal page's fault, for the whole service.
     pub const TERMINAL_PAGE: &str = "terminal_page";
+    /// A stopped or archived team's launch row whose failures have reached
+    /// the retry cap: the team and what keeps failing, written once at the
+    /// cap (zerus-63rru.24) and at once on the first pass after the stop
+    /// (zerus-63rru.63); its subject is the member.
+    pub const LAUNCH_FAILING: &str = "launch_failing";
 }
 /// The kind of the marker that says a team (or the service) has more items
 /// than the table holds. It is never listed as an item.
@@ -289,6 +294,47 @@ pub(crate) fn page(db: &Connection, team: &str, running: Option<bool>, now: i64)
     })
 }
 
+/// The actor ledger's connection for a writer outside the actor (the launch
+/// worker): the same private file, opened for writing, with the items'
+/// schema applied so the first writer creates the table. None when Teams is
+/// off or the file cannot be opened safely.
+fn write_connection(state: &Path) -> Option<Connection> {
+    // The actor's own open: the same private file, the same schema and the
+    // same migrations, so a writer outside the actor never forks them.
+    crate::desktop::teams::ActorLedger::open(state)
+        .ok()
+        .map(|ledger| ledger.connection())
+}
+/// The launch writer's put: one named non-fatal item (zerus-63rru.24).
+pub(crate) fn put_at(state: &Path, f: &Failure<'_>) -> Result<()> {
+    let Some(db) = write_connection(state) else {
+        return Err(Problem::new(
+            zerus_team_plan::problem::code::STORAGE_FAILED,
+            "The service items file cannot be opened.",
+        ));
+    };
+    put(&db, f)
+}
+/// The launch writer's read of one item's count.
+pub(crate) fn failures_at(state: &Path, team: &str, kind: &str, subject: &str) -> Result<Option<u32>> {
+    let Some(db) = write_connection(state) else {
+        return Err(Problem::new(
+            zerus_team_plan::problem::code::STORAGE_FAILED,
+            "The service items file cannot be opened.",
+        ));
+    };
+    failures(&db, team, kind, subject)
+}
+/// The launch writer's clear: the row's successful pass ends its item.
+pub(crate) fn clear_at(state: &Path, team: &str, kind: &str, subject: &str) -> Result<()> {
+    let Some(db) = write_connection(state) else {
+        return Err(Problem::new(
+            zerus_team_plan::problem::code::STORAGE_FAILED,
+            "The service items file cannot be opened.",
+        ));
+    };
+    clear(&db, team, kind, subject)
+}
 /// The items `hgs team status` shows for `team`, read-only from the actor
 /// ledger without creating it. None when Teams is off, the ledger or its
 /// table does not exist (a service that does not write items), or the

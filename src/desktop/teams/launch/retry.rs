@@ -1,4 +1,12 @@
 use super::*;
+use crate::desktop::teams::items::kind::LAUNCH_FAILING;
+use crate::desktop::teams::items::Failure as ItemFailure;
+
+/// The failures a launch row must reach before its service item is written:
+/// the retry table's 15-minute cap (zerus-63rru.24 and zerus-63rru.63).
+pub(super) fn at_cap(failures: u32) -> bool {
+    backoff(failures) >= 15 * MINUTE
+}
 const MINUTE: i64 = 60_000;
 impl Runtime {
     pub(super) fn cached_accounts(
@@ -100,6 +108,7 @@ impl Runtime {
         row.problem = None;
         row.failures = 0;
         row.retry_at = 0;
+        crate::desktop::teams::items::clear_at(&self.state, &row.team, LAUNCH_FAILING, &row.member)?;
         Ok(())
     }
     pub(super) fn record_failure(
@@ -165,6 +174,36 @@ impl Runtime {
                 {
                     row.late_after_stop = true;
                     self.save(&mut row, now)?;
+                }
+                // The stop closed the row's card: the item says the failure
+                // at once, written once for the row's cap-tier failures.
+                if at_cap(row.failures)
+                    && crate::desktop::teams::items::failures_at(
+                        &self.state,
+                        &row.team,
+                        LAUNCH_FAILING,
+                        &row.member,
+                    )?
+                    .is_none()
+                {
+                    let problem = row
+                        .problem
+                        .as_ref()
+                        .map(|p| format!("{}: {}", p.code, p.message))
+                        .unwrap_or_else(|| "The launch keeps failing".into());
+                    crate::desktop::teams::items::put_at(
+                        &self.state,
+                        &ItemFailure {
+                            team: &row.team,
+                            kind: LAUNCH_FAILING,
+                            subject: &row.member,
+                            node: None,
+                            reason: &problem,
+                            failures: row.failures,
+                            now,
+                            next_ms: Some(row.retry_at),
+                        },
+                    )?;
                 }
             }
             if !more {

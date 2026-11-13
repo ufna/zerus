@@ -8,6 +8,7 @@ mod child;
 pub(crate) use child::adopt_custody;
 mod actor;
 pub(crate) use actor::presence;
+pub(crate) use actor::Ledger as ActorLedger;
 
 /// A command's own reason as a card or a team record shows it: control
 /// characters as spaces, whitespace collapsed, at most 512 characters
