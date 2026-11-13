@@ -104,6 +104,56 @@ fn a_page_holds_at_most_50_entries_and_names_each_outcome() {
     );
 }
 
+/// zerus-63rru.66 round 5: the standing folder-trust kind survives the
+/// journal page projection, so the row sentences distinguish the five
+/// trust outcomes; a resume row shows none.
+#[test]
+fn the_page_carries_the_standing_trust_kind_for_each_outcome() {
+    let cases = [
+        ("approved", "Approved once", true),
+        ("failed", "Failed", false),
+        ("unknown", "Unconfirmed", false),
+        ("cancelled", "Cancelled", false),
+        ("unconfirmed", "Unconfirmed", false),
+    ];
+    let rows: Vec<Value> = cases
+        .iter()
+        .map(|(status, _, _)| {
+            json!({"id": 1, "at": 1, "host": "h", "session": "s", "prompt": "Trust this folder?",
+                "status": status, "categories": ["team_folder_trust"], "scope": "/fixture/main"})
+        })
+        .chain([json!({"id": 2, "at": 2, "host": "h", "session": "s", "prompt": "Resume?",
+            "status": "approved", "categories": ["team_resume"], "scope": "/fixture/main"})])
+        .collect();
+    let reply = json!({"entries": rows, "next": null, "previous": null});
+    let page = page(reply.as_object().unwrap()).unwrap();
+    assert_eq!(page.entries.len(), 6);
+    for (entry, (_, result, confirmed)) in page.entries.iter().zip(cases.iter()) {
+        assert_eq!(entry.result, *result, "{entry:?}");
+        assert_eq!(entry.standing.as_deref(), Some("team_folder_trust"), "{entry:?}");
+        assert_eq!(
+            trust_sentence(
+                entry.scope.as_deref(),
+                &json!(["team_folder_trust"]),
+                Some(if *confirmed { "approved" } else { "unknown" })
+            ),
+            Some(if *confirmed {
+                "Trusted for /fixture/main and its subfolders on this account".to_owned()
+            } else {
+                "Trust was requested for /fixture/main and its subfolders; it was not confirmed"
+                    .to_owned()
+            }),
+            "{entry:?}"
+        );
+    }
+    let resume = page.entries.last().unwrap();
+    assert_eq!(resume.standing, None, "a resume row carries no standing kind");
+    assert_eq!(
+        trust_sentence(resume.scope.as_deref(), &json!(["team_resume"]), Some("approved")),
+        None
+    );
+}
+
 #[test]
 fn a_detail_shows_the_question_and_the_answer_chosen() {
     let reply = json!({"id": 9, "status": "approved", "detail": "Granted once.",

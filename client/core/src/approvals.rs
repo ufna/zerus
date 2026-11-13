@@ -194,6 +194,11 @@ pub struct Entry {
     /// The granted scope the row recorded, next to the card's folder; none
     /// for a row written before it (zerus-63rru.66 round 2).
     pub scope: Option<String>,
+    /// The standing-confirmation kind the row recorded (the folder-trust
+    /// grant), carried through the page separately from the ordinary tool
+    /// categories so the row's sentence can distinguish the grant
+    /// (zerus-63rru.66 round 5).
+    pub standing: Option<String>,
 }
 
 /// One page and its cursors (0: none that way).
@@ -240,11 +245,25 @@ pub fn page(reply: &Map<String, Value>) -> Result<Page, String> {
                 result: status_text(entry["status"].as_str().unwrap_or_default()).into(),
                 categories: known_categories(&entry["categories"]),
                 scope: entry["scope"].as_str().map(str::to_owned),
+                standing: standing_kind(&entry["categories"]),
             })
             .collect(),
         next: reply.get("next").map_or(0, integer),
         previous: reply.get("previous").map_or(0, integer),
     })
+}
+
+/// The standing-confirmation kind the row recorded, when it has one:
+/// the service's folder-trust grant and any other standing kind it writes
+/// (zerus-63rru.66 round 5). Kept out of the ordinary category names.
+pub(crate) fn standing_kind(value: &Value) -> Option<String> {
+    value
+        .as_array()?
+        .iter()
+        .find_map(|id| match id.as_str()? {
+            "team_folder_trust" => Some("team_folder_trust".to_owned()),
+            _ => None,
+        })
 }
 
 /// The category IDs this client knows, in the page's order.
