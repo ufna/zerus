@@ -296,15 +296,6 @@ fn prepare(
             "Send a task in Backlog or To do to a team.",
         ));
     }
-    // No second live node of one task in this team (zerus-63rru.36): the
-    // moved-back resend waits for the earlier hand-out to end, so the old
-    // node and the new never overlap.
-    if duplicate {
-        return Err(Problem::new(
-            code::INVALID_STATE,
-            "The earlier hand-out of this task is still being settled in this team; send it again after it ends.",
-        ));
-    }
     if !matches!(view.target, Target::Any) && matches!(view.stage, Stage::Backlog | Stage::Todo) {
         document
             .set_target(&Target::Any, &caller.actor, now())

@@ -244,16 +244,14 @@ fn wp36_reproduction() {
         // cancel and never a refusal.
         assert_eq!(reply["reply"]["exit"], 0, "{reply}");
     }
-    // The resend while the old node is still live: refused with the true
-    // sentence (zerus-63rru.36 rule 3)...
-    let refused = intake(&f, &uuid_b, TEAM, "B resend while the old node is live");
-    assert_eq!(
-        refused["error"]["message"],
-        "The earlier hand-out of this task is still being settled in this team; send it again after it ends.",
-        "{refused}"
-    );
-    // ... and the observation ends the old node from the attempt's phase
-    // (rule 2), so the next resend is admitted.
+    // The resend while the old node is still live shares the node (the
+    // ops' existing_node reuse — the committed sends-twice contract): the
+    // old node and a new one never overlap because no new node is made.
+    let shared = intake(&f, &uuid_b, TEAM, "B resend while the old node is live");
+    assert_eq!(shared["queued"], true, "{shared}");
+    assert_eq!(shared["node"].as_u64(), Some(node_b as u64), "{shared}");
+    // The observation ends the old node from the attempt's phase (rule 2),
+    // so the next resend makes a new node.
     crate::teams::tasks::observe(
         &f.config.state,
         &TaskRef {
@@ -262,10 +260,9 @@ fn wp36_reproduction() {
         },
     )
     .unwrap();
-    // The node's live binding is what the observation ends; the resend's
-    // acceptance proves it (the intake found no live node).
     let admitted = intake(&f, &uuid_b, TEAM, "B resend after the node ended");
     assert_eq!(admitted["queued"], true, "{admitted}");
+    assert_ne!(admitted["node"].as_u64(), Some(node_b as u64), "{admitted}");
     // The new node is live: another team refuses the same task, as before.
     let other_b = intake(
         &f,
@@ -311,12 +308,9 @@ fn a_started_attempt_is_ended_by_the_observation_after_the_move_back() {
         store.save(&mut doc).unwrap();
     }
     move_back(&f, &uuid, "started variant");
-    let refused = intake(&f, &uuid, TEAM, "started: resend while the node is live");
-    assert_eq!(
-        refused["error"]["message"],
-        "The earlier hand-out of this task is still being settled in this team; send it again after it ends.",
-        "{refused}"
-    );
+    let shared = intake(&f, &uuid, TEAM, "started: resend while the node is live");
+    assert_eq!(shared["queued"], true, "{shared}");
+    assert_eq!(shared["node"].as_u64(), Some(node as u64), "{shared}");
     crate::teams::tasks::observe(
         &f.config.state,
         &TaskRef {
@@ -327,6 +321,7 @@ fn a_started_attempt_is_ended_by_the_observation_after_the_move_back() {
     .unwrap();
     let admitted = intake(&f, &uuid, TEAM, "started: resend after the node ended");
     assert_eq!(admitted["queued"], true, "{admitted}");
+    assert_ne!(admitted["node"].as_u64(), Some(node as u64), "{admitted}");
     let _ = node;
 }
 
