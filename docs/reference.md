@@ -6315,6 +6315,15 @@ Hosts are asked at once, each scanning for at most 5 seconds; a stopped host, an
 older adapter or a host that does not answer within 7 seconds reports that
 history as unavailable.
 
+A team member's hosted lifecycle is observed read-only through the advertised
+`teamLifecycle` capability and `session-lifecycle` RPC. A live Agent answers
+`live`; only the host's own `agent/disposed` event answers `ended`, with its
+source and timestamp. The host retains at most 4096 end records. A missing
+record, an older adapter, a changed host generation or an unreachable host is
+unknown, never an inferred exit or permission to resume. The standing terminal
+confirmation scan skips DeepSeek members. Live hosts are never reloaded for
+this capability.
+
 A task input to a hosted DeepSeek session is witnessed (`zerus-hfw2s`). The
 caller is the Agent Teams task delivery; it uses
 `state::dsh::witness::submit_witnessed(name, request, deadline)`. For recovery

@@ -30,6 +30,13 @@ CREATE TRIGGER IF NOT EXISTS actor_deleted AFTER DELETE ON actor_rows BEGIN
  UPDATE actor_budget SET rows=rows-1,bytes=bytes-length(CAST(old.data AS BLOB)) WHERE id=1;
 END;
 PRAGMA user_version=1;
+-- Frozen hosted inputs have the CLI's 30 MiB input bound, separate from
+-- compact actor state rows. The database's page bound still caps the store.
+CREATE TABLE IF NOT EXISTS actor_inputs (
+ team TEXT NOT NULL, key TEXT NOT NULL, version INTEGER NOT NULL,
+ data TEXT NOT NULL CHECK(length(CAST(data AS BLOB))<=31457280),
+ PRIMARY KEY(team,key)
+);
 -- A fixed retry record for the terminal entry, independent of row budgets.
 CREATE TABLE IF NOT EXISTS actor_terminal_retry (
  id INTEGER PRIMARY KEY CHECK(id=1),

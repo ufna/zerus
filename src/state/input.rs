@@ -1345,13 +1345,17 @@ pub(super) fn task_reply(
     attachments: &[Value],
     continuation: Continuation,
 ) -> Result<Value> {
-    let record = read(&session.session)?;
+    let hosted = session.session.starts_with("dsh/");
+    if hosted && continuation == Continuation::SameRun {
+        return Err("Hosted task inputs require the team's retained witnessed route".into());
+    }
+    let record = if hosted { super::dsh::binding(&session.session)? } else { read(&session.session)? };
     let key = if string(&record, "launch_id").is_empty() { "run_id" } else { "launch_id" };
     if session.session_id.is_empty() || session.session_id != format!("{key}:{}", string(&record, key)) {
         return Err("task execution identity changed; refresh before sending".into());
     }
     if let Ok(dispatch) = uuid::Uuid::parse_str(dispatch) {
-        let bytes = fs::read(absolute_root()?.join("input_receipts").join(format!("{dispatch}.json")))
+        let bytes = fs::read(absolute_root()?.join(if hosted { "dsh/receipts" } else { "input_receipts" }).join(format!("{dispatch}.json")))
             .map_err(|_| "the task dispatch receipt is unavailable; delivery is not authorized")?;
         let receipt: Value = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
         let changed = || {

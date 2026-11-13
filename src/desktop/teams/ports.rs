@@ -83,6 +83,7 @@ pub(super) enum Effect<T> {
 /// only after original custody actually settles. A result read never admits
 /// execution. No implementation is constructed from CLI input.
 pub(super) trait Effects {
+    fn hosted_ready(&mut self, _plan: &Plan, _bound: bool) -> Result<()> { Ok(()) }
     fn placement(&mut self, project: &str, launch: &str) -> Result<Placement>;
     fn branch_exists(&mut self, plan: &super::ledger::BranchPlan) -> Result<bool>;
     fn create_branch(&mut self, plan: &super::ledger::BranchPlan) -> Effect<()>;

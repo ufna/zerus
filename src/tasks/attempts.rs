@@ -48,7 +48,11 @@ pub(super) fn native(to: &SessionKey, request: &Value) -> NativeRequest {
             .as_str()
             .unwrap_or_default()
             .into(),
-        digest: digest(request),
+        digest: if to.session.starts_with("dsh/") {
+            format!("{:x}", Sha256::digest(json!([to.session, request]).to_string().as_bytes()))
+        } else {
+            digest(request)
+        },
     }
 }
 
@@ -96,7 +100,7 @@ fn attempt_actor(task: &TaskDoc, id: &str) -> Result<Actor> {
 /// Settles attempt `id` as never admitted, under a fresh project lock,
 /// against the original attempt: only after its own submission witnessed
 /// that the payload was never offered.
-fn not_admitted(config: &Config, project: &str, uuid: &str, id: &str) -> Result<()> {
+pub(super) fn not_admitted(config: &Config, project: &str, uuid: &str, id: &str) -> Result<()> {
     let store = store(config, project)?;
     let mut task = store.load(uuid).map_err(fail)?;
     let actor = attempt_actor(&task, id)?;
@@ -357,6 +361,7 @@ pub(super) fn freeze(
         who,
         &id,
         prepare_failed,
+        crate::state::Continuation::SameRun,
     )?;
     let view = task.view().map_err(fail)?;
     Ok(Frozen {
@@ -381,6 +386,7 @@ pub(super) fn render(
     who: &Actor,
     id: &str,
     refused: fn(String) -> Error,
+    continuation: crate::state::Continuation,
 ) -> Result<Value> {
     settings.check_agent(who, to, true, starts).map_err(fail)?;
     let mut view = task.view().map_err(fail)?;
@@ -397,7 +403,7 @@ pub(super) fn render(
         id,
         &prompt,
         &attachments,
-        crate::state::Continuation::SameRun,
+        continuation,
     )
     .map_err(refused)
 }
@@ -489,6 +495,7 @@ pub(super) fn send(
             who,
             &frozen.id,
             prepare_failed,
+            crate::state::Continuation::SameRun,
         ) {
             Ok(request) if request == frozen.request => {}
             Ok(_) => return refuse("changed", super::dispatch::CHANGED.into()),

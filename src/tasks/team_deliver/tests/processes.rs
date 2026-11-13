@@ -12,6 +12,7 @@ struct Fake {
     root: PathBuf,
     mode: String,
 }
+mod hosted_tests;
 impl Delivery for Fake {
     fn before_reserve(&self) {
         if std::env::var_os("HGS_TEAM_DELIVER_BARRIER").is_none() {
@@ -129,7 +130,43 @@ fn entry() {
             },
         );
     }
-    let result = if mode == "init" {
+    let result = if mode == "hosted-host-record" {
+        let args: Vec<String> = serde_json::from_str(&std::env::var("HGS_TEAM_DELIVER_ARGS").unwrap()).unwrap();
+        crate::state::dsh::record_this_boot_for_test(std::path::Path::new(&args[0]), args[1].parse().unwrap()).map(|()| json!({})).map_err(fail)
+    } else if mode == "hosted-doorbell" {
+        let args: Vec<String> = serde_json::from_str(&std::env::var("HGS_TEAM_DELIVER_ARGS").unwrap()).unwrap();
+        let request: Value = serde_json::from_str(&stdin_text("doorbell").unwrap()).unwrap();
+        let store = Store::open(&config.state).unwrap();
+        let mark = store.answer_marks(TEAM, "", 1).unwrap().remove(0);
+        let member = store.member(TEAM, "m1").unwrap().unwrap();
+        let gate = crate::teams::store::timers::Gate::Answer(crate::teams::store::timers::AnswerBell {
+            team:TEAM.into(), member:"m1".into(), session:member.session.unwrap(), node:args[0].parse().unwrap(),
+            generation:mark.generation, mark:mark.revision,
+        });
+        Ok(crate::desktop::teams::native_doorbell_for_test(&config, gate, &request))
+    } else if mode == "hosted-recorded" {
+        let args: Vec<String> = serde_json::from_str(&std::env::var("HGS_TEAM_DELIVER_ARGS").unwrap()).unwrap();
+        let request: Value = serde_json::from_str(&stdin_text("retained input").unwrap()).unwrap();
+        crate::state::dsh::witness::recorded(&args[0], &request).map(|outcome| json!({"recorded":match outcome {
+            crate::state::dsh::witness::Recorded::Absent => "absent",
+            crate::state::dsh::witness::Recorded::Conflict => "conflict",
+            crate::state::dsh::witness::Recorded::Outcome(outcome) => outcome.code(),
+        }})).map_err(fail)
+    } else if mode == "hosted-notice" {
+        let args: Vec<String> = serde_json::from_str(&std::env::var("HGS_TEAM_DELIVER_ARGS").unwrap()).unwrap();
+        let to: SessionKey = serde_json::from_str(&args[0]).unwrap();
+        crate::state::submit_task_message(&to, "This task was canceled; stop working on it.", &[]).map_err(fail)
+    } else if mode == "hosted-save" {
+        let mut record: Value = serde_json::from_str(&stdin_text("fixture binding").unwrap()).unwrap();
+        crate::state::dsh::save_binding_for_test(&mut record).map(|()| record).map_err(fail)
+    } else if mode == "hosted-lifecycle" {
+        let args: Vec<String> = serde_json::from_str(&std::env::var("HGS_TEAM_DELIVER_ARGS").unwrap()).unwrap();
+        crate::state::dsh::team_live(&args[0], &args[1], &args[2], Instant::now() + Duration::from_secs(2))
+            .map(|live| json!({"live":live})).map_err(fail)
+    } else if mode == "hosted-binding" {
+        let args: Vec<String> = serde_json::from_str(&std::env::var("HGS_TEAM_DELIVER_ARGS").unwrap()).unwrap();
+        crate::state::dsh::launched_binding_for_test(&args[0], &config.state, Some(&args[1])).map_err(fail)
+    } else if mode == "init" {
         crate::swarm::dispatch(&config, &["initialize".into()], false).map(|_| json!({}))
     } else if mode == "tmux-env" {
         // What a tmux started by this child would choose its server by.
@@ -263,6 +300,9 @@ struct Fixture {
 }
 impl Fixture {
     fn new() -> Self {
+        Self::with_agent("codex")
+    }
+    fn with_agent(agent: &str) -> Self {
         let h = Harness::empty();
         let config = Config {
             home: h.temp.path().display().to_string(),
@@ -300,9 +340,23 @@ impl Fixture {
         if let ops::Operation::Create { home: machine, .. } = &mut create {
             *machine = home.clone();
         }
+        if agent == "dsh" {
+            if let ops::Operation::Create { bundle, .. } = &mut create {
+                bundle.roles.iter_mut().find(|r| r.id == "developer").unwrap().agent = agent.into();
+            }
+        }
         f.h.run(&person(), create).unwrap();
         f.lead = f.bind("lead", &home);
-        f.bind("m1", &home);
+        let member = f.bind("m1", &home);
+        if agent == "dsh" {
+            use sha2::{Digest, Sha256};
+            // The hosted binding replaces this fixture's terminal metadata;
+            // no second route may retain the same launch identity.
+            std::fs::remove_file(f.config.state.join(format!("{:x}.json", Sha256::digest(member.session.as_bytes())))).unwrap();
+            let launch = member.session_id.strip_prefix("launch_id:").unwrap();
+            let (child, reply) = f.spawn("hosted-binding", &["dsh/example/member".into(), launch.into()], "", false);
+            assert_eq!(f.finish(child, reply)["ok"], true);
+        }
         {
             let tasks =
                 ProjectStore::open(&f.config.state.join("replica"), "example-project").unwrap();
@@ -466,7 +520,7 @@ impl Fixture {
         reply
     }
     fn wait(&self, mut child: Child) -> std::process::Output {
-        let until = Instant::now() + Duration::from_secs(18);
+        let until = Instant::now() + Duration::from_secs(if self.config.state.join("native-ready.json").exists() { 33 } else { 18 });
         while child.try_wait().unwrap().is_none() {
             if Instant::now() >= until {
                 child.kill().unwrap();

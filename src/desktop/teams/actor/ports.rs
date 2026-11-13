@@ -157,6 +157,11 @@ pub(in crate::desktop::teams) trait Ports {
     /// An uncertain original is never repeated. NotStarted proves no child
     /// ran and permits a later attempt with a fresh admission.
     fn deliver(&mut self, team: &Team, node: &Node, member: &Member, id: &str) -> DeliveryResult;
+    /// Read the original hosted request's outcome. None asks for a later
+    /// bounded read; it never authorizes reconstructing a current input.
+    fn recover_delivery(&mut self, _team: &Team, _node: &Node, _member: &Member, _id: &str) -> Result<Option<HandoutOutcome>> {
+        Ok(Some(HandoutOutcome::Uncertain { reason: "The service lost its original result; this delivery will not be sent again.".into() }))
+    }
 }
 
 /// Whether a member can take a task now.
@@ -212,6 +217,9 @@ pub(in crate::desktop::teams) enum DeliveryResult {
     /// The task writer proved it wrote nothing because observation is behind.
     Stale,
     Outcome(HandoutOutcome),
+    /// A hosted child may have offered the retained input but its answer
+    /// was lost. Read the recorded original on a later pass; never rebuild.
+    ReadLater,
     NotStarted {
         reason: String,
     },

@@ -46,7 +46,7 @@ pub(in crate::desktop::teams) fn step(
         if stop.load(Ordering::Acquire) {
             return Ok(());
         }
-        if member.session.is_none() {
+        if member.session.is_none() || member.agent == "dsh" {
             continue;
         }
         let Ok((binding, _)) = native.binding(team, &member.id) else {

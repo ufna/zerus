@@ -294,6 +294,7 @@ fn host_request(
 /// else advertises the capability: the host record holds none and the adapter
 /// version did not change with it.
 #[cfg(unix)]
+#[allow(dead_code)] // The caller-proof seam remains available independently of Teams input capabilities.
 pub(crate) fn host_advertises_call_tokens(
     agent_home: &str,
     host: (u32, &str),
@@ -306,6 +307,45 @@ pub(crate) fn host_advertises_call_tokens(
         },
     )?;
     Ok(ping["protocol"] == 1 && ping["callTokens"] == true)
+}
+
+/// Teams needs both a proven caller and witnessed task input. Query the
+/// resident host only; an older bridge is left running unchanged.
+#[cfg(unix)]
+pub(crate) fn host_advertises_team_inputs(agent_home: &str, host: (u32, &str), within: Duration) -> std::result::Result<bool, &'static str> {
+    let ping = host_request(agent_home, host, Instant::now() + within, "ping", json!({}))
+        .map_err(|unanswered| match unanswered {
+            Unanswered::NoAnswer => "The DeepSeek host did not answer in time.",
+            Unanswered::OtherPeer => "The DeepSeek host socket is not served by the recorded host.",
+        })?;
+    Ok(ping["protocol"] == 1 && ping["callTokens"] == true && ping["inputWitness"] == true && ping["teamLifecycle"] == true)
+}
+
+/// A hosted member's lifecycle, from the host's own live-agent answer. An
+/// unreachable host, old bridge, changed generation or missing answer is an
+/// error, never an ended member. No terminal process or turn-end is used.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub(crate) fn team_live(name: &str, run: &str, conversation: &str, deadline: std::time::Instant) -> Result<bool> {
+    let record = binding(name)?;
+    if record["run_id"] != run || record["conversation_id"] != conversation { return Err("DeepSeek member identity changed".into()); }
+    let agent_home = string(&record, "agent_home");
+    let hosts = session_graph::caller_host_for_home(agent_home).map_err(str::to_owned)?;
+    let hosts: Vec<_> = hosts.into_iter().filter(|(pid,birth)|
+        crate::platform::process_identity(*pid).is_some_and(|process| process.birth == *birth)).collect();
+    let [(pid,birth)] = hosts.as_slice() else { return Err("The recorded DeepSeek host is unavailable or ambiguous".into()); };
+    let ask = |method, params| host_request(agent_home, (*pid,birth), deadline, method, params)
+        .map_err(|_| "The recorded DeepSeek host did not answer its lifecycle check".to_owned());
+    let ping = ask("ping", json!({}))?;
+    if ping["teamLifecycle"] != true { return Err("The DeepSeek host has no lifecycle answer".into()); }
+    let answer = ask("session-lifecycle", json!({"sessionId":conversation}))?;
+    if answer["generation"] != ping["generation"] || ping["generation"].as_str().is_none_or(str::is_empty)
+        || binding(name)? != record { return Err("The DeepSeek host or member changed during observation".into()); }
+    if answer["sessionId"] != conversation { return Err("The DeepSeek lifecycle answer names another session".into()); }
+    match answer["state"].as_str() {
+        Some("live") => Ok(true),
+        Some("ended") if answer["end"]["source"] == "agent/disposed" && answer["end"]["at"].as_f64().is_some_and(|at| at.is_finite() && at > 0.0) => Ok(false),
+        _ => Err("The DeepSeek host's lifecycle answer is unavailable".into()),
+    }
 }
 
 /// The process serving a connected host socket, as the kernel recorded it,

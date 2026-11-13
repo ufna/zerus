@@ -13,6 +13,24 @@ mod ledger;
 mod native;
 mod ports;
 #[cfg(test)]
+pub(crate) fn native_doorbell_for_test(config: &crate::config::Config, gate: crate::teams::store::timers::Gate, request: &serde_json::Value) -> serde_json::Value {
+    use ports::{Effects, Ring, Rung};
+    let text = |key: &str| request[key].as_str().unwrap().to_owned();
+    let machine = text("machine");
+    let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let mut native = native::Native { config, machine:&machine, stop:&stop };
+    let ring = Ring { id:text("request_id"), gate, agent:"dsh".into(), name:text("name"), run:text("run_id"), conversation:text("conversation_id"), text:text("text") };
+    let store = crate::teams::store::Store::open(&config.state).unwrap();
+    let program = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("target/debug/hgs");
+    assert!(program.exists(), "Build the private worktree's hgs before the reviewed doorbell test");
+    native::Native::fixture_program(&program, || match native.ring(&store,&ring) {
+        Rung::Submitted => serde_json::json!({"state":"submitted"}),
+        Rung::Refused(reason) => serde_json::json!({"state":"refused","reason":reason}),
+        Rung::NotStarted(reason) => serde_json::json!({"state":"not_started","reason":reason}),
+        Rung::Uncertain(reason) => serde_json::json!({"state":"uncertain","reason":reason}),
+    })
+}
+#[cfg(test)]
 mod tests;
 pub(super) use clear::Finished;
 pub(super) use ledger::Ledger;

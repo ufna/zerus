@@ -14,6 +14,8 @@ struct Delivery {
     #[serde(default)]
     not_started: bool,
     #[serde(default)]
+    reads: u8,
+    #[serde(default)]
     nonstarts: u32,
     /// The refusal is the terminal gate's: the member's terminal holds
     /// input (zerus-63rru.79). An older build reads a plain refusal.
@@ -76,6 +78,7 @@ impl Runtime {
             receipt: None,
             gated: false,
             not_started: false,
+            reads: 0,
             nonstarts: 0,
             waiting: false,
             dialog: None,
@@ -127,6 +130,11 @@ impl Runtime {
         let result = ports.deliver(team, assignment.0, assignment.1, &d.id);
         boundary("effect");
         match result {
+            ports::DeliveryResult::ReadLater => {
+                d.command = true;
+                self.put(&team.id, key, &d)?;
+                self.defer(store, team, key, "", now)
+            }
             ports::DeliveryResult::Stale => {
                 self.defer_delivery(store, ports, team, (key, assignment.0), d, now)
             }
@@ -296,6 +304,7 @@ impl Runtime {
             // override. No admission lets it out again, so the row ends now:
             // nothing is delivered, replayed or recorded, no failure stays.
             self.recovered(store, team, key, now)?;
+            self.ledger.remove_input(&team.id, &d.id)?;
             self.ledger.remove(&row)?;
             return Ok(());
         }
@@ -311,6 +320,25 @@ impl Runtime {
                 .ok_or_else(|| problem("Deferred delivery member disappeared"))?;
             *budget -= 1;
             return self.invoke_delivery(store, ports, team, key, d, (&node, &member), now);
+        }
+        if d.outcome.is_none() {
+            let node = store.node(&team.id, d.node)?.ok_or_else(|| problem("Delivery node disappeared"))?;
+            let member = store.member(&team.id, &d.member)?.ok_or_else(|| problem("Delivery member disappeared"))?;
+            if member.agent == "dsh" && d.reads < 3 && *budget > 0 && !ports.stopped() {
+                d.reads += 1;
+                *budget -= 1;
+                self.put(&team.id, key, &d)?;
+                match ports.recover_delivery(team, &node, &member, &d.id) {
+                    Ok(Some(outcome)) => d.outcome = Some(outcome),
+                    Ok(None) | Err(_) if d.reads < 3 => {
+                        self.defer(store, team, key, "", now)?;
+                        return Ok(());
+                    }
+                    _ => {}
+                }
+            } else if member.agent == "dsh" && d.reads < 3 {
+                return Ok(());
+            }
         }
         if d.outcome.is_none() {
             d.outcome=Some(HandoutOutcome::Uncertain{reason:"The service restarted or lost its original result; this delivery will not be sent again.".into()});
@@ -427,6 +455,9 @@ impl Runtime {
         match ops::apply(store, &actor, d.receipt.as_ref().expect("reserved"), now) {
             Ok(_) => {
                 boundary("recorded");
+                // The effect now durably forbids another offer. Full inputs
+                // need not accumulate after their actor delivery settles.
+                self.ledger.remove_input(&team.id, &d.id)?;
                 if matches!(team.status, TeamStatus::Running | TeamStatus::Paused) {
                     self.recovered(store, team, key, now)?;
                 }
@@ -506,6 +537,7 @@ impl Delivery {
             receipt: None,
             gated: false,
             not_started: false,
+            reads: 0,
             nonstarts: 0,
             waiting: false,
             dialog: None,

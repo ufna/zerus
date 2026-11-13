@@ -85,6 +85,13 @@ fn observed(native: &Native, plan: &Plan, record: crate::state::TeamRecord) -> R
     {
         return Err(uncertain("Original launch identity or cwd changed"));
     }
+    if record.agent == "dsh" {
+        match crate::state::dsh::team_live(&record.name, &record.run_id, &record.conversation_id, Instant::now() + Duration::from_secs(2)) {
+            Ok(true) => (),
+            Ok(false) => return Err(uncertain("The DeepSeek host reports that this member's live agent ended; no terminal exit code is inferred")),
+            Err(_) => return Err(invalid("The DeepSeek member's lifecycle is unknown; no end is inferred")),
+        }
+    }
     Ok(LaunchRead::Session(Box::new(ObservedSession {
         machine: native.machine.clone(),
         launch_id: record.launch_id,

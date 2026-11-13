@@ -17,6 +17,8 @@ struct Fake {
     lock_after_send: Option<std::path::PathBuf>,
     held: Option<rusqlite::Connection>,
     pause_on_recheck: Option<std::path::PathBuf>,
+    recovery_reads: usize,
+    recovery_unreadable: bool,
 }
 impl Fake {
     fn new() -> Self {
@@ -38,10 +40,16 @@ impl Fake {
             lock_after_send: None,
             held: None,
             pause_on_recheck: None,
+            recovery_reads: 0,
+            recovery_unreadable: false,
         }
     }
 }
 impl super::super::ports::Ports for Fake {
+    fn recover_delivery(&mut self, _: &Team, _: &Node, _: &Member, _: &str) -> Result<Option<HandoutOutcome>> {
+        self.recovery_reads += 1;
+        if self.recovery_unreadable { Ok(None) } else { Ok(Some(self.reply.clone())) }
+    }
     fn changes(&mut self, _: &str, g: &str, _: u64) -> Result<zerus_replica::Changes> {
         self.journals += 1;
         Ok(zerus_replica::Changes {
@@ -264,6 +272,33 @@ fn restart_at_each_delivery_boundary_never_continues_an_original() {
                 .count(),
             usize::from(matches!(point, "reserved" | "intent" | "effect"))
         );
+    }
+}
+
+#[test]
+fn a_lost_hosted_answer_reads_boundedly_then_settles_without_another_original() {
+    for unreadable in [false, true] {
+        let mut h = Harness::empty();
+        let mut create = create();
+        if let Operation::Create { bundle, .. } = &mut create {
+            bundle.roles.iter_mut().find(|r| r.id == "developer").unwrap().agent = "dsh".into();
+        }
+        h.run(&person(), create).unwrap();
+        h.bind("m1");
+        h.add(&person(), 1);
+        let home = h.store.team(TEAM).unwrap().unwrap().home;
+        let mut a = super::super::Runtime::open(h.temp.path(), &home).unwrap();
+        let mut p = Fake::new();
+        p.recovery_unreadable = unreadable;
+        super::super::delivery::CRASH.with(|c| c.set(Some("effect")));
+        assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| tick(&mut h,&mut a,&mut p,100,false))).is_err());
+        drop(a);
+        let mut a = super::super::Runtime::open(h.temp.path(), &home).unwrap();
+        for pass in 1..=6 { tick(&mut h,&mut a,&mut p, pass * 900_000, false); }
+        assert_eq!(p.sends, 1);
+        assert_eq!(p.recovery_reads, if unreadable { 3 } else { 1 });
+        let inbox = h.store.inbox(TEAM, 200, None).unwrap();
+        assert_eq!(inbox.rows.iter().any(|item| item.kind == "delivery_uncertain"), unreadable);
     }
 }
 #[test]

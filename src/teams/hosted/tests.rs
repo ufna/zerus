@@ -60,7 +60,7 @@ fn an_older_host_is_refused_with_a_sentence_a_person_can_act_on() {
     assert_eq!(problem.code, code::INVALID_STATE);
     assert_eq!(
         problem.message,
-        "The DeepSeek host that serves /work/example/.dsh was started before Zerus could prove its sessions' commands; it serves proven calls after its next own start, which Zerus never forces."
+        "The DeepSeek host that serves /work/example/.dsh lacks the caller, task-input or lifecycle capabilities required by Agent Teams. They become available after its next own start, which Zerus never forces."
     );
 }
 

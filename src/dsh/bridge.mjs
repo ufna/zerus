@@ -318,6 +318,16 @@ export function apply(ctx, config) {
   const owned = new Map(), opening = new Map(), questions = new Map();
   registerAgentHint(ctx, config?.agentHint, owned);
   const generation = randomUUID();
+  // An end is the host's own lifecycle event, never a failed list/inspect
+  // or a turn that finished while its Agent remains alive. Keep bounded
+  // evidence only; a pruned or pre-bridge session has an unknown end.
+  const endedAgents = new Map();
+  ctx.on('agent/disposed', ({ agent }) => {
+    const sessionId = agent.session.id;
+    endedAgents.delete(sessionId);
+    endedAgents.set(sessionId, { at: Date.now(), source: 'agent/disposed' });
+    while (endedAgents.size > 4096) endedAgents.delete(endedAgents.keys().next().value);
+  });
   const shellContext = new AsyncLocalStorage(), shellCalls = new Map(), jobCalls = new Map();
   const callContext = new AsyncLocalStorage(), tokens = callTokens();
   const identities = typeof config.shellIdentities === 'string' && config.shellIdentities ? config.shellIdentities : null;
@@ -868,7 +878,7 @@ export function apply(ctx, config) {
     if (closing) throw new Error('Native host is stopping');
     const p = request.params ?? {};
     switch (request.method) {
-      case 'ping': return { protocol: 1, version: '0.2.1-rc.2', generation, accountPermissions: true, sessionActions: true, inputWitness: true, listJobs: true,
+      case 'ping': return { protocol: 1, version: '0.2.1-rc.2', generation, accountPermissions: true, sessionActions: true, inputWitness: true, listJobs: true, teamLifecycle: true,
         shellIdentity: callEnvironmentInstalled(), callTokens: callEnvironmentInstalled(),
         nativeOperations: ['fork', 'history-search', 'schedules'], schedule: Boolean(scheduleService()) };
       case 'list': {
@@ -888,6 +898,13 @@ export function apply(ctx, config) {
       }
       case 'inspect': return inspect(p);
       case 'input-witness': return inputWitness(p);
+      case 'session-lifecycle': {
+        if (typeof p.sessionId !== 'string' || !p.sessionId || p.sessionId.length > 2048) throw new Error('Invalid session identity');
+        const live = ctx.agents.get(p.sessionId);
+        const end = endedAgents.get(p.sessionId);
+        return { generation, sessionId: p.sessionId, state: live ? 'live' : end ? 'ended' : 'unknown',
+          ...(live || !end ? {} : { end }) };
+      }
       case 'fork': return fork(p);
       case 'search-history': return searchHistory(p);
       case 'schedules': return schedules(p);

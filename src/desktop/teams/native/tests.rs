@@ -330,11 +330,25 @@ fn native_provider_without_an_account_id_cannot_bind_as_another_profile() {
         std::fs::write(f.h.temp.path().join("launches").join(format!("{}.json",f.p.launch_id)), json!({"launch_id":f.p.launch_id,"name":format!("{agent}/example/original"),"session_id":f.record["session_id"],"started_at":1.0}).to_string()).unwrap();
         assert_eq!(f.read().unwrap_err().code, code::DELIVERY_UNCERTAIN);
         f.p.account = format!("native-{agent}");
+        if agent == "dsh" {
+            // Identity alone cannot turn an unreachable hosted agent into a
+            // live one. The reviewed-host contract covers the positive case.
+            assert_eq!(f.read().unwrap_err().code, code::INVALID_STATE);
+            continue;
+        }
         let LaunchRead::Session(session) = f.read().unwrap() else {
             panic!("native account was hidden")
         };
         assert_eq!(session.account, f.p.account);
     }
+}
+
+#[test]
+fn a_configured_deepseek_api_key_is_authenticated_without_quota_windows() {
+    let mut data = json!({"id":"native-dsh","provider":"dsh","status":"configured","windows":[]});
+    assert!(arguments::usage(&data, "dsh", "native-dsh").unwrap().signed_in);
+    data["auth_status"] = json!("signed_out");
+    assert!(!arguments::usage(&data, "dsh", "native-dsh").unwrap().signed_in);
 }
 
 #[test]

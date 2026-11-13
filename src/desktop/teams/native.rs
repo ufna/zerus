@@ -86,6 +86,19 @@ impl Native {
     }
 }
 impl Effects for Native {
+    fn hosted_ready(&mut self, plan: &Plan, bound: bool) -> Result<()> {
+        if plan.agent != "dsh" { return Ok(()); }
+        let (agent, home) = crate::accounts::hook_profile(&self.config, &plan.account)
+            .map_err(|e| invalid(&e.message))?;
+        if agent != "dsh" { return Err(invalid("DeepSeek account identity changed")); }
+        let home = home.to_str().ok_or_else(|| invalid("DeepSeek account path is not UTF-8"))?;
+        match crate::teams::hosted::deepseek_host(home)? {
+            crate::teams::hosted::HostState::Proves => Ok(()),
+            crate::teams::hosted::HostState::NoHost if !bound => Ok(()),
+            crate::teams::hosted::HostState::NoHost => Err(invalid("The new DeepSeek host is unavailable; the member was not bound")),
+            _ => Err(crate::teams::hosted::older(home)),
+        }
+    }
     fn placement(&mut self, project: &str, launch: &str) -> Result<Placement> {
         let source = self.project(project)?;
         let git_dir = observation::common_dir(&source)?;
@@ -254,7 +267,7 @@ impl Effects for Native {
         observation::session(self, plan, Instant::now() + Duration::from_secs(15))
     }
     fn parent(&mut self, plan: &Plan, _session: &ObservedSession, original: &str) -> String {
-        if matches!(plan.agent.as_str(), "dsh" | "opencode") {
+        if plan.agent == "opencode" {
             return "unsupported_agent".into();
         }
         let result = (|| -> Result<String> {

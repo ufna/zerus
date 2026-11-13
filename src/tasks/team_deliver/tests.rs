@@ -252,12 +252,17 @@ fn only_the_team_route_reaches_the_conversation_comparison() {
         files,
         [
             "state/input.rs",
+            "state/mod.rs",
             "tasks/team_deliver.rs",
             "tasks/team_deliver/tests.rs"
         ],
         "{found:?}"
     );
-    assert_eq!(found[1].1, 2, "team-deliver's two reopen preparations");
+    assert_eq!(found.iter().find(|(file,_)| file == "tasks/team_deliver.rs").unwrap().1, 4,
+        "team-deliver's two base renders and two continuation preparations");
+    // A cancel notice has no dispatch to compare; it selects only the
+    // hosted preparation branch and cannot continue a task's old dispatch.
+    assert!(include_str!("../../state/mod.rs").contains("input::task_reply(session, \"\", &uuid::Uuid::new_v4().to_string()"));
 }
 
 #[test]

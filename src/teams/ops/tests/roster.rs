@@ -27,13 +27,26 @@ fn refused_host(agent: &str, lead: bool) {
 }
 #[test]
 fn a_host_served_lead_is_refused_at_creation() {
-    for agent in ["dsh", "opencode"] {
-        refused_host(agent, true);
-    }
+    refused_host("opencode", true);
 }
 #[test]
 fn a_host_served_member_is_refused_at_creation() {
-    for agent in ["dsh", "opencode"] {
-        refused_host(agent, false);
+    refused_host("opencode", false);
+}
+
+#[test]
+fn deepseek_seats_are_created_without_contacting_or_starting_a_host() {
+    for lead in [false, true] {
+        let mut h = Harness::empty();
+        let mut op = create();
+        if let Operation::Create { bundle, .. } = &mut op {
+            if lead { bundle.template.lead.agent = "dsh".into(); }
+            else {
+                let role = &bundle.template.roster[0].role;
+                bundle.roles.iter_mut().find(|r| &r.id == role).unwrap().agent = "dsh".into();
+            }
+        }
+        h.run(&person(), op).unwrap();
+        assert!(!h.temp.path().join("dsh").exists());
     }
 }

@@ -2,6 +2,7 @@
 //! A pre-reservation refusal has no record; a repeat of its still-open effect may deliver.
 use super::*;
 mod cancel;
+mod hosted;
 pub(super) mod completion;
 pub(super) mod stage;
 use crate::swarm::fence::{Admission, Closed};
@@ -370,10 +371,12 @@ fn request(
     let base = if handover {
         attempts::render(
             settings, starts, task, name, &to, true, &who, &body.id, refused,
+            crate::state::Continuation::SameConversation,
         )?
     } else if permit.kind == "handout" {
         attempts::render(
             settings, starts, task, name, &to, false, &who, &body.id, refused,
+            crate::state::Continuation::SameConversation,
         )?
     } else {
         let dispatch = view
@@ -555,7 +558,7 @@ fn execute(config: &Config, args: &[String], delivery: &dyn Delivery) -> Result<
         return Err(rule("teams_inactive: Agent Teams preview is off."));
     }
     arguments(args, true, true)?;
-    let deadline = Instant::now() + attempts::BUDGET;
+    let deadline = Instant::now() + std::time::Duration::from_secs(20);
     let text = stdin_text("team delivery request")?;
     let body: Input = serde_json::from_str(&text).map_err(|error| {
         rule(format!(
@@ -642,6 +645,7 @@ fn recover(
     kind: &str,
     home: &str,
     store: &Store,
+    deadline: Instant,
 ) -> Result<Value> {
     let attempt = task
         .attempt(&body.id)
@@ -683,6 +687,9 @@ fn recover(
     let native = attempt
         .delivery
         .ok_or_else(|| rule("Attempt has no native delivery binding."))?;
+    if native.name.starts_with("dsh/") {
+        return hosted::recover(config, body, reference, &native, store, home, deadline);
+    }
     let facts = task
         .attempt_facts(&body.id)
         .map_err(fail)?
@@ -781,6 +788,7 @@ fn run(
             &kind,
             &team.home,
             &teams_store,
+            deadline,
         );
     }
     if flag(args, "--recover-only") {
@@ -886,6 +894,7 @@ fn run(
                 if current != frozen || current_to != to || current_actor != who {
                     return Err(rule(dispatch::CHANGED));
                 }
+                hosted::reserve(config, body, &to, &frozen)?;
                 reserve(task, body, &fresh, &to, &who, &frozen)?;
                 Ok(store)
             })();
@@ -923,16 +932,16 @@ fn run(
         return Err(error);
     }
     match admitted {
-        Ok(Admission::Reserved { .. }) => Ok(delivered(
-            body,
-            delivery.deliver(config, &reference, body, &to, &frozen),
-        )),
+        Ok(Admission::Reserved { .. }) if to.session.starts_with("dsh/") => {
+            hosted::deliver(config, &reference, body, &to, &frozen, deadline)
+        }
+        Ok(Admission::Reserved { .. }) => Ok(delivered(body, delivery.deliver(config, &reference, body, &to, &frozen))),
         Ok(Admission::Refused(closed)) if closed.reason == "existing" => {
             let task = super::store(config, &reference.project)?
                 .load(&reference.uuid)
                 .map_err(fail)?;
             let store = Store::open(&config.state).map_err(problem)?;
-            recover(config, body, &task, &reference, &kind, &here, &store)
+            recover(config, body, &task, &reference, &kind, &here, &store, deadline)
         }
         Ok(Admission::Refused(closed)) => {
             let (state, error) = attempts::refusal(&closed, &detail.borrow());
