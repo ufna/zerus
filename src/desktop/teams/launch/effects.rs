@@ -242,20 +242,27 @@ impl Runtime {
                 now,
             );
         }
+        // The row's successful pass ends its failing item (zerus-63rru.24):
+        // attempted after the success is saved, only when the row had
+        // reached the cap, and never blocking the transition — a failed
+        // clear leaves the item for the next pass's sweep (round 2). The
+        // flag is read before the reset, which clears the count.
+        let had_cap = super::retry::at_cap(row.failures);
         self.close_stale(store, team, row, now)?;
         row.observed = Some(observed);
         row.problem = None;
         row.retry_at = 0;
         row.failures = 0;
         row.state = State::Bound;
-        // The row's successful pass ends its failing item (zerus-63rru.24).
-        crate::desktop::teams::items::clear_at(
-            &self.state,
-            &row.team,
-            crate::desktop::teams::items::kind::LAUNCH_FAILING,
-            &row.member,
-        )?;
         self.save(row, now)?;
+        if had_cap {
+            let _ = crate::desktop::teams::items::clear_at(
+                &self.state,
+                &row.team,
+                crate::desktop::teams::items::kind::LAUNCH_FAILING,
+                &row.member,
+            );
+        }
         self.admitted = None;
         Ok(true)
     }

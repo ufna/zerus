@@ -108,7 +108,15 @@ impl Runtime {
         row.problem = None;
         row.failures = 0;
         row.retry_at = 0;
-        crate::desktop::teams::items::clear_at(&self.state, &row.team, LAUNCH_FAILING, &row.member)?;
+        // Best-effort: the caller's save must never wait on the items file
+        // (zerus-63rru.24, round 2); the next pass's sweep clears a
+        // lingering item.
+        let _ = crate::desktop::teams::items::clear_at(
+            &self.state,
+            &row.team,
+            LAUNCH_FAILING,
+            &row.member,
+        );
         Ok(())
     }
     pub(super) fn record_failure(
@@ -177,21 +185,23 @@ impl Runtime {
                 }
                 // The stop closed the row's card: the item says the failure
                 // at once, written once for the row's cap-tier failures.
-                if at_cap(row.failures)
-                    && crate::desktop::teams::items::failures_at(
-                        &self.state,
-                        &row.team,
-                        LAUNCH_FAILING,
-                        &row.member,
-                    )?
-                    .is_none()
-                {
+                // The items file's own trouble never fails the retry
+                // bookkeeping (round 2).
+                let exists = crate::desktop::teams::items::failures_at(
+                    &self.state,
+                    &row.team,
+                    LAUNCH_FAILING,
+                    &row.member,
+                )
+                .unwrap_or(None)
+                .is_some();
+                if at_cap(row.failures) && !exists {
                     let problem = row
                         .problem
                         .as_ref()
                         .map(|p| format!("{}: {}", p.code, p.message))
                         .unwrap_or_else(|| "The launch keeps failing".into());
-                    crate::desktop::teams::items::put_at(
+                    let _ = crate::desktop::teams::items::put_at(
                         &self.state,
                         &ItemFailure {
                             team: &row.team,
@@ -203,7 +213,16 @@ impl Runtime {
                             now,
                             next_ms: Some(row.retry_at),
                         },
-                    )?;
+                    );
+                } else if !at_cap(row.failures) && exists {
+                    // The row succeeded below the cap and its item lingers
+                    // from a failed clear: removed now.
+                    let _ = crate::desktop::teams::items::clear_at(
+                        &self.state,
+                        &row.team,
+                        LAUNCH_FAILING,
+                        &row.member,
+                    );
                 }
             }
             if !more {
