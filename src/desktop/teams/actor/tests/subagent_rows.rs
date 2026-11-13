@@ -263,10 +263,21 @@ fn a_subagent_count_is_settled_only_when_every_child_that_may_run_now_is_counted
     // An unsettled count above zero is busy, not unreadable, and its working
     // child is still seen: presence is not dropped along with the count.
     let active = Facts::of(&rows["mixed_hooks_unsettled_active"]);
-    assert_eq!(rows["mixed_hooks_unsettled_active"]["subagent_source"], "mixed_hooks");
-    assert_eq!(rows["mixed_hooks_unsettled_active"]["subagent_counts_complete"], false);
     assert_eq!(
-        (active.children, active.children_unsettled, active.free(), active.unknown()),
+        rows["mixed_hooks_unsettled_active"]["subagent_source"],
+        "mixed_hooks"
+    );
+    assert_eq!(
+        rows["mixed_hooks_unsettled_active"]["subagent_counts_complete"],
+        false
+    );
+    assert_eq!(
+        (
+            active.children,
+            active.children_unsettled,
+            active.free(),
+            active.unknown()
+        ),
         (Some(2), true, false, None)
     );
     assert_eq!(active.seen().map(|seen| seen.working), Some(true));
