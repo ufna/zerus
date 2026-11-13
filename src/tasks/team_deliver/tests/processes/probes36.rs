@@ -240,7 +240,9 @@ fn wp36_reproduction() {
             "WP36 B team-cancel on the revived task: {reply} {}",
             String::from_utf8_lossy(&result.stdout)
         );
-        assert_eq!(reply["reply"]["exit"], 1, "{reply}");
+        // The released answer is an accepted one (exit 0), never a second
+        // cancel and never a refusal.
+        assert_eq!(reply["reply"]["exit"], 0, "{reply}");
     }
     // The resend while the old node is still live: refused with the true
     // sentence (zerus-63rru.36 rule 3)...
