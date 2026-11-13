@@ -5705,6 +5705,84 @@ Hosts are asked at once, each scanning for at most 5 seconds; a stopped host, an
 older adapter or a host that does not answer within 7 seconds reports that
 history as unavailable.
 
+A task input to a hosted DeepSeek session is witnessed (`zerus-hfw2s`). The
+caller is the Agent Teams task delivery; it uses
+`state::dsh::witness::submit_witnessed(name, request, deadline)`. For recovery
+it uses `recorded(name, request)`, which reads the store under the same
+bindings lock and answers `Absent`, `Conflict` (the request ID holds another
+input) or `Outcome(code)`. A lock or store that cannot be read is an error.
+Only `Absent` means that no witnessed submit offered, or is offering, this
+exact request. Each input answers with exactly one fixed
+code. Codes are never folded, retried or promoted. A repeat of exactly the same
+request ID, digest, name, run and conversation replays the stored code without
+sending. A well-formed receipt of the same request ID with any other payload or
+binding is refused as an identity conflict, and the stored outcome is kept.
+The receipt path is read without following links. A link, another
+non-regular file, an unparsable file, or a parsed value that is not a
+well-formed receipt of this request ID proves nothing about what was offered.
+Each is `Unknown{unseen}`, with no host call and nothing written. A pending
+marker whose write reports a failure is answered by what the store then holds:
+no receipt is `NotOffered{host_refused}`, and a receipt is `Unknown{pending}`.
+
+- `Receipt`: the conversation durably recorded this request's own message. It
+  carries the same message ID and request ID, and the offered content digest.
+- `NotOffered{host_refused}`: refused before the pending marker, by HGS or the
+  host. This also covers a host whose `ping` lacks `inputWitness` ("This
+  DeepSeek host cannot witness a task input; it can after its next own start").
+  It also covers the host's own refusal of this exact request before its
+  prompt.
+- `NotOffered{unsafe_content}`: a text block HGS would insert contains the
+  case-sensitive literal `dsh-session:`. The host's session-reference plugin
+  rewrites such a mention or fails the turn on it. This is checked before any
+  marker.
+- `NotOffered{host_disposed}`: the queued input was canceled while the adapter
+  disposed of the agent itself (Pause or Forget). `NotOffered{canceled}`: it was
+  canceled by anyone else, which the log does not name.
+- `NotOffered{dropped_after_claim}`: a turn claimed the input and ended without
+  recording it. A claimed input is never queued again, after a later turn,
+  Forget and resume, or a host restart.
+- `Unknown{pending}`: still queued, claimed or not yet durable at the caller's
+  deadline. `Unknown{changed}`: recorded with other content, for example after
+  an edit in the native UI.
+- `Unknown{host_gone}`: the host stopped answering or changed generation.
+  `Unknown{unseen}`: no witness exists for the request. Either the host holds
+  no record of it, or an earlier call may already have offered it. That happens
+  when exactly this request was recorded by an ordinary send without a witness,
+  or when its receipt, its receipt path or the store's lock could not be read. It is never a
+  refusal and never sent again.
+
+The digest is SHA-256 over each content block's type and, for a text block, its
+text, each followed by NUL. The host keeps images as attachment references, so
+**a Receipt does not prove image bytes**. Its receipt says
+`"digest_scope": "text_and_block_types"`.
+
+The adapter's `ping` advertises `inputWitness: true`. Its `send` binds a request
+to the first message the harness inserts with that request ID as `rpcId`.
+`input-witness {sessionId, requestId, generation, waitMs <= 25000, fromSeq?}`
+reports facts only:
+
+- it waits until the message settles or `waitMs` passes;
+- it flushes the session;
+- it returns at most 4096 log events, forward from the inserting splice or
+  `fromSeq`: inbox splices, that session's `user/message` digests and
+  `turn/end`;
+- `complete` says whether the page reached the log's end;
+- it also returns the adapter's own disposal windows and whether the flush made
+  them durable.
+- After the adapter disposes of a session itself, each record bound to it keeps
+  its final facts (`frozen: true`) instead of the disposed session's log.
+
+HGS pages forward from `through` and classifies the events. A receipt, a
+changed message or a cancellation is concluded only from a complete slice.
+`dropped_after_claim` may be concluded from any prefix. The deadline is the
+caller's: about 20 seconds for a Teams hand-out and about 90 seconds for a
+person's send. A foreground bash step alone can last 60 seconds, so a hand-out
+during a long tool call often ends `Unknown{pending}`. Receipts live in
+`dsh/receipts/<request_id>.json`. They are written with a temporary file,
+fsync, rename and directory fsync. Their states are `pending`, `submitted`, or
+`not_offered` with its `code`; an unknown outcome keeps `pending` with its
+`code`.
+
 The official Schedule plugin (**Automation tasks** in Native UI Plugins) is
 listed and managed per exact session. The reviewed web bundles include it,
 and the profile Zerus creates layers that bundle, so it is on unless the

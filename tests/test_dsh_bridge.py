@@ -1,7 +1,10 @@
 """Adapter controls; the native suites separately exercise the real engine."""
+import json
+import os
 from pathlib import Path
 import shutil
 import subprocess
+import tempfile
 import unittest
 
 BRIDGE = Path(__file__).resolve().parents[1] / 'src/dsh/bridge.mjs'
@@ -400,6 +403,101 @@ assert.equal(tokens.conversation(theirs), undefined);
 assert.equal(tokens.conversation(again), b);
 assert.ok(mine.slice(1).every(token => tokens.conversation(token) === a));
 """)
+
+
+# The real bridge's apply() over a stand-in host whose prompt inserts scripted
+# messages, as the harness does, before it resolves (zerus-hfw2s.2).
+WITNESS_HARNESS = r"""
+import net from 'node:net';
+const [bridgeUrl, socket, scenario] = process.argv.slice(2);
+const { apply } = await import(bridgeUrl);
+const listeners = {}, effects = [];
+const session = id => {
+  const log = [];
+  return { id, header: { origin: 'user' }, log, get seq() { return log.length; },
+    snapshotEvents(from = 0, to = log.length) { return log.slice(from, to); } };
+};
+const agent = id => ({ id, session: session(id), status: 'idle', inbox: { nextStep: [], nextTurn: [] },
+  model: { current: () => ({ provider: 'fixture', model: 'm' }), select() {} } });
+const agents = new Map(['S1', 'S2'].map(id => [id, agent(id)]));
+const insert = (target, message) => {
+  const log = target.session.log;
+  log.push({ seq: log.length, type: 'agent/inbox/spliced',
+    data: { target: 'next-step', start: target.inbox.nextStep.length, inserted: [message] } });
+  target.inbox.nextStep.push(message);
+  for (const listener of listeners['agent/inbox/inserted'] ?? []) listener({ agent: target, message });
+};
+const prompt = async p => {
+  const message = id => ({ id, role: 'user', source: { kind: 'user', rpcId: p.requestId }, content: p.content });
+  if (scenario === 'refused') throw new Error('Scripted refusal before any insert');
+  // Another session's message with the same request ID comes first.
+  if (scenario === 'other-session-first') insert(agents.get('S2'), message('foreign'));
+  insert(agents.get(p.sessionId), message('m1'));
+  // A later message with the same request ID on the same session.
+  if (scenario === 'later-insert') insert(agents.get(p.sessionId), message('m2'));
+  if (scenario === 'inserted-then-throws') throw new Error('Scripted failure after the insert');
+  return { accepted: true };
+};
+const ctx = new Proxy({
+  sessionController: { prompt, list: async () => ({ items: [] }), projections: async () => ({ values: {} }),
+    agents: { composeAgent: async () => ({}), presetForObservation() {}, serializeImageAdmission() {} } },
+  agents: { get: id => agents.get(id), roots: () => [...agents.values()] },
+  goals: { get: () => null },
+  get: name => (name === 'sessions' ? { flush: async () => true } : undefined),
+  on: (name, listener) => { (listeners[name] ??= []).push(listener); return () => {}; },
+  effect: run => { effects.push(run()); },
+}, { get: (target, key) => (key in target ? target[key] : undefined) });
+apply(ctx, { socket });
+await Promise.all(effects);
+const call = (method, params = {}) => new Promise((resolve, reject) => {
+  const client = net.connect(socket);
+  let data = '';
+  client.on('data', chunk => { data += chunk; });
+  client.on('end', () => resolve(JSON.parse(data)));
+  client.on('error', reject);
+  client.write(JSON.stringify({ method, params }) + '\n');
+});
+const { value: { generation } } = await call('ping');
+const sent = await call('send', { sessionId: 'S1', requestId: 'R', content: [{ type: 'text', text: 'X' }], mode: 'steer' });
+const witness = sessionId => call('input-witness', { sessionId, requestId: 'R', generation, waitMs: 0 });
+process.stdout.write(JSON.stringify({ sent, s1: await witness('S1'), s2: await witness('S2') }));
+process.exit(0);
+"""
+
+
+@unittest.skipUnless(shutil.which('node'), 'Node.js required')
+class InputWitnessBinding(unittest.TestCase):
+    """zerus-hfw2s.2: a request is bound to the FIRST message the harness inserts
+    for it on the sending session, never to another session's or a later one."""
+
+    def answers(self, scenario):
+        with tempfile.TemporaryDirectory(prefix='hgs-dsh-witness-', dir=os.environ.get('ZERUS_TEST_SHORT_TMPDIR', '/tmp')) as root:
+            result = subprocess.run(['node', '--input-type=module', '-', BRIDGE.as_uri(), str(Path(root) / 'host.sock'), scenario],
+                                    input=WITNESS_HARNESS, text=True, capture_output=True, timeout=20)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return json.loads(result.stdout)
+
+    def bound(self, answer):
+        self.assertTrue(answer['ok'], answer)
+        value = answer['value']
+        return value['state'], value.get('messageId'), value.get('spliceSeq')
+
+    def test_a_later_insert_with_the_same_request_id_never_rebinds(self):
+        answers = self.answers('later-insert')
+        self.assertEqual(self.bound(answers['s1']), ('tracked', 'm1', 0))
+
+    def test_another_sessions_insert_never_binds(self):
+        answers = self.answers('other-session-first')
+        self.assertEqual(self.bound(answers['s1']), ('tracked', 'm1', 0))
+        self.assertEqual(self.bound(answers['s2']), ('unseen', None, None))
+
+    def test_only_a_request_with_no_insert_is_refused(self):
+        refused = self.answers('refused')
+        self.assertFalse(refused['sent']['ok'])
+        self.assertEqual(refused['s1']['value']['state'], 'refused')
+        inserted = self.answers('inserted-then-throws')
+        self.assertFalse(inserted['sent']['ok'])
+        self.assertEqual(self.bound(inserted['s1']), ('tracked', 'm1', 0))
 
 
 if __name__ == '__main__':

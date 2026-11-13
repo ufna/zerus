@@ -65,6 +65,12 @@ WAITING = {
 }
 
 
+# Kimi Code's selected steps that no hosted run has proven yet (the review's point H).
+# While any are listed, the workflow header and the docs say so; once a hosted run proves
+# them, empty this and both sentences must go (TeamsWaitingList checks both ways).
+KIMI_UNPROVEN = ('test_2_delivery_and_member_shell', 'test_3_lead_doorbell', 'test_4_cancel_notice')
+
+
 class ClassFixture:
     """One team per class, brought up once; the ordered steps share it, and a failed
     step fails the later ones with its name."""
@@ -833,6 +839,17 @@ class TeamsWaitingList(unittest.TestCase):
         fixes = set(self.ISSUE.findall(' '.join(waiting.values())))
         return [place for place, text in (('workflow header', header), ('docs section', section), ('row coverage', coverage))
                 if set(self.ISSUE.findall(text)) != fixes]
+
+    def test_kimi_steps_not_yet_proven_are_said_so_in_the_header_and_the_docs(self):
+        kimi = self.script('kimi-native.py')
+        selected = {name.rsplit('.', 1)[1] for name in kimi.TEAMS_METHODS}
+        self.assertLessEqual(set(KIMI_UNPROVEN), selected, 'the unproven Kimi steps are selected')
+        header, section, _ = self.places(self.script('agent-compatibility.py'))
+        phrase = re.compile(r"Kimi Code's steps 2 to 4[^.]*not yet proven")
+        for place, text in (('workflow header', header), ('docs section', section)):
+            with self.subTest(place=place):
+                flat = ' '.join(line.lstrip('#').strip() for line in text.splitlines())
+                self.assertEqual(bool(phrase.search(flat)), bool(KIMI_UNPROVEN))
 
     def test_each_place_is_compared(self):
         # Each place drifting alone is found (the review's mutant m7 removed one comparison).
