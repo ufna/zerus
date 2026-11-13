@@ -147,8 +147,9 @@ actions ask for confirmation first.
 member's actions are **Pause**, **Resume**, **Stop** and **Remove**; the lead
 cannot be removed. Removing a member puts its open work back to the lead.
 
-A member whose terminal holds input, such as an open question or an unsent
-draft, takes no task: it is a fact about the member, not a failure. The
+A member whose terminal holds input, such as an open question, an unsent
+draft or a dialog waiting for the person, takes no task: it is a fact about
+the member, not a failure, with one typed cause for all of them. The
 service hands the task to another free member, and tries the member again
 after one, two, four, eight and then fifteen minutes; a ready task that only
 that member can take gets a card after the wait. A member the service cannot
@@ -217,9 +218,8 @@ changes nothing else.
 | **Start not confirmed** | Whether a member started is not known; Zerus checks before it starts anything again |
 | **No room for members** | New members wait until there is room for another session or account |
 | **Member needs you** | A member's session asks for something Zerus does not confirm on your behalf |
-| **Unreadable member** | A member a ready task needs cannot be read, so it takes no task; one card names it |
 | **Project limit** | The project's own settings refuse every hand-out; one card per team, at the first refusal, and the queue waits until the project allows it |
-| **Team service blocked** | A step of the service failed three times, for example a merge that cannot run, and is tried again |
+| **Team service blocked** | A step of the service failed three times, for example a merge that cannot run, and is tried again; the same card names a member a ready task needs that cannot be read |
 | **Report waiting** | A member's report has waited for the lead's decision longer than the team allows, an hour by default |
 | **Lead not working** | The lead has not worked for a while, 20 minutes by default, although items wait in its inbox |
 | **Late session** | A member's session started after the team stopped or the member was removed; Zerus does not stop it |

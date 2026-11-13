@@ -4992,7 +4992,8 @@ Every command prints one JSON object. A refusal is
 `{"ok":false,"error":{"code","message","refs"}}` with exit 1; callers match on
 `code`, never on `message`. A command that has input reads one JSON object on
 stdin, at most 262,144 bytes, and refuses unknown fields with `unknown_field`.
-Unknown options and repeated options are refused. `--team` takes a lowercase
+Unknown options and repeated valued options are refused ("given twice");
+a repeated switch is accepted and reads as once. `--team` takes a lowercase
 canonical UUID; a lead or a member may omit it for its own team.
 
 **Who runs a command.** `hgs team` proves its caller with one interim check.
@@ -5063,10 +5064,13 @@ a holder; `reassign` needs an active member of the node's role that is not the
 lead and, for a stage, not its implementer. `route` refuses a stage: its role
 is the pipeline's and its member is chosen by the hand-out. Removing a member
 puts its open work back to the lead. A task already handed out stays held
-until its observation moves; it takes no free member. The lead does not resume
-a team the person paused or a member the person stopped. `decide` takes `approve` or
-`reject` for the `integration` and `pipeline_acceptance` cards and any
-non-empty word for the others, which closes the card. `create` records the
+until its observation moves; it takes no free member. A settings change
+touches only the live nodes, and only when the integration setting actually
+changed; the archive keeps the value each node ended with. The lead does not
+resume a team the person paused or a member the person stopped. `decide` takes `approve` or
+`reject` for the `integration` and `pipeline_acceptance` cards, `acknowledged`
+for an ordinary card without a stored list, and only a listed word for a card
+that stores its list; a wrong word is refused and nothing is written. `create` records the
 team as `running` with every member `not_created` and launches nothing; the
 desktop service launches the members. `expected_template` is the template's
 `digest` from the catalog read: when the template the command is about to use
@@ -5182,7 +5186,9 @@ card per team, bound to no task, at the first refusal, with the decisions
 as a probe after the retry table's 1, 2, 4, 8 and 15 minute delays; a probe
 the project admits ends the fact, closes the card and the queue goes on. The
 lead reads the fact among the `service_items` of `status`. A member whose
-terminal holds input, or one the service cannot read, is likewise a fact: the
+terminal holds input, such as an open question, an unsent draft or a dialog
+waiting for the person, or one the service cannot read, is likewise a fact,
+with one typed cause for all of them: the
 member is not free, another member is tried, and the member is tried again on
 the same delays; a ready task that only such a member can take gets a
 `team_actor_blocked` card after the wait.
