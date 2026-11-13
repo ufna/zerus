@@ -8,6 +8,74 @@ use sha2::{Digest, Sha256};
 use std::fs;
 
 const MAX_DATE: u64 = 253_402_300_800;
+/// One refresh per key (a member's name) per five minutes (zerus-63rru.67):
+/// the standing confirmation's reader and the member read ask when a session
+/// they cannot resolve may be an archive the catalog has not listed yet. A
+/// failed refresh is logged and retried after the same interval, never in a
+/// loop inside one read.
+const REFRESH_INTERVAL: std::time::Duration = std::time::Duration::from_secs(300);
+static REFRESHED: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, std::time::Instant>>> =
+    std::sync::OnceLock::new();
+#[cfg(test)]
+pub(crate) static REFRESHES: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+#[cfg(test)]
+pub(crate) fn reset_refreshes() {
+    REFRESHES.store(0, std::sync::atomic::Ordering::SeqCst);
+    if let Some(seen) = REFRESHED.get() {
+        seen.lock().unwrap_or_else(|error| error.into_inner()).clear();
+    }
+}
+
+/// Asks for one bounded rebuild of the archive catalog for `key`.
+pub(crate) fn refresh(key: &str) -> Result<()> {
+    let now = std::time::Instant::now();
+    let seen = REFRESHED.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+    {
+        let mut seen = seen.lock().unwrap_or_else(|error| error.into_inner());
+        if seen
+            .get(key)
+            .is_some_and(|at| now.duration_since(*at) < REFRESH_INTERVAL)
+        {
+            return Ok(());
+        }
+        seen.insert(key.to_owned(), now);
+    }
+    #[cfg(test)]
+    REFRESHES.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    let started = std::time::Instant::now();
+    let result = catalog().map(drop);
+    if let Err(error) = &result {
+        eprintln!("hgs: archive catalog refresh for {key} failed: {error}");
+    }
+    if started.elapsed() > std::time::Duration::from_secs(2) {
+        eprintln!(
+            "hgs: archive catalog refresh for {key} took {:?}",
+            started.elapsed()
+        );
+    }
+    result
+}
+
+/// Whether the catalog has any row under this session name, without building
+/// it: a read-only lookup that a missing catalog simply answers false.
+pub(crate) fn has_name(name: &str) -> Result<bool> {
+    let path = root().join("archive-catalog-v1.sqlite3");
+    if !path.exists() {
+        return Ok(false);
+    }
+    let db = sql(Connection::open_with_flags(
+        path,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NOFOLLOW,
+    ))?;
+    sql(db.busy_timeout(std::time::Duration::from_millis(100)))?;
+    sql(db.query_row(
+        "SELECT EXISTS(SELECT 1 FROM archive_rows WHERE name=?1)",
+        [name],
+        |row| row.get(0),
+    ))
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Query {

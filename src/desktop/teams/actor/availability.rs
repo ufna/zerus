@@ -116,6 +116,9 @@ pub(super) enum Unresolved {
     StartedFresh,
     /// The store, the record or the deadline did not answer; a later read may.
     Unavailable,
+    /// Its session is not in the archive catalog although its name is known:
+    /// an archive may be durable that the catalog never listed (zerus-63rru.67).
+    Archive,
 }
 impl Unresolved {
     /// The fact a card names for this result.
@@ -126,6 +129,7 @@ impl Unresolved {
             Unresolved::Changed => Fact::Changed,
             Unresolved::StartedFresh => Fact::StartedFresh,
             Unresolved::Unavailable => Fact::Unavailable,
+            Unresolved::Archive => Fact::Archive,
         }
     }
 }
@@ -216,7 +220,20 @@ fn resolve(config: &Config, member: &Member, launch: &str, id: &str, hint: &str)
             Current::Unresolved(Unresolved::Changed)
         }
         TeamSession::StartedFresh => Current::Unresolved(Unresolved::StartedFresh),
-        TeamSession::Gone => Current::Unresolved(Unresolved::Gone),
+        TeamSession::Gone => {
+            // A durable archive whose catalog row is missing reads as this:
+            // one bounded refresh for the member, then the same answer.
+            if !hint.is_empty() {
+                let listed = crate::state::archive_catalog::has_name(hint).unwrap_or(false);
+                if !listed {
+                    let _ = crate::state::archive_catalog::refresh(&format!("member:{}", member.id));
+                    if !crate::state::archive_catalog::has_name(hint).unwrap_or(false) {
+                        return Current::Unresolved(Unresolved::Archive);
+                    }
+                }
+            }
+            Current::Unresolved(Unresolved::Gone)
+        }
         TeamSession::Unavailable => Current::Unresolved(Unresolved::Unavailable),
     }
 }

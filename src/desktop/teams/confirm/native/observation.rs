@@ -34,7 +34,7 @@ impl Native<'_> {
             ).ok_or("A current native session has different or unreadable identity; no archive was selected")?;
             return self.read_view(b, &view, raw, None);
         }
-        let (id, raw) = archive(&self.config.state, &roots, b, name)?;
+        let (id, raw) = archived(&self.config.state, &roots, b, name)?;
         let view = self.read(
             vec![
                 "inspect".into(),
@@ -175,6 +175,20 @@ pub(super) fn self_exit(v: &Value, archived: bool) -> bool {
                 || v["termination_signal"].as_i64().is_some_and(|n| n > 0)
         }
         _ => false,
+    }
+}
+/// The member's archive, asking for one bounded catalog refresh when the
+/// archive is durable but the catalog never listed it (zerus-63rru.67): at
+/// most one refresh per member per five minutes, logged and retried then.
+fn archived(state: &Path, roots: &Roots, b: &Binding, name: &str) -> Result<(String, Value)> {
+    match archive(state, roots, b, name) {
+        Ok(found) => Ok(found),
+        Err(first) => {
+            if !crate::state::archive_catalog::has_name(name).unwrap_or(false) {
+                let _ = crate::state::archive_catalog::refresh(name);
+            }
+            archive(state, roots, b, name).map_err(|_| first)
+        }
     }
 }
 fn archive(state: &Path, roots: &Roots, b: &Binding, name: &str) -> Result<(String, Value)> {
@@ -419,6 +433,12 @@ mod tests {
         isolated("desktop::teams::confirm::native::observation::tests::archive_fixture");
     }
     #[test]
+    fn an_archive_the_catalog_missed_is_found_after_the_readers_refresh() {
+        isolated(
+            "desktop::teams::confirm::native::observation::tests::catalog_refresh_fixture",
+        );
+    }
+    #[test]
     fn a_persons_pause_reads_as_paused_not_as_an_exit_to_resume() {
         isolated("desktop::teams::confirm::native::observation::tests::pause_fixture");
     }
@@ -469,6 +489,40 @@ mod tests {
             (found.as_str(), &raw["state"]),
             (id.as_str(), &json!("archived"))
         );
+    }
+
+    #[test]
+    #[ignore = "run by its isolated wrapper"]
+    fn catalog_refresh_fixture() {
+        let (config, _, _) = store_env();
+        let (b, _, record) = real_codex(|_| ());
+        let id = crate::state::archive_for_test(&record).unwrap();
+        let name = "codex/example/member";
+        let roots = Roots::open(&config.state, "question_receipts").unwrap();
+        // The archive is durable; the catalog that should index it is gone, as
+        // after a refresh that failed (zerus-63rru.67).
+        let catalog = config.state.join("archive-catalog-v1.sqlite3");
+        std::fs::remove_file(&catalog).unwrap();
+        assert!(archive(&config.state, &roots, &b, name).is_err());
+        let (found, raw) = archived(&config.state, &roots, &b, name).unwrap();
+        assert_eq!(
+            (found.as_str(), &raw["state"]),
+            (id.as_str(), &json!("archived"))
+        );
+        // A refresh that keeps failing leaves the unknown and is attempted once
+        // per member per five minutes, never in a loop.
+        crate::state::archive_catalog::reset_refreshes();
+        std::fs::remove_file(&catalog).unwrap();
+        std::fs::create_dir(&catalog).unwrap();
+        assert!(archived(&config.state, &roots, &b, name).is_err());
+        let once = crate::state::archive_catalog::REFRESHES.load(std::sync::atomic::Ordering::SeqCst);
+        assert_eq!(once, 1);
+        assert!(archived(&config.state, &roots, &b, name).is_err());
+        assert_eq!(
+            crate::state::archive_catalog::REFRESHES.load(std::sync::atomic::Ordering::SeqCst),
+            once
+        );
+        std::fs::remove_dir(&catalog).unwrap();
     }
 
     #[test]

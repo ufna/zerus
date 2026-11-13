@@ -579,6 +579,7 @@ fn each_fact_reads_its_sentence_on_the_card() {
         (Fact::Changed, format!("its session now belongs to another launch, agent or folder. {last}")),
         (Fact::StartedFresh, format!("its session was started fresh, and a new conversation does not take over its tasks. {last}")),
         (Fact::Unavailable, "its session record did not answer in time. Retry reads it again on the next pass.".to_owned()),
+        (Fact::Archive, "its exit archive is not in the archive catalog. The catalog is refreshed at most once per five minutes; if it never appears, restore the archive by hand or archive the member.".to_owned()),
     ];
     // The terminal fact's own sentence names the dialog its gate knew
     // (zerus-63rru.83), in the card's own shape.

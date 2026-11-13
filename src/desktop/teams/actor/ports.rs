@@ -193,6 +193,8 @@ pub(in crate::desktop::teams) enum Fact {
     StartedFresh,
     /// The store, the record or the deadline did not answer.
     Unavailable,
+    /// Its exit archive is durable but not in the archive catalog yet.
+    Archive,
     /// Its terminal refused a hand-out because it holds input: a question,
     /// a dialog or an unsent draft (zerus-63rru.79). The member can be read;
     /// its row says free, but its terminal is not. The dialog the gate

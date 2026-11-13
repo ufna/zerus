@@ -105,6 +105,10 @@ pub(in crate::desktop::teams::actor) fn sentence(
             "its session record did not answer in time",
             "Retry reads it again on the next pass.",
         ),
+        Fact::Archive => (
+            "its exit archive is not in the archive catalog",
+            "The catalog is refreshed at most once per five minutes; if it never appears, restore the archive by hand or archive the member.",
+        ),
     };
     format!(
         "Member {member} ({role}) is needed by ready task {node} but cannot be read: {what}. {next} This card closes when the member can be read or no ready task needs it."
