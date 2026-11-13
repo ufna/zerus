@@ -10,6 +10,9 @@ use crate::desktop::teams::actor::ports::Fact;
 use crate::desktop::teams::actor::schedule::Needs;
 
 const ROWS: &str = "gate:unreadable:";
+/// The archive unknown's own words: the hold closes its card when this cause
+/// resolves to the ordinary Gone path.
+pub(super) const ARCHIVE_WHY: &str = "its exit archive is not in the archive catalog";
 
 impl Runtime {
     /// Ends the rows of the members nobody needs now, except a member whose
@@ -40,6 +43,21 @@ impl Runtime {
         }
         for (member, (node, role, fact)) in &needs.needed {
             let key = format!("unreadable:{member}");
+            // The archive appeared in the catalog: the Archive card is
+            // recovered on this pass, and the ordinary Gone path starts its
+            // own hold. While the cause stands, no card is replaced.
+            if !matches!(fact, Fact::Archive)
+                && self
+                    .ledger
+                    .get(&team.id, &format!("gate:{key}"))?
+                    .is_some_and(|row| {
+                        row.data["hold"]["reason"]
+                            .as_str()
+                            .is_some_and(|reason| reason.contains(ARCHIVE_WHY))
+                    })
+            {
+                self.recovered(store, team, &key, now)?;
+            }
             let reason = sentence(member, role, *node, fact.clone());
             self.for_row(|a| a.hold_write(store, team, (&key, 0, 0), &reason, now))?;
         }
@@ -106,7 +124,7 @@ pub(in crate::desktop::teams::actor) fn sentence(
             "Retry reads it again on the next pass.",
         ),
         Fact::Archive => (
-            "its exit archive is not in the archive catalog",
+            ARCHIVE_WHY,
             "The catalog is refreshed at most once per five minutes; if it never appears, restore the archive by hand or archive the member.",
         ),
     };

@@ -218,6 +218,23 @@ fn archived_child() {
     assert_eq!(hand_out(w), Vec::<String>::new());
 }
 #[test]
+#[ignore = "run by its isolated wrapper"]
+fn gone_without_an_archive_child() {
+    let mut w = world(&["m1"]);
+    bound(&mut w);
+    use sha2::Digest;
+    let path = w.h.temp.path().join(format!(
+        "{:x}.json",
+        sha2::Sha256::digest(name("m1").as_bytes())
+    ));
+    std::fs::remove_file(path).unwrap();
+    assert_eq!(now(&w, "m1"), Current::Unresolved(Unresolved::Gone));
+}
+#[test]
+fn a_session_gone_without_an_archive_stays_gone() {
+    isolated(&format!("{CHILD}gone_without_an_archive_child"));
+}
+#[test]
 fn an_archived_member_is_not_free_and_is_named_gone() {
     isolated(&format!("{CHILD}archived_child"));
 }

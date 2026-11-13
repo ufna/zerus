@@ -631,6 +631,31 @@ fn each_fact_reads_its_sentence_on_the_card() {
     }
 }
 
+/// The Archive card closes on the next pass once the cause resolves to the
+/// ordinary Gone path (the catalog row appeared); while it stands it is not
+/// replaced (zerus-63rru.67 round 2).
+#[test]
+fn the_archive_card_closes_when_the_cause_resolves_to_gone() {
+    let mut h = Harness::new();
+    h.bind("m1");
+    h.add(&person(), 1);
+    let machine = h.store.team(TEAM).unwrap().unwrap().home;
+    let mut a = Runtime::open(h.temp.path(), &machine).unwrap();
+    let mut archive = Named(Fact::Archive, false);
+    for minute in 0..4 {
+        a.tick(&mut h.store, &mut archive, TEAM, T0 + minute * MINUTE, false)
+            .unwrap();
+    }
+    let shown = open(&h, "m1");
+    assert_eq!(shown.len(), 1);
+    assert!(shown[0].text.contains("its exit archive is not in the archive catalog"));
+    let mut gone = Named(Fact::Gone, false);
+    a.tick(&mut h.store, &mut gone, TEAM, T0 + 4 * MINUTE, false)
+        .unwrap();
+    assert_eq!(h.store.card(TEAM, shown[0].seq).unwrap().unwrap().state, "closed");
+    assert!(open(&h, "m1").is_empty());
+}
+
 /// A read that fails waits for its backoff; the passes in between read
 /// nothing about the member, and its row and card stay as they are.
 #[test]

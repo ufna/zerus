@@ -221,13 +221,18 @@ fn resolve(config: &Config, member: &Member, launch: &str, id: &str, hint: &str)
         }
         TeamSession::StartedFresh => Current::Unresolved(Unresolved::StartedFresh),
         TeamSession::Gone => {
-            // A durable archive whose catalog row is missing reads as this:
-            // one bounded refresh for the member, then the same answer.
+            // A durable archive whose catalog row is missing reads as the
+            // archive unknown, but only with the archive itself on disk: a
+            // forgotten or removed session stays Gone. The whole state's
+            // refresh is bounded and shared by every reader.
             if !hint.is_empty() {
                 let listed = crate::state::archive_catalog::has_name(hint).unwrap_or(false);
                 if !listed {
-                    let _ = crate::state::archive_catalog::refresh(&format!("member:{}", member.id));
-                    if !crate::state::archive_catalog::has_name(hint).unwrap_or(false) {
+                    let _ = crate::state::archive_catalog::refresh(hint);
+                    if !crate::state::archive_catalog::has_name(hint).unwrap_or(false)
+                        && crate::state::archive_catalog::has_session_archive(id)
+                            .unwrap_or(false)
+                    {
                         return Current::Unresolved(Unresolved::Archive);
                     }
                 }

@@ -509,8 +509,17 @@ mod tests {
             (found.as_str(), &raw["state"]),
             (id.as_str(), &json!("archived"))
         );
+        // The bound is the whole state's, persisted for a restart: a second
+        // reader's key right after asks nothing.
+        assert!(crate::state::archive_catalog::refresh_stamp_for_test().exists());
+        let before = crate::state::archive_catalog::REFRESHES.load(std::sync::atomic::Ordering::SeqCst);
+        crate::state::archive_catalog::refresh("another-member").unwrap();
+        assert_eq!(
+            crate::state::archive_catalog::REFRESHES.load(std::sync::atomic::Ordering::SeqCst),
+            before
+        );
         // A refresh that keeps failing leaves the unknown and is attempted once
-        // per member per five minutes, never in a loop.
+        // for the whole state in five minutes, never in a loop.
         crate::state::archive_catalog::reset_refreshes();
         std::fs::remove_file(&catalog).unwrap();
         std::fs::create_dir(&catalog).unwrap();

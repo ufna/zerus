@@ -11,41 +11,65 @@ const MAX_DATE: u64 = 253_402_300_800;
 /// One refresh per key (a member's name) per five minutes (zerus-63rru.67):
 /// the standing confirmation's reader and the member read ask when a session
 /// they cannot resolve may be an archive the catalog has not listed yet. A
-/// failed refresh is logged and retried after the same interval, never in a
-/// loop inside one read.
+/// The whole state's refresh bound (zerus-63rru.67 round 2): a rebuild serves
+/// every member at once, so one persisted time bounds all readers and
+/// survives a restart. A failed attempt still waits for the next allowed
+/// time; the rebuild runs under the state writer lock the module contract
+/// requires.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
-const REFRESH_INTERVAL: std::time::Duration = std::time::Duration::from_secs(300);
-#[cfg(any(target_os = "linux", target_os = "macos"))]
-static REFRESHED: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, std::time::Instant>>> =
-    std::sync::OnceLock::new();
+const REFRESH_INTERVAL_MS: u128 = 300_000;
 #[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
 pub(crate) static REFRESHES: std::sync::atomic::AtomicUsize =
     std::sync::atomic::AtomicUsize::new(0);
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn refresh_stamp() -> std::path::PathBuf {
+    root().join("archive-catalog-refresh-v1")
+}
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn refreshed_at() -> u128 {
+    std::fs::read_to_string(refresh_stamp())
+        .ok()
+        .and_then(|text| text.trim().parse().ok())
+        .unwrap_or(0)
+}
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn stamp_refresh(now: u128) {
+    let path = refresh_stamp();
+    let temporary = path.with_extension("tmp");
+    if std::fs::write(&temporary, now.to_string())
+        .and_then(|()| std::fs::rename(&temporary, &path))
+        .is_err()
+    {
+        eprintln!("hgs: archive catalog refresh time could not be written");
+    }
+}
 #[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
 pub(crate) fn reset_refreshes() {
     REFRESHES.store(0, std::sync::atomic::Ordering::SeqCst);
-    if let Some(seen) = REFRESHED.get() {
-        seen.lock().unwrap_or_else(|error| error.into_inner()).clear();
-    }
+    let _ = std::fs::remove_file(refresh_stamp());
+}
+#[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
+pub(crate) fn refresh_stamp_for_test() -> std::path::PathBuf {
+    refresh_stamp()
 }
 
-/// Asks for one bounded rebuild of the archive catalog for `key`.
+/// Asks for the bounded rebuild of the archive catalog; `key` only names the
+/// asker in the log. At most one rebuild runs in the whole state every five
+/// minutes, whichever reader asks.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub(crate) fn refresh(key: &str) -> Result<()> {
-    let now = std::time::Instant::now();
-    let seen = REFRESHED.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()));
-    {
-        let mut seen = seen.lock().unwrap_or_else(|error| error.into_inner());
-        if seen
-            .get(key)
-            .is_some_and(|at| now.duration_since(*at) < REFRESH_INTERVAL)
-        {
-            return Ok(());
-        }
-        seen.insert(key.to_owned(), now);
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_millis())
+        .unwrap_or(0);
+    if now.saturating_sub(refreshed_at()) < REFRESH_INTERVAL_MS {
+        return Ok(());
     }
+    private_dir(&root())?;
+    stamp_refresh(now);
     #[cfg(test)]
     REFRESHES.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    let _guard = lock(None)?;
     let started = std::time::Instant::now();
     let result = catalog().map(drop);
     if let Err(error) = &result {
@@ -78,6 +102,51 @@ pub(crate) fn has_name(name: &str) -> Result<bool> {
         [name],
         |row| row.get(0),
     ))
+}
+
+/// Positive evidence that a durable archive for this exact session is on
+/// disk: the bounded scan reads at most 512 archive entries within 200 ms and
+/// matches the session ID the record carries (zerus-63rru.67 round 2). A
+/// forgotten or removed session has none and stays Gone.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub(crate) fn has_session_archive(session: &str) -> Result<bool> {
+    if session.is_empty() {
+        return Ok(false);
+    }
+    let directory = root().join("archives");
+    if !directory.is_dir() {
+        return Ok(false);
+    }
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(200);
+    let mut seen = 0usize;
+    for entry in fs::read_dir(&directory).map_err(|error| error.to_string())? {
+        let Ok(entry) = entry else { continue };
+        seen += 1;
+        if seen > 512 || std::time::Instant::now() >= deadline {
+            break;
+        }
+        let path = entry.path();
+        if path.extension().and_then(|extension| extension.to_str()) != Some("json") {
+            continue;
+        }
+        let Ok(bytes) = fs::read(&path) else { continue };
+        if bytes.len() > 1 << 20 {
+            continue;
+        }
+        let Ok(record) = serde_json::from_slice::<Value>(&bytes) else {
+            continue;
+        };
+        if record["session_id"].as_str() == Some(session)
+            && record["state"].as_str() == Some("archived")
+            && record["archive_id"]
+                .as_str()
+                .and_then(|id| uuid::Uuid::parse_str(id).ok())
+                .is_some_and(|id| !id.is_nil())
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
