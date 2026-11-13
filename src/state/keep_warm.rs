@@ -461,10 +461,30 @@ fn remove(record: &mut Value, key: &str) -> Option<Value> {
     record.as_object_mut().and_then(|record| record.remove(key))
 }
 
+/// End a ping turn's masking because a prompt of another origin arrived. The
+/// person's saved visible fields return before that prompt is applied, so the
+/// ping text never becomes the session's prompt and the new turn stays visible.
+fn unmask(record: &mut Value) {
+    if let Some(quiet) = remove(record, "keep_warm_quiet").filter(Value::is_object) {
+        for key in VISIBLE {
+            if let Some(value) = quiet.get(key) {
+                record[key] = value.clone();
+            }
+        }
+    }
+    remove(record, "keep_warm_turn");
+    remove(record, "keep_warm_pending");
+    remove(record, "keep_warm_prompt_at");
+}
+
 /// Mark a main-agent hook `event` of a ping turn before `update_activity`:
 /// `event["keep_warm"]` is "prompt" for the ping's own prompt and "turn" for
 /// the rest of its turn. Only the ping's exact text while its submission is
-/// pending opens a ping turn; any other prompt makes the turn the person's.
+/// pending opens a ping turn. The first prompt of any other origin (the
+/// person's text, a task notification, a subagent report, a peer message, any
+/// other system envelope) ends the masking before it is applied, even when it
+/// arrives during the ping: only a turn that holds nothing but the ping stays
+/// silent.
 pub(super) fn observe(record: &mut Value, event: &mut Value, now: f64) {
     if !main_event(record, event) {
         return;
@@ -503,12 +523,10 @@ pub(super) fn observe(record: &mut Value, event: &mut Value, now: f64) {
             return;
         }
     }
-    // The person's own message, or a job's: everything is visible again, and
-    // a ping still being dispatched can no longer claim a later prompt.
-    remove(record, "keep_warm_turn");
-    remove(record, "keep_warm_quiet");
-    remove(record, "keep_warm_pending");
-    remove(record, "keep_warm_prompt_at");
+    // The first prompt of another origin: restore the person's visible fields
+    // before this prompt is applied, and let every event from here on be
+    // ordinary. A ping still being dispatched can no longer claim a later prompt.
+    unmask(record);
 }
 
 /// Whether the latest prompt of the session was a verified keep-warm ping
@@ -586,6 +604,15 @@ impl Facts {
     }
 }
 
+/// Whether owned background jobs hold a due ping. Claude and Codex accept a new
+/// message while the desktop shows Background (their hook frames carry no turn
+/// that a job starts by itself), so their ping goes through the guarded path.
+/// Kimi's scheduled and background jobs can start their own turns, so its ping
+/// must not race them.
+fn background_holds(record: &Value) -> bool {
+    string(record, "agent") == "kimi"
+}
+
 /// Why ping `id` must not be typed now, if it must not. The guarded submit
 /// asks this under the input lock, once before staging and again immediately
 /// before the first input byte.
@@ -604,7 +631,7 @@ fn submission_refusal(record: &Value, entry: Option<&Entry>, runtime: &Value, fa
     {
         return Some("The agent is not idle; nothing was submitted");
     }
-    if facts.background != Some(0) {
+    if background_holds(record) && facts.background != Some(0) {
         return Some("Background work is running or unknown; nothing was submitted");
     }
     if facts.schedules > 0 {
@@ -729,7 +756,7 @@ fn decide(entry: &Entry, runtime: &Value, observed: Option<&Observed>, facts: im
         return hold("waiting", "", Some(due), None);
     }
     let facts = facts();
-    if facts.background != Some(0) {
+    if background_holds(record) && facts.background != Some(0) {
         return hold("waiting", "Background work is running.", None, None);
     }
     if facts.schedules > 0 {
@@ -1470,8 +1497,19 @@ mod tests {
             busy[key] = value;
             assert!(refusal(&busy, entry, &runtime, &quiet(), NOW).is_some(), "{key}");
         }
-        for facts in [Facts { background: Some(1), ..quiet() }, Facts { background: None, ..quiet() },
-            Facts { schedules: 1, ..quiet() }, Facts { recovery_active: true, ..quiet() },
+        // Owned background jobs do not hold Claude's ping: an idle agent with
+        // them accepts a new message, so the guarded path may type. Kimi keeps
+        // the hold because its jobs can start their own turns.
+        for facts in [Facts { background: Some(1), ..quiet() }, Facts { background: None, ..quiet() }] {
+            assert_eq!(refusal(&idle(), entry, &runtime, &facts, NOW), None, "{facts:?}");
+        }
+        let mut kimi = idle();
+        kimi["agent"] = json!("kimi");
+        for background in [Some(1), None] {
+            let facts = Facts { background, ..quiet() };
+            assert!(refusal(&kimi, entry, &runtime, &facts, NOW).is_some(), "{background:?}");
+        }
+        for facts in [Facts { schedules: 1, ..quiet() }, Facts { recovery_active: true, ..quiet() },
             // Unknown terminal activity, or someone typed in Terminal moments ago.
             Facts { client_input: None, ..quiet() }, Facts { client_input: Some(Some(NOW - 30.0)), ..quiet() }] {
             assert!(refusal(&idle(), entry, &runtime, &facts, NOW).is_some(), "{facts:?}");
@@ -1649,6 +1687,30 @@ mod tests {
         event
     }
 
+    /// Claude Code's own background-completion prompt and a peer message.
+    const NOTICE: &str = "<task-notification>\n<task-id>b1</task-id>\n<status>completed</status>\n<summary>Background command \"watch\" completed</summary>\n</task-notification>";
+    const PEER: &str = "<zerus-message from=\"peer/session\" host=\"peerhost\" reference=\"zerus://session?machine=11111111-1111-4111-8111-111111111111&amp;host=peerhost&amp;name=peer%2Fsession&amp;conversation=22222222-2222-4222-8222-222222222222&amp;run=33333333-3333-4333-8333-333333333333\">\nhello from a peer\n</zerus-message>";
+
+    /// One hook through the real record writer, then settle.
+    fn deliver_real(record: &mut Value, mut event: Value) -> Value {
+        observe(record, &mut event, NOW);
+        journal::update_activity(record, &event);
+        settle(record, &event, NOW);
+        event
+    }
+
+    /// The person's finished turn, then one ping typed by the guarded path.
+    fn began_ping(agent: &str) -> Value {
+        let mut record = idle();
+        record["agent"] = json!(agent);
+        deliver_real(&mut record, hook("UserPromptSubmit", json!({"prompt":"Fix the tests"})));
+        deliver_real(&mut record, hook("Stop", json!({"last_assistant_message":"Done."})));
+        record["keep_warm_pending"] = json!({"request_id":"request-1","submitted_at":NOW});
+        let ping = deliver_real(&mut record, hook("UserPromptSubmit", json!({"prompt":TEXT})));
+        assert_eq!(ping["keep_warm"], "prompt");
+        record
+    }
+
     #[test]
     fn a_ping_turn_is_marked_and_leaves_the_visible_session_unchanged() {
         let mut record = pinged();
@@ -1682,8 +1744,69 @@ mod tests {
         assert!(queued.get("keep_warm").is_none());
         assert!(record.get("keep_warm_turn").is_none());
         assert!(record.get("keep_warm_quiet").is_none());
+        // The visible fields are the person's again, not the ping's.
+        assert_eq!(record["prompt"], "Fix the tests");
+        assert_eq!(record["last_message"], "Done.");
         let stop = deliver(&mut record, hook("Stop", json!({"last_assistant_message":"CI is green."})));
         assert!(stop.get("keep_warm").is_none());
+    }
+
+    #[test]
+    fn a_background_completion_after_a_ping_restores_the_visible_prompt_and_reply() {
+        let mut record = began_ping("claude");
+        assert_eq!(record["prompt"], TEXT, "the ping was applied, and masking hid it");
+        assert_eq!(journal::user_prompt(&record), &json!("Fix the tests"));
+        let stop = deliver_real(&mut record, hook("Stop", json!({"last_assistant_message":"OK"})));
+        assert_eq!(stop["keep_warm"], "turn");
+        let completion = deliver_real(&mut record, hook("UserPromptSubmit", json!({"prompt":NOTICE})));
+        assert!(completion.get("keep_warm").is_none());
+        assert!(record.get("keep_warm_turn").is_none());
+        assert!(record.get("keep_warm_quiet").is_none());
+        assert_eq!(record["prompt"], "Fix the tests");
+        let reply = deliver_real(&mut record, hook("Stop", json!({"last_assistant_message":"The watcher finished."})));
+        assert!(reply.get("keep_warm").is_none());
+        assert_eq!(journal::user_prompt(&record), &json!("Fix the tests"));
+        assert_eq!(journal::last_message(&record), "The watcher finished.");
+    }
+
+    #[test]
+    fn a_background_completion_queued_during_a_ping_restores_the_visible_prompt_and_reply() {
+        let mut record = began_ping("claude");
+        let completion = deliver_real(&mut record, hook("UserPromptSubmit", json!({"prompt":NOTICE})));
+        assert!(completion.get("keep_warm").is_none());
+        // A prompt joined the turn the ping started, so its Stop ends real work.
+        let joined = deliver_real(&mut record, hook("Stop", json!({"last_assistant_message":"OK"})));
+        assert!(joined.get("keep_warm").is_none(), "a joined Stop must stay visible");
+        let reply = deliver_real(&mut record, hook("Stop", json!({"last_assistant_message":"The watcher finished."})));
+        assert!(reply.get("keep_warm").is_none());
+        assert_eq!(record["prompt"], "Fix the tests");
+        assert_eq!(journal::last_message(&record), "The watcher finished.");
+    }
+
+    #[test]
+    fn a_persons_message_during_a_ping_restores_then_becomes_the_prompt() {
+        let mut record = began_ping("claude");
+        let person = deliver_real(&mut record, hook("UserPromptSubmit", json!({"prompt":"Also check CI"})));
+        assert!(person.get("keep_warm").is_none());
+        assert_eq!(record["prompt"], "Also check CI");
+        assert!(record.get("keep_warm_turn").is_none());
+        assert!(record.get("keep_warm_quiet").is_none());
+        let reply = deliver_real(&mut record, hook("Stop", json!({"last_assistant_message":"CI is green."})));
+        assert!(reply.get("keep_warm").is_none());
+        assert_eq!(journal::last_message(&record), "CI is green.");
+    }
+
+    #[test]
+    fn a_peer_message_during_a_ping_restores_the_prompt_and_stays_visible() {
+        let mut record = began_ping("claude");
+        let peer = deliver_real(&mut record, hook("UserPromptSubmit", json!({"prompt":PEER})));
+        assert!(peer.get("keep_warm").is_none());
+        assert_eq!(journal::system_prompt(&prompt_text(&peer)).unwrap()["kind"], "peer_message");
+        // A system envelope never becomes the person's prompt.
+        assert_eq!(record["prompt"], "Fix the tests");
+        let reply = deliver_real(&mut record, hook("Stop", json!({"last_assistant_message":"Handled the peer message."})));
+        assert!(reply.get("keep_warm").is_none());
+        assert_eq!(journal::last_message(&record), "Handled the peer message.");
     }
 
     #[test]
@@ -1754,8 +1877,21 @@ mod tests {
         // Past or within 30 s of the estimated expiry: cold, nothing sent.
         assert!(held("cold")(&step(&enabled(), Value::Null, Some(&ended(1775.0)), quiet(), Some(None))));
         assert!(held("cold")(&step(&enabled(), Value::Null, Some(&ended(4000.0)), quiet(), Some(None))));
-        for facts in [Facts { background: Some(1), ..quiet() }, Facts { background: None, ..quiet() },
-            Facts { schedules: 2, ..quiet() }, Facts { recovery_active: true, ..quiet() }] {
+        // Claude and Codex accept new messages while Background holds owned
+        // jobs. Kimi's own jobs can start their own turns, so only Kimi waits.
+        for facts in [Facts { background: Some(1), ..quiet() }, Facts { background: None, ..quiet() }] {
+            assert_eq!(step(&enabled(), Value::Null, Some(&due), facts, Some(None)), Step::Send);
+        }
+        let home = tempfile::tempdir().unwrap();
+        let mut kimi = idle();
+        kimi["agent"] = json!("kimi");
+        kimi["model"] = json!("kimi-for-coding");
+        kimi["agent_home"] = json!(home.path().to_str().unwrap());
+        kimi["cache_touched"] = json!({"at":NOW - 3000.0,"conversation_id":"conversation-1"});
+        assert!(held("waiting")(&step(&enabled(), Value::Null, Some(&kimi),
+            Facts { background: Some(1), ..quiet() }, Some(None))));
+        assert_eq!(step(&enabled(), Value::Null, Some(&kimi), quiet(), Some(None)), Step::Send);
+        for facts in [Facts { schedules: 2, ..quiet() }, Facts { recovery_active: true, ..quiet() }] {
             assert!(held("waiting")(&step(&enabled(), Value::Null, Some(&due), facts, Some(None))));
         }
         let mut busy = due.clone();
@@ -1764,6 +1900,46 @@ mod tests {
         let mut old = due.clone();
         old["model"] = json!("gpt-5.5");
         assert!(held("unsupported")(&step(&enabled(), Value::Null, Some(&old), quiet(), Some(None))));
+    }
+
+    #[test]
+    fn background_work_holds_a_ping_only_for_kimi() {
+        let mut store = Store::default();
+        update(&mut store, "owner", &record(), &request(json!({})), NOW, ok);
+        let entry = store.sessions.get("owner");
+        let runtime = json!({"state":"dispatching","request_id":"ping-1","revision":1});
+        let refused = |record: &Value, rule: &Eligibility, background: Option<u64>| {
+            submission_refusal(record, entry, &runtime, &Facts { background, ..quiet() }, rule, "ping-1", NOW)
+        };
+        // Claude: a warm, due cache and owned background jobs. The ping may be
+        // typed through the guarded path.
+        let mut claude = idle();
+        claude["agent"] = json!("claude");
+        let usage = json!({"prompt_cache":{"ttl_seconds":3600,"expires_at":NOW + 600.0}});
+        let observed = Observed { record: &claude, live: true, usage };
+        assert_eq!(decide(&enabled(), &Value::Null, Some(&observed),
+            || Facts { background: Some(3), ..quiet() }, NOW), Step::Send);
+        let rule = Eligibility::known(3600, "native_usage", Some(NOW + 600.0));
+        assert_eq!(refused(&claude, &rule, Some(3)), None);
+        // Codex: its provider default is due, and background jobs do not hold it.
+        let codex = ended(1500.0);
+        assert_eq!(step(&enabled(), Value::Null, Some(&codex),
+            Facts { background: Some(3), ..quiet() }, Some(None)), Step::Send);
+        assert_eq!(refused(&codex, &rule, Some(3)), None);
+        // Kimi's own jobs can start turns, so its ping waits, unknown included.
+        let home = tempfile::tempdir().unwrap();
+        let mut kimi = idle();
+        kimi["agent"] = json!("kimi");
+        kimi["model"] = json!("kimi-for-coding");
+        kimi["agent_home"] = json!(home.path().to_str().unwrap());
+        kimi["cache_touched"] = json!({"at":NOW - 3000.0,"conversation_id":"conversation-1"});
+        for background in [Some(3), None] {
+            let observed = Observed { record: &kimi, live: true, usage: Value::Null };
+            assert!(matches!(decide(&enabled(), &Value::Null, Some(&observed),
+                || Facts { background, ..quiet() }, NOW), Step::Hold { state: "waiting", .. }));
+            assert_eq!(refused(&kimi, &rule, background),
+                Some("Background work is running or unknown; nothing was submitted"));
+        }
     }
 
     #[test]

@@ -3032,12 +3032,15 @@ context plus about 40 new tokens, which stay in the conversation.
 
 A ping goes only to the exact verified, live agent process with the expected
 run and conversation when it is settled: no turn, tool or child is running, no
-live background or scheduled job, no automatic recovery episode, no unconfirmed
+scheduled job, no automatic recovery episode, no unconfirmed
 or queued input, no pending launch message, question, approval, trust, resume,
 usage-limit or cache-expiry choice, no pending model or effort setting, an
 empty recognized composer, no terminal input in the last two minutes (a terminal
 that cannot report input times must have no attached client; unknown activity
 never admits a ping), and the session is not paused, archived or terminated.
+Owned live shell or native jobs (desktop **Background**) do not hold a ping for
+Claude or Codex, because an idle agent with them accepts a new message; Kimi's
+own scheduled and background jobs can start turns, so its ping waits.
 The last check before the first typed byte repeats these rules and the
 30-second cache margin, so a slow stage never types into a cold cache. A
 partial native usage read is not evidence of expiry: while Claude's usage scan
@@ -3051,12 +3054,16 @@ overlap, so two desktops or a manual `hgs recovery tick` cannot send two pings
 for one window.
 
 A ping is not the person's message. Its prompt is journaled with
-`origin: "keep_warm"` and every event of its turn with
-`turn_origin: "keep_warm"`. Its Stop is never the session's reply, so it adds no
-unread badge, notification or read-mark change; listings and search keep the
-previous prompt, last message and last event time. A message the person sends
-or queues while a ping is being typed or running makes that turn theirs; the
-ping's own prompt arriving later is then shown as ordinary text. A ping turn that
+`origin: "keep_warm"` and the rest of a turn that holds nothing but the ping
+with `turn_origin: "keep_warm"`. Its Stop is never the session's reply, so it
+adds no unread badge, notification or read-mark change; listings and search keep
+the previous prompt, last message and last event time. The first prompt of any
+other origin, whether the person's text, a task notification, a subagent
+report, a peer message or any other system envelope, ends the masking at once
+before it is applied: the person's prompt, last message and times return, and
+that prompt and every later event are ordinary and visible, including a Stop
+that closes a turn the ping started. The ping's own prompt event keeps
+`origin: "keep_warm"`. A ping turn that
 fails, for example on a usage limit, never starts automatic recovery, even when
 an earlier finished recovery episode is kept: keep-warm stops
 until the next real turn, and the provider failure stays visible as usual.

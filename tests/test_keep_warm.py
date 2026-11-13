@@ -12,6 +12,14 @@ import test_input as fixtures
 import test_pause
 
 TEXT = "[Zerus keep-warm] Reply with exactly OK and do nothing else."
+NOTICE = ("<task-notification>\n<task-id>b1</task-id>\n<status>completed</status>\n"
+          "<summary>Background command \"watch\" completed</summary>\n</task-notification>")
+PEER = ("<zerus-message from=\"peer/session\" host=\"peerhost\" "
+        "reference=\"zerus://session?machine=11111111-1111-4111-8111-111111111111"
+        "&amp;host=peerhost&amp;name=peer%2Fsession"
+        "&amp;conversation=22222222-2222-4222-8222-222222222222"
+        "&amp;run=33333333-3333-4333-8333-333333333333\">\n"
+        "hello from a peer\n</zerus-message>")
 
 
 class KeepWarm(unittest.TestCase):
@@ -137,6 +145,78 @@ class KeepWarm(unittest.TestCase):
         final = self.inspect()
         self.assertNotEqual(final["reply_id"], before["reply_id"])
         self.assertEqual(final["last_message"], "Done again.")
+
+    def begin_ping(self, agent="claude"):
+        """The person's finished turn, then one ping typed by the guarded path."""
+        self.record.update(agent=agent)
+        self.write_record()
+        self.hook("UserPromptSubmit", prompt="Fix the tests")
+        self.hook("Stop", last_assistant_message="Done.")
+        before = self.inspect()
+        self.pending_ping()
+        self.hook("UserPromptSubmit", prompt=TEXT)
+        return before
+
+    def marked(self, after):
+        return [(event["type"], event.get("origin"), event.get("turn_origin"))
+                for event in after["events"]
+                if event.get("origin") == "keep_warm" or event.get("turn_origin") == "keep_warm"]
+
+    def test_a_background_completion_after_a_ping_keeps_the_person_prompt_and_reply(self):
+        before = self.begin_ping()
+        self.hook("Stop", last_assistant_message="OK")
+        self.hook("UserPromptSubmit", prompt=NOTICE)
+        self.hook("Stop", last_assistant_message="The watcher finished; all jobs are green.")
+        after = self.inspect()
+        self.assertNotEqual(after["reply_id"], before["reply_id"])
+        self.assertEqual((after["prompt"], after["last_message"]),
+                         ("Fix the tests", "The watcher finished; all jobs are green."))
+        self.assertFalse(self.listed()["keep_warm"]["turn_active"])
+        # Only the ping's own prompt and Stop are marked; the completion is visible.
+        self.assertEqual(self.marked(after),
+                         [("UserPromptSubmit", "keep_warm", "keep_warm"), ("Stop", None, "keep_warm")])
+        by_detail = {event.get("detail"): event for event in after["events"]}
+        completion = by_detail['Background command "watch" completed']
+        self.assertEqual((completion["origin"], completion.get("turn_origin")), ("task_notification", None))
+        self.assertIsNone(by_detail["The watcher finished; all jobs are green."].get("turn_origin"))
+
+    def test_a_background_completion_queued_during_a_ping_keeps_the_person_prompt_and_reply(self):
+        before = self.begin_ping()
+        self.hook("UserPromptSubmit", prompt=NOTICE)  # queued while the ping runs
+        self.hook("Stop", last_assistant_message="OK")  # the joined Stop ends real work
+        self.hook("Stop", last_assistant_message="The watcher finished; all jobs are green.")
+        after = self.inspect()
+        self.assertNotEqual(after["reply_id"], before["reply_id"])
+        self.assertEqual((after["prompt"], after["last_message"]),
+                         ("Fix the tests", "The watcher finished; all jobs are green."))
+        # The joined turn holds more than the ping, so only the ping prompt is marked.
+        self.assertEqual(self.marked(after), [("UserPromptSubmit", "keep_warm", "keep_warm")])
+        by_detail = {event.get("detail"): event for event in after["events"]}
+        self.assertIsNone(by_detail["OK"].get("turn_origin"), "a joined Stop stays visible")
+        self.assertIsNone(by_detail["The watcher finished; all jobs are green."].get("turn_origin"))
+
+    def test_a_persons_message_during_a_ping_keeps_the_persons_prompt(self):
+        before = self.begin_ping()
+        self.hook("UserPromptSubmit", prompt="Also check CI")
+        self.hook("Stop", last_assistant_message="CI is green.")
+        after = self.inspect()
+        self.assertNotEqual(after["reply_id"], before["reply_id"])
+        self.assertEqual((after["prompt"], after["last_message"]), ("Also check CI", "CI is green."))
+        self.assertEqual(self.marked(after), [("UserPromptSubmit", "keep_warm", "keep_warm")])
+        self.assertFalse(self.listed()["keep_warm"]["turn_active"])
+
+    def test_a_peer_message_during_a_ping_keeps_the_person_prompt(self):
+        before = self.begin_ping()
+        self.hook("UserPromptSubmit", prompt=PEER)
+        self.hook("Stop", last_assistant_message="Handled the peer message.")
+        after = self.inspect()
+        self.assertNotEqual(after["reply_id"], before["reply_id"])
+        self.assertEqual((after["prompt"], after["last_message"]),
+                         ("Fix the tests", "Handled the peer message."))
+        self.assertEqual(self.marked(after), [("UserPromptSubmit", "keep_warm", "keep_warm")])
+        peer = next(event for event in after["events"] if event.get("origin") == "peer_message")
+        self.assertEqual(peer["detail"], "Message from peer/session")
+        self.assertIsNone(peer.get("turn_origin"))
 
     def test_a_failed_ping_starts_no_recovery(self):
         self.record["agent"] = "claude"
