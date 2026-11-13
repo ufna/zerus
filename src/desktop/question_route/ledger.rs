@@ -228,7 +228,7 @@ fn insert(tx: &Connection, record: &Record, at: i64, state: &str, code: &str) ->
     ensure!(count(tx)? < ROWS, "question route ledger is full");
     tx.execute(
         "INSERT INTO desktop_question_routes(key,request_id,child_session_id,parent_session_id,
-         question_id,created,state,code,run_id) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9)",
+         question_id,created,state,code,run_id,record) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
         params![
             record.identity.key(),
             record.request_id(),
@@ -238,7 +238,8 @@ fn insert(tx: &Connection, record: &Record, at: i64, state: &str, code: &str) ->
             at,
             state,
             code,
-            record.identity.run_id
+            record.identity.run_id,
+            serde_json::to_string(record)?
         ],
     )?;
     Ok(())

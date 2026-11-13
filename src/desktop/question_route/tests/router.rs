@@ -975,7 +975,7 @@ fn exact_previous_store_upgrade_adds_only_the_route_leaf() {
     );
     // This leaf's table, then the later switch leaf's two (schema 37), the
     // latch leaf's two (schema 39) and the retention counter (schema 40).
-    assert_eq!(tables(&store.db), before + 1 + 2 + 2 + 1);
+    assert_eq!(tables(&store.db), before + 1 + 2 + 2 + 1 + 1);
     assert!(ledger::reserved(&store.db, 8).unwrap().is_empty());
 }
 
@@ -1447,7 +1447,7 @@ fn exact_previous_store_upgrade_adds_only_the_switch_leaf_switched_on() {
     );
     // This leaf's two tables, then the later latch leaf's two (schema 39)
     // and the retention counter (schema 40).
-    assert_eq!(tables(&store.db), before + 2 + 2 + 1);
+    assert_eq!(tables(&store.db), before + 2 + 2 + 1 + 1);
     assert!(
         super::super::policy::enabled(&store.db).unwrap(),
         "on by default"
@@ -1583,7 +1583,7 @@ fn a_submitted_route_is_one_line_for_the_child_and_the_parent() {
 }
 
 #[test]
-fn refused_reserved_and_unknown_routes_have_no_line() {
+fn settled_failures_show_only_the_child_and_reserved_stays_pending() {
     let mut f = Fixture::new();
     *f.child.lock().unwrap() = Child::NoReceipt;
     f.snapshot(vec![child_row(), parent_row()]);
@@ -1592,8 +1592,8 @@ fn refused_reserved_and_unknown_routes_have_no_line() {
     *f2.child.lock().unwrap() = Child::NotStarted;
     f2.snapshot(vec![child_row(), parent_row()]);
     f2.until("refused", |f| f.states() == ["refused"]);
-    for f in [&f, &f2] {
-        assert!(lines(f, CHILD_ID).is_empty());
+    for (f, outcome) in [(&f, "uncertain"), (&f2, "not_sent")] {
+        assert_eq!(lines(f, CHILD_ID)[0]["outcome"], outcome);
         assert!(lines(f, PARENT_ID).is_empty());
     }
     // Admitted but not yet settled: still nothing.
@@ -1675,12 +1675,14 @@ fn only_the_newest_twenty_lines_of_either_role_are_read() {
             "submitted",
         );
     }
-    // A refused and a reserved one are newest, yet never shown.
+    // A refused route is newest and shown to its child.
     admitted(&mut f, &question(&base, 99), 100 * HOUR, "refused");
     let shown = lines(&f, CHILD_ID);
     assert_eq!(shown.len(), super::super::activity::LIMIT);
     let at: Vec<i64> = shown.iter().map(|l| l["at"].as_i64().unwrap()).collect();
-    let mut newest: Vec<i64> = (11..=30).rev().map(|n| n * HOUR).collect();
+    let mut newest: Vec<i64> = std::iter::once(100 * HOUR)
+        .chain((11..=30).rev().map(|n| n * HOUR))
+        .collect();
     newest.truncate(20);
     assert_eq!(at, newest, "newest first, both roles merged");
     let roles: Vec<&str> = shown.iter().map(|l| l["role"].as_str().unwrap()).collect();
@@ -1692,7 +1694,7 @@ fn only_the_newest_twenty_lines_of_either_role_are_read() {
     for (sql, index) in [
         (
             super::super::activity::CHILD_SQL,
-            "desktop_question_routes_child_submitted",
+            "desktop_question_routes_child_outcomes",
         ),
         (
             super::super::activity::PARENT_SQL,
@@ -1755,7 +1757,10 @@ fn exact_previous_store_upgrade_adds_only_the_activity_indexes() {
     // The two partial indexes, then the later latch leaf's two tables, its
     // receipt index and their two primary key indexes (schema 39), then the
     // retention counter and the settled index (schema 40).
-    assert_eq!(objects(&store.db), (tables + 2 + 1, indexes + 2 + 3 + 1));
+    assert_eq!(
+        objects(&store.db),
+        (tables + 2 + 1 + 1, indexes + 2 + 3 + 1 + 2)
+    );
     // The route settled before the upgrade is indexed and shown.
     let reply = super::super::activity_request(
         &store.db,
@@ -1999,7 +2004,7 @@ fn exact_previous_store_upgrade_adds_only_the_latch_leaf() {
         crate::desktop::store::SCHEMA
     );
     // This leaf's two tables, then the retention counter (schema 40).
-    assert_eq!(tables(&store.db), before + 2 + 1);
+    assert_eq!(tables(&store.db), before + 2 + 1 + 1);
     assert!(!super::super::latch::latched(&store.db, CHILD_ID).unwrap());
 }
 
@@ -2726,7 +2731,7 @@ fn exact_previous_store_upgrade_adds_only_the_retention_leaf() {
         crate::desktop::store::SCHEMA
     );
     // The counter table and the settled index.
-    assert_eq!(objects(&store.db), (tables + 1, indexes + 1));
+    assert_eq!(objects(&store.db), (tables + 1 + 1, indexes + 1 + 2));
     assert_eq!(ledger::count(&store.db).unwrap(), 2);
     let runs: i64 = store
         .db
@@ -2744,4 +2749,79 @@ fn exact_previous_store_upgrade_adds_only_the_retention_leaf() {
             []
         )
         .is_err());
+}
+
+/// Uses the production read-only listing/inspection projection over the real
+/// actor ledger. A failure never consumes or answers the person's card.
+#[test]
+fn f3_f4_escalation_is_exact_and_unknown_never_replays_after_restart() {
+    for child in [Child::NotStarted, Child::NoReceipt, Child::Submitted] {
+        let mut f = Fixture::new();
+        *f.child.lock().unwrap() = child;
+        f.snapshot(vec![child_row(), parent_row()]);
+        let state = match child {
+            Child::NotStarted => "refused",
+            Child::NoReceipt => "unknown",
+            Child::Submitted => "submitted",
+        };
+        f.until(state, |f| f.states() == [state]);
+        let outcomes = crate::state::question_route_outcomes::Reader::at(&f.config.state).unwrap();
+        let original = card("tool:toolu_1");
+        let escalated = child != Child::Submitted;
+        assert_eq!(
+            outcomes.escalated(&child_row(), Some(std::slice::from_ref(&original))),
+            escalated
+        );
+        let mut inspection = inspect(vec![original.clone()]);
+        inspection["parent"] = child_row()["parent"].clone();
+        inspection["phase"] = json!("input");
+        outcomes.inspect(&mut inspection);
+        assert_eq!(inspection["human_request"] == true, escalated);
+        assert_eq!(
+            inspection["pending_questions"][0], original,
+            "the person can still answer"
+        );
+        for (key, value) in [
+            ("question_hash", json!("new-hash")),
+            ("question_id", json!("tool:next")),
+            ("run_id", json!("next-run")),
+            ("conversation_id", json!("next-conversation")),
+            ("answer_delivery", json!({"status":"submitted"})),
+            ("can_answer", json!(false)),
+            ("optional", json!(true)),
+        ] {
+            let mut stale = original.clone();
+            stale[key] = value;
+            assert!(!outcomes.escalated(&child_row(), Some(&[stale])), "{key}");
+        }
+        assert!(!outcomes.escalated(&child_row(), Some(&[])));
+        drop(outcomes);
+        let sent = f.sent();
+        f.restart();
+        f.snapshot(vec![child_row(), parent_row()]);
+        f.settle();
+        assert_eq!(
+            f.sent(),
+            sent,
+            "a settled failure or unknown is never sent again"
+        );
+        assert_eq!(f.states(), [state]);
+    }
+}
+
+#[test]
+fn invalid_route_metadata_is_kept_without_admitting_a_send() {
+    let mut f = Fixture::new();
+    let mut r = record();
+    r.identity.question_id = "tool:unprintable'".into();
+    assert!(!r.valid());
+    assert!(r.displayable());
+    ledger::refuse(&mut f.store.db, &r, 1, ledger::INVALID).unwrap();
+    assert_eq!(lines(&f, CHILD_ID)[0]["outcome"], "not_sent");
+    assert!(lines(&f, PARENT_ID).is_empty());
+    let mut q = card(&r.identity.question_id);
+    q["question_hash"] = json!(r.identity.question_hash);
+    let outcomes = crate::state::question_route_outcomes::Reader::at(&f.config.state).unwrap();
+    assert!(outcomes.escalated(&child_row(), Some(&[q])));
+    assert_eq!(f.sent(), 0);
 }

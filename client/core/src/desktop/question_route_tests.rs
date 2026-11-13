@@ -739,3 +739,17 @@ fn a_route_with_any_other_text_target_or_identity_is_refused() {
     intent.checkpoint = serde_json::to_string(&changed).unwrap();
     assert!(intent.verify_route().is_err());
 }
+
+#[test]
+fn failures_escalate_immediately_without_replay_against_the_shared_contract() {
+    let fixture: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../../mobile/android/app/src/test/resources/question-route-outcome-contract.json"
+    ))
+    .unwrap();
+    for case in fixture["decisions"].as_array().unwrap() {
+        assert_eq!(
+            super::escalates(case["state"].as_str().unwrap()),
+            case["human_request"].as_bool().unwrap()
+        );
+    }
+}

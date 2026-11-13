@@ -1,3 +1,4 @@
+import outcomeContract from "../../../mobile/android/app/src/test/resources/question-route-outcome-contract.json";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 // The read-only Activity lines of submitted question routes (zerus-sa9qn.33);
 // the native read is a fixture.
@@ -154,4 +155,12 @@ describe("which session's lines the Activity shows", () => {
     expect(routeSessionOf(undefined, live)).toBeUndefined();
     expect(routeSessionOf({ computer: "", key: "\nrun:r1" }, live)).toBeUndefined();
   });
+});
+
+it("the settled outcomes follow the shared mobile contract at real millisecond timestamps", () => {
+  for (const c of outcomeContract.activity) {
+    const routes = parseRouteActivity({ routes: [c.line] }, outcomeContract.session_id);
+    expect(routes.length, c.name).toBe(c.accepted ? 1 : 0);
+    if (c.accepted) expect(routes[0]).toMatchObject({ outcome: c.line.outcome, at: 1794599000 });
+  }
 });

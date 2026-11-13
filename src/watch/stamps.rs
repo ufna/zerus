@@ -142,6 +142,13 @@ pub(super) fn scan(root: &Path) -> Scan {
             scan.global.add(&path, &metadata);
         }
     }
+    // The service ledger is read once per scan, never once per session.
+    // Only a failure revision changes this stamp; ordinary desktop writes do not.
+    if let Some(revision) = crate::state::question_route_outcomes::Reader::at(root).and_then(|r| r.revision()) {
+        let mut hash = DefaultHasher::new();
+        ("question_route_outcome_revision", revision).hash(&mut hash);
+        scan.global.hash = scan.global.hash.wrapping_add(hash.finish());
+    }
     scan
 }
 
