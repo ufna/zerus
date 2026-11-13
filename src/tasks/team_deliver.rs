@@ -993,7 +993,9 @@ fn delivered(body: &Input, result: attempts::Delivered) -> Value {
 #[cfg(test)]
 mod tests;
 #[cfg(all(test, unix))]
-pub(crate) use tests::processes::{blocked_handout, Blocked, RealHandout};
+pub(crate) use tests::processes::{
+    blocked_handout, removed_stage_cancel, Blocked, RealCancel, RealHandout,
+};
 
 #[cfg(test)]
 fn locked_test_pause(config: &Config, phase: &str) {

@@ -234,6 +234,15 @@ impl Runtime {
                 }
             }
         }
+        if d.outcome.is_none() && !store.effect_reserved(&team.id, &d.id)? {
+            // The store settled this effect before any outcome reached the
+            // row: a removal's hand-back (zerus-63rru.77), a reopen or an
+            // override. No admission lets it out again, so the row ends now:
+            // nothing is delivered, replayed or recorded, no failure stays.
+            self.recovered(store, team, key, now)?;
+            self.ledger.remove(&row)?;
+            return Ok(());
+        }
         if d.not_started && d.outcome.is_none() {
             if *budget == 0 || ports.stopped() || team.status != TeamStatus::Running {
                 return Ok(());
@@ -262,7 +271,18 @@ impl Runtime {
         now: i64,
     ) -> Result<()> {
         if !d.gated {
-            if let Some(HandoutOutcome::Refused { reason }) = &d.outcome {
+            // A refusal of an effect the store has already settled (a
+            // removal's hand-back, which told the lead) is no failure of the
+            // node's hand-out (zerus-63rru.77).
+            let refused = match &d.outcome {
+                Some(HandoutOutcome::Refused { reason })
+                    if store.effect_reserved(&team.id, &d.id)? =>
+                {
+                    Some(reason)
+                }
+                _ => None,
+            };
+            if let Some(reason) = refused {
                 let revision = store
                     .task_observation(&team.id, d.node)?
                     .map_or(String::new(), |o| o.revision);

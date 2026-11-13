@@ -53,6 +53,24 @@ impl Runtime {
         if store.report(&team.id, node.id, generation)?.is_some() {
             return self.recovered(store, team, &key, now);
         }
+        // Its holder was removed, which took the task back (zerus-63rru.77):
+        // the report is not the team's. The lead is told once, and the step
+        // ends here: no retry, no failure, no card.
+        if let Some(member) = store.removed_reporter(&team.id, node.id, generation)? {
+            if !store.late_report_told(&team.id, node.id, generation)? {
+                write(
+                    store,
+                    &team.id,
+                    Operation::RecordLateReport {
+                        node: node.id,
+                        generation,
+                        member,
+                    },
+                    now,
+                )?;
+            }
+            return self.recovered(store, team, &key, now);
+        }
         let Some(task) = node.task.as_ref() else {
             return Ok(());
         };
