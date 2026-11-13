@@ -147,9 +147,12 @@ impl TaskDoc {
         }
         if !self.team_invalid() && self.team()?.as_ref() == team {
             // An unchanged binding still clears a stale mark: the team takes
-            // the task anew (zerus-63rru.36 round 2).
-            self.fields().delete("cancelled_at")?;
-            self.fields().delete("cancel_reason")?;
+            // the task anew (zerus-63rru.36 round 2). A repeat of a task
+            // without a mark stays the no-op it was.
+            if self.fields().get("cancelled_at").is_some() {
+                self.fields().delete("cancelled_at")?;
+                self.fields().delete("cancel_reason")?;
+            }
             return Ok(());
         }
         if self.content_len() + 1024 > MAX_DOCUMENT {
