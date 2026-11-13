@@ -42,7 +42,7 @@ public enum QuestionRouteActivity {
         normalized["outcome"] = .string("not_sent")
         if line["role"] == .string("parent") {
             guard line.object("parent")?["session_id"] == .string(sessionId), text(line["text"],2048) else { return false }
-            normalized.removeValue(forKey: "text")
+            normalized = normalized.putting("text",nil)
             normalized["role"] = .string("child")
             return label(normalized,sessionId: line.object("child")?.string("session_id") ?? "") != nil
         }
