@@ -18,6 +18,10 @@ use zerus_replica::Settlement;
 pub(super) const BUDGET: Duration = Duration::from_secs(15);
 /// The actor's deadline for one hand-out child
 /// (desktop/teams/actor/native/tasks.rs).
+#[cfg_attr(
+    not(any(target_os = "linux", target_os = "macos")),
+    allow(dead_code)
+)]
 pub(crate) const CHILD_DEADLINE: Duration = Duration::from_secs(30);
 /// The hand-out command's first wait for the project's task-store lock
 /// (zerus-63rru.72). It must stay well below [`CHILD_DEADLINE`]: a held lock
