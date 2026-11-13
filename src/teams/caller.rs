@@ -89,7 +89,10 @@
 //! the process table alone, reading no environment, matched by process ID and
 //! birth; never `HGS_AGENT` or another marker. When it cannot tell (records
 //! unreadable or over their bound, a birth unreadable, a walk past its
-//! bound), both refuse with the person path's sentences.
+//! bound), both refuse with the person path's sentences. The check stands on
+//! the host records: a call that removes or edits its host's own same-user
+//! records is no longer seen below that host, which is the hosted proof's
+//! stated exclusion and this guard's limit too (zerus-63rru.28's review).
 //! [`limits`] is the one text that states every limit of these proofs.
 //!
 //! With a session-ID hint, ids/<ID>.json selects one verified record.
