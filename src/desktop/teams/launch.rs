@@ -217,21 +217,42 @@ impl Runtime {
         Ok(())
     }
 }
-fn apply(store: &mut Store, team: &Team, operation: Operation, now: i64) -> Result<()> {
-    let current = store
-        .team(&team.id)?
-        .ok_or_else(|| invalid("Team disappeared"))?;
+/// One intended write through the store, with one request ID kept across
+/// every retry and a restart, persisted with the row (zerus-63rru.91, the
+/// task intake's and the actor's receipt rule). A stale revision drops the
+/// reserved request so the next pass reserves a new one against the new
+/// revision; a storage failure keeps it, because the commit's result is
+/// unknown and the same ID must be replayed, as the store's own answer says.
+fn apply(
+    store: &mut Store,
+    team: &Team,
+    operation: Operation,
+    reserved: &mut Option<Request>,
+    now: i64,
+) -> Result<()> {
+    if reserved.is_none() {
+        let current = store
+            .team(&team.id)?
+            .ok_or_else(|| invalid("Team disappeared"))?;
+        *reserved = Some(Request {
+            request_id: uuid::Uuid::new_v4().to_string(),
+            team: team.id.clone(),
+            expected_revision: current.revision,
+            operation,
+        });
+    }
     let actor = Actor::Service {
         person: team.owner.clone(),
         team: team.id.clone(),
     };
-    let request = Request {
-        request_id: uuid::Uuid::new_v4().to_string(),
-        team: team.id.clone(),
-        expected_revision: current.revision,
-        operation,
-    };
-    ops::apply(store, &actor, &request, now).map(|_| ())
+    match ops::apply(store, &actor, reserved.as_ref().expect("reserved above"), now) {
+        Ok(_) => Ok(()),
+        Err(p) if p.code == code::STALE_REVISION => {
+            *reserved = None;
+            Err(p)
+        }
+        Err(p) => Err(p),
+    }
 }
 pub(super) fn invalid(text: &str) -> Problem {
     Problem::new(code::INVALID_STATE, text)

@@ -29,6 +29,7 @@ impl Runtime {
                         card: kept.seq,
                         reason: "The launch's state changed what this card can take.".into(),
                     },
+                    &mut row.close_request,
                     now,
                 )?;
             }
