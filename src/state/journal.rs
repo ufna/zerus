@@ -1446,7 +1446,7 @@ pub(super) fn update_activity(record: &mut Value, event: &Value) {
                 record[count] = json!(record[count].as_u64().unwrap_or(0) + 1);
             }
         }
-        settle_quiet_revivals(record, &mut children, timestamp);
+        let _ = settle_quiet_revivals(record, &mut children, timestamp);
         record["subagents"] = json!(children);
         return;
     }
@@ -1745,14 +1745,18 @@ pub(super) fn update_activity(record: &mut Value, event: &Value) {
     // zerus-63rru.93 round 2: the persisted settle also rides the session's
     // next event of any kind (the main's Stop or turn end included), so a
     // last invocation whose Start lost the race cannot keep the member busy
-    // for ever.
-    settle_quiet_revivals(record, &mut record["subagents"].as_object().cloned().unwrap_or_default(), timestamp);
+    // for ever. Round 3: the map is rewritten only when a child settled.
+    let mut children = record["subagents"].as_object().cloned().unwrap_or_default();
+    if settle_quiet_revivals(record, &mut children, timestamp) {
+        record["subagents"] = json!(children);
+    }
 }
 
 /// zerus-63rru.93: a revived Kimi profile child that has had no event of its
 /// own for the settle period is ended, with no new timer; its group's counts
 /// follow so the listing the fleet reads shows no active child for it.
-fn settle_quiet_revivals(record: &mut Value, children: &mut serde_json::Map<String, Value>, timestamp: f64) {
+/// Whether anything was settled.
+fn settle_quiet_revivals(record: &mut Value, children: &mut serde_json::Map<String, Value>, timestamp: f64) -> bool {
     let quiet: Vec<String> = children
         .iter()
         .filter(|(_, child)| {
@@ -1763,6 +1767,7 @@ fn settle_quiet_revivals(record: &mut Value, children: &mut serde_json::Map<Stri
         })
         .map(|(id, _)| id.clone())
         .collect();
+    let settled_any = !quiet.is_empty();
     for id in quiet {
         let Some(child) = children.get_mut(&id) else {
             continue;
@@ -1772,18 +1777,19 @@ fn settle_quiet_revivals(record: &mut Value, children: &mut serde_json::Map<Stri
         child.as_object_mut().unwrap().remove("revived_at");
         if let Some(groups) = record["subagent_groups"].as_object_mut() {
             if let Some(group) = groups.get_mut(&id) {
-                group["active_count"] = json!(group["active_count"]
-                    .as_u64()
-                    .unwrap_or(1)
-                    .saturating_sub(1));
+                // The read-time rule zeroes the profile's whole active count
+                // (the quiet revived profile has no live invocation left to
+                // be told apart), so the persisted settle agrees with it.
+                let active = group["active_count"].as_u64().unwrap_or(1);
+                group["active_count"] = json!(0);
                 group["completed_count"] = json!(group["completed_count"]
                     .as_u64()
                     .unwrap_or(0)
-                    .saturating_add(1));
+                    .saturating_add(active));
             }
         }
     }
-    record["subagents"] = json!(children.clone());
+    settled_any
 }
 
 // Native turn IDs are monotonic, but the observation-only TurnStarted hook can

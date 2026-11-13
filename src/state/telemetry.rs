@@ -29,12 +29,7 @@ pub(super) fn grouped_active(record: &Value) -> u64 {
 pub(super) fn quiet_revived(record: &Value, profile: &str, now: f64) -> bool {
     record["subagents"]
         .get(profile)
-        .is_some_and(|child| {
-            child["revived_at"].as_f64().is_some()
-                && child["updated"]
-                    .as_f64()
-                    .is_some_and(|at| now - at >= super::journal::REVIVED_KIMI_SETTLE_SECONDS)
-        })
+        .is_some_and(|child| quiet_revived_child(child, now))
 }
 
 /// An unknown child never establishes current work: listings count it as
@@ -42,6 +37,19 @@ pub(super) fn quiet_revived(record: &Value, profile: &str, now: f64) -> bool {
 pub(super) fn child_working(record: &Value, child: &Value) -> bool {
     child["state"] == "working" && child["display_state"] != "unknown" && (record["kimi_native_roster"] != true
         || child["external"] == true || child["native_roster"] == true)
+        // zerus-63rru.93 round 3: a revived Kimi profile child quiet for the
+        // settle period counts as ended here too, so settled(), work_remains
+        // and every idle-only action see it exactly as the listing does.
+        && !quiet_revived_child(child, super::now())
+}
+
+/// A child revived by a racing start that has had no event of its own for
+/// the settle period: read as ended everywhere.
+fn quiet_revived_child(child: &Value, now: f64) -> bool {
+    child["revived_at"].as_f64().is_some()
+        && child["updated"]
+            .as_f64()
+            .is_some_and(|at| now - at >= super::journal::REVIVED_KIMI_SETTLE_SECONDS)
 }
 
 /// Whether the listing names this child. A Kimi hook names only a profile,
@@ -68,7 +76,20 @@ pub(super) fn work_remains(record: &Value) -> bool {
 /// of them acts while the listing shows work, and none waits for a Kimi hook
 /// entry the native roster has replaced.
 pub(super) fn settled(record: &Value) -> bool {
-    string(record, "activity") == "idle" && string(record, "phase") == "idle" && !work_remains(record)
+    // zerus-63rru.93 round 3: a busy activity whose every working child is
+    // a quiet revived one reads settled too, so the idle-only actions do not
+    // wait for an event that will never come. Any other busy with no work
+    // keeps its settled reading as before.
+    let quiet_only = string(record, "activity") == "busy"
+        && record["subagents"].as_object().is_some_and(|children| {
+            children
+                .values()
+                .any(|child| quiet_revived_child(child, super::now()))
+        })
+        && !work_remains(record);
+    (string(record, "activity") == "idle" || quiet_only)
+        && (string(record, "phase") == "idle" || quiet_only)
+        && !work_remains(record)
 }
 
 /// Kimi external hooks expose a profile name, not the Swarm child's identity.

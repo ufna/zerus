@@ -253,6 +253,16 @@ fn the_race_followed_by_no_further_event_reads_free_after_the_period() {
         row["subagent_active_count"], 0,
         "the revived child kept the member busy: {row}"
     );
+    // The settled and work-remains reads agree: no idle-only action waits
+    // for an event that will never come.
+    assert!(
+        !crate::state::telemetry::work_remains(&record),
+        "work remains after the period: {record}"
+    );
+    assert!(
+        crate::state::telemetry::settled(&record),
+        "the session is not settled after the period: {record}"
+    );
     // The persisted row is untouched by the read: only the read counts it.
     assert_eq!(child(&record, "profile-1")["state"], "working");
 }
@@ -276,6 +286,36 @@ fn the_main_agents_turn_end_persists_the_settle() {
     );
     let ended = child(&record, "profile-1");
     assert_eq!(ended["state"], "ended", "{ended}");
+    // The activity decision ran with the read-time rule, so the persisted
+    // activity and phase read idle once the child is settled.
+    assert_eq!(record["activity"], "idle", "{record}");
+    assert_eq!(record["phase"], "idle", "{record}");
     let row = listed_live_row(record.clone()).expect("a listed row");
     assert_eq!(row["subagent_active_count"], 0, "{row}");
+}
+
+/// Round 3: the persisted settle and the read-time rule agree — a quiet
+/// revived profile's whole group zeroes, whatever its active count was.
+#[test]
+fn the_persisted_settle_zeroes_the_whole_profile_group() {
+    let mut record = record("kimi");
+    apply(
+        &mut record,
+        &[
+            kimi("SubagentStart", "profile-1"),
+            kimi("SubagentStart", "profile-1"),
+            kimi("SubagentStop", "profile-1"),
+            kimi("SubagentStart", "profile-1"),
+        ],
+    );
+    assert_eq!(child(&record, "profile-1")["state"], "working");
+    quiet(&mut record);
+    apply(
+        &mut record,
+        &[json!({"hook_event_name":"Stop","agent_id":"main"})],
+    );
+    let group = &record["subagent_groups"]["profile-1"];
+    assert_eq!(group["active_count"], 0, "{group}");
+    assert_eq!(group["completed_count"], 3, "{group}");
+    assert_eq!(child(&record, "profile-1")["state"], "ended");
 }
