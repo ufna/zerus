@@ -505,3 +505,89 @@ fn a_paused_members_started_task_is_untouched() {
     assert!(items(&h).is_empty());
     assert_eq!(cards(&h), 0);
 }
+
+/// A report written at the task level before the removal, and not yet
+/// recorded by the team when the removal lands, is still the team's: the
+/// real reports step records it, tells no late report and leaves no gate.
+#[test]
+fn a_report_written_before_the_removal_is_recorded_through_the_real_pass() {
+    /// Production, with the member's report text and head answered.
+    struct Reporting {
+        inner: Production,
+    }
+    impl Ports for Reporting {
+        fn changes(
+            &mut self,
+            project: &str,
+            generation: &str,
+            offset: u64,
+        ) -> crate::desktop::teams::actor::ports::Result<zerus_replica::Changes> {
+            Ports::changes(&mut self.inner, project, generation, offset)
+        }
+        fn observe(
+            &mut self,
+            store: &mut crate::teams::store::Store,
+            task: &TaskRef,
+        ) -> crate::desktop::teams::actor::ports::Result<()> {
+            Ports::observe(&mut self.inner, store, task)
+        }
+        fn free(
+            &mut self,
+            team: &Team,
+            member: &Member,
+        ) -> crate::desktop::teams::actor::ports::Result<bool> {
+            Ports::free(&mut self.inner, team, member)
+        }
+        fn availability(
+            &mut self,
+            team: &Team,
+            member: &Member,
+        ) -> crate::desktop::teams::actor::ports::Result<
+            crate::desktop::teams::actor::ports::Availability,
+        > {
+            Ports::availability(&mut self.inner, team, member)
+        }
+        fn deliver(&mut self, t: &Team, n: &Node, m: &Member, id: &str) -> DeliveryResult {
+            Ports::deliver(&mut self.inner, t, n, m, id)
+        }
+        fn report(
+            &mut self,
+            _: &TaskRef,
+        ) -> crate::desktop::teams::actor::ports::Result<Option<String>> {
+            Ok(Some("Implemented and checked".into()))
+        }
+        fn reported(
+            &mut self,
+            _: &Team,
+            _: &Member,
+        ) -> crate::desktop::teams::actor::ports::Result<crate::teams::integrate::Reported>
+        {
+            Ok(crate::teams::integrate::Reported {
+                commit: COMMIT.into(),
+                branch: "teams/member".into(),
+                dirty: false,
+            })
+        }
+    }
+    let (mut h, mut a, p, _) = team();
+    let mut p = Reporting { inner: p };
+    a.tick(&mut h.store, &mut p, TEAM, T0, false).unwrap();
+    h.observe(1, crate::teams::ops::TaskStage::InProgress);
+    h.observe(1, crate::teams::ops::TaskStage::InReview);
+    removed(&mut h);
+    passes(&mut h, &mut a, &mut p, T0 + MINUTE, 5);
+
+    let generation = h.store.generation(TEAM, 1).unwrap().unwrap();
+    let report = h.store.report(TEAM, 1, generation).unwrap().unwrap();
+    assert_eq!(report.member, "m1");
+    assert!(items(&h).iter().all(|(kind, _)| kind != "removed_report"));
+    assert!(items(&h)
+        .iter()
+        .all(|(kind, _)| !kind.starts_with("member_removed:")));
+    assert!(a
+        .ledger
+        .prefix_page(TEAM, "gate:report:", "")
+        .unwrap()
+        .is_empty());
+    assert_eq!(cards(&h), 0);
+}

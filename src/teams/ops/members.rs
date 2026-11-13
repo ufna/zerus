@@ -255,10 +255,15 @@ fn settle_handout(
     let Some((node, id, state)) = open else {
         return Ok(());
     };
-    if handed.contains(&node) || ctx.pending(node)?.is_some() {
+    if ctx.pending(node)?.is_some() {
         return Ok(());
     }
     supersede(ctx, node, member)?;
+    // A node the decision loop handed back keeps that one item; its open
+    // hand-out is settled all the same, so no timer speaks of it later.
+    if handed.contains(&node) {
+        return Ok(());
+    }
     let body = if state == "in_progress" {
         format!(
             "Member {member} was removed while task {node} was in progress; the task is with the lead again. {} Reassign gives the task to another member, and a later report from that session will not move it; Cancel stops that session and ends the task.",

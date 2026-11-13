@@ -385,6 +385,17 @@ fn a_report_written_before_the_removal_stays_the_teams() {
     assert_eq!(effect(&h, &id).state, "submitted");
     assert!(!h.node(node).hold);
     let generation = h.store.generation(TEAM, node).unwrap().unwrap();
+    // It is no late report: neither the actor's read nor the store's own
+    // operation takes it for one.
+    assert_eq!(
+        h.store.removed_reporter(TEAM, node, generation).unwrap(),
+        None
+    );
+    let refused = h.run(&service(), late(node, generation)).unwrap_err();
+    assert_eq!(
+        refused.message,
+        "No report of a removed member waits here after its removal."
+    );
     h.run(
         &service(),
         Operation::RecordReport {
@@ -475,4 +486,68 @@ fn a_late_report_is_only_for_a_removed_members_settled_hand_out() {
         refused.message,
         "No report of a removed member waits here after its removal."
     );
+}
+
+/// A Reassign aimed at the member that holds the task's open hand-out, then
+/// the member's removal: the decision's hand-back is the one item, and the
+/// hand-out is settled all the same, so the start timer never speaks of it.
+#[test]
+fn a_node_handed_back_for_its_decision_has_its_hand_out_settled_too() {
+    let (mut h, node, id) = holding("submitted");
+    h.run(
+        &person(),
+        Operation::Reassign {
+            node,
+            member: "m1".into(),
+            reason: "The same member keeps it".into(),
+        },
+    )
+    .unwrap();
+    let seq = decision(&h, node).seq;
+    assert_eq!(decision(&h, node).state, DecisionState::Pending);
+    h.run(&person(), removed("m1")).unwrap();
+    assert_eq!(decision(&h, node).state, DecisionState::Settled);
+    assert_eq!(effect(&h, &id).state, "superseded");
+    assert!(h.node(node).hold);
+    let kinds: Vec<String> = items(&h, node).into_iter().map(|i| i.kind).collect();
+    assert_eq!(kinds, [format!("member_removed:{seq}")]);
+    assert!(h.store.unstarted(TEAM, 0, 200).unwrap().is_empty());
+}
+
+/// After a handover to m2, m1's hand-out of the earlier generation was
+/// superseded by the reopen, not by a removal; m1 is removed later. A late
+/// report is only ever the current generation's.
+#[test]
+fn a_late_report_is_never_an_earlier_generations() {
+    let (mut h, node, _) = holding("submitted");
+    h.observe(node, TaskStage::InProgress);
+    let earlier = h.store.generation(TEAM, node).unwrap().unwrap();
+    h.run(
+        &person(),
+        Operation::Reassign {
+            node,
+            member: "m2".into(),
+            reason: "Another member takes it".into(),
+        },
+    )
+    .unwrap();
+    let id = h.reopen(node, "m2");
+    h.reopen_outcome(
+        &id,
+        HandoutOutcome::Submitted {
+            receipt: "receipt-example".into(),
+        },
+    );
+    let current = h.store.generation(TEAM, node).unwrap().unwrap();
+    assert!(current > earlier);
+    h.observe(node, TaskStage::InReview);
+    h.run(&person(), removed("m1")).unwrap();
+    assert_eq!(h.node(node).state, NodeState::Reported);
+    assert_eq!(h.store.removed_reporter(TEAM, node, current).unwrap(), None);
+    let refused = h.run(&service(), late(node, earlier)).unwrap_err();
+    assert_eq!(
+        refused.message,
+        "No report of a removed member waits here after its removal."
+    );
+    assert!(items(&h, node).iter().all(|i| i.kind != "removed_report"));
 }
