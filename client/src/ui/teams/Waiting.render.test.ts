@@ -115,3 +115,15 @@ it("says nothing waits for you when the page is empty, with the Team tab's empty
   expect(empty.querySelector("h3")?.textContent).toBe("Nothing waits for you.");
   expect(empty.querySelector("p")?.textContent).toBe("Decisions that only you can make appear here.");
 });
+
+it("describes a rejected result that is still merged, with the store's facts as its body", () => {
+  const body = "Task 4 (task example-project/00000000-0000-4000-8000-000000000004, node 4) was merged as 1123456789abcdef0123456789abcdef01234567 into integration/example before this integration was rejected. The rejection did not undo the merge; only a revert on integration/example removes it.";
+  const rejected = item({ id: `${TEAM_A}:6`, card: 6, kind: "rejected_merge", node: 4, text: body, decisions: ["acknowledged"] });
+  const { host } = setup({ view: { items: [rejected], next: null } });
+  const card = host.querySelector(`[data-waiting="${TEAM_A}:6"]`);
+  expect(card?.textContent).toContain("Rejected result is merged");
+  expect(card?.textContent).toContain("The rejection did not undo the merge; only a revert on the integration branch removes it.");
+  expect(card?.textContent).toContain(body);
+  expect(card?.textContent).not.toContain("Card: rejected_merge");
+  expect(card?.querySelector('[data-decision="acknowledged"]')?.textContent).toBe("Acknowledge");
+});

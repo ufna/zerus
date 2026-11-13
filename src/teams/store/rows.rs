@@ -335,9 +335,11 @@ pub(crate) fn rejected_merge(
         params![team, id, actor, text, now, decision],
     )
     .map_err(storage)?;
+    // The inbox is unique by (team, kind, node, generation): the decision in
+    // the kind lets two such decisions of one node and generation both land.
     db.execute(
-        "INSERT INTO inbox(team,kind,node,generation,actor,text,created_ms) VALUES(?1,'rejected_merge',?2,?3,?4,?5,?6)",
-        params![team, id, generation, actor, text, now],
+        "INSERT INTO inbox(team,kind,node,generation,actor,text,created_ms) VALUES(?1,?2,?3,?4,?5,?6,?7)",
+        params![team, format!("rejected_merge:{decision}"), id, generation, actor, text, now],
     )
     .map_err(storage)?;
     Ok(true)

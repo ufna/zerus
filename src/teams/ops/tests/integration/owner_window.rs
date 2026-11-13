@@ -425,7 +425,7 @@ fn rejected_merge_items(h: &Harness) -> u32 {
         .as_ref()
         .unwrap()
         .query_row(
-            "SELECT count(*) FROM inbox WHERE team=?1 AND kind='rejected_merge'",
+            "SELECT count(*) FROM inbox WHERE team=?1 AND kind LIKE 'rejected_merge%'",
             [TEAM],
             |r| r.get(0),
         )
@@ -484,7 +484,7 @@ fn a_merge_fact_then_a_rejection_opens_one_card_and_one_lead_item() {
             .unwrap()
             .rows
             .into_iter()
-            .find(|item| item.kind == "rejected_merge")
+            .find(|item| item.kind == format!("rejected_merge:{seq}"))
             .unwrap()
             .text,
         told.text
@@ -572,4 +572,36 @@ fn a_rejection_without_a_merge_opens_nothing() {
     assert!(rejected_merge_cards(&h).is_empty());
     assert_eq!(rejected_merge_items(&h), 0);
     assert_eq!(decision(&h, seq).state, DecisionState::Settled);
+}
+
+#[test]
+fn two_rejected_decisions_of_one_node_and_generation_each_get_a_card_and_item() {
+    let mut h = Harness::new();
+    let (node, _, first) = accepted(&mut h);
+    h.run(&service(), receipt(node, first)).unwrap();
+    let db = h.store.db.as_ref().unwrap();
+    let generation: u32 = db
+        .query_row("SELECT generation FROM decisions WHERE seq=?1", [first], |r| r.get(0))
+        .unwrap();
+    // The first decision is settled, so the node can take another one in the
+    // same generation; the two must not collide on the inbox key.
+    db.execute(
+        "INSERT INTO decisions(team,node,generation,actor,kind,text,state,stopped_ready)
+         VALUES(?1,?2,?3,?4,'accept','A second acceptance',?5,1)",
+        params![TEAM, node, generation, encode(&person()).unwrap(), DecisionState::Settled],
+    )
+    .unwrap();
+    let second = db.last_insert_rowid() as u64;
+    db.execute(
+        "INSERT INTO integration_facts(decision,team,node,actor,commit_id,conflicts,created_ms)
+         VALUES(?1,?2,?3,?4,?5,?6,0)",
+        params![second, TEAM, node, encode(&service()).unwrap(), NEW_COMMIT, encode(&Vec::<String>::new()).unwrap()],
+    )
+    .unwrap();
+    let branch = h.store.team(TEAM).unwrap().unwrap().integration_branch;
+    let actor = encode(&person()).unwrap();
+    assert!(rows::rejected_merge(db, TEAM, node, first, &branch, &actor, 1).unwrap());
+    assert!(rows::rejected_merge(db, TEAM, node, second, &branch, &actor, 2).unwrap());
+    assert_eq!(rejected_merge_cards(&h).len(), 2);
+    assert_eq!(rejected_merge_items(&h), 2);
 }
