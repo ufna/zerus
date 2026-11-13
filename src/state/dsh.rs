@@ -18,6 +18,7 @@ use std::{
 pub(in crate::state) mod host_identity;
 #[cfg(unix)]
 mod shell_identity;
+pub(crate) mod witness;
 #[cfg(all(test, unix))]
 pub(super) use host_identity::record_running_for_test;
 
@@ -253,6 +254,10 @@ fn rpc(_: &Value, _: &str, _: Value) -> Result<Value> {
 }
 #[cfg(not(unix))]
 fn search_rpc(_: &Value, _: Value) -> Result<Value> {
+    Err(UNSUPPORTED.into())
+}
+#[cfg(not(unix))]
+fn rpc_within(_: &Value, _: &str, _: Value, _: std::time::Duration) -> Result<Value> {
     Err(UNSUPPORTED.into())
 }
 #[cfg(not(unix))]
@@ -1772,6 +1777,49 @@ fn interrupt_refusal(error: String) -> String {
     }
 }
 
+/// The native content of a message request: its text, interleaved with its
+/// image attachments and their references, in order.
+fn message_content(request: &Value) -> Result<Vec<Value>> {
+    let text = string(request, "text");
+    if text.len() > 65536 {
+        return Err("Message exceeds 64 KiB".into());
+    }
+    let files = request["attachments"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    let references = files
+        .iter()
+        .map(|f| string(f, "reference"))
+        .collect::<Vec<_>>();
+    attachments::validate_references(&references)?;
+    for file in &files {
+        if !["image/png", "image/jpeg", "image/webp", "image/gif"].contains(&string(file, "mime")) {
+            return Err("This DeepSeek composer supports image attachments; use the native UI for other files".into());
+        }
+    }
+    let mut content = Vec::new();
+    for part in attachments::ordered_parts(text, &references) {
+        match part {
+            attachments::MessagePart::Text(value) => {
+                if !value.trim().is_empty() {
+                    content.push(json!({"type":"text","text":value}));
+                }
+            }
+            attachments::MessagePart::Attachment(index) => {
+                let file = &files[index];
+                if !references[index].is_empty() && !text.contains(references[index]) {
+                    content.push(json!({"type":"text","text":references[index]}));
+                }
+                content.push(json!({"type":"image","mediaType":file["mime"],"data":file["data_base64"],"name":file["name"]}));
+            }
+        }
+    }
+    if content.is_empty() {
+        return Err("Message is empty".into());
+    }
+    Ok(content)
+}
 fn checked_request(record: &Value) -> Result<Value> {
     let mut bytes = Vec::new();
     io::stdin()
@@ -1870,45 +1918,7 @@ pub(crate) fn dispatch(command: &str, args: &[String]) -> Result<i32> {
             if command == "send" {
                 let agent_id = string(&request, "agent_id");
                 let text = string(&request, "text");
-                if text.len() > 65536 {
-                    return Err("Message exceeds 64 KiB".into());
-                }
-                let files = request["attachments"]
-                    .as_array()
-                    .cloned()
-                    .unwrap_or_default();
-                let references = files
-                    .iter()
-                    .map(|f| string(f, "reference"))
-                    .collect::<Vec<_>>();
-                attachments::validate_references(&references)?;
-                for file in &files {
-                    if !["image/png", "image/jpeg", "image/webp", "image/gif"]
-                        .contains(&string(file, "mime"))
-                    {
-                        return Err("This DeepSeek composer supports image attachments; use the native UI for other files".into());
-                    }
-                }
-                let mut content = Vec::new();
-                for part in attachments::ordered_parts(text, &references) {
-                    match part {
-                        attachments::MessagePart::Text(value) => {
-                            if !value.trim().is_empty() {
-                                content.push(json!({"type":"text","text":value}));
-                            }
-                        }
-                        attachments::MessagePart::Attachment(index) => {
-                            let file = &files[index];
-                            if !references[index].is_empty() && !text.contains(references[index]) {
-                                content.push(json!({"type":"text","text":references[index]}));
-                            }
-                            content.push(json!({"type":"image","mediaType":file["mime"],"data":file["data_base64"],"name":file["name"]}));
-                        }
-                    }
-                }
-                if content.is_empty() {
-                    return Err("Message is empty".into());
-                }
+                let content = message_content(&request)?;
                 let receipt_path = root()
                     .join("dsh/receipts")
                     .join(format!("{}.json", string(&request, "request_id")));
