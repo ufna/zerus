@@ -13,13 +13,15 @@ const MAX_DATE: u64 = 253_402_300_800;
 /// they cannot resolve may be an archive the catalog has not listed yet. A
 /// failed refresh is logged and retried after the same interval, never in a
 /// loop inside one read.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 const REFRESH_INTERVAL: std::time::Duration = std::time::Duration::from_secs(300);
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 static REFRESHED: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, std::time::Instant>>> =
     std::sync::OnceLock::new();
-#[cfg(test)]
+#[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
 pub(crate) static REFRESHES: std::sync::atomic::AtomicUsize =
     std::sync::atomic::AtomicUsize::new(0);
-#[cfg(test)]
+#[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
 pub(crate) fn reset_refreshes() {
     REFRESHES.store(0, std::sync::atomic::Ordering::SeqCst);
     if let Some(seen) = REFRESHED.get() {
@@ -28,6 +30,7 @@ pub(crate) fn reset_refreshes() {
 }
 
 /// Asks for one bounded rebuild of the archive catalog for `key`.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 pub(crate) fn refresh(key: &str) -> Result<()> {
     let now = std::time::Instant::now();
     let seen = REFRESHED.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()));
@@ -59,6 +62,7 @@ pub(crate) fn refresh(key: &str) -> Result<()> {
 
 /// Whether the catalog has any row under this session name, without building
 /// it: a read-only lookup that a missing catalog simply answers false.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 pub(crate) fn has_name(name: &str) -> Result<bool> {
     let path = root().join("archive-catalog-v1.sqlite3");
     if !path.exists() {
