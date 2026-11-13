@@ -145,3 +145,87 @@ fn a_kimi_profile_child_resumes_with_its_own_start() {
         "the profile's own start did not revive it"
     );
 }
+
+/// zerus-63rru.93: Kimi's frames carry nothing orderable per invocation
+/// (the measure in the report), so a racing Start after the child's own
+/// Stop revives it, and the next profile-group event settles the revival
+/// once it has had no event of its own for the settle period.
+fn quiet(h: &mut Value) {
+    let at = h["subagents"]["profile-1"]["updated"].as_f64().unwrap();
+    h["subagents"]["profile-1"]["updated"] = json!(at - 61.0);
+}
+
+#[test]
+fn a_kimi_start_after_its_own_stop_is_settled_by_the_next_group_event_in_both_orders() {
+    for order in [
+        &[
+            kimi("SubagentStart", "profile-1"),
+            kimi("SubagentStop", "profile-1"),
+            kimi("SubagentStart", "profile-1"),
+        ][..],
+        &[
+            kimi("SubagentStop", "profile-1"),
+            kimi("SubagentStart", "profile-1"),
+        ][..],
+    ] {
+        let mut record = record("kimi");
+        apply(&mut record, order);
+        assert_eq!(
+            child(&record, "profile-1")["state"], "working",
+            "the revived child works after its own stop"
+        );
+        quiet(&mut record);
+        // The next profile-group event settles the revival; the other
+        // profile's own short invocation then ends, leaving the member free.
+        apply(&mut record, &[kimi("SubagentStart", "profile-2")]);
+        let ended = child(&record, "profile-1");
+        assert_eq!(ended["state"], "ended", "{ended}");
+        apply(&mut record, &[kimi("SubagentStop", "profile-2")]);
+        let row = listed_live_row(record.clone()).expect("a listed row");
+        assert_eq!(
+            row["subagent_active_count"], 0,
+            "the member is not free: {row}"
+        );
+    }
+}
+
+#[test]
+fn a_genuine_kimi_resume_after_a_long_gap_stays_working() {
+    let mut record = record("kimi");
+    apply(
+        &mut record,
+        &[kimi("SubagentStart", "profile-1"), kimi("SubagentStop", "profile-1")],
+    );
+    assert_eq!(child(&record, "profile-1")["state"], "finished");
+    // A genuine resume after a long gap: the Start revives the child.
+    quiet(&mut record);
+    apply(&mut record, &[kimi("SubagentStart", "profile-1")]);
+    assert_eq!(child(&record, "profile-1")["state"], "working");
+    // Its own tool event within the settle period keeps it working, and the
+    // next group event settles nothing.
+    apply(
+        &mut record,
+        &[json!({"hook_event_name":"PreToolUse","agent_id":"main",
+            "agent_name":"profile-1","tool_name":"Tool"})],
+    );
+    apply(&mut record, &[kimi("SubagentStop", "profile-2")]);
+    assert_eq!(child(&record, "profile-1")["state"], "working");
+}
+
+#[test]
+fn a_settled_revival_frees_the_member_in_the_teams_fleet() {
+    let mut record = record("kimi");
+    apply(
+        &mut record,
+        &[kimi("SubagentStart", "profile-1"), kimi("SubagentStop", "profile-1")],
+    );
+    quiet(&mut record);
+    apply(&mut record, &[kimi("SubagentStart", "profile-1")]);
+    quiet(&mut record);
+    apply(&mut record, &[kimi("SubagentStart", "profile-2")]);
+    apply(&mut record, &[kimi("SubagentStop", "profile-2")]);
+    // The fleet's own free read over the listed row: the settled child
+    // leaves no working child and the member is free again.
+    let row = listed_live_row(record.clone()).expect("a listed row");
+    assert_eq!(row["subagent_active_count"], 0, "the member is not free: {row}");
+}

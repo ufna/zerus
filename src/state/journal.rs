@@ -1262,6 +1262,11 @@ pub(super) fn journal_name(record: &Value) -> &str {
     }
 }
 
+/// A Kimi profile child revived by a racing start: settled as ended by the
+/// next profile-group event once it has had no event of its own for this
+/// long, the first tier the unreadable-member path waits (zerus-63rru.93).
+pub(super) const REVIVED_KIMI_SETTLE_SECONDS: f64 = 60.0;
+
 pub(super) fn update_activity(record: &mut Value, event: &Value) {
     if stale_kimi_turn(record, event) { return; }
     repair_kimi_main(record);
@@ -1348,6 +1353,15 @@ pub(super) fn update_activity(record: &mut Value, event: &Value) {
         // its own tool events resume it as before.
         let final_end = ["finished", "ended"].contains(&string(info, "state"));
         let revives = !final_end || kind == "SubagentStart";
+        // zerus-63rru.93: the Start that revives a finished or ended Kimi
+        // profile child records the revival; the next profile-group event
+        // settles it if nothing of its own has followed (the measure found
+        // nothing orderable in Kimi's frames, so the race cannot be told
+        // from a genuine resume by the bytes alone).
+        let revived = kind == "SubagentStart" && final_end && string(record, "agent") == "kimi";
+        if revived {
+            info["revived_at"] = json!(timestamp);
+        }
         if ["Stop", "SubagentStop"].contains(&kind) {
             let result = detail(event);
             if string(info, "state") != "finished"
@@ -1430,6 +1444,44 @@ pub(super) fn update_activity(record: &mut Value, event: &Value) {
                 let ended = children.remove(&key).is_some_and(|child| child["state"] == "ended");
                 let count = if ended {"subagents_ended_pruned"} else {"subagents_completed_pruned"};
                 record[count] = json!(record[count].as_u64().unwrap_or(0) + 1);
+            }
+        }
+        // zerus-63rru.93: a revived Kimi profile child that has had no
+        // event of its own for the settle period is ended by this
+        // profile-group event, with no new timer; the member is free again
+        // from the next read.
+        if ["SubagentStart", "SubagentStop"].contains(&kind) {
+            let quiet: Vec<String> = children
+                .iter()
+                .filter(|(_, child)| {
+                    child["revived_at"].as_f64().is_some()
+                        && child["updated"].as_f64().is_some_and(|at| {
+                            timestamp - at >= REVIVED_KIMI_SETTLE_SECONDS
+                        })
+                })
+                .map(|(id, _)| id.clone())
+                .collect();
+            for id in quiet {
+                let Some(child) = children.get_mut(&id) else {
+                    continue;
+                };
+                child["state"] = json!("ended");
+                child["detail"] = json!("Revived by a racing start and quiet since; the next profile event settled the child.");
+                child.as_object_mut().unwrap().remove("revived_at");
+                // The profile group's counts follow the settle: the listing
+                // the fleet reads takes its active count from the group.
+                if let Some(groups) = record["subagent_groups"].as_object_mut() {
+                    if let Some(group) = groups.get_mut(&id) {
+                        group["active_count"] = json!(group["active_count"]
+                            .as_u64()
+                            .unwrap_or(1)
+                            .saturating_sub(1));
+                        group["completed_count"] = json!(group["completed_count"]
+                            .as_u64()
+                            .unwrap_or(0)
+                            .saturating_add(1));
+                    }
+                }
             }
         }
         record["subagents"] = json!(children);
