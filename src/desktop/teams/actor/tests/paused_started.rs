@@ -212,11 +212,7 @@ fn a_tell_for_a_member_without_started_work_writes_nothing() {
             node: 1,
         },
     );
-    let actor = Actor::Service {
-        person: "the-owner".into(),
-        team: TEAM.into(),
-    };
-    crate::teams::ops::apply(&mut h.store, &actor, &request, T0).unwrap();
+    crate::teams::ops::apply(&mut h.store, &service(), &request, T0).unwrap();
     assert!(items(&h).is_empty(), "{:?}", items(&h));
 }
 
