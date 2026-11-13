@@ -695,7 +695,7 @@ fn a_cancelled_task_is_ended_by_its_observation() {
         None,
     )
     .unwrap();
-    assert_eq!(again.queued, true, "{again:?}");
+    assert!(again.queued, "{again:?}");
     let new_node = again.node.expect("the new node");
     assert_ne!(new_node, node, "the settled node is never reused");
     // The settlement ended the old node exactly once: the pending cancel is
