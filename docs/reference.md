@@ -3045,7 +3045,11 @@ The last check before the first typed byte repeats these rules and the
 30-second cache margin, so a slow stage never types into a cold cache. A
 partial native usage read is not evidence of expiry: while Claude's usage scan
 is still catching up, the cache lifetime is unknown, nothing is sent, and the
-cache is not called cold; only a complete read may decide either. It uses the
+cache is not called cold; only a complete read may decide either. The scan
+takes the transcript's identity and modification stamp under its usage-cache
+lock, and a round records a cold cache only from a fresh complete read taken in
+that round: a stale size or stamp, or a fresh read that shows a later expiry,
+leaves it warm. It uses the
 guarded send path with its own origin and request ID, bound to the setting
 revision it was decided for (a change in between cancels it): a refusal before any input
 waits for the next round, and an unknown delivery is never sent again; keep-warm

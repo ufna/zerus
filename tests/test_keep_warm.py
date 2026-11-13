@@ -1,7 +1,9 @@
 """Keep cache warm: setting, worker round and silent ping turns, with private fake agents only."""
+import datetime
 import fcntl
 import os
 import json
+from pathlib import Path
 import subprocess
 import sys
 import time
@@ -217,6 +219,26 @@ class KeepWarm(unittest.TestCase):
         peer = next(event for event in after["events"] if event.get("origin") == "peer_message")
         self.assertEqual(peer["detail"], "Message from peer/session")
         self.assertIsNone(peer.get("turn_origin"))
+
+    def test_a_prompt_that_only_starts_with_the_ping_text_stays_visible(self):
+        self.begin_ping()
+        text = TEXT + " Then review this task."
+        self.hook("UserPromptSubmit", prompt=text)
+        after = self.inspect()
+        self.assertEqual(after["prompt"], text)
+        self.assertFalse(self.listed()["keep_warm"]["turn_active"])
+        self.hook("Stop", last_assistant_message="Real reply")
+        self.assertEqual(self.inspect()["last_message"], "Real reply")
+
+    def test_an_unmasking_prompt_restores_the_last_message_at_once(self):
+        self.begin_ping()
+        self.hook("Stop", last_assistant_message="OK")
+        self.hook("UserPromptSubmit", prompt=NOTICE)
+        after = self.inspect()
+        self.assertEqual((after["prompt"], after["last_message"]), ("Fix the tests", "Done."))
+        self.assertFalse(self.listed()["keep_warm"]["turn_active"])
+        self.hook("Stop", last_assistant_message="Watcher finished.")
+        self.assertEqual(self.inspect()["last_message"], "Watcher finished.")
 
     def test_a_failed_ping_starts_no_recovery(self):
         self.record["agent"] = "claude"
@@ -492,6 +514,81 @@ class KeepWarm(unittest.TestCase):
         self.tick()
         time.sleep(0.3)
         self.assertEqual(self.received(), b"")
+
+    def transcript(self):
+        self.record.update(agent="claude", model="claude-opus-5-5",
+                           transcript=str(self.root / (self.conversation_id + ".jsonl")))
+        self.write_record()
+        return Path(self.record["transcript"])
+
+    def assistant(self, at, identity):
+        return json.dumps(dict(type="assistant", sessionId=self.conversation_id,
+            timestamp=datetime.datetime.fromtimestamp(at, datetime.timezone.utc).isoformat(),
+            message=dict(id=identity, model="claude-opus-5-5", usage=dict(input_tokens=10,
+                cache_read_input_tokens=100, cache_creation_input_tokens=20, output_tokens=3,
+                cache_creation=dict(ephemeral_1h_input_tokens=20))))) + "\n"
+
+    def wait_for_usage_lock(self, pid):
+        for _ in range(500):
+            try:
+                if "lock" in Path(f"/proc/{pid}/wchan").read_text():
+                    return
+            except OSError:
+                pass
+            time.sleep(0.01)
+        self.fail("the round never waited for the usage cache lock")
+
+    @unittest.skipUnless(sys.platform.startswith("linux"), "waits on the lock with /proc wchan")
+    def test_an_append_while_a_round_waits_for_the_usage_lock_does_not_turn_cold(self):
+        path = self.transcript()
+        path.write_text(self.assistant(time.time() - 7000, "old"))
+        self.change(always=True)
+        cache_path = next((self.state / "usage-cache").glob("cache-v2-*.json"))
+        with cache_path.with_suffix(".lock").open("a") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            child = subprocess.Popen([str(fixtures.HGS), "recovery", "tick"], env=self.env,
+                                     text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            try:
+                self.wait_for_usage_lock(child.pid)
+                with path.open("a") as out:
+                    out.write(self.assistant(time.time() - 30, "recent"))
+                fcntl.flock(lock, fcntl.LOCK_UN)
+                _, stderr = child.communicate(timeout=15)
+                self.assertEqual(child.returncode, 0, stderr)
+            finally:
+                if child.poll() is None:
+                    child.terminate()
+                    child.communicate(timeout=10)
+        after = self.inspect()
+        self.assertEqual(after["keep_warm"]["state"], "waiting")
+        self.assertFalse(after["session_usage"]["partial"])
+        self.assertGreater(after["session_usage"]["prompt_cache"]["expires_at"], time.time())
+
+    def test_an_oversized_record_no_longer_stalls_the_scan(self):
+        path = self.transcript()
+        with path.open("w") as out:
+            out.write(self.assistant(time.time() - 7000, "old"))
+            out.write('{"type":"user","message":{"content":"')
+            for _ in range(33 * 16):
+                out.write("x" * (64 * 1024))
+            out.write('"}}\n')
+            out.write(self.assistant(time.time() - 3000, "recent"))
+        usage = self.inspect()["session_usage"]
+        for _ in range(4):
+            if not usage["partial"]:
+                break
+            usage = self.inspect()["session_usage"]
+        self.assertFalse(usage["partial"])
+        self.assertGreater(usage["prompt_cache"]["expires_at"], time.time())
+
+    def test_a_really_expired_cache_still_turns_cold(self):
+        path = self.transcript()
+        path.write_text(self.assistant(time.time() - 7000, "old"))
+        self.change(always=True)
+        self.tick()
+        after = self.inspect()
+        self.assertEqual(after["keep_warm"]["state"], "cold")
+        self.assertLess(after["session_usage"]["prompt_cache"]["expires_at"], time.time())
 
     def test_a_stale_conversation_is_refused(self):
         stale = self.command("keep-warm", self.name, "--json", ok=False, payload=dict(

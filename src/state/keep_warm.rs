@@ -604,11 +604,12 @@ impl Facts {
     }
 }
 
-/// Whether owned background jobs hold a due ping. Claude and Codex accept a new
-/// message while the desktop shows Background (their hook frames carry no turn
-/// that a job starts by itself), so their ping goes through the guarded path.
-/// Kimi's scheduled and background jobs can start their own turns, so its ping
-/// must not race them.
+/// Whether owned background jobs hold a due ping. An idle agent with owned live
+/// shell or native jobs (desktop Background) accepts the person's input, and
+/// the ping uses the same guarded path, so Claude and Codex do not hold it. HGS
+/// itself injects no prompt for a Codex job; this does not claim that a Codex
+/// job can never present a turn of its own. Kimi's scheduled and background
+/// jobs can start their own turns, so its ping must not race them.
 fn background_holds(record: &Value) -> bool {
     string(record, "agent") == "kimi"
 }
@@ -773,6 +774,27 @@ fn decide(entry: &Entry, runtime: &Value, observed: Option<&Observed>, facts: im
     Step::Send
 }
 
+/// One round's decision for a live session. A cold candidate is confirmed by a
+/// fresh native usage read taken in the same round: a partial read waits, a
+/// later expiry continues as warm, and only a read that still shows the cache
+/// within the 30-second margin keeps the cold state. Codex and Kimi take no
+/// deadline from native usage, so their cold decision does not re-read.
+fn decide_round(
+    entry: &Entry, runtime: &Value, observed: &Observed, now: f64,
+    facts: impl Fn() -> Facts, read_fresh: impl FnOnce() -> Value,
+) -> Step {
+    let step = decide(entry, runtime, Some(observed), &facts, now);
+    if !matches!(&step, Step::Hold { state: "cold", .. }) || string(observed.record, "agent") != "claude" {
+        return step;
+    }
+    let fresh = Observed {
+        record: observed.record,
+        live: observed.live,
+        usage: read_fresh(),
+    };
+    decide(entry, runtime, Some(&fresh), facts, now)
+}
+
 /// The enabled session's current record: by its session ID, so a rename
 /// keeps it, else by its saved label with the same owner key.
 /// None only when the session is positively gone; a record that exists but
@@ -880,9 +902,12 @@ fn round(owner: &str, entry: &Entry, panes: &Snapshot, now: f64,
         live: matches(record, panes_of(panes, record)) && process_alive(record),
         usage: if string(record, "agent") == "claude" { usage::read(record) } else { Value::Null },
     });
-    let step = decide(entry, &runtime, observed.as_ref(),
-        || record.as_ref().map_or(Facts { background: None, schedules: 0, recovery_active: false, client_input: None }, Facts::observe),
-        now);
+    let step = match observed.as_ref() {
+        Some(observed) => decide_round(entry, &runtime, observed, now,
+            || Facts::observe(observed.record), || usage::read(observed.record)),
+        None => decide(entry, &runtime, None,
+            || Facts { background: None, schedules: 0, recovery_active: false, client_input: None }, now),
+    };
     match step {
         Step::Off(state, reason) => {
             turn_off(owner, entry, verify)?;
@@ -1343,6 +1368,14 @@ mod tests {
             (true, "usage_partial", None, None, true));
     }
 
+    /// One Claude transcript line with a 1 h cache write at `at`.
+    fn claude_line(at: f64, id: &str) -> String {
+        json!({"type":"assistant","sessionId":"conversation-1","timestamp":at,
+            "message":{"id":id,"model":"claude-opus-5-5","usage":{"input_tokens":10,
+                "cache_read_input_tokens":100,"cache_creation_input_tokens":20,"output_tokens":3,
+                "cache_creation":{"ephemeral_1h_input_tokens":20}}}}).to_string() + "\n"
+    }
+
     /// A Claude transcript larger than one 32 MiB usage read: an old 1 h cache
     /// write near its start and a recent one at its end.
     fn large_claude_transcript(dir: &Path) -> PathBuf {
@@ -1401,6 +1434,36 @@ mod tests {
         assert_eq!(complete["partial"], false);
         let observed = Observed { record: &session, live: true, usage: complete };
         assert_eq!(decide(&enabled(), &Value::Null, Some(&observed), quiet, NOW), Step::Send);
+    }
+
+    #[test]
+    fn a_cold_candidate_is_confirmed_by_a_fresh_complete_read() {
+        use std::io::Write;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("transcript.jsonl");
+        let cache = dir.path().join("usage.json");
+        let mut session = idle();
+        session["agent"] = json!("claude");
+        session["model"] = json!("claude-opus-5-5");
+        session["conversation_id"] = json!("conversation-1");
+        fs::write(&path, claude_line(NOW - 7000.0, "old")).unwrap();
+        let stale = usage::scan(&path, &cache, "claude", "conversation-1").unwrap();
+        assert_eq!(stale["partial"], false);
+        // A really expired cache is confirmed by the fresh read and stays cold.
+        let observed = Observed { record: &session, live: true, usage: stale.clone() };
+        let step = decide_round(&enabled(), &Value::Null, &observed, NOW, quiet, || stale.clone());
+        assert!(matches!(&step, Step::Hold { state: "cold", .. }), "a really expired cache turns cold: {step:?}");
+        // Append a recent 1 h write: the fresh read sees it, so the round continues warm.
+        fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap()
+            .write_all(claude_line(NOW - 3000.0, "recent").as_bytes())
+            .unwrap();
+        let observed = Observed { record: &session, live: true, usage: stale.clone() };
+        let step = decide_round(&enabled(), &Value::Null, &observed, NOW, quiet,
+            || usage::scan(&path, &cache, "claude", "conversation-1").unwrap());
+        assert_eq!(step, Step::Send, "the fresh read must lift the stale cold");
     }
 
     #[test]
@@ -1763,6 +1826,9 @@ mod tests {
         assert!(record.get("keep_warm_turn").is_none());
         assert!(record.get("keep_warm_quiet").is_none());
         assert_eq!(record["prompt"], "Fix the tests");
+        // The ping's OK is already gone from the visible last message.
+        assert_eq!(record["last_message"], "Done.");
+        assert_eq!(journal::last_message(&record), "Done.");
         let reply = deliver_real(&mut record, hook("Stop", json!({"last_assistant_message":"The watcher finished."})));
         assert!(reply.get("keep_warm").is_none());
         assert_eq!(journal::user_prompt(&record), &json!("Fix the tests"));
@@ -1807,6 +1873,16 @@ mod tests {
         let reply = deliver_real(&mut record, hook("Stop", json!({"last_assistant_message":"Handled the peer message."})));
         assert!(reply.get("keep_warm").is_none());
         assert_eq!(journal::last_message(&record), "Handled the peer message.");
+    }
+
+    #[test]
+    fn a_prompt_that_only_starts_with_the_ping_text_is_not_a_ping() {
+        let mut record = pinged();
+        let text = format!("{TEXT} Then review this task.");
+        let event = deliver(&mut record, hook("UserPromptSubmit", json!({"prompt":text.clone()})));
+        assert!(event.get("keep_warm").is_none());
+        assert!(record.get("keep_warm_turn").is_none());
+        assert_eq!(record["prompt"], text);
     }
 
     #[test]

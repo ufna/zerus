@@ -202,7 +202,10 @@ under the input lock.
    the source of Claude's TTL, is not evidence of expiry: while its scan is
    still catching up, the cache lifetime is unknown, the round holds `waiting`
    with a plain reason and only a complete read may turn the state cold or
-   allow a ping.
+   allow a ping. A scan takes the transcript's identity and modification stamp
+   under the usage-cache lock, and a cold decision is confirmed by a fresh
+   complete read taken in the same round: a size or stamp read before the lock,
+   or a fresh read that shows a later expiry, never turns the state cold.
 3. The exact verified process is live with the expected run and conversation;
    the session is not paused, pausing, launching, archived or terminated.
 4. The agent is settled (`telemetry::settled`), has no scheduled jobs, no

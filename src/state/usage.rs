@@ -7,6 +7,23 @@ use std::io::{BufRead, BufReader, Seek, SeekFrom};
 
 const MAX_READ: u64 = 32 * 1024 * 1024;
 
+/// Test seam for the lock race: signals when a scan of this exact cache is
+/// about to take the usage-cache lock, after opening the transcript and before
+/// its metadata. The cache path keeps another parallel scan out of the signal.
+#[cfg(test)]
+static BEFORE_CACHE_LOCK: std::sync::Mutex<Option<(PathBuf, std::sync::mpsc::Sender<()>)>> =
+    std::sync::Mutex::new(None);
+
+#[cfg(test)]
+fn note_before_cache_lock(cache_path: &Path) {
+    let mut hook = BEFORE_CACHE_LOCK.lock().unwrap();
+    if hook.as_ref().is_some_and(|(path, _)| path == cache_path) {
+        if let Some((_, sender)) = hook.take() {
+            let _ = sender.send(());
+        }
+    }
+}
+
 fn number(value: &Value) -> Option<u64> {
     value.as_u64().filter(|n| *n <= 9_007_199_254_740_991)
 }
@@ -253,6 +270,12 @@ fn output(state: &Value, provider: &str, partial: bool) -> Value {
 
 pub(super) fn scan(path: &Path, cache_path: &Path, provider: &str, conversation: &str) -> Result<Value> {
     let mut file = File::open(path).map_err(|e| e.to_string())?;
+    // The file's identity and metadata belong under the cache lock. A scan that
+    // waited here must not answer from a size and stamp read before the lock:
+    // another reader may have appended and written the cache meanwhile.
+    #[cfg(test)]
+    note_before_cache_lock(cache_path);
+    let _guard = lock(Some(&cache_path.with_extension("lock")))?;
     let (identity, meta) =
         crate::platform::FileIdentity::with_metadata(&file).map_err(|e| e.to_string())?;
     let mut prefix = vec![0; meta.len().min(256) as usize];
@@ -274,7 +297,6 @@ pub(super) fn scan(path: &Path, cache_path: &Path, provider: &str, conversation:
             return Err("Native conversation identity mismatch".into());
         }
     }
-    let _guard = lock(Some(&cache_path.with_extension("lock")))?;
     let mut state: Value = fs::read(cache_path)
         .ok()
         .and_then(|b| serde_json::from_slice(&b).ok())
@@ -304,26 +326,73 @@ pub(super) fn scan(path: &Path, cache_path: &Path, provider: &str, conversation:
     }
     file.seek(SeekFrom::Start(offset))
         .map_err(|e| e.to_string())?;
-    let mut reader = BufReader::new(file.take(MAX_READ));
+    let mut reader = BufReader::new(file);
     let mut line = Vec::new();
+    let mut used = 0u64;
     loop {
-        line.clear();
-        let count = reader
-            .read_until(b'\n', &mut line)
-            .map_err(|e| e.to_string())?;
-        if count == 0 || !line.ends_with(b"\n") {
+        if used >= MAX_READ {
             break;
         }
-        offset += count as u64;
-        if let Ok(event) = serde_json::from_slice::<Value>(&line) {
-            observe(&mut state, &event, provider, conversation);
+        line.clear();
+        let count = (&mut reader)
+            .take(MAX_READ)
+            .read_until(b'\n', &mut line)
+            .map_err(|e| e.to_string())?;
+        if count == 0 {
+            break;
         }
+        if line.ends_with(b"\n") {
+            let count = count as u64;
+            if used + count > MAX_READ {
+                break;
+            }
+            used += count;
+            offset += count;
+            if let Ok(event) = serde_json::from_slice::<Value>(&line) {
+                observe(&mut state, &event, provider, conversation);
+            }
+            continue;
+        }
+        // No newline within one read bound: this record is longer than the
+        // bound. Stream past it to its newline without buffering it, advance
+        // the offset, and count it as not observed; usage samples are on small
+        // assistant records, so nothing needed is lost. A transcript that grows
+        // faster than the bound per read is accepted as a limit and converges
+        // when growth slows. A tail that ends before its newline stays unread.
+        if offset + count as u64 >= meta.len() {
+            break;
+        }
+        let Some(skipped) = skip_to_newline(&mut reader)? else {
+            break;
+        };
+        offset += count as u64 + skipped;
+        break;
     }
     state["offset"] = json!(offset);
     state["size"] = json!(meta.len());
     state["stamp"] = stamp;
     atomic(cache_path, &state.to_string())?;
     Ok(output(&state, provider, offset < meta.len()))
+}
+
+/// Skip the rest of an oversized record up to and including its newline
+/// without buffering it. None when the file ends before that newline.
+fn skip_to_newline(reader: &mut BufReader<File>) -> Result<Option<u64>> {
+    let mut skipped = 0u64;
+    loop {
+        let available = reader.fill_buf().map_err(|e| e.to_string())?;
+        if available.is_empty() {
+            return Ok(None);
+        }
+        if let Some(at) = available.iter().position(|byte| *byte == b'\n') {
+            let count = at as u64 + 1;
+            reader.consume(count as usize);
+            return Ok(Some(skipped + count));
+        }
+        let count = available.len();
+        reader.consume(count);
+        skipped += count as u64;
+    }
 }
 
 fn kimi_capacity(config: &str, model: &str) -> Option<u64> {
@@ -584,6 +653,76 @@ mod tests {
         );
         assert_eq!(state["totals"], json!({}));
     }
+    #[test]
+    fn a_scan_waiting_for_the_cache_lock_reads_metadata_after_it() {
+        use std::io::Write;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("transcript.jsonl");
+        let cache = dir.path().join("cache.json");
+        let at = now();
+        let line = |at: f64, id: &str| json!({"type":"assistant","sessionId":"one","timestamp":at,
+            "message":{"id":id,"model":"claude-opus-5-5","usage":{"input_tokens":10,
+                "cache_read_input_tokens":100,"cache_creation_input_tokens":20,"output_tokens":3,
+                "cache_creation":{"ephemeral_1h_input_tokens":20}}}}).to_string() + "\n";
+        fs::write(&path, line(at - 7000.0, "old")).unwrap();
+        let first = scan(&path, &cache, "claude", "one").unwrap();
+        assert_eq!(first["partial"], false);
+        let guard = lock(Some(&cache.with_extension("lock"))).unwrap();
+        let (sender, receiver) = std::sync::mpsc::channel();
+        BEFORE_CACHE_LOCK.lock().unwrap().replace((cache.clone(), sender));
+        let (waiter_path, waiter_cache) = (path.clone(), cache.clone());
+        let waiter = std::thread::spawn(move || scan(&waiter_path, &waiter_cache, "claude", "one"));
+        receiver.recv_timeout(std::time::Duration::from_secs(10)).unwrap();
+        // The waiter is about to take the lock. Append a recent 1 h write while
+        // it waits, then let it read its metadata under the lock.
+        fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap()
+            .write_all(line(at - 3000.0, "recent").as_bytes())
+            .unwrap();
+        drop(guard);
+        let second = waiter.join().unwrap().unwrap();
+        assert_eq!(second["partial"], false);
+        assert!(
+            second["prompt_cache"]["expires_at"].as_f64().unwrap() > at,
+            "a waiting scan must see the append, not the pre-lock size: {second}"
+        );
+    }
+
+    #[test]
+    fn an_oversized_record_is_skipped_to_its_newline() {
+        use std::io::Write;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("transcript.jsonl");
+        let cache = dir.path().join("cache.json");
+        let at = now();
+        let line = |at: f64, id: &str| json!({"type":"assistant","sessionId":"one","timestamp":at,
+            "message":{"id":id,"model":"claude-opus-5-5","usage":{"input_tokens":10,
+                "cache_read_input_tokens":100,"cache_creation_input_tokens":20,"output_tokens":3,
+                "cache_creation":{"ephemeral_1h_input_tokens":20}}}}).to_string() + "\n";
+        let mut file = fs::File::create(&path).unwrap();
+        file.write_all(line(at - 7000.0, "old").as_bytes()).unwrap();
+        file.write_all(b"{\"type\":\"user\",\"message\":{\"content\":\"").unwrap();
+        let chunk = [b'x'; 64 * 1024];
+        for _ in 0..(MAX_READ / 65536 + 16) {
+            file.write_all(&chunk).unwrap();
+        }
+        file.write_all(b"\"}}\n").unwrap();
+        file.write_all(line(at - 3000.0, "recent").as_bytes()).unwrap();
+        drop(file);
+        // The oversized record is skipped to its newline; the following record
+        // is read by the next round, so the scan converges instead of stalling.
+        let first = scan(&path, &cache, "claude", "one").unwrap();
+        assert_eq!(first["partial"], true);
+        let second = scan(&path, &cache, "claude", "one").unwrap();
+        assert_eq!(second["partial"], false);
+        assert!(
+            second["prompt_cache"]["expires_at"].as_f64().unwrap() > at,
+            "the oversized record did not stall the scan: {second}"
+        );
+    }
+
     #[test]
     fn codex_rejects_mismatched_identity_even_with_cached_usage() {
         let temp = tempfile::tempdir().unwrap();
