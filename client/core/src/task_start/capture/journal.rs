@@ -62,6 +62,27 @@ struct Slot {
     name: OsString,
     lock_name: OsString,
 }
+/// Process-owned metadata exclusion, never an inherited native custody lease.
+struct MetadataLock {
+    file: File,
+    owner_pid: u32,
+}
+impl std::ops::Deref for MetadataLock {
+    type Target = File;
+    fn deref(&self) -> &File {
+        &self.file
+    }
+}
+impl Drop for MetadataLock {
+    fn drop(&mut self) {
+        // Close alone lets an unrelated pre-exec child extend this exclusion.
+        // A fork child's copy must never unlock the original's live journal.
+        if self.owner_pid == std::process::id() {
+            // SAFETY: only this metadata flock; native custody is separate.
+            let _ = unsafe { libc::flock(self.file.as_raw_fd(), libc::LOCK_UN) };
+        }
+    }
+}
 impl Slot {
     fn open(store: &Path, project: &str, task: &str) -> io::Result<Self> {
         crate::task_details::document_call(project, task).map_err(|_| refused())?;
@@ -147,7 +168,7 @@ impl Slot {
         file_version(&file, BYTES)?;
         Ok(file)
     }
-    fn lock(&self, create: bool) -> Result<File, Error> {
+    fn lock(&self, create: bool) -> Result<MetadataLock, Error> {
         self.current().map_err(|_| Error::Unavailable)?;
         let file = if create {
             self.create(&self.lock_name, true)
@@ -180,7 +201,10 @@ impl Slot {
                 Error::Unavailable
             });
         }
-        Ok(file)
+        Ok(MetadataLock {
+            file,
+            owner_pid: std::process::id(),
+        })
     }
 }
 struct Disk {
@@ -316,7 +340,7 @@ impl Saved {
 pub struct Journal {
     saved: Saved,
     source: Captured,
-    lock: File,
+    lock: MetadataLock,
     poisoned: bool,
 }
 impl Journal {
@@ -579,5 +603,7 @@ fn encode(record: &Record) -> Result<Vec<u8>, Error> {
     Ok(bytes)
 }
 
+#[cfg(test)]
+mod lock_tests;
 #[cfg(test)]
 mod tests;
