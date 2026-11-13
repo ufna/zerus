@@ -646,8 +646,9 @@ mod tests {
         // its lock-free proof window and typing marker (#2119, #2124,
         // zerus-iitw8.4-.8), Clear input's pending request id (#2110,
         // zerus-wkj9l.5) and the original receipt's persist (#2077,
-        // zerus-a4mub.4). Routing, receipt bytes and native input order stay
-        // pinned below.
+        // zerus-a4mub.4). PR #2195 (zerus-cdhjm.3) adds Kimi's pre-send
+        // compaction reservation, wait, identity recheck and receipt diagnostics.
+        // Pin the complete resulting core, including ordinary delivery guards.
         let source = include_str!("../input.rs");
         let body = source
             .split_once("fn submit_core(")
@@ -659,7 +660,7 @@ mod tests {
         let original = format!("fn submit_core({body}");
         assert_eq!(
             format!("{:x}", Sha256::digest(original.as_bytes())),
-            "843183ff4e2dd7ec9ef392271a192b963feaaae25408c7acb9ecfb52a6818f41"
+            "fff1e65bfc4cda56753b9f9e5b425db0c7deac5046ae0748e95d4e678ccd39c9"
         );
     }
     fn fixture() -> (Value, Value, Guard<'static>) {
