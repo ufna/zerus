@@ -53,6 +53,9 @@ pub(crate) mod kind {
     pub const KEY_CLEAR: &str = "key_clear";
     /// The terminal page's fault, for the whole service.
     pub const TERMINAL_PAGE: &str = "terminal_page";
+    /// A team whose project's own limits refuse every hand-out
+    /// (zerus-63rru.23); the subject is empty, the team is the row's.
+    pub const PROJECT_LIMIT: &str = "project_limit";
 }
 /// The kind of the marker that says a team (or the service) has more items
 /// than the table holds. It is never listed as an item.

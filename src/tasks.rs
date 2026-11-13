@@ -34,7 +34,7 @@ mod index;
 mod teams;
 mod team_deliver;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
-pub(crate) use team_deliver::TERMINAL_WAITING;
+pub(crate) use team_deliver::{PROJECT_LIMIT, TERMINAL_WAITING};
 #[cfg(all(test, unix))]
 pub(crate) use team_deliver::{blocked_handout, waiting_handout, Blocked, RealHandout};
 #[cfg(test)]

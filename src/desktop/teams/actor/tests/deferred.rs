@@ -64,7 +64,7 @@ fn five_deferred() -> (Harness, Runtime, Deferred) {
         let team = h.store.team(TEAM).unwrap().unwrap();
         let n = h.node(node);
         let m = h.store.member(TEAM, &id).unwrap().unwrap();
-        a.send(&mut h.store, &mut p, &team, (&n, &m), "handout", 100)
+        a.send(&mut h.store, &mut p, &team, (&n, &m), "handout", false, 100)
             .unwrap();
     }
     assert_eq!(p.calls, 5);

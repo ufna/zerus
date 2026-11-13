@@ -218,6 +218,12 @@ pub(in crate::desktop::teams) enum DeliveryResult {
     TerminalWaiting {
         reason: String,
     },
+    /// The task command refused before any input because the project's own
+    /// limits refuse it, by its answer's typed cause (zerus-63rru.23).
+    /// Recorded as a refusal; a fact about the team, not a failed hand-out.
+    ProjectLimit {
+        reason: String,
+    },
 }
 impl From<HandoutOutcome> for DeliveryResult {
     fn from(value: HandoutOutcome) -> Self {

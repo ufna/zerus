@@ -133,13 +133,21 @@ fn operation(key: &str, error: &Problem) -> Operation {
         decisions: Some(decisions()),
         // A held step's or an unreadable member's sentence carries its own
         // timing; neither row's key is shown.
-        text: if key.starts_with("held:") || key.starts_with("unreadable:") {
+        text: if key == "project_limit" {
+            let message = cut(&error.message, 2000);
+            format!(
+                "The project's own limit refused the latest hand-out: {}. The team's tasks wait and are handed out by themselves when the project allows it. {}",
+                message.trim_end_matches('.'),
+                timing
+            )
+        } else if key.starts_with("held:") || key.starts_with("unreadable:") {
             cut(&error.message, 3000)
         } else {
+            let message = cut(&error.message, 2000);
             format!(
                 "{}: {}. {}",
                 cut(key, 200),
-                cut(&error.message, 2000),
+                message.trim_end_matches('.'),
                 timing
             )
         },
