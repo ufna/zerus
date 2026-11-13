@@ -63,29 +63,6 @@ pub(super) fn capture(record: &Value, pid: u32) -> Option<Value> {
     .ok()
 }
 
-/// A fresh event from a child whose stored process identity is still the same
-/// live process, but whose parent binding went stale (a resumed record): keep
-/// the identity, refresh the parent evidence from the same process. A changed
-/// birth never matches, so a reused PID cannot be adopted.
-pub(super) fn refresh(record: &mut Value, id: &str) -> bool {
-    let Some(child) = record["subagents"].get(id) else {
-        return false;
-    };
-    let Some(original) = original(child) else {
-        return false;
-    };
-    let same = crate::platform::process_identity(original.pid)
-        .is_some_and(|current| current.birth == original.birth);
-    if !same {
-        return false;
-    }
-    let Some(fresh) = capture(record, original.pid) else {
-        return false;
-    };
-    record["subagents"][id]["original_process"] = fresh;
-    true
-}
-
 fn original_status(record: &Value, child: &Value) -> &'static str {
     let Some(original) = original(child) else {
         return "unknown";

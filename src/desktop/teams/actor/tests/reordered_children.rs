@@ -31,7 +31,7 @@ const EXPECTED: [(
     bool,
     Option<Fact>,
     Option<bool>,
-); 21] = [
+); 24] = [
     // Claude Code: both orders of one child's events leave it ended.
     (
         "claude_start_stop",
@@ -200,12 +200,45 @@ const EXPECTED: [(
     (
         "external_uncertain_start_reconciled",
         "hooks",
+        false,
+        None,
+        false,
+        false,
+        Some(Fact::Children),
+        None,
+    ),
+    // The same process under an old run is never adopted, and the member is
+    // not free while that uncertainty stands.
+    (
+        "external_old_run_start",
+        "hooks",
+        false,
+        None,
+        false,
+        false,
+        Some(Fact::Children),
+        None,
+    ),
+    // A later reconcile settles it: live and bound counts working; gone ends.
+    (
+        "external_uncertain_settled_live",
+        "hooks",
         true,
         Some(1),
         false,
         false,
         None,
         None,
+    ),
+    (
+        "external_uncertain_settled_ended",
+        "hooks",
+        false,
+        Some(0),
+        false,
+        true,
+        None,
+        Some(false),
     ),
     // An Interrupt, then the lifecycle's uncertainty, then a Start: the hook's
     // interrupted evidence is the last end and the Start stays out.
@@ -313,16 +346,46 @@ fn a_start_for_an_ended_child_never_counts_as_active_again() {
     );
     assert_eq!(evidence["kimi_removed_start"]["before"]["state"], "unknown");
     assert_eq!(evidence["kimi_removed_start"]["after"]["state"], "working");
-    // Process uncertainty is not an end: the fresh Start clears it, keeps the
-    // same live process, and the member is busy again.
+    // Process uncertainty is not an end: the fresh Start is not suppressed,
+    // but the reconciled uncertainty stands and no count is reported.
     let uncertain = &evidence["external_uncertain_start_reconciled"];
     assert_eq!(uncertain["before"]["state"], "working");
     assert_eq!(uncertain["before"]["display_state"], "unknown");
     assert_eq!(uncertain["before"]["process_unknown"], true);
     assert_eq!(uncertain["after"]["state"], "working");
-    assert_eq!(uncertain["after"]["display_state"], Value::Null);
-    assert_eq!(uncertain["after"]["process_unknown"], false);
-    assert_eq!(uncertain["after"]["process_state"], "live");
+    assert_eq!(uncertain["after"]["display_state"], "unknown");
+    assert_eq!(uncertain["after"]["process_unknown"], true);
+    assert_eq!(uncertain["after"]["process_state"], "unknown");
+    // The old run's process is never adopted for the new run.
+    assert_eq!(
+        evidence["external_old_run_start"]["after"]["original_process"]["run_id"],
+        "run-claude"
+    );
+    assert_eq!(
+        evidence["external_old_run_start"]["after"]["original_process"],
+        evidence["external_old_run_start"]["before"]["original_process"]
+    );
+    // A settled reconcile resumes or ends the child.
+    assert_eq!(
+        evidence["external_uncertain_settled_live"]["after"]["state"],
+        "working"
+    );
+    assert_eq!(
+        evidence["external_uncertain_settled_live"]["after"]["display_state"],
+        Value::Null
+    );
+    assert_eq!(
+        evidence["external_uncertain_settled_live"]["after"]["process_unknown"],
+        false
+    );
+    assert_eq!(
+        evidence["external_uncertain_settled_ended"]["after"]["state"],
+        "ended"
+    );
+    assert_eq!(
+        evidence["external_uncertain_settled_ended"]["after"]["completion_source"],
+        "original_process_exit"
+    );
     // The earlier Interrupt wins: the lifecycle's uncertainty does not replace
     // its evidence, and the later Start stays history.
     let interrupt = &evidence["external_interrupt_uncertain_start"];
@@ -336,7 +399,7 @@ fn a_start_for_an_ended_child_never_counts_as_active_again() {
         interrupt["after_start"]["tracking_evidence"]["kind"],
         "Interrupt"
     );
-    assert_eq!(interrupt["after_start"]["process_state"], "live");
+    assert_eq!(interrupt["after_start"]["process_state"], "unknown");
     // The two orders of one child are indistinguishable to the member: both
     // leave it free, which is what hands it its next task.
     assert_eq!(

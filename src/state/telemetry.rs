@@ -209,6 +209,25 @@ fn children(record: &Value) -> Value {
     result["subagent_total_count"] = json!(active + completed + unknown);
     result["subagent_previews"] = json!(previews);
     result["subagents"] = json!(roster);
+    // A child whose process may still run but cannot be bound is not history:
+    // no count can say whether it works now, so none is reported until the
+    // process settles (a later reconcile writes working, or ended).
+    let uncertain = children.is_some_and(|children| {
+        children
+            .values()
+            .any(|child| listed(record, child) && child["process_unknown"] == true)
+    });
+    if uncertain {
+        for field in [
+            "subagent_active_count",
+            "subagent_completed_count",
+            "subagent_unknown_count",
+            "subagent_total_count",
+        ] {
+            result[field] = Value::Null;
+        }
+        result["subagent_counts_complete"] = json!(false);
+    }
     result
 }
 

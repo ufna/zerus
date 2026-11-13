@@ -173,6 +173,87 @@ fn external_process_uncertain(reconciled: bool) -> (Value, Value) {
     )
 }
 
+/// The same live process captured under an old run: a fresh Start must not
+/// adopt it for the new run.
+fn external_old_run() -> (Value, Value) {
+    const ID: &str = "external:codex:22222222-2222-4222-8222-222222222222";
+    let mut child = Command::new("sleep")
+        .arg("30")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("a sleeping child");
+    let mut record = record("claude");
+    let pid = std::process::id();
+    record["pid"] = json!(pid);
+    record["process_start"] = json!(storage::process_start(pid));
+    record["subagents"][ID] = json!({"external":true,"provider":"codex","conversation_id":"child",
+        "name":"external child","state":"working","started":1.0,"updated":2.0,
+        "reply_id":"original-reply"});
+    record["subagents"][ID]["original_process"] =
+        subagent_lifecycle::capture(&record, child.id()).expect("the child's process identity");
+    record["run_id"] = json!("new-run");
+    subagent_lifecycle::reconcile(&mut record);
+    assert_eq!(record["subagents"][ID]["process_unknown"], true);
+    let before = record["subagents"][ID].clone();
+    let event = json!({"hook_event_name":"SubagentStart","session_id":"child",
+        "agent_id":"grandchild-1","agent_type":"general-purpose"});
+    let scoped = external_agents::route(&mut record, &event).expect("the external child route");
+    telemetry::observe(&mut record, &scoped);
+    journal::update_activity(&mut record, &scoped);
+    subagent_lifecycle::reconcile(&mut record);
+    let after = record["subagents"][ID].clone();
+    assert_eq!(after["original_process"], before["original_process"]);
+    assert_eq!(after["original_process"]["run_id"], "run-claude");
+    assert!(child.try_wait().expect("the child").is_none());
+    let listed = row(record);
+    child.kill().expect("kill the child");
+    child.wait().expect("reap the child");
+    (
+        listed,
+        json!({"before":before,"after":after,"original_alive_through_listing":true}),
+    )
+}
+
+/// An uncertain child settled two ways: the process is re-captured while live
+/// and bound (working), or it exits (ended).
+fn external_settled(ended: bool) -> (Value, Value) {
+    const ID: &str = "external:codex:22222222-2222-4222-8222-222222222222";
+    let mut child = Command::new("sleep")
+        .arg("30")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("a sleeping child");
+    let mut record = record("claude");
+    let pid = std::process::id();
+    record["pid"] = json!(pid);
+    record["process_start"] = json!(storage::process_start(pid));
+    record["subagents"][ID] = json!({"external":true,"provider":"codex","conversation_id":"child",
+        "name":"external child","state":"working","started":1.0,"updated":2.0,
+        "reply_id":"original-reply"});
+    record["subagents"][ID]["original_process"] =
+        subagent_lifecycle::capture(&record, child.id()).expect("the child's process identity");
+    record["subagents"][ID]["original_process"]["parent_start"] = json!("stale-parent-start");
+    subagent_lifecycle::reconcile(&mut record);
+    assert_eq!(record["subagents"][ID]["process_unknown"], true);
+    if ended {
+        child.kill().expect("kill the child");
+        child.wait().expect("reap the child");
+    } else {
+        record["subagents"][ID]["original_process"] =
+            subagent_lifecycle::capture(&record, child.id()).expect("the child's process identity");
+    }
+    subagent_lifecycle::reconcile(&mut record);
+    let after = record["subagents"][ID].clone();
+    let listed = row(record);
+    child.kill().expect("kill the child");
+    child.wait().expect("reap the child");
+    (listed, json!({"after":after,"ended":ended}))
+}
+
 /// An external child interrupted, then its lifecycle uncertainty, then a
 /// fresh Start: which record survives.
 fn external_interrupt_uncertain() -> (Value, Value) {
@@ -375,6 +456,19 @@ fn produce() -> Value {
         let (uncertain_row, uncertain_evidence) = external_process_uncertain(reconciled);
         rows.insert(name.into(), uncertain_row);
         evidence.insert(name.into(), uncertain_evidence);
+    }
+    let (old_run_row, old_run_evidence) = external_old_run();
+    rows.insert("external_old_run_start".into(), old_run_row);
+    evidence.insert("external_old_run_start".into(), old_run_evidence);
+    for ended in [false, true] {
+        let name = if ended {
+            "external_uncertain_settled_ended"
+        } else {
+            "external_uncertain_settled_live"
+        };
+        let (settled_row, settled_evidence) = external_settled(ended);
+        rows.insert(name.into(), settled_row);
+        evidence.insert(name.into(), settled_evidence);
     }
     let (interrupt_row, interrupt_evidence) = external_interrupt_uncertain();
     rows.insert("external_interrupt_uncertain_start".into(), interrupt_row);
