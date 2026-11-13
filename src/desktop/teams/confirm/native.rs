@@ -236,7 +236,25 @@ mod tests {
         std::fs::write(config.state.join("teams/preview"), "on").unwrap();
         let mut store = Store::open(&config.state).unwrap();
         let stop = Arc::new(AtomicBool::new(false));
-        let (b, _, s) = super::super::policy::tests::sample();
+        let (mut b, _, s) = super::super::policy::tests::sample();
+        // A real scratch worktree so the granted scope is the repository's
+        // main checkout, an independent known value (zerus-63rru.66 round 2).
+        let scratch = temp.path().join("repo");
+        std::fs::create_dir_all(&scratch).unwrap();
+        for args in [
+            vec!["init", "-q"],
+            vec!["config", "user.email", "review@example.invalid"],
+            vec!["config", "user.name", "review"],
+        ] {
+            assert!(std::process::Command::new("git").arg("-C").arg(&scratch).args(args).output().unwrap().status.success());
+        }
+        std::fs::write(scratch.join("file.txt"), "fixture").unwrap();
+        assert!(std::process::Command::new("git").arg("-C").arg(&scratch).args(["add", "file.txt"]).output().unwrap().status.success());
+        assert!(std::process::Command::new("git").arg("-C").arg(&scratch).args(["commit", "-qm", "fixture"]).output().unwrap().status.success());
+        assert!(std::process::Command::new("git").arg("-C").arg(&scratch).args(["worktree", "add", "-q", "--detach", "../member-wt"]).output().unwrap().status.success());
+        let worktree = temp.path().join("member-wt");
+        b.folder = worktree.to_str().unwrap().to_owned();
+        b.launch = b.folder.clone();
         let mut native = Native::new(&config, &b.machine, &stop, &mut store).unwrap();
         let plan = super::super::engine::candidate(&b, &s, Kind::Trust, s.questions[0].clone());
         let audit = native.audit_begin(&plan).unwrap();
@@ -248,11 +266,9 @@ mod tests {
             })
             .unwrap();
         let saved: serde_json::Value = serde_json::from_str(&saved).unwrap();
-        assert_eq!(
-            saved["scope"],
-            super::super::policy::scope_for(&b.folder),
-            "{saved}"
-        );
+        // The independent value: the scratch repository's main checkout,
+        // the known path of the worktree the binding names.
+        assert_eq!(saved["scope"], scratch.to_str().unwrap(), "{saved}");
         let status: String = db
             .query_row("SELECT status FROM attempts WHERE id=?1", [audit.id], |r| {
                 r.get(0)

@@ -182,31 +182,69 @@ pub(super) fn scope_for(folder: &str) -> String {
 }
 
 /// The repository's main checkout a linked worktree belongs to, resolved
-/// from Git, never from the card's text: the worktree's common Git dir is
-/// the main checkout's `.git`, whose parent is the checkout itself
-/// (zerus-63rru.66). A folder that is not a linked worktree resolves to
-/// itself.
+/// from Git, never from the card's text (zerus-63rru.66 round 2): the
+/// common Git dir must be the main checkout's own `.git` — its file name is
+/// `.git`, the repository is not bare, and the work tree's top level of the
+/// common dir's parent is that parent — so a bare repository, a separate Git
+/// directory and a submodule (a common dir under `.git/modules`) resolve to
+/// nothing and stay the person's. A folder that is its own non-bare
+/// repository resolves to itself.
 pub(super) fn main_checkout(folder: &str) -> Option<String> {
-    let out = std::process::Command::new("git")
-        .arg("-C")
-        .arg(folder)
-        .args(["-c", "core.hooksPath=/dev/null", "-c", "commit.gpgSign=false"])
-        .args(["rev-parse", "--path-format=absolute", "--git-common-dir"])
-        .output()
-        .ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    let common = String::from_utf8(out.stdout).ok()?;
+    let git = |at: &str, args: &[&str]| -> Option<String> {
+        let out = std::process::Command::new("git")
+            .arg("-C")
+            .arg(at)
+            .args(["-c", "core.hooksPath=/dev/null", "-c", "commit.gpgSign=false"])
+            .args(args)
+            .output()
+            .ok()?;
+        out.status
+            .success()
+            .then(|| String::from_utf8(out.stdout).ok())
+            .flatten()
+    };
+    let common = git(folder, &["rev-parse", "--path-format=absolute", "--git-common-dir"])?;
     let common = common.trim();
     if common == ".git" {
-        // The folder is its own repository root, not a linked worktree.
-        return Some(folder.to_owned());
+        // The folder is its own repository: a main checkout only when the
+        // repository is not bare.
+        return non_bare(folder).then(|| folder.to_owned());
     }
-    // The linked worktree's common dir: <main checkout>/.git.
     let git_dir = std::path::Path::new(common);
+    if git_dir.file_name() != Some(std::ffi::OsStr::new(".git")) {
+        return None;
+    }
     let checkout = git_dir.parent()?.to_str()?;
-    Some(checkout.to_owned())
+    // The work tree's top level of the common dir's parent must be that
+    // parent (a submodule's top level is elsewhere), and the repository is
+    // not bare.
+    if git(checkout, &["rev-parse", "--show-toplevel"])?.trim() != checkout {
+        return None;
+    }
+    non_bare(checkout).then(|| checkout.to_owned())
+}
+
+fn non_bare(at: &str) -> bool {
+    std::process::Command::new("git")
+        .arg("-C")
+        .arg(at)
+        .args(["-c", "core.hooksPath=/dev/null", "-c", "commit.gpgSign=false"])
+        .args(["rev-parse", "--is-bare-repository"])
+        .output()
+        .map(|o| o.status.success() && o.stdout.starts_with(b"false"))
+        .unwrap_or(false)
+}
+
+/// Whether two paths name the same checkout, canonicalized: a symlink
+/// spelling is accepted only when it canonicalizes to the other path
+/// (zerus-63rru.66 round 2).
+fn same_checkout(a: &str, b: &str) -> bool {
+    let canon = |p: &str| std::fs::canonicalize(p).map(|c| c.to_string_lossy().into_owned());
+    match (canon(a), canon(b)) {
+        (Ok(a), Ok(b)) => a == b,
+        (Err(_), Err(_)) => a == b,
+        _ => false,
+    }
 }
 
 fn folder_item(
@@ -235,23 +273,34 @@ fn folder_item(
             .is_some_and(|path| path == folder),
         "The prompt names a different folder",
     )?;
+    need(
+        paragraphs.next().is_some_and(|text| !text.is_empty()),
+        "The prompt carries no disclosure",
+    )?;
     // The repository card names the root it would grant, in the note its
     // producer writes: the member's folder itself, or the repository's main
     // checkout as Git resolves it. Anything else stays the person's.
     if repository {
-        // The note's own line names the root the grant would cover; the
-        // disclosure may wrap it, so each line is read, never the prose.
+        // The producer emits the note and its root on one line, the root as
+        // the note's last words after its colon (state::codex_trust parse
+        // and card). The root is required, and it must canonicalize to the
+        // repository's main checkout as Git resolves it.
+        const NOTE: &str = "Note: You\u{2019}re in a subdirectory of a Git project. Trusting will apply to the repository root:";
         let root = body
             .lines()
-            .map(str::trim)
-            .find(|line| line.starts_with('/') && *line != folder)
-            .map(str::to_owned);
-        if let Some(root) = root {
-            need(
-                main_checkout(folder).as_deref() == Some(root.as_str()),
-                "The prompt grants a different repository",
-            )?;
-        }
+            .find_map(|line| {
+                let line = line.trim();
+                line.strip_prefix(NOTE)
+                    .map(str::trim)
+                    .filter(|r| !r.is_empty())
+                    .map(str::to_owned)
+            })
+            .ok_or("The prompt grants no repository root")?;
+        let checkout = main_checkout(folder).ok_or("The repository's main checkout is unknown")?;
+        need(
+            same_checkout(&root, &checkout),
+            "The prompt grants a different repository",
+        )?;
     }
     let choices = item["options"]
         .as_array()

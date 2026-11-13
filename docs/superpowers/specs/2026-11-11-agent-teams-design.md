@@ -392,10 +392,11 @@ Team status: Draft, Planning, Running, Paused, Finished, Archived, and Stopped.
    first phase. Its tasks are created and the team is Running.
 4. **Trust.** The startup trust prompts of the team's sessions, for folders
    Zerus created for the team, are confirmed under the lead's delegation (D9)
-   and recorded. The grant each agent records is wider than the card names:
-   answering a member's folder card trusts the repository's main checkout for
-   that member's account, which the setting and the audit row say.
-   Nobody has to sit through them.
+   and recorded. The grant each agent records is wider than Claude's card
+   names: answering a member's folder card trusts the repository's main
+   checkout and its subfolders for that member's account, which the setting
+   and the audit row say. Codex's own card names the repository root it would
+   grant, and the same rule answers it. Nobody has to sit through them.
 5. **Running and Paused.** The lead or the person pauses and resumes the team
    or one member. A pause stops hand-outs; it sends nothing to a session.
 6. **Finish.** A team finishes only by an explicit `finish`, when every task
@@ -790,7 +791,7 @@ settings.
 | Worktrees appear only after an explicit start | Kept. The lead's at Start planning, the members' at Create team |
 | Destructive actions need confirmation | Kept. Stop, archive and member removal are the person's, confirmed in the desktop core |
 | Automatic tool approvals are a separate opt-in, off by default | Unchanged for ordinary sessions. For a team's members the delegation (D5, D9) confirms what they need, with the same journal, identity and no-replay rules |
-| Startup trust and persistent permission changes stay manual | Changed for a team's members by D9: Zerus answers the trust prompt of a folder it created for the team. The agent records the trust for the repository's main checkout on that member's account, which the setting and the audit row say. A change beyond a member's own session or the team repository stays manual |
+| Startup trust and persistent permission changes stay manual | Changed for a team's members by D9: Zerus answers the trust prompt of a folder it created for the team. On the member's account the grant applies to the repository's main checkout and its subfolders, which the setting and the audit row say. Claude's card names only the folder and the grant is wider; Codex's card names the repository root. A change beyond a member's own session or the team repository stays manual |
 | "Only the person accepts Done" (agent guide) | Unchanged for `hgs task`: no agent moves a team task to Done. Under D5 the lead accepts through `hgs team`, and the service's own command finishes the task |
 | An unknown delivery is never replayed | Kept for hand-outs, doorbells, answers and resumes |
 | `Background` status contract | Unchanged. A member in `Background` is busy |

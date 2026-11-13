@@ -23,6 +23,12 @@ pub(crate) fn record(agent: &str) -> Value {
 }
 
 /// The pending startup card `agent`'s producer writes for [`record`].
+/// The real producer's card for `record` at `screen` (zerus-63rru.66 round
+/// 2): the tests drive the producer, never a hand-made card shape.
+pub(crate) fn codex_repository_card(record: &Value, screen: &str) -> Option<Value> {
+    codex_trust::produced(record, screen)
+}
+
 pub(crate) fn startup_card(agent: &str) -> Value {
     let record = record(agent);
     match agent {

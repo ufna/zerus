@@ -191,6 +191,9 @@ pub struct Entry {
     /// The approval categories the request needed, by ID; empty for an
     /// entry saved before categories or by an older CLI.
     pub categories: Vec<String>,
+    /// The granted scope the row recorded, next to the card's folder; none
+    /// for a row written before it (zerus-63rru.66 round 2).
+    pub scope: Option<String>,
 }
 
 /// One page and its cursors (0: none that way).
@@ -236,6 +239,7 @@ pub fn page(reply: &Map<String, Value>) -> Result<Page, String> {
                 prompt: text(&entry["prompt"]),
                 result: status_text(entry["status"].as_str().unwrap_or_default()).into(),
                 categories: known_categories(&entry["categories"]),
+                scope: entry["scope"].as_str().map(str::to_owned),
             })
             .collect(),
         next: reply.get("next").map_or(0, integer),

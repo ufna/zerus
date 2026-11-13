@@ -736,6 +736,92 @@ fn a_question_that_is_not_a_folder_trust_prompt_plans_nothing() {
     }
 }
 
+/// The repository card's root guard, driven by the real producer on real
+/// Git layouts (zerus-63rru.66 round 2): the producer emits the note and its
+/// root on one line; the named root is required, compared canonicalized with
+/// the main checkout Git resolves, and only the member's worktree's main
+/// checkout or a symlink spelling of it is accepted. A sibling checkout, a
+/// different repository, a bare repository and a submodule are refused.
+#[test]
+fn a_codex_repository_card_answers_only_the_main_checkout_the_producer_names() {
+    let temp = tempfile::tempdir().unwrap();
+    let run = |args: &[&str], at: &std::path::Path| -> std::process::Output {
+        std::process::Command::new("git")
+            .arg("-C")
+            .arg(at)
+            .args(["-c", "user.email=review@example.invalid", "-c", "user.name=review"])
+            .args(["-c", "core.hooksPath=/dev/null", "-c", "commit.gpgSign=false"])
+            .args(args)
+            .output()
+            .unwrap()
+    };
+    let init = |dir: &std::path::Path| {
+        std::fs::create_dir_all(dir).unwrap();
+        run(&["init", "-q"], dir);
+        std::fs::write(dir.join("file.txt"), "fixture").unwrap();
+        run(&["add", "file.txt"], dir);
+        run(&["commit", "-qm", "fixture"], dir);
+    };
+    let main = temp.path().join("repo");
+    init(&main);
+    run(&["worktree", "add", "-q", "--detach", "../member-wt"], &main);
+    let worktree = temp.path().join("member-wt");
+    // A sibling checkout of the same repository.
+    let sibling = temp.path().join("sibling");
+    init(&sibling);
+    // A bare repository.
+    let bare = temp.path().join("bare.git");
+    std::fs::create_dir_all(&bare).unwrap();
+    run(&["init", "-q", "--bare"], &bare);
+    // A different repository and an initialized submodule of it.
+    let other = temp.path().join("other");
+    init(&other);
+    run(&["-c", "protocol.file.allow=always", "submodule", "add", "-q", other.to_str().unwrap(), "sub"], &main);
+    run(&["commit", "-qm", "submodule"], &main);
+    let submodule_git = main.join(".git/modules/sub");
+    // A symlink spelling of the main checkout.
+    let spelling = temp.path().join("spelling");
+    std::os::unix::fs::symlink(&main, &spelling).unwrap();
+    // The producer's own card for each layout, from the real capture's
+    // screen shape: the note and its root are the capture's own lines of
+    // one paragraph, which the producer joins into one disclosure line.
+    let screen = |root: &str| {
+        include_str!("../../../../../tests/fixtures/codex-folder-trust-git-root-0167.txt")
+            .replace("/work/repository/subdir", &worktree.display().to_string())
+            .replace("/work/repository", root)
+    };
+    let mut record = crate::state::trust_fixture::record("codex");
+    record["launch_dir"] = json!(worktree.to_str().unwrap());
+    let card = |root: &str| {
+        let screen = screen(root);
+        crate::state::trust_fixture::codex_repository_card(&record, &screen)
+    };
+    let main_str = main.to_str().unwrap();
+    for (root, answered) in [
+        (main_str, true),
+        (spelling.to_str().unwrap(), true),
+        (sibling.to_str().unwrap(), false),
+        (other.to_str().unwrap(), false),
+        (bare.to_str().unwrap(), false),
+        (submodule_git.to_str().unwrap(), false),
+    ] {
+        let produced = card(root);
+        let mut f = Fake::new();
+        at_startup(&mut f, "codex");
+        f.binding.folder = worktree.to_str().unwrap().to_owned();
+        f.snapshot.folder = f.binding.folder.clone();
+        f.owner.folder = f.binding.folder.clone();
+        f.facts.member.worktree = f.binding.folder.clone();
+        f.facts.binding = f.binding.clone();
+        f.snapshot.questions[0] = produced.unwrap_or_else(|| {
+            panic!("the producer wrote no card for the root {root}");
+        });
+        let why = super::super::policy::trust(&f.binding, &f.snapshot).err();
+        assert_eq!(why.is_none(), answered, "root {root}: {why:?}");
+    }
+}
+
+
 /// A Codex repository card whose note names the member's own folder is the
 /// same grant as the folder card (zerus-63rru.66).
 #[test]
@@ -751,52 +837,6 @@ fn a_codex_repository_card_naming_the_members_folder_is_answered() {
     ));
     f.run("epoch-1", 100).unwrap();
     assert_eq!(f.answers, 1, "the repository card is answered");
-}
-
-/// A Codex repository card whose note names the repository's main checkout
-/// as Git resolves it is answered; a note naming another repository is the
-/// person's (zerus-63rru.66).
-#[test]
-fn a_codex_repository_card_naming_the_main_checkout_is_answered_and_another_is_refused() {
-    // A real scratch repository with a linked worktree, through the product's
-    // own git: the policy resolves the main checkout from Git, never from the
-    // card's text.
-    let temp = tempfile::tempdir().unwrap();
-    let main = temp.path().join("repo");
-    std::fs::create_dir_all(&main).unwrap();
-    let run = |args: &[&str], at: &std::path::Path| {
-        std::process::Command::new("git")
-            .arg("-C")
-            .arg(at)
-            .args(args)
-            .output()
-            .unwrap()
-    };
-    run(&["init", "-q"], &main);
-    run(&["config", "user.email", "review@example.invalid"], &main);
-    run(&["config", "user.name", "review"], &main);
-    std::fs::write(main.join("file.txt"), "fixture").unwrap();
-    run(&["add", "file.txt"], &main);
-    run(&["commit", "-qm", "fixture"], &main);
-    run(&["worktree", "add", "-q", "--detach", "../member-wt"], &main);
-    let worktree = temp.path().join("member-wt");
-    let checkout = main.to_str().unwrap();
-    for (root, answered) in [(checkout.to_owned(), true), ("/another/repository".to_owned(), false)] {
-        let mut f = Fake::new();
-        at_startup(&mut f, "codex");
-        f.binding.folder = worktree.to_str().unwrap().to_owned();
-        f.snapshot.folder = f.binding.folder.clone();
-        f.owner.folder = f.binding.folder.clone();
-        f.facts.member.worktree = f.binding.folder.clone();
-        f.facts.binding = f.binding.clone();
-        f.snapshot.questions[0]["questions"][0]["question"] = json!("Trust this Git repository?");
-        f.snapshot.questions[0]["questions"][0]["body"] = json!(format!(
-            "{}\n\nNote: You are in a subdirectory of a Git project. Trusting will apply to the repository root:\n{root}",
-            worktree.display()
-        ));
-        f.run("epoch-1", 100).unwrap();
-        assert_eq!(f.answers, usize::from(answered), "root {root}");
-    }
 }
 
 /// The repository card is Codex's own: Claude's policy refuses it

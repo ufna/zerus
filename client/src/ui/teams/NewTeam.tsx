@@ -49,7 +49,7 @@ export function delegationWords(key: string): { name: string; sentence: string }
   switch (key) {
     case "accept_results": return { name: tr("Accept results"), sentence: tr("The lead may accept a team task's result without you.") };
     case "answer_members": return { name: tr("Answer members"), sentence: tr("The lead answers members' questions and permission requests without you.") };
-    case "confirm_trust": return { name: tr("Confirm folder trust"), sentence: tr("Zerus confirms the trust prompt of a folder it created for the team; the agent records the trust for the team repository's main checkout.") };
+    case "confirm_trust": return { name: tr("Confirm folder trust"), sentence: tr("Zerus confirms the trust prompt of a folder it created for the team; on the member's account the agent records the trust for the team repository's main checkout and its subfolders.") };
     case "resume_exited": return { name: tr("Resume exited members"), sentence: tr("Zerus resumes a member whose agent exited by itself.") };
     case "merge_accepted": return { name: tr("Merge accepted work"), sentence: tr("An accepted result is merged into the integration branch without your approval.") };
     default: return { name: key, sentence: tr("A permission this version does not describe.") };

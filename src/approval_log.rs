@@ -319,6 +319,15 @@ pub(crate) const CATEGORIES: &str = "CASE WHEN length(CAST(question AS BLOB))>19
     WHEN json_valid(question) AND json_type(question,'$.categories')='array'
         AND length(json_extract(question,'$.categories'))<=1024
     THEN json_extract(question,'$.categories') END";
+/// The granted scope the row recorded, when it has one (zerus-63rru.66
+/// round 2); rows written before it carry none and stay valid.
+pub(crate) fn saved_scope(raw: &str) -> Value {
+    serde_json::from_str::<Value>(raw)
+        .ok()
+        .and_then(|value| value.get("scope").cloned())
+        .unwrap_or(Value::Null)
+}
+
 pub(crate) fn saved_categories(raw: Option<String>) -> Value {
     raw.and_then(|raw| serde_json::from_str::<Value>(&raw).ok())
         .and_then(|value| categories(&value))
@@ -358,9 +367,10 @@ fn list(db: &Connection, payload: &Value) -> Result<Value> {
         };
     let operator = if reverse { ">" } else { "<" };
     let order = if reverse { "ASC" } else { "DESC" };
-    let mut statement = db.prepare(&format!("SELECT id,at,host,session,provider,prompt,status,{CATEGORIES} FROM attempts WHERE id{operator}?1{filter} ORDER BY id {order} LIMIT {}",PAGE+1)).map_err(bad)?;
+    let mut statement = db.prepare(&format!("SELECT id,at,host,session,provider,prompt,status,{CATEGORIES},question FROM attempts WHERE id{operator}?1{filter} ORDER BY id {order} LIMIT {}",PAGE+1)).map_err(bad)?;
     let rows = statement.query_map(values.as_slice(),|row| Ok(json!({"id":row.get::<_,i64>(0)?,"at":row.get::<_,i64>(1)?,"host":row.get::<_,String>(2)?,"session":row.get::<_,String>(3)?,"provider":row.get::<_,String>(4)?,"prompt":row.get::<_,String>(5)?,"status":row.get::<_,String>(6)?,
-        "categories":saved_categories(row.get::<_,Option<String>>(7)?)}))).map_err(bad)?;
+        "categories":saved_categories(row.get::<_,Option<String>>(7)?),
+        "scope":saved_scope(&row.get::<_,String>(8)?)}))).map_err(bad)?;
     let mut entries = rows
         .collect::<std::result::Result<Vec<_>, _>>()
         .map_err(bad)?;
@@ -441,6 +451,45 @@ pub fn dispatch(config: &Config, target: &str, args: &[String], dry: bool) -> Re
 #[cfg(all(test, unix))]
 pub(crate) mod lock_tests;
 
+#[test]
+fn the_journal_list_and_detail_carry_the_recorded_scope() {
+    // zerus-63rru.66 round 2: the scope the row recorded reaches the person
+    // through the bounded readers; a row without one stays valid.
+    let directory = tempfile::tempdir().unwrap();
+    let mut db = open(&directory.path().join("audit")).unwrap();
+    let record = crate::state::trust_fixture::record("codex");
+    let question = crate::state::trust_fixture::startup_card("codex");
+    assert_eq!(record["launch_dir"], question["questions"][0]["body"].as_str().unwrap().split('\n').next().unwrap());
+    let payload = json!({
+        "host": "h", "session": "s", "provider": "codex",
+        "question": question, "scope": "/work/repository"
+    });
+    let reserved = begin_team(&mut db, &payload, TeamKind::FolderTrust).unwrap();
+    assert_eq!(reserved["eligible"], true, "{reserved}");
+    let page = list(&db, &json!({})).unwrap();
+    let entries = page["entries"].as_array().unwrap();
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0]["scope"], "/work/repository", "{page}");
+}
+
+#[test]
+fn a_codex_repository_card_admitted_by_the_policy_is_admitted_by_the_team_audit() {
+    // zerus-63rru.66 round 2: the audit admission takes the same Codex
+    // repository card the policy takes.
+    let mut record = crate::state::trust_fixture::record("codex");
+    record["launch_dir"] = json!("/work/repository/subdir");
+    let screen = include_str!("../tests/fixtures/codex-folder-trust-git-root-0167.txt");
+    let question = crate::state::trust_fixture::codex_repository_card(&record, screen)
+        .expect("the producer wrote no card");
+    let directory = tempfile::tempdir().unwrap();
+    let mut db = open(&directory.path().join("audit")).unwrap();
+    let payload = json!({
+        "host": "h", "session": "s", "provider": "codex",
+        "question": question, "scope": "/work/repository"
+    });
+    let reserved = begin_team(&mut db, &payload, TeamKind::FolderTrust).unwrap();
+    assert_eq!(reserved["eligible"], true, "{reserved}");
+}
 #[cfg(test)]
 mod tests {
     use super::*;
