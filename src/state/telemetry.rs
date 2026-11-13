@@ -142,6 +142,7 @@ fn children(record: &Value) -> Value {
                 .sum::<u64>());
         }
         result["subagent_previews"] = json!(previews);
+        result["subagent_process_unknown_count"] = json!(0);
         return result;
     }
     if !observed && children.is_none_or(|children| children.is_empty()) {
@@ -209,25 +210,16 @@ fn children(record: &Value) -> Value {
     result["subagent_total_count"] = json!(active + completed + unknown);
     result["subagent_previews"] = json!(previews);
     result["subagents"] = json!(roster);
-    // A child whose process may still run but cannot be bound is not history:
-    // no count can say whether it works now, so none is reported until the
-    // process settles (a later reconcile writes working, or ended).
-    let uncertain = children.is_some_and(|children| {
+    // The counts stay numeric for every reader; this separate number says how
+    // many listed children may still run but cannot be bound, which the Teams
+    // reader treats as unsettled. Other readers ignore it.
+    let unbound = children.map_or(0, |children| {
         children
             .values()
-            .any(|child| listed(record, child) && child["process_unknown"] == true)
+            .filter(|child| listed(record, child) && child["process_unknown"] == true)
+            .count()
     });
-    if uncertain {
-        for field in [
-            "subagent_active_count",
-            "subagent_completed_count",
-            "subagent_unknown_count",
-            "subagent_total_count",
-        ] {
-            result[field] = Value::Null;
-        }
-        result["subagent_counts_complete"] = json!(false);
-    }
+    result["subagent_process_unknown_count"] = json!(unbound);
     result
 }
 

@@ -31,7 +31,7 @@ const EXPECTED: [(
     bool,
     Option<Fact>,
     Option<bool>,
-); 24] = [
+); 25] = [
     // Claude Code: both orders of one child's events leave it ended.
     (
         "claude_start_stop",
@@ -201,10 +201,10 @@ const EXPECTED: [(
         "external_uncertain_start_reconciled",
         "hooks",
         false,
-        None,
+        Some(0),
+        true,
         false,
-        false,
-        Some(Fact::Children),
+        Some(Fact::ChildrenUnsettled),
         None,
     ),
     // The same process under an old run is never adopted, and the member is
@@ -213,11 +213,23 @@ const EXPECTED: [(
         "external_old_run_start",
         "hooks",
         false,
-        None,
+        Some(0),
+        true,
         false,
-        false,
-        Some(Fact::Children),
+        Some(Fact::ChildrenUnsettled),
         None,
+    ),
+    // An explicit retirement clears the process projection: the ended child
+    // counts zero and the member is free again.
+    (
+        "external_retired",
+        "hooks",
+        false,
+        Some(0),
+        false,
+        true,
+        None,
+        Some(false),
     ),
     // A later reconcile settles it: live and bound counts working; gone ends.
     (
@@ -356,6 +368,14 @@ fn a_start_for_an_ended_child_never_counts_as_active_again() {
     assert_eq!(uncertain["after"]["display_state"], "unknown");
     assert_eq!(uncertain["after"]["process_unknown"], true);
     assert_eq!(uncertain["after"]["process_state"], "unknown");
+    assert_eq!(
+        rows["external_uncertain_start_reconciled"]["subagent_process_unknown_count"],
+        1
+    );
+    assert_eq!(
+        rows["external_old_run_start"]["subagent_process_unknown_count"],
+        1
+    );
     // The old run's process is never adopted for the new run.
     assert_eq!(
         evidence["external_old_run_start"]["after"]["original_process"]["run_id"],
@@ -386,6 +406,26 @@ fn a_start_for_an_ended_child_never_counts_as_active_again() {
         evidence["external_uncertain_settled_ended"]["after"]["completion_source"],
         "original_process_exit"
     );
+    // Retirement clears the process projection and settles the ended child.
+    let retired = &evidence["external_retired"];
+    assert_eq!(retired["uncertain"]["process_unknown"], true);
+    assert_eq!(retired["retired"]["state"], "ended");
+    assert_eq!(retired["retired"]["display_state"], "ended");
+    assert_eq!(
+        retired["retired"]["completion_source"],
+        "explicit_retirement"
+    );
+    assert!(retired["retired"].get("process_unknown").is_none());
+    assert!(retired["retired"].get("process_display_state").is_none());
+    assert_eq!(
+        rows["external_retired"]["subagent_process_unknown_count"],
+        0
+    );
+    // The desktop core reads the same numeric count as before the separate
+    // Teams field: unknown work is not current work for reply attention.
+    let core = zerus_client_core::view::row(&rows["external_old_run_start"]);
+    assert_eq!(core.notify.subagents_active, 0);
+    assert_eq!(core.status, "ready");
     // The earlier Interrupt wins: the lifecycle's uncertainty does not replace
     // its evidence, and the later Start stays history.
     let interrupt = &evidence["external_interrupt_uncertain_start"];

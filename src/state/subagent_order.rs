@@ -299,6 +299,32 @@ fn external_interrupt_uncertain() -> (Value, Value) {
     )
 }
 
+/// A legacy external child with no original process, retired, then reconciled
+/// again and listed: the explicit end must be settled and visible.
+fn external_retired() -> (Value, Value) {
+    const ID: &str = "external:codex:22222222-2222-4222-8222-222222222222";
+    let mut record = record("claude");
+    record["subagents"][ID] = json!({"external":true,"provider":"codex","conversation_id":"child",
+        "name":"external child","state":"working","started":1.0,"updated":2.0,
+        "reply_id":"original-reply","attention_id":"original-attention"});
+    subagent_lifecycle::reconcile(&mut record);
+    assert_eq!(record["subagents"][ID]["process_unknown"], true);
+    let uncertain = record["subagents"][ID].clone();
+    let request: subagent_lifecycle::Retire = serde_json::from_value(json!({
+        "request_id":uuid::Uuid::new_v4().to_string(),
+        "expected_run_id":string(&record,"run_id"),
+        "expected_conversation_id":string(&record,"conversation_id"),
+        "agent_id":ID,
+        "expected_updated":2.0,
+    }))
+    .expect("the retirement request");
+    subagent_lifecycle::retire_record(&mut record, request).expect("the explicit retirement");
+    subagent_lifecycle::reconcile(&mut record);
+    let retired = record["subagents"][ID].clone();
+    let listed = row(record);
+    (listed, json!({"uncertain":uncertain,"retired":retired}))
+}
+
 fn produce() -> Value {
     let mut rows = serde_json::Map::new();
     let mut evidence = serde_json::Map::new();
@@ -470,6 +496,9 @@ fn produce() -> Value {
         rows.insert(name.into(), settled_row);
         evidence.insert(name.into(), settled_evidence);
     }
+    let (retired_row, retired_evidence) = external_retired();
+    rows.insert("external_retired".into(), retired_row);
+    evidence.insert("external_retired".into(), retired_evidence);
     let (interrupt_row, interrupt_evidence) = external_interrupt_uncertain();
     rows.insert("external_interrupt_uncertain_start".into(), interrupt_row);
     evidence.insert(
