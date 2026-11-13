@@ -21,9 +21,10 @@ the Teams service touches a real session, in order:
 5. stop and terminate: a person's team stop ends no agent; a person's Terminate ends
    the member's process and archives its run.
 
-Steps 2 to 4 wait for zerus-63rru.51 (WAITING): they are kept as waiting_* methods
-that the contract does not select. Folder trust and resume of an exited member are
-added after zerus-63rru.48 and .49.
+Further classes turn one of the team's delegations
+on: folder trust by the standing confirmation (Codex selected; Claude Code waits for
+the owner's decision zerus-63rru.66 and for zerus-63rru.73) and the resume of an
+exited member (Claude Code and Codex selected).
 The model is a keyless loopback fixture; no account and no model quota are used.
 Run through `scripts/ci/agent-compatibility.py --contract teams`, or directly with
 HGS_TEST_BIN and HGS_CLAUDE_TEST_BIN or HGS_CODEX_TEST_BIN, outside any agent
@@ -39,6 +40,7 @@ import shutil
 import socket
 import subprocess
 import tempfile
+import time
 import unittest
 from unittest import mock
 import uuid
@@ -47,25 +49,42 @@ import teams_native_fixture as fixture
 
 
 # Cases written against real agents that wait for a product fix before the contract
-# selects them; each is a method of TeamsContract named waiting_*. Folder trust by the
-# standing confirmation and resume of an exited member wait for zerus-63rru.48 and .49
-# and are added with those fixes.
+# selects them: TeamsContract methods named waiting_*, and whole classes by name.
+# TeamsWaitingList keeps this list, the selection, the workflow header, the row's
+# coverage and the docs naming the same fixes.
 WAITING = {
-    'waiting_2_delivery_and_member_shell': 'zerus-63rru.51 (no member is free: availability reads subagents_active)',
-    'waiting_3_lead_doorbell': 'zerus-63rru.51 (the doorbell needs an idle lead and a report)',
-    'waiting_4_cancel_notice': 'zerus-63rru.51 (a delivered task to cancel needs a hand-out)',
+    'waiting_6_a_member_shell_in_a_private_pid_namespace': 'zerus-63rru.76 (the caller proof cannot see the agent\'s '
+                                                           'recorded process from a private PID namespace; a named '
+                                                           'refusal comes with the other stream\'s next sync to main)',
+    # Whole classes the teams contract does not select yet.
+    'NativeTeamsTrustClaude': 'zerus-63rru.66 (the owner decides whether the standing confirmation may answer a '
+                              'card whose recorded trust is the main checkout; runs tc20, tc21, tp1 to tp3) and '
+                              'zerus-63rru.73 (test_2: an ordinary question is taken as a trust candidate)',
+    'NativeTeamsQuestionAfterTrustClaude': 'zerus-63rru.73 (an ordinary question after no startup card opens one '
+                                           'notice card today)',
 }
 
 
-class TeamsContract:
+class ClassFixture:
+    """One team per class, brought up once; the ordered steps share it, and a failed
+    step fails the later ones with its name."""
     agent = None
     variable = None
     fx = None
     failed = None
+    delegations = None
+    service_answers = ()
+    after_refusal = None
+    count = 1
+    pinned = None
+    pretrust = ()
 
     @classmethod
     def setUpClass(cls):
-        cls.fx = fixture.TeamFixture(cls.agent, os.environ[cls.variable], cls.__name__)
+        cls.fx = fixture.TeamFixture(cls.agent, os.environ[cls.variable], cls.__name__,
+                                     delegations=cls.delegations, service_answers=cls.service_answers,
+                                     after_refusal=cls.after_refusal, count=cls.count, pinned=cls.pinned,
+                                     pretrust=cls.pretrust)
         try:
             cls.fx.bring_up()
         except BaseException:
@@ -94,6 +113,63 @@ class TeamsContract:
         if result is not None and len(result.failures) + len(result.errors) > before and not type(self).failed:
             type(self).failed = self._testMethodName
         return outcome
+
+
+def journal_is(case, expected, label):
+    """The whole audit journal settles to exactly `expected` (journal_summary) within a
+    turn's bound; the last summary read is kept in the evidence either way."""
+    fx = case.fx
+    last = []
+
+    def settled():
+        last[:] = [fx.journal_summary()]
+        return last[0] == expected or None
+    try:
+        fx.wait(label, settled, fixture.BOUND['turn'], 2)
+    finally:
+        fx.evidence.write('journal-' + re.sub(r'\W+', '-', label).strip('-')[:60] + '.json',
+                          dict(expected=expected, last=last[0] if last else None))
+
+
+# Hand-outs took 0.1 to 0.9 s from the task's observation in tc23; a quiet window ten
+# times longer shows that nobody took the task.
+QUIET = 15
+
+
+def ordinary_question_stays_the_persons(case, askers):
+    """zerus-63rru.73: only the member agent's own folder-trust prompt is a candidate of
+    the standing confirmation. An ordinary question plans nothing (no card, no audit row),
+    stays pending for the person, and its member is not free while it is open. The
+    positive control: once the person answers one member's question, that member takes
+    the task nobody took while every question was open."""
+    fx = case.fx
+    journal = fx.journal_summary()
+    seen = {c.get('seq') for c in fx.cards()}
+    for member in askers:
+        fx.send(member, 'Ask the fixture questions now.')
+    cards = {member: fx.wait(f'{member} asked a question mid-conversation', lambda m=member: next(iter(fx.pending(m)), None),
+                             fixture.BOUND['turn'], 2) for member in askers}
+    fx.evidence.write('ordinary-questions.json', cards)
+    _, task_uuid = fx.add_task('Fixture task while questions are open', 'Fixture task: taken once a question is answered.')
+    node = fx.wait('task node in the queue', lambda: fx.node_of(task_uuid), fixture.BOUND['handout'], 2)
+    deadline = time.monotonic() + QUIET
+    while time.monotonic() < deadline:
+        case.assertEqual(fx.handouts(node['id']), [], 'no member with an open question is handed a task')
+        time.sleep(1)
+    first = askers[0]
+    fx.answer_question(first, cards[first])
+    taken = fx.wait(f'{first} takes the task once its question is answered', lambda: fx.handouts(node['id']) or None,
+                    fixture.BOUND['handout'], 1)
+    case.assertEqual(taken, [first])
+    for member in askers[1:]:
+        case.assertIn(cards[member]['question_id'], [q.get('question_id') for q in fx.pending(member)],
+                      f"{member}'s question is still the person's")
+    case.assertEqual([c for c in fx.cards() if c.get('seq') not in seen], [], 'no Teams card for an ordinary question')
+    journal_is(case, journal, 'the journal is unchanged by the ordinary questions')
+
+
+class TeamsContract(ClassFixture):
+    """Delegations off: the person answers every startup card."""
 
     # 1 -----------------------------------------------------------------------
     def test_1_launch_and_identity(self):
@@ -145,14 +221,25 @@ class TeamsContract:
         self.assertEqual((parent.get('parent') or {}).get('name'), fx.sessions['lead']['name'],
                          'the member is linked to its lead (manual link written after binding)')
 
+    def pinned_form(self, prompt):
+        """Which acknowledgement form a delivered prompt pins: report-attempt exactly once
+        and begin-attempt at most once (src/tasks/controls.rs pin_dispatch); anything else
+        fails."""
+        reports = re.findall(fixture.PINNED.format(verb='report-attempt'), prompt)
+        begins = re.findall(fixture.PINNED.format(verb='begin-attempt'), prompt)
+        self.assertEqual(len(reports), 1, 'report-attempt is pinned exactly once')
+        self.assertLessEqual(len(begins), 1, 'begin-attempt is pinned at most once')
+        return 'begin and report' if begins else 'report only'
+
     # 2 -----------------------------------------------------------------------
-    def waiting_2_delivery_and_member_shell(self):
+    def test_2_delivery_and_member_shell(self):
         fx = self.fx
         out = fx.root / 'out'
         fx.script('delivered', (
             'set -- "$@"; n=0; for x in ' + str(out) + '/delivered-*.json; do [ -e "$x" ] && n=$((n+1)); done; '
             'f=' + str(out) + '/delivered-$n.json\n'
-            'begin=$("$H" task begin-attempt "$1" --attempt "$2" 2>&1); b=$?\n'
+            'if [ -n "$1" ]; then begin=$("$H" task begin-attempt "$1" --attempt "$2" 2>&1); b=$?; '
+            'else begin="no begin-attempt is pinned"; b=-1; fi\n'
             'current=$("$H" team current --json 2>&1); c=$?\n'
             'inbox=$("$H" team inbox --team ' + fx.team + ' --json 2>&1); i=$?\n'
             'if [ -f ' + str(out) + '/begin-only ]; then report=""; r=-1; else\n'
@@ -172,12 +259,17 @@ class TeamsContract:
         prompts = fx.requests_with(lambda r: (r.get('prompt') or '').startswith('[Zerus task ' + ref))
         self.assertTrue(prompts, 'no model request carried the delivered prompt')
         delivered = prompts[0]['prompt']
-        self.assertIn('hgs task begin-attempt', delivered)
+        # Every dispatched prompt pins report-attempt exactly once, and begin-attempt at most
+        # once: only while the product's task controls are on (TASK_CONTROLS; off in
+        # 1d565627e). The member runs every command its prompt pins; the form met is kept.
+        form = self.pinned_form(delivered)
+        fx.evidence.write('delivered-0-form.json', dict(form=form))
         for request in prompts:
             self.assertEqual(sum(text == delivered for text in request['users']), 1,
                              'the delivered prompt appears once in the member conversation')
-        # The member's own shell: acknowledgement, caller proof, refusal, report.
-        self.assertEqual(result['begin_exit'], 0, result['begin'])
+        # The member's own shell: the acknowledgement when one is pinned, caller proof,
+        # refusal, report.
+        self.assertEqual(result['begin_exit'], 0 if form == 'begin and report' else -1, result['begin'])
         current = json.loads(result['current'])
         self.assertEqual(result['current_exit'], 0, result['current'])
         self.assertEqual(current['actor'], dict(kind='session', member='m1', person='local', team=fx.team))
@@ -192,7 +284,7 @@ class TeamsContract:
         type(self).first = dict(ref=ref, uuid=task_uuid, node=node['id'])
 
     # 3 -----------------------------------------------------------------------
-    def waiting_3_lead_doorbell(self):
+    def test_3_lead_doorbell(self):
         fx = self.fx
         bell = re.compile(r'(1 item waits|\d+ items wait) in your team inbox\. Read them with: hgs team inbox --team '
                           + re.escape(fx.team))
@@ -213,15 +305,19 @@ class TeamsContract:
         self.assertTrue(any(row.get('kind') == 'report' and row.get('node') == self.first['node'] for row in inbox['rows']))
 
     # 4 -----------------------------------------------------------------------
-    def waiting_4_cancel_notice(self):
+    def test_4_cancel_notice(self):
         fx = self.fx
         out = fx.root / 'out'
-        (out / 'begin-only').write_text('the member acknowledges and keeps working\n')
+        (out / 'begin-only').write_text('the member keeps working without a report\n')
         ref, task_uuid = fx.add_task('Fixture task two', 'Fixture task two: keep working until cancelled.')
-        result = fx.wait('member acknowledged the second task',
+        result = fx.wait('member ran the second task in its shell and kept working',
                          lambda: (out / 'delivered-1.json').is_file() and json.loads((out / 'delivered-1.json').read_text()),
                          fixture.BOUND['handout'] + fixture.BOUND['turn'], 2)
-        self.assertEqual(result['begin_exit'], 0, result['begin'])
+        second = fx.requests_with(lambda r: (r.get('prompt') or '').startswith('[Zerus task ' + ref))
+        self.assertTrue(second, 'no model request carried the second delivered prompt')
+        form = self.pinned_form(second[0]['prompt'])
+        fx.evidence.write('delivered-1-form.json', dict(form=form))
+        self.assertEqual((result['begin_exit'], result['report_exit']), (0 if form == 'begin and report' else -1, -1), result)
         node = fx.node_of(task_uuid)
         cancel = out / 'lead-cancel.json'
         fx.script('lead-cancel', (
@@ -244,18 +340,42 @@ class TeamsContract:
         task = task.get('task') or task
         self.assertTrue(task.get('cancelled_at'), 'the task is cancelled')
 
+    # 6 (waiting) --------------------------------------------------------------
+    def waiting_6_a_member_shell_in_a_private_pid_namespace(self):
+        """Written down, not built (zerus-63rru.76). A member whose agent runs its shell
+        commands inside a private PID namespace (the agent's own sandbox, when a person
+        turned one on with a private process namespace) is handed a task. Expected, once
+        the other stream's helper is synced: the member's own report-attempt and every team
+        command in its shell are refused with the refusal that names the separate process
+        namespace and its remedy; no report is recorded for the node; and the lead is told
+        (its inbox holds the refusal, with one doorbell)."""
+        raise unittest.SkipTest('waits for zerus-63rru.76; not built')
+
     # 5 -----------------------------------------------------------------------
     def test_5_stop_and_terminate(self):
         fx = self.fx
         rows = fx.json('team', 'queue', '--team', fx.team, '--limit', '200', '--json').get('rows') or []
-        if not rows:
-            # The stop must have an unfinished node to cancel.
+        if not any(row.get('state') in ('waiting', 'pending', 'in_progress') for row in rows):
+            # The stop must have an unfinished node to cancel; the earlier steps' tasks are
+            # reported and cancelled, and a free member may take this one at once.
             _, task_uuid = fx.add_task('Fixture task for the stop', 'Fixture task: unfinished when the team stops.')
             fx.wait('task node in the queue', lambda: fx.node_of(task_uuid), fixture.BOUND['handout'], 2)
         before = {m: fx.process(m) for m in ('lead', 'm1')}
-        revision = fx.status()['team']['revision']
-        reply = fx.json('team', 'stop', '--json', stdin=json.dumps(dict(
-            request_id=str(uuid.uuid4()), team=fx.team, expected_revision=revision)))
+        refusals = []
+
+        def stop():
+            # The service may change the team between the person's read and the stop (a
+            # hand-out of the task above): a stale revision changes nothing, so the person
+            # refreshes and asks again with a new request.
+            revision = fx.status()['team']['revision']
+            reply = fx.json('team', 'stop', '--json', ok=False, stdin=json.dumps(dict(
+                request_id=str(uuid.uuid4()), team=fx.team, expected_revision=revision)))
+            if (reply.get('error') or {}).get('code') == 'stale_revision':
+                refusals.append(revision)
+                return None
+            return reply
+        reply = fx.wait("the person's team stop at a fresh revision", stop, fixture.BOUND['stop'], 1)
+        fx.evidence.write('stop-reply.json', dict(reply=reply, stale_revisions=refusals))
         self.assertTrue(reply.get('ok'), reply)
         fx.wait('team stopped', lambda: fx.status()['team'].get('status') == 'stopped', fixture.BOUND['stop'], 2)
         # The service acts on the stop (it records the cancel of the unfinished node) and
@@ -277,6 +397,332 @@ class TeamsContract:
                 fixture.BOUND['exit'], 1)
         archives = [json.loads(p.read_text()) for p in (Path(fx.env['HGS_STATE_DIR']) / 'archives').glob('*.json')]
         self.assertTrue(any(a.get('run_id') == view['run_id'] for a in archives), 'Terminate archived the run')
+
+
+class TrustContract(ClassFixture):
+    """Delegation confirm_trust on: the standing confirmation answers the members' startup
+    folder-trust cards (zerus-63rru.48), and a prompt that is not a startup prompt stays
+    the person's. The agent's own trust record proves the answer reached it."""
+    delegations = {'confirm_trust': True}
+    trust_source = None
+
+    def test_1_the_service_answers_the_startup_folder_trust(self):
+        fx = self.fx
+        answered = [json.loads(line) for line in (fx.evidence.folder / 'person-answers.jsonl').read_text().splitlines()]
+        for member_id in self.member_ids():
+            with self.subTest(member=member_id):
+                self.assertFalse([a for a in answered if a['member'] == member_id and a['source'] == self.trust_source],
+                                 'the person did not answer it')
+                name = fx.sessions[member_id]['name']
+                rows = fx.audit_rows(name)
+                fx.evidence.write(f'audit-{member_id}.json', rows)
+                grants = [r for r in rows if r['source'] == self.trust_source]
+                self.assertEqual(len(grants), 1, 'one audited grant for the card')
+                self.assertEqual(grants[0]['status'], 'approved', grants[0])
+                # The card the service answered, as its grant saved it: the real startup card
+                # with its null conversation. The service may answer before the fixture's
+                # first look; a card the fixture did see is the granted one.
+                card = grants[0]['saved_question']
+                self.assertEqual(card['questions'][0]['question'], 'Trust this folder?')
+                self.assertIn('conversation_id', card)
+                self.assertIsNone(card['conversation_id'], 'the real card carries a null conversation')
+                seen = [v['card'] for k, v in fx.cards_seen.items() if k[0] == member_id and v['source'] == self.trust_source]
+                self.assertLessEqual(len(seen), 1, 'the startup trust card appeared at most once')
+                if seen:
+                    self.assertEqual(seen[0].get('question_id'), card.get('question_id'), 'the card seen is the card granted')
+                pending = [q for q in fx.pending(member_id) if q.get('source') == self.trust_source]
+                self.assertFalse(pending, 'no second startup trust card for the member')
+                self.assert_agent_trusted(member_id)
+        refusals = [c for c in fx.cards() if 'needs your attention' in c.get('text', '')]
+        fx.evidence.write('cards-after-trust.json', refusals)
+        self.assertFalse(refusals, 'no member card was left for the person')
+        journal_is(self, self.startup_grants(), 'the journal holds exactly the two startup grants')
+
+    def member_ids(self):
+        return ('lead',) + tuple(f'm{number}' for number in range(1, self.count + 1))
+
+    def startup_grants(self):
+        return sorted((member, self.trust_source, ('team_folder_trust',), 'approved') for member in self.member_ids())
+
+    def test_2_an_ordinary_question_stays_the_persons(self):
+        """After the startup grants, every member asks an ordinary question (zerus-63rru.73)."""
+        ordinary_question_stays_the_persons(self, self.member_ids()[1:])
+
+    def assert_agent_trusted(self, member_id):
+        raise NotImplementedError
+
+
+class ClaudeTrust:
+    """Claude Code 2.1.322 records a folder-trust answer in a linked worktree as trust for
+    the repository's main checkout, on the member's account, and none for the worktree;
+    a second worktree on the same account still shows its card (zerus-63rru.66: the same
+    record a person's own answer leaves). Pinned as observed, so a release that stores it
+    elsewhere or stops asking fails here. Two members share one account for that."""
+    trust_source = 'claude_folder_trust'
+    service_answers = ('claude_folder_trust',)
+    count = 2
+    pinned = 'zt-claude'
+
+    # A rule, not a race (probes tp1, tp3, tp4): after an answer given on a worktree card,
+    # a later worktree on the same account asks again, with or without another session of
+    # the account running; only an answer given in the main checkout itself stops it.
+    def test_3_a_second_worktree_on_the_same_account_still_asked(self):
+        fx = self.fx
+        launches = {}
+        for row in fx.listed(fx.json('team', 'journal', '--team', fx.team, '--limit', '200', '--json'), 'rows', 'team journal'):
+            if row.get('kind') == 'set_member_session':
+                member = next((ref[len('member:'):] for ref in row.get('refs') or [] if ref.startswith('member:')), None)
+                launches.setdefault(member, row['at_ms'])
+        shared = sorted((launches[m], m) for m in self.member_ids() if fx.members()[m].get('account') == self.pinned)
+        fx.evidence.write('shared-account-launches.json', dict(launches=launches, shared=shared))
+        self.assertEqual(len(shared), 2, 'two members on the pinned account')
+        (_, first), (later_at, later) = shared
+        first_grant = [r for r in fx.audit_rows(fx.sessions[first]['name']) if r['source'] == self.trust_source]
+        self.assertEqual(len(first_grant), 1)
+        self.assertGreater(later_at, first_grant[0]['at'], 'the later member launched after the first grant on its account')
+        later_grant = [r for r in fx.audit_rows(fx.sessions[later]['name']) if r['source'] == self.trust_source]
+        self.assertEqual(len(later_grant), 1, 'the later worktree on the same account still showed its own card')
+
+    def assert_agent_trusted(self, member_id):
+        fx = self.fx
+        home = fx.agent_home(member_id)
+        # Where Claude keeps trust, recorded before asserting it (zerus-63rru.60: the grant
+        # must be no wider than the card's folder).
+        records = fx.claude_trust_records()
+        fx.evidence.write(f'claude-trust-records-{member_id}.json', dict(home=str(home), records=records))
+        mine = records.get(str(home / '.claude.json'))
+        self.assertIsInstance(mine, dict, "the member account's own .claude.json is readable")
+        main = str((fx.root / 'work/proj').resolve())
+        self.assertEqual(mine, {main: True}, "the account holds exactly the main checkout as trusted, no worktree key")
+
+
+def codex_config(fx, member):
+    """The config.toml Codex reads for a member: the native account's in HOME/.codex,
+    a managed account's in its own home."""
+    account = fx.members()[member].get('account')
+    if not account:
+        raise AssertionError(f'{member} has no account')
+    if account.startswith('native-'):
+        return Path(fx.env['HOME']) / '.codex/config.toml'
+    return Path(fx.env['HGS_CONFIG_DIR']) / 'accounts' / account / 'config.toml'
+
+
+def codex_trust_problems(records, accounts, main):
+    """How Codex's recorded folder trust differs from the card the person answered: every
+    members' account configuration holds exactly {main: trusted}, and every other
+    config.toml in the root holds no project at all. A wider, narrower or extra record is a
+    problem."""
+    problems = [f'{path}: not a readable configuration' for path, value in records.items() if not isinstance(value, dict)]
+    for path in sorted(accounts):
+        if records.get(path) != {main: 'trusted'}:
+            problems.append(f'{path}: {records.get(path)!r} instead of {{{main!r}: trusted}}')
+    for path, value in records.items():
+        if path not in accounts and value:
+            problems.append(f'{path}: unexpected projects {value!r}')
+    return problems
+
+
+class CodexTrustContract(ClassFixture):
+    """Delegation confirm_trust on, Codex: every member worktree is a linked worktree, so
+    Codex's Folder access panel carries its Git root note and asks to trust the repository
+    root. The standing confirmation refuses that scope (zerus-63rru.49 and the owner's
+    decision); the panel, wrapped or not, is now recognized, so the person answers it
+    through hgs answer, not only in Terminal.
+
+    The panel's variant is what the pane showed, checked against the folder's length: a
+    hosted runner (a short root in /tmp) must show the one-row panel and a local run (a
+    root inside the worktree) the wrapped one, so neither variant drops out unseen."""
+    delegations = {'confirm_trust': True}
+    after_refusal = {'codex_folder_trust': 'grants a different scope'}
+
+    def test_1_the_repository_scope_is_refused_and_the_person_answers_it(self):
+        fx = self.fx
+        answered = [json.loads(line) for line in (fx.evidence.folder / 'person-answers.jsonl').read_text().splitlines()]
+        for member_id in ('lead', 'm1'):
+            with self.subTest(member=member_id):
+                seen = [v for k, v in fx.cards_seen.items() if k[0] == member_id and v['source'] == 'codex_folder_trust']
+                self.assertEqual(len(seen), 1, 'the Folder access panel is recognized as Codex folder trust')
+                card = seen[0]['card']
+                item = card['questions'][0]
+                self.assertEqual(item['question'], 'Trust this Git repository?')
+                self.assertTrue(card.get('can_answer'), 'the person can answer it through hgs answer')
+                worktree = fx.members()[member_id]['worktree']
+                self.assertEqual(item['body'].split('\n\n', 1)[0].replace('\n', ''), worktree,
+                                 'the panel names the member worktree, wrapped as the terminal shows it')
+                self.assertEqual(seen[0]['size'], '80x24', 'the panel rows are measured in an 80-column pane')
+                key = next(k for k, v in fx.cards_seen.items() if v is seen[0])
+                variant = fixture.codex_panel_variant(fx.panes[key], worktree)
+                fits = len(worktree) <= fixture.CODEX_PANEL_COLUMNS
+                fx.evidence.write(f'codex-panel-{member_id}.json', dict(
+                    variant=variant, folder_columns=len(worktree), row_columns=fixture.CODEX_PANEL_COLUMNS,
+                    hosted=fixture.hosted_runner()))
+                self.assertEqual(variant, 'one-row' if fits else 'wrapped',
+                                 'the pane shows the folder on as many rows as its length needs')
+                self.assertEqual(variant, 'one-row' if fixture.hosted_runner() else 'wrapped',
+                                 'a hosted runner shows the one-row panel, a local run the wrapped one')
+                rows = [r for r in fx.audit_rows(fx.sessions[member_id]['name'])
+                        if r['source'] == 'codex_folder_trust']
+                self.assertFalse(rows, 'the standing confirmation granted nothing')
+                refusal = [c for c in fx.cards() if f'Member {member_id} needs your attention' in c.get('text', '')
+                           and 'grants a different scope' in c.get('text', '')]
+                self.assertTrue(refusal, 'the service refused the repository scope with a card for the person')
+                person = [a for a in answered if a['member'] == member_id and a['source'] == 'codex_folder_trust']
+                self.assertEqual([(a.get('terminal'), a.get('exit')) for a in person], [(None, 0)],
+                                 'the person answered it once through hgs answer')
+        fx.evidence.write('codex-trust-cards.json', fx.cards())
+        # The standing confirmation refused before any reservation, and the person's own
+        # answers write none: the whole journal is empty.
+        journal_is(self, [], 'the journal holds nothing at all')
+        # What Codex recorded for the person's answer: the repository's main checkout, as
+        # the card says, in the members' account configuration, and nothing else anywhere.
+        records = fx.codex_trust_records()
+        fx.evidence.write('codex-trust-records-asserted.json', records)
+        accounts = {str(codex_config(fx, member)) for member in ('lead', 'm1')}
+        self.assertEqual(codex_trust_problems(records, accounts, str((fx.root / 'work/proj').resolve())), [])
+
+
+class ResumeContract(ClassFixture):
+    """Delegation resume_exited on (folder trust stays the person's): a member that has
+    worked (the person's message and its answer) and whose agent then exits by itself is
+    resumed with its brief, in the same launch and conversation and a new run; a member
+    the person terminated is not resumed."""
+    delegations = {'resume_exited': True}
+    exit_keys = ('/exit', 'Enter')
+
+    def brief_text(self):
+        return (f'You are a member of team {self.fx.team} in role zt-dev. '
+                'Read `hgs team current` for your current team and work.')
+
+    def test_1_a_member_that_exits_by_itself_is_resumed_with_its_brief(self):
+        fx = self.fx
+        # A resume continues a persisted conversation: the member works once first (Codex
+        # also starts its conversation at this message).
+        fx.worked('m1', 'Fixture message before the exit.')
+        before = fx.inspect('m1')
+        pid, _ = fx.process('m1')
+        target = '=' + fx.sessions['m1']['name'] + ':'
+        # Evidence for a refused resume: whether the member's folder exists over time.
+        watch = fixture.FolderWatch(fx.members()['m1']['worktree'])
+        watch.start()
+        for key in self.exit_keys:
+            subprocess.run(['tmux', 'send-keys', '-t', target, key], env=fx.env, check=True)
+        try:
+            fx.wait('m1 agent exited by itself', lambda: fx.start_ticks(pid) is None or None, fixture.BOUND['exit'], 1)
+            resumed = fx.wait('the service resumed m1 in a new run', lambda: (lambda v: v if v.get('run_id') not in (None, before['run_id'])
+                              and v.get('runtime_state') == 'live' else None)(fx.inspect('m1')), fixture.BOUND['doorbell'], 3)
+        except AssertionError:
+            fx.evidence.write('m1-folder-watch.json', watch.finish())
+            self.diagnose_refused_resume()
+            raise
+        fx.evidence.write('m1-folder-watch.json', watch.finish())
+        fx.evidence.write('resumed-view.json', {k: resumed.get(k) for k in ('run_id', 'conversation_id', 'launch_id', 'activity')})
+        self.assertEqual(resumed.get('launch_id'), fx.sessions['m1']['launch'], 'the same launch')
+        self.assertTrue(before.get('conversation_id'), 'the exited run had a conversation')
+        self.assertEqual(resumed.get('conversation_id'), before.get('conversation_id'), 'the same conversation')
+        brief = self.brief_text()
+        seen = fx.wait('the brief reached the resumed member', lambda: fx.requests_with(lambda r: r.get('prompt') == brief),
+                       fixture.BOUND['turn'], 2)
+        latest = fx.requests_with(lambda r: brief in r['users'])[-1]
+        self.assertEqual(latest['users'].count(brief), 1, 'the brief arrives once')
+        rows = [r for r in fx.audit_rows(fx.sessions['m1']['name']) if r['source'] == 'team_resume']
+        fx.evidence.write('resume-audit.json', rows)
+        # One reservation for the resume of the exited run and one for the brief in the new run.
+        self.assertEqual(sorted((r['question_id'].split(':', 1)[0], r['run']) for r in rows),
+                         [('brief', resumed['run_id']), ('resume', before['run_id'])], 'the resume and its brief are audited')
+        journal_is(self, self.resume_journal(), 'the journal holds exactly the resume and its brief')
+        type(self).resumed_run = resumed['run_id']
+
+    def resume_journal(self):
+        return [('m1', 'team_resume', ('team_resume',), 'approved')] * 2
+
+    def diagnose_refused_resume(self):
+        """A refused resume: what the service reads at that moment, then the person's own
+        Restore of the member's archive, which tells a fault of Teams from a refused
+        Restore."""
+        fx = self.fx
+        try:
+            seen = fx.observation()
+            fx.evidence.write('observation-at-refusal.json', seen)
+            archives = (seen.get('m1') or {}).get('archives') or []
+            if archives:
+                fx.evidence.write('person-restore.json', fx.person_restore('m1', archives[-1]))
+        except Exception as error:
+            fx.evidence.write('person-restore.json', dict(error=str(error)[:500]))
+
+    def test_2_a_member_the_person_terminates_is_not_resumed(self):
+        fx = self.fx
+        view = fx.inspect('m1')
+        pid, _ = fx.process('m1')
+        # The launch from the team store's binding (fails if absent), and the view agrees.
+        launch = fx.sessions['m1']['launch']
+        self.assertEqual(view.get('launch_id'), launch)
+        last = max([c.get('seq', 0) for c in fx.cards()] or [0])
+        fx.hgs('terminate', fx.sessions['m1']['name'], '--expected-run-id', view['run_id'], timeout=120)
+        fx.wait('m1 process exited after Terminate', lambda: fx.start_ticks(pid) is None or None, fixture.BOUND['exit'], 1)
+        refused = fx.wait('the service refused to resume the terminated member, with a card for the person',
+                          lambda: [c for c in fx.cards() if c.get('seq', 0) > last
+                                   and 'Member m1 needs your attention' in c.get('text', '')], fixture.BOUND['doorbell'], 3)
+        fx.evidence.write('terminate-refusal.json', refused)
+        rows = [r for r in fx.audit_rows(fx.sessions['m1']['name'])
+                if r['source'] == 'team_resume' and r['run'] == view['run_id'] and r['question_id'].startswith('resume:')]
+        self.assertFalse(rows, 'no resume was reserved for the terminated run')
+        # The positive control: the same reader still finds the first resume and its brief.
+        journal_is(self, self.resume_journal(), 'the journal still holds only the first resume and its brief')
+        live = fx.live_runs(launch, control=fx.sessions['lead']['launch'])
+        self.assertFalse(live, 'no session of the member launch runs again')
+
+
+class UnworkedResumeContract(ClassFixture):
+    """Delegation resume_exited on: a member that exits before any message (launched and
+    closed before its first hand-out) has no persisted conversation, so its restore is
+    refused before launch. What zerus-63rru.62's fix makes true: nothing starts, and the
+    person's card carries the command's own reason. The person's own Restore of that
+    archive is recorded beside it."""
+    delegations = {'resume_exited': True}
+    exit_keys = ('/exit', 'Enter')
+    reason = 'persisted conversation is missing or empty'
+
+    def test_1_a_member_that_never_worked_is_not_restored_and_the_card_says_why(self):
+        fx = self.fx
+        before = fx.inspect('m1')
+        pid, _ = fx.process('m1')
+        last = max([c.get('seq', 0) for c in fx.cards()] or [0])
+        target = '=' + fx.sessions['m1']['name'] + ':'
+        for key in self.exit_keys:
+            subprocess.run(['tmux', 'send-keys', '-t', target, key], env=fx.env, check=True)
+        fx.wait('m1 agent exited by itself', lambda: fx.start_ticks(pid) is None or None, fixture.BOUND['exit'], 1)
+        cards = fx.wait('the service told the person about m1', lambda: [c for c in fx.cards() if c.get('seq', 0) > last
+                        and 'Member m1 needs your attention' in c.get('text', '')], fixture.BOUND['doorbell'], 3)
+        fx.evidence.write('unworked-cards.json', cards)
+        live = fx.live_runs(fx.sessions['m1']['launch'], control=fx.sessions['lead']['launch'])
+        seen = fx.observation()
+        fx.evidence.write('observation-at-refusal.json', seen)
+        archives = (seen.get('m1') or {}).get('archives') or []
+        if archives:
+            fx.evidence.write('person-restore.json', fx.person_restore('m1', archives[-1]))
+        fx.evidence.write('journal-after-refusal.json', fx.journal_summary())
+        self.assertFalse(live, 'nothing of the member launch started')
+        self.assertTrue(any(self.reason in c.get('text', '') for c in cards), "the card carries the command's own reason")
+
+
+class QuestionAfterTrustContract(ClassFixture):
+    """Delegation confirm_trust on, and the person has trusted the main checkout on both
+    Claude accounts before the team starts, so no member shows a startup card. An ordinary
+    question then plans nothing: the mirror of the trust case's test_2 (zerus-63rru.73:
+    today it opens one notice card)."""
+    delegations = {'confirm_trust': True}
+    pinned = 'zt-claude'
+    pretrust = ('native-claude', 'zt-claude')
+
+    def test_1_no_startup_card_and_an_ordinary_question_stays_the_persons(self):
+        fx = self.fx
+        # The positive control: the same capture saw the person's two plain sessions' cards.
+        plain = sorted(k[0] for k, v in fx.cards_seen.items() if k[0].startswith('plain-') and v['source'] == 'claude_folder_trust')
+        self.assertEqual(plain, ['plain-native-claude', 'plain-zt-claude'], 'the capture saw the plain sessions\' trust cards')
+        startup = [v['source'] for k, v in fx.cards_seen.items() if not k[0].startswith('plain-')]
+        self.assertEqual(startup, [], 'no member showed a startup card')
+        journal_is(self, [], 'the journal holds no grant: there was no startup card')
+        ordinary_question_stays_the_persons(self, ['m1'])
 
 
 class TeamsFixtureIsolation(unittest.TestCase):
@@ -350,6 +796,317 @@ class TeamsFixtureIsolation(unittest.TestCase):
                 self.fx.env[key] = saved
 
 
+class TeamsWaitingList(unittest.TestCase):
+    """Every written class is selected or waiting, and the waiting cases' fixes are named
+    alike wherever the contract lists them."""
+
+    ISSUE = re.compile(r'zerus-63rru\.\d+')
+    ROOT = Path(__file__).resolve().parent.parent
+
+    def script(self, name):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location('teams_' + name.removesuffix('.py').replace('-', '_'),
+                                                      self.ROOT / 'scripts/ci' / name)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+
+    def test_every_class_is_selected_or_waiting_and_each_list_names_the_same_fixes(self):
+        compat, kimi = self.script('agent-compatibility.py'), self.script('kimi-native.py')
+        selected = {name.split('.')[1] for names in compat.TEAMS_CLASSES.values() for name in names}
+        selected |= {name.split('.')[1] for name in kimi.TEAMS_METHODS}
+        written = {name for name, value in globals().items() if name.startswith('NativeTeams') and isinstance(value, type)}
+        waiting = {name for name in WAITING if name in written}
+        self.assertFalse(selected & waiting, 'a waiting class is not selected')
+        self.assertEqual(written, selected | waiting, 'every written class is selected or waiting')
+        self.assertEqual(set(WAITING) - waiting, {name for name in dir(TeamsContract) if name.startswith('waiting_')})
+        self.assertEqual(self.mismatches(*self.places(compat), WAITING), [])
+
+    def places(self, compat):
+        header = (self.ROOT / '.github/workflows/teams-native.yml').read_text().split('\non:', 1)[0]
+        docs = (self.ROOT / 'docs/ci-and-aur.md').read_text()
+        section = docs.split('\n### Agent Teams real agents\n', 1)[1].split('\n## ', 1)[0]
+        return header, section, compat.TEAMS_COVERAGE
+
+    def mismatches(self, header, section, coverage, waiting):
+        """The places whose fixes differ from the waiting list's."""
+        fixes = set(self.ISSUE.findall(' '.join(waiting.values())))
+        return [place for place, text in (('workflow header', header), ('docs section', section), ('row coverage', coverage))
+                if set(self.ISSUE.findall(text)) != fixes]
+
+    def test_each_place_is_compared(self):
+        # Each place drifting alone is found (the review's mutant m7 removed one comparison).
+        header, section, coverage = self.places(self.script('agent-compatibility.py'))
+        extra = ' zerus-63rru.999'
+        for place, args in (('workflow header', (header + extra, section, coverage)),
+                            ('docs section', (header, section + extra, coverage)),
+                            ('row coverage', (header, section, coverage + extra))):
+            with self.subTest(place=place):
+                self.assertEqual(self.mismatches(*args, WAITING), [place])
+
+
+class TeamsCodexPanel(unittest.TestCase):
+    """Reading which Folder access panel Codex showed (synthetic folders)."""
+
+    def pane(self, folder, columns=fixture.CODEX_PANEL_COLUMNS):
+        rows = [folder[i:i + columns] for i in range(0, len(folder), columns)]
+        return '\n'.join(['', '  Folder access', *('  ' + row for row in rows), '',
+                          '  Note: You\u2019re in a subdirectory of a Git project. Trusting will apply to the',
+                          '  repository root:', '  /tmp/example/work/proj', ''])
+
+    def test_the_variant_is_what_the_pane_shows(self):
+        short = '/tmp/hgs-tn-abcdefgh/work/zerus-team-' + str(uuid.UUID(int=1))
+        long = '/srv/example/target/run/tmp/hgs-tn-abcdefgh/work/zerus-team-' + str(uuid.UUID(int=2))
+        self.assertLessEqual(len(short), fixture.CODEX_PANEL_COLUMNS)
+        self.assertGreater(len(long), fixture.CODEX_PANEL_COLUMNS)
+        self.assertEqual(fixture.codex_panel_variant(self.pane(short), short), 'one-row')
+        self.assertEqual(fixture.codex_panel_variant(self.pane(long), long), 'wrapped')
+        # Another folder, a cut folder, or no panel title is no variant.
+        self.assertIsNone(fixture.codex_panel_variant(self.pane(short), long))
+        self.assertIsNone(fixture.codex_panel_variant(self.pane(long), short))
+        cut = '\n'.join(['', '  Folder access', '  ' + long[:fixture.CODEX_PANEL_COLUMNS], '', '  Note: example'])
+        self.assertIsNone(fixture.codex_panel_variant(cut, long))
+        # The folder's rows follow each other: a blank row between its halves is not the panel.
+        rest = long[fixture.CODEX_PANEL_COLUMNS:]
+        gap = self.pane(long).replace('\n  ' + rest + '\n', '\n\n  ' + rest + '\n')
+        self.assertNotEqual(gap, self.pane(long))
+        self.assertIsNone(fixture.codex_panel_variant(gap, long))
+        self.assertIsNone(fixture.codex_panel_variant(self.pane(short).replace('Folder access', 'Folder'), short))
+
+    def test_a_hosted_root_in_tmp_fits_one_row_and_a_worktree_root_wraps(self):
+        # mkdtemp adds eight characters; the service names the member worktree after its launch.
+        member = 'work/zerus-team-' + str(uuid.uuid4())
+        hosted = Path('/tmp') / (fixture.ROOT_PREFIX + 'x' * 8) / member
+        self.assertLessEqual(len(str(hosted)), fixture.CODEX_PANEL_COLUMNS)
+        local = Path(__file__).resolve().parents[1] / 'target/run/tmp' / (fixture.ROOT_PREFIX + 'x' * 8) / member
+        self.assertGreater(len(str(local)), fixture.CODEX_PANEL_COLUMNS)
+        self.assertTrue(fixture.hosted_runner({'GITHUB_ACTIONS': 'true', 'RUNNER_ENVIRONMENT': 'github-hosted'}))
+        for env in ({}, {'GITHUB_ACTIONS': 'true'}, {'GITHUB_ACTIONS': 'true', 'RUNNER_ENVIRONMENT': 'self-hosted'}):
+            self.assertFalse(fixture.hosted_runner(env), env)
+
+
+class TeamsFixtureDiagnostics(unittest.TestCase):
+    """The read-only evidence of a refused resume, on a synthetic private state."""
+
+    def product_reader(self, entries, details, pages=None):
+        from types import SimpleNamespace
+        calls = []
+
+        def json_(*argv, stdin=None, **kw):
+            calls.append((argv, json.loads(stdin)))
+            if argv[:2] == ('approval-log', 'list'):
+                if pages is not None:
+                    return pages[json.loads(stdin).get('before')]
+                return dict(entries=entries, next=None, previous=None)
+            if argv[:2] == ('approval-log', 'detail'):
+                return details[json.loads(stdin)['id']]
+            raise AssertionError(argv)
+        import types
+        reader = SimpleNamespace(json=json_, listed=fixture.TeamFixture.listed, JOURNAL_BOUND=fixture.TeamFixture.JOURNAL_BOUND)
+        reader.journal = types.MethodType(fixture.TeamFixture.journal, reader)
+        return reader, calls
+
+    def test_the_journal_is_read_through_the_products_own_reader(self):
+        # The reader's shapes come from their producer (src/approval_log.rs list and detail).
+        producer = (Path(__file__).resolve().parents[1] / 'src/approval_log.rs').read_text()
+        self.assertIn('"categories":saved_categories(row.get::<_,Option<String>>(7)?)', producer)
+        self.assertIn('json!({"id":id,"question":saved["question"],"answers":saved["answers"],"status":status,"detail":detail,', producer)
+        self.assertIn('"usage: hgs approval-log begin|finish|list|detail (JSON stdin)"', producer)
+        question = {'source': 'team_resume', 'question_id': 'resume:run-1', 'run_id': 'run-1'}
+        entries = [dict(id=1, at=1, host='h', session='member', provider='claude', prompt='', status='approved',
+                        categories=['team_resume']),
+                   dict(id=2, at=2, host='h', session='other', provider='claude', prompt='', status='approved',
+                        categories=None)]
+        details = {1: dict(id=1, question=question, answers=[], status='approved', detail=''),
+                   2: dict(id=2, question=dict(question, source='claude_tool_approval'), answers=[], status='approved',
+                           detail='')}
+        reader, calls = self.product_reader(entries, details)
+        rows = fixture.TeamFixture.audit_rows(reader, 'member')
+        self.assertEqual([(r['id'], r['source'], r['question_id'], r['run'], r['categories']) for r in rows],
+                         [(1, 'team_resume', 'resume:run-1', 'run-1', ['team_resume'])])
+        self.assertEqual([c[0][:2] for c in calls], [('approval-log', 'list'), ('approval-log', 'detail'), ('approval-log', 'detail')])
+        # Pages are followed by the product's own cursor.
+        pages = {None: dict(entries=entries[1:], next=2, previous=None), 2: dict(entries=entries[:1], next=None, previous=2)}
+        reader, _ = self.product_reader(None, details, pages)
+        self.assertEqual([r['id'] for r in reader.journal()], [1, 2])
+        # A reply without its entries list fails the reader.
+        reader, _ = self.product_reader(None, details, {None: dict(rows=[])})
+        with self.assertRaisesRegex(AssertionError, 'reply has no entries list'):
+            reader.journal()
+
+    def test_the_journal_reader_refuses_a_shape_it_does_not_know(self):
+        entry = dict(id=1, at=1, host='h', session='member', provider='claude', prompt='', status='approved',
+                     categories=['team_resume'])
+        good = dict(id=1, question={'source': 'team_resume', 'question_id': 'q', 'run_id': 'r'}, answers=[],
+                    status='approved', detail='')
+        for name, entry_, detail in (('no question', entry, dict(good, question=None)),
+                                     ('question without run', entry, dict(good, question={'source': 's', 'question_id': 'q'})),
+                                     ('no answers', entry, {k: v for k, v in good.items() if k != 'answers'}),
+                                     ('another id', entry, dict(good, id=2)),
+                                     ('categories not a list', dict(entry, categories='team_resume'), good),
+                                     ('no session', {k: v for k, v in entry.items() if k != 'session'}, good)):
+            with self.subTest(case=name):
+                reader, _ = self.product_reader([entry_], {1: detail})
+                with self.assertRaisesRegex(AssertionError, 'shape the reader does not know'):
+                    reader.journal()
+
+    def test_codex_trust_problems_name_a_wider_or_extra_record(self):
+        main, account, native = '/tmp/example/work/proj', '/tmp/example/cfg/accounts/zt-codex/config.toml', \
+            '/tmp/example/native/.codex/config.toml'
+        problems = codex_trust_problems
+        self.assertEqual(problems({account: {main: 'trusted'}, native: {}}, {account}, main), [])
+        for name, records in (('a parent', {account: {'/tmp/example/work': 'trusted'}, native: {}}),
+                              ('the worktree', {account: {'/tmp/example/work/zerus-team-1': 'trusted'}, native: {}}),
+                              ('an extra project', {account: {main: 'trusted', '/tmp/example': 'trusted'}, native: {}}),
+                              ('another account', {account: {main: 'trusted'}, native: {main: 'trusted'}}),
+                              ('not trusted', {account: {main: 'untrusted'}, native: {}}),
+                              ('no record', {native: {}}),
+                              ('unreadable', {account: {main: 'trusted'}, native: 'TOMLDecodeError'})):
+            with self.subTest(case=name):
+                self.assertNotEqual(problems(records, {account}, main), [])
+
+    def test_readers_refuse_a_reply_without_the_keys_a_check_relies_on(self):
+        from types import SimpleNamespace
+        listed = fixture.TeamFixture.listed
+        self.assertEqual(listed({'rows': []}, 'rows', 'team cards'), [])
+        for reply in ({}, {'rows': None}, {'rows': {}}, {'items': []}, []):
+            with self.subTest(reply=reply), self.assertRaisesRegex(AssertionError, 'reply has no rows list'):
+                listed(reply, 'rows', 'team cards')
+
+        def reader(rows):
+            return SimpleNamespace(rows=lambda: rows)
+        live = fixture.TeamFixture.live_runs
+        control = dict(name='lead', launch_id='C', runtime_state='live', run_id='r0')
+        self.assertEqual(live(reader([control, dict(name='m1', launch_id='L', runtime_state='stopped', run_id='r1')]), 'L', 'C'), [])
+        self.assertEqual(live(reader([control, dict(name='m1', launch_id='L', runtime_state='live', run_id='r1')]), 'L', 'C'), ['m1'])
+        with self.assertRaisesRegex(AssertionError, 'lacks its runtime state'):
+            live(reader([control, dict(name='m1', launch_id='L', state='live', run_id='r1')]), 'L', 'C')
+        with self.assertRaisesRegex(AssertionError, 'control launch C is not found live'):
+            live(reader([dict(control, runtime_state='stopped')]), 'L', 'C')
+        with self.assertRaisesRegex(AssertionError, 'control launch C is not found live'):
+            live(reader([dict(name='lead', launchId='C', runtime_state='live', run_id='r0')]), 'L', 'C')
+        for launch in (None, '', 7):
+            with self.subTest(launch=launch), self.assertRaisesRegex(AssertionError, 'not a launch'):
+                live(reader([control]), launch, 'C')
+        with self.assertRaisesRegex(AssertionError, 'not a launch'):
+            live(reader([control]), 'L', None)
+        gone = SimpleNamespace(record=lambda member: dict(pid=2 ** 22 + 12345), start_ticks=fixture.TeamFixture.start_ticks)
+        with self.assertRaisesRegex(AssertionError, 'not running when its identity is taken'):
+            fixture.TeamFixture.process(gone, 'm1')
+
+    def test_the_session_record_is_the_one_live_record_of_the_run(self):
+        from types import SimpleNamespace
+        with tempfile.TemporaryDirectory() as base:
+            state = Path(base)
+            (state / 'sessions').mkdir()
+            (state / 'archives').mkdir()
+            (state / 'sessions/a.json').write_text(json.dumps(dict(run_id='r', pid=11, name='m1')))
+            (state / 'archives/b.json').write_text(json.dumps(dict(run_id='r', pid=11, state='archived')))
+            (state / 'sessions/receipt.json').write_text(json.dumps(dict(run_id='r', status='completed')))
+            reader = SimpleNamespace(env={'HGS_STATE_DIR': str(state)}, inspect=lambda member: {'run_id': 'r'})
+            self.assertEqual(fixture.TeamFixture.record(reader, 'm1')['name'], 'm1')
+            (state / 'sessions/c.json').write_text(json.dumps(dict(run_id='r', pid=12)))
+            with self.assertRaisesRegex(AssertionError, '2 live session records'):
+                fixture.TeamFixture.record(reader, 'm1')
+            reader.inspect = lambda member: {}
+            with self.assertRaisesRegex(AssertionError, 'has no current run'):
+                fixture.TeamFixture.record(reader, 'm1')
+
+    def test_account_snapshots_name_what_changed_without_content(self):
+        from types import SimpleNamespace
+        with tempfile.TemporaryDirectory() as base:
+            home = Path(base)
+            (home / '.claude.json').write_text(json.dumps({'projects': {}, 'numStartups': 1}))
+            (home / 'keep.txt').write_text('same')
+            (home / 'gone.txt').write_text('x')
+            before = fixture.TeamFixture.account_snapshot(SimpleNamespace(), home)
+            time.sleep(0.01)
+            (home / '.claude.json').write_text(json.dumps({'projects': {'/tmp/example/work/proj': {
+                'hasTrustDialogAccepted': True, 'allowedTools': []}}, 'numStartups': 2, 'secretish': 'value'}))
+            (home / 'gone.txt').unlink()
+            (home / 'new.txt').write_text('y')
+            after = fixture.TeamFixture.account_snapshot(SimpleNamespace(), home)
+        diff = fixture.TeamFixture.snapshot_diff(before, after)
+        self.assertEqual((diff['added'], diff['removed']), (['new.txt'], ['gone.txt']))
+        change = diff['changed']['.claude.json']
+        self.assertEqual((change['keys_added'], change['keys_changed']), (['secretish'], ['numStartups', 'projects']))
+        self.assertEqual(change['projects_added'], ['/tmp/example/work/proj'])
+        self.assertEqual(change['project_keys'], {'/tmp/example/work/proj': dict(
+            added=['allowedTools', 'hasTrustDialogAccepted'], removed=[], changed=[])})
+        self.assertNotIn('keep.txt', diff['changed'])
+        self.assertNotIn('value', json.dumps(after), 'names and hashes only, no content')
+
+    def test_the_pinned_commands_of_a_delivered_prompt(self):
+        attempt = str(uuid.UUID(int=7))
+        prompt = ('[Zerus task Example project/T-abc]\nWritten by the person.\n\n'
+                  f"Report this execution with `hgs task report-attempt 'Example project/T-abc' --attempt {attempt}` "
+                  'instead of any unscoped report instruction above.')
+        self.assertEqual(fixture.pinned(prompt, 'report-attempt'), ('Example project/T-abc', attempt))
+        self.assertIsNone(fixture.pinned(prompt, 'begin-attempt'))
+        plain = f'Acknowledge with `hgs task begin-attempt T-abc --attempt {attempt}` first.'
+        self.assertEqual(fixture.pinned(plain, 'begin-attempt'), ('T-abc', attempt))
+        self.assertIsNone(fixture.pinned(plain.replace(attempt, 'not-a-uuid'), 'begin-attempt'))
+
+    def test_handouts_name_the_members_a_node_went_to(self):
+        from types import SimpleNamespace
+        rows = [dict(kind='handout_intent', refs=['team:t', 'node:1', 'member:m1', 'effect:e']),
+                dict(kind='handout_intent', refs=['team:t', 'node:2', 'member:m2', 'effect:f']),
+                dict(kind='observe_task', refs=['team:t', 'node:1'])]
+        reader = SimpleNamespace(team='t', listed=fixture.TeamFixture.listed, json=lambda *argv, **kw: dict(rows=rows))
+        self.assertEqual(fixture.TeamFixture.handouts(reader, 1), ['m1'])
+        self.assertEqual(fixture.TeamFixture.handouts(reader, 3), [])
+        reader.json = lambda *argv, **kw: dict(items=rows)
+        with self.assertRaisesRegex(AssertionError, 'reply has no rows list'):
+            fixture.TeamFixture.handouts(reader, 1)
+
+    def test_folder_watch_times_a_folder_that_goes_and_comes_back(self):
+        with tempfile.TemporaryDirectory() as base:
+            folder = Path(base) / 'member'
+            folder.mkdir()
+            watch = fixture.FolderWatch(folder)
+            watch.start()
+            time.sleep(0.5)
+            folder.rmdir()
+            time.sleep(0.5)
+            folder.mkdir()
+            time.sleep(0.5)
+            result = watch.finish()
+        self.assertIsNotNone(result['gone_at'])
+        self.assertIsNotNone(result['back_at'])
+        self.assertLess(result['started'], result['gone_at'])
+        self.assertLess(result['gone_at'], result['back_at'])
+        self.assertGreater(result['samples'], 3)
+
+    def test_maintenance_reads_only_the_rows_and_receipts_of_that_checkout(self):
+        import sqlite3
+        from types import SimpleNamespace
+        with tempfile.TemporaryDirectory() as base:
+            state = Path(base) / 'state'
+            (state / 'worktree-maintenance').mkdir(parents=True)
+            (state / 'worktree-cache').mkdir()
+            member, other = '/tmp/example/work/zerus-team-1', '/tmp/example/work/zerus-team-2'
+            db = sqlite3.connect(state / 'worktree-maintenance/queue.sqlite3')
+            db.execute('CREATE TABLE checkouts (path TEXT PRIMARY KEY, common_dir TEXT, owner TEXT, next_check REAL, '
+                       'status TEXT, detail TEXT)')
+            db.execute('CREATE TABLE removals (path TEXT PRIMARY KEY, common_dir TEXT, branch TEXT, head TEXT, '
+                       'fingerprint TEXT, request_id TEXT, reserved_at REAL, status TEXT, detail TEXT)')
+            for path in (member, other):
+                db.execute('INSERT INTO checkouts VALUES (?, ?, ?, 0, ?, ?)', (path, '/tmp/example/.git', '{}', 'pending', ''))
+            db.execute('INSERT INTO removals VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)',
+                       (other, '/tmp/example/.git', 'b', 'h', 'f', 'r', 'pending', ''))
+            db.commit()
+            db.close()
+            (state / 'worktree-maintenance/policy.json').write_text('{"enabled": true}')
+            (state / 'worktree-cache/owned-a.json').write_text(json.dumps({'path': member}))
+            (state / 'worktree-cache/owned-b.json').write_text(json.dumps({'path': other}))
+            out = fixture.TeamFixture.maintenance(SimpleNamespace(env={'HGS_STATE_DIR': str(state)}), member)
+        self.assertEqual([row['path'] for row in out['checkouts']], [member])
+        self.assertEqual(out['removals'], [])
+        self.assertEqual(out['policy_file'], {'enabled': True})
+        self.assertIsNone(out['last_result'])
+        self.assertEqual([r['file'] for r in out['owned_receipts']], ['owned-a.json'])
+
+
 class TeamsFixtureProducers(unittest.TestCase):
     """Values another component writes come from that component (plan, 2026-11-12):
     the Kimi inspection stand-in carries only what src/accounts/kimi-read.mjs writes."""
@@ -375,6 +1132,46 @@ class TeamsFixtureProducers(unittest.TestCase):
 class NativeTeamsClaude(TeamsContract, unittest.TestCase):
     agent = 'claude'
     variable = 'HGS_CLAUDE_TEST_BIN'
+
+
+@unittest.skipUnless(os.environ.get('HGS_CLAUDE_TEST_BIN') and fixture.HGS, 'Set HGS_TEST_BIN and HGS_CLAUDE_TEST_BIN')
+class NativeTeamsTrustClaude(ClaudeTrust, TrustContract, unittest.TestCase):
+    agent = 'claude'
+    variable = 'HGS_CLAUDE_TEST_BIN'
+
+
+@unittest.skipUnless(os.environ.get('HGS_CLAUDE_TEST_BIN') and fixture.HGS, 'Set HGS_TEST_BIN and HGS_CLAUDE_TEST_BIN')
+class NativeTeamsResumeClaude(ResumeContract, unittest.TestCase):
+    agent = 'claude'
+    variable = 'HGS_CLAUDE_TEST_BIN'
+
+
+@unittest.skipUnless(os.environ.get('HGS_CLAUDE_TEST_BIN') and fixture.HGS, 'Set HGS_TEST_BIN and HGS_CLAUDE_TEST_BIN')
+class NativeTeamsResumeUnworkedClaude(UnworkedResumeContract, unittest.TestCase):
+    """Selected since zerus-63rru.62: the card of the refused restore carries the command's reason."""
+    agent = 'claude'
+    variable = 'HGS_CLAUDE_TEST_BIN'
+
+
+@unittest.skipUnless(os.environ.get('HGS_CLAUDE_TEST_BIN') and fixture.HGS, 'Set HGS_TEST_BIN and HGS_CLAUDE_TEST_BIN')
+class NativeTeamsQuestionAfterTrustClaude(QuestionAfterTrustContract, unittest.TestCase):
+    """Waiting (WAITING): not selected by the teams contract until zerus-63rru.73."""
+    agent = 'claude'
+    variable = 'HGS_CLAUDE_TEST_BIN'
+
+
+@unittest.skipUnless(os.environ.get('HGS_CODEX_TEST_BIN') and fixture.HGS, 'Set HGS_TEST_BIN and HGS_CODEX_TEST_BIN')
+class NativeTeamsResumeCodex(ResumeContract, unittest.TestCase):
+    """Selected since zerus-63rru.54 and .56 (tx10: the brief arrives, nothing is read as an exit)."""
+    agent = 'codex'
+    variable = 'HGS_CODEX_TEST_BIN'
+    exit_keys = ('/quit', 'Enter')
+
+
+@unittest.skipUnless(os.environ.get('HGS_CODEX_TEST_BIN') and fixture.HGS, 'Set HGS_TEST_BIN and HGS_CODEX_TEST_BIN')
+class NativeTeamsTrustCodex(CodexTrustContract, unittest.TestCase):
+    agent = 'codex'
+    variable = 'HGS_CODEX_TEST_BIN'
 
 
 @unittest.skipUnless(os.environ.get('HGS_CODEX_TEST_BIN') and fixture.HGS, 'Set HGS_TEST_BIN and HGS_CODEX_TEST_BIN')

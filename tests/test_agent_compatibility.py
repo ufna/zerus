@@ -1013,7 +1013,7 @@ class AgentCompatibility(unittest.TestCase):
                 self.assertEqual(list(row['cases']), ['teams'])
                 self.assertEqual(len(runs), 1, 'Teams adds no terminal-geometry cases')
                 suites, env, timeout = runs[0]
-                self.assertEqual(suites, [compat.TEAMS_CLASSES[agent]])
+                self.assertEqual(suites, compat.TEAMS_CLASSES[agent])
                 self.assertEqual(timeout, compat.TEAMS_TIMEOUT)
                 self.assertEqual(env['ZERUS_TEAMS_EVIDENCE'], str(results / 'teams-evidence'))
                 self.assertNotIn('HGS_CODEX_TEST_SIZE', env)
