@@ -4,7 +4,7 @@
 use super::super::ports::{DeliveryResult, Ports};
 use super::super::Runtime;
 use super::*;
-use crate::teams::ops::{self, Actor, HandoutOutcome, KeyState, Operation, TaskObservation, TaskStage};
+use crate::teams::ops::{Actor, HandoutOutcome, KeyState, Operation, TaskObservation, TaskStage};
 
 struct ProjectRefused {
     /// The two project sentences the real command answers with.

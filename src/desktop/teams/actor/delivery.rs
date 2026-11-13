@@ -31,6 +31,7 @@ struct Delivery {
     stamp: Option<String>,
 }
 impl Runtime {
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn send(
         &mut self,
         store: &mut Store,
