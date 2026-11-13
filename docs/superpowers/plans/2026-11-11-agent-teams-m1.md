@@ -1810,6 +1810,26 @@ failed hand-out. Left open: a reservation for a paused, stopped or unbound
 member (zerus-63rru.85), a paused member's started task (.86), an unbound
 member's open effect (.87), and Route of a stage (.84).
 
+**A terminal that holds input is a fact about the member.** The hand-out
+command's terminal gate refuses to type into a terminal that shows a draft,
+a dialog or a question, and the service counted that refusal as a failed
+hand-out of the task: a failure row, retries of the same member, in the end
+a card about the task (zerus-63rru.79, 2026-11-13). The command now types
+the cause: a refusal because the composer is not an empty prompt, or
+because the record's phase is a question or an approval, answers
+`terminal_waiting`; every other refusal stays an ordinary one, the dialogs
+read by their own detectors included (zerus-63rru.83). The actor reads the
+cause, never the sentence, and records a fact about the member in its
+ledger: while it stands the member is not free and the task goes to another
+free member; it ends on a submitted delivery, when the member's row says
+another session or no longer waiting (its run, launch and conversation, its
+phase and its open-question count), or by the retry table's growing delay.
+Work counts and activity are not part of that stamp, since they change
+while a terminal waits. Past the unreadable-member period the card says the
+member's terminal waits for input. The journal's hand-out outcome row says
+the outcome and the cleaned reason. A refusal of an effect the store has
+already settled, such as a removed member's, is no failure either.
+
 **A recovery removes only the row it owns.** The service's gate recovery
 closed its card and then removed whichever ledger row was current, so a
 second runtime that had failed the same check in between lost its fresh

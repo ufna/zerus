@@ -1,4 +1,5 @@
 use super::ports::{Availability, Fact};
+use super::terminal::TerminalState;
 use super::*;
 use crate::teams::store::EffectIntent;
 use std::collections::{BTreeMap, BTreeSet};
@@ -205,7 +206,19 @@ impl Runtime {
                 && !self.ledger.pending_member(&team.id, &m.id)?
                 && !effects.iter().any(|e| e.member == m.id)
             {
-                self.member_free(store, ports, team, &m, now)?
+                match self.terminal_state(ports, team, &m, now)? {
+                    // Its terminal holds input (zerus-63rru.79): not free, and
+                    // needed like a member that cannot be read.
+                    TerminalState::Standing => {
+                        Some(Availability::Unreadable(Fact::TerminalWaiting))
+                    }
+                    // Tried again: a card for it stays as it is this pass.
+                    TerminalState::Lapsed => {
+                        needs.unread.insert(m.id.clone());
+                        self.member_free(store, ports, team, &m, now)?
+                    }
+                    TerminalState::None => self.member_free(store, ports, team, &m, now)?,
+                }
             } else {
                 Some(Availability::Busy)
             };
@@ -461,7 +474,10 @@ impl Runtime {
         else {
             return Ok(());
         };
-        if m.state != MemberState::Active || !ports.free(team, &m)? {
+        if m.state != MemberState::Active
+            || self.terminal_standing(ports, team, &m, now)?
+            || !ports.free(team, &m)?
+        {
             return Ok(());
         }
         self.send(store, ports, team, (&node, &m), "reopen", now)?;
