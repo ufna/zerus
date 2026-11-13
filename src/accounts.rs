@@ -2,6 +2,7 @@
 mod inspection;
 mod claude_usage;
 mod model_defaults;
+mod kimi_compaction;
 mod claude;
 mod claude_settings;
 mod mcp_servers;
@@ -50,6 +51,8 @@ struct Catalog {
     defaults: BTreeMap<String, String>,
     #[serde(default, skip_serializing_if = "model_defaults::Stored::is_empty")]
     model_defaults: model_defaults::Stored,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    kimi_compact_on_expiry: BTreeMap<String, bool>,
 }
 fn read(config: &Config) -> Result<Vec<u8>> {
     match fs::read(config.dir.join("accounts.json")) {
@@ -86,6 +89,11 @@ fn decode(bytes: &[u8]) -> Result<Catalog> {
     for (id, mode) in &catalog.permission_modes {
         if (!native_id(id) && !catalog.profiles.contains_key(id)) || !["provider", "bypass"].contains(&mode.as_str()) {
             return Err(Error::new(1,"Invalid account permission mode."));
+        }
+    }
+    for id in catalog.kimi_compact_on_expiry.keys() {
+        if id != "native-kimi" && catalog.profiles.get(id).is_none_or(|p| p.provider != "kimi") {
+            return Err(Error::new(1, "Invalid Kimi cache-expiry account policy."));
         }
     }
     for (provider, id) in &catalog.defaults {
@@ -340,6 +348,10 @@ fn list(config: &Config) -> Result<Value> {
         row["permission_mode_source"] = json!(if explicit.is_some() { "zerus" } else { "default" });
         permission_status::describe(config, row, explicit.unwrap_or(default_permission_mode(&provider)));
         model_defaults::describe(row, &catalog);
+        if provider == "kimi" {
+            row["compact_on_expiry_supported"] = json!(true);
+            row["compact_on_expiry"] = json!(catalog.kimi_compact_on_expiry.get(row["id"].as_str().unwrap_or("")).copied().unwrap_or(true));
+        }
     }
     permission_scope::describe(config, &mut rows);
     marks::describe(config, &mut rows);
@@ -559,6 +571,7 @@ pub fn dispatch(config: &Config, args: &[String], dry: bool) -> Result<i32> {
         "inspect"=>{println!("{}",inspection::inspect(config,args)?);},
         "model-settings"=>{println!("{}",model_defaults::inspect(config,id)?);},
         "model-defaults"=>{println!("{}",model_defaults::set(config,args,dry)?);},
+        "compact-on-expiry"=>{println!("{}",kimi_compaction::set(config,args,dry)?);},
         "set-key"=>{println!("{}",deepseek::set_key(config,args,dry)?);},
         "install"=>return install::run(id,dry),
         "start"=>{
@@ -1174,6 +1187,12 @@ pub fn apply_model_defaults(config: &Config, account: &str, provider: &str, argv
 /// The DeepSeek account's saved launch selection as (provider/model, effort).
 pub fn launch_selection(config: &Config, provider: &str) -> Result<Option<(String, String)>> {
     model_defaults::launch_selection(config, provider)
+}
+
+/// Read the exact account's Zerus policy. Missing policy defaults on; unreadable
+/// catalogs and a changed home are errors, never permission to compact.
+pub(crate) fn kimi_compact_on_expiry(config: &Config, id: &str, home: &Path) -> Result<bool> {
+    kimi_compaction::enabled(config, id, home)
 }
 
 #[cfg(test)]

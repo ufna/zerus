@@ -72,6 +72,7 @@ mod inventory {
         ("hgs_voice", NotACard),
         ("hooks", NotACard),
         ("journal", NotACard),
+        ("kimi_estimated_cache_duration", NotACard),
         ("kimi_goal_v1", NotACard),
         ("kimi_session_state", NotACard),
         ("kimi_tasks", NotACard),

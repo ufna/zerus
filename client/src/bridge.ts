@@ -581,13 +581,13 @@ export async function accountsView(force = false): Promise<AccountsView> {
   if (!inTauri()) return emptyAccounts([DESKTOP_ONLY]);
   return invoke<AccountsView>("accounts_view", { force });
 }
-export type AccountEditKind = "rename" | "default" | "remove" | "permissions" | "model" | "scope" | "mark";
+export type AccountEditKind = "rename" | "default" | "remove" | "permissions" | "model" | "scope" | "mark" | "cache_expiry";
 export interface AccountModelCatalog {
   models: {id:string;label:string;effort_options:string[]}[];
   defaults: {model:string;effort:string}; provider_defaults: {model:string;effort:string}; effort_supported:boolean;
 }
 export interface AccountEditValues {label?:string;mode?:string;model?:string;effort?:string;color?:string;emoji?:string}
-export interface AccountEditView { handle: string; kind: AccountEditKind; label: string; machine: string; provider: string; permission_mode?:string; permission_detail?:string; models?:AccountModelCatalog|null;
+export interface AccountEditView { handle: string; kind: AccountEditKind; label: string; machine: string; provider: string; permission_mode?:string; compact_on_expiry?:boolean; permission_detail?:string; models?:AccountModelCatalog|null;
   /** Every computer the edit saves on, the selected one first; whether their values differ now; per-computer permissions (zerus-f0uz8). */
   machines?: string[]; differs?: boolean; per_computer?: boolean }
 /** Notices are translated prose (zerus-0y2yx); errors carry hgs's own text. */

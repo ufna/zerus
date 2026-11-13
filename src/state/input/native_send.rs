@@ -657,8 +657,10 @@ mod tests {
             .unwrap()
             .0;
         // Teams adds only its typed pre-input refusal witness here. Undo
-        // those three exact, uniquely present edits before checking main's
-        // original pin; changing or dropping any gate also fails this guard.
+        // those four exact, uniquely present edits before checking main's
+        // 9875d263b core (including pre-send compaction); changing or dropping
+        // any gate also fails this guard. before_input owns the common
+        // post-publication refusal persistence for both kinds of gate.
         let mut original = format!("fn submit_core({body}");
         for (teams, main) in [
             (r###"    let witness = |reason: String, waiting: bool, dialog: Option<&'static str>| NotOffered {
@@ -681,6 +683,7 @@ mod tests {
     };
     let record = checked_record_gate(name, &request).map_err(|gate| gated(typed, gate))?;
 "###, r###"    let refused = |typed: bool, reason: String| {
+        let reason = if typed { kimi_expiry::refused(&receipt_path, reason) } else { reason };
         before_input(
             typed,
             NotOffered {
@@ -708,13 +711,18 @@ mod tests {
         return Err(refused(typed, error));
     }
 "###),
+            (r###"        record = checked_record_gate(name,&request).map_err(|gate| gated(typed,gate))?;
+        checked_send_gate(&record).map_err(|gate| gated(typed,gate))?;
+"###, r###"        record = checked_record(name,&request).map_err(|e| refused(typed,e))?;
+        checked_send_terminal(&record).map_err(|e| refused(typed,e))?;
+"###),
         ] {
             assert_eq!(original.matches(teams).count(), 1, "Teams gate projection changed");
             original = original.replacen(teams, main, 1);
         }
         assert_eq!(
             format!("{:x}", Sha256::digest(original.as_bytes())),
-            "843183ff4e2dd7ec9ef392271a192b963feaaae25408c7acb9ecfb52a6818f41"
+            "fff1e65bfc4cda56753b9f9e5b425db0c7deac5046ae0748e95d4e678ccd39c9"
         );
     }
     fn fixture() -> (Value, Value, Guard<'static>) {

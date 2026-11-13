@@ -4,6 +4,10 @@ mod hidden;
 #[cfg(all(test, unix))]
 mod input_tests;
 mod stdin;
+// Internal cross-crate bridge for the root desktop original_child runner only.
+#[cfg(unix)]
+#[doc(hidden)]
+pub mod original_input;
 use stdin::InputOwner;
 pub use stdin::InputSpawn;
 #[cfg(unix)]

@@ -436,6 +436,9 @@ fn checked_bound_record_gate(
     record: Value, run_id: &str, conversation_id: &str, allow_working: bool,
 ) -> std::result::Result<Value, Gate> {
     terminating::check_mutation(&record)?;
+    if kimi_expiry::active(&record).is_some() && !kimi_expiry::owned(&record) {
+        return Err("A message is waiting for pre-send compaction; wait for its delivery receipt".into());
+    }
     if string(&record, "run_id") != run_id || string(&record, "conversation_id") != conversation_id
     {
         return Err("session identity changed; refresh before sending".into());
@@ -523,7 +526,7 @@ fn checked_bound_record_gate(
     if !allow_working {
         idle_only(&record)?;
     }
-    if input_typing(&record).is_some() {
+    if ordinary_typing(&record).is_some() {
         return Err("previous input has not been confirmed yet: another message is being entered into this session; try again in a few seconds".into());
     }
     if input_unconfirmed(&record) {
@@ -1647,7 +1650,9 @@ fn existing_value(receipt: Value, digest: &str, name: &str) -> Existing {
 /// unknown (desktop-u's (a)).
 fn before_input(typed: bool, witness: NotOffered) -> Failure {
     if typed {
-        Failure::Unknown(witness.reason)
+        // Both ordinary refusals and typed terminal gates retain the original
+        // payload and diagnostic after a possible compaction receipt publication.
+        Failure::Unknown(kimi_expiry::refused(&witness.receipts, witness.reason))
     } else {
         Failure::NotOffered(Box::new(witness))
     }
@@ -1665,6 +1670,9 @@ const TYPING_SECONDS: f64 = settle::WINDOW.as_secs_f64() + 4.0;
 
 /// The request ID of the send typing into this session now, if any.
 pub(crate) fn input_typing(record: &Value) -> Option<&str> {
+    kimi_expiry::active(record).or_else(|| ordinary_typing(record))
+}
+fn ordinary_typing(record: &Value) -> Option<&str> {
     let marker = &record[TYPING];
     let left = marker["until"].as_f64()? - now();
     // Expired, or further ahead than any send's window: a clock stepped back.
@@ -1806,6 +1814,44 @@ fn submit_core(
         );
     }
     let text = attachments::terminal_text(request.text.trim(), &paths);
+    let mut attachments = Some(attachments);
+    let mut pre_send_compaction = Value::Null;
+    let decision = (matches!(origin, Origin::Person) && request.expected_compaction_id.is_empty())
+        .then(|| kimi_expiry::decision(&record)).flatten();
+    if let Some(decision) = decision {
+        // Reserve the ORIGINAL request and payload before the first compact
+        // byte. A duplicate UUID can only observe this receipt, never re-enter.
+        let mut reserved = json!({"request_id":request_id,"name":name,"run_id":request.expected_run_id,
+            "conversation_id":record["conversation_id"],"digest":digest,"status":"preparing",
+            "prepared_at":now(),"submitted_text":text,"text":request.text.trim(),"attachments":paths,
+            "transport":"terminal","pre_send_compaction":decision});
+        if let Some(target) = session_graph::target_receipt(&record) {
+            delivery::bind(&mut reserved, &record, &target); reserved["graph_target"] = target;
+        }
+        typed = true; // No NotOffered witness after a possible receipt publication.
+        let _ = attachments.take().map(tempfile::TempDir::keep);
+        receipt_index::persist(&receipt_path, &reserved).map_err(unknown)?;
+        record["last_send_compaction"] = reserved["pre_send_compaction"].clone();
+        record["last_send_compaction"]["kept_message"] = json!({"text":request.text.trim(),"attachments":paths,"request_id":request_id});
+        kimi_expiry::reserve(&mut record, &request_id).map_err(unknown)?;
+        drop(guard.take()); // Kimi's completion hooks must acquire Root.
+        let outcome = kimi_expiry::compact(&record, &request_id);
+        guard = Some(lock(None).map_err(unknown)?);
+        pre_send_compaction = reserved["pre_send_compaction"].clone();
+        pre_send_compaction["status"] = outcome["status"].clone();
+        pre_send_compaction["outcome"] = outcome;
+        reserved["pre_send_compaction"] = pre_send_compaction.clone();
+        receipt_index::persist(&receipt_path, &reserved).map_err(unknown)?;
+        // Rebind every native field before ordinary delivery. No force-paste,
+        // retry Enter, clearing, or automatic replay exists on this path.
+        let mut current = kimi_tui_choice::identity(&record).map_err(|e| refused(typed,e))?;
+        if !kimi_expiry::same_identity(&record,&current) {
+            return Err(refused(typed,"Session identity changed during pre-send compaction".into()));
+        }
+        kimi_expiry::release(&mut current, &request_id, &pre_send_compaction).map_err(unknown)?;
+        record = checked_record_gate(name,&request).map_err(|gate| gated(typed,gate))?;
+        checked_send_gate(&record).map_err(|gate| gated(typed,gate))?;
+    }
     // Claude and Kimi treat a trailing backslash plus the next Enter as line
     // continuation. Paste a final newline with the literal text so our single
     // Enter submits it; never retry Enter, which could answer a subsequently
@@ -1827,7 +1873,7 @@ fn submit_core(
     // A staging error may leave a buffer loaded: unknown, never a witness.
     if !terminal
         .stage(&buffer, pasted.as_bytes(), backend::StageErrors::Read)
-        .map_err(unknown)?
+        .map_err(|e| unknown(kimi_expiry::refused(&receipt_path,e)))?
     {
         return Err(refused(
             typed,
@@ -1857,6 +1903,7 @@ fn submit_core(
     let mut receipt = json!({"request_id":request_id,"name":name,"run_id":request.expected_run_id,
         "conversation_id":string(&record,"conversation_id"),"first_message":string(&record,"conversation_id").is_empty(),"digest":digest,"status":"in_progress",
         "submitted_at":submitted_at,"submitted_text":text,"text":request.text.trim(),"attachments":paths,"transport":"terminal"});
+    if pre_send_compaction.is_object() { receipt["pre_send_compaction"] = pre_send_compaction; }
     if let Some(target) = session_graph::target_receipt(&record) {
         delivery::bind(&mut receipt, &record, &target);
         receipt["graph_target"] = target;
@@ -1871,7 +1918,7 @@ fn submit_core(
         return Err(unknown(error));
     }
     // Preserve attachments after any possible input: the agent may read them later.
-    let _ = attachments.keep();
+    let _ = attachments.map(tempfile::TempDir::keep);
     record["input_pending_at"] = json!(submitted_at);
     // Clear input reads this send's receipt to tell an input still in its proof
     // window from one left uncertain or stuck (zerus-wkj9l.1).
@@ -2239,6 +2286,37 @@ mod tests {
             ("id", "n", "r", "c", "other"),
         ] {
             assert!(!bound.binds(id, name, run, conversation, digest));
+        }
+    }
+
+    #[test]
+    fn post_compaction_refusals_keep_payload_for_plain_and_waiting_witnesses() {
+        let private = tempfile::tempdir().unwrap();
+        let path = private.path().join("receipt.json");
+        let original = json!({"request_id":"id","name":"n","digest":"d",
+            "status":"preparing","text":"kept message","attachments":[{"path":"private/file"}],
+            "pre_send_compaction":{"status":"completed"}});
+        for dialog in [None, Some(Dialog::ClaudeApproval.name())] {
+            let witness = || NotOffered {
+                request_id: "id".into(), name: "n".into(), run_id: "r".into(),
+                conversation_id: "c".into(), digest: "d".into(), receipts: path.clone(),
+                reason: "terminal refused".into(), waiting: dialog.is_some(), dialog,
+            };
+            fs::write(&path, original.to_string()).unwrap();
+            assert!(matches!(before_input(false, witness()), Failure::NotOffered(w)
+                if w.waiting == dialog.is_some() && w.dialog == dialog && w.reason == "terminal refused"));
+            assert_eq!(fs::read_to_string(&path).unwrap(), original.to_string());
+            let Failure::Unknown(reason) = before_input(true, witness()) else {
+                panic!("a reserved receipt cannot become an unsent witness");
+            };
+            let kept: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+            assert_eq!(kept["uncertain_reason"], reason);
+            assert!(reason.contains("terminal refused"));
+            assert_eq!(kept["delivery"], "not_confirmed");
+            for key in ["text", "attachments", "status", "pre_send_compaction"] {
+                assert_eq!(kept[key], original[key]);
+            }
+            assert!(matches!(existing(&path, "d", "n"), Existing::Unknown(_)));
         }
     }
 

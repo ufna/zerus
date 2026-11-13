@@ -366,6 +366,9 @@ function Detail(props: { a: Account }) {
             <button class="btn small" disabled={!m().online || managementBusy()} onClick={event=>void openCatalog("scope",props.a.key,m().key,event.currentTarget)}>{perComputer() ? tr("Share across computers…") : tr("Keep per computer…")}</button>
           </div>
         </Show>
+        <Show when={m().compact_on_expiry_supported && m().provider === "kimi"}>
+          <div class="acct-setting"><span>{tr("Compact after cache expiry")}: <b>{m().compact_on_expiry !== false ? tr("On") : tr("Off")}</b></span><button class="btn small" disabled={!m().online || managementBusy()} onClick={event=>void openCatalog("cache_expiry",props.a.key,m().key,event.currentTarget)}>{tr("Change…")}</button></div>
+        </Show>
         <Show when={m().model_supported}>
           <div class="acct-setting">
             <span>{trText(m().model_text)}</span>
@@ -495,7 +498,7 @@ export function AccountsScreen() {
       </main>
       <Show when={accountDistribution.prompt()}>{prompt=><Suspense><AccountDistributionDialog prompt={prompt()}/></Suspense>}</Show>
       <Show when={accountSetup.prompt()}>{prompt=><Suspense><AccountSetupDialog prompt={prompt()} busy={accountSetup.busy()} close={accountSetup.close} confirm={(values,handle)=>void accountSetup.confirm(values,handle)}/></Suspense>}</Show>
-      <Show when={accountManagement.prompt()}>{prompt=><Suspense><Switch><Match when={prompt().kind==="permissions" || prompt().kind==="model" || prompt().kind==="scope"}><AccountDefaultsDialog prompt={prompt()} close={accountManagement.close} confirm={(values,handle)=>void accountManagement.confirm(values,handle)}/></Match><Match when={true}><AccountCatalogDialog prompt={prompt()} close={accountManagement.close} confirm={(label,handle)=>void accountManagement.confirm(label,handle)}/></Match></Switch></Suspense>}</Show>
+      <Show when={accountManagement.prompt()}>{prompt=><Suspense><Switch><Match when={prompt().kind==="permissions" || prompt().kind==="model" || prompt().kind==="scope" || prompt().kind==="cache_expiry"}><AccountDefaultsDialog prompt={prompt()} close={accountManagement.close} confirm={(values,handle)=>void accountManagement.confirm(values,handle)}/></Match><Match when={true}><AccountCatalogDialog prompt={prompt()} close={accountManagement.close} confirm={(label,handle)=>void accountManagement.confirm(label,handle)}/></Match></Switch></Suspense>}</Show>
     </div>
   );
 }
