@@ -394,6 +394,7 @@ fn legacy_observation(db: &Connection, team: &str, node: u32) -> Result<Option<T
                 revision,
                 stage: serde_json::from_value(serde_json::Value::String(stage)).map_err(storage)?,
                 cancelled,
+                current_cancelled: false,
                 rank,
                 title,
                 key: KeyState::Ours,

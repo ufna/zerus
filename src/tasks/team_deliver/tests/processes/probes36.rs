@@ -183,8 +183,9 @@ fn wp36_reproduction() {
     );
     move_back(&f, &uuid_a, "A");
     fields(&f, &uuid_a, "A moved back to To do");
-    intake(&f, &uuid_a, TEAM, "A resend to the same team");
-    fields(&f, &uuid_a, "A after the same-team refusal");
+    let a_same = intake(&f, &uuid_a, TEAM, "A resend to the same team");
+    assert_eq!(a_same["queued"], true, "{a_same}");
+    fields(&f, &uuid_a, "A after the same-team resend");
     let mut create2 = ops::tests::create();
     if let ops::Operation::Create {
         home: machine,
@@ -197,11 +198,17 @@ fn wp36_reproduction() {
     }
     f.h.run_for("00000000-0000-4000-8000-0000000000cc", &person(), create2)
         .unwrap();
-    intake(
+    // The new node in this team is live: another team refuses the same task
+    // (the existing live-node guard), so one task never runs in two teams.
+    let a_other = intake(
         &f,
         &uuid_a,
         "00000000-0000-4000-8000-0000000000cc",
         "A resend to another team",
+    );
+    assert_eq!(
+        a_other["error"]["code"], "duplicate",
+        "{a_other}"
     );
     fields(&f, &uuid_a, "A after the other-team refusal");
 
@@ -219,19 +226,112 @@ fn wp36_reproduction() {
     fields(&f, &uuid_b, "B after person cancel");
     move_back(&f, &uuid_b, "B");
     fields(&f, &uuid_b, "B moved back to To do");
-    intake(&f, &uuid_b, TEAM, "B resend to the same team");
+    // The resend while the old node is still live: refused with the true
+    // sentence (zerus-63rru.36 rule 3)...
+    let refused = intake(&f, &uuid_b, TEAM, "B resend while the old node is live");
+    assert_eq!(
+        refused["error"]["message"],
+        "The earlier hand-out of this task is still being settled in this team; send it again after it ends.",
+        "{refused}"
+    );
+    // ... and the observation ends the old node from the attempt's phase
+    // (rule 2), so the next resend is admitted.
+    crate::teams::tasks::observe(
+        &f.config.state,
+        &TaskRef {
+            project: "example-project".into(),
+            uuid: uuid_b.clone(),
+        },
+    )
+    .unwrap();
+    // The node's live binding is what the observation ends; the resend's
+    // acceptance proves it (the intake found no live node).
+    let admitted = intake(&f, &uuid_b, TEAM, "B resend after the node ended");
+    assert_eq!(admitted["queued"], true, "{admitted}");
+    // The new node is live: another team refuses the same task, as before.
     let other_b = intake(
         &f,
         &uuid_b,
         "00000000-0000-4000-8000-0000000000cc",
         "B resend to another team",
     );
-    fields(&f, &uuid_b, "B after the refusals");
-    // The pinned refusal: a task moved back to To do after a cancel is still
-    // refused by the intake, because the cancelled mark survives the move.
-    assert_eq!(
-        other_b["error"]["message"], "Send a task in Backlog or To do to a team.",
-        "{other_b}"
-    );
+    assert_eq!(other_b["error"]["code"], "duplicate", "{other_b}");
+    fields(&f, &uuid_b, "B after the new node");
     let _ = node_b;
 }
+
+/// Rule 2, the started variant: the member began the attempt before the
+/// person's cancel. The move-back clears the mark; the observation still
+/// ends the old node from the bound attempt's phase, and the resend is
+/// refused before it and admitted after it.
+#[test]
+fn a_started_attempt_is_ended_by_the_observation_after_the_move_back() {
+    let mut f = Fixture::new();
+    let (_id, uuid) = add(&mut f);
+    let node = deliver(&mut f, &uuid, "m2");
+    {
+        let store = crate::tasks::store(&f.config, "example-project").unwrap();
+        let mut doc = store.load(&uuid).unwrap();
+        let id = f.body.id.clone();
+        let holder = doc.attempt(&id).unwrap().unwrap().executor;
+        doc.begin_attempt(&id, &Actor::Agent(holder), now()).unwrap();
+        store.save(&mut doc).unwrap();
+    }
+    crate::teams::tasks::observe(
+        &f.config.state,
+        &TaskRef {
+            project: "example-project".into(),
+            uuid: uuid.clone(),
+        },
+    )
+    .unwrap();
+    {
+        let store = crate::tasks::store(&f.config, "example-project").unwrap();
+        let mut doc = store.load(&uuid).unwrap();
+        doc.record_cancel("Obsolete", &zerus_replica::Actor::Person, now())
+            .unwrap();
+        store.save(&mut doc).unwrap();
+    }
+    move_back(&f, &uuid, "started variant");
+    let refused = intake(&f, &uuid, TEAM, "started: resend while the node is live");
+    assert_eq!(
+        refused["error"]["message"],
+        "The earlier hand-out of this task is still being settled in this team; send it again after it ends.",
+        "{refused}"
+    );
+    crate::teams::tasks::observe(
+        &f.config.state,
+        &TaskRef {
+            project: "example-project".into(),
+            uuid: uuid.clone(),
+        },
+    )
+    .unwrap();
+    let admitted = intake(&f, &uuid, TEAM, "started: resend after the node ended");
+    assert_eq!(admitted["queued"], true, "{admitted}");
+    let _ = node;
+}
+
+/// Rule 2, the team's own cancel with the observation deferred: the team
+/// cancels, the person moves the task back before the observation reads the
+/// mark, and the deferred observation still ends the node from the phase.
+#[test]
+fn the_teams_cancel_ends_the_node_even_when_the_observation_comes_after_the_move_back() {
+    let mut f = Fixture::new();
+    let (_id, uuid) = add(&mut f);
+    let node = deliver(&mut f, &uuid, "m2");
+    team_cancel(&mut f, node);
+    fields(&f, &uuid, "team variant: after the team cancel");
+    move_back(&f, &uuid, "team variant");
+    crate::teams::tasks::observe(
+        &f.config.state,
+        &TaskRef {
+            project: "example-project".into(),
+            uuid: uuid.clone(),
+        },
+    )
+    .unwrap();
+    let admitted = intake(&f, &uuid, TEAM, "team variant: resend");
+    assert_eq!(admitted["queued"], true, "{admitted}");
+}
+

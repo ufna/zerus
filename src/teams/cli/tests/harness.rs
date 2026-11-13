@@ -292,6 +292,7 @@ impl Harness {
             previous_revision: previous,
             stage,
             cancelled: false,
+            current_cancelled: false,
             rank: format!("a{node:02}"),
             title: format!("Task {node}"),
             attempt: 0,

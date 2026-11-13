@@ -182,6 +182,7 @@ impl Harness {
             previous_revision: previous.map_or(String::new(), |o| o.revision),
             stage,
             cancelled: false,
+            current_cancelled: false,
             rank: format!("a{node:08}"),
             title: format!("Task {node}"),
             attempt,

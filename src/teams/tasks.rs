@@ -78,6 +78,13 @@ fn observation(document: &TaskDoc, team: &str, home: &str) -> Result<TaskObserva
         None if !document.team_invalid() => ops::KeyState::Absent,
         _ => ops::KeyState::Other,
     };
+    let current_cancelled = matches!(key, ops::KeyState::Ours)
+        && view
+            .execution
+            .as_ref()
+            .filter(|e| !e.conflict)
+            .and_then(|e| e.current.as_ref())
+            .is_some_and(|current| current.phase == zerus_replica::execution::Phase::Cancelled);
     Ok(TaskObservation {
         key,
         revision: document.revision(),
@@ -90,6 +97,7 @@ fn observation(document: &TaskDoc, team: &str, home: &str) -> Result<TaskObserva
             Stage::Done => TaskStage::Done,
         },
         cancelled: view.cancelled_at.is_some(),
+        current_cancelled,
         rank: view.rank,
         title: view.title,
         attempt,

@@ -285,13 +285,24 @@ fn prepare(
     let view = document.view().map_err(storage)?;
     let duplicate = binding(store, task)?.is_some_and(|(id, _)| id == team);
     // A cancelled task is never sent, also while it is still bound: between
-    // a cancel written to the task and the observation of that cancel.
+    // a cancel written to the task and the observation of that cancel. A
+    // document written by a build before the move-back clears the mark keeps
+    // it here.
     if view.cancelled_at.is_some()
         || (!duplicate && !matches!(view.stage, Stage::Backlog | Stage::Todo))
     {
         return Err(Problem::new(
             code::INVALID_STATE,
             "Send a task in Backlog or To do to a team.",
+        ));
+    }
+    // No second live node of one task in this team (zerus-63rru.36): the
+    // moved-back resend waits for the earlier hand-out to end, so the old
+    // node and the new never overlap.
+    if duplicate {
+        return Err(Problem::new(
+            code::INVALID_STATE,
+            "The earlier hand-out of this task is still being settled in this team; send it again after it ends.",
         ));
     }
     if !matches!(view.target, Target::Any) && matches!(view.stage, Stage::Backlog | Stage::Todo) {
