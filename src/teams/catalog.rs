@@ -18,6 +18,11 @@ use zerus_team_plan::model::Caps;
 use zerus_team_plan::problem::code;
 use zerus_team_plan::{builtin, bundle, validate_bundle, validate_catalog, validate_ids, Problem};
 
+/// The largest encoded bundle a create request accepts (`validate_create`).
+/// A template over it can never be created, so `catalog show` lists it without
+/// spending digest work.
+pub(crate) const CREATE_BUNDLE_LIMIT: usize = 131_072;
+
 /// The folder that holds the catalog below the configuration directory.
 const DIR: &str = "teams";
 /// The one JSON file a person edits and the designer saves.

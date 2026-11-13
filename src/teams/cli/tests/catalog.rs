@@ -211,3 +211,119 @@ fn every_catalog_reply_names_the_person_and_the_interim_rule() {
     let (reply, _) = run(&harness, "template remove bugfix", "");
     actor_is_shown(&reply, "template remove");
 }
+
+fn sized_catalog(target: usize) -> zerus_team_plan::catalog::Catalog {
+    let mut catalog = builtin();
+    let lead = catalog.templates[0].lead.clone();
+    let settings = catalog.templates[0].settings.clone();
+    let developer = catalog
+        .roles
+        .iter()
+        .position(|role| role.id == "developer")
+        .unwrap();
+    catalog.roles[developer].prompt.clear();
+    catalog.templates.push(zerus_team_plan::catalog::Template {
+        id: "sized".into(),
+        name: "Sized".into(),
+        description: String::new(),
+        lead,
+        roster: vec![
+            zerus_team_plan::catalog::Seat {
+                role: "developer".into(),
+                count: 1,
+                optional: false,
+            },
+            zerus_team_plan::catalog::Seat {
+                role: "reviewer".into(),
+                count: 1,
+                optional: false,
+            },
+        ],
+        default_pipeline: "reviewed".into(),
+        settings,
+    });
+    // A non-empty prompt adds its field name as well as its bytes; measure
+    // that shape and subtract the one character so the target is exact.
+    catalog.roles[developer].prompt = "a".into();
+    let base = serde_json::to_string(
+        &zerus_team_plan::bundle(&catalog, "sized").unwrap(),
+    )
+    .unwrap()
+    .len();
+    catalog.roles[developer].prompt = "a".repeat(target - (base - 1));
+    assert_eq!(
+        serde_json::to_string(&zerus_team_plan::bundle(&catalog, "sized").unwrap())
+            .unwrap()
+            .len(),
+        target
+    );
+    catalog
+}
+
+#[test]
+fn catalog_show_skips_the_digest_of_a_bundle_over_the_create_limit() {
+    for (target, over) in [
+        (crate::teams::catalog::CREATE_BUNDLE_LIMIT, false),
+        (crate::teams::catalog::CREATE_BUNDLE_LIMIT + 1, true),
+    ] {
+        let harness = Harness::new();
+        let catalog = sized_catalog(target);
+        let (reply, exit) = run(
+            &harness,
+            "catalog import",
+            &serde_json::to_string(&catalog).unwrap(),
+        );
+        assert_eq!(exit, 0, "{reply}");
+        let (shown, exit) = run(&harness, "catalog show", "");
+        assert_eq!(exit, 0, "{shown}");
+        let row = shown["catalog"]["templates"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|template| template["id"] == "sized")
+            .unwrap();
+        if over {
+            assert!(row.get("digest").is_none(), "{row}");
+            assert_eq!(row["over_limit"], true, "{row}");
+        } else {
+            assert_eq!(row["digest"].as_str().unwrap().len(), 64, "{row}");
+            assert!(row.get("over_limit").is_none(), "{row}");
+        }
+    }
+}
+
+#[test]
+fn a_shown_catalog_row_saves_and_imports_with_its_read_only_fields() {
+    let harness = Harness::new();
+    let (shown, exit) = run(&harness, "catalog show", "");
+    assert_eq!(exit, 0, "{shown}");
+    let row = shown["catalog"]["templates"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|template| template["id"] == "bugfix")
+        .unwrap()
+        .clone();
+    assert_eq!(row["digest"].as_str().unwrap().len(), 64);
+    let (reply, exit) = run(&harness, "template save", &row.to_string());
+    assert_eq!(exit, 0, "{reply}");
+    let (reply, exit) = run(
+        &harness,
+        "catalog import",
+        &shown["catalog"].to_string(),
+    );
+    assert_eq!(exit, 0, "{reply}");
+    // A stale read-only field is ignored, not refused.
+    let mut stale = row;
+    stale["digest"] = json!("0".repeat(64));
+    stale["over_limit"] = json!(true);
+    let (reply, exit) = run(&harness, "template save", &stale.to_string());
+    assert_eq!(exit, 0, "{reply}");
+    let mut catalog = shown["catalog"].clone();
+    for template in catalog["templates"].as_array_mut().unwrap() {
+        template["digest"] = json!("f".repeat(64));
+        template["over_limit"] = json!(true);
+    }
+    let (reply, exit) = run(&harness, "catalog import", &catalog.to_string());
+    assert_eq!(exit, 0, "{reply}");
+}

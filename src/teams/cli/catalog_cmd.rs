@@ -59,6 +59,13 @@ fn catalog_show(actor: &Value, catalog: &Catalog) -> Result<Value, Problem> {
         for row in templates {
             let id = row["id"].as_str().expect("template ID");
             let bundle = zerus_team_plan::bundle(catalog, id)?;
+            let encoded = serde_json::to_string(&bundle).map_err(storage)?;
+            if encoded.len() > catalog::CREATE_BUNDLE_LIMIT {
+                row.as_object_mut()
+                    .expect("template object")
+                    .insert("over_limit".into(), json!(true));
+                continue;
+            }
             row.as_object_mut()
                 .expect("template object")
                 .insert("digest".into(), json!(catalog::template_digest(&bundle)?));
@@ -149,7 +156,9 @@ fn remove(actor: &Value, config: &Config, args: &[String]) -> Result<Value, Prob
 }
 
 fn save(actor: &Value, config: &Config, provided: Option<&str>) -> Result<Value, Problem> {
-    let template: Template = parsed(&request_input(provided)?, "template")?;
+    let value = without_read_only(input::value(&request_input(provided)?, "template")?);
+    let template: Template =
+        serde_json::from_value(value).map_err(|error| input::serde_problem(error.to_string()))?;
     let mut person = catalog::person(&config.dir)?;
     match person
         .templates
@@ -174,9 +183,30 @@ fn import_catalog(
     config: &Config,
     provided: Option<&str>,
 ) -> Result<Value, Problem> {
-    let catalog: Catalog = parsed(&request_input(provided)?, "catalog")?;
+    let value = without_read_only(input::value(&request_input(provided)?, "catalog")?);
+    let catalog: Catalog =
+        serde_json::from_value(value).map_err(|error| input::serde_problem(error.to_string()))?;
     catalog::save(&config.dir, &catalog)?;
     reply(actor, json!({"saved": true}))
+}
+
+/// A shown catalog row is a saveable row: `catalog show` adds the read-only
+/// `digest` and `over_limit`, and feeding it back ignores those fields whether
+/// they match or are stale. They are presentation metadata, never authority.
+fn without_read_only(mut value: Value) -> Value {
+    if let Some(object) = value.as_object_mut() {
+        object.remove("digest");
+        object.remove("over_limit");
+    }
+    if let Some(templates) = value.get_mut("templates").and_then(Value::as_array_mut) {
+        for row in templates {
+            if let Some(object) = row.as_object_mut() {
+                object.remove("digest");
+                object.remove("over_limit");
+            }
+        }
+    }
+    value
 }
 
 /// One JSON document of the type the command stores, with an unknown field
