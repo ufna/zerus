@@ -10,7 +10,8 @@ name: Agent Teams real agents
 # refused restore of a member that never worked. Written and waiting: Claude Code
 # folder trust by the standing confirmation, for the owner's decision zerus-63rru.66 and
 # for zerus-63rru.73; an ordinary question after no startup card, for zerus-63rru.73;
-# and a member shell in a private PID namespace, for zerus-63rru.76.
+# and a member shell in a private PID namespace, for zerus-63rru.76. Kimi Code's steps
+# 2 to 4 are selected but not yet proven: their first proof is the first hosted run.
 # This workflow is not part of the Dev gate or Nightly: a red run is visible and holds
 # nothing back.
 on:
