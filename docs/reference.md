@@ -5504,6 +5504,13 @@ A same-user process that reads another tool call's environment can copy its
 token: that is deliberate instrumentation and outside this proof, as is an agent
 that edits the same-user identity file.
 
+A command below a recorded resident agent host that carries the markers of
+another session is refused: a command there can only be a session that host
+serves, and only a hosted call's token proves one. The host is found from the
+host records and the process tree, never from a marker, and a check that cannot
+tell refuses. The same limit holds for this guard: a call that removes or edits
+its host's own same-user records is no longer seen below that host.
+
 A host an older Zerus started keeps the markers it inherited and its adapter
 until it exits on its own; it is never restarted or reloaded for this. Its
 `ping` has no `shellIdentity`, and the existing refusals for those inherited

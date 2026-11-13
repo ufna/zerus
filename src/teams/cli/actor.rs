@@ -85,7 +85,8 @@ pub(super) fn bound_member(
     })
 }
 
-/// The actor as every reply shows it. A person's reply names the interim rule.
+/// The actor as every reply shows it. A person's reply names the limits of the
+/// caller proofs (`caller::limits`).
 pub(super) fn view(actor: &Actor) -> Value {
     match actor {
         Actor::Person { person, origin } => {
@@ -99,7 +100,7 @@ pub(super) fn view(actor: &Actor) -> Value {
                 "interim": matches!(origin, PersonOrigin::CliInterim),
             });
             if matches!(origin, PersonOrigin::CliInterim) {
-                view["note"] = json!(crate::teams::caller::INTERIM_NOTE);
+                view["note"] = json!(crate::teams::caller::limits());
             }
             view
         }

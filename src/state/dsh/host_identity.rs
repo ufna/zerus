@@ -359,6 +359,28 @@ pub(in crate::state) fn record_running_for_test(dir: &Path, pid: u32) -> Result<
     )
 }
 
+/// The running record `spawn` writes for a host this boot (version 2, with
+/// this boot's identity), naming `pid`, which a test's own process serves:
+/// the Teams caller proof's tests take their host record from this component
+/// (zerus-63rru.28). The PID-file stamp is not read for a running record.
+#[cfg(all(test, unix))]
+pub(crate) fn record_this_boot_for_test(dir: &Path, pid: u32) -> Result<()> {
+    let identity = crate::platform::process_identity(pid)
+        .filter(|process| valid_birth(&process.birth))
+        .ok_or(UNVERIFIABLE)?;
+    let record = Record::Running(Running {
+        version: 2,
+        pid,
+        birth: identity.birth,
+        pid_file: Stamp(0, 0, 0, 0),
+        boot: Some(boot()?),
+    });
+    atomic(
+        &dir.join(FILE),
+        &serde_json::to_string(&record).map_err(|_| UNVERIFIABLE)?,
+    )
+}
+
 pub(super) fn before_start(dir: &Path) -> Result<()> {
     assess(dir).map(|_| ())
 }
