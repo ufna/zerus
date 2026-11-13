@@ -353,11 +353,70 @@ pub(super) fn removed_holder(ctx: &Context<'_>, node: u32) -> Result<Option<Stri
 /// hand the task to another free member. Whether the person paused the
 /// member is not stored, so the lead is told in every case. A member that
 /// is still in the active set is never settled here.
+pub(super) fn settle_left(ctx: &mut Context<'_>) -> Result<()> {
+    let Operation::SettleLeftHandout { node, reason } = ctx.op else {
+        unreachable!()
+    };
+    let node = *node;
+    let reason = reason.clone();
+    let open: Option<(String, String)> = ctx
+        .db
+        .query_row(
+            &format!(
+                "SELECT e.member,e.request_id FROM effects e WHERE e.team=?1 AND e.node=?2 AND e.state IN {OPEN_EFFECT_STATES} AND e.kind='handout'"
+            ),
+            params![ctx.team.id, node],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()
+        .map_err(storage)?;
+    let Some((member, id)) = open else {
+        return Ok(());
+    };
+    let m = ctx.member(&member)?;
+    if m.state == MemberState::Active && m.session.is_some() && reason.is_none() {
+        // The member is still in the active set and the actor read no
+        // departure: nothing settles.
+        return Ok(());
+    }
+    let how = reason
+        .filter(|r| !r.is_empty())
+        .unwrap_or_else(|| {
+            if m.state == MemberState::Paused {
+                if ctx.person_stopped(&member).unwrap_or(false) {
+                    "stopped".into()
+                } else {
+                    "paused".into()
+                }
+            } else {
+                "unbound".into()
+            }
+        });
+    supersede(ctx, node, &member)?;
+    // The item without the hand-back's hold: the task stays in the queue,
+    // so the next pass can hand it to another free member.
+    rows::hand_back_item(
+        ctx.db,
+        &ctx.team.id,
+        node,
+        &encode(ctx.actor)?,
+        &format!("member_left:{id}"),
+        &format!(
+            "Member {member} was {how} before the hand-out of task {node} reached it; the task is offered to another member."
+        ),
+        ctx.now,
+    )?;
+    Ok(())
+}
+
 /// The lead is told once that a member out of the active set holds a
-/// started task (zerus-63rru.86): one member_left item per member and
+/// started task (zerus-63rru.86): one member_started item per member and
 /// task, naming the member, the task, and that the work stays with the
 /// member until it is resumed or the person moves the task. The task
-/// stays with the member; nothing else changes. A call that finds no
+/// stays with the member; nothing else changes. The operation is
+/// idempotent by itself: an open item of the path for that member and
+/// node means the lead was already told, and a crash between the apply
+/// and the actor's own memory cannot tell twice. A call that finds no
 /// such task, or a member that is in the active set again, writes
 /// nothing.
 pub(super) fn tell_paused_started(ctx: &mut Context<'_>) -> Result<()> {
@@ -423,76 +482,19 @@ pub(super) fn tell_paused_started(ctx: &mut Context<'_>) -> Result<()> {
     Ok(())
 }
 
-/// The member is back in the active set: its open paused-started items
-/// close, so a later leave tells the lead again (zerus-63rru.86).
 pub(super) fn close_paused_started(ctx: &mut Context<'_>) -> Result<()> {
     let Operation::ClosePausedStarted { member } = ctx.op else {
         unreachable!()
     };
     ctx.db
         .execute(
-            "UPDATE inbox SET state='closed' WHERE team=?1 AND state='open' AND substr(kind,1,15)='member_started:' AND substr(kind,16+instr(substr(kind,16),':'),length(?2))=?2",
+            "UPDATE inbox SET state='closed' WHERE team=?1 AND state='open' AND substr(kind,1,15)='member_started:' AND substr(kind,16+instr(substr(kind,16),':'),length(?2)+1)=?2||':'",
             params![ctx.team.id, member],
         )
         .map_err(storage)?;
     Ok(())
 }
 
-pub(super) fn settle_left(ctx: &mut Context<'_>) -> Result<()> {
-    let Operation::SettleLeftHandout { node, reason } = ctx.op else {
-        unreachable!()
-    };
-    let node = *node;
-    let reason = reason.clone();
-    let open: Option<(String, String)> = ctx
-        .db
-        .query_row(
-            &format!(
-                "SELECT e.member,e.request_id FROM effects e WHERE e.team=?1 AND e.node=?2 AND e.state IN {OPEN_EFFECT_STATES} AND e.kind='handout'"
-            ),
-            params![ctx.team.id, node],
-            |r| Ok((r.get(0)?, r.get(1)?)),
-        )
-        .optional()
-        .map_err(storage)?;
-    let Some((member, id)) = open else {
-        return Ok(());
-    };
-    let m = ctx.member(&member)?;
-    if m.state == MemberState::Active && m.session.is_some() && reason.is_none() {
-        // The member is still in the active set and the actor read no
-        // departure: nothing settles.
-        return Ok(());
-    }
-    let how = reason
-        .filter(|r| !r.is_empty())
-        .unwrap_or_else(|| {
-            if m.state == MemberState::Paused {
-                if ctx.person_stopped(&member).unwrap_or(false) {
-                    "stopped".into()
-                } else {
-                    "paused".into()
-                }
-            } else {
-                "unbound".into()
-            }
-        });
-    supersede(ctx, node, &member)?;
-    // The item without the hand-back's hold: the task stays in the queue,
-    // so the next pass can hand it to another free member.
-    rows::hand_back_item(
-        ctx.db,
-        &ctx.team.id,
-        node,
-        &encode(ctx.actor)?,
-        &format!("member_left:{id}"),
-        &format!(
-            "Member {member} was {how} before the hand-out of task {node} reached it; the task is offered to another member."
-        ),
-        ctx.now,
-    )?;
-    Ok(())
-}
 
 pub(super) fn hand_to_lead(
     ctx: &mut Context<'_>,

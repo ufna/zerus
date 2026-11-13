@@ -8,6 +8,7 @@ use super::real_rows::Production;
 use super::rows::seed_row;
 use crate::teams::ops::tests::*;
 use crate::teams::ops::{Actor, Operation};
+use crate::teams::store::rows;
 use serde_json::{json, Value};
 
 const MINUTE: i64 = 60_000;
@@ -225,8 +226,15 @@ fn a_tell_for_a_member_without_started_work_writes_nothing() {
 fn a_replayed_request_and_a_lost_row_tell_once() {
     let (mut h, mut a, mut p, lead) = team();
     a.tick(&mut h.store, &mut p, TEAM, T0, false).unwrap();
-    h.run(&lead, Operation::PauseMember { member: "m1".into() }).unwrap();
-    a.tick(&mut h.store, &mut p, TEAM, T0 + MINUTE, false).unwrap();
+    h.run(
+        &lead,
+        Operation::PauseMember {
+            member: "m1".into(),
+        },
+    )
+    .unwrap();
+    a.tick(&mut h.store, &mut p, TEAM, T0 + MINUTE, false)
+        .unwrap();
     assert_eq!(items(&h).len(), 1);
     // The replayed request: the same op again writes nothing.
     let request = request(
@@ -240,12 +248,115 @@ fn a_replayed_request_and_a_lost_row_tell_once() {
     assert_eq!(items(&h).len(), 1, "the replayed request told twice");
     // The crash between the apply and the actor's row: the row is lost,
     // and the next pass still tells once.
-    let rows = a.ledger.prefix_page(TEAM, "paused_started:m1:", "").unwrap();
+    let rows = a
+        .ledger
+        .prefix_page(TEAM, "paused_started:m1:", "")
+        .unwrap();
     for row in &rows {
         a.ledger.remove(row).unwrap();
     }
-    a.tick(&mut h.store, &mut p, TEAM, T0 + 2 * MINUTE, false).unwrap();
+    a.tick(&mut h.store, &mut p, TEAM, T0 + 2 * MINUTE, false)
+        .unwrap();
     assert_eq!(items(&h).len(), 1, "the lost row told twice");
+}
+
+/// Round 3: the close is exact with the delimiter — m1's return closes
+/// only m1's items, never m10's or a pattern member's.
+#[test]
+fn the_close_is_exact_with_the_delimiter() {
+    let (mut h, mut a, mut p, lead) = team();
+    a.tick(&mut h.store, &mut p, TEAM, T0, false).unwrap();
+    h.run(&lead, Operation::PauseMember { member: "m1".into() })
+        .unwrap();
+    a.tick(&mut h.store, &mut p, TEAM, T0 + MINUTE, false)
+        .unwrap();
+    assert_eq!(items(&h).len(), 1, "{:?}", items(&h));
+    // A second member's and a pattern member's items, written through the
+    // store's own row writer.
+    for kind in ["member_started:7:m10:1", "member_started:7:m_1:1"] {
+        rows::hand_back_item(
+            h.store.db.as_ref().unwrap(),
+            TEAM,
+            1,
+            "service",
+            kind,
+            "the item",
+            T0,
+        )
+        .unwrap();
+    }
+    // m1 returns: only m1's items close.
+    h.run(&person(), Operation::ResumeMember { member: "m1".into() })
+        .unwrap();
+    a.tick(&mut h.store, &mut p, TEAM, T0 + 2 * MINUTE, false)
+        .unwrap();
+    let inbox = h.store.inbox(TEAM, 200, None).unwrap();
+    let mut states: Vec<(String, String)> = inbox
+        .rows
+        .iter()
+        .map(|i| (i.kind.clone(), i.state.clone()))
+        .collect();
+    states.sort();
+    assert_eq!(
+        states,
+        [
+            ("member_started:1:m1:1".into(), "closed".into()),
+            ("member_started:7:m_1:1".into(), "open".into()),
+            ("member_started:7:m10:1".into(), "open".into()),
+        ],
+        "the close touched the wrong items"
+    );
+}
+
+/// Round 3: the crash window between the tell's apply and the actor's
+/// ledger row — the item is written, the row is lost, and the member's
+/// return still closes the item because the close's decision comes from
+/// the store.
+#[test]
+fn the_crash_window_item_still_closes_on_the_return() {
+    let (mut h, mut a, mut p, lead) = team();
+    a.tick(&mut h.store, &mut p, TEAM, T0, false).unwrap();
+    h.run(
+        &lead,
+        Operation::PauseMember {
+            member: "m1".into(),
+        },
+    )
+    .unwrap();
+    a.tick(&mut h.store, &mut p, TEAM, T0 + MINUTE, false)
+        .unwrap();
+    assert_eq!(items(&h).len(), 1, "{:?}", items(&h));
+    // The ledger row is lost (the crash window).
+    let rows = a
+        .ledger
+        .prefix_page(TEAM, "paused_started:m1:", "")
+        .unwrap();
+    for row in &rows {
+        a.ledger.remove(row).unwrap();
+    }
+    // The member returns: the store-driven close closes the item.
+    h.run(
+        &person(),
+        Operation::ResumeMember {
+            member: "m1".into(),
+        },
+    )
+    .unwrap();
+    a.tick(&mut h.store, &mut p, TEAM, T0 + 2 * MINUTE, false)
+        .unwrap();
+    let inbox = h.store.inbox(TEAM, 200, None).unwrap();
+    assert!(
+        inbox
+            .rows
+            .iter()
+            .any(|i| i.kind.starts_with("member_started:") && i.state == "closed"),
+        "the item was not closed: {:?}",
+        inbox
+            .rows
+            .iter()
+            .map(|i| (i.kind.as_str(), i.state.as_str()))
+            .collect::<Vec<_>>()
+    );
 }
 
 /// A removed member keeps the removal's path: the removal's own item, never

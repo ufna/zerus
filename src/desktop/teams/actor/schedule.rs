@@ -282,13 +282,6 @@ impl Runtime {
         }
         Ok(())
     }
-    /// zerus-63rru.45: the kernel's unstaffed set over the uncooled view,
-    /// compared with the told episodes by the store's own function; the
-    /// store reconciles only when that finds a change and recomputes the
-    /// set itself. The request is kept in the ledger before it is applied,
-    /// so a restart replays it by its request ID and gets its saved reply. A
-    /// race (`unstaffed_unchanged`, or a revision that moved) is settled,
-    /// never a gate failure or a card.
     /// The lead is told once per member and task while a member out of the
     /// active set holds started work (zerus-63rru.86). The actor's ledger
     /// rows `paused_started:<member>:<node>` are the once-only memory; the
@@ -344,9 +337,23 @@ impl Runtime {
         member: &str,
         now: i64,
     ) -> Result<()> {
-        let prefix = format!("paused_started:{member}:");
-        if self.ledger.prefix_page(&team.id, &prefix, "")?.is_empty() {
-            // Nothing was told: no ops call, so an unchanged pass stays a
+        // The close's decision comes from the store's own open items, not
+        // the actor's ledger (zerus-63rru.86 round 3): a crash between the
+        // apply and the ledger write cannot leave an open item unclosed,
+        // and the ledger rows stay an optimization only.
+        let prefix = "member_started:";
+        let open: i64 = store
+            .db
+            .as_ref()
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM inbox WHERE team=?1 AND state='open' AND substr(kind,1,15)='member_started:' AND substr(kind,16+instr(substr(kind,16),':'),length(?2)+1)=?2||':'",
+                rusqlite::params![team.id, member],
+                |r| r.get(0),
+            )
+            .map_err(crate::teams::store::storage)?;
+        if open == 0 {
+            // Nothing to close: no ops call, so an unchanged pass stays a
             // no-op and its revision does not move.
             return Ok(());
         }
@@ -372,6 +379,13 @@ impl Runtime {
         Ok(())
     }
 
+    /// zerus-63rru.45: the kernel's unstaffed set over the uncooled view,
+    /// compared with the told episodes by the store's own function; the
+    /// store reconciles only when that finds a change and recomputes the
+    /// set itself. The request is kept in the ledger before it is applied,
+    /// so a restart replays it by its request ID and gets its saved reply. A
+    /// race (`unstaffed_unchanged`, or a revision that moved) is settled,
+    /// never a gate failure or a card.
     fn unstaffed(
         &mut self,
         store: &mut Store,
