@@ -1343,8 +1343,11 @@ pub(super) fn update_activity(record: &mut Value, event: &Value) {
         }
         // The non-start events of an ended child are recorded as history
         // only: nothing but its producer's own start event (the guard above
-        // admits only Kimi's) sets it working again.
-        let revives = !ended || kind == "SubagentStart";
+        // admits only Kimi's) sets it working again. An interrupted child
+        // (working with the hook writer's unknown display) is not an end:
+        // its own tool events resume it as before.
+        let final_end = ["finished", "ended"].contains(&string(info, "state"));
+        let revives = !final_end || kind == "SubagentStart";
         if ["Stop", "SubagentStop"].contains(&kind) {
             let result = detail(event);
             if string(info, "state") != "finished"
