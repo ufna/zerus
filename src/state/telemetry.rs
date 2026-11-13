@@ -80,7 +80,8 @@ pub(super) fn settled(record: &Value) -> bool {
     // a quiet revived one reads settled too, so the idle-only actions do not
     // wait for an event that will never come. Any other busy with no work
     // keeps its settled reading as before.
-    let quiet_only = string(record, "activity") == "busy"
+    let quiet_only = record["main_done"].as_bool().unwrap_or(false)
+        && string(record, "activity") == "busy"
         && record["subagents"].as_object().is_some_and(|children| {
             children
                 .values()

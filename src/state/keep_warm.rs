@@ -1751,4 +1751,58 @@ mod tests {
             assert!(parsed(base(valid.clone())).is_ok(), "{valid}");
         }
     }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn revived_race() -> Value {
+        let mut record = crate::state::listing_fixture::launched_record(
+            "kimi",
+            "kimi/example/member",
+            "00000000-0000-4000-8000-0000000000a1",
+            "00000000-0000-4000-8000-0000000000a2",
+            "run-kimi",
+            "/",
+            "account-example",
+        );
+        crate::state::listing_fixture::confirmed(&mut record, "conversation-kimi");
+        let kimi = |kind: &str| {
+            json!({"hook_event_name":kind,"agent_id":"main","agent_name":"profile-1"})
+        };
+        for event in [
+            kimi("SubagentStart"),
+            kimi("SubagentStop"),
+            kimi("SubagentStart"),
+        ] {
+            crate::state::telemetry::observe(&mut record, &event);
+            crate::state::journal::update_activity(&mut record, &event);
+        }
+        record
+    }
+
+    #[test]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn a_working_turn_is_never_settled_by_a_quiet_revived_child() {
+        let mut record = revived_race();
+        let prompt = json!({"hook_event_name":"UserPromptSubmit","prompt":"go"});
+        crate::state::telemetry::observe(&mut record, &prompt);
+        crate::state::journal::update_activity(&mut record, &prompt);
+        // The turn works; the period then passes with no further event, so
+        // the revived child goes quiet by time alone.
+        let at = record["subagents"]["profile-1"]["updated"].as_f64().unwrap();
+        record["subagents"]["profile-1"]["updated"] = json!(at - 61.0);
+        assert!(!crate::state::telemetry::work_remains(&record), "{record}");
+        assert!(
+            !crate::state::telemetry::settled(&record),
+            "a working turn read settled: {record}"
+        );
+        let mut store = Store::default();
+        update(&mut store, "owner", &record, &request(json!({})), NOW, ok);
+        let entry = store.sessions.get("owner");
+        let runtime = json!({"state":"dispatching","request_id":"ping-1","revision":1});
+        let warm = Eligibility::known(3600, "native_usage", Some(NOW + 600.0));
+        assert!(
+            submission_refusal(&record, entry, &runtime, &quiet(), &warm, "ping-1", NOW)
+                .is_some(),
+            "the due check let a ping into a working turn"
+        );
+    }
 }

@@ -294,6 +294,32 @@ fn the_main_agents_turn_end_persists_the_settle() {
     assert_eq!(row["subagent_active_count"], 0, "{row}");
 }
 
+/// Round 4: the main's Stop while the child is not yet quiet, then the
+/// period passes with no event: the settled read is true (the main's turn
+/// has ended, so the busy activity comes from children alone).
+#[test]
+fn the_stop_before_the_quiet_period_still_reads_settled_after_it() {
+    let mut record = record("kimi");
+    apply(
+        &mut record,
+        &[
+            kimi("SubagentStart", "profile-1"),
+            kimi("SubagentStop", "profile-1"),
+            kimi("SubagentStart", "profile-1"),
+        ],
+    );
+    apply(
+        &mut record,
+        &[json!({"hook_event_name":"Stop","agent_id":"main"})],
+    );
+    quiet(&mut record);
+    assert!(
+        crate::state::telemetry::settled(&record),
+        "the ended turn is not settled: {record}"
+    );
+    assert!(!crate::state::telemetry::work_remains(&record));
+}
+
 /// Round 3: the persisted settle and the read-time rule agree — a quiet
 /// revived profile's whole group zeroes, whatever its active count was.
 #[test]
