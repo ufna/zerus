@@ -63,6 +63,7 @@ fn receipt(
         phase,
         drained,
         code: code.into(),
+        cli_exit: None,
         outcome: (phase == wire::Phase::Recorded).then(|| wire::Outcome {
             request_id: verified.plan.request_id.clone(),
             status: wire::SUBMITTED.into(),
@@ -160,4 +161,23 @@ fn without_a_live_service_a_send_stays_direct_and_a_check_knows_nothing() {
         SendAnswer::Direct
     );
     assert_eq!(check(None, &verified().plan), Checked::Unavailable);
+}
+
+#[test]
+fn a_refusal_is_visible_only_on_the_exact_drained_unknown_and_never_means_unsent() {
+    let v = verified();
+    let mut r = receipt(&v, wire::Phase::Unknown, true, "deferred_send_receipt_missing");
+    r.cli_exit = Some(wire::CliExit::new(1, "hgs: agent busy: real draft\nnot retained"));
+    assert_eq!(settled(&r, &v.plan), Some(SendAnswer::Unconfirmed(
+        format!("{UNCONFIRMED}\nhgs send (1): hgs: agent busy: real draft")
+    )));
+    r.drained = false;
+    assert_eq!(settled(&r, &v.plan), None);
+    r.drained = true;
+    let mut other = v.plan.clone();
+    other.run_id = "another-run".into();
+    assert_eq!(settled(&r, &other), None);
+    r.phase = wire::Phase::Recorded;
+    r.outcome = Some(wire::Outcome { request_id: v.plan.request_id.clone(), status: wire::SUBMITTED.into(), input_sha256: v.plan.input_sha256.clone() });
+    assert_eq!(settled(&r, &v.plan), Some(SendAnswer::Recorded(r.outcome.unwrap())));
 }

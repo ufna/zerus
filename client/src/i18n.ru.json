@@ -3302,6 +3302,7 @@
   "This agent cannot keep its cache warm.": "Этот агент не может поддерживать кэш тёплым.",
   "This agent has not reported a cache expiry. No countdown is available.": "Этот агент не сообщил об истечении срока действия кэша. Обратный отсчет невозможен.",
   "This agent reports no prompt cache that pings can keep warm.": "Этот агент не сообщает о кэше промпта, который можно поддерживать пингами.",
+  "This agent was started with NO_COLOR, so Zerus cannot tell a queued message from a draft. Restart the session to fix sending.": "Этот агент запущен с NO_COLOR, поэтому Zerus не может отличить сообщение в очереди от черновика. Перезапустите сессию, чтобы снова отправлять сообщения.",
   "This alias comes from HGS configuration. ": "Этот псевдоним взят из конфигурации HGS. ",
   "This attachment has no saved file reference.": "В этом вложении нет сохраненной ссылки на файл.",
   "This child's blocking questions are sent to its parent session.": "Блокирующие вопросы этой сессии передаются родительской сессии.",

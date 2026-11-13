@@ -962,6 +962,15 @@ fn terminal_check_on(record: &Value, empty: bool, sending: bool, terminal: &dyn 
         ) {
             if sending {
                 diagnostic::save(record, screen, cursor_x, cursor_y, stable);
+                if stable && string(record, "agent") == "claude"
+                    && matches!(composer::read(record, screen, cursor_x, cursor_y), composer::Composer::Text(_))
+                    && screen.lines().nth(cursor_y).is_some_and(|row| {
+                        !styled_cells(row, &mut TerminalStyle::default()).iter().any(|(_, style)| style.dim)
+                    })
+                    && diagnostic::no_color(record)
+                {
+                    return Err(zerus_client_core::send::NO_COLOR.into());
+                }
                 if matches!(string(record, "agent"), "codex" | "claude")
                     && string(record, "activity") == "busy"
                     && matches!(string(record, "phase"), "idle" | "working" | "tool" | "compacting")

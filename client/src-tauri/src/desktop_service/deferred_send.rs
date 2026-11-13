@@ -77,7 +77,13 @@ pub(crate) fn settled(receipt: &wire::Receipt, plan: &wire::Plan) -> Option<Send
     }
     // Drained but not Recorded or Failed: Unknown for good.
     (receipt.valid() && receipt.drained && receipt.binding.agrees(plan))
-        .then(|| SendAnswer::Unconfirmed(UNCONFIRMED.into()))
+        .then(|| {
+            let mut message = UNCONFIRMED.to_owned();
+            if let Some(exit) = receipt.cli_exit.as_ref().filter(|exit| exit.code != 0) {
+                message.push_str(&format!("\nhgs send ({}): {}", exit.code, exit.stderr));
+            }
+            SendAnswer::Unconfirmed(message)
+        })
 }
 
 /// The scoped original: the local session, the checkpoint the draft saved

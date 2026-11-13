@@ -230,9 +230,9 @@ impl Fixture {
                                 &format!("{}.json", plan.request_id),
                                 receipt.to_string().as_bytes(),
                             );
-                            Ended::Exited { code: 0 }
+                            Ended::Exited { code: 0, stderr: String::new() }
                         }
-                        Child::NoReceipt => Ended::Exited { code: 1 },
+                        Child::NoReceipt => Ended::Exited { code: 1, stderr: String::new() },
                         Child::NotStarted => Ended::NotStarted,
                     }
                 },

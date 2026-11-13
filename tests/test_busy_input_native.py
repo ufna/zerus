@@ -197,6 +197,11 @@ class NativeBusyClaude(claude.NativeClaudeInput):
     test_multiline_message_ending_in_backslashes_is_preserved = None
     test_leading_absolute_path_is_literal_message_text = None
 
+    def setUp(self):
+        if self._testMethodName.startswith('test_no_color_'):
+            self.native_env = (*self.native_env, 'NO_COLOR=1')
+        super().setUp()
+
     def queued_messages(self):
         # Claude steers queued inputs into the original Bash tool result, not
         # standalone native user turns. Inspect that exact model-bound envelope.
@@ -255,6 +260,79 @@ class NativeBusyClaude(claude.NativeClaudeInput):
 
     def test_busy_tool_queue_80x24(self):
         self.test_busy_tool_queue_preserves_drafts_and_accepts_exactly_once()
+
+    def test_busy_long_hgs_reports_preserve_a_real_draft_then_accept_the_persons_send(self):
+        release = self.root / 'tool-release'
+        self.busy_ready = True
+        reports = [f'<zerus-message from="codex/fixture/child-{n}">\n' +
+                   '\n'.join(f'Report {n}, line {line}: ' + 'long private fixture report ' * 5 for line in range(12)) +
+                   '\n</zerus-message>' for n in range(3)]
+        try:
+            terminal_send(self, PROMPT)
+            self.wait_for((self.root / 'tool-started').exists)
+            self.record.update(activity='busy', phase='tool', active_tools={'toolu_busy': {'tool_name': 'Bash'}})
+            self.write_record()
+            for report in reports:
+                payload = self.payload(text=report)
+                receipt = self.send(payload)
+                self.assertEqual(receipt['status'], 'submitted')
+                self.assertEqual(self.send(payload), receipt)
+            self.wait_for(lambda: 'Press up to edit queued messages' in self.screen())
+            draft = 'keep the persons real draft'
+            self.tmux('send-keys', '-t', self.pane, '-l', draft)
+            self.wait_for(lambda: draft in self.screen())
+            refused = self.payload(text='must not be typed')
+            self.assertIn('agent busy:', self.send(refused, success=False))
+            self.assertFalse((self.state / 'input_receipts' / (refused['request_id'] + '.json')).exists())
+            self.assertIn(draft, self.screen())
+            self.tmux('send-keys', '-t', self.pane, 'C-u')
+            self.wait_for(lambda: draft not in self.screen())
+            payload = self.payload(text=LAST)
+            receipt = self.send(payload)
+            self.assertEqual(receipt['status'], 'submitted')
+            self.assertEqual(self.send(payload), receipt)
+            release.touch()
+            self.wait_for(lambda: LAST in self.queued_messages())
+            self.assertEqual(self.queued_messages(), [*reports, LAST])
+            self.assertEqual(self.accepted('must not be typed'), 0)
+        finally:
+            release.touch()
+
+    def test_busy_long_hgs_reports_80x24(self):
+        self.test_busy_long_hgs_reports_preserve_a_real_draft_then_accept_the_persons_send()
+
+    def test_no_color_short_terminal_queue_explains_the_refusal_and_never_types_into_a_draft(self):
+        release = self.root / 'tool-release'
+        self.busy_ready = True
+        reason = 'This agent was started with NO_COLOR, so Zerus cannot tell a queued message from a draft. Restart the session to fix sending.'
+        try:
+            terminal_send(self, PROMPT)
+            self.wait_for((self.root / 'tool-started').exists)
+            self.record.update(activity='busy', phase='tool', active_tools={'toolu_busy': {'tool_name': 'Bash'}})
+            self.write_record()
+            terminal_send(self, 'Short terminal queue')
+            hint = 'Press up to edit queued messages'
+            self.wait_for(lambda: hint in self.screen())
+            payload = self.payload(text='must not be typed')
+            self.assertIn(reason, self.send(payload, success=False))
+            self.assertFalse((self.state / 'input_receipts' / (payload['request_id'] + '.json')).exists())
+            # The same hint as a real draft with its caret at Home must refuse too.
+            self.tmux('send-keys', '-t', self.pane, '-l', hint)
+            self.wait_for(lambda: self.tmux('display-message', '-p', '-t', self.pane, '#{cursor_x}').strip() == str(2 + len(hint)))
+            self.tmux('send-keys', '-t', self.pane, 'C-a')
+            self.wait_for(lambda: self.tmux('display-message', '-p', '-t', self.pane, '#{cursor_x}').strip() == '2')
+            payload = self.payload(text='also must not be typed')
+            self.assertIn(reason, self.send(payload, success=False))
+            self.assertFalse((self.state / 'input_receipts' / (payload['request_id'] + '.json')).exists())
+            self.assertIn(hint, self.screen())
+            release.touch()
+            self.wait_for(lambda: 'Short terminal queue' in self.queued_messages())
+            self.assertEqual(self.queued_messages(), ['Short terminal queue'])
+        finally:
+            release.touch()
+
+    def test_no_color_short_terminal_queue_80x24(self):
+        self.test_no_color_short_terminal_queue_explains_the_refusal_and_never_types_into_a_draft()
 
     def enqueued(self, content):
         return [r for r in self.rows() if r.get('type') == 'queue-operation'
