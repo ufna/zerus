@@ -63,6 +63,37 @@ ALLOWED_HOSTS = {
 # (the upstream canary has no Teams step yet); the logged durations tighten them.
 BOUND = dict(service=60, bound=420, listed=90, card=180, ready=180, parent=200, handout=240, turn=180,
              doorbell=240, cancel=240, stop=180, exit=60, teardown=60)
+# The private root's name. It is short so that a member worktree in a hosted runner's
+# /tmp (`/tmp/hgs-tn-XXXXXXXX/work/zerus-team-<uuid>`, 73 columns) fits one row of
+# Codex's Folder access panel; a local root inside the worktree's target/ wraps.
+ROOT_PREFIX = 'hgs-tn-'
+# Codex's Folder access panel shows the folder in rows of this many columns in the
+# member's 80-column pane (measured with Codex 0.167.2); a longer folder continues on
+# the rows below.
+CODEX_PANEL_COLUMNS = 76
+
+
+def hosted_runner(env=None):
+    """A disposable GitHub-hosted runner, where the private root sits in a short /tmp."""
+    env = os.environ if env is None else env
+    return env.get('GITHUB_ACTIONS') == 'true' and env.get('RUNNER_ENVIRONMENT') == 'github-hosted'
+
+
+def codex_panel_variant(pane, folder):
+    """Which Folder access panel `pane` shows for `folder`: 'one-row' when the folder
+    fills the row under the panel's title, 'wrapped' when it continues on the rows
+    below, None when the pane does not show that folder there."""
+    lines = [line.strip() for line in pane.splitlines()]
+    if 'Folder access' not in lines:
+        return None
+    joined = ''
+    for count, line in enumerate(lines[lines.index('Folder access') + 1:], 1):
+        joined += line
+        if not line or not folder.startswith(joined):
+            return None
+        if joined == folder:
+            return 'one-row' if count == 1 else 'wrapped'
+    return None
 
 TMUX_WRAPPER = r'''#!/bin/bash
 # Teams fixture tmux wrapper: logs every call; passes it to the real tmux only when it
@@ -162,6 +193,16 @@ class Evidence:
     def write(self, name, value):
         (self.folder / name).write_text(value if isinstance(value, str) else json.dumps(value, indent=2, default=str),
                                         encoding='utf-8')
+
+
+PINNED = r"`hgs task {verb} (?:'([^'`]+)'|([^\s'`]+)) --attempt ([0-9a-f]{{8}}-[0-9a-f]{{4}}-[0-9a-f]{{4}}-[0-9a-f]{{4}}-[0-9a-f]{{12}})"
+
+
+def pinned(prompt, verb):
+    """The (ref, attempt) of the pinned `hgs task <verb> REF --attempt UUID` in a real
+    delivered prompt, the ref quoted when it holds a space; None when it is not pinned."""
+    match = re.search(PINNED.format(verb=verb), prompt)
+    return (match.group(1) or match.group(2), match.group(3)) if match else None
 
 
 class Model(api.Handler):
@@ -266,14 +307,17 @@ class ModelServer(api.Server):
         if step and (self.scripts / (step.group(1) + '.sh')).is_file():
             return self.shell(offered, '/bin/bash ' + shlex.quote(str(self.scripts / (step.group(1) + '.sh'))))
         if prompt.startswith('[Zerus task ') and not prompt.split('\n', 1)[0].rstrip().endswith('cancelled]'):
-            begin = re.search(r"`hgs task begin-attempt '?([^' `]+)'? --attempt ([0-9a-f-]{36})`", prompt)
-            report = re.search(r"`hgs task report-attempt '?([^' `]+)'? --attempt ([0-9a-f-]{36})", prompt)
-            if begin and report:
+            begin = pinned(prompt, 'begin-attempt')
+            report = pinned(prompt, 'report-attempt')
+            if report:
+                # Only the commands the prompt supplies: a prompt without a pinned
+                # begin-attempt gets no acknowledgement (empty arguments).
                 script = self.scripts / 'delivered.sh'
                 return self.shell(offered, ' '.join(shlex.quote(x) for x in (
-                    '/bin/bash', str(script), begin.group(1), begin.group(2), report.group(1), report.group(2))))
+                    '/bin/bash', str(script), *(begin or ('', '')), *report)))
             return ('text', 'Fixture: the delivered prompt has no pinned commands')
-        return ('text', REPLY)
+        # Anything else is the shared fixture's own plan (a reply, or its questions).
+        return api.plan(body, '')
 
     def log_request(self, route, number, body, answer):
         row = dict(n=number, at=time.time(), route=route, prompt=api.typed(body), users=user_texts(body),
@@ -407,13 +451,57 @@ class Census(threading.Thread):
         return summary
 
 
+class FolderWatch(threading.Thread):
+    """Whether one folder exists, sampled every 0.2 s until finished: when it was first
+    seen gone and when it came back."""
+
+    def __init__(self, path):
+        super().__init__(daemon=True)
+        self.path, self.stopping = Path(path), threading.Event()
+        self.result = dict(path=str(path), started=time.time(), samples=0, gone_at=None, back_at=None)
+
+    def run(self):
+        while not self.stopping.is_set():
+            exists = self.path.is_dir()
+            self.result['samples'] += 1
+            if not exists and self.result['gone_at'] is None:
+                self.result['gone_at'] = time.time()
+            if exists and self.result['gone_at'] is not None and self.result['back_at'] is None:
+                self.result['back_at'] = time.time()
+            self.stopping.wait(0.2)
+
+    def finish(self):
+        self.stopping.set()
+        self.join(2)
+        self.result['finished'] = time.time()
+        return self.result
+
+
 class TeamFixture:
     """One private root, one private service, one team (lead and member m1) of one agent."""
 
-    def __init__(self, agent, native, case):
+    DELEGATIONS_OFF = {'accept_results': False, 'answer_members': False, 'confirm_trust': False,
+                       'merge_accepted': False, 'resume_exited': False}
+
+    def __init__(self, agent, native, case, delegations=None, service_answers=(), after_refusal=None, count=1, pinned=None,
+                 pretrust=()):
         self.agent, self.native, self.case = agent, Path(native).resolve(), case
+        # Card sources the person answers only once the service has refused them with a
+        # card naming the member and containing the given text.
+        self.after_refusal = dict(after_refusal or {})
+        # The team's delegations, and the startup card sources the person leaves to the
+        # standing confirmation (it must answer them, or the bring-up fails).
+        self.delegations = dict(self.DELEGATIONS_OFF, **(delegations or {}))
+        self.service_answers = tuple(service_answers)
+        # The role's member count, and the account its members are pinned to (none: the
+        # service picks the freest).
+        self.count, self.pinned = count, pinned
+        # Accounts on which the person trusts the main checkout before the team starts.
+        self.pretrust = tuple(pretrust)
+        self.cards_seen = {}
+        self.panes = {}
         base = os.environ.get('TMPDIR') or tempfile.gettempdir()
-        self.root = Path(tempfile.mkdtemp(prefix='hgs-teams-native-', dir=base)).resolve()
+        self.root = Path(tempfile.mkdtemp(prefix=ROOT_PREFIX, dir=base)).resolve()
         if ROOT_CREATED is not None:
             ROOT_CREATED(case, self.root)
         folder = os.environ.get('ZERUS_TEAMS_EVIDENCE') or str(self.root / 'evidence')
@@ -433,6 +521,8 @@ class TeamFixture:
                     'home/.local/state', 'run', 'tmux', 'tmp', 'state', 'cfg', 'scripts', 'out', 'model', 'work'):
             (r / sub).mkdir(parents=True, exist_ok=True)
         os.chmod(r / 'run', 0o700)
+        # The person's answers start as an empty log, so a reader can tell "none" from "lost".
+        (self.evidence.folder / 'person-answers.jsonl').write_text('')
         os.chmod(r / 'tmux', 0o700)
         for name, text in (('tmux', TMUX_WRAPPER), ('ssh', REFUSE), ('scp', REFUSE), ('systemd-run', REFUSE), ('hgs', REFUSE)):
             path = r / 'bin' / name
@@ -613,8 +703,10 @@ class TeamFixture:
             role.update(model='claude-sonnet-4-6', effort='high')
         elif self.agent == 'codex':
             role.update(model='gpt-6.1-sol', effort='high')
+        if self.pinned:
+            role['account'] = {'mode': 'named', 'account': self.pinned}
         return {'template': {'id': 'zt-' + self.agent, 'name': 'Teams fixture ' + self.agent, 'description': 'One member.',
-                             'lead': {'agent': self.agent}, 'roster': [{'role': 'zt-dev', 'count': 1}],
+                             'lead': {'agent': self.agent}, 'roster': [{'role': 'zt-dev', 'count': self.count}],
                              'default_pipeline': 'zt-direct', 'settings': {}},
                 'roles': [role], 'pipelines': [{'id': 'zt-direct', 'name': 'Direct', 'implementer': 'zt-dev'}]}
 
@@ -629,9 +721,7 @@ class TeamFixture:
             'request_id': str(uuid.uuid4()), 'team': self.team, 'expected_revision': 0, 'project': 'teams-fixture',
             'name': 'Teams fixture', 'goal': 'Real-agent contract.', 'home': self.machine,
             'integration_branch': 'zerus/team/fixture-' + self.agent, 'base_commit': self.commit,
-            # Standing confirmations stay off in this round (zerus-63rru.48 and .49).
-            'delegations': {'accept_results': False, 'answer_members': False, 'confirm_trust': False,
-                            'merge_accepted': False, 'resume_exited': False}}))
+            'delegations': self.delegations}))
         if reply.get('ok') is not True:
             raise AssertionError('team create: ' + json.dumps(reply)[:800])
 
@@ -642,11 +732,20 @@ class TeamFixture:
         self.wait('desktop service running', lambda: self.hgs('desktop', 'status', '--json', ok=False).returncode == 0
                   and json.loads(self.hgs('desktop', 'status', '--json', ok=False).stdout).get('running'), BOUND['service'])
 
+    @staticmethod
+    def listed(reply, key, what):
+        """The list `key` of a CLI reply. A reply without it is an error of the reader,
+        never an empty list, so a check that nothing is there cannot pass on a renamed key."""
+        value = reply.get(key) if isinstance(reply, dict) else None
+        if not isinstance(value, list):
+            raise AssertionError(f'{what} reply has no {key} list: {json.dumps(reply)[:300]}')
+        return value
+
     def status(self):
         return self.json('team', 'status', '--team', self.team, '--json')
 
     def members(self):
-        return {m['id']: m for m in self.status().get('members') or []}
+        return {m['id']: m for m in self.listed(self.status(), 'members', 'team status')}
 
     def rows(self):
         found = []
@@ -678,9 +777,11 @@ class TeamFixture:
         self.start_model()
         self.project()
         self.accounts()
+        for account in self.pretrust:
+            self.trust_main_checkout(account)
         self.create_team()
         self.start_service()
-        bound = self.wait('lead and member bound by launch ID', lambda: (lambda m: m if len(m) == 2 and all(
+        bound = self.wait('lead and members bound by launch ID', lambda: (lambda m: m if len(m) == 1 + self.count and all(
             (x.get('session') or {}).get('session_id') for x in m.values()) else None)(self.members()), BOUND['bound'], 3)
         for member_id, member in bound.items():
             self.sessions[member_id] = self.wait(f'{member_id} session listed', lambda m=member: self.session_of(m),
@@ -690,17 +791,59 @@ class TeamFixture:
         for member_id in bound:
             self.answer_startup(member_id)
 
+    def trust_main_checkout(self, account):
+        """The person trusts the team's main checkout on one account before the team
+        starts: a plain session there on that account, its trust card answered through
+        hgs answer, then the session ended by Terminate."""
+        if not getattr(self, 'main_project', None):
+            self.hgs('project', 'add', 'trusted-main', str(self.root / 'work/proj'))
+            self.main_project = 'trusted-main'
+        self.hgs('account', 'default', account)
+        tag = 'trust-' + account
+        self.hgs(self.agent, self.main_project, '-n', tag, '-d', timeout=120)
+        row = self.wait(f'the plain session on {account} is listed', lambda: next(
+            (r for r in self.rows() if str(r.get('name', '')).endswith('/' + tag)), None), BOUND['listed'], 2)
+        key = 'plain-' + account
+        self.sessions[key] = dict(name=row['name'], member={})
+        view = self.answer_startup(key)
+        self.hgs('terminate', row['name'], '--expected-run-id', view.get('run_id'), timeout=120)
+        del self.sessions[key]
+
+    def answer_question(self, member_id, card):
+        """The person answers an ordinary question card in full: the first option of each
+        question, or a short text where it offers none."""
+        view = self.inspect(member_id)
+        answers = []
+        for item in card.get('questions') or []:
+            options = item.get('options') or []
+            answers.append(dict(question_id=item['id'], selected_option_ids=[options[0]['id']] if options else [],
+                                text='' if options else 'Fixture answer.'))
+        payload = dict(request_id=str(uuid.uuid4()), expected_run_id=view.get('run_id'),
+                       expected_conversation_id=view.get('conversation_id') or '', question_id=card['question_id'],
+                       expected_question_hash=card['question_hash'], answers=answers)
+        return self.json('answer', self.sessions[member_id]['name'], '--json', stdin=json.dumps(payload))
+
+    def handouts(self, node):
+        """The members the service handed one node to, from its journal."""
+        rows = self.listed(self.json('team', 'journal', '--team', self.team, '--limit', '200', '--json'), 'rows', 'team journal')
+        return [ref[len('member:'):] for row in rows if row.get('kind') == 'handout_intent' and f'node:{node}' in (row.get('refs') or [])
+                for ref in row.get('refs') or [] if ref.startswith('member:')]
+
     def tmux_server(self):
         out = subprocess.run(['tmux', 'display-message', '-p', '#{pid}'], env=self.env, capture_output=True, text=True)
         return int(out.stdout.strip()) if out.stdout.strip().isdigit() else os.getpid()
 
     def inspect(self, member_id):
-        return self.json('inspect', self.sessions[member_id]['name'], timeout=60)
+        view = self.json('inspect', self.sessions[member_id]['name'], timeout=60)
+        if view.get('tracked') is True and view.get('session_id'):
+            self.sessions[member_id]['last_tracked'] = {key: view.get(key) for key in (
+                'session_id', 'run_id', 'launch_id', 'conversation_id')}
+        return view
 
     def answer_startup(self, member_id):
-        """The person answers each startup card of this member until it is ready. Claude
-        and Kimi folder trust and Codex's hooks review go through `hgs answer`; Codex's
-        Folder access is only answerable in Terminal (zerus-63rru.49), where the person
+        """The person answers each startup card of this member until it is ready: through
+        `hgs answer` when the card can be answered there (Claude and Kimi folder trust,
+        Codex's Folder access and hooks review), otherwise in Terminal, where the person
         presses Enter on its highlighted first choice."""
         name = self.sessions[member_id]['name']
         answered = []
@@ -713,6 +856,13 @@ class TeamFixture:
             if not pending and live and (started or view.get('first_message_can_send')):
                 return view
             for card in pending:
+                self.capture_card(member_id, card)
+                if card.get('source') in self.service_answers:
+                    continue  # the standing confirmation's to answer
+                wanted = self.after_refusal.get(card.get('source'))
+                if wanted and not any(f'Member {member_id} needs your attention' in c.get('text', '') and wanted in c.get('text', '')
+                                      for c in self.cards()):
+                    continue  # the service has not refused it yet
                 if card.get('question_id') in answered:
                     continue
                 items = card.get('questions') or []
@@ -738,6 +888,189 @@ class TeamFixture:
         self.sessions[member_id].update(run=view.get('run_id'), conversation=view.get('conversation_id') or '')
         return view
 
+    def capture_card(self, member_id, card):
+        """The first sight of each startup card: the inspection's card and the pane as
+        tmux holds it, with its size, so the real rendering is kept in the evidence."""
+        key = (member_id, card.get('question_id'))
+        if key in self.cards_seen:
+            return
+        target = '=' + self.sessions[member_id]['name'] + ':'
+        pane = subprocess.run(['tmux', 'capture-pane', '-p', '-t', target], env=self.env, capture_output=True, text=True)
+        size = subprocess.run(['tmux', 'display-message', '-p', '-t', target, '#{pane_width}x#{pane_height}'],
+                              env=self.env, capture_output=True, text=True)
+        number = len(self.cards_seen)
+        self.cards_seen[key] = dict(member=member_id, source=card.get('source'), at=time.time(), size=size.stdout.strip(),
+                                    card=card)
+        self.evidence.write(f'startup-card-{number}-{member_id}.json', self.cards_seen[key])
+        self.evidence.write(f'startup-card-{number}-{member_id}-pane.txt', pane.stdout)
+        self.panes[key] = pane.stdout
+
+    JOURNAL_BOUND = 500
+
+    def journal(self):
+        """Every attempt of the approval-audit journal, read through the product's own
+        reader, hgs approval-log list (paged) and detail (src/approval_log.rs), so the
+        store's place is the product's and a moved or renamed store is followed. Each row
+        carries its question's source, ID and run and its categories. A reply or a row of
+        any other shape fails the reader: an unknown shape is an error, never "no match".
+        What this cannot catch: a product whose own writer and reader disagree on the
+        store; and the product's reader reads a store that does not exist yet as empty."""
+        entries, before = [], None
+        while True:
+            page = self.json('approval-log', 'list', stdin=json.dumps({} if before is None else {'before': before}))
+            entries.extend(self.listed(page, 'entries', 'approval-log list'))
+            if len(entries) > self.JOURNAL_BOUND:
+                raise AssertionError(f'the audit journal holds more than {self.JOURNAL_BOUND} rows')
+            before = page.get('next') if isinstance(page, dict) else None
+            if before is None:
+                break
+        rows = []
+        for entry in sorted(entries, key=lambda e: e.get('id', 0) if isinstance(e, dict) else 0):
+            try:
+                detail = self.json('approval-log', 'detail', stdin=json.dumps({'id': entry['id']}))
+                question = detail['question']
+                fields = {key: question[key] for key in ('source', 'question_id', 'run_id')}
+                categories = entry['categories'] if entry['categories'] is not None else []
+                if (not all(isinstance(value, str) for value in fields.values()) or not isinstance(detail['answers'], list)
+                        or not isinstance(categories, list) or detail['id'] != entry['id']
+                        or not isinstance(entry['session'], str) or not isinstance(entry['status'], str)):
+                    raise TypeError('a field has an unexpected type')
+            except (ValueError, KeyError, TypeError) as error:
+                raise AssertionError(f'audit journal row {entry!r:.200} has a shape the reader does not know: {error!r}')
+            rows.append(dict(id=entry['id'], at=entry.get('at'), session=entry['session'], provider=entry.get('provider'),
+                             prompt=entry.get('prompt'), status=entry['status'], detail=detail.get('detail'),
+                             source=fields['source'], question_id=fields['question_id'], run=fields['run_id'],
+                             categories=categories, saved_question=question))
+        return rows
+
+    def audit_rows(self, session_name):
+        """The journal's attempts of one session (see journal)."""
+        return [row for row in self.journal() if row['session'] == session_name]
+
+    def journal_summary(self):
+        """The whole journal as (member, source, categories, status), sorted, for evidence
+        and for assertions about everything it holds."""
+        members = {session['name']: member_id for member_id, session in self.sessions.items()}
+        return sorted((members.get(row['session'], row['session']), row['source'], tuple(row['categories']), row['status'])
+                      for row in self.journal())
+
+    def claude_trust_records(self):
+        """Read-only, private root only: where Claude keeps its folder trust. Every
+        .claude.json in the root, with its project keys and the trust flag only."""
+        records = {}
+        for path in sorted(self.root.rglob('.claude.json'))[:20]:
+            try:
+                projects = json.loads(path.read_text()).get('projects') or {}
+            except (OSError, ValueError) as error:
+                records[str(path)] = repr(error)
+                continue
+            records[str(path)] = {key: bool((value or {}).get('hasTrustDialogAccepted')) for key, value in projects.items()}
+        return records
+
+    def account_snapshot(self, home, limit=2000):
+        """Read-only, private root only: every file under one account folder with its size
+        and change time; for a JSON object, its top-level keys with a short hash of each
+        value, and for .claude.json its project keys. Names and hashes only, no content."""
+        import hashlib
+        home = Path(home)
+        out = {}
+        for path in sorted(home.rglob('*'))[:limit]:
+            if path.is_symlink() or not path.is_file():
+                continue
+            info = path.stat()
+            entry = dict(size=info.st_size, mtime_ns=info.st_mtime_ns)
+            if path.suffix == '.json' and info.st_size <= 1 << 20:
+                try:
+                    value = json.loads(path.read_text())
+                except (OSError, ValueError):
+                    value = None
+                if isinstance(value, dict):
+                    entry['keys'] = {key: hashlib.sha256(json.dumps(item, sort_keys=True).encode()).hexdigest()[:12]
+                                     for key, item in value.items()}
+                    if isinstance(value.get('projects'), dict):
+                        entry['projects'] = sorted(value['projects'])
+                        # Each project entry's own keys, names and value hashes only.
+                        entry['project_entries'] = {
+                            project: {key: hashlib.sha256(json.dumps(item, sort_keys=True).encode()).hexdigest()[:12]
+                                      for key, item in (fields or {}).items()} if isinstance(fields, dict) else {}
+                            for project, fields in value['projects'].items()}
+            out[str(path.relative_to(home))] = entry
+        return out
+
+    @staticmethod
+    def snapshot_diff(before, after):
+        """Files added, removed and changed between two account snapshots; for a changed
+        JSON object, the names of the keys added, removed or changed, and its project keys
+        added or removed."""
+        changed = {}
+        for name in sorted(set(before) & set(after)):
+            old, new = before[name], after[name]
+            if (old['size'], old['mtime_ns']) == (new['size'], new['mtime_ns']):
+                continue
+            change = dict(size=[old['size'], new['size']])
+            if 'keys' in old or 'keys' in new:
+                a, b = old.get('keys', {}), new.get('keys', {})
+                change['keys_added'] = sorted(set(b) - set(a))
+                change['keys_removed'] = sorted(set(a) - set(b))
+                change['keys_changed'] = sorted(k for k in set(a) & set(b) if a[k] != b[k])
+            if 'projects' in old or 'projects' in new:
+                change['projects_added'] = sorted(set(new.get('projects', [])) - set(old.get('projects', [])))
+                change['projects_removed'] = sorted(set(old.get('projects', [])) - set(new.get('projects', [])))
+                a, b = old.get('project_entries', {}), new.get('project_entries', {})
+                change['project_keys'] = {
+                    project: dict(added=sorted(set(b.get(project, {})) - set(a.get(project, {}))),
+                                  removed=sorted(set(a.get(project, {})) - set(b.get(project, {}))),
+                                  changed=sorted(k for k in set(a.get(project, {})) & set(b.get(project, {}))
+                                                 if a[project][k] != b[project][k]))
+                    for project in sorted(set(a) | set(b)) if a.get(project) != b.get(project)}
+            changed[name] = change
+        return dict(added=sorted(set(after) - set(before)), removed=sorted(set(before) - set(after)), changed=changed)
+
+    def codex_trust_records(self):
+        """Read-only, private root only: where Codex keeps its folder trust. Every
+        config.toml in the root, with its [projects] keys and their trust_level only."""
+        import tomllib
+        records = {}
+        for path in sorted(self.root.rglob('config.toml'))[:20]:
+            try:
+                projects = tomllib.loads(path.read_text()).get('projects') or {}
+            except (OSError, ValueError) as error:
+                records[str(path)] = repr(error)
+                continue
+            records[str(path)] = {key: (value or {}).get('trust_level') for key, value in projects.items()}
+        return records
+
+    def agent_home(self, member_id):
+        """The account home a member runs in: a managed account, or the native one in HOME."""
+        account = self.members()[member_id].get('account')
+        if account and account.startswith('native-'):
+            return Path(self.env['HOME'])
+        return Path(self.env['HGS_CONFIG_DIR']) / 'accounts' / account
+
+    def cards(self):
+        return self.listed(self.json('team', 'cards', '--team', self.team, '--limit', '50', '--json'), 'rows', 'team cards')
+
+    def pending(self, member_id):
+        """The member's pending questions; a view without that list fails the reader."""
+        return self.listed(self.inspect(member_id), 'pending_questions', 'inspect')
+
+    def live_runs(self, launch, control):
+        """The live sessions of one launch in `hgs ls`. Every listed session must say its
+        runtime state, and the launch `control` (one known to be live) must be found live by
+        the same reading: a positive control for "nothing of this launch is live". A launch
+        or control that is not a non-empty string fails the reader: a missing launch must
+        not satisfy "nothing of it runs"."""
+        for value in (launch, control):
+            if not isinstance(value, str) or not value:
+                raise AssertionError(f'not a launch: {value!r}')
+        rows = [row for row in self.rows() if row.get('launch_id') in (launch, control)]
+        for row in rows:
+            if not isinstance(row.get('runtime_state'), str):
+                raise AssertionError(f'a listed session lacks its runtime state: {json.dumps(row)[:300]}')
+        if not [row for row in rows if row['launch_id'] == control and row['runtime_state'] == 'live']:
+            raise AssertionError(f'the control launch {control} is not found live in hgs ls')
+        return [row['name'] for row in rows if row['launch_id'] == launch and row['runtime_state'] == 'live']
+
     # ---- person actions --------------------------------------------------------
     def send(self, member_id, text):
         view = self.inspect(member_id)
@@ -748,6 +1081,18 @@ class TeamFixture:
             raise AssertionError('send: ' + json.dumps(reply)[:600])
         return reply
 
+    def worked(self, member_id, text):
+        """The person sends one message and the member answers it: the model sees the
+        message and the member's turn ends (a Stop event after it) with a conversation,
+        which the agent has then persisted."""
+        last = max([event.get('seq', 0) for event in self.inspect(member_id).get('events') or []] or [0])
+        self.send(member_id, text)
+        self.wait(f'{member_id} model received the person\'s message',
+                  lambda: self.requests_with(lambda r: r.get('prompt') == text), BOUND['turn'], 1)
+        return self.wait(f'{member_id} answered the person\'s message', lambda: (lambda v: v if v.get('conversation_id') and any(
+            event.get('type') == 'Stop' and event.get('seq', 0) > last for event in v.get('events') or []) else None)(
+            self.inspect(member_id)), BOUND['turn'], 2)
+
     def add_task(self, title, text):
         reply = self.json('task', 'add', '--project', 'teams-fixture', '--team', self.team, '--title', title, '--json',
                           stdin=text)
@@ -755,7 +1100,7 @@ class TeamFixture:
         return task['ref'], task['uuid']
 
     def node_of(self, uuid_):
-        rows = self.json('team', 'queue', '--team', self.team, '--limit', '200', '--json').get('rows') or []
+        rows = self.listed(self.json('team', 'queue', '--team', self.team, '--limit', '200', '--json'), 'rows', 'team queue')
         return next((r for r in rows if (r.get('task') or {}).get('uuid') == uuid_), None)
 
     def requests_with(self, predicate):
@@ -766,7 +1111,11 @@ class TeamFixture:
         """The native agent's PID and kernel start time from its session record."""
         record = self.record(member_id)
         pid = record.get('pid')
-        return pid, self.start_ticks(pid)
+        ticks = self.start_ticks(pid)
+        if ticks is None:
+            # A process that is already gone has no identity to compare later.
+            raise AssertionError(f'{member_id} process {pid} is not running when its identity is taken')
+        return pid, ticks
 
     @staticmethod
     def start_ticks(pid):
@@ -777,15 +1126,23 @@ class TeamFixture:
             return None
 
     def record(self, member_id):
+        """The one live session record of the member's current run (an archive of the same
+        run is not it); none or several fail the reader."""
         run = self.inspect(member_id).get('run_id')
+        if not run:
+            raise AssertionError(f'{member_id} has no current run')
+        found = []
         for path in Path(self.env['HGS_STATE_DIR']).rglob('*.json'):
             try:
                 data = json.loads(path.read_text())
             except (OSError, ValueError):
                 continue
-            if isinstance(data, dict) and data.get('run_id') == run and data.get('pid'):
-                return data
-        raise AssertionError(f'no session record for {member_id} run {run}')
+            if isinstance(data, dict) and data.get('run_id') == run and data.get('pid') and data.get('state') != 'archived':
+                found.append((path, data))
+        if len(found) != 1:
+            raise AssertionError(f'{len(found)} live session records for {member_id} run {run}: '
+                                 + ', '.join(str(path) for path, _ in found[:5]))
+        return found[0][1]
 
     # ---- teardown --------------------------------------------------------------
     def owned_left(self):
@@ -821,6 +1178,134 @@ class TeamFixture:
                 self.evidence.write(f'diagnose-{name}.json', self.hgs(*argv, ok=False, timeout=30).stdout)
             except Exception as error:
                 self.evidence.write(f'diagnose-{name}.json', str(error)[:500])
+
+    VIEW_FIELDS = ('tracked', 'name', 'agent', 'cwd', 'run_id', 'session_id', 'launch_id', 'conversation_id', 'state',
+                   'archive_id', 'pending_questions_error', 'runtime_state', 'process_state')
+    RECORD_FIELDS = ('archive_id', 'name', 'agent', 'cwd', 'run_id', 'session_id', 'launch_id', 'conversation_id',
+                     'account_id', 'state', 'conversation_state', 'completion_source', 'completion_reason', 'exited_at',
+                     'exit_code', 'termination_signal', 'session_end', 'error', 'expected_id', 'paused', 'pausing',
+                     'terminating', 'launch_dir', 'worktree_cleanup')
+
+    def observation(self):
+        """Read-only, through the private state only: what the service's observation of a
+        member reads (confirm/native/observation.rs), so a refused resume names its step:
+        the inspection by the member's last session ID, the archive catalog rows of its
+        name, each archive's exit fields and the archive's own inspection; then the
+        lifecycle receipts of the member's session (the CLI's own refusal text) and
+        whether its worktree folder still exists."""
+        import sqlite3
+        state = Path(self.env['HGS_STATE_DIR'])
+        after = str(2 ** 63 - 1)
+
+        def read(*argv):
+            run = self.hgs(*argv, ok=False, timeout=60)
+            try:
+                value = json.loads(run.stdout)
+            except ValueError:
+                value = None
+            if not isinstance(value, dict):
+                return dict(exit=run.returncode, stdout=run.stdout[:500], stderr=run.stderr[-500:])
+            return dict(exit=run.returncode, stderr=run.stderr[-500:], pending_questions=len(value.get('pending_questions') or []),
+                        **{key: value.get(key) for key in self.VIEW_FIELDS})
+
+        catalog = state / 'archive-catalog-v1.sqlite3'
+        receipts = []
+        folder = state / 'action_receipts'
+        if folder.is_dir() and not folder.is_symlink():
+            for path in sorted(folder.glob('*.json'))[:50]:
+                if path.is_file() and not path.is_symlink() and path.stat().st_size <= 64 << 10:
+                    receipt = json.loads(path.read_text())
+                    receipts.append({key: receipt.get(key) for key in (
+                        'request_id', 'name', 'run_id', 'conversation_id', 'archive_id', 'status', 'at', 'error',
+                        'error_source', 'result_target')})
+        out = {}
+        for member_id, session in self.sessions.items():
+            last = session.get('last_tracked') or {}
+            worktree = (session.get('member') or {}).get('worktree') or ''
+            item = out[member_id] = dict(name=session['name'], last_tracked=last, archives=[], worktree=dict(
+                path=worktree, exists=bool(worktree) and Path(worktree).is_dir(),
+                git_link=bool(worktree) and (Path(worktree) / '.git').is_file()),
+                action_receipts=[r for r in receipts if r.get('name') == session['name']])
+            if last.get('session_id'):
+                item['by_session_id'] = read('inspect', '--session-id', last['session_id'], '--after', after,
+                                             '--skip-processes')
+            rows = []
+            if catalog.is_file():
+                db = sqlite3.connect(f'file:{catalog}?mode=ro', uri=True, timeout=1)
+                try:
+                    rows = db.execute('SELECT id, run, conversation FROM archive_rows WHERE name=? LIMIT 5',
+                                      (session['name'],)).fetchall()
+                finally:
+                    db.close()
+            for archive_id, run, conversation in rows:
+                entry = dict(id=archive_id, run=run, conversation=conversation)
+                path = state / 'archives' / f'{archive_id}.json'
+                if path.is_file() and not path.is_symlink() and path.stat().st_size <= 1 << 20:
+                    record = json.loads(path.read_text())
+                    entry['record'] = {key: record.get(key) for key in self.RECORD_FIELDS}
+                    entry['record'].update(has_supervisor='supervisor' in record,
+                                           worktree_owner=(record.get('worktree_owner') or {}).get('id'))
+                entry['view'] = read('inspect', session['name'], '--archive', archive_id, '--after', after,
+                                     '--skip-processes')
+                item['archives'].append(entry)
+            item['worktree_maintenance'] = self.maintenance(worktree)
+        return out
+
+    def maintenance(self, worktree):
+        """Read-only, private state only: the worktree lifecycle's own records of one
+        member checkout: its policy, its queue rows, its last sweep result and the
+        ownership receipt that names the checkout."""
+        import sqlite3
+        state = Path(self.env['HGS_STATE_DIR'])
+        folder = state / 'worktree-maintenance'
+        out = dict(policy_file=None, checkouts=[], removals=[], last_result=None, owned_receipts=[])
+
+        def small(path, limit=64 << 10):
+            if path.is_file() and not path.is_symlink() and path.stat().st_size <= limit:
+                try:
+                    return json.loads(path.read_text())
+                except ValueError:
+                    return path.read_text()[:2000]
+            return None
+        out['policy_file'] = small(folder / 'policy.json')
+        out['last_result'] = small(folder / 'last-result.json')
+        queue = folder / 'queue.sqlite3'
+        if worktree and queue.is_file() and not queue.is_symlink():
+            db = sqlite3.connect(f'file:{queue}?mode=ro', uri=True, timeout=1)
+            try:
+                for table in ('checkouts', 'removals'):
+                    cursor = db.execute(f'SELECT * FROM {table} WHERE path=? LIMIT 5', (worktree,))
+                    columns = [c[0] for c in cursor.description]
+                    out[table] = [dict(zip(columns, row)) for row in cursor]
+            finally:
+                db.close()
+        cache = state / 'worktree-cache'
+        if worktree and cache.is_dir() and not cache.is_symlink():
+            for path in sorted(cache.glob('owned-*.json'))[:50]:
+                value = small(path, 16 << 10)
+                if value is not None and worktree in json.dumps(value):
+                    out['owned_receipts'].append(dict(file=path.name, value=value))
+        return out
+
+    def person_restore(self, member_id, archive):
+        """The person's own Restore of one archive: the request the desktop sends through
+        `hgs session-action`, with a new request ID, and the member's view after it."""
+        name = self.sessions[member_id]['name']
+        request = dict(request_id=str(uuid.uuid4()), action='restore', expected_run_id=archive['run'],
+                       expected_conversation_id=archive['conversation'], archive_id=archive['id'])
+        run = self.hgs('session-action', name, '--json', stdin=json.dumps(request), ok=False, timeout=120)
+        try:
+            receipt = json.loads(run.stdout)
+        except ValueError:
+            receipt = run.stdout[:2000]
+        time.sleep(5)
+        view = self.hgs('inspect', name, ok=False, timeout=60)
+        try:
+            after = {key: json.loads(view.stdout).get(key) for key in ('tracked', 'run_id', 'conversation_id',
+                                                                      'runtime_state', 'process_state', 'state')}
+        except ValueError:
+            after = view.stdout[:500]
+        return dict(request=request, exit=run.returncode, receipt=receipt, stderr=run.stderr[-1000:], view_after=after)
 
     def fleet_rows(self):
         """Read-only: the private service's fleet rows of this team's runs, the fields the
@@ -870,6 +1355,18 @@ class TeamFixture:
                     self.evidence.write('diagnose-' + name.replace('/', '-') + '.json', tables)
             except Exception as error:
                 self.evidence.write('diagnose-ledger-error.txt', str(error)[:500])
+        try:
+            self.evidence.write('diagnose-observation.json', self.observation())
+        except Exception as error:
+            self.evidence.write('diagnose-observation.json', str(error)[:500])
+        if self.agent in ('claude', 'codex'):
+            name = self.agent + '-trust-records.json'
+            try:
+                worktrees = {member_id: (session.get('member') or {}).get('worktree') for member_id, session in self.sessions.items()}
+                records = self.claude_trust_records() if self.agent == 'claude' else self.codex_trust_records()
+                self.evidence.write(name, dict(worktrees=worktrees, records=records))
+            except Exception as error:
+                self.evidence.write(name, str(error)[:500])
         for member_id, session in list(self.sessions.items()):
             try:
                 view = self.inspect(member_id)

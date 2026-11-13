@@ -43,14 +43,7 @@ fn answered(row: &Entry) -> String {
 /// command's own words into an outcome, a recorded reason, a row's error or
 /// a card uses this, whichever step carries it.
 pub(in crate::desktop::teams::actor) fn spoken(text: &str) -> String {
-    let text: String = text
-        .chars()
-        .filter(|c| !c.is_control() || c.is_whitespace())
-        .collect();
-    cut(&text, 512)
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
+    crate::teams::clean::sentence(text, 512)
 }
 fn sentence(text: &str, limit: usize) -> String {
     cut(text, limit)

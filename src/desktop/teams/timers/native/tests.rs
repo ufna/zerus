@@ -438,3 +438,73 @@ fn a_refusal_after_a_warning_keeps_the_last_line() {
         Rung::Refused("The expected run changed".into())
     );
 }
+
+/// The team-clear command's own sentence is cleaned where it is taken
+/// (zerus-63rru.59): the decoder's answer, and through the terminal sweep
+/// the reason the store records, are one clean line of at most 512 bytes.
+#[test]
+fn a_clear_refusals_sentence_is_recorded_as_one_clean_line() {
+    let mut f = Fixture::new();
+    let hostile = format!(
+        "The task\u{1b}[2J moved\u{7} on\nforged line\u{9b}31m{}",
+        "x".repeat(600)
+    );
+    f.mode(&serde_json::json!({"state":"refused","error":hostile}).to_string());
+    let request = ClearRequest {
+        schema: 1,
+        team: TEAM.into(),
+        node: 7,
+    };
+    let Answer::Refused(why) = f.native().clear(&task(1), &request) else {
+        panic!("a refusal is an answer")
+    };
+    assert!(!why.chars().any(char::is_control), "{why:?}");
+    assert!(
+        why.starts_with("The task[2J moved on forged line31mxxx"),
+        "{why}"
+    );
+    assert!(why.len() <= 512);
+    // Through the sweep of a stopped team into the store.
+    f.h.bind("lead");
+    f.h.bind("m1");
+    let node = f.h.add(&person(), 2);
+    f.h.run(&person(), Operation::Stop).unwrap();
+    loop {
+        let page = f.h.store.pending_cancels(TEAM, 200, 0).unwrap();
+        if page.is_empty() {
+            break;
+        }
+        for row in page {
+            let op = Operation::RecordCancel {
+                node: row.node,
+                decision: row.decision,
+                state: crate::teams::ops::CancelState::Cancelled,
+                reason: String::new(),
+                attempt: 0,
+                attempt_id: String::new(),
+            };
+            f.h.run(&service(), op).unwrap();
+        }
+    }
+    let mut ledger = super::super::Ledger::open(f.h.temp.path()).unwrap();
+    let mut timers = super::super::Timers::new("epoch-1");
+    let mut native = Native {
+        config: &f.config,
+        machine: "00000000-0000-4000-8000-0000000000aa",
+        stop: &f.stop,
+    };
+    timers
+        .terminal(&mut f.h.store, &mut ledger, &mut native, 1234)
+        .unwrap();
+    let recorded: Vec<(u32, String)> = {
+        let db = f.h.store.db.as_ref().unwrap();
+        let mut s = db
+            .prepare("SELECT node,reason FROM key_clears WHERE state='refused'")
+            .unwrap();
+        let rows = s.query_map([], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+        rows.collect::<rusqlite::Result<Vec<_>>>().unwrap()
+    };
+    assert_eq!(recorded.len(), 1, "{recorded:?}");
+    assert_eq!(recorded[0].0, node);
+    assert_eq!(recorded[0].1, why);
+}

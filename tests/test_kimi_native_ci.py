@@ -268,7 +268,7 @@ class KimiNativeCI(unittest.TestCase):
 
     def test_teams_mode_has_its_own_reviewed_inventory_and_outcome(self):
         self.assertEqual(ci.checked_teams_methods(), ci.TEAMS_METHODS)
-        self.assertEqual(len(ci.TEAMS_METHODS), 2)
+        self.assertEqual(len(ci.TEAMS_METHODS), 5)
         self.assertTrue(all(m.startswith('test_teams_native.NativeTeamsKimi.test_') for m in ci.TEAMS_METHODS))
         self.assertFalse(set(ci.TEAMS_METHODS) & set(ci.METHODS), 'the original inventory is unchanged')
         good = dict(tests=len(ci.TEAMS_METHODS), started=list(ci.TEAMS_METHODS), completed=list(ci.TEAMS_METHODS),
@@ -276,7 +276,7 @@ class KimiNativeCI(unittest.TestCase):
         self.assertTrue(ci.outcome(good, 0, ci.TEAMS_METHODS))
         self.assertFalse(ci.outcome(good, 0), 'a Teams result never passes as the original cases')
         self.assertFalse(ci.outcome(dict(good, skipped=1), 0, ci.TEAMS_METHODS), 'a skip is no evidence')
-        self.assertIn('all 2 exact cases', ci.failure_summary(dict(good, failures=1), ci.TEAMS_METHODS))
+        self.assertIn('all 5 exact cases', ci.failure_summary(dict(good, failures=1), ci.TEAMS_METHODS))
 
     def test_teams_mode_lifts_only_the_effort_seed_guard(self):
         temporary = self.root()
@@ -330,7 +330,9 @@ class KimiNativeCI(unittest.TestCase):
 
     def test_teams_inventory_is_what_will_run(self):
         good = ('class TeamsContract:\n    def test_1_launch_and_identity(self): pass\n'
-                '    def test_5_stop_and_terminate(self): pass\n    def waiting_2(self): pass\n'
+                '    def test_2_delivery_and_member_shell(self): pass\n    def test_3_lead_doorbell(self): pass\n'
+                '    def test_4_cancel_notice(self): pass\n'
+                '    def test_5_stop_and_terminate(self): pass\n    def waiting_6(self): pass\n'
                 'class NativeTeamsKimi(TeamsContract, unittest.TestCase):\n    agent = "kimi"\n')
         for name, text, refusal in (
                 ('good', good, None),
