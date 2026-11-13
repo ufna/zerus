@@ -557,7 +557,7 @@ mod source_text {
     }
 
     /// The block an `if` or `match` head is followed by.
-    fn block<'a>(rest: &'a str) -> Option<&'a str> {
+    fn block(rest: &str) -> Option<&str> {
         let open = rest.find('{')?;
         let end = matching(rest, open)?;
         Some(&rest[open + 1..end])
@@ -576,25 +576,24 @@ mod source_text {
         let mut depth = 0i32;
         let mut in_string = false;
         let mut escaped = false;
-        for index in open..bytes.len() {
-            let byte = bytes[index];
+        for (offset, byte) in bytes[open..].iter().enumerate() {
             if in_string {
                 if escaped {
                     escaped = false;
-                } else if byte == b'\\' {
+                } else if *byte == b'\\' {
                     escaped = true;
-                } else if byte == b'"' {
+                } else if *byte == b'"' {
                     in_string = false;
                 }
                 continue;
             }
-            match byte {
+            match *byte {
                 b'"' => in_string = true,
                 b'(' | b'[' | b'{' => depth += 1,
                 b')' | b']' | b'}' => {
                     depth -= 1;
                     if depth == 0 {
-                        return Some(index);
+                        return Some(open + offset);
                     }
                 }
                 _ => {}
