@@ -622,7 +622,7 @@ fn delivered_result(
     let task = super::store(config, project)?.load(uuid).map_err(fail)?;
     match delivered {
         super::attempts::Delivered::Submitted(_) => result("submitted", "", &task),
-        super::attempts::Delivered::NotAdmitted(reason) => result("refused", &reason, &task),
+        super::attempts::Delivered::NotAdmitted { reason, .. } => result("refused", &reason, &task),
         super::attempts::Delivered::Uncertain(text) => result("uncertain", &text, &task),
     }
 }

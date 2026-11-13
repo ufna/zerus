@@ -113,6 +113,14 @@ pub(in crate::desktop::teams) trait Ports {
             Availability::Busy
         })
     }
+    /// A stamp of what the member's current fleet row says, by the values
+    /// the actor reads (`fleet::stamp`), or None when it has no row now
+    /// (zerus-63rru.79). A changed stamp is a changed row. An adapter that
+    /// cannot tell has none, and a member's terminal fact then ends only
+    /// with its time.
+    fn row_stamp(&mut self, _team: &Team, _member: &Member) -> Result<Option<String>> {
+        Ok(None)
+    }
     fn report(&mut self, _task: &TaskRef) -> Result<Option<String>> {
         Ok(None)
     }
@@ -185,6 +193,10 @@ pub(in crate::desktop::teams) enum Fact {
     StartedFresh,
     /// The store, the record or the deadline did not answer.
     Unavailable,
+    /// Its terminal refused a hand-out because it holds input: a question,
+    /// a dialog or an unsent draft (zerus-63rru.79). The member can be read;
+    /// its row says free, but its terminal is not.
+    TerminalWaiting,
 }
 
 /// Only a positive non-write permits another admission. NotStarted means
@@ -198,6 +210,12 @@ pub(in crate::desktop::teams) enum DeliveryResult {
     Stale,
     Outcome(HandoutOutcome),
     NotStarted {
+        reason: String,
+    },
+    /// The task command refused before any input because the member's
+    /// terminal holds input, by its answer's typed cause (zerus-63rru.79).
+    /// Recorded as a refusal; a fact about the member, not a failed hand-out.
+    TerminalWaiting {
         reason: String,
     },
 }

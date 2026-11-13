@@ -228,6 +228,18 @@ impl Ports for Native {
     }
     /// One read: the fleet row's answer, then the session's task index for a
     /// member that row calls free.
+    fn row_stamp(&mut self, team: &Team, m: &Member) -> Result<Option<String>> {
+        let Some(session) = m.session.as_ref() else {
+            return Ok(None);
+        };
+        if session.machine != self.machine {
+            return Ok(None);
+        }
+        Ok(
+            super::availability::record(&self.config, &self.epoch, &team.id, m, false)?
+                .map(|row| super::fleet::stamp(&row)),
+        )
+    }
     fn availability(&mut self, team: &Team, m: &Member) -> Result<ports::Availability> {
         let Some(session) = m.session.as_ref() else {
             return Ok(ports::Availability::Busy);
@@ -289,6 +301,20 @@ pub(super) fn delivery_result(ended: Ended, id: &str) -> ports::DeliveryResult {
             if v["schema"] == 1 && v["id"] == id {
                 match (v["state"].as_str(), v["error"].as_str()) {
                     (Some("stale"), Some(_)) => return ports::DeliveryResult::Stale,
+                    // The member's terminal holds input, by the answer's
+                    // typed cause, never its sentence (zerus-63rru.79).
+                    (Some("refused"), Some(reason))
+                        if v["cause"] == crate::tasks::TERMINAL_WAITING =>
+                    {
+                        let said = super::cancel::reason::spoken(&cut(reason, 2048));
+                        return ports::DeliveryResult::TerminalWaiting {
+                            reason: if said.is_empty() {
+                                "The member's terminal holds input".to_owned()
+                            } else {
+                                said
+                            },
+                        };
+                    }
                     // The task command reserved and sent nothing, for a cause
                     // that may pass (zerus-63rru.58): retry the same delivery.
                     (Some("not_started"), Some(reason)) => {
