@@ -459,6 +459,7 @@ pub fn dispatch(config: &Config, target: &str, args: &[String], dry: bool) -> Re
 #[cfg(all(test, unix))]
 pub(crate) mod lock_tests;
 
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 #[test]
 fn the_journal_list_and_detail_carry_the_recorded_scope() {
     // zerus-63rru.66 round 2: the scope the row recorded reaches the person
@@ -494,6 +495,7 @@ fn the_journal_list_and_detail_carry_the_recorded_scope() {
     );
 }
 
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 #[test]
 fn a_codex_repository_card_admitted_by_the_policy_is_admitted_by_the_team_audit() {
     // zerus-63rru.66 round 2: the audit admission takes the same Codex
