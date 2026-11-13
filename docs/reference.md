@@ -3049,7 +3049,9 @@ cache is not called cold; only a complete read may decide either. The scan
 takes the transcript's identity and modification stamp under its usage-cache
 lock, and a round records a cold cache only from a fresh complete read taken in
 that round: a stale size or stamp, or a fresh read that shows a later expiry,
-leaves it warm. It uses the
+leaves it warm. A JSONL record longer than the scan bound is discarded across
+scans within that byte budget; a scan resumes from the stored discard point,
+and an unterminated tail stays unread. It uses the
 guarded send path with its own origin and request ID, bound to the setting
 revision it was decided for (a change in between cancels it): a refusal before any input
 waits for the next round, and an unknown delivery is never sent again; keep-warm

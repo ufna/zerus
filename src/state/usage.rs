@@ -308,7 +308,7 @@ pub(super) fn scan(path: &Path, cache_path: &Path, provider: &str, conversation:
         || offset > meta.len()
         || (state["size"] == meta.len() && state["stamp"] != stamp)
     {
-        state = json!({"version":4,"fingerprint":fingerprint,"totals":{},"seen":{},"context":{}});
+        state = json!({"version":4,"fingerprint":fingerprint,"totals":{},"seen":{},"context":{},"skipping":false});
         offset = 0;
         // Codex's last snapshot is cumulative; no need to replay its full log.
         if provider == "codex" && meta.len() > 8 * 1024 * 1024 {
@@ -321,78 +321,102 @@ pub(super) fn scan(path: &Path, cache_path: &Path, provider: &str, conversation:
                 .map_err(|e| e.to_string())? as u64;
         }
     }
-    if state["offset"] == meta.len() && state["stamp"] == stamp {
+    let mut skipping = state["skipping"].as_bool() == Some(true);
+    if !skipping && state["offset"] == meta.len() && state["stamp"] == stamp {
         return Ok(output(&state, provider, false));
     }
     file.seek(SeekFrom::Start(offset))
         .map_err(|e| e.to_string())?;
     let mut reader = BufReader::new(file);
     let mut line = Vec::new();
+    // Reads and discards share one per-scan byte budget. An oversized record is
+    // discarded across scans: the reached offset and a skipping flag persist,
+    // so the next scan continues the discard before reading records again.
     let mut used = 0u64;
     loop {
-        if used >= MAX_READ {
+        let remaining = MAX_READ.saturating_sub(used);
+        if remaining == 0 {
             break;
+        }
+        if skipping {
+            match skip_to_newline(&mut reader, remaining)? {
+                Skipped::Found(consumed) => {
+                    used += consumed;
+                    offset += consumed;
+                    skipping = false;
+                }
+                Skipped::Budget(consumed) | Skipped::Eof(consumed) => {
+                    offset += consumed;
+                    break;
+                }
+            }
+            continue;
         }
         line.clear();
         let count = (&mut reader)
-            .take(MAX_READ)
+            .take(remaining)
             .read_until(b'\n', &mut line)
             .map_err(|e| e.to_string())?;
         if count == 0 {
             break;
         }
         if line.ends_with(b"\n") {
-            let count = count as u64;
-            if used + count > MAX_READ {
-                break;
-            }
-            used += count;
-            offset += count;
+            used += count as u64;
+            offset += count as u64;
             if let Ok(event) = serde_json::from_slice::<Value>(&line) {
                 observe(&mut state, &event, provider, conversation);
             }
             continue;
         }
-        // No newline within one read bound: this record is longer than the
-        // bound. Stream past it to its newline without buffering it, advance
-        // the offset, and count it as not observed; usage samples are on small
-        // assistant records, so nothing needed is lost. A transcript that grows
-        // faster than the bound per read is accepted as a limit and converges
-        // when growth slows. A tail that ends before its newline stays unread.
-        if offset + count as u64 >= meta.len() {
-            break;
+        // No newline within the remaining budget. A short read is an
+        // unterminated tail at EOF: leave it unread. A full budget ended
+        // inside this record, so persist the discard point for the next scan.
+        if count as u64 == remaining {
+            offset += count as u64;
+            skipping = true;
         }
-        let Some(skipped) = skip_to_newline(&mut reader)? else {
-            break;
-        };
-        offset += count as u64 + skipped;
         break;
     }
     state["offset"] = json!(offset);
     state["size"] = json!(meta.len());
     state["stamp"] = stamp;
+    state["skipping"] = json!(skipping);
     atomic(cache_path, &state.to_string())?;
-    Ok(output(&state, provider, offset < meta.len()))
+    Ok(output(&state, provider, offset < meta.len() || skipping))
+}
+
+/// The outcome of discarding the rest of an oversized record within a byte
+/// budget.
+enum Skipped {
+    /// The newline was consumed; the record ended.
+    Found(u64),
+    /// The budget ran out still inside the record.
+    Budget(u64),
+    /// The file ended before a newline.
+    Eof(u64),
 }
 
 /// Skip the rest of an oversized record up to and including its newline
-/// without buffering it. None when the file ends before that newline.
-fn skip_to_newline(reader: &mut BufReader<File>) -> Result<Option<u64>> {
-    let mut skipped = 0u64;
-    loop {
+/// without buffering it, consuming at most `budget` bytes.
+fn skip_to_newline(reader: &mut BufReader<File>, budget: u64) -> Result<Skipped> {
+    let mut consumed = 0u64;
+    while consumed < budget {
         let available = reader.fill_buf().map_err(|e| e.to_string())?;
         if available.is_empty() {
-            return Ok(None);
+            return Ok(Skipped::Eof(consumed));
         }
-        if let Some(at) = available.iter().position(|byte| *byte == b'\n') {
+        let limit = (budget - consumed) as usize;
+        let slice = &available[..available.len().min(limit)];
+        if let Some(at) = slice.iter().position(|byte| *byte == b'\n') {
             let count = at as u64 + 1;
             reader.consume(count as usize);
-            return Ok(Some(skipped + count));
+            return Ok(Skipped::Found(consumed + count));
         }
-        let count = available.len();
+        let count = slice.len();
         reader.consume(count);
-        skipped += count as u64;
+        consumed += count as u64;
     }
+    Ok(Skipped::Budget(consumed))
 }
 
 fn kimi_capacity(config: &str, model: &str) -> Option<u64> {
@@ -721,6 +745,97 @@ mod tests {
             second["prompt_cache"]["expires_at"].as_f64().unwrap() > at,
             "the oversized record did not stall the scan: {second}"
         );
+    }
+
+    #[test]
+    fn a_long_oversized_record_is_discarded_within_each_scan_budget() {
+        use std::io::Write;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("transcript.jsonl");
+        let cache = dir.path().join("cache.json");
+        let at = now();
+        let line = |at: f64, id: &str| json!({"type":"assistant","sessionId":"one","timestamp":at,
+            "message":{"id":id,"model":"claude-opus-5-5","usage":{"input_tokens":10,
+                "cache_read_input_tokens":100,"cache_creation_input_tokens":20,"output_tokens":3,
+                "cache_creation":{"ephemeral_1h_input_tokens":20}}}}).to_string() + "\n";
+        let mut file = fs::File::create(&path).unwrap();
+        file.write_all(line(at - 7000.0, "old").as_bytes()).unwrap();
+        file.write_all(b"{\"type\":\"user\",\"message\":{\"content\":\"").unwrap();
+        let chunk = [b'x'; 64 * 1024];
+        let mut written = 0u64;
+        while written < 128 * 1024 * 1024 {
+            let count = chunk.len().min((128 * 1024 * 1024 - written) as usize);
+            file.write_all(&chunk[..count]).unwrap();
+            written += count as u64;
+        }
+        file.write_all(b"\"}}\n").unwrap();
+        file.write_all(line(at - 3000.0, "recent").as_bytes()).unwrap();
+        drop(file);
+        let mut previous = 0u64;
+        let mut saw_skipping = false;
+        let mut complete = None;
+        for _ in 0..10 {
+            let value = scan(&path, &cache, "claude", "one").unwrap();
+            let state: Value = serde_json::from_slice(&fs::read(&cache).unwrap()).unwrap();
+            let offset = state["offset"].as_u64().unwrap();
+            assert!(offset - previous <= MAX_READ, "one scan consumed {} bytes", offset - previous);
+            saw_skipping |= state["skipping"].as_bool() == Some(true);
+            previous = offset;
+            if value["partial"] == false {
+                complete = Some(value);
+                break;
+            }
+        }
+        let complete = complete.expect("the 128 MiB record never converged");
+        assert!(saw_skipping, "the record must be discarded across scans");
+        assert!(complete["prompt_cache"]["expires_at"].as_f64().unwrap() > at,
+            "the recent record after the discarded one was not read: {complete}");
+    }
+
+    #[test]
+    fn a_discarded_record_is_not_parsed_from_its_middle() {
+        use std::io::Write;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("transcript.jsonl");
+        let cache = dir.path().join("cache.json");
+        let at = now();
+        let line = |at: f64, id: &str| json!({"type":"assistant","sessionId":"one","timestamp":at,
+            "message":{"id":id,"model":"claude-opus-5-5","usage":{"input_tokens":10,
+                "cache_read_input_tokens":100,"cache_creation_input_tokens":20,"output_tokens":3,
+                "cache_creation":{"ephemeral_1h_input_tokens":20}}}}).to_string() + "\n";
+        let old = line(at - 7000.0, "old");
+        let inner = line(at - 3000.0, "mid");
+        // Byte-for-byte, the oversized line puts a valid assistant record
+        // exactly at the read bound, so a lost skipping flag would parse it.
+        let open = b"{\"type\":\"user\",\"message\":{\"content\":\"";
+        let close = b"\"}}";
+        let target = MAX_READ - old.len() as u64;
+        let filler_len = target - open.len() as u64 - close.len() as u64;
+        let mut file = fs::File::create(&path).unwrap();
+        file.write_all(old.as_bytes()).unwrap();
+        file.write_all(open).unwrap();
+        let chunk = [b'y'; 64 * 1024];
+        let mut written = 0u64;
+        while written < filler_len {
+            let count = chunk.len().min((filler_len - written) as usize);
+            file.write_all(&chunk[..count]).unwrap();
+            written += count as u64;
+        }
+        file.write_all(close).unwrap();
+        file.write_all(inner.as_bytes()).unwrap();
+        drop(file);
+        let first = scan(&path, &cache, "claude", "one").unwrap();
+        assert_eq!(first["partial"], true);
+        let state: Value = serde_json::from_slice(&fs::read(&cache).unwrap()).unwrap();
+        // A restart inside the record continues the discard; it does not parse
+        // the assistant-shaped suffix that begins at the stored offset.
+        let second = scan(&path, &cache, "claude", "one").unwrap();
+        assert_eq!(second["partial"], false);
+        assert!(second["prompt_cache"]["expires_at"].as_f64().unwrap() < at,
+            "a record was parsed from the middle of the discarded one: {second}");
+        assert_eq!(second["requests"], 1);
+        assert_eq!(state["skipping"], json!(true));
+        assert_eq!(state["offset"], json!(MAX_READ));
     }
 
     #[test]

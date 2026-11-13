@@ -205,7 +205,10 @@ under the input lock.
    allow a ping. A scan takes the transcript's identity and modification stamp
    under the usage-cache lock, and a cold decision is confirmed by a fresh
    complete read taken in the same round: a size or stamp read before the lock,
-   or a fresh read that shows a later expiry, never turns the state cold.
+   or a fresh read that shows a later expiry, never turns the state cold. An
+   oversized JSONL record is discarded across scans within the same per-scan
+   byte budget, persisting the reached offset and a skipping flag; an
+   unterminated tail at EOF stays partial and unread.
 3. The exact verified process is live with the expected run and conversation;
    the session is not paused, pausing, launching, archived or terminated.
 4. The agent is settled (`telemetry::settled`), has no scheduled jobs, no
