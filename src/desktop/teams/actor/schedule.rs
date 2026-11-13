@@ -344,6 +344,12 @@ impl Runtime {
         member: &str,
         now: i64,
     ) -> Result<()> {
+        let prefix = format!("paused_started:{member}:");
+        if self.ledger.prefix_page(&team.id, &prefix, "")?.is_empty() {
+            // Nothing was told: no ops call, so an unchanged pass stays a
+            // no-op and its revision does not move.
+            return Ok(());
+        }
         let (actor, request) = request(
             store,
             &team.id,
@@ -352,7 +358,6 @@ impl Runtime {
             },
         )?;
         ops::apply(store, &actor, &request, now)?;
-        let prefix = format!("paused_started:{member}:");
         let mut after = String::new();
         for _ in 0..4 {
             let rows = self.ledger.prefix_page(&team.id, &prefix, &after)?;

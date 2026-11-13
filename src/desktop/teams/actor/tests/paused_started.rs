@@ -220,7 +220,7 @@ fn a_tell_for_a_member_without_started_work_writes_nothing() {
 /// the paused-started one.
 #[test]
 fn a_removed_member_keeps_the_removal_path() {
-    let (mut h, mut a, mut p, lead) = team();
+    let (mut h, mut a, mut p, _lead) = team();
     a.tick(&mut h.store, &mut p, TEAM, T0, false).unwrap();
     h.run(
         &person(),
