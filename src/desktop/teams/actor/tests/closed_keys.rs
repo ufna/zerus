@@ -106,7 +106,7 @@ fn close_cancelled(h: &mut Harness, uuid: &str, node: u32) {
     // In a live team the task's end is recorded by its observation; the
     // pending cancel settles with the node.
     crate::teams::tasks::observe(
-        &h.temp.path(),
+        h.temp.path(),
         &TaskRef {
             project: "example-project".into(),
             uuid: uuid.to_string(),

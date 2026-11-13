@@ -1,5 +1,5 @@
 use super::*;
-use zerus_replica::{Actor, ProjectStore};
+use zerus_replica::ProjectStore;
 impl Runtime {
     /// One page of a stopped or archived team's closed tasks, each cleared
     /// of the team's key when it still names this team (zerus-63rru.32).
@@ -28,20 +28,24 @@ impl Runtime {
         let here = team.home.clone();
         let name = team.name.clone();
         for task in &page {
-            let Some(doc) = self.clear_one(store, &id, &here, &name, task)? else {
+            if self.clear_one(store, &id, &here, &name, task)?.is_none() {
                 continue;
-            };
-            let _ = doc;
+            }
         }
-        let saved = page
-            .last()
-            .map(|task| (task.project.clone(), task.uuid.clone(), done));
-        self.put(
-            &id,
-            "key_clear_cursor",
-            &saved.unwrap_or_else(|| (String::new(), String::new(), done)),
-        )?;
-
+        // The done marker is the row's absence: a finished sweep leaves the
+        // team's rows fully reclaimable, and a restart re-derives the sweep
+        // as idempotent no-ops (zerus-63rru.32).
+        if done {
+            if let Some(row) = self.ledger.get(&id, "key_clear_cursor")? {
+                self.ledger.remove(&row)?;
+            }
+        } else {
+            let saved = page
+                .last()
+                .map(|task| (task.project.clone(), task.uuid.clone(), false))
+                .unwrap_or_else(|| (String::new(), String::new(), false));
+            self.put(&id, "key_clear_cursor", &saved)?;
+        }
         Ok(done)
     }
     /// Clears the team's key from one closed task when it still names this
@@ -222,6 +226,9 @@ impl Runtime {
         if team.status != TeamStatus::Finished
             && (!store.pending_cancels(&id, 1, 0)?.is_empty()
                 || !store.keyed_tasks(&id, 0, 1)?.is_empty()
+                || self
+                    .load::<Option<(String, String, bool)>>(&id, "key_clear_cursor")?
+                    .is_some()
                 || self
                     .open_effects(store, &id)?
                     .iter()
