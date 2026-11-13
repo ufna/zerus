@@ -346,6 +346,24 @@ def async_stdin_pipe():
         if read is not None: kernel.CloseHandle(read)
 
 
+def decoder_failure_snapshot(root, child, readers, *, shell, sustained, started, budget, renewals):
+    """Bounded observation of this fixture's original child and fixed leaves only."""
+    files = {}
+    for name in ('ready.json', 'record.jsonl', 'stdout', 'stderr'):
+        try:
+            with (root/name).open('rb') as file:
+                size = file.seek(0, 2)
+                file.seek(max(0, size-4096))
+                tail = file.read(4096).decode('utf-8', errors='replace')
+            files[name] = dict(exists=True, size=size, tail=tail)
+        except OSError as error:
+            files[name] = dict(exists=False, error=type(error).__name__)
+    return dict(shell=shell, sustained=sustained, budget_ms=int(budget*1000),
+                elapsed_ms=None if started is None else int((time.monotonic()-started)*1000),
+                child_returncode=child.returncode, stdin_closed=child.stdin.closed,
+                renewals=renewals, readers_alive=[reader.is_alive() for reader in readers], files=files)
+
+
 @unittest.skipUnless(os.name == 'nt', 'native PowerShell 5.1/cmd decoder controls run on Windows')
 class WindowsNativeTransport(unittest.TestCase):
     def run_decoder(self, shell, lease=False, code=0, slow=False, sustained=False):
@@ -420,16 +438,21 @@ class WindowsNativeTransport(unittest.TestCase):
                 reader.start(); readers.append(reader)
             body = bytes(range(256)) + 'π 日本語\r\n'.encode()
             fallback = False
+            primary = None
+            started = None
+            budget = 25 if sustained else 8
+            renewals = 0
             try:
                 child.stdin.write(struct.pack('<I', 0xffffffff)); child.stdin.flush()
                 # The fake renders before writing ready; keep renewing while
                 # its twenty-second output crosses OpenSSH's original lease.
                 started = time.monotonic()
-                deadline = started+(25 if sustained else 8)
+                deadline = started+budget
                 next_ping = started+2
                 while not slow and not ready.exists():
                     if sustained and time.monotonic() >= next_ping:
                         child.stdin.write(struct.pack('<I', 0xffffffff)); child.stdin.flush()
+                        renewals += 1
                         next_ping = time.monotonic()+2
                     status = child.poll()
                     self.assertIsNone(status, (root/'stderr').read_bytes() if status is not None else None)
@@ -464,6 +487,15 @@ class WindowsNativeTransport(unittest.TestCase):
                     if sustained:
                         self.assertEqual([json.loads(line) for line in (root/'stdout').read_bytes().splitlines()],
                                          [{'i': n} for n in range(20)])
+            except BaseException as error:
+                primary = error
+                try:
+                    detail = decoder_failure_snapshot(root, child, readers, shell=shell,
+                        sustained=sustained, started=started, budget=budget, renewals=renewals)
+                    print('WINDOWS_DECODER_FAILURE ' + json.dumps(detail), file=sys.stderr)
+                except Exception as observation_error:
+                    error.add_note('Decoder observation unavailable: ' + type(observation_error).__name__)
+                raise
             finally:
                 if child.poll() is None:
                     fallback = True
@@ -473,7 +505,10 @@ class WindowsNativeTransport(unittest.TestCase):
                         child.terminate(); child.wait(timeout=5)  # same original wrapper only
                 child.stdin.close()
                 for reader in readers: reader.join(timeout=3)
-                self.assertFalse(fallback, 'original decoder required fallback; this is a failed control')
+                if fallback and primary is not None:
+                    primary.add_note('original decoder required fallback; this is a failed control')
+                else:
+                    self.assertFalse(fallback, 'original decoder required fallback; this is a failed control')
 
     def test_native_decoder_preserves_argv_bytes_eof_and_exit_code(self):
         for shell in ('powershell', 'cmd'):
