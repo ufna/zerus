@@ -347,6 +347,7 @@ pub(crate) fn team_live(name: &str, run: &str, conversation: &str, deadline: std
 /// The lifecycle answer's member state (zerus-63rru.102): live, or ended by
 /// the host's own disposal. Any other end source reads as unavailable,
 /// never ended; an end with a bad time is unavailable too.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn lifecycle_state(answer: &Value) -> Result<bool> {
     match answer["state"].as_str() {
         Some("live") => Ok(true),
