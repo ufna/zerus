@@ -242,13 +242,30 @@ class NativeCodexStartup(test_pause.Harness):
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 self.fail('The original did not settle for pause within 20 s: ' + last)
-            result = subprocess.run([str(test_pause.HGS), 'pause', name], env=self.env,
-                                    capture_output=True, text=True, timeout=remaining)
-            if result.returncode == 0:
+            request = dict(request_id=str(uuid.uuid4()), action='pause',
+                           expected_run_id=identity[0], expected_conversation_id=identity[1])
+            result = subprocess.run([str(test_pause.HGS), 'session-action', name, '--json'], env=self.env,
+                                    input=json.dumps(request), capture_output=True, text=True, timeout=remaining)
+            if result.returncode != 0:
+                self.fail(result.stdout + result.stderr)
+            try:
+                receipt = json.loads(result.stdout)
+            except ValueError:
+                self.fail('Pause returned no scoped receipt: ' + result.stdout + result.stderr)
+            self.assertIsInstance(receipt, dict, 'Invalid pause receipt')
+            self.assertEqual(tuple(receipt.get(key) for key in ('request_id', 'name', 'run_id', 'conversation_id')),
+                             (request['request_id'], name, identity[0], identity[1]),
+                             'Pause receipt does not match the captured original')
+            if receipt.get('status') == 'completed':
+                # Pause retains the original PID/birth in its saved record;
+                # exit/paused metadata may change, but no replacement is accepted.
+                current = self.binding(name)
+                self.assertEqual(tuple(current.get(key) for key in fields), identity,
+                                 'The original changed during a successful pause; never adopt another run')
                 return result.stdout
-            last = result.stdout + result.stderr
-            if result.returncode != 1 or result.stdout or result.stderr.strip() not in refusals:
-                self.fail(last)  # A possible signal, timeout or another refusal is never retried.
+            last = 'hgs: ' + str(receipt.get('error', ''))
+            if receipt.get('status') != 'failed' or result.stderr or last not in refusals:
+                self.fail(result.stdout + result.stderr)  # An uncertain effect is never retried.
             time.sleep(min(.1, max(0, deadline - time.monotonic())))
 
     def launch(self, trust=False):
