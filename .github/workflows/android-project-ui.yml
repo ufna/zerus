@@ -158,7 +158,9 @@ jobs:
           ref: ${{ env.EXPECTED_SOURCE }}
           persist-credentials: false
       - name: Check result and APK admission controls without an SDK
-        run: python3 -I -B tests/test_android_project_ui.py
+        run: |
+          python3 -I -B tests/test_android_project_ui.py
+          python3 -I -B tests/test_android_emulator_pin.py
       - name: Prepare pinned task-replica libraries on this disposable VM
         timeout-minutes: 15
         shell: bash

@@ -106,6 +106,7 @@
         "bytes": 349654171,
         "checksum": "cd7362ea55dfb86a418958138dc396e74165dd01",
         "checksum_type": "sha1",
+        "sha256": "b08fc43d8608d2955f607f1b287beb525041e730086bdca3af152accac3af9c1",
         "url": "https://dl.google.com/android/repository/emulator-linux_x64-16428233.zip"
       },
       "channel": "channel-0",

@@ -161,6 +161,7 @@ jobs:
       - name: Check result and APK admission controls without an SDK
         run: |
           python3 -I -B tests/test_android_project_ui.py
+          python3 -I -B tests/test_android_emulator_pin.py
           python3 -I -B tests/test_approval_ui_harness.py
       - name: Prepare pinned task-replica libraries on this disposable VM
         timeout-minutes: 15
