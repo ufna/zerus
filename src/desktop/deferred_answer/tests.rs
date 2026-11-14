@@ -1590,7 +1590,25 @@ mod actor {
     fn the_pinned_image_observes_first_and_answers_only_a_current_question() {
         let mut changed = pinned();
         changed["approval"] = json!("allow_always");
-        let cases: [(&str, String, u64, bool); 6] = [
+        let cases: [(&str, String, u64, bool); 9] = [
+            (
+                "startup exceeds the observation deadline",
+                String::from_utf8(observation(true, Some(pinned()))).unwrap(),
+                3,
+                false,
+            ),
+            (
+                "the observation interpreter cannot start",
+                String::from_utf8(observation(true, Some(pinned()))).unwrap(),
+                5,
+                false,
+            ),
+            (
+                "a current question after slow startup",
+                String::from_utf8(observation(true, Some(pinned()))).unwrap(),
+                4,
+                true,
+            ),
             (
                 "current",
                 String::from_utf8(observation(true, Some(pinned()))).unwrap(),
@@ -1633,16 +1651,29 @@ mod actor {
             let path = dir.path().join("hgs");
             let calls = dir.path().join("calls");
             let mut f = Fixture::unexecuted();
-            f.runtime
-                .fixture_observation_wait(Duration::from_millis(300));
+            // Only the deadline controls shorten the production allowance.
+            // A semantic case must reach the observer, even when interpreter
+            // startup spends more than this artificial 300 ms. The slow valid
+            // case above pins that distinction without relaxing a real bound.
+            if matches!(behaviour, 2 | 3) {
+                f.runtime
+                    .fixture_observation_wait(Duration::from_millis(300));
+            }
             let receipts = f.config.state.join("question_receipts");
             std::fs::create_dir(&receipts).unwrap();
             mode(&receipts, 0o700);
+            let interpreter = if behaviour == 5 {
+                dir.path().join("missing-interpreter").display().to_string()
+            } else {
+                "/usr/bin/env python3".to_owned()
+            };
             std::fs::write(
                 &path,
                 format!(
-                    r#"#!/usr/bin/env python3
+                    r#"#!{interpreter}
 import hashlib,json,os,sys,time
+if {behaviour}==3: time.sleep(2)
+if {behaviour}==4: time.sleep(0.5)
 data=sys.stdin.buffer.read()
 with open({calls:?},"a") as log:
     log.write(json.dumps({{"argv":sys.argv[1:],"stdin":data.decode(),"custody":os.environ.get("HGS_DEFERRED_ANSWER_CUSTODY_FD")}})+"\n")
@@ -1673,11 +1704,42 @@ print(json.dumps(record))
             assert!(f.admit(&original).accepted, "{name}");
             f.until("settled", |f| f.row(&original).receipt.drained);
             let receipt = f.row(&original).receipt;
-            let calls: Vec<Value> = std::fs::read_to_string(&calls)
-                .unwrap()
+            let journal = match std::fs::read_to_string(&calls) {
+                Ok(journal) => journal,
+                Err(error)
+                    if error.kind() == std::io::ErrorKind::NotFound
+                        && matches!(behaviour, 2 | 3 | 5) =>
+                {
+                    String::new()
+                }
+                Err(error) => panic!("{name}: {error}; receipt={receipt:?}"),
+            };
+            let calls: Vec<Value> = journal
                 .lines()
                 .map(|line| serde_json::from_str(line).unwrap())
                 .collect();
+            let record = receipts.join(format!("{}.json", original.plan.request_id));
+            if matches!(behaviour, 3 | 5) {
+                assert!(
+                    calls.is_empty(),
+                    "{name}: the observer never recorded a call"
+                );
+            }
+            if calls.is_empty() {
+                // Drained does not prove the observation interpreter ran. Its
+                // deadline or spawn refusal must still prove no answer input.
+                assert!(matches!(behaviour, 2 | 3 | 5), "{name}: no observation");
+                assert!(!answers, "{name}: the current question must be answered");
+                assert_eq!(
+                    (receipt.phase, receipt.code.as_str()),
+                    (Phase::Failed, wire::NOT_STARTED),
+                    "{name}"
+                );
+                assert!(receipt.not_delivered(&original.plan), "{name}");
+                assert!(!record.exists(), "{name}: no CLI answer receipt");
+                eprintln!("PINNED_OBSERVER_NOT_STARTED case={name:?}, calls=0, no CLI receipt");
+                continue;
+            }
             // The observation, exactly asked and holding no custody.
             assert_eq!(
                 calls[0]["argv"],
@@ -1703,6 +1765,7 @@ print(json.dumps(record))
                 assert!(calls[1]["custody"]
                     .as_str()
                     .is_some_and(|fd| fd.parse::<u32>().is_ok()));
+                eprintln!("PINNED_OBSERVER_RECORDED case={name:?}, calls=2");
             } else {
                 assert_eq!(
                     (receipt.phase, receipt.code.as_str()),
@@ -1711,6 +1774,7 @@ print(json.dumps(record))
                 );
                 assert!(receipt.not_delivered(&original.plan), "{name}");
                 assert_eq!(calls.len(), 1, "{name}: never answered");
+                assert!(!record.exists(), "{name}: no CLI answer receipt");
             }
         }
     }
