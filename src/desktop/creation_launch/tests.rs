@@ -1313,6 +1313,43 @@ mod reservation_budget {
         originals
     }
     #[test]
+    fn custody_pages_search_the_pinned_partial_index_and_refuse_its_absence() {
+        let (_temp, _location, store, _epoch) = fixture();
+        for after in ["", "00000000-0000-4000-8000-000000000001"] {
+            let mut query = store
+                .db
+                .prepare(&format!("EXPLAIN QUERY PLAN {}", ledger::CUSTODY_PENDING))
+                .unwrap();
+            let plan: Vec<String> = query
+                .query_map([after], |row| row.get(3))
+                .unwrap()
+                .collect::<rusqlite::Result<_>>()
+                .unwrap();
+            assert!(
+                plan.iter().any(|step| step.contains(
+                    "INDEX desktop_creation_launches_custody (drained=? AND launch_id>?)"
+                )),
+                "{after:?}: {plan:?}"
+            );
+            assert!(
+                !plan
+                    .iter()
+                    .any(|step| step.starts_with("SCAN desktop_creation_launches")
+                        || step.contains("TEMP B-TREE")),
+                "{plan:?}"
+            );
+            assert!(ledger::custody_pending(&store.db, after).unwrap().is_none());
+        }
+        store
+            .db
+            .execute_batch("DROP INDEX desktop_creation_launches_custody")
+            .unwrap();
+        assert!(
+            ledger::custody_pending(&store.db, "").is_err(),
+            "a missing custody index must refuse instead of scanning retained history"
+        );
+    }
+    #[test]
     fn exact_legacy_conversion_keeps_every_original_and_duplicate() {
         let (_temp, location, mut store, epoch) = fixture();
         let old = legacy(&mut store, &location.configuration, &epoch);
