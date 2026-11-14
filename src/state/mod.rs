@@ -41,6 +41,10 @@ mod goals;
 mod hooks;
 pub(crate) mod hook_health;
 mod input;
+pub(crate) use input::dialog_clause;
+// Its only callers are the Teams actor's tests, which run on Linux and macOS.
+#[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
+pub(crate) mod listing_fixture;
 pub(crate) use input::task_refusal;
 pub(crate) use input::{Lookup as ReceiptLookup, Submission};
 // The session resume actor's readiness rule (zerus-5wmh.66.4.9), on its
@@ -134,6 +138,26 @@ mod workspace;
 mod git_status;
 pub(crate) mod repositories;
 mod launch_observation;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub(crate) use launch_observation::{
+    observe_team_launch, observe_team_session, TeamObservation, TeamRecord, TeamSession,
+};
+pub(crate) use questions::native_identity;
+#[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
+pub(crate) use questions::read_answer_request;
+/// The maintained ownership reader; Teams supplies the exact generated path.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub(crate) fn team_worktree_ownership(
+    state: &Path,
+    common: &Path,
+    path: &Path,
+) -> std::result::Result<Option<Value>, worktree_lifecycle::OwnershipUnavailable> {
+    worktree_lifecycle::owned_in(state, common, path)
+}
+#[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
+pub(crate) fn team_worktree_receipt_path(state: &Path, common: &Path, path: &Path) -> PathBuf {
+    worktree_lifecycle::receipt_path_in(state, common, path)
+}
 pub(crate) mod launch_identity;
 /// Evidence about original launch `launch` under this process's own state
 /// root (`HGS_STATE_DIR` or its default), read within `deadline`. A root that
@@ -995,12 +1019,32 @@ pub(crate) fn inspect_reference(reference: &crate::session_reference::Reference)
 /// conversation, the way `hgs send` does, and returns the durable receipt.
 pub(crate) fn submit_task_message(session: &zerus_replica::SessionKey, text: &str, attachments: &[Value]) -> Result<Value> {
     local_sessions()?;
+    if session.session.starts_with("dsh/") {
+        let request = input::task_reply(session, "", &uuid::Uuid::new_v4().to_string(), text, attachments, Continuation::SameConversation)?;
+        return match dsh::witness::submit_witnessed(&session.session, &request, std::time::Duration::from_secs(10)) {
+            dsh::witness::Witnessed::Receipt(receipt) => Ok(receipt),
+            dsh::witness::Witnessed::NotOffered { code, reason, .. } => Err(format!("DeepSeek cancel notice refused ({}): {reason}", code.code())),
+            dsh::witness::Witnessed::Unknown { code, .. } => Err(format!("DeepSeek cancel notice uncertain ({}); it is never sent again", code.code())),
+        };
+    }
     input::submit_task(session, text, attachments)
 }
 
-pub(crate) fn prepare_task_reply(session: &zerus_replica::SessionKey, dispatch: &str, id: &str, text: &str, attachments: &[Value]) -> Result<Value> {
+/// The terminal gate's sentence for a terminal that holds input, for the
+/// Teams tests that answer as the task command does (zerus-63rru.79).
+#[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
+pub(crate) use input::DRAFT as TERMINAL_DRAFT;
+pub(crate) use input::{Continuation, CONVERSATION_GONE};
+pub(crate) fn prepare_task_reply(
+    session: &zerus_replica::SessionKey,
+    dispatch: &str,
+    id: &str,
+    text: &str,
+    attachments: &[Value],
+    continuation: Continuation,
+) -> Result<Value> {
     local_sessions()?;
-    input::task_reply(session, dispatch, id, text, attachments)
+    input::task_reply(session, dispatch, id, text, attachments, continuation)
 }
 pub(crate) fn submit_task_reply(name: &str, request: &Value) -> Result<Value> {
     input::submit(name, request.to_string().as_bytes(), None)
@@ -1054,6 +1098,36 @@ impl Unresolved {
     fn ambiguous((text, value): (String, Value)) -> Self {
         Self { text, value: Some(value), code: session_id::AMBIGUOUS }
     }
+}
+
+/// The real `hgs inspect` reply for `record`, after this component's own
+/// writer saved it: the Teams confirmation's tests read inspections from here
+/// (zerus-63rru.56).
+#[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
+pub(crate) fn inspection_for_test(record: &mut Value) -> Result<Value> {
+    storage::write(record)?;
+    journal::inspection(string(record, "name"), 0, None, false)
+}
+/// `record` as a completed pause leaves it, saved by this component.
+#[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
+pub(crate) fn pause_for_test(record: &mut Value) -> Result<()> {
+    let _guard = lock(None)?;
+    lifecycle::mark_paused(record);
+    storage::write(record)
+}
+/// Archives `record` through this component's own archive, as an exit's
+/// archive does, and returns the archive ID.
+#[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
+pub(crate) fn archive_for_test(record: &Value) -> Result<String> {
+    let _guard = lock(None)?;
+    archive::save(record)
+}
+/// The real `hgs inspect NAME --archive ID` reply, as the Teams confirmation
+/// reads an exited member's archive (zerus-63rru.62): after every event,
+/// without processes.
+#[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
+pub(crate) fn archive_inspection_for_test(name: &str, id: &str) -> Result<Value> {
+    journal::inspection_with(name, i64::MAX, Some(id), false, false)
 }
 
 /// zerus-ucck P3a: a label a command names without a selection, resolved
@@ -1650,6 +1724,11 @@ pub fn dispatch(args: &[String]) -> Result<i32> {
     Ok(0)
 }
 
+#[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
+mod late_child_event;
+#[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
+mod subagent_order;
+
 #[cfg(all(test, unix))]
 mod hosted_ancestry_tests;
 #[cfg(test)]
@@ -1812,3 +1891,6 @@ mod control_console_tests {
         );
     }
 }
+
+#[cfg(test)]
+pub(crate) mod trust_fixture;

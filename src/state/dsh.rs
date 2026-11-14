@@ -15,13 +15,18 @@ use std::{
 };
 
 #[cfg(unix)]
-mod host_identity;
+pub(in crate::state) mod host_identity;
 #[cfg(unix)]
 mod shell_identity;
+pub(crate) mod witness;
 #[cfg(all(test, unix))]
 pub(super) use host_identity::record_running_for_test;
 #[cfg(all(test, unix))]
+pub(crate) use host_identity::record_this_boot_for_test;
+#[cfg(all(test, unix))]
 pub(super) use host_identity::recorded::UNDER_HOST as UNDER_HOST_FOR_TESTS;
+#[cfg(all(test, unix))]
+pub(crate) use host_identity::recorded::reads as recorded_host_reads;
 /// The shared check (zerus-ppd26.15): Agent Teams' caller proof calls it too.
 #[cfg(unix)]
 pub(crate) use host_identity::recorded::{hosted_ancestor, Host, Refusal};
@@ -149,12 +154,251 @@ pub(crate) fn account_ui_url(home: &Path) -> Result<String> {
         .ok_or_else(|| "Native DeepSeek UI is unavailable.".into())
 }
 fn host_dir(record: &Value) -> PathBuf {
-    root().join("dsh/hosts").join(
-        &format!(
-            "{:x}",
-            Sha256::digest(string(record, "agent_home").as_bytes())
-        )[..16],
-    )
+    root()
+        .join("dsh/hosts")
+        .join(host_key(string(record, "agent_home")))
+}
+/// The name of the host folder of one agent home, the same for every reader.
+pub(crate) fn host_key(agent_home: &str) -> String {
+    format!("{:x}", Sha256::digest(agent_home.as_bytes()))[..16].to_owned()
+}
+/// The conversation whose live tool call holds `token`, asked of the host of
+/// `agent_home` (zerus-ppd26 Part B). `host` is the recorded host process and
+/// birth that the caller proved as its own ancestor: each connection's peer
+/// credentials, which name the process that created the listening socket,
+/// must be that same process, so the answering socket is the host's (the host
+/// never hands its listener to a child). One deadline, `within` from the start, bounds every connect, write
+/// and read together, so a peer that answers a byte at a time cannot hold the
+/// command longer. An adapter that does not advertise call tokens, no answer
+/// in time, a malformed reply or an unknown token is an error, never an answer.
+#[cfg(unix)]
+pub(crate) fn call_token_conversation(
+    agent_home: &str,
+    token: &str,
+    host: (u32, &str),
+    within: Duration,
+) -> std::result::Result<String, &'static str> {
+    const NO_ANSWER: &str = "The DeepSeek host did not confirm this tool call in time.";
+    const OLDER: &str =
+        "The running DeepSeek host predates per-call tokens; its tool calls cannot be proven.";
+    const UNKNOWN: &str = "The DeepSeek host knows no live tool call with this token.";
+    const OTHER_PEER: &str =
+        "The DeepSeek host socket is not served by the host this command runs under.";
+    let deadline = Instant::now() + within;
+    let ask = |method: &str, params: Value| {
+        host_request(agent_home, host, deadline, method, params).map_err(|unanswered| {
+            match unanswered {
+                Unanswered::NoAnswer => NO_ANSWER,
+                Unanswered::OtherPeer => OTHER_PEER,
+            }
+        })
+    };
+    let ping = ask("ping", json!({}))?;
+    if ping["protocol"] != 1 || ping["callTokens"] != true {
+        return Err(OLDER);
+    }
+    let answer = ask("call-token", json!({"token":token}))?;
+    if answer["known"] != true {
+        return Err(UNKNOWN);
+    }
+    answer["conversation"]
+        .as_str()
+        .filter(|conversation| !conversation.is_empty())
+        .map(str::to_owned)
+        .ok_or(UNKNOWN)
+}
+/// Why one request to a recorded host has no answer.
+#[cfg(unix)]
+enum Unanswered {
+    /// No connection, write, read or well-formed `ok` reply within the deadline.
+    NoAnswer,
+    /// The socket's peer is not the recorded host process with its birth.
+    OtherPeer,
+}
+
+/// One request to the host of `agent_home`, answered only through a socket
+/// whose peer credentials name `host`, the recorded process and birth (the
+/// exchange of zerus-ppd26 Part B). `deadline` bounds every connect, write and
+/// read together, so a peer that answers a byte at a time cannot hold the
+/// caller longer; an answer is one line of at most 64 KiB.
+#[cfg(unix)]
+fn host_request(
+    agent_home: &str,
+    host: (u32, &str),
+    deadline: Instant,
+    method: &str,
+    params: Value,
+) -> std::result::Result<Value, Unanswered> {
+    use std::io::Read;
+    let remaining = || {
+        deadline
+            .checked_duration_since(Instant::now())
+            .filter(|left| !left.is_zero())
+            .ok_or(Unanswered::NoAnswer)
+    };
+    let socket = root()
+        .join("dsh/hosts")
+        .join(host_key(agent_home))
+        .join("host.sock");
+    let mut stream =
+        crate::platform::connect_unix(&socket, remaining()?).map_err(|_| Unanswered::NoAnswer)?;
+    let peer = host_peer(&stream).ok_or(Unanswered::OtherPeer)?;
+    if peer != host.0
+        || crate::platform::process_identity(peer).is_none_or(|process| process.birth != host.1)
+    {
+        return Err(Unanswered::OtherPeer);
+    }
+    let request = format!("{}\n", json!({"method":method,"params":params}));
+    let mut written = 0;
+    while written < request.len() {
+        stream
+            .set_write_timeout(Some(remaining()?))
+            .map_err(|_| Unanswered::NoAnswer)?;
+        match stream.write(&request.as_bytes()[written..]) {
+            Ok(0) => return Err(Unanswered::NoAnswer),
+            Ok(count) => written += count,
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+            Err(_) => return Err(Unanswered::NoAnswer),
+        }
+    }
+    let mut response = Vec::new();
+    let mut chunk = [0u8; 4096];
+    let line = loop {
+        stream
+            .set_read_timeout(Some(remaining()?))
+            .map_err(|_| Unanswered::NoAnswer)?;
+        match stream.read(&mut chunk) {
+            Ok(0) => return Err(Unanswered::NoAnswer),
+            Ok(count) => response.extend_from_slice(&chunk[..count]),
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+            Err(_) => return Err(Unanswered::NoAnswer),
+        }
+        if let Some(end) = response.iter().position(|byte| *byte == b'\n') {
+            break &response[..end];
+        }
+        if response.len() > 64 * 1024 {
+            return Err(Unanswered::NoAnswer);
+        }
+    };
+    let reply: Value = serde_json::from_slice(line).map_err(|_| Unanswered::NoAnswer)?;
+    if reply["ok"] != true {
+        return Err(Unanswered::NoAnswer);
+    }
+    Ok(reply["value"].clone())
+}
+
+/// Whether the host of `agent_home`, the recorded process and birth `host`,
+/// advertises per-call tokens (zerus-63rru.28): its `ping` answers protocol 1
+/// with `callTokens` true, through the same peer-checked exchange as
+/// [`call_token_conversation`] and within one deadline of `within`. Nothing
+/// else advertises the capability: the host record holds none and the adapter
+/// version did not change with it.
+#[cfg(unix)]
+#[allow(dead_code)] // The caller-proof seam remains available independently of Teams input capabilities.
+pub(crate) fn host_advertises_call_tokens(
+    agent_home: &str,
+    host: (u32, &str),
+    within: Duration,
+) -> std::result::Result<bool, &'static str> {
+    let ping = host_request(agent_home, host, Instant::now() + within, "ping", json!({})).map_err(
+        |unanswered| match unanswered {
+            Unanswered::NoAnswer => "The DeepSeek host did not answer in time.",
+            Unanswered::OtherPeer => "The DeepSeek host socket is not served by the recorded host.",
+        },
+    )?;
+    Ok(ping["protocol"] == 1 && ping["callTokens"] == true)
+}
+
+/// Teams needs both a proven caller and witnessed task input. Query the
+/// resident host only; an older bridge is left running unchanged.
+#[cfg(unix)]
+pub(crate) fn host_advertises_team_inputs(agent_home: &str, host: (u32, &str), within: Duration) -> std::result::Result<bool, &'static str> {
+    let ping = host_request(agent_home, host, Instant::now() + within, "ping", json!({}))
+        .map_err(|unanswered| match unanswered {
+            Unanswered::NoAnswer => "The DeepSeek host did not answer in time.",
+            Unanswered::OtherPeer => "The DeepSeek host socket is not served by the recorded host.",
+        })?;
+    Ok(ping["protocol"] == 1 && ping["callTokens"] == true && ping["inputWitness"] == true && ping["teamLifecycle"] == true)
+}
+
+/// A hosted member's lifecycle, from the host's own live-agent answer. An
+/// unreachable host, old bridge, changed generation or missing answer is an
+/// error, never an ended member. No terminal process or turn-end is used.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub(crate) fn team_live(name: &str, run: &str, conversation: &str, deadline: std::time::Instant) -> Result<bool> {
+    let record = binding(name)?;
+    if record["run_id"] != run || record["conversation_id"] != conversation { return Err("DeepSeek member identity changed".into()); }
+    let agent_home = string(&record, "agent_home");
+    let hosts = session_graph::caller_host_for_home(agent_home).map_err(str::to_owned)?;
+    let hosts: Vec<_> = hosts.into_iter().filter(|(pid,birth)|
+        crate::platform::process_identity(*pid).is_some_and(|process| process.birth == *birth)).collect();
+    let [(pid,birth)] = hosts.as_slice() else { return Err("The recorded DeepSeek host is unavailable or ambiguous".into()); };
+    let ask = |method, params| host_request(agent_home, (*pid,birth), deadline, method, params)
+        .map_err(|_| "The recorded DeepSeek host did not answer its lifecycle check".to_owned());
+    let ping = ask("ping", json!({}))?;
+    if ping["teamLifecycle"] != true { return Err("The DeepSeek host has no lifecycle answer".into()); }
+    let answer = ask("session-lifecycle", json!({"sessionId":conversation}))?;
+    if answer["generation"] != ping["generation"] || ping["generation"].as_str().is_none_or(str::is_empty)
+        || binding(name)? != record { return Err("The DeepSeek host or member changed during observation".into()); }
+    if answer["sessionId"] != conversation { return Err("The DeepSeek lifecycle answer names another session".into()); }
+    match answer["state"].as_str() {
+        Some("live") => Ok(true),
+        Some("ended") if answer["end"]["source"] == "agent/disposed" && answer["end"]["at"].as_f64().is_some_and(|at| at.is_finite() && at > 0.0) => Ok(false),
+        _ => Err("The DeepSeek host's lifecycle answer is unavailable".into()),
+    }
+}
+
+/// The process serving a connected host socket, as the kernel recorded it,
+/// and only when it runs as this user.
+#[cfg(target_os = "linux")]
+fn host_peer(stream: &UnixStream) -> Option<u32> {
+    use std::os::fd::AsRawFd;
+    let mut credentials: libc::ucred = unsafe { std::mem::zeroed() };
+    let mut size = std::mem::size_of_val(&credentials) as libc::socklen_t;
+    // SAFETY: a live socket and exactly sized writable credentials.
+    let read = unsafe {
+        libc::getsockopt(
+            stream.as_raw_fd(),
+            libc::SOL_SOCKET,
+            libc::SO_PEERCRED,
+            (&mut credentials as *mut libc::ucred).cast(),
+            &mut size,
+        )
+    };
+    (read == 0
+        && size as usize == std::mem::size_of_val(&credentials)
+        && credentials.pid > 0
+        && credentials.uid == unsafe { libc::geteuid() })
+    .then_some(credentials.pid as u32)
+}
+#[cfg(target_os = "macos")]
+fn host_peer(stream: &UnixStream) -> Option<u32> {
+    use std::os::fd::AsRawFd;
+    let (mut uid, mut gid): (libc::uid_t, libc::gid_t) = (0, 0);
+    // SAFETY: a connected Unix socket and two writable identifiers.
+    if unsafe { libc::getpeereid(stream.as_raw_fd(), &mut uid, &mut gid) } != 0
+        || uid != unsafe { libc::geteuid() }
+    {
+        return None;
+    }
+    let mut pid: libc::pid_t = 0;
+    let mut size = std::mem::size_of_val(&pid) as libc::socklen_t;
+    // SAFETY: a connected Unix socket and one writable pid_t.
+    let read = unsafe {
+        libc::getsockopt(
+            stream.as_raw_fd(),
+            libc::SOL_LOCAL,
+            libc::LOCAL_PEERPID,
+            (&mut pid as *mut libc::pid_t).cast(),
+            &mut size,
+        )
+    };
+    (read == 0 && size as usize == std::mem::size_of_val(&pid) && pid > 0).then_some(pid as u32)
+}
+/// No other Unix reads a socket peer's process here: nothing is proven.
+#[cfg(all(unix, not(any(target_os = "linux", target_os = "macos"))))]
+fn host_peer(_: &UnixStream) -> Option<u32> {
+    None
 }
 /// The native host listens on a Unix socket; DeepSeek is a Phase 2 non-goal on
 /// Windows, so nothing there starts or reaches a host.
@@ -167,6 +411,10 @@ fn rpc(_: &Value, _: &str, _: Value) -> Result<Value> {
 }
 #[cfg(not(unix))]
 fn search_rpc(_: &Value, _: Value) -> Result<Value> {
+    Err(UNSUPPORTED.into())
+}
+#[cfg(not(unix))]
+fn rpc_within(_: &Value, _: &str, _: Value, _: std::time::Duration) -> Result<Value> {
     Err(UNSUPPORTED.into())
 }
 #[cfg(not(unix))]
@@ -635,6 +883,33 @@ fn apply_account_defaults_with(
     }
 }
 
+/// The binding a new session starts with, before its host creates it.
+fn new_binding(name: &str, cwd: &Path, launch_id: Option<&str>) -> Value {
+    json!({"backend":"dsh","name":name,"agent":"dsh","agent_home":native_home(),"cwd":cwd,
+        "conversation_id":format!("session-{}",uuid::Uuid::new_v4()),"run_id":uuid::Uuid::new_v4().to_string(),
+        "created":now(),"launch_id":launch_id,"paused":false})
+}
+
+/// A new session's binding exactly as `launch` builds and saves it, with no
+/// host started or asked: the Teams caller proof's tests take their binding
+/// from this component (zerus-63rru.28).
+#[cfg(all(test, unix))]
+pub(crate) fn launched_binding_for_test(
+    name: &str,
+    cwd: &Path,
+    launch_id: Option<&str>,
+) -> Result<Value> {
+    let mut record = new_binding(name, cwd, launch_id);
+    save(&mut record)?;
+    Ok(record)
+}
+
+/// Saves a binding through this component's own `save`, for the same tests.
+#[cfg(all(test, unix))]
+pub(crate) fn save_binding_for_test(record: &mut Value) -> Result<()> {
+    save(record)
+}
+
 pub(crate) fn launch(
     name: &str,
     cwd: &str,
@@ -665,9 +940,7 @@ pub(crate) fn launch(
     // existing name above resumes it with its own stored selection.
     let config = crate::config::Config::load().map_err(|e| e.message)?;
     let defaults = crate::accounts::launch_selection(&config, "dsh").map_err(|e| e.message)?;
-    let mut record = json!({"backend":"dsh","name":name,"agent":"dsh","agent_home":native_home(),"cwd":cwd,
-        "conversation_id":format!("session-{}",uuid::Uuid::new_v4()),"run_id":uuid::Uuid::new_v4().to_string(),
-        "created":now(),"launch_id":launch_id,"paused":false});
+    let mut record = new_binding(name, &cwd, launch_id);
     if let Some(parent) = parent { record["parent"] = parent; }
     ensure_host(&record)?;
     let (generation, mode) = create_session(&mut record)?;
@@ -771,6 +1044,12 @@ pub(super) fn claim_live(_: &Value, _: std::time::Duration) -> Result<bool> {
     Ok(false)
 }
 
+/// The listing projection of `record` from a host's `list` answer, for the
+/// fleet-row fixtures of the Teams actor's tests (zerus-63rru.51).
+#[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
+pub(super) fn listed_for_fixture(record: &Value, list: &Value) -> Value {
+    snapshot_from(record, list)
+}
 fn snapshot_from(record: &Value, list: &Value) -> Value {
     snapshot_with(record, list, &mut |method, params| rpc(record, method, params))
 }
@@ -1834,6 +2113,49 @@ fn interrupt_refusal(error: String) -> String {
     }
 }
 
+/// The native content of a message request: its text, interleaved with its
+/// image attachments and their references, in order.
+fn message_content(request: &Value) -> Result<Vec<Value>> {
+    let text = string(request, "text");
+    if text.len() > 65536 {
+        return Err("Message exceeds 64 KiB".into());
+    }
+    let files = request["attachments"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    let references = files
+        .iter()
+        .map(|f| string(f, "reference"))
+        .collect::<Vec<_>>();
+    attachments::validate_references(&references)?;
+    for file in &files {
+        if !["image/png", "image/jpeg", "image/webp", "image/gif"].contains(&string(file, "mime")) {
+            return Err("This DeepSeek composer supports image attachments; use the native UI for other files".into());
+        }
+    }
+    let mut content = Vec::new();
+    for part in attachments::ordered_parts(text, &references) {
+        match part {
+            attachments::MessagePart::Text(value) => {
+                if !value.trim().is_empty() {
+                    content.push(json!({"type":"text","text":value}));
+                }
+            }
+            attachments::MessagePart::Attachment(index) => {
+                let file = &files[index];
+                if !references[index].is_empty() && !text.contains(references[index]) {
+                    content.push(json!({"type":"text","text":references[index]}));
+                }
+                content.push(json!({"type":"image","mediaType":file["mime"],"data":file["data_base64"],"name":file["name"]}));
+            }
+        }
+    }
+    if content.is_empty() {
+        return Err("Message is empty".into());
+    }
+    Ok(content)
+}
 fn checked_request(record: &Value) -> Result<Value> {
     let mut bytes = Vec::new();
     io::stdin()
@@ -1929,48 +2251,13 @@ pub(crate) fn dispatch(command: &str, args: &[String]) -> Result<i32> {
             if command == "send" {
                 let agent_id = string(&request, "agent_id");
                 let text = string(&request, "text");
-                if text.len() > 65536 {
-                    return Err("Message exceeds 64 KiB".into());
-                }
-                let files = request["attachments"]
-                    .as_array()
-                    .cloned()
-                    .unwrap_or_default();
-                let references = files
-                    .iter()
-                    .map(|f| string(f, "reference"))
-                    .collect::<Vec<_>>();
-                attachments::validate_references(&references)?;
-                for file in &files {
-                    if !["image/png", "image/jpeg", "image/webp", "image/gif"]
-                        .contains(&string(file, "mime"))
-                    {
-                        return Err("This DeepSeek composer supports image attachments; use the native UI for other files".into());
-                    }
-                }
-                let mut content = Vec::new();
-                for part in attachments::ordered_parts(text, &references) {
-                    match part {
-                        attachments::MessagePart::Text(value) => {
-                            if !value.trim().is_empty() {
-                                content.push(json!({"type":"text","text":value}));
-                            }
-                        }
-                        attachments::MessagePart::Attachment(index) => {
-                            let file = &files[index];
-                            if !references[index].is_empty() && !text.contains(references[index]) {
-                                content.push(json!({"type":"text","text":references[index]}));
-                            }
-                            content.push(json!({"type":"image","mediaType":file["mime"],"data":file["data_base64"],"name":file["name"]}));
-                        }
-                    }
-                }
-                if content.is_empty() {
-                    return Err("Message is empty".into());
-                }
+                let content = message_content(&request)?;
                 let receipt_path = root()
                     .join("dsh/receipts")
                     .join(format!("{}.json", string(&request, "request_id")));
+                // One request offers at most once across ordinary and witnessed
+                // sends (zerus-hfw2s.5). Taken after, and inside, the bindings lock.
+                let _request = witness::request_lock(string(&request, "request_id"))?;
                 let digest = format!(
                     "{:x}",
                     Sha256::digest(json!([name, request]).to_string().as_bytes())

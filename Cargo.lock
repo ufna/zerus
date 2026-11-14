@@ -1064,6 +1064,7 @@ dependencies = [
  "zerus-freedesktop-notify",
  "zerus-presence-sampler",
  "zerus-replica",
+ "zerus-team-plan",
  "zerus-watch-protocol",
 ]
 
@@ -3374,6 +3375,7 @@ dependencies = [
  "zerus-desktop-migration",
  "zerus-desktop-read-policy",
  "zerus-file-lock",
+ "zerus-team-plan",
  "zerus-watch-protocol",
 ]
 
@@ -3471,6 +3473,14 @@ dependencies = [
  "sha2",
  "uuid",
  "zerus-file-lock",
+]
+
+[[package]]
+name = "zerus-team-plan"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

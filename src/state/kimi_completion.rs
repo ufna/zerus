@@ -1137,6 +1137,24 @@ mod tests {
                 .unwrap();
             assert_eq!(count, 1, "{ordering}");
             assert_eq!(read(string(&settled, "name")).unwrap()["main_done"], true);
+            // The merged Teams path keeps profile children separate from
+            // main Stop deduplication, even with the same native turn ID.
+            let mut parent = settled.clone();
+            for kind in ["SubagentStart", "SubagentStop", "PreToolUse"] {
+                let event = json!({"hook_event_name":kind,"agent_id":"main",
+                    "agent_name":"profile-1","turn_id":0});
+                journal::update_activity(&mut parent, &event);
+                journal::log_event(&parent, &event).unwrap();
+            }
+            assert_eq!(parent["subagents"]["profile-1"]["state"], "finished", "{ordering}");
+            let child_stops: u64 = db.query_row(
+                "SELECT COUNT(*) FROM events WHERE json_extract(payload, '$.type')='SubagentStop'
+                 AND json_extract(payload, '$.run_id')=?", [ordering], |row| row.get(0)
+            ).unwrap();
+            assert_eq!(child_stops, 1, "main dedupe swallowed a child stop: {ordering}");
+            journal::update_activity(&mut parent, &json!({"hook_event_name":"SubagentStart",
+                "agent_id":"main","agent_name":"profile-1","turn_id":0}));
+            assert_eq!(parent["subagents"]["profile-1"]["state"], "working", "{ordering}");
         }
         let mut record = record();
         record["agent_home"] = json!(native);

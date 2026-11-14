@@ -264,6 +264,138 @@ class RemoteLoginShells(unittest.TestCase):
                         self.assertEqual(argv[:2], ['--expect-machine', '33333333-3333-4333-8333-333333333333'], argv)
                     self.assertEqual(argv[-len(call[1:]):], call[1:], argv)
 
+    def test_an_unproven_hosted_call_forwards_nothing_as_nobody(self):
+        # zerus-ppd26 Part B: a resident DeepSeek host's tool call (HGS_AGENT=dsh)
+        # without its hosted proof is never the person, and a peer cannot see
+        # who calls. Every command a session reference or --expect-machine
+        # forwards with a machine, every send and every launch without --parent
+        # is refused before ssh runs; the person, and a launch with --parent,
+        # go on. The commands are read from the source tables.
+        import re
+        source = (ROOT / 'src/cli.rs').read_text()
+        def table(name):
+            found = re.search(r'const ' + name + r': &\[&str\] = &\[(.*?)\];', source, re.S)
+            return re.findall(r'"([a-z_-]+)"', found.group(1))
+        session_commands = table('SESSION_COMMANDS')
+        self.assertIn('send', session_commands)
+        # The launch verbs are pinned here, not only read from the table they
+        # check (zerus-ppd26.10): dropping one from the table fails this test.
+        launches = ['claude', 'codex', 'kimi', 'dsh', 'opencode', 'fork']
+        self.assertEqual(table('LAUNCH_COMMANDS'), launches)
+        machine = '33333333-3333-4333-8333-333333333333'
+        reference = (f'zerus://session?machine={machine}&host=peer&name=codex%2Fp%2Fa&conversation=c&run=r')
+        (self.peer / '.local/bin/hgs').write_text(PEER_HGS.replace(
+            "'hooks-health-v1'", "'hooks-health-v1' 'Desktop creation ABI: guarded-create-v1' '  lifecycle-receipt-status-v1'"
+            " '  session-id-selector-v1' '  session-reference-selector-v1' '  session-keep-warm-v1'"
+            " '  claimed-parent-v1' '  launch-parent-v1'"))
+        hosted = dict(HGS_AGENT='dsh')
+        person = {}
+        parent = '{"session_id":"s","run_id":"r","conversation_id":"c"}'
+        calls = []
+        for command in session_commands:
+            extra = ['--json'] if command in ('send', 'session-action-status') else []
+            calls.append(('reference', [command, reference, *extra]))
+            calls.append(('guarded', ['@peer', '--expect-machine', machine, command, 'codex/p/a', *extra]))
+        for command in launches:
+            target = 'codex/p/a' if command == 'fork' else '/tmp'
+            calls.append(('launch', ['@peer', command, target]))
+        # A word that only looks like --parent names no parent: the value of
+        # another option, or an agent flag after -- (zerus-ppd26.10).
+        for shape in (['claude', '-n', '--parent'], ['claude', '--model', '--parent'], ['codex', '--account', '--parent'],
+                      ['fork', 'codex/p/a', '-n', '--parent'], ['claude', '/tmp', '--', '--parent', parent],
+                      ['dsh', '/tmp', '--parent'], ['kimi', '/tmp', '--parent', 'not a claim'],
+                      # The value of -n or --account, followed by a real claim
+                      # that the peer reads as the project folder.
+                      ['claude', '-n', '--parent', parent], ['codex', '--account', '--parent', parent],
+                      ['fork', 'codex/p/a', '-n', '--parent', parent],
+                      # Neither --parent=CLAIM (no launch parser reads it) nor a
+                      # claim after the value of --parent-link (U5, U6).
+                      ['claude', '/tmp', '--parent=' + parent], ['claude', '--parent-link', '--parent', parent]):
+            calls.append(('shape', ['@peer', *shape]))
+        sent = self.root / 'ssh-args.json'
+
+        def run(call, extra):
+            sent.unlink(missing_ok=True)
+            for name in ('argv.json', 'stdin'):
+                (self.peer / name).unlink(missing_ok=True)
+            env = {k: v for k, v in self.env.items()}
+            env.update(extra, REMOTE_LOGIN_SHELL='/bin/sh')
+            return subprocess.run([str(HGS), *call], input='{}', text=True, capture_output=True, timeout=30, env=env)
+
+        refusals = ('cannot prove its session', "Open another computer's native UI by name")
+        for route, call in calls:
+            with self.subTest(route=route, call=call[:2] if route != 'guarded' else call[3:5], caller='hosted'):
+                refused = run(call, hosted)
+                self.assertEqual(refused.returncode, 1, refused.stdout + refused.stderr)
+                if 'question-routing' in call:
+                    # This operation's machine-readable refusal is on stdout;
+                    # it still fails before any remote hop or native action.
+                    self.assertEqual(json.loads(refused.stdout), dict(ok=False, error='agent_refused'))
+                else:
+                    self.assertTrue(any(text in refused.stderr for text in refusals), refused.stderr)
+                self.assertFalse(sent.exists(), 'ssh must not run')
+                self.assertFalse((self.peer / 'argv.json').exists())
+        forwarded = 0
+        for route, call in calls:
+            with self.subTest(route=route, call=call[:2] if route != 'guarded' else call[3:5], caller='person'):
+                result = run(call, person)
+                self.assertNotIn('cannot prove its session', result.stderr)
+                if (self.peer / 'argv.json').exists():
+                    forwarded += 1
+        # Most of them really reach the peer for the person; none for the call.
+        self.assertGreater(forwarded, len(calls) // 2)
+        for command in launches:
+            target = 'codex/p/a' if command == 'fork' else '/tmp'
+            for route, call in (('launch', ['@peer', command, target, '--parent', parent]),
+                                ('reference', [command, reference, '--parent', parent]) if command == 'fork' else (None, None)):
+                if route is None:
+                    continue
+                with self.subTest(route=route, call=command, caller='hosted with --parent'):
+                    result = run(call, hosted)
+                    self.assertNotIn('cannot prove its session', result.stderr)
+                    self.assertTrue(sent.exists(), result.stdout + result.stderr)
+
+    def test_the_parent_scan_skips_every_value_a_launch_parser_takes(self):
+        # zerus-ppd26.13: names_parent skips the values in LAUNCH_VALUE_OPTIONS;
+        # every option LaunchOptions::parse or the fork parser reads a value for
+        # must be there, so a new value option cannot pass as --parent.
+        import re
+        source = (ROOT / 'src/cli.rs').read_text()
+        table = re.search(r'const LAUNCH_VALUE_OPTIONS: &\[&str\] = &\[(.*?)\];', source, re.S)
+        skipped = set(re.findall(r'"(-[-a-z]+)"', table.group(1)))
+
+        def function(marker):
+            at = source.index(marker)
+            start = source.rindex('fn ', 0, at)
+            end = source.index('\n    }\n', at) if source[start - 4:start] == '    ' else source.index('\n}\n', at)
+            return source[start:end]
+
+        def value_options(body, index):
+            found, optional = set(), set()
+            for arm in re.finditer(r'((?:"-[-a-z]+"\s*\|\s*)*"-[-a-z]+")\s*=>\s*\{', body):
+                depth, end = 0, arm.end() - 1
+                for end in range(arm.end() - 1, len(body)):
+                    depth += {'{': 1, '}': -1}.get(body[end], 0)
+                    if depth == 0:
+                        break
+                block, names = body[arm.end():end], re.findall(r'"(-[-a-z]+)"', arm.group(1))
+                if re.search(r'get\(' + index + r'\s*\+\s*1\)', block):
+                    optional.update(names)
+                elif re.search(r'\b' + index + r'\s*\+\s*1\b|\b' + index + r'\s*\+=\s*1\b', block):
+                    found.update(names)
+            return found, optional
+
+        launch, optional = value_options(function('fn parse(args: &[String], dry: bool) -> Result<Self> {'), 'i')
+        fork, _ = value_options(function('unknown fork option'), 'index')
+        self.assertIn('--account', launch)
+        self.assertIn('--archive', fork)
+        self.assertEqual(optional, {'-c', '--resume', '--continue'})
+        # --parent itself is read by the scan, and -- ends it, as it ends the parsers.
+        self.assertEqual((launch | fork) - {'--parent', '--'} - skipped, set())
+        scan = function('fn names_parent(args: &[String]) -> bool {')
+        self.assertIn('"-c" | "--resume" | "--continue"', scan)
+        self.assertIn('"--" => return false', scan)
+
     def test_a_reference_takes_exactly_one_verified_hop(self):
         # #1376 review: a reference reaches its computer through one SSH hop the
         # peer verifies; a guarded call never forwards a reference again.

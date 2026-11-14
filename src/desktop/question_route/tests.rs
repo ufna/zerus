@@ -50,6 +50,7 @@ mod inventory {
         ("dsh_native_api", OtherProvider),
         ("opencode_native", OtherProvider),
         ("adopt", NotACard),
+        ("agent/disposed", NotACard),
         ("auto", NotACard),
         ("claude", NotACard),
         ("claude_goal_status_v1", NotACard),

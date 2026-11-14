@@ -262,13 +262,15 @@ fn retain(mut pipe: Box<dyn Pipe>, retain: &Retain<'_>) {
 /// Runs `program args` as `spec`'s original child under `custody`, to its end
 /// or to `deadline`. `final_check` runs inside the spawn turn, last before the
 /// spawn: its refusal means that no child ever existed.
-pub(in crate::desktop) fn run(
+/// The final check may return a guard, held through spawn and dropped as soon
+/// as spawn returns, including failure. It is never held while the child runs.
+pub(in crate::desktop) fn run<T>(
     program: &Path,
     args: &[String],
     spec: Spec<'_>,
     custody: &Arc<InheritedLock>,
     deadline: Instant,
-    final_check: impl FnOnce(&mut Command) -> std::io::Result<()>,
+    final_check: impl FnOnce(&mut Command) -> std::io::Result<T>,
 ) -> Ended {
     start(program, args, spec, Some(custody), deadline, final_check)
 }
@@ -287,13 +289,13 @@ pub(in crate::desktop) fn run_unheld(
     start(program, args, spec, None, deadline, final_check)
 }
 
-fn start(
+fn start<T>(
     program: &Path,
     args: &[String],
     spec: Spec<'_>,
     custody: Option<&Arc<InheritedLock>>,
     deadline: Instant,
-    final_check: impl FnOnce(&mut Command) -> std::io::Result<()>,
+    final_check: impl FnOnce(&mut Command) -> std::io::Result<T>,
 ) -> Ended {
     let Spec {
         custody_env,
@@ -336,7 +338,7 @@ fn start(
                     custody
                         .map_or(Ok(()), |custody| custody.inherit(command))
                         .and_then(|()| final_check(command))
-                        .and_then(|()| {
+                        .and_then(|admission| {
                             #[cfg(test)]
                             if REFUSE_PRE_EXEC.with(|refuse| refuse.replace(false)) {
                                 // SAFETY: returns an error only; nothing else runs after fork.
@@ -357,7 +359,9 @@ fn start(
                             if Instant::now() >= deadline {
                                 return Err(std::io::ErrorKind::TimedOut.into());
                             }
-                            command.spawn()
+                            let spawned = command.spawn();
+                            drop(admission);
+                            spawned
                         })
                 };
                 match input {
@@ -819,5 +823,7 @@ mod tests {
     }
 }
 
+#[cfg(test)]
+mod admission_tests;
 #[cfg(test)]
 mod fork_tests;

@@ -177,6 +177,9 @@ export interface ActivityOut { computer: ComputerId; key: string; kind: Activity
 /** The existing watch tasks topic; a list replaces the open project's board. */
 export interface TasksOut { computer: ComputerId; key: string; kind: string; payload: unknown }
 
+/** One Teams view of the followed computer: `list`, `team:<id>`, `failed` or `ended`. */
+export interface TeamsOut { computer: ComputerId; key: string; kind: string; payload: unknown }
+
 // The Sessions list's grouping by the shared project organization
 // (client/core `swarm/grouping.rs`). The Rust side keeps the organization;
 // the webview gets each row's project and rank, and the ordered headers.
@@ -310,6 +313,8 @@ export interface Batch {
   machines?: MachineOut[];
   activity: ActivityOut[];
   tasks?: TasksOut[];
+  /** The Teams views that changed, latest value per key. */
+  teams?: TeamsOut[];
   /** Each row's project and rank, for the rows whose grouping changed. */
   groups?: GroupOut[];
   /** The headers and the edit state, when they changed. */

@@ -22,6 +22,7 @@ uuid = { version = "1", features = ["v4"] }
 time = { version = "0.3", features = ["parsing"] }
 zerus-watch-protocol = { path = "../../crates/watch-protocol" }
 zerus-desktop-migration = { path = "../../crates/desktop-migration" }
+zerus-team-plan = { path = "../../crates/team-plan" }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

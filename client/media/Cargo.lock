@@ -1561,6 +1561,7 @@ dependencies = [
  "zerus-desktop-migration",
  "zerus-desktop-read-policy",
  "zerus-file-lock",
+ "zerus-team-plan",
  "zerus-watch-protocol",
 ]
 
@@ -1607,6 +1608,14 @@ name = "zerus-file-lock"
 version = "0.1.0"
 dependencies = [
  "fs2",
+]
+
+[[package]]
+name = "zerus-team-plan"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

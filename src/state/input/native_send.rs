@@ -657,7 +657,70 @@ mod tests {
             .split_once("/// Codex on Windows reads console key events")
             .unwrap()
             .0;
-        let original = format!("fn submit_core({body}");
+        // Teams adds only its typed pre-input refusal witness here. Undo
+        // those four exact, uniquely present edits before checking main's
+        // 9875d263b core (including pre-send compaction); changing or dropping
+        // any gate also fails this guard. before_input owns the common
+        // post-publication refusal persistence for both kinds of gate.
+        let mut original = format!("fn submit_core({body}");
+        for (teams, main) in [
+            (r###"    let witness = |reason: String, waiting: bool, dialog: Option<&'static str>| NotOffered {
+        request_id: request_id.clone(),
+        name: name.to_owned(),
+        run_id: request.expected_run_id.clone(),
+        conversation_id: request.expected_conversation_id.clone(),
+        digest: digest.clone(),
+        receipts: receipt_path.clone(),
+        reason,
+        waiting,
+        dialog,
+    };
+    let refused = |typed: bool, reason: String| before_input(typed, witness(reason, false, None));
+    // The terminal gate's own refusal keeps its cause.
+    let gated = |typed: bool, gate: Gate| {
+        let waiting = matches!(gate, Gate::Waiting { .. });
+        let dialog = gate.dialog().map(|d| d.name());
+        before_input(typed, witness(gate.reason(), waiting, dialog))
+    };
+    let record = checked_record_gate(name, &request).map_err(|gate| gated(typed, gate))?;
+"###, r###"    let refused = |typed: bool, reason: String| {
+        let reason = if typed { kimi_expiry::refused(&receipt_path, reason) } else { reason };
+        before_input(
+            typed,
+            NotOffered {
+                request_id: request_id.clone(),
+                name: name.to_owned(),
+                run_id: request.expected_run_id.clone(),
+                conversation_id: request.expected_conversation_id.clone(),
+                digest: digest.clone(),
+                receipts: receipt_path.clone(),
+                reason,
+            },
+        )
+    };
+    let record = checked_record(name, &request).map_err(|e| refused(typed, e))?;
+"###),
+            (r###"    checked_send_gate(&record).map_err(|gate| gated(typed, gate))?;
+"###, r###"    checked_send_terminal(&record).map_err(|e| refused(typed, e))?;
+"###),
+            (r###"    if let Err(gate) = checked_record_gate(name, &request).and_then(|r| checked_send_gate(&r)) {
+        cleanup();
+        return Err(gated(typed, gate));
+    }
+"###, r###"    if let Err(error) = checked_record(name, &request).and_then(|r| checked_send_terminal(&r)) {
+        cleanup();
+        return Err(refused(typed, error));
+    }
+"###),
+            (r###"        record = checked_record_gate(name,&request).map_err(|gate| gated(typed,gate))?;
+        checked_send_gate(&record).map_err(|gate| gated(typed,gate))?;
+"###, r###"        record = checked_record(name,&request).map_err(|e| refused(typed,e))?;
+        checked_send_terminal(&record).map_err(|e| refused(typed,e))?;
+"###),
+        ] {
+            assert_eq!(original.matches(teams).count(), 1, "Teams gate projection changed");
+            original = original.replacen(teams, main, 1);
+        }
         assert_eq!(
             format!("{:x}", Sha256::digest(original.as_bytes())),
             "fff1e65bfc4cda56753b9f9e5b425db0c7deac5046ae0748e95d4e678ccd39c9"

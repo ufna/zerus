@@ -1,14 +1,16 @@
-import { For, Show } from "solid-js";
+import { For, Show, onMount } from "solid-js";
 import { Dynamic } from "solid-js/web";
 import { Icon } from "../lib/icons";
 import { available, section, setSection, type SectionId } from "./settings/sections";
 import { tr } from "../../i18n";
+import { teams } from "../../store/teams";
 
 // Settings (tray/src/SettingsPage.h): a fixed section list and one scrollable
 // page at a time, at most 850 px wide, as in the approved mockup
 // (design/webui/src/screens/Settings.tsx). Up and Down move through the list.
 
 export function SettingsScreen() {
+  onMount(() => { void teams.recheck(); });
   let scroller!: HTMLDivElement;
   const open = (id: SectionId) => {
     setSection(id);

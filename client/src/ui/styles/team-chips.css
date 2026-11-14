@@ -1,0 +1,4 @@
+@layer components {
+  .team-identity { display: inline-flex; align-items: center; gap: 5px; min-width: 0; color: var(--z-color-accent); }
+  .team-identity > svg { flex: none; }
+}

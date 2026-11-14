@@ -44,4 +44,6 @@ pub use sync::{
     canonical_version, version_includes, Document, DoneEntry, DonePage, DoneRow, Imported,
     Inventory, Update, Version,
 };
+#[cfg(not(feature = "test-without-team"))]
+pub use task::TaskTeam;
 pub use task::{NewTask, Settled, Settlement, TaskDoc};

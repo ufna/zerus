@@ -250,11 +250,11 @@ fn enabled() -> Policy {
 }
 fn row() -> Value {
     json!({"name":"codex/example/review","cmd":"codex","agent":"codex",
-        "state":"running","process_state":"running","activity":"idle","phase":"idle",
+        "process_state":"running","runtime_state":"live","activity":"idle","phase":"idle",
         "run_id":"run","conversation_id":"conversation","conversation_state":"active",
         "created":1,"reply_id":"reply-1","attention_signature":null,
         "read":{"conversation_id":"conversation","reply_id":null,"attention_signature":null},
-        "process_work":{"count":0},"subagents_active":0,"optional_questions":{"count":0}})
+        "process_work":{"count":0},"subagent_active_count":0,"optional_questions":{"count":0}})
 }
 fn project(raw: &Value) -> Projection {
     projection::project("", "fixture", raw, Map::new(), enabled(), false, false).unwrap()

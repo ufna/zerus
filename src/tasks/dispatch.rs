@@ -204,8 +204,15 @@ fn rendered(
         request_id,
         acknowledgement_mode,
     );
-    let request =
-        crate::state::prepare_task_reply(to, "", request_id, &prompt, &files).map_err(fail)?;
+    let request = crate::state::prepare_task_reply(
+        to,
+        "",
+        request_id,
+        &prompt,
+        &files,
+        crate::state::Continuation::SameRun,
+    )
+    .map_err(fail)?;
     if request["expected_run_id"].as_str() != Some(selection.run_id.as_str())
         || request["expected_conversation_id"].as_str() != Some(selection.conversation_id.as_str())
     {
@@ -239,7 +246,7 @@ pub(super) fn execute(config: &Config, action: &str, args: &[String]) -> Result<
     // The catalog and the project's lock within that budget too (#1519
     // review, zerus-9gzdp): a held lock refuses as busy, never waits on.
     let (machines, projects) = super::entry_until(config, deadline)?;
-    if actor(&machines.here, args, false)? != Actor::Person {
+    if super::teams::actor(config, &machines, args, false, false)? != Actor::Person {
         return Err(fail(
             "task start plans are for the person's explicit desktop Start",
         ));
@@ -247,6 +254,8 @@ pub(super) fn execute(config: &Config, action: &str, args: &[String]) -> Result<
     let r = super::reference_by(config, args, &Actor::Person, Some((&projects, deadline)))?;
     let mut store = super::store_until(config, &r.project.0, deadline)?;
     let mut task = store.find(&r.task).map_err(fail)?;
+    super::attempts::pause_at(body["id"].as_str().unwrap_or_default(), "start_read");
+    super::teams::guard(config, &machines, &task, "send", args)?;
     let current = task.view().map_err(fail)?;
     let (selection, to) = if action == "start-plan" {
         let prepare: Prepare = serde_json::from_value(body.clone()).map_err(fail)?;
@@ -451,6 +460,10 @@ pub(super) fn execute(config: &Config, action: &str, args: &[String]) -> Result<
                     *detail.borrow_mut() = why;
                     Ok(Err(Closed { node: None, reason }))
                 };
+                super::attempts::pause_at(&plan.id, "start_managed");
+                if let Err(error) = super::teams::guard(config, &machines, task, "send", args) {
+                    return refuse("not_sendable", error.message);
+                }
                 // The frozen plan's business binding, against the task as
                 // admitted (after the proof's imports) and the current
                 // executor, selection and settings (condition 2).
@@ -514,6 +527,8 @@ pub(super) fn execute(config: &Config, action: &str, args: &[String]) -> Result<
         };
         match admission {
             Admission::Reserved { .. } => {
+                #[cfg(test)]
+                delivery_canary();
                 let delivered = super::attempts::deliver(
                     config,
                     &r.project.0,
@@ -563,6 +578,8 @@ pub(super) fn execute(config: &Config, action: &str, args: &[String]) -> Result<
         }
         store = super::store(config, &r.project.0)?;
         task = store.load(&uuid).map_err(fail)?;
+        super::attempts::pause_at(&plan.id, "start_legacy");
+        super::teams::guard(config, &machines, &task, "send", args)?;
         let current = task.view().map_err(fail)?;
         return legacy(
             &store,
@@ -605,7 +622,7 @@ fn delivered_result(
     let task = super::store(config, project)?.load(uuid).map_err(fail)?;
     match delivered {
         super::attempts::Delivered::Submitted(_) => result("submitted", "", &task),
-        super::attempts::Delivered::NotAdmitted(reason) => result("refused", &reason, &task),
+        super::attempts::Delivered::NotAdmitted { reason, .. } => result("refused", &reason, &task),
         super::attempts::Delivered::Uncertain(text) => result("uncertain", &text, &task),
     }
 }
@@ -656,6 +673,8 @@ fn legacy(
     if let Err(error) = check {
         return result("refused", &error.message, task);
     }
+    #[cfg(test)]
+    delivery_canary();
     if let Err(error) = crate::state::submit_task_reply(&to.session, &plan.request) {
         return result("uncertain", &error, task);
     }
@@ -669,6 +688,13 @@ fn legacy(
             .map_err(|e| fail(format!("{SENT_UNRECORDED}: {e}")))?;
     }
     result("submitted", "", task)
+}
+
+#[cfg(test)]
+fn delivery_canary() {
+    if let Some(path) = std::env::var_os("HGS_TEST_TASK_START_DELIVERY") {
+        std::fs::write(path, "native submission reached").unwrap();
+    }
 }
 
 #[cfg(test)]

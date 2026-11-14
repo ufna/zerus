@@ -101,7 +101,7 @@ class Fixture(unittest.TestCase):
         # Each test stops its own private server, never another one.
         if TMUX:
             self.addCleanup(lambda: subprocess.run([TMUX, "-S", str(self.socket), "kill-server"], capture_output=True))
-            self.script("tmux", '#!/bin/sh\nexec ' + TMUX + ' -S "' + str(self.socket) + '" -f /dev/null "$@"\n')
+            self.script("tmux", '#!/bin/sh\n[ -d "' + str(self.socket.parent) + '" ] || { echo "private tmux socket directory is gone" >&2; exit 97; }\nexec ' + TMUX + ' -S "' + str(self.socket) + '" -f /dev/null "$@"\n')
         else:
             self.script("tmux", "#!/bin/sh\nexit 1\n")
         catalog = {"projects": [{"id": "project-1", "name": "orchard", "color": "#123456", "folders": [], "sessions": []},

@@ -1518,6 +1518,53 @@ mod actor {
         assert_eq!(calls.load(Ordering::SeqCst), 1);
     }
 
+    #[test]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn a_typed_waiting_gate_reaches_the_durable_refusal_without_replay() {
+        let private = tempfile::tempdir().unwrap();
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "state::input::tests::no_color_gate_fixture", "--ignored", "--nocapture"])
+            .env("HOME", private.path())
+            .env("HGS_STATE_DIR", private.path().join("state"))
+            .env("HGS_CONFIG_DIR", private.path().join("config"))
+            .env("NO_COLOR", "1")
+            .env("ZERUS_TEST_NO_COLOR_GATE", "1")
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{}\n{}",
+            String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+        let stdout = String::from_utf8(output.stdout).unwrap();
+        let reason = stdout.lines().find_map(|line| line.strip_prefix("TYPED_GATE_REASON "))
+            .expect("the production typed gate's reason").to_owned();
+        let expected = format!("hgs: {reason}");
+        let stderr = expected.clone();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let sent = calls.clone();
+        let mut f = Fixture::new(move |_, _, _, input, lock, resources| {
+            sent.fetch_add(1, Ordering::SeqCst);
+            child::run(
+                Path::new("/bin/sh"),
+                &["-c".into(), "cat >/dev/null; printf '%s\\nprivate next line\\n' \"$1\" >&2; exit 1".into(),
+                    "gate-refusal".into(), stderr.clone()],
+                input, lock, resources, Instant::now() + Duration::from_secs(5), |_| Ok(()),
+            )
+        });
+        let original = f.original();
+        assert!(f.admit(&original).accepted);
+        f.until("settled", |f| f.row(&original).receipt.drained);
+        let receipt = f.row(&original).receipt;
+        assert_eq!(receipt.cli_exit, Some(wire::CliExit::new(1, &expected)));
+        assert_eq!(serde_json::to_value(&receipt).unwrap()["cli_exit"]["stderr"], expected);
+        assert_eq!(receipt.phase, Phase::Unknown, "a diagnostic is no input receipt");
+        assert!(!receipt.not_started(&original.plan));
+        assert_eq!(receipt.result(&original.plan), None);
+        f.runtime.request_stop();
+        f.until("stopped", |f| f.runtime.drained());
+        ledger::startup(&mut f.store.db).unwrap();
+        assert_eq!(f.row(&original).receipt, receipt);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
     /// The real original path, without an executor: the runtime's pinned
     /// image (a script here) receives the exact call, frozen stdin and
     /// custody descriptor, and writes the CLI's receipt as `hgs send` does.

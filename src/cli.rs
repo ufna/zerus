@@ -266,6 +266,7 @@ pub(crate) const USAGE: &str = r#"usage: hgs [@host] <cmd> [project] [-c [ID]] [
        hgs task begin-attempt REF --attempt UUID [--json]   inactive task-scoped acknowledgement
        hgs task control plan|execute|status --json   inactive task controls (JSON stdin)
        hgs task mobile-send|mobile-cancel|mobile-done --json   the phone's task actions (mobile)
+       hgs [@host] team preview on|off|status | catalog | template | create | list | waiting | status | inbox | queue | cards | journal | current | admit | route | accept | return | reassign | hold | release | cancel | reply | ask | pause-member | resume-member | stop-member | archive-member   Agent Teams (preview; JSON on stdin)
        hgs clip                       PNG from this box's clipboard to stdout (rc 1: no image)
        hgs paste <session> <pane> [client]   the tmux C-v binding; not for hand use
   cmd      claude | codex | kimi (know --resume) | opencode (native API) | sh (login shell) | any command
@@ -626,6 +627,15 @@ pub fn dispatch(args: Vec<String>) -> Result<i32> {
     dispatch_at(args, Instant::now())
 }
 
+/// The start of the one stderr line `hgs` writes for a refused command.
+pub(crate) const ERROR_PREFIX: &str = "hgs: ";
+/// The line `hgs` writes on stderr, in one piece and last, when a command is
+/// refused (main.rs); nothing about the refusal goes to stdout. A reader of a
+/// child's refusal parses this line (zerus-63rru.57).
+pub(crate) fn error_line(message: &str) -> String {
+    format!("{ERROR_PREFIX}{message}\n")
+}
+
 pub(crate) fn dispatch_at(args: Vec<String>, entered: Instant) -> Result<i32> {
     if let Some(result) = observe_gate(&args) {
         return result;
@@ -702,6 +712,12 @@ fn dispatch_normal(mut args: Vec<String>) -> Result<i32> {
     // Existing hooks call this private stable ABI, including hooks installed before migration.
     if args.first().is_some_and(|a| a == "__state") {
         session_process()?;
+        if args
+            .get(1)
+            .is_some_and(|verb| matches!(verb.as_str(), "send" | "send-now"))
+        {
+            check_send_caller()?;
+        }
         return state::dispatch(&args[1..]).map_err(|e| Error::new(1, e));
     }
     crate::desktop::launch_configuration(&args)?;
@@ -853,17 +869,7 @@ fn dispatch_normal(mut args: Vec<String>) -> Result<i32> {
     // Only a host actually found refuses: an unverifiable check, such as a
     // sandboxed agent's sender-less send, keeps working as before.
     if matches!(routed, Some("send" | "send-now")) {
-        let proven_hosted = crate::state::session_graph::hosted_agent_call()
-            && ["HGS_SESSION", "HGS_RUN_ID"]
-                .iter()
-                .all(|name| env::var(name).is_ok_and(|value| !value.is_empty()));
-        let check = crate::state::dsh::host_check();
-        if check == crate::state::dsh::HostCheck::Under
-            && state::session_graph::send_origin().is_none()
-            && !proven_hosted
-        {
-            return Err(Error::new(1, check.sentence().unwrap_or_default()));
-        }
+        check_send_caller()?;
     }
     // zerus-ucck P1c: a session reference selects the session it names on every
     // session command, through the same checks as `--session-id`. `inspect`
@@ -1203,6 +1209,7 @@ fn dispatch_normal(mut args: Vec<String>) -> Result<i32> {
         "account" => crate::accounts::dispatch(&config, args, dry),
         "project" => project(&config, args, dry),
         "task" => crate::tasks::dispatch(&config, args, dry),
+        "team" => crate::teams::dispatch(&config, args, dry),
         _ => launch(&config, command, args, &client, dry),
     }
 }
@@ -1745,6 +1752,129 @@ fn bound_terminal(session: &str) -> Result<Option<(String, String)>> {
     Ok(Some((fields[0].to_owned(), run)))
 }
 
+/// Commands that start a session, one list for the hosted forwarding refusal,
+/// the claimed-parent gate (`fork` takes no `--parent`) and the forwarded
+/// parent link; with `--parent` a launch names its parent.
+const LAUNCH_COMMANDS: &[&str] = &["claude", "codex", "kimi", "dsh", "opencode", "fork"];
+
+/// Why forwarding `command` to another computer is refused for a resident
+/// DeepSeek host's tool call (`HGS_AGENT=dsh`) without its hosted proof, or
+/// `None` (zerus-ppd26 Part B). Such a call is never the person, and the peer
+/// cannot see who calls: on every route it sends nothing and launches nothing
+/// without an explicit `--parent`, and on a route that names a machine (a
+/// session reference, forwarded as its verified hop or as `inspect`'s
+/// argument, or `--expect-machine`) it runs no command at all. A launch with
+/// `--parent` names its parent and goes on.
+fn hosted_forwarding_refusal(
+    command: &str,
+    args: &[String],
+    machine: Option<&str>,
+) -> Option<String> {
+    let (verb, rest, named) = if command == "--expect-machine" {
+        (
+            args.get(1).map(String::as_str).unwrap_or_default(),
+            args.get(2..).unwrap_or_default(),
+            true,
+        )
+    } else {
+        let referenced = args
+            .iter()
+            .take_while(|arg| arg.as_str() != "--")
+            .any(|arg| arg.starts_with("zerus://"));
+        (command, args, machine.is_some() || referenced)
+    };
+    let launch = LAUNCH_COMMANDS.contains(&verb);
+    let parent = launch && names_parent(rest);
+    let send = matches!(verb, "send" | "send-now");
+    if !(send || launch && !parent || named && !parent) {
+        return None;
+    }
+    let reason = state::session_graph::hosted_proof_refusal()?;
+    Some(if send {
+        hosted_send_refusal(&reason)
+    } else if launch {
+        state::parent_link::hosted_launch_refusal(&reason)
+    } else {
+        format!("This DeepSeek tool call (HGS_AGENT=dsh) cannot prove its session, so it does not act on another computer: {reason}")
+    })
+}
+
+/// The launch and fork options that take a value, which the parent scan
+/// skips. A test reads `LaunchOptions::parse` and the fork parser and fails
+/// when either gains a value option this list lacks (zerus-ppd26.13).
+const LAUNCH_VALUE_OPTIONS: &[&str] = &[
+    "-n",
+    "--model",
+    "--effort",
+    "--account",
+    "--parent-link",
+    "--launch-id",
+    "--archive",
+    "--expected-run-id",
+    "--expected-conversation-id",
+    "--session-id",
+];
+
+/// Whether a launch's own options name its parent: `--parent` followed by a
+/// claim with its session, run and conversation IDs (zerus-ppd26.10). The
+/// scan follows the launch and fork option grammars, so the value of another
+/// option (`-n --parent`), a conversation ID after `-c`, or an agent flag
+/// after `--` never counts as a parent.
+fn names_parent(args: &[String]) -> bool {
+    let mut i = 0;
+    while let Some(arg) = args.get(i) {
+        match arg.as_str() {
+            "--" => return false,
+            "--parent" => {
+                return args.get(i + 1).is_some_and(|claim| {
+                    serde_json::from_str::<serde_json::Value>(claim).is_ok_and(|claim| {
+                        ["session_id", "run_id", "conversation_id"]
+                            .iter()
+                            .all(|key| claim[key].as_str().is_some_and(|id| !id.is_empty()))
+                    })
+                })
+            }
+            option if LAUNCH_VALUE_OPTIONS.contains(&option) => i += 1,
+            "-c" | "--resume" | "--continue"
+                if args
+                    .get(i + 1)
+                    .is_some_and(|value| conversation_id(value).is_some()) =>
+            {
+                i += 1
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    false
+}
+
+/// Public and private native send entries use the same caller admission.
+/// A proven hosted source may retain its call context in an already-attributed
+/// child; the private state entry skips attribution, never this proof.
+fn check_send_caller() -> Result<()> {
+    let proven_hosted = crate::state::session_graph::hosted_agent_call()
+        && ["HGS_SESSION", "HGS_RUN_ID"]
+            .iter()
+            .all(|name| env::var(name).is_ok_and(|value| !value.is_empty()));
+    let check = crate::state::dsh::host_check();
+    if check == crate::state::dsh::HostCheck::Under
+        && state::session_graph::send_origin().is_none()
+        && !proven_hosted
+    {
+        return Err(Error::new(1, check.sentence().unwrap_or_default()));
+    }
+    if let Some(reason) = state::session_graph::hosted_proof_refusal() {
+        return Err(Error::new(1, hosted_send_refusal(&reason)));
+    }
+    Ok(())
+}
+
+/// The refusal of a send by a DeepSeek tool call without its hosted proof.
+fn hosted_send_refusal(reason: &str) -> String {
+    format!("This DeepSeek tool call (HGS_AGENT=dsh) cannot prove its session, so its message is not sent: {reason}")
+}
+
 fn remote(
     config: &Config,
     target: &str,
@@ -1885,6 +2015,12 @@ fn remote_via(
     person_only_forwarding(command, args)?;
     if target.starts_with('-') || target.chars().any(char::is_whitespace) {
         return Err(Error::new(1, "invalid SSH host alias"));
+    }
+    // Every route to another computer passes here, by @host or by a session
+    // reference's verified hop: the one place a DeepSeek tool call without its
+    // hosted proof is refused before anything is forwarded (zerus-ppd26).
+    if let Some(refusal) = hosted_forwarding_refusal(command, args, machine) {
+        return Err(Error::new(1, refusal));
     }
     let mut args = args.to_vec();
     if command == "inspect" && args.first().is_some_and(|arg| arg.starts_with("zerus://session?")) && args.len()==1 {
@@ -2065,9 +2201,15 @@ fn remote_via(
         platform::remote_sh(&format!("if ~/.local/bin/hgs --help 2>/dev/null | grep -qF '{}'; then exec ~/.local/bin/hgs {}; else echo 'hgs: update the selected computer to stream events (watch-v1)' >&2; exit 1; fi",zerus_watch_protocol::HELP_MARKER,platform::join(&remote_args)))
     } else if command == "guide" {
         platform::remote_sh(&format!("if ~/.local/bin/hgs --help 2>/dev/null | grep -qF 'hgs [@host] guide'; then exec ~/.local/bin/hgs {}; else echo 'hgs: the selected computer has no agent guide; check hgs @host -h' >&2; exit 1; fi",platform::join(&remote_args)))
-    } else if matches!(command, "claude" | "codex" | "kimi" | "dsh" | "opencode") && args.iter().take_while(|s| s.as_str() != "--").any(|s| s == "--parent") {
+    } else if LAUNCH_COMMANDS.contains(&command)
+        && command != "fork"
+        && args
+            .iter()
+            .take_while(|s| s.as_str() != "--")
+            .any(|s| s == "--parent")
+    {
         platform::remote_sh(&format!("if ~/.local/bin/hgs --help 2>/dev/null | grep -qEx '[[:space:]]*claimed-parent-v1[[:space:]]*'; then exec ~/.local/bin/hgs {}; else echo 'hgs: update the selected computer to claim a launch parent' >&2; exit 1; fi", platform::join(&remote_args)))
-    } else if let Some(link) = (matches!(command, "claude" | "codex" | "kimi" | "dsh" | "opencode" | "fork") && machine.is_none())
+    } else if let Some(link) = (LAUNCH_COMMANDS.contains(&command) && machine.is_none())
         .then(state::parent_link::forwarded_argument)
         .flatten()
     {
@@ -3099,6 +3241,13 @@ fn resolve_project(
         ),
     ))
 }
+fn record_native_launch(launch: Option<&str>, name: &str) {
+    let Some(id) = launch else { return };
+    let _ = match state::session_id_of(name) {
+        Some(session) => state::launches::started_with_session(id, name, &session),
+        None => state::launches::started(id, name),
+    };
+}
 fn launch(
     config: &Config,
     command: &str,
@@ -3119,6 +3268,7 @@ fn launch(
         let project=if project=="/" {"root".into()}else{sanitize(&project)};
         let tag=if options.tag.is_empty(){"main"}else{&options.tag};let name=format!("opencode/{project}/{tag}");
         state::opencode::launch(&name,&directory,options.launch_id.as_deref(),options.model.as_deref(),options.effort.as_deref(),options.dry,options.new_only).map_err(|e|Error::new(1,e))?;
+        if !options.dry { record_native_launch(options.launch_id.as_deref(), &name); }
         if !options.dry {println!("OpenCode session ready: {name}\nOpen this session in Zerus.");}return Ok(0);
     }
     if options.model.is_some() || options.effort.is_some() {return Err(Error::new(1,"--model and --effort are OpenCode launch options; other agent flags go after --"));}
@@ -3160,6 +3310,7 @@ fn launch(
             options.new_only,
         )
         .map_err(|e| Error::new(1, e))?;
+        if !options.dry { record_native_launch(options.launch_id.as_deref(), &name); }
         if !options.dry {
             println!("DeepSeek session ready: {name}\nOpen this session in Zerus.");
         }
@@ -3509,7 +3660,11 @@ fn launch(
             if let Some(id) = &options.launch_id {
                 // A session that ends before a listing shows it still ends
                 // its launch's placeholder (`state::launches`).
-                if let Err(error) = state::launches::started(id, &session) {
+                let evidence=match &allocation {
+                    Some(allocation)=>state::launches::started_with_session(id,&session,allocation.session()),
+                    None=>state::launches::started(id,&session),
+                };
+                if let Err(error) = evidence {
                     eprintln!("hgs: cannot record launch {id}: {error}");
                 }
             }

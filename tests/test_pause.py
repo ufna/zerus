@@ -678,6 +678,7 @@ class Harness(unittest.TestCase):
         # kill-server returns before the supervised agents have drained and
         # synced their final records. Identify only this private socket's pane
         # processes and recorded processes whose start identity still matches.
+        assert Path(self.socket).parent.is_dir(), "the private tmux socket directory is gone"
         panes = subprocess.run([TMUX, "-S", self.socket, "list-panes", "-a", "-F", "#{pane_pid}"],
                                env=self.env, capture_output=True, text=True)
         table = process_table()
@@ -713,6 +714,7 @@ class Harness(unittest.TestCase):
                     if pid in table and table[pid][2] == started and not table[pid][1].startswith(("Z", "X"))}
 
         live_owned(table)
+        assert Path(self.socket).parent.is_dir(), "the private tmux socket directory is gone"
         subprocess.run([TMUX, "-S", self.socket, "kill-server"], env=self.env, capture_output=True)
         deadline = time.monotonic() + 6
         while remaining := live_owned(process_table()):
@@ -3243,11 +3245,17 @@ class ActivitySummary(Harness):
         self.assertEqual(self.row(name)["activity"], "busy")
         write("turn_aborted", reason="interrupted")
         self.counts(self.row(name), 0, 1, 1)
-        # A transcript for a different parent cannot complete a newer hook turn.
+        # A late hook cannot revive that finished ID. A genuinely new hook
+        # child gets a fresh ID, and foreign-parent native evidence cannot end it.
         self.send_event(name, "SubagentStart", agent_id=child, agent_type="Review")
-        header["payload"]["parent_thread_id"] = str(uuid.uuid4())
+        self.counts(self.row(name), 0, 1, 1)
+        child = str(uuid.uuid4())
+        self.send_event(name, "SubagentStart", agent_id=child, agent_type="Review")
+        with sqlite3.connect(account / "state_5.sqlite") as db:
+            db.execute("INSERT INTO threads VALUES(?,?,?)", (child, str(rollout), str(self.project)))
+        header["payload"].update(id=child, parent_thread_id=str(uuid.uuid4()))
         write("task_complete", last_agent_message="Foreign result")
-        self.counts(self.row(name), 1, 0, 1)
+        self.counts(self.row(name), 1, 1, 2)
 
     def test_kimi_native_catalog_separates_same_profile_children(self):
         name = self.start("kimi")
@@ -3351,12 +3359,16 @@ class ActivitySummary(Harness):
         self.send_event(name, "Stop", last_assistant_message="The worker hit its limit")
         self.assertEqual(self.binding(name)["activity"], "idle")
         self.assertEqual(self.row(name)["activity"], "idle")
-        # A resumed child is current work again.
+        # Late events cannot revive a finished hook child or erase its error.
         self.send_event(name, "PreToolUse", agent_id="worker", tool_name="Bash", tool_use_id="later")
-        self.counts(self.row(name), 1, 0, 1)
-        self.send_event(name, "SubagentStop", agent_id="worker")
         self.counts(self.row(name), 0, 1, 1)
-        self.assertNotIn("display_state", self.binding(name)["subagents"]["worker"])
+        self.assertEqual(self.binding(name)["subagents"]["worker"]["display_state"], "error")
+        self.send_event(name, "SubagentStart", agent_id="worker-next", agent_type="Research")
+        self.send_event(name, "PreToolUse", agent_id="worker-next", tool_name="Bash", tool_use_id="fresh")
+        self.counts(self.row(name), 1, 1, 2)
+        self.send_event(name, "SubagentStop", agent_id="worker-next")
+        self.counts(self.row(name), 0, 2, 2)
+        self.assertNotIn("display_state", self.binding(name)["subagents"]["worker-next"])
 
     def test_unknown_child_status_is_not_reported_as_completed(self):
         name = self.start("codex")

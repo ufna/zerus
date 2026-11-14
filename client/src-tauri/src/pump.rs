@@ -1229,6 +1229,7 @@ impl Mirror {
             | Change::Activity { .. }
             | Change::Processes { .. }
             | Change::Tasks { .. }
+            | Change::Teams { .. }
             | Change::Git { .. } => {}
         }
     }

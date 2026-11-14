@@ -1309,6 +1309,11 @@ pub(super) fn journal_name(record: &Value) -> &str {
     }
 }
 
+/// A Kimi profile child revived by a racing start: settled as ended by the
+/// next profile-group event once it has had no event of its own for this
+/// long, the first tier the unreadable-member path waits (zerus-63rru.93).
+pub(super) const REVIVED_KIMI_SETTLE_SECONDS: f64 = 60.0;
+
 pub(super) fn update_activity(record: &mut Value, event: &Value) {
     if stale_kimi_turn(record, event) { return; }
     repair_kimi_main(record);
@@ -1365,6 +1370,45 @@ pub(super) fn update_activity(record: &mut Value, event: &Value) {
                 info["description"] = json!(clipped(&tool["detail"], 160));
             }
         }
+        // A Start for a child the record already holds as ended or interrupted
+        // is that child's own Stop or Interrupt that arrived first: the two hook
+        // processes race. Counting it working again would leave a child no later
+        // Stop ever ends, so the record keeps the end it already has. Nothing
+        // else about the child changes, and a late announcement is still kept.
+        // This is the one exception to "a later event resumes the child": a
+        // later Start of the same ID is not counted until its next event.
+        // "Interrupted" is the hook writer's own shape, never process
+        // uncertainty, which a fresh Start must clear: only the lifecycle
+        // projection sets process_unknown.
+        let interrupted = string(info, "state") == "working"
+            && string(info, "display_state") == "unknown"
+            && info["process_unknown"] != true;
+        let ended = ["finished", "ended"].contains(&string(info, "state")) || interrupted;
+        // A child's end is final for its ID (zerus-63rru.88). Claude and
+        // Codex name every subagent invocation with a fresh ID, so no event
+        // of theirs revives an ended child: a late Start is dropped here.
+        // A Kimi profile child really resumes under its profile name, so
+        // only its own start event revives it.
+        if kind == "SubagentStart" && ended && string(record, "agent") != "kimi" {
+            record["subagents"] = json!(children);
+            return;
+        }
+        // The non-start events of an ended child are recorded as history
+        // only: nothing but its producer's own start event (the guard above
+        // admits only Kimi's) sets it working again. An interrupted child
+        // (working with the hook writer's unknown display) is not an end:
+        // its own tool events resume it as before.
+        let final_end = ["finished", "ended"].contains(&string(info, "state"));
+        let revives = !final_end || kind == "SubagentStart";
+        // zerus-63rru.93: the Start that revives a finished or ended Kimi
+        // profile child records the revival; the next profile-group event
+        // settles it if nothing of its own has followed (the measure found
+        // nothing orderable in Kimi's frames, so the race cannot be told
+        // from a genuine resume by the bytes alone).
+        let revived = kind == "SubagentStart" && final_end && string(record, "agent") == "kimi";
+        if revived {
+            info["revived_at"] = json!(timestamp);
+        }
         if ["Stop", "SubagentStop"].contains(&kind) {
             let result = detail(event);
             if string(info, "state") != "finished"
@@ -1375,10 +1419,12 @@ pub(super) fn update_activity(record: &mut Value, event: &Value) {
         }
         // A Claude child's StopFailure ends its turn with a provider error, such
         // as a usage limit; Claude sends no SubagentStop after it. The child is
-        // settled as an error, which never keeps its parent working. A newer
-        // event of the same child resumes it as usual.
+        // settled as an error, which never keeps its parent working. Any newer
+        // event of the same child but its Start resumes it as usual.
         let failed = kind == "StopFailure" && string(record, "agent") == "claude";
-        info["state"] = json!(if failed || ["SubagentStop", "SessionEnd", "Stop"].contains(&kind) {
+        info["state"] = json!(if !revives {
+            string(info, "state")
+        } else if failed || ["SubagentStop", "SessionEnd", "Stop"].contains(&kind) {
             "finished"
         } else {
             "working"
@@ -1391,7 +1437,7 @@ pub(super) fn update_activity(record: &mut Value, event: &Value) {
             info["display_state"] = json!("error");
         } else if ["StopFailure", "Interrupt"].contains(&kind) {
             info["display_state"] = json!("unknown");
-        } else {
+        } else if revives {
             info.as_object_mut().unwrap().remove("display_state");
         }
         // Any newer child event ends its pending request (hooks.rs sets a new one).
@@ -1447,6 +1493,7 @@ pub(super) fn update_activity(record: &mut Value, event: &Value) {
                 record[count] = json!(record[count].as_u64().unwrap_or(0) + 1);
             }
         }
+        let _ = settle_quiet_revivals(record, &mut children, timestamp);
         record["subagents"] = json!(children);
         return;
     }
@@ -1746,6 +1793,54 @@ pub(super) fn update_activity(record: &mut Value, event: &Value) {
         }
     }
     record["active_tools"] = json!(tools);
+    // zerus-63rru.93 round 2: the persisted settle also rides the session's
+    // next event of any kind (the main's Stop or turn end included), so a
+    // last invocation whose Start lost the race cannot keep the member busy
+    // for ever. Round 3: the map is rewritten only when a child settled.
+    let mut children = record["subagents"].as_object().cloned().unwrap_or_default();
+    if settle_quiet_revivals(record, &mut children, timestamp) {
+        record["subagents"] = json!(children);
+    }
+}
+
+/// zerus-63rru.93: a revived Kimi profile child that has had no event of its
+/// own for the settle period is ended, with no new timer; its group's counts
+/// follow so the listing the fleet reads shows no active child for it.
+/// Whether anything was settled.
+fn settle_quiet_revivals(record: &mut Value, children: &mut serde_json::Map<String, Value>, timestamp: f64) -> bool {
+    let quiet: Vec<String> = children
+        .iter()
+        .filter(|(_, child)| {
+            child["revived_at"].as_f64().is_some()
+                && child["updated"].as_f64().is_some_and(|at| {
+                    timestamp - at >= REVIVED_KIMI_SETTLE_SECONDS
+                })
+        })
+        .map(|(id, _)| id.clone())
+        .collect();
+    let settled_any = !quiet.is_empty();
+    for id in quiet {
+        let Some(child) = children.get_mut(&id) else {
+            continue;
+        };
+        child["state"] = json!("ended");
+        child["detail"] = json!("Revived by a racing start and quiet since; the next event settled the child.");
+        child.as_object_mut().unwrap().remove("revived_at");
+        if let Some(groups) = record["subagent_groups"].as_object_mut() {
+            if let Some(group) = groups.get_mut(&id) {
+                // The read-time rule zeroes the profile's whole active count
+                // (the quiet revived profile has no live invocation left to
+                // be told apart), so the persisted settle agrees with it.
+                let active = group["active_count"].as_u64().unwrap_or(1);
+                group["active_count"] = json!(0);
+                group["completed_count"] = json!(group["completed_count"]
+                    .as_u64()
+                    .unwrap_or(0)
+                    .saturating_add(active));
+            }
+        }
+    }
+    settled_any
 }
 
 // Native turn IDs are monotonic, but the observation-only TurnStarted hook can

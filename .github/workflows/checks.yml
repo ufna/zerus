@@ -228,6 +228,7 @@ jobs:
           cargo +1.99.1 fmt --check --manifest-path crates/replica/Cargo.toml
           cargo +1.99.1 clippy --locked --manifest-path crates/replica/Cargo.toml --target-dir target --all-targets -- -D warnings
           cargo +1.99.1 test --locked --manifest-path crates/replica/Cargo.toml --target-dir target
+          cargo +1.99.1 test --locked --manifest-path crates/replica/Cargo.toml --target-dir target --features test-without-team
           cargo +1.99.1 fmt --check --manifest-path crates/replica-ffi/Cargo.toml
           cargo +1.99.1 clippy --locked --manifest-path crates/replica-ffi/Cargo.toml --target-dir target --all-targets -- -D warnings
           cargo +1.99.1 test --locked --manifest-path crates/replica-ffi/Cargo.toml --target-dir target
@@ -250,6 +251,11 @@ jobs:
       - name: Disk usage after watch tests
         if: ${{ !cancelled() }}
         run: python3 scripts/ci/ubuntu-disk.py report after-watch-tests
+      - name: Team plan crate (format, lints, tests)
+        run: |
+          cargo +1.99.1 fmt --check --manifest-path crates/team-plan/Cargo.toml
+          cargo +1.99.1 clippy --locked --manifest-path crates/team-plan/Cargo.toml --target-dir target --all-targets -- -D warnings
+          cargo +1.99.1 test --locked --manifest-path crates/team-plan/Cargo.toml --target-dir target
       - name: Desktop client core crate (format, lints, tests)
         run: |
           cargo +1.99.1 fmt --check --manifest-path client/core/Cargo.toml

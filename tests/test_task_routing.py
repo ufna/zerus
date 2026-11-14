@@ -67,7 +67,7 @@ class TaskRouting(unittest.TestCase):
             (self.root / node / "state").mkdir()
             socket = self.root / node / "socket"
             # hgs puts $HOME/.local/bin first on PATH: each node's tmux stays private.
-            shim = home / "tmux"; shim.write_text(f'#!/bin/sh\nexec {TMUX} -S "{socket}" -f /dev/null "$@"\n'); shim.chmod(0o755)
+            shim = home / "tmux"; shim.write_text(f'#!/bin/sh\n[ -d "{socket.parent}" ] || {{ echo "private tmux socket directory is gone" >&2; exit 97; }}\nexec {TMUX} -S "{socket}" -f /dev/null "$@"\n'); shim.chmod(0o755)
             self.addCleanup(lambda socket=socket: subprocess.run([TMUX, "-S", str(socket), "kill-server"], capture_output=True))
             config = self.root / node / "config"; config.mkdir()
             (config / "config").write_text(f'HGS_SELF="{node}"\nHGS_PEERS="{peer}"\n')

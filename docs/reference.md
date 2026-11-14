@@ -3051,7 +3051,7 @@ unknown counts remain unknown. An unknown child never keeps its parent from Read
 A Claude child that stops on a provider error, such as a usage limit, gets no
 SubagentStop: its StopFailure, or a `failed` entry for its current start in the
 workflow journal with no newer child event, settles it as **Error** with that
-message, and a later event of the same child resumes it. Ordinary child
+message, and any later event of the same child but its Start resumes it. Ordinary child
 results/errors stay out of the attention count, while explicit input/approval
 requests remain visible. DeepSeek
 continuable children can receive messages through the native API with parent
@@ -3239,28 +3239,14 @@ context plus about 40 new tokens, which stay in the conversation.
 
 A ping goes only to the exact verified, live agent process with the expected
 run and conversation when it is settled: no turn, tool or child is running, no
-scheduled job, no automatic recovery episode, no unconfirmed
+live background or scheduled job, no automatic recovery episode, no unconfirmed
 or queued input, no pending launch message, question, approval, trust, resume,
 usage-limit or cache-expiry choice, no pending model or effort setting, an
 empty recognized composer, no terminal input in the last two minutes (a terminal
 that cannot report input times must have no attached client; unknown activity
 never admits a ping), and the session is not paused, archived or terminated.
-Owned live shell or native jobs (desktop **Background**) do not hold a ping for
-Claude or Codex, because an idle agent with them accepts a new message; Kimi's
-own scheduled and background jobs can start turns, so its ping waits.
 The last check before the first typed byte repeats these rules and the
-30-second cache margin, so a slow stage never types into a cold cache. A
-partial native usage read is not evidence of expiry: while Claude's usage scan
-is still catching up, the cache lifetime is unknown, nothing is sent, and the
-cache is not called cold; only a complete read may decide either. The scan
-takes the transcript's identity and modification stamp under its usage-cache
-lock, and a round records a cold cache only from a fresh complete read taken in
-that round: a stale size or stamp, or a fresh read that shows a later expiry,
-leaves it warm. A JSONL record longer than the scan bound is discarded across
-scans within that byte budget; a record is oversized only when a full bound
-from its own start finds no newline, a record that only straddles the remaining
-budget is read from its start by the next scan, a scan resumes from the stored
-discard point, and an unterminated tail stays unread. It uses the
+30-second cache margin, so a slow stage never types into a cold cache. It uses the
 guarded send path with its own origin and request ID, bound to the setting
 revision it was decided for (a change in between cancels it): a refusal before any input
 waits for the next round, and an unknown delivery is never sent again; keep-warm
@@ -3269,16 +3255,12 @@ overlap, so two desktops or a manual `hgs recovery tick` cannot send two pings
 for one window.
 
 A ping is not the person's message. Its prompt is journaled with
-`origin: "keep_warm"` and the rest of a turn that holds nothing but the ping
-with `turn_origin: "keep_warm"`. Its Stop is never the session's reply, so it
-adds no unread badge, notification or read-mark change; listings and search keep
-the previous prompt, last message and last event time. The first prompt of any
-other origin, whether the person's text, a task notification, a subagent
-report, a peer message or any other system envelope, ends the masking at once
-before it is applied: the person's prompt, last message and times return, and
-that prompt and every later event are ordinary and visible, including a Stop
-that closes a turn the ping started. The ping's own prompt event keeps
-`origin: "keep_warm"`. A ping turn that
+`origin: "keep_warm"` and every event of its turn with
+`turn_origin: "keep_warm"`. Its Stop is never the session's reply, so it adds no
+unread badge, notification or read-mark change; listings and search keep the
+previous prompt, last message and last event time. A message the person sends
+or queues while a ping is being typed or running makes that turn theirs; the
+ping's own prompt arriving later is then shown as ordinary text. A ping turn that
 fails, for example on a usage limit, never starts automatic recovery, even when
 an earlier finished recovery episode is kept: keep-warm stops
 until the next real turn, and the provider failure stays visible as usual.
@@ -4653,6 +4635,23 @@ task and works with them offline. Every command prints
 JSON. Tasks belong to a catalog project, named by its ID or name; a task is
 `T-` plus six characters, and `PROJECT/T-xxxxxx` names it anywhere.
 
+With the Agent Teams preview on, a task's `team` key identifies its team and
+home computer. Agents cannot send, hand off, retarget, cancel, reorder, edit,
+rename or change the stage of a live team's task. Its delivered holder may
+acknowledge its own attempt or legacy dispatch, register a worker and report;
+comments and messages that only add text remain available. The person can
+override these restrictions. A person's retarget away from the team clears the
+key and releases its live node under the same project lock; a refused release
+keeps the task unchanged.
+
+Turning the preview off makes a local team's marked tasks dormant: ordinary
+task commands do not open the team store or apply its guards. A foreign-home
+or invalid key still refuses agent control without opening the store, whether
+the preview is on or off. The refusal points the person to `hgs task target
+REF any` to clear the key. When a key is cleared or replaced on another
+computer, the home service releases the node at its next observation; that
+sync and observation window is accepted.
+
 ```sh
 hgs task add --project orchard [--backlog] [--target codex/api|any [--host ALIAS]] [--position N] < prompt.txt
 hgs task add --project orchard --title "Task title" --request-id UUID < description.txt
@@ -4932,8 +4931,9 @@ Run inside a session (`HGS_SESSION` and
 for that session, and the project settings can keep agents to their own
 session or limit how many tasks they start per hour. `settings --set` reads a
 JSON object and changes only the fields it names. A DeepSeek host's tool call
-(`HGS_AGENT=dsh`) never acts as the person; while its session cannot be proven,
-`hgs task` refuses it (see Session markers of hosted tool calls).
+(`HGS_AGENT=dsh`) never acts as the person: it acts as its hosted session when
+the hosted caller proof holds, and `hgs task` refuses it otherwise (see Session
+markers of hosted tool calls).
 
 Another computer's hgs, reached as `hgs @host …`, sees no marker of the agent
 that calls it and takes the caller for the person. So an agent's process
@@ -6050,15 +6050,85 @@ sets these per call.
 
 A hosted tool call is never the person. `hgs task` and the desktop's
 agent-descended refusal treat `HGS_AGENT=dsh` without a session they can prove
-as an agent, and refuse person actions plainly. Until a hosted session can be
-proven, its `hgs task` commands are refused and its sends are unattributed.
+as an agent, and refuse person actions plainly.
+
+Each call's processes also carry `HGS_DSH_CALL_TOKEN`, a fresh random token of
+256 bits. The host keeps it, naming the calling top-level conversation, while
+the call runs and, for a background or promoted job the call starts, until that
+job settles; the table is bounded and an evicted token is unknown. Each
+conversation holds at most 512 live tokens and makes room only from its own
+oldest, so a full table never evicts another conversation's live token: a call
+that finds it full of other conversations' tokens gets none and stays unproven.
+Everything the host's private socket serves, such as a running job's output that
+printed its environment or an error that echoes a request, shows a live token as
+`[hidden call token]`, wherever it stands in the text and however often. That
+hides a live token printed whole: a call can always disclose its own token split
+or encoded, which no redaction catches. A job's output is served as its last
+32 KiB, so a token cut at that window's start shows only its final characters.
+What the host's own web UI shows is outside this: reaching it takes the sign-in
+address in the host's private log. A command
+then acts as its hosted session for `hgs task` and for the source of `hgs send`
+when the hosted caller proof holds:
+
+1. the binding its `HGS_SESSION`, `HGS_RUN_ID` and `HGS_SESSION_ID` name, read
+   by its exact route, is that DeepSeek session's;
+2. the binding's agent home selects the host folder, whose record of this boot
+   names a process and its birth;
+3. that process, with that birth, is an ancestor of the command;
+4. the command's `DSH_HOME` is the binding's agent home;
+5. the host, asked over its private socket, holds the token for the
+   binding's conversation; the socket's peer credentials (`SO_PEERCRED` on
+   Linux, `LOCAL_PEERPID` on macOS), which name the process that created the
+   listening socket, must be the very process and birth of step 3, so the
+   answering socket is the host's; one 2-second deadline bounds the whole
+   exchange.
+
+An older host that does not advertise call tokens, no answer, an unknown token
+or another conversation refuses; so do another session's markers with a call's
+own token, a made-up token and the token of a call that has ended. `hgs self`
+reports such a proof as `identity_source` `hosted_call`, with its limit.
+
+Peer credentials do not show which process accepted a connection: a process
+that held the host's listening descriptor, such as a child that inherited it or
+the host re-executed while listening, would answer as the host. The host never
+hands its listener to a child, because it is opened close-on-exec, and never
+re-executes while listening. On Linux the end-to-end suite checks that no
+process of a tool call holds a descriptor of `host.sock` and that the host's
+listener is close-on-exec; on macOS this rests on the same Node behaviour.
+
+A command that carries `HGS_AGENT=dsh` but whose hosted proof fails (no token,
+a wrong or ended token, or any other refusal) is never the person: `hgs send`
+and `send-now` refuse it, and so does a launch without `--parent`, each with a
+sentence naming the missing proof. Neither sends nor launches as nobody. Every
+route to another computer passes one check before anything is forwarded: by
+`@host`, by a session reference (its verified hop, or `inspect` of it) or by
+`--expect-machine`, such a call sends nothing and launches nothing without
+`--parent`, and on a route that names a machine it runs no other command,
+because the peer cannot see who calls. A launch names its parent only with
+`--parent` followed by a claim of the parent's session, run and conversation
+IDs among its own options: the value of another option, or a word after `--`,
+is no parent. A launch Zerus does not track
+(`HGS_TRACKING=0`, or a plain shell session) records no parent at all and is
+outside this rule. Hosts an older Zerus started never set `HGS_AGENT=dsh`, so
+their calls are unaffected.
 
 The limit: one process serves all hosted sessions, so process ancestry proves
 only that a command runs under the host serving a session, not which hosted
-agent ran it. The markers are claims that the host sets per call, which ends
-accidental attribution to another session; an agent that deliberately sets
-another hosted session's markers, or edits the same-user identity file, is not
-detected by them.
+agent ran it; the per-call token proves which conversation's call started it.
+A same-user process that reads another tool call's environment can copy its
+token: that is deliberate instrumentation and outside this proof, as is an agent
+that edits the same-user identity file.
+
+A command below a recorded resident agent host that carries the markers of
+another session is refused: a command there can only be a session that host
+serves, and only a hosted call's token proves one. The host is found from the
+host records and the process tree, never from a marker, and a check that cannot
+tell refuses. The shared `state::dsh::hosted_ancestor` also recognizes a live host by its
+own exact arguments, including the patch path under this state's `dsh/hosts`.
+Removing or editing the records does not conceal an ancestor with that shape;
+reparenting or a host with neither a record nor matching arguments remains
+outside this interim proof. Agent Teams keeps OpenCode's separate, untrusted
+service-file refusal check.
 
 A host an older Zerus started keeps the markers it inherited and its adapter
 until it exits on its own; it is never restarted or reloaded for this. Its
@@ -6071,8 +6141,9 @@ check of recorded host ancestry below refuses them.
 
 Under a recorded host, no other identity (zerus-ppd26.15). The process tree and
 the host records decide this, never a marker the caller sets. hgs reads the host
-records first: a computer or account that records no DeepSeek host is never
-affected by the rest of this check. Otherwise hgs walks a command's ancestry
+records first. With no records it still looks for a live host by its own
+arguments, but does not adopt an unreadable or changing walk's refusals. With
+records, those refusals stand. hgs walks a command's ancestry
 through processes of the same user, at most 64, up to the first process of
 another user. When that walk contains a DeepSeek host this
 computer records in `dsh/hosts`, matched by process ID and birth, the command is
@@ -6109,7 +6180,8 @@ atomically (a synced temporary file renamed into place, then the folder synced),
 so a crash leaves the previous record or the new one. Outside this check:
 - a command that leaves the host's tree (a double fork, setsid, or a background
   job whose shell exits), which the user's service manager adopts;
-- a host started by an attempt that ended before its running record.
+- a host with neither a record nor the exact host argument shape under this
+  state directory.
 
 The official minimal composition's persistent `bash` tool keeps one shell per
 agent across calls, which starts with the environment of the call that opened
@@ -6311,6 +6383,123 @@ and reasoning are excluded. Searching never starts, resumes or reloads a host.
 Hosts are asked at once, each scanning for at most 5 seconds; a stopped host, an
 older adapter or a host that does not answer within 7 seconds reports that
 history as unavailable.
+
+A team member's hosted lifecycle is observed read-only through the advertised
+`teamLifecycle` capability and `session-lifecycle` RPC. A live Agent answers
+`live`; only the host's own `agent/disposed` event answers `ended`, with its
+source and timestamp. The host retains at most 4096 end records. A missing
+record, an older adapter, a changed host generation or an unreachable host is
+unknown, never an inferred exit or permission to resume. The standing terminal
+confirmation scan skips DeepSeek members. Live hosts are never reloaded for
+this capability.
+
+A task input to a hosted DeepSeek session is witnessed (`zerus-hfw2s`). The
+caller is the Agent Teams task delivery; it uses
+`state::dsh::witness::submit_witnessed(name, request, deadline)`. For recovery
+it uses `recorded(name, request)`, which reads the store under the same
+per-request lock and answers `Absent`, `Conflict` (the request ID holds another
+input) or `Outcome(code)`. A lock or store that cannot be read is an error.
+Only `Absent` means that no witnessed submit offered, or is offering, this
+exact request. Each input answers with exactly one fixed
+code. Codes are never folded, retried or promoted. A repeat of exactly the same
+request ID, digest, name, run and conversation replays the stored code without
+sending. A well-formed receipt of the same request ID with any other payload or
+binding is refused as an identity conflict, and the stored outcome is kept.
+The receipt path is read without following links. A link, another
+non-regular file, an unparsable file, or a parsed value that is not a
+well-formed receipt of this request ID proves nothing about what was offered.
+Each is `Unknown{unseen}`, with no host call and nothing written. The opened
+descriptor is checked again, so a path replaced after its check is no
+receipt either. A pending
+marker whose write reports a failure is answered by what the store then holds:
+no receipt is `NotOffered{host_refused}`, and a receipt is `Unknown{pending}`.
+
+- `Receipt`: the conversation durably recorded this request's own message. It
+  carries the same message ID and request ID, and the offered content digest.
+- `NotOffered{host_refused}`: refused before the pending marker, by HGS or the
+  host. This also covers a host whose `ping` lacks `inputWitness` ("This
+  DeepSeek host cannot witness a task input; it can after its next own start").
+  It also covers the host's own refusal of this exact request before its
+  prompt, and a stored binding without its run or conversation ID ("Session
+  identity is incomplete"), whose receipt would not read as well-formed.
+- `NotOffered{unsafe_content}`: a text block HGS would insert contains the
+  case-sensitive literal `dsh-session:`. The host's session-reference plugin
+  rewrites such a mention or fails the turn on it. This is checked before any
+  marker.
+- `NotOffered{host_disposed}`: the queued input was canceled while the adapter
+  disposed of the agent itself (Pause or Forget). `NotOffered{canceled}`: it was
+  canceled by anyone else, which the log does not name.
+- `NotOffered{dropped_after_claim}`: a turn claimed the input and ended without
+  recording it. A claimed input is never queued again, after a later turn,
+  Forget and resume, or a host restart.
+- `Unknown{pending}`: still queued, claimed or not yet durable at the caller's
+  deadline. `Unknown{changed}`: recorded with other content, for example after
+  an edit in the native UI.
+- `Unknown{host_gone}`: the host stopped answering or changed generation.
+  `Unknown{unseen}`: no witness exists for the request. Either the host holds
+  no record of it, or an earlier call may already have offered it. That happens
+  when exactly this request was recorded by an ordinary send without a witness,
+  or when its receipt, its receipt path or the store's lock could not be read. It is never a
+  refusal and never sent again.
+
+The digest is SHA-256 over each content block's type and, for a text block, its
+text, each followed by NUL. The host keeps images as attachment references, so
+**a Receipt does not prove image bytes**. Its receipt says
+`"digest_scope": "text_and_block_types"`.
+
+The adapter's `ping` advertises `inputWitness: true`. Its `send` binds a request
+to the first message the harness inserts with that request ID as `rpcId`.
+`input-witness {sessionId, requestId, generation, waitMs <= 25000, fromSeq?}`
+reports facts only:
+
+- it waits until the message settles or `waitMs` passes;
+- it flushes the session;
+- it returns at most 4096 log events, forward from the inserting splice or
+  `fromSeq`: inbox splices, that session's `user/message` digests and
+  `turn/end`;
+- `complete` says whether the page reached the log's end;
+- it also returns the adapter's own disposal windows and whether the flush made
+  them durable.
+- After the adapter disposes of a session itself, each record bound to it keeps
+  its final facts (`frozen: true`) instead of the disposed session's log.
+
+HGS pages forward from `through` and classifies the events. A receipt, a
+changed message or a cancellation is concluded only from a complete slice.
+`dropped_after_claim` may be concluded from any prefix. The deadline is the
+caller's: about 20 seconds for a Teams hand-out and about 90 seconds for a
+person's send. A foreground bash step alone can last 60 seconds, so a hand-out
+during a long tool call often ends `Unknown{pending}`. The deadline budgets the
+whole call (`zerus-hfw2s.8`):
+
+- The wait for the request's lock ends at the deadline. Another call that still
+  holds the request may be offering it, so this answers `Unknown{unseen}` and
+  this call sends nothing.
+- `ping` and `inspect` each get at most what is left. Running out before the
+  marker, or less than one second left to offer and read, answers
+  `NotOffered{host_refused}` ("The deadline passed before the input was
+  offered; nothing was written or sent").
+- After the marker, the send and the reads share what is left. Running out
+  answers `Unknown{pending}`.
+
+`tests/fixtures/dsh-input-witness-facts.json` records the pinned reviewed host
+it was captured on. It is regenerated only on that host, where the native test
+also compares its live facts with it. Receipts live in
+`dsh/receipts/<request_id>.json`. They are written with a temporary file,
+fsync, rename and directory fsync. Their states are `pending`, `submitted`, or
+`not_offered` with its `code`; an unknown outcome keeps `pending` with its
+`code`.
+
+Exclusivity is per request ID, never per computer (`zerus-hfw2s.5`): a
+witnessed submit holds `dsh/witness-locks/<request_id>.lock` from before its
+store check until after its send. `recorded()` takes the same lock, and so does
+an ordinary send around its receipt check, marker and send, inside the bindings
+lock. The witness path never takes the machine-wide `dsh/bindings.lock`, so one
+slow host never delays a witnessed submit or `recorded()` for another session.
+The binding record is read without that lock: the run and conversation
+identity check before the marker is the gate, and the offer and its witness
+stay with the request's own conversation. A lock file is removed on release; a
+crash leaves at most one per in-flight request, and that request's next use
+removes it.
 
 A DeepSeek row in `hgs ls` and the GUI reports its background work without an
 inspection, so an idle session with a running background job shows

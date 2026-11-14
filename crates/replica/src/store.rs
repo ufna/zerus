@@ -20,6 +20,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime};
 use zerus_file_lock::OwnedLock;
 
+mod change_reader;
 mod copy_review;
 pub use copy_review::{CopyReview, CopyReviewOutcome};
 #[cfg(all(test, unix))]

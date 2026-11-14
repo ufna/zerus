@@ -6052,6 +6052,7 @@ dependencies = [
  "zerus-desktop-migration",
  "zerus-desktop-read-policy",
  "zerus-file-lock",
+ "zerus-team-plan",
  "zerus-watch-protocol",
 ]
 
@@ -6105,6 +6106,14 @@ name = "zerus-freedesktop-notify"
 version = "0.1.0"
 dependencies = [
  "zbus",
+]
+
+[[package]]
+name = "zerus-team-plan"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

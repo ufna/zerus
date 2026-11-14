@@ -82,6 +82,7 @@ pub(crate) mod task_message;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 mod task_start_reconcile;
 pub(crate) mod task_controls;
+pub(crate) mod teams;
 mod termination_outcome;
 mod transport;
 mod ui_authority;
@@ -818,9 +819,7 @@ fn serve(config: &Config, location: Location, background_mode: bool) -> Result<(
                 drop(handoff);
                 if background::replacement_permitted(
                     background_mode,
-                    background
-                        .as_ref()
-                        .is_some_and(background::Runtime::drained),
+                    background.as_ref(),
                     &location,
                     &store,
                 )? {

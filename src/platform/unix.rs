@@ -1302,26 +1302,52 @@ pub fn run_bounded(
 ) -> std::result::Result<(ExitStatus, Vec<u8>, Vec<u8>), RunError> {
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     helper_group::admit().map_err(RunError::Spawn)?;
+    let turn = spawn_turn_before(deadline, cancelled).map_err(|_| RunError::Stopped)?;
+    run_bounded_in_turn(command, limits, deadline, cancelled, turn)
+}
+/// A failed turn reservation proves no child started. Callers may wait
+/// before taking their own write admission; no store lock is held here.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum SpawnTurnNotStarted {
+    Deadline,
+    Cancelled,
+}
+pub(crate) fn spawn_turn_before(
+    deadline: Instant,
+    cancelled: &dyn Fn() -> bool,
+) -> std::result::Result<MutexGuard<'static, ()>, SpawnTurnNotStarted> {
+    loop {
+        if cancelled() {
+            return Err(SpawnTurnNotStarted::Cancelled);
+        }
+        if Instant::now() >= deadline {
+            return Err(SpawnTurnNotStarted::Deadline);
+        }
+        match SPAWN.try_lock() {
+            Ok(turn) => return Ok(turn),
+            Err(std::sync::TryLockError::Poisoned(error)) => return Ok(error.into_inner()),
+            Err(std::sync::TryLockError::WouldBlock) => std::thread::sleep(
+                Duration::from_millis(2).min(deadline.saturating_duration_since(Instant::now())),
+            ),
+        }
+    }
+}
+/// Run with a turn already reserved. The caller starts its execution clock
+/// after obtaining that turn and retains its own admission until this returns.
+pub(crate) fn run_bounded_in_turn(
+    command: &mut Command,
+    limits: [usize; 2],
+    deadline: Instant,
+    cancelled: &dyn Fn() -> bool,
+    turn: MutexGuard<'static, ()>,
+) -> std::result::Result<(ExitStatus, Vec<u8>, Vec<u8>), RunError> {
     command
         .process_group(0)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     let mut child = {
-        // Keep the original budget while another thread owns the spawn turn.
-        let _turn = loop {
-            if cancelled() || Instant::now() >= deadline {
-                return Err(RunError::Stopped);
-            }
-            match SPAWN.try_lock() {
-                Ok(turn) => break turn,
-                Err(std::sync::TryLockError::Poisoned(error)) => break error.into_inner(),
-                Err(std::sync::TryLockError::WouldBlock) => std::thread::sleep(
-                    Duration::from_millis(2)
-                        .min(deadline.saturating_duration_since(Instant::now())),
-                ),
-            }
-        };
+        let _turn = turn;
         #[cfg(any(target_os = "linux", target_os = "macos"))]
         helper_group::admit().map_err(RunError::Spawn)?;
         // The turn, policy query or cancellation check can consume time.
@@ -2657,3 +2683,6 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod spawn_turn_tests;
