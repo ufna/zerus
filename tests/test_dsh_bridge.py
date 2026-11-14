@@ -476,6 +476,20 @@ const unrelated = 'a'.repeat(200);
 assert.equal(tokens.redact(unrelated), unrelated);
 """)
 
+    def test_a_multi_megabyte_hex_run_is_redacted_without_overflow(self):
+        # zerus-ppd26.14: a single 4-8 MiB hex run made the old
+        # /[0-9a-f]{64,}/g matcher throw RangeError inside String.replace;
+        # the bounded matcher keeps the reply readable and the token hidden.
+        self.run_js("""
+const tokens = callTokens();
+const live = tokens.open(conversation);
+const huge = 'a'.repeat(5 * 1024 * 1024);
+const served = tokens.redact(JSON.stringify({ output: huge + live + huge }));
+assert.ok(!served.includes(live), 'the live token in the middle is hidden');
+assert.ok(served.includes(HIDDEN_TOKEN));
+assert.ok(served.startsWith('{"output":"aaaa'));
+""")
+
     def test_a_full_table_never_takes_another_conversations_live_token(self):
         # zerus-ppd26.13: a conversation makes room only from its own tokens; a
         # newcomer facing a full table gets none and its call stays unproven.

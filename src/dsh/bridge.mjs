@@ -120,10 +120,16 @@ export function callTokens(limit = CALL_TOKENS, share = CONVERSATION_TOKENS) {
     // hidden too, and every copy of it (zerus-ppd26.13).
     redact(text) {
       if (live.size === 0) return text;
-      return text.replace(/[0-9a-f]{64,}/g, run => {
+      // A cheap prefix test before the 64-character lookup; a live token's
+      // first 8 hex characters are not a hex run of their own (zerus-ppd26.14).
+      const prefixes = new Set();
+      for (const token of live.keys()) prefixes.add(token.slice(0, 8));
+      // {64}[0-9a-f]* never asks the regex engine for an unbounded run: a
+      // 4-8 MiB hex run threw RangeError with {64,} (zerus-ppd26.14).
+      return text.replace(/[0-9a-f]{64}[0-9a-f]*/g, run => {
         let out = '', at = 0, from = 0;
         while (at + 64 <= run.length) {
-          if (live.has(run.slice(at, at + 64))) {
+          if (prefixes.has(run.slice(at, at + 8)) && live.has(run.slice(at, at + 64))) {
             out += run.slice(from, at) + HIDDEN_TOKEN;
             at += 64;
             from = at;
