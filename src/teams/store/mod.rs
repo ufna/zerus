@@ -320,6 +320,27 @@ fn initialize(db: &mut Connection) -> Result<()> {
 // nothing is written over a store a newer program marked after the first,
 // unlocked fence; an ordinary open finds every object and takes no lock.
 fn schema_extensions(db: &Connection) -> Result<()> {
+    // zerus-63rru.52 round 3: the stop identity columns, added
+    // conditionally so an older build keeps opening the store (it never
+    // reads them).
+    for (table, column, kind) in [
+        ("teams", "stop_seq", "INTEGER NOT NULL DEFAULT 0"),
+        ("decisions", "stop", "INTEGER NOT NULL DEFAULT 0"),
+    ] {
+        let present: bool = db
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM pragma_table_info(?1) WHERE name=?2)",
+                [table, column],
+                |r| r.get(0),
+            )
+            .map_err(storage)?;
+        if !present {
+            db.execute_batch(&format!(
+                "ALTER TABLE {table} ADD COLUMN {column} {kind};"
+            ))
+            .map_err(storage)?;
+        }
+    }
     timers::fence(db)?;
     #[cfg(test)]
     timers::after_fence()?;
