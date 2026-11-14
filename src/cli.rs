@@ -1982,16 +1982,22 @@ fn forwarded_answer_input(command: &str, args: &[String]) -> Result<Option<fs::F
     if bytes.len() > 128 * 1024 {
         return Err(Error::new(1, "answer payload exceeds128 KiB"));
     }
-    if serde_json::from_slice::<Value>(&bytes)
+    if let Some(reason) = serde_json::from_slice::<Value>(&bytes)
         .ok()
-        .is_some_and(|answer| {
-            answer["question_id"]
-                .as_str()
-                .is_some_and(|id| id.starts_with("codex-sandbox:"))
+        .and_then(|answer| {
+            let id = answer["question_id"].as_str()?;
+            if id.starts_with("codex-sandbox:") {
+                Some("Codex's sandbox setup needs the person's answer in Zerus or Terminal; an agent cannot forward this answer")
+            } else if id.starts_with("kimi-cache:") {
+                // Launch-parent proof is local to the exact child; it cannot
+                // authorize even Compact and continue through a remote hop.
+                Some("Kimi's context choice cannot be forwarded by an agent. A verified launch parent may choose Compact and continue only for that exact child locally; ask the person in Zerus or Terminal for a remote answer.")
+            } else {
+                None
+            }
         })
     {
-        return Err(Error::new(1,
-            "Codex's sandbox setup needs the person's answer in Zerus or Terminal; an agent cannot forward this answer"));
+        return Err(Error::new(1, reason));
     }
     let mut input = tempfile::tempfile()?;
     input.write_all(&bytes)?;

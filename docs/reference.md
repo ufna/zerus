@@ -5055,10 +5055,23 @@ never forwards a command whose handler tells the person from an agent that way
   agent's variables can unset them.
 - **Unchanged:** tasks' own forwarding of `send` and `cancel` to the
   executor's computer (`--agent NODE/SESSION`).
-- **Still forwarded for an agent:** `answer`, `interrupt` and terminal input
-  act the same for an agent and the person; `wait` acts on its ticket;
+- **Still forwarded for an agent:** ordinary `answer` payloads, `interrupt`
+  and terminal input; the answer-source exceptions are below. `wait` acts on
+  its ticket;
   `parent` and `wait begin` refuse a caller the other computer cannot see;
   `desktop` and `approval-log` refuse every other computer.
+
+An agent cannot forward an `answer` whose outer `question_id` starts with
+`codex-sandbox:` or `kimi-cache:`. The check runs locally before any SSH or
+peer capability probe, through the same routes listed above. Agent answer
+input is bounded to 128 KiB; other answer sources retain their exact original
+bytes. Person and GUI answers keep their existing forwarding path.
+
+Any permission for a verified launch parent to choose **Compact and continue**
+in Kimi's Cache expired chooser is local to that exact child. This proof does
+not cross computers, so every agent-originated remote answer to this chooser
+refuses, including that parent's Compact choice. Ask the person to answer in
+Zerus or Terminal instead. This does not change other answer sources.
 
 This guards against accidental agent use, not against an agent that clears its
 own environment. Forwarding a verified caller instead is future work.
