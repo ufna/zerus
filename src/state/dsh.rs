@@ -3389,7 +3389,7 @@ mod tests {
     #[test]
     fn a_lifecycle_end_other_than_the_hosts_disposal_reads_not_ended() {
         let ended = json!({"state": "ended", "end": {"source": "agent/disposed", "at": 100}});
-        assert_eq!(lifecycle_state(&ended).unwrap(), false);
+        assert!(!lifecycle_state(&ended).unwrap());
         for bad in [
             json!({"state": "ended", "end": {"source": "agent/exit", "at": 100}}),
             json!({"state": "ended", "end": {"source": "agent/disposed", "at": 0}}),
@@ -3397,7 +3397,7 @@ mod tests {
         ] {
             assert!(lifecycle_state(&bad).is_err(), "{bad}");
         }
-        assert_eq!(lifecycle_state(&json!({"state": "live"})).unwrap(), true);
+        assert!(lifecycle_state(&json!({"state": "live"})).unwrap());
     }
 
     #[test]
