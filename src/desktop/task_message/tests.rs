@@ -3193,10 +3193,33 @@ mod actor {
                             let _ = entered.send(());
                             let _ = held.recv_timeout(Duration::from_secs(10));
                         });
-                        let started = Instant::now();
+                        let delayed = matches!(case, "deadline" | "late scan" | "late empty scan");
+                        let (starting, start) = std::sync::mpsc::channel::<()>();
+                        let (start_now, start_gate) = std::sync::mpsc::channel::<()>();
+                        if delayed {
+                            at(&original, staging::ReviewPoint::BeforeDeadline, move || {
+                                let _ = starting.send(());
+                                let _ = start_gate.recv_timeout(Duration::from_secs(10));
+                            });
+                        }
+                        // Delay this worker past the old queue-based deadline.
+                        // The hook is scoped to this request, so other reviews run.
+                        let queued = Instant::now();
                         let queue =
                             f.send_release(&f.release_of(&original, "orphaned", observed), None);
+                        if delayed {
+                            start.recv_timeout(Duration::from_secs(10)).unwrap();
+                            std::thread::sleep(
+                                (queued + limit + Duration::from_millis(100))
+                                    .saturating_duration_since(Instant::now()),
+                            );
+                            start_now.send(()).unwrap();
+                        }
                         wait.recv_timeout(Duration::from_secs(10)).unwrap();
+                        // This acknowledgement follows the actual worker start.
+                        // Its full limit from here therefore crosses that deadline.
+                        let observed_at = Instant::now();
+                        eprintln!("REVIEW_CLOCK absent={absent}; case={case}; delayed_start={delayed}; queued_elapsed={:?}; limit={limit:?}", queued.elapsed());
                         match case {
                             "stop" => f.runtime.request_stop(),
                             "revoke" => {
@@ -3207,8 +3230,7 @@ mod actor {
                                 f.runtime.poll(&mut f.store, Some(f.exclusion.clone()));
                             }
                             _ => std::thread::sleep(
-                                (started + limit + Duration::from_millis(100))
-                                    .saturating_duration_since(Instant::now()),
+                                (observed_at + limit).saturating_duration_since(Instant::now()),
                             ),
                         }
                         resume.send(()).unwrap();
