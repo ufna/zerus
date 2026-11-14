@@ -1,91 +1,301 @@
-//! zerus-63rru.102: a retained hosted input ends with its effect's
-//! settlement, on the running path and on a terminal team.
+//! zerus-63rru.102 round 2: a stopped or archived team settles a hosted
+//! delivery whose actor outcome was never recorded, only from a durable
+//! outcome it already holds; with neither, the delivery stays unknown.
+//! Every store row comes from the product's own writers: the real Create,
+//! bind and Add, the actor's real send up to a crash boundary, the child's
+//! own Ledger::reserve_input in its data shape, the person's real Stop and
+//! Archive, and ArchiveMember.
 use super::*;
-use serde_json::{json, Value};
+use crate::teams::ops::Operation;
+use serde_json::json;
 
-fn delivery_row(node: u32, member: &str, id: &str, not_started: bool) -> Value {
-    json!({
-        "node": node, "member": member, "id": id, "kind": "handout",
-        "intent": null, "outcome": null, "receipt": null, "gated": false,
-        "not_started": not_started, "reads": 0, "nonstarts": 0,
-        "waiting": false, "dialog": null, "project": false, "probe": false,
-        "command": false, "stamp": null,
-    })
-}
-fn has_input(a: &super::super::Runtime, id: &str) -> bool {
-    a.ledger
+fn input_kept(h: &Harness, id: &str) -> bool {
+    super::super::ledger::Ledger::open(h.temp.path())
+        .unwrap()
         .input(TEAM, &format!("hosted-input:{id}"))
         .unwrap()
         .is_some()
 }
-
-/// Decision 2: the success path's ops::apply removes the input row. The
-/// terminal settle runs the same apply; the mutant deleting remove_input
-/// kills this test.
-#[test]
-fn the_settled_effects_input_row_is_gone_after_the_outcomes_apply() {
-    let mut h = Harness::new();
-    // The real store rows the outcome's apply reads: the node, the member
-    // and the effect the terminal settle records against.
-    let node = h.add(&person(), 1);
+#[derive(Debug)]
+struct Case {
+    point: &'static str,
+    remove_member: bool,
+    archive: bool,
+}
+fn run_case(case: &Case) -> (bool, bool, bool, String, bool, bool) {
+    let mut h = Harness::empty();
+    let mut create = create();
+    if let Operation::Create { bundle, .. } = &mut create {
+        bundle
+            .roles
+            .iter_mut()
+            .find(|r| r.id == "developer")
+            .unwrap()
+            .agent = "dsh".into();
+    }
+    h.run(&person(), create).unwrap();
     h.bind("m1");
-    let intent = h.intent(node, "m1");
-    h.store
-        .db
-        .as_ref()
+    h.add(&person(), 1);
+    let home = h.store.team(TEAM).unwrap().unwrap().home;
+    let mut a = super::super::Runtime::open(h.temp.path(), &home).unwrap();
+    let mut p = super::core::Fake::new();
+    super::super::delivery::CRASH.with(|c| c.set(Some(case.point)));
+    assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        a.begin_pass();
+        a.tick(&mut h.store, &mut p, TEAM, 100, false).unwrap()
+    }))
+    .is_err());
+    let row = a
+        .ledger
+        .prefix_page(TEAM, "delivery:", "")
         .unwrap()
-        .execute(
-            "UPDATE teams SET status=?2 WHERE id=?1",
-            rusqlite::params![TEAM, serde_json::to_string(&TeamStatus::Stopped).unwrap()],
+        .remove(0);
+    let id = row.data["id"].as_str().unwrap().to_string();
+    let persisted_outcome = !row.data["outcome"].is_null();
+    drop(a);
+    super::super::ledger::Ledger::open(h.temp.path())
+        .unwrap()
+        .reserve_input(
+            TEAM,
+            &format!("hosted-input:{id}"),
+            json!({"input": {"text": "retained task text"}, "to": null, "body": {"id": id},
+                   "reply": {"schema": 1, "id": id, "team": TEAM, "node": 1, "member": "m1",
+                             "state": "submitted", "receipt": {"request_id": id}}}),
         )
         .unwrap();
-    let machine = h.store.team(TEAM).unwrap().unwrap().home;
-    let mut a = super::super::Runtime::open(h.temp.path(), &machine).unwrap();
-    a.ledger
-        .reserve(TEAM, "delivery:x", delivery_row(node, "m1", &intent, true))
+    if case.remove_member {
+        h.run(
+            &person(),
+            Operation::ArchiveMember {
+                member: "m1".into(),
+            },
+        )
         .unwrap();
-    a.ledger
-        .reserve_input(TEAM, &format!("hosted-input:{intent}"), json!({"input": "retained"}))
-        .unwrap();
-    let mut store = Store::open(h.temp.path()).unwrap();
-    let team = store.team(TEAM).unwrap().unwrap();
-    for _ in 0..4 {
-        a.terminal_deliveries(&mut store, &team, 100).unwrap();
     }
-    assert!(!has_input(&a, &intent), "the input outlived the settled outcome");
+    h.run(&person(), Operation::Stop).unwrap();
+    if case.archive {
+        h.run(&person(), Operation::Archive).unwrap();
+    }
+    let mut a = super::super::Runtime::open(h.temp.path(), &home).unwrap();
+    let team = h.store.team(TEAM).unwrap().unwrap();
+    for pass in 0..4i64 {
+        a.begin_pass();
+        a.tick(&mut h.store, &mut p, TEAM, 1_000_000 + pass * 900_000, false)
+            .unwrap();
+    }
+    for pass in 0..4i64 {
+        a.terminal_deliveries(&mut h.store, &team, 5_000_000 + pass)
+            .unwrap();
+    }
+    for pass in 0..2i64 {
+        a.terminal_cancels(&mut h.store, &mut p, 6_000_000 + pass * 900_000)
+            .unwrap();
+    }
+    for _ in 0..4 {
+        a.maintain(&h.store).unwrap();
+    }
+    let row_kept = a
+        .ledger
+        .get(TEAM, &format!("delivery:{id}"))
+        .unwrap()
+        .is_some();
+    let gate_gone = a.ledger.get(TEAM, "handout:1").unwrap().is_none();
+    let reserved = h.store.effect_reserved(TEAM, &id).unwrap();
+    let state = h
+        .store
+        .effects(TEAM, 200, None)
+        .unwrap()
+        .rows
+        .into_iter()
+        .find(|e| e.request_id == id)
+        .map(|e| e.state)
+        .unwrap_or_default();
+    drop(a);
+    let input = input_kept(&h, &id);
+    (
+        row_kept,
+        input,
+        reserved,
+        state,
+        persisted_outcome,
+        gate_gone,
+    )
 }
 
-/// Decision 1: the stop landing between the hosted child's settlement and
-/// the actor's outcome leaves a row with no outcome and no reserved effect;
-/// the terminal pass removes it and its input, nothing is replayed.
+/// P2-1: every table row from the reviewer's probe settles from the durable
+/// outcome it holds (the child's retained submitted reply), records it as a
+/// fact, and removes the row and the input.
 #[test]
-fn a_stop_between_the_childs_settlement_and_the_outcome_removes_the_input() {
-    let h = Harness::new();
-    h.store
-        .db
-        .as_ref()
+fn the_terminal_team_settles_each_probe_row_from_its_durable_outcome() {
+    for case in [
+        Case {
+            point: "effect",
+            remove_member: false,
+            archive: false,
+        },
+        Case {
+            point: "effect",
+            remove_member: true,
+            archive: true,
+        },
+        Case {
+            point: "outcome",
+            remove_member: false,
+            archive: false,
+        },
+        Case {
+            point: "outcome",
+            remove_member: true,
+            archive: true,
+        },
+    ] {
+        let (row_kept, input, reserved, state, persisted, gate_gone) = run_case(&case);
+        assert!(!row_kept, "{case:?}: the delivery row stayed");
+        assert!(!input, "{case:?}: the input stayed");
+        assert!(!reserved, "{case:?}: the effect stayed reserved");
+        assert!(
+            state == "submitted" || state == "superseded",
+            "{case:?}: {state}"
+        );
+        assert!(gate_gone, "{case:?}: the hand-out gate stayed");
+        let _ = persisted;
+    }
+}
+
+/// P2-1: with neither a persisted outcome nor a retained reply, the delivery
+/// stays unknown: keep the row and the input, never replay.
+#[test]
+fn an_unknown_delivery_without_a_durable_outcome_stays_unknown() {
+    let mut h = Harness::empty();
+    let mut create = create();
+    if let Operation::Create { bundle, .. } = &mut create {
+        bundle
+            .roles
+            .iter_mut()
+            .find(|r| r.id == "developer")
+            .unwrap()
+            .agent = "dsh".into();
+    }
+    h.run(&person(), create).unwrap();
+    h.bind("m1");
+    h.add(&person(), 1);
+    let home = h.store.team(TEAM).unwrap().unwrap().home;
+    let mut a = super::super::Runtime::open(h.temp.path(), &home).unwrap();
+    let mut p = super::core::Fake::new();
+    super::super::delivery::CRASH.with(|c| c.set(Some("effect")));
+    assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        a.begin_pass();
+        a.tick(&mut h.store, &mut p, TEAM, 100, false).unwrap()
+    }))
+    .is_err());
+    let row = a
+        .ledger
+        .prefix_page(TEAM, "delivery:", "")
         .unwrap()
-        .execute(
-            "UPDATE teams SET status=?2 WHERE id=?1",
-            rusqlite::params![TEAM, serde_json::to_string(&TeamStatus::Stopped).unwrap()],
+        .remove(0);
+    let id = row.data["id"].as_str().unwrap().to_string();
+    drop(a);
+    super::super::ledger::Ledger::open(h.temp.path())
+        .unwrap()
+        .reserve_input(
+            TEAM,
+            &format!("hosted-input:{id}"),
+            json!({"input": {"text": "retained task text"}, "to": null, "body": {"id": id},
+                   "reply": null}),
         )
         .unwrap();
-    let machine = h.store.team(TEAM).unwrap().unwrap().home;
-    let mut a = super::super::Runtime::open(h.temp.path(), &machine).unwrap();
-    a.ledger
-        .reserve(TEAM, "delivery:y", delivery_row(1, "m1", "y", false))
-        .unwrap();
-    a.ledger
-        .reserve_input(TEAM, "hosted-input:y", json!({"input": "retained"}))
-        .unwrap();
-    let mut store = Store::open(h.temp.path()).unwrap();
-    let team = store.team(TEAM).unwrap().unwrap();
-    for _ in 0..4 {
-        a.terminal_deliveries(&mut store, &team, 100).unwrap();
+    h.run(&person(), Operation::Stop).unwrap();
+    h.run(&person(), Operation::Archive).unwrap();
+    let mut a = super::super::Runtime::open(h.temp.path(), &home).unwrap();
+    let team = h.store.team(TEAM).unwrap().unwrap();
+    for pass in 0..4i64 {
+        a.begin_pass();
+        a.tick(&mut h.store, &mut p, TEAM, 1_000_000 + pass * 900_000, false)
+            .unwrap();
     }
-    assert!(!has_input(&a, "y"), "the input outlived the settled effect");
+    for pass in 0..4i64 {
+        a.terminal_deliveries(&mut h.store, &team, 5_000_000 + pass)
+            .unwrap();
+    }
+    for _ in 0..4 {
+        a.maintain(&h.store).unwrap();
+    }
     assert!(
-        a.ledger.get(TEAM, "delivery:y").unwrap().is_none(),
-        "the settled row stayed"
+        a.ledger
+            .get(TEAM, &format!("delivery:{id}"))
+            .unwrap()
+            .is_some(),
+        "the unknown delivery's row was removed"
     );
+    assert!(
+        input_kept(&h, &id),
+        "the unknown delivery's input was removed"
+    );
+    assert!(
+        h.store.effect_reserved(TEAM, &id).unwrap(),
+        "the unknown delivery's effect was settled"
+    );
+}
+
+/// P3-4: the running path's not-reserved removal in recover_delivery is
+/// pinned: a running team's delivery whose effect the store superseded
+/// (ArchiveMember) leaves no row and no input on the next tick.
+#[test]
+fn the_running_teams_not_reserved_delivery_removes_the_input() {
+    let mut h = Harness::empty();
+    let mut create = create();
+    if let Operation::Create { bundle, .. } = &mut create {
+        bundle
+            .roles
+            .iter_mut()
+            .find(|r| r.id == "developer")
+            .unwrap()
+            .agent = "dsh".into();
+    }
+    h.run(&person(), create).unwrap();
+    h.bind("m1");
+    h.add(&person(), 1);
+    let home = h.store.team(TEAM).unwrap().unwrap().home;
+    let mut a = super::super::Runtime::open(h.temp.path(), &home).unwrap();
+    let mut p = super::core::Fake::new();
+    super::super::delivery::CRASH.with(|c| c.set(Some("effect")));
+    assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        a.begin_pass();
+        a.tick(&mut h.store, &mut p, TEAM, 100, false).unwrap()
+    }))
+    .is_err());
+    let row = a
+        .ledger
+        .prefix_page(TEAM, "delivery:", "")
+        .unwrap()
+        .remove(0);
+    let id = row.data["id"].as_str().unwrap().to_string();
+    drop(a);
+    super::super::ledger::Ledger::open(h.temp.path())
+        .unwrap()
+        .reserve_input(
+            TEAM,
+            &format!("hosted-input:{id}"),
+            json!({"input": {"text": "retained task text"}, "to": null, "body": {"id": id},
+                   "reply": null}),
+        )
+        .unwrap();
+    h.run(
+        &person(),
+        Operation::ArchiveMember {
+            member: "m1".into(),
+        },
+    )
+    .unwrap();
+    let mut a = super::super::Runtime::open(h.temp.path(), &home).unwrap();
+    a.begin_pass();
+    a.tick(&mut h.store, &mut p, TEAM, 1_000_000, false).unwrap();
+    assert!(
+        a.ledger
+            .get(TEAM, &format!("delivery:{id}"))
+            .unwrap()
+            .is_none(),
+        "the not-reserved delivery row stayed"
+    );
+    assert!(!input_kept(&h, &id), "the not-reserved input stayed");
 }

@@ -650,6 +650,10 @@ async function ask(sessionId) {{
 }}
 const oldest = await ask('session-0');
 assert.equal(oldest.value.state, 'unknown');
+// The bound keeps exactly 4096: the second-oldest is still there, so the
+// drop is a bound, not a larger eviction.
+const second = await ask('session-1');
+assert.equal(second.value.state, 'ended');
 const newest = await ask('session-4096');
 assert.equal(newest.value.state, 'ended');
 assert.equal(newest.value.end.source, 'agent/disposed');
@@ -657,7 +661,7 @@ process.exit(0);
 """
             self.run_js(body)
 
-    def test_an_end_from_another_source_reads_not_ended(self):
+    def test_a_disposed_session_reads_ended_through_the_lifecycle(self):
         import tempfile as tf
         with tf.TemporaryDirectory() as d:
             sock = os.path.join(d, 'bridge.sock')
