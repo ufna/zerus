@@ -2662,6 +2662,44 @@ mod tests {
         let high = include_str!("../../tests/fixtures/codex-composer-wrapped-high-0169.txt");
         assert!(codex_wrapped_empty(&record, high, 2, 19, 80));
         assert!(codex_wrapped_columns(&record, high, 2, 19).is_some());
+        // Review regressions: a prefix folder, a changed native margin and a
+        // different record model are independently refused (N4, N5 and N8).
+        let prefix = json!({"agent":"codex", "cwd":format!("{}1",string(&record,"cwd"))});
+        assert!(!codex_wrapped_empty(&prefix, screen, 2, 19, 80));
+        let margin = high.replace("  \x1b[38;2;246;226;183mGPT-", " \x1b[38;2;246;226;183mGPT-");
+        assert!(!codex_wrapped_empty(&record, &margin, 2, 19, 80));
+        let model = json!({"agent":"codex", "cwd":record["cwd"], "model":"gpt-5.4"});
+        assert!(!codex_wrapped_empty(&model, screen, 2, 19, 80));
+        struct Width {
+            width: Option<&'static str>,
+            reads: std::sync::atomic::AtomicUsize,
+        }
+        impl backend::TerminalBackend for Width {
+            fn input_state(&self, _: &backend::InputClaim) -> Result<backend::InputState> {
+                Ok(backend::InputState {cursor_x:"2".into(),cursor_y:"19".into()})
+            }
+            fn capture(&self, _: &str, _: backend::Capture) -> Result<Vec<u8>> {
+                Ok(include_bytes!("../../tests/fixtures/codex-composer-wrapped-status-0169.txt").to_vec())
+            }
+            fn pane_info(&self, target: backend::Target, fields: &[backend::PaneField]) -> Result<backend::PaneInfo> {
+                assert!(matches!(target,backend::Target::Pane("%1")) && matches!(fields,[backend::PaneField::Width]));
+                self.reads.fetch_add(1,std::sync::atomic::Ordering::Relaxed);
+                self.width.map(|w|backend::PaneInfo::new(format!("{w}\n"))).ok_or("width unavailable".into())
+            }
+        }
+        let pid=std::process::id();
+        let gate_record=json!({"name":"codex/fixture/input","agent":"codex","cwd":record["cwd"],
+            "run_id":"run","conversation_id":"conversation","pane":"%1","pid":pid,
+            "process_start":storage::process_start(pid),"activity":"idle","phase":"idle"});
+        // N6/N7: a capture hint never substitutes for the backend's actual
+        // width, and an unavailable/malformed width grants no input.
+        for width in [Some("80"),Some("70"),Some("76"),Some("200"),Some("abc"),None] {
+            for sending in [false,true] {
+                let frame=Width {width,reads:std::sync::atomic::AtomicUsize::new(0)};
+                assert_eq!(terminal_gate_on(&gate_record,true,sending,&frame).is_ok(),width==Some("80"),"{width:?}");
+                assert_eq!(frame.reads.load(std::sync::atomic::Ordering::Relaxed),1);
+            }
+        }
         let break_at = "4111-\x1b[39m\n  \x1b[38;2;171;223;167m8111";
         for changed in [
             high.replace(break_at, "4111\x1b[39m\n  \x1b[38;2;171;223;167m8111"),
