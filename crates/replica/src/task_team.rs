@@ -184,4 +184,21 @@ impl TaskDoc {
         self.log("team", actor, now, &text, None)?;
         self.commit()
     }
+
+    /// Clears the team key without a history entry (zerus-63rru.32 round 2):
+    /// a closed task's history stays as it was, only the key changes. The
+    /// revision advances, which is inherent to any replica write and is how
+    /// the clear reaches other computers. No display name or actor enters
+    /// the document. `None` is already clear: a no-op.
+    pub fn clear_team_silent(&mut self) -> Result<()> {
+        self.writable()?;
+        if !self.team_invalid() && self.team()?.is_none() {
+            return Ok(());
+        }
+        if self.content_len() + 1024 > MAX_DOCUMENT {
+            return Err(Error::new("task history is full"));
+        }
+        self.fields().delete("team")?;
+        self.commit()
+    }
 }

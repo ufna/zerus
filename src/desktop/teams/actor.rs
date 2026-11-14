@@ -187,6 +187,7 @@ impl Runtime {
     }
     pub fn maintain(&mut self, store: &Store) -> Result<()> {
         self.prune_items(store)?;
+        let mut cleared = false;
         for _ in 0..16 {
             if self.maintenance_team.is_none() {
                 let page = store.teams(1, self.maintenance.as_ref())?;
@@ -202,6 +203,12 @@ impl Runtime {
                 } else {
                     continue;
                 }
+            }
+            // One page of the closed keys per pass, for the current terminal
+            // team (zerus-63rru.32).
+            if !cleared {
+                cleared = true;
+                self.clear_closed_keys(store)?;
             }
             if !self.prune_terminal_rows(store)? || self.maintenance.is_none() {
                 break;

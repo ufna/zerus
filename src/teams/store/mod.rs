@@ -63,6 +63,11 @@ pub(crate) fn sql_json<T: DeserializeOwned>(
 }
 
 impl Store {
+    /// The state directory this store was opened on, for the actor's
+    /// document-side maintenance (zerus-63rru.32).
+    pub(crate) fn state(&self) -> &Path {
+        &self.state
+    }
     pub fn open(state: &Path) -> Result<Self> {
         if !super::enabled(state) {
             return Err(Problem::new(code::TEAMS_INACTIVE, "Teams preview is off."));
@@ -320,6 +325,7 @@ fn schema_extensions(db: &Connection) -> Result<()> {
     timers::after_fence()?;
     common_schema(db)?;
     handles_schema(db)?;
+    key_clear_schema(db)?;
     read_indexes(db)?;
     timers::extend(db)
 }
@@ -330,6 +336,10 @@ const COMMON_SCHEMA: [&str; 3] = [
     include_str!("observation-schema.sql"),
     include_str!("read-indexes.sql"),
 ];
+/// The closed-key sweep's finished marker (zerus-63rru.32 round 2). Applied
+/// once per store, when the table is absent, so the ordinary open performs
+/// no schema write.
+const KEY_CLEAR_SCHEMA: &str = include_str!("key-clear-schema.sql");
 /// The member handles' table and the triggers that end a handle with its
 /// membership (zerus-63rru.53). Like the common batches it moves no version
 /// or mark, but its trigger bodies hold statements of their own, so its
@@ -415,6 +425,36 @@ fn common_schema(db: &Connection) -> Result<()> {
 /// Creates the member handles' objects on a store that lacks one, as the
 /// common batches are created: under the write lock, after the mark is read
 /// again under it. An ordinary open finds all three and takes no lock.
+fn key_clear_schema(db: &Connection) -> Result<()> {
+    let present: bool = db
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='key_clear_finished')",
+            [],
+            |r| r.get(0),
+        )
+        .map_err(storage)?;
+    if present {
+        return Ok(());
+    }
+    let own = db.is_autocommit();
+    db.execute_batch(if own {
+        "BEGIN IMMEDIATE;"
+    } else {
+        "SAVEPOINT key_clear_schema;"
+    })
+    .map_err(begin_error)?;
+    let result = db
+        .execute_batch(KEY_CLEAR_SCHEMA)
+        .map_err(storage);
+    let end = match (&result, own) {
+        (Ok(()), true) => "COMMIT;",
+        (Ok(()), false) => "RELEASE key_clear_schema;",
+        (Err(_), true) => "ROLLBACK;",
+        (Err(_), false) => "ROLLBACK TO key_clear_schema; RELEASE key_clear_schema;",
+    };
+    db.execute_batch(end).map_err(begin_error)?;
+    result
+}
 fn handles_schema(db: &Connection) -> Result<()> {
     let mut complete = true;
     for (kind, name) in HANDLE_OBJECTS {

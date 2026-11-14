@@ -152,6 +152,10 @@ pub(crate) mod sql {
     /// The work frontier of a team, in node order: each row names the bound
     /// task, or the task its saved stage creation names.
     pub const KEYED_PAGE: &str = "SELECT w.node,i.task_project,CASE WHEN i.task_uuid<>'' THEN i.task_uuid ELSE s.request_id END FROM key_clear_work w JOIN node_identity i ON i.team=w.team AND i.id=w.node LEFT JOIN stage_tasks s ON s.team=w.team AND s.node=w.node WHERE w.team=?1 AND w.node>?2 ORDER BY w.node LIMIT ?3";
+    /// A team's closed tasks by identity, deduplicated, in keyset order
+    /// (zerus-63rru.32): accepted or cancelled nodes still in `nodes`, and
+    /// every archived node.
+    pub const CLOSED_TASKS: &str = "SELECT DISTINCT i.task_project,i.task_uuid FROM node_identity i WHERE i.team=?1 AND (i.task_project>?2 OR (i.task_project=?2 AND i.task_uuid>?3)) AND i.task_uuid<>'' AND (EXISTS(SELECT 1 FROM nodes n WHERE n.team=i.team AND n.id=i.id AND (n.task_cancelled=1 OR n.task_stage='done')) OR EXISTS(SELECT 1 FROM node_archive a WHERE a.team=i.team AND a.id=i.id)) ORDER BY i.task_project,i.task_uuid LIMIT ?4";
     /// A team leaves the pending set when its frontier is empty and no cancel
     /// waits; both are prefix searches of what is still open.
     pub const SETTLE: &str = "UPDATE key_clear_teams SET pending=0 WHERE team=?1 AND pending=1 AND NOT EXISTS(SELECT 1 FROM key_clear_work w WHERE w.team=?1) AND NOT EXISTS(SELECT 1 FROM decisions d WHERE d.team=?1 AND d.state<>'settled' AND d.kind='cancel')";
@@ -246,6 +250,53 @@ impl Store {
     pub fn keyed_teams(&self, after: &str, page: u32) -> Result<Vec<String>> {
         let page = limit(page)?;
         self.read(|db| column(db, sql::KEYED_TEAMS, params![after, page]))
+    }
+    /// A team's closed tasks (accepted or cancelled nodes, and the archive),
+    /// by the task identity in keyset order after `after`, one page
+    /// (zerus-63rru.32). The same task appears once, however many closed
+    /// nodes it has.
+    pub fn closed_tasks(
+        &self,
+        team: &str,
+        after: Option<&(String, String)>,
+        page: u32,
+    ) -> Result<Vec<TaskRef>> {
+        let page = limit(page)?;
+        let (project, uuid) = after
+            .cloned()
+            .unwrap_or_else(|| (String::new(), String::new()));
+        self.read(|db| {
+            rows(db, sql::CLOSED_TASKS, params![team, project, uuid, page], |r| {
+                Ok(TaskRef {
+                    project: r.get(0)?,
+                    uuid: r.get(1)?,
+                })
+            })
+        })
+    }
+    /// Whether the team's closed-key sweep is recorded finished
+    /// (zerus-63rru.32 round 2); only a new stop or archive reopens it.
+    pub fn sweep_finished(&self, team: &str) -> Result<bool> {
+        self.read(|db| {
+            db.query_row(
+                "SELECT EXISTS(SELECT 1 FROM key_clear_finished WHERE team=?1)",
+                params![team],
+                |r| r.get(0),
+            )
+            .map_err(storage)
+        })
+    }
+    /// Records the sweep finished (zerus-63rru.32 round 2). The teams store
+    /// writes happen through the operations; this marker is a plain row.
+    pub fn mark_sweep_finished(&self, team: &str) -> Result<()> {
+        if let Some(db) = self.db.as_ref() {
+            db.execute(
+                "INSERT OR REPLACE INTO key_clear_finished(team) VALUES (?1)",
+                params![team],
+            )
+            .map_err(storage)?;
+        }
+        Ok(())
     }
     /// A terminal team's nodes whose task key is neither released nor finally
     /// recorded, in node order after `after`.
