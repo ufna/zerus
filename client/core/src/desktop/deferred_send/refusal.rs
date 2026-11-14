@@ -1,5 +1,5 @@
 //! Retained evidence from the CLI that this exact original refused before input.
-//! It is a diagnostic, never a submission, no-spawn proof or permission to replay.
+//! It is a diagnostic, never a submission, no-spawn proof or automatic desktop retry permit.
 use super::*;
 
 pub const STATUS: &str = "refused_before_input";
@@ -97,6 +97,13 @@ impl Refusal {
     /// Decode the original bytes, retaining duplicate-field rejection. No exit,
     /// stdout, absence or partial identity can manufacture this diagnostic.
     pub fn from_receipt(plan: &Plan, bytes: &[u8]) -> Result<Self, &'static str> {
+        let value = Self::from_cli_record(bytes)?;
+        value.matches(plan).then_some(value).ok_or(RECEIPT_MISMATCH)
+    }
+
+    /// Decode bounded negative evidence without granting any delivery or retry
+    /// authority. A public CLI retry must separately check every original binding.
+    pub fn from_cli_record(bytes: &[u8]) -> Result<Self, &'static str> {
         if bytes.len() > BYTES {
             return Err(RECEIPT_INVALID);
         }
@@ -119,7 +126,7 @@ impl Refusal {
         if !value.valid() {
             return Err(RECEIPT_INVALID);
         }
-        value.matches(plan).then_some(value).ok_or(RECEIPT_MISMATCH)
+        Ok(value)
     }
 }
 

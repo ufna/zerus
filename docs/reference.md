@@ -2439,17 +2439,24 @@ An ordinary public terminal send with a live `NotOffered` witness also retains
 an additive `refusal_schema: 1`, `status: refused_before_input` record in
 `input_receipts/<request_id>.json`, under the original input lock and before any
 settings or message input. It binds the exact request ID, session, run,
-conversation, stdin digest and terminal transport. Publication never replaces
-an existing record. The record is at most 8 KiB; its reason keeps only the first
-1024 UTF-8 bytes of the first line, without control characters, and no message
-or attachment body. The original request UUID stays spent after the refusal.
+conversation, stdin digest and terminal transport. The record is at most 8 KiB;
+its reason keeps only the first 1024 UTF-8 bytes of the first line, without
+control characters, and no message
+or attachment body. This exact negative evidence does not spend the request
+UUID. A deliberate public send with the same UUID and exactly matching session,
+run, conversation, stdin digest and terminal transport checks the ordinary
+guards again. Under the same input lock, a renewed refusal atomically replaces
+the matching negative; reaching input atomically replaces it with the ordinary
+input receipt before typing. A different digest remains a content conflict;
+different identities, malformed or unreadable evidence and any non-refusal
+record keep their existing refusal or submitted-receipt behavior.
 After the child drains, the desktop retains this exact refusal as a bounded
 diagnostic on its Unknown receipt and shows its reason in Activity, including
 after read-only recovery. Known native reasons are translated in the English
 and Russian interfaces; other native diagnostics remain verbatim. This negative
-record never counts as submission, releases no retry authority and never clears
-the draft. Missing, mismatched or unreadable evidence and possible prior input
-remain Unknown. Only exact `submitted` evidence can mark the message delivered.
+record never counts as submission, authorizes no automatic desktop retry and
+never clears the draft. Missing, mismatched or unreadable evidence and possible
+prior input remain Unknown. Only exact `submitted` evidence can mark the message delivered.
 For Claude and Kimi messages ending in a literal backslash, the paste includes a
 final newline so the single Enter submits the unchanged message instead of
 activating the agent's backslash-Enter line continuation. This is verified
@@ -7913,7 +7920,10 @@ used for different content`, or `This request ID was already used for another
 message` for DeepSeek and OpenCode) and delivers nothing. Without that receipt,
 for example when an earlier attempt stopped before the recipient recorded it or
 the receipt is gone, the retry is a new delivery under the ordinary guards,
-even if an earlier attempt arrived. The source ledger retains attempts for 30
+even if an earlier attempt arrived. An exact terminal `refused_before_input`
+record also permits a deliberate retry with its original UUID and unchanged
+binding, under those same guards; it proves that attempt typed nothing and is
+never a submitted receipt. The source ledger retains attempts for 30
 days. If the source ledger still has a conflicting entry for the same native
 sender and request ID, hgs warns that attribution could not be recorded and
 still forwards the send under the ordinary guards. A refusal says nothing about

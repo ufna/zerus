@@ -846,18 +846,21 @@ while True: signal.pause()
         self.assertIn("input mode", self.send(success=False))
         self.assertEqual(self.received(), b"")
 
-    def test_public_preinput_refusal_is_durable_bound_and_never_replayed(self):
+    def test_public_preinput_refusal_is_durable_and_an_exact_retry_rechecks_the_composer(self):
         self.screen("\x1b[2J\x1b[H› existing draft", "16:0")
-        request = self.payload(text="never type this original")
+        request = self.payload(text="type only after the draft is gone")
         self.assertIn("draft", self.send(request, success=False))
         self.assert_refusal(request)
         path = self.state / "input_receipts" / (request["request_id"] + ".json")
-        before = path.read_bytes()
-        self.screen("\x1b[2J\x1b[H› \x1b[?2004h", "2:0")
-        # Even after the real draft is gone, this spent UUID cannot type again.
-        self.send(request, success=False)
-        self.assertEqual(path.read_bytes(), before)
+        self.assertIn("draft", self.send(request, success=False))
+        self.assert_refusal(request)
         self.assertEqual(self.received(), b"")
+        self.screen("\x1b[2J\x1b[H› \x1b[?2004h", "2:0")
+        self.assertEqual(self.send(request)["status"], "submitted")
+        receipt = json.loads(path.read_bytes())
+        self.assertEqual(receipt["status"], "submitted")
+        self.assertNotIn("refusal_schema", receipt)
+        self.wait_for(lambda: self.received().endswith(b"\r"))
 
     # zerus-ucck P3b: input goes to the session's own terminal, named apart
     # from its label as a resume beside an untracked terminal names it; the
@@ -870,6 +873,21 @@ while True: signal.pause()
         self.screen("\x1b[2J\x1b[H› \x1b[?2004h", "2:0")
         self.send()
         self.wait_for(lambda: self.received().endswith(b"\r"))
+
+    def test_a_refusal_retry_retires_its_negative_before_pending_settings(self):
+        self.screen("\x1b[2J\x1b[H› existing draft", "16:0")
+        request = self.payload()
+        self.send(request, success=False)
+        self.assert_refusal(request)
+        self.screen("\x1b[2J\x1b[H› \x1b[?2004h", "2:0")
+        self.record["pending_settings"] = dict(run_id="other-run", conversation_id=self.conversation_id)
+        self.write_record()
+        self.assertIn("pending settings belong to a different session", self.send(request, success=False))
+        receipt = self.receipt_file(request)
+        self.assertEqual(receipt["status"], "preparing")
+        self.assertNotIn("refusal_schema", receipt)
+        self.assertIn("delivery uncertain", self.send(request, success=False))
+        self.assertEqual(self.received(), b"")
 
     def test_empty_claude_prompt_is_supported(self):
         self.record["agent"] = "claude"

@@ -1608,8 +1608,8 @@ enum Failure {
 }
 
 /// What the receipt store already holds for a request ID, read under the
-/// input lock. Only a positively absent receipt lets a later refusal witness
-/// that nothing was offered; an existing one decides by itself.
+/// input lock. Public admission additionally checks exact negative evidence;
+/// every other existing record continues to decide by itself.
 enum Existing {
     Absent,
     /// The exact submitted acknowledgement: replayed as is.
@@ -1763,12 +1763,12 @@ fn submit_core(
         .join("input_receipts")
         .join(format!("{request_id}.json"));
     let mut guard = Some(lock(None).map_err(unknown)?);
-    match existing(&receipt_path, &digest, name) {
+    match refusal::admit(&receipt_path, &digest, name, &request_id, &request, retain_refusal) {
         Existing::Absent => {}
         Existing::Submitted(receipt) => return Ok(receipt),
         Existing::Unknown(error) => return Err(unknown(error)),
     }
-    // From here no receipt existed for this ID. A refusal before any settings
+    // From here no possible-input receipt existed for this ID. A refusal before any settings
     // key and before the receipt marker witnesses that nothing was offered;
     // once pending settings may have been typed, it is unknown.
     let mut typed = false;
@@ -1803,6 +1803,7 @@ fn submit_core(
     }
     // Pending settings may be typed here, whatever this returns.
     typed = effort::pending_applies(&record);
+    if retain_refusal && typed { refusal::prepare(&witness(String::new(), false, None)).map_err(unknown)?; }
     let mut record = effort::apply_pending(name, record).map_err(unknown)?;
     match origin {
         Origin::Recovery(id) => recovery::check_submission(&record, id).map_err(|e| refused(typed, e))?,
