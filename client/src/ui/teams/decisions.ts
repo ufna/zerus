@@ -1,5 +1,5 @@
 import { tr } from "../../i18n";
-import type { WaitingItem } from "../../store/teams";
+import type { ServiceNote, WaitingItem } from "../../store/teams";
 
 // Waiting for you's vocabulary: a card's kind in words and with an icon, its
 // age, and the one-click decisions it offers. A decision is a word the store
@@ -44,6 +44,17 @@ export function waitingKindLabel(item: Pick<WaitingItem, "kind">): string {
     case "late_session": return tr("Late session");
     case "rejected_merge": return tr("Rejected result is merged");
     default: return tr("Card: %1", item.kind);
+  }
+}
+
+/** The service's own sentence for one note beside a quoted report. Known
+ * codes keep their reviewed words; an unknown code shows its own text, or the
+ * code itself, never another note's sentence. */
+export function waitingNote(note: ServiceNote): string {
+  switch (note.code) {
+    case "text_shortened": return tr("The report text was shortened.");
+    case "worktree_dirty": return tr("The member's worktree had uncommitted changes.");
+    default: return note.text && note.text.length > 0 ? note.text : note.code;
   }
 }
 

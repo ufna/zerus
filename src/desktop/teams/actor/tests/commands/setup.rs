@@ -168,6 +168,7 @@ impl Fixture {
                     member: "m1".into(),
                     text: "Work is ready".into(),
                     commit: COMMIT.into(),
+                    notes: Vec::new(),
                 },
             )
             .unwrap();

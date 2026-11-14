@@ -344,11 +344,68 @@ fn schema_extensions(db: &Connection) -> Result<()> {
     timers::fence(db)?;
     #[cfg(test)]
     timers::after_fence()?;
+    notes_schema(db)?;
     common_schema(db)?;
     handles_schema(db)?;
     key_clear_schema(db)?;
     read_indexes(db)?;
     timers::extend(db)
+}
+
+/// The notes columns beside the member's own words (zerus-63rru.69). They are
+/// added in place, not by a version bump: a version-2 store from before them
+/// keeps its rows and takes the additive columns on its next open. Each add
+/// runs under the write lock after the mark is read again under it; an
+/// ordinary open finds all three columns and takes no lock.
+const NOTES_COLUMNS: [(&str, &str); 3] = [
+    ("reports", "notes"),
+    ("inbox", "notes"),
+    ("cards", "notes"),
+];
+
+fn notes_schema(db: &Connection) -> Result<()> {
+    let mut complete = true;
+    for (table, column) in NOTES_COLUMNS {
+        complete &= has_column(db, table, column)?;
+    }
+    if complete {
+        return Ok(());
+    }
+    let own = db.is_autocommit();
+    db.execute_batch(if own {
+        "BEGIN IMMEDIATE;"
+    } else {
+        "SAVEPOINT notes_schema;"
+    })
+    .map_err(begin_error)?;
+    let result = timers::fence(db).and_then(|()| {
+        for (table, column) in NOTES_COLUMNS {
+            if !has_column(db, table, column)? {
+                db.execute_batch(&format!(
+                    "ALTER TABLE {table} ADD COLUMN {column} TEXT NOT NULL DEFAULT '[]'"
+                ))
+                .map_err(storage)?;
+            }
+        }
+        Ok(())
+    });
+    let end = match (&result, own) {
+        (Ok(()), true) => "COMMIT;",
+        (Ok(()), false) => "RELEASE notes_schema;",
+        (Err(_), true) => "ROLLBACK;",
+        (Err(_), false) => "ROLLBACK TO notes_schema; RELEASE notes_schema;",
+    };
+    db.execute_batch(end).map_err(storage)?;
+    result
+}
+
+fn has_column(db: &Connection, table: &str, column: &str) -> Result<bool> {
+    db.prepare(&format!(
+        "SELECT 1 FROM pragma_table_info('{table}') WHERE name=?1"
+    ))
+    .map_err(storage)?
+    .exists([column])
+    .map_err(storage)
 }
 
 /// The common batches: only `CREATE ... IF NOT EXISTS` statements.

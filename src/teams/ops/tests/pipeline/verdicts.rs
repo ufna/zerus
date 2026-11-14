@@ -255,6 +255,56 @@ fn a_pipeline_can_ask_the_person_and_only_the_current_card_can_accept() {
     );
 }
 
+/// The person's acceptance card is a reader of the report: its text is the
+/// member's block and the service's notes are their own field, also through
+/// the waiting page the desktop reads.
+#[test]
+fn a_person_acceptance_card_carries_the_reports_service_notes() {
+    let mut h = Harness::empty();
+    let mut create = create();
+    if let Operation::Create { bundle, .. } = &mut create {
+        bundle.pipelines[0].stages.clear();
+        bundle.pipelines[0].accept = Acceptance::Person;
+    }
+    h.run(&person(), create).unwrap();
+    h.bind("m1");
+    let parent = h.add(&person(), 1);
+    h.submit(parent, "m1");
+    h.observe(parent, TaskStage::InReview);
+    h.run(
+        &service(),
+        Operation::RecordReport {
+            node: parent,
+            generation: 1,
+            member: "m1".into(),
+            text: "Worktree has uncommitted changes.".into(),
+            commit: COMMIT.into(),
+            notes: vec![ReportNote::new("worktree_dirty")],
+        },
+    )
+    .unwrap();
+    let card = h
+        .store
+        .cards(TEAM, 200, None)
+        .unwrap()
+        .rows
+        .into_iter()
+        .find(|c| c.kind == "pipeline_acceptance")
+        .unwrap();
+    assert_eq!(
+        card.text,
+        "Worktree has uncommitted changes.",
+        "the member's line is the card's text"
+    );
+    assert_eq!(card.notes, vec![ReportNote::new("worktree_dirty")]);
+    let waiting = h.store.waiting(200, None).unwrap().rows;
+    let card = waiting
+        .iter()
+        .find(|row| row.card.kind == "pipeline_acceptance")
+        .unwrap();
+    assert_eq!(card.card.notes, vec![ReportNote::new("worktree_dirty")]);
+}
+
 #[test]
 fn verdict_authority_table_is_member_only_independent_of_holder_validation() {
     let (mut h, _, stage) = wanted();

@@ -5,6 +5,7 @@ use super::super::actor::Caller;
 use crate::config::Config;
 use crate::teams::ops::{
     self, Actor, KeyState, Operation, PersonOrigin, Reply, Request, TaskObservation, TaskStage,
+    ReportNote,
 };
 use crate::teams::store::Store;
 use serde_json::Value;
@@ -245,6 +246,11 @@ impl Harness {
 
     /// A task handed to `m1`, worked to Done and reported.
     pub fn reported(&self, n: u32) -> u32 {
+        self.reported_notes(n, Vec::new())
+    }
+
+    /// The same report with the service's own notes beside the member's text.
+    pub fn reported_notes(&self, n: u32, notes: Vec<ReportNote>) -> u32 {
         let node = self.add(n);
         let effect = uid(0x8000 + n);
         self.apply(
@@ -275,6 +281,7 @@ impl Harness {
                 member: "m1".into(),
                 text: "Trimmed the label and added a case for an empty one.".into(),
                 commit: COMMIT.into(),
+                notes,
             },
         );
         node

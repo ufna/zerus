@@ -144,6 +144,7 @@ fn a_service_report_must_belong_to_the_effect_holder() {
                 member: "m2".into(),
                 text: "Wrong holder".into(),
                 commit: COMMIT.into(),
+                notes: Vec::new(),
             },
         ),
         code::INVALID_STATE,
@@ -156,10 +157,68 @@ fn a_service_report_must_belong_to_the_effect_holder() {
             member: "m1".into(),
             text: "Correct holder".into(),
             commit: COMMIT.into(),
+            notes: Vec::new(),
         },
     )
     .unwrap();
 }
+/// The report's service notes are validated, and a bad one writes nothing:
+/// the member's text is untouched either way.
+#[test]
+fn report_validates_service_note_codes_and_bounds() {
+    let mut h = Harness::new();
+    h.bind("m1");
+    let node = h.add(&person(), 1);
+    h.submit(node, "m1");
+    h.observe(node, TaskStage::InReview);
+    let op = |notes| Operation::RecordReport {
+        node,
+        generation: 1,
+        member: "m1".into(),
+        text: "Report".into(),
+        commit: COMMIT.into(),
+        notes,
+    };
+    refused(
+        h.run(
+            &service(),
+            op(vec![ReportNote {
+                code: "Not A Token".into(),
+                text: None,
+            }]),
+        ),
+        code::INVALID_STATE,
+    );
+    refused(
+        h.run(
+            &service(),
+            op(vec![ReportNote {
+                code: "text_shortened".into(),
+                text: Some("x".repeat(501)),
+            }]),
+        ),
+        code::OVER_CAP,
+    );
+    assert!(h.store.report(TEAM, node, 1).unwrap().is_none());
+    h.run(
+        &service(),
+        op(vec![ReportNote {
+            code: "text_shortened".into(),
+            text: Some("Why it was cut".into()),
+        }]),
+    )
+    .unwrap();
+    let report = h.store.report(TEAM, node, 1).unwrap().unwrap();
+    assert_eq!(report.text, "Report");
+    assert_eq!(
+        report.notes,
+        vec![ReportNote {
+            code: "text_shortened".into(),
+            text: Some("Why it was cut".into())
+        }]
+    );
+}
+
 #[test]
 fn report_requires_service_observation_and_the_current_generation() {
     let mut h = Harness::new();
@@ -172,7 +231,8 @@ fn report_requires_service_observation_and_the_current_generation() {
         member: "m1".into(),
         text: "Report".into(),
         commit: COMMIT.into(),
-    };
+        notes: Vec::new(),
+};
     refused(h.run(&service(), op.clone()), code::INVALID_STATE);
     h.observe(node, TaskStage::InReview);
     h.run(&service(), op.clone()).unwrap();

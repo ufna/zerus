@@ -1,4 +1,5 @@
 use super::DecisionState;
+use crate::teams::ops::ReportNote;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use zerus_team_plan::model::TeamStatus;
@@ -92,6 +93,10 @@ pub struct InboxItem {
     pub generation: u32,
     pub actor: Value,
     pub text: String,
+    /// The service's statements about the quoted report, apart from its text.
+    /// Every other item has none, and so does a row from before notes.
+    #[serde(default)]
+    pub notes: Vec<ReportNote>,
     pub state: String,
     pub reply: Option<String>,
     pub reply_actor: Option<Value>,
@@ -114,6 +119,10 @@ pub struct Card {
     /// rule of its kind.
     #[serde(default)]
     pub decisions: Vec<String>,
+    /// The service's statements about a report the card quotes, apart from
+    /// the member's text. Every other card has none.
+    #[serde(default)]
+    pub notes: Vec<ReportNote>,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

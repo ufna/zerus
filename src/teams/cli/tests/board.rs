@@ -182,6 +182,7 @@ fn current_follows_a_reassignment_and_never_the_plan_or_a_reservation() {
             member: "m2".into(),
             text: "Report of the new attempt".into(),
             commit: COMMIT.into(),
+            notes: Vec::new(),
         },
     );
     h.observe(node, TaskStage::Todo);
@@ -258,6 +259,7 @@ fn row_kind_uses_the_node_kind_for_a_reviewer_task_and_developer_stage() {
             member: "m3".into(),
             text: "Task implemented by the reviewer role".into(),
             commit: COMMIT.into(),
+            notes: Vec::new(),
         },
     );
     let (reply, exit) = h.cli(&Caller::Person, &format!("queue --team {TEAM}"), "");

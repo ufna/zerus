@@ -706,6 +706,7 @@ fn a_members_question_or_report_needs_a_delivery_not_known_refused_or_superseded
                 member: "m1".into(),
                 text: "Implemented".into(),
                 commit: COMMIT.into(),
+                notes: Vec::new(),
             },
         );
         if matches!(state, "reserved" | "submitted") {
@@ -782,6 +783,7 @@ fn a_refused_newest_effect_does_not_fall_back_to_an_older_delivered_member() {
                 member: "m1".into(),
                 text: "Implemented".into(),
                 commit: COMMIT.into(),
+                notes: Vec::new(),
             },
         ),
         code::INVALID_STATE,

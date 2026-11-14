@@ -269,6 +269,7 @@ impl Harness {
                 member: member.into(),
                 text: "Implemented and checked".into(),
                 commit: COMMIT.into(),
+                notes: Vec::new(),
             },
         )
         .unwrap();

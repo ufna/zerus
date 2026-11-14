@@ -1,7 +1,45 @@
 //! The reads: their shape, their bounded pages and who may run them.
 use super::harness::*;
 use crate::teams::cli::actor::Caller;
+use crate::teams::ops::ReportNote;
 use serde_json::Value;
+
+#[test]
+fn inbox_carries_the_service_notes_apart_from_the_member_report() {
+    let harness = Harness::new();
+    harness.create();
+    harness.bind("lead", LEAD_SESSION);
+    harness.bind("m1", M1_SESSION);
+    let node = harness.reported_notes(
+        1,
+        vec![
+            ReportNote::new("text_shortened"),
+            ReportNote::new("worktree_dirty"),
+        ],
+    );
+    let (reply, exit) = harness.cli(&lead_caller(), &format!("inbox --team {TEAM}"), "");
+    assert_eq!(exit, 0, "{reply}");
+    let item = reply["rows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["kind"] == "report" && row["node"] == node)
+        .unwrap();
+    assert!(
+        item["text"]
+            .as_str()
+            .unwrap()
+            .contains("> Trimmed the label and added a case for an empty one."),
+        "the member's block is quoted: {item}"
+    );
+    assert_eq!(
+        item["notes"],
+        serde_json::json!([
+            {"code": "text_shortened"},
+            {"code": "worktree_dirty"}
+        ])
+    );
+}
 
 fn person_caller() -> Caller {
     Caller::Person
@@ -371,6 +409,7 @@ fn waiting_lists_every_open_owner_card_oldest_first_and_only_for_the_person() {
             "decided_actor",
             "created_ms",
             "team",
+            "notes",
         ] {
             assert!(row.get(field).is_some(), "{field} is missing from {row}");
         }

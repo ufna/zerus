@@ -150,6 +150,9 @@
 .waiting-team { max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .waiting-age { margin-left: auto; font-size: 11px; }
 .waiting-text { margin: 0; font-size: 13px; overflow-wrap: anywhere; }
+.waiting-notes { display: flex; flex-direction: column; gap: 2px; padding: 6px 8px; border-left: 2px solid var(--z-color-card-border); }
+.waiting-notes-heading { margin: 0; font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; }
+.waiting-note { margin: 0; font-size: 12px; color: var(--z-color-text-2); overflow-wrap: anywhere; }
 .waiting-kind-sentence { margin: 0; font-size: 12px; overflow-wrap: anywhere; }
 .waiting-decisions { display: flex; flex-wrap: wrap; gap: 6px; }
 .waiting-requests { display: flex; flex-direction: column; gap: 6px; }

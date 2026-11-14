@@ -60,6 +60,42 @@ impl KeyState {
     }
 }
 
+/// A service note stored beside a member's report, never inside its text: a
+/// short lower-case code and an optional bounded text. Readers show it under
+/// their own heading and keep the member's words exactly as written.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReportNote {
+    pub code: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+}
+
+impl ReportNote {
+    pub fn new(code: &str) -> Self {
+        Self {
+            code: code.to_owned(),
+            text: None,
+        }
+    }
+    /// The English sentence a prompt or the command line shows under its own
+    /// heading. An unknown code with text shows that text.
+    pub fn sentence(&self) -> String {
+        match self.code.as_str() {
+            "text_shortened" => {
+                "The service shortened the member's report text at its 15000-byte bound.".to_owned()
+            }
+            "worktree_dirty" => {
+                "The member's worktree had uncommitted changes when it reported.".to_owned()
+            }
+            _ => self
+                .text
+                .clone()
+                .unwrap_or_else(|| format!("Service note: {}", self.code)),
+        }
+    }
+}
+
 /// The task writer's authoritative snapshot, not an independently editable
 /// node state. Revisions are the task document's opaque tokens. Each update
 /// compares the previously projected token so delayed observations cannot
@@ -271,8 +307,12 @@ pub enum Operation {
         node: NodeId,
         generation: u32,
         member: MemberId,
+        /// The member's own bounded text; a service note is never appended.
         text: String,
         commit: String,
+        /// Service statements about the report, stored beside it.
+        #[serde(default)]
+        notes: Vec<ReportNote>,
     },
     StageTaskIntent {
         node: NodeId,
