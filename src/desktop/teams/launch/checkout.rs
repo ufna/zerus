@@ -105,34 +105,6 @@ fn statement<T>(name: Statement, run: impl FnOnce() -> rusqlite::Result<T>) -> r
     }
 }
 
-/// Test-only injected-error seam for the checkout statements. It fails the
-/// named statement's own result with SQLITE_BUSY before the statement runs; it
-/// never holds or simulates a real concurrent SQLite lock, so it cannot stand
-/// in for the BEGIN contention test.
-#[cfg(test)]
-pub(crate) mod injection {
-    use super::Statement;
-    use std::cell::Cell;
-    thread_local! {
-        static NEXT: Cell<Option<Statement>> = Cell::new(None);
-    }
-    pub(crate) fn fail(statement: Statement) {
-        NEXT.with(|next| next.set(Some(statement)));
-    }
-    pub(crate) fn next(statement: Statement) -> Option<rusqlite::Error> {
-        NEXT.with(|next| {
-            if next.get() != Some(statement) {
-                return None;
-            }
-            next.set(None);
-            Some(rusqlite::Error::SqliteFailure(
-                rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_BUSY),
-                None,
-            ))
-        })
-    }
-}
-
 pub(super) fn record(db: &mut Connection, plan: &Plan, tree: &Worktree) -> Result<bool> {
     // Absence is preserved, never backfilled by the confirmation reader.
     let Some(proof) = Checkout::capture(plan, tree) else {
@@ -179,4 +151,32 @@ pub(super) fn lookup(
         return Err(storage("Checkout proof identity changed"));
     }
     Ok(Some(proof))
+}
+
+/// Test-only injected-error seam for the checkout statements. It fails the
+/// named statement's own result with SQLITE_BUSY before the statement runs; it
+/// never holds or simulates a real concurrent SQLite lock, so it cannot stand
+/// in for the BEGIN contention test.
+#[cfg(test)]
+pub(crate) mod injection {
+    use super::Statement;
+    use std::cell::Cell;
+    thread_local! {
+        static NEXT: Cell<Option<Statement>> = const { Cell::new(None) };
+    }
+    pub(crate) fn fail(statement: Statement) {
+        NEXT.with(|next| next.set(Some(statement)));
+    }
+    pub(crate) fn next(statement: Statement) -> Option<rusqlite::Error> {
+        NEXT.with(|next| {
+            if next.get() != Some(statement) {
+                return None;
+            }
+            next.set(None);
+            Some(rusqlite::Error::SqliteFailure(
+                rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_BUSY),
+                None,
+            ))
+        })
+    }
 }
