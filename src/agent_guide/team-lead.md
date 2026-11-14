@@ -50,3 +50,5 @@ Rules
   archives the team.
 
 The member's page is hgs guide team.
+
+A member in a sandbox with its own process namespace cannot report.

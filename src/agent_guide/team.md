@@ -47,3 +47,9 @@ Never
 
 The task's prompt is the authority for the task; this page is how the team
 talks to you. Your lead reads hgs guide team-lead.
+
+## A sandbox with its own process namespace
+
+Inside such a sandbox your team commands are refused; run them outside, or
+turn its private namespace off.
+
