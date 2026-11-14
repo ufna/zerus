@@ -3580,9 +3580,13 @@ reads one; only members that list the kind exchange them. `swarm get` lists
 the ID form as `projects[].session_ids` ("machine\nsession ID") only while the
 operation a twin mirrors is still the selected label membership, so any later
 move by label, from any hgs or desktop, hides it. `swarm get` also reports
-`membership_by_id {ready, missing}`. It is ready when every machine of the
-catalog is this computer or a peer whose last sync listed the kind; any other
-machine fails closed. Desktops and the Rust mobile connector read the ID form
+`membership_by_id {ready, missing}`. It is ready when primary data is available
+and every machine of the catalog is this computer or a peer whose last verified
+hello listed `session_id_memberships_v1`. The older `session_id` twins capability
+alone is insufficient. Primary-capability observations are node-bound and kept
+separately in the bounded `swarm/session-id-membership-peers.json`; existing
+twins observations never initialize that evidence. Desktops and the Rust mobile
+connector read the ID form
 only when it is ready. The connector keeps sessions with the same label separate
 by ID; a missing or invalid session ID never falls back to that label's project.
 With a legacy catalog, only unique labels receive label-based membership; twins
@@ -3600,6 +3604,12 @@ lock without replacing an existing ID record. An exact primary null/conflict
 means unassigned; only an absent ID record allows name membership fallback.
 Unreadable primary data stays unavailable and is not repaired automatically.
 Older builds preserve this file but cannot edit its ID grouping.
+Native project queries and assignments for a verified legacy record without a
+session ID continue through the name catalog when primary data is unavailable.
+An ID-bearing native record still requires primary evidence, including when a
+request omits its session ID. Missing, null and empty ID fields retain legacy
+behavior; malformed native IDs refuse. Legacy operations leave unavailable
+primary data untouched.
 
 The `session-labels-v1` transition gate requires fresh positives from this
 computer, every configured peer and every catalog machine. An unaddressed,
