@@ -120,9 +120,11 @@ def stop(*args):
     event("SessionEnd", reason="exit" if agent == "kimi" else "other")
     sys.exit(143)
 signal.signal(signal.SIGTERM, stop)
-# Only stop_report sends this: the Python stacks go to the pane's terminal.
+# Only stop_report sends this. The stacks go to a file the report polls:
+# the pane's terminal loses the dump's race under load (zerus-63rru.90).
 import faulthandler
-faulthandler.register(signal.SIGUSR1, all_threads=True)
+stacks = open(home / ("stacks-" + sid), "w")
+faulthandler.register(signal.SIGUSR1, all_threads=True, file=stacks)
 if (home / "record-interrupts").exists():
     def interrupted(*args):
         with open(home / ("interrupts-" + sid), "a") as log:
@@ -914,6 +916,30 @@ class Harness(unittest.TestCase):
 
         def python_stacks():
             if not state["signalled"]:
+                return
+            home = self.env.get("HOME")
+            if home:
+                # The dump writes asynchronously to each agent's stacks file:
+                # wait for the marker itself, bounded and generous, never the
+                # deadline arithmetic that lost the race under load
+                # (zerus-63rru.90).
+                files = sorted(Path(home).glob("stacks-*"))
+                until = time.monotonic() + 30
+                while time.monotonic() < until and not any(
+                    re.search(r"(Current thread|Thread) 0x", f.read_text(errors="ignore"))
+                    for f in files
+                ):
+                    time.sleep(0.05)
+                    files = sorted(Path(home).glob("stacks-*"))
+                for pane in state["panes"]:
+                    for f in files:
+                        text = f.read_text(errors="ignore")
+                        starts = [i for i, line in enumerate(text.splitlines()) if re.match(r"(Current thread|Thread) 0x", line)]
+                        if starts:
+                            lines.append(f"python in {pane[1]}: " + " | ".join(line.strip() for line in text.splitlines()[starts[0]:] if line.strip())[:1500])
+                            break
+                    else:
+                        lines.append(f"python in {pane[1]}: no stack on its terminal")
                 return
             time.sleep(max(0, min(0.3, deadline - time.monotonic())))
             for pane in state["panes"]:
