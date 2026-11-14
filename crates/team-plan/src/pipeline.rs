@@ -90,10 +90,15 @@ pub fn staffed(step: Step, node: &Node, view: &PlanView) -> Step {
     let Step::Stage { role, .. } = &step else {
         return step;
     };
+    // zerus-63rru.20 round 2: at stage creation the node passed is the
+    // target task itself; its recorded earlier implementers are attached by
+    // the ops layer and read here, together with its current implementer.
+    let mut implementers: Vec<&str> = node.implementer.as_deref().into_iter().collect();
+    implementers.extend(node.earlier_implementers.iter().map(|m| m.as_str()));
     let work = Work {
         role,
         assignee: None,
-        implementers: node.implementer.as_deref().into_iter().collect(),
+        implementers,
     };
     match (Staffing { view: *view }).gap(&work) {
         Some(reason) => Step::ToLead { reason },
@@ -344,7 +349,8 @@ mod tests {
         assert_eq!(
             to_lead(&step),
             "m3 implemented the task and is the only member with the role reviewer, \
-             and a stage is never handed to the member who implemented the task."
+             and a stage is never handed to a member who implemented any round of the task. \
+             The task went to the lead, who can accept, return or cancel it there."
         );
         // A second reviewer, even busy, can take it later.
         plan.members.push(member("m4", "reviewer"));

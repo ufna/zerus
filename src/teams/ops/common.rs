@@ -138,6 +138,9 @@ impl Context<'_> {
             .checked_add(1)
             .ok_or_else(|| over("Attempt generations are exhausted."))?;
         if n.kind == NodeKind::Task {
+            if let Some(previous) = n.implementer.as_deref() {
+                super::handout::record_earlier(self, node, previous)?;
+            }
             n.implementer = None;
         }
         if n.kind != NodeKind::Stage {

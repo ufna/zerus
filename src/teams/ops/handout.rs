@@ -85,11 +85,28 @@ fn eligible(db: &Connection, team: &Team, node: &Node, id: &str) -> Result<()> {
     }
     let m = rows::member(db, &team.id, id)?
         .ok_or_else(|| Problem::new(code::UNKNOWN_MEMBER, "Member does not exist."))?;
+    // A stage never goes to a member who implemented any round of what it
+    // checks: its own record, the node's current implementer, or the
+    // target's recorded earlier implementers (zerus-63rru.20). The kernel's
+    // staffing carries the same lists for the unstaffed reading. A record
+    // read fails closed: an unreadable record refuses the hand-out.
+    let earlier = if node.kind == NodeKind::Stage {
+        node.implementer.as_deref() == Some(id)
+            || match node.stage_of {
+                Some(target) => rows::earlier_implementers(db, &team.id, target)
+                    .map_err(storage)?
+                    .iter()
+                    .any(|m| m == id),
+                None => false,
+            }
+    } else {
+        false
+    };
     if m.state != MemberState::Active
         || m.session.is_none()
         || m.id == team.lead
         || m.role != node.role
-        || (node.kind == NodeKind::Stage && node.implementer.as_deref() == Some(id))
+        || earlier
     {
         return Err(invalid("Member cannot take this task."));
     }
@@ -297,11 +314,28 @@ fn outcome_state(outcome: &HandoutOutcome) -> Result<(&'static str, Option<&str>
 fn read_effect(ctx: &Context<'_>, id: &str) -> Result<Effect> {
     ctx.db.query_row("SELECT node,member,generation,kind,state,outcome FROM effects WHERE team=?1 AND request_id=?2",params![ctx.team.id,id],|r|Ok(Effect{node:r.get(0)?,member:r.get(1)?,generation:r.get(2)?,kind:r.get(3)?,state:r.get(4)?,outcome:r.get(5)?})).optional().map_err(storage)?.ok_or_else(missing)
 }
+/// Records `member` as an earlier implementer of the target `node`
+/// (zerus-63rru.20). Called only by the service's own operations, in their
+/// transaction; the record per target is bounded by the team's member
+/// bound, so no separate cap is needed.
+pub(super) fn record_earlier(ctx: &Context<'_>, node: u32, member: &str) -> Result<()> {
+    ctx.db
+        .execute(
+            "INSERT OR IGNORE INTO target_implementers(team,target,member,round) VALUES(?1,?2,?3,?4)",
+            params![ctx.team.id, node, member, ctx.generation(node)?],
+        )
+        .map_err(storage)?;
+    Ok(())
+}
+
 fn record_implementer(ctx: &Context<'_>, node: u32, member: &str) -> Result<()> {
     let mut n = ctx.node(node)?;
     // A stage keeps the implementer copied from the task it checks. Its own
     // reviewer/tester lives only in the effect row and never replaces that ID.
     if n.kind == NodeKind::Task {
+        if let Some(previous) = n.implementer.as_deref().filter(|p| *p != member) {
+            record_earlier(ctx, node, previous)?;
+        }
         n.implementer = Some(member.into());
         let table = ctx.node_table(node)?;
         ctx.db
@@ -390,6 +424,9 @@ pub(super) fn report(ctx: &mut Context<'_>) -> Result<()> {
     // A trusted report proves delivery even when its submission outcome has
     // not arrived. Freeze that implementer before choosing any stage staff.
     if n.kind != NodeKind::Stage {
+        if let Some(previous) = n.implementer.as_deref().filter(|p| *p != member) {
+            record_earlier(ctx, *node, previous)?;
+        }
         n.implementer = Some(member.clone());
         ctx.db
             .execute(

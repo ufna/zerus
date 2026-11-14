@@ -430,6 +430,12 @@ pub struct Node {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub task: Option<TaskRef>,
     pub title: String,
+    /// Every member who implemented any round of this task, read from the
+    /// store's own records (zerus-63rru.20); a stage of the task never goes
+    /// to any of them. Kept out of the serialized rows so an older build
+    /// reads the store exactly as before.
+    #[serde(default, skip)]
+    pub earlier_implementers: Vec<MemberId>,
     /// The task text of a draft. Once the task exists, the task holds it.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub text: String,

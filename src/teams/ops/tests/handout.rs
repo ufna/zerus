@@ -297,6 +297,163 @@ fn a_stage_keeps_the_checked_tasks_implementer_when_the_reviewer_is_submitted() 
     assert_eq!(effect.member, "m3");
 }
 
+/// zerus-63rru.20: after a reassignment, a stage of the target never goes
+/// to any member who implemented an earlier round, whatever the stage's
+/// role; a member who never implemented it can take it; the record
+/// survives a restart. Driven by the real reassignment and round
+/// operations, then the kernel's hand-out over the stored rows.
+#[test]
+fn a_stage_after_a_reassignment_refuses_every_earlier_implementer() {
+    let mut h = Harness::new();
+    let (parent, _lead) = h.reported();
+    h.bind("m2");
+    // The person reassigns the reported task to m2; the store records m1 as
+    // the earlier implementer in the reassignment's own transaction.
+    h.run(
+        &person(),
+        Operation::Reassign {
+            node: parent,
+            member: "m2".into(),
+            reason: "Take the next round over".into(),
+        },
+    )
+    .unwrap();
+    // m2 takes the round over through the real reopen and reports: the
+    // report's freeze records m1 too and makes m2 the current implementer,
+    // so the stage's refusal of m1 is the earlier record alone.
+    let reopen = h.reopen(parent, "m2");
+    h.reopen_outcome(
+        &reopen,
+        HandoutOutcome::Submitted {
+            receipt: "Reopen receipt".into(),
+        },
+    );
+    h.observe(parent, TaskStage::InProgress);
+    h.report(parent, "m2");
+    let recorded: i64 = h
+        .store
+        .db
+        .as_ref()
+        .unwrap()
+        .query_row(
+            "SELECT count(*) FROM target_implementers WHERE team=?1 AND target=?2 AND member='m1'",
+            rusqlite::params![TEAM, parent],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(recorded, 1, "the reassignment recorded the first implementer");
+    assert_eq!(h.node(parent).implementer.as_deref(), Some("m2"), "m2 is the current implementer");
+    // A stage of the target whose role equals the implementers' role.
+    let stage = h.add(&person(), 2);
+    let mut s = h.node(stage);
+    s.kind = NodeKind::Stage;
+    s.role = h.node(parent).role.clone();
+    s.stage_of = Some(parent);
+    s.round = h.node(parent).round;
+    s.implementer = h.node(parent).implementer.clone();
+    h.store
+        .db
+        .as_ref()
+        .unwrap()
+        .execute(
+            "UPDATE nodes SET data=?3 WHERE team=?1 AND id=?2",
+            params![TEAM, stage, rows::node_payload(&s).unwrap()],
+        )
+        .unwrap();
+    let intent = |h: &mut Harness, member: &str| {
+        h.run(
+            &service(),
+            Operation::HandoutIntent {
+                node: stage,
+                member: member.into(),
+                effect_request_id: uuid::Uuid::new_v4().to_string(),
+            },
+        )
+    };
+    // The first implementer is refused though its role equals the stage's
+    // and it is not the current implementer.
+    refused(intent(&mut h, "m1"), code::INVALID_STATE);
+    // The current implementer stays refused as before.
+    refused(intent(&mut h, "m2"), code::INVALID_STATE);
+    // The record survives a restart: m1 stays refused.
+    h.store = Store::open(h.temp.path()).unwrap();
+    refused(intent(&mut h, "m1"), code::INVALID_STATE);
+}
+
+/// zerus-63rru.20: the kernel's staffing names every earlier implementer
+/// in the unstaffed reading (the lead's card).
+#[test]
+fn the_unstaffed_reading_names_every_earlier_implementer() {
+    let mut h = Harness::new();
+    let (parent, _lead) = h.reported();
+    h.bind("m2");
+    h.run(
+        &person(),
+        Operation::Reassign {
+            node: parent,
+            member: "m2".into(),
+            reason: "Take the next round over".into(),
+        },
+    )
+    .unwrap();
+    let reopen = h.reopen(parent, "m2");
+    h.reopen_outcome(
+        &reopen,
+        HandoutOutcome::Submitted {
+            receipt: "Reopen receipt".into(),
+        },
+    );
+    h.observe(parent, TaskStage::InProgress);
+    h.report(parent, "m2");
+    let stage = h.add(&person(), 2);
+    let mut s = h.node(stage);
+    s.kind = NodeKind::Stage;
+    s.role = h.node(parent).role.clone();
+    s.stage_of = Some(parent);
+    s.round = h.node(parent).round;
+    s.implementer = h.node(parent).implementer.clone();
+    h.store
+        .db
+        .as_ref()
+        .unwrap()
+        .execute(
+            "UPDATE nodes SET data=?3 WHERE team=?1 AND id=?2",
+            params![TEAM, stage, rows::node_payload(&s).unwrap()],
+        )
+        .unwrap();
+    // The kernel's staffing over the stored rows: the reason names both
+    // implementers, the earlier m1 included.
+    let readiness = crate::teams::ops::readiness::load(h.store.db.as_ref().unwrap(), TEAM).unwrap();
+    let team = h.store.team(TEAM).unwrap().unwrap();
+    let members: Vec<zerus_team_plan::model::Member> = h
+        .store
+        .members(TEAM, 200, None)
+        .unwrap()
+        .rows;
+    let member_views: Vec<zerus_team_plan::ready::MemberView> = members
+        .iter()
+        .map(|m| zerus_team_plan::ready::MemberView { id: m.id.clone(), role: m.role.clone(), state: m.state, free: false })
+        .collect();
+    let view = zerus_team_plan::ready::PlanView {
+        phases: &readiness.phases,
+        nodes: &readiness.nodes,
+        members: &member_views,
+        lead: &team.lead,
+        integration: team.settings.integration,
+    };
+    let unstaffed = zerus_team_plan::ready::unstaffed(&view);
+    let stage_entry = unstaffed.iter().find(|u| u.node == stage).unwrap_or_else(|| {
+        panic!("the stage is unstaffed: {unstaffed:?}")
+    });
+    assert!(
+        stage_entry.reason.contains("m1") && stage_entry.reason.contains("m2"),
+        "{}",
+        stage_entry.reason
+    );
+}
+
+
+
 #[test]
 fn service_handout_requires_kernel_ready_and_reads_archived_dependencies() {
     let mut h = Harness::new();
