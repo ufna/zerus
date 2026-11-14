@@ -37,6 +37,7 @@ from pathlib import Path
 import pwd
 import re
 import shutil
+import shlex
 import socket
 import subprocess
 import tempfile
@@ -235,7 +236,10 @@ class TeamsContract(ClassFixture):
         begins = re.findall(fixture.PINNED.format(verb='begin-attempt'), prompt)
         self.assertEqual(len(reports), 1, 'report-attempt is pinned exactly once')
         self.assertLessEqual(len(begins), 1, 'begin-attempt is pinned at most once')
-        return 'begin and report' if begins else 'report only'
+        if begins:
+            return 'begin and report'
+        self.assertIsNotNone(fixture.acknowledgement(prompt), 'the prompt pins an acknowledgement')
+        return 'start and report'
 
     # 2 -----------------------------------------------------------------------
     def test_2_delivery_and_member_shell(self):
@@ -244,12 +248,20 @@ class TeamsContract(ClassFixture):
         fx.script('delivered', (
             'set -- "$@"; n=0; for x in ' + str(out) + '/delivered-*.json; do [ -e "$x" ] && n=$((n+1)); done; '
             'f=' + str(out) + '/delivered-$n.json\n'
-            'if [ -n "$1" ]; then begin=$("$H" task begin-attempt "$1" --attempt "$2" 2>&1); b=$?; '
-            'else begin="no begin-attempt is pinned"; b=-1; fi\n'
-            'current=$("$H" team current --json 2>&1); c=$?\n'
+            'current=$(python3 -c ' + shlex.quote(
+                'import sys; sys.path.insert(0, ' + repr(str(Path(__file__).resolve().parent)) + '); '
+                'import teams_native_fixture as f; import json; '
+                'print(json.dumps(f.wait_for_held_task(sys.argv[1], sys.argv[2], ' + str(fixture.BOUND['turn']) + ')))'
+            ) + ' "$H" "$3"); c=$?\n'
+            'if [ "$c" -ne 0 ]; then exit "$c"; fi\n'
+            'if [ "$5" = begin-attempt ]; then begin=$("$H" task begin-attempt "$1" --attempt "$2" --json 2>&1); b=$?; '
+            'elif [ "$5" = start ]; then begin=$("$H" task start "$1" --json 2>&1); b=$?; '
+            'else begin="no acknowledgement is pinned"; b=-1; fi\n'
             'inbox=$("$H" team inbox --team ' + fx.team + ' --json 2>&1); i=$?\n'
             'if [ -f ' + str(out) + '/begin-only ]; then report=""; r=-1; else\n'
-            '  report=$(printf "Fixture report: nothing to change.\\n" | "$H" task report-attempt "$3" --attempt "$4" 2>&1); r=$?\n'
+            '  legacy=$(printf \'%s\' "$begin" | python3 -c \'import json,sys; print(json.load(sys.stdin).get("reporting") == "legacy")\')\n'
+            '  if [ "$legacy" = True ]; then report=$(printf "Fixture report: nothing to change.\\n" | "$H" task report "$1" 2>&1); r=$?; '
+            'else report=$(printf "Fixture report: nothing to change.\\n" | "$H" task report-attempt "$3" --attempt "$4" 2>&1); r=$?; fi\n'
             'fi\n'
             'python3 -c \'import json,sys; json.dump(dict(begin=sys.argv[1], begin_exit=int(sys.argv[2]), current=sys.argv[3], '
             'current_exit=int(sys.argv[4]), inbox=sys.argv[5], inbox_exit=int(sys.argv[6]), report=sys.argv[7], '
@@ -265,17 +277,16 @@ class TeamsContract(ClassFixture):
         prompts = fx.requests_with(lambda r: (r.get('prompt') or '').startswith('[Zerus task ' + ref))
         self.assertTrue(prompts, 'no model request carried the delivered prompt')
         delivered = prompts[0]['prompt']
-        # Every dispatched prompt pins report-attempt exactly once, and begin-attempt at most
-        # once: only while the product's task controls are on (TASK_CONTROLS; off in
-        # 1d565627e). The member runs every command its prompt pins; the form met is kept.
+        # Follow the prompt's managed acknowledgement or legacy Start, then the
+        # report origin from that acknowledgement; keep the form in the evidence.
         form = self.pinned_form(delivered)
         fx.evidence.write('delivered-0-form.json', dict(form=form))
         for request in prompts:
             self.assertEqual(sum(text == delivered for text in request['users']), 1,
                              'the delivered prompt appears once in the member conversation')
-        # The member's own shell: the acknowledgement when one is pinned, caller proof,
+        # The member's own shell: its pinned acknowledgement, caller proof,
         # refusal, report.
-        self.assertEqual(result['begin_exit'], 0 if form == 'begin and report' else -1, result['begin'])
+        self.assertEqual(result['begin_exit'], 0, result['begin'])
         current = json.loads(result['current'])
         self.assertEqual(result['current_exit'], 0, result['current'])
         self.assertEqual(current['actor'], dict(kind='session', member='m1', person='local', team=fx.team))
@@ -323,7 +334,7 @@ class TeamsContract(ClassFixture):
         self.assertTrue(second, 'no model request carried the second delivered prompt')
         form = self.pinned_form(second[0]['prompt'])
         fx.evidence.write('delivered-1-form.json', dict(form=form))
-        self.assertEqual((result['begin_exit'], result['report_exit']), (0 if form == 'begin and report' else -1, -1), result)
+        self.assertEqual((result['begin_exit'], result['report_exit']), (0, -1), result)
         node = fx.node_of(task_uuid)
         cancel = out / 'lead-cancel.json'
         fx.script('lead-cancel', (
@@ -686,7 +697,6 @@ class UnworkedResumeContract(ClassFixture):
     archive is recorded beside it."""
     delegations = {'resume_exited': True}
     exit_keys = ('/exit', 'Enter')
-    reason = 'persisted conversation is missing or empty'
 
     def test_1_a_member_that_never_worked_is_not_restored_and_the_card_says_why(self):
         fx = self.fx
@@ -704,11 +714,19 @@ class UnworkedResumeContract(ClassFixture):
         seen = fx.observation()
         fx.evidence.write('observation-at-refusal.json', seen)
         archives = (seen.get('m1') or {}).get('archives') or []
-        if archives:
-            fx.evidence.write('person-restore.json', fx.person_restore('m1', archives[-1]))
+        self.assertTrue(archives, 'the exited member has an archive inspected by the product')
+        archive = archives[-1]
+        view = archive['view']
+        self.assertNotIn('restore', view['allowed_actions'])
+        reason = view['action_reasons']['restore']
+        self.assertTrue(reason, 'the archive inspection explains why it offers no restore')
+        restored = fx.person_restore('m1', archive)
+        fx.evidence.write('person-restore.json', restored)
+        self.assertEqual(restored['receipt']['status'], 'failed', restored)
+        self.assertFalse(fx.live_runs(fx.sessions['m1']['launch'], control=fx.sessions['lead']['launch']))
         fx.evidence.write('journal-after-refusal.json', fx.journal_summary())
         self.assertFalse(live, 'nothing of the member launch started')
-        self.assertTrue(any(self.reason in c.get('text', '') for c in cards), "the card carries the command's own reason")
+        self.assertTrue(any(reason in c.get('text', '') for c in cards), "the card carries the command's own reason")
 
 
 class QuestionAfterTrustContract(ClassFixture):
@@ -1063,6 +1081,32 @@ class TeamsFixtureDiagnostics(unittest.TestCase):
         plain = f'Acknowledge with `hgs task begin-attempt T-abc --attempt {attempt}` first.'
         self.assertEqual(fixture.pinned(plain, 'begin-attempt'), ('T-abc', attempt))
         self.assertIsNone(fixture.pinned(plain.replace(attempt, 'not-a-uuid'), 'begin-attempt'))
+
+    def test_acknowledgement_follows_the_original_legacy_or_managed_pin(self):
+        attempt = str(uuid.UUID(int=7))
+        legacy = "[Zerus task start]\nAcknowledge this task with `hgs task start 'Example project/T-abc'` before working."
+        managed = f"Acknowledge with `hgs task begin-attempt T-abc --attempt {attempt}`."
+        self.assertEqual(fixture.acknowledgement(legacy), ('start', 'Example project/T-abc', ''))
+        self.assertEqual(fixture.acknowledgement(legacy + managed), ('begin-attempt', 'T-abc', attempt))
+        self.assertIsNone(fixture.acknowledgement(legacy.replace('[Zerus task start]', 'Mentioned in prose')))
+        self.assertIsNone(fixture.acknowledgement('Report with `hgs task report T-abc`.'))
+
+    def test_member_waits_for_the_original_tasks_product_delivery_outcome(self):
+        # Synthetic reader control; native classes read every row from hgs itself.
+        task = json.dumps(dict(task=dict(uuid='original-task')))
+        other = json.dumps(dict(nodes=[dict(task=dict(uuid='another-task'))]))
+        held = json.dumps(dict(nodes=[dict(task=dict(uuid='original-task'))]))
+        with mock.patch.object(fixture.subprocess, 'check_output', side_effect=[task, other, held]) as read, \
+                mock.patch.object(fixture.time, 'sleep'):
+            self.assertEqual(fixture.wait_for_held_task('/fixture/hgs', 'Example/T-abc', 1), json.loads(held))
+        self.assertEqual(read.call_args_list[0].args[0], ['/fixture/hgs', 'task', 'get', 'Example/T-abc', '--json'])
+        self.assertEqual([c.args[0] for c in read.call_args_list[1:]], [['/fixture/hgs', 'team', 'current', '--json']] * 2)
+        with mock.patch.object(fixture.subprocess, 'check_output', side_effect=[task, other]):
+            with self.assertRaisesRegex(AssertionError, 'did not record the original task delivery'):
+                fixture.wait_for_held_task('/fixture/hgs', 'Example/T-abc', 0)
+        with mock.patch.object(fixture.subprocess, 'check_output', side_effect=[task, '{}']):
+            with self.assertRaisesRegex(AssertionError, 'no nodes list'):
+                fixture.wait_for_held_task('/fixture/hgs', 'Example/T-abc', 1)
 
     def test_handouts_name_the_members_a_node_went_to(self):
         from types import SimpleNamespace

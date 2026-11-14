@@ -1479,9 +1479,9 @@ Further classes repeat the same bring-up with one of the team's delegations on:
 - **A Claude Code member that exits before any message**
   (`NativeTeamsResumeUnworkedClaude`, `resume_exited`, selected). It has no persisted
   conversation, so the service's restore is refused before launch. Nothing of its
-  launch starts, and the person's card carries the command's own reason ("persisted
-  conversation is missing or empty"). The person's own Restore of that archive is
-  recorded beside it.
+  launch starts, and the person's card carries the exact refusal reason from the
+  archive's own inspection. The separate explicit Restore must fail too; its receipt
+  is recorded beside the inspection, and no member run starts afterward.
 
 Written and waiting: `WAITING` in the module lists these, and the contract does not
 select them until their fixes land.

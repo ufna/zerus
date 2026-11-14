@@ -828,6 +828,10 @@ fn composer_empty_for_model(agent: &str, screen: &str, cursor_x: usize, cursor_y
     if agent == "kimi" && kimi_preparing(screen) {
         return false;
     }
+    // Fresh Codex can leave the unused rows of an unviewed tmux pane below
+    // its footer. They are terminal padding, not part of the input boundary.
+    // Keep every nonblank row so drafts and unfamiliar footers still refuse.
+    let screen = if agent == "codex" { screen.trim_end() } else { screen };
     let lines: Vec<_> = screen.lines().collect();
     let Some(row) = lines.get(cursor_y) else {
         return false;
@@ -2563,6 +2567,23 @@ mod tests {
             1
         ));
     }
+    #[test]
+    fn codex_startup_composer_with_unused_pane_rows() {
+        // Native Codex 0.169.0 in a private 80x24 tmux pane after folder trust.
+        // Only the private folder is replaced; the unused terminal rows remain.
+        let screen = include_str!("../../tests/fixtures/codex-composer-startup-0169.txt");
+        assert!(composer_empty("codex", screen, 2, 5));
+        assert!(!composer_empty("codex", screen, 3, 5));
+        for changed in [
+            screen.replace("\x1b[2mAsk Codex to do anything\x1b[0m", ""),
+            screen.replace("Ask Codex to do anything", "retained draft").replace("\x1b[2mretained draft", "retained draft"),
+            screen.replace("?\x1b[0m for shortcuts", "Approve command?"),
+            format!("{screen}  draft continuation\n"),
+        ] {
+            assert!(!composer_empty("codex", &changed, 2, 5), "{changed}");
+        }
+    }
+
     #[test]
     fn codex_unshaded_composer_with_two_line_status_bar() {
         // Native capture of the unfocused Codex composer; all user content in
