@@ -813,10 +813,10 @@ pub(super) fn codex_wrapped_columns(record: &Value, screen: &str, x: usize, y: u
 }
 
 /// A hard-wrapped native model/path footer, with this run's exact folder.
-/// Rejoin only the footer after checking every physical row against the
-/// terminal's width; an arbitrary continuation or an extra wrap is refused.
+/// Rejoin only the exact model/folder content. Native word and hyphen wraps
+/// need not fill each row; the current width still bounds row size and count.
 pub(super) fn codex_wrapped_empty(record: &Value, screen: &str, x: usize, y: usize, columns: usize) -> bool {
-    use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+    use unicode_width::UnicodeWidthStr;
     if string(record, "agent") != "codex" || columns <= 2 || string(record, "cwd").is_empty() {
         return false;
     }
@@ -845,37 +845,38 @@ pub(super) fn codex_wrapped_empty(record: &Value, screen: &str, x: usize, y: usi
     let model = codex_footer_model(record);
     let first_row = &rows[first].0;
     let Some(label_model) = first_row.split_whitespace().next() else { return false; };
-    if !codex_status_row(first_row, model)
+    if !first_row.starts_with("  ") || first_row[2..].starts_with(char::is_whitespace)
+        || !codex_status_row(first_row, model)
         || !codex_model_footer(first_row, model.or(Some(label_model)))
     {
         return false;
     }
     let Some((label, path)) = first_row.split_once(" · ") else { return false; };
     let prefix = format!("{label} · ");
-    let mut folder = path.to_owned();
-    for (row, _) in &rows[first + 1..last] {
-        let Some(part) = row.strip_prefix("  ").filter(|s| !s.is_empty()) else { return false; };
-        folder.push_str(part);
-    }
-    if !shown_path::names(&folder, string(record, "cwd"), crate::platform::home().as_deref()) {
+    if rows[first..=last].iter().any(|(row, _)| row.width() > columns) {
         return false;
     }
-    let mut remaining = folder.as_str();
-    for (index, (row, _)) in rows[first..last].iter().enumerate() {
-        let margin = if index == 0 { prefix.as_str() } else { "  " };
-        let Some(available) = columns.checked_sub(margin.width()) else { return false; };
-        let mut used = 0;
-        let mut end = 0;
-        for (offset, ch) in remaining.char_indices() {
-            let Some(width) = ch.width() else { return false; };
-            if used + width > available { break; }
-            used += width;
-            end = offset + ch.len_utf8();
+    let cwd = string(record, "cwd");
+    let home_alias = crate::platform::home().and_then(|home| shown_path::home_alias(cwd, &home));
+    let Some(folder) = std::iter::once(cwd).chain(home_alias.as_deref()).find(|folder| {
+        // Two cells are the native left margin on every physical footer row.
+        // Permit no more rows than this exact footer needs at the fresh width.
+        let needed = (prefix.width() + folder.width() - 2).div_ceil(columns - 2);
+        if last - first != needed { return false; }
+        let windows = shown_path::drive(cwd);
+        let Some(mut remaining) = shown_path::strip_prefix(folder, path, windows) else { return false; };
+        for (row, _) in &rows[first + 1..last] {
+            let Some(part) = row.strip_prefix("  ").filter(|s| !s.trim().is_empty()) else { return false; };
+            // A native word wrap may consume exactly one separating space.
+            // Hyphens and every other character must remain in the capture.
+            let rest = shown_path::strip_prefix(remaining, part, windows).or_else(|| {
+                shown_path::strip_prefix(remaining.strip_prefix(' ')?, part, windows)
+            });
+            let Some(rest) = rest else { return false; };
+            remaining = rest;
         }
-        if end == 0 || *row != format!("{margin}{}", &remaining[..end]) { return false; }
-        remaining = &remaining[end..];
-    }
-    if !remaining.is_empty() { return false; }
+        remaining.is_empty()
+    }) else { return false; };
     // Folding footer rows does not move the cursor or alter the composer.
     // Reuse its existing cursor, placeholder and input-boundary checks.
     let folded = format!("{}\n\x1b[0m{prefix}{folder}\n{}", lines[..first].join("\n"), lines[last]);
@@ -2656,6 +2657,26 @@ mod tests {
         let screen = include_str!("../../tests/fixtures/codex-composer-wrapped-status-0169.txt");
         let record = json!({"agent":"codex", "cwd":"/tmp/hgs-tn-fixture1/work/zerus-team-11111111-1111-4111-8111-111111111111"});
         assert!(codex_wrapped_empty(&record, screen, 2, 19, 80));
+        // The member's high-effort label leaves three cells before a native
+        // hyphen wrap (hosted job 132419071924).
+        let high = include_str!("../../tests/fixtures/codex-composer-wrapped-high-0169.txt");
+        assert!(codex_wrapped_empty(&record, high, 2, 19, 80));
+        assert!(codex_wrapped_columns(&record, high, 2, 19).is_some());
+        let break_at = "4111-\x1b[39m\n  \x1b[38;2;171;223;167m8111";
+        for changed in [
+            high.replace(break_at, "4111\x1b[39m\n  \x1b[38;2;171;223;167m8111"),
+            high.replace(break_at, "4112-\x1b[39m\n  \x1b[38;2;171;223;167m8111"),
+            high.replace("8111-111111111111", "8111-\n  111111111111"),
+            high.replace("\x1b[2mAsk Codex to do anything\x1b[0m", "retained draft"),
+            high.replace("\n\n  \x1b[38;2;246;226;183mGPT-", "\n  Approve this command?\n  \x1b[38;2;246;226;183mGPT-"),
+        ] {
+            assert!(!codex_wrapped_empty(&record, &changed, 2, 19, 80), "{changed}");
+        }
+        let space_record = json!({"agent":"codex", "cwd":string(&record, "cwd").replace("4111-8111", "4111 8111")});
+        let dropped_space = high.replace(break_at, "4111\x1b[39m\n  \x1b[38;2;171;223;167m8111");
+        assert!(codex_wrapped_empty(&space_record, &dropped_space, 2, 19, 80));
+        let two_spaces = json!({"agent":"codex", "cwd":string(&record, "cwd").replace("4111-8111", "4111  8111")});
+        assert!(!codex_wrapped_empty(&two_spaces, &dropped_space, 2, 19, 80));
         assert!(!codex_wrapped_empty(&record, screen, 3, 19, 80));
         assert!(!codex_wrapped_empty(&record, screen, 2, 19, 79));
         assert!(!codex_wrapped_empty(&json!({"agent":"codex","cwd":"/another/folder"}), screen, 2, 19, 80));
