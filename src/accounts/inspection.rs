@@ -538,9 +538,6 @@ fn kimi(home: &Path) -> Value {
         result["status"] = json!("signed_out");
         return result;
     }
-    let Some((base, policy)) = kimi_base(&mut result) else {
-        return result;
-    };
     if auth["expires_at"]
         .as_u64()
         .is_some_and(|expiry| expiry <= now() + 60)
@@ -564,6 +561,11 @@ fn kimi(home: &Path) -> Value {
             .and_then(|b| serde_json::from_slice(&b).ok())
             .unwrap_or(result);
     }
+    // The live-token path resolves the base only after the refresh, as on main:
+    // an expiring token still gets the native server's own answer.
+    let Some((base, policy)) = kimi_base(&mut result) else {
+        return result;
+    };
     // The same token goes to the default provider or to a validated loopback
     // test endpoint; the path below the base stays the provider's.
     if let Ok(a) = http_json(&format!("{base}/me"), token, &[], policy) {
@@ -1178,6 +1180,57 @@ fi
         assert!(
             !marker.exists(),
             "the refresh child inherited HGS_TEST_KIMI_API_BASE"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_expired_token_with_a_custom_kimi_cli_base_refreshes_without_a_platform_request() {
+        use std::os::unix::fs::PermissionsExt;
+        let _lock = curl_lock();
+        let platform = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        platform.set_nonblocking(true).unwrap();
+        let platform_url = format!(
+            "http://{}/kimi-platform",
+            platform.local_addr().unwrap()
+        );
+        let bin = tempfile::tempdir().unwrap();
+        let record = tempfile::tempdir().unwrap();
+        let marker = record.path().join("node-called");
+        let child_env = record.path().join("node-env");
+        let node = bin.path().join("node");
+        fs::write(
+            &node,
+            format!(
+                "#!/bin/sh\nprintf 'called\\n' > '{}'\nenv > '{}'\nprintf '%s\\n' '{{\"identity\":{{\"name\":\"Fixture\",\"email\":\"fixture@example.test\",\"plan\":\"Pro\",\"auth_method\":\"Kimi Code\"}},\"windows\":[],\"source\":\"Kimi Code\",\"status\":\"ok\"}}'\n",
+                marker.display(),
+                child_env.display()
+            ),
+        )
+        .unwrap();
+        fs::set_permissions(&node, fs::Permissions::from_mode(0o700)).unwrap();
+        let _path = PathEnv::prepend(bin.path());
+        let home = kimi_home("synthetic-token", now().saturating_sub(120));
+        let _env = EnvVars::set(&[
+            // An invalid seam: a base-first order would refuse before the refresh.
+            (TEST_BASE_VAR, Some("http://127.0.0.2:9")),
+            (CLI_BASE_VAR, Some(&platform_url)),
+            ("NODE_RECORD_DIR", Some(record.path().to_str().unwrap())),
+        ]);
+        let result = kimi(home.path());
+        assert_eq!(result["status"], "ok", "{result}");
+        assert_eq!(result["identity"]["auth_method"], "Kimi Code", "{result}");
+        assert_eq!(result["identity"]["name"], "Fixture", "{result}");
+        assert!(result.get("detail").is_none(), "{result}");
+        assert!(marker.exists(), "the expired token did not reach the refresh node");
+        let seen = fs::read_to_string(&child_env).unwrap();
+        assert!(
+            !seen.lines().any(|line| line.starts_with(&format!("{TEST_BASE_VAR}="))),
+            "the refresh child inherited {TEST_BASE_VAR}",
+        );
+        assert!(
+            platform.accept().is_err(),
+            "the inspection requested the custom platform"
         );
     }
 

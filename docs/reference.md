@@ -5754,10 +5754,13 @@ variable or `HTTP_PROXY`). A valid test value takes precedence over
 `KIMI_CODE_BASE_URL`. Any other test value is ignored; the `detail` names the
 variable, and the rule below then applies. The seam is read only by the
 inspection and is never passed to a native Kimi child. `KIMI_CODE_BASE_URL`
-keeps the Kimi CLI's own meaning: any non-default value, including an empty one
-and a loopback address, makes the inspection send no request and no token, and
-names it in `detail`. Unset, the value `https://api.kimi.com/coding/v1` and that
-value with a trailing slash use the provider as before.
+keeps the Kimi CLI's own meaning: with a live token, any non-default value,
+including an empty one and a loopback address, makes the inspection send no
+request and no token, and names it in `detail`. An expiring token still runs
+the native CLI's refresh first, as before, so the person keeps that answer; the
+refresh no longer depends on the base. Unset, the value
+`https://api.kimi.com/coding/v1` and that value with a trailing slash use the
+provider as before.
 
 Claude usage refreshes share a cache on the account's owning computer. Account
 views and the selected session footer normally request usage every five minutes;

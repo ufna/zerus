@@ -528,6 +528,11 @@ mod tests {
 
     /// One checksummed Zstandard frame of `text`, made by Node like dsh's own writer.
     fn frame(text: &str) -> Vec<u8> {
+        // Tests that replace `node` or the PATH hold this lock; a concurrent
+        // frame must not pick up their stand-in.
+        let _lock = crate::accounts::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let mut command = Command::new("node");
         command.args([
             "-e",
@@ -543,6 +548,9 @@ mod tests {
 
     /// Several frames from one Node run, in order.
     fn frames(texts: &[String]) -> Vec<Vec<u8>> {
+        let _lock = crate::accounts::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let mut command = Command::new("node");
         command.args([
             "-e",
