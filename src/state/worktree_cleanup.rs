@@ -3375,8 +3375,10 @@ mod tests {
                 let pinned = deletion::open(parent_fd.as_raw_fd(), c"reviewed").unwrap();
                 let expected = deletion::identify(&pinned).unwrap();
                 assert_eq!(
-                    deletion::identify(&deletion::open(parent_fd.as_raw_fd(), c"reviewed").unwrap())
-                        .unwrap(),
+                    deletion::identify(
+                        &deletion::open(parent_fd.as_raw_fd(), c"reviewed").unwrap()
+                    )
+                    .unwrap(),
                     expected
                 );
                 assert!(deletion::entries(&pinned).unwrap().is_empty());
