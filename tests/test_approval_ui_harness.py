@@ -45,7 +45,7 @@ BASELINES = _focus_projection.BASELINES
 
 
 EMULATOR_PROVISIONING_PATCH = ROOT / "tests/fixtures/android-ui-pinned-emulator.patch"
-EMULATOR_PROVISIONING_PATCH_SHA = "3e28a648a7bc226d29c55deb890034a5f76f5b685a3926218786ddb6fb79294e"
+EMULATOR_PROVISIONING_PATCH_SHA = "578d5b5f371df92b128a5d53204ad9cfab961f50683f64deaf0a43a413e5b2ef"
 
 
 def without_pinned_emulator_provisioning(source):

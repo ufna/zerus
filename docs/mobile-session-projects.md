@@ -162,6 +162,13 @@ directory. Its own `source.properties` must report revision 37.2.12 and build
 16428233; the selected binary's runtime version must agree before any app build.
 No package-manager metadata is synthesized and no unversioned emulator is
 requested or used as a fallback. The system-image 9.0.0 assertion remains.
+The Ubuntu runtime-library versions are also recorded in the pin file. Before
+fixture execution, both workflows check every offered apt version, install the
+exact batch without recommendations, then verify and retain the installed
+versions. A changed candidate is a refusal, even if the older version is still
+available. The driver verifies the package receipt and runs `ldd` on the staged
+qemu with its bundled-library paths; `libpulse.so.0` and every other dependency
+must resolve before the emulator's version command.
 Installed tool/image hashes are retained separately; system-image archive bytes
 are not independently re-hashed by this helper. This selection does not map a
 development host's older platform-tools binary to an upstream source revision.

@@ -24,6 +24,17 @@ IMAGE = "system-images;android-35;google_apis;x86_64"
 SERIAL = "emulator-5554"
 REVISIONS = {"emulator": "37.2.12", IMAGE: "9.0.0"}
 HOSTED_IMAGES = frozenset({"20261012.334.1", "20261018.339.1", "20261023.334.3", "20261111.370.1"})
+RUNTIME_PACKAGES = {
+    "libpulse0": "1:16.1+dfsg1-2ubuntu10.1",
+    "libnss3": "2:3.98-1ubuntu0.3",
+    "libnspr4": "2:4.35-1.1build1",
+    "libpng16-16t64": "1.6.43-5ubuntu0.7",
+    "libexpat1": "2.6.1-2ubuntu0.6",
+    "libdrm2": "2.4.125-1ubuntu0.1~24.04.2",
+    "libxi6": "2:1.8.1-1build1",
+    "libxext6": "2:1.3.4-1build2",
+    "libxkbfile1": "1:1.1.0-1build4"
+}
 
 
 def select_suite(arguments):
@@ -334,6 +345,23 @@ def emulator_runtime_version(text):
     assert len(versions) == 1 and re.fullmatch(r"Android emulator version 37\.2\.12\.0 \(build_id 16428233\)(?: \(CL:[ -~]{1,80}\))?", versions[0]), "emulator runtime revision"
 
 
+def emulator_runtime_libraries(text):
+    assert len(text.encode("utf-8")) <= 65536 and "not found" not in text, "unresolved emulator library"
+    pulse = re.findall(r"(?m)^\s*libpulse\.so\.0\s+=>\s+/[^\s]+\s+\(0x[0-9a-f]+\)\s*$", text)
+    assert len(pulse) == 1, "libpulse resolution unknown"
+
+
+def verified_runtime_packages(text):
+    assert len(text.encode("utf-8")) <= 65536
+    found = {}
+    for line in text.splitlines():
+        name, separator, version = line.partition("=")
+        assert separator and name not in found, "runtime package fields"
+        found[name] = version
+    assert found == RUNTIME_PACKAGES, "runtime package version"
+    return found
+
+
 def defined_classes(apk):
     """Class definitions -> type IDs -> string IDs; descriptor text alone is no proof."""
     classes = set()
@@ -478,6 +506,8 @@ def main():
         save("source.json", {"commit": source, "files": source_before, "scope": "owned disposable VM; no installed/production/tool-closure claim"})
         save("selected-packages.json", pins)
         save("java-release.json", java_identity)
+        packages = run("runtime-packages", ["dpkg-query", "-W", "-f=${Package}=${Version}\n", *RUNTIME_PACKAGES], 30)
+        save("runtime-packages.json", verified_runtime_packages(packages))
         sdkmanager = sdk / "cmdline-tools/latest/bin/sdkmanager"
         assert "Pkg.Revision=12.0" in (sdkmanager.parent.parent / "source.properties").read_text().splitlines()
         save("setup-tools.json", {str(path): sha(path) for path in (java / "release", java / "bin/java", sdkmanager,
@@ -498,6 +528,9 @@ def main():
         assert "Pkg.Revision=37.0.1" in (sdk / "platform-tools/source.properties").read_text().splitlines()
         assert "Pkg.Revision=36.0.0" in (sdk / "build-tools/36.0.0/source.properties").read_text().splitlines()
         adb, emulator = sdk / "platform-tools/adb", emulator_root / "emulator"
+        library_path = ":".join(str(emulator_root / name) for name in ("lib64", "lib64/qt/lib", "lib64/gles_swiftshader"))
+        libraries = run("emulator-ldd", ["env", "LD_LIBRARY_PATH=" + library_path, "ldd", emulator_root / "qemu/linux-x86_64/qemu-system-x86_64"], 30)
+        emulator_runtime_libraries(libraries)
         version = run("emulator-version", [emulator, "-version"], 30)
         emulator_runtime_version(version)
         build = sdk / "build-tools/36.0.0"
