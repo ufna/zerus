@@ -35,6 +35,7 @@ unicode-width = "0.2"
 uuid = { version = "1", features = ["v4"] }
 ureq = { version = "3.4", default-features = false, features = ["rustls", "platform-verifier"] }
 zerus-replica = { path = "crates/replica" }
+zerus-file-lock = { path = "crates/file-lock" }
 zerus-watch-protocol = { path = "crates/watch-protocol" }
 zerus-desktop-migration = { path = "crates/desktop-migration" }
 zerus-desktop-ledger = { path = "crates/desktop-ledger" }
@@ -44,6 +45,7 @@ zerus-content-search = { path = "crates/content-search" }
 zerus-client-core = { path = "client/core", default-features = false }
 
 [dev-dependencies]
+zerus-file-lock = { path = "crates/file-lock", features = ["test-support"] }
 # Documents an older replica leaves, for the task index's tests.
 zerus-replica = { path = "crates/replica", features = ["test-support"] }
 

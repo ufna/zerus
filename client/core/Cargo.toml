@@ -25,6 +25,7 @@ zerus-desktop-migration = { path = "../../crates/desktop-migration" }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
+zerus-file-lock = { path = "../../crates/file-lock" }
 socket2 = "0.6"
 
 # Konsole tabs and raising over the session D-Bus (libdbus); the Linux app
