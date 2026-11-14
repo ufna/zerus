@@ -322,11 +322,8 @@ fn the_deepseek_list_answer_carries_only_the_pinned_keys() {
     ));
 }
 
-/// zerus-63rru.93 round 3: the fleet's own free read over the real listed
-/// row — a quiet revived Kimi profile child leaves no active child and no
-/// unsettled count, so the member reads free.
-#[test]
-fn a_quiet_revived_kimi_child_reads_free_in_the_fleet() {
+/// A quiet revived Kimi profile child, as the hooks record it.
+fn quiet_kimi_record() -> Value {
     let mut record = record("kimi", "/fixture");
     record["subagents"] = json!({"profile-1": {
         "name":"profile-1","started":1793000000.0,"state":"working",
@@ -335,7 +332,54 @@ fn a_quiet_revived_kimi_child_reads_free_in_the_fleet() {
         "label":"profile-1","active_count":1,"completed_count":1,"total_count":2,
         "updated":1792999940.0}});
     record["subagent_groups_complete"] = json!(true);
-    let row = crate::state::listing_fixture::listed_live_row(record).unwrap();
+    record
+}
+
+/// The rows the settled reads below need, made by the listing's own steps in
+/// a child test process with a private state root (zerus-63rru.117). The
+/// listing reads a live terminal's pane paths through `tmux`, whose client is
+/// a direct child of the process that lists; `processes::control::roots`
+/// counts a direct child shell as one of the row's own background jobs. Made
+/// in the shared test process, a row reads a sibling test's client as its own
+/// background job under load, so one test at a time in the child keeps a
+/// row's own process clear of another test's children. The rows are still the
+/// producer's: `listing_fixture::listed_live_row` runs its steps here.
+fn settled_rows() -> Value {
+    static ROWS: std::sync::OnceLock<Value> = std::sync::OnceLock::new();
+    ROWS.get_or_init(|| {
+        let text = super::real_rows::isolated(&format!("{CHILD}settled_rows_child"));
+        let rows = text
+            .lines()
+            .find_map(|line| line.split_once("SETTLED-ROWS "))
+            .map(|(_, rows)| rows)
+            .expect("settled rows");
+        serde_json::from_str::<Value>(rows).unwrap()
+    })
+    .clone()
+}
+
+/// Makes `settled_rows`' rows; run by its isolated wrapper.
+#[test]
+#[ignore = "run by its isolated wrapper"]
+fn settled_rows_child() {
+    let rows = json!({
+        "quiet_kimi": crate::state::listing_fixture::listed_live_row(quiet_kimi_record()).unwrap(),
+        "mixed_complete":
+            crate::state::listing_fixture::listed_live_row(mixed_record(true)).unwrap(),
+        "mixed_incomplete":
+            crate::state::listing_fixture::listed_live_row(mixed_record(false)).unwrap(),
+        "claude":
+            crate::state::listing_fixture::listed_live_row(record("claude", "/fixture")).unwrap(),
+    });
+    println!("SETTLED-ROWS {rows}");
+}
+
+/// zerus-63rru.93 round 3: the fleet's own free read over the real listed
+/// row — a quiet revived Kimi profile child leaves no active child and no
+/// unsettled count, so the member reads free.
+#[test]
+fn a_quiet_revived_kimi_child_reads_free_in_the_fleet() {
+    let row = settled_rows()["quiet_kimi"].clone();
     assert_eq!(row["subagent_active_count"], 0, "{row}");
     let facts = super::super::fleet::Facts::of(&row);
     assert!(facts.free(), "{facts:?}");
@@ -366,7 +410,7 @@ fn mixed_record(groups_complete: bool) -> Value {
 
 #[test]
 fn a_mixed_row_with_an_unknown_external_child_and_complete_groups_reads_settled() {
-    let row = crate::state::listing_fixture::listed_live_row(mixed_record(true)).unwrap();
+    let row = settled_rows()["mixed_complete"].clone();
     assert_eq!(row["subagent_source"], "mixed_hooks", "{row}");
     assert_eq!(row["subagent_counts_complete"], false, "{row}");
     assert_eq!(row["subagent_groups_complete"], true, "{row}");
@@ -376,7 +420,7 @@ fn a_mixed_row_with_an_unknown_external_child_and_complete_groups_reads_settled(
 
 #[test]
 fn incomplete_groups_stay_unsettled() {
-    let row = crate::state::listing_fixture::listed_live_row(mixed_record(false)).unwrap();
+    let row = settled_rows()["mixed_incomplete"].clone();
     assert_eq!(row["subagent_source"], "mixed_hooks", "{row}");
     assert_eq!(row["subagent_groups_complete"], false, "{row}");
     let facts = super::super::fleet::Facts::of(&row);
@@ -385,7 +429,7 @@ fn incomplete_groups_stay_unsettled() {
 
 #[test]
 fn an_older_row_without_the_group_field_reads_as_today() {
-    let mut row = crate::state::listing_fixture::listed_live_row(mixed_record(true)).unwrap();
+    let mut row = settled_rows()["mixed_complete"].clone();
     row.as_object_mut().unwrap().remove("subagent_groups_complete");
     // The fallback reads the old combined flag, which is false for the
     // unknown external child: unsettled, exactly as before the split.
@@ -439,8 +483,7 @@ fn required_additive_legacy_flag() {
 /// Round 2's three surviving mutants, each now killed by a committed test.
 #[test]
 fn a_malformed_groups_field_reads_unsettled() {
-    let mut row =
-        crate::state::listing_fixture::listed_live_row(mixed_record(true)).unwrap();
+    let mut row = settled_rows()["mixed_complete"].clone();
     row["subagent_groups_complete"] = json!("true");
     let facts = super::super::fleet::Facts::of(&row);
     assert!(!facts.free(), "a non-boolean completeness read settled: {facts:?}");
@@ -448,10 +491,7 @@ fn a_malformed_groups_field_reads_unsettled() {
 
 #[test]
 fn an_unbound_process_child_still_unsettles_history() {
-    let mut row = crate::state::listing_fixture::listed_live_row(
-        super::rows::record("claude", "/fixture"),
-    )
-    .unwrap();
+    let mut row = settled_rows()["claude"].clone();
     row["subagent_process_unknown_count"] = json!(1);
     let facts = super::super::fleet::Facts::of(&row);
     assert!(!facts.free(), "the process_unknown guard was dropped: {facts:?}");
