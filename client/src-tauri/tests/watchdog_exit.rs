@@ -35,14 +35,25 @@ fn windows_watchdog_start_and_exit_share_the_supported_platforms() {
 
 #[test]
 fn normal_exit_keeps_slow_writes_alive_beyond_the_watchdog_threshold() {
-    use std::{sync::mpsc, time::Duration};
+    use std::{
+        sync::{
+            atomic::{AtomicI64, Ordering},
+            mpsc,
+        },
+        time::Duration,
+    };
+    static CLOCK: AtomicI64 = AtomicI64::new(0);
+    fn now() -> i64 {
+        CLOCK.load(Ordering::SeqCst)
+    }
+    CLOCK.store(0, Ordering::SeqCst);
     let (sender, fired) = mpsc::channel();
     let dog = watchdog::Watchdog::start(
         watchdog::Limits {
             hang_ms: 60,
             wake_grace_ms: 0,
         },
-        watchdog::now_ms,
+        now,
         move |silent| {
             sender.send(silent).unwrap();
         },
@@ -50,8 +61,10 @@ fn normal_exit_keeps_slow_writes_alive_beyond_the_watchdog_threshold() {
     .unwrap();
     let mut settled = false;
     watchdog::run_exit(Some(&dog), || {
-        // No heartbeat runs while exit writes settle. This exceeds the real
-        // checking thread's hang threshold without aborting the fixture.
+        // Advance only after exit begins: a loaded runner cannot look hung
+        // before it has reached the production stop. The real checking thread
+        // sees a silence past its threshold while exit writes still settle.
+        CLOCK.store(1_000, Ordering::SeqCst);
         std::thread::sleep(Duration::from_millis(200));
         match fired.recv_timeout(Duration::from_secs(5)) {
             Err(mpsc::RecvTimeoutError::Disconnected) => (),
