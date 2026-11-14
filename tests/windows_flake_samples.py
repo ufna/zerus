@@ -29,6 +29,13 @@ def mode_rounds(rounds, grant, choose):
                   file=sys.stderr)
             assert value.get('ok') is True, json.dumps(value)
             assert value.get('running_mode') == desired, json.dumps(value)
+            assert value.get('changed') is True, 'only a changed mode qualifies a Stop sample'
+            timing = value.get('stop_timing')
+            assert isinstance(timing, dict) and timing.get('abi') == 'desktop-mode-stop-timing-v1', 'missing Stop timing'
+            assert timing.get('budget_ms') == 4000, 'Stop timing must report the approved four-second budget'
+            for name in ('native_rechecks', 'metadata_sync', 'instance_stop', 'physical_exit'):
+                assert isinstance(timing.get('steps', {}).get(name, {}).get('elapsed_ms'), int), 'missing Stop timing step'
+            assert timing['steps']['instance_stop']['calls'] == 1, 'sample must exercise one original Stop'
             request = value.get('request_id')
             assert request and request not in seen, 'every sampled choice needs a fresh request'
             seen.add(request)
@@ -64,7 +71,7 @@ class TransportSamples(unittest.TestCase):
         from test_remote_windows import WindowsNativeTransport
         rounds = round_count()
         self.assertGreater(rounds, 0, 'sampling requires an explicit positive count')
-        with ThreadPoolExecutor(max_workers=4) as pool:
+        with cpu_load(), ThreadPoolExecutor(max_workers=4) as pool:
             for index in range(rounds):
                 cases = [WindowsNativeTransport('run_decoder') for _ in range(4)]
                 futures = [pool.submit(case.run_decoder, 'powershell', sustained=True) for case in cases]

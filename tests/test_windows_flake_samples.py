@@ -7,6 +7,13 @@ from unittest import mock
 import windows_flake_samples as samples
 
 
+def settled(desired, request):
+    return dict(ok=True, changed=True, running_mode=desired, request_id=request,
+                stop_timing=dict(abi='desktop-mode-stop-timing-v1', budget_ms=4000,
+                    steps={name:dict(calls=1, elapsed_ms=1) for name in
+                           ('native_rechecks', 'metadata_sync', 'instance_stop', 'physical_exit')}))
+
+
 class Sampling(unittest.TestCase):
     def test_round_count_is_explicit_bounded_and_disabled_by_default(self):
         self.assertEqual(samples.round_count({}), 0)
@@ -15,11 +22,38 @@ class Sampling(unittest.TestCase):
             with self.subTest(value=value), self.assertRaises(ValueError):
                 samples.round_count({'ZERUS_WINDOWS_FLAKE_ROUNDS':value})
 
+    def test_transport_samples_hold_cpu_load_until_all_original_calls_settle(self):
+        active = False
+        cases = []
+        @contextlib.contextmanager
+        def load():
+            nonlocal active
+            active = True
+            try:
+                yield
+            finally:
+                self.assertEqual(sum(case.run_decoder.call_count for case in cases), 8)
+                active = False
+        def fixture(method):
+            self.assertEqual(method, 'run_decoder')
+            case = mock.Mock()
+            case.run_decoder.side_effect = lambda *args, **kwargs: self.assertTrue(active, 'missing sustained CPU load')
+            cases.append(case)
+            return case
+        with mock.patch.object(samples, 'round_count', return_value=2), \
+             mock.patch.object(samples, 'cpu_load', side_effect=load), \
+             mock.patch('test_remote_windows.WindowsNativeTransport', side_effect=fixture), \
+             contextlib.redirect_stderr(io.StringIO()):
+            samples.TransportSamples('test_loaded_sustained_streams').test_loaded_sustained_streams()
+        self.assertFalse(active)
+        self.assertEqual(len(cases), 8)
+        for case in cases:
+            case.run_decoder.assert_called_once_with('powershell', sustained=True)
+
     def test_serial_choices_use_fresh_requests_only_after_settlement(self):
         grant = mock.Mock()
         n = iter(range(4))
-        choose = mock.Mock(side_effect=lambda desired: dict(ok=True, running_mode=desired,
-                                                          request_id='request-'+str(next(n))))
+        choose = mock.Mock(side_effect=lambda desired: settled(desired, 'request-'+str(next(n))))
         with contextlib.redirect_stderr(io.StringIO()):
             samples.mode_rounds(2, grant, choose)
         self.assertEqual(grant.call_args_list,
@@ -33,8 +67,8 @@ class Sampling(unittest.TestCase):
                 def choice(desired):
                     if desired == failed_mode:
                         return dict(ok=False, code='mode_transition_unconfirmed',
-                                    stop_timing={'budget_ms':2000})
-                    return dict(ok=True, running_mode=desired, request_id='fresh-request')
+                                    stop_timing={'budget_ms':4000})
+                    return settled(desired, 'fresh-request')
                 choose = mock.Mock(side_effect=choice)
                 with contextlib.redirect_stderr(io.StringIO()), self.assertRaisesRegex(
                         AssertionError, 'mode_transition_unconfirmed'):
@@ -45,11 +79,29 @@ class Sampling(unittest.TestCase):
                 self.assertEqual(choose.call_args_list, expected)
 
     def test_reused_request_cannot_qualify_another_choice(self):
-        choose = mock.Mock(side_effect=lambda desired: dict(ok=True, running_mode=desired,
-                                                          request_id='same-request'))
+        choose = mock.Mock(side_effect=lambda desired: settled(desired, 'same-request'))
         with contextlib.redirect_stderr(io.StringIO()), self.assertRaisesRegex(AssertionError, 'fresh request'):
             samples.mode_rounds(40, mock.Mock(), choose)
         self.assertEqual(choose.call_count, 2)
+
+    def test_a_success_without_stop_timings_does_not_qualify_a_round(self):
+        n = iter(range(80))
+        def choice(desired):
+            value = settled(desired, 'request-'+str(next(n)))
+            del value['stop_timing']
+            return value
+        choose = mock.Mock(side_effect=choice)
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaisesRegex(AssertionError, 'Stop timing'):
+            samples.mode_rounds(40, mock.Mock(), choose)
+        choose.assert_called_once_with('background')
+
+    def test_an_unchanged_reply_does_not_qualify_a_stop_sample(self):
+        n = iter(range(80))
+        choose = mock.Mock(side_effect=lambda desired: dict(
+            settled(desired, 'request-'+str(next(n))), changed=False))
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaisesRegex(AssertionError, 'changed'):
+            samples.mode_rounds(40, mock.Mock(), choose)
+        choose.assert_called_once_with('background')
 
 
 class WorkflowSampling(unittest.TestCase):

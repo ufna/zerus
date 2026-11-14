@@ -281,7 +281,9 @@ Review and merging remain deliberate; successful CI does not auto-merge PRs.
 The existing CI workflow accepts `windows_flake_rounds` from 0 to 40 for opt-in
 native Windows qualification. Zero keeps ordinary runs unchanged. A selected
 run samples four independent sustained transports per round and serial mode
-round trips under two local hash workers. Mode sampling stops at the first
+round trips, each under two local hash workers. Successful changed-mode replies
+carry bounded Stop step timings; a no-op or missing timing cannot qualify a
+Stop sample. A fresh round explicitly Rearms after the prior passive rollback. Mode sampling stops at the first
 refused or unknown choice, retaining the original fixture custody; it never
 retries that choice. Per-invocation readiness, lease, Stop and cleanup bounds
 stay unchanged. Additional dispatch-only steps have their own aggregate CI
