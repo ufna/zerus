@@ -154,6 +154,41 @@ fn the_page_carries_the_standing_trust_kind_for_each_outcome() {
     );
 }
 
+/// zerus-63rru.66 round 6: the real service list reply through the real
+/// page, committed as the fixture the Approvals render test consumes; the
+/// guard fails when the core's page output drifts from the committed file
+/// (regenerate with HGS_R6_WRITE_FIXTURE set).
+#[test]
+fn the_real_service_reply_projects_into_the_committed_page_fixture() {
+    let reply = json!({"entries": [
+        {"id": 1, "at": 1, "host": "a.example", "session": "agent/project/fixture", "provider": "codex",
+            "prompt": "Trust this folder?", "status": "approved", "categories": ["team_folder_trust"], "scope": "/fixture/main"},
+        {"id": 2, "at": 2, "host": "a.example", "session": "agent/project/fixture", "provider": "codex",
+            "prompt": "Trust this folder?", "status": "failed", "categories": ["team_folder_trust"], "scope": "/fixture/main"},
+        {"id": 3, "at": 3, "host": "a.example", "session": "agent/project/fixture", "provider": "codex",
+            "prompt": "Trust this folder?", "status": "unknown", "categories": ["team_folder_trust"], "scope": "/fixture/main"},
+        {"id": 4, "at": 4, "host": "a.example", "session": "agent/project/fixture", "provider": "codex",
+            "prompt": "Trust this folder?", "status": "cancelled", "categories": ["team_folder_trust"], "scope": "/fixture/main"},
+        {"id": 5, "at": 5, "host": "a.example", "session": "agent/project/fixture", "provider": "codex",
+            "prompt": "Trust this folder?", "status": "unconfirmed", "categories": ["team_folder_trust"], "scope": "/fixture/main"},
+        {"id": 6, "at": 6, "host": "a.example", "session": "agent/project/fixture", "provider": "claude",
+            "prompt": "Resume the member?", "status": "approved", "categories": ["team_resume"], "scope": "/fixture/main"},
+        {"id": 7, "at": 7, "host": "a.example", "session": "agent/project/fixture", "provider": "claude",
+            "prompt": "Resume the member?", "status": "approved", "categories": [], "scope": "/fixture/main"},
+        {"id": 8, "at": 8, "host": "a.example", "session": "agent/project/fixture", "provider": "claude",
+            "prompt": "May I run this command?", "status": "approved", "categories": ["shell"], "scope": null},
+    ], "next": null, "previous": null});
+    let page = page(reply.as_object().unwrap()).unwrap();
+    let projected = serde_json::to_value(&page).unwrap();
+    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../src/ui/screens/settings/approvals-page.r6.fixture.json");
+    if std::env::var_os("HGS_R6_WRITE_FIXTURE").is_some() {
+        std::fs::write(path, serde_json::to_string_pretty(&projected).unwrap() + "\n").unwrap();
+    }
+    let committed: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+    assert_eq!(projected, committed, "the core page output drifted; regenerate with HGS_R6_WRITE_FIXTURE");
+}
+
 #[test]
 fn a_detail_shows_the_question_and_the_answer_chosen() {
     let reply = json!({"id": 9, "status": "approved", "detail": "Granted once.",

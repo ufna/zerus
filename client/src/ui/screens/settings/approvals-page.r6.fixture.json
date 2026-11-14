@@ -1,0 +1,96 @@
+{
+  "entries": [
+    {
+      "at": 1,
+      "categories": [],
+      "host": "a.example",
+      "id": 1,
+      "prompt": "Trust this folder?",
+      "result": "Approved once",
+      "scope": "/fixture/main",
+      "session": "agent/project/fixture",
+      "standing": "team_folder_trust"
+    },
+    {
+      "at": 2,
+      "categories": [],
+      "host": "a.example",
+      "id": 2,
+      "prompt": "Trust this folder?",
+      "result": "Failed",
+      "scope": "/fixture/main",
+      "session": "agent/project/fixture",
+      "standing": "team_folder_trust"
+    },
+    {
+      "at": 3,
+      "categories": [],
+      "host": "a.example",
+      "id": 3,
+      "prompt": "Trust this folder?",
+      "result": "Unconfirmed",
+      "scope": "/fixture/main",
+      "session": "agent/project/fixture",
+      "standing": "team_folder_trust"
+    },
+    {
+      "at": 4,
+      "categories": [],
+      "host": "a.example",
+      "id": 4,
+      "prompt": "Trust this folder?",
+      "result": "Cancelled",
+      "scope": "/fixture/main",
+      "session": "agent/project/fixture",
+      "standing": "team_folder_trust"
+    },
+    {
+      "at": 5,
+      "categories": [],
+      "host": "a.example",
+      "id": 5,
+      "prompt": "Trust this folder?",
+      "result": "Unconfirmed",
+      "scope": "/fixture/main",
+      "session": "agent/project/fixture",
+      "standing": "team_folder_trust"
+    },
+    {
+      "at": 6,
+      "categories": [],
+      "host": "a.example",
+      "id": 6,
+      "prompt": "Resume the member?",
+      "result": "Approved once",
+      "scope": "/fixture/main",
+      "session": "agent/project/fixture",
+      "standing": null
+    },
+    {
+      "at": 7,
+      "categories": [],
+      "host": "a.example",
+      "id": 7,
+      "prompt": "Resume the member?",
+      "result": "Approved once",
+      "scope": "/fixture/main",
+      "session": "agent/project/fixture",
+      "standing": null
+    },
+    {
+      "at": 8,
+      "categories": [
+        "shell"
+      ],
+      "host": "a.example",
+      "id": 8,
+      "prompt": "May I run this command?",
+      "result": "Approved once",
+      "scope": null,
+      "session": "agent/project/fixture",
+      "standing": null
+    }
+  ],
+  "next": 0,
+  "previous": 0
+}
