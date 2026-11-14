@@ -31,6 +31,10 @@ on:
         description: Opt-in test-only artifact for private Windows membership qualification
         type: boolean
         default: false
+      qualify_start_refusal:
+        description: Opt-in hosted standard-user NTFS refusal qualification, with native runtime mutants
+        type: boolean
+        default: false
       run_ios:
         type: boolean
         default: false
@@ -1515,6 +1519,11 @@ jobs:
           path: artifacts/membership-hosted-timing
           if-no-files-found: warn
           retention-days: 1
+      - name: Qualify conservative Windows Start-refusal publication
+        if: github.event_name == 'workflow_dispatch' && inputs.qualify_start_refusal
+        env:
+          QUALIFICATION_SOURCE: ${{ needs.source.outputs.commit }}
+        run: python scripts/ci/windows-start-refusal.py
       - name: Root unit tests and pinned lints
         id: root-tests
         run: |

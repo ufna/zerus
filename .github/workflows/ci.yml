@@ -48,6 +48,10 @@ on:
         description: Retain the exact Windows test executable for private read-only membership qualification
         type: boolean
         default: false
+      qualify_start_refusal:
+        description: Qualify Windows Start-refusal Unknown handling as a disposable standard user on NTFS
+        type: boolean
+        default: false
   workflow_call:
     inputs:
       ref:
@@ -120,6 +124,7 @@ jobs:
       windows_installer_version: ${{ inputs.windows_installer_version || '' }}
       windows_flake_rounds: ${{ github.event_name == 'workflow_dispatch' && fromJSON(format('{0}', inputs.windows_flake_rounds || 0)) || 0 }}
       retain_membership_probe: ${{ github.event_name == 'workflow_dispatch' && inputs.retain_membership_probe || false }}
+      qualify_start_refusal: ${{ github.event_name == 'workflow_dispatch' && inputs.qualify_start_refusal || false }}
       run_ios: ${{ inputs.run_ios || false }}
       filter_pr_platforms: ${{ github.event_name == 'pull_request' }}
       arch_check_in_source: ${{ inputs.release_rehearsal || false }}
