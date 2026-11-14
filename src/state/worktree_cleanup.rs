@@ -3310,6 +3310,8 @@ mod tests {
     #[test]
     #[ignore = "requires an explicitly authorized native macOS filesystem window"]
     fn macos_late_swap_preserves_appledouble_payload_at_root_and_nested_names() {
+        // This proves containment, not a safe raw rmdir primitive. The raw
+        // observations below must remain separate from this preservation gate.
         use std::os::fd::AsRawFd;
         for nested in [false, true] {
             let base = tempfile::tempdir().unwrap();
@@ -3329,13 +3331,18 @@ mod tests {
                     .unwrap(),
                 expected
             );
+            assert!(deletion::entries(&pinned).unwrap().is_empty());
             // The swap is AFTER the final identity check, not before it.
             let moved = parent.join("original");
             fs::rename(&root, &moved).unwrap();
             fs::create_dir(&root).unwrap();
             fs::write(root.join("._payload"), b"unreviewed user bytes").unwrap();
-            assert!(
-                deletion::unlink(parent_fd.as_raw_fd(), c"reviewed", libc::AT_REMOVEDIR).is_err()
+            assert_eq!(
+                deletion::unlink(parent_fd.as_raw_fd(), c"reviewed", libc::AT_REMOVEDIR)
+                    .unwrap_err()
+                    .kind(),
+                std::io::ErrorKind::Unsupported,
+                "a green contained probe is not evidence for re-enablement"
             );
             assert_eq!(
                 fs::read(root.join("._payload")).unwrap(),
@@ -3345,6 +3352,83 @@ mod tests {
             assert!(moved.is_dir());
         }
     }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    #[ignore = "raw kernel observations; requires an explicitly authorized native macOS filesystem window"]
+    fn macos_raw_appledouble_observations_do_not_qualify_deletion() {
+        use std::os::fd::AsRawFd;
+        let payload = b"unreviewed user bytes";
+        let mut observations = Vec::new();
+        for nested in [false, true] {
+            for case in ["empty", "ordinary", "late_swap", "late_insert"] {
+                let base = tempfile::tempdir().unwrap();
+                let parent = if nested {
+                    base.path().join("parent")
+                } else {
+                    base.path().to_path_buf()
+                };
+                fs::create_dir_all(&parent).unwrap();
+                let root = parent.join("reviewed");
+                fs::create_dir(&root).unwrap();
+                let parent_fd = deletion::open_path(&fs::canonicalize(&parent).unwrap()).unwrap();
+                let pinned = deletion::open(parent_fd.as_raw_fd(), c"reviewed").unwrap();
+                let expected = deletion::identify(&pinned).unwrap();
+                assert_eq!(
+                    deletion::identify(
+                        &deletion::open(parent_fd.as_raw_fd(), c"reviewed").unwrap()
+                    )
+                    .unwrap(),
+                    expected
+                );
+                assert!(deletion::entries(&pinned).unwrap().is_empty());
+                if case == "late_swap" {
+                    fs::rename(&root, parent.join("original")).unwrap();
+                    fs::create_dir(&root).unwrap();
+                }
+                let file = root.join(if case == "ordinary" {
+                    "ordinary"
+                } else {
+                    "._payload"
+                });
+                if case != "empty" {
+                    fs::write(&file, payload).unwrap();
+                }
+                // Intentionally bypass ONLY the test's contained wrapper to
+                // observe XNU on fresh synthetic directories. No application
+                // path may copy this call as an expected-inode guard.
+                let rc = unsafe {
+                    libc::unlinkat(
+                        parent_fd.as_raw_fd(),
+                        c"reviewed".as_ptr(),
+                        libc::AT_REMOVEDIR,
+                    )
+                };
+                let error = (rc != 0).then(std::io::Error::last_os_error);
+                let intact = fs::read(&file).is_ok_and(|bytes| bytes == payload);
+                observations.push(json!({"nested":nested,"case":case,"raw_rc":rc,
+                    "raw_errno":error.as_ref().and_then(std::io::Error::raw_os_error),
+                    "payload_intact":intact,"name_exists":root.exists()}));
+                if case == "empty" {
+                    assert_eq!(rc, 0, "the raw empty positive must reach the kernel");
+                    assert!(!root.exists());
+                } else if case == "ordinary" {
+                    assert_eq!(
+                        error.and_then(|error| error.raw_os_error()),
+                        Some(libc::ENOTEMPTY)
+                    );
+                    assert!(intact, "the ordinary-file control must preserve its bytes");
+                } else if case == "late_swap" {
+                    assert_eq!(deletion::identify(&pinned).unwrap(), expected);
+                    assert!(parent.join("original").is_dir());
+                }
+                // Neither a raw success nor an error establishes preservation:
+                // inspect payload_intact separately. This is not a safety gate.
+            }
+        }
+        eprintln!("APPLEDOUBLE_KERNEL_OBSERVATIONS={}", json!(observations));
+    }
+
     #[cfg(target_os = "linux")]
     #[test]
     fn an_empty_replacement_before_the_final_unlink_is_refused() {

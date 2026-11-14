@@ -4435,6 +4435,12 @@ The shared directory-removal wrapper also refuses both nested and root removals
 on macOS. A future authorized native window must run the ignored
 `state::worktree_cleanup::tests::macos_late_swap_preserves_appledouble_payload_at_root_and_nested_names`
 probe with `--exact --ignored` before re-enablement is considered.
+It is a containment probe: it requires an `Unsupported` refusal and intact
+payloads, and does not call raw XNU directory removal. The separate ignored
+`state::worktree_cleanup::tests::macos_raw_appledouble_observations_do_not_qualify_deletion`
+probe observes raw syscalls on fresh synthetic directories; its passing result
+does not authorize deletion. The [native qualification](native-macos-leftover-qualification.md)
+records the verified late-swap data loss and the unsuccessful held-fd candidates.
 
 On Linux, deleting the remaining files needs an
 explicit confirmation and the fingerprint of the fresh review the owner saw. It
