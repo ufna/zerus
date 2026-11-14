@@ -106,51 +106,16 @@ def target(system=None, machine=None):
     return found
 
 
-class OfficialRedirect(urllib.request.HTTPRedirectHandler):
-    def __init__(self, method='GET'):
-        self.hops = []
-        self.method = method
+discovery_spec = importlib.util.spec_from_file_location(
+    'zerus_native_discovery', Path(__file__).with_name('native_discovery.py'))
+discovery = importlib.util.module_from_spec(discovery_spec)
+discovery_spec.loader.exec_module(discovery)
 
-    def redirect_request(self, request, fp, code, message, headers, newurl):
-        source, destination = map(urllib.parse.urlsplit, (request.full_url, newurl))
-        if (self.hops or code != 302 or len(headers.get_all('Location', [])) != 1
-                or request.get_method() != self.method or self.method not in ('GET', 'HEAD')
-                or source.scheme != 'https' or source.netloc != 'code.kimi.com'
-                or not (source.path.startswith('/kimi-code/binaries/') or source.path == '/kimi-code/latest')
-                or source.query or source.fragment
-                or destination.scheme != 'https' or destination.netloc != 'cdn.kimi.com'
-                or destination.path != source.path or destination.query or destination.fragment):
-            raise ValueError('unreviewed download redirect')
-        self.hops.append(dict(source=request.full_url, target=newurl, status=code))
-        return urllib.request.Request(newurl, headers=dict(request.headers), method=self.method)
+OfficialRedirect = discovery.OfficialRedirect
 
 
 def metadata(url, limit, method='GET'):
-    """One bounded official metadata request; no fallback, retries or execution."""
-    redirects = OfficialRedirect(method)
-    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), redirects)
-    end = time.monotonic() + 60
-    with opener.open(urllib.request.Request(url, headers={'Accept-Encoding': 'identity'}, method=method),
-                     timeout=30) as response:
-        lengths = response.headers.get_all('Content-Length', [])
-        if (response.status != 200 or len(lengths) != 1 or not re.fullmatch('[0-9]+', lengths[0])
-                or not 0 < int(lengths[0]) <= limit
-                or response.headers.get('Content-Encoding', 'identity') != 'identity'):
-            raise ValueError('official metadata status/length/encoding is invalid')
-        size, body = int(lengths[0]), bytearray()
-        if method == 'GET':
-            while len(body) < size:
-                if time.monotonic() >= end:
-                    raise TimeoutError('metadata deadline')
-                chunk = response.read(min(65536, size - len(body)))
-                if time.monotonic() >= end or not chunk:
-                    raise ValueError('short or late metadata')
-                body.extend(chunk)
-            if response.read(1):
-                raise ValueError('oversized metadata')
-        if time.monotonic() >= end:
-            raise TimeoutError('metadata deadline')
-        return bytes(body), dict(url=url, final_url=response.url, redirects=redirects.hops, size=size)
+    return discovery.fetch_metadata(url, limit, method=method, policy='kimi', stage='official Kimi metadata')
 
 
 def resolve_latest(platform_id):

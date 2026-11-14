@@ -260,12 +260,14 @@ def check_manifest(manifest):
                 raise ValueError(label + ': only an older version may be retained, with its reason')
 
 
+discovery_spec = importlib.util.spec_from_file_location(
+    'zerus_native_discovery', Path(__file__).with_name('native_discovery.py'))
+discovery = importlib.util.module_from_spec(discovery_spec)
+discovery_spec.loader.exec_module(discovery)
+
+
 def fetch_json(url):
-    request = urllib.request.Request(url, headers={'User-Agent': 'Zerus-agent-compatibility'})
-    with urllib.request.urlopen(request, timeout=30) as response:
-        data = response.read(8 * 1024 * 1024 + 1)
-    if len(data) > 8 * 1024 * 1024:
-        raise ValueError('Upstream metadata exceeds its size limit')
+    data, _ = discovery.fetch_metadata(url, 8 * 1024 * 1024, stage='official npm metadata')
     return json.loads(data)
 
 
@@ -321,7 +323,7 @@ def discover_upstream(manifest):
 def latest_packages(agents, target, upstream):
     """Resolve one exact official package per selected agent before any native run.
 
-    The registry's latest tag is read once, not once per terminal case. Historical
+    The registry's latest tag selects one version, not one per terminal case. Historical
     pins are never a fallback for a missing release, target package or integrity.
     """
     packages, errors = {}, []
