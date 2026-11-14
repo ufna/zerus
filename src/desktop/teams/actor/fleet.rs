@@ -14,7 +14,7 @@ use serde_json::Value;
 
 /// Every key path [`Facts::of`] reads, and whether every producer writes it
 /// (the guard test checks both against rows the producers made).
-pub(super) const READ: [(&str, bool); 15] = [
+pub(super) const READ: [(&str, bool); 16] = [
     ("name", true),
     ("run_id", true),
     ("launch_id", true),
@@ -28,6 +28,7 @@ pub(super) const READ: [(&str, bool); 15] = [
     ("subagent_active_count", true),
     ("subagent_source", true),
     ("subagent_counts_complete", true),
+    ("subagent_groups_complete", false),
     ("subagent_process_unknown_count", false),
     ("optional_questions.count", true),
 ];
@@ -126,10 +127,15 @@ fn children(row: &Value) -> (Option<u64>, bool) {
         .and_then(|source| SOURCES.iter().find(|(name, _)| *name == source))
         .map(|(_, meaning)| *meaning);
     let unsettled = match meaning {
+        // History never keeps a member: a child that ended, was interrupted
+        // or failed is past work, whatever its completeness flag says; the
+        // separate process_unknown guard below still unsettles an unbound
+        // child that may run now (zerus-63rru.68 round 2, the plan's rule).
         Some(Some(Incomplete::History)) => false,
-        Some(Some(Incomplete::MayRunNow)) => {
-            row.get("subagent_counts_complete") != Some(&Value::Bool(true))
-        }
+        Some(Some(Incomplete::MayRunNow)) => match row.get("subagent_groups_complete") {
+            Some(value) => value != &Value::Bool(true),
+            None => row.get("subagent_counts_complete") != Some(&Value::Bool(true)),
+        },
         // `unavailable` writes no count; a source the reader does not know
         // cannot say what its count leaves out.
         Some(None) | None => true,

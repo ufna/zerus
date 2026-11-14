@@ -142,6 +142,7 @@ fn the_reader_names_an_unknown_count_only_of_an_otherwise_free_member() {
         let unsettled = [
             ("subagent_source", json!("hook_profiles")),
             ("subagent_counts_complete", json!(false)),
+            ("subagent_groups_complete", json!(false)),
         ];
         let facts = Facts::of(&seed_row(kind, &unsettled));
         assert!(!facts.free(), "{kind}");

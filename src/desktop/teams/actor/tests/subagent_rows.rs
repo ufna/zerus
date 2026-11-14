@@ -93,6 +93,7 @@ fn produce() -> BTreeMap<&'static str, Value> {
     let mut active = super::rows::producer_row("kimi");
     active["subagent_source"] = json!("mixed_hooks");
     active["subagent_counts_complete"] = json!(false);
+    active["subagent_groups_complete"] = json!(false);
     active["subagent_active_count"] = json!(2);
     rows.insert("mixed_hooks_unsettled_active", active);
     rows.insert("unavailable", live("claude", json!({"last_event_at":null})));
