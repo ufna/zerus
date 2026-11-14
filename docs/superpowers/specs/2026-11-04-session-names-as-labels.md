@@ -371,8 +371,19 @@ Saved Start fresh (zerus-ucck.4.15) prepares its recipe from that captured raw
 frame and rechecks the same slot at its existing final state-writer boundary,
 before starting its runner. Changed or unavailable sources require selecting
 the session again. Existing current-activity, namespace and identity checks
-remain in place; unchanged records retain their existing launch behavior. Ordinary
-Resume, physical custody and writer-gate activation remain separate.
+remain in place; unchanged records retain their existing launch behavior. Physical
+custody and writer-gate activation remain separate.
+
+Ordinary saved Resume (zerus-ucck.4.16) prepares history identity and its recipe
+from the same raw snapshot, then consumes it into a small retained source fence:
+only the original slot/name and complete digest, with no raw Value, re-read or
+re-hash. Named, ID, batch and scoped resumes recheck that slot at their existing
+final writer boundary. Current namespace, identity, native-live, terminal,
+cleanup and Scope checks remain. Only one raw source frame is transient during
+preparation; each already-prepared batch recipe retains only the small fence.
+A later refusal does not roll back, restart or replay earlier batch entries
+that already started. This neither adopts a changed recipe nor grants native
+custody or duplicate-label admission.
 
 P3e's controls for the lock:
 - a lock that fails or is interrupted before publication;

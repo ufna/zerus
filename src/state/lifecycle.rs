@@ -1171,29 +1171,36 @@ pub(super) fn resume_scoped(names: &[String], dry: bool, scope: Option<&session_
         if let Some(id) = &requested {
             verify_requested(&read(&name)?, &snapshot, id)?;
         }
-        let record = read(&name)?;
-        terminating::check_mutation(&record)?;
-        if already_live(&record, &snapshot)? {
+        let changed = || format!("{name}: saved source changed or is unavailable; select the session again before resuming");
+        let slot = std::path::absolute(storage::record_path(&name)).map_err(|_| changed())?;
+        let source = storage::selected_source::Snapshot::capture(&slot, &name).map_err(|_| changed())?;
+        let record = source.record();
+        terminating::check_mutation(record)?;
+        if already_live(record, &snapshot)? {
             if scope.is_some() {return Err("Session is already live; no resume was launched".into());}
             continue;
         }
-        if let Some(scope)=scope {scope.check(&record)?;}
-        if archive::equivalent(&record, &archived) {
+        if let Some(scope)=scope {scope.check(record)?;}
+        if archive::equivalent(record, &archived) {
             return Err(format!(
                 "{name}: this session is archived; restore it using --archive ID"
             ));
         }
-        refuse_unsettled_clear(&record)?;
-        recipes::verify_history(&record, true)?;
-        let restore_id = nonempty_value(&record, "restore_archive_id");
+        refuse_unsettled_clear(record)?;
+        recipes::verify_history(record, true)?;
+        let restore_id = nonempty_value(record, "restore_archive_id");
         let new_run=uuid::Uuid::new_v4().to_string();
-        let spec = resume_spec(&record, &new_run, restore_id.as_deref(), dry)?;
-        recipes.push((name, spec, saved_binding(&record), new_run));
+        let spec = resume_spec(record, &new_run, restore_id.as_deref(), dry)?;
+        let binding = saved_binding(record);
+        // Batches retain only the original locator/digest, never one full raw
+        // Value per prepared recipe. Conversion cannot refresh the source.
+        recipes.push((name, spec, binding, new_run, source.into_fence()));
     }
     let _guard = lock(None)?;
-    for (name, spec, original_binding, new_run) in recipes {
+    for (name, spec, original_binding, new_run, source) in recipes {
+        let changed = || format!("{name}: saved source changed or is unavailable; select the session again before resuming");
         let current_snapshot = live()?;
-        let current = read(&name)?;
+        let current = read(&name).map_err(|_| changed())?;
         refuse_unsettled_clear(&current)?;
         if let Some(scope)=scope {scope.check(&current)?;}
         if let Some(id) = &requested {
@@ -1206,6 +1213,7 @@ pub(super) fn resume_scoped(names: &[String], dry: bool, scope: Option<&session_
         if current_snapshot.contains_key(&spec.name) {
             return Err(format!("{name}: terminal {} was taken before the resume; retry", spec.name));
         }
+        source.recheck().map_err(|_| changed())?;
         if saved_binding(&current) != original_binding {
             return Err(format!("{name}: saved binding changed; retry resume"));
         }
