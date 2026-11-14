@@ -234,7 +234,6 @@ fn host_request(
     method: &str,
     params: Value,
 ) -> std::result::Result<Value, Unanswered> {
-    use std::io::Read;
     let remaining = || {
         deadline
             .checked_duration_since(Instant::now())
@@ -266,12 +265,32 @@ fn host_request(
             Err(_) => return Err(Unanswered::NoAnswer),
         }
     }
+    host_response(&mut stream, deadline)
+}
+
+/// Read one complete, bounded host reply. XNU may already have shut the
+/// socket down after the peer sent it: options then fail, but queued bytes
+/// remain readable. That case drains nonblocking and still needs a valid
+/// complete reply before the original absolute deadline.
+#[cfg(unix)]
+fn host_response(stream: &mut UnixStream, deadline: Instant) -> std::result::Result<Value, Unanswered> {
+    use std::io::Read;
+    let remaining = || {
+        deadline
+            .checked_duration_since(Instant::now())
+            .filter(|left| !left.is_zero())
+            .ok_or(Unanswered::NoAnswer)
+    };
     let mut response = Vec::new();
     let mut chunk = [0u8; 4096];
     let line = loop {
-        stream
-            .set_read_timeout(Some(remaining()?))
+        let timeout = stream.set_read_timeout(Some(remaining()?));
+        let closed = timeout.is_err();
+        crate::platform::receive_timeout_result(timeout, cfg!(target_vendor = "apple"))
             .map_err(|_| Unanswered::NoAnswer)?;
+        if closed {
+            stream.set_nonblocking(true).map_err(|_| Unanswered::NoAnswer)?;
+        }
         match stream.read(&mut chunk) {
             Ok(0) => return Err(Unanswered::NoAnswer),
             Ok(count) => response.extend_from_slice(&chunk[..count]),
@@ -285,6 +304,7 @@ fn host_request(
             return Err(Unanswered::NoAnswer);
         }
     };
+    remaining()?;
     let reply: Value = serde_json::from_slice(line).map_err(|_| Unanswered::NoAnswer)?;
     if reply["ok"] != true {
         return Err(Unanswered::NoAnswer);
@@ -3560,3 +3580,6 @@ mod tests {
         assert_eq!(off["socket"], on["socket"]);
     }
 }
+
+#[cfg(all(test, unix))]
+mod host_exchange_tests;
