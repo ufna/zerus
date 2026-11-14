@@ -1,8 +1,17 @@
 //! Real-process review regressions. Each proof runs in a fresh process under
 //! a detached helper, outside the test runner's own Zerus agent ancestry.
+//! Whoever adopts a detached process depends on the machine: a subreaper of
+//! this user (`systemd --user`) on a Linux desktop, PID 1 in hosted CI, an ssh
+//! session or a container, launchd on macOS. Where a foreign process adopts
+//! the helper, the helper is the top of the walk, and the top may have an
+//! unreadable environment. The modes in [`KEPT`] give the helper an
+//! environment the walk cannot read, so their helper runs below a keeper of
+//! this user that outlives the probe: it is never the top (zerus-e8e6m).
 use super::*;
 use sha2::{Digest, Sha256};
-use std::path::PathBuf;
+use std::collections::BTreeMap;
+use std::ffi::OsStr;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
@@ -62,8 +71,26 @@ else:
     if mode=='nohup': cmd.insert(0,'nohup')
     result=subprocess.run(cmd,env=child,capture_output=True,text=True,timeout=15)
     text=result.stdout+result.stderr
+(base/'parent').write_text(str(os.getppid()))
 (base/'answer.tmp').write_text(text)
 os.replace(base/'answer.tmp',base/'answer')
+"#;
+
+/// The modes whose helper has an environment the walk cannot read: a
+/// nondumpable process and one over the 1 MiB cap. The walk tolerates that
+/// only at the top, so these helpers run below a keeper.
+const KEPT: [&str; 2] = ["unreadable", "oversize"];
+
+/// A detached process of this user with only `PATH` in its environment: it
+/// starts the helper that `helper.json` describes and waits for it, so the
+/// helper's parent is this keeper until the helper has written its answer.
+const KEEPER: &str = r#"
+import json,os,subprocess,sys
+from pathlib import Path
+base=Path(sys.argv[1])
+spec=json.loads((base/'helper.json').read_text())
+(base/'keeper').write_text(str(os.getpid()))
+subprocess.run(spec['argv'],env=spec['env'],stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
 "#;
 
 struct Tree {
@@ -71,6 +98,8 @@ struct Tree {
     state: PathBuf,
     pid: u32,
     birth: String,
+    /// The keeper of a [`KEPT`] mode's helper.
+    keeper: Option<u32>,
 }
 
 impl Tree {
@@ -83,10 +112,9 @@ impl Tree {
         let state = std::fs::canonicalize(state).unwrap();
         let config = std::fs::canonicalize(config).unwrap();
         catalog(&config);
-        let mut command = Command::new("sh");
+        // The helper's command line and environment; `detach` starts it.
+        let mut command = Command::new("python3");
         command
-            .args(["-c", "\"$@\" </dev/null >/dev/null 2>&1 &", "fixture"])
-            .arg("python3")
             .arg("-c")
             .arg(HELPER)
             .arg(temp.path())
@@ -97,10 +125,7 @@ impl Tree {
             .env("HOME", temp.path())
             .env("HGS_STATE_DIR", &state)
             .env("HGS_CONFIG_DIR", &config)
-            .env("HGS_TEAMS_CALLER_PROBE", "1")
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null());
+            .env("HGS_TEAMS_CALLER_PROBE", "1");
         if ![
             "clean-agent",
             "person",
@@ -157,21 +182,39 @@ impl Tree {
         if let Some(action) = preview {
             command.env("HGS_TEAMS_PREVIEW_PROBE", action);
         }
-        assert!(command.status().unwrap().success());
+        let kept = KEPT.contains(&mode);
+        detach(temp.path(), &command, kept);
         let pid_file = temp.path().join("pid");
         let pid = wait(|| {
             std::fs::read_to_string(&pid_file)
                 .ok()
                 .and_then(|p| p.trim().parse::<u32>().ok())
         });
-        let birth = crate::platform::process_identity(pid)
-            .expect("the fixture helper's identity")
-            .birth;
+        let helper = crate::platform::process_identity(pid).expect("the fixture helper's identity");
+        let keeper = kept.then(|| {
+            let keeper = wait(|| {
+                std::fs::read_to_string(temp.path().join("keeper"))
+                    .ok()
+                    .and_then(|p| p.trim().parse::<u32>().ok())
+            });
+            assert_eq!(helper.parent, keeper, "the keeper is the helper's parent");
+            // The walk's own rule: a process is the top when its parent is
+            // foreign. The keeper is this user's, so the helper is not.
+            assert!(
+                matches!(
+                    super::super::ancestry::inspect(keeper),
+                    Ok(super::super::ancestry::Inspection::Own(_))
+                ),
+                "the helper's parent is a process of this user, so the helper is not the top"
+            );
+            keeper
+        });
         Self {
             temp,
             state,
             pid,
-            birth,
+            birth: helper.birth,
+            keeper,
         }
     }
 
@@ -223,13 +266,62 @@ impl Tree {
 
     fn answer(&self) -> String {
         std::fs::write(self.temp.path().join("go"), b"go").unwrap();
-        wait(|| {
+        let text = wait(|| {
             let text = std::fs::read_to_string(self.temp.path().join("answer")).ok()?;
             text.lines()
                 .any(|line| line.starts_with("PROBE ") || line.starts_with("DISPATCH "))
                 .then_some(text)
-        })
+        });
+        if let Some(keeper) = self.keeper {
+            // Adoption is final: a helper that still has its keeper as its
+            // parent after the probe had it throughout the probe.
+            let parent = std::fs::read_to_string(self.temp.path().join("parent")).unwrap();
+            assert_eq!(
+                parent.trim(),
+                keeper.to_string(),
+                "the helper's parent: {text}"
+            );
+        }
+        text
     }
+}
+
+/// Starts `helper` detached from the test runner: a shell puts it in the
+/// background and exits. A [`KEPT`] helper is started by a keeper instead,
+/// which the shell puts in the background; `helper` is written to
+/// `helper.json` in `base` for it.
+fn detach(base: &Path, helper: &Command, kept: bool) {
+    let mut shell = Command::new("sh");
+    shell
+        .args(["-c", "\"$@\" </dev/null >/dev/null 2>&1 &", "fixture"])
+        .env_clear()
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    let envs = helper
+        .get_envs()
+        .filter_map(|(key, value)| Some((key, value?)));
+    if kept {
+        let text = |value: &OsStr| value.to_str().expect("a UTF-8 fixture value").to_owned();
+        let argv: Vec<String> = std::iter::once(helper.get_program())
+            .chain(helper.get_args())
+            .map(text)
+            .collect();
+        let env: BTreeMap<String, String> =
+            envs.map(|(key, value)| (text(key), text(value))).collect();
+        let spec = json!({"argv": argv, "env": env});
+        std::fs::write(base.join("helper.json"), spec.to_string()).unwrap();
+        shell
+            .args(["python3", "-c", KEEPER])
+            .arg(base)
+            .env("PATH", std::env::var_os("PATH").unwrap_or_default());
+    } else {
+        shell
+            .arg(helper.get_program())
+            .args(helper.get_args())
+            .envs(envs);
+    }
+    assert!(shell.status().unwrap().success());
 }
 
 impl Drop for Tree {
@@ -278,7 +370,8 @@ fn a_nondumpable_same_user_ancestor_refuses() {
 fn an_environment_over_the_cap_refuses() {
     let tree = Tree::start("oversize", None);
     tree.record(tree.pid, &tree.born());
-    assert!(tree.answer().contains("PROBE refused:invalid_state"));
+    let text = tree.answer();
+    assert!(text.contains("PROBE refused:invalid_state"), "{text}");
 }
 
 #[test]
