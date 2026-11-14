@@ -1268,6 +1268,21 @@ class WorkflowSecurityTests(unittest.TestCase):
         quick = job((ROOT / ".github/workflows/checks.yml").read_text(), "quick")
         self.assertIn("python3 -m unittest test_windows_installer test_webview2_ci", quick)
 
+    def test_quick_uses_the_cli_verified_tmux_before_root_tests(self):
+        quick = self.checks_steps("quick")
+        install = 'bash scripts/ci/install-tmux.sh "$RUNNER_TEMP/tmux"'
+        cli = next(step for step in self.checks_steps("cli") if install in step)
+        pinned = [step for step in quick if install in step]
+        self.assertEqual(len(pinned), 1, "Quick root tests require verified tmux input-mode support")
+        self.assertEqual(pinned[0].strip(), cli.strip())
+        self.assertIn('echo "$RUNNER_TEMP/tmux/bin" >> "$GITHUB_PATH"', pinned[0])
+        dependencies = next(step for step in quick if "sudo apt-get install" in step)
+        for package in ("libevent-dev", "libncurses-dev", "bison", "pkg-config"):
+            self.assertIn(package, dependencies)
+        root_tests = next(step for step in quick if "run: cargo +1.99.1 test --locked\n" in step)
+        self.assertLess(quick.index(dependencies), quick.index(pinned[0]))
+        self.assertLess(quick.index(pinned[0]), quick.index(root_tests))
+
     def test_quick_checks_scan_all_history_for_secrets_with_a_verified_gitleaks(self):
         checks = (ROOT / ".github/workflows/checks.yml").read_text()
         quick = job(checks, "quick")
