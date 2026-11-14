@@ -1,17 +1,14 @@
 //! Bind a prepared restore to its complete normalized, selected archive.
 use super::*;
-use sha2::{Digest, Sha256};
+use crate::state::record_source::Digest;
 
-pub(super) struct Source([u8; 32]);
+pub(super) struct Source(Digest);
 
 impl Source {
     /// Capture before removing legacy compatibility fields. Keep only a fixed
     /// digest, not another archive copy or a cache indexed by session count.
     pub(super) fn capture(archive: &Value) -> Self {
-        let mut hash = Sha256::new();
-        hash.update(b"zerus-archive-source-v1\0");
-        canonical(&mut hash, archive);
-        Self(hash.finalize().into())
+        Self(Digest::capture(archive))
     }
 
     /// Called with the state writer held, before worktree Restore and again
@@ -22,51 +19,10 @@ impl Source {
             format!("{name}: archived source changed or is unavailable; select the archive again before restoring")
         };
         let current = archive::read_archive(name, id).map_err(|_| changed())?;
-        if Self::capture(&current).0 != self.0 {
+        if !self.0.matches(&current) {
             return Err(changed());
         }
         Ok(current)
-    }
-}
-
-fn bytes(hash: &mut Sha256, value: &[u8]) {
-    hash.update((value.len() as u64).to_le_bytes());
-    hash.update(value);
-}
-
-/// A typed, length-delimited canonical JSON value stream. Object ordering and
-/// formatting do not matter; array ordering, types, and absent/null do. There
-/// is no field whitelist and no second serialized history-sized allocation.
-fn canonical(hash: &mut Sha256, value: &Value) {
-    match value {
-        Value::Null => hash.update(b"n"),
-        Value::Bool(value) => hash.update(if *value { b"t" } else { b"f" }),
-        Value::Number(value) => {
-            hash.update(b"d");
-            bytes(hash, value.to_string().as_bytes());
-        }
-        Value::String(value) => {
-            hash.update(b"s");
-            bytes(hash, value.as_bytes());
-        }
-        Value::Array(values) => {
-            hash.update(b"a");
-            hash.update((values.len() as u64).to_le_bytes());
-            for value in values {
-                canonical(hash, value);
-            }
-        }
-        Value::Object(values) => {
-            hash.update(b"o");
-            hash.update((values.len() as u64).to_le_bytes());
-            // Be canonical even if a dependency enables preserve_order later.
-            let mut entries: Vec<_> = values.iter().collect();
-            entries.sort_unstable_by_key(|(key, _)| *key);
-            for (key, value) in entries {
-                bytes(hash, key.as_bytes());
-                canonical(hash, value);
-            }
-        }
     }
 }
 
