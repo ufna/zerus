@@ -209,7 +209,7 @@ impl Runtime {
             let held = effects.iter().find(|e| e.member == m.id);
             // The member is in the active set: a later leave tells the lead
             // again (zerus-63rru.86).
-            if m.state == MemberState::Active && m.session.is_some() {
+            if any_ready && m.state == MemberState::Active && m.session.is_some() {
                 self.forget_paused_started(store, team, &m.id, now)?;
             }
             let answer = if m.id != team.lead
@@ -246,7 +246,7 @@ impl Runtime {
             } else {
                 // A member out of the active set that holds started work is
                 // told to the lead once (zerus-63rru.86).
-                if m.state != MemberState::Active || m.session.is_none() {
+                if any_ready && (m.state != MemberState::Active || m.session.is_none()) {
                     self.tell_paused_started(store, team, &m, now)?;
                 }
                 Some(Availability::Busy)
