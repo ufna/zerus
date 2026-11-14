@@ -399,3 +399,77 @@ fn each_producers_startup_card_is_eligible() {
         assert_eq!(trust(&b, &s), Ok(card), "{agent}");
     }
 }
+#[test]
+fn main_checkout_requires_the_checkout_own_git_dir_and_a_non_bare_repository() {
+    // Real Git fixtures, isolated configuration, every exit checked
+    // (zerus-63rru.66 round 2).
+    let temp = tempfile::tempdir().unwrap();
+    let git = |args: &[&str], at: &std::path::Path| -> std::process::Output {
+        std::process::Command::new("git")
+            .env("HOME", temp.path())
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_CONFIG_GLOBAL", temp.path().join("none"))
+            .env("XDG_CONFIG_HOME", temp.path().join("xdg"))
+            .arg("-C")
+            .arg(at)
+            .args([
+                "-c", "core.hooksPath=/dev/null", "-c", "commit.gpgSign=false",
+                "-c", "user.name=review", "-c", "user.email=review@example.invalid",
+            ])
+            .args(args)
+            .output()
+            .unwrap()
+    };
+    let init = |dir: &std::path::Path| {
+        std::fs::create_dir_all(dir).unwrap();
+        assert!(git(&["init", "-q"], dir).status.success());
+        std::fs::write(dir.join("file.txt"), "fixture").unwrap();
+        assert!(git(&["add", "file.txt"], dir).status.success());
+        assert!(git(&["commit", "-qm", "fixture"], dir).status.success());
+    };
+    // A linked worktree of a non-bare repository resolves to its main
+    // checkout.
+    let main = temp.path().join("repo");
+    init(&main);
+    assert!(git(&["worktree", "add", "-q", "--detach", "../wt"], &main).status.success());
+    let wt = temp.path().join("wt");
+    assert_eq!(super::main_checkout(wt.to_str().unwrap()).as_deref(), Some(main.to_str().unwrap()));
+    // A non-bare repository itself resolves to itself.
+    assert_eq!(super::main_checkout(main.to_str().unwrap()).as_deref(), Some(main.to_str().unwrap()));
+    // A bare repository resolves to nothing.
+    let bare = temp.path().join("bare.git");
+    std::fs::create_dir_all(&bare).unwrap();
+    assert!(git(&["init", "-q", "--bare"], &bare).status.success());
+    assert_eq!(super::main_checkout(bare.to_str().unwrap()), None);
+    // A separate Git directory resolves to nothing.
+    let separate = temp.path().join("separate");
+    std::fs::create_dir_all(&separate).unwrap();
+    assert!(git(&["init", "-q", "--separate-git-dir", "../separate.git", "."], &separate).status.success());
+    assert_eq!(super::main_checkout(separate.to_str().unwrap()), None);
+    // An initialized submodule resolves to nothing.
+    let other = temp.path().join("other");
+    init(&other);
+    assert!(git(&["-c", "protocol.file.allow=always", "submodule", "add", "-q", other.to_str().unwrap(), "sub"], &main).status.success());
+    assert!(git(&["commit", "-qm", "submodule"], &main).status.success());
+    let sub_git = main.join(".git/modules/sub");
+    assert_eq!(super::main_checkout(sub_git.to_str().unwrap()), None);
+    // The submodule's worktree resolves to nothing either.
+    let sub_wt = main.join("sub");
+    assert_eq!(super::main_checkout(sub_wt.to_str().unwrap()), None);
+}
+
+#[test]
+fn a_symlink_spelling_of_the_main_checkout_is_accepted() {
+    let temp = tempfile::tempdir().unwrap();
+    let main = temp.path().join("repo");
+    std::fs::create_dir_all(&main).unwrap();
+    let out = std::process::Command::new("git")
+        .arg("-C").arg(&main)
+        .args(["-c", "core.hooksPath=/dev/null", "-c", "commit.gpgSign=false"])
+        .args(["init", "-q"]).output().unwrap();
+    assert!(out.status.success());
+    let spelling = temp.path().join("spelling");
+    std::os::unix::fs::symlink(&main, &spelling).unwrap();
+    assert!(super::same_checkout(spelling.to_str().unwrap(), main.to_str().unwrap()));
+    assert!(!super::same_checkout(spelling.to_str().unwrap(), temp.path().join("elsewhere").to_str().unwrap()));
+}

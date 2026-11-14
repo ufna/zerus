@@ -114,12 +114,18 @@ impl Ports for Native<'_> {
         self.ledger.save(row)
     }
     fn audit_begin(&mut self, plan: &Plan) -> Result<Audit> {
-        let payload = json!({"host":self.machine,"session":plan.snapshot.name,"provider":plan.binding.agent,"question":plan.question});
         let kind = if plan.kind == Kind::Trust {
             crate::approval_log::TeamKind::FolderTrust
         } else {
             crate::approval_log::TeamKind::Resume
         };
+        // The scope is recorded only for a FolderTrust plan: it is the
+        // extent of the trust grant, never of a resume or any other plan
+        // (zerus-63rru.66 round 4).
+        let mut payload = json!({"host":self.machine,"session":plan.snapshot.name,"provider":plan.binding.agent,"question":plan.question});
+        if kind == crate::approval_log::TeamKind::FolderTrust {
+            payload["scope"] = json!(super::policy::scope_for(&plan.binding.folder));
+        }
         let mut db = crate::approval_log::open(&self.config.state.join("approval-audit"))
             .map_err(|e| e.to_string())?;
         let reserved =
@@ -216,6 +222,48 @@ impl Native<'_> {
 mod tests {
     use super::*;
     #[test]
+    fn a_resume_plans_audit_row_carries_no_scope() {
+        // zerus-63rru.66 round 4: the scope is recorded only for a
+        // FolderTrust plan; a resume's row reads as before.
+        let temp = tempfile::tempdir().unwrap();
+        let config = Config {
+            home: String::new(),
+            dir: temp.path().join("config"),
+            state: temp.path().join("state"),
+            selves: vec![],
+            peers: vec![],
+            base_peers: vec![],
+            peers_from_environment: false,
+            machines: Default::default(),
+            tab: false,
+            tab_colors: String::new(),
+        };
+        crate::platform::private_dir(&config.state.join("teams")).unwrap();
+        std::fs::write(config.state.join("teams/preview"), "on").unwrap();
+        let mut store = Store::open(&config.state).unwrap();
+        let stop = Arc::new(AtomicBool::new(false));
+        let (b, _, mut s) = super::super::policy::tests::sample();
+        s.ended = true;
+        s.paused = false;
+        s.self_exit = true;
+        s.exit_identity = "exit".into();
+        s.conversation = "conversation-1".into();
+        s.questions.clear();
+        let plan =
+            super::super::engine::candidate(&b, &s, Kind::Resume, serde_json::Value::Null);
+        let mut native = Native::new(&config, &b.machine, &stop, &mut store).unwrap();
+        let audit = native.audit_begin(&plan).unwrap();
+        let db = crate::approval_log::open(&config.state.join("approval-audit")).unwrap();
+        let saved: String = db
+            .query_row("SELECT question FROM attempts WHERE id=?1", [audit.id], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        let saved: serde_json::Value = serde_json::from_str(&saved).unwrap();
+        assert!(saved.get("scope").is_none(), "{saved}");
+    }
+
+    #[test]
     fn team_audit_is_durable_before_delivery_and_finishes_only_once() {
         let temp = tempfile::tempdir().unwrap();
         let config = Config {
@@ -234,12 +282,39 @@ mod tests {
         std::fs::write(config.state.join("teams/preview"), "on").unwrap();
         let mut store = Store::open(&config.state).unwrap();
         let stop = Arc::new(AtomicBool::new(false));
-        let (b, _, s) = super::super::policy::tests::sample();
+        let (mut b, _, s) = super::super::policy::tests::sample();
+        // A real scratch worktree so the granted scope is the repository's
+        // main checkout, an independent known value (zerus-63rru.66 round 2).
+        let scratch = temp.path().join("repo");
+        std::fs::create_dir_all(&scratch).unwrap();
+        for args in [
+            vec!["init", "-q"],
+            vec!["config", "user.email", "review@example.invalid"],
+            vec!["config", "user.name", "review"],
+        ] {
+            assert!(std::process::Command::new("git").arg("-C").arg(&scratch).args(args).output().unwrap().status.success());
+        }
+        std::fs::write(scratch.join("file.txt"), "fixture").unwrap();
+        assert!(std::process::Command::new("git").arg("-C").arg(&scratch).args(["add", "file.txt"]).output().unwrap().status.success());
+        assert!(std::process::Command::new("git").arg("-C").arg(&scratch).args(["commit", "-qm", "fixture"]).output().unwrap().status.success());
+        assert!(std::process::Command::new("git").arg("-C").arg(&scratch).args(["worktree", "add", "-q", "--detach", "../member-wt"]).output().unwrap().status.success());
+        let worktree = temp.path().join("member-wt");
+        b.folder = worktree.to_str().unwrap().to_owned();
+        b.launch = b.folder.clone();
         let mut native = Native::new(&config, &b.machine, &stop, &mut store).unwrap();
         let plan = super::super::engine::candidate(&b, &s, Kind::Trust, s.questions[0].clone());
         let audit = native.audit_begin(&plan).unwrap();
         assert!(audit.fresh);
         let db = crate::approval_log::open(&config.state.join("approval-audit")).unwrap();
+        let saved: String = db
+            .query_row("SELECT question FROM attempts WHERE id=?1", [audit.id], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        let saved: serde_json::Value = serde_json::from_str(&saved).unwrap();
+        // The independent value: the scratch repository's main checkout,
+        // the known path of the worktree the binding names.
+        assert_eq!(saved["scope"], scratch.to_str().unwrap(), "{saved}");
         let status: String = db
             .query_row("SELECT status FROM attempts WHERE id=?1", [audit.id], |r| {
                 r.get(0)
