@@ -733,7 +733,7 @@ class Harness(unittest.TestCase):
         self.remove_fixture_root()
 
     def remove_fixture_root(self):
-        wal = Path(self.env["HGS_STATE_DIR"]) / "delivery-receipts-v1.sqlite3-wal"
+        wal = self.root / "state" / "delivery-receipts-v1.sqlite3-wal"
 
         def failed(function, path, exception):
             # SQLite can remove this sidecar after rmtree enumerates it.
@@ -1140,7 +1140,6 @@ class FixtureRootCleanup(unittest.TestCase):
         fixture.root = root / "fixture"
         state = fixture.root / "state"
         state.mkdir(parents=True)
-        fixture.env = {"HGS_STATE_DIR": str(state)}
         return fixture, state / "delivery-receipts-v1.sqlite3-wal"
 
     def test_receipt_wal_can_vanish_between_the_walk_and_unlink(self):
