@@ -64,6 +64,15 @@ impl Drop for HeldFork {
 
 const BODY: &[u8] = b"exact frozen original input\n";
 fn with_alias(input: Input<'_>, held_custody: bool) -> Ended {
+    with_alias_child(input, held_custody, Path::new("/bin/cat"), &[], |_| Ok(()))
+}
+fn with_alias_child(
+    input: Input<'_>,
+    held_custody: bool,
+    program: &Path,
+    args: &[String],
+    final_check: impl FnOnce(&mut Command) -> io::Result<()>,
+) -> Ended {
     let held = Rc::new(RefCell::new(None));
     let observed = held.clone();
     AFTER_SPAWN.with(|hook| {
@@ -83,18 +92,20 @@ fn with_alias(input: Input<'_>, held_custody: bool) -> Ended {
         input,
         ..tests::spec(b"")
     };
-    let deadline = Instant::now() + Duration::from_secs(1);
+    // Darwin's smaller socket/pipe buffers need many drain turns for the
+    // 2 MiB backpressure case. This remains one original, never-renewed bound.
+    let deadline = Instant::now() + Duration::from_secs(20);
     let ended = if held_custody {
         run(
-            Path::new("/bin/cat"),
-            &[],
+            program,
+            args,
             spec,
             &tests::custody(),
             deadline,
-            |_| Ok(()),
+            final_check,
         )
     } else {
-        run_unheld(Path::new("/bin/cat"), &[], spec, deadline, |_| Ok(()))
+        run_unheld(program, args, spec, deadline, final_check)
     };
     assert!(
         held.borrow().is_some(),
@@ -102,13 +113,18 @@ fn with_alias(input: Input<'_>, held_custody: bool) -> Ended {
     );
     assert!(AFTER_SPAWN.with(|hook| hook.borrow().is_none()));
     // Assert before releasing the unrelated process: EOF must not depend on it.
-    assert_eq!(
-        ended,
-        Ended::Exited {
-            code: 0,
-            output: expected
+    match &ended {
+        Ended::Exited { code, output } => {
+            assert_eq!(*code, 0);
+            assert_eq!(output.len(), expected.len());
+            assert!(output == &expected, "output differs");
         }
-    );
+        other => panic!(
+            "input of {} bytes: {other:?}; offered={:?}",
+            expected.len(),
+            OFFERED.with(|slot| slot.get())
+        ),
+    }
     ended
 }
 fn frozen(stdin: Stdin<'_>) -> Input<'_> {
@@ -221,7 +237,28 @@ fn a_partial_frozen_file_never_proves_complete_delivery() {
 #[test]
 fn fork_stdin_backpressure_does_not_finish_a_temporary_write_pause() {
     let bytes = vec![b'x'; 2 << 20];
-    with_alias(frozen(Stdin::Bytes(&bytes)), true);
+    let (mut release, barrier) = UnixStream::pair().unwrap();
+    INPUT_BLOCKED.with(|slot| {
+        *slot.borrow_mut() = Some(Box::new(move || release.write_all(b"read-now\n").unwrap()));
+    });
+    // The original child waits on a separate standard stream until a real
+    // nonblocking write pauses. No scheduler race can make this a no-pause
+    // control. A newline, rather than the last writer's close, releases it.
+    with_alias_child(
+        frozen(Stdin::Bytes(&bytes)),
+        true,
+        Path::new("/bin/sh"),
+        &["-c".into(), "read -r ready <&2 && exec /bin/cat".into()],
+        move |command| {
+            command.stderr(Stdio::from(std::os::fd::OwnedFd::from(barrier)));
+            Ok(())
+        },
+    );
+    assert!(INPUT_BLOCKED.with(|slot| slot.borrow().is_none()));
+    assert!(
+        INPUT_BLOCKS.with(|slot| slot.get()) > 0,
+        "the fixture must exercise a real temporary WouldBlock"
+    );
 }
 
 #[test]
