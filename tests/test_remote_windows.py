@@ -371,6 +371,97 @@ def decoder_failure_snapshot(root, child, readers, *, shell, sustained, started,
                 renewals=renewals, readers_alive=[reader.is_alive() for reader in readers], files=files)
 
 
+def decoder_file_bytes(path, limit):
+    if os.name != 'nt':
+        with path.open('rb') as file:
+            return file.read(limit)
+    import ctypes
+    from ctypes import wintypes
+    kernel = ctypes.WinDLL('kernel32', use_last_error=True)
+    kernel.CreateFileW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD,
+                                  ctypes.c_void_p, wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE]
+    kernel.CreateFileW.restype = wintypes.HANDLE
+    kernel.ReadFile.argtypes = [wintypes.HANDLE, ctypes.c_void_p, wintypes.DWORD,
+                               ctypes.POINTER(wintypes.DWORD), ctypes.c_void_p]
+    kernel.ReadFile.restype = wintypes.BOOL
+    kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel.CloseHandle.restype = wintypes.BOOL
+    # Rename is already visible while its publisher still holds DELETE access.
+    # The C-runtime opener cannot share that handle; CreateFile can.
+    handle = kernel.CreateFileW(str(path), 0x80000000, 1 | 2 | 4, None, 3, 0, None)
+    if handle == ctypes.c_void_p(-1).value:
+        raise ctypes.WinError(ctypes.get_last_error())
+    try:
+        buffer = ctypes.create_string_buffer(limit)
+        count = wintypes.DWORD()
+        if not kernel.ReadFile(handle, buffer, limit, ctypes.byref(count), None):
+            raise ctypes.WinError(ctypes.get_last_error())
+        return buffer.raw[:count.value]
+    finally:
+        if not kernel.CloseHandle(handle):
+            raise ctypes.WinError(ctypes.get_last_error())
+
+
+def decoder_readiness(path):
+    try:
+        data = decoder_file_bytes(path, 8193)
+    except FileNotFoundError:
+        return None
+    assert len(data) <= 8192, 'decoder fixture ready file exceeded its bound'
+    try:
+        return json.loads(data)
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return None
+
+
+class DecoderFixtureFiles(unittest.TestCase):
+    def test_readiness_coexists_with_an_atomic_publishers_delete_handle(self):
+        import ctypes
+        from ctypes import wintypes
+        from types import SimpleNamespace
+        from unittest import mock
+        with tempfile.TemporaryDirectory(prefix='decoder-ready-share-') as temporary:
+            ready = Path(temporary) / 'ready.json'
+            body = b'{"argv":["synthetic"]}\n'
+            ready.write_bytes(body)
+            def create(path, access, sharing, *rest):
+                # Win32 rejects an opener that does not share an existing
+                # publisher's DELETE access, even after its rename is visible.
+                if not sharing & 4:
+                    raise PermissionError(13, 'publisher still holds DELETE access')
+                return 11
+            def read(handle, buffer, limit, count, overlapped):
+                ctypes.memmove(buffer, body, len(body))
+                count._obj.value = len(body)
+                return 1
+            kernel = SimpleNamespace(CreateFileW=create, ReadFile=read,
+                                     CloseHandle=mock.Mock(return_value=1))
+            # The ordinary C-runtime reader has no FILE_SHARE_DELETE.
+            with mock.patch.object(os, 'name', 'nt'), \
+                 mock.patch.object(ctypes, 'WinDLL', return_value=kernel, create=True), \
+                 mock.patch.object(Path, 'open', side_effect=PermissionError(13, 'rename sharing')):
+                try:
+                    value = decoder_readiness(ready)
+                except PermissionError as error:
+                    self.fail(f'readiness cannot read during atomic publication: {error}')
+            self.assertEqual(value, {'argv': ['synthetic']})
+            kernel.CloseHandle.assert_called_once_with(11)
+
+    def test_readiness_keeps_missing_partial_size_and_permission_outcomes_distinct(self):
+        from unittest import mock
+        with tempfile.TemporaryDirectory(prefix='decoder-ready-bounds-') as temporary:
+            ready = Path(temporary) / 'ready.json'
+            self.assertIsNone(decoder_readiness(ready))
+            ready.write_bytes(b'{')
+            self.assertIsNone(decoder_readiness(ready))
+            ready.write_bytes(b'x' * 8193)
+            with self.assertRaises(AssertionError):
+                decoder_readiness(ready)
+            with mock.patch(__name__ + '.decoder_file_bytes', side_effect=PermissionError(13, 'denied')):
+                with self.assertRaises(PermissionError):
+                    decoder_readiness(ready)
+
+
 def decoder_rows(path):
     """Only complete records from this small fixture; a publishing tail waits."""
     try:
@@ -384,6 +475,37 @@ def decoder_rows(path):
 
 @unittest.skipUnless(os.name == 'nt', 'native PowerShell 5.1/cmd decoder controls run on Windows')
 class WindowsNativeTransport(unittest.TestCase):
+    def test_ready_file_is_read_while_the_native_publisher_retains_delete_access(self):
+        import ctypes
+        from ctypes import wintypes
+        from unittest import mock
+        kernel = ctypes.WinDLL('kernel32', use_last_error=True)
+        kernel.CreateFileW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD,
+                                      ctypes.c_void_p, wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE]
+        kernel.CreateFileW.restype = wintypes.HANDLE
+        kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+        kernel.CloseHandle.restype = wintypes.BOOL
+        with tempfile.TemporaryDirectory(prefix='decoder-native-rename-') as temporary:
+            pending, ready = (Path(temporary) / name for name in ('pending.json', 'ready.json'))
+            value = {'argv': ['synthetic'], 'pid': 123}
+            pending.write_text(json.dumps(value), encoding='utf-8')
+            publisher = kernel.CreateFileW(str(pending), 0x10000, 1 | 2 | 4, None, 3, 0, None)
+            self.assertNotEqual(publisher, ctypes.c_void_p(-1).value)
+            try:
+                pending.rename(ready)
+                # Revert the actual readiness reader to its former opener.
+                def old_read(path, limit):
+                    with path.open('rb') as file:
+                        return file.read(limit)
+                with mock.patch(__name__ + '.decoder_file_bytes', side_effect=old_read):
+                    with self.assertRaises(PermissionError) as refused:
+                        decoder_readiness(ready)
+                self.assertEqual(refused.exception.winerror, 32)
+                self.assertEqual(decoder_readiness(ready), value)
+            finally:
+                self.assertTrue(kernel.CloseHandle(publisher))
+            self.assertEqual(json.loads(ready.read_bytes()), value)
+
     def run_decoder(self, shell, lease=False, code=0, slow=False, sustained=False, renew=True):
         import base64
         import shutil
@@ -469,18 +591,6 @@ class WindowsNativeTransport(unittest.TestCase):
             renewals = 0
             lease_expired = False
 
-            def readiness():
-                try:
-                    with ready.open('rb') as file:
-                        data = file.read(8193)
-                except FileNotFoundError:
-                    return None
-                self.assertLessEqual(len(data), 8192)
-                try:
-                    return json.loads(data)
-                except (json.JSONDecodeError, UnicodeDecodeError):
-                    return None  # The fake's small ready file is still publishing.
-
             def publish_control(text):
                 pending = root/'control.next'
                 pending.write_text(text, encoding='utf-8')
@@ -492,7 +602,7 @@ class WindowsNativeTransport(unittest.TestCase):
                 deadline = started+budget
                 value = None
                 while not slow:
-                    value = readiness()
+                    value = decoder_readiness(ready)
                     if value is not None: break
                     status = child.poll()
                     self.assertIsNone(status, (root/'stderr').read_bytes() if status is not None else None)
