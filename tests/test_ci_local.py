@@ -244,6 +244,26 @@ class RealIsolation(unittest.TestCase):
         self.assertFalse((self.runner.workspace / 'body-started').exists())
         self.assertIn('load', job['steps'][1]['reason'])
 
+    def test_load_is_rechecked_after_the_shared_slot_queue(self):
+        row = dict(name='queued load change', index=0, body='touch body-started',
+                   directory='.', env={}, timeout=10)
+        with patch.object(CI.os, 'getloadavg', side_effect=[(0, 0, 0), (100000, 0, 0)]):
+            self.runner.run(dict(id='quick'), row)
+        self.assertEqual(row['status'], 'not run')
+        self.assertFalse((self.runner.workspace / 'body-started').exists())
+        self.assertIn('load', row['reason'])
+
+    def test_disk_is_rechecked_after_the_shared_slot_queue(self):
+        self.args.min_free_gib = 1
+        row = dict(name='queued disk change', index=0, body='touch body-started',
+                   directory='.', env={}, timeout=10)
+        with patch.object(CI.shutil, 'disk_usage', side_effect=[SimpleNamespace(free=10**12),
+                    *[SimpleNamespace(free=0)] * 3]):
+            self.runner.run(dict(id='quick'), row)
+        self.assertEqual(row['status'], 'not run')
+        self.assertFalse((self.runner.workspace / 'body-started').exists())
+        self.assertIn('disk', row['reason'])
+
     def test_real_failure_does_not_hide_later_check_and_logs_are_hashed(self):
         job = {"id": "quick", "steps": []}
         for body, expected in (("printf 'first-failure\\n'; exit 19", "fail"),

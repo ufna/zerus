@@ -35,7 +35,9 @@ Every check acquires one slot before starting its namespace, then retains it
 until that original namespace and its network helper settle. Queue time does
 not consume the check's execution timeout. The wrapper and its control files
 stay outside the test namespace. A refused or prematurely ended slot cannot
-produce a passing check. Checks run one at a time.
+produce a passing check. Load and disk space are checked again after queuing;
+a changed resource limit refuses new work before any check body starts.
+Checks run one at a time.
 
 Each job uses its own detached clean checkout, private home, PID/network/IPC
 namespaces, short temporary socket directory and D-Bus session. It inherits no

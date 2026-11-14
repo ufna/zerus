@@ -509,6 +509,14 @@ class Runner:
                 slot.acquire()
                 step["heavy_wait_seconds"] = round(time.monotonic() - queued, 3)
                 step["heavy_wrapper"] = str(self.heavy)
+                step["admission_load"] = os.getloadavg()[0]
+                if step["admission_load"] > self.args.max_load:
+                    self.resource_error = "load rose above configured ceiling while queued; no new checks started"
+                    raise RuntimeError(self.resource_error)
+                if min(shutil.disk_usage(path).free for path in
+                       (self.output, self.cache, self.target)) < self.args.min_free_gib * 1024**3:
+                    self.resource_error = "disk floor reached while queued; no new checks started"
+                    raise RuntimeError(self.resource_error)
                 # A shared-slot queue is preparation, not the check's budget.
                 deadline = time.monotonic() + step["timeout"]
                 child, network = self.spawn(command, output, step, home)
