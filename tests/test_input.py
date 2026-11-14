@@ -846,6 +846,19 @@ while True: signal.pause()
         self.assertIn("input mode", self.send(success=False))
         self.assertEqual(self.received(), b"")
 
+    def test_public_preinput_refusal_is_durable_bound_and_never_replayed(self):
+        self.screen("\x1b[2J\x1b[H› existing draft", "16:0")
+        request = self.payload(text="never type this original")
+        self.assertIn("draft", self.send(request, success=False))
+        self.assert_refusal(request)
+        path = self.state / "input_receipts" / (request["request_id"] + ".json")
+        before = path.read_bytes()
+        self.screen("\x1b[2J\x1b[H› \x1b[?2004h", "2:0")
+        # Even after the real draft is gone, this spent UUID cannot type again.
+        self.send(request, success=False)
+        self.assertEqual(path.read_bytes(), before)
+        self.assertEqual(self.received(), b"")
+
     # zerus-ucck P3b: input goes to the session's own terminal, named apart
     # from its label as a resume beside an untracked terminal names it; the
     # input claim checks that terminal's name, never the label's.
@@ -879,6 +892,30 @@ while True: signal.pause()
 
     def receipt_file(self, payload):
         return json.loads((self.state / "input_receipts" / (payload["request_id"] + ".json")).read_text())
+
+    def assert_refusal(self, payload, reason=None):
+        path = self.state / "input_receipts" / (payload["request_id"] + ".json")
+        self.assertTrue(path.is_file(), "the same public send must retain its pre-input refusal")
+        raw = path.read_bytes()
+        self.assertLessEqual(len(raw), 8192)
+        value = json.loads(raw)
+        self.assertEqual(value["refusal_schema"], 1)
+        self.assertEqual(value["status"], "refused_before_input")
+        self.assertEqual(value["request_id"], payload["request_id"])
+        self.assertEqual(value["name"], self.name)
+        self.assertEqual(value["run_id"], payload["expected_run_id"])
+        self.assertEqual(value["conversation_id"], payload["expected_conversation_id"])
+        self.assertEqual(value["digest"], hashlib.sha256(json.dumps(payload).encode()).hexdigest())
+        self.assertEqual(value["transport"], "terminal")
+        self.assertTrue(value["reason"])
+        self.assertLessEqual(len(value["reason"].encode()), 1024)
+        self.assertNotIn("\n", value["reason"])
+        self.assertNotIn("text", value)
+        self.assertNotIn("attachments", value)
+        if reason is not None:
+            self.assertEqual(value["reason"], reason)
+        self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+        self.assertEqual(path.parent.stat().st_mode & 0o777, 0o700)
 
     def claude_rows(self):
         path = Path(self.record["transcript"])
@@ -1489,7 +1526,7 @@ os.execv('/bin/sh',['sh','-c',sys.argv[-1]])
                 request = self.payload(text='private attempted send')
                 self.assertIn('agent busy:', self.send(request, success=False))
                 self.assertEqual(self.received(), b'')
-                self.assertFalse((self.state / 'input_receipts' / (request['request_id'] + '.json')).exists())
+                self.assert_refusal(request)
                 path = self.state / 'input_diagnostics' / (agent + '.json')
                 raw = path.read_bytes()
                 self.assertLessEqual(len(raw), 16 * 1024)
@@ -1531,7 +1568,7 @@ os.execv('/bin/sh',['sh','-c',sys.argv[-1]])
             request = self.payload()
             self.assertIn(reason, self.send(request, success=False))
             self.assertEqual(self.received(), b'')
-            self.assertFalse((self.state / 'input_receipts' / (request['request_id'] + '.json')).exists())
+            self.assert_refusal(request, reason)
 
     @unittest.skipUnless(os.sys.platform.startswith('linux'), 'Linux native environment permissions')
     def test_no_color_unreadable_environment_keeps_the_generic_refusal(self):

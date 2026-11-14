@@ -264,6 +264,7 @@ fn receipt(
         drained,
         code: code.into(),
         cli_exit: None,
+        refusal: None,
         outcome,
     }
 }

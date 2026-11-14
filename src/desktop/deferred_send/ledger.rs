@@ -451,6 +451,7 @@ pub(super) fn admit(
         code: String::new(),
         outcome: None,
         cli_exit: None,
+        refusal: None,
     };
     ensure!(receipt.valid(), "invalid original deferred send");
     let encoded_receipt = encoded(&receipt, wire::REPLY_BYTES)?;
@@ -751,7 +752,14 @@ pub(super) fn drained(
             next.phase = Phase::Recorded;
             next.code.clear();
             next.cli_exit = None;
+            next.refusal = None;
             next.outcome = Some(outcome.clone());
+        }
+        Observed::Refused(refusal) if refusal.matches(&row.verified.plan) => {
+            next.phase = Phase::Unknown;
+            next.code = wire::refusal::CODE.into();
+            next.outcome = None;
+            next.refusal = Some(refusal.clone());
         }
         // The closed pre-child result, confirmed by the absence of any
         // record of the request: nothing ran and nothing else submitted it.
@@ -759,7 +767,7 @@ pub(super) fn drained(
             next.phase = Phase::Failed;
             next.code = wire::NOT_STARTED.into();
         }
-        Observed::Submitted(_) => {
+        Observed::Submitted(_) | Observed::Refused(_) => {
             next.phase = Phase::Unknown;
             next.code = wire::RECEIPT_MISMATCH.into();
         }

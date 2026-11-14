@@ -77,6 +77,9 @@ pub(crate) fn settled(receipt: &wire::Receipt, plan: &wire::Plan) -> Option<Send
     }
     // Drained but not Recorded or Failed: Unknown for good.
     (receipt.valid() && receipt.drained && receipt.binding.agrees(plan)).then(|| {
+        if let Some(refusal) = receipt.refusal.as_ref().filter(|value| value.matches(plan)) {
+            return SendAnswer::Unconfirmed(wire::refusal::MESSAGE.replace("%1", &refusal.reason));
+        }
         let mut message = UNCONFIRMED.to_owned();
         if let Some(exit) = receipt.cli_exit.as_ref().filter(|exit| exit.code != 0) {
             message.push_str(&format!("\nhgs send ({}): {}", exit.code, exit.stderr));
