@@ -143,3 +143,37 @@ fn a_busy_launch_ledger_records_no_checkout_and_answers_store_busy() {
     assert!(ledger.record_checkout(&plan, &tree).unwrap());
     assert!(ledger.checkout(&team.id, &team.lead, &plan.launch_id).unwrap().is_some());
 }
+
+/// Injected-error seam: a busy failure at each checkout statement's own result
+/// answers `store_busy` and records no checkout. This is test-only injection,
+/// not a real concurrent lock; the test above keeps the real BEGIN contention.
+#[test]
+fn an_injected_busy_checkout_statement_answers_store_busy() {
+    use crate::desktop::teams::ledger::checkout::{injection, Statement};
+    let h = Harness::new();
+    let team = h.store.team(TEAM).unwrap().unwrap();
+    let path = h.temp.path().join("member");
+    std::fs::create_dir(&path).unwrap();
+    let tree = p::Worktree {
+        path: path.to_str().unwrap().into(),
+        ownership_nonce: uuid::Uuid::new_v4().to_string(),
+    };
+    let mut ledger = Ledger::open(h.temp.path()).unwrap();
+    for statement in [Statement::Insert, Statement::Commit, Statement::Select] {
+        let plan = plan(&team, &path);
+        injection::fail(statement);
+        let problem = ledger.record_checkout(&plan, &tree).unwrap_err();
+        assert_eq!(problem.code, "store_busy", "{statement:?}: {problem:?}");
+        assert!(
+            ledger
+                .checkout(&team.id, &team.lead, &plan.launch_id)
+                .unwrap()
+                .is_none(),
+            "{statement:?} wrote a checkout"
+        );
+        assert!(
+            ledger.record_checkout(&plan, &tree).unwrap(),
+            "{statement:?} did not clear"
+        );
+    }
+}

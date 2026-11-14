@@ -78,6 +78,61 @@ fn object(path: &Path) -> Option<Object> {
         });
     Some((id.device, id.inode, birth))
 }
+
+/// One store statement of the checkout record, named for the test-only
+/// injected-error seam below.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Statement {
+    Insert,
+    Commit,
+    Select,
+}
+
+/// Runs one checkout statement. Production always runs it; the test-only seam
+/// may answer with an injected busy error instead.
+#[cfg(not(test))]
+#[inline]
+fn statement<T>(_: Statement, run: impl FnOnce() -> rusqlite::Result<T>) -> rusqlite::Result<T> {
+    run()
+}
+
+#[cfg(test)]
+#[inline]
+fn statement<T>(name: Statement, run: impl FnOnce() -> rusqlite::Result<T>) -> rusqlite::Result<T> {
+    match injection::next(name) {
+        Some(error) => Err(error),
+        None => run(),
+    }
+}
+
+/// Test-only injected-error seam for the checkout statements. It fails the
+/// named statement's own result with SQLITE_BUSY before the statement runs; it
+/// never holds or simulates a real concurrent SQLite lock, so it cannot stand
+/// in for the BEGIN contention test.
+#[cfg(test)]
+pub(crate) mod injection {
+    use super::Statement;
+    use std::cell::Cell;
+    thread_local! {
+        static NEXT: Cell<Option<Statement>> = Cell::new(None);
+    }
+    pub(crate) fn fail(statement: Statement) {
+        NEXT.with(|next| next.set(Some(statement)));
+    }
+    pub(crate) fn next(statement: Statement) -> Option<rusqlite::Error> {
+        NEXT.with(|next| {
+            if next.get() != Some(statement) {
+                return None;
+            }
+            next.set(None);
+            Some(rusqlite::Error::SqliteFailure(
+                rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_BUSY),
+                None,
+            ))
+        })
+    }
+}
+
 pub(super) fn record(db: &mut Connection, plan: &Plan, tree: &Worktree) -> Result<bool> {
     // Absence is preserved, never backfilled by the confirmation reader.
     let Some(proof) = Checkout::capture(plan, tree) else {
@@ -90,17 +145,18 @@ pub(super) fn record(db: &mut Connection, plan: &Plan, tree: &Worktree) -> Resul
     let tx = db
         .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
         .map_err(begin_error)?;
-    let inserted = tx
-        .execute(
+    let inserted = statement(Statement::Insert, || {
+        tx.execute(
             "INSERT OR IGNORE INTO launch_checkout_objects VALUES(?1,?2,?3,?4)",
             params![plan.team, plan.member, plan.launch_id, raw],
         )
-        .map_err(begin_error)?;
+    })
+    .map_err(begin_error)?;
     let prior = lookup(&tx, &plan.team, &plan.member, &plan.launch_id)?;
     if prior.as_ref() != Some(&proof) {
         return Err(storage("The launch checkout object was replaced"));
     }
-    tx.commit().map_err(begin_error)?;
+    statement(Statement::Commit, move || tx.commit()).map_err(begin_error)?;
     Ok(inserted == 1)
 }
 pub(super) fn lookup(
@@ -109,7 +165,10 @@ pub(super) fn lookup(
     member: &str,
     launch: &str,
 ) -> Result<Option<Checkout>> {
-    let raw:Option<Option<String>>=db.query_row("SELECT CASE WHEN length(CAST(data AS BLOB))<=16384 THEN data END FROM launch_checkout_objects WHERE team=?1 AND member=?2 AND launch=?3",params![team,member,launch],|r|r.get(0)).optional().map_err(begin_error)?;
+    let raw: Option<Option<String>> = statement(Statement::Select, || {
+        db.query_row("SELECT CASE WHEN length(CAST(data AS BLOB))<=16384 THEN data END FROM launch_checkout_objects WHERE team=?1 AND member=?2 AND launch=?3",params![team,member,launch],|r|r.get(0)).optional()
+    })
+    .map_err(begin_error)?;
     let Some(raw) = raw else {
         return Ok(None);
     };
