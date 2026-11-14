@@ -487,7 +487,7 @@ fn start<T>(
                 let finished = finish_input(input_owner.take());
                 #[cfg(test)]
                 if let Err(error) = &finished {
-                    eprintln!("original_child finish: {error:?}; written={written}; expected={}; deadline_spent={}", input.as_ref().map_or(0, Stdin::len), Instant::now() >= deadline);
+                    eprintln!("original_child finish: {error:?}; written={written}; expected={}; deadline_spent={}", input.len(), Instant::now() >= deadline);
                 }
                 input_failed |= finished.is_err();
                 stdin = None;
