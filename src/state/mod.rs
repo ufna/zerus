@@ -522,10 +522,15 @@ pub fn merge_listing_archives(mut box_value: Value, ids: &BTreeMap<String, Strin
             .ok_or("invalid session")?
             .extend(telemetry::unavailable().as_object().unwrap().clone());
     }
-    // Bounds question indexing for the whole listing.
+    let mut archive_page = if include_archives { Some(archive_catalog::preview(&marks)?) } else { None };
+    let archived: &[Value] = archive_page.as_ref().and_then(|page| page["sessions"].as_array()).map_or(&[], Vec::as_slice);
+    // Archive preparation does not consume the live question-indexing budget.
     let shared = Shared { marks: &marks, preferences: notification_preferences.as_ref(), keep_warm: keep_warm_settings.as_ref(), question_routing: question_routing.as_ref(), route_outcomes: route_outcomes.as_ref(), budget: read_marks::question_budget() };
     let mut process_work = processes::WorkSample::default();
     for record in bindings {
+        // An archive written before its binding was removed wins, as before.
+        // Consult only this preview so older archives never add listing I/O.
+        if archive::equivalent(&record, archived) { continue; }
         let name = string(&record, "name");
         // Live rows are the terminals' (P3b): a record finds its row by its
         // own terminal, and that row then lists under the record's label.
@@ -565,12 +570,10 @@ pub fn merge_listing_archives(mut box_value: Value, ids: &BTreeMap<String, Strin
         question_routing::enrich(&mut session, question_routing.as_ref());
         sessions.push(session);
     }
-    let archive_page = if include_archives {
-        let mut page = archive_catalog::preview(&marks)?;
+    if let Some(page) = archive_page.as_mut() {
         sessions.append(page["sessions"].as_array_mut().ok_or("invalid archive page")?);
         page.as_object_mut().unwrap().remove("sessions");
-        Some(page)
-    } else { None };
+    }
     sessions.extend(dsh::snapshots()?);
     sessions.extend(opencode::snapshots()?);
     finish_rows(sessions, &marks, &names);

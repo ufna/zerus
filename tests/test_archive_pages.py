@@ -1,11 +1,13 @@
 """Indexed archive pages on private synthetic records; no agent or live mark is touched."""
 import json
+import hashlib
 import os
 import shlex
 from pathlib import Path
 import sqlite3
 import subprocess
 import shutil
+import sys
 import tempfile
 import unittest
 import uuid
@@ -18,7 +20,7 @@ class ArchivePages(unittest.TestCase):
         self.temp=tempfile.TemporaryDirectory(prefix='zerus-archive-pages-');self.addCleanup(self.temp.cleanup)
         self.root=Path(self.temp.name);self.state=self.root/'state';self.archives=self.state/'archives';self.archives.mkdir(parents=True)
         socket=self.root/'tmux-private';socket.mkdir(mode=0o700)
-        self.env={k:v for k,v in os.environ.items() if not k.startswith('HGS_') and k not in ('TMUX','TMUX_PANE','TMUX_TMPDIR')}
+        self.env={k:v for k,v in os.environ.items() if not k.startswith('HGS_') and k not in ('TMUX','TMUX_PANE','TMUX_TMPDIR','CLAUDE_CONFIG_DIR','CODEX_HOME','KIMI_CODE_HOME')}
         self.env.update(HOME=str(self.root),HGS_STATE_DIR=str(self.state),HGS_CONFIG_DIR=str(self.root/'config'),HGS_SELF='archive-fixture',HGS_PEERS='',TMUX_TMPDIR=str(socket))
     def record(self,index,at=100,**extra):
         ident=str(uuid.UUID(int=index+1));value=dict(version=1,name=f'codex/example/archived-{index}',agent='codex',run_id=f'run-{index}',conversation_id=f'conversation-{index}',state='archived',archive_id=ident,archived_at=at,created=1,cwd='/synthetic/project',**extra)
@@ -176,6 +178,47 @@ class ArchivePages(unittest.TestCase):
         self.assertEqual(len(identities),137);self.assertEqual(len(set(identities)),137)
         self.assertNotIn('run-200',[row['run_id'] for row in rows])
         self.assertEqual([(r['archived_at'],r['archive_id']) for r in rows],sorted(((r['archived_at'],r['archive_id']) for r in rows),reverse=True))
+    @unittest.skipUnless(os.name=='posix','The private process birth fixture uses ps')
+    def test_preview_archive_wins_over_its_retained_binding_without_hiding_other_runs(self):
+        child=subprocess.Popen([sys.executable,'-c','import time; time.sleep(120)'],env=self.env)
+        try:
+            self.env.update(LC_ALL='C',TZ='UTC')
+            start=subprocess.check_output(['ps','-p',str(child.pid),'-o','lstart='],env=self.env,text=True).strip()
+            self.assertTrue(start)
+            archived=self.record(0,1000,pid=child.pid,process_start=start)
+            archive_path=self.archives/(archived['archive_id']+'.json');archive_path.unlink()
+            binding={key:value for key,value in archived.items() if key not in ('archive_id','archived_at','state')}
+            path=self.state/(hashlib.sha256(binding['name'].encode()).hexdigest()+'.json')
+            original=json.dumps(binding).encode();path.write_bytes(original)
+            archive_path.write_text(json.dumps(archived))
+            def listing(*extra):
+                result=subprocess.run([str(HGS),'ls','--json','--local',*extra],env=self.env,capture_output=True,text=True,timeout=30)
+                self.assertEqual(result.returncode,0,result.stderr);return json.loads(result.stdout)
+            # The original process birth keeps the binding present across the
+            # archive-write/remove-binding crash cut; no real agent is used.
+            active=listing('--no-archives')['sessions']
+            self.assertEqual(len(active),1);self.assertEqual(active[0]['run_id'],binding['run_id'])
+            self.assertIsNone(child.poll());self.assertEqual(path.read_bytes(),original)
+            rows=listing()['sessions']
+            self.assertEqual(len(rows),1,'The archive and its retained binding must not list twice')
+            self.assertEqual(rows[0]['archive_id'],archived['archive_id'])
+            self.assertEqual(rows[0]['state'],'archived')
+            self.assertEqual(path.read_bytes(),original,'Projection never removes the retained binding')
+            for key in ('run_id','conversation_id'):
+                changed=dict(binding);changed[key]='another-'+key;path.write_text(json.dumps(changed))
+                rows=listing()['sessions']
+                self.assertEqual(len(rows),2,'A different run or conversation remains a current binding')
+                self.assertEqual(sum(row.get('state')=='archived' for row in rows),1)
+            path.write_bytes(original)
+            for index in range(1,51):self.record(index,2000+index)
+            page=listing()
+            self.assertEqual(len(page['sessions']),51,'Archives outside the preview never hide a binding')
+            self.assertEqual(sum(row.get('state')=='archived' for row in page['sessions']),50)
+            self.assertTrue(page['archive_page']['next_cursor'])
+            self.assertEqual(len(listing('--no-archives')['sessions']),1)
+        finally:
+            if child.poll() is None:child.terminate()
+            child.wait(timeout=5)
     def test_preview_preserves_the_original_journal_read_mark_and_row_fields(self):
         owner='session:00000000-0000-4000-8000-000000000050'
         record=self.record(0,journal_name=owner)
