@@ -527,6 +527,9 @@ impl Catalog {
                 "CREATE INDEX IF NOT EXISTS receipt_change ON receipt_rows(source,change);
                  CREATE INDEX IF NOT EXISTS receipt_change_scope ON receipt_rows(source,agent,conversation,change,request);
                  CREATE INDEX IF NOT EXISTS receipt_change_initial ON receipt_rows(source,agent,run,change,request);
+                 CREATE INDEX IF NOT EXISTS receipt_change_first ON receipt_rows(source,agent,run,change,request) WHERE conversation='' AND first_message=1;
+                 CREATE INDEX IF NOT EXISTS receipt_change_file_scope ON receipt_rows(source,agent,conversation,change,request) WHERE files=1;
+                 CREATE INDEX IF NOT EXISTS receipt_change_file_first ON receipt_rows(source,agent,run,change,request) WHERE conversation='' AND first_message=1 AND files=1;
                  CREATE INDEX IF NOT EXISTS receipt_seq ON receipt_rows(source,seq);
                  CREATE INDEX IF NOT EXISTS receipt_gap ON receipt_rows(source) WHERE substr(stamp,1,4)='gap:';",
             ))?;
@@ -1410,9 +1413,9 @@ impl Catalog {
                 continue;
             }
             let index = match (files, initial) {
-                (true, true) => "receipt_change_initial",
-                (true, false) => "receipt_change_scope",
-                (false, true) => "receipt_change_initial",
+                (true, true) => "receipt_change_file_first",
+                (true, false) => "receipt_change_file_scope",
+                (false, true) => "receipt_change_first",
                 (false, false) => "receipt_change_scope",
             };
             let extra = if initial {
@@ -1421,7 +1424,8 @@ impl Catalog {
                 "conversation=?3"
             };
             let query = format!(
-                "SELECT request,at,binding,stamp,change FROM receipt_rows INDEXED BY {index} WHERE source=?1 AND agent=?2 AND {extra} AND change>?4 AND change<=?5 ORDER BY change LIMIT ?6"
+                "SELECT request,at,binding,stamp,change FROM receipt_rows INDEXED BY {index} WHERE source=?1 AND agent=?2 AND {extra} {} AND change>?4 AND change<=?5 ORDER BY change LIMIT ?6",
+                if files { "AND files=1" } else { "" }
             );
             let mut statement = sql(self.db.prepare(&query))?;
             let mapped = sql(statement.query_map(
