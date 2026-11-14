@@ -43,6 +43,35 @@ describe("discovery and visibility", () => {
     expect(store.readFailureFor("list")?.message).toBe("team reply gives no actor");
   });
 
+  it.each(["invalid_reply", "failed"])("a transient %s list failure keeps the confirmed preview on", (code) => {
+    const { transport } = fake();
+    const store = createTeams(transport);
+    store.apply([entry("list", "list", { teams: [], truncated: false, next: null })]);
+    store.apply([entry("list", "failed", { code, message: "The read did not answer." })]);
+    expect(store.available()).toBe(true);
+    expect(store.off()).toBeNull();
+    expect(store.readFailureFor("list")).toMatchObject({ code, message: "The read did not answer." });
+  });
+
+  it("a cursor reset keeps the confirmed preview on", () => {
+    const { transport } = fake();
+    const store = createTeams(transport);
+    store.apply([entry("list", "list", { teams: [], truncated: false, next: null })]);
+    store.apply([entry("list", "failed", { code: "cursor_reset", message: "Read the first page again." })]);
+    expect(store.available()).toBe(true);
+    expect(store.off()).toBeNull();
+    expect(store.readFailureFor("list")?.code).toBe("cursor_reset");
+  });
+
+  it("a real off answer turns a confirmed-on preview off", () => {
+    const { transport } = fake();
+    const store = createTeams(transport);
+    store.apply([entry("list", "list", { teams: [], truncated: false, next: null })]);
+    store.apply([entry("list", "failed", { code: "teams_inactive", message: "Teams are off." })]);
+    expect(store.available()).toBe(false);
+    expect(store.off()).toBe("inactive");
+  });
+
   it("a positive off answer unfollows, stops the reads and hides the entry points", async () => {
     const { transport, calls } = fake();
     const store = createTeams(transport);

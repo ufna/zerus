@@ -499,7 +499,7 @@ export function createTeams(transport: TeamsTransport = tauriTeams()) {
           batch(() => { setAvailable(true); setOff(null); });
         } else if (entry.kind === "failed") {
           if (payload.code === "cursor_reset") { listSelected = null; requestedPages.clear(); }
-          batch(() => { setAvailable(false); setOff("unavailable"); });
+          else if (available() === undefined) batch(() => { setAvailable(false); setOff("unavailable"); });
         } else if (entry.kind === "ended") {
           // The scope was retired: the reader forgot its page selection.
           listSelected = null; requestedPages.clear();
