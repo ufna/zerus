@@ -98,6 +98,12 @@ pub(crate) fn check_title(title: &str) -> Result<()> {
     Ok(())
 }
 
+/// Whether an edit only drops files from the current set: no new media is
+/// added, so it may still run when the retained history is already full.
+fn removal_only(current: &[TaskAttachment], files: &[TaskAttachment]) -> bool {
+    files.len() < current.len() && files.iter().all(|file| current.contains(file))
+}
+
 impl TaskDoc {
     pub fn create(task: NewTask<'_>) -> Result<Self> {
         Self::create_inner(task, None, None)
@@ -860,14 +866,29 @@ impl TaskDoc {
         )?;
         check_attachments(files)?;
         self.check_media_budget(files, &[])?;
-        if files == self.attachments()? {
+        let current = self.attachments()?;
+        if files == current {
             return Ok(());
+        }
+        let encoded = serde_json::to_string(files)?;
+        // Every replacement appends the whole set to the operation history.
+        // Stop before the document outgrows what a phone can assemble, but
+        // keep removals available so an oversized legacy task can be reduced.
+        let retained = self.snapshot()?.len();
+        if retained
+            .saturating_add(encoded.len())
+            .saturating_add(64 * 1024)
+            > crate::MAX_TASK_DOCUMENT
+            && !removal_only(&current, files)
+        {
+            return Err(Error::new(
+                "this task's attachment history is full; remove attachments or start a new task",
+            ));
         }
         // Never lower this after removal: old binaries must not mutate a task
         // whose media history they cannot preserve or deliver.
         self.upgrade_schema(BASE_TASK_SCHEMA)?;
-        self.fields()
-            .insert("attachments", serde_json::to_string(files)?)?;
+        self.fields().insert("attachments", encoded)?;
         self.count_requirement()?;
         self.log("attachments", actor, now, "Updated attachments", None)?;
         self.commit()?;
@@ -3007,5 +3028,56 @@ mod tests {
             crowded.doc.commit();
             assert!(crowded.view().unwrap_err().to_string().contains("too many"));
         }
+    }
+
+    #[test]
+    fn replacing_a_full_media_set_beyond_the_task_document_cap_is_refused() {
+        use base64::{engine::general_purpose::STANDARD, Engine};
+        let size = crate::attachment::MAX_ATTACHMENT;
+        let mut state = 0x9e37_79b9_7f4a_7c15_u64;
+        let mut media = |name: &str| {
+            let mut bytes = Vec::with_capacity(size);
+            while bytes.len() < size {
+                state ^= state << 13;
+                state ^= state >> 7;
+                state ^= state << 17;
+                bytes.extend_from_slice(&state.to_le_bytes());
+            }
+            bytes.truncate(size);
+            TaskAttachment {
+                name: name.into(),
+                mime: "application/octet-stream".into(),
+                data_base64: STANDARD.encode(bytes),
+                reference: String::new(),
+            }
+        };
+        let first = media("first.bin");
+        let second = media("second.bin");
+        let mut task = task(Stage::Todo);
+        task.set_attachments(&[first.clone(), second.clone()], &Actor::Person, 2)
+            .unwrap();
+        let retained = task.snapshot().unwrap().len();
+        assert!(
+            retained <= crate::MAX_TASK_DOCUMENT,
+            "the current document must fit the cap: {retained}"
+        );
+        let error = task
+            .set_attachments(
+                &[media("third.bin"), media("fourth.bin")],
+                &Actor::Person,
+                3,
+            )
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("attachment history is full"),
+            "{error}"
+        );
+        assert_eq!(task.attachments().unwrap(), [first.clone(), second]);
+        assert_eq!(task.snapshot().unwrap().len(), retained);
+        // Removing attached files stays possible even when their retained
+        // history no longer fits another full set.
+        task.set_attachments(std::slice::from_ref(&first), &Actor::Person, 4)
+            .unwrap();
+        assert_eq!(task.attachments().unwrap(), [first]);
     }
 }

@@ -149,7 +149,9 @@ impl Screens {
         if kind == Kind::Model && !selected.model_supported {
             return Err("This agent manages model defaults in its native settings.".into());
         }
-        if kind == Kind::CacheExpiry && (selected.provider != "kimi" || !selected.compact_on_expiry_supported) {
+        if kind == Kind::CacheExpiry
+            && (selected.provider != "kimi" || !selected.compact_on_expiry_supported)
+        {
             return Err("Update hgs on this computer to change cache-expiry compaction.".into());
         }
         if kind == Kind::Scope && selected.provider == "opencode" {
@@ -167,7 +169,9 @@ impl Screens {
         let members: Vec<_> = match kind {
             Kind::Rename => group.members.iter().collect(),
             Kind::Model => fan_out(&|m| m.model_supported),
-            Kind::CacheExpiry => fan_out(&|m| m.provider == "kimi" && m.compact_on_expiry_supported),
+            Kind::CacheExpiry => {
+                fan_out(&|m| m.provider == "kimi" && m.compact_on_expiry_supported)
+            }
             Kind::Permissions if !group.permissions_per_computer => {
                 fan_out(&|m| m.provider != "opencode")
             }
@@ -178,7 +182,9 @@ impl Screens {
         };
         let differs = match kind {
             Kind::Model => group.model_differs,
-            Kind::CacheExpiry => members.iter().any(|m| m.compact_on_expiry != selected.compact_on_expiry),
+            Kind::CacheExpiry => members
+                .iter()
+                .any(|m| m.compact_on_expiry != selected.compact_on_expiry),
             Kind::Permissions => group.permission_differs && !group.permissions_per_computer,
             _ => false,
         };
@@ -520,7 +526,11 @@ impl Screens {
                     }
                     if matches!(
                         plan.kind,
-                        Kind::Model | Kind::CacheExpiry | Kind::Permissions | Kind::Scope | Kind::Mark
+                        Kind::Model
+                            | Kind::CacheExpiry
+                            | Kind::Permissions
+                            | Kind::Scope
+                            | Kind::Mark
                     ) {
                         saved.push(target.machine.clone());
                         continue;
@@ -567,7 +577,9 @@ impl Screens {
                     "Permission mode saved for new and resumed sessions on %1.",
                     on
                 ),
-                Kind::CacheExpiry => zerus_client_core::text!("Cache-expiry compaction saved on %1.", on),
+                Kind::CacheExpiry => {
+                    zerus_client_core::text!("Cache-expiry compaction saved on %1.", on)
+                }
                 Kind::Mark => zerus_client_core::text!("Color and mark saved on %1.", on),
                 _ if values.mode == "computer" => {
                     zerus_client_core::text!("Permissions are now kept per computer on %1.", on)
@@ -790,19 +802,39 @@ mod tests {
     }
     #[test]
     fn cache_expiry_uses_the_native_kimi_capability_and_default() {
-        let (screens,pump,_) = fixture();
+        let (screens, pump, _) = fixture();
         {
-            let mut hub=screens.lock();
-            let raw=hub.accounts.catalogs.get_mut(&ComputerId::local()).unwrap().data.as_mut().unwrap();
-            raw["profiles"][0]["provider"]=json!("kimi");
-            raw["profiles"][0]["compact_on_expiry_supported"]=json!(true);
+            let mut hub = screens.lock();
+            let raw = hub
+                .accounts
+                .catalogs
+                .get_mut(&ComputerId::local())
+                .unwrap()
+                .data
+                .as_mut()
+                .unwrap();
+            raw["profiles"][0]["provider"] = json!("kimi");
+            raw["profiles"][0]["compact_on_expiry_supported"] = json!(true);
         }
-        let view=screens.accounts(false);let group=&view.accounts[0];
-        let opened=screens.edit_open(&pump,&group.key,&group.members[0].key,Kind::CacheExpiry).unwrap();
+        let view = screens.accounts(false);
+        let group = &view.accounts[0];
+        let opened = screens
+            .edit_open(&pump, &group.key, &group.members[0].key, Kind::CacheExpiry)
+            .unwrap();
         assert!(opened.compact_on_expiry);
-        assert_eq!(opened.kind,Kind::CacheExpiry);
-        screens.lock().accounts.catalogs.get_mut(&ComputerId::local()).unwrap().data.as_mut().unwrap()["profiles"][0]["compact_on_expiry_supported"]=json!(false);
-        assert!(screens.edit_open(&pump,&group.key,&group.members[0].key,Kind::CacheExpiry).is_err());
+        assert_eq!(opened.kind, Kind::CacheExpiry);
+        screens
+            .lock()
+            .accounts
+            .catalogs
+            .get_mut(&ComputerId::local())
+            .unwrap()
+            .data
+            .as_mut()
+            .unwrap()["profiles"][0]["compact_on_expiry_supported"] = json!(false);
+        assert!(screens
+            .edit_open(&pump, &group.key, &group.members[0].key, Kind::CacheExpiry)
+            .is_err());
     }
     #[test]
     fn captures_the_native_group_and_consumes_a_stale_handle_once() {

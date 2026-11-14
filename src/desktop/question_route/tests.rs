@@ -72,6 +72,8 @@ mod inventory {
         ("hgs_voice", NotACard),
         ("hooks", NotACard),
         ("journal", NotACard),
+        // Read-only Kimi cache-duration config provenance for the pre-send
+        // compaction decision/receipt, never a question card.
         ("kimi_estimated_cache_duration", NotACard),
         ("kimi_goal_v1", NotACard),
         ("kimi_session_state", NotACard),

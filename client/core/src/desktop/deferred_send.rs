@@ -61,7 +61,13 @@ impl CliExit {
     /// Keep only the bounded first line, without terminal control characters.
     pub fn new(code: i32, stderr: &str) -> Self {
         let mut kept = String::new();
-        for ch in stderr.lines().next().unwrap_or("").chars().filter(|ch| !ch.is_control()) {
+        for ch in stderr
+            .lines()
+            .next()
+            .unwrap_or("")
+            .chars()
+            .filter(|ch| !ch.is_control())
+        {
             if kept.len() + ch.len_utf8() > STDERR_BYTES {
                 break;
             }

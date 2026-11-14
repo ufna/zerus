@@ -112,6 +112,8 @@ tauri-build = { version = "2", features = [] }
 embed-resource = "3"
 
 [dev-dependencies]
+# Portable action tests also run on Windows.
+tempfile = "3"
 # The subscriber's silence deadline is tested without thirty wall-clock seconds.
 tokio = { version = "1", default-features = false, features = ["test-util"] }
 

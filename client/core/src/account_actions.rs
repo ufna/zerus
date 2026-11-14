@@ -181,10 +181,11 @@ impl Binding {
         }
         let mut call = self.invocation(&[op, &self.id, "--revision", &self.revision]);
         if kind == Kind::CacheExpiry {
-            if self.provider != "kimi" || !["on","off"].contains(&values.mode.as_str()) {
+            if self.provider != "kimi" || !["on", "off"].contains(&values.mode.as_str()) {
                 return Err("Choose On or Off for a Kimi account.".into());
             }
-            call.args.extend(["--enabled".into(), (values.mode == "on").to_string()]);
+            call.args
+                .extend(["--enabled".into(), (values.mode == "on").to_string()]);
         }
         if kind == Kind::Rename {
             let label = values.label.trim();
@@ -310,12 +311,34 @@ mod tests {
     #[test]
     fn cache_expiry_is_a_revision_bound_kimi_account_setting() {
         let mut b = binding();
-        let values = Values {mode:"off".into(),..Default::default()};
-        assert!(b.edit_values(Kind::CacheExpiry,&values).is_err());
+        let values = Values {
+            mode: "off".into(),
+            ..Default::default()
+        };
+        assert!(b.edit_values(Kind::CacheExpiry, &values).is_err());
         b.provider = "kimi".into();
-        let call = b.edit_values(Kind::CacheExpiry,&values).unwrap();
-        assert_eq!(&call.args[3..], &["account","compact-on-expiry","work","--revision","r1","--enabled","false"]);
-        assert!(b.edit_values(Kind::CacheExpiry,&Values {mode:"invalid".into(),..Default::default()}).is_err());
+        let call = b.edit_values(Kind::CacheExpiry, &values).unwrap();
+        assert_eq!(
+            &call.args[3..],
+            &[
+                "account",
+                "compact-on-expiry",
+                "work",
+                "--revision",
+                "r1",
+                "--enabled",
+                "false"
+            ]
+        );
+        assert!(b
+            .edit_values(
+                Kind::CacheExpiry,
+                &Values {
+                    mode: "invalid".into(),
+                    ..Default::default()
+                }
+            )
+            .is_err());
     }
     #[test]
     fn guards_every_call_and_keeps_labels_as_one_argument() {
