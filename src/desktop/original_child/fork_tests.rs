@@ -102,13 +102,18 @@ fn with_alias(input: Input<'_>, held_custody: bool) -> Ended {
     );
     assert!(AFTER_SPAWN.with(|hook| hook.borrow().is_none()));
     // Assert before releasing the unrelated process: EOF must not depend on it.
-    assert_eq!(
-        ended,
-        Ended::Exited {
-            code: 0,
-            output: expected
+    match &ended {
+        Ended::Exited { code, output } => {
+            assert_eq!(*code, 0);
+            assert_eq!(output.len(), expected.len());
+            assert!(output == &expected, "output differs");
         }
-    );
+        other => panic!(
+            "input of {} bytes: {other:?}; offered={:?}",
+            expected.len(),
+            OFFERED.with(|slot| slot.get())
+        ),
+    }
     ended
 }
 fn frozen(stdin: Stdin<'_>) -> Input<'_> {

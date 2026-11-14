@@ -372,6 +372,13 @@ fn start<T>(
     };
     // Only these pre-child branches mean "not started"; once a child exists,
     // every outcome is its exit or Unknown.
+    #[cfg(test)]
+    if let Err(error) = &spawned {
+        eprintln!(
+            "original_child spawn refused: {error:?}; deadline_spent={}",
+            Instant::now() >= deadline
+        );
+    }
     let Ok(mut child) = spawned else {
         return Ended::NotStarted;
     };
@@ -477,7 +484,12 @@ fn start<T>(
                 }
             }
             if finished {
-                input_failed |= finish_input(input_owner.take()).is_err();
+                let finished = finish_input(input_owner.take());
+                #[cfg(test)]
+                if let Err(error) = &finished {
+                    eprintln!("original_child finish: {error:?}; written={written}; expected={}; deadline_spent={}", input.as_ref().map_or(0, Stdin::len), Instant::now() >= deadline);
+                }
+                input_failed |= finished.is_err();
                 stdin = None;
             }
         }
@@ -584,7 +596,16 @@ fn start<T>(
     };
     // The loop has really ended, including on early exit or deadline. Never
     // let an inherited alias keep this input live after its writer is done.
-    input_failed |= finish_input(input_owner.take()).is_err();
+    let finished = finish_input(input_owner.take());
+    #[cfg(test)]
+    if let Err(error) = &finished {
+        eprintln!(
+            "original_child finish: {error:?}; written={written}; expected={}; deadline_spent={}",
+            input.as_ref().map_or(0, Stdin::len),
+            Instant::now() >= deadline
+        );
+    }
+    input_failed |= finished.is_err();
     drop(stdin);
     #[cfg(test)]
     OFFERED.with(|offered| offered.set(Some(written)));
