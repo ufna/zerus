@@ -1213,10 +1213,18 @@ class NativeWindowsCodex(NativeAgent, host.HostCase):
         self.deliver(name, MESSAGES[0])
 
     def test_explicit_sandbox_setup_quit_is_bound_and_never_configures_or_replays(self):
+        # Exercise ordinary Codex permissions, not this suite's YOLO default.
+        # The native header then has no permissions row (history_cell/session.rs).
+        config = self.agent_home / 'config.toml'
+        config.write_text(config.read_text(encoding='utf-8')
+                          .replace('sandbox_mode = "danger-full-access"', 'sandbox_mode = "workspace-write"')
+                          .replace('approval_policy = "never"', 'approval_policy = "on-request"'), encoding='utf-8')
+        self.ARGS = ()
         name, trust, _ = self.untrusted_folder()
         self.answer(name, trust, [dict(question_id='trust', selected_option_ids=['trust_0'], text='')])
         card = self.card(name, 'codex_sandbox_setup')
         screen = self.capture(name)
+        self.assertNotIn('permissions: YOLO mode', screen)
         evidence = TESTS.parent / 'artifacts/test-results/codex-sandbox-setup-native.txt'
         evidence.parent.mkdir(parents=True, exist_ok=True)
         evidence.write_text(screen, encoding='utf-8')

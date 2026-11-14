@@ -89,12 +89,12 @@ fn parse(screen: &str, width: usize) -> Option<Panel> {
         regex::Regex::new(r"^  >_ OpenAI Codex \(v[0-9]+\.[0-9]+\.[0-9]+(?:[-+][a-zA-Z0-9.-]+)?\)$")
             .unwrap()
     });
-    if prelude.len() != 3
+    // SessionHeaderHistoryCell always shows the title and directory; only
+    // has_yolo_permissions adds this exact third row (Codex 0.169.0).
+    if !(2..=3).contains(&prelude.len())
         || !BANNER.is_match(prelude[0])
         || prelude[1].strip_prefix("     ").is_none_or(str::is_empty)
-        || prelude[2]
-            .strip_prefix("  permissions: ")
-            .is_none_or(str::is_empty)
+        || (prelude.len() == 3 && prelude[2] != "  permissions: YOLO mode")
     {
         return None;
     }
@@ -466,5 +466,23 @@ mod tests {
             &json!({"phase":"input"}),
             Some(&[raw])
         ));
+    }
+
+    #[test]
+    fn normal_native_header_without_yolo_has_a_reviewed_card() {
+        let q = produced(
+            &trust_fixture::record("codex"),
+            include_str!("../../tests/fixtures/codex-sandbox-setup-normal-80.txt"),
+            80,
+            true,
+        )
+        .expect("normal Codex startup has no YOLO row");
+        assert_eq!(q["can_answer"], true);
+        assert_eq!(q["questions"][0]["options"].as_array().unwrap().len(), 3);
+    }
+    #[test]
+    fn unrelated_permissions_header_is_not_native_setup_evidence() {
+        let screen = SCREEN.replace("  permissions: YOLO mode", "  permissions: Full access");
+        assert!(produced(&trust_fixture::record("codex"), &screen, 120, true).is_none());
     }
 }

@@ -19,7 +19,9 @@ def render(*args):
  global selected
  if (root/'selection').exists(): selected=int((root/'selection').read_text());(root/'selection').unlink()
  width=os.get_terminal_size(fd).columns
- lines=['','  >_ OpenAI Codex (v0.169.0)','     /work/example','  permissions: YOLO mode','','']
+ lines=['','  >_ OpenAI Codex (v0.169.0)','     /work/example']
+ if not (root/'normal').exists():lines+=['  permissions: YOLO mode']
+ lines+=['','']
  lines+=['  '+r for r in textwrap.wrap(body,width=width-4,break_on_hyphens=False)]+['','']
  for i,label in enumerate(labels):
   if (root/'changed').exists() and i==1:label='Use a different sandbox'
@@ -129,6 +131,19 @@ class SandboxSetup(unittest.TestCase):
         self.assertEqual(self.received(), b'')
         for card in self.inspect()['pending_questions']:
             self.assertFalse(card.get('can_answer'), card)
+
+    def test_normal_permissions_header_requires_a_fresh_explicit_choice(self):
+        old = self.payload(2)
+        (self.root/'normal').touch()
+        os.kill(self.record['pid'], signal.SIGUSR1)
+        self.wait_for(lambda: 'YOLO' not in self.tmux('capture-pane', '-p', '-t', self.pane))
+        self.answer(old, success=False)
+        self.assertEqual(self.received(), b'')
+        self.card = self.inspect()['pending_questions'][0]
+        self.assertEqual(self.card['source'], 'codex_sandbox_setup')
+        self.assertTrue(self.card['can_answer'])
+        self.assertEqual(self.answer(self.payload(2))['status'], 'answered')
+        self.assertEqual((self.root/'submitted').read_text(), 'Quit')
 
     def test_copy_mode_keeps_card_read_only_and_answer_sends_nothing(self):
         self.tmux('copy-mode', '-t', self.pane)
