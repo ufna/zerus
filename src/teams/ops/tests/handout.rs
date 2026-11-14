@@ -189,6 +189,18 @@ fn report_validates_service_note_codes_and_bounds() {
         ),
         code::INVALID_STATE,
     );
+    // A valid first character is not enough: every later character is checked
+    // too, so a validation that only looks at the first one is refused.
+    refused(
+        h.run(
+            &service(),
+            op(vec![ReportNote {
+                code: "text_Shortened".into(),
+                text: None,
+            }]),
+        ),
+        code::INVALID_STATE,
+    );
     refused(
         h.run(
             &service(),
