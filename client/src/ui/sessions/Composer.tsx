@@ -26,6 +26,7 @@ import { SessionUsageChip, UsageLimitChip } from "./UsageChips";
 import { allowRetryShown, moveFocusOff } from "./composer-ui";
 import { focusTranscript, following, jumpToLatest, shownSearchPreview, unseen } from "./Activity";
 import { jumpButton } from "./search-hit";
+import { OwnMessageNavigation } from "./OwnMessageNavigation";
 import type { ChipTone } from "../../types";
 import { tr } from "../../i18n";
 import { CacheChip } from "./CacheChip";
@@ -286,6 +287,7 @@ export function Composer() {
             <Icon name="check-check" size={13} /><Show when={!compact()}>{tr("Mark as read")}</Show>
           </button>
         </Show>
+        <OwnMessageNavigation />
         <Show when={jump().visible}>
           <button type="button" class="tchip icon" title={jumpCaption()} aria-label={jumpCaption()}
             onClick={(e) => { if (document.activeElement === e.currentTarget) moveFocusOff(focusTranscript, editor); jumpToLatest(); }}><Icon name="chevrons-down" size={14} /></button>
