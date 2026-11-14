@@ -1478,15 +1478,19 @@ Further classes repeat the same bring-up with one of the team's delegations on:
 - **Codex folder trust by the standing confirmation** (`NativeTeamsTrustCodex`,
   `confirm_trust`, selected). Every member worktree is a linked worktree, so Codex's
   Folder access panel carries its Git-root note and asks "Trust this Git
-  repository?". The standing confirmation refuses that scope: it records no grant
-  and leaves a card naming the member, and the person then answers the panel through
-  `hgs answer`. The case reads which panel the pane showed (a folder of up to 76
+  repository?". The standing confirmation answers that startup card, as owner
+  decision D9 permits, with one audited grant per member naming the exact main
+  checkout scope, category and original run. The person supplies no folder answer;
+  the native account records only the main checkout as trusted. The ordinary Codex
+  startup case, where the person answers, retains which panel the pane showed (a folder of up to 76
   columns fills one row): a hosted runner, whose root in `/tmp` is short, must show
   the one-row panel and a local run the wrapped one.
 - **Resume of an exited member** (`NativeTeamsResumeClaude` and
   `NativeTeamsResumeCodex`, `resume_exited`, selected; the person answers folder
   trust). The member works once
-  (the person's message and its answer), so its conversation is persisted. When its
+  (the person's message and its answer), so its conversation is persisted. The existing
+  turn wait requires both Stop and the product Terminal reader's empty composer before
+  sending quit keys; Stop can precede native input readiness. When its
   agent then exits by itself (`/exit`; Codex `/quit`), the service resumes it in a new run of the same
   launch and conversation, it gets its brief once, and the audit records `team_resume`. A member
   the person terminates is refused with a card and no audit row, and no run of its
@@ -1494,9 +1498,9 @@ Further classes repeat the same bring-up with one of the team's delegations on:
 - **A Claude Code member that exits before any message**
   (`NativeTeamsResumeUnworkedClaude`, `resume_exited`, selected). It has no persisted
   conversation, so the service's restore is refused before launch. Nothing of its
-  launch starts, and the person's card carries the command's own reason ("persisted
-  conversation is missing or empty"). The person's own Restore of that archive is
-  recorded beside it.
+  launch starts, and the person's card carries the exact refusal reason from the
+  archive's own inspection. The separate explicit Restore must fail too; its receipt
+  is recorded beside the inspection, and no member run starts afterward.
 
 Written and waiting: `WAITING` in the module lists these, and the contract does not
 select them until their fixes land.
