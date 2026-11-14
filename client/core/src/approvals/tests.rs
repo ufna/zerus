@@ -179,7 +179,18 @@ fn the_real_service_reply_projects_into_the_committed_page_fixture() {
             "prompt": "May I run this command?", "status": "approved", "categories": ["shell"], "scope": null},
     ], "next": null, "previous": null});
     let page = page(reply.as_object().unwrap()).unwrap();
-    let projected = serde_json::to_value(&page).unwrap();
+    let mut projected = serde_json::to_value(&page).unwrap();
+    // Each row's exact detail sentence, from the same core formatter the
+    // detail reader feeds, on the detail reply's full shape with the raw
+    // categories (zerus-63rru.66 round 7).
+    for (i, entry) in reply["entries"].as_array().unwrap().iter().enumerate() {
+        let mut detail_reply = entry.clone();
+        detail_reply["categories"] = entry["categories"].clone();
+        detail_reply["question"] = json!({"questions": [{"id": "trust", "question": "Trust this folder?", "body": "/fixture/main"}]});
+        detail_reply["answers"] = json!([]);
+        let text = detail(detail_reply.as_object().unwrap());
+        projected["entries"][i]["detail"] = json!(text);
+    }
     let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../src/ui/screens/settings/approvals-page.r6.fixture.json");
     if std::env::var_os("HGS_R6_WRITE_FIXTURE").is_some() {
         std::fs::write(path, serde_json::to_string_pretty(&projected).unwrap() + "\n").unwrap();

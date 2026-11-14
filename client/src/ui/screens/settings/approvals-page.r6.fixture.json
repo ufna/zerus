@@ -3,6 +3,7 @@
     {
       "at": 1,
       "categories": [],
+      "detail": "Approved once\n\nTrusted for /fixture/main and its subfolders on this account\n\nTrust this folder?\n\n/fixture/main",
       "host": "a.example",
       "id": 1,
       "prompt": "Trust this folder?",
@@ -14,6 +15,7 @@
     {
       "at": 2,
       "categories": [],
+      "detail": "Failed\n\nTrust was requested for /fixture/main and its subfolders; it was not confirmed\n\nTrust this folder?\n\n/fixture/main",
       "host": "a.example",
       "id": 2,
       "prompt": "Trust this folder?",
@@ -25,6 +27,7 @@
     {
       "at": 3,
       "categories": [],
+      "detail": "Unconfirmed\n\nTrust was requested for /fixture/main and its subfolders; it was not confirmed\n\nTrust this folder?\n\n/fixture/main",
       "host": "a.example",
       "id": 3,
       "prompt": "Trust this folder?",
@@ -36,6 +39,7 @@
     {
       "at": 4,
       "categories": [],
+      "detail": "Cancelled\n\nTrust was requested for /fixture/main and its subfolders; it was not confirmed\n\nTrust this folder?\n\n/fixture/main",
       "host": "a.example",
       "id": 4,
       "prompt": "Trust this folder?",
@@ -47,6 +51,7 @@
     {
       "at": 5,
       "categories": [],
+      "detail": "Unconfirmed\n\nTrust was requested for /fixture/main and its subfolders; it was not confirmed\n\nTrust this folder?\n\n/fixture/main",
       "host": "a.example",
       "id": 5,
       "prompt": "Trust this folder?",
@@ -58,6 +63,7 @@
     {
       "at": 6,
       "categories": [],
+      "detail": "Approved once\n\nTrust this folder?\n\n/fixture/main",
       "host": "a.example",
       "id": 6,
       "prompt": "Resume the member?",
@@ -69,6 +75,7 @@
     {
       "at": 7,
       "categories": [],
+      "detail": "Approved once\n\nTrust this folder?\n\n/fixture/main",
       "host": "a.example",
       "id": 7,
       "prompt": "Resume the member?",
@@ -82,6 +89,7 @@
       "categories": [
         "shell"
       ],
+      "detail": "Approved once\n\nCategories: Shell commands\n\nTrust this folder?\n\n/fixture/main",
       "host": "a.example",
       "id": 8,
       "prompt": "May I run this command?",
