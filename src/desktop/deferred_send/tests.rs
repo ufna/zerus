@@ -1333,15 +1333,32 @@ mod actor {
             .unwrap()
         }
         fn until(&mut self, what: &str, done: impl Fn(&Self) -> bool) {
-            let until = Instant::now() + Duration::from_secs(8);
+            let started = Instant::now();
+            let until = started + Duration::from_secs(8);
+            let mut polls = 0;
+            let mut longest_poll = Duration::ZERO;
+            let mut status = self.runtime.status();
+            let mut progress = std::collections::VecDeque::from([(0, status.clone())]);
             while !done(self) {
                 assert!(
                     Instant::now() < until,
-                    "timed out: {what}, {}",
-                    self.runtime.status()
+                    "timed out: {what}, {}; elapsed={:?}, polls={polls}, longest_poll={longest_poll:?}, progress={progress:?}",
+                    self.runtime.status(),
+                    started.elapsed()
                 );
+                let poll_started = Instant::now();
                 self.runtime
                     .poll(&mut self.store, Some(self.exclusion.clone()));
+                longest_poll = longest_poll.max(poll_started.elapsed());
+                polls += 1;
+                let current = self.runtime.status();
+                if current != status {
+                    if progress.len() == 64 {
+                        progress.pop_front();
+                    }
+                    progress.push_back((started.elapsed().as_millis(), current.clone()));
+                    status = current;
+                }
                 std::thread::sleep(Duration::from_millis(2));
             }
         }
@@ -2410,6 +2427,22 @@ os._exit(0)"#;
         assert_eq!(sent.load(Ordering::SeqCst), 0);
         assert_eq!(budget(&f.store.db).2, 32);
         f.runtime.request_stop();
+        // Retire one canceled original per actor poll. Keep the existing wait
+        // bound for each decrease, rather than for the whole 32-original queue.
+        // Status is cached; read the durable charge count before the first poll.
+        let started = Instant::now();
+        let mut active = budget(&f.store.db).2;
+        while active > 0 {
+            f.until("next original charge retires", |f| {
+                budget(&f.store.db).2 < active
+            });
+            let remaining = budget(&f.store.db).2;
+            eprintln!(
+                "CAPACITY_RETIRE_PROGRESS elapsed={:?}, active={active}, remaining={remaining}",
+                started.elapsed()
+            );
+            active = remaining;
+        }
         f.until("queued originals retire without input", |f| {
             f.runtime.drained()
         });
