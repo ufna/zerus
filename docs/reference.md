@@ -5754,9 +5754,10 @@ variable or `HTTP_PROXY`). A valid test value takes precedence over
 `KIMI_CODE_BASE_URL`. An empty test value is treated as unset. Any other test
 value is ignored; the `detail` names the variable, and the rule below then
 applies. The seam is read only by the
-inspection. Zerus removes it from the native children it starts for login,
-inspection and account sessions; a launch without an account has no account
-environment, so it inherits whatever the launching environment holds. `KIMI_CODE_BASE_URL`
+inspection. Zerus removes it from the native children it starts for login and
+inspection, and sets it empty (which the inspection treats as unset) in account
+sessions; a launch without an account has no account environment, so it
+inherits whatever the launching environment holds. `KIMI_CODE_BASE_URL`
 keeps the Kimi CLI's own meaning: with a live token, any non-default value,
 including an empty one and a loopback address, makes the inspection send no
 request and no token, and names it in `detail`. An expiring token still runs
