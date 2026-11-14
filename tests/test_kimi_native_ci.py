@@ -262,13 +262,26 @@ class KimiNativeCI(unittest.TestCase):
                 ci.target(*pair)
         self.assertEqual(ci.checked_methods(), ci.METHODS)
         self.assertEqual(len(ci.METHODS), len(set(ci.METHODS)))
-        self.assertEqual(len(ci.METHODS),22)
+        self.assertEqual(len(ci.METHODS), 23)
         self.assertIn('test_kimi_native.NativeKimi.test_background_task_completion_settles_its_own_main_turn',ci.METHODS)
         self.assertIn('test_kimi_native.NativeKimi.test_hint_reaches_model_through_real_hgs_hook',ci.METHODS)
+        self.assertIn('test_kimi_native.NativeKimi.test_expired_cache_compacts_before_delivering_one_original_message', ci.METHODS)
         self.assertIn('test_kimi_native.NativeKimi.test_manual_compaction_reaches_native_hooks',ci.METHODS)
         self.assertIn('test_kimi_native.NativeKimi.test_id_settings_before_first_message_preserves_empty_conversation_and_defaults',ci.METHODS)
         self.assertIn('test_kimi_native.NativeKimi.test_id_unprimed_pending_settings_then_message_makes_one_model_call_and_keeps_defaults',ci.METHODS)
         self.assertEqual(ci.METHODS[-1],'test_kimi_native.NativeKimi.test_id_effort_preserves_raw_request_identity_and_shared_defaults')
+
+    def test_method_inventory_refuses_missing_extra_and_duplicate_entries(self):
+        reviewed = ci.METHODS
+        expiry = 'test_kimi_native.NativeKimi.test_expired_cache_compacts_before_delivering_one_original_message'
+        for reason, methods in (
+            ('missing', tuple(method for method in reviewed if method != expiry)),
+            ('extra', reviewed + ('test_kimi_native.NativeKimi.test_unreviewed',)),
+            ('duplicate', reviewed + (reviewed[0],)),
+        ):
+            with self.subTest(reason=reason), mock.patch.object(ci, 'METHODS', methods):
+                with self.assertRaisesRegex(ValueError, 'native method inventory needs an explicit review'):
+                    ci.checked_methods()
 
     def test_the_only_redirect_is_one_exact_302_to_the_cdn(self):
         source = 'https://code.kimi.com/kimi-code/binaries/2.2.0/manifest.json'
