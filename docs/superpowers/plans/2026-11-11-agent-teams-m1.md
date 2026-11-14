@@ -2107,12 +2107,20 @@ its whole archive and is a tracked follow-up, not part of milestone 1.
 
 **Known limit, now resolved.** A stage excludes the implementer of the
 target's current round and every earlier implementer of the target
-(zerus-63rru.20): the store records the implementers a target has had, in
-a bounded way (a cap of 16; past the cap the stage's staffing fails closed
-with a stated reason instead of handing to an unrecorded member silently),
+(zerus-63rru.20): the store records the implementers a target has had,
 written by the service's own reassignment, round-change and report
-operations, and the hand-out and the kernel's staffing read those records.
-An older build ignores the table and reads the store exactly as before.
+operations, and the hand-out, the stage creation and the kernel's staffing
+read those records. The record per target is bounded by the team's member
+bound on its own, so there is no separate cap and no full marker; the
+readiness read takes only the live stages' targets through the primary key.
+A person's Reassign of a stage follows the hand-out's rule and writes no
+record of its own.
+
+**Rollback limit (documented and accepted).** An older build ignores the
+table and reads the store exactly as before, and its own reassignments,
+round changes and reports write no record. A stage can therefore later go
+to a member whose earlier round only that older build carried out. The
+schema version is unchanged; a one-way bump was rejected for this reason.
 
 ## Addendum: wave 3 (packages 8, 9, 10, 13, 14 and 17)
 

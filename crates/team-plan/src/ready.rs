@@ -186,7 +186,8 @@ impl Staffing<'_> {
         if of_role.is_empty() {
             return Some(format!("No member of the team has the role {role}."));
         }
-        const RULE: &str = "a stage is never handed to a member who implemented any round of the task";
+        const RULE: &str =
+            "a stage is never handed to a member who implemented any round of the task";
         Some(match work.assignee {
             Some(assignee) if !of_role.contains(&assignee) => {
                 format!("The assignee {assignee} is not a member with the role {role}.")
@@ -987,7 +988,8 @@ mod tests {
         assert_eq!(
             stuck[0].reason,
             "m3 implemented the task and is the only member with the role reviewer, \
-             and a stage is never handed to the member who implemented the task."
+             and a stage is never handed to a member who implemented any round of the task. \
+             The task went to the lead, who can accept, return or cancel it there."
         );
         // Either record naming the implementer is enough.
         plan.node(1).implementer = None;
@@ -1065,39 +1067,93 @@ mod tests {
         );
         assert!(unstaffed(&view).is_empty());
     }
-#[test]
-fn every_implementer_rounds_reason_names_the_rule_and_the_way_forward() {
-    // zerus-63rru.20 round 2: the kernel's gap reason names every round and
-    // the way forward when every member with the role implemented.
-    use crate::ready::{MemberView, PlanView, Staffing, Work};
-    use crate::{Member, MemberState, Node, NodeKind, NodeSource, NodeState as NState, Phase, PhaseKind, PhaseState, Severity};
-    let node = Node {
-        id: 2, phase: 0, task: None, title: "Review".into(), text: String::new(),
-        source: NodeSource::Sent, deps: vec![], assignee: None, role: "developer".into(),
-        pipeline: String::new(), writes: vec![], estimate_minutes: 0, kind: NodeKind::Stage,
-        severity: Severity::None, origin: None, stage_of: Some(1), stage_index: 0, round: 1,
-        implementer: None, earlier_implementers: vec!["m1".into()], hold: false, admitted: true,
-        state: NState::Pending, decided_by: None, integrated: false, rank: String::new(),
-    };
-    let members = vec![Member {
-        id: "m1".into(), role: "developer".into(), agent: "claude".into(),
-        account: String::new(), state: MemberState::Active, session: None,
-        worktree: String::new(), ownership_nonce: String::new(),
-    }];
-    let member_views: Vec<MemberView> = members.iter().map(|m| MemberView {
-        id: m.id.clone(), role: m.role.clone(), state: m.state, free: false,
-    }).collect();
-    let phases = vec![Phase {
-        n: 0, order: 0, title: String::new(), kind: PhaseKind::Queue,
-        mode: crate::PhaseMode::default(), approval: crate::Approval::default(),
-        state: PhaseState::Approved, acceptance: crate::Acceptance::default(),
-        barrier: false, paused: false,
-    }];
-    let nodes = vec![node.clone()];
-    let lead = String::from("lead");
-    let view = PlanView { phases: &phases, nodes: &nodes, members: &member_views, lead: &lead, integration: crate::Integration::None };
-    let work = Work { role: "developer", assignee: None, implementers: vec!["m1"] };
-    let reason = Staffing { view }.gap(&work).unwrap();
-    assert!(reason.contains("any round") && reason.contains("accept, return or cancel"), "{reason}");
-}
+
+    #[test]
+    fn every_implementer_rounds_reason_names_the_rule_and_the_way_forward() {
+        // zerus-63rru.20 round 2: the kernel's gap reason names every round and
+        // the way forward when every member with the role implemented.
+        use crate::ready::{MemberView, PlanView, Staffing, Work};
+        use crate::{
+            Member, MemberState, Node, NodeKind, NodeSource, NodeState as NState, Phase, PhaseKind,
+            PhaseState, Severity,
+        };
+        let node = Node {
+            id: 2,
+            phase: 0,
+            task: None,
+            title: "Review".into(),
+            text: String::new(),
+            source: NodeSource::Sent,
+            deps: vec![],
+            assignee: None,
+            role: "developer".into(),
+            pipeline: String::new(),
+            writes: vec![],
+            estimate_minutes: 0,
+            kind: NodeKind::Stage,
+            severity: Severity::None,
+            origin: None,
+            stage_of: Some(1),
+            stage_index: 0,
+            round: 1,
+            implementer: None,
+            earlier_implementers: vec!["m1".into()],
+            hold: false,
+            admitted: true,
+            state: NState::Pending,
+            decided_by: None,
+            integrated: false,
+            rank: String::new(),
+        };
+        let members = vec![Member {
+            id: "m1".into(),
+            role: "developer".into(),
+            agent: "claude".into(),
+            account: String::new(),
+            state: MemberState::Active,
+            session: None,
+            worktree: String::new(),
+            ownership_nonce: String::new(),
+        }];
+        let member_views: Vec<MemberView> = members
+            .iter()
+            .map(|m| MemberView {
+                id: m.id.clone(),
+                role: m.role.clone(),
+                state: m.state,
+                free: false,
+            })
+            .collect();
+        let phases = vec![Phase {
+            n: 0,
+            order: 0,
+            title: String::new(),
+            kind: PhaseKind::Queue,
+            mode: crate::PhaseMode::default(),
+            approval: crate::Approval::default(),
+            state: PhaseState::Approved,
+            acceptance: crate::Acceptance::default(),
+            barrier: false,
+            paused: false,
+        }];
+        let nodes = vec![node.clone()];
+        let lead = String::from("lead");
+        let view = PlanView {
+            phases: &phases,
+            nodes: &nodes,
+            members: &member_views,
+            lead: &lead,
+            integration: crate::Integration::None,
+        };
+        let work = Work {
+            role: "developer",
+            assignee: None,
+            implementers: vec!["m1"],
+        };
+        let reason = Staffing { view }.gap(&work).unwrap();
+        assert!(
+            reason.contains("any round") && reason.contains("accept, return or cancel"),
+            "{reason}"
+        );
+    }
 }

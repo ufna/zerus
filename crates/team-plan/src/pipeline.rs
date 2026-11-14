@@ -349,7 +349,8 @@ mod tests {
         assert_eq!(
             to_lead(&step),
             "m3 implemented the task and is the only member with the role reviewer, \
-             and a stage is never handed to the member who implemented the task."
+             and a stage is never handed to a member who implemented any round of the task. \
+             The task went to the lead, who can accept, return or cancel it there."
         );
         // A second reviewer, even busy, can take it later.
         plan.members.push(member("m4", "reviewer"));

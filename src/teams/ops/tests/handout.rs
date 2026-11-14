@@ -368,6 +368,7 @@ fn the_unstaffed_reading_names_every_earlier_implementer() {
 
 
 
+#[test]
 fn service_handout_requires_kernel_ready_and_reads_archived_dependencies() {
     let mut h = Harness::new();
     h.bind("m1");

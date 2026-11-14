@@ -27,9 +27,8 @@ pub(crate) fn earlier_implementers(
     team: &str,
     target: u32,
 ) -> rusqlite::Result<Vec<String>> {
-    let mut statement = db
-        .prepare("SELECT member FROM target_implementers WHERE team=?1 AND target=?2")
-        .unwrap();
+    let mut statement =
+        db.prepare("SELECT member FROM target_implementers WHERE team=?1 AND target=?2")?;
     statement
         .query_map(rusqlite::params![team, target], |r| r.get(0))
         .and_then(|rows| rows.collect())

@@ -112,10 +112,13 @@ pub(super) fn reassign(ctx: &mut Context<'_>) -> Result<()> {
     // sentence (zerus-63rru.20 round 2).
     let stage_earlier = n.kind == NodeKind::Stage
         && (n.implementer.as_ref() == Some(member)
-            || n.stage_of.is_some_and(|target| {
-                rows::earlier_implementers(ctx.db, &ctx.team.id, target)
-                    .is_ok_and(|list| list.iter().any(|m| m == member))
-            }));
+            || match n.stage_of {
+                Some(target) => rows::earlier_implementers(ctx.db, &ctx.team.id, target)
+                    .map_err(storage)?
+                    .iter()
+                    .any(|m| m == member),
+                None => false,
+            });
     if m.state != MemberState::Active
         || m.session.is_none()
         || m.id == ctx.team.lead

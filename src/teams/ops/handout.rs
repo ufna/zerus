@@ -87,17 +87,18 @@ fn eligible(db: &Connection, team: &Team, node: &Node, id: &str) -> Result<()> {
         .ok_or_else(|| Problem::new(code::UNKNOWN_MEMBER, "Member does not exist."))?;
     // A stage never goes to a member who implemented any round of what it
     // checks: its own record, the node's current implementer, or the
-    // target's recorded earlier implementers, and never at all once the
-    // record is full (zerus-63rru.20). The kernel's staffing carries the
-    // same lists for the unstaffed reading.
+    // target's recorded earlier implementers (zerus-63rru.20). The kernel's
+    // staffing carries the same lists for the unstaffed reading. A record
+    // read fails closed: an unreadable record refuses the hand-out.
     let earlier = if node.kind == NodeKind::Stage {
         node.implementer.as_deref() == Some(id)
-            || node
-                .stage_of
-                .is_some_and(|target| {
-                    rows::earlier_implementers(db, &team.id, target)
-                        .is_ok_and(|list| list.iter().any(|m| m == id))
-                })
+            || match node.stage_of {
+                Some(target) => rows::earlier_implementers(db, &team.id, target)
+                    .map_err(storage)?
+                    .iter()
+                    .any(|m| m == id),
+                None => false,
+            }
     } else {
         false
     };
