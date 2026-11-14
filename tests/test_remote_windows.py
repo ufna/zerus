@@ -477,6 +477,7 @@ def decoder_rows(path):
 class WindowsNativeTransport(unittest.TestCase):
     def test_ready_file_is_read_while_the_native_publisher_retains_delete_access(self):
         import ctypes
+        import errno
         from ctypes import wintypes
         from unittest import mock
         kernel = ctypes.WinDLL('kernel32', use_last_error=True)
@@ -493,6 +494,12 @@ class WindowsNativeTransport(unittest.TestCase):
             self.assertNotEqual(publisher, ctypes.c_void_p(-1).value)
             try:
                 pending.rename(ready)
+                denied = kernel.CreateFileW(str(ready), 0x80000000, 1 | 2, None, 3, 0, None)
+                sharing_error = ctypes.get_last_error()
+                if denied != ctypes.c_void_p(-1).value:
+                    self.assertTrue(kernel.CloseHandle(denied))
+                self.assertEqual(denied, ctypes.c_void_p(-1).value)
+                self.assertEqual(sharing_error, 32)
                 # Revert the actual readiness reader to its former opener.
                 def old_read(path, limit):
                     with path.open('rb') as file:
@@ -500,7 +507,8 @@ class WindowsNativeTransport(unittest.TestCase):
                 with mock.patch(__name__ + '.decoder_file_bytes', side_effect=old_read):
                     with self.assertRaises(PermissionError) as refused:
                         decoder_readiness(ready)
-                self.assertEqual(refused.exception.winerror, 32)
+                # The CRT reader reports EACCES without retaining Win32's code.
+                self.assertEqual(refused.exception.errno, errno.EACCES)
                 self.assertEqual(decoder_readiness(ready), value)
             finally:
                 self.assertTrue(kernel.CloseHandle(publisher))
