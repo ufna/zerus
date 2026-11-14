@@ -405,7 +405,10 @@ fn a_paused_members_hand_out_is_kept() {
     passes(&mut h, &mut a, &mut p, T0 + MINUTE, 10);
     assert_eq!(effects(&h), [("submitted".into(), "m1".into(), 1)]);
     assert!(!h.node(1).hold);
-    assert!(items(&h).is_empty());
+    // zerus-63rru.86: the lead is told once that the paused member holds
+    // started work; nothing else is sent.
+    assert_eq!(items(&h).len(), 1, "{:?}", items(&h));
+    assert!(items(&h)[0].0.starts_with("member_started:1:m1:"));
     assert_eq!(p.deliveries.len(), 1);
 }
 
