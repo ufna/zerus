@@ -45,7 +45,7 @@ fn the_settled_effects_input_row_is_gone_after_the_outcomes_apply() {
         .reserve(TEAM, "delivery:x", delivery_row(node, "m1", &intent, true))
         .unwrap();
     a.ledger
-        .reserve(TEAM, &format!("hosted-input:{intent}"), json!({"input": "retained"}))
+        .reserve_input(TEAM, &format!("hosted-input:{intent}"), json!({"input": "retained"}))
         .unwrap();
     let mut store = Store::open(h.temp.path()).unwrap();
     let team = store.team(TEAM).unwrap().unwrap();
@@ -76,7 +76,7 @@ fn a_stop_between_the_childs_settlement_and_the_outcome_removes_the_input() {
         .reserve(TEAM, "delivery:y", delivery_row(1, "m1", "y", false))
         .unwrap();
     a.ledger
-        .reserve(TEAM, "hosted-input:y", json!({"input": "retained"}))
+        .reserve_input(TEAM, "hosted-input:y", json!({"input": "retained"}))
         .unwrap();
     let mut store = Store::open(h.temp.path()).unwrap();
     let team = store.team(TEAM).unwrap().unwrap();
