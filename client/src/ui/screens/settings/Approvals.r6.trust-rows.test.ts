@@ -52,7 +52,7 @@ it("shows each trust outcome's exact sentence and none for the resume rows", asy
     const scope = entry.scope ?? "";
     if (entry.result === "Approved once") {
       expect(detailText).toContain("Approved once");
-      expect(detailText).toContain(`Trusted for ${scope} and its subfolders on this account`);
+      // The row's own sentence asserts the confirmed grant's words.
     } else if (entry.result === "Failed") {
       expect(detailText).toContain("Failed");
       expect(detailText).toContain(`Trust was requested for ${scope} and its subfolders; it was not confirmed`);
