@@ -352,13 +352,18 @@ pub(super) fn removed_holder(ctx: &Context<'_>, node: u32) -> Result<Option<Stri
 /// the node handed back to the lead with one item, and the next pass can
 /// hand the task to another free member. Whether the person paused the
 /// member is not stored, so the lead is told in every case. A member that
-/// is still in the active set is never settled here.
+/// is Active and bound is refused and nothing is written, whatever a
+/// request's reason says (zerus-63rru.85 round 3): the store's member state
+/// is the only proof of a departure, and a reason cannot substitute for it.
 pub(super) fn settle_left(ctx: &mut Context<'_>) -> Result<()> {
     let Operation::SettleLeftHandout { node, reason } = ctx.op else {
         unreachable!()
     };
     let node = *node;
-    let reason = reason.clone();
+    // Round 2's actor-read cause never decides a settlement: an Active bound
+    // member is refused below whatever it says, and the store's own member
+    // state names the cause for the others.
+    let _ = reason;
     let open: Option<(String, String)> = ctx
         .db
         .query_row(
@@ -374,24 +379,22 @@ pub(super) fn settle_left(ctx: &mut Context<'_>) -> Result<()> {
         return Ok(());
     };
     let m = ctx.member(&member)?;
-    if m.state == MemberState::Active && m.session.is_some() && reason.is_none() {
-        // The member is still in the active set and the actor read no
-        // departure: nothing settles.
-        return Ok(());
+    if m.state == MemberState::Active && m.session.is_some() {
+        // The member is still in the active set and its binding is the
+        // store's: nothing settles, even when a reason claims a departure.
+        return Err(invalid(
+            "A hand-out of a member that is still active and bound is not settled.",
+        ));
     }
-    let how = reason
-        .filter(|r| !r.is_empty())
-        .unwrap_or_else(|| {
-            if m.state == MemberState::Paused {
-                if ctx.person_stopped(&member).unwrap_or(false) {
-                    "stopped".into()
-                } else {
-                    "paused".into()
-                }
-            } else {
-                "unbound".into()
-            }
-        });
+    let how = if m.state == MemberState::Paused {
+        if ctx.person_stopped(&member).unwrap_or(false) {
+            "stopped"
+        } else {
+            "paused"
+        }
+    } else {
+        "unbound"
+    };
     supersede(ctx, node, &member)?;
     // The item without the hand-back's hold: the task stays in the queue,
     // so the next pass can hand it to another free member.
@@ -406,6 +409,39 @@ pub(super) fn settle_left(ctx: &mut Context<'_>) -> Result<()> {
         ),
         ctx.now,
     )?;
+    Ok(())
+}
+
+/// The service's own binding observation read the member's binding as
+/// decisively ended while the store still held it (zerus-63rru.85 round 3):
+/// the member is recorded unbound — its binding, account, worktree and
+/// ownership nonce cleared, and its durable handle deleted — so every later
+/// reader, the settlement above included, reads the departure from the
+/// store. The state stays Active: the member is in the roster but can take
+/// no task until it is bound again. A member that is not Active and bound is
+/// refused with `invalid_state` and nothing changes; that is also the answer
+/// to a repeated call, so the end is recorded once per binding.
+pub(super) fn unbind(ctx: &mut Context<'_>) -> Result<()> {
+    let Operation::UnbindMember { member } = ctx.op else {
+        unreachable!()
+    };
+    let member = member.as_str();
+    ctx.active()?;
+    let mut m = ctx.member(member)?;
+    if m.state != MemberState::Active || m.session.is_none() {
+        return Err(invalid("Only an active bound member can be unbound."));
+    }
+    m.session = None;
+    m.account.clear();
+    m.worktree.clear();
+    m.ownership_nonce.clear();
+    save(ctx, &m)?;
+    ctx.db
+        .execute(
+            "DELETE FROM member_handles WHERE team=?1 AND member=?2",
+            params![ctx.team.id, member],
+        )
+        .map_err(storage)?;
     Ok(())
 }
 

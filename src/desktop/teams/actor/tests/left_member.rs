@@ -249,6 +249,16 @@ fn an_unbound_members_reservation_is_settled_with_one_item_and_reassigned() {
         a.ledger.get(TEAM, "gate:handout:1").unwrap().is_none(),
         "no failure gate"
     );
+    // Round 3: the actor recorded the ended binding in the store before the
+    // settlement, so the store — not a request's reason — shows the member
+    // unbound, and the handle of the ended binding is gone.
+    let m = h.store.member(TEAM, "m1").unwrap().unwrap();
+    assert_eq!(m.state, zerus_team_plan::model::MemberState::Active);
+    assert!(m.session.is_none(), "the store shows the member unbound");
+    assert!(
+        h.store.member_handle(TEAM, "m1").unwrap().is_none(),
+        "the ended binding's handle is cleared"
+    );
     row(&p, &h, "m2", &[("activity", json!("idle"))]);
     a.tick(&mut h.store, &mut p, TEAM, T0 + 2 * MINUTE, false)
         .unwrap();
@@ -332,20 +342,20 @@ fn a_stale_settle_revision_is_not_a_failure_gate() {
     );
 }
 
-/// The ops' own Active guard: a settle for a member that is Active with a
-/// live binding and no actor-read departure writes nothing.
+/// The ops' own Active guard (zerus-63rru.85 round 2, made unconditional in
+/// round 3): a settle for a member that is Active with a live binding is
+/// refused and writes nothing, even though the reservation is open.
 #[test]
 fn a_settle_for_an_active_member_writes_nothing() {
-    let (mut h, mut a, mut p, lead) = team();
+    let (mut h, mut a, mut p, _lead) = team();
     super::super::delivery::CRASH.with(|c| c.set(Some("intent")));
     let crashed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         a.tick(&mut h.store, &mut p, TEAM, T0, false)
     }));
-    assert!(crashed.is_err());
+    assert!(crashed.is_err(), "the intent boundary was not exercised");
     drop(a);
-    let _ = lead;
     // The reservation exists and the member is still Active with a live
-    // binding: the ops' own guard writes nothing.
+    // binding: the ops' own guard refuses and writes nothing.
     let request = request(
         h.store.team(TEAM).unwrap().unwrap().revision,
         Operation::SettleLeftHandout {
@@ -353,8 +363,61 @@ fn a_settle_for_an_active_member_writes_nothing() {
             reason: None,
         },
     );
-    crate::teams::ops::apply(&mut h.store, &service(), &request, T0).unwrap();
+    let refused = crate::teams::ops::apply(&mut h.store, &service(), &request, T0);
+    assert_eq!(
+        refused.unwrap_err().code,
+        zerus_team_plan::problem::code::INVALID_STATE
+    );
     assert!(items(&h).is_empty(), "{:?}", items(&h));
+    assert_eq!(effects(&h), [("reserved".into(), "m1".into(), 1)]);
+}
+
+/// The reviewer's round-2 probe, committed (zerus-63rru.85 round 3): an
+/// Active bound member's reservation is refused for every reason shape a
+/// round-2 caller could send — none, empty, and the text the actor used to
+/// pass — and nothing is superseded or told. The store, not the reason,
+/// decides.
+#[test]
+fn an_active_bound_members_settle_is_refused_for_none_empty_and_text_reasons() {
+    let reasons: [Option<String>; 4] = [
+        None,
+        Some(String::new()),
+        Some("unbound".into()),
+        Some("paused".into()),
+    ];
+    for reason in reasons {
+        let (mut h, mut a, mut p, _lead) = team();
+        super::super::delivery::CRASH.with(|c| c.set(Some("intent")));
+        let crashed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            a.tick(&mut h.store, &mut p, TEAM, T0, false)
+        }));
+        assert!(crashed.is_err(), "{reason:?}: the intent boundary was not exercised");
+        drop(a);
+        assert_eq!(
+            h.store.member(TEAM, "m1").unwrap().unwrap().state,
+            zerus_team_plan::model::MemberState::Active,
+            "{reason:?}"
+        );
+        let request = request(
+            h.store.team(TEAM).unwrap().unwrap().revision,
+            Operation::SettleLeftHandout {
+                node: 1,
+                reason: reason.clone(),
+            },
+        );
+        let refused = crate::teams::ops::apply(&mut h.store, &service(), &request, T0);
+        assert_eq!(
+            refused.unwrap_err().code,
+            zerus_team_plan::problem::code::INVALID_STATE,
+            "{reason:?}: the settle must be refused"
+        );
+        assert_eq!(
+            effects(&h),
+            [("reserved".into(), "m1".into(), 1)],
+            "{reason:?}: nothing is superseded"
+        );
+        assert!(items(&h).is_empty(), "{reason:?}: nothing is told");
+    }
 }
 
 /// A member that comes back before the next pass keeps its reservation:

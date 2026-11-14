@@ -393,15 +393,26 @@ pub enum Operation {
     /// A hand-out reserved for a member that left the active set (paused,
     /// stopped, unbound) is settled at the next pass (zerus-63rru.85): the
     /// effect superseded, the node handed back to the lead with one item,
-    /// and the next pass can hand the task to another free member.
+    /// and the next pass can hand the task to another free member. A member
+    /// that is Active and bound is refused, whatever the reason says: the
+    /// store's member state is the only proof of a departure.
     SettleLeftHandout {
         node: NodeId,
-        /// Why the actor read the member as departed, when the store's own
-        /// member state does not say it (a binding ended): the item names
-        /// the cause (zerus-63rru.85 round 2).
-        #[serde(default)]
+        /// Round 2's actor-read cause. A value here never authorizes a
+        /// settlement and never names the item's cause: the store's member
+        /// state decides both, and an Active bound member is refused. The
+        /// field stays so a round-2 request shape still decodes; new calls
+        /// leave it out.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         reason: Option<String>,
     },
+    /// The service's own binding observation read the member's binding as
+    /// decisively ended while the store still held it (zerus-63rru.85 round
+    /// 3): the member is recorded unbound, its binding and durable handle
+    /// cleared, so every later reader — the settlement above included —
+    /// decides from the store. A member that is not Active and bound is
+    /// refused with `invalid_state` and nothing changes.
+    UnbindMember { member: MemberId },
     /// The lead is told once that a member out of the active set holds a
     /// started task (zerus-63rru.86): one member_left item per member and
     /// task; the task stays with the member. A call that finds no such
