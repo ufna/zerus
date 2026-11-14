@@ -8,7 +8,7 @@
 mod digest;
 mod roster;
 pub(crate) use digest::template_digest;
-pub(crate) use roster::validate_roster;
+pub(crate) use roster::{validate_catalog_roles, validate_roster};
 
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -84,6 +84,7 @@ pub fn save(config_dir: &Path, catalog: &Catalog) -> Result<(), Problem> {
     first_problem(validate_ids(catalog))?;
     let merged = merge(&builtin(), catalog);
     first_problem(validate_catalog(&merged))?;
+    validate_catalog_roles(&merged)?;
     for template in &merged.templates {
         export_bundle(&merged, &template.id)?;
     }

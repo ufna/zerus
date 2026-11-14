@@ -71,6 +71,50 @@ fn a_person_imports_a_catalog_and_an_unknown_field_is_refused_untouched() {
 }
 
 #[test]
+fn a_catalog_import_refuses_an_unseated_role_with_a_refused_agent_untouched() {
+    let harness = Harness::new();
+    let catalog_json = json!({
+        "roles": [
+            {"id": "architect", "name": "Architect", "agent": "claude"},
+            {"id": "unused", "name": "Unused", "agent": "DeepSeek"}
+        ]
+    });
+    let (reply, exit) = run(&harness, "catalog import", &catalog_json.to_string());
+    assert_eq!((code(&reply), exit), ("invalid_state", 1), "{reply}");
+    let message = reply["error"]["message"].as_str().unwrap();
+    assert!(message.contains("'roles.unused.agent'"), "{message}");
+    assert!(message.contains("'DeepSeek'"), "{message}");
+    assert!(
+        !catalog::path(&harness.config.dir).exists(),
+        "nothing is written"
+    );
+}
+
+#[test]
+fn a_template_import_refuses_an_extra_unseated_role_with_a_refused_agent_untouched() {
+    let harness = Harness::new();
+    let mut bundle = catalog::export_bundle(&builtin(), "bugfix").expect("bugfix exports");
+    let mut extra = bundle.roles[0].clone();
+    extra.id = "unused".into();
+    extra.name = "Unused".into();
+    extra.agent = "DeepSeek".into();
+    extra.pipeline.clear();
+    bundle.roles.push(extra);
+    let (reply, exit) = run(
+        &harness,
+        "template import",
+        &serde_json::to_string(&bundle).unwrap(),
+    );
+    assert_eq!((code(&reply), exit), ("invalid_state", 1), "{reply}");
+    let message = reply["error"]["message"].as_str().unwrap();
+    assert!(message.contains("'roles.unused.agent'"), "{message}");
+    assert!(
+        !catalog::path(&harness.config.dir).exists(),
+        "nothing is written"
+    );
+}
+
+#[test]
 fn templates_are_listed_shown_exported_saved_and_removed() {
     let harness = Harness::new();
     let (reply, exit) = run(&harness, "template list", "");

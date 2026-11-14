@@ -1,5 +1,9 @@
 //! Milestone policy shares the caller proof's resident-host classification.
-use zerus_team_plan::{catalog::TemplateBundle, problem::code, Problem};
+use zerus_team_plan::{
+    catalog::{Catalog, TemplateBundle},
+    problem::code,
+    Problem,
+};
 
 /// The exact agent kind names a team seat may be launched with in this
 /// milestone. A name is matched exactly: another spelling of a known kind
@@ -8,33 +12,54 @@ const KNOWN_AGENTS: [&str; 4] = ["claude", "codex", "kimi", "dsh"];
 
 pub(crate) fn validate_roster(bundle: &TemplateBundle) -> Result<(), Problem> {
     let template = bundle.template.id.as_str();
-    agent_of(template, "lead.agent", &bundle.template.lead.agent)?;
+    agent_of(Some(template), "lead.agent", &bundle.template.lead.agent)?;
     for seat in &bundle.template.roster {
         if let Some(role) = bundle.roles.iter().find(|role| role.id == seat.role) {
             let field = format!("roles.{}.agent", role.id);
-            agent_of(template, &field, &role.agent)?;
+            agent_of(Some(template), &field, &role.agent)?;
         }
     }
     Ok(())
 }
 
-/// One agent field of one template. The refusal names the field and the
-/// template so a later save or import says which older template blocks it
-/// and which field to correct.
-fn agent_of(template: &str, field: &str, agent: &str) -> Result<(), Problem> {
+/// Every role's agent field in a whole catalog, seated or not. This runs
+/// before a save prunes each template's bundle, so a role that no template
+/// seats is checked too; a seated role still names its template.
+pub(crate) fn validate_catalog_roles(catalog: &Catalog) -> Result<(), Problem> {
+    for role in &catalog.roles {
+        let field = format!("roles.{}.agent", role.id);
+        let template = catalog
+            .templates
+            .iter()
+            .find(|template| template.roster.iter().any(|seat| seat.role == role.id))
+            .map(|template| template.id.as_str());
+        agent_of(template, &field, &role.agent)?;
+    }
+    Ok(())
+}
+
+/// One agent field of one catalog or template. A refusal names the field and,
+/// when a template seats the role, that template, so a later save or import
+/// says which older template blocks it and which field to correct. An unseated
+/// role has no template to name.
+fn agent_of(template: Option<&str>, field: &str, agent: &str) -> Result<(), Problem> {
     if KNOWN_AGENTS.contains(&agent) {
         return Ok(());
     }
+    let of_template = match template {
+        Some(template) => format!(" of template '{template}'"),
+        None => String::new(),
+    };
     if crate::teams::caller::host_served_agent(agent) {
         return Err(Problem::new(
             code::INVALID_STATE,
-            format!("The agent field '{field}' of template '{template}' names '{agent}', a session of agent kind '{agent}' served by a resident agent host; such a session cannot be a team lead or member in this milestone."),
+            format!("The agent field '{field}'{of_template} names '{agent}', a session of agent kind '{agent}' served by a resident agent host; such a session cannot be a team lead or member in this milestone."),
         )
         .with_refs([agent, field]));
     }
     Err(Problem::new(
         code::INVALID_STATE,
-        format!("The agent field '{field}' of template '{template}' names '{agent}', which is not a known agent kind; a team seat's agent must be exactly claude, codex, kimi or dsh."),
+        format!("The agent field '{field}'{of_template} names '{agent}', which is not a known agent kind; a team seat's agent must be exactly claude, codex, kimi or dsh."),
     )
     .with_refs([agent, field]))
 }
@@ -42,7 +67,7 @@ fn agent_of(template: &str, field: &str, agent: &str) -> Result<(), Problem> {
 #[cfg(test)]
 mod tests {
     use super::super::*;
-    use zerus_team_plan::catalog::Seat;
+    use zerus_team_plan::catalog::{Role, Seat};
     fn catalog_with(agent: &str, lead: bool) -> Catalog {
         let mut catalog = builtin();
         if lead {
@@ -96,6 +121,20 @@ mod tests {
         let bytes = serde_json::to_vec(catalog).unwrap();
         std::fs::write(&file, &bytes).unwrap();
         bytes
+    }
+    fn unseated_role(agent: &str) -> Role {
+        let mut role = builtin().roles[0].clone();
+        role.id = "architect".into();
+        role.name = "Architect".into();
+        role.agent = agent.into();
+        role.pipeline.clear();
+        role
+    }
+    fn person_with_unseated(agent: &str) -> Catalog {
+        Catalog {
+            roles: vec![unseated_role(agent)],
+            ..Catalog::default()
+        }
     }
     fn refuse_agent(agent: &str, lead: bool) -> Problem {
         let dir = tempfile::tempdir().unwrap();
@@ -208,6 +247,64 @@ mod tests {
             assert_eq!(problem.code, code::INVALID_STATE);
             assert!(problem.message.contains("'legacy-bugfix'"), "{problem:?}");
             assert_eq!(std::fs::read(path(dir.path())).unwrap(), bytes, "no rewrite");
+        }
+    }
+    #[test]
+    fn saving_refuses_an_unseated_role_with_a_refused_agent() {
+        for agent in ["DeepSeek", "opencode"] {
+            let dir = tempfile::tempdir().unwrap();
+            let problem = save(dir.path(), &person_with_unseated(agent)).unwrap_err();
+            assert_eq!(problem.code, code::INVALID_STATE);
+            assert!(
+                problem.message.contains("'roles.architect.agent'"),
+                "{problem:?}"
+            );
+            assert!(problem.message.contains(&format!("'{agent}'")), "{problem:?}");
+            assert!(!path(dir.path()).exists(), "nothing is written for {agent}");
+        }
+    }
+    #[test]
+    fn saving_keeps_an_unseated_role_with_an_exact_known_agent() {
+        let dir = tempfile::tempdir().unwrap();
+        save(dir.path(), &person_with_unseated("dsh")).unwrap();
+        assert!(path(dir.path()).exists());
+    }
+    #[test]
+    fn a_later_save_or_import_names_an_older_saved_unseated_role_with_a_refused_agent() {
+        for agent in ["DeepSeek", "opencode"] {
+            let dir = tempfile::tempdir().unwrap();
+            let bytes = saved_person(dir.path(), &person_with_unseated(agent));
+            let mut person = person(dir.path()).unwrap();
+            let mut extra = builtin().roles[1].clone();
+            extra.id = "reviewer-two".into();
+            extra.name = "Reviewer two".into();
+            extra.pipeline.clear();
+            person.roles.push(extra);
+            let problem = save(dir.path(), &person).unwrap_err();
+            assert_eq!(problem.code, code::INVALID_STATE);
+            assert!(
+                problem.message.contains("'roles.architect.agent'"),
+                "{problem:?}"
+            );
+            assert!(problem.message.contains(&format!("'{agent}'")), "{problem:?}");
+            assert_eq!(
+                std::fs::read(path(dir.path())).unwrap(),
+                bytes,
+                "no rewrite on save"
+            );
+            let bundle = export_bundle(&builtin(), "feature-delivery").unwrap();
+            let problem = import_bundle(dir.path(), &bundle).unwrap_err();
+            assert_eq!(problem.code, code::INVALID_STATE);
+            assert!(
+                problem.message.contains("'roles.architect.agent'"),
+                "{problem:?}"
+            );
+            assert!(problem.message.contains(&format!("'{agent}'")), "{problem:?}");
+            assert_eq!(
+                std::fs::read(path(dir.path())).unwrap(),
+                bytes,
+                "no rewrite on import"
+            );
         }
     }
     #[test]
