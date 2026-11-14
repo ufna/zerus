@@ -1,4 +1,4 @@
-"""Dormancy and read-only inventory for the selected-record data snapshot."""
+"""Reviewed consumers and read-only inventory of the selected-record snapshot."""
 import importlib.util
 from pathlib import Path
 import re
@@ -11,7 +11,7 @@ SPEC.loader.exec_module(CHECK)
 
 
 class SelectedRecordSnapshotSource(unittest.TestCase):
-    def test_snapshot_has_no_production_consumers(self):
+    def test_snapshot_has_only_the_saved_fresh_consumer(self):
         references = {
             str(path.relative_to(ROOT))
             for path in (ROOT / "src").rglob("*.rs")
@@ -21,11 +21,20 @@ class SelectedRecordSnapshotSource(unittest.TestCase):
             "src/state/storage.rs",
             "src/state/storage/selected_source_tests.rs",
             "src/state/storage/selected_source_tests/cases.rs",
+            "src/state/lifecycle.rs",
         })
         storage = CHECK.code_only((ROOT / "src/state/storage.rs").read_text())
         self.assertEqual(len(re.findall(r"\bselected_source\b", storage)), 1,
-                         "no production re-export or wiring in the declaring module")
-        self.assertIn("#[allow(dead_code)]\npub(super) mod selected_source;", storage)
+                         "no production re-export or additional wiring in the declaring module")
+        self.assertIn("pub(super) mod selected_source;", storage)
+        lifecycle = CHECK.code_only((ROOT / "src/state/lifecycle.rs").read_text())
+        fresh = lifecycle.split("pub(super) fn fresh(", 1)[1].split("fn verify_requested(", 1)[0]
+        self.assertEqual(len(re.findall(r"\bselected_source\b", lifecycle)), 1)
+        self.assertIn("let record = source.record();", fresh)
+        self.assertIn("let current = read(name).map_err(|_| changed())?;", fresh)
+        self.assertEqual(fresh.count("record_path(name)"), 1, "resolve once before capture")
+        self.assertLess(fresh.index("lock(None)?"), fresh.index("source.recheck()"))
+        self.assertLess(fresh.index("source.recheck()"), fresh.index("backend::current().start"))
 
     def test_snapshot_uses_only_the_resolved_metadata_reader(self):
         code = CHECK.code_only((ROOT / "src/state/storage/selected_source.rs").read_text())

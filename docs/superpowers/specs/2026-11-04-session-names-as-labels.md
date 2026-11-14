@@ -359,7 +359,7 @@ This fence does not activate ID-layout restore or native continuity. If a later
 recheck refuses after an authorized folder recreation, the folder stays for
 review; the source fence never deletes or replays anything.
 
-The selected-record source snapshot (zerus-ucck.4.14) is dormant. Its caller
+The selected-record source snapshot (zerus-ucck.4.14) is read-only. Its caller
 provides one already-resolved absolute legacy/ID slot. It captures the complete
 unrepaired stored metadata under the existing 16 MiB regular/no-follow bound,
 then rechecks only that slot with the shared canonical digest. It never resolves
@@ -367,7 +367,12 @@ a label again, repairs state, observes native/process status or adopts a newer
 record. Its immutable captured value must be the input to any later prepared
 recipe; ordinary `read()` adds derived observations and is not a stored source.
 Equality is data only, not an original-object pin, exclusion or native lease.
-Fresh/Resume wiring, physical custody and writer-gate activation remain separate.
+Saved Start fresh (zerus-ucck.4.15) prepares its recipe from that captured raw
+frame and rechecks the same slot at its existing final state-writer boundary,
+before starting its runner. Changed or unavailable sources require selecting
+the session again. Existing current-activity, namespace and identity checks
+remain in place; unchanged records retain their existing launch behavior. Ordinary
+Resume, physical custody and writer-gate activation remain separate.
 
 P3e's controls for the lock:
 - a lock that fails or is interrupted before publication;

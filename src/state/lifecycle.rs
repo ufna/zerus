@@ -1230,23 +1230,30 @@ pub(super) fn fresh(args: &[String], dry: bool) -> Result<i32> {
         _ => return Err("usage: hgs resume <session> --fresh [--expected-run-id ID] [-d]".into()),
     };
     archive::reconcile()?;
-    let record = read(name)?;
-    refuse_unsettled_clear(&record)?;
-    if !AGENTS.contains(&string(&record, "agent")) {
+    let changed = || format!("{name}: saved source changed or is unavailable; select the session again before starting fresh");
+    let slot = std::path::absolute(storage::record_path(name)).map_err(|_| changed())?;
+    let source = storage::selected_source::Snapshot::capture(&slot, name).map_err(|_| changed())?;
+    // Prepare from the exact raw frame that was fingerprinted. Ordinary
+    // read() adds native/process projections which are not stored evidence.
+    let record = source.record();
+    refuse_unsettled_clear(record)?;
+    if !AGENTS.contains(&string(record, "agent")) {
         return Err(format!("{name}: only Claude, Codex and Kimi sessions can start fresh"));
     }
-    let argv = recipes::fresh_argv(string(&record, "agent"), &recipes::argv(&record)?)?;
+    let argv = recipes::fresh_argv(string(record, "agent"), &recipes::argv(record)?)?;
     let run_id = uuid::Uuid::new_v4().to_string();
     let spec = session_spec(
-        &record,
-        effort::resume_argv(&record, argv),
+        record,
+        effort::resume_argv(record, argv),
         &run_id,
         None,
-        Some(string(&record, "run_id")),
+        Some(string(record, "run_id")),
         dry,
     )?;
     let _guard = lock(None)?;
-    let current = read(name)?;
+    // Retain today's namespace/identity check as well as the fixed-slot fence:
+    // a route may now name another holder while the original slot still exists.
+    let current = read(name).map_err(|_| changed())?;
     refuse_unsettled_clear(&current)?;
     let snapshot = live()?;
     if already_live(&current, &snapshot)? {
@@ -1255,8 +1262,11 @@ pub(super) fn fresh(args: &[String], dry: bool) -> Result<i32> {
     if snapshot.contains_key(&spec.name) {
         return Err(format!("{name}: terminal {} was taken before the fresh start; retry", spec.name));
     }
+    // Keep the original slot even if a label route or holder changes. This
+    // adds a source refusal, never a lease or permission to start by itself.
+    source.recheck().map_err(|_| changed())?;
     if expected_run.is_some_and(|run| run != string(&current, "run_id"))
-        || saved_binding(&current) != saved_binding(&record)
+        || saved_binding(&current) != saved_binding(record)
     {
         return Err(format!("{name}: saved binding changed; refresh before starting fresh"));
     }
