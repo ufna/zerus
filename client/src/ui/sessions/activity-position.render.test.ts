@@ -280,7 +280,8 @@ it("runs the registered shortcut from the composer without editing or moving its
 
 it("cancels an unpainted jump when a resumed run retains the same display window", async () => {
   const view = mount(); view.setOlderDone(true); view.setRows([own(1), ...events(2)]);
-  view.source.displayKey = () => "retained-display-" + serial;
+  const display = "retained-display-" + serial;
+  view.source.displayKey = () => display;
   view.setTarget("before-resume-" + serial); await settle();
   const top = view.scroller.scrollTop;
   nav(view.host, "Previous").click();
