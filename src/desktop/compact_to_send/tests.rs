@@ -1459,15 +1459,37 @@ mod actor {
                 }
                 ended
             });
+            // Closed-reason cases use the production window. Only the pending
+            // and busy cases intend to expire the wait's short test budget.
             f.runtime.fixture_wait(
-                Duration::from_millis(80),
+                if matches!(name, "cancelled" | "uncertain" | "session") {
+                    runtime::WAIT
+                } else {
+                    Duration::from_millis(80)
+                },
                 Duration::from_millis(5),
                 runtime::CHAIN,
             );
             let original = f.original();
             f.admit(&original);
+            if matches!(name, "cancelled" | "uncertain" | "session") {
+                f.until("compaction drained before first slot probe", |f| {
+                    let receipt = f.row(&original).receipt;
+                    receipt.compaction.step == Step::Recorded && !receipt.drained
+                });
+                assert_eq!(ran.counts(), (1, 0), "{name}: before slot observation");
+                // A delayed actor must still exercise the closed reason,
+                // rather than expire before its first slot observation.
+                std::thread::sleep(Duration::from_millis(150));
+            }
             f.until(name, |f| f.row(&original).receipt.drained);
             let receipt = f.row(&original).receipt;
+            eprintln!(
+                "COMPACT_CLOSED case={name}; counts={:?}; send_reserved={}; receipt={}",
+                ran.counts(),
+                f.row(&original).send.is_some(),
+                serde_json::to_string(&receipt).unwrap()
+            );
             assert_eq!(receipt.compaction.step, Step::Recorded, "{name}");
             assert_eq!(
                 (receipt.send.step, receipt.code.as_str()),
