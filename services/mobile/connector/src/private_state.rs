@@ -2,6 +2,7 @@
 //! Public reports must select fields explicitly; this module never logs bytes.
 use crate::fsguard;
 use ring::rand::{SecureRandom, SystemRandom};
+#[cfg(unix)]
 use std::fs::File;
 use std::io::{self, Read, Write};
 use std::path::Path;
