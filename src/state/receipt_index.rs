@@ -15,10 +15,12 @@ use std::sync::{
 };
 use std::time::{Duration, Instant};
 
+mod admission;
 mod migration;
 mod pin;
 mod point;
 mod question;
+pub(super) use admission::Wait as QuestionAdmission;
 pub(super) use point::{delivery_binding, delivery_receipt, DeliveryQuery};
 // The independently developed recovery consumer stacks on this interface.
 #[allow(unused_imports)]
@@ -429,6 +431,9 @@ impl Catalog {
         } else {
             wait
         }))?;
+        if create {
+            admission::install(&db)?;
+        }
         let verified = rowset_protocol(&db);
         if !create && !verified {
             return Err("Receipt index coverage is unverified".into());
