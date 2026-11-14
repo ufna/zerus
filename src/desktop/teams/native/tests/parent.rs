@@ -15,6 +15,10 @@ const WRITER: &str = "desktop::teams::native::tests::parent::parent_writer_fixtu
 #[test]
 fn an_idle_member_is_linked_before_its_first_conversation() {
     let root = tempfile::tempdir().unwrap();
+    let temp = root.path().join("tmp");
+    crate::platform::private_dir(&temp).unwrap();
+    let alias = root.path().join("alias");
+    std::os::unix::fs::symlink(&temp, &alias).unwrap();
     let output = Command::new(std::env::current_exe().unwrap())
         .args([
             WORLD,
@@ -24,6 +28,7 @@ fn an_idle_member_is_linked_before_its_first_conversation() {
             "--nocapture",
         ])
         .env("HOME", root.path())
+        .env("TMPDIR", &alias)
         .env("HGS_STATE_DIR", root.path().join("state"))
         .env("HGS_CONFIG_DIR", root.path().join("config"))
         .env_remove("HGS_SESSION")
@@ -44,12 +49,13 @@ fn an_idle_member_is_linked_before_its_first_conversation() {
 #[ignore = "exact child of an_idle_member_is_linked_before_its_first_conversation"]
 fn idle_member_parent_fixture() {
     let mut h = Harness::new();
-    crate::platform::restrict_dir(h.temp.path()).unwrap();
+    let state = crate::platform::canonical(h.temp.path()).unwrap();
+    crate::platform::restrict_dir(state.as_path()).unwrap();
     for dir in ["sessions", "launches", "config"] {
-        crate::platform::private_dir(&h.temp.path().join(dir)).unwrap();
+        crate::platform::private_dir(&state.as_path().join(dir)).unwrap();
     }
-    std::env::set_var("HGS_STATE_DIR", h.temp.path());
-    std::env::set_var("HGS_CONFIG_DIR", h.temp.path().join("config"));
+    std::env::set_var("HGS_STATE_DIR", state.as_path());
+    std::env::set_var("HGS_CONFIG_DIR", state.as_path().join("config"));
     let mut native = Native {
         config: crate::config::Config::load().unwrap(),
         machine: h.store.team(TEAM).unwrap().unwrap().home,
@@ -63,8 +69,8 @@ fn idle_member_parent_fixture() {
     )
     .unwrap();
     let team = h.store.team(TEAM).unwrap().unwrap();
-    let mut ledger = crate::desktop::teams::ledger::Ledger::open(h.temp.path()).unwrap();
-    let source = h.temp.path().join("repo");
+    let mut ledger = crate::desktop::teams::ledger::Ledger::open(state.as_path()).unwrap();
+    let source = state.as_path().join("repo");
     std::fs::create_dir(&source).unwrap();
     for args in [
         vec!["init", "-q"],
@@ -93,7 +99,7 @@ fn idle_member_parent_fixture() {
     let mut child_record = Value::Null;
     for id in ["lead", "m1"] {
         let member = fixture().members.into_iter().find(|m| m.id == id).unwrap();
-        let destination = h.temp.path().join(format!("zerus-team-{id}"));
+        let destination = state.as_path().join(format!("zerus-team-{id}"));
         let branch = format!("team-{id}");
         assert_eq!(
             crate::state::dispatch(&[
@@ -111,7 +117,7 @@ fn idle_member_parent_fixture() {
             0
         );
         let owner = crate::state::team_worktree_ownership(
-            h.temp.path(),
+            state.as_path(),
             &source.join(".git"),
             &destination,
         )
