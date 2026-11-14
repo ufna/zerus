@@ -92,8 +92,12 @@ pub(crate) fn check_new_stage(stage: Stage) -> Result<()> {
 }
 
 pub(crate) fn check_title(title: &str) -> Result<()> {
-    if title.trim().is_empty() || title.len() > 512 || title.chars().any(char::is_control) {
-        return Err(Error::new("task title must be nonempty, at most 512 UTF-8 bytes and contain no control characters"));
+    // One shared rule: the nine bidirectional characters are refused as
+    // control characters are (zerus-63rru.75), in this one place.
+    if title.trim().is_empty() || title.len() > 512 || crate::forbidden_char(title).is_some() {
+        return Err(Error::new(
+            "task title must be nonempty, at most 512 UTF-8 bytes and contain no control or bidirectional characters",
+        ));
     }
     Ok(())
 }
@@ -128,6 +132,27 @@ impl TaskDoc {
         }
         if title.is_none() || !task.text.trim().is_empty() {
             check_text(task.text, "prompt")?;
+            // The plain card's title is the prompt's first line: it refuses
+            // only the line separators and the nine bidirectional characters
+            // (zerus-63rru.75 round 2). The prompt check already owns the
+            // tabs and the other control characters, so a pasted table or
+            // code keeps working; the explicit title keeps the full rule.
+            if title.is_none()
+                && task
+                    .text
+                    .lines()
+                    .next()
+                    .unwrap_or_default()
+                    .chars()
+                    .any(|ch| {
+                        let point = ch as u32;
+                        matches!(point, 0x2028 | 0x2029 | 0x202A..=0x202E | 0x2066..=0x2069)
+                    })
+            {
+                return Err(Error::new(
+                    "task title must be nonempty, at most 512 UTF-8 bytes and contain no control or bidirectional characters",
+                ));
+            }
         } else if !task.text.is_empty() {
             return Err(Error::new(
                 "an empty description must contain no whitespace",
@@ -1029,8 +1054,7 @@ impl TaskDoc {
         // started is no longer cancelled: the mark and its reason go with
         // the stage, in the same commit (zerus-63rru.36). Every other move
         // keeps them.
-        if matches!(from, Stage::Review | Stage::Done)
-            && matches!(to, Stage::Todo | Stage::Backlog)
+        if matches!(from, Stage::Review | Stage::Done) && matches!(to, Stage::Todo | Stage::Backlog)
         {
             self.fields().delete("cancelled_at")?;
             self.fields().delete("cancel_reason")?;
@@ -1897,9 +1921,7 @@ mod tests {
             .record_cancel("Superseded", &Actor::Person, 3)
             .unwrap();
         assert!(cancelled.view().unwrap().cancelled_at.is_some());
-        cancelled
-            .set_stage(Stage::Todo, &Actor::Person, 4)
-            .unwrap();
+        cancelled.set_stage(Stage::Todo, &Actor::Person, 4).unwrap();
         let view = cancelled.view().unwrap();
         assert_eq!(view.cancelled_at, None);
         assert_eq!(view.cancel_reason, "");
@@ -1921,8 +1943,7 @@ mod tests {
         let mut kept = task(Stage::Todo);
         kept.record_send(&api(), "request-1", &Actor::Person, 2)
             .unwrap();
-        kept.record_cancel("Superseded", &Actor::Person, 3)
-            .unwrap();
+        kept.record_cancel("Superseded", &Actor::Person, 3).unwrap();
         kept.set_stage(Stage::Done, &Actor::Person, 4).unwrap();
         assert!(kept.view().unwrap().cancelled_at.is_some());
     }
@@ -1949,9 +1970,7 @@ mod tests {
             reviving
                 .record_cancel("Superseded", &Actor::Person, 3)
                 .unwrap();
-            reviving
-                .set_stage(Stage::Todo, &Actor::Person, 4)
-                .unwrap();
+            reviving.set_stage(Stage::Todo, &Actor::Person, 4).unwrap();
             let (mut first, second) = if order == 0 {
                 (reviving, cancelling)
             } else {
@@ -1959,7 +1978,10 @@ mod tests {
             };
             assert!(first.import_block(&second.export_since_vv(&first.current_vv()).unwrap()));
             let view = first.view().unwrap();
-            assert!(matches!(view.stage, Stage::Todo | Stage::Review), "{view:?}");
+            assert!(
+                matches!(view.stage, Stage::Todo | Stage::Review),
+                "{view:?}"
+            );
             match (view.stage, view.cancelled_at.is_some()) {
                 (Stage::Todo, false) | (Stage::Todo, true) | (Stage::Review, true) => {}
                 (Stage::Review, false) => {
@@ -1999,9 +2021,7 @@ mod tests {
         // The old writer's leftover, reconstructed with the fields API: the
         // new set_stage cannot produce it.
         doc.fields().insert("cancelled_at", 2).unwrap();
-        doc.fields()
-            .insert("cancel_reason", "Superseded")
-            .unwrap();
+        doc.fields().insert("cancel_reason", "Superseded").unwrap();
         // No move from To do departs Review or Done: the mark survives.
         doc.set_stage(Stage::Backlog, &Actor::Person, 3).unwrap();
         doc.set_stage(Stage::Todo, &Actor::Person, 4).unwrap();
@@ -2020,9 +2040,7 @@ mod tests {
     fn the_team_binding_write_clears_the_mark() {
         let mut doc = task(Stage::Todo);
         doc.fields().insert("cancelled_at", 2).unwrap();
-        doc.fields()
-            .insert("cancel_reason", "Superseded")
-            .unwrap();
+        doc.fields().insert("cancel_reason", "Superseded").unwrap();
         let before = doc.view().unwrap();
         doc.set_team_named(
             Some(&crate::TaskTeam {
@@ -2042,6 +2060,100 @@ mod tests {
         assert_eq!(view.stage, before.stage);
         assert_eq!(view.title, before.title);
         assert_eq!(view.author, before.author);
+    }
+
+    /// zerus-63rru.75: each of the nine bidirectional characters is refused
+    /// in a title as a control character is, through the one title check.
+    #[test]
+    fn each_bidirectional_character_is_refused_in_a_title() {
+        for ch in [
+            '\u{202A}', '\u{202B}', '\u{202C}', '\u{202D}', '\u{202E}', '\u{2066}', '\u{2067}',
+            '\u{2068}', '\u{2069}',
+        ] {
+            let mut task = task(Stage::Todo);
+            let error = task
+                .set_title(&format!("Title{ch}name"), &Actor::Person, 2)
+                .unwrap_err();
+            assert!(
+                error.to_string().contains("no control or bidirectional"),
+                "{ch:?}: {error:?}"
+            );
+        }
+    }
+
+    /// zerus-63rru.75 round 2: the plain card's first line refuses only the
+    /// line separators and the nine bidirectional characters; a tab (a
+    /// pasted table or code) stays accepted there, while the explicit title
+    /// keeps the full rule.
+    #[test]
+    fn a_plain_cards_first_line_refuses_only_the_separators_and_bidirectionals() {
+        let plain = TaskDoc::create(NewTask {
+            project: "p1",
+            id: "T-tabbed",
+            text: "Column\twith\ta\ttab",
+            stage: Stage::Todo,
+            target: Target::Any,
+            author: Actor::Person,
+            rank: "V",
+            now: 1,
+        })
+        .unwrap();
+        assert_eq!(plain.title(), "");
+        let error = TaskDoc::create(NewTask {
+            project: "p1",
+            id: "T-202e01",
+            text: "First\u{202E}line",
+            stage: Stage::Todo,
+            target: Target::Any,
+            author: Actor::Person,
+            rank: "V",
+            now: 1,
+        })
+        .err()
+        .unwrap();
+        assert!(
+            error.to_string().contains("no control or bidirectional"),
+            "{error:?}"
+        );
+        // The explicit title keeps the full rule: the tab is refused there.
+        let error = TaskDoc::create_named(
+            NewTask {
+                project: "p1",
+                id: "T-ttab01",
+                text: "",
+                stage: Stage::Todo,
+                target: Target::Any,
+                author: Actor::Person,
+                rank: "V",
+                now: 1,
+            },
+            "Explicit\u{0009}title",
+            None,
+        )
+        .err()
+        .unwrap();
+        assert!(
+            error.to_string().contains("no control or bidirectional"),
+            "{error:?}"
+        );
+    }
+
+    /// zerus-63rru.75: a title with non-ASCII letters is accepted; a title
+    /// that already holds a forbidden character still loads and moves.
+    #[test]
+    fn a_non_ascii_title_is_accepted_and_an_old_one_still_moves() {
+        let mut named = task(Stage::Todo);
+        named
+            .set_title("Заголовок Ångström 東京", &Actor::Person, 2)
+            .unwrap();
+        assert_eq!(named.title(), "Заголовок Ångström 東京");
+        // The value an older build stored: it still loads and moves.
+        let mut old = task(Stage::Todo);
+        old.fields().insert("title", "Old\u{202D}title").unwrap();
+        old.doc.commit();
+        assert_eq!(old.view().unwrap().title, "Old\u{202D}title");
+        old.set_stage(Stage::Backlog, &Actor::Person, 2).unwrap();
+        assert_eq!(old.view().unwrap().title, "Old\u{202D}title");
     }
 
     #[test]
