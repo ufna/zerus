@@ -5,8 +5,9 @@
 //! the live tracked agent that launched or adopted it, proven by native process
 //! ancestry exactly as `hgs self` proves its caller. The child's computer is
 //! the link's only writer. The link is presentation and attention routing
-//! only: it never authorizes a send, answer, approval, stop or removal, and it
-//! never moves a session's project. Only a new child's initial placement
+//! only: by itself it never authorizes an action or moves a session's project.
+//! The explicit Kimi Compact-only exception separately proves the caller of
+//! the exact recorded launch parent. Only a new child's initial placement
 //! follows a parent this computer proved (zerus-d5twt).
 use super::*;
 use std::{fs, io::Read};
@@ -93,6 +94,23 @@ fn proven_link() -> Option<String> {
     let config = crate::config::Config::load().ok()?;
     let machine = observed_machine(&config)?;
     link_of(&record, &machine, config.host(), "launch").map(|link| link.to_string())
+}
+
+/// Proof for the Kimi cache chooser's explicit Compact-only exception. A
+/// recorded launch link alone grants nothing: reuse the launcher's native caller
+/// proof and this computer's existing identity, with all durable parent IDs.
+/// Names may change; siblings and ancestors never substitute for this parent.
+pub(super) fn caller_is_parent(child: &Value) -> bool {
+    let Some(parent) = listed(child).filter(|p| string(p, "source") == "launch") else {
+        return false;
+    };
+    let Some(caller) = proven_link().and_then(|raw| serde_json::from_str::<Value>(&raw).ok())
+    else {
+        return false;
+    };
+    ["machine", "session_id", "run_id", "conversation_id"]
+        .iter()
+        .all(|key| !string(&parent, key).is_empty() && parent[*key] == caller[*key])
 }
 
 /// A link another computer's hgs forwarded with this launch (zerus-sa9qn.7).

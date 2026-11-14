@@ -1,6 +1,7 @@
 //! Kimi's cache-expiry chooser lives in the TUI, outside its wire interactions.
 //! Read only its complete editor-replacement panel. Never choose or resend a
-//! stashed prompt without the user's explicit answer.
+//! stashed prompt without an explicit answer. The verified direct parent may
+//! choose only Compact and continue; every other agent caller is refused.
 use super::kimi_tui_choice::{capture, identity};
 use super::*;
 use sha2::{Digest, Sha256};
@@ -308,11 +309,14 @@ fn frame(record: &Value) -> Option<String> {
     (values[0] < values[2] && values[1] < values[3]).then(|| info.value().to_owned())
 }
 
-pub(super) fn available(record: &Value, question: &Value) -> Result<()> {
-    if crate::cli::agent_caller() {
+pub(super) fn available(record: &Value, question: &Value, answers: &Value) -> Result<()> {
+    let record = identity(record)?;
+    if crate::cli::agent_caller()
+        && (answers[0]["selected_option_ids"] != json!(["cache_0"])
+            || !parent_link::caller_is_parent(&record))
+    {
         return Err("Kimi's context choice needs the person's answer in Zerus or Terminal".into());
     }
-    let record = identity(record)?;
     let panel = parse(&capture(&record)?)
         .ok_or("Kimi's context choice is no longer visible; nothing was sent")?;
     if !pending(&record)
@@ -324,7 +328,7 @@ pub(super) fn available(record: &Value, question: &Value) -> Result<()> {
     Ok(())
 }
 pub(super) fn answer(record: &Value, question: &Value, answers: &Value) -> Result<()> {
-    available(record, question)?;
+    available(record, question, answers)?;
     let chosen = answers[0]["selected_option_ids"][0]
         .as_str()
         .and_then(|id| id.strip_prefix("cache_"))
@@ -337,7 +341,12 @@ pub(super) fn answer(record: &Value, question: &Value, answers: &Value) -> Resul
         chosen,
         LABELS.len(),
         |record, screen| {
-            if !pending(record) || !receipt_bound(record) {
+            // Navigation re-reads the original child before every key. A
+            // changed parent must revoke the exception before its one Enter.
+            if (crate::cli::agent_caller() && !parent_link::caller_is_parent(record))
+                || !pending(record)
+                || !receipt_bound(record)
+            {
                 return None;
             }
             let panel = parse(screen)?;
