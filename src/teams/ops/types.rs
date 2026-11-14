@@ -401,9 +401,12 @@ pub enum Operation {
         /// Round 2's actor-read cause. A value here never authorizes a
         /// settlement and never names the item's cause: the store's member
         /// state decides both, and an Active bound member is refused. The
-        /// field stays so a round-2 request shape still decodes; new calls
-        /// leave it out.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
+        /// field stays on the wire even when it is `None`: round 2 wrote
+        /// `"reason":null`, and the strict Request decoder learns an
+        /// operation's known fields by serializing it, so a dropped key
+        /// would reject those saved requests as unknown fields
+        /// (zerus-63rru.85 round 4).
+        #[serde(default)]
         reason: Option<String>,
     },
     /// The service's own binding observation read the member's binding as
