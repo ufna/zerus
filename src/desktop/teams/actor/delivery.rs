@@ -1,6 +1,45 @@
 use super::*;
 use crate::teams::{ops::HandoutOutcome, store::EffectIntent};
+use super::ports::{Availability, Fact};
 use serde::{Deserialize, Serialize};
+use zerus_team_plan::model::MemberState;
+
+/// Why `member` left the active set, when the actor's read shows it
+/// (zerus-63rru.85, round 3 after zerus-63rru.87): the store's own member
+/// state says it (paused, stopped, unbound, or the row is gone), or the
+/// actor's observation read the binding as decisively ended (Gone, Changed,
+/// StartedFresh). The second case is recorded in the store before any
+/// settlement, so a settlement is always decided from store state and never
+/// from a request's reason. An observation that cannot decide (NoHandle,
+/// Unavailable) is unknown and stays the unreadable-member way, so it is not
+/// a departure.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Left {
+    /// The store's member row already says it; the ops name the cause.
+    Store,
+    /// The binding ended in the actor's own read; the store still holds it.
+    Binding,
+}
+
+fn left(
+    store: &Store,
+    ports: &mut impl Ports,
+    team: &Team,
+    member: &str,
+) -> Result<Option<Left>> {
+    let Some(m) = store.member(&team.id, member)? else {
+        // A missing member is gone too: a removal already settled its row.
+        return Ok(Some(Left::Store));
+    };
+    if m.state != MemberState::Active || m.session.is_none() {
+        return Ok(Some(Left::Store));
+    }
+    Ok(matches!(
+        ports.availability(team, &m)?,
+        Availability::Unreadable(Fact::Gone | Fact::Changed | Fact::StartedFresh)
+    )
+    .then_some(Left::Binding))
+}
 #[derive(Serialize, Deserialize)]
 struct Delivery {
     node: u32,
@@ -263,6 +302,12 @@ impl Runtime {
             return Ok(());
         }
         if let Err(error) = self.recover_delivery(store, ports, team, key, now, budget) {
+            // A stale revision is a lost race, not a failure: another
+            // request settled the row first, and the next pass re-reads
+            // (zerus-63rru.96).
+            if error.code == code::STALE_REVISION {
+                return Ok(());
+            }
             self.failure(store, team, key, "", &error, now)?;
         }
         Ok(())
@@ -307,6 +352,62 @@ impl Runtime {
             self.ledger.remove_input(&team.id, &d.id)?;
             self.ledger.remove(&row)?;
             return Ok(());
+        }
+        if d.outcome.is_none() && store.effect_reserved(&team.id, &d.id)? {
+            if let Some(left) = left(store, ports, team, &d.member)? {
+                // A reservation for a member that left the active set
+                // (paused, stopped, unbound) is settled at the next pass
+                // instead of being replayed through the non-start tiers
+                // (zerus-63rru.85): the store supersedes the effect and
+                // hands the node back to the lead with one item, and nothing
+                // here delivers, replays or fails it.
+                if left == Left::Binding {
+                    // The store still holds the binding the actor's own read
+                    // found ended. Record the departure first, so the
+                    // settlement is decided from store state and not from a
+                    // reason the operation cannot check (zerus-63rru.85
+                    // round 3).
+                    let (actor, unbind) = request(
+                        store,
+                        &team.id,
+                        Operation::UnbindMember {
+                            member: d.member.clone(),
+                        },
+                    )?;
+                    if let Err(error) = ops::apply(store, &actor, &unbind, now) {
+                        if store.request_refused(&team.id, &unbind.request_id)? {
+                            // The store moved between the read and the write:
+                            // the next pass reads it again.
+                            return Ok(());
+                        }
+                        return Err(error);
+                    }
+                }
+                let (actor, request) = request(
+                    store,
+                    &team.id,
+                    Operation::SettleLeftHandout {
+                        node: d.node,
+                        reason: None,
+                    },
+                )?;
+                #[cfg(test)]
+                if STALE_RACE.with(|c| c.get()) {
+                    return Err(Problem::new(code::STALE_REVISION, "stale"));
+                }
+                if let Err(error) = ops::apply(store, &actor, &request, now) {
+                    if store.request_refused(&team.id, &request.request_id)? {
+                        // The member returned to the active set between the
+                        // read and the settlement, which writes nothing: the
+                        // next pass reads the store again.
+                        return Ok(());
+                    }
+                    return Err(error);
+                }
+                self.recovered(store, team, key, now)?;
+                self.ledger.remove(&row)?;
+                return Ok(());
+            }
         }
         if d.not_started && d.outcome.is_none() {
             if *budget == 0 || ports.stopped() || team.status != TeamStatus::Running {
@@ -551,6 +652,8 @@ impl Delivery {
 
 #[cfg(test)]
 thread_local! {pub(super) static CRASH: std::cell::Cell<Option<&'static str>> = const { std::cell::Cell::new(None) };}
+#[cfg(test)]
+thread_local! {pub(super) static STALE_RACE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };}
 fn boundary(name: &str) {
     #[cfg(test)]
     CRASH.with(|c| {

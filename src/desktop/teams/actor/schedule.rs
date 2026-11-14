@@ -209,6 +209,11 @@ impl Runtime {
         let mut members = Vec::new();
         let mut needs = Needs::default();
         for m in all_members {
+            // The member is in the active set: a later leave tells the lead
+            // again (zerus-63rru.86).
+            if m.state == MemberState::Active && m.session.is_some() {
+                self.forget_paused_started(store, team, &m.id, now)?;
+            }
             let answer = if m.id != team.lead
                 && m.state == MemberState::Active
                 && m.session.is_some()
@@ -231,6 +236,11 @@ impl Runtime {
                     TerminalState::None => self.member_free(store, ports, team, &m, now)?,
                 }
             } else {
+                // A member out of the active set that holds started work is
+                // told to the lead once (zerus-63rru.86).
+                if m.state != MemberState::Active || m.session.is_none() {
+                    self.tell_paused_started(store, team, &m, now)?;
+                }
                 Some(Availability::Busy)
             };
             match &answer {
@@ -292,6 +302,96 @@ impl Runtime {
         }
         Ok(())
     }
+    /// The lead is told once per member and task while a member out of the
+    /// active set holds started work (zerus-63rru.86). The actor's ledger
+    /// rows `paused_started:<member>:<node>` are the once-only memory; the
+    /// member's return removes them, so a later leave tells the lead again.
+    fn tell_paused_started(
+        &mut self,
+        store: &mut Store,
+        team: &Team,
+        m: &Member,
+        now: i64,
+    ) -> Result<()> {
+        // The member's started work: its submitted hand-outs of tasks in
+        // progress, read from the store's own effects.
+        let mut started = std::collections::BTreeSet::new();
+        let mut cursor = None;
+        for _ in 0..4 {
+            let page = store.effects(&team.id, 200, cursor.as_ref())?;
+            for e in page.rows {
+                if e.member == m.id && e.state == "submitted" {
+                    started.insert(e.node);
+                }
+            }
+            cursor = page.next;
+            if cursor.is_none() {
+                break;
+            }
+        }
+        for node in started {
+            let key = format!("paused_started:{}:{}", m.id, node);
+            if self.ledger.get(&team.id, &key)?.is_some() {
+                continue;
+            }
+            let (actor, request) = request(
+                store,
+                &team.id,
+                Operation::TellPausedStarted {
+                    member: m.id.clone(),
+                    node,
+                },
+            )?;
+            ops::apply(store, &actor, &request, now)?;
+            self.ledger.reserve(&team.id, &key, serde_json::json!({}))?;
+        }
+        Ok(())
+    }
+
+    /// The member is in the active set again: its once-only memory ends, so
+    /// a later leave tells the lead again (zerus-63rru.86).
+    fn forget_paused_started(
+        &mut self,
+        store: &mut Store,
+        team: &Team,
+        member: &str,
+        now: i64,
+    ) -> Result<()> {
+        // The close's decision comes from the store's own open items, not
+        // the actor's ledger (zerus-63rru.86 round 3): a crash between the
+        // apply and the ledger write cannot leave an open item unclosed,
+        // and the ledger rows stay an optimization only.
+        if store.open_member_started(&team.id, member)? == 0 {
+            // Nothing to close: no ops call, so an unchanged pass stays a
+            // no-op and its revision does not move.
+            return Ok(());
+        }
+        let (actor, request) = request(
+            store,
+            &team.id,
+            Operation::ClosePausedStarted {
+                member: member.to_owned(),
+            },
+        )?;
+        ops::apply(store, &actor, &request, now)?;
+        // The ledger rows are keyed paused_started:{member}:{node}; the
+        // cleanup's prefix carries the member's delimiter, so m1's return
+        // never removes m10's rows.
+        let ledger_prefix = format!("paused_started:{member}:");
+        let mut after = String::new();
+        for _ in 0..4 {
+            let rows = self.ledger.prefix_page(&team.id, &ledger_prefix, &after)?;
+            for row in &rows {
+                self.ledger.remove(row)?;
+            }
+            match rows.last() {
+                Some(last) if rows.len() == 200 => after = last.key.clone(),
+                _ => break,
+            }
+        }
+        Ok(())
+    }
+
     /// zerus-63rru.45: the kernel's unstaffed set over the uncooled view,
     /// compared with the told episodes by the store's own function; the
     /// store reconciles only when that finds a change and recomputes the

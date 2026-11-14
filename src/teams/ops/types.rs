@@ -438,6 +438,45 @@ pub enum Operation {
     /// episodes. A call that finds none is refused with
     /// `unstaffed_unchanged`.
     EndStaleUnstaffed,
+    /// A hand-out reserved for a member that left the active set (paused,
+    /// stopped, unbound) is settled at the next pass (zerus-63rru.85): the
+    /// effect superseded, the node handed back to the lead with one item,
+    /// and the next pass can hand the task to another free member. A member
+    /// that is Active and bound is refused, whatever the reason says: the
+    /// store's member state is the only proof of a departure.
+    SettleLeftHandout {
+        node: NodeId,
+        /// Round 2's actor-read cause. A value here never authorizes a
+        /// settlement and never names the item's cause: the store's member
+        /// state decides both, and an Active bound member is refused. The
+        /// field stays on the wire even when it is `None`: round 2 wrote
+        /// `"reason":null`, and the strict Request decoder learns an
+        /// operation's known fields by serializing it, so a dropped key
+        /// would reject those saved requests as unknown fields
+        /// (zerus-63rru.85 round 4).
+        #[serde(default)]
+        reason: Option<String>,
+    },
+    /// The service's own binding observation read the member's binding as
+    /// decisively ended while the store still held it (zerus-63rru.85 round
+    /// 3): the member is recorded unbound, its binding and durable handle
+    /// cleared, so every later reader — the settlement above included —
+    /// decides from the store. A member that is not Active and bound is
+    /// refused with `invalid_state` and nothing changes.
+    UnbindMember { member: MemberId },
+    /// The lead is told once that a member out of the active set holds a
+    /// started task (zerus-63rru.86): one member_left item per member and
+    /// task; the task stays with the member. A call that finds no such
+    /// task writes nothing.
+    TellPausedStarted {
+        member: MemberId,
+        node: NodeId,
+    },
+    /// The member is back in the active set: its paused-started items
+    /// close, so a later leave tells the lead again (zerus-63rru.86).
+    ClosePausedStarted {
+        member: MemberId,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
