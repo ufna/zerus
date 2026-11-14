@@ -2635,7 +2635,7 @@ fn remove_inner(
     args: &[String], attempted: &mut bool, observed: &mut Option<Value>,
     native: Option<&ProgramCleanupAdapter<'_, '_>>,
 ) -> Result<Value> {
-    let deadline = |duration| {
+    let deadline = |duration: Duration| {
         let ordinary = Instant::now() + duration;
         native.map_or(ordinary, |adapter| ordinary.min(adapter.deadline()))
     };
