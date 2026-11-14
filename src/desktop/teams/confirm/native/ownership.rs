@@ -152,11 +152,12 @@ mod tests {
     #[test]
     fn missing_replaced_or_rewritten_ownership_objects_invalidate_the_pin() {
         let temp = tempfile::tempdir().unwrap();
-        let path = temp.path().join("owner.json");
+        let root = platform::canonical(temp.path()).unwrap();
+        let path = root.join("owner.json");
         std::fs::write(&path, b"owner-1").unwrap();
         let pin = Pin::open(&path, false).unwrap();
         assert!(pin.current());
-        std::fs::rename(&path, temp.path().join("original.json")).unwrap();
+        std::fs::rename(&path, root.join("original.json")).unwrap();
         std::fs::write(&path, b"owner-1").unwrap();
         assert!(!pin.current());
         let pin = Pin::open(&path, false).unwrap();
@@ -170,12 +171,13 @@ mod tests {
     #[test]
     fn replacing_the_checkout_directory_is_refused_but_ordinary_edits_are_allowed() {
         let temp = tempfile::tempdir().unwrap();
-        let path = temp.path().join("checkout");
+        let root = platform::canonical(temp.path()).unwrap();
+        let path = root.join("checkout");
         std::fs::create_dir(&path).unwrap();
         let pin = Pin::open(&path, true).unwrap();
         std::fs::write(path.join("file"), b"edit").unwrap();
         assert!(pin.current());
-        std::fs::rename(&path, temp.path().join("old-checkout")).unwrap();
+        std::fs::rename(&path, root.join("old-checkout")).unwrap();
         std::fs::create_dir(&path).unwrap();
         assert!(!pin.current());
     }

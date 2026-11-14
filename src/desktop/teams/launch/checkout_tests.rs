@@ -59,8 +59,9 @@ fn plan(team: &Team, path: &Path) -> Plan {
 fn both_verified_worktree_transitions_record_the_original_directory_once() {
     for deferred in [false, true] {
         let h = Harness::new();
+        let root = crate::platform::canonical(h.temp.path()).unwrap();
         let team = h.store.team(TEAM).unwrap().unwrap();
-        let path = h.temp.path().join("member");
+        let path = root.join("member");
         std::fs::create_dir(&path).unwrap();
         let plan = plan(&team, &path);
         let mut r = Runtime::open(h.temp.path(), &team.home, "epoch").unwrap();
@@ -123,8 +124,9 @@ fn checkout_store_errors_map_a_busy_lock_to_store_busy_and_a_broken_store_to_sto
 #[test]
 fn a_busy_launch_ledger_records_no_checkout_and_answers_store_busy() {
     let h = Harness::new();
+    let root = crate::platform::canonical(h.temp.path()).unwrap();
     let team = h.store.team(TEAM).unwrap().unwrap();
-    let path = h.temp.path().join("member");
+    let path = root.join("member");
     std::fs::create_dir(&path).unwrap();
     let plan = plan(&team, &path);
     let tree = p::Worktree {
@@ -151,8 +153,9 @@ fn a_busy_launch_ledger_records_no_checkout_and_answers_store_busy() {
 fn an_injected_busy_checkout_statement_answers_store_busy() {
     use crate::desktop::teams::ledger::checkout::{injection, Statement};
     let h = Harness::new();
+    let root = crate::platform::canonical(h.temp.path()).unwrap();
     let team = h.store.team(TEAM).unwrap().unwrap();
-    let path = h.temp.path().join("member");
+    let path = root.join("member");
     std::fs::create_dir(&path).unwrap();
     let tree = p::Worktree {
         path: path.to_str().unwrap().into(),
