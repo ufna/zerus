@@ -176,7 +176,7 @@ impl Context {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::teams::ops::tests::{fixture, person, Harness, TEAM};
+    use crate::teams::ops::tests::{fixture, person, service, Harness, TEAM};
 
     #[test]
     fn a_stage_prompt_requests_a_verdict_for_its_exact_target() {
@@ -240,21 +240,28 @@ mod tests {
     #[test]
     fn dependency_context_keeps_every_service_note_outside_the_member_quote() {
         let mut h = Harness::new();
+        h.bind("m1");
         let id = h.add(&person(), 1);
-        let notes = serde_json::to_string(&vec![
-            ops::ReportNote::new("text_shortened"),
-            ops::ReportNote::new("worktree_dirty"),
-        ])
+        // The report is written by the product's own report writer, so a
+        // change to how it formats the notes breaks this test.
+        h.submit(id, "m1");
+        let generation = h.store.generation(TEAM, id).unwrap().unwrap();
+        h.observe(id, TaskStage::InReview);
+        h.run(
+            &service(),
+            ops::Operation::RecordReport {
+                node: id,
+                generation,
+                member: "m1".into(),
+                text: "Dependency report result".into(),
+                commit: "0123456789abcdef0123456789abcdef01234567".into(),
+                notes: vec![
+                    ops::ReportNote::new("text_shortened"),
+                    ops::ReportNote::new("worktree_dirty"),
+                ],
+            },
+        )
         .unwrap();
-        h.store
-            .db
-            .as_ref()
-            .unwrap()
-            .execute(
-                "INSERT INTO reports(team,node,generation,actor,text,commit_id,notes) VALUES(?1,?2,1,'{}',?3,'',?4)",
-                params![TEAM, id, "Dependency report result", notes],
-            )
-            .unwrap();
         let f = fixture();
         let mut node = h.node(id);
         node.deps.push(zerus_team_plan::model::Dep {

@@ -211,6 +211,20 @@ fn report_validates_service_note_codes_and_bounds() {
         ),
         code::OVER_CAP,
     );
+    // Nine notes exceed the limit; the count comparison is not allowed to
+    // accept one more, and nothing is written.
+    refused(
+        h.run(
+            &service(),
+            op((0..9)
+                .map(|_| ReportNote {
+                    code: "worktree_dirty".into(),
+                    text: None,
+                })
+                .collect()),
+        ),
+        code::OVER_CAP,
+    );
     assert!(h.store.report(TEAM, node, 1).unwrap().is_none());
     h.run(
         &service(),
