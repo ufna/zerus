@@ -523,6 +523,10 @@ impl Runtime {
                     d.outcome = Some(outcome);
                     d.gated = true;
                     self.put(&team.id, &row.key, &d)?;
+                    // The fact is durable before it is applied: a crash here
+                    // must leave the recorded outcome and its gate for the
+                    // next pass, not a row that only looks unknown.
+                    boundary("terminal_outcome");
                     self.settle(store, team, &row.key, d, now)?;
                 }
                 continue;
@@ -542,7 +546,10 @@ impl Runtime {
     /// The hosted child's retained reply as a durable outcome, read without
     /// any offer (zerus-63rru.102 round 2). Only a submitted, refused,
     /// handed-back or cutting-over answer counts; an uncertain or pending
-    /// reply settles nothing, and a missing input settles nothing.
+    /// reply settles nothing, and a missing input settles nothing. An
+    /// uncertain reply is the accepted limit (round 3): the delivery stays
+    /// unknown, the row and its retained task text stay, and the open effect
+    /// keeps the terminal prune blocked for that team. It is never replayed.
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     fn retained_outcome(&self, team: &Team, d: &Delivery) -> Result<Option<HandoutOutcome>> {
         let Some(row) = self

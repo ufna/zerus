@@ -6,7 +6,7 @@ pub(super) struct Fake {
     journals: usize,
     sends: usize,
     free: BTreeSet<String>,
-    reply: HandoutOutcome,
+    pub(super) reply: HandoutOutcome,
     stale: bool,
     driven: bool,
     busy_on_recheck: bool,
@@ -18,7 +18,7 @@ pub(super) struct Fake {
     held: Option<rusqlite::Connection>,
     pause_on_recheck: Option<std::path::PathBuf>,
     recovery_reads: usize,
-    recovery_unreadable: bool,
+    pub(super) recovery_unreadable: bool,
 }
 impl Fake {
     pub(super) fn new() -> Self {

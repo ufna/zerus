@@ -228,14 +228,20 @@ fn record_outcome(
     if let Some(why) = why {
         ctx.reply.item = Some(ctx.inbox(e.node, "delivery_uncertain", why)?);
     }
-    if kind == "handout" {
+    // A stopped or archived team records the outcome as a fact only. Its own
+    // Stop settled every decision and wrote each node's Cancel, so moving a
+    // decision here would settle that Cancel, re-hold the node or tell the
+    // lead that the person already ended the work (zerus-63rru.102 round 3).
+    // A running or paused team keeps the move it had before.
+    let moving = matches!(ctx.team.status, TeamStatus::Running | TeamStatus::Paused);
+    if kind == "handout" && moving {
         if let HandoutOutcome::HandedBack { reason } = outcome {
             let kind = format!("handout_handed_back:{id}");
             ctx.reply.item = Some(super::members::hand_to_lead(ctx, e.node, &kind, reason)?);
             return Ok(());
         }
     }
-    if kind == "reopen" && ctx.reopening(e.node)? {
+    if kind == "reopen" && moving && ctx.reopening(e.node)? {
         if let HandoutOutcome::HandedBack { reason } = outcome {
             // At once, never retried: the decision settled, the node held and
             // one inbox item for the lead (zerus-63rru.64).
@@ -269,7 +275,9 @@ fn record_outcome(
     }
     // A refused delivery may have been the only reason a Return or Reassign
     // waits for a hand-over; a proven non-start is recorded the same way.
-    if state == "refused" {
+    // Only while the team may still move a decision: a terminal team records
+    // the fact alone (zerus-63rru.102 round 3).
+    if state == "refused" && moving {
         settle_without_reason(ctx, e.node)?;
     }
     Ok(())
