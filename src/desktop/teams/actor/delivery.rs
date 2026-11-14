@@ -510,7 +510,14 @@ impl Runtime {
                 let outcome = if d.outcome.is_some() {
                     d.outcome.clone()
                 } else {
-                    self.retained_outcome(team, &d)?
+                    #[cfg(any(target_os = "linux", target_os = "macos"))]
+                    {
+                        self.retained_outcome(team, &d)?
+                    }
+                    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+                    {
+                        None
+                    }
                 };
                 if let Some(outcome) = outcome {
                     d.outcome = Some(outcome);
@@ -536,6 +543,7 @@ impl Runtime {
     /// any offer (zerus-63rru.102 round 2). Only a submitted, refused,
     /// handed-back or cutting-over answer counts; an uncertain or pending
     /// reply settles nothing, and a missing input settles nothing.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     fn retained_outcome(&self, team: &Team, d: &Delivery) -> Result<Option<HandoutOutcome>> {
         let Some(row) = self
             .ledger
