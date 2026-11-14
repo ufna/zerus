@@ -3020,3 +3020,6 @@ fn the_target_check_refuses_a_listed_candidate_without_its_identity() {
     mode(&twin, 0o600);
     assert!(current());
 }
+
+#[path = "tests/raw_storage.rs"]
+mod raw_storage;
