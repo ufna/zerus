@@ -88,7 +88,7 @@
   ],
   "ok": true,
   "service_items": null,
-  "service_running": null,
+  "service_running": false,
   "team": {
     "base_commit": "0123456789abcdef0123456789abcdef01234567",
     "home": "00000000-0000-4000-8000-0000000000aa",
