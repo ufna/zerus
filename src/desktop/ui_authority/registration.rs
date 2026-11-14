@@ -100,3 +100,44 @@ fn capture(scope: &Scope) -> Result<(&'static str, Process)> {
     }
     anyhow::bail!("desktop mode changes require Settings or a foreground terminal outside Zerus")
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const PROBE: &str = "desktop::ui_authority::registration::tests::hosted_capture_probe";
+
+    #[test]
+    fn desktop_mode_capture_refuses_a_hosted_call_without_session_markers() {
+        let temp = tempfile::tempdir().unwrap();
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", PROBE, "--ignored", "--nocapture"])
+            .env_clear()
+            .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+            .env("HOME", temp.path())
+            .env("HGS_CONFIG_DIR", temp.path().join("config"))
+            .env("HGS_STATE_DIR", temp.path().join("state"))
+            .env("HGS_AGENT", "dsh")
+            .stdin(std::process::Stdio::null())
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{}\n{}",
+            String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+    }
+
+    #[test]
+    #[ignore = "isolated registration capture; launched only with private configuration"]
+    fn hosted_capture_probe() {
+        assert_eq!(std::env::var("HGS_AGENT").as_deref(), Ok("dsh"));
+        for marker in ["HGS_SESSION", "HGS_RUN_ID", "HGS_SESSION_ID"] {
+            assert!(std::env::var_os(marker).is_none());
+        }
+        let config = crate::config::Config::load().unwrap();
+        let location = Location { root: config.state.join("desktop"), configuration: "a".repeat(64) };
+        let scope = Scope::new(&config, &location);
+        let error = capture(&scope).err().expect("a hosted call cannot capture desktop mode authority");
+        assert_eq!(error.to_string(),
+            "agent session cannot change desktop mode; use Settings or a terminal outside Zerus");
+        assert!(!location.root.exists(), "refusal must precede registration effects");
+    }
+}

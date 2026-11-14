@@ -1653,3 +1653,17 @@ fn start_legacy_rechecks_a_caller_that_became_refused_after_entry() {
 }
 
 mod gating;
+
+#[test]
+fn ordinary_task_send_cannot_forward_for_a_hosted_agent_without_markers() {
+    let f = Fixture::new();
+    let forwarded = format!("{}/codex/another", f.machine);
+    let (child, reply) = f.spawn(
+        &["send", "example/T-abcdef", "--agent", &forwarded], "", None,
+        &[("HGS_AGENT", "dsh".into())],
+    );
+    assert!(child.wait_with_output().unwrap().status.success());
+    let out: Value = serde_json::from_slice(&std::fs::read(reply).unwrap()).unwrap();
+    assert_eq!(out["ok"], false, "{out}");
+    assert_eq!(out["error"], "--agent is for commands another computer forwards; an agent acts as its own session");
+}
