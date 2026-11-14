@@ -2852,9 +2852,6 @@ exit $status
         self.wait(lambda: self.binding(name).get("run_id"))
         r = self.binding(name)
         env = dict(self.env, HGS_SESSION=name, HGS_RUN_ID=r["run_id"])
-        # With --no-hook there is no SessionStart to prove fixture readiness.
-        # The record's run/PID can be published before its hook producer starts.
-        self.wait(lambda: hook_caller_fixtures.scripted_socket(self.root, env))
         self.hook({"hook_event_name": "SessionStart", "session_id": "child",
                    "agent_id": "subagent"}, env)
         self.hgs("pause", name, rc=1)
