@@ -5745,10 +5745,19 @@ their report is stale or offline. Viewing accounts never refreshes Claude's
 credentials on Zerus's behalf.
 
 Kimi Code's quota inspection calls the provider's endpoints with the native
-token. `KIMI_CODE_BASE_URL` may point it at a private test endpoint only when
-the value is an `http` or `https` URL whose host is `127.0.0.1`, `::1` or
-`localhost`; the token is sent there exactly as to the provider. Any other
-value is ignored, named in the inspection's `detail`, and receives no token.
+token. The Zerus test seam `HGS_TEST_KIMI_API_BASE` points a test build at a
+private stand-in only when the value is an `http` or `https` URL whose host is
+`127.0.0.1`, `::1` or `localhost` and whose port, when present, is a number in
+curl's range; the token is sent there exactly as to the provider, and curl runs
+without any config file or proxy (no `~/.curlrc`, `$CURL_HOME`, ambient proxy
+variable or `HTTP_PROXY`). A valid test value takes precedence over
+`KIMI_CODE_BASE_URL`. Any other test value is ignored; the `detail` names the
+variable, and the rule below then applies. The seam is read only by the
+inspection and is never passed to a native Kimi child. `KIMI_CODE_BASE_URL`
+keeps the Kimi CLI's own meaning: any non-default value, including an empty one
+and a loopback address, makes the inspection send no request and no token, and
+names it in `detail`. Unset, the value `https://api.kimi.com/coding/v1` and that
+value with a trailing slash use the provider as before.
 
 Claude usage refreshes share a cache on the account's owning computer. Account
 views and the selected session footer normally request usage every five minutes;

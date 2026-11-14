@@ -480,6 +480,10 @@ pub fn select(config: &Config, id: &str, provider: &str) -> Result<Vec<String>> 
         format!("{key}={selected_home}"),
         format!("HGS_ACCOUNT_ID={id}"),
     ];
+    // The inspection's test seam is never passed to a native agent started in
+    // this session, whichever account kind it uses.
+    env::remove_var(inspection::KIMI_TEST_BASE_ENV);
+    environment.push(format!("{}=", inspection::KIMI_TEST_BASE_ENV));
     if !native {
         if provider == "claude" {
             let config_home = home.join("anthropic");
@@ -1166,6 +1170,8 @@ pub fn run_environment(account: &str, provider: &str, home: &str) -> Vec<String>
         return Vec::new();
     };
     let mut environment = vec![format!("{key}={home}"), format!("HGS_ACCOUNT_ID={account}")];
+    // As in `select`: the inspection's test seam stays out of agent sessions.
+    environment.push(format!("{}=", inspection::KIMI_TEST_BASE_ENV));
     if !account.starts_with("native-") {
         if provider == "claude" {
             environment.push(format!(

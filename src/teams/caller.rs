@@ -226,7 +226,9 @@ fn hosted_session(config: &Config, name: &str, run: &str, session: Option<&str>)
 /// OpenCode's commands cannot be bound to their own session at all. A
 /// DeepSeek session's commands are proven by its host's per-call token;
 /// its seat also requires witnessed inputs and hosted lifecycle observations.
-/// Creating a team with such a member and launching one call this.
+/// Team creation's roster validation and the catalog's export/save call this;
+/// no member-launch code does, because an agent kind cannot change after
+/// creation.
 pub(crate) fn host_served_agent(agent: &str) -> bool {
     matches!(agent, "dsh" | "opencode")
 }
