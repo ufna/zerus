@@ -123,6 +123,13 @@ The final control restores the original source and the const-false gate.
 These controls qualify the conservative Unknown response; they do not establish
 namespace durability or authorize queue activation.
 
+These filesystem controls use a real new logon token without loading a user
+profile hive, with explicit private home/app-data/temp directories. The kernel
+user SID must match the created ordinary account and its token must contain no
+Administrators SID. Hosted profile loading has a separately recorded pre-handle
+stall (`zerus-5wmh.66.3.27.4.1`); this control neither retries an unknown launch
+nor qualifies cold-profile, registry or installed-GUI behavior.
+
 The retained Windows directory handles are read-only and deny write/delete
 sharing to keep the original ancestry pinned. `FILE_FLAG_BACKUP_SEMANTICS`
 permits opening a directory but does not establish successful namespace flush.

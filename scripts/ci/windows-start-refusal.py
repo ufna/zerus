@@ -63,6 +63,7 @@ def native(label, needle=None):
             not report["sid"].startswith("S-1-5-21-") or not report["settled"] or
             not all(call["physical_wait"] for call in report["calls"]) or
             not all(cleanup.values()) or not launch["physical_wait"] or
+            launch["load_user_profile"] is not False or
             launch["image_sha256"] != hashlib.sha256(image.read_bytes()).hexdigest()):
         raise RuntimeError(f"{label}: incomplete native custody/standard-user evidence")
     if needle is None:

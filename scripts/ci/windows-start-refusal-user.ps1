@@ -75,8 +75,11 @@ if ($Mode -eq 'Child') {
     foreach ($entry in @(Get-ChildItem Env: | Where-Object { $_.Name.StartsWith('HGS_') -or $_.Name.StartsWith('DSH_') })) {
         Remove-Item ('Env:' + $entry.Name)
     }
-    foreach ($leaf in @('home','tmp')) { [void][IO.Directory]::CreateDirectory([IO.Path]::Combine($Stage,$leaf)) }
+    foreach ($leaf in @('home','local','roaming','tmp')) { [void][IO.Directory]::CreateDirectory([IO.Path]::Combine($Stage,$leaf)) }
     $env:HOME = [IO.Path]::Combine($Stage,'home')
+    $env:USERPROFILE = $env:HOME
+    $env:LOCALAPPDATA = [IO.Path]::Combine($Stage,'local')
+    $env:APPDATA = [IO.Path]::Combine($Stage,'roaming')
     $env:TEMP = [IO.Path]::Combine($Stage,'tmp'); $env:TMP = $env:TEMP
     $volume = [IO.DriveInfo]::new([IO.Path]::GetPathRoot($env:TEMP))
     if ($volume.DriveFormat -ne 'NTFS') { throw 'The native qualification requires NTFS' }
@@ -147,7 +150,11 @@ try {
     if ($program.Length+$arguments.Length+3 -ge 1024) { throw 'Credentialed native launch exceeds its bound' }
     $outer=[Diagnostics.Process]::new(); $outer.StartInfo.FileName=$program; $outer.StartInfo.Arguments=$arguments
     $outer.StartInfo.WorkingDirectory=$Stage; $outer.StartInfo.UseShellExecute=$false; $outer.StartInfo.CreateNoWindow=$true
-    $outer.StartInfo.UserName=$userName; $outer.StartInfo.Domain=$env:COMPUTERNAME; $outer.StartInfo.Password=$secure; $outer.StartInfo.LoadUserProfile=$true
+    # This is filesystem/token qualification with explicit private directories,
+    # not HKCU or cold-profile acceptance. The hosted profile-load stall is
+    # documented in zerus-5wmh.66.3.27.4.1. No-load still logs on the real new
+    # user; its kernel SID must match and no Administrators SID may be present.
+    $outer.StartInfo.UserName=$userName; $outer.StartInfo.Domain=$env:COMPUTERNAME; $outer.StartInfo.Password=$secure; $outer.StartInfo.LoadUserProfile=$false
     $outer.StartInfo.RedirectStandardInput=$true; $outer.StartInfo.RedirectStandardOutput=$true; $outer.StartInfo.RedirectStandardError=$true
     $starting=[StartRefusalCapture]::Start($outer,(Join-Path $Stage 'launch-phases.txt'))
     if (-not $starting.Wait(20000) -or -not $starting.Result) { throw 'Credentialed original launch remains pending' }
@@ -158,7 +165,7 @@ try {
         throw 'Original standard-user wrapper exceeded its deadline'
     }
     if (-not [Threading.Tasks.Task]::WaitAll(@($out,$err),3000)) { throw 'Original wrapper output remains pending' }
-    $launch=[ordered]@{ physical_wait=$true; exit=$outer.ExitCode; stdout=$out.GetAwaiter().GetResult(); stderr=$err.GetAwaiter().GetResult(); image_sha256=$digest }
+    $launch=[ordered]@{ physical_wait=$true; exit=$outer.ExitCode; stdout=$out.GetAwaiter().GetResult(); stderr=$err.GetAwaiter().GetResult(); image_sha256=$digest; load_user_profile=$outer.StartInfo.LoadUserProfile }
     Write-Report (Join-Path $reportRoot 'launch.json') $launch
     $outer.Dispose(); $outer=$null
     $text=[IO.File]::ReadAllText((Join-Path $Stage 'result.json'))
@@ -188,6 +195,6 @@ try {
         if ($profile) { $profile | Remove-CimInstance }
         Remove-LocalUser -SID $user.SID
         Remove-Item -LiteralPath $Stage -Recurse
-        Write-Report (Join-Path $reportRoot 'cleanup.json') @{account_removed=$true;profile_removed=$true;stage_removed=$true}
+        Write-Report (Join-Path $reportRoot 'cleanup.json') @{account_removed=$true;profile_absent=$true;stage_removed=$true}
     } else { Write-Output 'Incomplete fixture retained only on the disposable runner; no effect replayed' }
 }
