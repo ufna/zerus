@@ -598,3 +598,37 @@ fn a_busy_advisory_writer_lock_cannot_refuse_the_canonical_write() {
     assert!(record[WITNESS]["witness"]["epoch"].is_null());
     assert_eq!(owner.store.stamp().unwrap().high_water, 0);
 }
+
+#[test]
+fn a_replaced_background_namespace_discards_the_pass_and_restarts_bounded() {
+    let (root, path, mut record) = fixture();
+    write(root.path(), &path, &mut record).unwrap();
+    let mut state = None;
+    background_at(root.path(), &mut state).unwrap();
+    fs::rename(
+        root.path().join("process-index"),
+        root.path().join("retained-index"),
+    )
+    .unwrap();
+    assert!(background_at(root.path(), &mut state).is_err());
+    assert!(
+        state.is_none(),
+        "a replaced namespace must not leave the worker permanently pinned to its old handles"
+    );
+    let step = background_at(root.path(), &mut state).unwrap();
+    assert!(step.entries <= 256 && step.bytes <= 2 * 1024 * 1024);
+    assert!(!open(root.path()).stamp().unwrap().complete);
+}
+
+#[test]
+fn a_busy_background_gate_preserves_the_existing_bounded_cursor() {
+    let (root, path, mut record) = fixture();
+    write(root.path(), &path, &mut record).unwrap();
+    let mut state = None;
+    background_at(root.path(), &mut state).unwrap();
+    let owner = Owner::open(root.path()).unwrap();
+    assert!(background_at(root.path(), &mut state).is_err());
+    assert!(state.is_some(), "a concurrent writer is a temporary yield");
+    drop(owner);
+    assert!(background_at(root.path(), &mut state).is_ok());
+}

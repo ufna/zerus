@@ -552,8 +552,19 @@ pub(in crate::state) fn background_at(
     if state.is_none() {
         *state = Some(Background::new(root)?);
     }
-    state
+    let result = state
         .as_mut()
         .ok_or_else(|| anyhow::anyhow!("Background bootstrap unavailable"))?
-        .step()
+        .step();
+    // A busy writer is a yield of the same cursor. Other failures invalidate
+    // this pass's held namespace/epoch; rebuild in a later background step.
+    let busy = result
+        .as_ref()
+        .err()
+        .and_then(|error| error.downcast_ref::<std::io::Error>())
+        .is_some_and(|error| error.kind() == std::io::ErrorKind::WouldBlock);
+    if result.is_err() && !busy {
+        *state = None;
+    }
+    result
 }
