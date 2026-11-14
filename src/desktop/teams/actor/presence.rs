@@ -12,10 +12,12 @@ pub(crate) fn presence(config: &Config) -> Option<bool> {
     let bytes = protocol::line_checked(
         &mut BufReader::new(stream),
         protocol::FRAME_BYTES,
-        |reader| {
+        |reader, phase| {
             let remaining = until.saturating_duration_since(Instant::now());
             anyhow::ensure!(!remaining.is_zero(), "Teams status deadline expired");
-            reader.get_ref().set_read_timeout(Some(remaining))?;
+            if matches!(phase, protocol::ReadPhase::BeforeRead) {
+                reader.get_ref().set_read_timeout(Some(remaining))?;
+            }
             Ok(())
         },
     )
