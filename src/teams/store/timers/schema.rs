@@ -261,7 +261,7 @@ pub(in crate::teams::store) fn extend(db: &Connection) -> Result<()> {
     } else {
         "SAVEPOINT timers;"
     });
-    let result = begun.map_err(storage).and_then(|()| {
+    let result = begun.map_err(begin_error).and_then(|()| {
         let result = marked(db).and_then(|mark| match mark {
             Mark::Current => Ok(()),
             mark => transition(db, mark),

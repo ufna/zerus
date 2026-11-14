@@ -710,3 +710,20 @@ fn a_cancelled_task_is_ended_by_its_observation() {
     assert!(h.store.pending_cancels(TEAM, 200, 0).unwrap().is_empty());
     assert_eq!(binding(&h.store, &reference).unwrap(), None);
 }
+
+/// A task-store admission another caller holds past this call's deadline is
+/// a busy non-start, not a storage failure: nothing was read or written and
+/// the same call may repeat (zerus-63rru.35).
+#[test]
+fn a_task_store_admission_that_cannot_be_taken_answers_store_busy() {
+    let h = Harness::new();
+    let reference = document(&h);
+    let store = ProjectStore::open(&h.temp.path().join("replica"), &reference.project).unwrap();
+    let held = store
+        .admit_until(std::time::Instant::now() + std::time::Duration::from_secs(30))
+        .expect("the store is free");
+    let problem = super::load(&store, &reference.uuid).err().expect("busy");
+    assert_eq!(problem.code, code::STORE_BUSY);
+    drop(held);
+    super::load(&store, &reference.uuid).unwrap();
+}
