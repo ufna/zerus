@@ -29,7 +29,7 @@ pub(super) use host_identity::recorded::UNDER_HOST as UNDER_HOST_FOR_TESTS;
 pub(crate) use host_identity::recorded::reads as recorded_host_reads;
 /// The shared check (zerus-ppd26.15): Agent Teams' caller proof calls it too.
 #[cfg(unix)]
-pub(crate) use host_identity::recorded::{hosted_ancestor, Host, Refusal};
+pub(crate) use host_identity::recorded::{hosted_ancestor, Host, Refusal, ANCESTRY_STEPS};
 
 /// Whether this command runs under a DeepSeek host this computer records
 /// (zerus-ppd26.15). Such a command can be only that host's own hosted

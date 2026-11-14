@@ -36,17 +36,27 @@ fn cli_entry() {
         record["pid"] = json!(std::process::id());
         record["process_start"] =
             json!(crate::platform::process_start_time(std::process::id()).unwrap());
-        if std::env::var_os("HGS_TEAM_START_STALE_ANCESTOR").is_some() {
-            record["state"] = json!("archived");
-        }
         std::fs::write(path, record.to_string()).unwrap();
-        let status = Command::new(std::env::current_exe().unwrap())
+        let mut child = Command::new(std::env::current_exe().unwrap());
+        child
             .args(["--exact", "tasks::teams::tests::cli_entry", "--nocapture"])
             .env_remove("HGS_TEAM_UNMARKED_CHILD")
-            .env_remove("HGS_TEAM_BIND_SELF")
-            .env_remove("HGS_SESSION")
-            .env_remove("HGS_RUN_ID")
-            .env_remove("HGS_SESSION_ID")
+            .env_remove("HGS_TEAM_BIND_SELF");
+        match std::env::var("HGS_TEAM_REMOVE_MARKER").as_deref() {
+            Ok("HGS_SESSION") => {
+                child.env_remove("HGS_SESSION");
+            }
+            Ok("HGS_RUN_ID") => {
+                child.env_remove("HGS_RUN_ID");
+            }
+            _ => {
+                child
+                    .env_remove("HGS_SESSION")
+                    .env_remove("HGS_RUN_ID")
+                    .env_remove("HGS_SESSION_ID");
+            }
+        }
+        let status = child
             .stdin(Stdio::inherit())
             .stdout(Stdio::inherit())
             .stderr(Stdio::inherit())
@@ -163,8 +173,12 @@ impl Fixture {
     }
 
     fn bind(&mut self, member: &str) -> String {
+        self.bind_agent(member, "codex")
+    }
+
+    fn bind_agent(&mut self, member: &str, agent: &str) -> String {
         use sha2::{Digest, Sha256};
-        let name = format!("codex/{member}");
+        let name = format!("{agent}/{member}");
         let launch = uuid::Uuid::new_v4().to_string();
         let run = format!("run-{member}");
         let session = zerus_team_plan::model::SessionKey {
@@ -189,7 +203,7 @@ impl Fixture {
             )
             .unwrap();
         let pid = std::process::id();
-        let record = json!({"version":1,"name":name,"agent":"codex","run_id":run,"launch_id":launch,"pid":pid,"process_start":crate::platform::process_start_time(pid).unwrap(),"activity":"idle"});
+        let record = json!({"version":1,"name":name,"agent":agent,"run_id":run,"launch_id":launch,"pid":pid,"process_start":crate::platform::process_start_time(pid).unwrap(),"activity":"idle"});
         let path = self
             .h
             .temp
@@ -331,11 +345,18 @@ impl Fixture {
         )
     }
     fn unmarked_child(&self, args: &[&str], input: &str, session: &str) -> Value {
+        self.stripped_child(args, input, session, "all")
+    }
+
+    fn stripped_child(&self, args: &[&str], input: &str, session: &str, marker: &str) -> Value {
         let (child, reply) = self.spawn(
             args,
             input,
             Some(session),
-            &[("HGS_TEAM_UNMARKED_CHILD", "1".into())],
+            &[
+                ("HGS_TEAM_UNMARKED_CHILD", "1".into()),
+                ("HGS_TEAM_REMOVE_MARKER", marker.into()),
+            ],
         );
         let output = child.wait_with_output().unwrap();
         assert!(
@@ -1387,7 +1408,8 @@ fn unmarked_child_of_a_live_agent_is_never_the_person_for_team_control() {
         let result = f.unmarked_child(&args, input, &member);
         assert_eq!(result["ok"], false, "{args:?}: {result}");
         assert!(
-            result["error"].as_str().unwrap().contains("not_allowed"),
+            result["error"].as_str().unwrap().contains("not_allowed")
+                || result["error"] == crate::tasks::person::REFUSED,
             "{args:?}: {result}"
         );
         assert_eq!(f.document(&task).revision(), before);
@@ -1425,7 +1447,8 @@ fn unmarked_child_of_a_live_agent_is_never_the_person_for_team_control() {
         assert_eq!(result["ok"], false, "{result}");
         assert_eq!(f.document(&task).revision(), before);
     }
-    // The explicit dormant-local rule retains ordinary behaviour with preview off.
+    // Preview off retains ordinary behavior, including its agent-tree refusal.
+    // A person outside that tree can still complete a dormant local task.
     let store = ProjectStore::open(&f.h.temp.path().join("replica"), "example-project").unwrap();
     let mut doc = store.load(task["uuid"].as_str().unwrap()).unwrap();
     doc.set_team(
@@ -1440,12 +1463,14 @@ fn unmarked_child_of_a_live_agent_is_never_the_person_for_team_control() {
     store.save(&mut doc).unwrap();
     drop(store);
     let result = f.unmarked_child(&["stage", &reference, "done", "--json"], "", &member);
-    assert_eq!(result["ok"], true, "{result}");
+    assert_eq!(result["error"], crate::tasks::person::REFUSED, "{result}");
+    let person = f.run(&["stage", &reference, "done", "--json"], "", None);
+    assert_eq!(person["ok"], true, "{person}");
     assert_eq!(f.document(&task).stage().unwrap(), Stage::Done);
 }
 
 #[test]
-fn ordinary_add_with_preview_off_keeps_its_existing_unmarked_caller_rule() {
+fn ordinary_add_with_preview_off_refuses_an_unmarked_agent_child() {
     let mut f = Fixture::new();
     let member = f.bind("m1");
     std::fs::remove_file(f.h.temp.path().join("teams/preview")).unwrap();
@@ -1461,12 +1486,113 @@ fn ordinary_add_with_preview_off_keeps_its_existing_unmarked_caller_rule() {
         "",
         &member,
     );
-    assert_eq!(result["ok"], true, "{result}");
-    assert!(f
-        .document(&result["value"]["task"])
-        .team()
-        .unwrap()
-        .is_none());
+    assert_eq!(result["ok"], false, "{result}");
+    assert!(
+        result["error"]
+            .as_str()
+            .unwrap()
+            .contains("outside the agent's process tree"),
+        "{result}"
+    );
+}
+
+#[test]
+fn ordinary_person_confirmations_refuse_each_stripped_agent_marker() {
+    use sha2::{Digest, Sha256};
+    for agent in ["claude", "codex"] {
+        for marker in ["HGS_SESSION", "HGS_RUN_ID", "all"] {
+            let mut f = Fixture::new();
+            let member = f.bind_agent("m1", agent);
+            std::fs::remove_file(f.h.temp.path().join("teams/preview")).unwrap();
+            // A real person's terminal can set and clear the hold outside the
+            // agent's tree, even with a live agent recorded on this computer.
+            let hold = ["cutover", "--project", "example", "--hold", "on"];
+            assert_eq!(f.run(&hold, "", None)["ok"], true);
+            assert_eq!(
+                f.run(
+                    &[
+                        "cutover",
+                        "--project",
+                        "example",
+                        "--hold",
+                        "off",
+                        "--confirm"
+                    ],
+                    "",
+                    None
+                )["ok"],
+                true
+            );
+            let denied = f.stripped_child(&hold, "", &member, marker);
+            assert_eq!(denied["ok"], false, "{agent}/{marker}: {denied}");
+            let status = f.run(&["cutover", "--project", "example"], "", None);
+            assert_eq!(status["value"]["hold"]["on"], false, "{status}");
+
+            let added = f.run(
+                &["add", "--project", "example", "--json"],
+                "Copy review control",
+                None,
+            );
+            assert_eq!(added["ok"], true, "{added}");
+            let uuid = added["value"]["task"]["uuid"].as_str().unwrap();
+            let folder =
+                f.h.temp
+                    .path()
+                    .join("replica")
+                    .join(format!("{:x}", Sha256::digest(b"example-project")))
+                    .join("tasks");
+            let snapshot = folder.join(format!("{uuid}.loro"));
+            std::fs::write(&snapshot, b"damaged snapshot").unwrap();
+            std::fs::write(
+                folder.join(format!("{uuid}.managed")),
+                b"unreadable kept marker",
+            )
+            .unwrap();
+            let review = [
+                "review-copy",
+                "--project",
+                "example",
+                "--uuid",
+                uuid,
+                "--json",
+            ];
+            let preview = f.run(&review, "", None);
+            assert_eq!(preview["value"]["state"], "review", "{preview}");
+            let mut confirm = review.to_vec();
+            confirm.extend([
+                "--confirm",
+                preview["value"]["fingerprint"].as_str().unwrap(),
+            ]);
+            let denied = f.stripped_child(&confirm, "", &member, marker);
+            assert_eq!(denied["ok"], false, "{agent}/{marker}: {denied}");
+            assert_eq!(std::fs::read(&snapshot).unwrap(), b"damaged snapshot");
+            let moved = f.run(&confirm, "", None);
+            assert_eq!(moved["value"]["state"], "moved", "{moved}");
+        }
+    }
+}
+
+#[test]
+fn ordinary_forwarded_agent_refuses_a_stripped_agent_caller() {
+    let mut f = Fixture::new();
+    let member = f.bind("m1");
+    let added = f.run(
+        &["add", "--project", "example", "--json"],
+        "Ordinary forwarded control",
+        None,
+    );
+    assert_eq!(added["ok"], true, "{added}");
+    let task = &added["value"]["task"];
+    let before = f.document(task).revision();
+    let reference = format!("example/{}", task["id"].as_str().unwrap());
+    let forwarded = format!("{}/codex/another", f.machine);
+    let args = ["cancel", &reference, "--agent", &forwarded];
+    for marker in ["HGS_SESSION", "HGS_RUN_ID", "all"] {
+        let out = f.stripped_child(&args, "", &member, marker);
+        assert_eq!(out["ok"], false, "{marker}: {out}");
+        assert_eq!(out["error"], crate::tasks::person::REFUSED, "{out}");
+        assert_eq!(f.document(task).revision(), before);
+    }
 }
 
 #[test]
@@ -1530,7 +1656,6 @@ fn start_recheck_case(phase: &str) {
     use sha2::{Digest, Sha256};
     let mut f = Fixture::new();
     let recipient = f.bind("m1");
-    let ancestor = f.bind("lead");
     let task = f.add();
     let reference = format!("example/{}", task["id"].as_str().unwrap());
     if phase == "start_legacy" {
@@ -1575,10 +1700,13 @@ fn start_recheck_case(phase: &str) {
     let (child, reply) = f.spawn(
         &[action, &reference, "--json"],
         &body.to_string(),
-        Some(&ancestor),
+        None,
         &[
-            ("HGS_TEAM_UNMARKED_CHILD", "1".into()),
-            ("HGS_TEAM_START_STALE_ANCESTOR", "1".into()),
+            ("HGS_TEAMS_TEST_CONTEXT", "opaque_after".into()),
+            (
+                "HGS_TEAMS_TEST_CONTEXT_AFTER",
+                pause.join("withheld").into_os_string(),
+            ),
             ("HGS_TEST_ATTEMPT_PAUSE", pause.as_os_str().to_owned()),
             ("HGS_TEST_ATTEMPT_PAUSE_AT", phase.into()),
             (
@@ -1593,14 +1721,9 @@ fn start_recheck_case(phase: &str) {
     }
     let ready = pause.join("ready").is_file();
     if ready {
-        let path =
-            f.h.temp
-                .path()
-                .join(format!("{:x}.json", Sha256::digest(ancestor.as_bytes())));
-        let mut record: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-        assert_eq!(record["state"], "archived");
-        record["state"] = json!("active");
-        std::fs::write(path, record.to_string()).unwrap();
+        // Ordinary admission reads a real clean tree. Only the later strict
+        // Teams proof sees a newly withheld synthetic ancestor environment.
+        std::fs::write(pause.join("withheld"), "unreadable environment").unwrap();
     }
     std::fs::write(pause.join("release"), "continue").unwrap();
     let output = child.wait_with_output().unwrap();
@@ -1617,7 +1740,12 @@ fn start_recheck_case(phase: &str) {
         assert_eq!(out["value"]["state"], "refused", "{out}");
         out["value"]["error"].as_str()
     };
-    assert_eq!(error, Some("not_allowed: A live agent session runs this command; person-only operations require a caller outside its process tree."), "{out}");
+    assert!(
+        error
+            .is_some_and(|error| error.starts_with("not_allowed:")
+                && error.contains("hides its environment")),
+        "{out}"
+    );
     let doc = f.document(&task);
     assert!(
         doc.attempt(&id).unwrap().is_none(),
@@ -1659,11 +1787,16 @@ fn ordinary_task_send_cannot_forward_for_a_hosted_agent_without_markers() {
     let f = Fixture::new();
     let forwarded = format!("{}/codex/another", f.machine);
     let (child, reply) = f.spawn(
-        &["send", "example/T-abcdef", "--agent", &forwarded], "", None,
+        &["send", "example/T-abcdef", "--agent", &forwarded],
+        "",
+        None,
         &[("HGS_AGENT", "dsh".into())],
     );
     assert!(child.wait_with_output().unwrap().status.success());
     let out: Value = serde_json::from_slice(&std::fs::read(reply).unwrap()).unwrap();
     assert_eq!(out["ok"], false, "{out}");
-    assert_eq!(out["error"], "--agent is for commands another computer forwards; an agent acts as its own session");
+    assert_eq!(
+        out["error"],
+        "--agent is for commands another computer forwards; an agent acts as its own session"
+    );
 }

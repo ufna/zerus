@@ -4660,6 +4660,25 @@ task and works with them offline. Every command prints
 JSON. Tasks belong to a catalog project, named by its ID or name; a task is
 `T-` plus six characters, and `PROJECT/T-xxxxxx` names it anywhere.
 
+On Linux and macOS, ordinary task commands use a refusal-only interim check
+before acting as the person or accepting a forwarded `--agent`: at most 64
+same-user processes from the caller upward, with each readable environment
+bounded to 1 MiB. An ancestor carrying `HGS_SESSION` or `HGS_RUN_ID`, even an
+empty value, refuses person actions; no ancestor's session identity is adopted.
+The DeepSeek host refusal runs first. An unreadable or macOS-withheld
+environment is no evidence of an agent: Terminal.app's system shell keeps
+working, while a readable agent above it still causes refusal. Windows keeps
+its existing caller path. The check reads no session inventory and runs only
+where the task state lives; `hgs @host` carries no `HGS_*` to that computer.
+
+This is an interim guard within one user's process tree, not verified Person
+authority. An agent started without markers and a process reparented out of its
+agent's tree, such as a detached `setsid` helper whose parent exits, are not
+detected. The bounded walk also cannot see beyond an unreadable process table
+or its 64-process limit. A reverse process index (zerus-j43fm) and verified
+Person authority (zerus-cg5h.4.11) are separate work. Team commands keep their
+existing stricter proof, including its unreadable-environment refusal.
+
 With the Agent Teams preview on, a task's `team` key identifies its team and
 home computer. Agents cannot send, hand off, retarget, cancel, reorder, edit,
 rename or change the stage of a live team's task. Its delivered holder may

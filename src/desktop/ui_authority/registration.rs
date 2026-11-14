@@ -121,8 +121,12 @@ mod tests {
             .stdin(std::process::Stdio::null())
             .output()
             .unwrap();
-        assert!(output.status.success(), "{}\n{}",
-            String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 
     #[test]
@@ -133,11 +137,21 @@ mod tests {
             assert!(std::env::var_os(marker).is_none());
         }
         let config = crate::config::Config::load().unwrap();
-        let location = Location { root: config.state.join("desktop"), configuration: "a".repeat(64) };
+        let location = Location {
+            root: config.state.join("desktop"),
+            configuration: "a".repeat(64),
+        };
         let scope = Scope::new(&config, &location);
-        let error = capture(&scope).err().expect("a hosted call cannot capture desktop mode authority");
-        assert_eq!(error.to_string(),
-            "agent session cannot change desktop mode; use Settings or a terminal outside Zerus");
-        assert!(!location.root.exists(), "refusal must precede registration effects");
+        let error = capture(&scope)
+            .err()
+            .expect("a hosted call cannot capture desktop mode authority");
+        assert_eq!(
+            error.to_string(),
+            "agent session cannot change desktop mode; use Settings or a terminal outside Zerus"
+        );
+        assert!(
+            !location.root.exists(),
+            "refusal must precede registration effects"
+        );
     }
 }
