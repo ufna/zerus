@@ -446,10 +446,12 @@ fn unknown(code: UnknownCode, detail: &str) -> Witnessed {
 /// request lock, without holding the machine-wide binding lock. The witness
 /// path takes neither a session guard nor the machine-wide binding lock.
 ///
-/// The file is removed while still locked on release, so the number of files
-/// stays bounded; a waiter that locked the removed inode sees the path gone or
-/// replaced and retries. A crash leaves at most one empty file per in-flight
-/// request, removed by that request's next use.
+/// On Unix the file is removed while still locked on release, so the number of
+/// files stays bounded; a waiter that locked the removed inode sees the path
+/// gone or replaced and retries. A crash leaves at most one empty file per
+/// in-flight request, removed by that request's next use. Elsewhere the file
+/// is kept, so its path always names the file that was locked, and one empty
+/// file remains for each request ID used.
 pub(crate) struct RequestLock {
     #[cfg_attr(not(unix), allow(dead_code))]
     path: PathBuf,
@@ -1267,6 +1269,32 @@ mod tests {
         );
     }
 
+    /// Windows' words for refusing to open a directory as a file:
+    /// `ERROR_ACCESS_DENIED` (zerus-hfw2s.10).
+    #[cfg(windows)]
+    fn directory_open_refusal() -> String {
+        std::io::Error::from_raw_os_error(
+            windows_sys::Win32::Foundation::ERROR_ACCESS_DENIED as i32,
+        )
+        .to_string()
+    }
+
+    /// With the receipt reader's own options, Windows refuses to open a
+    /// directory before any descriptor check, in the words the flow expects.
+    #[cfg(windows)]
+    #[test]
+    fn windows_refuses_a_directory_at_the_receipt_open() {
+        let folder = tempfile::tempdir().unwrap();
+        let error = crate::platform::no_follow(fs::OpenOptions::new().read(true))
+            .open(folder.path())
+            .unwrap_err();
+        assert_eq!(
+            error.raw_os_error(),
+            Some(windows_sys::Win32::Foundation::ERROR_ACCESS_DENIED as i32)
+        );
+        assert_eq!(error.to_string(), directory_open_refusal());
+    }
+
     #[test]
     #[ignore = "run by submissions_refuse_before_the_marker_and_replay_recorded_outcomes"]
     fn flow() {
@@ -1695,6 +1723,9 @@ mod tests {
         unknown_unsent(&foreign, UNREADABLE);
         // The opened descriptor is checked too: a regular file replaced by a
         // directory after the path check is no receipt, by that same check.
+        // Windows refuses to open a directory as a file, so there the open's
+        // own refusal answers first (zerus-hfw2s.10). Either way nothing is
+        // sent and the input is never offered again.
         let swapped = request("WITNESS");
         let digest = request_digest(name, &swapped);
         let swapped_path = receipt_path(string(&swapped, "request_id"));
@@ -1717,8 +1748,12 @@ mod tests {
             Err("unreachable".into()),
             Duration::from_secs(5),
         );
+        #[cfg(windows)]
+        let refusal = directory_open_refusal();
+        #[cfg(not(windows))]
+        let refusal = NOT_A_FILE.to_owned();
         assert!(
-            matches!(&outcome, Witnessed::Unknown { code: UnknownCode::Unseen, detail } if *detail == format!("{UNREADABLE}: {NOT_A_FILE}")),
+            matches!(&outcome, Witnessed::Unknown { code: UnknownCode::Unseen, detail } if *detail == format!("{UNREADABLE}: {refusal}")),
             "{outcome:?}"
         );
         assert!(calls.is_empty(), "{calls:?}");
@@ -1762,15 +1797,34 @@ mod tests {
         assert!(!receipt_path(string(&unwritten, "request_id")).exists());
         assert_eq!(recorded(name, &unwritten).unwrap(), Recorded::Absent);
         // A crash's leftover lock file is used, then removed, by the next use.
+        // Only Unix removes a lock file on release; elsewhere it is used and
+        // kept (`RequestLock`'s Drop, zerus-hfw2s.10).
         let leftover = request("WITNESS");
         let lock_path = root()
             .join("dsh/witness-locks")
             .join(format!("{}.lock", string(&leftover, "request_id")));
         fs::write(&lock_path, b"").unwrap();
         assert_eq!(recorded(name, &leftover).unwrap(), Recorded::Absent);
-        assert!(!lock_path.exists());
+        assert_eq!(lock_path.exists(), cfg!(not(unix)));
         // A lock on a file that a racing release removed or replaced after this
         // open is retried: the lock held is always on the file the path names.
+        // Elsewhere no release removes the file, so the path always names it,
+        // and a held lock still excludes another holder.
+        #[cfg(not(unix))]
+        {
+            let held_request = request("WITNESS");
+            let held_path = root()
+                .join("dsh/witness-locks")
+                .join(format!("{}.lock", string(&held_request, "request_id")));
+            let held = request_lock(string(&held_request, "request_id")).unwrap();
+            let other = fs::File::open(&held_path).unwrap();
+            let error = fs2::FileExt::try_lock_exclusive(&other).unwrap_err();
+            assert!(crate::platform::lock_contended(&error), "{error}");
+            drop(other);
+            drop(held);
+            assert!(held_path.exists());
+        }
+        #[cfg(unix)]
         for replace in [false, true] {
             let raced = request("WITNESS");
             let raced_path = root()
@@ -1792,13 +1846,17 @@ mod tests {
             drop(held);
             assert!(!raced_path.exists());
         }
-        // Every lock taken above was released and removed.
-        assert_eq!(
-            fs::read_dir(root().join("dsh/witness-locks"))
-                .unwrap()
-                .count(),
-            0
-        );
+        // Every lock taken above was released and removed. Elsewhere the files
+        // stay, and each one is free to lock again.
+        let locks: Vec<PathBuf> = fs::read_dir(root().join("dsh/witness-locks"))
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .collect();
+        assert_eq!(locks.is_empty(), cfg!(unix), "{locks:?}");
+        for lock in &locks {
+            let file = fs::File::open(lock).unwrap();
+            fs2::FileExt::try_lock_exclusive(&file).unwrap();
+        }
         // Before concurrency(): its last test rebinds the name to another session.
         deadlines(name);
         concurrency(name);
