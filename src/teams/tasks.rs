@@ -131,6 +131,47 @@ fn record(store: &mut Store, team: &str, node: u32, document: &TaskDoc) -> Resul
     )?;
     Ok(())
 }
+/// The returned key (zerus-63rru.97): an older replica document merged
+/// after the stop sweep brought the key back. Meeting it here clears it
+/// with the same write the sweep uses — only the key, once per meeting,
+/// never for a live team, never for a key bound again after the stop.
+pub(crate) fn clear_returned_key(
+    store: &Store,
+    task: &TaskRef,
+    team: &str,
+    home: &str,
+) -> Result<bool> {
+    use zerus_team_plan::model::TeamStatus;
+    let Some(status) = store.team(team)?.map(|t| t.status) else {
+        return Ok(false);
+    };
+    if !matches!(status, TeamStatus::Stopped | TeamStatus::Archived) {
+        return Ok(false);
+    }
+    if binding(store, task)?.is_some_and(|(id, _)| id == team) {
+        // Bound again after the stop: the key is live again.
+        return Ok(false);
+    }
+    let Ok(projects) =
+        zerus_replica::ProjectStore::open(&store.state().join("replica"), &task.project)
+    else {
+        return Ok(false);
+    };
+    let Ok(mut document) = projects.load(&task.uuid) else {
+        return Ok(false);
+    };
+    let view = document.view().map_err(storage)?;
+    let Some(key) = view.team else {
+        return Ok(false);
+    };
+    if key.team != team || key.home != home {
+        return Ok(false);
+    }
+    document.clear_team_silent().map_err(storage)?;
+    projects.save(&mut document).map_err(storage)?;
+    Ok(true)
+}
+
 pub(crate) fn binding(store: &Store, task: &TaskRef) -> Result<Option<(String, u32)>> {
     store.db.as_ref().map_or(Ok(None), |db| {
         db.query_row(

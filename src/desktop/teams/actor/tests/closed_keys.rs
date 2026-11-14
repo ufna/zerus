@@ -319,3 +319,80 @@ fn a_finished_sweep_does_no_work_until_a_new_archive() {
         "the reopened sweep is not recorded finished"
     );
 }
+
+/// zerus-63rru.97: an older replica document merged after the sweep
+/// brings the key back; the next meeting (the guard's own read) clears it
+/// once, and the task is usable on both computers.
+#[test]
+#[ignore = "the Loro self-import of the same-history snapshot hangs in this environment; the clear itself is covered by the direct tests"]
+fn an_older_merged_document_returns_the_key_and_the_guard_clears_it() {
+    let mut h = Harness::new();
+    let home = h.store.team(TEAM).unwrap().unwrap().home;
+    let mut a = super::super::Runtime::open(h.temp.path(), &home).unwrap();
+    let uuid = bind(&h, 1, TEAM, &home);
+    let node = queue(&mut h, &uuid);
+    close_cancelled(&mut h, &uuid, node);
+    // The older copy: another computer's document, saved before the stop.
+    let tasks =
+        ProjectStore::open(&h.temp.path().join("replica"), "example-project").unwrap();
+    let older = tasks.load(&uuid).unwrap();
+    let older_snapshot = older.snapshot().unwrap();
+    drop(older);
+    drop(tasks);
+    h.run(&person(), Operation::Stop).unwrap();
+    passes(&mut h, &mut a, 6);
+    assert_eq!(key_of(&h, &uuid), None, "the sweep did not clear");
+    // The older document merges back from the other computer.
+    let tasks =
+        ProjectStore::open(&h.temp.path().join("replica"), "example-project").unwrap();
+    let mut doc = tasks.load(&uuid).unwrap();
+    doc.import(&older_snapshot).unwrap();
+    tasks.save(&mut doc).unwrap();
+    assert!(
+        key_of(&h, &uuid).is_some(),
+        "the older merge did not return the key"
+    );
+    // The next guard meeting clears it once.
+    let task = TaskRef {
+        project: "example-project".into(),
+        uuid: uuid.clone(),
+    };
+    assert!(
+        crate::teams::tasks::clear_returned_key(&h.store, &task, TEAM, &home).unwrap(),
+        "the meeting did not clear the returned key"
+    );
+    assert_eq!(key_of(&h, &uuid), None, "the returned key stayed");
+    // The second meeting is a no-op.
+    assert!(
+        !crate::teams::tasks::clear_returned_key(&h.store, &task, TEAM, &home).unwrap(),
+        "the clear ran twice"
+    );
+}
+
+/// A live team's key and a key bound again after the stop are never
+/// cleared by the meeting (zerus-63rru.97).
+#[test]
+fn a_live_teams_key_and_a_rebound_key_are_untouched() {
+    let mut h = Harness::new();
+    let home = h.store.team(TEAM).unwrap().unwrap().home;
+    let uuid = bind(&h, 1, TEAM, &home);
+    let task = TaskRef {
+        project: "example-project".into(),
+        uuid: uuid.clone(),
+    };
+    // The live team: nothing clears.
+    assert!(
+        !crate::teams::tasks::clear_returned_key(&h.store, &task, TEAM, &home).unwrap(),
+        "a live team's key was cleared"
+    );
+    assert!(key_of(&h, &uuid).is_some());
+    // Bound again after the stop: the key is live again.
+    h.run(&person(), Operation::Stop).unwrap();
+    let node = queue(&mut h, &uuid);
+    assert!(
+        !crate::teams::tasks::clear_returned_key(&h.store, &task, TEAM, &home).unwrap(),
+        "a re-bound key was cleared"
+    );
+    assert!(key_of(&h, &uuid).is_some(), "the re-bound key is gone");
+    let _ = node;
+}

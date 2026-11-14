@@ -56,6 +56,20 @@ pub(crate) fn guard(caller: &Caller<'_>, task: &TaskDoc, action: &str) -> Result
     if matches!(action, "start" | "worker") && acknowledgement(task, &caller.actor)? {
         return Ok(());
     }
+    // zerus-63rru.97: the key returned on an older merged document for a
+    // team stopped or archived on this computer. Meeting it clears it with
+    // the sweep's own write, once; the task is usable again.
+    if let Some(link) = task.team().map_err(storage)? {
+        if let Ok(store) = Store::open(caller.state) {
+            let reference = TaskRef {
+                project: task.view().map_err(storage)?.project,
+                uuid: task.uuid().into(),
+            };
+            if super::clear_returned_key(&store, &reference, &link.team, &link.home)? {
+                return Ok(());
+            }
+        }
+    }
     Err(Problem::new(
         code::NOT_ALLOWED,
         format!(
