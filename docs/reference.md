@@ -4947,6 +4947,27 @@ not queued feedback and is never delivered by itself, and only the receipt
 moves the task back to In progress. Feedback to a task In progress
 (`--mode send`) stays an ordinary message.
 
+When recovery cannot settle an unknown delivery, the person can use
+`hgs task cancel-attempt REF --attempt UUID [--reason TEXT]`. This abandons
+only that exact unknown attempt, records a `Cancelled` fact and an
+`attempt_cancelled` audit entry, and releases its hold. Delivery remains
+unknown: the original request and evidence stay, the task keeps its stage,
+and no cancel notice or other native input is sent. An exact repeat observes
+the original disposition without another write; wrong or already-settled
+attempts refuse. Other unknown attempts still hold the task. A later send
+uses a new attempt, and an old request is never replayed.
+The reply contains one task row; read its audit through the bounded task
+history command.
+
+The task view shows each unknown attempt with **Abandon attempt…**, followed
+by a separate confirmation. A team-owned task requires the person's command
+on the team's home computer. Running, Paused, Draft and Planning teams refuse;
+Stopped, Finished, Archived or a missing home team allow the disposition.
+The team writer admission is retained across the task save. With preview off,
+an existing store is read without migration or Team data writes under the same
+admission; an absent store stays absent, and a schema needing migration refuses.
+The team key and its facts stay intact.
+
 Plain `task list` still returns every task for existing clients. With `--stage`
 and `--limit` (1–200) it returns one page of that stage in the same order and
 with the same rows, except that a prompt longer than 2 KiB is cut at a
@@ -5083,10 +5104,14 @@ never forwards a command whose handler tells the person from an agent that way
 - **Who counts as an agent:** a process that claims a session (`HGS_SESSION`
   and `HGS_RUN_ID`, proven or not), a resident DeepSeek tool call
   (`HGS_AGENT=dsh`), or a process a live session proves as its caller, a
-  Claude background job included.
+  Claude background job included. On Linux and macOS, the same readable
+  marked-ancestor refusal as local task commands runs before forwarding:
+  clearing the child's own session markers does not hide that ancestor.
+  This keeps the local interim ancestry check's bounds and limitations;
+  reparenting can sever the chain and grants no verified Person authority.
 - **What the agent does instead:** it runs `hgs task` on its own computer,
-  which reaches every computer's copy. A person's shell that inherited an
-  agent's variables can unset them.
+  which reaches every computer's copy. A person's shell outside the agent's
+  process tree can unset inherited agent variables.
 - **Unchanged:** tasks' own forwarding of `send` and `cancel` to the
   executor's computer (`--agent NODE/SESSION`).
 - **Still forwarded for an agent:** ordinary `answer` payloads, `interrupt`
