@@ -1,4 +1,4 @@
-import { createEffect, createMemo, createSignal, onCleanup } from "solid-js";
+import { createEffect, createMemo, createSignal, onCleanup, untrack } from "solid-js";
 import type { ActivitySource } from "../../store/activitySource";
 import type { TranscriptItem } from "./types";
 
@@ -12,6 +12,7 @@ export function createOwnMessageNavigation(port: {
   items(): readonly TranscriptItem[];
   pivot(): number;
   available(): boolean;
+  scrolling(): boolean;
   begin(): void;
   reveal(id: string): void;
 }) {
@@ -19,13 +20,15 @@ export function createOwnMessageNavigation(port: {
   const [searching, setSearching] = createSignal(false);
   const [highlight, setHighlight] = createSignal<string>();
   const [position, setPosition] = createSignal(0);
+  const [queued, setQueued] = createSignal<OwnMessageDirection>();
   let timer: ReturnType<typeof setTimeout> | undefined;
   let generation = 0, waiting = false;
-  const reset = () => {
+  const moved = () => {
     generation++; waiting = false; clearTimeout(timer);
     setSearching(false); setCursor(undefined); setHighlight(undefined);
     setPosition(n => n + 1);
   };
+  const reset = () => { moved(); setQueued(undefined); };
   createEffect(() => { port.source().target()?.id; reset(); });
   onCleanup(reset);
   const candidate = (direction: OwnMessageDirection) => {
@@ -37,9 +40,17 @@ export function createOwnMessageNavigation(port: {
       if (own(items[i])) return items[i].id;
     }
   };
-  const previous = createMemo(() => port.available() && !searching() &&
-    (candidate(-1) !== undefined || (!port.source().olderDone() && port.source().events().length > 0)));
-  const next = createMemo(() => port.available() && !searching() && candidate(1) !== undefined);
+  // The scroll owner releases after quiet and two stable frames. Until then
+  // keep the last direction snapshot, without subscribing to moving pivots.
+  const directions = createMemo((last: { previous: boolean; next: boolean }) => {
+    if (port.scrolling()) return last;
+    const ready = port.available() && !searching();
+    return {
+      previous: ready && (candidate(-1) !== undefined || (!port.source().olderDone() && port.source().events().length > 0)),
+      next: ready && candidate(1) !== undefined,
+    };
+  }, { previous: false, next: false }, { equals: (a, b) => a.previous === b.previous && a.next === b.next });
+  const previous = () => directions().previous, next = () => directions().next;
   const show = (id: string) => {
     setSearching(false); setCursor(id); setHighlight(id);
     clearTimeout(timer); timer = setTimeout(() => setHighlight(undefined), 1600);
@@ -68,17 +79,22 @@ export function createOwnMessageNavigation(port: {
       if (!source.loadingOlder()) setSearching(false);
     });
   });
-  return {
-    previous, next, loading: searching, highlight, reset,
-    moved() { reset(); },
-    navigate(direction: OwnMessageDirection) {
-      if (!(direction < 0 ? previous() : next())) return;
-      port.begin();
-      const id = candidate(direction);
-      if (id !== undefined) show(id);
-      else setSearching(true);
-    },
+  const navigate = (direction: OwnMessageDirection) => {
+    if (!(direction < 0 ? previous() : next())) return;
+    if (port.scrolling()) { setQueued(direction); return; }
+    if (!port.available()) return;
+    port.begin();
+    const id = candidate(direction);
+    if (id !== undefined) show(id);
+    else setSearching(true);
   };
+  createEffect(() => {
+    const direction = queued();
+    if (direction === undefined || port.scrolling()) return;
+    setQueued(undefined);
+    untrack(() => navigate(direction));
+  });
+  return { previous, next, loading: searching, highlight, reset, moved, navigate, cancelQueued: () => setQueued(undefined) };
 }
 
 export type OwnMessageNavigation = ReturnType<typeof createOwnMessageNavigation>;

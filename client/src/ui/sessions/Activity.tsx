@@ -972,7 +972,7 @@ export function ActivityView(props: { source?: ActivitySource }) {
   const settleReading = (before = false) => { if (before) reading.beforeChange(); else reading.changed(); };
   const scrollIntent = () => {
     if (!placed()) return; // Initial placement owns the hidden loading layout.
-    setLayoutHeld(true); motion.intent(); latestAfterScroll = false;
+    setLayoutHeld(true); ownNavigation.cancelQueued(); setOwnReveal(undefined); motion.intent(); latestAfterScroll = false;
     end.release(); setFollowing(false); reading.remember();
   };
   const latest = () => {
@@ -989,6 +989,7 @@ export function ActivityView(props: { source?: ActivitySource }) {
   const ownNavigation = createOwnMessageNavigation({
     source, items: () => view.items,
     available: () => placed() && !preview() && !restoring() && !layoutHeld(),
+    scrolling: layoutHeld,
     pivot: () => {
       const index = view.items.findIndex(item => `item-${item.id}` === ownPivot());
       return index < 0 ? view.items.length : index;
