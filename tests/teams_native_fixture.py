@@ -879,11 +879,17 @@ class TeamFixture:
                     continue
                 items = card.get('questions') or []
                 options = items[0].get('options') if len(items) == 1 else []
-                if card.get('source') == 'startup_terminal_choice' and options and options[0].get('label') == 'Trust and continue':
+                choice = options[0].get('label') if options else None
+                if card.get('source') == 'startup_terminal_choice' and self.agent == 'kimi' and choice is None:
+                    from test_kimi_approvals_native import trust_chooser_2_2
+                    pane = self.panes.get((member_id, card.get('question_id')), '')
+                    if trust_chooser_2_2(pane, view.get('cwd')):
+                        choice = 'Trust and continue'
+                if card.get('source') == 'startup_terminal_choice' and choice == 'Trust and continue':
                     subprocess.run(['tmux', 'send-keys', '-t', '=' + name + ':', 'Enter'], env=self.env, check=True)
                     answered.append(card.get('question_id'))
                     self.evidence.append('person-answers.jsonl', dict(member=member_id, source=card.get('source'),
-                                                                       terminal=True, label=options[0]['label']))
+                                                                       terminal=True, label=choice))
                     continue
                 accept = [o for o in options or [] if re.match(r'(yes|trust)\b', o.get('label', ''), re.I)]
                 if card.get('can_answer') and len(accept) == 1:

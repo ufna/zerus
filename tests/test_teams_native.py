@@ -832,6 +832,47 @@ class TeamsFixtureIsolation(unittest.TestCase):
         production = Path(__file__).resolve().parents[1] / 'src/platform/unix.rs'
         self.assertIn('"{home}/.local/bin:/opt/homebrew/bin:/usr/local/bin:{path}:', production.read_text())
 
+    def test_kimi_terminal_trust_answer_uses_the_exact_pane(self):
+        from types import SimpleNamespace
+        from test_kimi_approvals_native import FixtureControls
+        short = '/tmp/hgs-pause-x/project with spaces'
+        folder = short + '/' + 'x' * 80
+        card = dict(source='startup_terminal_choice', question_id='startup-choice:fixture', can_answer=False,
+                    questions=[dict(id='terminal', question='Trust this folder?', options=[])])
+        pending = dict(pending_questions=[card], runtime_state='live', process_state='running', activity='busy',
+                       conversation_id=None, first_message_can_send=False, run_id='run', cwd=folder)
+        ready = dict(pending, pending_questions=[], activity='idle', conversation_id='conversation')
+
+        def answer(pane, succeeds):
+            fx = fixture.TeamFixture.__new__(fixture.TeamFixture)
+            fx.agent, fx.env = 'kimi', {}
+            fx.after_refusal, fx.service_answers = {}, ()
+            fx.panes, fx.cards_seen = {}, {}
+            fx.sessions = {'lead': {'name': 'kimi/example/team'}}
+            fx.evidence = SimpleNamespace(append=mock.Mock())
+            fx.capture_card = lambda member, item: fx.panes.__setitem__((member, item['question_id']), pane)
+            fx.inspect = mock.Mock(side_effect=[pending, ready if succeeds else pending])
+            def wait(label, predicate, bound, step):
+                for _ in range(2):
+                    value = predicate()
+                    if value:
+                        return value
+                raise AssertionError('not ready')
+            fx.wait = wait
+            with mock.patch.object(fixture.subprocess, 'run') as run:
+                if succeeds:
+                    self.assertEqual(fx.answer_startup('lead'), ready)
+                else:
+                    with self.assertRaisesRegex(AssertionError, 'not ready'):
+                        fx.answer_startup('lead')
+            return run
+
+        chooser = FixtureControls.CHOOSER.replace('  ' + short, '  ' + folder[:77] + '\n  ' + folder[77:])
+        answered = answer(chooser, True)
+        answered.assert_called_once_with(['tmux', 'send-keys', '-t', '=kimi/example/team:', 'Enter'], env={}, check=True)
+        changed = chooser.replace('❯ Trust and continue', '  Trust and continue').replace('     Exit', '   ❯ Exit')
+        self.assertFalse(answer(changed, False).call_count, 'a changed selection must stay in Terminal for the person')
+
 
 class TeamsWaitingList(unittest.TestCase):
     """Every written class is selected or waiting, and the waiting cases' fixes are named
