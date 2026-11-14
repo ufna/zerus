@@ -10,6 +10,7 @@ use std::time::{Duration, Instant};
 const AFTER_ARCHIVE_GIT_TIME: Duration = Duration::from_secs(5);
 pub(super) const OWNERSHIP_GIT_TIME: Duration = Duration::from_secs(3);
 pub(super) const PREPARE_ARCHIVES_TIME: Duration = Duration::from_secs(2);
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 pub(crate) const AFTER_ARCHIVE_FIXED_TIME: Duration = AFTER_ARCHIVE_GIT_TIME
     .saturating_add(super::worktree_cleanup::AUTOMATIC_REMOVE_FIXED_TIME);
 

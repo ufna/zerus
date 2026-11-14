@@ -188,7 +188,9 @@ pub(crate) use {
     worktrees::{Control as WorktreeControl, Step as WorktreeStep},
 };
 mod worktree_cleanup;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 pub(crate) use worktree_cleanup::LEFTOVER_DELETE_TIME;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 pub(crate) use worktree_lifecycle::AFTER_ARCHIVE_FIXED_TIME;
 mod worktree_caches;
 mod worktree_inspection;

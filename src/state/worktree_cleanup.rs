@@ -31,6 +31,7 @@ pub(crate) const LEFTOVER_DELETE_TIME: Duration = Duration::from_secs(300);
 // Sequential automatic removal phases. Substeps capped by the review's total
 // are not charged again. Ownership is checked in review, admission, preparation
 // and the durable maintenance reservation, each with its own Git budget.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 pub(super) const AUTOMATIC_REMOVE_FIXED_TIME: Duration = REMOVE_PROBE_TIME
     .saturating_mul(2)
     .saturating_add(AUTOMATIC_LOCK_TIME.saturating_mul(2))
