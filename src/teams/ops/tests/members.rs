@@ -286,3 +286,46 @@ fn a_session_can_be_bound_in_another_team_once_its_membership_ended() {
         .unwrap();
     assert_eq!(rows, 0);
 }
+
+/// zerus-63rru.85 round 3: the service records a binding its own observation
+/// read as ended, so the store — not a settlement request's reason — shows
+/// the member unbound. The state stays Active, the binding's account,
+/// worktree and ownership nonce go with the session, and the durable handle
+/// is cleared so a later binding can write its own. Only the service writes
+/// it, and a second call is refused rather than a second write.
+#[test]
+fn the_service_records_an_ended_binding_as_unbound_once() {
+    let mut h = Harness::new();
+    let lead = h.bind("lead");
+    h.bind("m1");
+    let bound = h.store.member(TEAM, "m1").unwrap().unwrap();
+    assert!(bound.session.is_some());
+    assert!(!bound.account.is_empty());
+    assert!(!bound.worktree.is_empty());
+    assert!(!bound.ownership_nonce.is_empty());
+    h.run(&service(), handle("m1", HANDLE)).unwrap();
+    // Only the service records the end.
+    for actor in [&lead, &person()] {
+        refused(
+            h.run(actor, Operation::UnbindMember { member: "m1".into() }),
+            code::NOT_ALLOWED,
+        );
+    }
+    h.run(&service(), Operation::UnbindMember { member: "m1".into() })
+        .unwrap();
+    let m = h.store.member(TEAM, "m1").unwrap().unwrap();
+    assert_eq!(m.state, MemberState::Active);
+    assert!(m.session.is_none());
+    assert_eq!(m.account, "");
+    assert_eq!(m.worktree, "");
+    assert_eq!(m.ownership_nonce, "");
+    assert_eq!(h.store.member_handle(TEAM, "m1").unwrap(), None);
+    assert_eq!(h.store.member_session(TEAM, "m1").unwrap(), None);
+    // The end is recorded once: a repeated call changes nothing.
+    refused(
+        h.run(&service(), Operation::UnbindMember { member: "m1".into() }),
+        code::INVALID_STATE,
+    );
+    // The refusal wrote nothing.
+    assert!(h.store.member(TEAM, "m1").unwrap().unwrap().session.is_none());
+}

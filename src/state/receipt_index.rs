@@ -15,10 +15,12 @@ use std::sync::{
 };
 use std::time::{Duration, Instant};
 
+mod admission;
 mod migration;
 mod pin;
 mod point;
 mod question;
+pub(super) use admission::Wait as QuestionAdmission;
 pub(super) use point::{delivery_binding, delivery_receipt, DeliveryQuery};
 // The independently developed recovery consumer stacks on this interface.
 #[allow(unused_imports)]
@@ -30,6 +32,7 @@ pub(super) const PAGE_LIMIT: usize = 100;
 const EXAMINE: usize = 256;
 const ORIGINAL_BYTES: u64 = 256 * 1024;
 const DATABASE: &str = "delivery-receipts-v1.sqlite3";
+const READ_BUSY_WAIT: Duration = Duration::from_millis(20);
 // 4: the rebound trigger also moves a row's count between sources, so the
 // witness token stays exact across a source change (zerus-z5uax.1).
 const ROWSET_PROTOCOL: &str = "4";
@@ -366,6 +369,18 @@ pub(super) struct Catalog {
 }
 impl Catalog {
     fn open(state: &Path, create: bool) -> Result<Self> {
+        Self::open_with_timeout(state, create, READ_BUSY_WAIT)
+    }
+    fn read_until(state: &Path, deadline: Option<Instant>) -> Result<Self> {
+        let wait = deadline
+            .map(|d| {
+                d.saturating_duration_since(Instant::now())
+                    .min(READ_BUSY_WAIT)
+            })
+            .unwrap_or(READ_BUSY_WAIT);
+        Self::open_with_timeout(state, false, wait)
+    }
+    fn open_with_timeout(state: &Path, create: bool, wait: Duration) -> Result<Self> {
         if create {
             private_dir(state)?;
         }
@@ -414,8 +429,11 @@ impl Catalog {
         sql(db.busy_timeout(if create {
             Duration::from_millis(20)
         } else {
-            Duration::ZERO
+            wait
         }))?;
+        if create {
+            admission::install(&db)?;
+        }
         let verified = rowset_protocol(&db);
         if !create && !verified {
             return Err("Receipt index coverage is unverified".into());

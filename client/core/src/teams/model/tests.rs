@@ -6,6 +6,26 @@ const TEAM_A: &str = "aaaaaaaa-0000-4000-8000-000000000001";
 const TEAM_B: &str = "bbbbbbbb-0000-4000-8000-000000000002";
 const TEAM: &str = "00000000-0000-4000-8000-00000000beef";
 
+#[test]
+fn an_explicit_recheck_reads_and_publishes_an_unchanged_answer() {
+    let now = Instant::now();
+    let mut model = TeamsModel::default();
+    model.follow(
+        TeamsFollow {
+            list: true,
+            ..TeamsFollow::default()
+        },
+        now,
+    );
+    let read = model.next(now).unwrap();
+    let reply = list_reply();
+    assert_eq!(model.apply(&read, Ok(reply.clone()), now).len(), 1);
+    assert!(model.next(now).is_none());
+    model.recheck(now);
+    let read = model.next(now).expect("Read again is due immediately");
+    assert_eq!(model.apply(&read, Ok(reply), now).len(), 1);
+}
+
 /// The pinned CLI replies of package 5, copied beside the module so the branch
 /// runs before package 5 merges.
 fn fixture(name: &str) -> Value {

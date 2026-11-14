@@ -248,6 +248,7 @@ pub(super) fn guard(
     task: &TaskDoc,
     action: &str,
     args: &[String],
+    meeting: &mut bridge::Meeting<'_, '_>,
 ) -> Result<()> {
     let action = match action {
         "send" | "handoff" | "stage" | "target" | "start" | "worker" | "reopen" | "cancel"
@@ -256,10 +257,14 @@ pub(super) fn guard(
         _ => return Ok(()),
     };
     if !bridge::guarded(&config.state, &machines.here, task).map_err(problem)? {
+        // A non-live team's task is not guarded, but the meeting still
+        // clears a key returned after the stop sweep (zerus-63rru.97 F1).
+        bridge::meet(&config.state, &machines.here, task, meeting).map_err(problem)?;
         return Ok(());
     }
     bridge::guard(
         &caller(config, machines, args, true).map_err(problem)?,
+        meeting,
         task,
         action,
     )

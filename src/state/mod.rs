@@ -5,6 +5,7 @@
 mod answer_channel;
 mod agent_hint;
 mod archive;
+mod record_source;
 pub(crate) mod archive_catalog;
 mod archive_references;
 mod claude_trust;
@@ -74,6 +75,8 @@ mod service_worker;
 mod session_limits;
 pub(crate) mod session_id;
 mod session_index;
+// Inactive data foundation; no publisher, caller policy or startup wiring.
+mod process_index;
 mod labels;
 /// How every reader decides what the label index proves (zerus-ucck P3a);
 /// the native readers that need it outside this module run on Unix.
@@ -90,6 +93,7 @@ mod question_terminal;
 mod questions;
 mod codex_questions;
 mod codex_trust;
+mod codex_sandbox;
 mod codex_hooks_trust;
 mod codex_update;
 mod codex_goal_resume;
@@ -466,13 +470,13 @@ pub fn merge_listing_archives(mut box_value: Value, ids: &BTreeMap<String, Strin
     // state lock. Read the panes and the saved records under it as well, so a
     // listing sees a rename before it began or after it finished, never a
     // pane under the new name with its binding still under the old one: that
-    // session would list twice (zerus-gd02). Archive reconciliation already
-    // read both under this lock; the listing reuses those reads and releases
-    // the lock before it summarizes the sessions.
-    let ((snapshot, mut names), (archived, bindings)) = if root().exists() {
+    // session would list twice (zerus-gd02). Active reconciliation reads the
+    // bindings under this lock; summaries and the bounded archive preview
+    // are read after releasing it.
+    let ((snapshot, mut names), bindings) = if root().exists() {
         let _guard = lock(None)?;
         let (snapshot, names) = live_sessions()?;
-        let saved = if include_archives { archive::reconcile_locked(&snapshot)? } else { (Vec::new(), archive::reconcile_active_locked(&snapshot)?) };
+        let saved = archive::reconcile_active_locked(&snapshot)?;
         ((snapshot, names), saved)
     } else {
         (live_sessions()?, Default::default())
@@ -524,13 +528,15 @@ pub fn merge_listing_archives(mut box_value: Value, ids: &BTreeMap<String, Strin
             .ok_or("invalid session")?
             .extend(telemetry::unavailable().as_object().unwrap().clone());
     }
-    // Bounds question indexing for the whole listing.
+    let mut archive_page = if include_archives { Some(archive_catalog::preview(&marks)?) } else { None };
+    let archived: &[Value] = archive_page.as_ref().and_then(|page| page["sessions"].as_array()).map_or(&[], Vec::as_slice);
+    // Archive preparation does not consume the live question-indexing budget.
     let shared = Shared { marks: &marks, preferences: notification_preferences.as_ref(), keep_warm: keep_warm_settings.as_ref(), question_routing: question_routing.as_ref(), route_outcomes: route_outcomes.as_ref(), budget: read_marks::question_budget() };
     let mut process_work = processes::WorkSample::default();
     for record in bindings {
-        if archive::equivalent(&record, &archived) {
-            continue;
-        }
+        // An archive written before its binding was removed wins, as before.
+        // Consult only this preview so older archives never add listing I/O.
+        if archive::equivalent(&record, archived) { continue; }
         let name = string(&record, "name");
         // Live rows are the terminals' (P3b): a record finds its row by its
         // own terminal, and that row then lists under the record's label.
@@ -570,26 +576,14 @@ pub fn merge_listing_archives(mut box_value: Value, ids: &BTreeMap<String, Strin
         question_routing::enrich(&mut session, question_routing.as_ref());
         sessions.push(session);
     }
-    for record in archived {
-        let name = string(&record, "name");
-        let parts: Vec<&str> = name.splitn(3, '/').collect();
-        let mut session = json!({"name": name, "cmd": record["agent"], "project": parts.get(1),
-            "tag": parts.get(2), "attached": 0, "clients": [], "created": record["created"],
-            "state": "archived", "resumable": !string(&record, "conversation_id").is_empty(),
-            "archive_id": record["archive_id"], "archived_at": record["archived_at"]});
-        session.as_object_mut().unwrap().extend(
-            journal::summary(&record, false)
-                .as_object()
-                .unwrap()
-                .clone(),
-        );
-        read_marks::enrich_listing(&mut session, &marks, journal::journal_name(&record), Ok(Some(Vec::new())));
-        notifications::enrich(&mut session, notification_preferences.as_ref(), journal::journal_name(&record));
-        sessions.push(session);
+    if let Some(page) = archive_page.as_mut() {
+        sessions.append(page["sessions"].as_array_mut().ok_or("invalid archive page")?);
+        page.as_object_mut().unwrap().remove("sessions");
     }
     sessions.extend(dsh::snapshots()?);
     sessions.extend(opencode::snapshots()?);
     finish_rows(sessions, &marks, &names);
+    if let Some(page) = archive_page { box_value["archive_page"] = page; }
     Ok(box_value)
 }
 

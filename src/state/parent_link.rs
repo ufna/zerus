@@ -5,8 +5,9 @@
 //! the live tracked agent that launched or adopted it, proven by native process
 //! ancestry exactly as `hgs self` proves its caller. The child's computer is
 //! the link's only writer. The link is presentation and attention routing
-//! only: it never authorizes a send, answer, approval, stop or removal, and it
-//! never moves a session's project. Only a new child's initial placement
+//! only: by itself it never authorizes an action or moves a session's project.
+//! The explicit Kimi Compact-only exception separately proves the caller of
+//! the exact recorded launch parent. Only a new child's initial placement
 //! follows a parent this computer proved (zerus-d5twt).
 use super::*;
 use std::{fs, io::Read};
@@ -93,6 +94,23 @@ fn proven_link() -> Option<String> {
     let config = crate::config::Config::load().ok()?;
     let machine = observed_machine(&config)?;
     link_of(&record, &machine, config.host(), "launch").map(|link| link.to_string())
+}
+
+/// Proof for the Kimi cache chooser's explicit Compact-only exception. A
+/// recorded launch link alone grants nothing: reuse the launcher's native caller
+/// proof and this computer's existing identity, with all durable parent IDs.
+/// Names may change; siblings and ancestors never substitute for this parent.
+pub(super) fn caller_is_parent(child: &Value) -> bool {
+    let Some(parent) = listed(child).filter(|p| string(p, "source") == "launch") else {
+        return false;
+    };
+    let Some(caller) = proven_link().and_then(|raw| serde_json::from_str::<Value>(&raw).ok())
+    else {
+        return false;
+    };
+    ["machine", "session_id", "run_id", "conversation_id"]
+        .iter()
+        .all(|key| !string(&parent, key).is_empty() && parent[*key] == caller[*key])
 }
 
 /// A link another computer's hgs forwarded with this launch (zerus-sa9qn.7).
@@ -246,8 +264,8 @@ pub(crate) fn decorate(sessions: &mut [Value]) {
     }
 }
 
-/// Native questions only the person may answer: folder and hook trust.
-const PERSON_ONLY_QUESTIONS: [&str; 4] = ["claude-trust:", "codex-trust:", "kimi-trust:", "codex-hooks-trust:"];
+/// Native questions only the person may answer: folder/hook trust and sandbox setup.
+const PERSON_ONLY_QUESTIONS: [&str; 5] = ["codex-sandbox:", "claude-trust:", "codex-trust:", "kimi-trust:", "codex-hooks-trust:"];
 
 /// Whether a live row holds a request only the person can answer (spec 2.2):
 /// a tool or permission approval, folder or hook trust, or signing in. A
@@ -1416,7 +1434,7 @@ mod tests {
         assert!(!human_request(&row("input"), None));
         assert!(!human_request(&row("idle"), Some(&[])));
         let asked = |id: &str| vec![json!({"question_id": id})];
-        for id in ["claude-trust:abc", "codex-trust:abc", "kimi-trust:abc", "codex-hooks-trust:abc"] {
+        for id in ["codex-sandbox:abc", "claude-trust:abc", "codex-trust:abc", "kimi-trust:abc", "codex-hooks-trust:abc"] {
             assert!(human_request(&row("input"), Some(&asked(id))), "{id}");
         }
         assert!(!human_request(&row("input"), Some(&asked("toolu_ask_user"))));

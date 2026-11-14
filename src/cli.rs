@@ -1965,6 +1965,46 @@ fn person_only_forwarding(command: &str, args: &[String]) -> Result<()> {
     ))
 }
 
+/// Inspect only an agent's forwarded answer, before any SSH or capability
+/// probe. Other answer bytes pass on unchanged; people keep their original
+/// stdin. A private file retains bounded JSON for Windows' SSH relay too.
+fn forwarded_answer_input(command: &str, args: &[String]) -> Result<Option<fs::File>> {
+    use std::io::{Read, Seek, Write};
+    if routed_command(command, args) != Some("answer") || !agent_caller() {
+        return Ok(None);
+    }
+    // Match the native answer contract's 128 KiB bound.
+    let mut bytes = Vec::new();
+    std::io::stdin()
+        .lock()
+        .take(128 * 1024 + 1)
+        .read_to_end(&mut bytes)?;
+    if bytes.len() > 128 * 1024 {
+        return Err(Error::new(1, "answer payload exceeds128 KiB"));
+    }
+    if let Some(reason) = serde_json::from_slice::<Value>(&bytes)
+        .ok()
+        .and_then(|answer| {
+            let id = answer["question_id"].as_str()?;
+            if id.starts_with("codex-sandbox:") {
+                Some("Codex's sandbox setup needs the person's answer in Zerus or Terminal; an agent cannot forward this answer")
+            } else if id.starts_with("kimi-cache:") {
+                // Launch-parent proof is local to the exact child; it cannot
+                // authorize even Compact and continue through a remote hop.
+                Some("Kimi's context choice cannot be forwarded by an agent. A verified launch parent may choose Compact and continue only for that exact child locally; ask the person in Zerus or Terminal for a remote answer.")
+            } else {
+                None
+            }
+        })
+    {
+        return Err(Error::new(1, reason));
+    }
+    let mut input = tempfile::tempfile()?;
+    input.write_all(&bytes)?;
+    input.rewind()?;
+    Ok(Some(input))
+}
+
 /// The port Codex's browser sign-in waits on, on the signing computer.
 const CALLBACK_PORT: u16 = 1455;
 /// SSH options for a remote sign-in: this computer's loopback port 1455
@@ -2014,6 +2054,7 @@ fn remote_via(
 ) -> Result<i32> {
     // Every route to another computer passes here, before any ssh is built.
     person_only_forwarding(command, args)?;
+    let answer_input = forwarded_answer_input(command, args)?;
     if target.starts_with('-') || target.chars().any(char::is_whitespace) {
         return Err(Error::new(1, "invalid SSH host alias"));
     }
@@ -2292,7 +2333,11 @@ fn remote_via(
     }
     flags.push(target.into());
     flags.push(remote);
-    let rc = platform::wait_interactive(ssh.args(flags))?;
+    ssh.args(flags);
+    let rc = match answer_input {
+        Some(input) => platform::wait_interactive_with_input(&mut ssh, input)?,
+        None => platform::wait_interactive(&mut ssh)?,
+    };
     if rc == 255 {
         if link
             .as_ref()

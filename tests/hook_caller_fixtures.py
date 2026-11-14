@@ -109,6 +109,14 @@ def scripted_source():
 def lifecycle(test, event, env):
     import test_pause
     env = dict(env, HGS_TEST_BIN=str(test_pause.HGS))
+    if env.get('HGS_SESSION') and env.get('HGS_RUN_ID'):
+        record = test.binding(env['HGS_SESSION'])
+        if (record.get('agent') == 'claude' and record.get('run_id') == env['HGS_RUN_ID']
+                and record.get('pid') and record.get('process_start')):
+            # A no-hook launch publishes its record before its producer starts.
+            # Wait only for this current fixture run; stale/missing markers
+            # must still exercise the direct, unadmitted CLI path below.
+            test.wait(lambda: scripted_socket(test.root, env))
     # Missing or stale marker tests keep their direct, unadmitted CLI path.
     if scripted_socket(test.root, env):
         try: return run(test, event, env)

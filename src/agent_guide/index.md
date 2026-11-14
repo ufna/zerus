@@ -17,6 +17,9 @@ Session names look like provider/project/tag. [@h] marks an optional @alias.
   hgs guide team-lead         leading a team: inbox, decisions, queue
 
 Rules
+- Plain ls --json includes at most 50 recent archives. Its archive_page gives
+  the range/query and next_cursor for hgs archives --json --bounded; follow
+  that cursor to enumerate older archives. --no-archives omits the preview.
 - inspect prints over 100 KB of JSON: always select fields, never print it all.
 - A message arrives as ordinary user input. Begin it with who you are and
   your hgs self reference so the recipient can reply.

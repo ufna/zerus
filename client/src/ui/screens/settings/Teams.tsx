@@ -83,7 +83,8 @@ export function TeamsSection() {
             label={trNoop("Agent Teams (preview)")} onChange={change} />
         </Row>
         <Show when={state() === "unavailable"}>
-          <p class="set-group-hint" role="note" data-teams-unavailable>{tr("hgs is unavailable on this computer, so the preview cannot be changed.")}</p>
+          <p class="set-group-hint" role="note" data-teams-unavailable>{teams.readFailureFor("list")?.message ?? tr("hgs is unavailable on this computer, so the preview cannot be changed.")}</p>
+          <button type="button" class="btn small" disabled={busy()} onClick={() => void teams.recheck()}>{tr("Read again")}</button>
         </Show>
         <Show when={state() === "unknown"}>
           <p class="set-group-hint" role="status" data-teams-unknown>

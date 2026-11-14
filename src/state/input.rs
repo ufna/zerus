@@ -462,6 +462,9 @@ fn checked_bound_record_gate(
     if claude_trust::current(&record).is_some() {
         return Err(Gate::Waiting { reason: "Claude is waiting for folder trust approval. Choose an option in Activity or Terminal before sending a message.".into(), dialog: Some(Dialog::ClaudeTrust) });
     }
+    if codex_sandbox::current(&record).is_some() {
+        return Err(Gate::Waiting { reason: "Codex is waiting for your sandbox setup choice. Choose an option in Activity or Terminal before sending a message.".into(), dialog: None });
+    }
     if codex_trust::current(&record).is_some() {
         return Err(Gate::Waiting { reason: "Codex is waiting for folder trust approval. Choose an option in Activity or Terminal before sending a message.".into(), dialog: Some(Dialog::CodexTrust) });
     }
@@ -1695,8 +1698,8 @@ enum Failure {
 }
 
 /// What the receipt store already holds for a request ID, read under the
-/// input lock. Only a positively absent receipt lets a later refusal witness
-/// that nothing was offered; an existing one decides by itself.
+/// input lock. Public admission additionally checks exact negative evidence;
+/// every other existing record continues to decide by itself.
 enum Existing {
     Absent,
     /// The exact submitted acknowledgement: replayed as is.
@@ -1850,12 +1853,12 @@ fn submit_core(
         .join("input_receipts")
         .join(format!("{request_id}.json"));
     let mut guard = Some(lock(None).map_err(unknown)?);
-    match existing(&receipt_path, &digest, name) {
+    match refusal::admit(&receipt_path, &digest, name, &request_id, &request, retain_refusal) {
         Existing::Absent => {}
         Existing::Submitted(receipt) => return Ok(receipt),
         Existing::Unknown(error) => return Err(unknown(error)),
     }
-    // From here no receipt existed for this ID. A refusal before any settings
+    // From here no possible-input receipt existed for this ID. A refusal before any settings
     // key and before the receipt marker witnesses that nothing was offered;
     // once pending settings may have been typed, it is unknown.
     let mut typed = false;
@@ -1890,6 +1893,7 @@ fn submit_core(
     }
     // Pending settings may be typed here, whatever this returns.
     typed = effort::pending_applies(&record);
+    if retain_refusal && typed { refusal::prepare(&witness(String::new(), false, None)).map_err(unknown)?; }
     let mut record = effort::apply_pending(name, record).map_err(unknown)?;
     match origin {
         Origin::Recovery(id) => recovery::check_submission(&record, id).map_err(|e| refused(typed, e))?,
@@ -2081,9 +2085,13 @@ fn submit_core(
                 }
                 // Under the lock again: still this send's marker on the same
                 // run, and the composer still shows exactly what settled.
-                if !typing_ours(&read(name)?, &request_id, string(&record, "run_id")) {
+                let current = read(name)?;
+                if !typing_ours(&current, &request_id, string(&record, "run_id")) {
                     return Err("the session changed while the message settled; no Enter was pressed".into());
                 }
+                // Root was released during settle: only this fresh record can
+                // fence the remaining Enter. Keep the writer through the key.
+                terminating::check_mutation(&current)?;
                 if settle::still(terminal, &claim, &shown) {
                     break;
                 }

@@ -407,9 +407,33 @@ confirmed versus submitted/unknown interruption, original receipt recovery,
 loaded adapter capability and no replay. Activation adds the isolated latest
 native contract campaign and coordinator-owned Arch/Mac preview.
 
-The macOS audit-token/csops/argv path has only been cross-typechecked so far.
-Before `.4.8` activation it requires actual non-display private tests on a Mac
-(`zerus-cg5h.4.8.1`), including wrong/reused identities, loaded-image changes,
-ancestry and both compatibility directions. Neither a cross-check nor the
-ordinary GUI preview qualifies that native path. No live agent or owner
-display is needed for that prerequisite.
+The macOS audit-token/csops/argv path has native non-display controls in
+`src/desktop/task_controls/peer_macos/tests.rs` (`zerus-cg5h.4.8.1`). They use
+owned socket peers and resident supervisor/child processes, the actual loaded
+unit-test image, audit-token-bound kernel status/CodeDirectory hashes, native
+argv and birth/ancestry queries. Controls reject another peer, stale token
+versions and saved generations, witnessed same-birth exec, a different valid
+ad-hoc CodeDirectory, and unsigned helper execution. Saved-generation controls
+do not force system-wide PID reuse. The one ignored helper entry point is
+explicitly executed by the controls, not counted as a skipped qualification.
+
+Before activation, run these on a Mac with private configuration/state, a short
+temporary directory, cleared inherited `HGS_*`, and the shared heavy lock:
+
+```sh
+cargo +1.99.1 test --locked --bin hgs desktop::task_controls:: -j 4 -- --test-threads=4 --nocapture
+cargo +1.99.1 build --locked --bin hgs -j 4
+HGS_TEST_BIN="$CARGO_TARGET_DIR/debug/hgs" PYTHONPATH=tests:. python3 -m unittest test_task_control_service.InactiveBridge tests.test_task_controls.InactiveControlCommands -v
+```
+
+Record the exact source, loaded signing status/hash, results and target cleanup.
+The native test image is locally built; its exact loaded hash is the fixture's
+trust reference, not a claim about a published Developer ID build. Signing
+receipts describe the ad-hoc negative fixture; no on-disk hash or signature
+label substitutes for the production kernel loaded-code proof. The integration
+controls retain gate-off bytes and old/missing-service refusal without effects.
+
+This qualification does not activate `.4.8`: `TASK_CONTROLS` stays false and the
+non-Linux authority guard-export paths still refuse. A cross-check or ordinary
+GUI preview alone never qualifies the native path. No live agent or owner
+display is needed or used for these controls.

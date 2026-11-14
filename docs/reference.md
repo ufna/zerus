@@ -1405,7 +1405,29 @@ is archived. Corrupt host preferences remain unknown. Native pages keep their
 768 KiB, within the 1 MiB response bound, so a valid 384 KiB preference can still
 be read. The compatibility preview remains capped at 128 KiB and omits an
 oversized row.
-The legacy `ls --json` default remains compatible. The native, read-only ABI is:
+Plain `ls --json` retains archived rows with the same session fields, including
+`archive_id`, `archived_at` and native action availability, but includes only a
+recent preview: at most 50 archives in `(archived_at, archive_id)` descending
+order, subject to the archive page's byte budget. Live and Saved rows remain
+complete. The additive host-level `archive_page` describes this preview without
+duplicating its rows: `total`, `total_capped`, `next_cursor`, `previous_cursor`,
+`position`, `from`, `until`, `query`, and `command: ["archives","--json","--bounded"]`.
+Its total counts at most 50 archives; `total_capped: true` means a lower bound,
+and an empty `next_cursor` means there are no older rows. To continue, pass
+`next_cursor` as `cursor` with the same range/query to the command in the
+descriptor. New completions appear on Refresh; additions do not shift a
+continuation's date/ID keyset. Agents must follow this cursor to enumerate the
+whole archive. `--no-archives` continues to omit archives and the preview
+descriptor, retaining `archive_paging` and `archive_revision` for client discovery.
+Only the preview's rows open summaries or check transcript metadata for actions;
+ordinary indexed polls do the same bounded work with 50 or 20,000 archives.
+Initial index creation and directory-generation reconciliation retain the
+existing one-time metadata indexing described below.
+`hgs status` forwards the preview's count as `sessions.archived`, with additive
+`archived_total_capped` when a preview is present; its text shows `50+ archived`
+for a capped count.
+
+The native, read-only archive ABI is:
 
 ```sh
 printf '%s' '{"from":0,"until":253402300800,"limit":50,"cursor":"","query":""}' | hgs archives --json
@@ -2078,6 +2100,14 @@ Reading older history preserves scroll and selection; **Jump to latest** returns
 to live events without resizing the timeline. Its double-down-arrow icon sits beside
 Voice in the composer toolbar, outside the messages; the tooltip includes the
 number of new events. Subagents use the same icon in their own toolbar.
+The adjacent up/down buttons jump between this session's messages from you,
+including phone text and recordings, and briefly outline the destination.
+They skip agent replies, tools, system notices, peer messages and inherited
+history. Previous reads older pages one at a time until it finds your message
+or reaches the end, showing a spinner while reading. A direction is disabled
+when no matching message remains. The default shortcuts are
+**Ctrl+Alt+Shift+Up/Down** (**Command+Option+Shift+Up/Down** on macOS);
+Settings > Keyboard shortcuts can change them without changing composer keys.
 Pressing Enter on a session or subagent row opens Activity and performs the same
 jump. Double-clicking a subagent row also jumps to latest; double-clicking a
 session row toggles its compact presentation.
@@ -2260,6 +2290,15 @@ can reconcile that family synchronously, then must validate every original and
 drain a complete snapshot before treating recovery as complete. A cursor from an
 incomplete snapshot requires a fresh chain after migration finishes. Locator
 coverage alone never proves an answer's submission.
+Codex terminal availability uses the same completed inspection snapshot and
+rechecks the live terminal identity without starting another receipt migration.
+Receipt readers open SQLite read-only with a bounded lock wait; a question
+inspection caps that wait at its remaining deadline. Actual answer input still
+requires fresh receipt recovery and the terminal's exact pending-question check.
+An explicit answer shares one 750 ms receipt-write busy-wait deadline across
+its nested checks and connections. Expiry before admission refuses without
+input; it never certifies stale coverage. Inspection retains its separate short
+read budget.
 
 Reads from the selected remote machine show a yellow loading circle beside the
 session name only after two seconds. It remains visible while an actual read is
@@ -2417,17 +2456,24 @@ An ordinary public terminal send with a live `NotOffered` witness also retains
 an additive `refusal_schema: 1`, `status: refused_before_input` record in
 `input_receipts/<request_id>.json`, under the original input lock and before any
 settings or message input. It binds the exact request ID, session, run,
-conversation, stdin digest and terminal transport. Publication never replaces
-an existing record. The record is at most 8 KiB; its reason keeps only the first
-1024 UTF-8 bytes of the first line, without control characters, and no message
-or attachment body. The original request UUID stays spent after the refusal.
+conversation, stdin digest and terminal transport. The record is at most 8 KiB;
+its reason keeps only the first 1024 UTF-8 bytes of the first line, without
+control characters, and no message
+or attachment body. This exact negative evidence does not spend the request
+UUID. A deliberate public send with the same UUID and exactly matching session,
+run, conversation, stdin digest and terminal transport checks the ordinary
+guards again. Under the same input lock, a renewed refusal atomically replaces
+the matching negative; reaching input atomically replaces it with the ordinary
+input receipt before typing. A different digest remains a content conflict;
+different identities, malformed or unreadable evidence and any non-refusal
+record keep their existing refusal or submitted-receipt behavior.
 After the child drains, the desktop retains this exact refusal as a bounded
 diagnostic on its Unknown receipt and shows its reason in Activity, including
 after read-only recovery. Known native reasons are translated in the English
 and Russian interfaces; other native diagnostics remain verbatim. This negative
-record never counts as submission, releases no retry authority and never clears
-the draft. Missing, mismatched or unreadable evidence and possible prior input
-remain Unknown. Only exact `submitted` evidence can mark the message delivered.
+record never counts as submission, authorizes no automatic desktop retry and
+never clears the draft. Missing, mismatched or unreadable evidence and possible
+prior input remain Unknown. Only exact `submitted` evidence can mark the message delivered.
 For Claude and Kimi messages ending in a literal backslash, the paste includes a
 final newline so the single Enter submits the unchanged message instead of
 activating the agent's backslash-Enter line continuation. This is verified
@@ -2649,9 +2695,20 @@ its original submitted or uncertain receipt is retained. A newer native input
 acceptance or the chooser disappearing clears this observation; an earlier turn
 ending does not accept the held message. The person's existing answer path stays
 available only with verified writable terminal mode; otherwise the options are
-read-only. Local agent callers cannot answer this source, and automatic approvals
-and question routing exclude it. Remote CLI answers retain their existing generic
-authority; a person-only remote boundary remains separate follow-up work.
+read-only. A verified agent caller of this child's exact recorded launch parent
+(`source=launch`) may explicitly answer **Compact and continue** only. This proof
+applies on the child's computer. The local machine, parent
+session/run/conversation and original child question hash/run/conversation must
+all match; a link or environment markers alone do not prove the caller. Siblings,
+grandparents, unrelated agents and adopted/manual/claimed/forwarded parent links
+cannot answer; assigning a parent grants no such authority. The exception never
+selects Start a new session, Continue as-is or Don't ask me again,
+and never retypes the held message. Each navigation step rechecks the parent;
+the existing durable receipt prevents a second input on replay or an uncertain
+result. The person's choices in Zerus or Terminal stay unchanged. Automatic
+approvals and question routing still exclude this chooser. Remote CLI answers
+retain their existing generic authority; a person-only remote boundary remains
+separate follow-up work.
 App-owned desktop and Android dialog action rows place **Cancel**, **Close** or
 the equivalent dismissal at the far right, after the available actions. Long
 Android rows wrap, keeping dismissal last and visible with larger text. Destructive
@@ -3551,9 +3608,13 @@ reads one; only members that list the kind exchange them. `swarm get` lists
 the ID form as `projects[].session_ids` ("machine\nsession ID") only while the
 operation a twin mirrors is still the selected label membership, so any later
 move by label, from any hgs or desktop, hides it. `swarm get` also reports
-`membership_by_id {ready, missing}`. It is ready when every machine of the
-catalog is this computer or a peer whose last sync listed the kind; any other
-machine fails closed. Desktops and the Rust mobile connector read the ID form
+`membership_by_id {ready, missing}`. It is ready when primary data is available
+and every machine of the catalog is this computer or a peer whose last verified
+hello listed `session_id_memberships_v1`. The older `session_id` twins capability
+alone is insufficient. Primary-capability observations are node-bound and kept
+separately in the bounded `swarm/session-id-membership-peers.json`; existing
+twins observations never initialize that evidence. Desktops and the Rust mobile
+connector read the ID form
 only when it is ready. The connector keeps sessions with the same label separate
 by ID; a missing or invalid session ID never falls back to that label's project.
 With a legacy catalog, only unique labels receive label-based membership; twins
@@ -3571,6 +3632,12 @@ lock without replacing an existing ID record. An exact primary null/conflict
 means unassigned; only an absent ID record allows name membership fallback.
 Unreadable primary data stays unavailable and is not repaired automatically.
 Older builds preserve this file but cannot edit its ID grouping.
+Native project queries and assignments for a verified legacy record without a
+session ID continue through the name catalog when primary data is unavailable.
+An ID-bearing native record still requires primary evidence, including when a
+request omits its session ID. Missing, null and empty ID fields retain legacy
+behavior; malformed native IDs refuse. Legacy operations leave unavailable
+primary data untouched.
 
 The `session-labels-v1` transition gate requires fresh positives from this
 computer, every configured peer and every catalog machine. An unaddressed,
@@ -5016,10 +5083,23 @@ never forwards a command whose handler tells the person from an agent that way
   agent's variables can unset them.
 - **Unchanged:** tasks' own forwarding of `send` and `cancel` to the
   executor's computer (`--agent NODE/SESSION`).
-- **Still forwarded for an agent:** `answer`, `interrupt` and terminal input
-  act the same for an agent and the person; `wait` acts on its ticket;
+- **Still forwarded for an agent:** ordinary `answer` payloads, `interrupt`
+  and terminal input; the answer-source exceptions are below. `wait` acts on
+  its ticket;
   `parent` and `wait begin` refuse a caller the other computer cannot see;
   `desktop` and `approval-log` refuse every other computer.
+
+An agent cannot forward an `answer` whose outer `question_id` starts with
+`codex-sandbox:` or `kimi-cache:`. The check runs locally before any SSH or
+peer capability probe, through the same routes listed above. Agent answer
+input is bounded to 128 KiB; other answer sources retain their exact original
+bytes. Person and GUI answers keep their existing forwarding path.
+
+Any permission for a verified launch parent to choose **Compact and continue**
+in Kimi's Cache expired chooser is local to that exact child. This proof does
+not cross computers, so every agent-originated remote answer to this chooser
+refuses, including that parent's Compact choice. Ask the person to answer in
+Zerus or Terminal instead. This does not change other answer sources.
 
 This guards against accidental agent use, not against an agent that clears its
 own environment. Forwarding a verified caller instead is future work.
@@ -7891,7 +7971,10 @@ used for different content`, or `This request ID was already used for another
 message` for DeepSeek and OpenCode) and delivers nothing. Without that receipt,
 for example when an earlier attempt stopped before the recipient recorded it or
 the receipt is gone, the retry is a new delivery under the ordinary guards,
-even if an earlier attempt arrived. The source ledger retains attempts for 30
+even if an earlier attempt arrived. An exact terminal `refused_before_input`
+record also permits a deliberate retry with its original UUID and unchanged
+binding, under those same guards; it proves that attempt typed nothing and is
+never a submitted receipt. The source ledger retains attempts for 30
 days. If the source ledger still has a conflicting entry for the same native
 sender and request ID, hgs warns that attribution could not be recorded and
 still forwards the send under the ordinary guards. A refusal says nothing about
@@ -8354,6 +8437,16 @@ reports `running`, `ownership`, `configuration`, executable `version`, schema,
 generation/epoch, pending counts, component state and incomplete upstream
 coverage. IPC connectivity does not establish peer freshness. An absent service
 reports `running:false`; an unsafe or incompatible endpoint is an error.
+Before a status/watch projection or ordinary command, the actor checks its
+original configuration, generation and epoch against the durable service row.
+Missing, unreadable or changed metadata stops admission and drains that actor
+through the existing shutdown path. It never adopts another opener's epoch or
+advertises its cached scope as current. A later service starts with a fresh
+scope; retained original results still require exact scoped, read-only queries.
+Operation recovery also checks the current service epoch inside its write
+transaction before changing attempts, so an old actor cannot mark a newer
+service's reserved work Unknown.
+Retiring an old Unix listener preserves a later socket or file at its endpoint.
 
 `serve` holds an exclusive OS file lock under `HGS_STATE_DIR/desktop`, opens the
 private versioned `state.sqlite3` and serves a same-user Unix socket or Windows

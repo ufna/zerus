@@ -173,6 +173,15 @@ fi
 exit 97
 '''
 
+KIMI_FD = r'''#!/bin/bash
+printf '%s\tfd %s\n' "$(date +%s.%N)" "$*" >> @LOGS@/fd-stand-in.log
+if [[ $# -eq 1 && "${1:-}" == "--version" ]]; then
+  printf 'fd fixture\n'
+  exit 0
+fi
+exit 97
+'''
+
 
 def now():
     return time.monotonic()
@@ -561,10 +570,22 @@ class TeamFixture:
                             .replace('@LOGS@', shlex.quote(str(self.evidence.folder))))
             path.chmod(0o755)
         if self.agent == 'kimi':
-            path = r / 'bin/node'
+            path = r / 'home/.local/bin/node'
             path.write_text(KIMI_NODE.replace('@LOGS@', shlex.quote(str(self.evidence.folder)))
                             .replace('@VALUE@', shlex.quote(json.dumps(kimi_inspection()))))
             path.chmod(0o755)
+            fd = r / 'home/.local/bin/fd'
+            fd.write_text(KIMI_FD.replace('@LOGS@', shlex.quote(str(self.evidence.folder))))
+            fd.chmod(0o755)
+            image = r / 'kimi-native'
+            shutil.copyfile(self.native, image)
+            image.chmod(0o700)
+            import hashlib
+            with self.native.open('rb') as source, image.open('rb') as copied:
+                self.native_sha256 = hashlib.file_digest(source, 'sha256').hexdigest()
+                if hashlib.file_digest(copied, 'sha256').hexdigest() != self.native_sha256:
+                    raise AssertionError('the private Kimi image differs from the pinned download')
+            self.native = image.resolve()
         # The wrappers log straight into the evidence folder, so their logs survive a
         # run that is killed; nothing copies them at the end.
         for log in ('tmux-calls.log', 'refused-calls.log'):
@@ -608,6 +629,11 @@ class TeamFixture:
         for name in ('tmux', 'ssh', 'scp', 'systemd-run', 'hgs'):
             if shutil.which(name, path=env['PATH']) != f'{r}/bin/{name}':
                 failures.append('resolves ' + name)
+        if self.agent == 'kimi':
+            for name in ('node', 'fd'):
+                expected = Path(env['HOME']) / '.local/bin' / name
+                if shutil.which(name, path=env['PATH']) != str(expected):
+                    failures.append('resolves ' + name)
         sock = Path(env['HGS_STATE_DIR']) / 'desktop/service.sock'
         if len(str(sock).encode()) >= 104:
             failures.append('service socket path length')
@@ -898,11 +924,17 @@ class TeamFixture:
                     continue
                 items = card.get('questions') or []
                 options = items[0].get('options') if len(items) == 1 else []
-                if card.get('source') == 'startup_terminal_choice' and options and options[0].get('label') == 'Trust and continue':
+                choice = options[0].get('label') if options else None
+                if card.get('source') == 'startup_terminal_choice' and self.agent == 'kimi' and choice is None:
+                    from test_kimi_approvals_native import trust_chooser_2_2
+                    pane = self.panes.get((member_id, card.get('question_id')), '')
+                    if trust_chooser_2_2(pane, view.get('cwd')):
+                        choice = 'Trust and continue'
+                if card.get('source') == 'startup_terminal_choice' and choice == 'Trust and continue':
                     subprocess.run(['tmux', 'send-keys', '-t', '=' + name + ':', 'Enter'], env=self.env, check=True)
                     answered.append(card.get('question_id'))
                     self.evidence.append('person-answers.jsonl', dict(member=member_id, source=card.get('source'),
-                                                                       terminal=True, label=options[0]['label']))
+                                                                       terminal=True, label=choice))
                     continue
                 accept = [o for o in options or [] if re.match(r'(yes|trust)\b', o.get('label', ''), re.I)]
                 if card.get('can_answer') and len(accept) == 1:

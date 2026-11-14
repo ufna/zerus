@@ -92,7 +92,7 @@ pub(super) fn stopped_with_conditions() -> Harness {
 const LAST: i64 = NOW + 2 * 3_600_000;
 
 /// A stopped team shows its service items (current only while the service
-/// runs; here its state is unknown), its key refusals newest first and its
+/// runs; here no service answers), its key refusals newest first and its
 /// refused cancels, each a page with the count of the rest.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 #[test]
@@ -104,7 +104,7 @@ fn a_stopped_teams_status_names_its_service_items_and_refusals() {
         .unwrap()
         .remove(0);
     let reply = status(&harness);
-    assert_eq!(reply["service_running"], Value::Null);
+    assert_eq!(reply["service_running"], Value::Bool(false));
     assert_eq!(
         reply["service_items"],
         json!({

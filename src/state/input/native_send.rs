@@ -664,9 +664,17 @@ mod tests {
         // post-publication refusal persistence for both kinds of gate.
         let mut original = format!("fn submit_core({body}");
         // The public send's durable negative adds only a retention parameter
-        // and routes the same two live witnesses through its publisher. Keep
+        // and routes the same two live witnesses through its publisher. Exact
+        // negative retries re-enter the guards and retire before settings input. Keep
         // the previous complete core hash and all delivery guards unchanged.
+        // The final Enter fence adds only this fresh-record check after the
+        // unlocked settle. The actual-CLI interleaving test pins its behavior.
         for (retained, previous) in [
+            ("                let current = read(name)?;\n                if !typing_ours(&current, &request_id, string(&record, \"run_id\")) {", "                if !typing_ours(&read(name)?, &request_id, string(&record, \"run_id\")) {"),
+            ("                // Root was released during settle: only this fresh record can\n                // fence the remaining Enter. Keep the writer through the key.\n                terminating::check_mutation(&current)?;\n", ""),
+            ("match refusal::admit(&receipt_path, &digest, name, &request_id, &request, retain_refusal)", "match existing(&receipt_path, &digest, name)"),
+            ("// From here no possible-input receipt existed for this ID.", "// From here no receipt existed for this ID."),
+            ("    if retain_refusal && typed { refusal::prepare(&witness(String::new(), false, None)).map_err(unknown)?; }\n", ""),
             ("    origin: Origin,\n    retain_refusal: bool,\n", "    origin: Origin,\n"),
             ("remember_before_input(typed, witness(reason, false, None), retain_refusal)", "before_input(typed, witness(reason, false, None))"),
             ("remember_before_input(typed, witness(gate.reason(), waiting, dialog), retain_refusal)", "before_input(typed, witness(gate.reason(), waiting, dialog))"),

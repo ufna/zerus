@@ -473,8 +473,11 @@ impl Git {
                     PathBuf::from("git")
                 }
             },
-            path: path
-                .canonicalize()
+            // Not `canonicalize`: on Windows it returns a verbatim `\\?\` path,
+            // where `/` is an ordinary character, and Git appends `/HEAD` and
+            // `/objects` to `--git-dir`, so it finds no repository there
+            // (zerus-63rru.111). The plain form names the same directory.
+            path: crate::platform::canonical(path)
                 .map_err(|e| unavailable(format!("Cannot open repository: {e}")))?,
             common_dir,
             hooks: tempfile::tempdir()
@@ -1519,6 +1522,30 @@ mod tests {
             assert!(supported_version(version.as_bytes()), "{version}");
         }
         assert_eq!(before, (f.refs(), snapshot(&f.main)));
+    }
+
+    /// Windows canonicalizes to a verbatim `\\?\` path, which Git cannot use
+    /// as `--git-dir`: it refused every repository-scoped command with
+    /// "--local can only be used inside a git repository" (zerus-63rru.111).
+    #[cfg(windows)]
+    #[test]
+    fn the_repository_reaches_git_as_a_plain_path() {
+        let f = Fixture::new();
+        let verbatim = f.repo.git_dir.canonicalize().unwrap();
+        assert!(
+            verbatim.to_string_lossy().starts_with(r"\\?\"),
+            "{verbatim:?}"
+        );
+        let git = Git::repo(&f.repo).unwrap();
+        assert!(
+            !git.path.to_string_lossy().starts_with(r"\\?\"),
+            "{:?}",
+            git.path
+        );
+        assert_eq!(git.path, crate::platform::canonical(&verbatim).unwrap());
+        assert!(!branch_exists(&f.repo, "integrate/team").unwrap());
+        create_branch(&f.repo, "integrate/team", &f.base).unwrap();
+        assert_eq!(f.tip(), f.base);
     }
 
     #[cfg(unix)]

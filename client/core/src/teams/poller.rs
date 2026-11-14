@@ -108,6 +108,12 @@ impl TeamsPoller {
         self.shared.wake.notify_all();
     }
 
+    /// Reads and publishes every followed view again for an explicit retry.
+    pub fn recheck(&self) {
+        self.shared.lock().model.recheck(Instant::now());
+        self.shared.wake.notify_all();
+    }
+
     /// Asks for one page of a followed key by its cursor; the page replaces
     /// the shown one. False when the key is not followed or the cursor is not
     /// a page token.

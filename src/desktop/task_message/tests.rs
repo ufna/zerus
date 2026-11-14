@@ -1162,15 +1162,32 @@ mod actor {
             .unwrap()
         }
         fn until(&mut self, what: &str, done: impl Fn(&Self) -> bool) {
-            let until = Instant::now() + Duration::from_secs(8);
+            let started = Instant::now();
+            let until = started + Duration::from_secs(8);
+            let mut polls = 0;
+            let mut longest_poll = Duration::ZERO;
+            let mut status = self.runtime.status();
+            let mut progress = std::collections::VecDeque::from([(0, status.clone())]);
             while !done(self) {
                 assert!(
                     Instant::now() < until,
-                    "timed out: {what}, {}",
-                    self.runtime.status()
+                    "timed out: {what}, {}; elapsed={:?}, polls={polls}, longest_poll={longest_poll:?}, progress={progress:?}",
+                    self.runtime.status(),
+                    started.elapsed()
                 );
+                let poll_started = Instant::now();
                 self.runtime
                     .poll(&mut self.store, Some(self.exclusion.clone()));
+                longest_poll = longest_poll.max(poll_started.elapsed());
+                polls += 1;
+                let current = self.runtime.status();
+                if current != status {
+                    if progress.len() == 64 {
+                        progress.pop_front();
+                    }
+                    progress.push_back((started.elapsed().as_millis(), current.clone()));
+                    status = current;
+                }
                 std::thread::sleep(Duration::from_millis(2));
             }
         }
@@ -1951,6 +1968,22 @@ mod actor {
             );
             f.runtime.request_stop();
             let _ = release.send(());
+            // Retire one canceled original per actor poll. Keep the existing wait
+            // bound for each decrease, rather than for the whole 32-original queue.
+            // Status is cached; read the durable charge count before the first poll.
+            let started = Instant::now();
+            let mut active = super::super::reservation_budget::budget(&f.store.db).2;
+            while active > 0 {
+                f.until("next original charge retires", |f| {
+                    super::super::reservation_budget::budget(&f.store.db).2 < active
+                });
+                let remaining = super::super::reservation_budget::budget(&f.store.db).2;
+                eprintln!(
+                    "CAPACITY_RETIRE_PROGRESS elapsed={:?}, active={active}, remaining={remaining}",
+                    started.elapsed()
+                );
+                active = remaining;
+            }
             f.until("original resources settle", |f| f.runtime.drained());
             assert_eq!(
                 super::super::reservation_budget::budget(&f.store.db),
@@ -3160,10 +3193,33 @@ mod actor {
                             let _ = entered.send(());
                             let _ = held.recv_timeout(Duration::from_secs(10));
                         });
-                        let started = Instant::now();
+                        let delayed = matches!(case, "deadline" | "late scan" | "late empty scan");
+                        let (starting, start) = std::sync::mpsc::channel::<()>();
+                        let (start_now, start_gate) = std::sync::mpsc::channel::<()>();
+                        if delayed {
+                            at(&original, staging::ReviewPoint::BeforeDeadline, move || {
+                                let _ = starting.send(());
+                                let _ = start_gate.recv_timeout(Duration::from_secs(10));
+                            });
+                        }
+                        // Delay this worker past the old queue-based deadline.
+                        // The hook is scoped to this request, so other reviews run.
+                        let queued = Instant::now();
                         let queue =
                             f.send_release(&f.release_of(&original, "orphaned", observed), None);
+                        if delayed {
+                            start.recv_timeout(Duration::from_secs(10)).unwrap();
+                            std::thread::sleep(
+                                (queued + limit + Duration::from_millis(100))
+                                    .saturating_duration_since(Instant::now()),
+                            );
+                            start_now.send(()).unwrap();
+                        }
                         wait.recv_timeout(Duration::from_secs(10)).unwrap();
+                        // This acknowledgement follows the actual worker start.
+                        // Its full limit from here therefore crosses that deadline.
+                        let observed_at = Instant::now();
+                        eprintln!("REVIEW_CLOCK absent={absent}; case={case}; delayed_start={delayed}; queued_elapsed={:?}; limit={limit:?}", queued.elapsed());
                         match case {
                             "stop" => f.runtime.request_stop(),
                             "revoke" => {
@@ -3174,8 +3230,7 @@ mod actor {
                                 f.runtime.poll(&mut f.store, Some(f.exclusion.clone()));
                             }
                             _ => std::thread::sleep(
-                                (started + limit + Duration::from_millis(100))
-                                    .saturating_duration_since(Instant::now()),
+                                (observed_at + limit).saturating_duration_since(Instant::now()),
                             ),
                         }
                         resume.send(()).unwrap();

@@ -222,6 +222,26 @@ fn continuation_fixture() {
     assert!(prepare(SameConversation).is_ok());
 }
 
+/// `path` below `root`, its components joined with `/` on every platform:
+/// `Path::display` would join them with `\` on Windows (zerus-63rru.114).
+fn relative(path: &std::path::Path, root: &std::path::Path) -> String {
+    path.strip_prefix(root)
+        .unwrap()
+        .components()
+        .map(|part| part.as_os_str().to_str().unwrap())
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+#[cfg(windows)]
+#[test]
+fn source_paths_are_named_with_slashes_on_windows() {
+    let root = std::path::Path::new(r"C:\checkout\src");
+    let path = root.join("tasks").join("team_deliver").join("tests.rs");
+    assert!(path.display().to_string().contains('\\'));
+    assert_eq!(relative(&path, root), "tasks/team_deliver/tests.rs");
+}
+
 /// zerus-63rru.64: only the team route reaches the comparison by
 /// conversation. Every use of `Continuation::SameConversation` in the source
 /// is in the comparison itself or in team-deliver; every other caller of the
@@ -237,8 +257,7 @@ fn only_the_team_route_reaches_the_conversation_comparison() {
                 let text = std::fs::read_to_string(&path).unwrap();
                 let uses = text.matches("Continuation::SameConversation").count();
                 if uses > 0 {
-                    let relative = path.strip_prefix(root).unwrap().display().to_string();
-                    found.push((relative, uses));
+                    found.push((relative(&path, root), uses));
                 }
             }
         }

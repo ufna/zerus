@@ -28,7 +28,12 @@ fn acknowledgement(task: &TaskDoc, actor: &TaskActor) -> Result<bool> {
 }
 
 /// An agent decides through hgs team; only the service drives a team task.
-pub(crate) fn guard(caller: &Caller<'_>, task: &TaskDoc, action: &str) -> Result<()> {
+pub(crate) fn guard(
+    caller: &Caller<'_>,
+    meeting: &mut Meeting<'_, '_>,
+    task: &TaskDoc,
+    action: &str,
+) -> Result<()> {
     if !matches!(
         action,
         "send"
@@ -50,10 +55,15 @@ pub(crate) fn guard(caller: &Caller<'_>, task: &TaskDoc, action: &str) -> Result
     if matches!(caller.actor, TaskActor::Person) {
         return Ok(());
     }
-    if !guarded(caller.state, caller.machine, task)? {
+    let guarded = guarded(caller.state, caller.machine, task)?;
+    if guarded && matches!(action, "start" | "worker") && acknowledgement(task, &caller.actor)? {
         return Ok(());
     }
-    if matches!(action, "start" | "worker") && acknowledgement(task, &caller.actor)? {
+    // zerus-63rru.97: meet the returned key of a team stopped or archived
+    // on this computer at every agent meeting, before the early exit for a
+    // non-live header. Meeting it clears it with the sweep's own write,
+    // once; the task is usable again. A foreign key still refuses below.
+    if meet(caller.state, caller.machine, task, meeting)? || !guarded {
         return Ok(());
     }
     Err(Problem::new(
@@ -62,6 +72,30 @@ pub(crate) fn guard(caller: &Caller<'_>, task: &TaskDoc, action: &str) -> Result
             "An agent cannot {action} a live team's task; the team service performs this action."
         ),
     ))
+}
+
+/// The key-clear half of a guard meeting. A command whose task is not
+/// guarded still meets a stopped or archived team's returned key here, so
+/// the clear is reached for a local team (F1) through the caller's own
+/// project writer (F2), and only for this computer's own key and team (F3).
+pub(crate) fn meet(
+    state: &Path,
+    machine: &str,
+    task: &TaskDoc,
+    meeting: &mut Meeting<'_, '_>,
+) -> Result<bool> {
+    let Some(link) = task.team().map_err(storage)? else {
+        return Ok(false);
+    };
+    let Ok(store) = Store::open(state) else {
+        // Teams is off or its store is not opened here; no meeting.
+        return Ok(false);
+    };
+    let reference = TaskRef {
+        project: task.view().map_err(storage)?.project,
+        uuid: task.uuid().into(),
+    };
+    super::clear_returned_key(&store, meeting, &reference, &link.team, machine)
 }
 
 /// The marker and indexed store binding decide whether a command touches a

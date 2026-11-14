@@ -607,5 +607,108 @@ class InputWitnessBinding(unittest.TestCase):
         self.assertEqual(self.bound(inserted['s1']), ('tracked', 'm1', 0))
 
 
+
+
+@unittest.skipUnless(shutil.which('node'), 'Node.js required')
+class LifecycleEnds(unittest.TestCase):
+    """zerus-63rru.102: the bridge's end-record map stays at 4096 (the oldest
+    dropped), and only the host's own disposal reads as ended."""
+    def run_js(self, body):
+        script = """
+import assert from 'node:assert/strict';
+const { apply } = await import(process.argv[2]);
+const control = () => ({
+  composeAgent: async () => ({ setup() {}, agentPreset: 'standard' }),
+  presetForObservation() {}, serializeImageAdmission() {},
+  selectionFor() { throw Error('read installed a selection'); },
+  selectModel() { throw Error('profile default changed'); },
+});
+""" + body
+        result = subprocess.run(['node', '--input-type=module', '-', BRIDGE.as_uri()],
+                                input=script, text=True, capture_output=True, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_disposals_beyond_4096_drop_the_oldest_and_only_disposals_read_ended(self):
+        import tempfile as tf
+        with tf.TemporaryDirectory() as d:
+            sock = os.path.join(d, 'bridge.sock')
+            body = f"""
+const sock = {sock!r};
+const handlers = new Map();
+const ctx = {{
+  sessionController: {{ agents: control() }},
+  get() {{ return undefined; }},
+  on(event, fn) {{
+    const list = handlers.get(event) ?? handlers.set(event, []).get(event);
+    list.push(fn);
+  }},
+  effect(fn) {{ fn().catch(() => {{}}); }},
+  agents: new Map(),
+}};
+apply(ctx, {{ socket: sock }});
+const fire = (event, payload) => handlers.get(event)?.forEach(fn => fn(payload));
+for (let n = 0; n < 4097; n++) fire('agent/disposed', {{ agent: {{ session: {{ id: `session-${{n}}` }} }} }});
+const net = await import('node:net');
+async function ask(sessionId) {{
+  for (let attempt = 0; attempt < 50; attempt++) {{
+    try {{
+      return await new Promise((resolve, reject) => {{
+        const s = net.connect(sock);
+        s.on('error', reject);
+        s.on('data', chunk => {{ resolve(JSON.parse(chunk.toString())); s.destroy(); }});
+        s.write(JSON.stringify({{ method: 'session-lifecycle', params: {{ sessionId }} }}) + '\\n');
+      }});
+    }} catch (error) {{ await new Promise(r => setTimeout(r, 50)); }}
+  }}
+  throw new Error('bridge socket never answered');
+}}
+const oldest = await ask('session-0');
+assert.equal(oldest.value.state, 'unknown');
+// The bound keeps exactly 4096: the second-oldest is still there, so the
+// drop is a bound, not a larger eviction.
+const second = await ask('session-1');
+assert.equal(second.value.state, 'ended');
+const newest = await ask('session-4096');
+assert.equal(newest.value.state, 'ended');
+assert.equal(newest.value.end.source, 'agent/disposed');
+process.exit(0);
+"""
+            self.run_js(body)
+
+    def test_a_disposed_session_reads_ended_through_the_lifecycle(self):
+        import tempfile as tf
+        with tf.TemporaryDirectory() as d:
+            sock = os.path.join(d, 'bridge.sock')
+            body = f"""
+const sock = {sock!r};
+const handlers = new Map();
+const ctx = {{
+  sessionController: {{ agents: control() }},
+  get() {{ return undefined; }},
+  on(event, fn) {{
+    const list = handlers.get(event) ?? handlers.set(event, []).get(event);
+    list.push(fn);
+  }},
+  effect(fn) {{ fn().catch(() => {{}}); }},
+  agents: new Map(),
+}};
+apply(ctx, {{ socket: sock }});
+const fire = (event, payload) => handlers.get(event)?.forEach(fn => fn(payload));
+fire('agent/disposed', {{ agent: {{ session: {{ id: 'session-x' }} }} }});
+const net = await import('node:net');
+const answer = await new Promise((resolve, reject) => {{
+  const s = net.connect(sock);
+  s.on('error', reject);
+  s.on('data', chunk => {{ resolve(JSON.parse(chunk.toString())); s.destroy(); }});
+  s.write(JSON.stringify({{ method: 'session-lifecycle', params: {{ sessionId: 'session-x' }} }}) + '\\n');
+}});
+assert.equal(answer.value.state, 'ended');
+assert.equal(answer.value.end.source, 'agent/disposed');
+process.exit(0);
+"""
+            self.run_js(body)
+
+
 if __name__ == '__main__':
     unittest.main()
+

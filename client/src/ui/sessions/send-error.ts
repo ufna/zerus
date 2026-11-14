@@ -4,6 +4,7 @@ export const NO_COLOR_SEND = trNoop("This agent was started with NO_COLOR, so Ze
 export const REFUSED_SEND = trNoop("Message was not sent. hgs refused before typing: %1");
 const PREFIX = REFUSED_SEND.replace("%1", "");
 const NATIVE_REFUSALS = [
+  trNoop("Codex is waiting for your sandbox setup choice. Choose an option in Activity or Terminal before sending a message."),
   NO_COLOR_SEND,
   trNoop("terminal has a draft, dialog, or unrecognized prompt; open Terminal and return to an empty agent prompt"),
   trNoop("agent busy: terminal queue prompt is unrecognized or contains a draft; wait for the agent or open Terminal; nothing was submitted"),

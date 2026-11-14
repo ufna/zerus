@@ -1105,7 +1105,7 @@ mod tests {
             integrated: false,
             rank: String::new(),
         };
-        let members = vec![Member {
+        let members = [Member {
             id: "m1".into(),
             role: "developer".into(),
             agent: "claude".into(),

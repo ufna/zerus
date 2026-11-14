@@ -352,6 +352,7 @@ fn collect(
         cards.push(trust);
     }
     if let Some(trust) = codex_trust::current(record) {cards.push(trust);}
+    if let Some(setup) = codex_sandbox::current(record) {cards.push(setup);}
     if let Some(trust) = codex_hooks_trust::current(record) {cards.push(trust);}
     if let Some(update) = codex_update::current(record) {cards.push(update);}
     if let Some(goal) = codex_goal_resume::current(record) {cards.push(goal);}
@@ -397,6 +398,7 @@ pub(super) fn observe_current(record: &Value) -> Result<Vec<Value>> {
             claude_usage_limit::current(record),
             claude_trust::current(record),
             codex_trust::current(record),
+            codex_sandbox::current(record),
             codex_hooks_trust::current(record),
             codex_update::current(record),
             codex_rate_limit::current(record),
@@ -722,7 +724,7 @@ fn names_session(record: &Value, run: &str, conversation: &str) -> bool {
 }
 
 fn startup_question_id(id: &str) -> bool {
-    ["codex-hooks-trust:", "codex-update:", "codex-goal-resume:", "codex-trust:", "kimi-trust:", "claude-trust:", "claude-permissions:", "claude-resume:", "claude-usage-limit:"].iter().any(|prefix| id.starts_with(prefix))
+    ["codex-sandbox:", "codex-hooks-trust:", "codex-update:", "codex-goal-resume:", "codex-trust:", "kimi-trust:", "claude-trust:", "claude-permissions:", "claude-resume:", "claude-usage-limit:"].iter().any(|prefix| id.starts_with(prefix))
 }
 
 fn matching_record(name: &str, request: &AnswerRequest) -> Result<Value> {
@@ -890,6 +892,9 @@ pub(super) fn dispatch(args: &[String]) -> Result<i32> {
     // different hosts or carrying different UUIDs. Provider hooks never take
     // this lock, and must remain free to acknowledge completion.
     let _answer_guard = lock(Some(&answer_lock(&request.expected_run_id)?))?;
+    // Nested canonical receipt checks share this one budget; a new connection
+    // or terminal guard must not restart the person's SQLite wait.
+    let _receipt_wait = receipt_index::QuestionAdmission::new();
     // Only the preparation is locked. Awaiting the UI must not block provider
     // hooks which confirm the very answer that we are waiting for.
     let (record, question, answers, mut receipt) = {
@@ -918,7 +923,7 @@ pub(super) fn dispatch(args: &[String]) -> Result<i32> {
         if string(&question, "question_hash") != request.expected_question_hash {
             return Err("question changed; refresh before answering".into());
         }
-        if !(["codex_hooks_trust", "codex_update", "codex_goal_resume", "codex_rate_limit", "codex_folder_trust", "codex_async", "kimi_wire", kimi_plan::SOURCE, kimi_approval::SOURCE, "kimi_cache_hint", "kimi_folder_trust", "claude_folder_trust", "claude_permission_mode", "claude_resume", "claude_usage_limit", "claude_tool_approval"]
+        if !(["codex_sandbox_setup", "codex_hooks_trust", "codex_update", "codex_goal_resume", "codex_rate_limit", "codex_folder_trust", "codex_async", "kimi_wire", kimi_plan::SOURCE, kimi_approval::SOURCE, "kimi_cache_hint", "kimi_folder_trust", "claude_folder_trust", "claude_permission_mode", "claude_resume", "claude_usage_limit", "claude_tool_approval"]
             .contains(&string(&question, "source"))
             || string(&record,"agent")=="claude" && string(&question,"source")=="hook")
         {
@@ -954,12 +959,14 @@ pub(super) fn dispatch(args: &[String]) -> Result<i32> {
             codex_rate_limit::available(&record, &question)?;
         } else if string(&question, "source") == "codex_goal_resume" {
             codex_goal_resume::available(&record, &question)?;
+        } else if string(&question, "source") == "codex_sandbox_setup" {
+            codex_sandbox::available(&record, &question)?;
         } else if string(&question, "source") == "codex_folder_trust" {
             codex_trust::available(&record, &question)?;
         } else if string(&question, "source") == "kimi_folder_trust" {
             kimi_trust::available(&record, &question)?;
         } else if string(&question, "source") == "kimi_cache_hint" {
-            kimi_cache_hint::available(&record, &question)?;
+            kimi_cache_hint::available(&record, &question, &answers)?;
         } else if string(&question, "source") == kimi_plan::SOURCE {
             kimi_plan::available(&record, &question)?;
         } else if string(&question, "source") == kimi_approval::SOURCE {
@@ -975,7 +982,7 @@ pub(super) fn dispatch(args: &[String]) -> Result<i32> {
         (record, question, answers, receipt)
     };
     let tui_choice =
-        ["codex_hooks_trust", "codex_update", "codex_goal_resume", "codex_rate_limit", "codex_folder_trust", "kimi_cache_hint", "kimi_folder_trust", "claude_folder_trust", "claude_permission_mode", "claude_resume", "claude_usage_limit", "claude_tool_approval"].contains(&string(&question, "source"));
+        ["codex_sandbox_setup", "codex_hooks_trust", "codex_update", "codex_goal_resume", "codex_rate_limit", "codex_folder_trust", "kimi_cache_hint", "kimi_folder_trust", "claude_folder_trust", "claude_permission_mode", "claude_resume", "claude_usage_limit", "claude_tool_approval"].contains(&string(&question, "source"));
     if string(&question,"source")=="codex_async" {
         let status = match codex_questions::answer(&record,&question,&answers,&request_id) {
             Ok(status) => status,
@@ -1026,6 +1033,8 @@ pub(super) fn dispatch(args: &[String]) -> Result<i32> {
         codex_rate_limit::answer(&record, &question, &answers)
     } else if string(&question, "source") == "codex_goal_resume" {
         codex_goal_resume::answer(&record, &question, &answers)
+    } else if string(&question, "source") == "codex_sandbox_setup" {
+        codex_sandbox::answer(&record, &question, &answers)
     } else if string(&question, "source") == "codex_folder_trust" {
         codex_trust::answer(&record, &question, &answers)
     } else if string(&question, "source") == "kimi_folder_trust" {
@@ -1052,6 +1061,7 @@ pub(super) fn dispatch(args: &[String]) -> Result<i32> {
     if tui_choice {
         // Hook review and the native installer continue in Terminal.
         if (question["source"] == "codex_hooks_trust" && answers[0]["selected_option_ids"][0] == "review")
+            || (question["source"] == "codex_sandbox_setup" && answers[0]["selected_option_ids"][0] != "sandbox_2")
             || (question["source"] == "codex_update" && answers[0]["selected_option_ids"][0] == "update_now")
         {
             receipt["open_terminal"] = json!(true);

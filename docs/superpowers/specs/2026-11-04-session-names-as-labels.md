@@ -346,6 +346,34 @@ The lock keeps worktree maintenance below the floor from removing the checkout o
      - **Reporting.** A kept lock is reported on standard error and never fails the archive or forget.
      - **The shared case.** A lock whose session left while another still uses the checkout keeps that session's text. Transferring the reason is P3e's.
 
+Archive restore source admission (P3e, zerus-ucck.4.13) keeps a fixed SHA-256
+fingerprint of the complete normalized selected archive, captured before dropping
+legacy compatibility fields. Under the existing state writer, it rechecks that
+source before worktree Restore and before publishing the pending binding and
+starting its runner. Changed, missing or unreadable sources require selecting the
+archive again, even when run and conversation IDs still agree. Unknown fields,
+negative transition evidence and missing versus null are part of the source;
+JSON formatting and object key order are not. Only that selected archive is read.
+Unchanged restores keep their existing legacy layout and native confirmation.
+This fence does not activate ID-layout restore or native continuity. If a later
+recheck refuses after an authorized folder recreation, the folder stays for
+review; the source fence never deletes or replays anything.
+
+The selected-record source snapshot (zerus-ucck.4.14) is read-only. Its caller
+provides one already-resolved absolute legacy/ID slot. It captures the complete
+unrepaired stored metadata under the existing 16 MiB regular/no-follow bound,
+then rechecks only that slot with the shared canonical digest. It never resolves
+a label again, repairs state, observes native/process status or adopts a newer
+record. Its immutable captured value must be the input to any later prepared
+recipe; ordinary `read()` adds derived observations and is not a stored source.
+Equality is data only, not an original-object pin, exclusion or native lease.
+Saved Start fresh (zerus-ucck.4.15) prepares its recipe from that captured raw
+frame and rechecks the same slot at its existing final state-writer boundary,
+before starting its runner. Changed or unavailable sources require selecting
+the session again. Existing current-activity, namespace and identity checks
+remain in place; unchanged records retain their existing launch behavior. Ordinary
+Resume, physical custody and writer-gate activation remain separate.
+
 P3e's controls for the lock:
 - a lock that fails or is interrupted before publication;
 - a foreign or replaced lock, and a replaced checkout;

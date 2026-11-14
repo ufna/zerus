@@ -11,7 +11,7 @@ fn guarded(dropped: Arc<AtomicBool>, deadline: Instant, refuse: bool) -> Ended {
     let held = InheritedLock::try_lock(tempfile::tempfile().unwrap()).unwrap();
     SPAWNED.with(|slot| slot.set(None));
     run(
-        Path::new("/bin/true"),
+        Path::new("/usr/bin/true"),
         &[],
         Spec {
             custody_env: "HGS_TEST_ADMISSION_CUSTODY_FD",
@@ -61,6 +61,7 @@ fn admission_survives_until_exec_and_is_released_before_observing_the_child() {
         Instant::now() + Duration::from_secs(5),
         false,
     );
+    assert_eq!(SPAWN_ERROR.with(|slot| slot.get()), None);
     assert_eq!(
         ended,
         Ended::Exited {
@@ -80,6 +81,10 @@ fn admission_is_released_when_exec_refuses() {
         true,
     );
     assert_eq!(ended, Ended::NotStarted);
+    assert_eq!(
+        SPAWN_ERROR.with(|slot| slot.get()),
+        Some((std::io::ErrorKind::PermissionDenied, Some(libc::EPERM)))
+    );
     assert!(SPAWNED.with(|slot| slot.get()).is_none());
     assert!(dropped.load(Ordering::Acquire));
 }
@@ -92,6 +97,10 @@ fn admission_is_released_without_a_spawn_when_the_deadline_is_spent() {
         false,
     );
     assert_eq!(ended, Ended::NotStarted);
+    assert_eq!(
+        SPAWN_ERROR.with(|slot| slot.get()),
+        Some((std::io::ErrorKind::TimedOut, None))
+    );
     assert!(SPAWNED.with(|slot| slot.get()).is_none());
     assert!(dropped.load(Ordering::Acquire));
 }

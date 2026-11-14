@@ -42,9 +42,10 @@ pub fn escalates(state: &str) -> bool {
 pub const ROUTED_SOURCE: &str = "hook";
 /// Question IDs only the person may ever answer, refused again here even
 /// though such a row is never quiet (`parent_link::human_request`).
-const PERSON_ONLY: [&str; 4] = [
+const PERSON_ONLY: [&str; 5] = [
     "claude-trust:",
     "codex-trust:",
+    "codex-sandbox:",
     "kimi-trust:",
     "codex-hooks-trust:",
 ];

@@ -346,6 +346,192 @@ pub(super) fn removed_holder(ctx: &Context<'_>, node: u32) -> Result<Option<Stri
 /// can no longer carry out, through the store's one writer of that outcome
 /// (`rows::hand_back`): its unsettled decision settled, the node held, one
 /// inbox item of the cause's own kind. The operation moves the revision.
+/// A hand-out reserved for a member that left the active set (paused,
+/// stopped, unbound) is settled at the next pass instead of being replayed
+/// through the non-start tiers (zerus-63rru.85): the effect is superseded,
+/// the node handed back to the lead with one item, and the next pass can
+/// hand the task to another free member. Whether the person paused the
+/// member is not stored, so the lead is told in every case. A member that
+/// is Active and bound is refused and nothing is written, whatever a
+/// request's reason says (zerus-63rru.85 round 3): the store's member state
+/// is the only proof of a departure, and a reason cannot substitute for it.
+pub(super) fn settle_left(ctx: &mut Context<'_>) -> Result<()> {
+    let Operation::SettleLeftHandout { node, reason } = ctx.op else {
+        unreachable!()
+    };
+    let node = *node;
+    // Round 2's actor-read cause never decides a settlement: an Active bound
+    // member is refused below whatever it says, and the store's own member
+    // state names the cause for the others.
+    let _ = reason;
+    let open: Option<(String, String)> = ctx
+        .db
+        .query_row(
+            &format!(
+                "SELECT e.member,e.request_id FROM effects e WHERE e.team=?1 AND e.node=?2 AND e.state IN {OPEN_EFFECT_STATES} AND e.kind='handout'"
+            ),
+            params![ctx.team.id, node],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()
+        .map_err(storage)?;
+    let Some((member, id)) = open else {
+        return Ok(());
+    };
+    let m = ctx.member(&member)?;
+    if m.state == MemberState::Active && m.session.is_some() {
+        // The member is still in the active set and its binding is the
+        // store's: nothing settles, even when a reason claims a departure.
+        return Err(invalid(
+            "A hand-out of a member that is still active and bound is not settled.",
+        ));
+    }
+    let how = if m.state == MemberState::Paused {
+        if ctx.person_stopped(&member).unwrap_or(false) {
+            "stopped"
+        } else {
+            "paused"
+        }
+    } else {
+        "unbound"
+    };
+    supersede(ctx, node, &member)?;
+    // The item without the hand-back's hold: the task stays in the queue,
+    // so the next pass can hand it to another free member.
+    rows::hand_back_item(
+        ctx.db,
+        &ctx.team.id,
+        node,
+        &encode(ctx.actor)?,
+        &format!("member_left:{id}"),
+        &format!(
+            "Member {member} was {how} before the hand-out of task {node} reached it; the task is offered to another member."
+        ),
+        ctx.now,
+    )?;
+    Ok(())
+}
+
+/// The service's own binding observation read the member's binding as
+/// decisively ended while the store still held it (zerus-63rru.85 round 3):
+/// the member is recorded unbound — its binding, account, worktree and
+/// ownership nonce cleared, and its durable handle deleted — so every later
+/// reader, the settlement above included, reads the departure from the
+/// store. The state stays Active: the member is in the roster but can take
+/// no task until it is bound again. A member that is not Active and bound is
+/// refused with `invalid_state` and nothing changes; that is also the answer
+/// to a repeated call, so the end is recorded once per binding.
+pub(super) fn unbind(ctx: &mut Context<'_>) -> Result<()> {
+    let Operation::UnbindMember { member } = ctx.op else {
+        unreachable!()
+    };
+    let member = member.as_str();
+    ctx.active()?;
+    let mut m = ctx.member(member)?;
+    if m.state != MemberState::Active || m.session.is_none() {
+        return Err(invalid("Only an active bound member can be unbound."));
+    }
+    m.session = None;
+    m.account.clear();
+    m.worktree.clear();
+    m.ownership_nonce.clear();
+    save(ctx, &m)?;
+    ctx.db
+        .execute(
+            "DELETE FROM member_handles WHERE team=?1 AND member=?2",
+            params![ctx.team.id, member],
+        )
+        .map_err(storage)?;
+    Ok(())
+}
+
+/// The lead is told once that a member out of the active set holds a
+/// started task (zerus-63rru.86): one member_started item per member and
+/// task, naming the member, the task, and that the work stays with the
+/// member until it is resumed or the person moves the task. The task
+/// stays with the member; nothing else changes. The operation is
+/// idempotent by itself: an open item of the path for that member and
+/// node means the lead was already told, and a crash between the apply
+/// and the actor's own memory cannot tell twice. A call that finds no
+/// such task, or a member that is in the active set again, writes
+/// nothing.
+pub(super) fn tell_paused_started(ctx: &mut Context<'_>) -> Result<()> {
+    let Operation::TellPausedStarted { member, node } = ctx.op else {
+        unreachable!()
+    };
+    let member = member.as_str();
+    let node = *node;
+    let m = ctx.member(member)?;
+    if m.state == MemberState::Active && m.session.is_some() {
+        // The member is back in the active set: nothing to tell.
+        return Ok(());
+    }
+    let holder = handout::holder(ctx, node)?;
+    if holder.as_deref() != Some(member) {
+        // No started work of this member on this task.
+        return Ok(());
+    }
+    // The store's own once-only (zerus-63rru.86 round 2): the kind family
+    // is member_started:{node}:{member}:{n}, n being the count of earlier
+    // items of the family for that member and node plus one. The exact
+    // prefix comparison never treats the member's characters as wildcards.
+    let prefix = format!("member_started:{node}:{member}:");
+    let told: i64 = ctx
+        .db
+        .query_row(
+            "SELECT COUNT(*) FROM inbox WHERE team=?1 AND node=?2 AND state='open' AND substr(kind,1,?3)=?4",
+            params![ctx.team.id, node, prefix.len() as i64, prefix],
+            |r| r.get(0),
+        )
+        .map_err(storage)?;
+    if told > 0 {
+        return Ok(());
+    }
+    let n: i64 = ctx
+        .db
+        .query_row(
+            "SELECT COUNT(*) FROM inbox WHERE team=?1 AND node=?2 AND substr(kind,1,?3)=?4",
+            params![ctx.team.id, node, prefix.len() as i64, prefix],
+            |r| r.get(0),
+        )
+        .map_err(storage)?;
+    let how = if m.state == MemberState::Paused {
+        if ctx.person_stopped(member)? {
+            "stopped"
+        } else {
+            "paused"
+        }
+    } else {
+        "unbound"
+    };
+    rows::hand_back_item(
+        ctx.db,
+        &ctx.team.id,
+        node,
+        &encode(ctx.actor)?,
+        &format!("{prefix}{}", n + 1),
+        &format!(
+            "Member {member} was {how} while task {node} is in progress; the work stays with the member until it is resumed or the person moves the task."
+        ),
+        ctx.now,
+    )?;
+    Ok(())
+}
+
+pub(super) fn close_paused_started(ctx: &mut Context<'_>) -> Result<()> {
+    let Operation::ClosePausedStarted { member } = ctx.op else {
+        unreachable!()
+    };
+    ctx.db
+        .execute(
+            "UPDATE inbox SET state='closed' WHERE team=?1 AND state='open' AND substr(kind,1,15)='member_started:' AND substr(kind,16+instr(substr(kind,16),':'),length(?2)+1)=?2||':'",
+            params![ctx.team.id, member],
+        )
+        .map_err(storage)?;
+    Ok(())
+}
+
+
 pub(super) fn hand_to_lead(
     ctx: &mut Context<'_>,
     node: u32,
