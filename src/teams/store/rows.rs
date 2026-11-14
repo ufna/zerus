@@ -395,6 +395,7 @@ pub(crate) fn card_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<Card> {
             })?,
             None => default_decisions(&kind),
         },
+        notes: sql_json(r, 10)?,
     })
 }
 /// A card's decisions: the stored list, or by its kind. An integration card
@@ -415,10 +416,10 @@ pub(crate) fn default_decisions(kind: &str) -> Vec<String> {
 }
 
 /// A single indexed lookup; scope is checked before returning any card data.
-pub(crate) const CARD_BY_SEQ_SQL: &str = "SELECT seq,kind,node,actor,text,state,decision,decided_actor,created_ms,decisions,team FROM cards WHERE seq=?1";
+pub(crate) const CARD_BY_SEQ_SQL: &str = "SELECT seq,kind,node,actor,text,state,decision,decided_actor,created_ms,decisions,notes,team FROM cards WHERE seq=?1";
 pub(crate) fn card(db: &Connection, team: &str, seq: u64) -> Result<Option<Card>> {
     let row: Option<(String, Card)> = db
-        .query_row(CARD_BY_SEQ_SQL, [seq], |r| Ok((r.get(10)?, card_row(r)?)))
+        .query_row(CARD_BY_SEQ_SQL, [seq], |r| Ok((r.get(11)?, card_row(r)?)))
         .optional()
         .map_err(storage)?;
     row.map(|(owner, card)| {

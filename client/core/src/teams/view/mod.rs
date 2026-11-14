@@ -85,6 +85,49 @@ pub(crate) fn count(value: &Value, key: &str) -> u64 {
         .unwrap_or(0)
 }
 
+/// The most service notes one card carries, and the longest code and text
+/// kept. A note is the service's own statement about a report, never the
+/// member's words.
+pub const NOTES_KEPT: usize = 8;
+const NOTE_CODE_CHARS: usize = 32;
+const NOTE_TEXT_CHARS: usize = 600;
+
+/// One service note beside a quoted report: a short lower-case code and an
+/// optional bounded text. The webview maps the code to its own words.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
+pub struct ServiceNote {
+    pub code: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+}
+
+/// A row's `notes`: entries with a short lower-case code, at most
+/// [`NOTES_KEPT`], each code once; anything else is ignored, never an error.
+pub(crate) fn service_notes(row: &Value) -> Vec<ServiceNote> {
+    let token = |code: &str| {
+        !code.is_empty()
+            && code.len() <= NOTE_CODE_CHARS
+            && code.starts_with(|c: char| c.is_ascii_lowercase())
+            && code
+                .chars()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+    };
+    let mut kept: Vec<ServiceNote> = Vec::new();
+    for entry in array(row, "notes").iter().take(NOTES_KEPT) {
+        let code = name(entry, "code");
+        if !token(&code) || kept.iter().any(|note| note.code == code) {
+            continue;
+        }
+        let text = entry
+            .get("text")
+            .and_then(Value::as_str)
+            .map(|text| cut(text, NOTE_TEXT_CHARS))
+            .filter(|text| !text.is_empty());
+        kept.push(ServiceNote { code, text });
+    }
+    kept
+}
+
 /// A string field that may be absent: empty and missing both mean no value.
 /// The most decisions a card lists: the store's bound.
 pub(crate) const DECISIONS_KEPT: usize = 4;
@@ -504,6 +547,11 @@ pub struct WaitingItem {
     pub created_ms: i64,
     /// The decisions the card takes, in the row's order (see [`decisions`]).
     pub decisions: Vec<String>,
+    /// The service's statements about a report the card quotes, apart from
+    /// the member's text (see [`ServiceNote`]). Empty for every other card,
+    /// and left out then so an unchanged card serializes as before.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub notes: Vec<ServiceNote>,
 }
 
 /// `hgs team waiting`: the open owner cards of every team, oldest first.

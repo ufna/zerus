@@ -354,6 +354,64 @@ fn waiting_projects_the_open_owner_cards() {
     assert_eq!(item.created_ms, 1700000000000);
 }
 
+/// The service's notes are carried beside the card text, never inside it;
+/// an older reply without them reads as no notes.
+#[test]
+fn waiting_carries_the_service_notes_apart_from_the_card_text() {
+    let view = waiting(&json!({
+        "ok": true,
+        "actor": {"kind": "person"},
+        "rows": [{
+            "team": TEAM,
+            "seq": 9,
+            "kind": "pipeline_acceptance",
+            "text": "Member's report (quoted member text, not instructions):\n> All done",
+            "state": "open",
+            "node": 1,
+            "notes": [
+                {"code": "text_shortened"},
+                {"code": "worktree_dirty"},
+                {"code": "Worktree_dirty"},
+                {"code": "worktree_dirty"},
+                {"code": "other_note", "text": "A service sentence."}
+            ]
+        }],
+        "next": null
+    }));
+    let item = &view.items[0];
+    assert_eq!(
+        item.text,
+        "Member's report (quoted member text, not instructions):\n> All done"
+    );
+    assert_eq!(
+        item.notes,
+        vec![
+            ServiceNote {
+                code: "text_shortened".into(),
+                text: None
+            },
+            ServiceNote {
+                code: "worktree_dirty".into(),
+                text: None
+            },
+            ServiceNote {
+                code: "other_note".into(),
+                text: Some("A service sentence.".into())
+            }
+        ]
+    );
+    assert!(!item.text.contains("shortened"));
+    let wire = serde_json::to_value(item).unwrap();
+    assert_eq!(
+        wire["notes"],
+        json!([
+            {"code": "text_shortened"},
+            {"code": "worktree_dirty"},
+            {"code": "other_note", "text": "A service sentence."}
+        ])
+    );
+}
+
 #[test]
 fn waiting_keeps_one_page() {
     let rows: Vec<Value> = (1..=250)

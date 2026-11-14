@@ -318,6 +318,7 @@ fn merge_fixture() -> (Harness, Owned, ports::MergePlan) {
             member: "m1".into(),
             text: "Report".into(),
             commit: commit.clone(),
+            notes: Vec::new(),
         },
     )
     .unwrap();

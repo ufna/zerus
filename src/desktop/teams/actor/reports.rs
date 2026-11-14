@@ -97,12 +97,15 @@ impl Runtime {
         // The member's own words: they keep their line feeds and tabs and lose
         // every other control character before they are bounded and recorded.
         let text = crate::teams::clean::lines(&text);
-        let mut bounded = cut(&text, 15_000);
+        let bounded = cut(&text, 15_000);
+        // The service's own statements stand beside the member's text, not
+        // inside it: the stored text is exactly the member's bounded words.
+        let mut notes = Vec::new();
         if bounded.len() < text.len() {
-            bounded.push_str("\n[Report text shortened.]");
+            notes.push(crate::teams::ops::ReportNote::new("text_shortened"));
         }
         if head.dirty {
-            bounded.push_str("\nWorktree has uncommitted changes.");
+            notes.push(crate::teams::ops::ReportNote::new("worktree_dirty"));
         }
         // The report and its receipt share the store transaction and the
         // (team,node,generation) primary key. Retrying this read cannot add a
@@ -116,6 +119,7 @@ impl Runtime {
                 member: effect.member,
                 text: bounded,
                 commit: head.commit,
+                notes,
             },
             now,
         )?;

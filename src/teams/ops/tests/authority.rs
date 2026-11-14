@@ -119,6 +119,7 @@ fn facts(o: TaskObservation) -> Vec<Operation> {
             member: "m1".into(),
             text: "Example".into(),
             commit: COMMIT.into(),
+            notes: Vec::new(),
         },
         Operation::RecordIntegration {
             decision: 1,

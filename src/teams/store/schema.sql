@@ -63,12 +63,12 @@ CREATE TABLE dependencies (team TEXT NOT NULL, node INTEGER NOT NULL, dependency
 CREATE INDEX dependency_dependants ON dependencies(team,dependency,node);
 CREATE TABLE inbox (seq INTEGER PRIMARY KEY AUTOINCREMENT, team TEXT NOT NULL REFERENCES teams(id),
  kind TEXT NOT NULL, node INTEGER NOT NULL, generation INTEGER NOT NULL, actor TEXT NOT NULL,
- text TEXT NOT NULL, state TEXT NOT NULL DEFAULT 'open', reply TEXT, reply_actor TEXT,
+ text TEXT NOT NULL, notes TEXT NOT NULL DEFAULT '[]', state TEXT NOT NULL DEFAULT 'open', reply TEXT, reply_actor TEXT,
  created_ms INTEGER NOT NULL, UNIQUE(team,kind,node,generation));
 CREATE INDEX inbox_page ON inbox(team,seq);
 CREATE INDEX inbox_open ON inbox(team,state,seq);
 CREATE TABLE cards (seq INTEGER PRIMARY KEY AUTOINCREMENT, team TEXT NOT NULL REFERENCES teams(id),
- kind TEXT NOT NULL, node INTEGER, actor TEXT NOT NULL, text TEXT NOT NULL,
+ kind TEXT NOT NULL, node INTEGER, actor TEXT NOT NULL, text TEXT NOT NULL, notes TEXT NOT NULL DEFAULT '[]',
  state TEXT NOT NULL DEFAULT 'open', decision TEXT, decided_actor TEXT, created_ms INTEGER NOT NULL, decision_seq INTEGER);
 CREATE INDEX cards_page ON cards(team,seq);
 CREATE INDEX cards_open ON cards(team,state,seq);
@@ -87,7 +87,7 @@ CREATE INDEX effects_pending ON effects(team,state,seq);
 CREATE UNIQUE INDEX effect_node ON effects(team,node) WHERE state IN __OPEN_EFFECT_STATES__;
 CREATE UNIQUE INDEX effect_member ON effects(team,member) WHERE state IN __OPEN_EFFECT_STATES__;
 CREATE TABLE reports (team TEXT NOT NULL, node INTEGER NOT NULL, generation INTEGER NOT NULL,
- actor TEXT NOT NULL, text TEXT NOT NULL, commit_id TEXT NOT NULL, PRIMARY KEY(team,node,generation),
+ actor TEXT NOT NULL, text TEXT NOT NULL, commit_id TEXT NOT NULL, notes TEXT NOT NULL DEFAULT '[]', PRIMARY KEY(team,node,generation),
  FOREIGN KEY(team,node) REFERENCES node_identity(team,id));
 CREATE TABLE decisions (seq INTEGER PRIMARY KEY AUTOINCREMENT, team TEXT NOT NULL, node INTEGER NOT NULL,
  generation INTEGER NOT NULL, actor TEXT NOT NULL, kind TEXT NOT NULL, text TEXT NOT NULL,

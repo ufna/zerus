@@ -125,6 +125,7 @@ fn actor_conflict(name: &str) -> Vec<String> {
             member: "m1".into(),
             text: "Conflicting report".into(),
             commit: git.incoming.clone(),
+            notes: Vec::new(),
         },
     )
     .unwrap();

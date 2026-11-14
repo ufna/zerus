@@ -334,17 +334,18 @@ impl Store {
                     generation: r.get(3)?,
                     actor: sql_json(r, 4)?,
                     text: r.get(5)?,
-                    state: r.get(6)?,
-                    reply: r.get(7)?,
+                    notes: sql_json(r, 6)?,
+                    state: r.get(7)?,
+                    reply: r.get(8)?,
                     reply_actor: r
-                        .get::<_, Option<String>>(8)?
+                        .get::<_, Option<String>>(9)?
                         .map(|s| serde_json::from_str(&s))
                         .transpose()
                         .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?,
-                    created_ms: r.get(9)?,
+                    created_ms: r.get(10)?,
                 })
             },
-            "seq,kind,node,generation,actor,text,state,reply,reply_actor,created_ms",
+            "seq,kind,node,generation,actor,text,notes,state,reply,reply_actor,created_ms",
         )
     }
     pub fn cards(&self, team: &str, limit: u32, cursor: Option<&Cursor>) -> Result<Page<Card>> {
@@ -354,7 +355,7 @@ impl Store {
             limit,
             cursor,
             rows::card_row,
-            "seq,kind,node,actor,text,state,decision,decided_actor,created_ms,decisions",
+            "seq,kind,node,actor,text,state,decision,decided_actor,created_ms,decisions,notes",
         )
     }
     pub fn journal(

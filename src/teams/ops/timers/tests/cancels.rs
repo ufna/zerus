@@ -881,6 +881,7 @@ fn the_reviewers_reopen_and_reported_variants_are_recorded() {
                 member: "m1".into(),
                 text: "Implemented and checked".into(),
                 commit: COMMIT.into(),
+                notes: Vec::new(),
             },
         )
         .unwrap();

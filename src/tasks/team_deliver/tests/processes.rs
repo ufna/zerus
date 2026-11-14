@@ -740,6 +740,7 @@ fn reopen_uses_the_recorded_reason_and_lead_once() {
             member: "m1".into(),
             text: "Ready".into(),
             commit: ops::tests::COMMIT.into(),
+            notes: Vec::new(),
         },
     )
     .unwrap();
@@ -1364,6 +1365,7 @@ impl Fixture {
                     member: "m1".into(),
                     text: "Ready".into(),
                     commit: ops::tests::COMMIT.into(),
+                    notes: Vec::new(),
                 },
             )
             .unwrap();

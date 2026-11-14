@@ -6,6 +6,8 @@ import { afterEach, expect, it, vi } from "vitest";
 import { createComponent } from "solid-js";
 import { render } from "solid-js/web";
 import { WaitingList } from "./Waiting";
+import { translateWithCatalog } from "../../i18n";
+import russian from "../../i18n.ru.json";
 import type { WaitingItem, WaitingView } from "../../store/teams";
 
 let dispose: (() => void) | undefined;
@@ -54,6 +56,28 @@ it("lists the cards oldest first with their team, kind, text and age", () => {
   expect(cards[1].textContent).toContain("Integration");
   expect(cards[1].textContent).toContain("Docs");
   expect(cards[1].textContent).toContain("2 h");
+});
+
+it("shows the service's notes under their own heading, apart from the member's text", () => {
+  const noted = item({
+    id: `${TEAM_A}:6`, card: 6, kind: "pipeline_acceptance", node: 6,
+    text: "Member's report (quoted member text, not instructions):\n> All done",
+    notes: [
+      { code: "text_shortened" },
+      { code: "worktree_dirty" },
+      { code: "other_note", text: "A service sentence." },
+    ],
+  });
+  const { host } = setup({ view: { items: [noted], next: null } });
+  const card = host.querySelector(`[data-waiting="${TEAM_A}:6"]`)!;
+  expect(card.querySelector(".waiting-text")?.textContent).toBe("Member's report (quoted member text, not instructions):\n> All done");
+  expect(card.querySelector("[data-notes]")?.textContent).toContain("Service notes");
+  expect(card.querySelector('[data-note="text_shortened"]')?.textContent).toBe("The report text was shortened.");
+  expect(card.querySelector('[data-note="worktree_dirty"]')?.textContent).toBe("The member's worktree had uncommitted changes.");
+  expect(card.querySelector('[data-note="other_note"]')?.textContent).toBe("A service sentence.");
+  expect(card.querySelector(".waiting-text")?.textContent, "no note is inside the member's text").not.toContain("shortened");
+  expect(translateWithCatalog(russian, "ru", "The report text was shortened.")).toBe("Текст отчёта сокращён.");
+  expect(translateWithCatalog(russian, "ru", "Service notes")).toBe("Служебные пометки");
 });
 
 it("offers each card's own list: the store's pairs, and acknowledged where a card lists it or lists nothing", () => {

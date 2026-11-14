@@ -106,6 +106,20 @@ pub(super) fn card(
     decision: Option<u64>,
     decisions: &[&str],
 ) -> Result<u64> {
+    card_notes(ctx, kind, body, node, decision, decisions, &[])
+}
+
+/// An open card that quotes a report: the service's notes are their own
+/// column beside the text, never appended into it.
+pub(super) fn card_notes(
+    ctx: &Context<'_>,
+    kind: &str,
+    body: &str,
+    node: Option<u32>,
+    decision: Option<u64>,
+    decisions: &[&str],
+    notes: &[ReportNote],
+) -> Result<u64> {
     reason(kind)?;
     text(kind, 128)?;
     reason(body)?;
@@ -114,7 +128,7 @@ pub(super) fn card(
     } else {
         Some(encode(&decisions)?)
     };
-    ctx.db.execute("INSERT INTO cards(team,kind,node,actor,text,created_ms,decision_seq,decisions) VALUES(?1,?2,?3,?4,?5,?6,?7,?8)",params![ctx.team.id,kind,node,encode(ctx.actor)?,body,ctx.now,decision,listed]).map_err(storage)?;
+    ctx.db.execute("INSERT INTO cards(team,kind,node,actor,text,notes,created_ms,decision_seq,decisions) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9)",params![ctx.team.id,kind,node,encode(ctx.actor)?,body,encode(&notes.to_vec())?,ctx.now,decision,listed]).map_err(storage)?;
     Ok(ctx.db.last_insert_rowid() as u64)
 }
 /// An open card's kind, node, decision sequence and stored decisions.
