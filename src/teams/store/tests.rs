@@ -711,7 +711,11 @@ fn a_new_store_creation_that_cannot_begin_answers_store_busy() {
     std::fs::write(temp.path().join("teams/preview"), "on").unwrap();
     let path = temp.path().join("teams/teams-v1.sqlite3");
     let mut store = Store::open(temp.path()).unwrap();
-    crate::sqlite_file::create(&path).unwrap();
+    drop(
+        crate::platform::private_open(std::fs::OpenOptions::new().create_new(true).write(true))
+            .open(&path)
+            .unwrap(),
+    );
     let writer = rusqlite::Connection::open(&path).unwrap();
     writer.execute_batch("BEGIN IMMEDIATE").unwrap();
     let error = store.ensure().unwrap_err();

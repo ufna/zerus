@@ -1,6 +1,7 @@
 //! Immutable directory-object provenance captured by the launch's worktree
 //! verification. A missing observation grants no standing confirmation.
 use super::*;
+use crate::teams::store::begin_error;
 use std::{fs::OpenOptions, os::unix::fs::OpenOptionsExt, time::UNIX_EPOCH};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

@@ -4,7 +4,7 @@
 use super::ports::{ObservedSession, Placement, Plan, Result, Worktree};
 use crate::teams::{
     ops::Request,
-    store::{begin_error, storage, Guard},
+    store::{storage, Guard},
 };
 use rusqlite::{params, Connection, OpenFlags, OptionalExtension};
 use serde::{Deserialize, Serialize};
