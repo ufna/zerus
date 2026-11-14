@@ -261,6 +261,8 @@ pub(super) fn conversation_persisted(record: &Value) -> bool {
 /// Whether the record's transcript (Claude's transcript, Codex's rollout) is
 /// a non-empty regular file: one metadata read, never its content.
 fn transcript_saved(record: &Value) -> bool {
+    #[cfg(test)]
+    crate::state::journal::read_order::note("transcript");
     Path::new(string(record, "transcript"))
         .metadata()
         .map(|metadata| metadata.is_file() && metadata.len() > 0)
