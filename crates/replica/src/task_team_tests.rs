@@ -3,6 +3,7 @@ use super::*;
 const TEAM: &str = "00000000-0000-4000-8000-000000000001";
 const HOME: &str = "00000000-0000-4000-8000-000000000002";
 
+#[cfg(not(feature = "test-without-team"))]
 fn task() -> TaskDoc {
     TaskDoc::create(NewTask {
         project: "example-project",

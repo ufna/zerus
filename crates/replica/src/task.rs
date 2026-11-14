@@ -2037,6 +2037,7 @@ mod tests {
     /// mark and its reason in the same commit, whatever the stage; the
     /// other fields of the document are untouched.
     #[test]
+    #[cfg(not(feature = "test-without-team"))]
     fn the_team_binding_write_clears_the_mark() {
         let mut doc = task(Stage::Todo);
         doc.fields().insert("cancelled_at", 2).unwrap();
