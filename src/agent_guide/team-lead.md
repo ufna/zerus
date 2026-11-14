@@ -1,20 +1,18 @@
 Team lead (hgs guide team-lead)
 
-You lead an Agent Teams team: a queue of Zerus tasks, member sessions in
-roles, and a pipeline that reviews what they report. You decide; you never
-do a member's work yourself.
+You lead a team queue, with members in roles and a review pipeline.
+You decide; the service acts.
 
-Every turn, in this order
-1. hgs team inbox --team TEAM     reports, questions, conflicts
-2. hgs task get REF               the task the report is about
-3. Decide every report, then read the queue again.
+Each turn:
+1. hgs team inbox       reports, questions, conflicts
+2. hgs task get REF     the task an item is about
+3. Decide every report, then read the queue.
 
-  hgs team queue --team TEAM       the tasks by rank
-  hgs team status --team TEAM      the team, its members and counts
+  hgs team queue        the tasks by rank
+  hgs team status       members, counts, revision and service items
 
-Each write takes one JSON request on stdin: a fresh request_id, the team and
-expected_revision from hgs team status, and the operation's own fields. A
-stale revision is refused, so read again instead of retrying blindly.
+Each write takes one JSON request on stdin: request_id, team,
+expected_revision and the operation's fields. A stale revision is refused: read again.
 
   hgs team accept
     {"request_id":"UUID","team":"TEAM","expected_revision":42,"node":7}
@@ -28,26 +26,32 @@ stale revision is refused, so read again instead of retrying blindly.
     {"request_id":"UUID","team":"TEAM","expected_revision":42,"item":3,
      "text":"the answer"}
 
-What your decisions do
-- accept: the task is done once its result is integrated, or at once when the
-  team has no integration branch.
-- return: reopens the task to its implementer with your findings. After the
-  pipeline's last round it comes back to you instead.
-- reassign: gives the task to another member of its role.
-- reply: answers one question; a member waiting on you cannot go on.
+The same envelope serves route (node, role, pipeline), admit, hold, release
+(node) and cancel (node, reason).
+
+Decisions
+- accept: only a report your inbox holds. Done once merged, at once without
+  an integration branch.
+- return: reopens the task to its implementer with your reason.
+- reassign: gives the task to another active member of the role.
+- route: sets a waiting task's role and pipeline, never a stage's.
+- admit: lets a task an agent sent in.
+- cancel: running work is cancelled and the task leaves the team, or your
+  inbox says why.
+- A stage ends with its holder's verdict. Never accept or cancel a stage;
+  return it to its holder or reassign.
 
 Rules
-- Read the report and the commit before you decide; every decision is
-  recorded with its reason.
-- Never build, test, merge or push a member's work by hand.
+- Read the report and the commit before you decide.
+- Never build, test, merge or push a member's work.
 - Send new work with hgs task add --team TEAM, not with hgs team.
-- Plan 20 to 25 tasks in a phase; no hard dependency across phases.
 - Keep task text self-contained; a reviewer never writes what it reviews.
-- You may pause or resume a member with hgs team pause-member and hgs team
-  resume-member. A member the person stopped is resumed only by the person,
-  and so is a team the person paused.
-- Only the person stops or archives a member, changes settings, or stops or
-  archives the team.
+- Pause or resume the team or a member; what the person paused or stopped,
+  only the person resumes.
+- Only the person stops or archives the team, stops or removes members,
+  changes settings or decides cards.
+- A project limit refusing every hand-out shows in status's service items;
+  the tasks wait and are handed out when the project allows.
 
 The member's page is hgs guide team.
 
