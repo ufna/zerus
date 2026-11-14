@@ -40,6 +40,63 @@ fn empty_published_store_recovers_schema_initialization() {
     h.run(&person(), create()).unwrap();
     assert_eq!(h.store.team(TEAM).unwrap().unwrap().revision, 1);
 }
+/// A version-2 store from before notes keeps its rows and gains the three
+/// additive columns on its next open; no schema version bump is involved.
+#[test]
+fn a_version_two_store_from_before_notes_gains_the_columns_and_keeps_rows() {
+    let mut h = Harness::new();
+    h.bind("m1");
+    let node = h.add(&person(), 1);
+    h.submit(node, "m1");
+    h.observe(node, ops::TaskStage::InReview);
+    h.report(node, "m1");
+    let db = h.store.db.as_ref().unwrap();
+    db.execute_batch(
+        "ALTER TABLE reports DROP COLUMN notes;
+         ALTER TABLE inbox DROP COLUMN notes;
+         ALTER TABLE cards DROP COLUMN notes;",
+    )
+    .unwrap();
+    for table in ["reports", "inbox", "cards"] {
+        let found: bool = db
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM pragma_table_info(?1) WHERE name='notes')",
+                [table],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(!found, "{table} still has notes before reopen");
+    }
+    drop(h.store);
+    let mut store = Store::open(h.temp.path()).unwrap();
+    for table in ["reports", "inbox", "cards"] {
+        let found: bool = store
+            .db
+            .as_ref()
+            .unwrap()
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM pragma_table_info(?1) WHERE name='notes')",
+                [table],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(found, "{table} did not gain notes");
+    }
+    let report = store
+        .report(TEAM, node, 1)
+        .unwrap()
+        .expect("the old row is kept");
+    assert_eq!(report.text, "Implemented and checked");
+    assert!(report.notes.is_empty());
+    // A second open is a no-op and still finds the columns.
+    drop(store);
+    store = Store::open(h.temp.path()).unwrap();
+    assert_eq!(
+        store.report(TEAM, node, 1).unwrap().unwrap().text,
+        "Implemented and checked"
+    );
+}
+
 #[test]
 fn newer_schema_is_refused_without_modifying_its_version() {
     let h = Harness::new();
