@@ -29,6 +29,7 @@ impl Ledger {
     pub(crate) fn open(state: &Path) -> Result<Self> {
         let dir = state.join("teams");
         platform::private_dir(&dir).map_err(storage)?;
+        let dir = platform::canonical(state).map_err(storage)?.join("teams");
         if !platform::verify_private(&dir, platform::Private::Directory).map_err(storage)? {
             return Err(storage("Actor ledger directory is not private"));
         }

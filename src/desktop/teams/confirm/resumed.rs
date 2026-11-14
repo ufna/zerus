@@ -25,6 +25,9 @@ pub(in crate::desktop::teams) fn resumed_binding(
         Err(e) => return Err(e.to_string()),
         Ok(_) => (),
     }
+    let path = crate::platform::canonical(state)
+        .map_err(|e| e.to_string())?
+        .join("teams/standing-v1/journal.sqlite3");
     if !crate::platform::verify_private(&path, crate::platform::Private::File)
         .map_err(|e| e.to_string())?
     {

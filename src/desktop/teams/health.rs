@@ -13,6 +13,7 @@ pub(super) fn read(state: &Path) -> Option<Health> {
     if !crate::teams::enabled(state) {
         return None;
     }
+    let state = crate::platform::canonical(state).ok()?;
     let directory = state.join("teams");
     if !crate::platform::verify_private(&directory, crate::platform::Private::Directory).ok()? {
         return None;

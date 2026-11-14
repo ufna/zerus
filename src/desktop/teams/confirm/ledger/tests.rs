@@ -31,6 +31,8 @@ fn reservation_tombstones_and_hourly_quota_survive_database_reopens() {
 #[test]
 fn unknown_never_publishes_a_binding_and_completed_receipt_publishes_exactly_one_fact() {
     let temp = tempfile::tempdir().unwrap();
+    let alias = temp.path().join("alias");
+    std::os::unix::fs::symlink(temp.path(), &alias).unwrap();
     let (b, _, mut s) = sample();
     s.conversation = "conversation-1".into();
     assert!(resumed_binding(temp.path(), &b.team, &b.member, &b.launch)
@@ -63,7 +65,7 @@ fn unknown_never_publishes_a_binding_and_completed_receipt_publishes_exactly_one
     target.receipt_at = Some(123456);
     c.result = Some(target);
     db.save(&c).unwrap();
-    let fact = resumed_binding(temp.path(), &b.team, &b.member, &b.launch)
+    let fact = resumed_binding(&alias, &b.team, &b.member, &b.launch)
         .unwrap()
         .unwrap();
     assert_eq!(fact.run_id, "new-run");
@@ -79,6 +81,12 @@ fn unknown_never_publishes_a_binding_and_completed_receipt_publishes_exactly_one
     assert_eq!(brief.binding.run, fact.run_id);
     assert_eq!(brief.binding.conversation, fact.conversation_id);
     assert_eq!(brief.kind, Kind::Brief);
+    drop(db);
+    let path = temp.path().join("teams/standing-v1/journal.sqlite3");
+    let saved = path.with_extension("saved");
+    std::fs::rename(&path, &saved).unwrap();
+    std::os::unix::fs::symlink(&saved, &path).unwrap();
+    assert!(resumed_binding(&alias, &b.team, &b.member, &b.launch).is_err());
 }
 
 #[test]

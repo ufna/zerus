@@ -4,6 +4,8 @@ mod cross;
 mod guards;
 mod holder;
 mod member_sessions;
+#[cfg(unix)]
+mod paths;
 mod stage;
 
 #[test]

@@ -178,6 +178,7 @@ pub(super) fn self_exit(v: &Value, archived: bool) -> bool {
     }
 }
 fn archive(state: &Path, roots: &Roots, b: &Binding, name: &str) -> Result<(String, Value)> {
+    let state = crate::platform::canonical(state).map_err(|e| e.to_string())?;
     let db = Connection::open_with_flags(
         state.join("archive-catalog-v1.sqlite3"),
         OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NOFOLLOW,
@@ -474,6 +475,15 @@ mod tests {
             (found.as_str(), &raw["state"]),
             (id.as_str(), &json!("archived"))
         );
+        let alias = config.state.join("alias");
+        std::os::unix::fs::symlink(&config.state, &alias).unwrap();
+        let (found, _) = archive(&alias, &roots, &b, "codex/example/member").unwrap();
+        assert_eq!(found, id);
+        let path = config.state.join("archive-catalog-v1.sqlite3");
+        let saved = path.with_extension("saved");
+        std::fs::rename(&path, &saved).unwrap();
+        std::os::unix::fs::symlink(&saved, &path).unwrap();
+        assert!(archive(&alias, &roots, &b, "codex/example/member").is_err());
     }
 
     #[test]

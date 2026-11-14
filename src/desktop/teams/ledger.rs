@@ -161,6 +161,7 @@ impl Ledger {
         if !crate::teams::enabled(state) {
             return Err(Problem::new(code::TEAMS_INACTIVE, "Teams preview is off."));
         }
+        let state = crate::platform::canonical(state).map_err(storage)?;
         let dir = state.join("teams");
         if !crate::platform::verify_private(&dir, crate::platform::Private::Directory)
             .map_err(storage)?
@@ -485,6 +486,52 @@ fn journal(tx: &rusqlite::Transaction<'_>, row: &Row, now_ms: i64) -> Result<()>
 mod tests {
     use super::*;
     use crate::teams::ops::tests::{Harness, TEAM};
+    #[cfg(unix)]
+    #[test]
+    fn state_aliases_open_the_ledgers_and_their_readers_but_database_aliases_are_refused() {
+        use std::{fs, os::unix::fs::symlink};
+        let h = Harness::new();
+        let alias = h.temp.path().join("alias");
+        symlink(h.temp.path(), &alias).unwrap();
+        let mut ledger = Ledger::open(&alias).unwrap();
+        ledger.write_health(Some(1), 7).unwrap();
+        assert_eq!(super::super::health(&alias).unwrap().at_ms, 7);
+        drop(ledger);
+
+        let actor = super::super::actor::test_ledger(&alias);
+        super::super::items::put(
+            &actor,
+            &super::super::items::Failure {
+                team: TEAM,
+                kind: "cancel_retry",
+                subject: "7",
+                node: Some(3),
+                reason: "Retry",
+                failures: 1,
+                now: 7,
+                next_ms: Some(60_007),
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            super::super::items::read(&alias, TEAM, Some(true), 7)
+                .unwrap()
+                .items
+                .len(),
+            1
+        );
+        drop(actor);
+
+        for name in [FILE, "actor-v1.sqlite3"] {
+            let path = h.temp.path().join("teams").join(name);
+            let saved = path.with_extension("saved");
+            fs::rename(&path, &saved).unwrap();
+            symlink(&saved, &path).unwrap();
+        }
+        assert!(Ledger::open(&alias).is_err());
+        assert!(super::super::health(&alias).is_none());
+        assert!(super::super::items::read(&alias, TEAM, Some(true), 7).is_none());
+    }
     #[test]
     fn a_stale_writer_is_refused_even_after_its_journal_was_pruned() {
         let h = Harness::new();

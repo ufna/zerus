@@ -72,16 +72,17 @@ impl Store {
         if !super::enabled(state) {
             return Err(Problem::new(code::TEAMS_INACTIVE, "Teams preview is off."));
         }
+        // SQLite NOFOLLOW rejects ancestor aliases too (macOS /var and /tmp).
+        // Resolve only the configured state directory, never the database or
+        // Teams-owned subdirectories, and retain it for lazy creation/refresh.
+        let state = crate::platform::canonical(state).map_err(storage)?;
         let path = state.join("teams/teams-v1.sqlite3");
         let db = match std::fs::symlink_metadata(&path) {
             Ok(_) => Some(connect(&path, false)?),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
             Err(e) => return Err(storage(e)),
         };
-        Ok(Self {
-            state: state.to_owned(),
-            db,
-        })
+        Ok(Self { state, db })
     }
 
     /// Retry discovery after another process creates the first team. Absence
