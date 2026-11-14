@@ -81,7 +81,9 @@
 //! is never restarted or reloaded for it. A marked caller whose binding says
 //! OpenCode's shared service serves its session is refused plainly: such a
 //! session cannot be a team lead or member in this milestone, and
-//! `host_served_agent` lets team creation and member launch refuse it too.
+//! `host_served_agent` lets team creation's bundle validation (and catalog
+//! export or save) refuse it too; no member-launch code calls it, because an
+//! agent kind cannot change after creation.
 //! Any other marked claim below a recorded resident agent host is refused
 //! with a sentence of its own: a command there can only be a session that
 //! host serves, and only a DeepSeek claim's token proves one. The person path

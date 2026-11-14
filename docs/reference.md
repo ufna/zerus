@@ -5744,6 +5744,12 @@ precedence; older authentication problems are labelled **Last reported** when
 their report is stale or offline. Viewing accounts never refreshes Claude's
 credentials on Zerus's behalf.
 
+Kimi Code's quota inspection calls the provider's endpoints with the native
+token. `KIMI_CODE_BASE_URL` may point it at a private test endpoint only when
+the value is an `http` or `https` URL whose host is `127.0.0.1`, `::1` or
+`localhost`; the token is sent there exactly as to the provider. Any other
+value is ignored, named in the inspection's `detail`, and receives no token.
+
 Claude usage refreshes share a cache on the account's owning computer. Account
 views and the selected session footer normally request usage every five minutes;
 their clocks, manual Refresh and requests from other GUI clients share a five-minute

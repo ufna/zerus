@@ -105,7 +105,12 @@ pub(super) fn native_command(provider: &str, home: &Path, native: bool) -> Comma
     }
     cmd
 }
-fn http_json(url: &str, token: &str, extra: &[&str]) -> std::result::Result<Value, String> {
+fn http_json(
+    url: &str,
+    token: &str,
+    extra: &[&str],
+    allow_http: bool,
+) -> std::result::Result<Value, String> {
     if token.is_empty() || token.chars().any(char::is_control) {
         return Err("Sign in with the native agent to read usage.".into());
     }
@@ -122,7 +127,7 @@ fn http_json(url: &str, token: &str, extra: &[&str]) -> std::result::Result<Valu
         "--silent",
         "--fail",
         "--proto",
-        "=https",
+        if allow_http { "=http,https" } else { "=https" },
         "--connect-timeout",
         "3",
         "--max-time",
@@ -401,6 +406,48 @@ fn claude(config: &Config, home: &Path, native: bool, seed: &Value) -> Result<Va
     }
     Ok(result)
 }
+const KIMI_API_BASE: &str = "https://api.kimi.com/coding/v1";
+
+/// A test/local endpoint is accepted only when its host is a loopback address.
+/// Any other value is ignored and named in the inspection's detail; it never
+/// receives the token.
+fn ignored_kimi_base(result: &mut Value) -> Option<(String, bool)> {
+    result["detail"] = json!(
+        "Ignored KIMI_CODE_BASE_URL: Kimi account inspection uses only a loopback http or https address."
+    );
+    None
+}
+
+fn kimi_base(result: &mut Value) -> Option<(String, bool)> {
+    let Ok(value) = env::var("KIMI_CODE_BASE_URL") else {
+        return Some((KIMI_API_BASE.into(), false));
+    };
+    if value.is_empty() || value.trim_end_matches('/') == KIMI_API_BASE {
+        return Some((KIMI_API_BASE.into(), false));
+    }
+    let Some((scheme, rest)) = value.split_once("://") else {
+        return ignored_kimi_base(result);
+    };
+    let allow_http = match scheme.to_ascii_lowercase().as_str() {
+        "https" => false,
+        "http" => true,
+        _ => return ignored_kimi_base(result),
+    };
+    if rest.contains('?') || rest.contains('#') || rest.contains('@') {
+        return ignored_kimi_base(result);
+    }
+    let authority = rest.split('/').next().unwrap_or("");
+    let host = if let Some(after) = authority.strip_prefix('[') {
+        after.split_once(']').map(|(host, _)| host).unwrap_or("")
+    } else {
+        authority.split(':').next().unwrap_or("")
+    };
+    if !(host.eq_ignore_ascii_case("localhost") || host == "127.0.0.1" || host == "::1") {
+        return ignored_kimi_base(result);
+    }
+    Some((value.trim_end_matches('/').to_owned(), allow_http))
+}
+
 fn kimi(home: &Path) -> Value {
     let mut result =
         json!({"identity":{},"windows":[],"source":"Kimi Code","status":"unavailable"});
@@ -410,6 +457,9 @@ fn kimi(home: &Path) -> Value {
         result["status"] = json!("signed_out");
         return result;
     }
+    let Some((base, allow_http)) = kimi_base(&mut result) else {
+        return result;
+    };
     if auth["expires_at"]
         .as_u64()
         .is_some_and(|expiry| expiry <= now() + 60)
@@ -430,22 +480,13 @@ fn kimi(home: &Path) -> Value {
             .and_then(|b| serde_json::from_slice(&b).ok())
             .unwrap_or(result);
     }
-    // Match the native managed provider's default endpoint. Custom gateways do not receive this token.
-    let base =
-        env::var("KIMI_CODE_BASE_URL").unwrap_or_else(|_| "https://api.kimi.com/coding/v1".into());
-    if ![
-        "https://api.kimi.com/coding/v1",
-        "https://api.kimi.com/coding/v1/",
-    ]
-    .contains(&base.as_str())
-    {
-        return result;
-    }
-    if let Ok(a) = http_json("https://api.kimi.com/coding/v1/me", token, &[]) {
+    // The same token goes to the default provider or to a validated loopback
+    // test endpoint; the path below the base stays the provider's.
+    if let Ok(a) = http_json(&format!("{base}/me"), token, &[], allow_http) {
         let a = a.get("user").or_else(|| a.get("data")).unwrap_or(&a);
         result["identity"] = json!({"name":text(a,"nickname"),"email":text(a,"email"),"plan":text(a,"user_level_name"),"auth_method":"Kimi Code"});
     }
-    if let Ok(usage) = http_json("https://api.kimi.com/coding/v1/usages", token, &[]) {
+    if let Ok(usage) = http_json(&format!("{base}/usages"), token, &[], allow_http) {
         let mut windows = Vec::new();
         for (key, label, minutes) in [
             ("limit_5h", "", Some(300)),
@@ -768,6 +809,191 @@ pub(super) fn inspect(config: &Config, args: &[String]) -> Result<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Write;
+    use std::sync::Mutex;
+
+    static KIMI_ENV: Mutex<()> = Mutex::new(());
+
+    struct KimiBaseEnv(Option<String>);
+
+    impl KimiBaseEnv {
+        fn set(value: &str) -> Self {
+            let old = env::var("KIMI_CODE_BASE_URL").ok();
+            env::set_var("KIMI_CODE_BASE_URL", value);
+            Self(old)
+        }
+    }
+
+    impl Drop for KimiBaseEnv {
+        fn drop(&mut self) {
+            match &self.0 {
+                Some(value) => env::set_var("KIMI_CODE_BASE_URL", value),
+                None => env::remove_var("KIMI_CODE_BASE_URL"),
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    struct PathEnv(Option<String>);
+
+    #[cfg(unix)]
+    impl PathEnv {
+        fn prepend(path: &Path) -> Self {
+            let old = env::var("PATH").ok();
+            let current = old.clone().unwrap_or_default();
+            env::set_var("PATH", format!("{}:{current}", path.display()));
+            Self(old)
+        }
+    }
+
+    #[cfg(unix)]
+    impl Drop for PathEnv {
+        fn drop(&mut self) {
+            match &self.0 {
+                Some(value) => env::set_var("PATH", value),
+                None => env::remove_var("PATH"),
+            }
+        }
+    }
+
+    fn kimi_home(token: &str, expires_at: u64) -> tempfile::TempDir {
+        let home = tempfile::tempdir().unwrap();
+        fs::create_dir_all(home.path().join("credentials")).unwrap();
+        fs::write(
+            home.path().join("credentials/kimi-code.json"),
+            json!({"access_token": token, "expires_at": expires_at}).to_string(),
+        )
+        .unwrap();
+        home
+    }
+
+    fn accept_with_timeout(
+        server: &std::net::TcpListener,
+    ) -> std::net::TcpStream {
+        let start = Instant::now();
+        loop {
+            match server.accept() {
+                Ok((stream, _)) => return stream,
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    assert!(
+                        start.elapsed() < Duration::from_secs(3),
+                        "the loopback server received no request"
+                    );
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                Err(error) => panic!("loopback accept failed: {error}"),
+            }
+        }
+    }
+
+    fn read_request(stream: &mut std::net::TcpStream) -> String {
+        stream
+            .set_read_timeout(Some(Duration::from_secs(3)))
+            .unwrap();
+        let mut request = Vec::new();
+        while !request.ends_with(b"\r\n\r\n") {
+            let mut byte = [0];
+            if stream.read_exact(&mut byte).is_err() {
+                break;
+            }
+            request.push(byte[0]);
+        }
+        String::from_utf8(request).unwrap()
+    }
+
+    fn respond(stream: &mut std::net::TcpStream, body: &str) {
+        write!(
+            stream,
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn kimi_inspection_uses_a_loopback_base_and_sends_the_token() {
+        let _lock = KIMI_ENV.lock().unwrap();
+        let server = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        server.set_nonblocking(true).unwrap();
+        let base = format!("http://{}", server.local_addr().unwrap());
+        let worker = std::thread::spawn(move || {
+            for (path, body) in [
+                ("/me", r#"{"user":{"nickname":"Loop","email":"loop@example.test","user_level_name":"Pro"}}"#),
+                ("/usages", r#"{"usages":{"limit_5h":{"used_ratio":0.5,"reset_time":123}}}"#),
+            ] {
+                let mut stream = accept_with_timeout(&server);
+                let request = read_request(&mut stream);
+                assert!(request.starts_with(&format!("GET {path} ")), "{request}");
+                assert!(
+                    request.contains("Authorization: Bearer synthetic-token"),
+                    "{request}"
+                );
+                respond(&mut stream, body);
+            }
+        });
+        let home = kimi_home("synthetic-token", now() + 3600);
+        let env = KimiBaseEnv::set(&base);
+        let result = kimi(home.path());
+        drop(env);
+        worker.join().unwrap();
+        assert_eq!(result["status"], "ok", "{result}");
+        assert_eq!(result["identity"]["name"], "Loop");
+        assert_eq!(result["identity"]["email"], "loop@example.test");
+        assert_eq!(result["identity"]["plan"], "Pro");
+        assert_eq!(result["windows"][0]["used_percent"], 50.0);
+        assert!(result.get("detail").is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_expired_kimi_token_does_not_use_the_loopback_base() {
+        use std::os::unix::fs::PermissionsExt;
+        let _lock = KIMI_ENV.lock().unwrap();
+        let server = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        server.set_nonblocking(true).unwrap();
+        let base = format!("http://{}", server.local_addr().unwrap());
+        let home = kimi_home("synthetic-token", now().saturating_sub(120));
+        let bin = tempfile::tempdir().unwrap();
+        let kimi = bin.path().join("kimi");
+        fs::write(&kimi, "#!/bin/sh\nexit 97\n").unwrap();
+        fs::set_permissions(&kimi, fs::Permissions::from_mode(0o700)).unwrap();
+        let _path = PathEnv::prepend(bin.path());
+        let env = KimiBaseEnv::set(&base);
+        let result = kimi_call(&home);
+        drop(env);
+        assert_ne!(result["status"], "ok", "{result}");
+        assert!(server.accept().is_err(), "the expired token reached the loopback base");
+    }
+
+    #[test]
+    fn a_non_loopback_kimi_base_is_ignored_without_a_request() {
+        let _lock = KIMI_ENV.lock().unwrap();
+        // Bind all interfaces and use 127.0.0.2 as the override host: the
+        // listener would see a request if the non-loopback value were used.
+        let server = std::net::TcpListener::bind("0.0.0.0:0").unwrap();
+        server.set_nonblocking(true).unwrap();
+        let port = server.local_addr().unwrap().port();
+        let home = kimi_home("synthetic-token", now() + 3600);
+        let env = KimiBaseEnv::set(&format!("http://127.0.0.2:{port}"));
+        let result = kimi_call(&home);
+        drop(env);
+        assert_eq!(result["status"], "unavailable", "{result}");
+        assert!(
+            result["detail"]
+                .as_str()
+                .unwrap()
+                .contains("Ignored KIMI_CODE_BASE_URL"),
+            "{result}"
+        );
+        assert!(
+            server.accept().is_err(),
+            "a non-loopback base received the token"
+        );
+    }
+
+    fn kimi_call(home: &tempfile::TempDir) -> Value {
+        kimi(home.path())
+    }
 
     #[test]
     fn claude_429_headers_survive_curl_refusing_an_oversized_error_body() {
