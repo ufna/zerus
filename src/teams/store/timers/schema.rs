@@ -247,6 +247,12 @@ pub(in crate::teams::store) fn fence(db: &Connection) -> Result<()> {
 }
 pub(in crate::teams::store) fn extend(db: &Connection) -> Result<()> {
     if marked(db)? == Mark::Current {
+        // The current layout's idempotent index, kept here instead of a
+        // newer mark so an older build still opens the upgraded store
+        // (zerus-63rru.52 round 2): a store at this layout that predates
+        // the index gains it on open, and a base build ignores it.
+        db.execute_batch("CREATE INDEX IF NOT EXISTS cancel_node_newest ON cancel_outcomes(team,node,decision DESC);")
+            .map_err(storage)?;
         return Ok(());
     }
     let own = db.is_autocommit();
