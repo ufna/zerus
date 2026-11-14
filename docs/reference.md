@@ -5751,8 +5751,9 @@ private stand-in only when the value is an `http` or `https` URL whose host is
 curl's range; the token is sent there exactly as to the provider, and curl runs
 without any config file or proxy (no `~/.curlrc`, `$CURL_HOME`, ambient proxy
 variable or `HTTP_PROXY`). A valid test value takes precedence over
-`KIMI_CODE_BASE_URL`. Any other test value is ignored; the `detail` names the
-variable, and the rule below then applies. The seam is read only by the
+`KIMI_CODE_BASE_URL`. An empty test value is treated as unset. Any other test
+value is ignored; the `detail` names the variable, and the rule below then
+applies. The seam is read only by the
 inspection and is never passed to a native Kimi child. `KIMI_CODE_BASE_URL`
 keeps the Kimi CLI's own meaning: with a live token, any non-default value,
 including an empty one and a loopback address, makes the inspection send no

@@ -493,6 +493,9 @@ fn loopback_test_base(value: &str) -> Option<(String, bool)> {
 /// trailing slash) reaches the provider.
 fn kimi_base(result: &mut Value) -> Option<(String, CurlPolicy)> {
     match env::var(KIMI_TEST_BASE_ENV) {
+        // Every account session's environment carries the seam as an empty
+        // value; that is unset, never an ignored endpoint.
+        Ok(value) if value.is_empty() => {}
         Ok(value) => {
             if let Some((base, allow_http)) = loopback_test_base(&value) {
                 return Some((
@@ -1333,6 +1336,30 @@ fi
                 "{value}: {result}"
             );
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_empty_test_base_is_unset_without_a_detail() {
+        let _lock = curl_lock();
+        let bin = tempfile::tempdir().unwrap();
+        let _path = recording_curl(bin.path());
+        let home = kimi_home("synthetic-token", now() + 3600);
+        let _env = EnvVars::set(&[
+            (TEST_BASE_VAR, Some("")),
+            (CLI_BASE_VAR, None),
+            ("CURL_RECORD_DIR", Some(bin.path().to_str().unwrap())),
+        ]);
+        let result = kimi(home.path());
+        assert_eq!(result["status"], "ok", "{result}");
+        assert!(
+            result.get("detail").is_none(),
+            "an empty seam was reported as ignored: {result}"
+        );
+        assert_eq!(
+            fs::read_to_string(bin.path().join("argv.0")).unwrap(),
+            KIMI_DEFAULT_ARGV
+        );
     }
 
     #[test]
