@@ -61,6 +61,13 @@ fn capture(scope: &Scope) -> Result<(&'static str, Process)> {
             // terminal consumer. Never choose a renderer-supplied PID.
             let group = unsafe { libc::tcgetpgrp(tty.as_raw_fd()) };
             let process = Process::read(u32::try_from(group)?)?;
+            // A reparented caller can retain this group after its leader has
+            // left the caller's ancestry. Check the actual consumer as well.
+            // A platform-withheld environment remains no positive evidence.
+            ensure!(
+                !agent_image(&process.executable) && !agent_environment(process.pid)?,
+                "agent-descended frontend request refused"
+            );
             ensure!(process.current(), "installer terminal consumer changed");
             return Ok(("interactive_terminal", process));
         }
