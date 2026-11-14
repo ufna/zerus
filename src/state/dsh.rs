@@ -3533,8 +3533,11 @@ mod tests {
     fn a_lifecycle_end_other_than_the_hosts_disposal_reads_not_ended() {
         let ended = json!({"state": "ended", "end": {"source": "agent/disposed", "at": 100}});
         assert!(!lifecycle_state(&ended).unwrap());
+        // A source the host never writes. It is bound to a variable, so the
+        // question-route inventory of real `source` literals does not count it.
+        let foreign = "agent/exit";
         for bad in [
-            json!({"state": "ended", "end": {"source": "agent/exit", "at": 100}}),
+            json!({"state": "ended", "end": {"source": foreign, "at": 100}}),
             json!({"state": "ended", "end": {"source": "agent/disposed", "at": 0}}),
             json!({"state": "ended", "end": {"source": "agent/disposed"}}),
         ] {
