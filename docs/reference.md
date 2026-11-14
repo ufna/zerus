@@ -6941,9 +6941,9 @@ witness lock and pending-marker no-replay rules above are unchanged.
 Scoped lifecycle, existing-name launch, fork preflight, parent-link writers
 and the DeepSeek launch-project gate use the same per-conversation guard
 (`zerus-keboc`). Host RPCs in these paths run outside the binding-file lock.
-A claimed parent's liveness is checked before taking the child's guard or
-machine-wide locks; its full saved binding is checked again during the local
-parent-link transaction. Launch-project inspects and lists the exact native
+A claimed parent's liveness is checked after waiting for the child's guard
+and before machine-wide locks; its full saved binding is checked again during
+the local parent-link transaction. Launch-project inspects and lists the exact native
 handle under its session guard, then rechecks the full binding before assigning
 metadata. Concurrent metadata changes refuse rather than overwrite an update.
 

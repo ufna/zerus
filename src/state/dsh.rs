@@ -983,13 +983,15 @@ pub(crate) fn launch(
             eprintln!("hgs: {warning}");
         }
     }
+    // Native creation and defaults have settled. Optional project metadata
+    // never needs the creation reservation, including folder inference.
+    drop(_guard);
     // A child its proven parent launched starts in the parent's project,
     // written after the bindings lock is released, like a fork (zerus-d5twt).
     if let Some(parent) = record
         .get("parent")
         .filter(|link| crate::swarm::placing_parent(link))
     {
-        drop(_guard);
         if let Ok(config) = crate::config::Config::load() {
             crate::swarm::place_child_session(
                 &config,

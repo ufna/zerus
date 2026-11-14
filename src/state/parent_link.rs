@@ -506,14 +506,14 @@ pub(super) fn dispatch(args: &[String]) -> Result<i32> {
     } else {
         String::new()
     };
-    // A claimed parent's liveness may wait for its host. Observe it before
-    // taking either the child's session guard or any machine-wide writer.
-    let claimed = if request.action == "adopt" {
-        request.parent.as_ref().map(claimed_parent).transpose()?
-    } else { None };
     let provider = provider_binding::Provider::named(name);
     let _session = if matches!(provider, Some(provider_binding::Provider::DeepSeek)) {
         Some(dsh::dispatch_lock::acquire(name)?.0)
+    } else { None };
+    // Observe liveness after any wait for the child, before machine-wide
+    // writers. The claim must not age while queued behind the child's RPC.
+    let claimed = if request.action == "adopt" {
+        request.parent.as_ref().map(claimed_parent).transpose()?
     } else { None };
     let _writer = lock(None)?;
     // Parent writers share the state lock for cycle checks, then the native

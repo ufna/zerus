@@ -1,5 +1,7 @@
 """Remaining binding gates: private hosts, causal RPC holds, no live harness."""
+import hashlib
 import json
+from pathlib import Path
 import subprocess
 import time
 import test_dsh_dispatch_lock as dispatch_fixture
@@ -80,6 +82,45 @@ class DeepSeekBindingLocks(unittest.TestCase):
                 self.independent(s, slow)
             finally:
                 child.close()
+
+    @unittest.skipUnless(Path('/proc/self/fd').is_dir(), 'observes only this private CLI child on Linux')
+    def test_parent_claim_is_observed_after_waiting_for_the_child_guard(self):
+        with Scenario() as s:
+            self.done(self.cli(s, ['swarm', 'get', '--json']))
+            s.a.hold = 'send'
+            slow = s.start(s.a, 'send', public=True, request=s.payload(s.a, 'send'))
+            self.assertTrue(s.a.entered.wait(5))
+            request = dict(s.payload(s.a, ''), action='adopt', parent={
+                k: s.b.record[k] for k in ('name', 'session_id', 'run_id', 'conversation_id')})
+            request.pop('request_id')
+            parent = s.start(s.a, 'parent', public=True, request=request)
+            identity = json.dumps([s.a.record['agent_home'], s.a.record['conversation_id']],
+                                  separators=(',', ':'))
+            guard = str(s.state / 'dsh/session-locks' / (hashlib.sha256(identity.encode()).hexdigest() + '.lock'))
+            # Seeing the exact open guard fd proves the child reached its lock
+            # wait. No fixed startup sleep and no owner's process inspection.
+            deadline = time.monotonic() + 5
+            reached = False
+            while time.monotonic() < deadline and parent.poll() is None:
+                for fd in (Path('/proc') / str(parent.pid) / 'fd').iterdir():
+                    try:
+                        if str(fd.readlink()) == guard:
+                            reached = True
+                    except FileNotFoundError:
+                        pass
+                if reached:
+                    break
+                time.sleep(.005)
+            self.assertTrue(reached, 'private parent CLI never reached the selected session guard')
+            # The parent becomes unavailable without a binding-file edit while
+            # the child is queued. A pre-wait liveness snapshot is now stale.
+            s.b.replies['list'] = lambda p, v: dict(v, items=[])
+            s.a.release.set()
+            self.done(slow)
+            out, err = parent.communicate(timeout=5)
+            self.assertNotEqual(parent.returncode, 0, out + err)
+            self.assertIn('claimed parent must be a live session', err)
+            self.assertNotIn('parent', json.loads(s.a.binding.read_text()))
 
     def test_launch_project_inspect_and_list_are_outside_machine_locks(self):
         for method in ('inspect', 'list'):
