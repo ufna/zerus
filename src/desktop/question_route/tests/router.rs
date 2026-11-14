@@ -230,9 +230,15 @@ impl Fixture {
                                 &format!("{}.json", plan.request_id),
                                 receipt.to_string().as_bytes(),
                             );
-                            Ended::Exited { code: 0, stderr: String::new() }
+                            Ended::Exited {
+                                code: 0,
+                                stderr: String::new(),
+                            }
                         }
-                        Child::NoReceipt => Ended::Exited { code: 1, stderr: String::new() },
+                        Child::NoReceipt => Ended::Exited {
+                            code: 1,
+                            stderr: String::new(),
+                        },
                         Child::NotStarted => Ended::NotStarted,
                     }
                 },
@@ -1868,14 +1874,14 @@ fn the_latch_request_is_exact_kept_and_bounded() {
         latch(&mut f, &latch_request(&id, false, 1))["accepted"],
         false
     );
-    // Already so: confirmed without a new revision.
+    // Already so: a new decision still advances the revision.
     let same = latch(
         &mut f,
         &latch_request(&uuid::Uuid::new_v4().to_string(), true, 1),
     );
     assert_eq!(
         (same["applied"].clone(), same["revision"].clone()),
-        (json!(false), json!(1))
+        (json!(false), json!(2))
     );
     // Only the child's exact current run and conversation, on this computer.
     for (field, value, code) in [
@@ -1915,7 +1921,7 @@ fn the_latch_request_is_exact_kept_and_bounded() {
     );
     assert_eq!(
         (status["person_off"].clone(), status["revision"].clone()),
-        (json!(true), json!(1))
+        (json!(true), json!(2))
     );
     for bad in [
         json!({"op": "question_route_child_status", "request_id": id, "session_id": CHILD_ID, "x": 1}),
@@ -1964,9 +1970,10 @@ fn the_latch_request_is_exact_kept_and_bounded() {
     );
     let changed = latch(
         &mut f,
-        &latch_request(&uuid::Uuid::new_v4().to_string(), false, 1),
+        &latch_request(&uuid::Uuid::new_v4().to_string(), false, 2),
     );
-    assert_eq!(changed["revision"], 2);
+    assert_eq!(changed["accepted"], true);
+    assert_eq!(changed["revision"], 3);
 }
 
 #[test]
@@ -2260,6 +2267,40 @@ fn a_phone_statement_issued_before_a_desktop_decision_is_refused() {
     );
     assert_eq!(newer["accepted"], true, "{newer}");
     assert!(!super::super::latch::latched(&f.store.db, CHILD_ID).unwrap());
+}
+
+/// zerus-sa9qn.55: a fast phone signed this decision before the desktop's
+/// off/on pair, even though its clock says it was signed forty seconds later.
+#[test]
+fn fast_phone_late_statement_cannot_override_a_newer_desktop_decision() {
+    let mut f = Fixture::new();
+    f.snapshot(vec![child_row(), parent_row()]);
+    let state = f.config.state.clone();
+    let now = chrono::Utc::now().timestamp();
+    let mut late = person_at(&uuid::Uuid::new_v4().to_string(), true, now + 40);
+    late["statement"]["expected_revision"] = json!(0);
+    assert_eq!(
+        latch(
+            &mut f,
+            &latch_request(&uuid::Uuid::new_v4().to_string(), true, 0)
+        )["accepted"],
+        true
+    );
+    assert_eq!(
+        latch(
+            &mut f,
+            &latch_request(&uuid::Uuid::new_v4().to_string(), false, 1)
+        )["accepted"],
+        true
+    );
+    let reply = super::super::latch_person(&mut f.store.db, &state, &late, verified);
+    assert_eq!(
+        reply["accepted"], false,
+        "a phone's clock lead grants no newer decision: {reply}"
+    );
+    assert_eq!(reply["code"], "stale_decision");
+    assert!(!super::super::latch::latched(&f.store.db, CHILD_ID).unwrap());
+    assert_eq!(host(&f), Some(true));
 }
 
 /// zerus-sa9qn.45: a question read while its child's own switch was off at
@@ -2900,4 +2941,266 @@ fn an_older_failure_without_metadata_still_escalates_only_its_exact_question() {
         lines(&f, CHILD_ID).is_empty(),
         "historical text is not reconstructed"
     );
+}
+
+/// A new decision at the same value still invalidates an earlier phone view.
+#[test]
+fn every_accepted_latch_decision_advances_its_revision() {
+    let mut f = Fixture::new();
+    f.snapshot(vec![child_row(), parent_row()]);
+    let first = latch(
+        &mut f,
+        &latch_request(&uuid::Uuid::new_v4().to_string(), false, 0),
+    );
+    assert_eq!(first["accepted"], true);
+    assert_eq!(first["applied"], false);
+    assert_eq!(
+        first["revision"], 1,
+        "the unchanged value is still a new decision"
+    );
+    let stale = latch(
+        &mut f,
+        &latch_request(&uuid::Uuid::new_v4().to_string(), true, 0),
+    );
+    assert_eq!(stale["accepted"], false);
+    assert!(!super::super::latch::latched(&f.store.db, CHILD_ID).unwrap());
+}
+
+#[test]
+fn a_corrected_computer_clock_does_not_block_a_current_v2_phone_decision() {
+    let mut f = Fixture::new();
+    f.snapshot(vec![child_row(), parent_row()]);
+    let now = chrono::Utc::now().timestamp();
+    let id = uuid::Uuid::new_v4().to_string();
+    super::super::latch::set(
+        &mut f.store.db,
+        &id,
+        CHILD_ID,
+        true,
+        super::super::latch::Guard::Revision(0),
+        (now + 3600) * 1000,
+    )
+    .unwrap();
+    let state = f.config.state.clone();
+    let mut request = person_at(&uuid::Uuid::new_v4().to_string(), false, now);
+    request["statement"]["expected_revision"] = json!(1);
+    let reply = super::super::latch_person(&mut f.store.db, &state, &request, verified);
+    assert_eq!(
+        (reply["accepted"].clone(), reply["revision"].clone()),
+        (json!(true), json!(2)),
+        "{reply}"
+    );
+    assert!(!super::super::latch::latched(&f.store.db, CHILD_ID).unwrap());
+}
+
+#[test]
+fn a_verified_v2_conflict_fences_legacy_statements_from_every_phone() {
+    let mut f = Fixture::new();
+    f.snapshot(vec![child_row(), parent_row()]);
+    assert_eq!(
+        latch(
+            &mut f,
+            &latch_request(&uuid::Uuid::new_v4().to_string(), false, 0)
+        )["revision"],
+        1
+    );
+    let state = f.config.state.clone();
+    let mut stale = person_at(&uuid::Uuid::new_v4().to_string(), true, 100);
+    stale["statement"]["expected_revision"] = json!(0);
+    assert_eq!(
+        super::super::latch_person(&mut f.store.db, &state, &stale, verified)["code"],
+        "stale_decision"
+    );
+    let mut other_phone = person_at(&uuid::Uuid::new_v4().to_string(), true, 4_000_000_000);
+    other_phone["statement"]["device_id"] = json!("different-legacy-phone");
+    let denied = super::super::latch_person(&mut f.store.db, &state, &other_phone, verified);
+    assert_eq!(denied["code"], "upgrade_required", "{denied}");
+    assert!(!super::super::latch::latched(&f.store.db, CHILD_ID).unwrap());
+    // The stored fence cannot be cleared or discarded.
+    assert!(f
+        .store
+        .db
+        .execute(
+            "UPDATE desktop_question_route_children SET revision_guarded=0",
+            []
+        )
+        .is_err());
+    assert!(f
+        .store
+        .db
+        .execute("DELETE FROM desktop_question_route_children", [])
+        .is_err());
+    // A current v2 statement ignores both clocks and succeeds, including a no-op.
+    stale["statement"]["request_id"] = json!(uuid::Uuid::new_v4().to_string());
+    stale["statement"]["person_off"] = json!(false);
+    stale["statement"]["expected_revision"] = json!(1);
+    let accepted = super::super::latch_person(&mut f.store.db, &state, &stale, verified);
+    assert_eq!(
+        (accepted["revision"].clone(), accepted["applied"].clone()),
+        (json!(2), json!(false))
+    );
+    // Request replay never repeats the decision or consumes another revision.
+    assert_eq!(
+        super::super::latch_person(&mut f.store.db, &state, &stale, |_| panic!(
+            "receipt replay"
+        )),
+        accepted
+    );
+}
+
+#[test]
+fn unverified_v2_never_fences_a_legacy_latch_and_status_is_identity_bound() {
+    let mut f = Fixture::new();
+    f.snapshot(vec![child_row(), parent_row()]);
+    let state = f.config.state.clone();
+    let mut request = person_at(&uuid::Uuid::new_v4().to_string(), true, 100);
+    request["statement"]["expected_revision"] = json!(0);
+    let refused = super::super::latch_person(&mut f.store.db, &state, &request, |_| {
+        anyhow::bail!("not a current phone")
+    });
+    assert_eq!(refused["code"], "not_verified");
+    request["statement"]
+        .as_object_mut()
+        .unwrap()
+        .remove("expected_revision");
+    assert_eq!(
+        super::super::latch_person(&mut f.store.db, &state, &request, verified)["accepted"],
+        true
+    );
+    let row = child_row();
+    let mut status = json!({"op":"question_route_child_status", "request_id":uuid::Uuid::new_v4().to_string(),
+        "session_id":CHILD_ID,"run_id":row["run_id"],"conversation_id":row["conversation_id"]});
+    let current = super::super::latch_status(&f.store.db, &status);
+    assert_eq!(current["accepted"], true, "{current}");
+    assert_eq!(current["revision"], 1);
+    assert_eq!(current["run_id"], row["run_id"]);
+    status["run_id"] = json!("another-run");
+    assert_eq!(
+        super::super::latch_status(&f.store.db, &status)["code"],
+        "stale_identity"
+    );
+}
+
+#[test]
+fn latch_order_migration_preserves_old_decisions_and_keeps_the_fence_after_reopen() {
+    let mut f = Fixture::new();
+    f.snapshot(vec![child_row(), parent_row()]);
+    assert_eq!(
+        latch(
+            &mut f,
+            &latch_request(&uuid::Uuid::new_v4().to_string(), true, 0)
+        )["accepted"],
+        true
+    );
+    super::super::latch::remove_order_fixture(&f.store.db);
+    f.store
+        .db
+        .pragma_update(None, "user_version", super::super::LATCH_ORDER_SCHEMA - 1)
+        .unwrap();
+    let Fixture {
+        store, location, ..
+    } = f;
+    drop(store);
+    let mut store = Store::open(&location, &uuid::Uuid::new_v4().to_string()).unwrap();
+    assert_eq!(
+        super::super::latch::state(&store.db, CHILD_ID).unwrap(),
+        (true, 1)
+    );
+    let accepted = super::super::latch::set(
+        &mut store.db,
+        &uuid::Uuid::new_v4().to_string(),
+        CHILD_ID,
+        false,
+        super::super::latch::Guard::PhoneRevision(1),
+        1,
+    )
+    .unwrap();
+    assert_eq!(accepted["accepted"], true);
+    drop(store);
+    let mut store = Store::open(&location, &uuid::Uuid::new_v4().to_string()).unwrap();
+    let denied = super::super::latch::set(
+        &mut store.db,
+        &uuid::Uuid::new_v4().to_string(),
+        CHILD_ID,
+        true,
+        super::super::latch::Guard::IssuedAt(4_000_000_000),
+        1,
+    )
+    .unwrap();
+    assert_eq!(denied["code"], "upgrade_required");
+    assert_eq!(
+        super::super::latch::state(&store.db, CHILD_ID).unwrap(),
+        (false, 2)
+    );
+}
+
+#[test]
+fn a_verified_v2_statement_for_an_old_run_still_prevents_a_legacy_downgrade() {
+    let mut f = Fixture::new();
+    f.snapshot(vec![child_row(), parent_row()]);
+    let state = f.config.state.clone();
+    let mut old = person_at(&uuid::Uuid::new_v4().to_string(), true, 100);
+    old["statement"]["expected_revision"] = json!(0);
+    old["statement"]["run_id"] = json!("previous-run");
+    assert_eq!(
+        super::super::latch_person(&mut f.store.db, &state, &old, verified)["code"],
+        "stale_identity"
+    );
+    let legacy = person_at(&uuid::Uuid::new_v4().to_string(), true, 4_000_000_000);
+    assert_eq!(
+        super::super::latch_person(&mut f.store.db, &state, &legacy, verified)["code"],
+        "upgrade_required"
+    );
+    assert!(!super::super::latch::latched(&f.store.db, CHILD_ID).unwrap());
+}
+
+#[test]
+fn a_verified_v2_statement_for_an_absent_child_fences_its_latch_before_restore() {
+    for existing in [false, true] {
+        let mut f = Fixture::new();
+        f.snapshot(vec![child_row(), parent_row()]);
+        if existing {
+            assert_eq!(
+                latch(
+                    &mut f,
+                    &latch_request(&uuid::Uuid::new_v4().to_string(), false, 0)
+                )["revision"],
+                1
+            );
+        }
+        f.cursor += 1;
+        let cursor = f.cursor;
+        f.apply(
+            Body::Delta(Delta {
+                topic: "catalog".into(),
+                cursor,
+                upsert: vec![],
+                remove: vec![zerus_watch_protocol::Removal {
+                    key: zerus_watch_protocol::catalog_key(&child_row()).unwrap(),
+                    reason: None,
+                }],
+            }),
+            false,
+        );
+        let state = f.config.state.clone();
+        let mut request = person_at(&uuid::Uuid::new_v4().to_string(), true, 100);
+        request["statement"]["expected_revision"] = json!(u64::from(existing));
+        assert_eq!(
+            super::super::latch_person(&mut f.store.db, &state, &request, verified)["code"],
+            "not_found"
+        );
+        // Returning the child to the catalog cannot restore clock ordering.
+        f.delta(child_row());
+        let legacy = person_at(&uuid::Uuid::new_v4().to_string(), true, 4_000_000_000);
+        assert_eq!(
+            super::super::latch_person(&mut f.store.db, &state, &legacy, verified)["code"],
+            "upgrade_required",
+            "existing latch: {existing}"
+        );
+        assert_eq!(
+            super::super::latch::state(&f.store.db, CHILD_ID).unwrap(),
+            (false, i64::from(existing)),
+            "the refused decision changes neither value nor revision"
+        );
+    }
 }

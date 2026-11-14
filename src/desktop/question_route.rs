@@ -75,9 +75,15 @@ pub(super) const OUTCOME_SCHEMA: i64 = 41;
 pub(super) fn migrate_outcomes(tx: &rusqlite::Transaction<'_>) -> anyhow::Result<()> {
     activity::migrate_outcomes(tx)
 }
+/// The durable latch-wide v2 ordering fence (zerus-sa9qn.55).
+pub(super) const LATCH_ORDER_SCHEMA: i64 = 42;
+pub(super) fn migrate_latch_order(tx: &rusqlite::Transaction<'_>) -> anyhow::Result<()> {
+    latch::migrate_order(tx)
+}
 /// Test rewind of the schema-40 retention leaf.
 #[cfg(test)]
 pub(super) fn remove_retention_fixture(db: &rusqlite::Connection) {
+    latch::remove_order_fixture(db);
     activity::remove_outcomes_fixture(db);
     ledger::remove_retention_fixture(db);
 }
