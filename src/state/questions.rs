@@ -892,6 +892,9 @@ pub(super) fn dispatch(args: &[String]) -> Result<i32> {
     // different hosts or carrying different UUIDs. Provider hooks never take
     // this lock, and must remain free to acknowledge completion.
     let _answer_guard = lock(Some(&answer_lock(&request.expected_run_id)?))?;
+    // Nested canonical receipt checks share this one budget; a new connection
+    // or terminal guard must not restart the person's SQLite wait.
+    let _receipt_wait = receipt_index::QuestionAdmission::new();
     // Only the preparation is locked. Awaiting the UI must not block provider
     // hooks which confirm the very answer that we are waiting for.
     let (record, question, answers, mut receipt) = {

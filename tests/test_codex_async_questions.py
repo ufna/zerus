@@ -277,6 +277,21 @@ db.close()
                 self.assertFalse(card['can_answer'])
                 self.assertIn('same text',card['answer_unavailable_reason'])
             self.assertEqual(self.received(),b'')
+    def test_answer_waits_for_receipt_contention_and_expiry_sends_no_input(self):
+        self.configure(panel=True)
+        card=self.request()
+        with self.receipt_writer():
+            started=time.monotonic()
+            response,payload=self.answer(card)
+            elapsed=time.monotonic()-started
+            self.assertNotEqual(response.returncode,0)
+            self.assertIn('SQLite DatabaseBusy',response.stderr)
+            # The writer stays held until this refusal, so no timed release
+            # races the admission. Scheduling delays can only increase this.
+            self.assertGreaterEqual(elapsed,0.7,'admission used the background 20ms busy wait')
+            self.assertEqual(self.received(),b'')
+        response,_=self.answer(card,request_id=payload['request_id'])
+        self.assertEqual(response.returncode,0,response.stderr)
     def warm_with_old_marker(self):
         # A completed, warm question cache, plus an older build's completion
         # marker for this run: neither may stand in for current receipts.

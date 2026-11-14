@@ -2295,6 +2295,10 @@ rechecks the live terminal identity without starting another receipt migration.
 Receipt readers open SQLite read-only with a bounded lock wait; a question
 inspection caps that wait at its remaining deadline. Actual answer input still
 requires fresh receipt recovery and the terminal's exact pending-question check.
+An explicit answer shares one 750 ms receipt-write busy-wait deadline across
+its nested checks and connections. Expiry before admission refuses without
+input; it never certifies stale coverage. Inspection retains its separate short
+read budget.
 
 Reads from the selected remote machine show a yellow loading circle beside the
 session name only after two seconds. It remains visible while an actual read is

@@ -82,6 +82,7 @@ fn question_page_at(
     if deadline.is_none() && after.is_none() {
         // A fresh explicit authority read seals the current original family,
         // including writers from older builds that do not update the locator.
+        let _wait = admission::Wait::new();
         let mut migration = migration::Migration::questions(state)?;
         while !migration.step()? {
             std::thread::sleep(Duration::from_millis(10));
