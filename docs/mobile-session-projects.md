@@ -131,11 +131,15 @@ acceptance; this document grants none of them.
 offers an explicit exact-commit manual run. It has read-only repository access,
 no secrets, publication environment or caches, and uses SHA-pinned actions on a
 standard disposable GitHub-hosted Ubuntu VM. The finite reviewed image list is
-`20261012.334.1` and `20261018.339.1`, which GitHub currently assigns during its
-rolling update. Both official image releases list the same required Java and
-SDK tool versions; all individual guards still apply. Other images or JDKs are
-refused pending review. Manual package inputs must equal the checked-in pins;
-there is no latest-version fallback.
+`20261012.334.1`, `20261018.339.1`, `20261023.334.3` and `20261111.370.1`.
+The last image's official release and README identities are recorded in
+`android-project-ui-pins.json`. It bundles Java 17.0.21+9, so both UI workflows
+explicitly install the original Temurin 17.0.20.1+1 with SHA-pinned `setup-java`
+on that exact hosted image, without caching. The subsequent admission still
+checks the actual Java release before checkout. The observed `20261111.127.1`
+has no available matching official release metadata and remains refused.
+Other images or JDKs require review. Manual package inputs must equal the
+checked-in pins; there is no latest-version fallback.
 
 Admission retains the bounded actual JDK `release` file and names the failing
 guard before checkout. The exact Temurin Java 17.0.20.1 build 1 must be proved by the
