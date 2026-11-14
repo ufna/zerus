@@ -1122,11 +1122,11 @@ fn checked(request: &Request, mut value: Value, lookup: bool) -> Option<(Value, 
             expected_revision,
             ..
         } => {
-            let applied = value["applied"].as_bool()?;
-            if value["op"] != "question_route_child"
+            if !value["applied"].is_boolean()
+                || value["op"] != "question_route_child"
                 || value["session_id"] != *session_id
                 || value["person_off"] != *person_off
-                || value["revision"].as_u64() != expected_revision.checked_add(u64::from(applied))
+                || value["revision"].as_u64() != expected_revision.checked_add(1)
             {
                 return None;
             }

@@ -1218,16 +1218,49 @@ The person has two switches, both on by default (zerus-sa9qn.32):
   that statement for this gateway, and must reply exactly `{ok, verifier:
   "question-route-person-v1", verified}`. Any failure, timeout or other
   output is the closed refusal `not_verified`. The service then sets the
-  latch once per request ID, and the host file follows. Decisions apply in
-  the order the person made them (zerus-sa9qn.53): the latch keeps the
-  time of its last decision (a desktop decision records the computer's
-  time). A statement not issued after it, such as one delivered late, is
-  the closed refusal `stale_decision` and changes nothing. A decision that
-  changes nothing still records its time. The phone then refreshes and
-  asks again. Peers and Windows
-  gateways do not offer it, and a legacy connection keeps the host switch.
-  The shared vector is
-  `services/mobile/crypto/tests/vectors/question-route-person-v1.json`.
+  latch once per request ID, and the host file follows.
+
+  With `question-route-person-v2`, the Rust connector additionally offers
+  the read-only `session_question_route_person_status` operation. Its exact
+  payload is `{session_id, expected_run_id, expected_conversation_id}`; it
+  reads the service's latch at that visible local child's identity, returning
+  the request ID, session/run/conversation, `person_off` and `revision`.
+  It grants no write authority. It is an additive API v1 operation, counted
+  and retained as a bounded read without changing the connector journal's
+  existing schema or frozen predicates. A phone uses it only when both relay
+  and computer advertise it, then signs `expected_revision` in domain
+  `zerus-question-route-person-v2`. There is no fallback to v1 if that read
+  or the v2 request fails or is uncertain.
+
+  Desktop and v2 phone decisions compare-and-swap the computer-issued,
+  durable per-latch revision (zerus-sa9qn.55). Every accepted new decision
+  advances it, including a decision that keeps the same value. A replay
+  returns its original receipt. A stale phone revision is the closed
+  `stale_decision` refusal; cross-device wall clocks never order v2
+  decisions. Signed issue/expiry timestamps still limit signature lifetime.
+  The first verified v2 statement for a child durably fences that entire
+  latch against v1, even when its compare-and-swap conflicts or its child
+  is temporarily absent or on another run. Refusals keep the latch value
+  and revision; a new fence keeps their defaults and shares the latch cap.
+  This fence survives restart, is never removed and applies to every phone.
+  A new v1 request on a fenced latch is `upgrade_required`; the updated
+  connector returns an ordinary failed receipt telling even an old app to
+  update before changing this switch. Looking up an already accepted
+  request remains read-only and returns its original receipt.
+
+  Compatibility: never-upgraded latches and computers/connectors without
+  the v2 capability retain the legacy v1 statement shape and time ordering
+  (zerus-sa9qn.53). The latch keeps `decided_at`; a phone statement's signed
+  `issued_at` must be later, and desktop decisions retain the maximum of
+  their local time and the stored time. This legacy path trusts device
+  clocks: a fast phone's delayed statement can override a newer choice,
+  and a computer clock corrected after running ahead can block legacy
+  phone decisions until time catches up. Those clock risks remain only on
+  latches that have not been fenced by v2. Peers and Windows gateways do not
+  offer the signed latch operations; a legacy connection keeps the host
+  switch. Shared vectors cover both domains in
+  `services/mobile/crypto/tests/vectors/question-route-person-v1.json` and
+  `question-route-person-v2.json`.
 
 The router reads nothing while the global switch is off. Every reservation
 reads both switches and the latch again in its own transaction, so a switch turned off

@@ -240,6 +240,7 @@ pub(crate) const USAGE: &str = r#"usage: hgs [@host] <cmd> [project] [-c [ID]] [
        session-question-routing-v1
        session-question-routing-v2
        question-route-person-v1
+       question-route-person-v2
        session-parent-v1
        launch-parent-v1
        claimed-parent-v1
