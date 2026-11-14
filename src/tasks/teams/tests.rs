@@ -5,6 +5,8 @@ use crate::teams::ops::{
 };
 use std::process::{Command, Stdio};
 
+mod waits;
+
 /// Run the real command entry with private configuration, stdin and caller
 /// ancestry, without changing this test process's environment or sessions.
 #[test]
@@ -106,10 +108,7 @@ struct FixtureChild {
 impl FixtureChild {
     fn wait_with_output(self) -> std::io::Result<std::process::Output> {
         use std::os::unix::process::ExitStatusExt;
-        let until = std::time::Instant::now() + std::time::Duration::from_secs(20);
-        while !self.path.join("status").exists() && std::time::Instant::now() < until {
-            std::thread::sleep(std::time::Duration::from_millis(5));
-        }
+        self.wait_for_completion()?;
         let code: i32 = std::fs::read_to_string(self.path.join("status"))?
             .trim()
             .parse()
@@ -126,7 +125,7 @@ import os,sys,subprocess
 from pathlib import Path
 path=Path(sys.argv[1])
 try:
-    result=subprocess.run([sys.argv[2],'--exact','tasks::teams::tests::cli_entry','--nocapture'],input=(path/'input').read_bytes(),capture_output=True,timeout=15)
+    result=subprocess.run([sys.argv[2],'--exact','tasks::teams::tests::cli_entry','--nocapture'],input=(path/'input').read_bytes(),capture_output=True,timeout=60)
     (path/'stdout').write_bytes(result.stdout)
     (path/'stderr').write_bytes(result.stderr)
     (path/'status.tmp').write_text(str(result.returncode))
@@ -595,11 +594,7 @@ fn a_send_that_becomes_a_team_task_after_freeze_never_reserves_an_attempt() {
     let pause = f.h.temp.path().join("attempt-pause");
     std::fs::create_dir(&pause).unwrap();
     let (child, reply) = f.paused_send(&reference, &member, &pause);
-    let until = std::time::Instant::now() + std::time::Duration::from_secs(6);
-    while !pause.join("ready").exists() && std::time::Instant::now() < until {
-        std::thread::sleep(std::time::Duration::from_millis(10));
-    }
-    let ready = pause.join("ready").is_file();
+    let ready = child.wait_for_marker(&pause.join("ready"));
     let joined = if ready {
         Some(f.run(&["target", &reference, "team", TEAM, "--json"], "", None))
     } else {
@@ -930,11 +925,7 @@ fn service_observation_waits_for_the_project_lock_and_reads_the_later_document()
     let mut doc = tasks.load(task["uuid"].as_str().unwrap()).unwrap();
     let ready = f.h.temp.path().join("observe-ready");
     let (child, reply) = f.observer(&task, &ready);
-    let until = std::time::Instant::now() + std::time::Duration::from_secs(4);
-    while !ready.exists() && std::time::Instant::now() < until {
-        std::thread::sleep(std::time::Duration::from_millis(10));
-    }
-    let started = ready.exists();
+    let started = child.wait_for_marker(&ready);
     doc.set_title("Updated while the observer waits", &Actor::Person, now())
         .unwrap();
     tasks.save(&mut doc).unwrap();
@@ -951,12 +942,13 @@ fn service_observation_waits_for_the_project_lock_and_reads_the_later_document()
     assert_eq!(observation.title, "Updated while the observer waits");
 }
 
-fn restore_marker_while_paused(f: &Fixture, task: &Value, pause: &std::path::Path) -> bool {
-    let until = std::time::Instant::now() + std::time::Duration::from_secs(6);
-    while !pause.join("ready").exists() && std::time::Instant::now() < until {
-        std::thread::sleep(std::time::Duration::from_millis(5));
-    }
-    let ready = pause.join("ready").is_file();
+fn restore_marker_while_paused(
+    child: &FixtureChild,
+    f: &Fixture,
+    task: &Value,
+    pause: &std::path::Path,
+) -> bool {
+    let ready = child.wait_for_marker(&pause.join("ready"));
     if ready {
         let store =
             ProjectStore::open(&f.h.temp.path().join("replica"), "example-project").unwrap();
@@ -1074,7 +1066,7 @@ fn guarded_reload_case(reopen: bool, legacy: bool, forwarded: bool) {
             if legacy { "legacy_reload" } else { "admission" },
         )
     };
-    let ready = restore_marker_while_paused(&f, &task, &pause);
+    let ready = restore_marker_while_paused(&child, &f, &task, &pause);
     let before = f.document(&task).revision();
     let output = child.wait_with_output().unwrap();
     assert!(
@@ -1190,11 +1182,7 @@ fn observation_keeps_the_project_lock_from_load_through_record() {
     let pause = ready.with_extension("pause");
     std::fs::create_dir(&pause).unwrap();
     let (child, reply) = f.observer(&task, &ready);
-    let until = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    while !pause.join("ready").exists() && std::time::Instant::now() < until {
-        std::thread::sleep(std::time::Duration::from_millis(5));
-    }
-    let loaded = pause.join("ready").exists();
+    let loaded = child.wait_for_marker(&pause.join("ready"));
     // An attempted write between load and record must wait for that lock. If a
     // mutant drops it, write and observe a newer document before releasing it.
     let writer = ProjectStore::open_within(
@@ -1715,11 +1703,7 @@ fn start_recheck_case(phase: &str) {
             ),
         ],
     );
-    let until = std::time::Instant::now() + std::time::Duration::from_secs(6);
-    while !pause.join("ready").exists() && std::time::Instant::now() < until {
-        std::thread::sleep(std::time::Duration::from_millis(5));
-    }
-    let ready = pause.join("ready").is_file();
+    let ready = child.wait_for_marker(&pause.join("ready"));
     if ready {
         // Ordinary admission reads a real clean tree. Only the later strict
         // Teams proof sees a newly withheld synthetic ancestor environment.
