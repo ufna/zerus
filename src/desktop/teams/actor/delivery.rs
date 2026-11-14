@@ -613,8 +613,9 @@ impl Runtime {
                 // after retaining its reply (hosted.rs:212-223). If the child
                 // stopped between those two writes and the team is terminal, the
                 // attempt stays unknown: every later send or start of that task
-                // is refused until the person cancels that exact attempt, and
-                // nothing is replayed (zerus-63rru.102 round 3 residual, D3).
+                // is refused, and nothing is replayed. --recover-only cannot settle
+                // it on a terminal team, and no person command cancels that exact
+                // attempt yet (zerus-iysrw, zerus-63rru.125).
                 let outcome = if d.outcome.is_some() {
                     d.outcome.clone()
                 } else {
