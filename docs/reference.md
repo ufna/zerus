@@ -2100,6 +2100,14 @@ Reading older history preserves scroll and selection; **Jump to latest** returns
 to live events without resizing the timeline. Its double-down-arrow icon sits beside
 Voice in the composer toolbar, outside the messages; the tooltip includes the
 number of new events. Subagents use the same icon in their own toolbar.
+The adjacent up/down buttons jump between this session's messages from you,
+including phone text and recordings, and briefly outline the destination.
+They skip agent replies, tools, system notices, peer messages and inherited
+history. Previous reads older pages one at a time until it finds your message
+or reaches the end, showing a spinner while reading. A direction is disabled
+when no matching message remains. The default shortcuts are
+**Ctrl+Alt+Shift+Up/Down** (**Command+Option+Shift+Up/Down** on macOS);
+Settings > Keyboard shortcuts can change them without changing composer keys.
 Pressing Enter on a session or subagent row opens Activity and performs the same
 jump. Double-clicking a subagent row also jumps to latest; double-clicking a
 session row toggles its compact presentation.
