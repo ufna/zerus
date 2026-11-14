@@ -34,7 +34,7 @@ mod history;
 mod index;
 mod teams;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
-mod person;
+pub(crate) mod person;
 mod team_deliver;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub(crate) use team_deliver::{PROJECT_LIMIT, TERMINAL_WAITING};

@@ -5098,10 +5098,14 @@ never forwards a command whose handler tells the person from an agent that way
 - **Who counts as an agent:** a process that claims a session (`HGS_SESSION`
   and `HGS_RUN_ID`, proven or not), a resident DeepSeek tool call
   (`HGS_AGENT=dsh`), or a process a live session proves as its caller, a
-  Claude background job included.
+  Claude background job included. On Linux and macOS, the same readable
+  marked-ancestor refusal as local task commands runs before forwarding:
+  clearing the child's own session markers does not hide that ancestor.
+  This keeps the local interim ancestry check's bounds and limitations;
+  reparenting can sever the chain and grants no verified Person authority.
 - **What the agent does instead:** it runs `hgs task` on its own computer,
-  which reaches every computer's copy. A person's shell that inherited an
-  agent's variables can unset them.
+  which reaches every computer's copy. A person's shell outside the agent's
+  process tree can unset inherited agent variables.
 - **Unchanged:** tasks' own forwarding of `send` and `cancel` to the
   executor's computer (`--agent NODE/SESSION`).
 - **Still forwarded for an agent:** ordinary `answer` payloads, `interrupt`
