@@ -5,9 +5,15 @@ use super::*;
 use crate::state::record_source::Digest;
 
 pub(in crate::state) struct Snapshot {
+    record: Value,
+    fence: Fence,
+}
+
+/// A retained equality check after recipe preparation. No raw payload or
+/// native resource is retained; the digest is the original capture's.
+pub(in crate::state) struct Fence {
     slot: PathBuf,
     name: String,
-    record: Value,
     source: Digest,
 }
 
@@ -22,10 +28,12 @@ impl Snapshot {
         let record = read_metadata_at(slot, name)?;
         let source = Digest::capture(&record);
         Ok(Self {
-            slot: slot.to_owned(),
-            name: name.to_owned(),
             record,
-            source,
+            fence: Fence {
+                slot: slot.to_owned(),
+                name: name.to_owned(),
+                source,
+            },
         })
     }
 
@@ -38,6 +46,18 @@ impl Snapshot {
     /// Equality only. Even a match grants no write/input authority, and no
     /// refreshed record is adopted. Missing slots never follow a label holder.
     pub(in crate::state) fn recheck(&self) -> Result<()> {
+        self.fence.recheck()
+    }
+
+    /// Drop the raw frame once its recipe is prepared. Moving the original
+    /// proof performs no I/O or re-hash, even if the source has since vanished.
+    pub(in crate::state) fn into_fence(self) -> Fence {
+        self.fence
+    }
+}
+
+impl Fence {
+    pub(in crate::state) fn recheck(&self) -> Result<()> {
         let current = read_metadata_at(&self.slot, &self.name)?;
         if !self.source.matches(&current) {
             return Err(
@@ -45,5 +65,24 @@ impl Snapshot {
             );
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn retained_fence_has_only_locator_and_fixed_digest() {
+        // A closed payload shape: batch recipes cannot accidentally retain a
+        // Value, collection, borrowed frame or another hidden resource here.
+        let _parts: fn(Fence) -> (PathBuf, String, Digest) =
+            |Fence { slot, name, source }| (slot, name, source);
+        assert_eq!(
+            std::mem::size_of::<Fence>(),
+            std::mem::size_of::<PathBuf>()
+                + std::mem::size_of::<String>()
+                + std::mem::size_of::<Digest>()
+        );
     }
 }

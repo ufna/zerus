@@ -18,6 +18,11 @@ fn observations_and_capture_never_mutate_stored_metadata() {
     fixture("observations");
 }
 
+#[test]
+fn retained_fence_keeps_the_original_near_bound_source_without_refresh() {
+    fixture("retained");
+}
+
 fn stored() -> (Value, PathBuf) {
     let mut record = raw();
     record["agent_home"] = json!(home().join(".claude"));
@@ -233,6 +238,7 @@ pub(super) fn observations() {
     );
     let live = read(name).unwrap();
     assert_eq!(live["subagents"]["child"]["process_state"], "live");
+    let retained = captured.into_fence();
     child.0.kill().unwrap();
     child.0.wait().unwrap();
     let ended = read(name).unwrap();
@@ -241,8 +247,51 @@ pub(super) fn observations() {
         ended, live,
         "ordinary read projection changes without a stored-record change"
     );
-    captured.recheck().unwrap();
-    assert_eq!(captured.record(), &original);
+    retained.recheck().unwrap();
     assert_eq!(fs::read(&path).unwrap(), before);
     assert_eq!(fs::metadata(&path).unwrap().modified().unwrap(), modified);
+}
+
+pub(super) fn retained() {
+    let (mut original, path) = stored();
+    original["padding"] = json!("x".repeat(ID_RECORD_BYTES as usize - 2048));
+    let bytes = original.to_string();
+    assert!(bytes.len() < ID_RECORD_BYTES as usize);
+    assert!(bytes.len() > ID_RECORD_BYTES as usize - 2048);
+    fs::write(&path, &bytes).unwrap();
+    let name = string(&original, "name");
+    let frame = Snapshot::capture(&path, name).unwrap();
+    assert_eq!(frame.record(), &original);
+    // Conversion must not consult the source, even when it no longer exists.
+    fs::remove_file(&path).unwrap();
+    let retained = frame.into_fence();
+    assert!(!path.exists());
+    assert!(retained.recheck().is_err());
+    fs::write(&path, &bytes).unwrap();
+    retained.recheck().unwrap();
+    let mut fences = Vec::new();
+    for _ in 0..3 {
+        let frame = Snapshot::capture(&path, name).unwrap();
+        assert_eq!(frame.record()["padding"], original["padding"]);
+        fences.push(frame.into_fence());
+    }
+    let frame = Snapshot::capture(&path, name).unwrap();
+    let mut changed = original.clone();
+    changed["future"]["opaque"] = json!("changed before conversion");
+    fs::write(&path, changed.to_string()).unwrap();
+    let modified = fs::metadata(&path).unwrap().modified().unwrap();
+    let original_proof = frame.into_fence();
+    assert_eq!(fs::metadata(&path).unwrap().modified().unwrap(), modified);
+    assert!(
+        original_proof.recheck().is_err(),
+        "conversion must not re-hash the new source"
+    );
+    for fence in &fences {
+        assert!(fence.recheck().is_err());
+    }
+    fs::write(&path, &bytes).unwrap();
+    original_proof.recheck().unwrap();
+    for fence in fences {
+        fence.recheck().unwrap();
+    }
 }

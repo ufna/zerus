@@ -88,6 +88,7 @@ fn fixture_entry() {
         "slot" => cases::slot(),
         "bounds" => cases::bounds(),
         "observations" => cases::observations(),
+        "retained" => cases::retained(),
         "hold" => std::thread::sleep(Duration::from_secs(60)),
         _ => panic!("unknown private case"),
     }
