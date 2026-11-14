@@ -19,6 +19,7 @@ pub(in crate::state) mod host_identity;
 #[cfg(unix)]
 mod shell_identity;
 pub(crate) mod witness;
+pub(in crate::state) mod dispatch_lock;
 #[cfg(all(test, unix))]
 pub(super) use host_identity::record_running_for_test;
 #[cfg(all(test, unix))]
@@ -786,6 +787,10 @@ fn permission_plan(record: &Value) -> Result<PermissionPlan> {
 /// Returns the host generation the session was created or resumed under and
 /// the account permission mode it used.
 fn create_session(record: &mut Value) -> Result<(Value, String)> {
+    create_session_with(record, save)
+}
+
+fn create_session_with(record: &mut Value, mut persist: impl FnMut(&mut Value) -> Result<()>) -> Result<(Value, String)> {
     // Deterministic capability/account checks precede persistence; identities
     // still precede native creation so an uncertain reply cannot duplicate it.
     let plan = permission_plan(record)?;
@@ -793,7 +798,7 @@ fn create_session(record: &mut Value) -> Result<(Value, String)> {
         return Err("DeepSeek host changed before session creation; retry opening the session".into());
     }
     if plan.needs_setup { record["permissions_pending"] = json!(true); }
-    save(record)?;
+    persist(record)?;
     rpc(record, "create", json!({"sessionId":record["conversation_id"],"cwd":record["cwd"],
         "title":string(record,"name").rsplit('/').next(),"permissionMode":plan.mode}))?;
     if let Some(url) = plan.legacy_url.filter(|_| plan.needs_setup) {
@@ -806,7 +811,7 @@ fn create_session(record: &mut Value) -> Result<(Value, String)> {
         }
     }
     record.as_object_mut().ok_or("Invalid DeepSeek binding")?.remove("permissions_pending");
-    save(record)?;
+    persist(record)?;
     Ok((plan.generation, plan.mode))
 }
 
@@ -2223,12 +2228,13 @@ pub(super) fn session_action(name: &str, action: &str, new_name: Option<&str>, s
 
 pub(crate) fn dispatch(command: &str, args: &[String]) -> Result<i32> {
     let name = args.first().ok_or("Choose a DeepSeek session")?;
-    let _guard = if !["inspect", "exists", "schedules"].contains(&command) {
-        Some(lock(Some(&root().join("dsh/bindings.lock")))?)
+    let (_session, mut record) = if !["inspect", "exists", "schedules"].contains(&command) {
+        let (guard, record) = dispatch_lock::acquire(name)?;
+        (Some(guard), record)
     } else {
-        None
+        (None, binding(name)?)
     };
-    let mut record = binding(name)?;
+    let mut expected = record.clone();
     match command {
         "inspect" => {
             let (agent, include_processes, current_read) = inspect_options(args)?;
@@ -2256,7 +2262,8 @@ pub(crate) fn dispatch(command: &str, args: &[String]) -> Result<i32> {
                     .join("dsh/receipts")
                     .join(format!("{}.json", string(&request, "request_id")));
                 // One request offers at most once across ordinary and witnessed
-                // sends (zerus-hfw2s.5). Taken after, and inside, the bindings lock.
+                // sends (zerus-hfw2s.5). The session guard precedes this request
+                // guard; no machine-wide binding lock is held while waiting.
                 let _request = witness::request_lock(string(&request, "request_id"))?;
                 let digest = format!(
                     "{:x}",
@@ -2412,7 +2419,7 @@ pub(crate) fn dispatch(command: &str, args: &[String]) -> Result<i32> {
                 ensure_host(&record)?;
             }
             if command == "resume" {
-                create_session(&mut record)?;
+                create_session_with(&mut record, |record| dispatch_lock::persist(name, &mut expected, record))?;
             } else {
                 rpc(
                     &record,
@@ -2424,7 +2431,7 @@ pub(crate) fn dispatch(command: &str, args: &[String]) -> Result<i32> {
             if command == "resume" {
                 record["run_id"] = json!(uuid::Uuid::new_v4().to_string());
             }
-            save(&mut record)?;
+            dispatch_lock::persist(name, &mut expected, &mut record)?;
         }
         "rename" => {
             let new = args.get(1).ok_or("Choose a new session name")?;
@@ -2442,19 +2449,26 @@ pub(crate) fn dispatch(command: &str, args: &[String]) -> Result<i32> {
                 return Ok(0);
             }
             if legacy_fork_unconfirmed(&record)? { return Err("Resolve the original legacy fork before renaming this session".into()); }
-            PROVIDER.prepare_label(&record, new)?;
+            dispatch_lock::transaction(name, &expected, || {
+                if exists(new) { return Err("This name is already used".into()); }
+                PROVIDER.prepare_label(&record, new)
+            })?;
             rpc(
                 &record,
                 "rename",
                 json!({"sessionId":record["conversation_id"],"title":new.rsplit('/').next()}),
             )?;
-            notifications::anchor(&mut record);
-            record["name"] = json!(new);
-            if storage::in_id_layout(&record) { recovery::rename_job_in_place(&record,new)?; } else { recovery::rename_job(name,new,string(&record,"run_id"))?; }
-            save(&mut record)?;
-            if !storage::in_id_layout(&record) { archive::remove_synced(&binding_path(name))?; }
-            // The rename is done; losing read marks only shows a reply as unread again.
-            if !storage::in_id_layout(&record) { let _ = read_marks::rename_owner(name, new); }
+            dispatch_lock::transaction(name, &expected, || {
+                if exists(new) { return Err("This name is already used".into()); }
+                notifications::anchor(&mut record);
+                record["name"] = json!(new);
+                if storage::in_id_layout(&record) { recovery::rename_job_in_place(&record,new)?; } else { recovery::rename_job(name,new,string(&record,"run_id"))?; }
+                save(&mut record)?;
+                if !storage::in_id_layout(&record) { archive::remove_synced(&binding_path(name))?; }
+                // The rename is done; losing read marks only shows a reply as unread again.
+                if !storage::in_id_layout(&record) { let _ = read_marks::rename_owner(name, new); }
+                Ok(())
+            })?;
             println!(
                 "{}",
                 json!({"old_name":name,"name":new,"new_name":new,"run_id":record["run_id"],"conversation_id":record["conversation_id"]})
@@ -2469,7 +2483,7 @@ pub(crate) fn dispatch(command: &str, args: &[String]) -> Result<i32> {
                 "pause",
                 json!({"sessionId":record["conversation_id"]}),
             )?;
-            remove(&record)?;
+            dispatch_lock::transaction(name, &expected, || remove(&record))?;
         }
         "exists" => return Ok(0),
         "schedules" => println!("{}", schedules(name, &record, &args[1..])?),
