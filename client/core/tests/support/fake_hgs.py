@@ -18,6 +18,7 @@ steps of its run (the n-th invocation plays run n, the last run repeats):
     {"await_file": "name"}     wait until the test creates that file
     {"exit": code}             exit at once
     {"serve": true}            read control lines until EOF, then exit 0
+    {"serve": true, "heartbeat_ms": 1000}   also emit periodic heartbeats
     {"serve": true, "until_file": "name"}   ... or exit 0 once that file exists
 
 When the steps run out the process exits 0 (EOF on stdout). Every invocation,
@@ -91,8 +92,13 @@ def previous_runs(host, args):
 class Writer:
     def __init__(self):
         self.seq = 0
+        self.lock = threading.RLock()
 
     def frame(self, frame):
+        with self.lock:
+            self._frame(frame)
+
+    def _frame(self, frame):
         if isinstance(frame, str):
             self.raw(frame)
             return
@@ -102,8 +108,9 @@ class Writer:
         self.raw(json.dumps(frame, separators=(",", ":")))
 
     def raw(self, line):
-        sys.stdout.write(line.rstrip("\n") + "\n")
-        sys.stdout.flush()
+        with self.lock:
+            sys.stdout.write(line.rstrip("\n") + "\n")
+            sys.stdout.flush()
 
 
 def session_key(session):
@@ -111,10 +118,10 @@ def session_key(session):
     return "run:" + run if run else "name:" + session.get("name", "")
 
 
-def serve(host, writer, until_file=None):
+def serve(host, writer, until_file=None, heartbeat_ms=None):
     if until_file:
         # Serve on a thread; the stream ends (exit 0) once the file exists.
-        reader = threading.Thread(target=serve, args=(host, writer), daemon=True)
+        reader = threading.Thread(target=serve, args=(host, writer, None, heartbeat_ms), daemon=True)
         reader.start()
         path = os.path.join(HERE, until_file)
         while reader.is_alive() and not os.path.exists(path):
@@ -123,25 +130,41 @@ def serve(host, writer, until_file=None):
         sys.stdout.flush()
         os._exit(0)
     receipt("serve-ready", host)
-    for line in sys.stdin:
-        try:
-            control = json.loads(line)
-        except ValueError:
-            control = {"invalid": line}
-        log({"host": host, "stdin": control})
-        if control.get("op") == "subscribe" and control.get("topic") == "activity":
-            key = session_key(control.get("session") or {})
-            writer.frame({"t": "events", "topic": "activity", "key": key,
-                          "events": [{"type": "Stop", "seq": 1, "at": 1787840000.0, "detail": "Synthetic reply"}],
-                          "cursor": 1})
-        elif control.get("op") == "ping":
-            writer.frame({"t": "pong", "id": control.get("id")})
-        elif control.get("op") == "subscribe" and control.get("topic") == "git":
-            path = control.get("path")
-            writer.frame({"t": "state", "topic": "git", "key": path, "rev": 1,
-                          "value": {"state": "ok", "root": path, "branch": "fixture",
-                                    "changed_files": 3, "ahead": 2, "behind": 1,
-                                    "remote_state": "verified", "remote_age_seconds": 0}})
+    stopped = threading.Event()
+    heartbeat = None
+    if heartbeat_ms:
+        def pulse():
+            while not stopped.wait(heartbeat_ms / 1000):
+                try:
+                    writer.frame({"t": "heartbeat", "at": time.time()})
+                except BrokenPipeError:
+                    return
+        heartbeat = threading.Thread(target=pulse, daemon=True)
+        heartbeat.start()
+    try:
+        for line in sys.stdin:
+            try:
+                control = json.loads(line)
+            except ValueError:
+                control = {"invalid": line}
+            log({"host": host, "stdin": control})
+            if control.get("op") == "subscribe" and control.get("topic") == "activity":
+                key = session_key(control.get("session") or {})
+                writer.frame({"t": "events", "topic": "activity", "key": key,
+                              "events": [{"type": "Stop", "seq": 1, "at": 1787840000.0, "detail": "Synthetic reply"}],
+                              "cursor": 1})
+            elif control.get("op") == "ping":
+                writer.frame({"t": "pong", "id": control.get("id")})
+            elif control.get("op") == "subscribe" and control.get("topic") == "git":
+                path = control.get("path")
+                writer.frame({"t": "state", "topic": "git", "key": path, "rev": 1,
+                              "value": {"state": "ok", "root": path, "branch": "fixture",
+                                        "changed_files": 3, "ahead": 2, "behind": 1,
+                                        "remote_state": "verified", "remote_age_seconds": 0}})
+    finally:
+        stopped.set()
+        if heartbeat is not None:
+            heartbeat.join(timeout=1)
     receipt("stdin-eof", host)
     log({"host": host, "eof": True})
     return 0
@@ -169,7 +192,7 @@ def watch(host, spec, config):
             log({"host": host, "exit": step["exit"]})
             return step["exit"]
         elif step.get("serve"):
-            return serve(host, writer, step.get("until_file"))
+            return serve(host, writer, step.get("until_file"), step.get("heartbeat_ms"))
     return 0
 
 

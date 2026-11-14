@@ -124,6 +124,42 @@ fn pump_until(
     }
 }
 
+fn watch_with_heartbeats(frames: Vec<Value>) -> Value {
+    json!({"":{"runs":[[{"lines":frames},{"serve":true,"heartbeat_ms":1000}]]}})
+}
+
+#[test]
+fn an_idle_watched_peer_emits_periodic_heartbeats_without_reconnecting() {
+    let fake = Fake::new(watch_with_heartbeats(vec![
+        hello(),
+        snapshot(0, true, vec![]),
+    ]));
+    let mut runtime = fake.start("11111111-1111-4111-8111-111111111111");
+    let until = Instant::now() + Duration::from_secs(15);
+    let mut heartbeats = 0;
+    while heartbeats < 2 && Instant::now() < until {
+        if let Some(event) = runtime.poll() {
+            if matches!(&event.packet, feed::Packet::Watch { frame, .. } if matches!(&frame.body, Body::Heartbeat(_)))
+            {
+                heartbeats += 1;
+            }
+        }
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    let upstreams = fake
+        .log()
+        .iter()
+        .filter(|v| v["args"] == json!(["watch", "--json"]))
+        .count();
+    // Settle the original child even when the negative control received no heartbeat.
+    stop(&mut runtime);
+    assert_eq!(
+        heartbeats, 2,
+        "the advertised peer must keep emitting heartbeats"
+    );
+    assert_eq!(upstreams, 1);
+}
+
 #[test]
 fn many_sessions_use_one_upstream_and_paged_projection_and_slow_clients_are_isolated() {
     let mut frames = vec![hello()];
@@ -134,7 +170,7 @@ fn many_sessions_use_one_upstream_and_paged_projection_and_slow_clients_are_isol
             (page * 128..(page + 1) * 128).map(row).collect(),
         ));
     }
-    let fake = Fake::new(json!({"":{"runs":[[{"lines":frames},{"serve":true}]]}}));
+    let fake = Fake::new(watch_with_heartbeats(frames));
     let mut runtime = fake.start("11111111-1111-4111-8111-111111111111");
     let mut store = fake.store("11111111-1111-4111-8111-111111111111");
     let mut broker = feed::Broker::new("11111111-1111-4111-8111-111111111111");
@@ -189,7 +225,10 @@ fn many_sessions_use_one_upstream_and_paged_projection_and_slow_clients_are_isol
             .iter()
             .filter(|v| v["args"] == json!(["watch", "--json"]))
             .count(),
-        1
+        1,
+        "upstream invocation history: {:?}; runtime: {}",
+        fake.log(),
+        runtime.status()
     );
     stop(&mut runtime);
     broker.stop(&mut store).unwrap();
