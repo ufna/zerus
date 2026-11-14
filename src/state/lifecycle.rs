@@ -233,6 +233,12 @@ pub(super) fn run(args: &[String]) -> Result<i32> {
             home: nonempty_env(home_var(&agent)?),
             session: allocation.as_ref().map(|allocation| allocation.session()),
         });
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        if agent == "claude" {
+            if let Some(directory) = continuations::launch_registry_home() {
+                record["claude_registry_home"] = json!(directory);
+            }
+        }
         // The live tracked agent that launched this new session, proven by the
         // launching hgs (zerus-sa9qn.2). A resume never adopts its launcher.
         if startup_kind == "new" || nonempty_env("HGS_FORK_PARENT_ID").is_some() {

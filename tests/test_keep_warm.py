@@ -99,10 +99,11 @@ class KeepWarm(unittest.TestCase):
         self.assertFalse((self.state / "keep-warm.json").exists())
 
     def hook(self, kind, **values):
-        result = subprocess.run([str(fixtures.HGS), "__state", "hook"],
-                                env=dict(self.env, HGS_SESSION=self.name, HGS_RUN_ID=self.run_id),
-                                input=json.dumps(dict(hook_event_name=kind, session_id=self.conversation_id, **values)),
-                                text=True, capture_output=True, timeout=10)
+        import hook_caller_fixtures
+        env=dict(self.env,HGS_SESSION=self.name,HGS_RUN_ID=self.run_id)
+        event=dict(hook_event_name=kind,session_id=self.conversation_id,**values)
+        result=hook_caller_fixtures.run(self,event,env) if self.record['agent']=='claude' else subprocess.run(
+            [str(fixtures.HGS),'__state','hook'],env=env,input=json.dumps(event),text=True,capture_output=True,timeout=10)
         self.assertEqual(result.returncode, 0, result.stderr)
 
     def pending_ping(self):

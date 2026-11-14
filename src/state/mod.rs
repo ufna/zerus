@@ -39,6 +39,7 @@ mod external_agents;
 mod fork;
 mod goals;
 mod hooks;
+mod hook_caller;
 pub(crate) mod hook_health;
 mod input;
 pub(crate) use input::dialog_clause;

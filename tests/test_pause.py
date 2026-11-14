@@ -73,6 +73,9 @@ if sys.argv[1:] == ['--version']:
 if agent == "kimi" and sys.argv[1:3] == ["session", "list"]:
     print(json.dumps([{"id": p.stem} for p in (home / "history").glob("*.jsonl")]))
     sys.exit(0)
+if agent == "claude":
+    (home / ("claude-config-observed-" + os.environ.get("HGS_RUN_ID", "probe"))).write_text(
+        json.dumps({"present": "CLAUDE_CONFIG_DIR" in os.environ, "value": os.environ.get("CLAUDE_CONFIG_DIR")}))
 with open(home / "argv.jsonl", "a") as f:
     f.write(json.dumps({"agent": agent, "argv": sys.argv[1:], "codex_home": os.environ.get("CODEX_HOME"),
                         "hgs_session_id": os.environ.get("HGS_SESSION_ID")}) + "\n")
@@ -151,6 +154,10 @@ for line in sys.stdin:
 event("SessionEnd")
 '''
 
+
+import hook_caller_fixtures
+AGENT = AGENT.replace('\nevent("SessionStart")\nfor line in sys.stdin:',
+    '\n' + hook_caller_fixtures.scripted_source() + '\nevent("SessionStart")\nfor line in sys.stdin:')
 
 def direct_signal_agent():
     """Opt-in diagnostics for Archive's three Linux direct-signal subcases only.
@@ -1035,11 +1042,15 @@ class Harness(unittest.TestCase):
         env = dict(self.env, HGS_SESSION=name, HGS_RUN_ID=r["run_id"])
         return self.hook(event, env)
 
-    def hook(self, event, env):
+    def hook(self, event, env, check=True):
         command = (["python3", LEGACY_STATE, "hook"] if LEGACY_STATE else
                    [str(HGS), "__state", "hook"])
-        return subprocess.run(command, env=env,
-                              input=json.dumps(event), text=True, capture_output=True, check=True)
+        if LEGACY_STATE:
+            return subprocess.run(command, env=env,
+                                  input=json.dumps(event), text=True, capture_output=True, check=check)
+        result = hook_caller_fixtures.lifecycle(self, event, env)
+        if check: result.check_returncode()
+        return result
 
     def move_to_id_layout(self, name):
         """Moves the saved session `name` into the ID layout by hand, as a later
@@ -1891,6 +1902,28 @@ exec {tmux} "$@"
 
 
 class Lifecycle(Harness):
+    @unittest.skipUnless(sys.platform in ("linux", "darwin"), "Linux/macOS recorded registry metadata")
+    def test_default_claude_registry_home_is_captured_without_setting_native_config(self):
+        self.env.pop("CLAUDE_CONFIG_DIR", None)
+        name = self.start("claude", "native-registry")
+        record = self.binding(name)
+        self.assertFalse(record.get("agent_home"), "the native default must stay unset")
+        self.assertEqual(record.get("claude_registry_home"), str(self.root / ".claude"))
+        observed = json.loads((self.root / ("claude-config-observed-" + record["run_id"])).read_text())
+        self.assertEqual(observed, {"present": False, "value": None})
+        registry = self.root / ".claude/sessions"; registry.mkdir(parents=True, exist_ok=True)
+        for pid, entry in [(os.getpid(), dict(kind="bg", jobId="native-default-job")),
+                           (record["pid"], dict(parkedJobId="native-default-job"))]:
+            (registry / f"{pid}.json").write_text(json.dumps(dict(pid=pid, **entry)))
+        event = dict(hook_event_name="PreToolUse", session_id=record["conversation_id"],
+                     tool_name="Bash", tool_use_id="toolu_native_default", tool_input=dict(command="true"))
+        env = dict(self.env, HGS_SESSION=name, HGS_RUN_ID=record["run_id"],
+                   CLAUDE_PID=str(os.getpid()), CLAUDE_CODE_SESSION_ID=record["conversation_id"])
+        result = subprocess.run([str(HGS), "__state", "hook"], input=json.dumps(event),
+            env=env, text=True, capture_output=True, timeout=15)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("toolu_native_default", self.binding(name)["active_tools"])
+
     def wrapped_hooks(self, agent, wrapper):
         """hgs's tracking entries per event, and answer channels, that run `wrapper`."""
         if agent == "kimi":
