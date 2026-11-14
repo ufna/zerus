@@ -10,11 +10,12 @@ use super::{
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
-// Match the original native effect's 45-second custody boundary. A supervisor
-// can publish its archive before post-archive work releases its terminal name.
+// Allow the original effect's 45-second custody budget plus one 60-second
+// standing-worker safety observation interval. Custody does not bound the old
+// supervisor's post-archive work; this is a bounded wait, not a teardown guarantee.
 // The durable exit timestamp bounds this wait across service restarts, with no
 // effect row, audit or hourly reservation for a deferral (zerus-63rru.129).
-pub(super) const RESUME_SETTLE_MS: i64 = 45_000;
+pub(super) const RESUME_SETTLE_CUSTODY_AND_OBSERVATION_MS: i64 = 45_000 + 60_000;
 
 pub(super) fn key(parts: &Value) -> String {
     format!("{:x}", Sha256::digest(parts.to_string()))
