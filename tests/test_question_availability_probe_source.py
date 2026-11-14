@@ -14,7 +14,8 @@ original_review_fixture = _focus_projection.original_review_fixture
 # Fixture pin includes one-time post-resume live-label preparation; the approval harness retains exact 95ef by reverse projection.
 MAIN = ROOT / "mobile/android/app/src/main/java/app/zerus/mobile"
 # Keep the reviewed 9b217ddd/b9c1e29c reconstruction pins unchanged. The exact
-# fixtures first reverse question-routing Activity and person-latch additions,
+# fixtures first reverse the person-latch revision delta, then
+# question-routing Activity and person-latch additions,
 # then the outbox-retention and send-receipt additions, then
 # the send-entry and transport-evidence additions, then
 # presentation, delivery recovery, recent-Activity, child-session and
@@ -170,6 +171,12 @@ QUESTION_ROUTE_PERSON_FILES = ("ZerusViewModel.kt",)
 QUESTION_ROUTE_OUTCOME_UPDATES = ROOT / "tests/fixtures/question-availability-question-route-outcome-updates.patch"
 QUESTION_ROUTE_OUTCOME_UPDATES_SHA = "4978e3979d98ac4f62ec9433a9c2936d95cdac11f2de22ab9c6ebcc83966526c"
 QUESTION_ROUTE_OUTCOME_FILES = ("MainActivity.kt",)
+# Exact one-file merged delta of #2209 / zerus-sa9qn.55 (6d136a82c).
+# Its signed-revision arguments change a hunk of the older person-latch
+# fixture, so reverse this first; retain every original reconstruction pin.
+QUESTION_ROUTE_PERSON_REVISION_UPDATES = ROOT / "tests/fixtures/question-availability-question-route-person-revision-updates.patch"
+QUESTION_ROUTE_PERSON_REVISION_UPDATES_SHA = "ded1ccce465e08f7839bc8bbd47aeca7554e44bb72b7543e18aa3845d496a5d9"
+QUESTION_ROUTE_PERSON_REVISION_FILES = ("ZerusViewModel.kt",)
 WORKSPACE_BASE_SHA = {
     "ZerusViewModel.kt": "5932d92ca74ccf37da9595a580bcb1457c93c83951976606c8defa8d1ee83326",
     "MainActivity.kt": "f68902349d1e0ac939582e9e139548663f5763c430a3c566f8823d9f045645f0",
@@ -178,6 +185,7 @@ BOTH_FILES = ("ZerusViewModel.kt", "MainActivity.kt")
 # Every reviewed update, newest first: reverse_reviewed_updates reverses them in
 # this order, and each fixture's duplicated-hunk check reverses the newer ones.
 REVIEWED_CHAIN = (
+    (QUESTION_ROUTE_PERSON_REVISION_UPDATES, QUESTION_ROUTE_PERSON_REVISION_UPDATES_SHA, QUESTION_ROUTE_PERSON_REVISION_FILES),
     (QUESTION_ROUTE_OUTCOME_UPDATES, QUESTION_ROUTE_OUTCOME_UPDATES_SHA, QUESTION_ROUTE_OUTCOME_FILES),
     (QUESTION_ROUTE_PERSON_UPDATES, QUESTION_ROUTE_PERSON_UPDATES_SHA, QUESTION_ROUTE_PERSON_FILES),
     (QUESTION_ROUTE_ACTIVITY_UPDATES, QUESTION_ROUTE_ACTIVITY_UPDATES_SHA, QUESTION_ROUTE_ACTIVITY_FILES),
@@ -313,6 +321,9 @@ class QuestionAvailabilityProbeSourceTests(unittest.TestCase):
         for name, digest in WORKSPACE_BASE_SHA.items():
             with self.subTest(source=name):
                 current = reverse_reviewed_patch(name, (MAIN / name).read_text(),
+                                                QUESTION_ROUTE_PERSON_REVISION_UPDATES, QUESTION_ROUTE_PERSON_REVISION_UPDATES_SHA,
+                                                QUESTION_ROUTE_PERSON_REVISION_FILES)
+                current = reverse_reviewed_patch(name, current,
                                                 QUESTION_ROUTE_OUTCOME_UPDATES, QUESTION_ROUTE_OUTCOME_UPDATES_SHA,
                                                 QUESTION_ROUTE_OUTCOME_FILES)
                 current = reverse_reviewed_patch(name, current,
@@ -388,6 +399,21 @@ class QuestionAvailabilityProbeSourceTests(unittest.TestCase):
                            "online && model.activityVerified && !model.contextBlocked(target)"):
             self.assertIn(expression, main)
             self.assertFalse(original_source("MainActivity.kt", main.replace(expression, "true", 1)))
+
+    def test_person_revision_projection_refuses_changed_missing_or_duplicate_reviewed_hunks(self):
+        fixture = QUESTION_ROUTE_PERSON_REVISION_UPDATES
+        addition = "                        target.run,target.conversation,!arguments.getBoolean(\"send_to_parent\"),action.requestId,\n"
+        source = (MAIN / "ZerusViewModel.kt").read_text()
+        self.assertEqual(source.count(addition), 1)
+        self.assert_refuses_duplicated_hunk("ZerusViewModel.kt", fixture, addition)
+        for kind, replacement in (("changed", addition.rstrip("\n") + " // changed reviewed addition\n"),
+                                  ("missing", ""), ("duplicated line", addition + addition)):
+            with self.subTest(kind=kind):
+                changed = source.replace(addition, replacement, 1)
+                with self.assertRaises(AssertionError):
+                    reverse_reviewed_patch("ZerusViewModel.kt", changed, fixture,
+                                           QUESTION_ROUTE_PERSON_REVISION_UPDATES_SHA, QUESTION_ROUTE_PERSON_REVISION_FILES)
+                self.assertFalse(original_source("ZerusViewModel.kt", changed))
 
     def test_question_route_projections_refuse_changed_missing_or_duplicate_reviewed_hunks(self):
         # Each merged routing delta is its own exact fixture. Reverse newer
