@@ -698,6 +698,11 @@ mod tests {
             dir.join(name)
         }
         fn refresh(&self) -> Value {
+            // The production reader spawns `node` by name; another locked test
+            // may have a stand-in first on PATH.
+            let _lock = crate::accounts::ENV_LOCK
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
             if self.fixed {
                 refresh_on(
                     &self.config,
