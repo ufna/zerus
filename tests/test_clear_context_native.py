@@ -57,7 +57,7 @@ class NativeInterruptedClear(unittest.TestCase):
     import test_claude_approval_native as approval
     import test_questions as questions
     tool_name = 'Bash'
-    tool_input = {'command': 'sleep 30; printf done > slept.txt', 'description': 'Wait for the fixture'}
+    native_tool_input = approval.NativeClaudeInterrupt.native_tool_input
     setUp = native.NativeClaudeQuestions.setUp
     tmux = NativeClearContext.tmux
     script = native.NativeClaudeQuestions.script
