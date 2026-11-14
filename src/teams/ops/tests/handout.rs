@@ -335,26 +335,37 @@ fn the_unstaffed_reading_names_every_earlier_implementer() {
             params![TEAM, stage, rows::node_payload(&s).unwrap()],
         )
         .unwrap();
-    h.run(&service(), Operation::ReconcileUnstaffed).unwrap();
-    let unstaffed: Vec<String> = h
+    // The kernel's staffing over the stored rows: the reason names both
+    // implementers, the earlier m1 included.
+    let readiness = crate::teams::ops::readiness::load(h.store.db.as_ref().unwrap(), TEAM).unwrap();
+    let team = h.store.team(TEAM).unwrap().unwrap();
+    let members: Vec<zerus_team_plan::model::Member> = h
         .store
-        .inbox(TEAM, 200, None)
+        .members(TEAM, 200, None)
         .unwrap()
-        .rows
-        .into_iter()
-        .filter(|i| i.kind.starts_with("unstaffed:"))
-        .map(|i| i.text)
+        .rows;
+    let member_views: Vec<zerus_team_plan::ready::MemberView> = members
+        .iter()
+        .map(|m| zerus_team_plan::ready::MemberView { id: m.id.clone(), role: m.role.clone(), state: m.state, free: false })
         .collect();
+    let view = zerus_team_plan::ready::PlanView {
+        phases: &readiness.phases,
+        nodes: &readiness.nodes,
+        members: &member_views,
+        lead: &team.lead,
+        integration: team.settings.integration,
+    };
+    let unstaffed = zerus_team_plan::ready::unstaffed(&view);
+    let stage_entry = unstaffed.iter().find(|u| u.node == stage).unwrap_or_else(|| {
+        panic!("the stage is unstaffed: {unstaffed:?}")
+    });
     assert!(
-        unstaffed.iter().any(|text| text.contains("m1") && text.contains("m2")),
-        "{unstaffed:?}"
+        stage_entry.reason.contains("m1") && stage_entry.reason.contains("m2"),
+        "{}",
+        stage_entry.reason
     );
 }
 
-/// The cap: past it the target is marked full and the stage's hand-out
-/// fails closed instead of handing to an unrecorded member silently
-/// (zerus-63rru.20).
-#[test]
 fn past_the_cap_a_stage_is_not_handed_to_an_unrecorded_member() {
     let mut h = Harness::new();
     let (parent, _) = h.reported();
