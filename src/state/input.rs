@@ -1998,9 +1998,13 @@ fn submit_core(
                 }
                 // Under the lock again: still this send's marker on the same
                 // run, and the composer still shows exactly what settled.
-                if !typing_ours(&read(name)?, &request_id, string(&record, "run_id")) {
+                let current = read(name)?;
+                if !typing_ours(&current, &request_id, string(&record, "run_id")) {
                     return Err("the session changed while the message settled; no Enter was pressed".into());
                 }
+                // Root was released during settle: only this fresh record can
+                // fence the remaining Enter. Keep the writer through the key.
+                terminating::check_mutation(&current)?;
                 if settle::still(terminal, &claim, &shown) {
                     break;
                 }
