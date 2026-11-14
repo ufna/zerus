@@ -866,6 +866,21 @@ selected agent, then resolves its exact platform package and SHA-512 integrity.
 All selected packages must resolve before any native execution. The report saves
 their exact versions, URLs and digests before the first test; a missing release,
 platform package or valid digest fails without falling back to historical pins.
+
+Discovery retries only the same official metadata URL and method, through the
+shared `scripts/ci/native_discovery.py` reader used by Kimi, Claude Code, Codex,
+OpenCode and DeepSeek. Each request has at most three attempts, each in a private
+child with a 30-second wall timeout, with 2- and 4-second backoff: a 96-second
+request budget, further clamped by any original caller deadline. Kimi resolves
+three metadata requests (latest, that exact manifest and the image HEAD), so its
+metadata phase has at most 288 seconds; image download keeps its separate bound.
+Each attempt logs URL, stage, attempt and outcome as `ZERUS_DISCOVERY` JSON.
+Transient network errors and HTTP 408/429/5xx may retry; invalid metadata,
+redirects rejected by the existing caller policy, permanent HTTP errors and
+certificate verification failures fail closed. Exhaustion raises a distinct
+`discovery unavailable` error and fails the job before native execution. A retry never selects a historical release, relaxes
+integrity checks or turns unavailable discovery into a skipped-suite success.
+
 Every terminal case uses that same selected image. Historical package records in
 `scripts/ci/agent-compatibility.json` remain evidence for separately selected old
 fixtures; ordinary CI and the daily upstream report do not execute those versions.

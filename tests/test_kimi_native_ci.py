@@ -85,29 +85,23 @@ class KimiNativeCI(unittest.TestCase):
                     ci.resolve_latest('linux-x64')
                 self.assertEqual(get.call_count, 2)
 
-    def test_latest_metadata_refuses_bad_lengths_encoding_late_reads_and_redirects(self):
+    def test_latest_metadata_refuses_bad_lengths_encoding_and_redirects(self):
         for body, declared in ((b'2.3.1', 5), (b'2.3.1', 4), (b'2.3', 5)):
             response = Response(body, declared)
             with mock.patch.object(ci.urllib.request, 'build_opener') as build:
                 build.return_value.open.return_value = response
                 if len(body) == declared:
-                    self.assertEqual(ci.metadata('https://code.kimi.com/kimi-code/latest', 64)[0], body)
+                    self.assertEqual(ci.discovery.read_metadata('https://code.kimi.com/kimi-code/latest', 64, policy='kimi')[0], body)
                 else:
                     with self.assertRaises(ValueError):
-                        ci.metadata('https://code.kimi.com/kimi-code/latest', 64)
+                        ci.discovery.read_metadata('https://code.kimi.com/kimi-code/latest', 64, policy='kimi')
         response = Response(b'2.3.1')
         response.headers['Content-Encoding'] = 'gzip'
         with mock.patch.object(ci.urllib.request, 'build_opener') as build:
             build.return_value.open.return_value = response
             with self.assertRaises(ValueError):
-                ci.metadata('https://code.kimi.com/kimi-code/latest', 64)
+                ci.discovery.read_metadata('https://code.kimi.com/kimi-code/latest', 64, policy='kimi')
             self.assertEqual(response.reads, 0)
-        response = Response(b'2.3.1')
-        with mock.patch.object(ci.urllib.request, 'build_opener') as build, \
-                mock.patch.object(ci.time, 'monotonic', side_effect=[0, 1, 61]):
-            build.return_value.open.return_value = response
-            with self.assertRaises(ValueError):
-                ci.metadata('https://code.kimi.com/kimi-code/latest', 64)
         source = 'https://code.kimi.com/kimi-code/latest'
         request = ci.OfficialRedirect().redirect_request(urllib.request.Request(source), None, 302, '',
                         headers(Location=source.replace('code.', 'cdn.')), source.replace('code.', 'cdn.'))
@@ -125,12 +119,12 @@ class KimiNativeCI(unittest.TestCase):
             with mock.patch.object(ci.urllib.request, 'build_opener') as build:
                 build.return_value.open.return_value = response
                 if accepted:
-                    self.assertEqual(ci.metadata('https://code.kimi.com/kimi-code/binaries/2.3.1/kimi-code-linux-x64',
-                                    ci.IMAGE_LIMIT, method='HEAD')[1]['size'], 5)
+                    self.assertEqual(ci.discovery.read_metadata('https://code.kimi.com/kimi-code/binaries/2.3.1/kimi-code-linux-x64',
+                                    ci.IMAGE_LIMIT, method='HEAD', policy='kimi')[1]['size'], 5)
                 else:
                     with self.assertRaises(ValueError):
-                        ci.metadata('https://code.kimi.com/kimi-code/binaries/2.3.1/kimi-code-linux-x64',
-                                    ci.IMAGE_LIMIT, method='HEAD')
+                        ci.discovery.read_metadata('https://code.kimi.com/kimi-code/binaries/2.3.1/kimi-code-linux-x64',
+                                    ci.IMAGE_LIMIT, method='HEAD', policy='kimi')
                 self.assertEqual(response.reads, 0)
         source = 'https://code.kimi.com/kimi-code/binaries/2.3.1/kimi-code-linux-x64'
         redirected = ci.OfficialRedirect('HEAD').redirect_request(urllib.request.Request(source, method='HEAD'),
