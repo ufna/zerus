@@ -87,7 +87,7 @@
       "process_work": {
         "command": "",
         "count": 0,
-        "sampled_at": 1794597965.6500163,
+        "sampled_at": 1794614695.477948,
         "started_at": null
       },
       "project": "example",
@@ -115,6 +115,7 @@
       "subagent_completed_count": 0,
       "subagent_count": 0,
       "subagent_counts_complete": true,
+      "subagent_groups_complete": true,
       "subagent_previews": [],
       "subagent_process_unknown_count": 0,
       "subagent_source": "hooks",
@@ -215,7 +216,7 @@
       "process_work": {
         "command": "",
         "count": 0,
-        "sampled_at": 1794597965.7070487,
+        "sampled_at": 1794614695.562708,
         "started_at": null
       },
       "project": "example",
@@ -243,6 +244,7 @@
       "subagent_completed_count": 0,
       "subagent_count": 0,
       "subagent_counts_complete": true,
+      "subagent_groups_complete": true,
       "subagent_previews": [],
       "subagent_process_unknown_count": 0,
       "subagent_source": "hooks",
@@ -305,7 +307,7 @@
       "process_work": {
         "command": "",
         "count": 0,
-        "sampled_at": 1794597965.7874453,
+        "sampled_at": 1794614695.6633613,
         "started_at": null
       },
       "project": "example",
@@ -419,7 +421,7 @@
       "process_work": {
         "command": "",
         "count": 0,
-        "sampled_at": 1794597965.77383,
+        "sampled_at": 1794614695.6503654,
         "started_at": null
       },
       "project": "example",
@@ -448,6 +450,7 @@
       "subagent_completed_count": 0,
       "subagent_count": 0,
       "subagent_counts_complete": true,
+      "subagent_groups_complete": true,
       "subagent_previews": [],
       "subagent_process_unknown_count": 0,
       "subagent_source": "hooks",

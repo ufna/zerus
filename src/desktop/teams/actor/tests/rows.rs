@@ -340,3 +340,141 @@ fn a_quiet_revived_kimi_child_reads_free_in_the_fleet() {
     let facts = super::super::fleet::Facts::of(&row);
     assert!(facts.free(), "{facts:?}");
 }
+
+/// zerus-63rru.68: the mixed-hooks row's two facts apart — the groups'
+/// completeness has its own field, so an unknown external child does not
+/// keep a member with complete groups unsettled.
+fn mixed_record(groups_complete: bool) -> Value {
+    let mut record = record("kimi", "/fixture");
+    record["subagents"] = json!({
+        "profile-1": {
+            "name":"profile-1","started":1793000000.0,"state":"finished",
+            "updated":1793000000.0
+        },
+        "ext-1": {
+            "name":"ext","started":1793000000.0,"state":"ended",
+            "display_state":"unknown","external":true,"updated":1793000000.0
+        },
+    });
+    record["subagent_groups"] = json!({"profile-1": {
+        "label":"profile-1","active_count":0,"completed_count":1,"total_count":1,
+        "updated":1793000000.0
+    }});
+    record["subagent_groups_complete"] = json!(groups_complete);
+    record
+}
+
+#[test]
+fn a_mixed_row_with_an_unknown_external_child_and_complete_groups_reads_settled() {
+    let row = crate::state::listing_fixture::listed_live_row(mixed_record(true)).unwrap();
+    assert_eq!(row["subagent_source"], "mixed_hooks", "{row}");
+    assert_eq!(row["subagent_counts_complete"], false, "{row}");
+    assert_eq!(row["subagent_groups_complete"], true, "{row}");
+    let facts = super::super::fleet::Facts::of(&row);
+    assert!(facts.free(), "{facts:?}");
+}
+
+#[test]
+fn incomplete_groups_stay_unsettled() {
+    let row = crate::state::listing_fixture::listed_live_row(mixed_record(false)).unwrap();
+    assert_eq!(row["subagent_source"], "mixed_hooks", "{row}");
+    assert_eq!(row["subagent_groups_complete"], false, "{row}");
+    let facts = super::super::fleet::Facts::of(&row);
+    assert!(!facts.free(), "{facts:?}");
+}
+
+#[test]
+fn an_older_row_without_the_group_field_reads_as_today() {
+    let mut row = crate::state::listing_fixture::listed_live_row(mixed_record(true)).unwrap();
+    row.as_object_mut().unwrap().remove("subagent_groups_complete");
+    // The fallback reads the old combined flag, which is false for the
+    // unknown external child: unsettled, exactly as before the split.
+    let facts = super::super::fleet::Facts::of(&row);
+    assert!(!facts.free(), "{facts:?}");
+}
+
+/// zerus-63rru.68 round 2: the independent reviewer's two real-writer probes,
+/// committed: History never keeps a member, and the legacy combined flag
+/// keeps its exact old meaning for the unchanged readers.
+fn review68_produced() -> Value {
+    let text = super::real_rows::isolated("state::subagent_order::reordered_children_child");
+    let row = text
+        .lines()
+        .find_map(|line| line.split_once("SUBAGENT-ORDER ").map(|(_, value)| value))
+        .unwrap();
+    serde_json::from_str(row).unwrap()
+}
+
+#[test]
+fn required_history_rule() {
+    let rows = review68_produced();
+    for name in ["codex_interrupt_start", "external_process_end_start"] {
+        let row = &rows["rows"][name];
+        let facts = super::super::fleet::Facts::of(row);
+        assert!(
+            facts.free(),
+            "the plan says History never keeps a member: {name} {facts:?}"
+        );
+        assert_eq!(row["subagent_active_count"], 0, "{name}");
+        assert_eq!(row["subagent_process_unknown_count"], 0, "{name}");
+    }
+}
+
+#[test]
+fn required_additive_legacy_flag() {
+    let rows = review68_produced();
+    let row = &rows["rows"]["kimi_stop_start"];
+    assert_eq!(row["subagent_groups_complete"], false);
+    assert_eq!(
+        row["subagent_counts_complete"], false,
+        "an additive field must not make incomplete groups complete for unchanged readers"
+    );
+    assert!(
+        !zerus_client_core::view::row(row).subagent_counts_complete,
+        "the client core reads the old combined flag"
+    );
+
+}
+
+/// Round 2's three surviving mutants, each now killed by a committed test.
+#[test]
+fn a_malformed_groups_field_reads_unsettled() {
+    let mut row =
+        crate::state::listing_fixture::listed_live_row(mixed_record(true)).unwrap();
+    row["subagent_groups_complete"] = json!("true");
+    let facts = super::super::fleet::Facts::of(&row);
+    assert!(!facts.free(), "a non-boolean completeness read settled: {facts:?}");
+}
+
+#[test]
+fn an_unbound_process_child_still_unsettles_history() {
+    let mut row = crate::state::listing_fixture::listed_live_row(
+        super::rows::record("claude", "/fixture"),
+    )
+    .unwrap();
+    row["subagent_process_unknown_count"] = json!(1);
+    let facts = super::super::fleet::Facts::of(&row);
+    assert!(!facts.free(), "the process_unknown guard was dropped: {facts:?}");
+    assert_eq!(
+        facts.unknown(),
+        Some(super::super::ports::Fact::ChildrenUnsettled),
+        "{facts:?}"
+    );
+}
+
+#[test]
+fn a_mixed_row_counts_its_active_profile_groups() {
+    let mut record = mixed_record(true);
+    record["subagent_groups"] = json!({
+        "profile-1": {
+            "label":"profile-1","active_count":2,"completed_count":1,"total_count":3,
+            "updated":1793000000.0
+        }
+    });
+    let row = crate::state::listing_fixture::listed_live_row(record).unwrap();
+    assert_eq!(row["subagent_source"], "mixed_hooks", "{row}");
+    assert_eq!(
+        row["subagent_active_count"], 2,
+        "the mixed row dropped its active groups: {row}"
+    );
+}
