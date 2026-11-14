@@ -22,7 +22,9 @@ class NativeClearContext(unittest.TestCase):
             command = 'env ' + ' '.join(shlex.quote(k+'='+v) for k,v in env.items()) + ' ' + shlex.quote(str(test_input.HGS)) + ' __state hook'
             path = self.root / '.claude/settings.json'
             config = json.loads(path.read_text())
-            config['hooks'] = {event: [{'hooks': [{'type':'command', 'command':command}]}] for event in getattr(self,'hook_events',['SessionStart'])}
+            # Retain common setup's async caller alongside the native hooks.
+            for event in getattr(self,'hook_events',['SessionStart']):
+                config.setdefault('hooks', {}).setdefault(event, []).append({'hooks': [{'type':'command', 'command':command}]})
             path.write_text(json.dumps(config))
         return test_input.InputTransport.tmux(self, *args, **kwargs)
 
