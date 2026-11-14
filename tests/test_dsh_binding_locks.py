@@ -1,6 +1,7 @@
 """Remaining binding gates: private hosts, causal RPC holds, no live harness."""
 import hashlib
 import json
+import os
 from pathlib import Path
 import subprocess
 import time
@@ -11,6 +12,7 @@ import uuid
 from test_dsh_dispatch_lock import GENERATION, HGS, Host, Scenario
 
 
+@unittest.skipUnless(os.name == 'posix', 'Unix scripted native hosts')
 class DeepSeekBindingLocks(unittest.TestCase):
     done = dispatch_fixture.DeepSeekDispatchLocks.done
 
