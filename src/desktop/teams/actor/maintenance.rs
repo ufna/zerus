@@ -1,5 +1,95 @@
 use super::*;
+use zerus_replica::ProjectStore;
 impl Runtime {
+    /// One page of a stopped or archived team's closed tasks, each cleared
+    /// of the team's key when it still names this team (zerus-63rru.32).
+    /// The cursor is the last (project, uuid) pair and a done flag; a short
+    /// page finishes the sweep. A task whose key names another team, or
+    /// that was bound again after the stop, is never touched.
+    pub(super) fn clear_closed_keys(&mut self, store: &Store) -> Result<bool> {
+        let Some((id, _)) = self.maintenance_team.clone() else {
+            return Ok(false);
+        };
+        let Some(team) = store.team(&id)? else {
+            return Ok(false);
+        };
+        if !matches!(team.status, TeamStatus::Stopped | TeamStatus::Archived) {
+            return Ok(false);
+        }
+        // A finished sweep stays finished: no work on later passes, only a
+        // new stop or archive reopens it (zerus-63rru.32 round 2).
+        if store.sweep_finished(&id)? {
+            return Ok(true);
+        }
+        let cursor: Option<(String, String, bool)> = self.load(&id, "key_clear_cursor")?;
+
+        if cursor.as_ref().is_some_and(|c| c.2) {
+            return Ok(true);
+        }
+        let after = cursor.as_ref().map(|c| (c.0.clone(), c.1.clone()));
+        let page = store.closed_tasks(&id, after.as_ref(), 200)?;
+
+        let done = page.len() < 200;
+        let here = team.home.clone();
+        for task in &page {
+            if self.clear_one(store, &id, &here, task)?.is_none() {
+                continue;
+            }
+        }
+        // Completion removes the cursor and persists a finished marker, so
+        // later passes do no work until Stop or Archive reopens the sweep
+        // (zerus-63rru.32 round 2).
+        if done {
+            if let Some(row) = self.ledger.get(&id, "key_clear_cursor")? {
+                self.ledger.remove(&row)?;
+            }
+            store.mark_sweep_finished(&id)?;
+        } else {
+            let saved = page
+                .last()
+                .map(|task| (task.project.clone(), task.uuid.clone(), false))
+                .unwrap_or_else(|| (String::new(), String::new(), false));
+            self.put(&id, "key_clear_cursor", &saved)?;
+        }
+        Ok(done)
+    }
+    /// Clears the team's key from one closed task when it still names this
+    /// team and the team holds no live node for it; `None` when the task's
+    /// document is gone or unreadable (nothing left to clear).
+    fn clear_one(
+        &self,
+        store: &Store,
+        team: &str,
+        home: &str,
+        task: &TaskRef,
+    ) -> Result<Option<()>> {
+        let Ok(tasks) = ProjectStore::open(&store.state().join("replica"), &task.project) else {
+            return Ok(None);
+        };
+        let Ok(mut document) = tasks.load(&task.uuid) else {
+            return Ok(None);
+        };
+        let view = document.view().map_err(crate::teams::store::storage)?;
+        let Some(key) = view.team else {
+            return Ok(Some(()));
+        };
+        if key.team != team || key.home != home {
+            return Ok(Some(()));
+        }
+        if crate::teams::tasks::binding(store, task)?
+            .is_some_and(|(id, _)| id == team)
+        {
+            return Ok(Some(()));
+        }
+        // A closed task's history stays as it was: the clear writes only the
+        // key (zerus-63rru.32 round 2). The revision advances, which is how
+        // the clear reaches other computers.
+        document
+            .clear_team_silent()
+            .map_err(crate::teams::store::storage)?;
+        tasks.save(&mut document).map_err(crate::teams::store::storage)?;
+        Ok(Some(()))
+    }
     /// A standing team does not retain a retry row for each completed task.
     /// The key cursor makes every row reachable even while earlier waits stay.
     pub(super) fn cleanup_metadata(
@@ -139,6 +229,9 @@ impl Runtime {
             && (!store.pending_cancels(&id, 1, 0)?.is_empty()
                 || !store.keyed_tasks(&id, 0, 1)?.is_empty()
                 || self
+                    .load::<Option<(String, String, bool)>>(&id, "key_clear_cursor")?
+                    .is_some()
+                || self
                     .open_effects(store, &id)?
                     .iter()
                     .any(|e| e.outcome.is_none()))
@@ -153,7 +246,11 @@ impl Runtime {
             let evidence = ["delivery:", "merge:"]
                 .iter()
                 .any(|prefix| row.key.starts_with(prefix));
-            if team.status == TeamStatus::Finished || !evidence {
+            // The closed-keys cursor survives the terminal pruning while the
+            // sweep's done marker is kept (zerus-63rru.32).
+            if team.status == TeamStatus::Finished
+                || (!evidence && row.key != "key_clear_cursor")
+            {
                 self.ledger.remove(row)?;
             }
         }
