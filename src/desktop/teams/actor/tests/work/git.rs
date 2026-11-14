@@ -1,5 +1,13 @@
 use super::*;
-use std::{path::PathBuf, process::Command};
+use std::{
+    io::Write,
+    path::PathBuf,
+    process::{Command, Stdio},
+};
+/// A repository whose base, integration and member commits change `file` in
+/// Git's object store alone: the name never reaches the file system, where
+/// Windows refuses blank names, control characters and quotes
+/// (zerus-63rru.112). The checkout holds only the seed commit's `seed.txt`.
 struct Git {
     _temp: tempfile::TempDir,
     path: PathBuf,
@@ -31,14 +39,21 @@ impl Git {
         f.run(&["config", "user.name", "Teams Fixture"]);
         f.run(&["config", "user.email", "fixture@example.test"]);
         f.run(&["config", "commit.gpgSign", "false"]);
-        f.base = f.commit("base");
-        let integration = f.commit("integration");
+        std::fs::write(f.path.join("seed.txt"), "seed\n").unwrap();
+        f.run(&["add", "seed.txt"]);
+        f.run(&["commit", "-m", "seed"]);
+        let seed = f.run(&["rev-parse", "HEAD"]);
+        f.base = f.commit(&seed, "base");
+        let integration = f.commit(&f.base, "integration");
         f.run(&["branch", "teams/integration", &integration]);
-        f.run(&["checkout", "-b", "member", &f.base]);
-        f.incoming = f.commit("member");
+        f.incoming = f.commit(&f.base, "member");
+        f.run(&["branch", "member", &f.incoming]);
         f
     }
     fn run(&self, args: &[&str]) -> String {
+        self.run_with(args, b"")
+    }
+    fn run_with(&self, args: &[&str], input: &[u8]) -> String {
         let mut cmd = Command::new("git");
         for (k, _) in std::env::vars_os() {
             if k.to_string_lossy().starts_with("GIT_") {
@@ -51,8 +66,13 @@ impl Git {
             .arg("-c")
             .arg(format!("core.hooksPath={}", self.hooks.display()))
             .args(["-c", "init.templateDir="])
-            .args(args);
-        let out = cmd.output().unwrap();
+            .args(args)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let mut child = cmd.spawn().unwrap();
+        child.stdin.take().unwrap().write_all(input).unwrap();
+        let out = child.wait_with_output().unwrap();
         assert!(
             out.status.success(),
             "{args:?}: {}",
@@ -60,11 +80,20 @@ impl Git {
         );
         String::from_utf8(out.stdout).unwrap().trim().into()
     }
-    fn commit(&self, text: &str) -> String {
-        std::fs::write(self.path.join(&self.file), format!("{text}\n")).unwrap();
-        self.run(&["add", &self.file]);
-        self.run(&["commit", "-m", text]);
-        self.run(&["rev-parse", "HEAD"])
+    /// A child of `parent` whose tree is the seed's `seed.txt` and `file`
+    /// holding `text`, written as objects only.
+    fn commit(&self, parent: &str, text: &str) -> String {
+        let seed = self.run(&["rev-parse", "HEAD:seed.txt"]);
+        let blob = self.run_with(
+            &["hash-object", "-w", "--stdin"],
+            format!("{text}\n").as_bytes(),
+        );
+        let mut entries = Vec::new();
+        for (name, oid) in [("seed.txt", &seed), (self.file.as_str(), &blob)] {
+            entries.extend_from_slice(format!("100644 blob {oid}\t{name}\0").as_bytes());
+        }
+        let tree = self.run_with(&["mktree", "-z"], &entries);
+        self.run(&["commit-tree", &tree, "-p", parent, "-m", text])
     }
 }
 #[test]
