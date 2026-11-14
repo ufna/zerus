@@ -274,11 +274,11 @@ fn round1_reply(id: &str) -> Value {
 /// of them as the Stop left them. `assert_only_a_fact` also requires that the
 /// settle opened no failure gate; the one test that starts with a real gate
 /// checks that separately.
-fn assert_no_hand_back(s: &Snapshot, before_cancels: usize, case: &str) {
+fn assert_no_hand_back(s: &Snapshot, before: &Snapshot, case: &str) {
     assert!(!s.row, "{case}: the delivery row stayed");
     assert!(!s.reserved, "{case}: the effect stayed reserved");
     assert_eq!(
-        s.cancels, before_cancels,
+        s.cancels, before.cancels,
         "{case}: the Stop's cancel decision changed"
     );
     assert!(!s.hand_back, "{case}: the node was held for the lead again");
@@ -295,12 +295,25 @@ fn assert_no_hand_back(s: &Snapshot, before_cancels: usize, case: &str) {
     );
 }
 
-fn assert_only_a_fact(s: &Snapshot, before_cancels: usize, case: &str) {
-    assert_no_hand_back(s, before_cancels, case);
+fn assert_only_a_fact(s: &Snapshot, before: &Snapshot, case: &str) {
+    assert_no_hand_back(s, before, case);
     assert!(
         s.gates.is_empty(),
         "{case}: a failure gate was opened: {:?}",
         s.gates
+    );
+    // The terminal fixture may already carry an item from an earlier writer
+    // (ArchiveMember's member_removed): the rule is that the terminal pass
+    // adds none, so a Stopped or Archived team writes no new lead item at all
+    // (zerus-63rru.102 round 4, D1).
+    let new: Vec<&String> = s
+        .inbox
+        .iter()
+        .filter(|kind| !before.inbox.contains(kind))
+        .collect();
+    assert!(
+        new.is_empty(),
+        "{case}: a new lead item was written on a terminal team: {new:?}"
     );
 }
 
@@ -336,7 +349,7 @@ fn the_terminal_team_settles_each_probe_row_from_its_durable_outcome() {
                 );
                 b.terminal(2);
                 let after = snapshot(&b.h, &b.id);
-                assert_only_a_fact(&after, before.cancels, &case);
+                assert_only_a_fact(&after, &before, &case);
                 assert!(!after.input, "{case}: the retained input stayed");
                 assert!(
                     after.effect == "submitted" || after.effect == "superseded",
@@ -391,7 +404,7 @@ fn the_terminal_team_records_every_persisted_outcome_without_handing_back() {
             );
             b.terminal(2);
             let after = snapshot(&b.h, &b.id);
-            assert_only_a_fact(&after, before.cancels, &case);
+            assert_only_a_fact(&after, &before, &case);
             assert_eq!(after.effect, state, "{case}: effect state");
             assert_eq!(
                 after.outcome["status"], status,
@@ -443,7 +456,7 @@ fn the_terminal_team_records_every_retained_reply_shape_without_replaying() {
             let after = snapshot(&b.h, &b.id);
             match settled {
                 Some((state, status)) => {
-                    assert_only_a_fact(&after, before.cancels, &case);
+                    assert_only_a_fact(&after, &before, &case);
                     assert!(!after.input, "{case}: the retained input stayed");
                     assert_eq!(after.effect, state, "{case}: effect state");
                     assert_eq!(after.outcome["status"], status, "{case}: outcome shape");
@@ -459,6 +472,11 @@ fn the_terminal_team_records_every_retained_reply_shape_without_replaying() {
                     assert!(!after.hand_back, "{case}: the node was held");
                     assert_eq!(after.open_cards, 0, "{case}: a card was opened");
                     assert!(after.gates.is_empty(), "{case}: {:?}", after.gates);
+                    assert!(
+                        after.inbox.is_empty(),
+                        "{case}: an unknown delivery wrote a lead item: {:?}",
+                        after.inbox
+                    );
                     assert_eq!(after.team, before.team, "{case}: the team status changed");
                 }
             }
@@ -485,7 +503,7 @@ fn the_persisted_outcome_is_the_fact_even_when_the_retained_reply_differs() {
     let after = snapshot(&b.h, &b.id);
     assert_only_a_fact(
         &after,
-        before.cancels,
+        &before,
         "persisted final with retained submitted",
     );
     assert_eq!(after.effect, "refused");
@@ -508,6 +526,7 @@ fn the_terminal_settlement_records_the_fact_durably_before_applying_it() {
     );
     b.retain(refused_reply(&b.id));
     b.stop();
+    let before = snapshot(&b.h, &b.id);
     let home = b.home.clone();
     let team = b.h.store.team(TEAM).unwrap().unwrap();
     let mut a = super::super::Runtime::open(b.h.temp.path(), &home).unwrap();
@@ -538,7 +557,7 @@ fn the_terminal_settlement_records_the_fact_durably_before_applying_it() {
     }
     drop(a);
     let after = snapshot(&b.h, &b.id);
-    assert_only_a_fact(&after, 1, "resumed terminal settle");
+    assert_only_a_fact(&after, &before, "resumed terminal settle");
     assert!(!after.input, "the retained input stayed");
     assert_eq!(after.outcome["status"], "refused");
 }
@@ -574,7 +593,7 @@ fn a_terminal_team_recovers_no_gate_and_the_prune_reclaims_it() {
     );
     b.terminal(1);
     let settled = snapshot(&b.h, &b.id);
-    assert_no_hand_back(&settled, before.cancels, "terminal settle with a gate");
+    assert_no_hand_back(&settled, &before, "terminal settle with a gate");
     assert!(!settled.input, "the retained input stayed");
     assert!(
         settled.gates.contains(&gate),

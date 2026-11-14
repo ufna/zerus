@@ -225,15 +225,19 @@ fn record_outcome(
             params![ctx.team.id, id, state],
         )
         .map_err(storage)?;
-    if let Some(why) = why {
-        ctx.reply.item = Some(ctx.inbox(e.node, "delivery_uncertain", why)?);
-    }
     // A stopped or archived team records the outcome as a fact only. Its own
     // Stop settled every decision and wrote each node's Cancel, so moving a
     // decision here would settle that Cancel, re-hold the node or tell the
-    // lead that the person already ended the work (zerus-63rru.102 round 3).
-    // A running or paused team keeps the move it had before.
+    // lead that the person already ended the work. The same gate covers the
+    // informational delivery_uncertain item: a terminal team writes no lead
+    // item at all (zerus-63rru.102 round 4).
+    // A running or paused team keeps the move and the item it had before.
     let moving = matches!(ctx.team.status, TeamStatus::Running | TeamStatus::Paused);
+    if let Some(why) = why {
+        if moving {
+            ctx.reply.item = Some(ctx.inbox(e.node, "delivery_uncertain", why)?);
+        }
+    }
     if kind == "handout" && moving {
         if let HandoutOutcome::HandedBack { reason } = outcome {
             let kind = format!("handout_handed_back:{id}");
