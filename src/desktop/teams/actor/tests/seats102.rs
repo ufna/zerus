@@ -87,6 +87,9 @@ impl Boot {
     fn stop(&mut self) {
         self.h.run(&person(), Operation::Stop).unwrap();
     }
+    fn pause(&mut self) {
+        self.h.run(&person(), Operation::Pause).unwrap();
+    }
     fn archive(&mut self) {
         self.h.run(&person(), Operation::Archive).unwrap();
     }
@@ -99,6 +102,14 @@ impl Boot {
                 },
             )
             .unwrap();
+    }
+    /// One real actor tick under the team's current status.
+    fn tick(&mut self, now: i64) {
+        let home = self.home.clone();
+        let mut a = super::super::Runtime::open(self.h.temp.path(), &home).unwrap();
+        let mut p = super::core::Fake::new();
+        a.begin_pass();
+        a.tick(&mut self.h.store, &mut p, TEAM, now, false).unwrap();
     }
     /// The real terminal pass, once per call.
     fn terminal(&mut self, passes: u32) {
@@ -668,6 +679,51 @@ fn an_unknown_delivery_without_a_durable_outcome_stays_unknown() {
             "archive={archive}: the unknown effect was settled"
         );
     }
+}
+
+/// D2: Paused is moving. A paused team still writes the informational
+/// delivery_uncertain item and still runs its hand-back path, so the round-4
+/// item gate did not narrow the live team.
+#[test]
+fn a_paused_team_still_writes_the_uncertain_item_and_hands_back() {
+    let mut uncertain = Boot::new(
+        "outcome",
+        HandoutOutcome::Uncertain {
+            reason: "The DeepSeek task input is uncertain.".into(),
+        },
+    );
+    uncertain.pause();
+    uncertain.tick(1_000);
+    let after = snapshot(&uncertain.h, &uncertain.id);
+    assert_eq!(after.team, "Paused");
+    assert!(!after.row, "the paused delivery row stayed");
+    assert!(
+        after.inbox.iter().any(|k| k == "delivery_uncertain"),
+        "the paused team wrote no delivery_uncertain item: {:?}",
+        after.inbox
+    );
+    assert!(!after.hand_back, "the paused uncertain held the node");
+
+    let mut final_refusal = Boot::new(
+        "outcome",
+        HandoutOutcome::HandedBack {
+            reason: "DeepSeek refused the task text finally.".into(),
+        },
+    );
+    final_refusal.pause();
+    final_refusal.tick(2_000);
+    let after = snapshot(&final_refusal.h, &final_refusal.id);
+    assert_eq!(after.team, "Paused");
+    assert!(!after.row, "the paused hand-back row stayed");
+    assert!(after.hand_back, "the paused hand-back did not hold the node");
+    assert!(
+        after
+            .inbox
+            .iter()
+            .any(|k| k.starts_with("handout_handed_back:")),
+        "the paused hand-back told no lead: {:?}",
+        after.inbox
+    );
 }
 
 /// The running team's final refusal still moves the decision and tells the
