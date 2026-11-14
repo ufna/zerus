@@ -746,6 +746,35 @@ mod tests {
         assert!(crate::state::recipes::verify_history(&persisted, true).is_ok());
     }
 
+    /// zerus-63rru.70: deciding one archive's actions reads its transcript
+    /// metadata at most once.
+    #[test]
+    fn deciding_one_archives_actions_reads_the_transcript_at_most_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let saved = dir.path().join("transcript.jsonl");
+        std::fs::write(&saved, "{\"type\":\"user\"}\n").unwrap();
+        let mut record = crate::state::listing_fixture::launched_record(
+            "claude",
+            "claude/example/member",
+            "00000000-0000-4000-8000-0000000000a1",
+            "00000000-0000-4000-8000-0000000000a2",
+            "run-claude",
+            "/",
+            "account-example",
+        );
+        crate::state::listing_fixture::confirmed(&mut record, "conversation-claude");
+        record["transcript"] = json!(saved);
+        record["archive_id"] = json!("00000000-0000-4000-8000-0000000000a3");
+        crate::state::journal::read_order::take();
+        let _ = summary(&record, false, &None);
+        let steps = crate::state::journal::read_order::take();
+        assert_eq!(
+            steps.iter().filter(|step| **step == "transcript").count(),
+            1,
+            "{steps:?}"
+        );
+    }
+
     /// zerus-63rru.70: Kimi, DeepSeek and OpenCode keep today's decision; the
     /// archive metadata read never touches them.
     #[test]
