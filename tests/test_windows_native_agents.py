@@ -1219,7 +1219,9 @@ class NativeWindowsCodex(NativeAgent, host.HostCase):
         config.write_text(config.read_text(encoding='utf-8')
                           .replace('sandbox_mode = "danger-full-access"', 'sandbox_mode = "workspace-write"')
                           .replace('approval_policy = "never"', 'approval_policy = "on-request"'), encoding='utf-8')
-        self.ARGS = ()
+        # hgs's native-account default is bypass; explicit launch switches
+        # take precedence without changing that private account default.
+        self.ARGS = ('--sandbox', 'workspace-write', '--ask-for-approval', 'on-request')
         name, trust, _ = self.untrusted_folder()
         self.answer(name, trust, [dict(question_id='trust', selected_option_ids=['trust_0'], text='')])
         card = self.card(name, 'codex_sandbox_setup')
@@ -1235,8 +1237,28 @@ class NativeWindowsCodex(NativeAgent, host.HostCase):
         self.assertEqual(card['run_id'], self.row(name)['run_id'])
         self.assertEqual(api.requests(self.api_root), [])
         original = self.record(name)
+        self.assertNotIn('--dangerously-bypass-approvals-and-sandbox', original['base'])
         self.assertFalse(original.get('conversation_id'))
         self.assertIsNone(tomllib.loads((self.agent_home/'config.toml').read_text(encoding='utf-8')).get('windows', {}).get('sandbox'))
+        # Even an agent-marked CLI must not drive this picker. Use only Quit
+        # for the native refusal control: a regression cannot request setup.
+        markers = ('HGS_SESSION', 'HGS_RUN_ID', 'HGS_SESSION_ID')
+        inherited = {key:self.env.get(key) for key in markers}
+        try:
+            self.env.update(HGS_SESSION='codex/fixture/unrelated', HGS_RUN_ID=str(uuid.uuid4()),
+                            HGS_SESSION_ID=str(uuid.uuid4()))
+            agent = dict(request_id=str(uuid.uuid4()), expected_run_id=card['run_id'],
+                         expected_conversation_id='', question_id=card['question_id'],
+                         expected_question_hash=card['question_hash'],
+                         answers=[dict(question_id='sandbox', selected_option_ids=['sandbox_2'], text='')])
+            refused = self.hgs('answer', name, '--json', input=json.dumps(agent), rc=None)
+            self.assertNotEqual(refused.returncode, 0, refused.stdout)
+            self.assertIn('person', refused.stderr)
+        finally:
+            for key, value in inherited.items():
+                if value is None: self.env.pop(key, None)
+                else: self.env[key] = value
+        self.assertEqual(self.card(name, 'codex_sandbox_setup')['question_hash'], card['question_hash'])
         # A stale card cannot drive even one navigation key. This is a new
         # rejected request, not a retry of an uncertain submission.
         stale = dict(request_id=str(uuid.uuid4()), expected_run_id=card['run_id'],

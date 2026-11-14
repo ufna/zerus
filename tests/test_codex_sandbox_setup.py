@@ -93,6 +93,15 @@ class SandboxSetup(unittest.TestCase):
         fixtures.InputTransport.send(self, fixtures.InputTransport.payload(self), success=False)
         self.assertEqual(self.received(), b'')
 
+    def test_agent_caller_cannot_choose_any_sandbox_option(self):
+        self.env.update(HGS_SESSION='codex/fixture/other-agent', HGS_RUN_ID=str(uuid.uuid4()))
+        for choice in range(3):
+            with self.subTest(choice=choice):
+                request = self.payload(choice)
+                self.assertIn("person", self.answer(request, success=False))
+                self.assertFalse((self.state/'question_receipts'/(request['request_id']+'.json')).exists())
+        self.assertEqual(self.received(), b'')
+
     def test_each_setup_choice_only_sends_the_persons_selection_once(self):
         for choice in (0, 1):
             with self.subTest(choice=choice):

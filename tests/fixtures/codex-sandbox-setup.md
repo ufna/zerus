@@ -27,14 +27,22 @@ The hosted Windows native fixture retains its actual latest-release screen as
 The Activity card preserves native labels and disclosure literally; its app
 heading and setup guidance are translated. The highlight is not a default
 answer. Only an explicit person submission uses the existing answer receipt
-and guarded native navigator. A setup selection acknowledges Codex's native
+and guarded native navigator. Agent callers are refused before reservation and
+each navigation snapshot rechecks the person-only boundary. A setup selection acknowledges Codex's native
 setup status and opens Terminal; Zerus sends no further setup or Administrator
 input. Without a writable terminal the card remains read-only. New pending
 input or changed run, process, pane or frame refuses the old card, and an
 uncertain answer is never replayed.
 
+Before any remote SSH or capability probe, an agent caller's `codex-sandbox:`
+answer is refused too, including guarded and `__state` routes. The fake-SSH
+controls retain person answers and byte-for-byte forwarding of every other
+valid answer. Inspected answer input retains the native 128 KiB limit and the
+Windows overlapped relay and interrupt handling.
+
 Private synthetic terminal controls cover both setup selections, native-status
 acknowledgement, Quit, read-only copy mode, stale bindings and receipt replay.
-The hosted Windows native case uses ordinary workspace-write permissions and
+The hosted Windows native case explicitly overrides the account's bypass default
+with workspace-write/on-request launch switches and
 explicitly selects only Quit; it neither extracts
 nor runs the sandbox setup executable, and proves no setup/elevation behavior.

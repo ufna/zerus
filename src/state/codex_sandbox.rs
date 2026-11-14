@@ -191,6 +191,12 @@ fn width(record: &Value) -> Option<usize> {
 fn same_record(original: &Value, active: &Value) -> bool {
     eligible(active) && IDENTITY.iter().all(|key| active[*key] == original[*key])
 }
+fn person() -> Result<()> {
+    if crate::cli::agent_caller() {
+        return Err("Codex's sandbox setup needs the person's answer in Zerus or Terminal".into());
+    }
+    Ok(())
+}
 pub(super) fn current(record: &Value) -> Option<Value> {
     if !eligible(record) {
         return None;
@@ -210,6 +216,7 @@ pub(super) fn current(record: &Value) -> Option<Value> {
     )
 }
 fn snapshot(record: &Value, screen: &str) -> Option<(Value, usize)> {
+    person().ok()?;
     let panel = parse(screen, width(record)?)?;
     Some((
         card(record, &panel, true)?["question_hash"].clone(),
@@ -217,6 +224,7 @@ fn snapshot(record: &Value, screen: &str) -> Option<(Value, usize)> {
     ))
 }
 pub(super) fn available(record: &Value, question: &Value) -> Result<()> {
+    person()?;
     let active = kimi_tui_choice::identity(record)?;
     if !same_record(record, &active)
         || snapshot(&active, &kimi_tui_choice::capture(&active)?).map(|s| s.0)
@@ -227,6 +235,7 @@ pub(super) fn available(record: &Value, question: &Value) -> Result<()> {
     Ok(())
 }
 pub(super) fn answer(record: &Value, question: &Value, answers: &Value) -> Result<()> {
+    available(record, question)?;
     let chosen = IDS
         .iter()
         .position(|id| Some(*id) == answers[0]["selected_option_ids"][0].as_str())
