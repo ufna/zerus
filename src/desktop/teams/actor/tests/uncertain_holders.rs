@@ -621,3 +621,47 @@ fn settled_child() {
         assert!(!w.marked());
     }
 }
+
+#[test]
+fn cooling_ready_work_preserves_the_existing_notice_scope() {
+    isolated(&format!("{CHILD}cooling_child"));
+}
+#[test]
+#[ignore = "run by its isolated wrapper"]
+fn cooling_child() {
+    let mut w = World::new("submitted", true);
+    w.h.add(&person(), 2);
+    w.h.run(
+        &person(),
+        crate::teams::ops::Operation::PauseMember {
+            member: "m1".into(),
+        },
+    )
+    .unwrap();
+    let team = w.h.store.team(TEAM).unwrap().unwrap();
+    let revision =
+        w.h.store
+            .task_observation(TEAM, 2)
+            .unwrap()
+            .unwrap()
+            .revision;
+    w.a.cooldown(&mut w.h.store, &team, "handout:2", &revision, T0 + 600_000)
+        .unwrap();
+    w.pass(0);
+    let items = w.h.store.inbox(TEAM, 200, None).unwrap().rows;
+    assert!(
+        items.iter().all(|i| !i.kind.starts_with("member_started:")),
+        "a cooling ready task did not enter the old member-notice pass"
+    );
+    assert!(w.cards().is_empty());
+    w.pass(600_000);
+    let items = w.h.store.inbox(TEAM, 200, None).unwrap().rows;
+    assert_eq!(
+        items
+            .iter()
+            .filter(|i| i.kind.starts_with("member_started:"))
+            .count(),
+        1,
+        "the ordinary pass resumes after cooling"
+    );
+}

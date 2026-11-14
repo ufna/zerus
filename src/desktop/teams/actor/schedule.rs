@@ -187,6 +187,7 @@ impl Runtime {
             integration: team.settings.integration,
         };
         let ready = ready::ready(&initial);
+        let ready_work = !ready.is_empty();
         // A task already handed out stays ready in the kernel's view until
         // its observation moves, and the store refuses a second intent for
         // it (zerus-63rru.71). Held here like a cooling task, it takes no
@@ -209,7 +210,7 @@ impl Runtime {
             let held = effects.iter().find(|e| e.member == m.id);
             // The member is in the active set: a later leave tells the lead
             // again (zerus-63rru.86).
-            if any_ready && m.state == MemberState::Active && m.session.is_some() {
+            if ready_work && m.state == MemberState::Active && m.session.is_some() {
                 self.forget_paused_started(store, team, &m.id, now)?;
             }
             let answer = if m.id != team.lead
@@ -221,7 +222,7 @@ impl Runtime {
                 // an undecidable binding needs this card: decisive ends are
                 // handled by delivery recovery (.85).
                 self.member_free(store, ports, team, &m, now)?
-            } else if any_ready
+            } else if ready_work
                 && m.id != team.lead
                 && m.state == MemberState::Active
                 && m.session.is_some()
@@ -246,7 +247,7 @@ impl Runtime {
             } else {
                 // A member out of the active set that holds started work is
                 // told to the lead once (zerus-63rru.86).
-                if any_ready && (m.state != MemberState::Active || m.session.is_none()) {
+                if ready_work && (m.state != MemberState::Active || m.session.is_none()) {
                     self.tell_paused_started(store, team, &m, now)?;
                 }
                 Some(Availability::Busy)
