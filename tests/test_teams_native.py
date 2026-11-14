@@ -801,6 +801,37 @@ class TeamsFixtureIsolation(unittest.TestCase):
                     self.fx.preflight()
                 self.fx.env[key] = saved
 
+    def test_kimi_stand_in_and_executable_image_survive_hgs_path_preparation(self):
+        import hashlib
+        import stat
+        source = self.base / 'sealed-kimi'
+        source.write_text('#!/bin/sh\nexit 0\n')
+        source.chmod(0o400)
+        fx = fixture.TeamFixture('kimi', source, 'KimiIsolation')
+        self.addCleanup(shutil.rmtree, fx.root, True)
+        fx.build()
+        fx.preflight()
+        home_bin = fx.root / 'home/.local/bin'
+        self.assertEqual(Path(shutil.which('node', path=fx.env['PATH'])), home_bin / 'node')
+        self.assertEqual(Path(shutil.which('kimi', path=fx.env['PATH'])).resolve(), fx.native)
+        self.assertNotEqual(fx.native, source.resolve())
+        self.assertEqual(stat.S_IMODE(fx.native.stat().st_mode), 0o700)
+        self.assertEqual(stat.S_IMODE(source.stat().st_mode), 0o400)
+        def digest(path):
+            with path.open('rb') as stream:
+                return hashlib.file_digest(stream, 'sha256').hexdigest()
+        self.assertEqual(digest(source), fx.native_sha256)
+        self.assertEqual(digest(fx.native), fx.native_sha256)
+        run = subprocess.run([str(home_bin / 'node'), '--input-type=module', '-e', 'inspection'],
+                             env=dict(fx.env, KIMI_CODE_HOME=str(fx.root / 'home/.kimi-code')),
+                             capture_output=True, text=True, timeout=30)
+        self.assertEqual(run.returncode, 0, run.stderr)
+        self.assertEqual(json.loads(run.stdout), fixture.kimi_inspection())
+        # The production rule that put the hosted runner's /usr/local/bin/node ahead
+        # of the old stand-in is part of this fixture's placement contract.
+        production = Path(__file__).resolve().parents[1] / 'src/platform/unix.rs'
+        self.assertIn('"{home}/.local/bin:/opt/homebrew/bin:/usr/local/bin:{path}:', production.read_text())
+
 
 class TeamsWaitingList(unittest.TestCase):
     """Every written class is selected or waiting, and the waiting cases' fixes are named

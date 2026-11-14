@@ -530,10 +530,19 @@ class TeamFixture:
                             .replace('@LOGS@', shlex.quote(str(self.evidence.folder))))
             path.chmod(0o755)
         if self.agent == 'kimi':
-            path = r / 'bin/node'
+            path = r / 'home/.local/bin/node'
             path.write_text(KIMI_NODE.replace('@LOGS@', shlex.quote(str(self.evidence.folder)))
                             .replace('@VALUE@', shlex.quote(json.dumps(kimi_inspection()))))
             path.chmod(0o755)
+            image = r / 'kimi-native'
+            shutil.copyfile(self.native, image)
+            image.chmod(0o700)
+            import hashlib
+            with self.native.open('rb') as source, image.open('rb') as copied:
+                self.native_sha256 = hashlib.file_digest(source, 'sha256').hexdigest()
+                if hashlib.file_digest(copied, 'sha256').hexdigest() != self.native_sha256:
+                    raise AssertionError('the private Kimi image differs from the pinned download')
+            self.native = image.resolve()
         # The wrappers log straight into the evidence folder, so their logs survive a
         # run that is killed; nothing copies them at the end.
         for log in ('tmux-calls.log', 'refused-calls.log'):
@@ -577,6 +586,9 @@ class TeamFixture:
         for name in ('tmux', 'ssh', 'scp', 'systemd-run', 'hgs'):
             if shutil.which(name, path=env['PATH']) != f'{r}/bin/{name}':
                 failures.append('resolves ' + name)
+        expected_node = Path(env['HOME']) / '.local/bin/node'
+        if self.agent == 'kimi' and shutil.which('node', path=env['PATH']) != str(expected_node):
+            failures.append('resolves node')
         sock = Path(env['HGS_STATE_DIR']) / 'desktop/service.sock'
         if len(str(sock).encode()) >= 104:
             failures.append('service socket path length')
