@@ -72,6 +72,8 @@ mod service_worker;
 mod session_limits;
 pub(crate) mod session_id;
 mod session_index;
+// Inactive data foundation; no publisher, caller policy or startup wiring.
+mod process_index;
 mod labels;
 /// How every reader decides what the label index proves (zerus-ucck P3a);
 /// the native readers that need it outside this module run on Unix.
