@@ -56,6 +56,32 @@
         "platform_tools": "37.0.1"
       },
       "version": "20261023.334.3"
+    },
+    {
+      "image": "ubuntu-24.04",
+      "java_home_variable": "JAVA_HOME_17_X64",
+      "java_provisioning": {
+        "action": "actions/setup-java",
+        "commit": "d1374f8ac74474200d16ef8ecee22c7ae7a51880",
+        "java_version": "17.0.20.1+1",
+        "version": "v6.3.0"
+      },
+      "jdk": "17.0.20.1+1",
+      "readme_git_blob": "cc509401857a95cfe09c44b3668825e37389e7e3",
+      "readme_sha256": "f9350ee9bbcd295a82e5914511a688c1b30d3efb37d655e865d590048f1518b0",
+      "readme_url": "https://github.com/actions/runner-images/blob/ubuntu24/20261111.370/images/ubuntu/Ubuntu2404-Readme.md",
+      "release_target_commit": "fb099341ddaf44a428fb17495341cb7c2300faf2",
+      "release_url": "https://github.com/actions/runner-images/releases/tag/ubuntu24/20261111.370",
+      "reviewed_date": "2026-11-14",
+      "runner_summary_jdk": "17.0.21+9",
+      "scope": "Official runner release and README identities bind this exact image. Its bundled Java differs; SHA-pinned setup-java explicitly supplies the unchanged reviewed Temurin build. Admission retains and verifies the actual bounded release file before checkout.",
+      "sdk": {
+        "build_tools": "36.0.0",
+        "command_line_tools": "12.0",
+        "platform": "android-36",
+        "platform_tools": "37.0.1"
+      },
+      "version": "20261111.370.1"
     }
   ],
   "jdk_release": {

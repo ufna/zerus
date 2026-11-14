@@ -44,6 +44,13 @@ reverse_focus_wait = _focus_projection.reverse_focus_wait
 BASELINES = _focus_projection.BASELINES
 
 
+def without_reviewed_hosted_image_update(source):
+    """Reverse only the exact reviewed image-list delta; keep every UI driver pin."""
+    reviewed = 'HOSTED_IMAGES = frozenset({"20261012.334.1", "20261018.339.1", "20261023.334.3", "20261111.370.1"})\n'
+    assert source.count(reviewed) == 1
+    return source.replace(reviewed, reviewed.replace(', "20261111.370.1"', ''))
+
+
 def without_native_tool_preparation(source):
     """Reverse only the exact three additive CI setup regions; retain the original UI driver pin."""
     pattern = re.compile(r'^([ ]*)# BEGIN NATIVE_TOOL_PREPARATION ([a-z-]+)\n[\s\S]*?'
@@ -1296,7 +1303,7 @@ class ApprovalHarnessTests(unittest.TestCase):
 
     def test_android_focus_diagnostics_project_to_exact_reviewed_driver_and_unchanged_ui(self):
         source = (ROOT / "scripts/ci/android-project-ui.py").read_text()
-        self.assertEqual(hashlib.sha256(without_android_focus_diagnostics(without_native_tool_preparation(source)).encode()).hexdigest(),
+        self.assertEqual(hashlib.sha256(without_android_focus_diagnostics(without_native_tool_preparation(without_reviewed_hosted_image_update(source))).encode()).hexdigest(),
                          "49c3814a3ef8cdb7be01e3a4792a6f5045559fb7c89db87fd53784feb4e76450")
         for path, digest in {
             "mobile/android/app/src/androidTest/java/app/zerus/mobile/ApprovalChoicesSmokeInstrumentation.kt": "73cee450f08e33c007ad6f3188a6a69135674e2503f80ea48582ba8aa394a9f7",
@@ -1316,6 +1323,15 @@ class ApprovalHarnessTests(unittest.TestCase):
         self.assertEqual(ast.unparse(guarded.test), "RESULT_NAMESPACE == 'approval' and instrumentation_started")
         self.assertIn(calls[0], list(ast.walk(guarded)))
         self.assertEqual(ast.unparse(handler.body[-1]), "raise")
+
+    def test_hosted_image_projection_refuses_changed_missing_or_duplicate_identity(self):
+        source = (ROOT / "scripts/ci/android-project-ui.py").read_text()
+        line = next(line + "\n" for line in source.splitlines() if line.startswith("HOSTED_IMAGES = "))
+        original = without_reviewed_hosted_image_update(source)
+        self.assertNotIn('"20261111.370.1"', original)
+        for replacement in (line.replace("20261111.370.1", "20261111.370.2"), "", line * 2):
+            with self.subTest(replacement=replacement), self.assertRaises(AssertionError):
+                without_reviewed_hosted_image_update(source.replace(line, replacement))
 
     def test_android_focus_capture_has_one_owned_filtered_read_and_no_new_clock(self):
         calls = []
