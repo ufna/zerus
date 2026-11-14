@@ -386,6 +386,17 @@ A later refusal does not roll back, restart or replay earlier batch entries
 that already started. This neither adopts a changed recipe nor grants native
 custody or duplicate-label admission.
 
+Non-archived terminal Fork (zerus-ucck.4.17) prepares from one selected raw
+legacy/ID frame while keeping its existing state-writer scope and current
+readiness checks. The original fixed-slot proof and independent namespace/
+identity check precede Kimi's native fork and the final terminal start. Only
+fixed digests and locators remain after preparation; conversion never reads or
+refreshes the source. A source refusal after a confirmed distinct native Kimi
+fork keeps that history and reports its exact CID for review, without starting,
+deleting, retrying or replaying it. Unknown native outcomes remain unknown and
+the same scoped UUID never forks again. This adds no physical/native custody,
+archive/provider transaction or duplicate-label authority.
+
 P3e's controls for the lock:
 - a lock that fails or is interrupted before publication;
 - a foreign or replaced lock, and a replaced checkout;

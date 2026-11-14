@@ -1127,7 +1127,7 @@ pub(super) fn resume(names: &[String], dry: bool) -> Result<i32> { resume_scoped
 // A legacy-to-ID move or rename can preserve both run and conversation.
 // Keep the prepared recipe bound to the same selected storage and terminal,
 // including opaque negative transition evidence. Missing and null differ.
-fn saved_binding(record: &Value) -> Value {
+pub(super) fn saved_binding(record: &Value) -> Value {
     json!([
         record["run_id"],
         record["conversation_id"],
