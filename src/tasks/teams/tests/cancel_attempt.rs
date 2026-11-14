@@ -209,7 +209,11 @@ fn team_writer_admission_is_retained_across_the_actual_task_save() {
             ("HGS_TEST_ATTEMPT_PAUSE_AT", "cancel_attempt".into()),
         ],
     );
-    assert!(child.wait_for_marker(&pause.join("ready")));
+    if !child.wait_for_marker(&pause.join("ready")) {
+        std::fs::write(pause.join("release"), "release").unwrap();
+        let output = child.wait_with_output().unwrap();
+        panic!("cancel admission was not reached: {output:?}");
+    }
     f.h.store
         .db
         .as_ref()
@@ -221,13 +225,13 @@ fn team_writer_admission_is_retained_across_the_actual_task_save() {
     // this stopped team's existing Resume rule itself stays unchanged.
     let result = resume.map_err(|e| e.code);
     std::fs::write(pause.join("release"), "release").unwrap();
+    assert!(child.wait_with_output().unwrap().status.success());
+    let out: Value = serde_json::from_slice(&std::fs::read(reply).unwrap()).unwrap();
+    assert_eq!(out["ok"], true, "{out}");
     assert_eq!(
         result.unwrap_err(),
         zerus_team_plan::problem::code::STORE_BUSY
     );
-    assert!(child.wait_with_output().unwrap().status.success());
-    let out: Value = serde_json::from_slice(&std::fs::read(reply).unwrap()).unwrap();
-    assert_eq!(out["ok"], true, "{out}");
     let doc = f.document(&task);
     assert!(doc.held().unwrap().is_none());
     assert_eq!(
