@@ -341,9 +341,21 @@ pub(crate) fn team_live(name: &str, run: &str, conversation: &str, deadline: std
     if answer["generation"] != ping["generation"] || ping["generation"].as_str().is_none_or(str::is_empty)
         || binding(name)? != record { return Err("The DeepSeek host or member changed during observation".into()); }
     if answer["sessionId"] != conversation { return Err("The DeepSeek lifecycle answer names another session".into()); }
+    lifecycle_state(&answer)
+}
+
+/// The lifecycle answer's member state (zerus-63rru.102): live, or ended by
+/// the host's own disposal. Any other end source reads as unavailable,
+/// never ended; an end with a bad time is unavailable too.
+fn lifecycle_state(answer: &Value) -> Result<bool> {
     match answer["state"].as_str() {
         Some("live") => Ok(true),
-        Some("ended") if answer["end"]["source"] == "agent/disposed" && answer["end"]["at"].as_f64().is_some_and(|at| at.is_finite() && at > 0.0) => Ok(false),
+        Some("ended")
+            if answer["end"]["source"] == "agent/disposed"
+                && answer["end"]["at"].as_f64().is_some_and(|at| at.is_finite() && at > 0.0) =>
+        {
+            Ok(false)
+        }
         _ => Err("The DeepSeek host's lifecycle answer is unavailable".into()),
     }
 }
@@ -3371,6 +3383,22 @@ mod pending_identity_tests {
 #[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
 mod tests {
     use super::*;
+
+    /// zerus-63rru.102: only the host's own disposal reads as ended; any
+    /// other source, or a bad time, reads as unavailable, never ended.
+    #[test]
+    fn a_lifecycle_end_other_than_the_hosts_disposal_reads_not_ended() {
+        let ended = json!({"state": "ended", "end": {"source": "agent/disposed", "at": 100}});
+        assert_eq!(lifecycle_state(&ended).unwrap(), false);
+        for bad in [
+            json!({"state": "ended", "end": {"source": "agent/exit", "at": 100}}),
+            json!({"state": "ended", "end": {"source": "agent/disposed", "at": 0}}),
+            json!({"state": "ended", "end": {"source": "agent/disposed"}}),
+        ] {
+            assert!(lifecycle_state(&bad).is_err(), "{bad}");
+        }
+        assert_eq!(lifecycle_state(&json!({"state": "live"})).unwrap(), true);
+    }
 
     #[test]
     fn a_new_host_gets_the_agent_hint_only_when_it_is_on() {

@@ -495,8 +495,18 @@ impl Runtime {
         };
         for row in rows {
             let mut d: Delivery =
-                serde_json::from_value(row.data).map_err(crate::teams::store::storage)?;
+                serde_json::from_value(row.data.clone()).map_err(crate::teams::store::storage)?;
             if !d.not_started {
+                // The store settled this effect before any outcome reached
+                // the row (the hosted child's durable settlement landed
+                // between the actor's frames, zerus-63rru.102): nothing is
+                // delivered, replayed or recorded, and the retained input
+                // goes with the row instead of outliving the team's stop.
+                if d.outcome.is_none() && !store.effect_reserved(&team.id, &d.id)? {
+                    self.recovered(store, team, &row.key, now)?;
+                    self.ledger.remove_input(&team.id, &d.id)?;
+                    self.ledger.remove(&row)?;
+                }
                 continue;
             }
             if d.outcome.is_none() {
