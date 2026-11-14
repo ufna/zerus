@@ -232,7 +232,7 @@ class WorkflowSecurityTests(unittest.TestCase):
         self.assertEqual(re.search(r'(?m)^cache-mode: (.*)$', workflow)[1], 'none')
 
     def selected(self, name, event, ref="refs/heads/main", test_ref="", repository="ufna/zerus",
-                 enabled="", private=False, cancelled=False):
+                 enabled="", private=False, cancelled=False, qualify_start_refusal=False):
         # Evaluate the checked-in condition with synthetic event identities.
         expression = field(job(self.ci, name), "if")
         expression = expression.replace("&&", " and ").replace("||", " or ")
@@ -242,7 +242,7 @@ class WorkflowSecurityTests(unittest.TestCase):
             "always": lambda: True, "cancelled": lambda: cancelled,
             "github": SimpleNamespace(repository=repository, ref=ref, event_name=event, sha="a" * 40,
                                       event=SimpleNamespace(repository=SimpleNamespace(private=private))),
-            "inputs": SimpleNamespace(ref=test_ref),
+            "inputs": SimpleNamespace(ref=test_ref, qualify_start_refusal=qualify_start_refusal),
             "vars": SimpleNamespace(DEV_UPDATES_ENABLED=enabled),
         }))
 
@@ -279,19 +279,44 @@ class WorkflowSecurityTests(unittest.TestCase):
     def test_final_gate_rejects_failure_cancellation_and_all_skipped(self):
         gate = job(self.ci, "gate")
         self.assertEqual(field(gate, "name"), "CI gate")
-        self.assertEqual(field(gate, "needs"), "[automatic, review, qualification]")
+        self.assertEqual(field(gate, "needs"), "[automatic, review, qualification, windows-start-refusal]")
         self.assertEqual(field(gate, "cache-mode"), "none")
         code = compile(inline_python(gate), "workflow-CI-gate", "exec")
-        for conclusions in product(('success', 'skipped', 'failure', 'cancelled'), repeat=3):
+        for conclusions in product(('success', 'skipped', 'failure', 'cancelled'), repeat=4):
             results = {name: {'result': result} for name, result in zip(
-                ('automatic', 'review', 'qualification'), conclusions)}
-            success = sorted(conclusions) == ['skipped', 'skipped', 'success']
+                ('automatic', 'review', 'qualification', 'windows-start-refusal'), conclusions)}
+            success = sorted(conclusions) == ['skipped', 'skipped', 'skipped', 'success']
             with self.subTest(results=results), patch.dict(os.environ, {"RESULTS": json.dumps(results)}):
                 if success:
                     exec(code, {})
                 else:
                     with self.assertRaises(SystemExit):
                         exec(code, {})
+
+    def test_start_refusal_proof_is_an_explicit_read_only_windows_only_mode(self):
+        for event in ('push', 'pull_request', 'schedule', 'workflow_dispatch'):
+            for enabled in (False, True):
+                with self.subTest(event=event, enabled=enabled):
+                    selected = event == 'workflow_dispatch' and enabled
+                    self.assertEqual(self.selected('windows-start-refusal', event,
+                                                  qualify_start_refusal=enabled), selected)
+                    if selected:
+                        self.assertFalse(self.selected('review', event, qualify_start_refusal=enabled))
+                        self.assertFalse(self.selected('qualification', event, qualify_start_refusal=enabled))
+        caller = job(self.ci, 'windows-start-refusal')
+        self.assertEqual(field(caller, 'cache-mode'), 'read')
+        self.assertEqual(field(caller, 'uses'), './.github/workflows/windows-start-refusal.yml')
+        workflow = (ROOT / '.github/workflows/windows-start-refusal.yml').read_text()
+        native = job(workflow, 'native')
+        self.assertEqual(field(native, 'runs-on'), 'windows-2025')
+        self.assertEqual(field(native, 'if'), "github.event_name == 'workflow_dispatch'")
+        self.assertIn('contents: read', workflow)
+        self.assertNotRegex(workflow, r'(?m)^\s*(contents|actions): write')
+        self.assertNotIn('secrets', workflow)
+        self.assertNotIn('environment:', native)
+        self.assertNotIn('actions/cache/save', workflow)
+        self.assertIn('python scripts/ci/windows-start-refusal.py', native)
+        self.assertIn('QUALIFICATION_SOURCE: ${{ inputs.ref }}', native)
 
     def test_windows_and_ios_coverage_are_explicit_and_independent(self):
         checks = (ROOT / '.github/workflows/checks.yml').read_text()
@@ -1439,7 +1464,7 @@ class WorkflowSecurityTests(unittest.TestCase):
         self.assertEqual(field(job(self.ci, 'dev-tail'), 'needs'), '[gate, qualification]')
         gate = job(self.ci, "gate")
         self.assertEqual(field(gate, "name"), "CI gate")
-        self.assertEqual(field(gate, "needs"), "[automatic, review, qualification]")
+        self.assertEqual(field(gate, "needs"), "[automatic, review, qualification, windows-start-refusal]")
         for name in ("automatic", "review"):
             self.assertEqual(field(job(self.ci, name), "uses"), "./.github/workflows/checks.yml")
         checks = (ROOT / ".github/workflows/checks.yml").read_text()
