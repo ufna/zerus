@@ -257,6 +257,7 @@ class Runner:
         self.postgres = None
         self.container = None
         self.heavy = Path(args.heavy).resolve() if getattr(args, 'heavy', None) else None
+        self.resource_error = None
         self.objects = []
         self.android_enabled = any(job["id"] == "android" and job["steps"] for job in report["jobs"])
         self.android_cache = (args.android_cache.resolve() if args.android_cache else self.cache / "android")
@@ -417,14 +418,19 @@ class Runner:
                 raise
 
     def run(self, job, step):
+        if self.resource_error:
+            step.update(status="not run", reason=self.resource_error)
+            return
         deadline = time.monotonic() + 600
         while os.getloadavg()[0] > self.args.max_load:
             if time.monotonic() >= deadline:
-                step.update(status="not run", reason="load stayed above configured ceiling for 10 minutes")
+                self.resource_error = "load stayed above configured ceiling for 10 minutes; no new checks started"
+                step.update(status="not run", reason=self.resource_error)
                 return
             time.sleep(10)
         if shutil.disk_usage(self.output).free < self.args.min_free_gib * 1024**3:
-            step.update(status="not run", reason="disk floor reached; no new work started")
+            self.resource_error = "disk floor reached; no new work started"
+            step.update(status="not run", reason=self.resource_error)
             return
         directory = Path(step["directory"])
         if directory.is_absolute() or ".." in directory.parts:
@@ -665,6 +671,9 @@ def main(argv=None):
     save(runner.output / "report.json", report)
     for job in report["jobs"]:
         try:
+            if runner.resource_error and any("body" in step for step in job["steps"]):
+                job["reason"] = runner.resource_error
+                continue
             if any("body" in step for step in job["steps"]):
                 runner.new_checkout(job)
             if job.get("container_image"):

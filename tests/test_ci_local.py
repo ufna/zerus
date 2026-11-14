@@ -230,6 +230,20 @@ class RealIsolation(unittest.TestCase):
         self.assertEqual(row['status'], 'not run')
         self.assertFalse((self.runner.workspace / 'body-started').exists())
 
+    def test_resource_refusal_is_retained_for_later_checks(self):
+        job = dict(id='quick', steps=[])
+        for index in range(2):
+            row = dict(name=f'check {index}', index=index, body='touch body-started',
+                       directory='.', env={}, timeout=10)
+            job['steps'].append(row)
+        with patch.object(CI.os, 'getloadavg', return_value=(100000, 0, 0)), \
+             patch.object(CI.time, 'monotonic', side_effect=[0, 601]):
+            self.runner.run(job, job['steps'][0])
+        self.runner.run(job, job['steps'][1])
+        self.assertEqual([row['status'] for row in job['steps']], ['not run', 'not run'])
+        self.assertFalse((self.runner.workspace / 'body-started').exists())
+        self.assertIn('load', job['steps'][1]['reason'])
+
     def test_real_failure_does_not_hide_later_check_and_logs_are_hashed(self):
         job = {"id": "quick", "steps": []}
         for body, expected in (("printf 'first-failure\\n'; exit 19", "fail"),

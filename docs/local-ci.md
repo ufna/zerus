@@ -25,8 +25,9 @@ is not part of this command.
 
 The default and maximum worker limit is four. CPU affinity, Cargo/libtest and Python worker
 counts are capped. Before starting each check, the runner waits if the one-minute
-host load exceeds 20; ten minutes above that ceiling leaves the check not run.
+host load exceeds 20; ten minutes above that ceiling leaves the remaining checks not run.
 It lets an already running check finish. A 40 GiB free-space floor stops new work.
+Neither resource refusal restarts the waiting budget for every remaining check.
 Use `--workers` and `--max-load` to lower those limits for a busy host.
 
 `--heavy` names the operator's shared build wrapper (or `heavy` on PATH).
