@@ -218,8 +218,7 @@ changes nothing else.
 | **Start not confirmed** | Whether a member started is not known; Zerus checks before it starts anything again |
 | **No room for members** | New members wait until there is room for another session or account |
 | **Member needs you** | A member's session asks for something Zerus does not confirm on your behalf |
-| **Project limit** | The project's own settings refuse every hand-out; one card per team, at the first refusal, and the queue waits until the project allows it |
-| **Team service blocked** | A step of the service failed three times, for example a merge that cannot run, and is tried again; the same card names a member a ready task needs that cannot be read |
+| **Team service blocked** | A step of the service failed three times, for example a merge that cannot run, and is tried again; the same card names a member a ready task needs that cannot be read. It is also the card for the project limit: when the project's own settings refuse every hand-out, one such card per team appears at the first refusal, its text names the limit, and the queue waits until the project allows it |
 | **Report waiting** | A member's report has waited for the lead's decision longer than the team allows, an hour by default |
 | **Lead not working** | The lead has not worked for a while, 20 minutes by default, although items wait in its inbox |
 | **Late session** | A member's session started after the team stopped or the member was removed; Zerus does not stop it |
@@ -379,7 +378,8 @@ executor, so the project's task settings for agents apply to it as to any
 agent. With **Agents may start and cancel tasks in other sessions** off, or
 with the hourly limit of agent starts reached, the refusal is a fact about the
 team, not about a task or a member: the whole queue waits. One card in Waiting
-for you, bound to no task, opens at the first refusal and says that the team's
+for you, shown as **Team service blocked** and bound to no task, opens at the
+first refusal and says that the team's
 tasks wait and are handed out by themselves when the project allows it; its
 decisions are **Retry**, which checks on the next service pass, and
 **Acknowledge**. While the fact stands the service hands nothing out, and it
