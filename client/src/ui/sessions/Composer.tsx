@@ -1,3 +1,4 @@
+import { continueList } from "../lib/list-edit";
 import { replaceText } from "../lib/text-edit";
 import { TextArea } from "../lib/TextField";
 import { Show, Suspense, createEffect, createMemo, createSignal, lazy, on, onCleanup, onMount } from "solid-js";
@@ -312,7 +313,7 @@ export function Composer() {
         placeholder={suggestion() || tr("Message this agent…")} readOnly={composer.locked()} disabled={!v()} value={composer.text()} title={editorTip()}
         onInput={(e) => { const c = caret(); composer.input(e.currentTarget.value, c.anchor, c.position); }}
         onSelect={remember} onKeyUp={remember} onMouseUp={remember}
-        onBlur={() => { void composer.flush(); }} onKeyDown={onKey} onPaste={onPaste} />
+        onBlur={() => { void composer.flush(); }} onKeyDown={onKey} onBeforeInput={continueList} onPaste={onPaste} />
       <Show when={input() && composer.hint()}><div class="cmp-hint" role="status">{composer.hint()}</div></Show>
       <DeliveryHistoryHint view={v()} text={composer.text()} shown={input()} />
       <div class="cmp-actions" hidden={!input()}>

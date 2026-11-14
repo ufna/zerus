@@ -38,6 +38,15 @@ async function run(){
  command("insertText","hello");
  replaceText(el,"hello\nvoice text");eq("native multiline/voice-style insertion",model.text(),"hello\nvoice text");
  key(el,"z",{ctrlKey:true});eq("voice-style insertion undo",model.text(),"hello");
+ handBack("9. list item");await tick();el=editor();el.focus();
+ const newline=()=>el.dispatchEvent(new InputEvent("beforeinput",{inputType:"insertLineBreak",bubbles:true,cancelable:true}));
+ newline();eq("Composer continues ordered list",el.value,"9. list item\n10. ");
+ eq("list continuation reaches draft",model.text(),el.value);
+ eq("list caret follows prefix",el.selectionStart,el.value.length);
+ key(el,"z",{ctrlKey:true});eq("list continuation is one undo",model.text(),"9. list item");
+ key(el,"y",{ctrlKey:true});eq("list continuation redo",model.text(),"9. list item\n10. ");
+ newline();eq("empty list item preserves final newline",model.text(),"9. list item\n");
+ key(el,"z",{ctrlKey:true});eq("ending a list is undoable",model.text(),"9. list item\n10. ");
  handBack("another saved draft");await tick();el=editor();el.focus();key(el,"z",{ctrlKey:true});eq("new draft never resurrects old text",el.value,"another saved draft");
  const d=()=>document.querySelector<HTMLInputElement>("#dialog")!;d().focus();command("insertText","dialog draft");key(d(),"z",{ctrlKey:true});eq("dialog typing undo",dialog(),"");key(d(),"y",{ctrlKey:true});eq("dialog typing redo",dialog(),"dialog draft");
  const before=inputs;setDialog("remote edit");await tick();eq("focused model replacement is silent",inputs,before);key(d(),"z",{ctrlKey:true});eq("model replacement undo is a real edit",dialog(),"dialog draft");

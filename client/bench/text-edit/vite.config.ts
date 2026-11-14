@@ -15,12 +15,13 @@ const mocks: Record<string, string> = {
   "./ActionDialogs": 'export const actionEntries=()=>({stop:{shown:false,disabled:true}});',
   "./mark-entries": 'export const markReadChip=()=>({active:false}),runMarkRead=()=>{};',
   "./actions-ui": 'export const snapshotOf=()=>({});',
-  "./Activity": 'export const following=()=>true, unseen=()=>0, jumpToLatest=()=>{}, focusTranscript=()=>{};',
+  "./Activity": 'export const following=()=>true, unseen=()=>0, shownSearchPreview=()=>undefined, jumpToLatest=()=>{}, focusTranscript=()=>{};',
   "./VoiceControls": empty+'export {EMPTY as VoiceToolbar,EMPTY as VoicePreview};',
   "./ModelSettings": empty+'export {EMPTY as ModelSettingsButton};',
   "./Attachments": empty+'export {EMPTY as AttachmentsChip};',
   "./RecoveryChip": empty+'export {EMPTY as RecoveryChip};',
   "./UsageChips": empty+'export {EMPTY as SessionUsageChip,EMPTY as UsageLimitChip};',
+  "./CacheChip": empty+'export {EMPTY as CacheChip};',
 };
 export default defineConfig({
   root: fileURLToPath(new URL("../..", import.meta.url)), base: "./",

@@ -1,3 +1,4 @@
+import { continueList } from "../lib/list-edit";
 import { TextArea } from "../lib/TextField";
 import { descriptionEditing, setDescriptionEditing } from "../../store/taskStart";
 import { noteOnly, setNoteOnly, queuedTask, messageChoice, messageLabel, messagePlaceholder, messageDelivery } from "../../store/taskMessage";
@@ -71,7 +72,7 @@ export function TaskInput(props: { project: string; task: Task; describing: bool
     </div>
     <TextArea ref={editor} historyKey={view()?.handle} class="cmp-editor" aria-label={props.describing ? tr("Task description") : tr("Comment on this task")} placeholder={!props.task.writable ? tr("Update Zerus to comment on this task") : props.describing ? tr("Describe the task…") : messagePlaceholder(props.task, noteOnly())} value={text()} readOnly={locked()} onInput={cursor}
       onSelect={() => { const v = view(); if (v && document.activeElement === editor && (v.position !== editor.selectionEnd || v.anchor !== editor.selectionStart)) cursor(); }} onBlur={() => void taskEditor.flush().catch(() => {})}
-      onKeyDown={(e) => { if (!e.defaultPrevented && e.key === "Enter" && !e.shiftKey && !e.isComposing && e.keyCode !== 229) { e.preventDefault(); void save(); } }} />
+      onBeforeInput={continueList} onKeyDown={(e) => { if (!e.defaultPrevented && e.key === "Enter" && !e.shiftKey && !e.isComposing && e.keyCode !== 229) { e.preventDefault(); void save(); } }} />
     <div class="cmp-actions"><button class="icon-btn cmp-attach" aria-label={tr("Attach files")} title={tr("Attach files (up to 8 files, 10 MiB each, 20 MiB per task)")} disabled={locked()} onClick={() => void taskEditor.pick().then(() => { if (alive) editor.focus(); })}><Icon name="paperclip" size={17} /></button><span class="cmp-status ell">{props.describing ? tr("Save updates the canonical task document. Comments remain separate.") : ""}</span><span class="grow" />
       <Show when={props.describing} fallback={<button class="btn primary tv-send" title={label()} aria-label={label()} disabled={locked() || (!text().trim() && !files().length) || !!view()?.recovery} onClick={() => void save()}><Icon name={taskEditor.busy() ? "loader-circle" : noteOnly() || queuedTask(props.task) ? "plus" : "send"} size={14} /></button>}><button class="btn primary" disabled={locked()} onClick={() => void save()}>{tr("Save description")}</button></Show>
     </div>
