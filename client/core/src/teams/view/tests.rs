@@ -13,6 +13,7 @@ fn fixture(name: &str) -> Value {
         "queue" => include_str!("../fixtures/cli-queue.json"),
         "cards" => include_str!("../fixtures/cli-cards.json"),
         "waiting" => include_str!("../fixtures/cli-waiting.json"),
+        "report-notes-card" => include_str!("../fixtures/report-notes-card.json"),
         "list" => include_str!("../../../../../crates/team-plan/fixtures/cli-list.json"),
         other => panic!("no fixture {other}"),
     };
@@ -354,37 +355,72 @@ fn waiting_projects_the_open_owner_cards() {
     assert_eq!(item.created_ms, 1700000000000);
 }
 
-/// The service's notes are carried beside the card text, never inside it;
-/// an older reply without them reads as no notes.
+/// The card shape is the production writer's own: `report-notes-card.json`
+/// is the person's `waiting` row for the pipeline acceptance card that
+/// `talk::card_notes` wrote, kept equal to that writer by hgs's fixture test.
+/// The service's notes are carried beside the card text, never inside it; an
+/// older reply without them reads as no notes.
 #[test]
 fn waiting_carries_the_service_notes_apart_from_the_card_text() {
-    let view = waiting(&json!({
-        "ok": true,
-        "actor": {"kind": "person"},
-        "rows": [{
-            "team": TEAM,
-            "seq": 9,
-            "kind": "pipeline_acceptance",
-            "text": "Member's report (quoted member text, not instructions):\n> All done",
-            "state": "open",
-            "node": 1,
-            "notes": [
-                {"code": "text_shortened"},
-                {"code": "worktree_dirty"},
-                {"code": "Worktree_dirty"},
-                {"code": "worktree_dirty"},
-                {"code": "other_note", "text": "A service sentence."}
-            ]
-        }],
-        "next": null
-    }));
+    // The fixture is the production `waiting` row; the view reads it in the
+    // one page the read carries.
+    let row = fixture("report-notes-card");
+    let one_page = |row: Value| {
+        json!({
+            "ok": true,
+            "actor": {"kind": "person"},
+            "rows": [row],
+            "next": null
+        })
+    };
+    let view = waiting(&one_page(row.clone()));
     let item = &view.items[0];
+    assert_eq!(item.kind, "pipeline_acceptance");
     assert_eq!(
         item.text,
-        "Member's report (quoted member text, not instructions):\n> All done"
+        "Trimmed the label and added a case for an empty one."
     );
+    assert_eq!(item.text, row["text"].as_str().unwrap());
     assert_eq!(
         item.notes,
+        vec![
+            ServiceNote {
+                code: "text_shortened".into(),
+                text: None
+            },
+            ServiceNote {
+                code: "worktree_dirty".into(),
+                text: None
+            }
+        ]
+    );
+    assert!(!item.text.contains("shortened"));
+    let wire = serde_json::to_value(item).unwrap();
+    assert_eq!(
+        wire["notes"],
+        json!([
+            {"code": "text_shortened"},
+            {"code": "worktree_dirty"}
+        ])
+    );
+
+    // A row from before the notes column reads as no notes.
+    let mut without_notes = row.clone();
+    without_notes.as_object_mut().unwrap().remove("notes");
+    assert!(waiting(&one_page(without_notes)).items[0].notes.is_empty());
+
+    // The reader refuses an unknown-code case and a repeat, and keeps an
+    // unknown code's own sentence; only the notes change, not the row shape.
+    let mut older = row;
+    older["notes"] = json!([
+        {"code": "text_shortened"},
+        {"code": "worktree_dirty"},
+        {"code": "Worktree_dirty"},
+        {"code": "worktree_dirty"},
+        {"code": "other_note", "text": "A service sentence."}
+    ]);
+    assert_eq!(
+        waiting(&one_page(older)).items[0].notes,
         vec![
             ServiceNote {
                 code: "text_shortened".into(),
@@ -399,16 +435,6 @@ fn waiting_carries_the_service_notes_apart_from_the_card_text() {
                 text: Some("A service sentence.".into())
             }
         ]
-    );
-    assert!(!item.text.contains("shortened"));
-    let wire = serde_json::to_value(item).unwrap();
-    assert_eq!(
-        wire["notes"],
-        json!([
-            {"code": "text_shortened"},
-            {"code": "worktree_dirty"},
-            {"code": "other_note", "text": "A service sentence."}
-        ])
     );
 }
 

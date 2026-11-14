@@ -2,7 +2,9 @@
 //! fixtures from exactly the JSON a person's `hgs team` prints.
 use super::harness::*;
 use crate::teams::cli::actor::Caller;
+use crate::teams::ops::{HandoutOutcome, Operation, ReportNote, TaskStage};
 use serde_json::Value;
+use zerus_team_plan::model::Acceptance;
 
 const STATUS: &str = include_str!("../../../../crates/team-plan/fixtures/cli-status.json");
 const STATUS_STOPPED: &str =
@@ -158,4 +160,101 @@ fn regenerate_fixtures() {
         text.push('\n');
         std::fs::write(&path, text).unwrap();
     }
+}
+
+/// The core's and the UI's own copy of one production card: the row of a
+/// report's pipeline acceptance card, with the service's notes beside the
+/// member's text, read through the person's `waiting` reply
+/// (zerus-63rru.105). Its producer is the real store, `talk::card_notes` and
+/// the CLI read, so the clients see the shape the service writes, not a
+/// hand-written card.
+const REPORT_NOTES_CARD: &str =
+    include_str!("../../../../client/core/src/teams/fixtures/report-notes-card.json");
+
+fn report_notes_card() -> Value {
+    let h = Harness::new();
+    let mut team = fixture().team;
+    team.bundle.pipelines[0].stages.clear();
+    team.bundle.pipelines[0].accept = Acceptance::Person;
+    h.apply(
+        &person(),
+        Operation::Create {
+            expected_template: None,
+            delegations: None,
+            project: team.project,
+            name: team.name,
+            goal: team.goal,
+            home: team.home,
+            bundle: Box::new(team.bundle),
+            integration_branch: team.integration_branch,
+            base_commit: team.base_commit,
+        },
+    );
+    h.bind("m1", M1_SESSION);
+    let node = h.add(1);
+    let effect = uid(0x8100);
+    h.apply(
+        &service(),
+        Operation::HandoutIntent {
+            node,
+            member: "m1".into(),
+            effect_request_id: effect.clone(),
+        },
+    );
+    h.apply(
+        &service(),
+        Operation::HandoutOutcome {
+            effect_request_id: effect,
+            outcome: HandoutOutcome::Submitted {
+                receipt: "receipt-example".into(),
+            },
+        },
+    );
+    for stage in [TaskStage::InProgress, TaskStage::InReview, TaskStage::Done] {
+        h.observe(node, stage);
+    }
+    h.apply(
+        &service(),
+        Operation::RecordReport {
+            node,
+            generation: 1,
+            member: "m1".into(),
+            text: "Trimmed the label and added a case for an empty one.".into(),
+            commit: COMMIT.into(),
+            notes: vec![
+                ReportNote::new("text_shortened"),
+                ReportNote::new("worktree_dirty"),
+            ],
+        },
+    );
+    let (reply, exit) = h.cli(&Caller::Person, "waiting", "");
+    assert_eq!(exit, 0, "{reply}");
+    let rows = reply["rows"].as_array().expect("the waiting rows");
+    assert_eq!(rows.len(), 1, "the report's one acceptance card: {reply}");
+    assert_eq!(rows[0]["kind"], "pipeline_acceptance", "{reply}");
+    assert_eq!(reply["next"], Value::Null, "{reply}");
+    rows[0].clone()
+}
+
+#[test]
+fn the_report_notes_card_fixture_is_the_waiting_row_the_cli_prints() {
+    let expected: Value = serde_json::from_str(REPORT_NOTES_CARD)
+        .unwrap_or_else(|error| panic!("report-notes-card.json: {error}"));
+    assert_eq!(
+        report_notes_card(),
+        expected,
+        "client/core/src/teams/fixtures/report-notes-card.json is not the waiting row hgs prints; regenerate it"
+    );
+}
+
+/// The core's and the UI's fixture, from the production writer. Run with:
+/// `cargo +1.99.1 test --bin hgs teams::cli::tests::fixtures::regenerate_report_notes_card -- --ignored`
+#[test]
+#[ignore = "writes client/core/src/teams/fixtures/report-notes-card.json"]
+fn regenerate_report_notes_card() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("client/core/src/teams/fixtures/report-notes-card.json");
+    let mut text = serde_json::to_string_pretty(&report_notes_card()).unwrap();
+    text.push('\n');
+    std::fs::write(&path, text).unwrap();
 }

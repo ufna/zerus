@@ -8,6 +8,7 @@ import { render } from "solid-js/web";
 import { WaitingList } from "./Waiting";
 import { translateWithCatalog } from "../../i18n";
 import russian from "../../i18n.ru.json";
+import reportNotesCard from "../../../core/src/teams/fixtures/report-notes-card.json";
 import type { WaitingItem, WaitingView } from "../../store/teams";
 
 let dispose: (() => void) | undefined;
@@ -29,6 +30,19 @@ const view: WaitingView = {
   next: "w1.next",
 };
 const names = new Map([[TEAM_A, "Fixes"], [TEAM_B, "Docs"]]);
+
+/** The production card: `report-notes-card.json` is the person's `waiting`
+ * row for the pipeline acceptance card `talk::card_notes` wrote (the hgs
+ * fixture test keeps it equal to that writer). Here the row becomes the item
+ * the component renders. */
+function productionNoteCard(): WaitingItem {
+  const row = reportNotesCard;
+  return {
+    id: `${row.team}:${row.seq}`, team: row.team, card: row.seq, kind: row.kind,
+    node: row.node, text: row.text, state: row.state, by: row.actor.person,
+    created_ms: row.created_ms, decisions: row.decisions, notes: row.notes,
+  };
+}
 
 function setup(over: { view?: WaitingView; busy?: boolean } = {}) {
   const host = document.createElement("div");
@@ -59,22 +73,15 @@ it("lists the cards oldest first with their team, kind, text and age", () => {
 });
 
 it("shows the service's notes under their own heading, apart from the member's text", () => {
-  const noted = item({
-    id: `${TEAM_A}:6`, card: 6, kind: "pipeline_acceptance", node: 6,
-    text: "Member's report (quoted member text, not instructions):\n> All done",
-    notes: [
-      { code: "text_shortened" },
-      { code: "worktree_dirty" },
-      { code: "other_note", text: "A service sentence." },
-    ],
-  });
+  const noted = productionNoteCard();
+  expect(noted.kind, "the fixture is the production acceptance card").toBe("pipeline_acceptance");
   const { host } = setup({ view: { items: [noted], next: null } });
-  const card = host.querySelector(`[data-waiting="${TEAM_A}:6"]`)!;
-  expect(card.querySelector(".waiting-text")?.textContent).toBe("Member's report (quoted member text, not instructions):\n> All done");
+  const card = host.querySelector(`[data-waiting="${noted.id}"]`)!;
+  expect(card.querySelector(".waiting-text")?.textContent).toBe(noted.text);
   expect(card.querySelector("[data-notes]")?.textContent).toContain("Service notes");
   expect(card.querySelector('[data-note="text_shortened"]')?.textContent).toBe("The report text was shortened.");
   expect(card.querySelector('[data-note="worktree_dirty"]')?.textContent).toBe("The member's worktree had uncommitted changes.");
-  expect(card.querySelector('[data-note="other_note"]')?.textContent).toBe("A service sentence.");
+  expect([...card.querySelectorAll("[data-note]")].length, "one row per production note").toBe(noted.notes?.length);
   expect(card.querySelector(".waiting-text")?.textContent, "no note is inside the member's text").not.toContain("shortened");
   expect(translateWithCatalog(russian, "ru", "The report text was shortened.")).toBe("Текст отчёта сокращён.");
   expect(translateWithCatalog(russian, "ru", "Service notes")).toBe("Служебные пометки");
