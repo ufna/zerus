@@ -180,3 +180,19 @@ fn a_writer_that_cannot_begin_is_certainly_busy_and_the_same_request_can_repeat(
     assert_eq!(first, replay);
     assert_eq!(h.store().journal(TEAM, 200, None).unwrap().rows.len(), 2);
 }
+
+/// zerus-63rru.35 (6a): the 4096-byte detail cut can fall inside a
+/// multi-byte character. The bounded detail keeps whole characters, never a
+/// cut byte sequence.
+#[test]
+fn a_storage_detail_cut_inside_a_multibyte_character_keeps_the_text_whole() {
+    // The storage prefix is 30 bytes; 4059 ASCII bytes put the 4096-byte
+    // cut seven bytes into the gear run, inside its third character.
+    let original = "a".repeat(4059) + &"⚙".repeat(100);
+    let (reply, exit) = crate::teams::cli::refusal(crate::teams::cli::storage(&original));
+    assert_eq!(exit, 1);
+    let detail = reply["error"]["detail"].as_str().expect("underlying cause");
+    assert_eq!(detail.len(), 4095, "the cut drops the partial character");
+    assert!(detail.ends_with('⚙'));
+    assert!(std::str::from_utf8(detail.as_bytes()).is_ok());
+}

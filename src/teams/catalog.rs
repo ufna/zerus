@@ -8,7 +8,7 @@
 mod digest;
 mod roster;
 pub(crate) use digest::template_digest;
-pub(crate) use roster::validate_roster;
+pub(crate) use roster::{validate_catalog_roles, validate_roster};
 
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -87,6 +87,7 @@ pub fn save(config_dir: &Path, catalog: &Catalog) -> Result<(), Problem> {
     // The character rules apply at admission (zerus-63rru.74 round 2): the
     // save and the import refuse, the load stays open.
     first_problem(zerus_team_plan::admission_problems(&merged))?;
+    validate_catalog_roles(&merged)?;
     for template in &merged.templates {
         export_bundle(&merged, &template.id)?;
     }

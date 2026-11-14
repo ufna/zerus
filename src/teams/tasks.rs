@@ -51,7 +51,12 @@ fn load(store: &ProjectStore, uuid: &str) -> Result<TaskDoc> {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
     store
         .admit_until(deadline)
-        .ok_or_else(|| storage("Task store is busy."))?
+        .ok_or_else(|| {
+            Problem::new(
+                code::STORE_BUSY,
+                "The task store is busy. Nothing was written; try again.",
+            )
+        })?
         .load_complete(uuid)
         .map_err(storage)
 }

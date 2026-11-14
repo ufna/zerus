@@ -609,13 +609,20 @@ pub(crate) fn is_busy(error: &rusqlite::Error) -> bool {
         rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked))
 }
 
-/// A failed BEGIN IMMEDIATE has done no write and saved no request receipt.
+/// A busy store or admission: no write of this request began, so its refusal
+/// is a non-start the person may repeat, never a lost storage outcome.
+pub(crate) fn busy() -> Problem {
+    Problem::new(
+        code::STORE_BUSY,
+        "The team store is busy. Nothing was written; try again.",
+    )
+}
+
+/// A statement that could not take the store's lock has done no write and
+/// saved no request receipt; any other failure is a storage failure.
 pub(crate) fn begin_error(error: rusqlite::Error) -> Problem {
     if is_busy(&error) {
-        Problem::new(
-            code::STORE_BUSY,
-            "The team store is busy. Nothing was written; try again.",
-        )
+        busy()
     } else {
         storage(error)
     }

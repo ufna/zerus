@@ -727,3 +727,60 @@ fn an_oversized_saved_request_is_refused_before_it_is_read() {
     let error = h.store.creation_request(&id).unwrap_err();
     assert_eq!(error.code, code::OVER_CAP);
 }
+
+
+/// zerus-63rru.35 (1): a version-2 store from before the timers extension
+/// creates that extension on its first open. When another writer holds the
+/// store, the opener never begins, so its refusal is store_busy, not a
+/// storage failure, and it writes no mark.
+#[test]
+fn an_extension_upgrade_that_cannot_begin_answers_store_busy() {
+    let h = Harness::new();
+    let path = h.temp.path().join("teams/teams-v1.sqlite3");
+    h.store
+        .db
+        .as_ref()
+        .unwrap()
+        .execute_batch("DELETE FROM timers_extension")
+        .unwrap();
+    let writer = rusqlite::Connection::open(&path).unwrap();
+    writer.execute_batch("BEGIN IMMEDIATE").unwrap();
+    let error = Store::open(h.temp.path()).unwrap_err();
+    writer.execute_batch("ROLLBACK").unwrap();
+    assert_eq!(error.code, code::STORE_BUSY);
+    let db = rusqlite::Connection::open(&path).unwrap();
+    let mark: Option<u32> = db
+        .query_row("SELECT version FROM timers_extension WHERE id=1", [], |r| {
+            r.get(0)
+        })
+        .optional()
+        .unwrap();
+    assert_eq!(mark, None, "the refused open wrote no mark");
+}
+
+/// zerus-63rru.35 (6b): creating a store is one immediate transaction. A
+/// writer that cannot begin it because another connection holds the store
+/// answers store_busy, never a storage failure.
+#[test]
+fn a_new_store_creation_that_cannot_begin_answers_store_busy() {
+    let temp = tempfile::tempdir().unwrap();
+    crate::platform::private_dir(&temp.path().join("teams")).unwrap();
+    std::fs::write(temp.path().join("teams/preview"), "on").unwrap();
+    let path = temp.path().join("teams/teams-v1.sqlite3");
+    let mut store = Store::open(temp.path()).unwrap();
+    drop(
+        crate::platform::private_open(std::fs::OpenOptions::new().create_new(true).write(true))
+            .open(&path)
+            .unwrap(),
+    );
+    let writer = rusqlite::Connection::open(&path).unwrap();
+    writer.execute_batch("BEGIN IMMEDIATE").unwrap();
+    let error = store.ensure().unwrap_err();
+    writer.execute_batch("ROLLBACK").unwrap();
+    assert_eq!(error.code, code::STORE_BUSY);
+    let db = rusqlite::Connection::open(&path).unwrap();
+    let version: u32 = db
+        .query_row("PRAGMA user_version", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(version, 0, "the refused creation wrote no schema");
+}

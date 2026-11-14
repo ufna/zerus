@@ -67,7 +67,11 @@ pub(super) fn route_valid(team: &Team, role: &str, pipeline: &str) -> Result<(),
     Ok(())
 }
 
-pub(super) fn validate_create(team: &Team) -> Result<()> {
+/// The creation checks a request must pass before a first store is created.
+/// The roster's agent kinds are checked inside the transaction instead, so a
+/// refused roster leaves the same saved receipt on a computer that has no
+/// store yet (zerus-63rru.35).
+pub(super) fn validate_create_before_store(team: &Team) -> Result<()> {
     uuid(&team.home)?;
     settings(&team.settings)?;
     if team.owner.is_empty() || team.project.is_empty() || team.name.trim().is_empty() {
@@ -90,6 +94,10 @@ pub(super) fn validate_create(team: &Team) -> Result<()> {
     {
         return Err(problem);
     }
+    Ok(())
+}
+pub(super) fn validate_create(team: &Team) -> Result<()> {
+    validate_create_before_store(team)?;
     crate::teams::catalog::validate_roster(&team.bundle)?;
     Ok(())
 }
