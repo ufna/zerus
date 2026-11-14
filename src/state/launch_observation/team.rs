@@ -3,6 +3,28 @@
 use super::unix::*;
 use super::{TeamObservation, TeamRecord, TeamSession};
 use std::{path::Path, time::Instant};
+
+/// Configuration may name the state directory through an ancestor alias
+/// (notably macOS /var). Resolve only that trusted root before the existing
+/// bounded, pinned no-follow walk. No descendant or record leaf is resolved.
+fn configured_root(state: &Path, deadline: Instant) -> Checked<PathBuf> {
+    valid_path(state)?;
+    if Instant::now() >= deadline {
+        return Err(Fault);
+    }
+    let root = match crate::platform::canonical(state) {
+        Ok(root) => root,
+        // Preserve the existing bounded absence checks for a missing root.
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => state.to_owned(),
+        Err(_) => return Err(Fault),
+    };
+    valid_path(&root)?;
+    if Instant::now() >= deadline {
+        return Err(Fault);
+    }
+    Ok(root)
+}
+
 struct Reads<'a> {
     counts: &'a mut Counts,
     bytes: ByteBudget,
@@ -316,12 +338,15 @@ pub(super) fn session(
     hint: &str,
     deadline: Instant,
 ) -> TeamSession {
+    let Ok(state) = configured_root(state, deadline) else {
+        return TeamSession::Unavailable;
+    };
     let mut counts = Counts {
         deadline: Some(deadline),
         ..Counts::default()
     };
     let mut r = Reads::new(&mut counts);
-    let result = selected_session(state, id, launch, agent, hint, &mut r)
+    let result = selected_session(&state, id, launch, agent, hint, &mut r)
         .and_then(|result| r.finish().map(|()| result));
     if Instant::now() >= deadline {
         return TeamSession::Unavailable;
@@ -332,13 +357,16 @@ pub(super) fn observe(state: &Path, launch: &str, deadline: Instant) -> TeamObse
     if !canonical(launch) {
         return TeamObservation::Unavailable;
     }
+    let Ok(state) = configured_root(state, deadline) else {
+        return TeamObservation::Unavailable;
+    };
     let mut counts = Counts {
         deadline: Some(deadline),
         ..Counts::default()
     };
     let mut r = Reads::new(&mut counts);
     let result =
-        selected_team(state, launch, &mut r).and_then(|result| r.finish().map(|()| result));
+        selected_team(&state, launch, &mut r).and_then(|result| r.finish().map(|()| result));
     if Instant::now() >= deadline {
         return TeamObservation::Unavailable;
     }
