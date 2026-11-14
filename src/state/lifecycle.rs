@@ -2,6 +2,8 @@ use super::*;
 use crate::platform::ExitInfo;
 use std::time::{Duration, Instant};
 
+mod archive_source;
+
 fn required_env(name: &str) -> Result<String> {
     nonempty_env(name).ok_or_else(|| format!("missing {name} in tracked agent launch"))
 }
@@ -1051,6 +1053,7 @@ fn resume_archive(name: &str, id: &str, dry: bool, scope: Option<&session_action
     // A restore never creates the ID layout in P3a: it is written at its
     // label's path and needs a free label, whatever its archive says.
     let mut archived = archive::read_archive(name, id)?;
+    let source = archive_source::Source::capture(&archived);
     if let Some(fields) = archived.as_object_mut() {
         fields.remove("layout");
         fields.remove("terminal_name");
@@ -1061,6 +1064,7 @@ fn resume_archive(name: &str, id: &str, dry: bool, scope: Option<&session_action
     {
         let _guard = lock(None)?;
         if live()?.contains_key(name) || storage::label_taken(name) { return Err(format!("{name}: a live or saved session already uses this name; finish or archive it before restoring")); }
+        source.check(name, id)?;
     }
     if !dry { super::worktree_lifecycle::restore(&archived)?; }
     let run_id = uuid::Uuid::new_v4().to_string();
@@ -1069,14 +1073,9 @@ fn resume_archive(name: &str, id: &str, dry: bool, scope: Option<&session_action
     if live()?.contains_key(name) || storage::label_taken(name) {
         return Err(format!("{name}: a live or saved session already uses this name; finish or archive it before restoring"));
     }
-    let current_archive = archive::read_archive(name, id)?;
+    let current_archive = source.check(name, id)?;
     refuse_unsettled_clear(&current_archive)?;
     if let Some(scope)=scope {scope.check(&current_archive)?;}
-    if current_archive["run_id"] != archived["run_id"]
-        || current_archive["conversation_id"] != archived["conversation_id"]
-    {
-        return Err("archived binding changed; retry resume".into());
-    }
     if dry {
         print_resume(&spec);
         return Ok(0);
