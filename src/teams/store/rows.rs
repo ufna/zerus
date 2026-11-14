@@ -20,6 +20,20 @@ pub(crate) fn member(db: &Connection, team: &str, id: &str) -> Result<Option<Mem
 }
 pub(crate) const NODE_COLUMNS: &str = "team,id,data,rank,admitted,routed,hold,hold_owner,hand_back,task_revision,task_stage,task_cancelled,generation,decided_by,integrated,integration_commit,requested,integration_required";
 
+/// The earlier implementers a target recorded (zerus-63rru.20), read by
+/// the handout's eligibility from the store's own rows.
+pub(crate) fn earlier_implementers(
+    db: &rusqlite::Connection,
+    team: &str,
+    target: u32,
+) -> rusqlite::Result<Vec<String>> {
+    let mut statement =
+        db.prepare("SELECT member FROM target_implementers WHERE team=?1 AND target=?2")?;
+    statement
+        .query_map(rusqlite::params![team, target], |r| r.get(0))
+        .and_then(|rows| rows.collect())
+}
+
 pub(crate) fn node_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<Node> {
     let mut node: Node = sql_json(r, 0)?;
     node.rank = r.get(1)?;

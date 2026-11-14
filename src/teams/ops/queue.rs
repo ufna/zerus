@@ -151,6 +151,7 @@ fn node_metadata(id: u32, task: &TaskRef, role: String, pipeline: String, admitt
         stage_index: 0,
         round: 1,
         implementer: None,
+        earlier_implementers: vec![],
         hold: false,
         admitted,
         state: NodeState::Waiting,

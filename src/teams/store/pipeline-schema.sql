@@ -16,3 +16,12 @@ CREATE TABLE IF NOT EXISTS verdicts (
  actor TEXT NOT NULL, pass INTEGER NOT NULL, text TEXT NOT NULL,
  PRIMARY KEY(team,node,generation), FOREIGN KEY(team,node) REFERENCES node_identity(team,id)
 );
+
+-- zerus-63rru.20: every member who implemented any round of a target, with
+-- the round that recorded them. The record per target is bounded by the
+-- team's member bound. An older build ignores this table and reads the
+-- store exactly as before (the node rows are unchanged).
+CREATE TABLE IF NOT EXISTS target_implementers (
+ team TEXT NOT NULL, target INTEGER NOT NULL, member TEXT NOT NULL, round INTEGER NOT NULL,
+ PRIMARY KEY(team,target,member), FOREIGN KEY(team,target) REFERENCES node_identity(team,id)
+);

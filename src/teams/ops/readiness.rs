@@ -74,6 +74,37 @@ pub(super) fn nodes(db: &Connection, team: &str) -> Result<Vec<Node>> {
     if map.len() > 600 {
         return Err(over("Live readiness rows exceed their cap."));
     }
+    // The earlier implementers each target recorded (zerus-63rru.20): one
+    // bounded read of the team's records, then each kernel node carries
+    // them, so a stage's staffing excludes every implementer of any round.
+    {
+        // zerus-63rru.20 round 2: read only the targets of the live stage
+        // nodes, through the primary key per target, bounded by the live
+        // stages this view already reads; the record per target is bounded
+        // by the team's member bound.
+        let mut stages = Vec::new();
+        for (id, node) in map.iter() {
+            if node.kind == NodeKind::Stage {
+                if let Some(target) = node.stage_of {
+                    stages.push((*id, target));
+                }
+            }
+        }
+        for (stage, target) in stages {
+            let mut statement = db
+                .prepare("SELECT member FROM target_implementers WHERE team=?1 AND target=?2")
+                .map_err(storage)?;
+            let list = statement
+                .query_map(params![team, target], |r| r.get::<_, String>(0))
+                .map_err(storage)?
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .map_err(storage)?;
+            if let Some(node) = map.get_mut(&target) {
+                node.earlier_implementers = list;
+            }
+            let _ = stage;
+        }
+    }
     while let Some(id) = pending.pop() {
         if map.contains_key(&id) {
             continue;
