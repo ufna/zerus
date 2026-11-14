@@ -148,4 +148,21 @@ class OwnMessageNavigationTest {
         val alias=page(listOf(event(1,"You"),event(2,"You").copy(id="canonical",originalIds=listOf("selected")),event(3,"You")))
         assertEquals("row:1",OwnMessageNavigation.candidate(alias,OwnMessageNavigation.Selection(cursor="selected"),previous)?.id)
     }
+
+    @Test fun directionSnapshotStaysStableThroughFlingAndRefreshesAtIdle() {
+        val availability=OwnMessageNavigation.Availability()
+        val window=page(listOf(event(1,"You"),event(2),event(3,"You")))
+        val before=availability.project(window,OwnMessageNavigation.Selection(),true,false,false)
+        availability.commit(before)
+        assertEquals(OwnMessageNavigation.Directions(true,false),before)
+        // An abandoned composition must not replace the last displayed values.
+        availability.project(window,OwnMessageNavigation.Selection(cursor="row:1"),true,false,false)
+        for(id in listOf("row:2","row:1","row:2","row:1")) {
+            val moving=OwnMessageNavigation.Selection(viewport=id,following=false)
+            assertEquals(before,availability.project(window,moving,true,true,true))
+        }
+        val settled=OwnMessageNavigation.Selection(viewport="row:1",following=false)
+        assertEquals(OwnMessageNavigation.Directions(false,true),availability.project(window,settled,true,false,false))
+        assertEquals(OwnMessageNavigation.Directions(),availability.project(window,settled,true,true,false))
+    }
 }

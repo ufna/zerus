@@ -181,7 +181,7 @@ QUESTION_ROUTE_PERSON_REVISION_FILES = ("ZerusViewModel.kt",)
 # This changes display scrolling and page-job return values only; retain every
 # question-eligibility, verification-writer and historical reconstruction pin.
 OWN_MESSAGE_NAVIGATION_UPDATES = ROOT / "tests/fixtures/question-availability-own-message-navigation-updates.patch"
-OWN_MESSAGE_NAVIGATION_UPDATES_SHA = "ac2a6e60de02481479f3d63cbac7964d859b3db050a8530e67f9dffbe52c1704"
+OWN_MESSAGE_NAVIGATION_UPDATES_SHA = "87314c128a991071a27ae0387d61f327792f478d0c15f0a621dde3bffd96e21c"
 WORKSPACE_BASE_SHA = {
     "ZerusViewModel.kt": "5932d92ca74ccf37da9595a580bcb1457c93c83951976606c8defa8d1ee83326",
     "MainActivity.kt": "f68902349d1e0ac939582e9e139548663f5763c430a3c566f8823d9f045645f0",

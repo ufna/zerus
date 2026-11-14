@@ -233,8 +233,10 @@ messages from the person, including desktop text, phone recordings and question
 answers. They skip inherited history, peer messages, agent replies, tools and system
 rows. A jump briefly outlines the message. Searches read one existing bounded page
 at a time in either direction, stop at the first match or history's end, and show a
-spinner while loading. Exhausted directions are disabled. The controls retain
-48 dp touch targets and localized English/Russian TalkBack labels.
+spinner while loading. Exhausted directions are disabled. Direction states stay
+fixed through a fling and refresh on an idle frame; one tapped direction waits
+for scrolling and the current history read to settle. The controls retain 48 dp
+touch targets and localized English/Russian TalkBack labels.
 Returning to the latest messages reads a fresh inspection and leaves the older
 window. Saved positions distinguish following the latest messages from reading
 an older page; older saved data retains its original reading semantics.

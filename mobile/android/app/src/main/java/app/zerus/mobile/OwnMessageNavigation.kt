@@ -6,6 +6,16 @@ object OwnMessageNavigation {
     data class Selection(val cursor: String? = null, val viewport: String? = null, val following: Boolean = true)
     data class Page(val target: Target, val events: List<Event>, val epoch: String = "", val before: String? = null,
         val after: String? = null, val older: Boolean = false, val newer: Boolean = false)
+    data class Directions(val previous: Boolean = false, val next: Boolean = false)
+    class Availability {
+        private var last = Directions()
+        fun project(page: Page?, selection: Selection, canPage: Boolean, busy: Boolean, scrolling: Boolean): Directions {
+            if (scrolling) return last
+            return Directions(page != null && enabled(page,selection,Direction.Previous,canPage,busy),
+                page != null && enabled(page,selection,Direction.Next,canPage,busy))
+        }
+        fun commit(value: Directions) { last = value }
+    }
     private fun own(event: Event) = QuestionReplyPresentation.isOwnRole(event.role) && event.inheritedFrom.isBlank() &&
         event.origin !in setOf("peer_message", "subagent_report", "task_notification", "keep_warm")
     private fun index(events: List<Event>, id: String?) = if (id == null) -1 else events.indexOfFirst { id in HistoryInspection.identities(it) }

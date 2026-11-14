@@ -860,6 +860,9 @@ private class MainListPullMotion(private val scope:CoroutineScope,private val ma
     var ownJob by remember(target.key) { mutableStateOf<Job?>(null) }
     var ownGeneration by remember(target.key) { mutableIntStateOf(0) }
     var ownEpoch by remember(target.key) { mutableStateOf(model.historyEpoch) }
+    var queuedOwn by remember(target.key) { mutableStateOf<OwnMessageNavigation.Direction?>(null) }
+    var navigationIdle by remember(target.key) { mutableStateOf(true) }
+    val ownAvailability = remember(target.key) { OwnMessageNavigation.Availability() }
     var searchNotice by remember(target.key) { mutableStateOf("") }
     val historyReason = if(model.demo) "" else model.historyReason(target)
     val boundedNotice = if(model.historyEpoch.isNotBlank()) {
@@ -942,8 +945,9 @@ private class MainListPullMotion(private val scope:CoroutineScope,private val ma
         onJumpConsumed()
     }
     val renderedHistory by rememberUpdatedState(Triple(model.conversationEvents,model.hasOlder,model.hasNewer))
-    fun cancelOwnNavigation() {
+    fun cancelOwnNavigation(keepQueued: Boolean = false) {
         ownGeneration++; ownJob?.cancel(); ownDirection = null; ownCursor = null; ownHighlight = null
+        if (!keepQueued) queuedOwn = null
     }
     DisposableEffect(target.key) { onDispose { ownJob?.cancel() } }
     LaunchedEffect(target.key,model.historyEpoch) {
@@ -961,6 +965,10 @@ private class MainListPullMotion(private val scope:CoroutineScope,private val ma
     fun ownPage() = model.ownMessagePage(target,latestEvents)
     fun requestOwn(direction: OwnMessageNavigation.Direction) {
         val page = ownPage() ?: return
+        if (listState.isScrollInProgress || !navigationIdle) {
+            if (ownDirection == null && !latestPending && !obscured) queuedOwn = direction
+            return
+        }
         val selection = ownSelection()
         if (!OwnMessageNavigation.enabled(page,selection,direction,historyReason.isBlank() && !model.demo,
                 ownDirection != null || latestPending || model.olderLoading || listState.isScrollInProgress || !follow.opened || obscured)) return
@@ -990,6 +998,24 @@ private class MainListPullMotion(private val scope:CoroutineScope,private val ma
             } finally { if (mine == ownGeneration) ownDirection = null }
         }
     }
+    // A native fling owns availability until its end has reached a frame.
+    LaunchedEffect(target.key,listState.isScrollInProgress,model.olderLoading) {
+        if (listState.isScrollInProgress) { navigationIdle = false; return@LaunchedEffect }
+        withFrameNanos { }
+        if (!listState.isScrollInProgress) {
+            navigationIdle = true
+            if (!model.olderLoading) {
+                val direction = queuedOwn; queuedOwn = null
+                direction?.let(::requestOwn)
+            }
+        }
+    }
+    val ownGesture = remember(target.key) { object : NestedScrollConnection {
+        override fun onPreScroll(available: Offset, source: NestedScrollSource): Offset {
+            if (source == NestedScrollSource.UserInput) queuedOwn = null
+            return Offset.Zero
+        }
+    } }
     fun requestLatest() {
         if(model.selected?.target != target || latestPending) return
         cancelOwnNavigation()
@@ -1057,7 +1083,7 @@ private class MainListPullMotion(private val scope:CoroutineScope,private val ma
         }.distinctUntilChanged().collect { (moving, atEnd, automatic) ->
             if (!automatic && moving) userMovement = true
             if (!automatic && userMovement) {
-                cancelOwnNavigation()
+                cancelOwnNavigation(keepQueued = true)
                 follow = ConversationViewport.userScrolled(follow, atEnd).copy(opened = true)
                 if (!moving) userMovement = false
             }
@@ -1173,7 +1199,7 @@ private class MainListPullMotion(private val scope:CoroutineScope,private val ma
             Box(Modifier.fillMaxSize().semantics { if (videoCapture || videoOverlayVisible) hideFromAccessibility() }) {
             ConversationTailRefresh(model, target.key, Modifier.fillMaxSize()) {
             // Keep the newest bubble above the floating navigation controls.
-            LazyColumn(Modifier.fillMaxSize(), state = listState, contentPadding = PaddingValues(start = 16.dp, top = 16.dp, end = 16.dp, bottom = 72.dp),
+            LazyColumn(Modifier.fillMaxSize().nestedScroll(ownGesture), state = listState, contentPadding = PaddingValues(start = 16.dp, top = 16.dp, end = 16.dp, bottom = 72.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 item(key = "history:earlier") { if (loadStatus?.initial != true) Column(Modifier.fillMaxWidth(),horizontalAlignment = Alignment.CenterHorizontally) {
                     if(model.olderError.isNotBlank()) {
@@ -1248,12 +1274,14 @@ private class MainListPullMotion(private val scope:CoroutineScope,private val ma
                 val page = ownPage()
                 val selection = ownSelection()
                 val busy = ownDirection != null || latestPending || model.olderLoading || listState.isScrollInProgress || !follow.opened || obscured
+                val directions = ownAvailability.project(page,selection,historyReason.isBlank() && !model.demo,busy,
+                    listState.isScrollInProgress || !navigationIdle)
+                SideEffect { ownAvailability.commit(directions) }
                 for (direction in OwnMessageNavigation.Direction.entries) {
                     val previous = direction == OwnMessageNavigation.Direction.Previous
                     val label = stringResource(if (previous) R.string.activity_previous_own else R.string.activity_next_own)
                     val loading = stringResource(if (previous) R.string.activity_reading_previous_own else R.string.activity_reading_next_own)
-                    FilledTonalIconButton(onClick = { requestOwn(direction) },enabled = page != null &&
-                        OwnMessageNavigation.enabled(page,selection,direction,historyReason.isBlank() && !model.demo,busy),
+                    FilledTonalIconButton(onClick = { requestOwn(direction) },enabled = if (previous) directions.previous else directions.next,
                         modifier = Modifier.size(48.dp).semantics {
                             contentDescription = label
                             if (ownDirection == direction) { stateDescription = loading; liveRegion = LiveRegionMode.Polite }
