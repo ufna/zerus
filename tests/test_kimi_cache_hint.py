@@ -3,7 +3,9 @@
 
 The fixture matches cache-hint-dialog.ts embedded in the sealed official 2.6.2
 image (SHA-256 c2070d77947b000016d1bc9c189f2e258c51f29d5f9eb537388cc44fa61c5856).
-It contains no owner-session output; these tests make no provider/model request.
+The 80- and 64-column fixtures include Kimi's outer 1+1 gutter and exact ASCII
+width truncation. They contain no owner-session output; these tests make no
+provider/model request.
 """
 import json, os, signal, subprocess, unittest, uuid
 from pathlib import Path
@@ -272,6 +274,32 @@ class CacheHint(unittest.TestCase):
         row=next(row for row in json.loads(listing.stdout)['sessions'] if row['name']==self.name)
         self.assertEqual(row['phase'],'input');self.assertTrue(row['attention_signature'])
         self.assertEqual(self.received(),received)
+
+    def test_width_truncated_dialog_keeps_the_original_input_without_keys(self):
+        payload,_=self.held_input();received=self.received()
+        record=self.record_path.read_bytes()
+        path=self.state/'input_receipts'/(payload['request_id']+'.json')
+        receipt=path.read_bytes()
+        self.tmux('resize-window','-t',self.name,'-x','120','-y','24')
+        full=Path(__file__).with_name('fixtures').joinpath('kimi-cache-expired-2.6.2.txt').read_text()
+        self.redraw('\x1b[2J\x1b[H'+full.replace('\n','\r\n'))
+        full_hash=self.inspect()['pending_questions'][0]['question_hash']
+        for columns in (80,64):
+            with self.subTest(columns=columns):
+                self.tmux('resize-window','-t',self.name,'-x',str(columns),'-y','24')
+                screen=Path(__file__).with_name('fixtures').joinpath(f'kimi-cache-expired-2.6.2-{columns}.txt').read_text()
+                self.redraw('\x1b[?2004l\x1b[2J\x1b[H'+screen.replace('\n','\r\n'))
+                for _ in range(2):
+                    info=self.inspect();self.assertEqual(info['phase'],'input')
+                    card=info['pending_questions'][0]
+                    self.assertEqual(card['source'],'kimi_cache_hint')
+                    self.assertEqual(card['question_hash'],full_hash)
+                    self.assertEqual(card['input_pending_request'],payload['request_id'])
+                    self.assertFalse(card['can_answer'])
+                    self.assertTrue(info['current_read']['attention_signature'])
+                self.assertEqual(path.read_bytes(),receipt)
+                self.assertEqual(self.record_path.read_bytes(),record)
+                self.assertEqual(self.received(),received)
 
     def test_partial_or_changed_panels_do_not_raise_attention(self):
         self.tmux('resize-window','-t',self.name,'-x','120','-y','30')

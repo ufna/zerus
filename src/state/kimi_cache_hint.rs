@@ -50,6 +50,17 @@ fn footer(rows: &[&str]) -> bool {
                     })
         })
 }
+/// Kimi 2.6.2 applies truncateToWidth to every dialog line, with ASCII "...".
+/// These reviewed literals contain only single-column glyphs after capture.
+/// Require the exact cutoff, not an arbitrary shortened prefix or suffix.
+fn native_line(row: &str, full: &str, width: usize) -> bool {
+    if full.chars().count() <= width {
+        return row == full;
+    }
+    row.strip_suffix("...").is_some_and(|prefix| {
+        !prefix.is_empty() && prefix.chars().count() + 3 == width && full.starts_with(prefix)
+    })
+}
 fn parse(screen: &str) -> Option<Panel> {
     // Kimi 2.6.2's cache-hint-dialog.ts and usage-format.ts. Bound the
     // variable fields too: a quote, truncation or changed title is not proof.
@@ -73,12 +84,19 @@ fn parse(screen: &str) -> Option<Panel> {
         return None;
     }
     let indent = border(rows[start - 1])?;
+    // GutterContainer pads outside render(width); only the rule's columns
+    // belong to that width, regardless of the terminal's outer indentation.
+    let width = rows[start - 1].chars().count() - indent.len();
     let end = start + 9;
     if end >= rows.len()
         || rows[start] != format!("{indent} {title}")
         || rows[start + 1] != format!("{indent} ↑↓ navigate · Enter select · Esc cancel")
         || !rows[start + 2].trim().is_empty()
-        || rows[start + 3] != format!("{indent} {EXPLANATION}")
+        || !native_line(
+            rows[start + 3].strip_prefix(indent)?,
+            &format!(" {EXPLANATION}"),
+            width,
+        )
         || !rows[start + 8].trim().is_empty()
         || rows[end] != rows[start - 1]
         || rows[start..end]
@@ -100,17 +118,22 @@ fn parse(screen: &str) -> Option<Panel> {
             row.strip_prefix("    ")?
         };
         let gap = LABELS.iter().map(|label| label.len()).max()? - label.len() + 4;
-        let expected = if DESCRIPTIONS[index].is_empty() {
-            (*label).to_owned()
+        if DESCRIPTIONS[index].is_empty() {
+            if text != *label {
+                return None;
+            }
         } else {
-            format!(
-                "{label}{}{description}",
-                " ".repeat(gap),
-                description = DESCRIPTIONS[index]
-            )
-        };
-        if text != expected {
-            return None;
+            let prefix = format!("{label}{}", " ".repeat(gap));
+            let description = text.strip_prefix(&prefix)?;
+            // Keep the complete label and alignment gap. Truncation must
+            // leave a nonempty, exact prefix of the known description.
+            if !native_line(
+                description,
+                DESCRIPTIONS[index],
+                width.checked_sub(4 + prefix.chars().count())?,
+            ) {
+                return None;
+            }
         }
     }
     Some(Panel {
@@ -405,6 +428,82 @@ mod tests {
         }
         assert!(parse(&screen.replace("Ask When Needed", "Unknown prompt")).is_none());
         assert!(parse(&(screen.to_owned() + " > new composer")).is_none());
+    }
+    const WIDTH_SCREENS: [&str; 2] = [
+        include_str!("../../tests/fixtures/kimi-cache-expired-2.6.2-80.txt"),
+        include_str!("../../tests/fixtures/kimi-cache-expired-2.6.2-64.txt"),
+    ];
+    #[test]
+    fn native_width_truncation_is_recognized() {
+        let record = json!({"run_id":"run", "conversation_id":"conversation"});
+        let hash = card(&record, &parse(SCREEN).unwrap())["question_hash"].clone();
+        for screen in WIDTH_SCREENS {
+            for (selected, label) in LABELS.iter().enumerate() {
+                let screen = screen
+                    .replace("  ❯ ", "    ")
+                    .replace(&format!("    {label}"), &format!("  ❯ {label}"));
+                // The outer gutter is not part of the dialog's render width.
+                for indent in ["", " ", "    "] {
+                    let screen = screen
+                        .lines()
+                        .map(|r| format!("{indent}{r}\n"))
+                        .collect::<String>();
+                    let panel = parse(&screen).expect("complete native width-truncated chooser");
+                    assert_eq!(panel.selected, selected);
+                    assert_eq!(card(&record, &panel)["question_hash"], hash);
+                }
+            }
+        }
+    }
+    #[test]
+    fn width_truncation_never_accepts_changed_text_or_geometry() {
+        let screen = WIDTH_SCREENS[0];
+        for (from, to) in [
+            ("th...", "th???"), // Same width, arbitrary suffix.
+            ("th...", "th…"),   // Kimi uses three ASCII dots.
+            ("th...", "th.."),
+            ("th...", "t..."), // Too early for the border width.
+            ("th...", "thi..."),
+            ("one-time", "two-time"), // Correct suffix, wrong prefix.
+            ("continue    one", "continue   xone"), // Changed gap, same width.
+            ("Compact and continue", "Compact AND continue"),
+            ("Don't ask me again", "Don't ask me again..."),
+            ("Continue as-is", "Continue as..."),
+            ("full price.", "full price…"),
+            ("tokens.", "tok..."),
+            ("Enter select", "Enter submit"),
+            ("    Continue as-is", "  ❯ Continue as-is"),
+            ("  ❯ ", "    "),
+        ] {
+            assert!(parse(&screen.replace(from, to)).is_none(), "{from} -> {to}");
+        }
+        assert!(parse(&screen.replace(&"─".repeat(78), &"─".repeat(79))).is_none());
+        assert!(
+            parse(&SCREEN.replace("this topic", "this to...")).is_none(),
+            "no truncation when the row fits"
+        );
+        let screen = WIDTH_SCREENS[1];
+        for (from, to) in [
+            ("Cache expired", "Cache changed"),
+            ("histo...", "histo???"),
+            ("zero context", "full context"),
+            ("full history", "zero history"),
+        ] {
+            assert!(
+                screen.contains(from),
+                "control must change the fixture: {from}"
+            );
+            assert!(parse(&screen.replace(from, to)).is_none(), "{from} -> {to}");
+        }
+        for screen in WIDTH_SCREENS {
+            for line in screen.lines().filter(|line| !line.is_empty()) {
+                assert!(
+                    parse(&screen.replacen(line, "", 1)).is_none(),
+                    "removed {line}"
+                );
+            }
+            assert!(parse(&(screen.to_owned() + " > composer")).is_none());
+        }
     }
     #[test]
     fn choice_does_not_change_identity_but_new_run_does() {
