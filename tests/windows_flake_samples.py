@@ -20,7 +20,9 @@ def mode_rounds(rounds, grant, choose):
     assert type(rounds) is int and 0 <= rounds <= 40
     seen = set()
     for index in range(rounds):
-        grant()
+        # A successful passive rollback revokes ownership. Each later round
+        # is a fresh fixture choice and must explicitly Rearm that history.
+        grant('ownership_grant' if index == 0 else 'ownership_rearm')
         for desired in ('background', 'passive'):
             value = choose(desired)
             print('MODE_SAMPLE_CHOICE ' + json.dumps(dict(round=index+1, desired=desired, result=value)),

@@ -22,7 +22,8 @@ class Sampling(unittest.TestCase):
                                                           request_id='request-'+str(next(n))))
         with contextlib.redirect_stderr(io.StringIO()):
             samples.mode_rounds(2, grant, choose)
-        self.assertEqual(grant.call_count, 2)
+        self.assertEqual(grant.call_args_list,
+                         [mock.call('ownership_grant'), mock.call('ownership_rearm')])
         self.assertEqual(choose.call_args_list, [mock.call('background'), mock.call('passive')]*2)
 
     def test_unknown_choice_stops_sampling_without_retry_or_later_choice(self):
@@ -38,7 +39,7 @@ class Sampling(unittest.TestCase):
                 with contextlib.redirect_stderr(io.StringIO()), self.assertRaisesRegex(
                         AssertionError, 'mode_transition_unconfirmed'):
                     samples.mode_rounds(40, grant, choose)
-                grant.assert_called_once_with()
+                grant.assert_called_once_with('ownership_grant')
                 expected = [mock.call('background')]
                 if failed_mode == 'passive': expected.append(mock.call('passive'))
                 self.assertEqual(choose.call_args_list, expected)
