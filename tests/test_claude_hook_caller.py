@@ -128,6 +128,20 @@ class ClaudeHookCaller(unittest.TestCase):
         self.assertEqual(saved['phase'], 'tool')
         self.assertIn('toolu_caller_fixture', saved['active_tools'])
 
+    def test_fixture_hook_runs_below_the_original_agent_without_borrowing_its_pin(self):
+        env = self.prepare()
+        pinned = {key: self.record[key] for key in ('pid', 'process_start', 'run_id', 'conversation_id')}
+        # The positive producer is the real private terminal process, with its
+        # original PID/birth. The test controller must remain a foreign caller.
+        fixture.InputTransport.claude_hook(self, 'UserPromptSubmit')
+        saved = json.loads(self.record_path.read_text())
+        self.assertEqual({key: saved[key] for key in pinned}, pinned)
+        self.assertEqual((saved['activity'], saved['phase']), ('busy', 'working'))
+        before = self.record_path.read_bytes()
+        refused = self.run_hook(env)
+        self.assertNotEqual(refused.returncode, 0, refused.stderr)
+        self.assertEqual(self.record_path.read_bytes(), before)
+
     def test_unpinned_legacy_hooks_keep_behavior_with_a_visible_diagnostic(self):
         result = self.run_hook(self.prepare(legacy=True))
         self.assertEqual(result.returncode, 0, result.stderr)

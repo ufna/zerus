@@ -2,6 +2,7 @@
 """Message transport tests. Private tmux socket + scripted raw-terminal agent only."""
 import base64
 import hashlib
+import hook_caller_fixtures
 import json
 import os
 from pathlib import Path
@@ -1011,10 +1012,12 @@ while True: signal.pause()
             fcntl.flock(file, fcntl.LOCK_UN)
             return True
 
-    def claude_hook(self, kind):
-        event = dict(hook_event_name=kind, session_id=self.conversation_id)
-        result = subprocess.run([str(HGS), "__state", "hook"], env=dict(self.env, HGS_SESSION=self.name, HGS_RUN_ID=self.run_id),
-                                input=json.dumps(event), capture_output=True, text=True, timeout=10)
+    def claude_hook(self, kind, **fields):
+        event = dict(hook_event_name=kind, session_id=self.conversation_id, **fields)
+        # The controller is a sibling of the pinned agent. Have that actual
+        # agent spawn the hook; copied routing markers alone grant no authority.
+        result = hook_caller_fixtures.run(self, event,
+            dict(self.env, HGS_TEST_BIN=str(HGS), HGS_SESSION=self.name, HGS_RUN_ID=self.run_id))
         self.assertEqual(result.returncode, 0, result.stderr)
 
     def terminal_request(self, **values):
@@ -1608,12 +1611,7 @@ os.execv('/bin/sh',['sh','-c',sys.argv[-1]])
             self.write_record()
             self.claude_composer()
             self.screen('\x1b[2J\x1b[H❯ ', '2:0')
-            event = dict(hook_event_name='StopFailure', session_id=self.conversation_id,
-                         error=message, error_type='model_capacity')
-            hook = subprocess.run([str(HGS), '__state', 'hook'],
-                                  env=dict(self.env, HGS_SESSION=self.name, HGS_RUN_ID=self.run_id),
-                                  input=json.dumps(event), capture_output=True, text=True, timeout=10)
-            self.assertEqual(hook.returncode, 0, hook.stderr)
+            self.claude_hook('StopFailure', error=message, error_type='model_capacity')
             self.record = json.loads(self.record_path.read_text())
 
     def interrupted_turn(self):
