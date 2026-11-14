@@ -222,8 +222,7 @@ fn a_stage_after_a_reassignment_refuses_every_earlier_implementer() {
     let (parent, _lead) = h.reported();
     h.bind("m2");
     // The person reassigns the reported task to m2; the store records m1 as
-    // the earlier implementer in the reassignment's own transaction, while
-    // m1 stays the recorded implementer until the next round's hand-out.
+    // the earlier implementer in the reassignment's own transaction.
     h.run(
         &person(),
         Operation::Reassign {
@@ -233,6 +232,18 @@ fn a_stage_after_a_reassignment_refuses_every_earlier_implementer() {
         },
     )
     .unwrap();
+    // m2 takes the round over through the real reopen and reports: the
+    // report's freeze records m1 too and makes m2 the current implementer,
+    // so the stage's refusal of m1 is the earlier record alone.
+    let reopen = h.reopen(parent, "m2");
+    h.reopen_outcome(
+        &reopen,
+        HandoutOutcome::Submitted {
+            receipt: "Reopen receipt".into(),
+        },
+    );
+    h.observe(parent, TaskStage::InProgress);
+    h.report(parent, "m2");
     let recorded: i64 = h
         .store
         .db
@@ -245,12 +256,14 @@ fn a_stage_after_a_reassignment_refuses_every_earlier_implementer() {
         )
         .unwrap();
     assert_eq!(recorded, 1, "the reassignment recorded the first implementer");
+    assert_eq!(h.node(parent).implementer.as_deref(), Some("m2"), "m2 is the current implementer");
     // A stage of the target whose role equals the implementers' role.
     let stage = h.add(&person(), 2);
     let mut s = h.node(stage);
     s.kind = NodeKind::Stage;
     s.role = h.node(parent).role.clone();
     s.stage_of = Some(parent);
+    s.round = h.node(parent).round;
     s.implementer = h.node(parent).implementer.clone();
     h.store
         .db
@@ -271,19 +284,16 @@ fn a_stage_after_a_reassignment_refuses_every_earlier_implementer() {
             },
         )
     };
-    // The first implementer is refused though its role equals the stage's.
+    // The first implementer is refused though its role equals the stage's
+    // and it is not the current implementer.
     refused(intent(&mut h, "m1"), code::INVALID_STATE);
-    // A developer who never implemented the target can take the stage.
-    intent(&mut h, "m2").unwrap();
+    // The current implementer stays refused as before.
+    refused(intent(&mut h, "m2"), code::INVALID_STATE);
     // The record survives a restart: m1 stays refused.
     h.store = Store::open(h.temp.path()).unwrap();
     refused(intent(&mut h, "m1"), code::INVALID_STATE);
 }
 
-/// The cap: past it the target is marked full and the stage's hand-out
-/// fails closed instead of handing to an unrecorded member silently
-/// (zerus-63rru.20).
-#[test]
 fn past_the_cap_a_stage_is_not_handed_to_an_unrecorded_member() {
     let mut h = Harness::new();
     let (parent, _) = h.reported();
