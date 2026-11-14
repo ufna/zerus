@@ -162,7 +162,7 @@ pub(crate) fn hosted_caller(
     if !same_home(&home, agent_home) {
         return Err(OTHER_HOME);
     }
-    // 3. The host record of that agent home, through the Teams reader.
+    // 3. The host record of that agent home, through the shared reader.
     let named: Vec<_> = caller_hosts::deepseek_home(agent_home)?
         .into_iter()
         .filter_map(|host| host.birth.map(|birth| (host.pid, birth)))

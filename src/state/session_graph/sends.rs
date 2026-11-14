@@ -78,7 +78,7 @@ pub(crate) fn caller_hosted_backend(
 
 #[cfg(test)]
 pub(crate) fn caller_host_reads() -> usize {
-    caller_hosts::reads() + {
+    {
         #[cfg(unix)]
         { crate::state::dsh::recorded_host_reads() }
         #[cfg(not(unix))]
