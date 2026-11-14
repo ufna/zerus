@@ -784,7 +784,7 @@ impl Store {
     /// actor before it publishes a projection or handles another command.
     pub fn check_service_scope(&self, location: &Location, epoch: &str) -> Result<()> {
         let durable: (String, u64, String) = self.db.query_row(
-            "SELECT substr(configuration,1,65),generation,substr(epoch,1,37) FROM service WHERE id=1",
+            "SELECT CASE typeof(configuration) WHEN 'text' THEN CAST(substr(CAST(configuration AS BLOB),1,65) AS TEXT) END,generation,CASE typeof(epoch) WHEN 'text' THEN CAST(substr(CAST(epoch AS BLOB),1,37) AS TEXT) END FROM service WHERE id=1",
             [],
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         ).context("read desktop service scope")?;
@@ -1141,6 +1141,16 @@ mod tests {
                 store.generation,
                 format!("{epoch}suffix"),
             ),
+            (
+                format!("{}\0suffix", location.configuration),
+                store.generation,
+                epoch.clone(),
+            ),
+            (
+                location.configuration.clone(),
+                store.generation,
+                format!("{epoch}\0suffix"),
+            ),
         ] {
             store
                 .db
@@ -1149,7 +1159,12 @@ mod tests {
                     params![configuration, generation, changed_epoch],
                 )
                 .unwrap();
-            assert!(store.check_service_scope(&location, &epoch).is_err());
+            assert!(
+                store.check_service_scope(&location, &epoch).is_err(),
+                "changed identity bytes: configuration={}, epoch={}",
+                configuration.len(),
+                changed_epoch.len()
+            );
             let retained: (String, u64, String) = store
                 .db
                 .query_row(
@@ -1168,6 +1183,27 @@ mod tests {
                 .execute(
                     "UPDATE service SET configuration=?1,generation=?2,epoch=?3 WHERE id=1",
                     params![location.configuration, store.generation, epoch],
+                )
+                .unwrap();
+            assert!(store.check_service_scope(&location, &epoch).is_ok());
+        }
+        for column in ["configuration", "epoch"] {
+            store
+                .db
+                .execute(
+                    &format!("UPDATE service SET {column}=CAST({column} AS BLOB) WHERE id=1"),
+                    [],
+                )
+                .unwrap();
+            assert!(
+                store.check_service_scope(&location, &epoch).is_err(),
+                "non-text {column}"
+            );
+            store
+                .db
+                .execute(
+                    "UPDATE service SET configuration=?1,epoch=?2 WHERE id=1",
+                    params![location.configuration, epoch],
                 )
                 .unwrap();
             assert!(store.check_service_scope(&location, &epoch).is_ok());
