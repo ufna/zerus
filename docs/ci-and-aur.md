@@ -1538,7 +1538,7 @@ Each class checks its own isolation and fails rather than skipping:
 |---|---|---|
 | Claude Code | `downloads.claude.ai` | `DISABLE_AUTOUPDATER=1` and `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1` in its environment and settings, `autoUpdates: false`; once per session start |
 | Codex | `raw.githubusercontent.com`, `ab.chatgpt.com` | `check_for_update_on_startup=false`, `[features] plugins=false`, `chatgpt_base_url` on loopback |
-| Kimi Code | none | `KIMI_CODE_NO_AUTO_UPDATE=1`, `KIMI_DISABLE_TELEMETRY=1`, `tui.toml` `auto_install=false`, platform URL on loopback |
+| Kimi Code | none | `KIMI_CODE_NO_AUTO_UPDATE=1`, `KIMI_DISABLE_TELEMETRY=1`, `tui.toml` `auto_install=false`, platform URL on loopback, private `fd` stand-in for file references |
 
 #### Kimi account inspection
 

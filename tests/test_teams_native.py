@@ -832,6 +832,26 @@ class TeamsFixtureIsolation(unittest.TestCase):
         production = Path(__file__).resolve().parents[1] / 'src/platform/unix.rs'
         self.assertIn('"{home}/.local/bin:/opt/homebrew/bin:/usr/local/bin:{path}:', production.read_text())
 
+    def test_kimi_fd_stand_in_prevents_managed_download(self):
+        source = self.base / 'sealed-kimi-fd'
+        source.write_text('#!/bin/sh\nexit 0\n')
+        source.chmod(0o400)
+        fx = fixture.TeamFixture('kimi', source, 'KimiFdIsolation')
+        self.addCleanup(shutil.rmtree, fx.root, True)
+        fx.build()
+        fd = Path(fx.env['HOME']) / '.local/bin/fd'
+        self.assertEqual(shutil.which('fd', path=fx.env['PATH']), str(fd))
+        version = subprocess.run([str(fd), '--version'], env=fx.env, capture_output=True, text=True, timeout=30)
+        self.assertEqual((version.returncode, version.stdout), (0, 'fd fixture\n'))
+        refused = subprocess.run([str(fd), 'unexpected-operation'], env=fx.env, capture_output=True, text=True, timeout=30)
+        self.assertEqual(refused.returncode, 97)
+        log = fx.evidence.folder / 'fd-stand-in.log'
+        self.assertEqual(len(log.read_text().splitlines()), 2)
+        fx.preflight()
+        fd.unlink()
+        with self.assertRaisesRegex(AssertionError, 'resolves fd'):
+            fx.preflight()
+
     def test_kimi_terminal_trust_answer_uses_the_exact_pane(self):
         from types import SimpleNamespace
         from test_kimi_approvals_native import FixtureControls

@@ -173,6 +173,15 @@ fi
 exit 97
 '''
 
+KIMI_FD = r'''#!/bin/bash
+printf '%s\tfd %s\n' "$(date +%s.%N)" "$*" >> @LOGS@/fd-stand-in.log
+if [[ $# -eq 1 && "${1:-}" == "--version" ]]; then
+  printf 'fd fixture\n'
+  exit 0
+fi
+exit 97
+'''
+
 
 def now():
     return time.monotonic()
@@ -534,6 +543,9 @@ class TeamFixture:
             path.write_text(KIMI_NODE.replace('@LOGS@', shlex.quote(str(self.evidence.folder)))
                             .replace('@VALUE@', shlex.quote(json.dumps(kimi_inspection()))))
             path.chmod(0o755)
+            fd = r / 'home/.local/bin/fd'
+            fd.write_text(KIMI_FD.replace('@LOGS@', shlex.quote(str(self.evidence.folder))))
+            fd.chmod(0o755)
             image = r / 'kimi-native'
             shutil.copyfile(self.native, image)
             image.chmod(0o700)
@@ -586,9 +598,11 @@ class TeamFixture:
         for name in ('tmux', 'ssh', 'scp', 'systemd-run', 'hgs'):
             if shutil.which(name, path=env['PATH']) != f'{r}/bin/{name}':
                 failures.append('resolves ' + name)
-        expected_node = Path(env['HOME']) / '.local/bin/node'
-        if self.agent == 'kimi' and shutil.which('node', path=env['PATH']) != str(expected_node):
-            failures.append('resolves node')
+        if self.agent == 'kimi':
+            for name in ('node', 'fd'):
+                expected = Path(env['HOME']) / '.local/bin' / name
+                if shutil.which(name, path=env['PATH']) != str(expected):
+                    failures.append('resolves ' + name)
         sock = Path(env['HGS_STATE_DIR']) / 'desktop/service.sock'
         if len(str(sock).encode()) >= 104:
             failures.append('service socket path length')
