@@ -404,6 +404,7 @@ fn a_report_written_before_the_removal_stays_the_teams() {
             member: "m1".into(),
             text: "Implemented and checked".into(),
             commit: COMMIT.into(),
+            notes: Vec::new(),
         },
     )
     .unwrap();
@@ -438,6 +439,7 @@ fn a_report_written_after_the_removal_is_told_once_and_never_recorded() {
                 member: "m1".into(),
                 text: "Implemented and checked".into(),
                 commit: COMMIT.into(),
+                notes: Vec::new(),
             },
         )
         .unwrap_err();

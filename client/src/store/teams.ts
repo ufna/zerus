@@ -62,6 +62,9 @@ export interface TeamView {
   after?: string | null;
 }
 
+/** One service note beside a quoted report: a code and optional text. */
+export interface ServiceNote { code: string; text?: string | null }
+
 /** One open owner card that waits for the person. */
 export interface WaitingItem {
   id: string;
@@ -76,6 +79,9 @@ export interface WaitingItem {
   /** The decisions the card takes, in order, as the core read them; absent
    * from an older core: acknowledged alone. */
   decisions?: string[];
+  /** The service's statements about a report the card quotes, apart from the
+   * member's text; absent from an older core. */
+  notes?: ServiceNote[];
 }
 
 /** The open owner cards of every team, oldest first, one bounded page. */

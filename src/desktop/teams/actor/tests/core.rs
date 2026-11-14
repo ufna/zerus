@@ -305,6 +305,7 @@ fn a_return_reserves_and_delivers_a_new_generation_once() {
             member: "m1".into(),
             text: "Report".into(),
             commit: COMMIT.into(),
+            notes: Vec::new(),
         },
     )
     .unwrap();
@@ -486,6 +487,7 @@ fn an_uncertain_reopen_is_not_sent_twice_and_stays_in_its_new_generation() {
             member: "m1".into(),
             text: "Report".into(),
             commit: COMMIT.into(),
+            notes: Vec::new(),
         },
     )
     .unwrap();
@@ -634,6 +636,7 @@ fn delivered_reopen_closes_its_old_retry_card_and_gate() {
             member: "m1".into(),
             text: "Report".into(),
             commit: COMMIT.into(),
+            notes: Vec::new(),
         },
     )
     .unwrap();
@@ -679,6 +682,7 @@ fn delivered_reopen_closes_its_old_retry_card_and_gate() {
             member: "m1".into(),
             text: "Report".into(),
             commit: COMMIT.into(),
+            notes: Vec::new(),
         },
     )
     .unwrap();
@@ -780,6 +784,7 @@ fn a_reopen_waits_while_its_holder_is_busy_outside_the_team() {
             member: "m1".into(),
             text: "Report".into(),
             commit: COMMIT.into(),
+            notes: Vec::new(),
         },
     )
     .unwrap();
@@ -948,6 +953,7 @@ pub(super) fn settle_reopen(outcome: HandoutOutcome) -> SettledReopen {
             member: "m1".into(),
             text: "Report".into(),
             commit: COMMIT.into(),
+            notes: Vec::new(),
         },
     )
     .unwrap();

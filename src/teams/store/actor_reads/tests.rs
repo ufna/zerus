@@ -51,6 +51,10 @@ fn report_is_pinned_to_holder_and_generation() {
             member: "m1".into(),
             text: "Report".into(),
             commit: COMMIT.into(),
+            notes: vec![
+                crate::teams::ops::ReportNote::new("text_shortened"),
+                crate::teams::ops::ReportNote::new("worktree_dirty"),
+            ],
         },
     )
     .unwrap();
@@ -58,8 +62,82 @@ fn report_is_pinned_to_holder_and_generation() {
     assert_eq!(report.member, "m1");
     assert_eq!(report.commit, COMMIT);
     assert_eq!(report.text, "Report");
+    assert_eq!(
+        report.notes,
+        vec![
+            crate::teams::ops::ReportNote::new("text_shortened"),
+            crate::teams::ops::ReportNote::new("worktree_dirty")
+        ]
+    );
     assert!(h.store.report(TEAM, node, 2).unwrap().is_none());
     assert!(h.store.report(TEAM_B, node, 1).unwrap().is_none());
+}
+
+/// A row from before notes keeps the old appended lines in its text and reads
+/// with no notes at all: nothing is reinterpreted or moved.
+#[test]
+fn an_old_report_row_reads_exactly_as_before() {
+    let mut h = Harness::new();
+    h.bind("m1");
+    let node = h.add(&person(), 1);
+    h.submit(node, "m1");
+    h.observe(node, crate::teams::ops::TaskStage::InReview);
+    let old = "All done\nWorktree has uncommitted changes.\n[Report text shortened.]";
+    h.store
+        .db
+        .as_ref()
+        .unwrap()
+        .execute(
+            "INSERT INTO reports(team,node,generation,actor,text,commit_id) VALUES(?1,?2,1,'{}',?3,?4)",
+            params![TEAM, node, old, COMMIT],
+        )
+        .unwrap();
+    let report = h.store.report(TEAM, node, 1).unwrap().unwrap();
+    assert_eq!(report.text, old);
+    assert!(report.notes.is_empty());
+}
+
+/// The base reader's exact SQL and reply shape ignore the notes column: an
+/// older build selects named columns and never asks for it.
+#[test]
+fn an_older_reader_reads_a_notes_row_unchanged() {
+    use serde_json::json;
+    let mut h = Harness::new();
+    h.bind("m1");
+    let node = h.add(&person(), 1);
+    h.submit(node, "m1");
+    h.observe(node, crate::teams::ops::TaskStage::InReview);
+    h.run(
+        &service(),
+        crate::teams::ops::Operation::RecordReport {
+            node,
+            generation: 1,
+            member: "m1".into(),
+            text: "Report".into(),
+            commit: COMMIT.into(),
+            notes: vec![crate::teams::ops::ReportNote::new("worktree_dirty")],
+        },
+    )
+    .unwrap();
+    let db = h.store.db.as_ref().unwrap();
+    let (text, commit): (String, String) = db
+        .query_row(
+            "SELECT text, commit_id FROM reports WHERE team=?1 AND node=?2 AND generation=?3",
+            params![TEAM, node, 1],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(text, "Report");
+    assert_eq!(commit, COMMIT);
+    let base = json!({"member": "m1", "text": text, "commit": commit});
+    assert_eq!(
+        base,
+        json!({"member": "m1", "text": "Report", "commit": COMMIT})
+    );
+    assert_eq!(
+        h.store.report(TEAM, node, 1).unwrap().unwrap().notes,
+        vec![crate::teams::ops::ReportNote::new("worktree_dirty")]
+    );
 }
 #[test]
 fn change_token_sees_other_connections_only_and_missing_store_is_read_only() {

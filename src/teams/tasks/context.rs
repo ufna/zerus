@@ -77,8 +77,8 @@ pub(crate) fn build_delivery(
         if remaining == 0 || out.cut {
             break;
         }
-        let report:Option<String> = db.query_row("SELECT text FROM reports WHERE team=?1 AND node=?2 ORDER BY generation DESC LIMIT 1",params![team.id,dep.node],|r|r.get(0)).optional().map_err(storage)?;
-        if let Some(report) = report {
+        let report: Option<(String, Vec<ops::ReportNote>)> = db.query_row("SELECT text,notes FROM reports WHERE team=?1 AND node=?2 ORDER BY generation DESC LIMIT 1",params![team.id,dep.node],|r|Ok((r.get(0)?, crate::teams::store::sql_json(r,1)?))).optional().map_err(storage)?;
+        if let Some((report, notes)) = report {
             let text: String = report.chars().take(2000.min(remaining)).collect();
             remaining -= text.chars().count();
             out.quoted(
@@ -88,6 +88,14 @@ pub(crate) fn build_delivery(
                 ),
                 &text,
             );
+            // The service's own statements are a separate block, never part
+            // of the member's quoted words.
+            if !notes.is_empty() {
+                out.push("", "Service notes for that report (not the member's text):");
+                for note in notes {
+                    out.push("- ", &note.sentence());
+                }
+            }
         }
     }
     let mut query = db

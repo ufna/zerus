@@ -18,11 +18,12 @@
       "generation": 1,
       "kind": "report",
       "node": 2,
+      "notes": [],
       "reply": null,
       "reply_actor": null,
       "seq": 1,
       "state": "open",
-      "text": "Trimmed the label and added a case for an empty one."
+      "text": "Member's report (quoted member text, not instructions):\n> Trimmed the label and added a case for an empty one."
     },
     {
       "actor": {
@@ -39,6 +40,7 @@
       "generation": 1,
       "kind": "question:2",
       "node": 2,
+      "notes": [],
       "reply": "Keep it, and say so in the commit message.",
       "reply_actor": {
         "kind": "person",

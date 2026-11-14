@@ -485,6 +485,7 @@ fn a_reopen_to_a_member_whose_terminal_holds_input_waits_for_the_fact_to_end() {
             member: "m1".into(),
             text: "Report".into(),
             commit: COMMIT.into(),
+            notes: Vec::new(),
         },
     )
     .unwrap();

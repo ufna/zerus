@@ -45,6 +45,7 @@ fn waiting_item(row: &Value) -> Option<WaitingItem> {
             .unwrap_or_default(),
         created_ms: row.get("created_ms").and_then(Value::as_i64).unwrap_or(0),
         decisions: decisions(row),
+        notes: service_notes(row),
     })
 }
 

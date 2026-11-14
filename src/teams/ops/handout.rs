@@ -309,6 +309,39 @@ fn record_implementer(ctx: &Context<'_>, node: u32, member: &str) -> Result<()> 
     }
     Ok(())
 }
+/// The most service notes one report carries, the longest code and the
+/// longest optional text. Codes are short lower-case tokens; the member's
+/// report text is never checked or changed here.
+const MAX_REPORT_NOTES: usize = 8;
+const MAX_NOTE_CODE: usize = 32;
+const MAX_NOTE_TEXT: usize = 500;
+
+fn report_notes(notes: &[ReportNote]) -> Result<()> {
+    if notes.len() > MAX_REPORT_NOTES {
+        return Err(over("A report carries too many service notes."));
+    }
+    for note in notes {
+        let token = !note.code.is_empty()
+            && note.code.len() <= MAX_NOTE_CODE
+            && note.code.starts_with(|c: char| c.is_ascii_lowercase())
+            && note
+                .code
+                .chars()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_');
+        if !token {
+            return Err(invalid(
+                "A report note's code is not a short lower-case token.",
+            ));
+        }
+        if let Some(text) = &note.text {
+            if text.len() > MAX_NOTE_TEXT {
+                return Err(over("A report note's text exceeds its size limit."));
+            }
+        }
+    }
+    Ok(())
+}
+
 pub(super) fn report(ctx: &mut Context<'_>) -> Result<()> {
     let Operation::RecordReport {
         node,
@@ -316,6 +349,7 @@ pub(super) fn report(ctx: &mut Context<'_>) -> Result<()> {
         member,
         text: body,
         commit,
+        notes,
     } = ctx.op
     else {
         unreachable!()
@@ -347,7 +381,8 @@ pub(super) fn report(ctx: &mut Context<'_>) -> Result<()> {
     }
     reason(body)?;
     text(commit, 256)?;
-    ctx.db.execute("INSERT INTO reports(team,node,generation,actor,text,commit_id) VALUES(?1,?2,?3,?4,?5,?6)",params![ctx.team.id,node,generation,encode(ctx.actor)?,body,commit]).map_err(storage)?;
+    report_notes(notes)?;
+    ctx.db.execute("INSERT INTO reports(team,node,generation,actor,text,commit_id,notes) VALUES(?1,?2,?3,?4,?5,?6,?7)",params![ctx.team.id,node,generation,encode(ctx.actor)?,body,commit,encode(notes)?]).map_err(storage)?;
     // A trusted report proves delivery even when its submission outcome has
     // not arrived. Freeze that implementer before choosing any stage staff.
     if n.kind != NodeKind::Stage {

@@ -45,6 +45,7 @@ pub(super) fn reported_text(f: &mut Fixture, text: &str) {
             member: "m1".into(),
             text: text.into(),
             commit: ops::tests::COMMIT.into(),
+            notes: Vec::new(),
         },
     )
     .unwrap();

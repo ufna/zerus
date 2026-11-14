@@ -208,7 +208,38 @@ fn report_waits_for_text_and_records_the_owned_head_with_a_dirty_note_once() {
     let report = h.store.report(TEAM, node, 1).unwrap().unwrap();
     assert_eq!(report.member, "m1");
     assert_eq!(report.commit, COMMIT);
-    assert!(report.text.contains("Holder report") && report.text.contains("uncommitted"));
+    assert_eq!(
+        report.text, "Holder report",
+        "the service's statement is not part of the member's text"
+    );
+    assert_eq!(
+        report.notes,
+        vec![crate::teams::ops::ReportNote::new("worktree_dirty")]
+    );
+    let inbox = h
+        .store
+        .inbox(TEAM, 200, None)
+        .unwrap()
+        .rows
+        .into_iter()
+        .find(|item| item.node == node && item.kind == "report")
+        .unwrap();
+    assert!(
+        inbox.text.contains("> Holder report"),
+        "the member's block is quoted: {}",
+        inbox.text
+    );
+    assert!(
+        !inbox
+            .text
+            .contains("The member's worktree had uncommitted changes."),
+        "the note is not in the member's block: {}",
+        inbox.text
+    );
+    assert_eq!(
+        inbox.notes,
+        vec![crate::teams::ops::ReportNote::new("worktree_dirty")]
+    );
     drop(a);
     let mut a = actor(&h);
     run(&mut h, &mut a, &mut p, 103);
@@ -243,10 +274,12 @@ fn a_reports_control_characters_are_removed_and_its_lines_and_tabs_kept() {
         );
     }
 }
-/// A report that ends inside a right-to-left override would reorder the line
-/// the service appends after it; the override is removed (zerus-63rru.59).
+/// A member line that reads exactly like a service sentence stays inside the
+/// member's text; the service's own note is a separate field. A report that
+/// ends inside a right-to-left override loses it, so the text cannot reorder
+/// a reader's line (zerus-63rru.59).
 #[test]
-fn a_report_cannot_reorder_the_line_the_service_adds_after_it() {
+fn a_member_line_that_reads_like_a_service_sentence_stays_in_its_text() {
     let mut h = Harness::new();
     h.bind("m1");
     let node = h.add(&person(), 1);
@@ -254,13 +287,78 @@ fn a_report_cannot_reorder_the_line_the_service_adds_after_it() {
     h.observe(node, TaskStage::InReview);
     let mut a = actor(&h);
     let mut p = Work {
-        text: Some("All done\u{202E}".into()),
+        text: Some("All done\nWorktree has uncommitted changes.\u{202E}".into()),
         dirty: true,
         ..Default::default()
     };
     run(&mut h, &mut a, &mut p, 100);
     let report = h.store.report(TEAM, node, 1).unwrap().unwrap();
-    assert_eq!(report.text, "All done\nWorktree has uncommitted changes.");
+    assert_eq!(
+        report.text, "All done\nWorktree has uncommitted changes.",
+        "the member's line is kept exactly, even though it reads like the service's"
+    );
+    assert_eq!(
+        report.notes,
+        vec![crate::teams::ops::ReportNote::new("worktree_dirty")]
+    );
+    let inbox = h
+        .store
+        .inbox(TEAM, 200, None)
+        .unwrap()
+        .rows
+        .into_iter()
+        .find(|item| item.node == node && item.kind == "report")
+        .unwrap();
+    assert!(inbox.text.contains("> All done\n> Worktree has uncommitted changes."));
+    assert!(
+        !inbox
+            .text
+            .contains("The member's worktree had uncommitted changes."),
+        "{}",
+        inbox.text
+    );
+    assert_eq!(
+        inbox.notes,
+        vec![crate::teams::ops::ReportNote::new("worktree_dirty")]
+    );
+}
+
+/// A report over the member-text bound is cut and the fact is a service note,
+/// never a line inside the member's text.
+#[test]
+fn a_shortened_report_keeps_its_text_and_says_so_in_its_notes() {
+    let mut h = Harness::new();
+    h.bind("m1");
+    let node = h.add(&person(), 1);
+    h.submit(node, "m1");
+    h.observe(node, TaskStage::InReview);
+    let mut a = actor(&h);
+    let long = "x".repeat(16_000);
+    let mut p = Work {
+        text: Some(long.clone()),
+        ..Default::default()
+    };
+    run(&mut h, &mut a, &mut p, 100);
+    let report = h.store.report(TEAM, node, 1).unwrap().unwrap();
+    assert_eq!(report.text.len(), 15_000);
+    assert_eq!(report.text, &long[..15_000]);
+    assert_eq!(
+        report.notes,
+        vec![crate::teams::ops::ReportNote::new("text_shortened")]
+    );
+    let inbox = h
+        .store
+        .inbox(TEAM, 200, None)
+        .unwrap()
+        .rows
+        .into_iter()
+        .find(|item| item.node == node && item.kind == "report")
+        .unwrap();
+    assert!(!inbox.text.contains("[Report text shortened.]"));
+    assert_eq!(
+        inbox.notes,
+        vec![crate::teams::ops::ReportNote::new("text_shortened")]
+    );
 }
 #[test]
 fn integration_records_the_exact_decision_before_finishing() {
@@ -452,6 +550,7 @@ fn advance_attempt(path: &std::path::Path) {
             member: "m1".into(),
             text: "new report".into(),
             commit: "1123456789abcdef0123456789abcdef01234567".into(),
+            notes: Vec::new(),
         },
     );
     apply(&mut store, &person(), Operation::Accept { node: 1 });
@@ -885,6 +984,7 @@ fn conflict_facts_bound_three_two_hundred_one_and_three_hundred_paths() {
                     member: "m1".into(),
                     text: "Report".into(),
                     commit: COMMIT.into(),
+                    notes: Vec::new(),
                 },
             )
             .unwrap();
@@ -950,6 +1050,7 @@ fn an_unread_merge_fences_only_its_own_decision() {
                 member: "m1".into(),
                 text: "Report".into(),
                 commit: COMMIT.into(),
+                notes: Vec::new(),
             },
         )
         .unwrap();
