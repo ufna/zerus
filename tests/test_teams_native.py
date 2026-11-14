@@ -1353,7 +1353,9 @@ class NativeTeamsResumeCodex(ResumeContract, unittest.TestCase):
     """Selected since zerus-63rru.54 and .56 (tx10: the brief arrives, nothing is read as an exit)."""
     agent = 'codex'
     variable = 'HGS_CODEX_TEST_BIN'
-    exit_keys = ('/quit', 'Enter')
+    # Native 0.169 buffers rapid characters plus Enter as a paste/newline. End
+    # flushes that burst without changing the command; Enter then dispatches it.
+    exit_keys = ('/quit', 'End', 'Enter')
 
 
 @unittest.skipUnless(os.environ.get('HGS_CODEX_TEST_BIN') and fixture.HGS, 'Set HGS_TEST_BIN and HGS_CODEX_TEST_BIN')
