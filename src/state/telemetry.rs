@@ -166,7 +166,7 @@ fn children(record: &Value) -> Value {
     let external = children.is_some_and(|c| c.values().any(|v| v["external"] == true));
     if profiles && !external {
         result["subagent_source"] = json!("hook_profiles");
-        result["subagent_counts_complete"] = json!(true);
+        result["subagent_counts_complete"] = json!(record["subagent_groups_complete"] == true);
         result["subagent_groups_complete"] = json!(record["subagent_groups_complete"] == true);
         let Some(groups) = groups else {
             return result;
@@ -256,11 +256,14 @@ fn children(record: &Value) -> Value {
     } else {
         "hooks"
     });
-    // zerus-63rru.68: the two facts apart. The counts' completeness is the
-    // children's own (an unknown child), the History fact; the groups'
-    // completeness is the profile groups' own (an incomplete group), the
-    // MayRunNow fact. An older reader ignores the new field.
-    result["subagent_counts_complete"] = json!(unknown == 0);
+    // zerus-63rru.68 round 2: the legacy flag keeps its exact old combined
+    // meaning for every unchanged reader (Android and iOS childCount, the
+    // client core); the new field is the profile groups' own completeness,
+    // purely additive, read only by the Teams fleet's MayRunNow sources.
+    result["subagent_counts_complete"] = json!(
+        unknown == 0
+            && (!profiles || groups.is_none() || record["subagent_groups_complete"] == true)
+    );
     result["subagent_groups_complete"] = json!(
         !profiles || groups.is_none() || record["subagent_groups_complete"] == true
     );

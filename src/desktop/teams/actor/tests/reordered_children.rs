@@ -113,10 +113,10 @@ const EXPECTED: [(
         "hooks",
         false,
         Some(0),
-        true,
         false,
-        Some(crate::desktop::teams::actor::ports::Fact::ChildrenUnsettled),
+        true,
         None,
+        Some(false),
     ),
     (
         "codex_interrupt_tool",
@@ -133,10 +133,10 @@ const EXPECTED: [(
         "hooks",
         false,
         Some(0),
-        true,
         false,
-        Some(crate::desktop::teams::actor::ports::Fact::ChildrenUnsettled),
+        true,
         None,
+        Some(false),
     ),
     // Kimi's profile hooks carry no child identity: a reordered Start cannot
     // be told from a new child of the same profile, so it stays counted and
@@ -154,7 +154,7 @@ const EXPECTED: [(
     (
         "kimi_stop_start",
         "hook_profiles",
-        true,
+        false,
         Some(1),
         true,
         false,
@@ -180,10 +180,10 @@ const EXPECTED: [(
         "hooks",
         false,
         Some(0),
-        true,
         false,
-        Some(crate::desktop::teams::actor::ports::Fact::ChildrenUnsettled),
+        true,
         None,
+        Some(false),
     ),
     // A live external child whose parent binding went stale is not an end:
     // the fresh Start resumes it, with or without the hook entry's reconcile.
@@ -226,10 +226,10 @@ const EXPECTED: [(
         "hooks",
         false,
         Some(0),
-        true,
         false,
-        Some(crate::desktop::teams::actor::ports::Fact::ChildrenUnsettled),
+        true,
         None,
+        Some(false),
     ),
     // A later reconcile settles it: live and bound counts working; gone ends.
     (
@@ -247,10 +247,10 @@ const EXPECTED: [(
         "hooks",
         false,
         Some(0),
-        true,
         false,
-        Some(crate::desktop::teams::actor::ports::Fact::ChildrenUnsettled),
+        true,
         None,
+        Some(false),
     ),
     // An Interrupt, then the lifecycle's uncertainty, then a Start: the hook's
     // interrupted evidence is the last end and the Start stays out.
@@ -259,10 +259,10 @@ const EXPECTED: [(
         "hooks",
         false,
         Some(0),
-        true,
         false,
-        Some(crate::desktop::teams::actor::ports::Fact::ChildrenUnsettled),
+        true,
         None,
+        Some(false),
     ),
     // The Kimi catalog's removal writes `unknown`, not an end; a raw Start
     // turns it working (no supported Kimi hook names a native ID).

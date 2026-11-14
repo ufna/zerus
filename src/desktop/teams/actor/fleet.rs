@@ -127,15 +127,11 @@ fn children(row: &Value) -> (Option<u64>, bool) {
         .and_then(|source| SOURCES.iter().find(|(name, _)| *name == source))
         .map(|(_, meaning)| *meaning);
     let unsettled = match meaning {
-        // zerus-63rru.68: the two facts apart. History settles on the
-        // children's own completeness (an unknown child unsettles it); the
-        // MayRunNow sources settle on the groups' completeness where the
-        // producer writes it, falling back to the old combined flag for an
-        // older row or a source without groups (dsh_native), which reads as
-        // today.
-        Some(Some(Incomplete::History)) => {
-            row.get("subagent_counts_complete") != Some(&Value::Bool(true))
-        }
+        // History never keeps a member: a child that ended, was interrupted
+        // or failed is past work, whatever its completeness flag says; the
+        // separate process_unknown guard below still unsettles an unbound
+        // child that may run now (zerus-63rru.68 round 2, the plan's rule).
+        Some(Some(Incomplete::History)) => false,
         Some(Some(Incomplete::MayRunNow)) => match row.get("subagent_groups_complete") {
             Some(value) => value != &Value::Bool(true),
             None => row.get("subagent_counts_complete") != Some(&Value::Bool(true)),
