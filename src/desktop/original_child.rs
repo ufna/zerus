@@ -331,7 +331,7 @@ fn start<T>(
         let _turn = platform::spawn_turn();
         input
             .as_ref()
-            .map(|input| original_input::prepare(input.len() > 0))
+            .map(|input| original_input::prepare_in_turn(input.len() > 0, &_turn))
             .transpose()
             .and_then(|input| {
                 let spawn = |command: &mut Command| {
@@ -827,3 +827,6 @@ mod tests {
 mod admission_tests;
 #[cfg(test)]
 mod fork_tests;
+
+#[cfg(test)]
+mod spawn_cost;

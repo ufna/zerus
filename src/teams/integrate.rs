@@ -666,7 +666,7 @@ impl Git {
         &self,
         args: &[&str],
         deadline: Instant,
-        #[cfg(unix)] turn: Option<std::sync::MutexGuard<'static, ()>>,
+        #[cfg(unix)] turn: Option<zerus_client_core::unix_spawn::Turn>,
     ) -> Result<Output, Problem> {
         if Instant::now() >= deadline {
             return Err(unavailable(

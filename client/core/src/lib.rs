@@ -97,6 +97,9 @@ pub mod terminal_launch;
 pub mod termination_cleanup;
 pub mod text;
 pub mod trayicon;
+#[cfg(unix)]
+#[doc(hidden)]
+pub mod unix_spawn;
 pub mod untracked_shell;
 pub mod updates;
 pub mod video_posters;
