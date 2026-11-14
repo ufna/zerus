@@ -10,12 +10,23 @@ use super::{
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
-// Allow the original effect's 45-second custody budget plus one 60-second
-// standing-worker safety observation interval. Custody does not bound the old
-// supervisor's post-archive work; this is a bounded wait, not a teardown guarantee.
-// The durable exit timestamp bounds this wait across service restarts, with no
-// effect row, audit or hourly reservation for a deferral (zerus-63rru.129).
-pub(super) const RESUME_SETTLE_CUSTODY_AND_OBSERVATION_MS: i64 = 45_000 + 60_000;
+// The exiting supervisor can still own its name during post-archive cleanup.
+// Include its sequential automatic deadlines and conservatively the separate
+// manual leftover-delete budget, plus a standing safety observation interval.
+// Filesystem/receipt I/O has no end-to-end deadline: allow the reviewed ten-minute
+// outer wait cap instead when it is larger. This never bounds teardown itself.
+const UNBOUNDED_TEARDOWN_WAIT_CAP_MS: i64 = 10 * 60 * 1000;
+pub(super) const RESUME_SETTLE_MS: i64 = {
+    let bounded = crate::state::AFTER_ARCHIVE_FIXED_TIME
+        .saturating_add(crate::state::LEFTOVER_DELETE_TIME)
+        .saturating_add(super::super::worker::SAFETY_OBSERVATION_INTERVAL)
+        .as_millis() as i64;
+    if bounded > UNBOUNDED_TEARDOWN_WAIT_CAP_MS {
+        bounded
+    } else {
+        UNBOUNDED_TEARDOWN_WAIT_CAP_MS
+    }
+};
 
 pub(super) fn key(parts: &Value) -> String {
     format!("{:x}", Sha256::digest(parts.to_string()))

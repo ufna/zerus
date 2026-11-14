@@ -300,6 +300,10 @@ fn fixture() {
     }
     let s = p.observe(&p.binding.clone()).unwrap();
     let wait = s.resume_wait.unwrap();
+    assert!(
+        engine::RESUME_SETTLE_MS >= crate::state::LEFTOVER_DELETE_TIME.as_millis() as i64,
+        "standing resume must cover the teardown delete budget"
+    );
     assert_eq!(wait.reason, "waiting for the original run to settle");
     assert!(p
         .exit

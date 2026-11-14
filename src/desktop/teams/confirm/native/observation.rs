@@ -191,7 +191,7 @@ fn resume_wait(s: &Snapshot, view: &Value, raw: &Value) -> Result<Option<ResumeW
         return Ok(None);
     }
     let exited = raw["exited_at"].as_f64().ok_or("The original exit time is unavailable")? * 1000.0;
-    let bound = super::super::engine::RESUME_SETTLE_CUSTODY_AND_OBSERVATION_MS;
+    let bound = super::super::engine::RESUME_SETTLE_MS;
     if !exited.is_finite() || exited <= 0.0 || exited >= (i64::MAX - bound) as f64 {
         return Err("The original exit time is invalid".into());
     }

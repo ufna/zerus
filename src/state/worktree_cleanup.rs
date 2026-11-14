@@ -15,6 +15,31 @@ const MAX_REVIEWED: usize = 64;
 const RECENT: f64 = 24.0 * 3600.0;
 const WALK_ENTRIES: usize = 200_000;
 const WALK_TIME: Duration = Duration::from_secs(2);
+
+const BINDINGS_TIME: Duration = Duration::from_secs(2);
+const REMOVE_PROBE_TIME: Duration = Duration::from_secs(5);
+const REMOVE_LOCK_TIME: Duration = Duration::from_secs(10);
+const AUTOMATIC_LOCK_TIME: Duration = Duration::from_secs(1);
+const REMOVE_REVIEW_TIME: Duration = Duration::from_secs(20);
+const AUTOMATIC_REVIEW_TIME: Duration = Duration::from_secs(5);
+const AUTOMATIC_REMOVE_TIME: Duration = Duration::from_secs(3);
+const REMOVE_GIT_TIME: Duration = Duration::from_secs(300);
+const REMOVE_SETTLE_TIME: Duration = Duration::from_secs(5);
+const REMOVE_BRANCH_TIME: Duration = Duration::from_secs(10);
+const MISSING_HEAD_TIME: Duration = Duration::from_secs(2);
+pub(crate) const LEFTOVER_DELETE_TIME: Duration = Duration::from_secs(300);
+// Sequential automatic removal phases. Substeps capped by the review's total
+// are not charged again. Ownership is checked in review, admission, preparation
+// and the durable maintenance reservation, each with its own Git budget.
+pub(super) const AUTOMATIC_REMOVE_FIXED_TIME: Duration = REMOVE_PROBE_TIME
+    .saturating_mul(2)
+    .saturating_add(AUTOMATIC_LOCK_TIME.saturating_mul(2))
+    .saturating_add(AUTOMATIC_REVIEW_TIME)
+    .saturating_add(BINDINGS_TIME)
+    .saturating_add(super::worktree_lifecycle::OWNERSHIP_GIT_TIME.saturating_mul(4))
+    .saturating_add(super::worktree_lifecycle::PREPARE_ARCHIVES_TIME)
+    .saturating_add(AUTOMATIC_REMOVE_TIME)
+    .saturating_add(REMOVE_SETTLE_TIME);
 const MAX_IGNORED: usize = 20;
 const MAX_SAMPLES: usize = 5;
 const PROCESS_CONSENT_SECONDS: u64 = 300;
@@ -234,7 +259,7 @@ pub(super) fn bindings() -> Result<Vec<Reference>> {
     // cannot treat a skipped, replaced or unreadable binding as no reference.
     let mut result = Vec::new();
     let mut count = 0;
-    let deadline = Instant::now() + Duration::from_secs(2);
+    let deadline = Instant::now() + BINDINGS_TIME;
     for directory in storage::BINDING_DIRS {
         let folder = root().join(directory);
         let files = match fs::read_dir(&folder) {
@@ -1135,7 +1160,7 @@ enum Settled {
 /// What a removal left, from a fresh worktree list and a no-follow check of
 /// the folder. A missing registration alone never proves complete deletion.
 fn settle(common: &Path, path: &Path) -> Settled {
-    settle_until(common, path, Instant::now() + Duration::from_secs(5))
+    settle_until(common, path, Instant::now() + REMOVE_SETTLE_TIME)
 }
 fn settle_until(common: &Path, path: &Path, until: Instant) -> Settled {
     let (trees, partial) = match list(common, common, until) {
@@ -1966,7 +1991,7 @@ fn delete_leftover(args: &[String], attempted: &mut bool) -> Result<Value> {
     super::worktree_maintenance::settle_removal(&record, Some(&pending))?;
     *attempted = true;
     // Completion is confirmed through the parent's descriptor, never by path.
-    match delete_tree(&path, &expected, Instant::now() + Duration::from_secs(300)) {
+    match delete_tree(&path, &expected, Instant::now() + LEFTOVER_DELETE_TIME) {
         Ok(()) => {
             super::worktree_maintenance::forget_removal(&record.path)?;
             Ok(json!({"status":"deleted","path":path,"common_dir":common,
@@ -2610,8 +2635,8 @@ fn remove_inner(
     args: &[String], attempted: &mut bool, observed: &mut Option<Value>,
     native: Option<&ProgramCleanupAdapter<'_, '_>>,
 ) -> Result<Value> {
-    let deadline = |seconds| {
-        let ordinary = Instant::now() + Duration::from_secs(seconds);
+    let deadline = |duration| {
+        let ordinary = Instant::now() + duration;
         native.map_or(ordinary, |adapter| ordinary.min(adapter.deadline()))
     };
 
@@ -2682,7 +2707,7 @@ fn remove_inner(
     let actual = git(
         &common,
         &["rev-parse", "--path-format=absolute", "--git-common-dir"],
-        deadline(5),
+        deadline(REMOVE_PROBE_TIME),
     )
     .map_err(|e| e.detail)?;
     if crate::platform::canonical(text(actual)).ok().as_ref() != Some(&common) {
@@ -2697,7 +2722,7 @@ fn remove_inner(
         let own = git(
             target,
             &["rev-parse", "--path-format=absolute", "--git-common-dir"],
-            deadline(5),
+            deadline(REMOVE_PROBE_TIME),
         )
         .map(text)
         .ok()
@@ -2718,7 +2743,7 @@ fn remove_inner(
     )
     .open(cache.with_extension("lock"))
     .map_err(|e| e.to_string())?;
-    let waited = deadline(if automatic { 1 } else { 10 });
+    let waited = deadline(if automatic { AUTOMATIC_LOCK_TIME } else { REMOVE_LOCK_TIME });
     while guard.try_lock_exclusive().is_err() {
         if Instant::now() >= waited {
             return Err(
@@ -2735,13 +2760,13 @@ fn remove_inner(
     // One lock order: repository, then session writer. No lifecycle caller holds
     // the writer lock while entering cleanup. A new binding cannot race removal.
     let _state_lock = storage::writer_until(
-        deadline(if automatic { 1 } else { 10 }),
+        deadline(if automatic { AUTOMATIC_LOCK_TIME } else { REMOVE_LOCK_TIME }),
     )?
     .ok_or("Session state is busy. Review cleanup after the current operation finishes.")?;
 
     let data = match native {
         Some(adapter) => adapter.review()?,
-        None => review(&common, Some(target), deadline(if automatic { 5 } else { 20 })),
+        None => review(&common, Some(target), deadline(if automatic { AUTOMATIC_REVIEW_TIME } else { REMOVE_REVIEW_TIME })),
     };
     if data["state"] != "ok" {
         return Err(format!(
@@ -2819,7 +2844,7 @@ fn remove_inner(
                 return Err("Missing worktree cleanup is disabled or the path cannot be verified absent".into());
             }
             let reference=format!("refs/heads/{}",string(&row,"branch"));
-            let retained=git(&common,&["rev-parse","--verify","--end-of-options",&reference],Instant::now()+Duration::from_secs(2)).ok().map(text);
+            let retained=git(&common,&["rev-parse","--verify","--end-of-options",&reference],Instant::now()+MISSING_HEAD_TIME).ok().map(text);
             if retained.as_deref()!=Some(string(&row,"head")) {
                 return Err("The missing checkout head is not retained by its branch; review manually".into());
             }
@@ -2894,13 +2919,13 @@ fn remove_inner(
     }
     *attempted = true;
     let removed = if native.is_some() {
-        super::worktrees::git_holding_cancellable(&common, &command, deadline(300), Some(&lock), &|| crate::platform::shutdown_signal() != 0)
+        super::worktrees::git_holding_cancellable(&common, &command, deadline(REMOVE_GIT_TIME), Some(&lock), &|| crate::platform::shutdown_signal() != 0)
     } else {
-        git_holding(&common, &command, deadline(if automatic { 3 } else { 300 }), Some(&lock))
+        git_holding(&common, &command, deadline(if automatic { AUTOMATIC_REMOVE_TIME } else { REMOVE_GIT_TIME }), Some(&lock))
     };
     let _ = fs::remove_file(&cache);
     let settled = match native {
-        Some(_) => settle_until(&common, &path, deadline(5)),
+        Some(_) => settle_until(&common, &path, deadline(REMOVE_SETTLE_TIME)),
         None => settle(&common, &path),
     };
     let _ = match &settled {
@@ -2959,7 +2984,7 @@ fn remove_inner(
             match git(
                 &common,
                 &["branch", "-d", "--", &branch],
-                deadline(10),
+                deadline(REMOVE_BRANCH_TIME),
             ) {
                 Ok(_) => deleted = true,
                 Err(e) => branch_error = json!(e.detail),
