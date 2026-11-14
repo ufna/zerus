@@ -1276,6 +1276,11 @@ mod actor {
                 let observer: Observe = Arc::new(move |_, _| {
                     let n = count.fetch_add(1, Ordering::SeqCst);
                     let ready = case == "before_send" && n == 0;
+                    if ready {
+                        // A valid observation may complete after the short
+                        // timeout used only by the never-ready controls.
+                        std::thread::sleep(Duration::from_millis(150));
+                    }
                     Some(
                         if ready {
                             OBSERVED_READY
@@ -1288,8 +1293,14 @@ mod actor {
                 observer
             });
             f.runtime.fixture_observer(observer, Duration::from_secs(5));
+            // Expiry cases keep their short budget. The before-send veto
+            // must reach its second observation within the production wait.
             f.runtime.fixture_wait(
-                Duration::from_millis(80),
+                if case == "before_send" {
+                    runtime::WAIT
+                } else {
+                    Duration::from_millis(80)
+                },
                 Duration::from_millis(5),
                 runtime::CHAIN,
             );
@@ -1297,6 +1308,8 @@ mod actor {
             f.admit(&original);
             f.until(case, |f| f.row(&original).receipt.drained);
             let row = f.row(&original);
+            eprintln!("RESUME_READY case={case}; send_reserved={}; observations={}; counts={:?}; receipt={}",
+                row.send.is_some(), observed.load(Ordering::SeqCst), ran.counts(), serde_json::to_string(&row.receipt).unwrap());
             assert_eq!(row.receipt.resume.step, Step::Recorded, "{case}");
             if case == "before_send" {
                 assert!(row.send.is_some(), "{case}: reserved before its turn");
