@@ -25,8 +25,3 @@ CREATE TABLE IF NOT EXISTS target_implementers (
  team TEXT NOT NULL, target INTEGER NOT NULL, member TEXT NOT NULL, round INTEGER NOT NULL,
  PRIMARY KEY(team,target,member), FOREIGN KEY(team,target) REFERENCES node_identity(team,id)
 );
-CREATE INDEX IF NOT EXISTS target_implementers_team ON target_implementers(team,target);
-CREATE TABLE IF NOT EXISTS target_implementer_full (
- team TEXT NOT NULL, target INTEGER NOT NULL,
- PRIMARY KEY(team,target), FOREIGN KEY(team,target) REFERENCES node_identity(team,id)
-);

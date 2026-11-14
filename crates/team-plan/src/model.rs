@@ -436,12 +436,6 @@ pub struct Node {
     /// reads the store exactly as before.
     #[serde(default, skip)]
     pub earlier_implementers: Vec<MemberId>,
-    /// The earlier-implementer record reached its cap and further
-    /// implementers could not be recorded (zerus-63rru.20): the stage's
-    /// staffing then fails closed instead of handing to an unrecorded
-    /// member silently.
-    #[serde(default, skip)]
-    pub implementer_record_full: bool,
     /// The task text of a draft. Once the task exists, the task holds it.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub text: String,

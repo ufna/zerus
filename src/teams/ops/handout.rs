@@ -106,10 +106,6 @@ fn eligible(db: &Connection, team: &Team, node: &Node, id: &str) -> Result<()> {
         || m.id == team.lead
         || m.role != node.role
         || earlier
-        || (node.kind == NodeKind::Stage
-            && node.stage_of.is_some_and(|target| {
-                rows::implementer_record_full(db, &team.id, target).unwrap_or(false)
-            }))
     {
         return Err(invalid("Member cannot take this task."));
     }
@@ -313,9 +309,10 @@ fn outcome_state(outcome: &HandoutOutcome) -> Result<(&'static str, Option<&str>
 fn read_effect(ctx: &Context<'_>, id: &str) -> Result<Effect> {
     ctx.db.query_row("SELECT node,member,generation,kind,state,outcome FROM effects WHERE team=?1 AND request_id=?2",params![ctx.team.id,id],|r|Ok(Effect{node:r.get(0)?,member:r.get(1)?,generation:r.get(2)?,kind:r.get(3)?,state:r.get(4)?,outcome:r.get(5)?})).optional().map_err(storage)?.ok_or_else(missing)
 }
-/// Records `member` as an earlier implementer of the target `node`, with
-/// the cap's fail-closed marker when the record is full (zerus-63rru.20).
-/// Called only by the service's own operations, in their transaction.
+/// Records `member` as an earlier implementer of the target `node`
+/// (zerus-63rru.20). Called only by the service's own operations, in their
+/// transaction; the record per target is bounded by the team's member
+/// bound, so no separate cap is needed.
 pub(super) fn record_earlier(ctx: &Context<'_>, node: u32, member: &str) -> Result<()> {
     ctx.db
         .execute(
@@ -323,30 +320,8 @@ pub(super) fn record_earlier(ctx: &Context<'_>, node: u32, member: &str) -> Resu
             params![ctx.team.id, node, member, ctx.generation(node)?],
         )
         .map_err(storage)?;
-    let count: i64 = ctx
-        .db
-        .query_row(
-            "SELECT count(*) FROM target_implementers WHERE team=?1 AND target=?2",
-            params![ctx.team.id, node],
-            |r| r.get(0),
-        )
-        .map_err(storage)?;
-    if count > EARLIER_IMPLEMENTERS_CAP {
-        ctx.db
-            .execute(
-                "INSERT OR IGNORE INTO target_implementer_full(team,target) VALUES(?1,?2)",
-                params![ctx.team.id, node],
-            )
-            .map_err(storage)?;
-    }
     Ok(())
 }
-
-/// The cap on a target's recorded earlier implementers (zerus-63rru.20):
-/// past it the record stays at the cap and the full marker makes the
-/// stage's staffing fail closed instead of handing to an unrecorded member
-/// silently.
-pub(super) const EARLIER_IMPLEMENTERS_CAP: i64 = 16;
 
 fn record_implementer(ctx: &Context<'_>, node: u32, member: &str) -> Result<()> {
     let mut n = ctx.node(node)?;

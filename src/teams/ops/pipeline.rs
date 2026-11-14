@@ -60,9 +60,14 @@ fn staffed(ctx: &Context<'_>, n: &Node, step: kernel::Step) -> Result<kernel::St
             free: false,
         })
         .collect();
+    // zerus-63rru.20 round 2: the target's recorded earlier implementers
+    // travel with the node the kernel reads at stage creation.
+    let mut target = n.clone();
+    target.earlier_implementers =
+        rows::earlier_implementers(ctx.db, &ctx.team.id, n.id).map_err(storage)?;
     Ok(kernel::staffed(
         step,
-        n,
+        &target,
         &PlanView {
             phases: &[],
             nodes: &[],

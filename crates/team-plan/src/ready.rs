@@ -143,10 +143,6 @@ pub(crate) struct Work<'a> {
     pub assignee: Option<&'a str>,
     /// Members who implemented what a stage checks; they never take it.
     pub implementers: Vec<&'a str>,
-    /// The target's earlier-implementer record reached its cap: the stage
-    /// fails closed instead of handing to an unrecorded member silently
-    /// (zerus-63rru.20).
-    pub record_full: bool,
 }
 
 /// Which members may ever take a piece of work, whatever their load.
@@ -161,7 +157,6 @@ impl Staffing<'_> {
             && !member.role.is_empty()
             && member.role == work.role
             && work.assignee.is_none_or(|assignee| assignee == member.id)
-            && !work.record_full
             && !work.implementers.contains(&member.id.as_str())
     }
 
@@ -174,12 +169,6 @@ impl Staffing<'_> {
             return None;
         }
         let role = work.role;
-        if work.record_full {
-            return Some(
-                "The task's earlier-implementer record is full, and the stage waits for the person."
-                    .to_owned(),
-            );
-        }
         if role.is_empty() {
             return Some("The task names no role.".to_owned());
         }
@@ -197,18 +186,20 @@ impl Staffing<'_> {
         if of_role.is_empty() {
             return Some(format!("No member of the team has the role {role}."));
         }
-        const RULE: &str = "a stage is never handed to the member who implemented the task";
+        const RULE: &str = "a stage is never handed to a member who implemented any round of the task";
         Some(match work.assignee {
             Some(assignee) if !of_role.contains(&assignee) => {
                 format!("The assignee {assignee} is not a member with the role {role}.")
             }
-            Some(assignee) => format!("The assignee {assignee} implemented the task, and {RULE}."),
+            Some(assignee) => format!(
+                "The assignee {assignee} implemented the task, and {RULE}. The task went to the lead, who can accept, return or cancel it there."
+            ),
             None if of_role.len() == 1 => format!(
-                "{} implemented the task and is the only member with the role {role}, and {RULE}.",
+                "{} implemented the task and is the only member with the role {role}, and {RULE}. The task went to the lead, who can accept, return or cancel it there.",
                 of_role[0]
             ),
             None => format!(
-                "{} implemented the task and are the only members with the role {role}, and {RULE}.",
+                "{} implemented every round of the task and are the only members with the role {role}, and {RULE}. The task went to the lead, who can accept, return or cancel it there.",
                 of_role.join(" and ")
             ),
         })
@@ -449,21 +440,18 @@ impl<'a> Index<'a> {
     /// implemented the node it checks, by its own record or the node's.
     fn work(&self, node: &'a Node) -> Work<'a> {
         let mut implementers = Vec::new();
-        let mut record_full = false;
         if node.kind == NodeKind::Stage {
             implementers.extend(node.implementer.as_deref());
             let target = node.stage_of.and_then(|id| self.nodes.get(&id));
             implementers.extend(target.and_then(|target| target.implementer.as_deref()));
             if let Some(target) = target {
                 implementers.extend(target.earlier_implementers.iter().map(|m| m.as_str()));
-                record_full = target.implementer_record_full;
             }
         }
         Work {
             role: &node.role,
             assignee: node.assignee.as_deref(),
             implementers,
-            record_full,
         }
     }
 }
@@ -1077,4 +1065,39 @@ mod tests {
         );
         assert!(unstaffed(&view).is_empty());
     }
+#[test]
+fn every_implementer_rounds_reason_names_the_rule_and_the_way_forward() {
+    // zerus-63rru.20 round 2: the kernel's gap reason names every round and
+    // the way forward when every member with the role implemented.
+    use crate::ready::{MemberView, PlanView, Staffing, Work};
+    use crate::{Member, MemberState, Node, NodeKind, NodeSource, NodeState as NState, Phase, PhaseKind, PhaseState, Severity};
+    let node = Node {
+        id: 2, phase: 0, task: None, title: "Review".into(), text: String::new(),
+        source: NodeSource::Sent, deps: vec![], assignee: None, role: "developer".into(),
+        pipeline: String::new(), writes: vec![], estimate_minutes: 0, kind: NodeKind::Stage,
+        severity: Severity::None, origin: None, stage_of: Some(1), stage_index: 0, round: 1,
+        implementer: None, earlier_implementers: vec!["m1".into()], hold: false, admitted: true,
+        state: NState::Pending, decided_by: None, integrated: false, rank: String::new(),
+    };
+    let members = vec![Member {
+        id: "m1".into(), role: "developer".into(), agent: "claude".into(),
+        account: String::new(), state: MemberState::Active, session: None,
+        worktree: String::new(), ownership_nonce: String::new(),
+    }];
+    let member_views: Vec<MemberView> = members.iter().map(|m| MemberView {
+        id: m.id.clone(), role: m.role.clone(), state: m.state, free: false,
+    }).collect();
+    let phases = vec![Phase {
+        n: 0, order: 0, title: String::new(), kind: PhaseKind::Queue,
+        mode: crate::PhaseMode::default(), approval: crate::Approval::default(),
+        state: PhaseState::Approved, acceptance: crate::Acceptance::default(),
+        barrier: false, paused: false,
+    }];
+    let nodes = vec![node.clone()];
+    let lead = String::from("lead");
+    let view = PlanView { phases: &phases, nodes: &nodes, members: &member_views, lead: &lead, integration: crate::Integration::None };
+    let work = Work { role: "developer", assignee: None, implementers: vec!["m1"] };
+    let reason = Staffing { view }.gap(&work).unwrap();
+    assert!(reason.contains("any round") && reason.contains("accept, return or cancel"), "{reason}");
+}
 }

@@ -90,19 +90,15 @@ pub fn staffed(step: Step, node: &Node, view: &PlanView) -> Step {
     let Step::Stage { role, .. } = &step else {
         return step;
     };
-    let target = node
-        .stage_of
-        .and_then(|id| view.nodes.iter().find(|n| n.id == id));
+    // zerus-63rru.20 round 2: at stage creation the node passed is the
+    // target task itself; its recorded earlier implementers are attached by
+    // the ops layer and read here, together with its current implementer.
     let mut implementers: Vec<&str> = node.implementer.as_deref().into_iter().collect();
-    implementers.extend(target.and_then(|t| t.implementer.as_deref()));
-    if let Some(t) = target {
-        implementers.extend(t.earlier_implementers.iter().map(|m| m.as_str()));
-    }
+    implementers.extend(node.earlier_implementers.iter().map(|m| m.as_str()));
     let work = Work {
         role,
         assignee: None,
         implementers,
-        record_full: target.is_some_and(|t| t.implementer_record_full),
     };
     match (Staffing { view: *view }).gap(&work) {
         Some(reason) => Step::ToLead { reason },

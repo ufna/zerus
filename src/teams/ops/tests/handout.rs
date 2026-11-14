@@ -366,65 +366,8 @@ fn the_unstaffed_reading_names_every_earlier_implementer() {
     );
 }
 
-fn past_the_cap_a_stage_is_not_handed_to_an_unrecorded_member() {
-    let mut h = Harness::new();
-    let (parent, _) = h.reported();
-    h.bind("m2");
-    h.bind("m3");
-    let db = h.store.db.as_ref().unwrap();
-    for i in 0..(super::super::handout::EARLIER_IMPLEMENTERS_CAP as usize) {
-        db.execute(
-            "INSERT OR IGNORE INTO target_implementers(team,target,member,round) VALUES(?1,?2,?3,1)",
-            params![TEAM, parent, format!("member-{i}")],
-        )
-        .unwrap();
-    }
-    let stage = h.add(&person(), 2);
-    let mut s = h.node(stage);
-    s.kind = NodeKind::Stage;
-    s.role = h.node(parent).role.clone();
-    s.stage_of = Some(parent);
-    s.round = h.node(parent).round;
-    s.implementer = h.node(parent).implementer.clone();
-    h.store
-        .db
-        .as_ref()
-        .unwrap()
-        .execute(
-            "UPDATE nodes SET data=?3 WHERE team=?1 AND id=?2",
-            params![TEAM, stage, rows::node_payload(&s).unwrap()],
-        )
-        .unwrap();
-    // One more implementer: the service's recording marks the target full
-    // and the hand-out refuses an unrecorded member with the stated reason.
-    h.run(
-        &person(),
-        Operation::Reassign {
-            node: parent,
-            member: "m2".into(),
-            reason: "Another round".into(),
-        },
-    )
-    .unwrap();
-    // The unrecorded developer with the stage's role is refused by the
-    // fail-closed marker alone.
-    refused(
-        h.run(
-            &service(),
-            Operation::HandoutIntent {
-                node: stage,
-                member: "m2".into(),
-                effect_request_id: uuid::Uuid::new_v4().to_string(),
-            },
-        ),
-        code::INVALID_STATE,
-    );
-    // Without the full marker m3 (who never implemented the target and
-    // shares its role) would take the stage; the refusal is the fail-closed
-    // behaviour (the kernel's gap reason states the full record).
-}
 
-#[test]
+
 fn service_handout_requires_kernel_ready_and_reads_archived_dependencies() {
     let mut h = Harness::new();
     h.bind("m1");

@@ -239,7 +239,10 @@ fn the_leads_reassign_and_cancel_on_the_held_stage() {
             },
         )
         .unwrap_err();
-    assert_eq!(wrong.message, "Replacement member cannot take this task.");
+    assert_eq!(
+        wrong.message,
+        "Replacement member cannot take this task: a stage is never handed to a member who implemented any round of the task."
+    );
     let cancel = h
         .run(
             &lead,

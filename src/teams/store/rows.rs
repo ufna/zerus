@@ -35,20 +35,6 @@ pub(crate) fn earlier_implementers(
         .and_then(|rows| rows.collect())
 }
 
-/// Whether the target's earlier-implementer record is full
-/// (zerus-63rru.20).
-pub(crate) fn implementer_record_full(
-    db: &rusqlite::Connection,
-    team: &str,
-    target: u32,
-) -> rusqlite::Result<bool> {
-    db.query_row(
-        "SELECT EXISTS(SELECT 1 FROM target_implementer_full WHERE team=?1 AND target=?2)",
-        rusqlite::params![team, target],
-        |r| r.get(0),
-    )
-}
-
 pub(crate) fn node_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<Node> {
     let mut node: Node = sql_json(r, 0)?;
     node.rank = r.get(1)?;
