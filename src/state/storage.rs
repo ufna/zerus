@@ -4,6 +4,12 @@ use sha2::{Digest, Sha256};
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 
+// Dormant selected-slot data capture; no constructor or native admission uses it.
+#[allow(dead_code)]
+pub(super) mod selected_source;
+#[cfg(test)]
+mod selected_source_tests;
+
 // Dormant physical exclusion for a future legacy-to-ID storage move.
 #[cfg(unix)]
 #[allow(dead_code)]
@@ -336,7 +342,6 @@ pub(super) fn read_metadata(name: &str) -> Result<Value> {
     read_metadata_at(&path, name)
 }
 
-#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn read_metadata_at(path: &Path, name: &str) -> Result<Value> {
     let bytes = record_bytes(path, Some(ID_RECORD_BYTES)).map_err(|e| not_found(name, e))?;
     let record = verify_metadata_at(path, name, &bytes)?;
@@ -347,7 +352,6 @@ fn read_metadata_at(path: &Path, name: &str) -> Result<Value> {
 /// Structural proof for bytes retained by recovery's original read. Selection
 /// is checked by public metadata readers; it never leaks into a different
 /// historical transaction through ambient caller state.
-#[cfg(any(target_os = "linux", target_os = "macos"))]
 pub(super) fn verify_metadata_at(path: &Path, name: &str, bytes: &[u8]) -> Result<Value> {
     let record: Value =
         serde_json::from_slice(bytes).map_err(|e| format!("{name}: invalid saved binding: {e}"))?;

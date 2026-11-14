@@ -5,6 +5,7 @@
 mod answer_channel;
 mod agent_hint;
 mod archive;
+mod record_source;
 pub(crate) mod archive_catalog;
 mod archive_references;
 mod claude_trust;
