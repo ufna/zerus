@@ -196,6 +196,12 @@ thread_local! {
     pub(in crate::desktop) static WAIT_ERROR: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     // The same wait fault, once the child's first kept output was read.
     pub(in crate::desktop) static WAIT_ERROR_AFTER_OUTPUT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    // Native outcomes observed by controls on this executor thread. In
+    // particular Darwin can reject shutdown after the peer has been killed.
+    static SPAWN_ERROR: std::cell::Cell<Option<(std::io::ErrorKind, Option<i32>)>> = const { std::cell::Cell::new(None) };
+    static INPUT_FINISH_ERROR: std::cell::Cell<Option<i32>> = const { std::cell::Cell::new(None) };
+    static INPUT_BLOCKS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static INPUT_BLOCKED: std::cell::RefCell<Option<Box<dyn FnOnce()>>> = const { std::cell::RefCell::new(None) };
     pub(in crate::desktop) static SPAWNED: std::cell::Cell<Option<u32>> = const { std::cell::Cell::new(None) };
     /// Runs once on this thread after the final check, right before spawn.
     pub(in crate::desktop) static AFTER_FINAL_CHECK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> = const { std::cell::RefCell::new(None) };
@@ -297,6 +303,12 @@ fn start<T>(
     deadline: Instant,
     final_check: impl FnOnce(&mut Command) -> std::io::Result<T>,
 ) -> Ended {
+    #[cfg(test)]
+    {
+        SPAWN_ERROR.with(|slot| slot.set(None));
+        INPUT_FINISH_ERROR.with(|slot| slot.set(None));
+        INPUT_BLOCKS.with(|slot| slot.set(0));
+    }
     let Spec {
         custody_env,
         input,
@@ -372,6 +384,10 @@ fn start<T>(
     };
     // Only these pre-child branches mean "not started"; once a child exists,
     // every outcome is its exit or Unknown.
+    #[cfg(test)]
+    if let Err(error) = &spawned {
+        SPAWN_ERROR.with(|slot| slot.set(Some((error.kind(), error.raw_os_error()))));
+    }
     let Ok(mut child) = spawned else {
         return Ended::NotStarted;
     };
@@ -468,7 +484,17 @@ fn start<T>(
                         break;
                     }
                     Ok(n) => written += n,
-                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
+                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                        #[cfg(test)]
+                        {
+                            INPUT_BLOCKS.with(|slot| slot.set(slot.get() + 1));
+                            if let Some(hook) = INPUT_BLOCKED.with(|slot| slot.borrow_mut().take())
+                            {
+                                hook();
+                            }
+                        }
+                        break;
+                    }
                     Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
                     Err(_) => {
                         finished = true;
@@ -619,7 +645,12 @@ fn finish_input(owner: Option<InputOwner>) -> std::io::Result<()> {
         }
         owner
     };
-    owner.finish()
+    let finished = owner.finish();
+    #[cfg(test)]
+    if let Err(error) = &finished {
+        INPUT_FINISH_ERROR.with(|slot| slot.set(Some(error.raw_os_error().unwrap_or(-1))));
+    }
+    finished
 }
 
 /// A last check in the spawn turn that `deadline` crosses: it notes whether
@@ -736,6 +767,23 @@ mod tests {
         assert_eq!(SPAWNED.with(|spawned| spawned.take()), None);
     }
 
+    fn assert_input_deadline(ended: Ended) {
+        // Killing the original child can disconnect Darwin's socket before
+        // finish. Keep its conservative unwritten result, and accept it only
+        // with the actual native ENOTCONN; never infer completed delivery.
+        match (
+            INPUT_FINISH_ERROR.with(|slot| slot.take()),
+            cfg!(target_os = "macos"),
+        ) {
+            (None, _) => assert_eq!(ended, Ended::Unknown("test_timed_out")),
+            (Some(errno), true) => {
+                assert_eq!(errno, libc::ENOTCONN);
+                assert_eq!(ended, Ended::Unknown("test_unwritten"));
+            }
+            (Some(errno), false) => panic!("unexpected shutdown errno {errno}"),
+        }
+    }
+
     /// A deadline that passes after the spawn offers no input: the child is
     /// killed, and its result stays Unknown.
     #[test]
@@ -745,7 +793,7 @@ mod tests {
         let deadline = Instant::now() + Duration::from_secs(3);
         AFTER_SPAWN.with(|hook| *hook.borrow_mut() = Some(Box::new(move || past(deadline))));
         let ended = cat(deadline, |_| Ok(()));
-        assert_eq!(ended, Ended::Unknown("test_timed_out"));
+        assert_input_deadline(ended);
         assert!(SPAWNED.with(|spawned| spawned.take()).is_some());
         assert_eq!(OFFERED.with(|offered| offered.take()), Some(0));
         assert!(AFTER_SPAWN.with(|hook| hook.borrow().is_none()));
@@ -795,7 +843,7 @@ mod tests {
             assert!(INPUT_READ.with(|hook| hook.borrow().is_none()));
             assert_eq!(OFFERED.with(|o| o.take()), Some(offered), "slow {slow}");
             if offered == 0 {
-                assert_eq!(ended, Ended::Unknown("test_timed_out"));
+                assert_input_deadline(ended);
             } else {
                 assert_eq!(
                     ended,
