@@ -137,11 +137,13 @@ class DecoderReadinessFailure(unittest.TestCase):
             detail = json.loads(lines[0])
             self.assertEqual(detail['shell'], 'powershell')
             self.assertTrue(detail['sustained'])
-            self.assertEqual(detail['budget_ms'], 25000)
+            self.assertEqual(detail['budget_ms'], 8000)
+            self.assertEqual(detail['stage'], 'startup')
+            self.assertFalse(detail['marker_observed'])
             self.assertGreaterEqual(detail['elapsed_ms'], detail['budget_ms'])
             self.assertIsNone(detail['child_returncode'])
             self.assertFalse(detail['stdin_closed'])
-            self.assertGreaterEqual(detail['renewals'], 1)
+            self.assertEqual(detail['renewals'], 0)
             self.assertEqual(detail['readers_alive'], [True, True])
             self.assertFalse(detail['files']['ready.json']['exists'])
             self.assertFalse(detail['files']['stderr']['exists'])
@@ -150,3 +152,192 @@ class DecoderReadinessFailure(unittest.TestCase):
             self.assertIn('"kind":"start"', detail['files']['record.jsonl']['tail'])
             self.assertTrue(writer.closed)
             child.wait.assert_called_once_with(timeout=18)
+
+
+class DecoderStages(unittest.TestCase):
+    def test_record_observation_refuses_an_oversized_fixture(self):
+        with tempfile.TemporaryDirectory(prefix='decoder-record-') as name:
+            path = Path(name)/'record.jsonl'
+            path.write_bytes(b'x'*65537)
+            with self.assertRaisesRegex(AssertionError, 'exceeded its bound'):
+                remote.decoder_rows(path)
+
+    def exercise(self, *, startup=7, partial_ready=False, partial_marker=False, renew=True):
+        import contextlib
+        import json
+        import struct
+        with tempfile.TemporaryDirectory(prefix='decoder-stages-') as name:
+            fake = Path(name)/'fake-agent-data'
+            fake.touch()
+            child = mock.Mock()
+            child.pid, child.returncode = 123, None
+            child.stdout, child.stderr = io.BytesIO(), io.BytesIO()
+            words = ['', 'a"b', 'back\\', 'two\\\\tail', '日本語', 'Пример', '$(literal);& data', "it's a word"]
+            marker_delay = .5 if partial_marker is True else float(partial_marker)
+
+            class Model:
+                now, last_renew = 0.0, 0.0
+                root = None
+                render_at = None
+                ready_complete = False
+                marker_complete = False
+                marker_at = None
+                rendered = False
+                eof = False
+                frames = []
+                events = []
+
+                def row(self, value):
+                    with (self.root/'record.jsonl').open('a', encoding='utf-8') as file:
+                        file.write(json.dumps(value)+'\n')
+
+                def update(self):
+                    if self.root is None or child.returncode is not None:
+                        return
+                    if self.now-self.last_renew > 15:
+                        child.returncode = 127
+                        (self.root/'stderr').write_bytes(b'hgs: remote Windows invocation failed\n')
+                        return
+                    ready_at = startup+(19 if self.preloaded else 0)
+                    if self.now >= ready_at and not self.ready_complete:
+                        if partial_ready and self.now < ready_at+.5:
+                            (self.root/'ready.json').write_text('{"argv":', encoding='utf-8')
+                        else:
+                            (self.root/'ready.json').write_text(json.dumps(dict(argv=words)), encoding='utf-8')
+                            self.ready_complete = True
+                    if self.marker_at is not None and not self.marker_complete and self.now >= self.marker_at+marker_delay:
+                        with (self.root/'record.jsonl').open('a', encoding='utf-8') as file:
+                            file.write('\n')
+                        self.marker_complete = True
+                    control = self.root/'control'
+                    if control.exists() and control.read_text() == 'render render\n':
+                        assert self.frames and self.marker_complete, 'render preceded the complete input marker record'
+                        self.render_at = self.now
+                        self.events.append(('render', self.now))
+                        control.unlink()
+                    if self.render_at is not None and self.now-self.render_at >= 19 and not self.rendered:
+                        self.row(dict(kind='render', bytes=1280, steps=20))
+                        (self.root/'stdout').write_bytes((self.root/'render').read_bytes())
+                        self.rendered = True
+
+                def sleep(self, _seconds):
+                    self.now += .25
+                    self.update()
+
+            model = Model()
+
+            class Input(io.BytesIO):
+                pending = b''
+
+                def write(self, data):
+                    self.pending += data
+                    while len(self.pending) >= 4:
+                        length = struct.unpack('<I', self.pending[:4])[0]
+                        if length == 0xffffffff:
+                            self.pending = self.pending[4:]
+                            model.last_renew = model.now
+                            model.events.append(('ping', model.now))
+                        elif length == 0:
+                            self.pending = self.pending[4:]
+                            model.eof = True
+                        elif len(self.pending) >= length+4:
+                            body, self.pending = self.pending[4:4+length], self.pending[4+length:]
+                            model.last_renew = model.now
+                            model.frames.append(body)
+                            row = json.dumps(dict(hex=body.hex()))
+                            with (model.root/'record.jsonl').open('a', encoding='utf-8') as file:
+                                file.write(row+('' if partial_marker and len(model.frames) == 1 else '\n'))
+                            if len(model.frames) == 1:
+                                model.events.append(('marker', model.now))
+                                model.marker_at = model.now
+                                model.marker_complete = not partial_marker
+                        else:
+                            break
+                    return len(data)
+
+            writer = Input()
+            child.stdin = writer
+            reader_fd, unused = os.pipe()
+            os.close(unused)
+
+            def launch(*args, **kwargs):
+                model.root = kwargs['cwd']
+                model.preloaded = 'FAKE_AGENT_RENDER' in kwargs['env']
+                if model.preloaded:
+                    model.render_at = startup
+                (model.root/'record.jsonl').touch()
+                return child
+
+            def poll():
+                model.update()
+                return child.returncode
+
+            def wait(**_):
+                if child.returncode is not None:
+                    return child.returncode
+                if not model.eof:
+                    self.assertEqual((model.root/'control').read_text(), 'exit 7\n')
+                child.returncode = 0 if model.eof else 7
+
+            child.poll.side_effect, child.wait.side_effect = poll, wait
+
+            class Capture:
+                def __init__(self, *, target, args):
+                    self.pipe, self.path = args
+                def start(self):
+                    self.path.touch()
+                def join(self, **_):
+                    self.pipe.close()
+                def is_alive(self):
+                    return child.returncode is None
+
+            log = io.StringIO()
+            with mock.patch.dict(os.environ, {'HGS_TEST_FAKE_AGENT':str(fake), 'SystemRoot':name}), \
+                    mock.patch.object(remote.subprocess, 'Popen', side_effect=launch), \
+                    mock.patch.object(remote.subprocess, 'CREATE_NO_WINDOW', 0, create=True), \
+                    mock.patch.object(remote, 'async_stdin_pipe', return_value=(reader_fd, writer)), \
+                    mock.patch('threading.Thread', Capture), \
+                    mock.patch.object(remote.time, 'monotonic', side_effect=lambda: model.now), \
+                    mock.patch.object(remote.time, 'sleep', side_effect=model.sleep), \
+                    contextlib.redirect_stderr(log):
+                kwargs = {} if renew else dict(renew=False)
+                result = remote.WindowsNativeTransport().run_decoder('powershell', sustained=True, **kwargs)
+            self.assertTrue(writer.closed)
+            self.assertEqual(child.returncode, 0 if renew else 127)
+            return result, model
+
+    def test_seven_second_startup_does_not_spend_the_sustained_render_allowance(self):
+        result, model = self.exercise()
+        self.assertGreaterEqual(result['startup_ms'], 7000)
+        self.assertLess(result['startup_ms'], 8000)
+        self.assertGreaterEqual(result['render_ms'], 19000)
+        self.assertGreater(model.now, 25)
+        marker = next(at for event, at in model.events if event == 'marker')
+        render = next(at for event, at in model.events if event == 'render')
+        self.assertFalse(any(marker < at < render for event, at in model.events if event == 'ping'))
+
+    def test_partial_ready_publication_stays_inside_the_same_startup_deadline(self):
+        result, _ = self.exercise(partial_ready=True)
+        self.assertEqual(result['startup_ms'], 7500)
+
+    def test_render_waits_for_the_complete_marker_record(self):
+        result, _ = self.exercise(partial_marker=True)
+        self.assertEqual(result['startup_ms'], 7500)
+
+    def test_startup_still_refuses_after_eight_seconds(self):
+        with self.assertRaisesRegex(AssertionError, 'original fake did not become ready'):
+            self.exercise(startup=9)
+
+    def test_no_renewal_mutant_expires_before_the_render_can_complete(self):
+        result, model = self.exercise(renew=False)
+        self.assertTrue(result['lease_expired'])
+        self.assertEqual(result['returncode'], 127)
+        self.assertGreaterEqual(result['lease_elapsed_ms'], 14000)
+        self.assertEqual(result['renewals'], 0)
+        self.assertFalse(model.rendered)
+        self.assertFalse(model.eof)
+
+    def test_marker_observation_delay_does_not_shorten_the_lease_measurement(self):
+        result, _ = self.exercise(startup=0, partial_marker=2, renew=False)
+        self.assertLess(result['render_ms'], 14000)
+        self.assertGreaterEqual(result['lease_elapsed_ms'], 14000)

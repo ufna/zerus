@@ -37,7 +37,10 @@ class Sampling(unittest.TestCase):
         def fixture(method):
             self.assertEqual(method, 'run_decoder')
             case = mock.Mock()
-            case.run_decoder.side_effect = lambda *args, **kwargs: self.assertTrue(active, 'missing sustained CPU load')
+            def run(*args, **kwargs):
+                self.assertTrue(active, 'missing sustained CPU load')
+                return dict(marker_observed=True, startup_ms=1, render_ms=19000, renewals=9)
+            case.run_decoder.side_effect = run
             cases.append(case)
             return case
         with mock.patch.object(samples, 'round_count', return_value=2), \

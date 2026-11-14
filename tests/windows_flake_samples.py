@@ -76,9 +76,12 @@ class TransportSamples(unittest.TestCase):
                 cases = [WindowsNativeTransport('run_decoder') for _ in range(4)]
                 futures = [pool.submit(case.run_decoder, 'powershell', sustained=True) for case in cases]
                 errors = []
-                for future in futures:
+                for slot, future in enumerate(futures, 1):
                     try:
-                        future.result()
+                        result = future.result()
+                        self.assertTrue(result.get('marker_observed'), 'sample lacks its decoder input marker')
+                        print('TRANSPORT_SAMPLE_CALL ' + json.dumps(dict(round=index+1, slot=slot, **result)),
+                              file=sys.stderr)
                     except BaseException as error:
                         errors.append(error)
                 # Join every in-flight fixture call. Only successful calls

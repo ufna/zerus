@@ -293,6 +293,16 @@ succeed, while earlier independent failures stay visible. Use the PR's
 reviewed workflow and exact source pin;
 do not start a second full matrix while that SHA is already under verification.
 
+The sustained transport fixture gives startup and an exact framed-input marker
+one eight-second deadline, then gives the 20-chunk render its own 25 seconds.
+The marker must appear in the fake's complete input record before rendering
+starts; no renewal is queued between those events. This binds the 19-second
+render to the decoder's actual clock, which starts after `Add-Type`. The product
+lease remains 15 seconds. Native no-renewal controls must observe the original
+helper exit with code 127 before rendering completes, while stdin stays open.
+Readiness/marker and render diagnostics identify their separate stage and bound;
+cleanup keeps its existing 18-second wait, five-second fallback and reader joins.
+
 Arch is the Linux GUI build environment because the application uses Qt 6 and KDE
 Frameworks 6. Ubuntu remains useful for portable CLI and minimum-Rust checks.
 Linux CLI CI builds the pinned official tmux 3.7c archive with an exact SHA-256;
