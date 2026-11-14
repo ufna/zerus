@@ -91,6 +91,9 @@ fn run_case(case: &Case) -> (bool, bool, bool, String, bool, bool) {
         a.terminal_cancels(&mut h.store, &mut p, 6_000_000 + pass * 900_000)
             .unwrap();
     }
+    // The settle's own recovery clears the hand-out gate; the maintenance
+    // prune runs later and must not be what clears it.
+    let gate_gone = a.ledger.get(TEAM, "handout:1").unwrap().is_none();
     for _ in 0..4 {
         a.maintain(&h.store).unwrap();
     }
@@ -99,7 +102,6 @@ fn run_case(case: &Case) -> (bool, bool, bool, String, bool, bool) {
         .get(TEAM, &format!("delivery:{id}"))
         .unwrap()
         .is_some();
-    let gate_gone = a.ledger.get(TEAM, "handout:1").unwrap().is_none();
     let reserved = h.store.effect_reserved(TEAM, &id).unwrap();
     let state = h
         .store
