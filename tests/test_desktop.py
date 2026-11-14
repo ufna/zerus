@@ -194,6 +194,47 @@ finally:
         self.assertNotEqual(result.returncode, 0)
         self.assertIn('agent session cannot change desktop mode', result.stderr)
 
+    @unittest.skipUnless(sys.platform.startswith(('linux', 'darwin')), 'Unix foreground consumer')
+    def test_mode_capture_checks_positive_agent_evidence_outside_the_callers_ancestry(self):
+        from desktop_foreground_consumer import run
+        import shutil
+        # The caller is genuinely reparented and unmarked. The still-current
+        # foreground leader is outside its ancestry, so ancestor checks alone
+        # cannot satisfy this regression.
+        source = Path(__file__).with_name('fixtures') / 'desktop_foreground_consumer.c'
+        terminal = self.root / 'terminal-consumer'
+        compiled = subprocess.run(['cc', '-Wall', '-Wextra', '-Werror', str(source), '-o', str(terminal)],
+                                  env=self.env, capture_output=True, text=True, timeout=30)
+        self.assertEqual(compiled.returncode, 0, compiled.stderr)
+        agent = terminal.with_name('codex')
+        shutil.copy2(terminal, agent)
+        clean = {key: value for key, value in self.env.items()
+                 if not key.startswith(('HGS_', 'DSH_'))}
+        clean.update(HGS_CONFIG_DIR=str(self.config), HGS_STATE_DIR=str(self.state),
+                     DSH_HOME=str(self.root / 'dsh'))
+        for label, image, markers in [('named', agent, {}),
+                                      ('marked', terminal, {'HGS_RUN_ID': 'private-agent-fixture'}),
+                                      ('clean', terminal, {})]:
+            with self.subTest(consumer=label):
+                result = run(HGS, self.root / label, image, dict(clean, **markers))
+                if label == 'clean':
+                    self.assertEqual(result['code'], 0, result)
+                    observed = json.loads(result['out'])
+                    self.assertEqual(observed['source'], 'interactive_terminal')
+                    self.assertEqual(observed['consumer']['pid'], result['leader']['pid'])
+                    self.assertEqual(observed['consumer']['birth'], result['leader']['birth'])
+                else:
+                    self.assertNotEqual(result['code'], 0, result)
+                    self.assertIn('agent-descended frontend request refused', result['error'])
+        if sys.platform == 'darwin':
+            # A real restricted Terminal shell can inherit a marker which the
+            # platform withholds. It remains no positive environment evidence.
+            result = run(HGS, self.root / 'restricted', terminal,
+                         dict(clean, HGS_RUN_ID='private-withheld-marker'), restricted=True)
+            self.assertEqual(result['code'], 0, result)
+            self.assertEqual(json.loads(result['out'])['source'], 'interactive_terminal')
+        self.assertFalse(self.desktop.exists(), 'mode capture must remain read-only')
+
     def test_notification_controls_are_scoped_reads_and_generic_mutation_is_refused(self):
         self.serve()
         current = self.cli('desktop', 'status', '--json')
