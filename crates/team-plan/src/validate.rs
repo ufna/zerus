@@ -12,6 +12,132 @@ use crate::catalog::{Catalog, TemplateBundle};
 use crate::model::{Acceptance, Caps};
 use crate::problem::{code, Problem};
 
+/// The characters a team name never contains (zerus-63rru.74): every
+/// control character, the two line separators, and the nine bidirectional
+/// embedding, override and isolate characters. The plan kernel keeps its
+/// own copy so it stays light: no dependency on the replica, whose Loro
+/// tree stays behind crates/replica (zerus-63rru.75 round 2). A root-crate
+/// test asserts this list and the replica's agree for every character.
+pub fn forbidden_char(value: &str) -> Option<char> {
+    value.chars().find(|ch| {
+        let point = *ch as u32;
+        ch.is_control() || matches!(point, 0x2028 | 0x2029 | 0x202A..=0x202E | 0x2066..=0x2069)
+    })
+}
+
+/// The characters a team name never contains (zerus-63rru.74): every
+/// control character, the two line separators, and the nine bidirectional
+/// embedding, override and isolate characters. The existing size limit
+/// still applies and reports its own problem.
+pub fn name_problem(name: &str, field: &str, limit: usize) -> Option<Problem> {
+    if name.len() > limit {
+        return Some(Problem::new(code::OVER_CAP, "Text exceeds its size limit."));
+    }
+    // The same list as the replica's title check (zerus-63rru.74).
+    if let Some(ch) = forbidden_char(name) {
+        return Some(Problem::new(
+            code::INVALID_STATE,
+            format!(
+                "{field} contains U+{:04X}, which is not allowed.",
+                ch as u32
+            ),
+        ));
+    }
+    None
+}
+
+/// The character rules at admission (zerus-63rru.74 round 2): the save, the
+/// import and the creation refuse a name or an ID outside the set, with the
+/// sentence naming the template and the field. Reading stays open: a
+/// catalog stored by an older build still loads, lists and runs; the next
+/// save or import refuses it.
+pub fn admission_problems(catalog: &Catalog) -> Vec<Problem> {
+    let mut problems = Vec::new();
+    for entry in &catalog.templates {
+        if let Some(problem) = name_problem(&entry.name, "The template name", 256) {
+            problems.push(problem);
+        }
+        if let Some(mut problem) = id_problem(&entry.id, "The template ID") {
+            problem.message = format!("Template {}: {}", entry.name, problem.message);
+            problems.push(problem);
+        }
+    }
+    for role in &catalog.roles {
+        if let Some(mut problem) = id_problem(&role.id, "The role ID") {
+            // The refusal names the template that actually uses the role:
+            // the first that seats it, or none — an unused role says so
+            // (zerus-63rru.74 round 3).
+            problem.message = match catalog
+                .templates
+                .iter()
+                .find(|t| t.roster.iter().any(|seat| seat.role == role.id))
+            {
+                Some(t) => format!("Template {}: {}", t.name, problem.message),
+                None => format!("An unused role: {}", problem.message),
+            };
+            problems.push(problem);
+        }
+    }
+    for pipeline in &catalog.pipelines {
+        if let Some(mut problem) = id_problem(&pipeline.id, "The pipeline ID") {
+            // A template uses a pipeline as its default or through a seated
+            // role's own pipeline, as its bundle counts it.
+            problem.message = match catalog
+                .templates
+                .iter()
+                .find(|t| used_pipelines(catalog, t).contains(pipeline.id.as_str()))
+            {
+                Some(t) => format!("Template {}: {}", t.name, problem.message),
+                None => format!("An unused pipeline: {}", problem.message),
+            };
+            problems.push(problem);
+        }
+    }
+    problems
+}
+
+/// A role or member ID (zerus-63rru.74): ASCII [a-z0-9] first, then
+/// [a-z0-9_-], at most 64 characters. No stricter rule existed before;
+/// this one is the only character-set rule and the length cap.
+pub fn id_problem(id: &str, field: &str) -> Option<Problem> {
+    if id.len() > 64 {
+        return Some(Problem::new(code::OVER_CAP, "Text exceeds its size limit."));
+    }
+    let mut chars = id.chars();
+    match chars.next() {
+        Some(ch) if ch.is_ascii_lowercase() || ch.is_ascii_digit() => {}
+        Some(ch) => {
+            let point = ch as u32;
+            return Some(Problem::new(
+                code::INVALID_STATE,
+                format!(
+                    "{field} contains U+{point:04X}, which is not allowed; IDs are [a-z0-9] then [a-z0-9_-], at most 64 characters."
+                ),
+            ));
+        }
+        None => {
+            return Some(Problem::new(
+                code::INVALID_STATE,
+                format!(
+                    "{field} is empty; IDs are [a-z0-9] then [a-z0-9_-], at most 64 characters."
+                ),
+            ));
+        }
+    }
+    for ch in chars {
+        if !(ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '-' || ch == '_') {
+            let point = ch as u32;
+            return Some(Problem::new(
+                code::INVALID_STATE,
+                format!(
+                    "{field} contains U+{point:04X}, which is not allowed; IDs are [a-z0-9] then [a-z0-9_-], at most 64 characters."
+                ),
+            ));
+        }
+    }
+    None
+}
+
 /// Only the duplicated IDs of one catalog, for a partial catalog that is
 /// merged over another: a merge must not hide a duplicate before validation.
 pub fn validate_ids(catalog: &Catalog) -> Vec<Problem> {
@@ -236,6 +362,31 @@ fn active_pipelines<'a>(
 /// Everything wrong with a bundle imported from elsewhere. `caps` is the
 /// widest a team on this computer may be.
 pub fn validate_bundle(bundle: &TemplateBundle, caps: &Caps) -> Vec<Problem> {
+    let mut problems = Vec::new();
+    let template = bundle.template.name.as_str();
+    if let Some(problem) = name_problem(&bundle.template.name, "The template name", 256) {
+        problems.push(problem);
+    }
+    if let Some(mut problem) = id_problem(&bundle.template.id, "The template ID") {
+        problem.message = format!("Template {template}: {}", problem.message);
+        problems.push(problem);
+    }
+    for role in &bundle.roles {
+        if let Some(mut problem) = id_problem(&role.id, "The role ID") {
+            problem.message = format!("Template {template}: {}", problem.message);
+            problems.push(problem);
+        }
+    }
+    for pipeline in &bundle.pipelines {
+        if let Some(mut problem) = id_problem(&pipeline.id, "The pipeline ID") {
+            problem.message = format!("Template {template}: {}", problem.message);
+            problems.push(problem);
+        }
+    }
+    problems.extend(validate_bundle_inner(bundle, caps));
+    problems
+}
+fn validate_bundle_inner(bundle: &TemplateBundle, caps: &Caps) -> Vec<Problem> {
     let catalog = Catalog {
         roles: bundle.roles.clone(),
         pipelines: bundle.pipelines.clone(),
@@ -398,6 +549,46 @@ mod tests {
 
     fn ids<T>(items: &[T], id: impl Fn(&T) -> &str) -> Vec<String> {
         items.iter().map(|item| id(item).to_owned()).collect()
+    }
+
+    #[test]
+    fn a_bad_pipeline_id_names_the_template_whose_seated_role_uses_it() {
+        // zerus-63rru.74 round 4: a pipeline reached only through a seated
+        // role's own pipeline is used by that template, not "unused".
+        let mut catalog = builtin();
+        let mut pipeline = catalog.pipelines[0].clone();
+        pipeline.id = "pipeline id".into();
+        catalog.pipelines.push(pipeline);
+        let mut role = catalog.roles[0].clone();
+        role.id = "own".into();
+        role.pipeline = "pipeline id".into();
+        catalog.roles.push(role);
+        let template = catalog.templates[0].name.clone();
+        catalog.templates[0].roster.push(Seat {
+            role: "own".into(),
+            count: 1,
+            optional: false,
+        });
+        let problems = admission_problems(&catalog);
+        let message = problems
+            .iter()
+            .map(|problem| problem.message.as_str())
+            .find(|message| message.contains("pipeline ID"))
+            .expect("the pipeline ID is refused");
+        assert!(
+            message.starts_with(&format!("Template {template}: ")),
+            "{message}"
+        );
+
+        // Unseated, the same role no longer uses it: the pipeline is unused.
+        catalog.templates[0].roster.pop();
+        let problems = admission_problems(&catalog);
+        let message = problems
+            .iter()
+            .map(|problem| problem.message.as_str())
+            .find(|message| message.contains("pipeline ID"))
+            .expect("the pipeline ID is refused");
+        assert!(message.starts_with("An unused pipeline: "), "{message}");
     }
 
     #[test]

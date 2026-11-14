@@ -84,6 +84,9 @@ pub fn save(config_dir: &Path, catalog: &Catalog) -> Result<(), Problem> {
     first_problem(validate_ids(catalog))?;
     let merged = merge(&builtin(), catalog);
     first_problem(validate_catalog(&merged))?;
+    // The character rules apply at admission (zerus-63rru.74 round 2): the
+    // save and the import refuse, the load stays open.
+    first_problem(zerus_team_plan::admission_problems(&merged))?;
     for template in &merged.templates {
         export_bundle(&merged, &template.id)?;
     }
@@ -93,7 +96,14 @@ pub fn save(config_dir: &Path, catalog: &Catalog) -> Result<(), Problem> {
 /// Adds a bundle's template, roles and pipelines to the person's catalog.
 /// Writes nothing when the bundle is incomplete or over this computer's cap.
 pub fn import_bundle(config_dir: &Path, bundle: &TemplateBundle) -> Result<(), Problem> {
+    // The import is an admission (zerus-63rru.74 round 2).
     first_problem(validate_bundle(bundle, &Caps::default()))?;
+    first_problem(zerus_team_plan::admission_problems(&Catalog {
+        roles: bundle.roles.clone(),
+        pipelines: bundle.pipelines.clone(),
+        templates: vec![bundle.template.clone()],
+        planning_rules: Vec::new(),
+    }))?;
     let mut person = person(config_dir)?;
     first_problem(validate_ids(&person))?;
     person.templates = merge_by_id(
@@ -189,6 +199,96 @@ mod tests {
         let file = path(dir);
         fs::create_dir_all(file.parent().expect("a parent")).unwrap();
         fs::write(file, text).unwrap();
+    }
+
+    /// zerus-63rru.74: a template with a forbidden name or a role with a
+    /// forbidden ID is refused at the catalog save, with the sentence that
+    /// names the field and the code point.
+    #[test]
+    fn a_template_with_a_forbidden_name_or_role_id_is_refused_at_save() {
+        let dir = temp();
+        let mut catalog = builtin();
+        catalog.templates[0].name = "Template\u{202D}name".into();
+        let problem = save(dir.path(), &catalog).unwrap_err();
+        assert_eq!(problem.code, code::INVALID_STATE, "{problem:?}");
+        assert!(
+            problem.message.contains("The template name")
+                && problem.message.contains("U+202D"),
+            "{problem:?}"
+        );
+        let mut catalog = builtin();
+        catalog.roles[0].id = "role id".into();
+        let problem = save(dir.path(), &catalog).unwrap_err();
+        assert_eq!(problem.code, code::INVALID_STATE, "{problem:?}");
+        assert!(problem.message.contains("The role ID"), "{problem:?}");
+    }
+
+    /// Round 2, P2-ID: a catalog stored before the rule still loads, lists
+    /// and runs; the next save refuses it with the sentence naming the
+    /// template and the field.
+    #[test]
+    fn an_older_catalog_with_an_id_outside_the_set_loads_and_is_refused_on_save() {
+        let dir = temp();
+        write(
+            dir.path(),
+            r#"{"roles":[{"id":"role id","name":"Old role","agent":"codex"}]}"#,
+        );
+        let loaded = load(dir.path()).unwrap();
+        let old = loaded
+            .roles
+            .iter()
+            .find(|role| role.id == "role id")
+            .expect("the stored role");
+        assert_eq!(old.name, "Old role");
+        let problem = save(dir.path(), &loaded).unwrap_err();
+        assert_eq!(problem.code, code::INVALID_STATE, "{problem:?}");
+        // The stored role is used by no template: the refusal says so and
+        // names no template (round 3's attribution).
+        assert!(
+            problem.message.contains("unused role")
+                && problem.message.contains("role ID"),
+            "{problem:?}"
+        );
+    }
+
+    /// Round 3, P3-1: the refusal names the template that uses the bad
+    /// role, not the first template; an unused role says it is unused.
+    #[test]
+    fn the_save_names_the_template_that_uses_the_bad_role_or_says_unused() {
+        let dir = temp();
+        let mut catalog = builtin();
+        let mut second = catalog.templates[0].clone();
+        second.id = "second".into();
+        second.name = "Second template".into();
+        second.roster.push(zerus_team_plan::catalog::Seat {
+            role: "role id".into(),
+            count: 1,
+            optional: false,
+        });
+        catalog.templates.push(second);
+        let mut old = catalog.roles[0].clone();
+        old.id = "role id".into();
+        old.name = "Old role".into();
+        catalog.roles.push(old);
+        let problem = save(dir.path(), &catalog).unwrap_err();
+        assert_eq!(problem.code, code::INVALID_STATE, "{problem:?}");
+        assert!(
+            problem.message.contains("Second template")
+                && problem.message.contains("role ID"),
+            "{problem:?}"
+        );
+        // An unused role names no template.
+        let mut catalog = builtin();
+        let mut orphan = catalog.roles[0].clone();
+        orphan.id = "role id".into();
+        orphan.name = "Orphan".into();
+        catalog.roles.push(orphan);
+        let problem = save(dir.path(), &catalog).unwrap_err();
+        assert_eq!(problem.code, code::INVALID_STATE, "{problem:?}");
+        assert!(
+            problem.message.contains("unused role"),
+            "{problem:?}"
+        );
     }
 
     #[test]

@@ -35,7 +35,10 @@ pub use model::{
     TeamFixture, TeamId, TeamStatus, Timers,
 };
 pub use problem::Problem;
-pub use validate::{bundle, validate_bundle, validate_catalog, validate_ids};
+pub use validate::{
+    admission_problems, bundle, forbidden_char, id_problem, name_problem, validate_bundle,
+    validate_catalog, validate_ids,
+};
 
 /// True when a value equals its type's default; used to keep JSON short.
 pub(crate) fn is_default<T: Default + PartialEq>(value: &T) -> bool {
