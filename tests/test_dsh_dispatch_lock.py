@@ -43,6 +43,7 @@ class Host:
         self.mode = ''
         self.hold = None
         self.unknown = set()
+        self.replies = {}
         self.entered, self.release, self.writer_entered = threading.Event(), threading.Event(), threading.Event()
         self.stop = threading.Event()
         self.thread = threading.Thread(target=self.serve)
@@ -65,7 +66,7 @@ class Host:
                 request = json.loads(client.makefile('rb').readline(1 << 20))
                 self.calls.append(request)
                 method, params = request['method'], request['params']
-                if method in ('rename', 'pause', 'create'):
+                if method in ('rename', 'pause', 'create', 'session-action'):
                     self.writer_entered.set()
                 if method == self.hold:
                     self.entered.set()
@@ -92,6 +93,8 @@ class Host:
                     value = {'selected': selection}
                 else:
                     value = {}
+                if method in self.replies:
+                    value = self.replies[method](params, value)
                 if method in self.unknown:
                     client.sendall(b'{lost acknowledgement\n')
                 else:

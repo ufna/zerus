@@ -927,18 +927,37 @@ pub(crate) fn launch(
         return Ok(());
     }
     let parent = parent_link::launcher_link()?;
-    let _guard = lock(Some(&root().join("dsh/bindings.lock")))?;
-    if let Some(mut record) = PROVIDER.existing_for_launch(name)? {
-        if parent_link::claimed_launch() { return Err("--parent applies only to new sessions; use hgs parent adopt for an existing session".into()); }
+    let existing = {
+        let _bindings = lock(Some(&root().join("dsh/bindings.lock")))?;
+        PROVIDER.existing_for_launch(name)?
+    };
+    if let Some(observed) = existing {
+        if parent_link::claimed_launch() {
+            return Err("--parent applies only to new sessions; use hgs parent adopt for an existing session".into());
+        }
         if new_only {
             return Err("This DeepSeek session name already exists".into());
         }
+        let (_session, mut record) = dispatch_lock::acquire(name)?;
+        if record != observed {
+            return Err("DeepSeek binding changed before launch; refresh and retry".into());
+        }
+        let mut expected = record.clone();
         ensure_host(&record)?;
-        create_session(&mut record)?;
+        create_session_with(&mut record, |record| {
+            dispatch_lock::persist(name, &mut expected, record)
+        })?;
         record["paused"] = json!(false);
         record["run_id"] = json!(uuid::Uuid::new_v4().to_string());
-        save(&mut record)?;
+        dispatch_lock::persist(name, &mut expected, &mut record)?;
         return Ok(());
+    }
+    // A new name has no durable destination reservation yet. Keep allocation,
+    // persistence and native creation together; an uncertain reply must retain
+    // this exact conversation, never allocate another one for the same name.
+    let _guard = lock(Some(&root().join("dsh/bindings.lock")))?;
+    if PROVIDER.existing_for_launch(name)?.is_some() {
+        return Err("DeepSeek binding appeared before launch; refresh and retry".into());
     }
     let cwd = crate::platform::canonical(cwd).map_err(|e| e.to_string())?;
     // Only a session created here takes the account defaults; relaunching an
@@ -946,7 +965,9 @@ pub(crate) fn launch(
     let config = crate::config::Config::load().map_err(|e| e.message)?;
     let defaults = crate::accounts::launch_selection(&config, "dsh").map_err(|e| e.message)?;
     let mut record = new_binding(name, &cwd, launch_id);
-    if let Some(parent) = parent { record["parent"] = parent; }
+    if let Some(parent) = parent {
+        record["parent"] = parent;
+    }
     ensure_host(&record)?;
     let (generation, mode) = create_session(&mut record)?;
     if let Some((model, effort)) = defaults {
@@ -962,13 +983,15 @@ pub(crate) fn launch(
             eprintln!("hgs: {warning}");
         }
     }
+    // Native creation and defaults have settled. Optional project metadata
+    // never needs the creation reservation, including folder inference.
+    drop(_guard);
     // A child its proven parent launched starts in the parent's project,
     // written after the bindings lock is released, like a fork (zerus-d5twt).
     if let Some(parent) = record
         .get("parent")
         .filter(|link| crate::swarm::placing_parent(link))
     {
-        drop(_guard);
         if let Ok(config) = crate::config::Config::load() {
             crate::swarm::place_child_session(
                 &config,
@@ -1559,8 +1582,12 @@ pub(super) fn fork(
     dry: bool,
     scope: Option<&session_action::Scope>,
 ) -> Result<String> {
+    let (_session, mut record) = dispatch_lock::acquire(name)?;
+    let expected = record.clone();
     let _guard = lock(Some(&root().join("dsh/bindings.lock")))?;
-    let mut record = binding(name)?;
+    if binding(name)? != expected {
+        return Err("DeepSeek binding changed before fork".into());
+    }
     if let Some(scope) = scope { scope.check(&record)?; }
     if expected_run.is_some_and(|id| id != string(&record, "run_id"))
         || expected_conversation.is_some_and(|id| id != string(&record, "conversation_id"))
@@ -1578,11 +1605,22 @@ pub(super) fn fork(
         println!("Fork official dsh session {name} as {target}");
         return Ok(target);
     }
+    drop(_guard);
     let ping = rpc(&record, "ping", json!({}))?;
     if !supports(&ping, "fork") { return Err(OLDER_ADAPTER.into()); }
     let inspected = rpc(&record, "inspect", json!({"sessionId":record["conversation_id"],"includeProcesses":false}))?;
     let reason = fork_reason(&record, &ping, &inspected);
     if !reason.is_empty() { return Err(reason.into()); }
+    // Allocation and the native fork still share the global reservation. No
+    // target binding exists until the host returns its new conversation ID.
+    let _guard = lock(Some(&root().join("dsh/bindings.lock")))?;
+    if binding(name)? != expected {
+        return Err("DeepSeek binding changed during fork inspection".into());
+    }
+    occupied = binding_records().iter().chain(records()?.iter())
+        .map(|record| string(record, "name").to_owned()).collect();
+    occupied.insert(name.to_owned());
+    target = fork::choose_name(name, tag, &occupied)?;
     if string(&record, "session_id").is_empty() { save(&mut record)?; }
     if !session_id::canonical(string(&record,"session_id")) { return Err("The source session identity is unavailable; nothing was forked".into()); }
     // A fork whose reply was lost is retried under the same request ID, which
@@ -2182,49 +2220,130 @@ fn checked_request(record: &Value) -> Result<Value> {
 }
 /// Lifecycle remains confined to a supported resident host. Never start,
 /// dispose, reload or replace a host to implement a mobile scoped action.
-pub(super) fn session_action(name: &str, action: &str, new_name: Option<&str>, scope: &session_action::Scope) -> Result<()> {
-    if !["pause","resume","rename","forget"].contains(&action) {return Err("This native DeepSeek adapter has no archive lifecycle API".into());}
-    let _guard=lock(Some(&root().join("dsh/bindings.lock")))?;
-    let mut record=binding(name)?;scope.check(&record)?;
-    if let Some(new)=new_name {
-        let old:Vec<_>=name.split('/').collect();let parts:Vec<_>=new.split('/').collect();
-        if parts.len()!=3 || old.len()!=3 || parts[..2]!=old[..2] || parts.iter().any(|p|p.is_empty() || p.trim()!=*p || p.contains([':', '.']) || p.chars().any(char::is_control)) {
+pub(super) fn session_action(
+    name: &str,
+    action: &str,
+    new_name: Option<&str>,
+    scope: &session_action::Scope,
+) -> Result<()> {
+    if !["pause", "resume", "rename", "forget"].contains(&action) {
+        return Err("This native DeepSeek adapter has no archive lifecycle API".into());
+    }
+    let (_session, mut record) = dispatch_lock::acquire(name)?;
+    scope.check(&record)?;
+    let expected = record.clone();
+    if let Some(new) = new_name {
+        let old: Vec<_> = name.split('/').collect();
+        let parts: Vec<_> = new.split('/').collect();
+        if parts.len() != 3
+            || old.len() != 3
+            || parts[..2] != old[..2]
+            || parts.iter().any(|p| {
+                p.is_empty()
+                    || p.trim() != *p
+                    || p.contains([':', '.'])
+                    || p.chars().any(char::is_control)
+            })
+        {
             return Err("Rename must preserve the original DeepSeek provider and project".into());
         }
-        if new!=name && exists(new) {return Err("The destination session already exists".into());}
+        if new != name && exists(new) {
+            return Err("The destination session already exists".into());
+        }
     }
-    if action=="rename" {
-        if legacy_fork_unconfirmed(&record)? { return Err("Resolve the original legacy fork before renaming this session".into()); }
-        PROVIDER.prepare_label(&record,new_name.unwrap())?;
+    if action == "rename" {
+        if legacy_fork_unconfirmed(&record)? {
+            return Err("Resolve the original legacy fork before renaming this session".into());
+        }
+        dispatch_lock::transaction(name, &expected, || {
+            if new_name != Some(name) && exists(new_name.unwrap()) {
+                return Err("The destination session already exists".into());
+            }
+            PROVIDER.prepare_label(&record, new_name.unwrap())
+        })?;
     }
-    let ping=rpc(&record,"ping",json!({}))?;
-    if ping["sessionActions"]!=true {return Err("The resident DeepSeek adapter lacks scoped lifecycle; it was left running".into());}
-    let inspected=rpc(&record,"inspect",json!({"sessionId":record["conversation_id"],"includeProcesses":false}))?;
-    if ping["generation"]!=inspected["generation"] || !inspected["lifecycleActions"].as_array().is_some_and(|values|values.iter().any(|value|value==action)) {
+    let ping = rpc(&record, "ping", json!({}))?;
+    if ping["sessionActions"] != true {
+        return Err(
+            "The resident DeepSeek adapter lacks scoped lifecycle; it was left running".into(),
+        );
+    }
+    let inspected = rpc(
+        &record,
+        "inspect",
+        json!({"sessionId":record["conversation_id"],"includeProcesses":false}),
+    )?;
+    if ping["generation"] != inspected["generation"]
+        || !inspected["lifecycleActions"]
+            .as_array()
+            .is_some_and(|values| values.iter().any(|value| value == action))
+    {
         return Err("This action is unavailable for the exact native DeepSeek handle".into());
     }
-    let mode=crate::accounts::permission_mode(&crate::config::Config::load().map_err(|e|e.message)?,"native-dsh","dsh").map_err(|e|e.message)?;
+    let mode = crate::accounts::permission_mode(
+        &crate::config::Config::load().map_err(|e| e.message)?,
+        "native-dsh",
+        "dsh",
+    )
+    .map_err(|e| e.message)?;
     scope.changing();
-    let answer=rpc(&record,"session-action",json!({"sessionId":record["conversation_id"],"generation":inspected["generation"],
-        "action":action,"title":new_name.map(|name|name.rsplit('/').next().unwrap()),"permissionMode":mode}))?;
-    if answer["sessionId"]!=record["conversation_id"] || answer["action"]!=action {return Err("DeepSeek lifecycle acknowledgement did not match".into());}
-    if answer["generation"]!=inspected["generation"] {return Err("DeepSeek host changed during lifecycle handoff".into());}
-    if answer["status"]=="failed" {scope.unchanged();return Err(string(&answer,"error").into());}
-    if answer["status"]!="completed" {return Err("DeepSeek lifecycle handoff was not confirmed".into());}
-    match action {
-        "pause"=>record["paused"]=json!(true),
-        "resume"=>{record["paused"]=json!(false);record["run_id"]=json!(uuid::Uuid::new_v4().to_string());record.as_object_mut().unwrap().remove("permissions_pending");},
-        "rename"=>{notifications::anchor(&mut record);if storage::in_id_layout(&record) { recovery::rename_job_in_place(&record,new_name.unwrap())?; } else { recovery::rename_job(name,new_name.unwrap(),string(&record,"run_id"))?; } record["name"]=json!(new_name.unwrap());},
-        "forget"=>{remove(&record)?;return Ok(());},
-        _=>unreachable!(),
+    let answer = rpc(
+        &record,
+        "session-action",
+        json!({"sessionId":record["conversation_id"],"generation":inspected["generation"],
+        "action":action,"title":new_name.map(|name|name.rsplit('/').next().unwrap()),"permissionMode":mode}),
+    )?;
+    if answer["sessionId"] != record["conversation_id"] || answer["action"] != action {
+        return Err("DeepSeek lifecycle acknowledgement did not match".into());
     }
-    save(&mut record)?;
-    if action=="rename" && new_name!=Some(name) && !storage::in_id_layout(&record) {
-        archive::remove_synced(&binding_path(name))?;
-        // The rename is done; losing read marks only shows a reply as unread again.
-        let _=read_marks::rename_owner(name,new_name.unwrap());
+    if answer["generation"] != inspected["generation"] {
+        return Err("DeepSeek host changed during lifecycle handoff".into());
     }
-    scope.result_record(&record);Ok(())
+    if answer["status"] == "failed" {
+        scope.unchanged();
+        return Err(string(&answer, "error").into());
+    }
+    if answer["status"] != "completed" {
+        return Err("DeepSeek lifecycle handoff was not confirmed".into());
+    }
+    dispatch_lock::transaction(name, &expected, || {
+        if action == "rename" && new_name != Some(name) && exists(new_name.unwrap()) {
+            return Err("The destination session already exists".into());
+        }
+        match action {
+            "pause" => record["paused"] = json!(true),
+            "resume" => {
+                record["paused"] = json!(false);
+                record["run_id"] = json!(uuid::Uuid::new_v4().to_string());
+                record
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("permissions_pending");
+            }
+            "rename" => {
+                notifications::anchor(&mut record);
+                if storage::in_id_layout(&record) {
+                    recovery::rename_job_in_place(&record, new_name.unwrap())?;
+                } else {
+                    recovery::rename_job(name, new_name.unwrap(), string(&record, "run_id"))?;
+                }
+                record["name"] = json!(new_name.unwrap());
+            }
+            "forget" => {
+                remove(&record)?;
+                return Ok(());
+            }
+            _ => unreachable!(),
+        }
+        save(&mut record)?;
+        if action == "rename" && new_name != Some(name) && !storage::in_id_layout(&record) {
+            archive::remove_synced(&binding_path(name))?;
+            // The rename is done; losing read marks only shows a reply as unread again.
+            let _ = read_marks::rename_owner(name, new_name.unwrap());
+        }
+        scope.result_record(&record);
+        Ok(())
+    })
 }
 
 pub(crate) fn dispatch(command: &str, args: &[String]) -> Result<i32> {
