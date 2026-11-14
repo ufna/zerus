@@ -85,30 +85,14 @@ fn eligible(db: &Connection, team: &Team, node: &Node, id: &str) -> Result<()> {
     }
     let m = rows::member(db, &team.id, id)?
         .ok_or_else(|| Problem::new(code::UNKNOWN_MEMBER, "Member does not exist."))?;
-    // A stage never goes to a member who implemented any round of what it
-    // checks: its own record, the node's current implementer, or the
-    // target's recorded earlier implementers, and never at all once the
-    // record is full (zerus-63rru.20).
-    let earlier = if node.kind == NodeKind::Stage {
-        node.implementer.as_deref() == Some(id)
-            || node
-                .stage_of
-                .is_some_and(|target| {
-                    rows::earlier_implementers(db, &team.id, target)
-                        .is_ok_and(|list| list.iter().any(|m| m == id))
-                })
-    } else {
-        false
-    };
+    // The plan kernel's staffing decides before this check and covers the
+    // stage's implementers (zerus-63rru.20), so the eligibility keeps only
+    // the base guards.
     if m.state != MemberState::Active
         || m.session.is_none()
         || m.id == team.lead
         || m.role != node.role
-        || earlier
-        || (node.kind == NodeKind::Stage
-            && node.stage_of.is_some_and(|target| {
-                rows::implementer_record_full(db, &team.id, target).unwrap_or(false)
-            }))
+        || (node.kind == NodeKind::Stage && node.implementer.as_deref() == Some(id))
     {
         return Err(invalid("Member cannot take this task."));
     }
