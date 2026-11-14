@@ -104,6 +104,10 @@ def main():
          '_ => reply("uncertain", UNCERTAIN),',
          '_ => reply("refused", UNCERTAIN),',
          'unavailable_publication_never_becomes_a_definite_refusal_or_delivery'),
+        ("restart-without-a-control", "src/state/input/task_refusal/windows_tests.rs",
+         'const RESTART: &str = "state::input::task_refusal::windows_tests::retained_refusal_restart_probe";',
+         'const RESTART: &str = "not_a_control";',
+         'restart probe must execute exactly one control'),
     ]
     source = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
     if source != ENV.get("QUALIFICATION_SOURCE"):

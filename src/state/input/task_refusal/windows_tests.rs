@@ -210,6 +210,11 @@ fn restart_preserves_unknown_tombstones_and_old_readers_never_offer_them() {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
+    assert!(
+        String::from_utf8_lossy(&output.stdout)
+            .contains("test result: ok. 1 passed; 0 failed; 0 ignored;"),
+        "restart probe must execute exactly one control"
+    );
     assert_eq!(fs::read(path).unwrap(), bytes);
 }
 

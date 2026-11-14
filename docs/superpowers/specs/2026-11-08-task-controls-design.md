@@ -117,6 +117,8 @@ checks original-file flush, no-replace preservation, the pinned root and native
 input exclusion, retained Unknown after publication and restart, and the old
 reader's present/Unknown result. Runtime mutants remove namespace completion,
 read-back completion, no-replace, and the caller's uncertain result separately.
+The restart helper must execute exactly one test; a zero-match helper mutation
+must fail too.
 The final control restores the original source and the const-false gate.
 These controls qualify the conservative Unknown response; they do not establish
 namespace durability or authorize queue activation.
