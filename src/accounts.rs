@@ -392,6 +392,10 @@ pub const AUTH_ENV: &[&str] = &[
     "CLAUDE_CODE_USE_VERTEX",
     "CLAUDE_CODE_USE_FOUNDRY",
 ];
+/// Serialises tests that change process environment variables.
+#[cfg(test)]
+pub(crate) static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// The permission mode of an account without an explicit choice (owner,
 /// 2026-11-07, T-6hcfnu): bypass for Claude, Codex and Kimi. OpenCode and
 /// DeepSeek keep their native configuration: OpenCode refuses a Zerus mode,
@@ -1204,6 +1208,56 @@ pub(crate) fn kimi_compact_on_expiry(config: &Config, id: &str, home: &Path) -> 
 #[cfg(test)]
 mod permission_tests {
     use super::*;
+
+    #[test]
+    fn selecting_an_account_clears_the_inspection_test_seam() {
+        let _lock = ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let root = tempfile::tempdir().unwrap();
+        let dir = root.path().join("config");
+        fs::create_dir_all(dir.join("accounts/work")).unwrap();
+        fs::write(
+            dir.join("accounts.json"),
+            r#"{"profiles":{"work":{"provider":"kimi","label":"Work"}}}"#,
+        )
+        .unwrap();
+        let config = Config {
+            home: root.path().to_string_lossy().into_owned(),
+            dir,
+            state: root.path().join("state"),
+            selves: Vec::new(),
+            peers: Vec::new(),
+            base_peers: Vec::new(),
+            peers_from_environment: false,
+            machines: Default::default(),
+            tab: false,
+            tab_colors: String::new(),
+        };
+        let keys: Vec<&str> = std::iter::once("KIMI_CODE_HOME")
+            .chain(std::iter::once("HGS_ACCOUNT_ID"))
+            .chain(std::iter::once(inspection::KIMI_TEST_BASE_ENV))
+            .chain(AUTH_ENV.iter().copied())
+            .collect();
+        let saved: Vec<(&str, Option<std::ffi::OsString>)> =
+            keys.into_iter().map(|key| (key, env::var_os(key))).collect();
+        env::set_var(inspection::KIMI_TEST_BASE_ENV, "http://127.0.0.1:9");
+        let environment = select(&config, "work", "kimi").unwrap();
+        assert!(
+            environment.contains(&format!("{}=", inspection::KIMI_TEST_BASE_ENV)),
+            "{environment:?}"
+        );
+        assert!(
+            env::var_os(inspection::KIMI_TEST_BASE_ENV).is_none(),
+            "select left the seam in the launching process"
+        );
+        for (key, value) in saved {
+            match value {
+                Some(value) => env::set_var(key, value),
+                None => env::remove_var(key),
+            }
+        }
+    }
 
     #[cfg(unix)]
     #[test]

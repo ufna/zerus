@@ -439,7 +439,13 @@ fn ignored_kimi_base(result: &mut Value, variable: &str) {
     } else {
         "Kimi account inspection sends its token only to the default platform."
     };
-    result["detail"] = json!(format!("Ignored {variable}: {reason}"));
+    let sentence = format!("Ignored {variable}: {reason}");
+    // An invalid seam and a non-default CLI value can both apply; the later
+    // rule adds its own sentence instead of hiding the seam's.
+    result["detail"] = match result["detail"].as_str().filter(|text| !text.is_empty()) {
+        Some(earlier) => json!(format!("{earlier} {sentence}")),
+        None => json!(sentence),
+    };
 }
 
 /// A `[::1]` or literal loopback host, then the end, a `/`, or `:PORT` with 1
@@ -899,18 +905,15 @@ pub(super) fn inspect(config: &Config, args: &[String]) -> Result<Value> {
 mod tests {
     use super::*;
     use std::io::Write;
-    use std::sync::Mutex;
 
     // The variable names are spelled out here: a mutant that changes the name
     // the inspection reads must fail these tests.
     const TEST_BASE_VAR: &str = "HGS_TEST_KIMI_API_BASE";
     const CLI_BASE_VAR: &str = "KIMI_CODE_BASE_URL";
 
-    static CURL_ENV: Mutex<()> = Mutex::new(());
-
     fn curl_lock() -> std::sync::MutexGuard<'static, ()> {
-        // A panicking test must not turn every later Kimi test red.
-        CURL_ENV
+        // A panicking test must not turn every later curl/environment test red.
+        crate::accounts::ENV_LOCK
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
@@ -1359,6 +1362,34 @@ fi
         assert_eq!(
             fs::read_to_string(bin.path().join("argv.0")).unwrap(),
             KIMI_DEFAULT_ARGV
+        );
+    }
+
+    #[test]
+    fn an_invalid_test_base_detail_survives_the_cli_base_detail() {
+        let _lock = curl_lock();
+        let server = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        server.set_nonblocking(true).unwrap();
+        let base = format!("http://{}", server.local_addr().unwrap());
+        let home = kimi_home("synthetic-token", now() + 3600);
+        let _env = EnvVars::set(&[
+            (TEST_BASE_VAR, Some("http://127.0.0.2:9")),
+            (CLI_BASE_VAR, Some(&base)),
+        ]);
+        let result = kimi(home.path());
+        assert_eq!(result["status"], "unavailable", "{result}");
+        let detail = result["detail"].as_str().unwrap();
+        assert!(
+            detail.contains("Ignored HGS_TEST_KIMI_API_BASE"),
+            "the seam's own detail was lost: {detail}"
+        );
+        assert!(
+            detail.contains("Ignored KIMI_CODE_BASE_URL"),
+            "the CLI base detail is missing: {detail}"
+        );
+        assert!(
+            server.accept().is_err(),
+            "a refused base received the token"
         );
     }
 
