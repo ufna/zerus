@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { readFileSync } from "node:fs";
 import { attentionMarks, pendingReadMarks, pump, queueReadMarks, updateAttentionMarks, type PumpHost, type Source } from "./bridge";
 import { emptyBatch, type Batch } from "./types";
 import { createTasks } from "./store/tasks";
@@ -39,6 +40,19 @@ const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
 const batch = (key: string): Batch => ({ ...emptyBatch(), removes: [{ computer: "", key, reason: null }] });
 
 describe("pump", () => {
+  it.skipIf(!process.env.HGS_TEST_TEAMS_BATCHES)("delivers the real CLI off/on core batches to discovery", async () => {
+    const batches = JSON.parse(readFileSync(process.env.HGS_TEST_TEAMS_BATCHES!, "utf8")) as Batch[];
+    expect(batches).toHaveLength(2);
+    for (const [index, answer] of batches.entries()) {
+      const src = source(), h = host(), store = createTeams();
+      pump(src.s, (b) => store.apply(b.teams ?? []), h.h);
+      src.answer(answer);
+      await settle(); h.runFrames();
+      expect(store.available()).toBe(index === 1);
+      expect(store.off()).toBe(index === 1 ? null : "inactive");
+    }
+  });
+
   it.each([
     ["on", "list", { teams: [], truncated: false, next: null }, true, null],
     ["off", "failed", { code: "teams_inactive", message: "Teams are off." }, false, "inactive"],
