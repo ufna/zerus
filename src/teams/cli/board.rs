@@ -27,11 +27,15 @@ pub(super) fn queue(team: &Team, page: Page<QueueRow>) -> Result<Page<Value>, Pr
             // zerus-63rru.52 round 2: only a stopped or archived team's row
             // carries the stop outcome, as a stable code plus the store's
             // refusal reason as data, never a sentence.
+            // zerus-63rru.52 round 4: a stopped or archived team without a
+            // recorded stop sequence (a team stopped before the upgrade)
+            // shows no outcome at all, exactly as before.
             if matches!(
                 team.status,
                 zerus_team_plan::model::TeamStatus::Stopped
                     | zerus_team_plan::model::TeamStatus::Archived
-            ) {
+            ) && row.stop.as_ref().is_some_and(|f| f.stop_seq > 0)
+            {
                 if let Some(outcome) = stop_outcome(row.stop.as_ref()) {
                     value["stop_outcome"] = json!(outcome);
                 }

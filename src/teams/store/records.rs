@@ -72,6 +72,9 @@ pub struct StopFacts {
     pub key: Option<String>,
     pub key_reason: Option<String>,
     pub pending_cancel: bool,
+    /// The team's recorded stop sequence; zero when no Stop of the new kind
+    /// has run (zerus-63rru.52 round 4): such a team shows no outcome.
+    pub stop_seq: i64,
 }
 /// A member row with whether the person stopped the member.
 #[derive(Clone, Debug, PartialEq, Eq)]

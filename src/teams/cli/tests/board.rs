@@ -627,6 +627,46 @@ fn a_second_stop_shows_only_its_own_outcome() {
     assert_eq!(outcome(&h), ("pending".to_owned(), None));
 }
 
+/// zerus-63rru.52 round 4: a stopped team whose stop happened before the
+/// upgrade (the sequence column defaults to zero) shows no outcome at all;
+/// a team whose Stop recorded a sequence shows the codes.
+#[test]
+fn a_pre_upgrade_stopped_team_shows_no_outcome_and_a_new_stop_shows_the_codes() {
+    use crate::teams::ops::Operation;
+    let h = seeded();
+    let node = 1;
+    // The team stops without the new Stop: the status is set directly (the
+    // reviewer's status-probe pattern) and the sequence stays zero.
+    h.store()
+        .db
+        .as_ref()
+        .unwrap()
+        .execute(
+            "UPDATE teams SET status=?2 WHERE id=?1",
+            rusqlite::params![TEAM, serde_json::to_string(&"stopped").unwrap()],
+        )
+        .unwrap();
+    let (reply, exit) = h.cli(&Caller::Person, &format!("queue --team {TEAM} --limit 200"), "");
+    assert_eq!(exit, 0, "{reply}");
+    let row = reply["rows"].as_array().unwrap().iter().find(|r| r["id"] == node).unwrap();
+    assert!(row.get("stop_outcome").is_none(), "{row}");
+    // A real Stop on a running team records the sequence and shows codes.
+    h.store()
+        .db
+        .as_ref()
+        .unwrap()
+        .execute(
+            "UPDATE teams SET status=?2 WHERE id=?1",
+            rusqlite::params![TEAM, serde_json::to_string(&"running").unwrap()],
+        )
+        .unwrap();
+    h.apply(&person(), Operation::Stop);
+    let (reply, exit) = h.cli(&Caller::Person, &format!("queue --team {TEAM} --limit 200"), "");
+    assert_eq!(exit, 0, "{reply}");
+    let row = reply["rows"].as_array().unwrap().iter().find(|r| r["id"] == node).unwrap();
+    assert_eq!(row["stop_outcome"]["code"], "pending", "{row}");
+}
+
 /// The queue reply carries `unstaffed`, always: null, then the sentence of
 /// the lead's open item once no member can take the ready node.
 #[test]
