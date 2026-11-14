@@ -288,3 +288,41 @@ it("cancels an unpainted jump when a resumed run retains the same display window
   view.setTarget("after-resume-" + serial); await settle();
   expect(highlighted(view.host)).toBeUndefined(); expect(view.scroller.scrollTop).toBe(top);
 });
+
+it("keeps both direction states through a scroll burst and recomputes only after idle", async () => {
+  const view = mount(); view.setOlderDone(true);
+  view.setRows([own(1), ...events(2, 6), own(8), ...events(9, 20)]); await settle();
+  const previous = nav(view.host, "Previous"), next = nav(view.host, "Next");
+  const disabled = () => [previous.disabled, next.disabled];
+  expect(disabled()).toEqual([false, true]);
+  const flips: MutationRecord[] = [];
+  const observer = new MutationObserver(records => flips.push(...records));
+  observer.observe(previous, { attributes: true, attributeFilter: ["disabled"] });
+  observer.observe(next, { attributes: true, attributeFilter: ["disabled"] });
+  try {
+    for (const top of [700, 300, 0]) {
+      view.scroller.dispatchEvent(new WheelEvent("wheel", { deltaY: -1, bubbles: true }));
+      view.scroller.scrollTop = top; view.scroller.dispatchEvent(new Event("scroll"));
+      await vi.advanceTimersByTimeAsync(50); await settle();
+      expect(disabled()).toEqual([false, true]); expect(flips).toHaveLength(0);
+    }
+    await vi.advanceTimersByTimeAsync(199); await settle();
+    expect(disabled()).toEqual([false, true]); expect(flips).toHaveLength(0);
+    await vi.advanceTimersByTimeAsync(1); await settle();
+    expect(disabled()).toEqual([true, false]);
+  } finally { observer.disconnect(); }
+});
+
+it("honors an enabled navigation click once the existing scroll gesture settles", async () => {
+  const view = mount(); view.setOlderDone(true);
+  view.setRows([own(1), ...events(2, 6), own(8), ...events(9, 20)]); await settle();
+  view.scroller.dispatchEvent(new WheelEvent("wheel", { deltaY: -1, bubbles: true }));
+  view.scroller.scrollTop = 500; view.scroller.dispatchEvent(new Event("scroll"));
+  nav(view.host, "Previous").click();
+  // The browser's remaining scroll events do not cancel the explicit click.
+  view.scroller.scrollTop = 450; view.scroller.dispatchEvent(new Event("scroll"));
+  await settle(); expect(highlighted(view.host)).toBeUndefined();
+  await vi.advanceTimersByTimeAsync(250); await settle();
+  expect(highlighted(view.host)).toBe("item-s1");
+  expect(view.host.querySelector("#item-s1")!.getBoundingClientRect().top).toBe(0);
+});
