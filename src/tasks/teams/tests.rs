@@ -1652,4 +1652,37 @@ fn start_legacy_rechecks_a_caller_that_became_refused_after_entry() {
     start_recheck_case("start_legacy");
 }
 
+/// zerus-63rru.97 F1/F2, end to end: a command whose task is no longer
+/// guarded still meets the stopped team's returned key through the caller's
+/// own project store, clears it, and its later write keeps it cleared.
+#[test]
+fn a_returned_key_is_cleared_through_the_commands_guard_meeting() {
+    let mut f = Fixture::new();
+    let member = f.bind("m1");
+    let task = f.add();
+    let reference = format!("example/{}", task["id"].as_str().unwrap());
+    f.h.run(&fixtures::person(), ops::Operation::Stop).unwrap();
+    assert_eq!(
+        f.h.store.team(TEAM).unwrap().unwrap().status,
+        zerus_team_plan::model::TeamStatus::Stopped
+    );
+    assert!(
+        f.document(&task).team().unwrap().is_some(),
+        "the stop left no key to return"
+    );
+    let out = f.run(
+        &["rename", &reference, "--json"],
+        "Renamed after the stop",
+        Some(&member),
+    );
+    assert_eq!(out["ok"], true, "{out}");
+    let after = f.document(&task);
+    assert_eq!(
+        after.team().unwrap(),
+        None,
+        "the command's guard meeting did not clear the returned key"
+    );
+    assert_eq!(after.view().unwrap().title, "Renamed after the stop");
+}
+
 mod gating;

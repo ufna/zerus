@@ -6,6 +6,15 @@ use crate::teams::ops::{
 use zerus_replica::{Actor as TaskActor, Position, ProjectStore, Stage, Target, TaskDoc};
 use zerus_team_plan::model::{NodeState, TaskRef};
 
+/// The direct tests below have no command project lock open; the meeting
+/// still writes through one caller-owned store, never a second one.
+fn guard(caller: &Caller<'_>, doc: &TaskDoc, action: &str) -> Result<()> {
+    let project = doc.view().unwrap().project;
+    let store = ProjectStore::open(&caller.state.join("replica"), &project).unwrap();
+    let mut meeting = Meeting::Projects(&store);
+    super::guard(caller, &mut meeting, doc, action)
+}
+
 fn caller<'a>(h: &'a Harness, actor: &'a TaskActor) -> Caller<'a> {
     Caller {
         state: h.temp.path(),

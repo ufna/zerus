@@ -37,7 +37,10 @@ pub(super) fn execute(config: &Config, args: &[String]) -> Result<Value> {
     };
     let mut task = store.find(&r.task).map_err(fail)?;
     if let Some(actor) = super::teams::actor_for_marked_task(config, &machines, args, true, &task)? { who = actor; }
-    super::teams::guard(config, &machines, &task, "message", args)?;
+    {
+        let mut meeting = crate::teams::tasks::Meeting::Projects(&store);
+        super::teams::guard(config, &machines, &task, "message", args, &mut meeting)?;
+    }
     let mut before = task.view().map_err(fail)?;
     let existing = before
         .log
@@ -166,7 +169,8 @@ pub(super) fn execute(config: &Config, args: &[String]) -> Result<Value> {
             super::attempts::pause_at(id, "legacy_reload");
             store = super::store(config, &r.project.0)?;
             task = store.load(&uuid).map_err(fail)?;
-            super::teams::guard(config, &machines, &task, "message", args)?;
+            let mut meeting = crate::teams::tasks::Meeting::Projects(&store);
+            super::teams::guard(config, &machines, &task, "message", args, &mut meeting)?;
             before = task.view().map_err(fail)?;
         }
     }

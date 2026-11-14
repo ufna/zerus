@@ -19,7 +19,7 @@ mod header;
 mod intake;
 mod policy;
 pub(crate) use intake::{preflight, send};
-pub(crate) use policy::{clear, clear_named, guard, guarded};
+pub(crate) use policy::{clear, clear_named, guard, guarded, meet};
 
 pub(crate) mod context;
 mod report;
@@ -131,44 +131,74 @@ fn record(store: &mut Store, team: &str, node: u32, document: &TaskDoc) -> Resul
     )?;
     Ok(())
 }
+/// The writer a guard meeting clears through (zerus-63rru.97 F2): the
+/// caller's already-open project store, or the attempt admission's own
+/// writer. A meeting never opens a second `ProjectStore` under the caller's
+/// project file lock, which would wait on itself.
+pub(crate) enum Meeting<'a, 'b> {
+    Projects(&'a ProjectStore),
+    Admitted(&'a mut zerus_replica::Admitted<'b>),
+}
+
+impl Meeting<'_, '_> {
+    fn load(&mut self, uuid: &str) -> Result<TaskDoc> {
+        match self {
+            Meeting::Projects(store) => store.load(uuid),
+            Meeting::Admitted(admitted) => admitted.load(uuid),
+        }
+        .map_err(storage)
+    }
+    fn save(&mut self, task: &mut TaskDoc) -> Result<()> {
+        match self {
+            Meeting::Projects(store) => store.save(task),
+            Meeting::Admitted(admitted) => admitted.save(task),
+        }
+        .map_err(storage)
+    }
+}
+
 /// The returned key (zerus-63rru.97): an older replica document merged
 /// after the stop sweep brought the key back. Meeting it here clears it
 /// with the same write the sweep uses — only the key, once per meeting,
-/// never for a live team, never for a key bound again after the stop.
+/// never for a live team, never for a key bound again after the stop, and
+/// never for a key or a team that belongs to another computer (F3).
 pub(crate) fn clear_returned_key(
     store: &Store,
+    meeting: &mut Meeting<'_, '_>,
     task: &TaskRef,
     team: &str,
-    home: &str,
+    machine: &str,
 ) -> Result<bool> {
     use zerus_team_plan::model::TeamStatus;
-    let Some(status) = store.team(team)?.map(|t| t.status) else {
+    let Some(header) = store.team(team)? else {
         return Ok(false);
     };
-    if !matches!(status, TeamStatus::Stopped | TeamStatus::Archived) {
+    if header.home != machine {
+        // A team whose home is another computer is not this computer's to
+        // clear; only that computer's own guard may clear its key.
         return Ok(false);
     }
-    if binding(store, task)?.is_some_and(|(id, _)| id == team) {
-        // Bound again after the stop: the key is live again.
+    if !matches!(header.status, TeamStatus::Stopped | TeamStatus::Archived) {
         return Ok(false);
     }
-    let Ok(projects) =
-        zerus_replica::ProjectStore::open(&store.state().join("replica"), &task.project)
-    else {
+    if binding(store, task)?.is_some() {
+        // Bound again to a live team after the stop: the key is live again.
         return Ok(false);
-    };
-    let Ok(mut document) = projects.load(&task.uuid) else {
+    }
+    let Ok(mut document) = meeting.load(&task.uuid) else {
         return Ok(false);
     };
     let view = document.view().map_err(storage)?;
     let Some(key) = view.team else {
         return Ok(false);
     };
-    if key.team != team || key.home != home {
+    if key.team != team || key.home != machine {
+        // The key is another team's, or its home is another computer, or
+        // the document changed under the caller: not this meeting's key.
         return Ok(false);
     }
     document.clear_team_silent().map_err(storage)?;
-    projects.save(&mut document).map_err(storage)?;
+    meeting.save(&mut document)?;
     Ok(true)
 }
 
