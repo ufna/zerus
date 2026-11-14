@@ -731,6 +731,9 @@ mod tests {
             assert_eq!(intents_left(), 0);
         };
         match case.as_str() {
+            case if case.starts_with("v2_shared") => {
+                legacy_handoff_tests::run(case, &main, &checkout, &record, &lock);
+            }
             case if case.starts_with("scoped_") => {
                 scoped_tests::run(case, &main, &checkout, &common, &record, &lock);
             }
@@ -1518,3 +1521,6 @@ mod tests {
 
 #[cfg(all(test, unix))]
 mod scoped_tests;
+
+#[cfg(all(test, unix))]
+mod legacy_handoff_tests;
