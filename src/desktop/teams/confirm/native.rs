@@ -266,10 +266,11 @@ mod tests {
     #[test]
     fn team_audit_is_durable_before_delivery_and_finishes_only_once() {
         let temp = tempfile::tempdir().unwrap();
+        let root = crate::platform::canonical(temp.path()).unwrap();
         let config = Config {
             home: String::new(),
-            dir: temp.path().join("config"),
-            state: temp.path().join("state"),
+            dir: root.join("config"),
+            state: root.join("state"),
             selves: vec![],
             peers: vec![],
             base_peers: vec![],
@@ -285,7 +286,7 @@ mod tests {
         let (mut b, _, s) = super::super::policy::tests::sample();
         // A real scratch worktree so the granted scope is the repository's
         // main checkout, an independent known value (zerus-63rru.66 round 2).
-        let scratch = temp.path().join("repo");
+        let scratch = root.join("repo");
         std::fs::create_dir_all(&scratch).unwrap();
         for args in [
             vec!["init", "-q"],
@@ -298,7 +299,7 @@ mod tests {
         assert!(std::process::Command::new("git").arg("-C").arg(&scratch).args(["add", "file.txt"]).output().unwrap().status.success());
         assert!(std::process::Command::new("git").arg("-C").arg(&scratch).args(["commit", "-qm", "fixture"]).output().unwrap().status.success());
         assert!(std::process::Command::new("git").arg("-C").arg(&scratch).args(["worktree", "add", "-q", "--detach", "../member-wt"]).output().unwrap().status.success());
-        let worktree = temp.path().join("member-wt");
+        let worktree = root.join("member-wt");
         b.folder = worktree.to_str().unwrap().to_owned();
         b.launch = b.folder.clone();
         let mut native = Native::new(&config, &b.machine, &stop, &mut store).unwrap();

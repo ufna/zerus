@@ -58,6 +58,55 @@ fn teams_reads_a_kimi_record_without_a_conversation_and_after_rename() {
     assert!(r.conversation_id.is_empty());
     assert_eq!(r.launch_id, id(1));
 }
+
+#[test]
+fn a_configured_state_alias_resolves_once_but_links_below_it_are_refused() {
+    use std::os::unix::fs::symlink;
+    let f = Fixture::new();
+    f.start(true);
+    let leaf = format!("sessions/{}.json", id(2));
+    f.put(&leaf, f.value());
+    let alias = f.root.path().join("state-alias");
+    symlink(&f.state, &alias).unwrap();
+    let read = || {
+        session(
+            &alias,
+            &id(2),
+            &id(1),
+            "kimi",
+            "",
+            Instant::now() + Duration::from_secs(3),
+        )
+    };
+    assert!(matches!(read(), TeamSession::Record(r) if r.run_id == id(3)));
+    assert!(matches!(
+        observe(&alias, &id(1), Instant::now() + Duration::from_secs(3)),
+        TeamObservation::Record(r) if r.run_id == id(3)
+    ));
+
+    let directory = f.state.join("sessions");
+    let saved = f.state.join("saved-sessions");
+    fs::rename(&directory, &saved).unwrap();
+    symlink(&saved, &directory).unwrap();
+    assert_eq!(read(), TeamSession::Unavailable);
+    assert_eq!(
+        observe(&alias, &id(1), Instant::now() + Duration::from_secs(3)),
+        TeamObservation::Unavailable
+    );
+    fs::remove_file(&directory).unwrap();
+    fs::rename(&saved, &directory).unwrap();
+
+    let path = f.state.join(leaf);
+    let saved = path.with_extension("saved");
+    fs::rename(&path, &saved).unwrap();
+    symlink(&saved, &path).unwrap();
+    assert_eq!(read(), TeamSession::Unavailable);
+    assert_eq!(
+        observe(&alias, &id(1), Instant::now() + Duration::from_secs(3)),
+        TeamObservation::Unavailable
+    );
+}
+
 #[test]
 fn an_older_start_record_uses_the_legacy_label_route() {
     let f = Fixture::new();
