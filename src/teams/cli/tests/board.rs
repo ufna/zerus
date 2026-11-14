@@ -526,6 +526,107 @@ fn the_cli_renders_each_stop_outcome_code_in_english() {
     }
 }
 
+/// zerus-63rru.52 round 3: the binding is the stop's identity, never the
+/// decision's text — a live cancel whose reason is "Team stopped", refused
+/// before the stop, is not shown as the stop's own.
+#[test]
+fn a_live_cancel_with_the_stops_text_is_never_the_stops_outcome() {
+    use crate::teams::ops::Operation;
+    let h = seeded();
+    let node = 1;
+    h.apply(&member("lead", LEAD_SESSION), Operation::Cancel {
+        node,
+        reason: "Team stopped".into(),
+    });
+    let seq: i64 = h
+        .store()
+        .db
+        .as_ref()
+        .unwrap()
+        .query_row(
+            "SELECT seq FROM decisions WHERE team=?1 AND node=?2 AND kind='cancel' AND state='pending'",
+            rusqlite::params![TEAM, node],
+            |r| r.get(0),
+        )
+        .unwrap();
+    h.apply(
+        &service(),
+        Operation::RecordCancel {
+            node,
+            decision: seq as u64,
+            state: crate::teams::ops::CancelState::Refused,
+            reason: "live refusal".into(),
+            attempt: 0,
+            attempt_id: String::new(),
+        },
+    );
+    h.apply(&person(), Operation::Stop);
+    let (reply, exit) = h.cli(&Caller::Person, &format!("queue --team {TEAM} --limit 200"), "");
+    assert_eq!(exit, 0, "{reply}");
+    let row = reply["rows"].as_array().unwrap().iter().find(|r| r["id"] == node).unwrap();
+    assert_eq!(row["stop_outcome"]["code"], "pending", "{row}");
+}
+
+/// zerus-63rru.52 round 3: after a stop, a resume and a second stop, only
+/// the second stop's own outcome shows.
+#[test]
+fn a_second_stop_shows_only_its_own_outcome() {
+    use crate::teams::ops::Operation;
+    let h = seeded();
+    let node = 1;
+    let cancel_seq = |h: &Harness| -> i64 {
+        h.store()
+            .db
+            .as_ref()
+            .unwrap()
+            .query_row(
+                "SELECT d.seq FROM decisions d WHERE d.team=?1 AND d.node=?2 AND d.kind='cancel' AND d.state='pending' ORDER BY d.seq DESC LIMIT 1",
+                rusqlite::params![TEAM, node],
+                |r| r.get(0),
+            )
+            .unwrap()
+    };
+    let outcome = |h: &Harness| -> (String, Option<String>) {
+        let (reply, exit) = h.cli(&Caller::Person, &format!("queue --team {TEAM} --limit 200"), "");
+        assert_eq!(exit, 0, "{reply}");
+        let row = reply["rows"].as_array().unwrap().iter().find(|r| r["id"] == node).unwrap();
+        (
+            row["stop_outcome"]["code"].as_str().unwrap().to_owned(),
+            row["stop_outcome"].get("reason").and_then(|r| r.as_str().map(str::to_owned)),
+        )
+    };
+    // First stop: its cancel is refused with its own reason.
+    h.apply(&person(), Operation::Stop);
+    h.apply(
+        &service(),
+        Operation::RecordCancel {
+            node,
+            decision: cancel_seq(&h) as u64,
+            state: crate::teams::ops::CancelState::Refused,
+            reason: "first stop refusal".into(),
+            attempt: 0,
+            attempt_id: String::new(),
+        },
+    );
+    assert_eq!(outcome(&h), ("cancel_refused".to_owned(), Some("first stop refusal".to_owned())));
+    // The team comes back to running (the milestone's ops have no
+    // stopped-to-running transition, so the status is restored directly as
+    // the reviewer's status probe does), then a second stop: the second
+    // stop's own cancel is pending, so the row says pending, never the
+    // first stop's refusal.
+    h.store()
+        .db
+        .as_ref()
+        .unwrap()
+        .execute(
+            "UPDATE teams SET status=?2 WHERE id=?1",
+            rusqlite::params![TEAM, serde_json::to_string(&"running").unwrap()],
+        )
+        .unwrap();
+    h.apply(&person(), Operation::Stop);
+    assert_eq!(outcome(&h), ("pending".to_owned(), None));
+}
+
 /// The queue reply carries `unstaffed`, always: null, then the sentence of
 /// the lead's open item once no member can take the ready node.
 #[test]

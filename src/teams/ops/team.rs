@@ -119,7 +119,17 @@ pub(super) fn stop(ctx: &mut Context<'_>) -> Result<()> {
     // A stop settles older decisions and records cancellation commands; the
     // existing task writer still owns their actual task-state transitions.
     rows::settle_decisions(ctx.db, &ctx.team.id, None, &encode(ctx.actor)?, true)?;
-    ctx.db.execute("INSERT INTO decisions(team,node,generation,actor,kind,text,state) SELECT team,id,generation,?2,'cancel','Team stopped',?3 FROM nodes WHERE team=?1",params![ctx.team.id,encode(ctx.actor)?,DecisionState::Pending]).map_err(storage)?;
+    // The stop's own identity: a monotonic sequence recorded on the team,
+    // stamped on this stop's cancel decisions (zerus-63rru.52 round 3).
+    // The queue read joins the recorded facts on this identity, never on
+    // the decision's text.
+    let stop: i64 = ctx
+        .db
+        .query_row("SELECT stop_seq FROM teams WHERE id=?1", [&ctx.team.id], |r| r.get(0))
+        .map_err(storage)?;
+    let stop = stop + 1;
+    ctx.db.execute("UPDATE teams SET stop_seq=?2 WHERE id=?1", params![ctx.team.id, stop]).map_err(storage)?;
+    ctx.db.execute("INSERT INTO decisions(team,node,generation,actor,kind,text,state,stop) SELECT team,id,generation,?2,'cancel','Team stopped',?3,?4 FROM nodes WHERE team=?1",params![ctx.team.id,encode(ctx.actor)?,DecisionState::Pending,stop]).map_err(storage)?;
     ctx.db
         .execute(
             "UPDATE nodes SET requested='cancel' WHERE team=?1",
