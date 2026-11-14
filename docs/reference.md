@@ -4950,6 +4950,8 @@ and no cancel notice or other native input is sent. An exact repeat observes
 the original disposition without another write; wrong or already-settled
 attempts refuse. Other unknown attempts still hold the task. A later send
 uses a new attempt, and an old request is never replayed.
+The reply contains one task row; read its audit through the bounded task
+history command.
 
 The task view shows each unknown attempt with **Abandon attempt…**, followed
 by a separate confirmation. A team-owned task requires the person's command

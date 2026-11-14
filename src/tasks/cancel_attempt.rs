@@ -84,7 +84,8 @@ pub(super) fn execute(config: &Config, args: &[String]) -> Result<Value> {
         store.save(&mut task).map_err(fail)?;
     }
     Ok(json!({
-        "task": view(&task, &reference.project.1, true, &machines)?,
+        // One bounded task row: the selected history is read separately.
+        "task": view(&task, &reference.project.1, false, &machines)?,
         "attempt": {"id": request.attempt, "state": "cancelled",
             "delivery": "unknown", "already_cancelled": repeated}
     }))

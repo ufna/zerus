@@ -1198,7 +1198,7 @@ class TaskDelivery(DeliveryFixture):
         finally:
             receipts.chmod(0o700)
         self.assertEqual(unknown["state"], "uncertain")
-        before = self.hgs("get", task["ref"])["task"]
+        before = self.hgs("get", task["ref"], "--history-limit", "8")["task"]
         self.assertIn(plan["id"], before["execution"]["unknown"])
         received = self.received()
         args = ("cancel-attempt", task["ref"], "--attempt", plan["id"])
@@ -1206,12 +1206,18 @@ class TaskDelivery(DeliveryFixture):
         self.assertEqual(cancelled["attempt"]["delivery"], "unknown")
         self.assertEqual(cancelled["attempt"]["state"], "cancelled")
         after = cancelled["task"]
+        self.assertNotIn("log", after, "the disposition reply never expands the history")
         self.assertEqual(after["stage"], before["stage"])
         self.assertEqual(after["execution"]["current"]["phase"], "cancelled")
         self.assertNotIn("unknown", after["execution"])
         self.assertEqual(self.received(), received, "abandonment sends no native input")
+        audit = self.hgs("get", task["ref"], "--history-limit", "8")["task"]["log"]
+        self.assertEqual(len([e for e in audit if e["kind"] == "attempt_cancelled"
+                             and e.get("request_id") == plan["id"]]), 1)
         repeated = self.hgs(*args)["task"]
-        self.assertEqual(repeated["log"], after["log"], "an exact repeat writes no audit twice")
+        self.assertEqual(repeated["history_revision"], after["history_revision"],
+                         "an exact repeat writes no audit twice")
+        self.assertEqual(self.hgs("get", task["ref"], "--history-limit", "8")["task"]["log"], audit)
         self.assertEqual(self.received(), received)
         wrong = self.hgs("cancel-attempt", task["ref"], "--attempt", str(uuid.uuid4()), ok=False)
         self.assertIn("unknown delivery", wrong)
