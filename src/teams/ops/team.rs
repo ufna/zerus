@@ -118,6 +118,13 @@ pub(super) fn stop(ctx: &mut Context<'_>) -> Result<()> {
     ctx.active()?;
     // A stop settles older decisions and records cancellation commands; the
     // existing task writer still owns their actual task-state transitions.
+    // A hosted delivery whose actor outcome was never recorded is settled
+    // only from a durable outcome the team already holds (the row's persisted
+    // outcome or the hosted child's retained reply); it is never replayed.
+    // A retained `uncertain` reply (or a missing one) leaves the delivery
+    // unknown: its row and its task text stay, and the terminal prune stays
+    // blocked for that team by the open effect. That is the accepted limit of
+    // zerus-63rru.102 round 3, not a retry.
     rows::settle_decisions(ctx.db, &ctx.team.id, None, &encode(ctx.actor)?, true)?;
     // The stop's own identity: a monotonic sequence recorded on the team,
     // stamped on this stop's cancel decisions (zerus-63rru.52 round 3).
