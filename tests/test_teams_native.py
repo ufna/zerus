@@ -801,6 +801,98 @@ class TeamsFixtureIsolation(unittest.TestCase):
                     self.fx.preflight()
                 self.fx.env[key] = saved
 
+    def test_kimi_stand_in_and_executable_image_survive_hgs_path_preparation(self):
+        import hashlib
+        import stat
+        source = self.base / 'sealed-kimi'
+        source.write_text('#!/bin/sh\nexit 0\n')
+        source.chmod(0o400)
+        fx = fixture.TeamFixture('kimi', source, 'KimiIsolation')
+        self.addCleanup(shutil.rmtree, fx.root, True)
+        fx.build()
+        fx.preflight()
+        home_bin = fx.root / 'home/.local/bin'
+        self.assertEqual(Path(shutil.which('node', path=fx.env['PATH'])), home_bin / 'node')
+        self.assertEqual(Path(shutil.which('kimi', path=fx.env['PATH'])).resolve(), fx.native)
+        self.assertNotEqual(fx.native, source.resolve())
+        self.assertEqual(stat.S_IMODE(fx.native.stat().st_mode), 0o700)
+        self.assertEqual(stat.S_IMODE(source.stat().st_mode), 0o400)
+        def digest(path):
+            with path.open('rb') as stream:
+                return hashlib.file_digest(stream, 'sha256').hexdigest()
+        self.assertEqual(digest(source), fx.native_sha256)
+        self.assertEqual(digest(fx.native), fx.native_sha256)
+        run = subprocess.run([str(home_bin / 'node'), '--input-type=module', '-e', 'inspection'],
+                             env=dict(fx.env, KIMI_CODE_HOME=str(fx.root / 'home/.kimi-code')),
+                             capture_output=True, text=True, timeout=30)
+        self.assertEqual(run.returncode, 0, run.stderr)
+        self.assertEqual(json.loads(run.stdout), fixture.kimi_inspection())
+        # The production rule that put the hosted runner's /usr/local/bin/node ahead
+        # of the old stand-in is part of this fixture's placement contract.
+        production = Path(__file__).resolve().parents[1] / 'src/platform/unix.rs'
+        self.assertIn('"{home}/.local/bin:/opt/homebrew/bin:/usr/local/bin:{path}:', production.read_text())
+
+    def test_kimi_fd_stand_in_prevents_managed_download(self):
+        source = self.base / 'sealed-kimi-fd'
+        source.write_text('#!/bin/sh\nexit 0\n')
+        source.chmod(0o400)
+        fx = fixture.TeamFixture('kimi', source, 'KimiFdIsolation')
+        self.addCleanup(shutil.rmtree, fx.root, True)
+        fx.build()
+        fd = Path(fx.env['HOME']) / '.local/bin/fd'
+        self.assertEqual(shutil.which('fd', path=fx.env['PATH']), str(fd))
+        version = subprocess.run([str(fd), '--version'], env=fx.env, capture_output=True, text=True, timeout=30)
+        self.assertEqual((version.returncode, version.stdout), (0, 'fd fixture\n'))
+        refused = subprocess.run([str(fd), 'unexpected-operation'], env=fx.env, capture_output=True, text=True, timeout=30)
+        self.assertEqual(refused.returncode, 97)
+        log = fx.evidence.folder / 'fd-stand-in.log'
+        self.assertEqual(len(log.read_text().splitlines()), 2)
+        fx.preflight()
+        fd.unlink()
+        with self.assertRaisesRegex(AssertionError, 'resolves fd'):
+            fx.preflight()
+
+    def test_kimi_terminal_trust_answer_uses_the_exact_pane(self):
+        from types import SimpleNamespace
+        from test_kimi_approvals_native import FixtureControls
+        short = '/tmp/hgs-pause-x/project with spaces'
+        folder = short + '/' + 'x' * 80
+        card = dict(source='startup_terminal_choice', question_id='startup-choice:fixture', can_answer=False,
+                    questions=[dict(id='terminal', question='Trust this folder?', options=[])])
+        pending = dict(pending_questions=[card], runtime_state='live', process_state='running', activity='busy',
+                       conversation_id=None, first_message_can_send=False, run_id='run', cwd=folder)
+        ready = dict(pending, pending_questions=[], activity='idle', conversation_id='conversation')
+
+        def answer(pane, succeeds):
+            fx = fixture.TeamFixture.__new__(fixture.TeamFixture)
+            fx.agent, fx.env = 'kimi', {}
+            fx.after_refusal, fx.service_answers = {}, ()
+            fx.panes, fx.cards_seen = {}, {}
+            fx.sessions = {'lead': {'name': 'kimi/example/team'}}
+            fx.evidence = SimpleNamespace(append=mock.Mock())
+            fx.capture_card = lambda member, item: fx.panes.__setitem__((member, item['question_id']), pane)
+            fx.inspect = mock.Mock(side_effect=[pending, ready if succeeds else pending])
+            def wait(label, predicate, bound, step):
+                for _ in range(2):
+                    value = predicate()
+                    if value:
+                        return value
+                raise AssertionError('not ready')
+            fx.wait = wait
+            with mock.patch.object(fixture.subprocess, 'run') as run:
+                if succeeds:
+                    self.assertEqual(fx.answer_startup('lead'), ready)
+                else:
+                    with self.assertRaisesRegex(AssertionError, 'not ready'):
+                        fx.answer_startup('lead')
+            return run
+
+        chooser = FixtureControls.CHOOSER.replace('  ' + short, '  ' + folder[:77] + '\n  ' + folder[77:])
+        answered = answer(chooser, True)
+        answered.assert_called_once_with(['tmux', 'send-keys', '-t', '=kimi/example/team:', 'Enter'], env={}, check=True)
+        changed = chooser.replace('❯ Trust and continue', '  Trust and continue').replace('     Exit', '   ❯ Exit')
+        self.assertFalse(answer(changed, False).call_count, 'a changed selection must stay in Terminal for the person')
+
 
 class TeamsWaitingList(unittest.TestCase):
     """Every written class is selected or waiting, and the waiting cases' fixes are named
