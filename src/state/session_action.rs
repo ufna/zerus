@@ -753,9 +753,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let saved = dir.path().join("transcript.jsonl");
         std::fs::write(&saved, "{\"type\":\"user\"}\n").unwrap();
+        let unique = format!("claude/example/member-{}", uuid::Uuid::new_v4());
         let mut record = crate::state::listing_fixture::launched_record(
             "claude",
-            "claude/example/member",
+            &unique,
             "00000000-0000-4000-8000-0000000000a1",
             "00000000-0000-4000-8000-0000000000a2",
             "run-claude",
