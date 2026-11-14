@@ -136,8 +136,7 @@ class TerminationFence(test_pause.Harness if test_pause else unittest.TestCase):
                 original = self.marker(name, {'request_id': str(uuid.uuid4())})
                 env = dict(self.env, HGS_SESSION=name, HGS_RUN_ID=original['run_id'])
                 event = dict(session_id=original['conversation_id'], hook_event_name='SessionEnd', reason=reason)
-                result = subprocess.run([str(test_pause.HGS), '__state', 'hook'], env=env,
-                                        input=json.dumps(event), text=True, capture_output=True, timeout=10)
+                result = self.hook(event, env, check=False)
                 self.assertEqual(result.returncode, 0, result.stderr)
                 current = self.binding(name)
                 self.assertEqual(current['session_end']['reason'], reason)
@@ -146,9 +145,7 @@ class TerminationFence(test_pause.Harness if test_pause else unittest.TestCase):
                     self.assertEqual(current.get(key), original.get(key), key)
                 before = self.path(name).read_bytes()
                 for kind in ('SessionStart', 'PreToolUse', 'UserPromptSubmit'):
-                    result = subprocess.run([str(test_pause.HGS), '__state', 'hook'], env=env,
-                                            input=json.dumps(dict(event, hook_event_name=kind)),
-                                            text=True, capture_output=True, timeout=10)
+                    result = self.hook(dict(event, hook_event_name=kind), env, check=False)
                     self.assertEqual(result.returncode, 2, result.stderr)
                     self.assertEqual(self.path(name).read_bytes(), before)
 

@@ -661,6 +661,31 @@ observed callbacks and provider-effective settings/trust are different evidence:
 settings, policy, native trust or a running agent's already-loaded settings can
 make its effective hooks differ. Attaching does not retrofit them.
 
+On Linux and macOS, a Claude hook's `HGS_SESSION` and `HGS_RUN_ID` select a
+record; they do not prove its caller. A pinned record also requires a stable
+native process ancestry from the hook to its recorded Claude PID and start
+time, outside any resident DeepSeek host. A held Claude background job uses
+its own proven ancestry and the matching window/job hold in the window's
+recorded account registry; a missing account directory refuses background routing.
+Caller-selected config and home directories grant no authority.
+New Claude launches record the effective registry directory separately from
+`agent_home`, preserving an unset native config directory and its macOS Keychain
+namespace. Older records without either directory retain foreground hooks;
+their separate background jobs cannot be proven and receive a diagnostic.
+Unproven callers receive a bounded diagnostic on stderr before any hook or
+continuation update, or answer-channel registration. The Claude answer channel
+only binds Claude records and refuses a later provider change. Channels recheck
+their proof before claiming and emitting an offer; losing proof after a claim
+leaves its result uncertain and never authorizes another delivery.
+
+Older, unversioned records without a complete PID/start pin retain their
+existing hook behavior with a visible legacy diagnostic. A record carrying a
+pin never uses this exception, and a versioned native launch with a missing
+pin is refused. An unavailable ancestry walk refuses pinned records visibly;
+it does not silently discard their hooks. Windows retains its existing hook
+path pending native qualification. Hooks outside Zerus, without the session
+and run markers, remain no-ops.
+
 Explicit configuration repair is native-only:
 `hgs hooks --account ID --repair --json`. Its stdin must contain a fresh UUID
 `request_id`, `expected_provider`, `expected_account_id`,

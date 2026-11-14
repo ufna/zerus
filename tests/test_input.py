@@ -164,6 +164,11 @@ class InputTransport(unittest.TestCase):
         self.write_record()
 
     def tearDown(self):
+        hook_error = None
+        if path := getattr(self, "native_hook_socket", None):
+            import hook_caller_fixtures
+            try: hook_caller_fixtures.stop(path)
+            except (OSError, TimeoutError) as error: hook_error = error
         pids = {pid for pid in self.tmux('list-panes', '-a', '-F', '#{pane_pid}', check=False).splitlines()
                 if pid.isdigit()}
         self.tmux("kill-server", check=False)
@@ -181,6 +186,7 @@ class InputTransport(unittest.TestCase):
             time.sleep(.02)
         self.assertFalse(pids, 'owned fixture panes survived tmux shutdown')
         self.temp.cleanup()
+        if hook_error: raise hook_error
 
     def script(self, name, value):
         path = self.bin / name

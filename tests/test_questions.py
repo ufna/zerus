@@ -240,8 +240,14 @@ class Questions(unittest.TestCase):
         return result.stderr
 
     def hook(self,event):
-        result=subprocess.run([str(HGS),'__state','hook'],env=dict(self.env,HGS_SESSION=self.name,HGS_RUN_ID=self.run_id),
-                              input=json.dumps(dict(event,session_id=self.conversation_id)),text=True,capture_output=True,timeout=5)
+        import hook_caller_fixtures
+        payload=dict(event,session_id=self.conversation_id)
+        env=dict(self.env,HGS_SESSION=self.name,HGS_RUN_ID=self.run_id,HGS_TEST_BIN=str(HGS))
+        if self.record['agent']=='claude':
+            result=hook_caller_fixtures.run(self,payload,env)
+        else:
+            result=subprocess.run([str(HGS),'__state','hook'],input=json.dumps(payload),
+                text=True,capture_output=True,env=env,timeout=12)
         self.assertEqual(result.returncode,0,result.stderr)
 
     def test_recovers_running_native_question_without_hooks_or_input(self):
