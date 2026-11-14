@@ -376,10 +376,10 @@ fn decode_team_reply(code: i32, stdout: &[u8], stderr: &[u8]) -> Result<Value, S
 // Runs a source-built command line through a Unix executable fixture.
 #[cfg(all(test, unix))]
 mod real_create;
-#[cfg(all(test, unix))]
-mod real_reads;
 #[cfg(all(test, target_os = "linux"))]
 mod real_preview;
+#[cfg(all(test, unix))]
+mod real_reads;
 
 #[cfg(test)]
 mod tests {
