@@ -6938,9 +6938,33 @@ the machine-wide lock. Binding updates recheck the full saved record before
 writing, so an intervening metadata writer is not overwritten. The per-request
 witness lock and pending-marker no-replay rules above are unchanged.
 
-Launch, fork, scoped lifecycle, parent/project/recovery metadata gates and the
-launch-project gate retain their existing wide lock scopes in this slice;
-`zerus-keboc` tracks their migration. They can still delay a binding transaction.
+Scoped lifecycle, existing-name launch, fork preflight, parent-link writers
+and the DeepSeek launch-project gate use the same per-conversation guard
+(`zerus-keboc`). Host RPCs in these paths run outside the binding-file lock.
+A claimed parent's liveness is checked before taking the child's guard or
+machine-wide locks; its full saved binding is checked again during the local
+parent-link transaction. Launch-project inspects and lists the exact native
+handle under its session guard, then rechecks the full binding before assigning
+metadata. Concurrent metadata changes refuse rather than overwrite an update.
+
+Two creation reservations deliberately remain wide. A **new-name launch**
+holds the binding lock from its second vacancy check through host setup,
+permission checks, persistence, native creation and account-default settings.
+An **actual fork** holds it from destination reallocation and durable intent
+through the native fork and child-binding publication; its ping/inspection
+preflight runs outside the lock. Neither has an independent destination-name
+reservation protocol. Dropping those holds could let concurrent creators choose
+the same free name, so these portions can still delay other sessions. An
+uncertain launch retains its persisted native conversation ID; an uncertain
+fork retains its original request UUID, host generation and destination. No
+new creation identity is minted to bypass an uncertain result.
+
+The session-project and pinned-project gates are already metadata-only, with
+no host RPC under their binding locks; their existing bounded locking stays
+unchanged. Scoped recovery edits already inspect before taking the binding
+lock and recheck the captured record before editing a waiting job. Automatic
+recovery's separate state-writer lock is unchanged. Witness request locks,
+exact delivery evidence, refusals and no-replay rules are unchanged.
 
 A DeepSeek row in `hgs ls` and the GUI reports its background work without an
 inspection, so an idle session with a running background job shows

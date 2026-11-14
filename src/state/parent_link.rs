@@ -506,10 +506,18 @@ pub(super) fn dispatch(args: &[String]) -> Result<i32> {
     } else {
         String::new()
     };
+    // A claimed parent's liveness may wait for its host. Observe it before
+    // taking either the child's session guard or any machine-wide writer.
+    let claimed = if request.action == "adopt" {
+        request.parent.as_ref().map(claimed_parent).transpose()?
+    } else { None };
+    let provider = provider_binding::Provider::named(name);
+    let _session = if matches!(provider, Some(provider_binding::Provider::DeepSeek)) {
+        Some(dsh::dispatch_lock::acquire(name)?.0)
+    } else { None };
     let _writer = lock(None)?;
     // Parent writers share the state lock for cycle checks, then the native
     // provider's own lock so a metadata change cannot overwrite its updates.
-    let provider = provider_binding::Provider::named(name);
     let _dsh = if matches!(provider, Some(provider_binding::Provider::DeepSeek)) {
         Some(lock(Some(&root().join("dsh/bindings.lock")))?)
     } else { None };
@@ -545,7 +553,13 @@ pub(super) fn dispatch(args: &[String]) -> Result<i32> {
             // set is the session a person chose.
             let (chosen, source) = match (caller, request.parent.as_ref()) {
                 (Some(caller), _) => (caller, "adopt"),
-                (None, Some(choice)) if request.action == "adopt" => (claimed_parent(choice)?, "claimed"),
+                (None, Some(_)) if request.action == "adopt" => {
+                    let parent = claimed.as_ref().ok_or("The claimed parent is unavailable")?;
+                    let current = read_session(string(parent, "session_id"), string(parent, "name"))?
+                        .ok_or("The claimed parent disappeared")?;
+                    if current != *parent { return Err("The claimed parent changed; refresh and retry".into()); }
+                    (current, "claimed")
+                },
                 (None, Some(choice)) => {
                     if !session_id::canonical(&choice.session_id) {
                         return Err("Choose the parent by its session ID".into());

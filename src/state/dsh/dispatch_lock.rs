@@ -38,7 +38,7 @@ pub(in crate::state) fn acquire(name: &str) -> Result<(Guard, Value)> {
 /// Only local binding I/O belongs in `write`. Other, not-yet-migrated metadata
 /// writers still use the machine lock, so recheck the full saved record before
 /// publishing an update rather than overwriting their intervening changes.
-pub(super) fn transaction<T>(
+pub(in crate::state) fn transaction<T>(
     name: &str,
     expected: &Value,
     write: impl FnOnce() -> Result<T>,
