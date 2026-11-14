@@ -14,6 +14,10 @@ mod active_app;
 mod analytics;
 #[cfg(feature = "live")]
 mod approvals;
+// The path-shared child_environment module must use the linked core gate,
+// never a second copy of unix_spawn.rs and its process-local mutex.
+#[cfg(unix)]
+use zerus_client_core::unix_spawn;
 #[path = "../../core/src/child_environment.rs"]
 #[allow(dead_code)]
 mod child_environment;
@@ -2419,3 +2423,61 @@ mod tests {
 #[cfg_attr(not(feature = "live"), allow(dead_code))]
 #[path = "../../../tests/support/executable.rs"]
 mod test_executable;
+
+#[cfg(all(test, unix))]
+mod unix_spawn_policy_tests {
+    use std::{sync::mpsc, time::Duration};
+
+    fn shared_gate_excludes(action: impl FnOnce() -> bool + Send + 'static) {
+        let turn = zerus_client_core::unix_spawn::turn();
+        let (ready_tx, ready_rx) = mpsc::channel();
+        let (done_tx, done_rx) = mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            ready_tx.send(()).unwrap();
+            done_tx.send(action()).unwrap();
+        });
+        ready_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        let early = done_rx.recv_timeout(Duration::from_millis(200));
+        drop(turn);
+        let escaped = early.is_ok();
+        let result =
+            early.unwrap_or_else(|_| done_rx.recv_timeout(Duration::from_secs(5)).unwrap());
+        worker.join().unwrap();
+        assert!(result);
+        assert!(!escaped, "the Tauri spawn must use the linked core mutex");
+    }
+
+    #[test]
+    fn path_shared_environment_uses_the_linked_core_gate() {
+        shared_gate_excludes(|| {
+            let mut command = std::process::Command::new("/bin/true");
+            command
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null());
+            let mut child = crate::child_environment::spawn(&mut command).unwrap();
+            child.wait().unwrap().success()
+        });
+    }
+
+    #[cfg(feature = "live")]
+    #[test]
+    fn tokio_spawn_uses_the_same_core_gate_without_changing_its_child() {
+        shared_gate_excludes(|| {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            runtime.block_on(async {
+                let mut command = tokio::process::Command::new("/bin/true");
+                command
+                    .stdin(std::process::Stdio::null())
+                    .stdout(std::process::Stdio::piped())
+                    .stderr(std::process::Stdio::piped());
+                let child = crate::platform::spawn_async(&mut command).unwrap();
+                let output = child.wait_with_output().await.unwrap();
+                output.status.success() && output.stdout.is_empty() && output.stderr.is_empty()
+            })
+        });
+    }
+}

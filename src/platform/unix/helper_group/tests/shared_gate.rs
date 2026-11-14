@@ -63,3 +63,11 @@ fn the_root_turn_also_excludes_the_core_pty() {
         drop(attach);
     });
 }
+
+#[test]
+fn the_root_turn_also_excludes_core_endpoint_preparation() {
+    root_turn_excludes(|| {
+        let pair = zerus_client_core::unix_spawn::socket_pair().unwrap();
+        drop(pair);
+    });
+}

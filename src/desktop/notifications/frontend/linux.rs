@@ -83,7 +83,7 @@ impl OwnedFrontend {
                     .env_remove("XDG_ACTIVATION_TOKEN")
                     .env_remove(wire::NAVIGATION_ENV);
                 input_spawn.spawn_with(command, |command| {
-                    platform::spawn_prepared_in_turn_before(until, || {
+                    platform::spawn_prepared_in_turn_before(until, |_turn| {
                         proof.selected.revalidate().map_err(std::io::Error::other)?;
                         Ok((std::mem::replace(command, Command::new("")), ()))
                     })
@@ -102,7 +102,7 @@ impl OwnedFrontend {
         );
         hold.selected.revalidate_for_launch(&launch)?;
         let command = command(&hold.selected, &launch)?;
-        let (child, ()) = platform::spawn_prepared_in_turn_before(until, || {
+        let (child, ()) = platform::spawn_prepared_in_turn_before(until, |_turn| {
             hold.selected
                 .revalidate_for_launch(&launch)
                 .map_err(std::io::Error::other)?;

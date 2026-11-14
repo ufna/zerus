@@ -1,18 +1,17 @@
 //! Input transport for noninteractive helpers. This is not a spawn policy or
 //! an operation receipt: only the original writer may end its socket input.
+use std::{
+    io,
+    process::{Child, Command},
+};
 #[cfg(unix)]
 use std::{
-    fs::OpenOptions,
     net::Shutdown,
     os::{
         fd::{AsFd, OwnedFd},
         unix::net::UnixStream,
     },
     process::{ChildStdin, Stdio},
-};
-use std::{
-    io,
-    process::{Child, Command},
 };
 
 /// The runner's one prepared stdin. Spawn through this adapter so the guard
@@ -28,30 +27,27 @@ impl InputSpawn {
     pub(super) fn new(has_input: bool) -> io::Result<Self> {
         #[cfg(unix)]
         {
-            let (child, writer) = if has_input {
-                let (writer, child) = UnixStream::pair()?;
-                (
-                    OwnedFd::from(child),
-                    ChildStdin::from(OwnedFd::from(writer)),
-                )
-            } else {
-                // Preserve the guard's close-to-withhold marker even for a
-                // fast empty-input helper. Both handles refer to /dev/null;
-                // no pipe writer can postpone the child's EOF.
-                let null = OpenOptions::new()
-                    .read(true)
-                    .write(true)
-                    .open("/dev/null")?;
-                let writer = ChildStdin::from(OwnedFd::from(null.try_clone()?));
-                (OwnedFd::from(null), writer)
-            };
-            Ok(Self { child, writer })
+            let turn = crate::unix_spawn::turn();
+            Self::new_in_turn(has_input, &turn)
         }
         #[cfg(not(unix))]
         {
             let _ = has_input;
             Ok(Self {})
         }
+    }
+    #[cfg(unix)]
+    pub(super) fn new_in_turn(has_input: bool, turn: &crate::unix_spawn::Turn) -> io::Result<Self> {
+        let (child, writer) = if has_input {
+            let (writer, child) = crate::unix_spawn::socket_pair_in_turn(turn)?;
+            (OwnedFd::from(child), OwnedFd::from(writer))
+        } else {
+            crate::unix_spawn::null_pair_in_turn(turn)?
+        };
+        Ok(Self {
+            child,
+            writer: ChildStdin::from(writer),
+        })
     }
     #[cfg(all(test, unix))]
     pub(super) fn observe_input(&self) -> io::Result<std::fs::File> {
@@ -62,7 +58,7 @@ impl InputSpawn {
     /// Configure stdin and attach its original writer BEFORE the host applies
     /// any post-spawn image/context/registration checks.
     pub fn spawn(self, command: &mut Command) -> io::Result<Child> {
-        self.spawn_with(command, Command::spawn)
+        self.spawn_with(command, crate::child_environment::spawn)
     }
     /// Keep the host's existing spawn turn or Windows flags. The supplied
     /// function only starts the child; post-spawn guards run on our returned

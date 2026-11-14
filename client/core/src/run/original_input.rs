@@ -10,6 +10,11 @@ pub fn prepare(has_input: bool) -> io::Result<InputSpawn> {
     InputSpawn::new(has_input)
 }
 
+/// The root original_child caller already holds the shared spawn turn.
+pub fn prepare_in_turn(has_input: bool, turn: &crate::unix_spawn::Turn) -> io::Result<InputSpawn> {
+    InputSpawn::new_in_turn(has_input, turn)
+}
+
 /// Opaque access to the same acquiring-PID owner used by the core runners.
 /// Acquire only after the final guarded spawn accepts the original writer.
 pub struct Owner(InputOwner);

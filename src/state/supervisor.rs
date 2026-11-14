@@ -21,7 +21,7 @@ pub(super) fn spawn(argv: &[String], name: &str, run_id: &str) -> Result<Spawned
     terminating::check_mutation(&record)?;
     // Windows finds the program and reads npm shims itself (spec D8).
     let child = crate::platform::agent_command(argv)
-        .and_then(|mut command| command.spawn())
+        .and_then(|mut command| zerus_client_core::child_environment::spawn(&mut command))
         .map_err(|error| format!("{}: {error}", argv[0]))?;
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     let identity = crate::platform::process_identity(child.id());
