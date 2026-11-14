@@ -34,15 +34,20 @@ pub(super) fn as_is(db: &Connection) -> Result<()> {
         .chain(NOTES_COLUMNS)
     {
         if !has_column(db, table, column)? {
-            return Err(Problem::new(code::INVALID_STATE,
-                format!("{MIGRATE}: missing {table}.{column}")));
+            return Err(Problem::new(
+                code::INVALID_STATE,
+                format!("{MIGRATE}: missing {table}.{column}"),
+            ));
         }
     }
     let objects = COMMON_SCHEMA
         .iter()
         .flat_map(|sql| created(sql))
         .chain(HANDLE_OBJECTS)
-        .chain([("table", "key_clear_finished"), ("index", "cancel_node_newest")]);
+        .chain([
+            ("table", "key_clear_finished"),
+            ("index", "cancel_node_newest"),
+        ]);
     for (kind, name) in objects {
         let present: bool = db
             .query_row(
@@ -52,8 +57,10 @@ pub(super) fn as_is(db: &Connection) -> Result<()> {
             )
             .map_err(storage)?;
         if !present {
-            return Err(Problem::new(code::INVALID_STATE,
-                format!("{MIGRATE}: missing {kind} {name}")));
+            return Err(Problem::new(
+                code::INVALID_STATE,
+                format!("{MIGRATE}: missing {kind} {name}"),
+            ));
         }
     }
     let unique: bool = db.query_row(

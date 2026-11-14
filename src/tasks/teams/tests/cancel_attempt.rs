@@ -1,8 +1,8 @@
 //! Product task/Team writers and the real CLI entry, on private state only.
 use super::*;
 use zerus_replica::{
-    TaskTeam,
     execution::{NativeRequest, Origin, Phase},
+    TaskTeam,
 };
 
 fn unknown(f: &Fixture, task: &Value, key: Option<TaskTeam>) -> String {
@@ -111,8 +111,10 @@ fn team_liveness_and_preview_off_use_the_same_person_override_policy() {
             } else {
                 assert_eq!(doc.revision(), before);
                 assert_eq!(doc.held().unwrap().unwrap().id, id);
-                assert!(out["error"].as_str().unwrap().contains("stop or archive"),
-                    "{status}, preview {preview}: {out}");
+                assert!(
+                    out["error"].as_str().unwrap().contains("stop or archive"),
+                    "{status}, preview {preview}: {out}"
+                );
             }
         }
     }
@@ -239,18 +241,18 @@ fn team_writer_admission_is_retained_across_the_actual_task_save() {
         Phase::Cancelled
     );
     let before = doc.revision();
-    assert!(
-        f.h.run(&fixtures::person(), ops::Operation::Resume)
-            .is_err()
-    );
+    assert!(f
+        .h
+        .run(&fixtures::person(), ops::Operation::Resume)
+        .is_err());
     assert_eq!(f.document(&task).revision(), before);
-    assert!(
-        f.h.store
-            .open_effects(TEAM, 200, None)
-            .unwrap()
-            .rows
-            .is_empty()
-    );
+    assert!(f
+        .h
+        .store
+        .open_effects(TEAM, 200, None)
+        .unwrap()
+        .rows
+        .is_empty());
 }
 
 #[test]
@@ -298,32 +300,43 @@ fn cancelled_own_delivery_stays_terminal_and_late_outcomes_cannot_replay_it() {
     // Feed the product observation to the product writer, retaining the task
     // writer just as the service does for that known original.
     {
-        let store = ProjectStore::open(&f.h.temp.path().join("replica"), "example-project").unwrap();
+        let store =
+            ProjectStore::open(&f.h.temp.path().join("replica"), "example-project").unwrap();
         let doc = store.load(task["uuid"].as_str().unwrap()).unwrap();
         let mut observation = crate::teams::tasks::observation(&doc, TEAM, &f.machine).unwrap();
-        observation.previous_revision = f.h.store.task_observation(TEAM, node).unwrap().unwrap().revision;
-        f.h.run(&fixtures::service(), ops::Operation::ObserveTask { node, observation }).unwrap();
+        observation.previous_revision =
+            f.h.store
+                .task_observation(TEAM, node)
+                .unwrap()
+                .unwrap()
+                .revision;
+        f.h.run(
+            &fixtures::service(),
+            ops::Operation::ObserveTask { node, observation },
+        )
+        .unwrap();
     }
     assert_eq!(
         f.h.store.node(TEAM, node).unwrap().unwrap().state,
         NodeState::Cancelled
     );
-    assert!(
-        f.h.store
-            .open_effects(TEAM, 200, None)
-            .unwrap()
-            .rows
-            .is_empty()
-    );
+    assert!(f
+        .h
+        .store
+        .open_effects(TEAM, 200, None)
+        .unwrap()
+        .rows
+        .is_empty());
     let before = f.document(&task).revision();
     // Stopped teams are not resumable in today's product. Keep that refusal,
     // and prove the original service reply cannot create a new open effect.
-    assert!(
-        f.h.run(&fixtures::person(), ops::Operation::Resume)
-            .is_err()
-    );
-    assert!(
-        f.h.run(
+    assert!(f
+        .h
+        .run(&fixtures::person(), ops::Operation::Resume)
+        .is_err());
+    assert!(f
+        .h
+        .run(
             &fixtures::service(),
             ops::Operation::HandoutOutcome {
                 effect_request_id: id,
@@ -332,20 +345,19 @@ fn cancelled_own_delivery_stays_terminal_and_late_outcomes_cannot_replay_it() {
                 },
             }
         )
-        .is_err()
-    );
+        .is_err());
     assert_eq!(f.document(&task).revision(), before);
     assert_eq!(
         f.h.store.node(TEAM, node).unwrap().unwrap().state,
         NodeState::Cancelled
     );
-    assert!(
-        f.h.store
-            .open_effects(TEAM, 200, None)
-            .unwrap()
-            .rows
-            .is_empty()
-    );
+    assert!(f
+        .h
+        .store
+        .open_effects(TEAM, 200, None)
+        .unwrap()
+        .rows
+        .is_empty());
 }
 
 #[test]
@@ -354,13 +366,12 @@ fn disposition_admission_enforces_query_only_and_excludes_a_concurrent_writer() 
     let held = crate::teams::store::Store::disposition_admission(f.h.temp.path())
         .unwrap()
         .unwrap();
-    assert!(
-        held.db
-            .as_ref()
-            .unwrap()
-            .execute("UPDATE teams SET name='unauthorised'", [])
-            .is_err()
-    );
+    assert!(held
+        .db
+        .as_ref()
+        .unwrap()
+        .execute("UPDATE teams SET name='unauthorised'", [])
+        .is_err());
     let db = f.h.store.db.as_ref().unwrap();
     db.busy_timeout(std::time::Duration::from_millis(5))
         .unwrap();
