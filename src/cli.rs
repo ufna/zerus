@@ -1800,8 +1800,9 @@ fn hosted_forwarding_refusal(
 }
 
 /// The launch and fork options that take a value, which the parent scan
-/// skips. A test reads `LaunchOptions::parse` and the fork parser and fails
-/// when either gains a value option this list lacks (zerus-ppd26.13).
+/// skips. A behavioural test runs the launch and fork parsers for every
+/// option literal, so value consumption is independent of source-arm shape
+/// (zerus-ppd26.13, .14, .20).
 const LAUNCH_VALUE_OPTIONS: &[&str] = &[
     "-n",
     "--model",
@@ -2685,43 +2686,60 @@ fn rename(config: &Config, args: &[String], mut dry: bool) -> Result<i32> {
     }
     Ok(result)
 }
-fn fork_session(config: &Config, args: &[String], client: &str, mut dry: bool) -> Result<i32> {
-    let name = require(
-        args,
-        0,
-        "usage: hgs fork <session> [-n name] [-d] [--archive ID]",
-    )?;
-    let (mut tag, mut archive, mut expected_run, mut expected_conversation) =
-        (None, None, None, None);
-    let mut detached = false;
-    let mut index = 1;
-    while index < args.len() {
-        match args[index].as_str() {
-            "--dry-run" => dry = true,
-            "-d" => detached = true,
-            "--parent-link" => {
-                let link = require(args, index + 1, "--parent-link needs a link")?;
-                state::parent_link::accept_forwarded(link).map_err(|e| Error::new(1, e))?;
-                index += 1;
-            }
-            "-n" | "--archive" | "--expected-run-id" | "--expected-conversation-id" => {
-                let value = require(args, index + 1, "missing fork option value")?;
-                let slot = match args[index].as_str() {
-                    "-n" => &mut tag,
-                    "--archive" => &mut archive,
-                    "--expected-run-id" => &mut expected_run,
-                    _ => &mut expected_conversation,
-                };
-                if slot.is_some() {
-                    return Err(Error::new(1, "duplicate fork option"));
+struct ForkOptions<'a> {
+    name: &'a str,
+    tag: Option<&'a str>,
+    archive: Option<&'a str>,
+    expected_run: Option<&'a str>,
+    expected_conversation: Option<&'a str>,
+    dry: bool,
+    detached: bool,
+}
+impl<'a> ForkOptions<'a> {
+    fn parse(args: &'a [String], mut dry: bool) -> Result<Self> {
+        let name = require(
+            args,
+            0,
+            "usage: hgs fork <session> [-n name] [-d] [--archive ID]",
+        )?;
+        let (mut tag, mut archive, mut expected_run, mut expected_conversation) =
+            (None, None, None, None);
+        let mut detached = false;
+        let mut index = 1;
+        while index < args.len() {
+            match args[index].as_str() {
+                "--dry-run" => dry = true,
+                "-d" => detached = true,
+                "--parent-link" => {
+                    let link = require(args, index + 1, "--parent-link needs a link")?;
+                    state::parent_link::accept_forwarded(link).map_err(|e| Error::new(1, e))?;
+                    index += 1;
                 }
-                *slot = Some(value);
-                index += 1;
+                "-n" | "--archive" | "--expected-run-id" | "--expected-conversation-id" => {
+                    let value = require(args, index + 1, "missing fork option value")?;
+                    let slot = match args[index].as_str() {
+                        "-n" => &mut tag,
+                        "--archive" => &mut archive,
+                        "--expected-run-id" => &mut expected_run,
+                        _ => &mut expected_conversation,
+                    };
+                    if slot.is_some() {
+                        return Err(Error::new(1, "duplicate fork option"));
+                    }
+                    *slot = Some(value);
+                    index += 1;
+                }
+                option => return Err(Error::new(1, format!("unknown fork option: {option}"))),
             }
-            option => return Err(Error::new(1, format!("unknown fork option: {option}"))),
+            index += 1;
         }
-        index += 1;
+        Ok(Self { name, tag, archive, expected_run, expected_conversation, dry, detached })
     }
+}
+
+fn fork_session(config: &Config, args: &[String], client: &str, dry: bool) -> Result<i32> {
+    let ForkOptions { name, tag, archive, expected_run, expected_conversation, dry, detached } =
+        ForkOptions::parse(args, dry)?;
     if !detached && !dry && terminal().inside() {
         return Err(Error::new(
             2,
@@ -3685,6 +3703,10 @@ fn launch(
     }
     Ok(rc)
 }
+
+#[cfg(all(test, unix))]
+#[path = "cli/parent_scan_tests.rs"]
+mod parent_scan_tests;
 
 #[cfg(test)]
 mod tests {
