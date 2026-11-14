@@ -116,9 +116,10 @@ impl Scope {
     }
 }
 
-/// Why an archive that ended before its first message cannot restore.
+/// Why an archive whose conversation was never saved cannot restore
+/// (zerus-63rru.70).
 pub(super) const NO_CONVERSATION: &str =
-    "This session ended before its first message, so it saved no conversation to restore";
+    "The conversation was never saved, so it cannot be restored";
 
 /// A presentation gate, never a substitute for the locked action checks.
 /// `resumed` is the summary's single verification of a pending resume.
@@ -132,9 +133,11 @@ pub(super) fn summary(record: &Value, live_pane: bool, resumed: &Option<Result<(
     let restore_pending = !string(record, "restore_archive_id").is_empty() || cleanup_pending;
     let restorable =
         archived && recipe && !cleanup_pending && !record_path(string(record, "name")).exists();
-    // One bounded metadata read, only for an archive that may otherwise
-    // restore (zerus-wyrqg).
-    let conversation = !restorable || recipes::restore_conversation_saved(record);
+    // The restore's own history check decides, through the shared code:
+    // one bounded metadata read, only for a Claude or Codex archive that
+    // may otherwise restore (zerus-63rru.70). Kimi, DeepSeek and OpenCode
+    // keep today's decision and are not read here.
+    let conversation = !restorable || recipes::conversation_persisted(record);
     let decisions = [
         (
             "pause",
@@ -688,3 +691,84 @@ mod tests {
         assert!(restore(&record("kimi", folder.path())).0);
     }
 }
+
+    /// zerus-63rru.70: a Claude archive that exited before its first message
+    /// (a conversation ID but no transcript) offers no restore, with the
+    /// plain reason; a saved one offers restore; the restore's own history
+    /// check still refuses the first.
+    #[test]
+    fn a_claude_archive_offers_restore_only_for_a_saved_conversation() {
+        let dir = tempfile::tempdir().unwrap();
+        let saved = dir.path().join("transcript.jsonl");
+        std::fs::write(&saved, "{\"type\":\"user\"}\n").unwrap();
+        let record = |transcript: &std::path::Path| {
+            let mut record = crate::state::listing_fixture::launched_record(
+                "claude",
+                "claude/example/member",
+                "00000000-0000-4000-8000-0000000000a1",
+                "00000000-0000-4000-8000-0000000000a2",
+                "run-claude",
+                "/",
+                "account-example",
+            );
+            crate::state::listing_fixture::confirmed(&mut record, "conversation-claude");
+            record["transcript"] = json!(transcript);
+            record["archive_id"] = json!("00000000-0000-4000-8000-0000000000a3");
+            record
+        };
+        // The conversation that was never saved: no transcript file.
+        let before_first = record(&dir.path().join("missing.jsonl"));
+        let offered = summary(&before_first, false, &None);
+        assert!(
+            !offered["allowed_actions"]
+                .as_array()
+                .unwrap()
+                .contains(&json!("restore")),
+            "{offered}"
+        );
+        let reason = offered["action_reasons"]["restore"].as_str().unwrap();
+        assert!(
+            reason.contains("never saved") && reason.contains("cannot be restored"),
+            "{reason}"
+        );
+        // The restore command's own check still refuses it, unchanged.
+        assert!(crate::state::recipes::verify_history(&before_first, true).is_err());
+        // The saved conversation offers restore and passes its own check.
+        let persisted = record(&saved);
+        let offered = summary(&persisted, false, &None);
+        assert!(
+            offered["allowed_actions"]
+                .as_array()
+                .unwrap()
+                .contains(&json!("restore")),
+            "{offered}"
+        );
+        assert!(crate::state::recipes::verify_history(&persisted, true).is_ok());
+    }
+
+    /// zerus-63rru.70: Kimi, DeepSeek and OpenCode keep today's decision; the
+    /// archive metadata read never touches them.
+    #[test]
+    fn other_agents_keep_todays_restore_decision_without_a_transcript_read() {
+        for agent in ["kimi", "dsh", "opencode"] {
+            let mut record = crate::state::listing_fixture::launched_record(
+                agent,
+                &format!("{agent}/example/member"),
+                "00000000-0000-4000-8000-0000000000a1",
+                "00000000-0000-4000-8000-0000000000a2",
+                &format!("run-{agent}"),
+                "/",
+                "account-example",
+            );
+            crate::state::listing_fixture::confirmed(&mut record, &format!("conversation-{agent}"));
+            record["archive_id"] = json!("00000000-0000-4000-8000-0000000000a3");
+            let offered = summary(&record, false, &None);
+            assert!(
+                offered["allowed_actions"]
+                    .as_array()
+                    .unwrap()
+                    .contains(&json!("restore")),
+                "{agent}: {offered}"
+            );
+        }
+    }
