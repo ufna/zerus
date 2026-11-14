@@ -135,7 +135,7 @@ fn parse(screen: &str, width: usize) -> Option<Panel> {
             return None;
         }
     }
-    if at + 1 != end || rows[at] != "" {
+    if at + 1 != end || !rows[at].is_empty() {
         return None;
     }
     Some(Panel {
