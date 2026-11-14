@@ -5553,6 +5553,361 @@ and selected Task View share one polling controller. Full execution and result
 milestones remain specified in
 `superpowers/specs/2026-10-26-activity-task-execution-design.md`.
 
+## Agent Teams
+
+`hgs team` drives Agent Teams: a lead session and member sessions that work a
+queue of Zerus tasks through review and test stages, with accepted work
+merged into an integration branch. The guide for a person is
+[agent-teams.md](agent-teams.md); the design is
+`superpowers/specs/2026-11-11-agent-teams-design.md`. Teams were designed and
+first built by WhiteWh in the `WhiteWh/zerus` fork (pull request #322).
+
+The preview is off on every computer. While it is off every `hgs team` command
+except `preview` answers `{"ok":false,"error":{"code":"teams_inactive",...}}`
+with exit 1 and creates no file. `preview on` creates the marker
+`teams/preview` in the `hgs` state directory; the store
+`teams/teams-v1.sqlite3` appears with the first team. The person's catalog is
+`teams/catalog.json` in the `hgs` configuration directory, merged over the
+built-in catalog by ID. `catalog import` replaces that file; `template save`
+and `template import` add or replace one template; `template remove` removes a
+template of the person's own and answers whether a built-in one with that ID
+is still available. Nothing is written when the merged catalog is invalid.
+
+```sh
+hgs team preview on|off|status
+hgs team catalog show|export
+hgs team catalog import < catalog.json
+hgs team template list
+hgs team template show|export|remove TEMPLATE
+hgs team template save < template.json
+hgs team template import < bundle.json
+hgs team create --template TEMPLATE < request.json
+hgs team list [--limit 1..200] [--after CURSOR]
+hgs team waiting [--limit 1..200] [--after CURSOR]
+hgs team status [--team TEAM] [--bundle]
+hgs team inbox|queue|cards|journal [--team TEAM] [--limit 1..200] [--after CURSOR]
+hgs team current
+hgs team settings|pause|resume|stop|archive|decide < request.json
+hgs team admit|route|accept|return|reassign|hold|release|cancel|reply < request.json
+hgs team pause-member|resume-member|stop-member|archive-member < request.json
+hgs team ask|verdict < request.json
+```
+
+Every command prints one JSON object. A refusal is
+`{"ok":false,"error":{"code","message","refs"}}` with exit 1; callers match on
+`code`, never on `message`. A command that has input reads one JSON object on
+stdin, at most 262,144 bytes, and refuses unknown fields with `unknown_field`.
+Unknown options and repeated valued options are refused ("given twice");
+a repeated switch is accepted and reads as once. `--team` takes a lowercase
+canonical UUID; a lead or a member may omit it for its own team.
+
+**Who runs a command.** `hgs team` proves its caller with one interim check.
+With the preview on, so does an `hgs task` command that touches a team: one
+with `--team`, or one on a task whose team key guards it. Every other task
+command behaves as with the preview off. A command carrying a session's markers
+is that session only when its live run, birth and process ancestry verify, or
+when a DeepSeek host proves that conversation's tool call with its per-call
+token, and
+it maps to a lead or a member only by the team's exact `(machine, session_id)`
+binding, never by a name. A command without markers is the person's only when
+no live agent session is among its process ancestors; replies then carry
+`actor.origin: "cli_interim"`, `actor.interim: true` and a `note` that states
+the limits of this interim rule. A command inside a sandbox with its own user
+namespace is refused, marked or not. On macOS an unmarked command below a
+program whose environment the system hides, usually a system shell, cannot be
+checked and is refused; the Zerus window runs `hgs` with no shell between.
+A command below a live DeepSeek host, matched by its record or its own exact
+host arguments, or below OpenCode's registered shared service is not a
+person's. Other marked claims below that host are refused; only a
+DeepSeek per-call proof names its hosted session. DeepSeek can hold a lead or
+member seat with per-call caller proof, witnessed task input and hosted
+lifecycle observations; an older host is never restarted or reloaded to add
+those capabilities. OpenCode's shared-service sessions cannot hold a seat.
+The caller proof also refuses a private process namespace that hides the
+host, with its own cause and the remedy to run outside it or turn that
+namespace off. See [Official DeepSeek Harness](#official-deepseek-harness)
+for the token proof and its limits. The interim rule guards against accidents and against a command
+that merely drops its markers, not against an agent that sets out to pass as
+the person. Windows has no Teams preview. A request never names its actor or
+its operation: `op`, `actor` and any other foreign field are refused.
+
+| Command | Person | Lead | Member | Input fields besides the envelope |
+|---|---|---|---|---|
+| `preview on`, `preview off` | yes | | | none, no stdin |
+| `preview status`, `list` | yes | yes | yes | none |
+| `catalog ...`, `template ...` | yes | | | the catalog, template or bundle JSON |
+| `create --template` | yes | | | `project`, `name`, `goal`, `home`, `integration_branch`, `base_commit`, optional `expected_template` and `delegations` |
+| `waiting` | yes | | | none |
+| `status` | yes | yes | yes | none |
+| `inbox`, `queue`, `cards`, `journal` | yes | yes | | none |
+| `current` | | yes | yes | none |
+| `settings` | yes | | | `settings`, the complete settings object |
+| `pause`, `resume` | yes | yes | | none |
+| `stop`, `archive` | yes | | | none |
+| `decide` | yes | | | `card`, `decision` |
+| `admit`, `hold`, `release` | yes | yes | | `node` |
+| `route` | yes | yes | | `node`, `role`, `pipeline`, optional `deps`, `writes`, `assignee` |
+| `accept` | yes | with the delegation | | `node` |
+| `return`, `cancel` | yes | yes | | `node`, `reason` |
+| `reassign` | yes | yes | | `node`, `member`, `reason` |
+| `reply` | yes | with the delegation | | `item`, `text` |
+| `pause-member`, `resume-member` | yes | yes | | `member` |
+| `stop-member`, `archive-member` | yes | | | `member` |
+| `ask` | | | the attempt's holder | `node`, `generation`, `text` |
+| `verdict` | | | the stage's holder | `node`, `generation`, `pass`, `text` |
+
+The envelope of every write is `request_id` (a fresh lowercase UUID), `team`
+(the team's UUID, chosen by the caller for `create`) and `expected_revision`
+(the team's revision from `status`, 0 for `create`). A changed revision is
+refused with `stale_revision`; read again before a new request. The same
+`request_id` with the same content from the same actor returns the first reply,
+success or refusal; different content is refused with `duplicate`. A write
+answers `{ok, revision, node?, item?, actor, team}`: `node` for a created
+queue entry, `item` for an inbox item or a card the write opened. A write waits
+8 seconds for the store; one that still cannot begin is refused with
+`store_busy`, nothing was written, and it may be sent again. `storage_failed`
+means the result is not known: repeat the same request with the same
+`request_id`, never a new one.
+
+Rules the store enforces beyond the table: a lead's `accept` and `reply` need
+the team's `accept_results` and `answer_members` delegations; a lead accepts
+only a report its pipeline handed to it, and a stage node is accepted or
+cancelled only by the person, since a stage ends by its holder's verdict. A
+node has one unsettled decision at a time. `return` needs a reported task with
+a holder; `reassign` needs an active member of the node's role that is not the
+lead and, for a stage, not its implementer. `route` refuses a stage: its role
+is the pipeline's and its member is chosen by the hand-out. Removing a member
+puts its open work back to the lead. A task already handed out stays held
+until its observation moves; it takes no free member. A settings change
+touches only the live nodes, and only when the integration setting actually
+changed; the archive keeps the value each node ended with. The lead does not
+resume a team the person paused or a member the person stopped. `decide` takes `approve` or
+`reject` for the `integration` and `pipeline_acceptance` cards, `acknowledged`
+for an ordinary card without a stored list, and only a listed word for a card
+that stores its list; a wrong word is refused and nothing is written. `create` records the
+team as `running` with every member `not_created` and launches nothing; the
+desktop service launches the members. `expected_template` is the template's
+`digest` from the catalog read: when the template the command is about to use
+has another digest, `create` is refused with `template_changed` before anything
+is written. `delegations` names all five booleans (`accept_results`,
+`answer_members`, `confirm_trust`, `resume_exited`, `merge_accepted`), which
+the team gets in place of the template's. Without the two fields the team takes
+the template as the catalog holds it.
+
+**Replies.** The read shapes are pinned in `crates/team-plan/fixtures/`:
+`cli-list.json` (`list`: `{ok, actor, rows, next}`, each row
+`{id, project, name, status, lead, home, revision, lead_session}`),
+`cli-waiting.json` (`waiting`: open cards of every team, oldest first, each
+with its `team`), `cli-status.json` (`status`: `{ok, actor, team, members,
+counts, service_running, health, service_items}`; the team without its
+`bundle` unless `--bundle`). `service_items` lists the team's named service
+conditions, each with its kind, sentence, count and next try; a refusal of
+every hand-out by the project's own limits appears here as
+`kind: "project_limit"` for as long as the fact stands, `cli-queue.json`,
+`cli-inbox.json`, `cli-cards.json` and `cli-journal.json` (`{ok, actor, team,
+rows, next}`). A queue row carries `kind` (`task` or `stage`) and `rounds`; a
+stage row adds `stage: {kind, target, round}` with the kind `review`, `test` or
+`land`. A member row carries `model` when its role names one. `current` answers
+`{ok, actor, team, revision, member, nodes}`, each held node with its
+`generation`. A held node also carries `questions`, the member's own questions
+of the current attempt as `{item, question, state, answer}`, newest first and
+at most ten, with `questions_more` when there are more; a question of an
+earlier attempt is not shown. The catalog commands answer `catalog`,
+`templates`, `template`, `bundle`, `saved`, `imported` or `removed` with
+`still_available`; each template row of the catalog read carries `digest`, the
+value `create` takes as `expected_template`. `preview` answers
+`{ok, preview: "on"|"off", note}`. A reader of a reply ignores fields it does
+not know: replies gain fields.
+
+Queue rows also carry `holder`, `pending_decision` and `pending_replaceable`:
+a new Return, Reassign or Cancel can supersede a pending Return or Reassign
+only before its reopen is reserved. A stopped or archived team's row may
+carry `stop_outcome: {code, reason?}` for its current recorded stop. Codes are
+`cancelled`, `released`, `cancel_refused`, `key_cleared`, `key_clear_refused`,
+`pending` and `unchanged`; refusal reasons are data, not a code inferred from
+text. An older stop without a recorded stop identity carries no such field.
+
+Report, inbox and waiting-card reads keep member `text` separate from the
+service's additive `notes: [{code, text?}]`. Known codes are `text_shortened`
+and `worktree_dirty`; the service retains at most 15,000 bytes of report text.
+The lead's, stages' and dependencies' prompts quote each member-written line
+and put service notes under a separate heading. A member-written heading or
+sentence is never reinterpreted as a note. Old rows without notes read with
+an empty array; the notes columns require no Teams store version bump.
+
+A row of `list` for a team that is planning, running or paused also carries
+`member_sessions`, the bound sessions of its members as `{member, machine,
+session_id}`, at most the roster's size; a removed member is left out.
+`status` reports whether the desktop service answered: `service_running` is
+`true` or `false`, or `null` when its state could not be read in time, and
+`health` is `null` or `{code, at_ms}` with `launch_notification_overflow` or
+`launch_worker_fault`. Without the service, `hgs team` still records
+decisions and answers reads; nothing is handed out.
+
+**Pages.** `--limit` is 1 to 200 and defaults to 50. `next` is an opaque
+cursor (`t1.` followed by the store's own cursor) for `--after`; it belongs to
+the list that issued it, and pages stay stable while new rows arrive. `null`
+marks the last page. `status` returns at most 200 members and `current` reads
+at most three pages of the queue.
+
+**Statuses** as replies show them.
+
+| Record | Values |
+|---|---|
+| Team `status` | `running`, `paused`, `stopped`, `archived`; `draft`, `planning` and `finished` belong to planned work and are not reached in this milestone |
+| Member `state` | `not_created`, `active`, `paused`, `removed` |
+| Queue row `state` | `waiting` (not admitted or not routed), `pending` (To do), `in_progress`, `reported` (In review), `accepted` (Done), `cancelled` |
+| Stage `kind` | `review`, `test`, `land` |
+| Inbox item | `state` `open` or `closed`; `kind` `report`, `question:N` (with `reply` and `reply_actor` once answered), `integration_conflict`, `delivery_uncertain`, `cancel_refused:N`, `unstaffed:` with the kernel's reason (no member can take a ready task; one item per episode, at most 500 current episodes, and an item the lead closes is not told again), and from the timers `no_report`, `not_started`, `report_reminder` |
+| Card | `state` `open` or `closed`; `decision` null while open, then the person's word or `stale` when the card was overtaken; `kind` `integration` and `pipeline_acceptance` (approve or reject), `launch_blocked`, `launch_uncertain`, `launch_capacity`, `standing_confirmation`, `team_actor_blocked`, `rejected_merge` (acknowledged), and from the timers and the stop `report_waiting`, `silent_lead`, `late_session` |
+| Journal entry | `kind` is the operation, with `seq`, `at_ms`, `actor`, `refs`, `request_id` and `text` |
+
+**Bounds** a caller can meet: 6 members besides the lead by default (the
+`max_members` cap); 500 admitted open tasks (`max_open_tasks`, at most 500)
+and 100 tasks waiting for admission per team; 3 open questions per attempt
+(`max_open_questions`); 200 dependencies and 200 write paths per route; 16,384
+bytes for a reason or a text; 200 entries in a conflict list; 600 open
+decisions per team, one for each live task. Decided queue tasks move to an
+archive and stop counting.
+
+At admission, team and template names refuse control characters, U+2028,
+U+2029 and the nine bidirectional embedding, override and isolate characters.
+Ordinary Unicode letters stay valid. Template, role, pipeline and member IDs
+are at most 64 ASCII characters: `[a-z0-9]` first, then `[a-z0-9_-]`.
+Existing teams and catalogs remain readable; create, save and import enforce
+the rules. Task titles use the replica's shared forbidden-character rule;
+an explicit title is nonempty and at most 512 UTF-8 bytes. A plain task's
+first prompt line still accepts tabs, but refuses the line separators and
+bidirectional characters. Older task titles remain readable and movable.
+
+**Problem codes.**
+
+| Code | Meaning |
+|---|---|
+| `teams_inactive` | The preview is off on this computer |
+| `not_found` | No such team, template, card, record or command |
+| `stale_revision` | `expected_revision` is not the team's revision |
+| `template_changed` | The template's digest is not `expected_template`; nothing was written |
+| `not_allowed` | The caller may not run this command or operation |
+| `invalid_state` | The request is malformed or the team, task or member is not in a state that allows it |
+| `store_busy` | The team store stayed busy; nothing was written; try again |
+| `unknown_role` | The role is not in the team's template, or has no seat |
+| `unknown_pipeline` | The pipeline is not in the team's template |
+| `unknown_member` | No such member in the team |
+| `unknown_account` | A named account is missing, of another agent or signed out |
+| `no_account_available` | No account of the role's agent has room; `refs` holds the earliest reset |
+| `no_seat_for_stage` | A pipeline names a role with no seat in the roster |
+| `dependency_cycle` | A route would create a dependency cycle |
+| `over_cap` | A size, page or capacity bound is reached |
+| `duplicate` | A repeated ID, a request ID reused with other content, or a task already in another team |
+| `unknown_field` | The request or catalog file has a field the command does not know |
+| `integration_conflict` | The accepted work conflicts with the integration branch |
+| `integration_unavailable` | The repository or Git cannot be integrated safely |
+| `delivery_uncertain` | An effect's result is unknown; it is never repeated |
+| `storage_failed` | Storage failed or its result was lost; repeat the same request with the same request ID |
+
+**Tasks and teams.** `hgs task add --team TEAM [--role ROLE] [--pipeline
+PIPELINE]` files a task into a team's queue, and `hgs task target REF team
+TEAM` sends an existing Backlog or To do task; see [Project tasks](#project-tasks)
+for what agents may do with a team's task. The task is created even when the
+team refuses it; the reply then has `team.queued: false`, `team.error` and the
+message `Task REF exists and was not queued (CODE): REASON`. After a refusal or
+`store_busy` the task's team key is what it was before the command: absent for
+a first send, the same team for a repeat. After `storage_failed` the key stays,
+because the team may hold the task; sending it again finds that entry by the
+task's identity and never queues it twice.
+
+**Facts about the team and its members.** A hand-out refused by the project's
+own limits (`agents_other` or the hourly `agent_limit`) is a fact about the
+team: the service records it with the command's sentence and the count, hands
+nothing out and no reopen while it stands, and opens one `team_actor_blocked`
+card per team, bound to no task, at the first refusal, with the decisions
+`retry` (a probe on the next pass) and `acknowledged`. One hand-out is tried
+as a probe after the retry table's 1, 2, 4, 8 and 15 minute delays; a probe
+the project admits ends the fact, closes the card and the queue goes on. The
+lead reads the fact among the `service_items` of `status`. A member whose
+terminal holds input, such as an open question, an unsent draft or a dialog
+waiting for the person, or one the service cannot read, is likewise a fact,
+with one typed cause for all of them: the
+member is not free, another member is tried, and the member is tried again on
+the same delays; a ready task that only such a member can take gets a
+`team_actor_blocked` card after the wait.
+
+**Service commands.** Five `hgs task` commands belong to the desktop service on
+the team's home computer: `team-deliver` (a hand-out or a reopen), `team-done`
+(an accepted task to Done), `team-stage` (the task of a stage), `team-cancel`
+(a cancel decision) and `team-clear` (removes the team key of a released task
+or of a stopped team's task). Each takes its authority from a decision or an
+effect the team store already holds, never from its caller, and repeating one
+with the same input changes nothing. Nobody runs them by hand.
+
+`team-cancel` acts on one attempt: the one the store last observed, or the
+node's own delivered hand-out. It answers `cancelled` (running work with a
+known delivery is cancelled with the task's ordinary notice), `released` (a
+task with nothing running loses its team key and stays in its stage),
+`refused` (a task whose delivery is unknown, or that is Done, is left as it is;
+in a live team the lead gets an inbox item), `stale` (the task changed since
+the store last observed it; the service observes it and asks again) or
+`cutting_over`. In a running or paused team the node ends only when the service
+observes the task cancelled; a person's new run of the task is taken over and
+never cancelled. After a stop, a task a person started again is refused with a
+reason that begins `attempt_changed:` and is left to that person.
+
+Stop and Archive also schedule a bounded, keyset-paged sweep of closed tasks.
+It silently clears only this team's key on an unbound closed task, without
+adding history; another team's key or a new live binding is kept. A completed
+sweep is not repeated until another Stop or Archive. Unreadable documents
+are skipped and a key arriving behind the cursor is not rediscovered by that
+pass. A cancelled task moved back to To do can be sent again: the move clears
+its mark and reason, and a send clears stale marks in Backlog or To do. The
+send settles the old cancelled node before creating a new one; In review is
+not a stage from which a resend creates a node.
+
+Rejecting an Integration card does not undo a merge already recorded for its
+decision. The service opens one `rejected_merge` card (shown as **Rejected
+result is merged**) and one lead inbox item, naming the task, commit and
+branch. The card takes `acknowledged`; only a revert on that integration
+branch removes the merged work. A later recorded fact for that rejected
+decision gives the same notice, without finishing a newer task attempt.
+
+**Doorbells and timers.** The service rings the lead with one `hgs send` that
+says how many inbox items wait and names `hgs team inbox`, and rings a member
+the same way for answers to its questions, naming `hgs team current`. A
+doorbell carries no text of an item, a question or an answer. It rings while
+the team is running and the session is live and idle with no pending request,
+for items newer than the previous doorbell, at most once per
+`inbox_interval_seconds`, bound to the run and conversation it read; one whose
+delivery is unknown is never sent again. The team's `timers` settings name the
+waits: `report_timeout_seconds` (a turn ended without a report),
+`start_timeout_seconds` (a hand-out not started), `remind_lead_minutes` and
+`remind_person_minutes` (an undecided report) and `lead_stall_minutes` (a lead
+that does not work while its inbox waits). Each fires once for its node and
+generation or its inbox item, only while its condition holds and never while
+the team is paused or stopped. `answer_escalate_minutes` belongs to a later
+milestone.
+
+**Standing confirmations.** Under the team's `confirm_trust` and
+`resume_exited` delegations, and nothing else, the service answers the startup
+folder trust prompt of a Claude, Codex or Kimi member whose worktree Zerus
+created for that team, and resumes a member whose agent exited by itself, at
+most three times an hour, in its own conversation with a brief that points it
+at `hgs team current`. Each is checked against the exact run, conversation,
+prompt and hash, reserved in the approval journal under its own categories
+(`team_folder_trust`, `team_resume`) before delivery and finished from the
+receipt; an unknown delivery is never repeated. Ordinary automatic tool
+approvals never admit these categories. Anything the service cannot confirm
+opens a `standing_confirmation` card.
+
+Folder trust applies on the member's account to the team's main Git checkout
+and its subfolders, as the permission checkbox states. A Codex repository
+prompt's root must match the Git-resolved main checkout; a bare repository,
+separate Git directory or submodule does not establish that scope. The
+approval journal carries the recorded `scope` in its bounded list and detail
+reads. In **Settings > Approvals**, only a confirmed folder-trust grant says
+**Trusted for ... and its subfolders on this account**; failed, cancelled,
+unconfirmed and unknown outcomes say it was requested but not confirmed.
+Resume and other ordinary approval rows do not claim that trust grant.
+
 ## Machines and accounts
 
 **Machines** edits local SSH aliases and overrides in
