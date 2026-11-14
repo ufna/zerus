@@ -440,12 +440,14 @@ pub(super) fn send(
             *detail.borrow_mut() = why;
             Ok(Err(Closed { node: None, reason }))
         };
+        let mut meeting = crate::teams::tasks::Meeting::Admitted(&mut *admitted);
         if let Err(error) = super::teams::guard(
             config,
             machines,
             task,
             if handoff { "handoff" } else { "send" },
             args,
+            &mut meeting,
         ) {
             return refuse("not_sendable", error.message);
         }
@@ -706,7 +708,8 @@ pub(super) fn reopen(
             *detail.borrow_mut() = why;
             Ok(Err(Closed { node: None, reason }))
         };
-        if let Err(error) = super::teams::guard(config, machines, task, "reopen", args) {
+        let mut meeting = crate::teams::tasks::Meeting::Admitted(&mut *admitted);
+        if let Err(error) = super::teams::guard(config, machines, task, "reopen", args, &mut meeting) {
             return refuse("not_sendable", error.message);
         }
         let view = task.view()?;
