@@ -259,6 +259,8 @@ fn event_db_at(root: &Path) -> Result<Connection> {
         .map_err(|e| e.to_string())?;
     db.execute_batch("CREATE TABLE IF NOT EXISTS events (seq INTEGER PRIMARY KEY, name TEXT, conversation TEXT, payload TEXT);
         CREATE INDEX IF NOT EXISTS events_session ON events(name, conversation, seq);
+        CREATE INDEX IF NOT EXISTS events_subagent_activity ON events(name, conversation,
+            json_extract(payload, '$.agent_id'), seq);
         CREATE INDEX IF NOT EXISTS events_kimi_completions ON events(name, conversation,
             json_extract(payload, '$.run_id'), json_extract(payload, '$.kimi_turn_id'))
         WHERE json_extract(payload, '$.type') = 'Stop' AND json_extract(payload, '$.agent_id') = '';
