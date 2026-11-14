@@ -1464,8 +1464,9 @@ fi
         } else {
             identity_worker(echo)
         };
+        // CURL_HOME rather than HOME: curl prefers it for `.curlrc`, and the
+        // suite's other tests read the real HOME. XDG has no config file here.
         let mut vars: Vec<(&'static str, Option<&str>)> = vec![
-            ("HOME", Some(&config_path)),
             ("CURL_HOME", Some(&config_path)),
             ("XDG_CONFIG_HOME", Some(&config_path)),
             ("http_proxy", None),
@@ -1640,8 +1641,9 @@ fi
 
     #[test]
     fn claude_429_headers_survive_curl_refusing_an_oversized_error_body() {
-        // The Kimi tests below replace PATH and HOME to record and redirect
-        // curl; every test that starts curl shares this lock.
+        // The Kimi tests below replace PATH, CURL_HOME and the proxy
+        // variables to record and redirect curl; every test that starts curl
+        // shares this lock.
         let _lock = curl_lock();
         let server = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let url = format!("http://{}/usage", server.local_addr().unwrap());
