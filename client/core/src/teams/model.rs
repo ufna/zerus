@@ -297,6 +297,13 @@ impl TeamsModel {
         }
     }
 
+    /// An explicit discovery retry needs a fresh answer even if unchanged:
+    /// the requesting webview may have lost or never received the last one.
+    pub fn recheck(&mut self, now: Instant) {
+        self.shown.clear();
+        self.refresh(now);
+    }
+
     /// The project's tasks topic changed: the watched team's status and queue
     /// are read again (a report moves a node's state).
     pub fn tasks_changed(&mut self, now: Instant) {

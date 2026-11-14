@@ -6,6 +6,7 @@ import { afterEach, expect, it, vi } from "vitest";
 import { createComponent } from "solid-js";
 import { render } from "solid-js/web";
 const f = vi.hoisted(() => ({
+  reason: "",
   setAvailable: (_: boolean | undefined) => {}, setOff: (_: "inactive" | "unavailable" | null) => {}, setList: (_: unknown) => {},
   preview: vi.fn(async (): Promise<{ outcome: string; detail?: string }> => ({ outcome: "done" })), recheck: vi.fn(),
 }));
@@ -15,12 +16,12 @@ vi.mock("../../../store/teams", async () => {
   const [off, setOff] = createSignal<"inactive" | "unavailable" | null>(null);
   const [list, setList] = createSignal<unknown>(undefined);
   f.setAvailable = setAvailable; f.setOff = setOff; f.setList = setList;
-  return { teams: { available, off, list, preview: f.preview, recheck: f.recheck } };
+  return { teams: { available, off, list, preview: f.preview, recheck: f.recheck, readFailureFor: () => f.reason ? { message: f.reason } : null } };
 });
 import { TeamsSection, previewState } from "./Teams";
 
 let dispose: (() => void) | undefined;
-afterEach(() => { dispose?.(); dispose = undefined; f.preview.mockClear(); f.recheck.mockClear(); f.setAvailable(undefined); f.setOff(null); f.setList(undefined); document.body.replaceChildren(); });
+afterEach(() => { dispose?.(); dispose = undefined; f.preview.mockClear(); f.recheck.mockClear(); f.reason = ""; f.setAvailable(undefined); f.setOff(null); f.setList(undefined); document.body.replaceChildren(); });
 
 function setup(available: boolean | undefined, off: "inactive" | "unavailable" | null = null, live = false) {
   f.setAvailable(available); f.setOff(off);
@@ -82,6 +83,16 @@ it("disables the row while hgs is unavailable, with the reason", () => {
   const host = setup(false, "unavailable");
   expect(toggle(host).disabled).toBe(true);
   expect(host.querySelector("[data-teams-unavailable]")?.textContent).toContain("hgs is unavailable");
+});
+
+it("shows the read's actual reason and retries it", () => {
+  f.reason = "hgs could not run here: permission denied";
+  const host = setup(false, "unavailable");
+  expect(toggle(host).disabled).toBe(true);
+  expect(host.querySelector("[data-teams-unavailable]")?.textContent).toBe(f.reason);
+  host.querySelector<HTMLButtonElement>(".btn.small")!.click();
+  expect(f.recheck).toHaveBeenCalledTimes(1);
+  expect(f.preview).not.toHaveBeenCalled();
 });
 
 it("explains an unknown state and can read it again without changing the preview", async () => {

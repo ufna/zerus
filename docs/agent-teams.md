@@ -33,6 +33,10 @@ does the same, and `hgs team preview status` shows the state. When the desktop
 cannot confirm a change, it says "The change could not be confirmed. Nothing on
 screen changed." and offers **Read the state again**.
 
+The switch follows this computer's command-line state. An unavailable read
+keeps the switch disabled and shows its reason. **Read again** requests a fresh
+answer even when the followed views and their contents have not changed.
+
 Turning it on adds a marker file to this computer's `hgs` state directory and
 makes the desktop show **New team** and **Waiting for you** in the rail, the
 **Team** tab on a lead's session, **Send to team** on the task board and a team
