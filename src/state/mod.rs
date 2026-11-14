@@ -73,8 +73,10 @@ mod service_worker;
 mod session_limits;
 pub(crate) mod session_id;
 mod session_index;
-// Inactive data foundation; no publisher, caller policy or startup wiring.
+// Process projection data. The advisory writer never grants caller authority.
 mod process_index;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+mod process_index_writer;
 mod labels;
 /// How every reader decides what the label index proves (zerus-ucck P3a);
 /// the native readers that need it outside this module run on Unix.
