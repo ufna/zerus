@@ -1043,6 +1043,7 @@ mod tests {
 
     /// The `https` row's stand-in: curl must reach it directly, so it sends a
     /// TLS handshake and never a proxy `CONNECT`.
+    #[cfg(unix)]
     fn tls_worker(server: std::net::TcpListener) -> std::thread::JoinHandle<()> {
         std::thread::spawn(move || {
             let mut stream = accept_with_timeout(&server);
@@ -1055,6 +1056,7 @@ mod tests {
         })
     }
 
+    #[cfg(unix)]
     fn no_connection(server: &std::net::TcpListener, who: &str) {
         match server.accept() {
             Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {}
@@ -1086,6 +1088,7 @@ fi
         PathEnv::prepend(dir)
     }
 
+    #[cfg(unix)]
     const KIMI_DEFAULT_ARGV: &str = "--silent\n--fail\n--proto\n=https\n--connect-timeout\n3\n--max-time\n6\n--max-filesize\n1048576\n--config\n-\n";
 
     #[test]
