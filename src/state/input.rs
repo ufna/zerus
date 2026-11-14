@@ -800,6 +800,88 @@ fn codex_shortcuts_footer(plain: &str) -> bool {
     tail.is_empty() || (tail.starts_with(' ') && codex_warning_footer(tail))
 }
 
+
+/// A read-only hint for the additional native width read. It grants no input:
+/// the caller must match the footer again against that backend's actual width.
+pub(super) fn codex_wrapped_columns(record: &Value, screen: &str, x: usize, y: usize) -> Option<usize> {
+    use unicode_width::UnicodeWidthStr;
+    if record["agent"] != "codex" { return None; }
+    let columns = screen.lines().map(|line| {
+        styled_row(line).iter().map(|(ch, _)| ch).collect::<String>().width()
+    }).max()?;
+    codex_wrapped_empty(record, screen, x, y, columns).then_some(columns)
+}
+
+/// A hard-wrapped native model/path footer, with this run's exact folder.
+/// Rejoin only the footer after checking every physical row against the
+/// terminal's width; an arbitrary continuation or an extra wrap is refused.
+pub(super) fn codex_wrapped_empty(record: &Value, screen: &str, x: usize, y: usize, columns: usize) -> bool {
+    use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+    if string(record, "agent") != "codex" || columns <= 2 || string(record, "cwd").is_empty() {
+        return false;
+    }
+    let lines: Vec<_> = screen.lines().collect();
+    let Some(input) = lines.get(y) else { return false; };
+    if !styled_row(input).iter().skip(x).any(|(ch, dim)| !ch.is_whitespace() && *dim) {
+        return false;
+    }
+    let mut style = TerminalStyle::default();
+    let rows: Vec<_> = lines.iter().map(|line| {
+        let cells = styled_cells(line, &mut style);
+        let plain: String = cells.iter().map(|(ch, _)| ch).collect();
+        let unshaded = cells.iter().filter(|(ch, _)| !ch.is_whitespace())
+            .all(|(_, cell)| !cell.background && !cell.inverse);
+        (plain, unshaded)
+    }).collect();
+    let Some(first) = (y + 1..rows.len()).find(|&i| !rows[i].0.trim().is_empty()) else { return false; };
+    if first + 2 >= rows.len() { return false; }
+    let last = rows.len() - 1;
+    let shortcuts = &rows[last].0;
+    if !shortcuts.trim_start().starts_with("← for agents · ? for shortcuts")
+        || !codex_shortcuts_footer(shortcuts) || !rows[first..].iter().all(|r| r.1)
+    {
+        return false;
+    }
+    let model = codex_footer_model(record);
+    let first_row = &rows[first].0;
+    let Some(label_model) = first_row.split_whitespace().next() else { return false; };
+    if !codex_status_row(first_row, model)
+        || !codex_model_footer(first_row, model.or(Some(label_model)))
+    {
+        return false;
+    }
+    let Some((label, path)) = first_row.split_once(" · ") else { return false; };
+    let prefix = format!("{label} · ");
+    let mut folder = path.to_owned();
+    for (row, _) in &rows[first + 1..last] {
+        let Some(part) = row.strip_prefix("  ").filter(|s| !s.is_empty()) else { return false; };
+        folder.push_str(part);
+    }
+    if !shown_path::names(&folder, string(record, "cwd"), crate::platform::home().as_deref()) {
+        return false;
+    }
+    let mut remaining = folder.as_str();
+    for (index, (row, _)) in rows[first..last].iter().enumerate() {
+        let margin = if index == 0 { prefix.as_str() } else { "  " };
+        let Some(available) = columns.checked_sub(margin.width()) else { return false; };
+        let mut used = 0;
+        let mut end = 0;
+        for (offset, ch) in remaining.char_indices() {
+            let Some(width) = ch.width() else { return false; };
+            if used + width > available { break; }
+            used += width;
+            end = offset + ch.len_utf8();
+        }
+        if end == 0 || *row != format!("{margin}{}", &remaining[..end]) { return false; }
+        remaining = &remaining[end..];
+    }
+    if !remaining.is_empty() { return false; }
+    // Folding footer rows does not move the cursor or alter the composer.
+    // Reuse its existing cursor, placeholder and input-boundary checks.
+    let folded = format!("{}\n\x1b[0m{prefix}{folder}\n{}", lines[..first].join("\n"), lines[last]);
+    composer_empty_for_model("codex", &folded, x, y, model)
+}
+
 pub(super) fn codex_footer_model(record: &Value) -> Option<&str> {
     if let Some(model) = record["model"].as_str().filter(|model| !model.is_empty()) {
         return Some(model);
@@ -828,10 +910,6 @@ fn composer_empty_for_model(agent: &str, screen: &str, cursor_x: usize, cursor_y
     if agent == "kimi" && kimi_preparing(screen) {
         return false;
     }
-    // Fresh Codex can leave the unused rows of an unviewed tmux pane below
-    // its footer. They are terminal padding, not part of the input boundary.
-    // Keep every nonblank row so drafts and unfamiliar footers still refuse.
-    let screen = if agent == "codex" { screen.trim_end() } else { screen };
     let lines: Vec<_> = screen.lines().collect();
     let Some(row) = lines.get(cursor_y) else {
         return false;
@@ -1114,19 +1192,23 @@ fn terminal_gate_on(
             .cursor_x
             .parse()
             .map_err(|_| "invalid terminal cursor")?;
+        let mut empty_composer = composer_empty_for_model(
+            string(record, "agent"), screen, cursor_x, cursor_y, codex_footer_model(record),
+        );
+        if !empty_composer && codex_wrapped_columns(record, screen, cursor_x, cursor_y).is_some() {
+            let info = terminal.pane_info(backend::Target::Pane(pane), &[backend::PaneField::Width]).ok();
+            let columns = info.as_ref().and_then(|info| info.fields().first().and_then(|field| field.parse().ok()));
+            empty_composer = columns.is_some_and(|columns| {
+                codex_wrapped_empty(record, screen, cursor_x, cursor_y, columns)
+            });
+        }
         // A native redraw may move the composer between cursor and screen
         // reads. Never type using coordinates from a different frame.
         let stable = if sending && matches!(string(record, "agent"), "codex" | "claude") {
             let after = terminal.input_state(&claim)?;
             state.cursor_x == after.cursor_x && state.cursor_y == after.cursor_y
         } else { true };
-        if !stable || !composer_empty_for_model(
-            string(record, "agent"),
-            screen,
-            cursor_x,
-            cursor_y,
-            codex_footer_model(record),
-        ) {
+        if !stable || !empty_composer {
             if sending {
                 diagnostic::save(record, screen, cursor_x, cursor_y, stable);
                 if stable && string(record, "agent") == "claude"
@@ -2568,19 +2650,29 @@ mod tests {
         ));
     }
     #[test]
-    fn codex_startup_composer_with_unused_pane_rows() {
-        // Native Codex 0.169.0 in a private 80x24 tmux pane after folder trust.
-        // Only the private folder is replaced; the unused terminal rows remain.
-        let screen = include_str!("../../tests/fixtures/codex-composer-startup-0169.txt");
-        assert!(composer_empty("codex", screen, 2, 5));
-        assert!(!composer_empty("codex", screen, 3, 5));
+    fn codex_empty_composer_with_a_wrapped_status_folder() {
+        // Complete post-trust pane from hosted job 132401169879, Codex 0.169.0.
+        // Only the synthetic folder/UUID are substituted, preserving columns.
+        let screen = include_str!("../../tests/fixtures/codex-composer-wrapped-status-0169.txt");
+        let record = json!({"agent":"codex", "cwd":"/tmp/hgs-tn-fixture1/work/zerus-team-11111111-1111-4111-8111-111111111111"});
+        assert!(codex_wrapped_empty(&record, screen, 2, 19, 80));
+        assert!(!codex_wrapped_empty(&record, screen, 3, 19, 80));
+        assert!(!codex_wrapped_empty(&record, screen, 2, 19, 79));
+        assert!(!codex_wrapped_empty(&json!({"agent":"codex","cwd":"/another/folder"}), screen, 2, 19, 80));
         for changed in [
             screen.replace("\x1b[2mAsk Codex to do anything\x1b[0m", ""),
-            screen.replace("Ask Codex to do anything", "retained draft").replace("\x1b[2mretained draft", "retained draft"),
-            screen.replace("?\x1b[0m for shortcuts", "Approve command?"),
+            screen.replace("\x1b[2mAsk Codex to do anything\x1b[0m", "retained draft"),
+            screen.replace("for shortcuts", "Approve command?"),
+            screen.replace("\x1b[39m  \x1b[38;2;171;223;167m8111-", "\x1b[39m  \x1b[48;5;1m8111-"),
+            screen.replace("\n\n  \x1b[38;2;246;226;183mGPT-", "\n  arbitrary text\n  \x1b[38;2;246;226;183mGPT-"),
+            screen.replace("\n\n  \x1b[38;2;246;226;183mGPT-", "\n  Approve this command?\n  \x1b[38;2;246;226;183mGPT-"),
+            screen.replace("\x1b[39m  \x1b[38;2;171;223;167m8111-111111111111",
+                "\x1b[39m  \x1b[38;2;171;223;167m8111-\n  111111111111"),
+            screen.replace("\x1b[39m  \x1b[38;2;171;223;167m8111-111111111111",
+                "\x1b[39m  \x1b[38;2;171;223;167marbitrary text"),
             format!("{screen}  draft continuation\n"),
         ] {
-            assert!(!composer_empty("codex", &changed, 2, 5), "{changed}");
+            assert!(!codex_wrapped_empty(&record, &changed, 2, 19, 80), "{changed}");
         }
     }
 
