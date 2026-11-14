@@ -939,26 +939,26 @@ class Harness(unittest.TestCase):
             home = self.env.get("HOME")
             if home:
                 # The dump writes asynchronously to each agent's stacks file:
-                # wait for the marker itself, bounded and generous, never the
-                # deadline arithmetic that lost the race under load
-                # (zerus-63rru.90).
-                files = sorted(Path(home).glob("stacks-*"))
+                # a thread header can precede its frames. Wait for the fake's
+                # module frame, keeping the generous #2218 window, and render
+                # that same snapshot rather than racing another file read.
+                def dumped_stack():
+                    for path in sorted(Path(home).glob("stacks-*")):
+                        text = path.read_text(errors="ignore").splitlines()
+                        starts = [i for i, line in enumerate(text) if re.match(r"(Current thread|Thread) 0x", line)]
+                        for start, end in zip(starts, starts[1:] + [len(text)]):
+                            thread = text[start:end]
+                            if any(re.search(r"line \d+ in <module>$", line) for line in thread):
+                                return " | ".join(line.strip() for line in thread if line.strip())[:1500]
+                    return None
+
                 until = time.monotonic() + 30
-                while time.monotonic() < until and not any(
-                    re.search(r"(Current thread|Thread) 0x", f.read_text(errors="ignore"))
-                    for f in files
-                ):
+                stack = dumped_stack()
+                while stack is None and time.monotonic() < until:
                     time.sleep(0.05)
-                    files = sorted(Path(home).glob("stacks-*"))
-                for pane in state["panes"]:
-                    for f in files:
-                        text = f.read_text(errors="ignore")
-                        starts = [i for i, line in enumerate(text.splitlines()) if re.match(r"(Current thread|Thread) 0x", line)]
-                        if starts:
-                            lines.append(f"python in {pane[1]}: " + " | ".join(line.strip() for line in text.splitlines()[starts[0]:] if line.strip())[:1500])
-                            break
-                    else:
-                        lines.append(f"python in {pane[1]}: no stack on its terminal")
+                    stack = dumped_stack()
+                lines.extend(f"python in {pane[1]}: " + (stack or "no complete stack in its dump file")
+                             for pane in state["panes"])
                 return
             time.sleep(max(0, min(0.3, deadline - time.monotonic())))
             for pane in state["panes"]:
@@ -5179,7 +5179,7 @@ class StopReportControls(unittest.TestCase):
         self.children.append(child)
         return child
 
-    def report(self, hang=False, platform="darwin"):
+    def report(self, hang=False, platform="darwin", sleep=None):
         self.hang, self.proc = hang, []
         real_open, real_realpath = open, os.path.realpath
         # /proc is recorded, never read: the mocked PIDs belong to no real pane.
@@ -5195,7 +5195,7 @@ class StopReportControls(unittest.TestCase):
             return real_realpath(path, *args, **options)
         with mock.patch.object(subprocess, "Popen", side_effect=self.spawn), mock.patch.object(sys, "platform", platform), \
                 mock.patch("builtins.open", side_effect=proc_open), mock.patch.object(os.path, "realpath", side_effect=proc_realpath), \
-                mock.patch.object(time, "sleep"), mock.patch.object(os, "getloadavg", return_value=(5.5, 4.25, 3.0)), \
+                mock.patch.object(time, "sleep", side_effect=sleep), mock.patch.object(os, "getloadavg", return_value=(5.5, 4.25, 3.0)), \
                 mock.patch.object(os, "cpu_count", return_value=3):
             return self.stop_report()
 
@@ -5228,6 +5228,57 @@ class StopReportControls(unittest.TestCase):
             self.assertRegex(report, rf"(?m)^process: {pid} ")
         # A listed path match is informational only: it is never sampled.
         self.assertEqual(self.sampled(), {"500", "501", "502", "503", "504"})
+
+    def test_a_thread_header_does_not_finish_a_delayed_file_dump(self):
+        import threading
+        self.env["HOME"] = str(self.root)
+        path = self.root / "stacks-fixture"
+        background = 'Thread 0x2 (most recent call first):\n' + '  File "helper", line 12 in wait\n' * 60 + '\n'
+        header = "Current thread 0x1 (most recent call first):\n"
+        frame = '  File "claude", line 73 in <module>\n'
+        release, written, published = threading.Event(), threading.Event(), threading.Event()
+        kills, sleeps = os.kill, []
+
+        def finish_dump():
+            release.wait()
+            with path.open("a") as file:
+                file.write(header + frame)
+            written.set()
+
+        writer = threading.Thread(target=finish_dump)
+        writer.start()
+        try:
+            def signal_dump(pid, number):
+                kills(pid, number)
+                if (pid, number) == (501, signal.SIGUSR1):
+                    path.write_text(background)
+                    published.set()
+
+            def poll(seconds):
+                # subprocess.wait also sleeps. Only the collector's poll after
+                # this dump started may release the delayed frames.
+                if seconds != 0.05 or not published.is_set() or written.is_set():
+                    return
+                sleeps.append(seconds)
+                # The header arrived; scheduling the remaining writes is delayed
+                # until the collector yields for another poll, not a wall clock.
+                release.set()
+                self.assertTrue(written.wait(5), "delayed private dump writer did not finish")
+
+            with mock.patch.object(os, "kill", side_effect=signal_dump):
+                poll(0.001)
+                poll(0.05)
+                self.assertFalse(release.is_set())
+                report = self.report(sleep=poll)
+        finally:
+            release.set()
+            writer.join(timeout=5)
+        self.assertFalse(writer.is_alive())
+        self.assertRegex(report, r"(?m)^python in %\d+: (Current thread|Thread) 0x.*line \d+ in <module>")
+        self.assertIn('python in %0: Current thread 0x1', report)
+        self.assertEqual(sleeps, [0.05])
+        self.assertEqual(self.kills, [(501, signal.SIGUSR1)])
+        self.assertFalse(any(command[1:2] == ["capture-pane"] for command in self.commands))
 
     def test_a_reused_pid_is_neither_signalled_nor_sampled(self):
         self.identity["501"] = "Sun Oct 18 00:00:09 2026"
