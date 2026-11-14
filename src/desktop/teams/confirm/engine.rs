@@ -10,6 +10,12 @@ use super::{
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
+// Match the original native effect's 45-second custody boundary. A supervisor
+// can publish its archive before post-archive work releases its terminal name.
+// The durable exit timestamp bounds this wait across service restarts, with no
+// effect row, audit or hourly reservation for a deferral (zerus-63rru.129).
+pub(super) const RESUME_SETTLE_MS: i64 = 45_000;
+
 pub(super) fn key(parts: &Value) -> String {
     format!("{:x}", Sha256::digest(parts.to_string()))
 }
@@ -53,6 +59,16 @@ pub(super) fn step(p: &mut impl Ports, b: &Binding, epoch: &str, now: i64) -> Re
         // no card and no audit reservation here.
         return Ok(());
     } else if snapshot.ended {
+        if let Some(wait) = &snapshot.resume_wait {
+            if now < wait.until {
+                return Ok(());
+            }
+            let plan = candidate(b, &snapshot, Kind::Resume, Value::Null);
+            let refusal = validate(p, &plan).err().unwrap_or_else(|| format!(
+                "The original run did not settle: its terminal name is still held. {}", policy::SEAT,
+            ));
+            return execute_refusal(p, plan, epoch, now, Some(refusal));
+        }
         (Kind::Resume, Value::Null)
     } else {
         return Ok(());
@@ -61,8 +77,11 @@ pub(super) fn step(p: &mut impl Ports, b: &Binding, epoch: &str, now: i64) -> Re
     execute(p, plan, epoch, now)
 }
 
-fn execute(p: &mut impl Ports, mut plan: Plan, epoch: &str, now: i64) -> Result<()> {
+fn execute(p: &mut impl Ports, plan: Plan, epoch: &str, now: i64) -> Result<()> {
     let refusal = validate(p, &plan).err();
+    execute_refusal(p, plan, epoch, now, refusal)
+}
+fn execute_refusal(p: &mut impl Ports, mut plan: Plan, epoch: &str, now: i64, refusal: Option<String>) -> Result<()> {
     if refusal.is_some() {
         plan.kind = Kind::Notice;
     }

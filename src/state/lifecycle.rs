@@ -1047,6 +1047,12 @@ fn journal_identity(record: &mut Value, name: &str, retried: Option<&Value>) {
     }
 }
 
+// Both Restore admission and standing-resume observation use this predicate.
+// The caller holds the state writer lock across a final admission check.
+pub(super) fn restore_name_busy(name: &str) -> Result<bool> {
+    Ok(live()?.contains_key(name) || storage::label_taken(name))
+}
+
 fn resume_archive(name: &str, id: &str, dry: bool, scope: Option<&session_action::Scope>) -> Result<i32> {
     // A restore never creates the ID layout in P3a: it is written at its
     // label's path and needs a free label, whatever its archive says.
@@ -1060,13 +1066,13 @@ fn resume_archive(name: &str, id: &str, dry: bool, scope: Option<&session_action
     if let Some(scope)=scope {scope.check(&archived)?;}
     {
         let _guard = lock(None)?;
-        if live()?.contains_key(name) || storage::label_taken(name) { return Err(format!("{name}: a live or saved session already uses this name; finish or archive it before restoring")); }
+        if restore_name_busy(name)? { return Err(format!("{name}: a live or saved session already uses this name; finish or archive it before restoring")); }
     }
     if !dry { super::worktree_lifecycle::restore(&archived)?; }
     let run_id = uuid::Uuid::new_v4().to_string();
     let spec = resume_spec(&archived, &run_id, Some(id), dry)?;
     let _guard = lock(None)?;
-    if live()?.contains_key(name) || storage::label_taken(name) {
+    if restore_name_busy(name)? {
         return Err(format!("{name}: a live or saved session already uses this name; finish or archive it before restoring"));
     }
     let current_archive = archive::read_archive(name, id)?;

@@ -65,6 +65,8 @@ mod kimi_plan;
 mod kimi_trust;
 mod kimi_tui_choice;
 mod lifecycle;
+#[cfg(all(test, unix))]
+pub(crate) mod resume_settlement_fixture;
 mod kimi_launch;
 mod provider_errors;
 mod recovery;
