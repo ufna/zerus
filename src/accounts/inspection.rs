@@ -896,6 +896,11 @@ mod tests {
     use std::io::Write;
     use std::sync::Mutex;
 
+    // The variable names are spelled out here: a mutant that changes the name
+    // the inspection reads must fail these tests.
+    const TEST_BASE_VAR: &str = "HGS_TEST_KIMI_API_BASE";
+    const CLI_BASE_VAR: &str = "KIMI_CODE_BASE_URL";
+
     static CURL_ENV: Mutex<()> = Mutex::new(());
 
     fn curl_lock() -> std::sync::MutexGuard<'static, ()> {
@@ -1092,8 +1097,8 @@ fi
         let worker = identity_worker(server);
         let home = kimi_home("synthetic-token", now() + 3600);
         let _env = EnvVars::set(&[
-            (KIMI_TEST_BASE_ENV, Some(&base)),
-            (KIMI_CLI_BASE_ENV, None),
+            (TEST_BASE_VAR, Some(&base)),
+            (CLI_BASE_VAR, None),
         ]);
         let result = kimi(home.path());
         worker.join().unwrap();
@@ -1128,8 +1133,8 @@ fi
             let worker = identity_worker(server);
             let home = kimi_home("synthetic-token", now() + 3600);
             let _env = EnvVars::set(&[
-                (KIMI_TEST_BASE_ENV, Some(&base)),
-                (KIMI_CLI_BASE_ENV, None),
+                (TEST_BASE_VAR, Some(&base)),
+                (CLI_BASE_VAR, None),
             ]);
             let result = kimi(home.path());
             worker.join().unwrap();
@@ -1157,8 +1162,8 @@ fi
         fs::set_permissions(&fake, fs::Permissions::from_mode(0o700)).unwrap();
         let _path = PathEnv::prepend(bin.path());
         let _env = EnvVars::set(&[
-            (KIMI_TEST_BASE_ENV, Some(&base)),
-            (KIMI_CLI_BASE_ENV, None),
+            (TEST_BASE_VAR, Some(&base)),
+            (CLI_BASE_VAR, None),
             ("KIMI_REFRESH_MARKER", Some(marker.to_str().unwrap())),
         ]);
         let result = kimi(home.path());
@@ -1183,8 +1188,8 @@ fi
         let port = server.local_addr().unwrap().port();
         let home = kimi_home("synthetic-token", now() + 3600);
         let _env = EnvVars::set(&[
-            (KIMI_TEST_BASE_ENV, Some(&format!("http://127.0.0.2:{port}"))),
-            (KIMI_CLI_BASE_ENV, None),
+            (TEST_BASE_VAR, Some(&format!("http://127.0.0.2:{port}"))),
+            (CLI_BASE_VAR, None),
         ]);
         let result = kimi(home.path());
         assert_eq!(result["status"], "unavailable", "{result}");
@@ -1209,8 +1214,8 @@ fi
         let base = format!("http://{}", server.local_addr().unwrap());
         let home = kimi_home("synthetic-token", now() + 3600);
         let _env = EnvVars::set(&[
-            (KIMI_TEST_BASE_ENV, None),
-            (KIMI_CLI_BASE_ENV, Some(&base)),
+            (TEST_BASE_VAR, None),
+            (CLI_BASE_VAR, Some(&base)),
         ]);
         let result = kimi(home.path());
         assert_eq!(result["status"], "unavailable", "{result}");
@@ -1235,8 +1240,8 @@ fi
         let base = format!("https://{}", server.local_addr().unwrap());
         let home = kimi_home("synthetic-token", now() + 3600);
         let _env = EnvVars::set(&[
-            (KIMI_TEST_BASE_ENV, None),
-            (KIMI_CLI_BASE_ENV, Some(&base)),
+            (TEST_BASE_VAR, None),
+            (CLI_BASE_VAR, Some(&base)),
         ]);
         let result = kimi(home.path());
         assert_eq!(result["status"], "unavailable", "{result}");
@@ -1259,8 +1264,8 @@ fi
         let home = kimi_home("synthetic-token", now() + 3600);
         for value in ["", "https://api.kimi.com/coding/v1//"] {
             let _env = EnvVars::set(&[
-                (KIMI_TEST_BASE_ENV, None),
-                (KIMI_CLI_BASE_ENV, Some(value)),
+                (TEST_BASE_VAR, None),
+                (CLI_BASE_VAR, Some(value)),
             ]);
             let result = kimi(home.path());
             assert_eq!(result["status"], "unavailable", "{value}: {result}");
@@ -1283,8 +1288,8 @@ fi
         let worker = identity_worker(server);
         let home = kimi_home("synthetic-token", now() + 3600);
         let _env = EnvVars::set(&[
-            (KIMI_TEST_BASE_ENV, Some(&base)),
-            (KIMI_CLI_BASE_ENV, Some("https://example.invalid/")),
+            (TEST_BASE_VAR, Some(&base)),
+            (CLI_BASE_VAR, Some("https://example.invalid/")),
         ]);
         let result = kimi(home.path());
         worker.join().unwrap();
@@ -1300,8 +1305,8 @@ fi
         let port = server.local_addr().unwrap().port();
         let home = kimi_home("synthetic-token", now() + 3600);
         let _env = EnvVars::set(&[
-            (KIMI_TEST_BASE_ENV, Some(&format!("http://127.0.0.2:{port}"))),
-            (KIMI_CLI_BASE_ENV, Some(&format!("https://127.0.0.1:{port}"))),
+            (TEST_BASE_VAR, Some(&format!("http://127.0.0.2:{port}"))),
+            (CLI_BASE_VAR, Some(&format!("https://127.0.0.1:{port}"))),
         ]);
         let result = kimi(home.path());
         assert_eq!(result["status"], "unavailable", "{result}");
@@ -1326,8 +1331,8 @@ fi
         let _path = recording_curl(bin.path());
         let home = kimi_home("synthetic-token", now() + 3600);
         let _env = EnvVars::set(&[
-            (KIMI_TEST_BASE_ENV, None),
-            (KIMI_CLI_BASE_ENV, None),
+            (TEST_BASE_VAR, None),
+            (CLI_BASE_VAR, None),
             ("CURL_RECORD_DIR", Some(bin.path().to_str().unwrap())),
         ]);
         let result = kimi(home.path());
@@ -1356,8 +1361,8 @@ fi
         let _path = recording_curl(bin.path());
         let home = kimi_home("synthetic-token", now() + 3600);
         let _env = EnvVars::set(&[
-            (KIMI_TEST_BASE_ENV, Some("http://127.0.0.2:9")),
-            (KIMI_CLI_BASE_ENV, None),
+            (TEST_BASE_VAR, Some("http://127.0.0.2:9")),
+            (CLI_BASE_VAR, None),
             ("CURL_RECORD_DIR", Some(bin.path().to_str().unwrap())),
         ]);
         let result = kimi(home.path());
@@ -1379,13 +1384,13 @@ fi
     fn native_kimi_children_and_sessions_never_inherit_the_test_base() {
         let _lock = curl_lock();
         let home = tempfile::tempdir().unwrap();
-        let _env = EnvVars::set(&[(KIMI_TEST_BASE_ENV, Some("http://127.0.0.1:9"))]);
+        let _env = EnvVars::set(&[(TEST_BASE_VAR, Some("http://127.0.0.1:9"))]);
         for native in [true, false] {
             let command = native_command("kimi", home.path(), native);
             assert!(
                 command
                     .get_envs()
-                    .any(|(key, value)| key == std::ffi::OsStr::new(KIMI_TEST_BASE_ENV)
+                    .any(|(key, value)| key == std::ffi::OsStr::new(TEST_BASE_VAR)
                         && value.is_none()),
                 "native_command({native}) passes the test base"
             );
@@ -1396,7 +1401,7 @@ fi
             "/private/profile",
         );
         assert!(
-            environment.contains(&format!("{KIMI_TEST_BASE_ENV}=")),
+            environment.contains(&format!("{TEST_BASE_VAR}=")),
             "{environment:?}"
         );
     }
@@ -1471,8 +1476,8 @@ fi
             ("ALL_PROXY", None),
             ("no_proxy", None),
             ("NO_PROXY", None),
-            (KIMI_TEST_BASE_ENV, Some(&base)),
-            (KIMI_CLI_BASE_ENV, None),
+            (TEST_BASE_VAR, Some(&base)),
+            (CLI_BASE_VAR, None),
         ];
         if let Some(var) = proxy_var {
             vars.push((var, Some(&proxy)));
@@ -1491,57 +1496,90 @@ fi
     }
 
     #[cfg(unix)]
-    #[test]
-    fn the_test_base_ignores_proxy_variables_and_curlrc() {
-        let _lock = curl_lock();
-        direct_request(
-            "http_proxy",
-            "127.0.0.1",
-            false,
-            Some("http_proxy"),
-            CurlrcProbe::None,
-            Decoy::Ephemeral,
-        );
-        direct_request(
-            "ALL_PROXY with localhost",
-            "localhost",
-            false,
-            Some("ALL_PROXY"),
-            CurlrcProbe::None,
-            Decoy::Ephemeral,
-        );
-        direct_request(
-            "HTTPS_PROXY with https localhost",
-            "localhost",
-            true,
-            Some("HTTPS_PROXY"),
-            CurlrcProbe::None,
-            Decoy::Ephemeral,
-        );
-        direct_request(
-            "curlrc proxy",
-            "127.0.0.1",
-            false,
-            None,
-            CurlrcProbe::Proxy,
-            Decoy::Ephemeral,
-        );
-        direct_request(
-            "curlrc connect-to",
-            "localhost",
-            false,
-            None,
-            CurlrcProbe::ConnectTo,
-            Decoy::Ephemeral,
-        );
-        direct_request(
-            "curlrc resolve",
-            "localhost",
-            false,
-            None,
-            CurlrcProbe::Resolve,
-            Decoy::EchoPort,
-        );
+    mod proxy_rows {
+        use super::*;
+
+        // The six ambient settings from the review. Each must reach the
+        // stand-in directly and leave the 127.0.0.2 listener empty; a row that
+        // passes without exercising its setting would be no test at all.
+
+        #[test]
+        fn http_proxy_cannot_route_the_test_base() {
+            let _lock = curl_lock();
+            direct_request(
+                "http_proxy",
+                "127.0.0.1",
+                false,
+                Some("http_proxy"),
+                CurlrcProbe::None,
+                Decoy::Ephemeral,
+            );
+        }
+
+        #[test]
+        fn all_proxy_cannot_route_the_test_base() {
+            let _lock = curl_lock();
+            direct_request(
+                "ALL_PROXY with localhost",
+                "localhost",
+                false,
+                Some("ALL_PROXY"),
+                CurlrcProbe::None,
+                Decoy::Ephemeral,
+            );
+        }
+
+        #[test]
+        fn https_proxy_cannot_tunnel_the_test_base() {
+            let _lock = curl_lock();
+            direct_request(
+                "HTTPS_PROXY with https localhost",
+                "localhost",
+                true,
+                Some("HTTPS_PROXY"),
+                CurlrcProbe::None,
+                Decoy::Ephemeral,
+            );
+        }
+
+        #[test]
+        fn a_curlrc_proxy_cannot_route_the_test_base() {
+            let _lock = curl_lock();
+            direct_request(
+                "curlrc proxy",
+                "127.0.0.1",
+                false,
+                None,
+                CurlrcProbe::Proxy,
+                Decoy::Ephemeral,
+            );
+        }
+
+        #[test]
+        fn a_curlrc_connect_to_cannot_move_the_test_base() {
+            let _lock = curl_lock();
+            direct_request(
+                "curlrc connect-to",
+                "localhost",
+                false,
+                None,
+                CurlrcProbe::ConnectTo,
+                Decoy::Ephemeral,
+            );
+        }
+
+        #[test]
+        fn a_curlrc_resolve_cannot_move_the_test_base() {
+            let _lock = curl_lock();
+            direct_request(
+                "curlrc resolve",
+                "localhost",
+                false,
+                None,
+                CurlrcProbe::Resolve,
+                Decoy::EchoPort,
+            );
+        }
     }
 
     #[test]
@@ -1555,6 +1593,9 @@ fi
             // Userinfo, which curl would read as `localhost:1` and send the
             // token to `127.0.0.2`. M1 in the review.
             format!("http://localhost:1@127.0.0.2:{port}"),
+            // Only the `@` check refuses this one: without it the authority
+            // parses as loopback and curl would send `/@` with the token.
+            format!("http://127.0.0.1:{port}/@"),
             // A trailing dot and a longer name curl would resolve. M3.
             format!("http://localhost.:{port}"),
             "http://localhost.evil.example".to_string(),
@@ -1578,8 +1619,8 @@ fi
             " http://127.0.0.1/".to_string(),
         ] {
             let _env = EnvVars::set(&[
-                (KIMI_TEST_BASE_ENV, Some(&value)),
-                (KIMI_CLI_BASE_ENV, None),
+                (TEST_BASE_VAR, Some(&value)),
+                (CLI_BASE_VAR, None),
             ]);
             let result = kimi(home.path());
             assert_eq!(result["status"], "unavailable", "{value}: {result}");
