@@ -152,7 +152,7 @@ impl Row {
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 #[path = "launch/checkout.rs"]
-mod checkout;
+pub(super) mod checkout;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub(super) use checkout::Checkout;
 pub(super) struct Ledger(Connection);

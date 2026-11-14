@@ -67,7 +67,7 @@ fn prepare_first(store: &mut Store, actor: &Actor, request: &Request) -> Result<
     }
     let team = validation::creation_team(request, actor)?;
     authority(actor, &request.operation, &team)?;
-    validation::validate_create(&team)?;
+    validation::validate_create_before_store(&team)?;
     if request.expected_revision != 0 {
         return Err(stale());
     }
