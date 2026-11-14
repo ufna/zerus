@@ -636,6 +636,7 @@ fn live_row(session: &mut Value, record: Value, shared: &Shared, process_work: &
         .ok()
         .and_then(|questions| questions.as_deref());
     let escalated = shared.route_outcomes.is_some_and(|outcomes| outcomes.escalated(session, pending));
+    telemetry::pending_input_summary(session, pending.is_some_and(|questions| !questions.is_empty()));
     parent_link::mark_human_request(session, pending, escalated);
     read_marks::enrich_listing(session, shared.marks, journal::journal_name(&record), questions);
     notifications::enrich(session, shared.preferences, journal::journal_name(&record));

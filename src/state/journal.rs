@@ -383,6 +383,12 @@ pub(super) fn normalized_activity(record: &Value, live_pane: bool) -> Value {
     let alive = live_pane && process_alive(record);
     let mut activity = record.get("activity").cloned().unwrap_or(json!("unknown"));
     let mut phase = record.get("phase").cloned().unwrap_or(json!("unknown"));
+    // Archives keep the last hooks for history and restore, not current work.
+    // Normalize reads so old archives also stop reporting their last live turn.
+    if !live_pane && record["state"] == "archived" {
+        activity = json!("ended");
+        phase = json!("ended");
+    }
     // Legacy SessionEnd was overloaded as process death. It is not evidence of
     // either process death or idleness; old manifests remain restorable.
     if live_pane && (activity == "ended" || phase == "ended") && alive {
@@ -643,6 +649,7 @@ pub(super) fn terminal_chooser(record: &Value) -> Option<(Value, &'static str, &
 /// fork and an effort change wait until it is answered, and a settings change
 /// is scheduled for Ready instead of applied now.
 fn wait_for_chooser(output: &mut Value) {
+    telemetry::pending_input_summary(output, true);
     if let Some(reason) = clear_context::answer_first(string(output, "phase")) {
         fork::wait_for_chooser(output, reason);
         effort::wait_for_chooser(output, reason);
@@ -1105,6 +1112,8 @@ pub(super) fn inspection_with(
             output["pending_questions_error"] = json!(error);
         }
     }
+    let pending = output["pending_questions"].as_array().is_some_and(|questions| !questions.is_empty());
+    telemetry::pending_input_summary(&mut output, pending);
     output["input_queue"] = if archive_id.is_none() { input_queue::inspection(&record, panes.is_some()).unwrap_or(Value::Null) } else { Value::Null };
     output["session_usage"] = if clear_context::awaiting_start(&record) {
         json!({"status":"unavailable","source":record["agent"],"scope":"conversation"})
@@ -1953,6 +1962,72 @@ pub(super) fn settle_children(record: &mut Value) {
     }
 }
 
+// Archives retain historical hooks without claiming current activity.
+#[cfg(test)]
+mod archived_activity_regressions {
+    use super::*;
+
+    #[test]
+    fn archived_activity_is_ended_without_changing_its_saved_history() {
+        for agent in ["kimi", "claude", "codex"] {
+            for phase in ["working", "tool", "approval", "input", "error", "idle"] {
+                let record = json!({"agent":agent,"state":"archived","activity":"busy","phase":phase,
+                    "pid":0,"process_start":"exited-fixture","conversation_state":"active",
+                    "run_id":"old-run","conversation_id":"saved-conversation",
+                    "archive_id":"11111111-1111-4111-8111-111111111111"});
+                let original = record.clone();
+                let activity = normalized_activity(&record, false);
+                assert_eq!(activity["activity"], "ended", "{agent}: {phase}");
+                assert_eq!(activity["phase"], "ended", "{agent}: {phase}");
+                assert_eq!(activity["runtime_state"], "stopped");
+                assert_eq!(activity["process_state"], "exited");
+                assert_eq!(activity["conversation_state"], "active");
+                assert_eq!(record, original, "the archive remains the restore source");
+
+                // The desktop already prioritizes Archive for the old wire
+                // shape as well as the normalized row.
+                let old_view = zerus_client_core::view::row(&record);
+                assert_eq!(old_view.status, "ended");
+                assert_eq!(old_view.caption, "Archived");
+                let mut projected = record.clone();
+                projected
+                    .as_object_mut()
+                    .unwrap()
+                    .extend(activity.as_object().unwrap().clone());
+                let view = zerus_client_core::view::row(&projected);
+                assert_eq!(view.status, "ended");
+                assert_eq!(view.caption, "Archived");
+            }
+        }
+    }
+
+    #[test]
+    fn live_and_saved_activity_keeps_background_and_attention_semantics() {
+        let pid = std::process::id();
+        let start = storage::process_start(pid);
+        assert!(!start.is_empty());
+        for state in ["running", "paused", "stopped", "archived"] {
+            for phase in ["working", "tool", "approval", "input", "error"] {
+                let record = json!({"state":state,"activity":"busy","phase":phase,
+                    "pid":pid,"process_start":start});
+                let live = normalized_activity(&record, true);
+                assert_eq!(live["activity"], "busy", "{state}: {phase}");
+                assert_eq!(live["phase"], phase, "{state}: {phase}");
+                if state != "archived" {
+                    let saved = normalized_activity(&record, false);
+                    assert_eq!(saved["activity"], "busy", "{state}: {phase}");
+                    assert_eq!(saved["phase"], phase, "{state}: {phase}");
+                }
+            }
+            let record = json!({"state":state,"activity":"idle","phase":"idle",
+                "pid":pid,"process_start":start,"subagent_groups":{"worker":{"active_count":1}}});
+            let live = normalized_activity(&record, true);
+            assert_eq!(live["activity"], "busy", "live background work: {state}");
+            assert_eq!(live["phase"], "working", "live background work: {state}");
+        }
+    }
+}
+
 /// The order in which an inspection captures its reply and reads its
 /// questions and provider messages (`read_marks::current_read`).
 #[cfg(test)]
@@ -2180,6 +2255,20 @@ mod attention_regressions {
         assert!(child.get("kimi_turn_clock").is_none());
         update_activity(&mut child,&json!({"hook_event_name":"TurnStarted","turn_id":1}));
         assert_eq!(child["phase"],"working");
+    }
+
+    #[test]
+    fn terminal_input_choosers_replace_the_earlier_activity_summary() {
+        for agent in ["claude", "codex", "kimi"] {
+            for earlier in ["Working", "Ready", "Bash"] {
+                let mut shown = json!({"agent":agent,"phase":"input","activity":"busy",
+                    "activity_summary":earlier,"pending_questions":[{"question_id":"choice"}]});
+                wait_for_chooser(&mut shown);
+                assert_eq!(shown["activity_summary"], "Needs attention", "{agent}: {earlier}");
+                assert_eq!(shown["phase"], "input");
+                assert_eq!(shown["pending_questions"][0]["question_id"], "choice");
+            }
+        }
     }
 
     #[test]

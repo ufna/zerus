@@ -1387,6 +1387,7 @@ fn normalize(record: &Value, row: &Value, inspected: &Value) -> Value {
         row
     };
     value["process_work"] = processes::dsh_work(record,process_source,alive && value["activity"] == "idle" && value["phase"] == "idle");
+    telemetry::pending_input_summary(&mut value, pending);
     value
 }
 
@@ -3118,6 +3119,10 @@ mod question_identity_tests {
         let row = json!({"agentAvailable":true,"running":false});
         let first = normalize(&record, &row, &json!({"pendingQuestions":[{"id":"question-1"}]}));
         assert_eq!(first["phase"], "input");
+        assert_eq!(first["activity_summary"], "Needs attention");
+        let also_auth = normalize(&record, &row, &json!({"authRequired":true,"pendingQuestions":[{"id":"question-1"}]}));
+        assert_eq!(also_auth["activity_summary"], "Sign in required");
+        assert_eq!(also_auth["auth_required"], true);
         assert_eq!(first["attention_id"], "dsh_question:question-1");
         let next = normalize(&record, &row, &json!({"pendingQuestions":[{"id":"question-2"}]}));
         assert_ne!(next["attention_id"], first["attention_id"]);

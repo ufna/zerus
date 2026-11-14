@@ -838,6 +838,9 @@ Late events from a previous run and child-agent events cannot rebind the parent.
 terminal, agent process and native conversation. `SessionEnd` alone does not prove
 process exit. A live process without verified activity shows **Status unknown**;
 **Agent exited** means the process ended while its tmux terminal still exists.
+Archive listings and `inspect --archive ID` report `activity` and `phase` as
+`ended`. The immutable archive retains its last hook state and native conversation
+identity for history and restore; those saved hooks do not establish current work.
 
 ### Child sessions
 
@@ -8074,7 +8077,10 @@ read` compares a mark with for that provider, owned by the session's name.
 `inspect` includes conversation, phase/activity, prompt/last message, tools,
 subagents, events and cursor. Initial reads return recent events; `--after` advances
 the cursor. Reset it when conversation ID changes. `history_truncated` discloses
-journal limits; `tracked: false` identifies an unbound session. Folder/Git fields
+journal limits; `tracked: false` identifies an unbound session.
+An input phase with a pending native question reports `Needs attention` in
+`activity_summary`; a specific sign-in request keeps `Sign in required`.
+Folder/Git fields
 include `cwd`, `cwd_source`, `cwd_canonical`, `git_root`, `git_common_dir`, branch,
 worktree, detached state and metadata status. Git metadata has a bounded read and
 15-second cache, independent of pause eligibility.

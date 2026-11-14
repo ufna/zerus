@@ -27,6 +27,32 @@ class ArchivePages(unittest.TestCase):
         r=subprocess.run([str(HGS),'archives','--json']+(['--bounded'] if bounded else []),input=json.dumps(query or {}),capture_output=True,text=True,env=self.env,timeout=30)
         if fail:self.assertNotEqual(r.returncode,0,r.stdout);return r
         self.assertEqual(r.returncode,0,r.stderr);return json.loads(r.stdout)
+    def test_exited_archive_status_is_ended_without_rewriting_the_restore_source(self):
+        value=self.record(0,activity='busy',phase='working',pid=0,process_start='exited-fixture',conversation_state='active')
+        value.update(agent='kimi',name='kimi/example/completed')
+        path=self.archives/(value['archive_id']+'.json')
+        path.write_text(json.dumps(value),encoding='utf-8');before=path.read_bytes()
+        commands=(['ls','--json','--local'],['archives','--json'],['archives','--json','--bounded'],
+                  ['inspect',value['name'],'--archive',value['archive_id']])
+        for args in commands:
+            with self.subTest(command=args):
+                result=subprocess.run([str(HGS),*args],input='{}',capture_output=True,text=True,env=self.env,timeout=30)
+                self.assertEqual(result.returncode,0,result.stderr)
+                output=json.loads(result.stdout)
+                row=output if args[0]=='inspect' else output['sessions'][0]
+                self.assertEqual(row['activity'],'ended')
+                self.assertEqual(row['phase'],'ended')
+                self.assertEqual(row['process_state'],'exited')
+                self.assertEqual(row['runtime_state'],'stopped')
+                self.assertEqual(row['activity_summary'],'Archived')
+                for key in ('archive_id','run_id','conversation_id'):
+                    self.assertEqual(row[key],value[key])
+                self.assertEqual(row['conversation_state'],'active')
+                self.assertEqual(path.read_bytes(),before,'Listing never rewrites the restore source')
+        # A name alone selects a current binding, not an archived instance.
+        result=subprocess.run([str(HGS),'inspect',value['name']],capture_output=True,text=True,env=self.env,timeout=30)
+        self.assertEqual(result.returncode,0,result.stderr)
+        self.assertFalse(json.loads(result.stdout)['tracked'])
     def test_thousands_bounded_pages_ties_and_complete_no_duplicates(self):
         for i in range(2043):self.record(i,100+i//30)
         first=self.run_query({'limit':50});self.assertEqual(first['total'],2043);self.assertEqual(len(first['sessions']),50)
