@@ -287,6 +287,47 @@ finally:
         else:
             self.assertNotIn('desktop-creation-worktree', help_text)
 
+    @unittest.skipUnless(os.name == 'posix', 'Private Unix endpoint and exclusion replacement')
+    def test_a_displaced_service_never_advertises_its_old_scope_after_an_offline_open(self):
+        service, original = self.serve()
+        # Fault only this private fixture's namespace. The original actor still
+        # holds its real exclusion, but a new pathname lets the real offline
+        # CLI acquire a different exclusion and advance the durable generation.
+        (self.desktop / 'owner.lock').rename(self.desktop / 'original-owner.lock')
+        endpoint = self.desktop / 'service.sock'
+        hidden = self.desktop / 'original-service.sock'
+        endpoint.rename(hidden)
+        try:
+            self.cli('desktop', 'revoke', '--json')
+        finally:
+            hidden.rename(endpoint)
+        with closing(sqlite3.connect((self.desktop / 'state.sqlite3').as_uri() + '?mode=ro', uri=True)) as db:
+            durable = db.execute('SELECT configuration,generation,epoch FROM service WHERE id=1').fetchone()
+        self.assertEqual(durable[0], original['configuration'])
+        self.assertEqual(durable[1], original['generation'] + 1)
+        self.assertNotEqual(durable[2], original['epoch'])
+        status = subprocess.run([str(HGS), 'desktop', 'status', '--json'], env=self.env,
+                                capture_output=True, text=True, timeout=10)
+        if status.returncode == 0:
+            self.assertFalse(json.loads(status.stdout).get('running'),
+                             'a displaced actor must never advertise its cached scope as current: ' + status.stdout)
+        _, error = service.communicate(timeout=8)
+        self.assertNotEqual(service.returncode, 0)
+        self.assertIn('desktop service scope changed', error)
+        _, current = self.serve()
+        with closing(sqlite3.connect((self.desktop / 'state.sqlite3').as_uri() + '?mode=ro', uri=True)) as db:
+            scope = db.execute('SELECT configuration,generation,epoch FROM service WHERE id=1').fetchone()
+        self.assertEqual(tuple(current[key] for key in ('configuration', 'generation', 'epoch')), scope)
+        query = dict(request_id=str(uuid.uuid4()),
+                     scope=dict(configuration=current['configuration'], service_epoch=current['epoch']),
+                     creation_id=str(uuid.uuid4()), worktree_request_id=str(uuid.uuid4()), plan_sha256='a' * 64)
+        result = self.cli('desktop', 'request', '--json', data=dict(op='creation_worktree_result', query=query))
+        self.assertTrue(result['read_only'])
+        self.assertFalse(result['found'], 'a new scope never invents an original or authorizes a replay')
+        query['scope']['service_epoch'] = original['epoch']
+        refused = self.cli('desktop', 'request', '--json', data=dict(op='creation_worktree_result', query=query))
+        self.assertEqual(refused['code'], 'creation_result_unavailable')
+
     def test_task_start_reconcile_is_closed_and_only_unix_advertises_the_native_caller(self):
         self.serve()
         status = self.cli('desktop', 'status', '--json')

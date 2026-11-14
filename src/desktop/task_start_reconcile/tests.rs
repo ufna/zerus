@@ -618,7 +618,9 @@ fn restart_unknown_is_immutable_and_a_new_actor_does_not_reconstruct_consent() {
     f.request();
     f.until(|f| f.path("entered").exists());
     let next = uuid::Uuid::new_v4().to_string();
-    assert_eq!(ledger::recover_batch(&mut f.store.db, &next).unwrap(), 1);
+    f.store = Store::open(&f.runtime.location, &next).unwrap();
+    assert!(f.store.check_service_scope(&f.runtime.location, &next).is_ok());
+    assert_eq!(ledger::recover_batch(&mut f.store.db, &next).unwrap(), 0);
     let outcome: String = f
         .store
         .db
@@ -720,7 +722,10 @@ fn later_explicit_lookup_uses_old_original_admission_and_a_separate_attempt_afte
     let mut f = Fixture::new("wait");
     f.request();
     f.until(|f| f.path("entered").exists());
-    ledger::recover_batch(&mut f.store.db, &uuid::Uuid::new_v4().to_string()).unwrap();
+    let ticket = ledger::custody::pending(&f.store.db).unwrap().unwrap().0.ticket;
+    ledger::finish(&mut f.store.db, &ticket, &ledger::Outcome::Unknown {
+        reason: ledger::Unknown::LostResult,
+    }).unwrap();
     fs::write(f.path("release"), b"original helper finishes").unwrap();
     f.until(|f| f.runtime.work.is_none());
     let first = f.intent.reconcile_id.clone();

@@ -588,7 +588,8 @@ fn projection(
     migration: &Value,
     feed: &feed::Broker,
     reads: &catalog_read::Reader,
-) -> Value {
+) -> Result<Value> {
+    store.check_service_scope(location, epoch)?;
     let mut value = json!({"abi":ABI,"version":env!("CARGO_PKG_VERSION"),"schema":store::SCHEMA,
         "configuration":location.configuration,"generation":store.generation,"epoch":epoch,
         "lifecycle":lifecycle::status(&location.configuration,epoch,store.generation),
@@ -607,7 +608,7 @@ fn projection(
     value["desktop_ownership"] = ownership::status(store, &location.configuration)
         .and_then(|v| Ok(serde_json::to_value(v)?))
         .unwrap_or(Value::Null);
-    value
+    Ok(value)
 }
 
 enum Event {
@@ -974,7 +975,7 @@ fn serve(config: &Config, location: Location, background_mode: bool) -> Result<(
                         &migration,
                         &feed,
                         &reads,
-                    );
+                    )?;
                     value["frontend_read_delivery"] = frontend.status();
                     value["notification_controls"] = notification_controls.projection(&store);
                     value["lifecycle"]["mode"] = if background_mode {
@@ -1695,7 +1696,7 @@ fn serve(config: &Config, location: Location, background_mode: bool) -> Result<(
                     &migration,
                     &feed,
                     &reads,
-                );
+                )?;
                 value["frontend_read_delivery"] = frontend.status();
                 value["notification_controls"] = notification_controls.projection(&store);
                 value["lifecycle"]["mode"] = if background_mode {

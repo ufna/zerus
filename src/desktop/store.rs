@@ -779,6 +779,21 @@ impl Store {
             resume_custody: super::session_resume::Recovery::default(),
         })
     }
+    /// Status is a claim about this original actor, never an adoption of a
+    /// later opener's scope. One indexed, bounded read fences a displaced
+    /// actor before it publishes a projection or handles another command.
+    pub fn check_service_scope(&self, location: &Location, epoch: &str) -> Result<()> {
+        let durable: (String, u64, String) = self.db.query_row(
+            "SELECT CASE typeof(configuration) WHEN 'text' THEN CAST(substr(CAST(configuration AS BLOB),1,65) AS TEXT) END,generation,CASE typeof(epoch) WHEN 'text' THEN CAST(substr(CAST(epoch AS BLOB),1,37) AS TEXT) END FROM service WHERE id=1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        ).context("read desktop service scope")?;
+        ensure!(
+            durable.0 == location.configuration && durable.1 == self.generation && durable.2 == epoch,
+            "desktop service scope changed"
+        );
+        Ok(())
+    }
     pub fn checkpoint(&self) -> Result<()> {
         let (busy, _, _): (i64, i64, i64) =
             self.db
@@ -1091,6 +1106,126 @@ mod tests {
     }
     use super::*;
     use rusqlite::params;
+
+    #[test]
+    fn public_scope_requires_the_same_durable_configuration_generation_and_epoch() {
+        let temp = tempfile::tempdir().unwrap();
+        let location = Location {
+            root: temp.path().canonicalize().unwrap().join("state/desktop"),
+            configuration: "a".repeat(64),
+        };
+        location.prepare().unwrap();
+        let owner = location.lock().unwrap();
+        let epoch = uuid::Uuid::new_v4().to_string();
+        let store = Store::open_owned(&location, &epoch, &owner).unwrap();
+        assert!(store.check_service_scope(&location, &epoch).is_ok());
+        for (configuration, generation, changed_epoch) in [
+            ("b".repeat(64), store.generation, epoch.clone()),
+            (
+                location.configuration.clone(),
+                store.generation + 1,
+                epoch.clone(),
+            ),
+            (
+                location.configuration.clone(),
+                store.generation,
+                uuid::Uuid::new_v4().to_string(),
+            ),
+            (
+                format!("{}suffix", location.configuration),
+                store.generation,
+                epoch.clone(),
+            ),
+            (
+                location.configuration.clone(),
+                store.generation,
+                format!("{epoch}suffix"),
+            ),
+            (
+                format!("{}\0suffix", location.configuration),
+                store.generation,
+                epoch.clone(),
+            ),
+            (
+                location.configuration.clone(),
+                store.generation,
+                format!("{epoch}\0suffix"),
+            ),
+        ] {
+            store
+                .db
+                .execute(
+                    "UPDATE service SET configuration=?1,generation=?2,epoch=?3 WHERE id=1",
+                    params![configuration, generation, changed_epoch],
+                )
+                .unwrap();
+            assert!(
+                store.check_service_scope(&location, &epoch).is_err(),
+                "changed identity bytes: configuration={}, epoch={}",
+                configuration.len(),
+                changed_epoch.len()
+            );
+            let retained: (String, u64, String) = store
+                .db
+                .query_row(
+                    "SELECT configuration,generation,epoch FROM service WHERE id=1",
+                    [],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                )
+                .unwrap();
+            assert_eq!(
+                retained,
+                (configuration, generation, changed_epoch),
+                "a status read never repairs or adopts a later scope"
+            );
+            store
+                .db
+                .execute(
+                    "UPDATE service SET configuration=?1,generation=?2,epoch=?3 WHERE id=1",
+                    params![location.configuration, store.generation, epoch],
+                )
+                .unwrap();
+            assert!(store.check_service_scope(&location, &epoch).is_ok());
+        }
+        for column in ["configuration", "epoch"] {
+            store
+                .db
+                .execute(
+                    &format!("UPDATE service SET {column}=CAST({column} AS BLOB) WHERE id=1"),
+                    [],
+                )
+                .unwrap();
+            assert!(
+                store.check_service_scope(&location, &epoch).is_err(),
+                "non-text {column}"
+            );
+            store
+                .db
+                .execute(
+                    "UPDATE service SET configuration=?1,epoch=?2 WHERE id=1",
+                    params![location.configuration, epoch],
+                )
+                .unwrap();
+            assert!(store.check_service_scope(&location, &epoch).is_ok());
+        }
+        store
+            .db
+            .execute("UPDATE service SET generation='unreadable' WHERE id=1", [])
+            .unwrap();
+        assert!(store.check_service_scope(&location, &epoch).is_err());
+        store
+            .db
+            .execute("DELETE FROM service WHERE id=1", [])
+            .unwrap();
+        assert!(store.check_service_scope(&location, &epoch).is_err());
+        assert_eq!(
+            store
+                .db
+                .query_row::<u64, _, _>("SELECT COUNT(*) FROM service", [], |r| r.get(0))
+                .unwrap(),
+            0
+        );
+    }
 
     /// review-q's S2 on #1349, the A-B-A swap: the path names the checked
     /// database A at the private check and again at the bind, but SQLite
