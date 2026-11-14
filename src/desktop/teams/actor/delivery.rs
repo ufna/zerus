@@ -596,8 +596,47 @@ impl Runtime {
         };
         for row in rows {
             let mut d: Delivery =
-                serde_json::from_value(row.data).map_err(crate::teams::store::storage)?;
+                serde_json::from_value(row.data.clone()).map_err(crate::teams::store::storage)?;
             if !d.not_started {
+                // Round 2 (zerus-63rru.102): the terminal team settles a
+                // hosted delivery whose actor outcome was never recorded
+                // only from a durable outcome it already holds. The row's
+                // persisted outcome, or the hosted child's retained reply
+                // (read without any offer; nothing is delivered, replayed
+                // or offered again), records through the service's own
+                // outcome writer as a fact only - no new hand-out, no new
+                // card, no status change - then settles, which removes the
+                // input as on a running team. With neither, the delivery
+                // stays unknown: keep the row and the input, never replay.
+                // The settle below removes the input, but it does not complete
+                // the Zerus task attempt that only the hosted child writes
+                // after retaining its reply (hosted.rs:212-223). If the child
+                // stopped between those two writes and the team is terminal, the
+                // attempt stays unknown: every later send or start of that task
+                // is refused until the person cancels that exact attempt, and
+                // nothing is replayed (zerus-63rru.102 round 3 residual, D3).
+                let outcome = if d.outcome.is_some() {
+                    d.outcome.clone()
+                } else {
+                    #[cfg(any(target_os = "linux", target_os = "macos"))]
+                    {
+                        self.retained_outcome(team, &d)?
+                    }
+                    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+                    {
+                        None
+                    }
+                };
+                if let Some(outcome) = outcome {
+                    d.outcome = Some(outcome);
+                    d.gated = true;
+                    self.put(&team.id, &row.key, &d)?;
+                    // The fact is durable before it is applied: a crash here
+                    // must leave the recorded outcome and its gate for the
+                    // next pass, not a row that only looks unknown.
+                    boundary("terminal_outcome");
+                    self.settle(store, team, &row.key, d, now)?;
+                }
                 continue;
             }
             if d.outcome.is_none() {
@@ -611,6 +650,36 @@ impl Runtime {
         }
         self.put(&team.id, "terminal_delivery_cursor", &next)?;
         Ok(next.is_empty())
+    }
+    /// The hosted child's retained reply as a durable outcome, read without
+    /// any offer (zerus-63rru.102 round 2). Only a submitted, refused,
+    /// handed-back or cutting-over answer counts; an uncertain or pending
+    /// reply settles nothing, and a missing input settles nothing. An
+    /// uncertain reply is the accepted limit (round 3): the delivery stays
+    /// unknown, the row and its retained task text stay, and the open effect
+    /// keeps the terminal prune blocked for that team. It is never replayed.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn retained_outcome(&self, team: &Team, d: &Delivery) -> Result<Option<HandoutOutcome>> {
+        let Some(row) = self
+            .ledger
+            .input(&team.id, &format!("hosted-input:{}", d.id))?
+        else {
+            return Ok(None);
+        };
+        if row.data["reply"].is_null() {
+            return Ok(None);
+        }
+        let raw =
+            serde_json::to_vec(&row.data["reply"]).map_err(crate::teams::store::storage)?;
+        Ok(match super::native::decode_delivery(&raw, &d.id) {
+            HandoutOutcome::Submitted { .. }
+            | HandoutOutcome::Refused { .. }
+            | HandoutOutcome::HandedBack { .. }
+            | HandoutOutcome::CuttingOver { .. } => {
+                Some(super::native::decode_delivery(&raw, &d.id))
+            }
+            HandoutOutcome::Uncertain { .. } => None,
+        })
     }
     pub(super) fn open_effects(&self, store: &Store, team: &str) -> Result<Vec<EffectIntent>> {
         let mut out = Vec::new();
