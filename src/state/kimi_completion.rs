@@ -8,7 +8,7 @@ use std::io::{Read, Seek, SeekFrom};
 const MAX_BYTES: u64 = 8 * 1024 * 1024;
 // Bump if terminal parsing changes. This cache contains only negative verdicts:
 // an entry can never supply completion evidence, prompt IDs or a native clock.
-const NO_END_CACHE: &str = "kimi-no-main-terminal-v2";
+const NO_END_CACHE: &str = "kimi-no-main-terminal-v3";
 
 #[cfg(test)]
 thread_local! { static SCANNED: std::cell::Cell<(u64,u64)> = const { std::cell::Cell::new((0,0)) }; }
@@ -187,7 +187,29 @@ fn terminal(bytes: &[u8], clipped: bool) -> Option<End> {
             outcome = None;
             conflicted = false;
         } else {
-            let (turn, id, prompt_at, opaque) = prompt.as_ref()?;
+            let completed = match string(&event, "reason") {
+                "completed" => true,
+                // These typed native outcomes finish no reply. They must not
+                // poison a later, independently completed main prompt (e.g.
+                // the successful recovery turn after a provider rate limit).
+                "cancelled" | "failed" | "blocked" => false,
+                _ => return None,
+            };
+            let Some((turn, id, prompt_at, opaque)) = prompt.as_ref() else {
+                if !clipped {
+                    return None;
+                }
+                // A bounded tail can start inside an older turn. Its valid
+                // terminal rows grant nothing without that turn's prompt.
+                if kind == "turn.ended" {
+                    event["turnId"]
+                        .as_u64()
+                        .filter(|id| *id <= i64::MAX as u64)?;
+                } else {
+                    prompt_id(&event["promptId"])?;
+                }
+                continue;
+            };
             if at < *prompt_at {
                 return None;
             }
@@ -198,14 +220,6 @@ fn terminal(bytes: &[u8], clipped: bool) -> Option<End> {
             } else if Some(event["promptId"].as_str()?) != id.as_deref() {
                 return None;
             }
-            let completed = match string(&event, "reason") {
-                "completed" => true,
-                // These typed native outcomes finish no reply. They must not
-                // poison a later, independently completed main prompt (e.g.
-                // the successful recovery turn after a provider rate limit).
-                "cancelled" | "failed" | "blocked" => false,
-                _ => return None,
-            };
             conflicted |= outcome.is_some_and(|previous| previous != completed);
             outcome = Some(completed);
             end = (completed && !conflicted && !*opaque).then_some(End {
@@ -775,6 +789,129 @@ mod tests {
             odd["promptId"] = json!(wrong);
             assert_eq!(terminal(&bytes(&[odd, end(0)]), false), None, "{wrong}");
         }
+    }
+
+    fn completion(turn: u64, time: u64) -> Value {
+        json!({"type":"prompt.completed","agentId":"main","promptId":format!("msg_{turn}"),
+            "reason":"completed","time":time})
+    }
+
+    fn after_clipped_turn() -> [Value; 3] {
+        let mut prompt = prompt(56);
+        prompt["time"] = json!(1200);
+        let mut end = end(56);
+        end["time"] = json!(1300);
+        [prompt, end, completion(56, 1300)]
+    }
+
+    #[test]
+    fn clipped_prefix_ends_grant_nothing_but_allow_a_later_complete_turn() {
+        for prefix in [
+            vec![end(18)],
+            vec![completion(18, 1100)],
+            vec![end(18), completion(18, 1100)],
+        ] {
+            let mut wire = b"clipped history fragment\n".to_vec();
+            wire.extend(bytes(&prefix));
+            assert_eq!(
+                terminal(&wire, true),
+                None,
+                "prefix ends alone grant nothing"
+            );
+            wire.extend(bytes(&after_clipped_turn()));
+            assert_eq!(
+                terminal(&wire, true),
+                Some(End {
+                    turn: 56,
+                    prompt_at: 1.2,
+                    at: 1.3,
+                    prompt_id: Some("msg_56".into()),
+                    prompts: BTreeSet::from(["msg_56".into()]),
+                })
+            );
+        }
+    }
+
+    #[test]
+    fn unclipped_prefix_ends_still_refuse_a_later_complete_turn() {
+        for prefix in [
+            vec![end(18)],
+            vec![completion(18, 1100)],
+            vec![end(18), completion(18, 1100)],
+        ] {
+            let mut wire = bytes(&[json!({"type":"fixture.history"})]);
+            wire.extend(bytes(&prefix));
+            wire.extend(bytes(&after_clipped_turn()));
+            assert_eq!(terminal(&wire, false), None);
+        }
+    }
+
+    #[test]
+    fn skipped_prefix_ends_keep_malformed_and_later_turn_refusals() {
+        for (mut prefix, key, bad) in [
+            (end(18), "turnId", json!(-1)),
+            (end(18), "turnId", json!(u64::MAX)),
+            (end(18), "reason", json!("unknown")),
+            (end(18), "time", Value::Null),
+            (end(18), "agentId", Value::Null),
+            (completion(18, 1100), "promptId", Value::Null),
+            (completion(18, 1100), "promptId", json!("msg/invalid")),
+            (completion(18, 1100), "reason", json!("unknown")),
+        ] {
+            prefix[key] = bad;
+            let mut wire = b"clipped fragment\n".to_vec();
+            wire.extend(bytes(&[prefix]));
+            wire.extend(bytes(&after_clipped_turn()));
+            assert_eq!(terminal(&wire, true), None, "{key}");
+        }
+        for prefix in [json!({"type":"gap"}), json!({"type":"wire.gap"}), json!([])] {
+            let mut wire = b"clipped fragment\n".to_vec();
+            wire.extend(bytes(&[prefix]));
+            wire.extend(bytes(&after_clipped_turn()));
+            assert_eq!(terminal(&wire, true), None);
+        }
+        for tail in [
+            vec![end(55)],
+            vec![completion(55, 1300)],
+            vec![prompt(56), end(56)],
+        ] {
+            let mut wire = b"clipped fragment\n".to_vec();
+            wire.extend(bytes(&[end(18)]));
+            wire.extend(bytes(&after_clipped_turn()));
+            wire.extend(bytes(&tail));
+            assert_eq!(
+                terminal(&wire, true),
+                None,
+                "post-prompt mismatches and duplicates still refuse"
+            );
+        }
+    }
+
+    #[test]
+    fn a_pre_prefix_skip_cache_cannot_hide_the_unchanged_wire_completion() {
+        let mut fixture = ScanFixture::new();
+        let mut history = fs::read(&fixture.wire).unwrap();
+        history.truncate(history.len() - bytes(&[prompt(0)]).len());
+        history.extend(bytes(&[end(18), completion(18, 1100)]));
+        history.extend(bytes(&after_clipped_turn()));
+        fs::write(&fixture.wire, history).unwrap();
+        fixture.record["kimi_turn_clock"]["started"] = json!(56);
+        let (version, metadata) = crate::platform::FileIdentity::at(&fixture.wire).unwrap();
+        let marker = json!([
+            "no_terminal",
+            version.device,
+            version.inode,
+            version.modified,
+            version.modified_nanos,
+            metadata.len()
+        ]);
+        assert!(
+            scan_cache::cached("kimi-no-main-terminal-v2", &fixture.wire, "", || Some(
+                marker
+            ))
+            .is_some()
+        );
+        assert_eq!(proof(&fixture.record).unwrap().end.turn, 56);
     }
     #[test]
     fn an_older_native_failure_never_hides_the_successful_current_turn() {
