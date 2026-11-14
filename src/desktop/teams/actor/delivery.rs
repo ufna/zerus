@@ -507,6 +507,13 @@ impl Runtime {
                 // card, no status change - then settles, which removes the
                 // input as on a running team. With neither, the delivery
                 // stays unknown: keep the row and the input, never replay.
+                // The settle below removes the input, but it does not complete
+                // the Zerus task attempt that only the hosted child writes
+                // after retaining its reply (hosted.rs:212-223). If the child
+                // stopped between those two writes and the team is terminal, the
+                // attempt stays unknown: every later send or start of that task
+                // is refused until the person cancels that exact attempt, and
+                // nothing is replayed (zerus-63rru.102 round 3 residual, D3).
                 let outcome = if d.outcome.is_some() {
                     d.outcome.clone()
                 } else {
