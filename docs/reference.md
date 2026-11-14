@@ -8306,6 +8306,16 @@ reports `running`, `ownership`, `configuration`, executable `version`, schema,
 generation/epoch, pending counts, component state and incomplete upstream
 coverage. IPC connectivity does not establish peer freshness. An absent service
 reports `running:false`; an unsafe or incompatible endpoint is an error.
+Before a status/watch projection or ordinary command, the actor checks its
+original configuration, generation and epoch against the durable service row.
+Missing, unreadable or changed metadata stops admission and drains that actor
+through the existing shutdown path. It never adopts another opener's epoch or
+advertises its cached scope as current. A later service starts with a fresh
+scope; retained original results still require exact scoped, read-only queries.
+Operation recovery also checks the current service epoch inside its write
+transaction before changing attempts, so an old actor cannot mark a newer
+service's reserved work Unknown.
+Retiring an old Unix listener preserves a later socket or file at its endpoint.
 
 `serve` holds an exclusive OS file lock under `HGS_STATE_DIR/desktop`, opens the
 private versioned `state.sqlite3` and serves a same-user Unix socket or Windows
