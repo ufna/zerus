@@ -8,7 +8,7 @@ use std::io::{Read, Seek, SeekFrom};
 const MAX_BYTES: u64 = 8 * 1024 * 1024;
 // Bump if terminal parsing changes. This cache contains only negative verdicts:
 // an entry can never supply completion evidence, prompt IDs or a native clock.
-const NO_END_CACHE: &str = "kimi-no-main-terminal-v1";
+const NO_END_CACHE: &str = "kimi-no-main-terminal-v2";
 
 #[cfg(test)]
 thread_local! { static SCANNED: std::cell::Cell<(u64,u64)> = const { std::cell::Cell::new((0,0)) }; }
@@ -107,7 +107,7 @@ pub(super) fn observe_submission(record: &mut Value, event: &Value, at: f64) {
 // A clipped prefix grants no authority: the complete current main prompt and
 // its terminal event must both be present after it, with no malformed/gap row.
 fn terminal(bytes: &[u8], clipped: bool) -> Option<End> {
-    let mut prompt: Option<(u64, Option<String>, f64)> = None;
+    let mut prompt: Option<(u64, Option<String>, f64, bool)> = None;
     let mut prompts = BTreeSet::new();
     let mut end = None;
     let mut outcome = None;
@@ -144,23 +144,33 @@ fn terminal(bytes: &[u8], clipped: bool) -> Option<End> {
             // its own when a background task ends, `task:bash-…:completed`
             // (zerus-cdhjm). A rejected id ends the whole parse, so every
             // later turn of that session would stay busy.
-            let id = if let Some(id) = event.get("promptId") {
-                Some(prompt_id(id)?.to_owned())
+            let (id, opaque) = if let Some(id) = event.get("promptId") {
+                (Some(prompt_id(id)?.to_owned()), false)
             } else {
-                if event["origin"]["kind"] != "task"
-                    || !event["input"].as_array().is_some_and(|parts| {
-                        !parts.is_empty()
-                            && parts.len() <= 64
-                            && parts
-                                .iter()
-                                .all(|part| part["type"] == "text" && part["text"].is_string())
-                    })
-                {
+                if !event["input"].as_array().is_some_and(|parts| {
+                    !parts.is_empty()
+                        && parts.len() <= 64
+                        && parts
+                            .iter()
+                            .all(|part| part["type"] == "text" && part["text"].is_string())
+                }) {
                     return None;
                 }
-                match event["origin"].get("notificationId") {
-                    Some(id) => Some(prompt_id(id)?.to_owned()),
-                    None => None,
+                match event["origin"]["kind"]
+                    .as_str()
+                    .filter(|kind| !kind.is_empty())?
+                {
+                    "task" => (
+                        match event["origin"].get("notificationId") {
+                            Some(id) => Some(prompt_id(id)?.to_owned()),
+                            None => None,
+                        },
+                        false,
+                    ),
+                    "cron_job" => (None, false),
+                    // Keep unknown turns in ordering checks, but their end
+                    // cannot prove completion or borrow a task notification ID.
+                    _ => (None, true),
                 }
             };
             if id.as_ref().is_some_and(|id| !prompts.insert(id.clone())) {
@@ -168,16 +178,16 @@ fn terminal(bytes: &[u8], clipped: bool) -> Option<End> {
             }
             if prompt
                 .as_ref()
-                .is_some_and(|(old, _, time)| turn <= *old || at < *time)
+                .is_some_and(|(old, _, time, _)| turn <= *old || at < *time)
             {
                 return None;
             }
-            prompt = Some((turn, id, at));
+            prompt = Some((turn, id, at, opaque));
             end = None;
             outcome = None;
             conflicted = false;
         } else {
-            let (turn, id, prompt_at) = prompt.as_ref()?;
+            let (turn, id, prompt_at, opaque) = prompt.as_ref()?;
             if at < *prompt_at {
                 return None;
             }
@@ -198,7 +208,7 @@ fn terminal(bytes: &[u8], clipped: bool) -> Option<End> {
             };
             conflicted |= outcome.is_some_and(|previous| previous != completed);
             outcome = Some(completed);
-            end = (completed && !conflicted).then_some(End {
+            end = (completed && !conflicted && !*opaque).then_some(End {
                 turn: *turn,
                 prompt_at: *prompt_at,
                 at,
@@ -945,6 +955,171 @@ mod tests {
                 terminal(&bytes(&[damaged, end(0)]), false).is_none(),
                 "{key}"
             );
+        }
+    }
+
+    fn cron_turn(turn: u64) -> [Value; 2] {
+        [
+            json!({"type":"turn.prompt","agentId":"main","turnId":turn,
+                "origin":{"kind":"cron_job","jobId":"job_fixture","cron":"*/5 * * * *",
+                    "recurring":true,"coalescedCount":1,"stale":false},
+                "input":[{"type":"text","text":"Run the scheduled check"}],
+                "time":1000 + turn * 200}),
+            json!({"type":"turn.ended","agentId":"main","turnId":turn,
+                "reason":"completed","time":1100 + turn * 200}),
+        ]
+    }
+
+    #[test]
+    fn cron_turns_without_prompt_ids_and_the_later_identified_turn_complete() {
+        // Synthetic version of the reported wire: 23 recurring cron turns
+        // without promptId, then an identified notify turn and both end rows.
+        let mut events: Vec<_> = (2..25).flat_map(cron_turn).collect();
+        let mut latest = cron_turn(25);
+        latest[0]["promptId"] = json!("msg_25");
+        latest[0]["origin"]["trigger"] = json!("notify");
+        events.extend(latest);
+        events.push(json!({"type":"prompt.completed","agentId":"main",
+            "promptId":"msg_25","reason":"completed","time":6100}));
+        let completed = terminal(&bytes(&events), false).unwrap();
+        assert_eq!(completed.turn, 25);
+        assert_eq!(completed.prompt_id.as_deref(), Some("msg_25"));
+        assert_eq!(completed.prompts, BTreeSet::from(["msg_25".into()]));
+        let mut r = record();
+        r["kimi_turn_clock"]["started"] = json!(25);
+        assert!(matches(&r, &completed));
+
+        let completed = terminal(&bytes(&cron_turn(0)), false).unwrap();
+        assert_eq!(completed.prompt_id, None);
+        assert!(completed.prompts.is_empty());
+        assert!(matches(&record(), &completed));
+    }
+
+    #[test]
+    fn a_pre_cron_negative_cache_cannot_hide_the_unchanged_wire_completion() {
+        let fixture = ScanFixture::new();
+        fs::write(&fixture.wire, bytes(&cron_turn(0))).unwrap();
+        let (version, metadata) = crate::platform::FileIdentity::at(&fixture.wire).unwrap();
+        let marker = json!([
+            "no_terminal",
+            version.device,
+            version.inode,
+            version.modified,
+            version.modified_nanos,
+            metadata.len()
+        ]);
+        assert!(
+            scan_cache::cached("kimi-no-main-terminal-v1", &fixture.wire, "", || Some(
+                marker
+            ))
+            .is_some()
+        );
+        assert!(
+            proof(&fixture.record).is_some(),
+            "upgrading must rescan the old refusal"
+        );
+    }
+
+    #[test]
+    fn an_unknown_promptless_origin_is_opaque_but_does_not_poison_later_turns() {
+        let mut unknown = cron_turn(0);
+        unknown[0]["origin"] = json!({"kind":"future_origin","notificationId":"msg_future"});
+        assert_eq!(terminal(&bytes(&unknown), false), None);
+        let mut events = bytes(&[prompt(0), end(0)]);
+        let mut later_unknown = cron_turn(1);
+        later_unknown[0]["origin"] = unknown[0]["origin"].clone();
+        events.extend(bytes(&later_unknown));
+        assert_eq!(
+            terminal(&events, false),
+            None,
+            "an opaque turn clears the old end"
+        );
+
+        let mut next = cron_turn(1);
+        next[0]["promptId"] = json!("msg_1");
+        let mut events = unknown.to_vec();
+        events.extend(next);
+        let completed = terminal(&bytes(&events), false).unwrap();
+        assert_eq!(completed.turn, 1);
+        assert_eq!(completed.prompts, BTreeSet::from(["msg_1".into()]));
+        assert_eq!(completed.prompt_id.as_deref(), Some("msg_1"));
+    }
+
+    #[test]
+    fn promptless_origins_keep_wire_integrity_refusals() {
+        for kind in ["cron_job", "future_origin"] {
+            let mut first = cron_turn(0);
+            first[0]["origin"]["kind"] = json!(kind);
+            let mut next = cron_turn(1);
+            next[0]["promptId"] = json!("msg_1");
+            for (key, value) in [
+                ("input", Value::Null),
+                ("input", json!([])),
+                ("input", json!([{"type":"image","text":"bad"}])),
+                ("input", json!([{"type":"text","text":false}])),
+                ("input", json!(vec![json!({"type":"text","text":"x"}); 65])),
+                ("origin", Value::Null),
+                ("origin", json!({"kind":false})),
+                ("origin", json!({"kind":""})),
+                ("promptId", Value::Null),
+                ("turnId", json!(-1)),
+                ("time", Value::Null),
+            ] {
+                let mut damaged = first.clone();
+                damaged[0][key] = value;
+                let events = [damaged, next.clone()].concat();
+                assert_eq!(terminal(&bytes(&events), false), None, "{kind}: {key}");
+            }
+            for gap in [json!({"type":"gap"}), json!({"type":"wire.gap"}), json!([])] {
+                let events = [
+                    first[0].clone(),
+                    first[1].clone(),
+                    gap,
+                    next[0].clone(),
+                    next[1].clone(),
+                ];
+                assert_eq!(
+                    terminal(&bytes(&events), false),
+                    None,
+                    "{kind}: gap/malformed"
+                );
+            }
+            let mut damaged = first.clone();
+            damaged[1]["turnId"] = json!(9);
+            assert_eq!(
+                terminal(&bytes(&[damaged, next.clone()].concat()), false),
+                None
+            );
+            let mut backwards = next.clone();
+            backwards[0]["turnId"] = json!(0);
+            assert_eq!(
+                terminal(&bytes(&[first.clone(), backwards].concat()), false),
+                None
+            );
+            let mut backwards = next.clone();
+            backwards[0]["time"] = json!(999);
+            assert_eq!(
+                terminal(&bytes(&[first.clone(), backwards].concat()), false),
+                None
+            );
+            let mut duplicate = next.clone();
+            duplicate[0]["turnId"] = json!(2);
+            duplicate[1]["turnId"] = json!(2);
+            assert_eq!(
+                terminal(
+                    &bytes(&[first.clone(), next.clone(), duplicate].concat()),
+                    false
+                ),
+                None
+            );
+            assert_eq!(
+                terminal(&bytes(&first), true),
+                None,
+                "clipped prompt grants nothing"
+            );
+            let mut partial = bytes(&[first, next].concat());
+            partial.pop();
+            assert_eq!(terminal(&partial, false), None, "partial row");
         }
     }
 
