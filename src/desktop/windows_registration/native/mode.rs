@@ -780,6 +780,7 @@ fn effect(
     })();
     fence.stop_timing = None;
     stopped.map_err(|error| timing.failure(error))?;
+    let stop_timing = timing.snapshot();
     fence.phase(Budget::Update);
     record.advance(Phase::Stopped, Phase::UpdateOffered)?;
     save(location, passive, &record, &mut || fence.check())?;
@@ -835,7 +836,7 @@ fn effect(
         Ok(())
     })?;
     Ok(
-        json!({"abi":MODE_ABI,"schema":1,"configuration":location.configuration,"task_name":passive.name,"selected_mode":desired.name(),"running_mode":desired.name(),"pending":null,"request_id":id,"changed":true,"instance":ready.observation()}),
+        json!({"abi":MODE_ABI,"schema":1,"configuration":location.configuration,"task_name":passive.name,"selected_mode":desired.name(),"running_mode":desired.name(),"pending":null,"request_id":id,"changed":true,"instance":ready.observation(),"stop_timing":stop_timing}),
     )
 }
 
