@@ -32,6 +32,8 @@ mod messages;
 mod history;
 mod index;
 mod teams;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+mod person;
 mod team_deliver;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub(crate) use team_deliver::{PROJECT_LIMIT, TERMINAL_WAITING};
@@ -353,6 +355,13 @@ fn actor(here: &str, args: &[String], forwardable: bool) -> Result<Actor> {
         {
             return Err(fail("--agent is for commands another computer forwards; an agent acts as its own session"));
         }
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        {
+            if let Some(refusal) = crate::state::dsh::host_refusal() {
+                return Err(fail(refusal));
+            }
+            person::check()?;
+        }
         let (machine, session) = agent
             .split_once('/')
             .filter(|(machine, session)| uuid::Uuid::parse_str(machine).is_ok() && !session.is_empty())
@@ -376,6 +385,8 @@ fn actor(here: &str, args: &[String], forwardable: bool) -> Result<Actor> {
         if let Some(refusal) = crate::state::dsh::host_refusal() {
             return Err(fail(refusal));
         }
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        person::check()?;
         return Ok(Actor::Person);
     };
     let record = crate::state::session_graph::caller_record().ok_or_else(|| {
@@ -387,8 +398,13 @@ fn actor(here: &str, args: &[String], forwardable: bool) -> Result<Actor> {
         if let Some(refusal) = crate::state::dsh::host_refusal() {
             return fail(format!("this command names the agent session {claimed}, but it cannot be proven: {refusal}"));
         }
+        let guidance = if cfg!(any(target_os = "linux", target_os = "macos")) {
+            "person actions require a terminal outside the agent's process tree"
+        } else {
+            "or unset HGS_SESSION and HGS_RUN_ID to act as yourself"
+        };
         fail(format!(
-            "this command names the agent session {claimed}, but that run is not live on this computer or does not run it; run hgs task from the agent's own shell, or unset HGS_SESSION and HGS_RUN_ID to act as yourself"
+            "this command names the agent session {claimed}, but that run is not live on this computer or does not run it; run hgs task from the agent's own shell, {guidance}"
         ))
     })?;
     Ok(Actor::Agent(SessionKey {

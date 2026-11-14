@@ -523,8 +523,8 @@ class AgentIdentity(Fixture):
                                 text=True, capture_output=True, timeout=30)
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("names the agent session codex/api", result.stderr)
-        # A person's shell in the session's tmux inherits its variables: say the way out.
-        self.assertIn("or unset HGS_SESSION and HGS_RUN_ID to act as yourself", result.stderr)
+        # Person actions must come from outside the agent's process tree.
+        self.assertIn("person actions require a terminal outside the agent's process tree", result.stderr)
         self.assertEqual(self.ids("todo"), [])
         # A record without the owned process proves nothing either.
         agent_record(self.state, self.env, "codex/api", "run-stale", process_start="not this process")
@@ -541,7 +541,7 @@ class AgentIdentity(Fixture):
             self.addCleanup(process.wait)
             self.addCleanup(process.kill)
         conversation, job = str(uuid.uuid4()), str(uuid.uuid4())
-        agent_record(self.state, self.env, "claude/api", "run-window", pid=window.pid, conversation_id=conversation)
+        agent_record(self.state, self.env, "claude/api", "run-window", pid=window.pid, conversation_id=conversation, agent_home=str(self.root / ".claude"))
         agent_record(self.state, self.env, "codex/web", "run-token", pid=token.pid)
         registry = self.root / ".claude/sessions"
         registry.mkdir(parents=True)

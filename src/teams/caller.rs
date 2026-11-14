@@ -523,7 +523,7 @@ fn text(bytes: &[u8]) -> Option<String> {
 /// One process's environment, bounded. The agent a caller descends from runs
 /// as this user, so only this user's processes are read.
 #[cfg(target_os = "linux")]
-fn environment(pid: u32) -> std::io::Result<Vec<u8>> {
+pub(crate) fn environment(pid: u32) -> std::io::Result<Vec<u8>> {
     use std::io::Read;
     let mut bytes = Vec::new();
     std::fs::File::open(format!("/proc/{pid}/environ"))?
@@ -555,7 +555,7 @@ const PROCARGS_BUFFER: usize = 1 << 20;
 
 /// The same read on macOS, through `KERN_PROCARGS2`.
 #[cfg(target_os = "macos")]
-fn environment(pid: u32) -> std::io::Result<Vec<u8>> {
+pub(crate) fn environment(pid: u32) -> std::io::Result<Vec<u8>> {
     let mut mib = [libc::CTL_KERN, libc::KERN_PROCARGS2, pid as i32];
     let mut bytes = vec![0u8; PROCARGS_BUFFER];
     let mut size = bytes.len();

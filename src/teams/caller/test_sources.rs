@@ -3,8 +3,16 @@
 use super::*;
 
 pub(super) fn selected(name: &str) -> bool {
+    // A late-admission control changes only this test's synthetic kernel read.
+    // It never injects a caller result or changes the ordinary task check.
+    if name == "opaque" && std::env::var("HGS_TEAMS_TEST_CONTEXT").as_deref() == Ok("opaque_after")
+    {
+        return std::env::var_os("HGS_TEAMS_TEST_CONTEXT_AFTER")
+            .is_some_and(|path| std::path::Path::new(&path).is_file());
+    }
     std::env::var("HGS_TEAMS_TEST_CONTEXT").as_deref() == Ok(name)
 }
+
 pub(super) fn called() {
     if let Some(path) = std::env::var_os("HGS_TEAMS_TEST_PROOF_READS") {
         use std::io::Write;
