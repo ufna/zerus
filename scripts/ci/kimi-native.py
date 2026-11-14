@@ -36,6 +36,8 @@ METHODS = (
     'test_kimi_native.NativeKimi.test_busy_attachment_send_is_typed_once_and_delivered_once',
     'test_kimi_native.NativeKimi.test_clear_input_discards_a_residue_and_kimi_keeps_running',
     'test_kimi_native.NativeKimi.test_hint_reaches_model_through_real_hgs_hook',
+    # #2195 (zerus-cdhjm.3): private cache expiry compacts before one delivery,
+    # retaining run/CID and the original receipt without replay.
     'test_kimi_native.NativeKimi.test_expired_cache_compacts_before_delivering_one_original_message',
     'test_kimi_native.NativeKimi.test_manual_compaction_reaches_native_hooks',
     'test_kimi_native.NativeKimi.test_pause_and_resume_keep_the_conversation',
