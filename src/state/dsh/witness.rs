@@ -1267,6 +1267,32 @@ mod tests {
         );
     }
 
+    /// Windows' words for refusing to open a directory as a file:
+    /// `ERROR_ACCESS_DENIED` (zerus-hfw2s.10).
+    #[cfg(windows)]
+    fn directory_open_refusal() -> String {
+        std::io::Error::from_raw_os_error(
+            windows_sys::Win32::Foundation::ERROR_ACCESS_DENIED as i32,
+        )
+        .to_string()
+    }
+
+    /// With the receipt reader's own options, Windows refuses to open a
+    /// directory before any descriptor check, in the words the flow expects.
+    #[cfg(windows)]
+    #[test]
+    fn windows_refuses_a_directory_at_the_receipt_open() {
+        let folder = tempfile::tempdir().unwrap();
+        let error = crate::platform::no_follow(fs::OpenOptions::new().read(true))
+            .open(folder.path())
+            .unwrap_err();
+        assert_eq!(
+            error.raw_os_error(),
+            Some(windows_sys::Win32::Foundation::ERROR_ACCESS_DENIED as i32)
+        );
+        assert_eq!(error.to_string(), directory_open_refusal());
+    }
+
     #[test]
     #[ignore = "run by submissions_refuse_before_the_marker_and_replay_recorded_outcomes"]
     fn flow() {
@@ -1695,6 +1721,9 @@ mod tests {
         unknown_unsent(&foreign, UNREADABLE);
         // The opened descriptor is checked too: a regular file replaced by a
         // directory after the path check is no receipt, by that same check.
+        // Windows refuses to open a directory as a file, so there the open's
+        // own refusal answers first (zerus-hfw2s.10). Either way nothing is
+        // sent and the input is never offered again.
         let swapped = request("WITNESS");
         let digest = request_digest(name, &swapped);
         let swapped_path = receipt_path(string(&swapped, "request_id"));
@@ -1717,8 +1746,12 @@ mod tests {
             Err("unreachable".into()),
             Duration::from_secs(5),
         );
+        #[cfg(windows)]
+        let refusal = directory_open_refusal();
+        #[cfg(not(windows))]
+        let refusal = NOT_A_FILE.to_owned();
         assert!(
-            matches!(&outcome, Witnessed::Unknown { code: UnknownCode::Unseen, detail } if *detail == format!("{UNREADABLE}: {NOT_A_FILE}")),
+            matches!(&outcome, Witnessed::Unknown { code: UnknownCode::Unseen, detail } if *detail == format!("{UNREADABLE}: {refusal}")),
             "{outcome:?}"
         );
         assert!(calls.is_empty(), "{calls:?}");
