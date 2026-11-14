@@ -844,6 +844,8 @@ class IosTerminalCleanupTests(unittest.TestCase):
     def test_exact_reverse_retains_all_seven_cases_and_every_other_fixture_statement(self):
         host = self.host
         replacements = [
+            # Later fixture API adapter: keep the historical cleanup hash and all other statements pinned.
+            ('    static func monotonicMillis() -> Int64 { Int64(ProcessInfo.processInfo.systemUptime * 1_000) }\n', ''),
             ('/// Four fixed review controls and one terminal cleanup notification in this disposable fixture only.',
              '/// Four fixed, payload-free notifications inside this disposable simulator fixture only.'),
             ('        case closeControls = "close-controls"\n', ''),
