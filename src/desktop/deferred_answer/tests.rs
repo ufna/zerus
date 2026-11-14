@@ -3368,47 +3368,107 @@ mod reservation_budget {
     #[test]
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     fn held_original_custody_keeps_the_entire_charge_until_its_exact_release() {
-        let (_temp, location, mut store, epoch) = fixture();
-        let v = original(&location.configuration, &epoch);
-        let (record, held) = super::running(&mut store, &location, &v, &epoch);
-        let before = budget(&store.db);
-        assert_eq!((before.0, before.2), (1, 1));
-        assert!(matches!(
-            crate::desktop::custody::probe(&location, &record),
-            crate::desktop::custody::Observation::Held
-        ));
-        let row = ledger::load(&store.db, key(&v)).unwrap().unwrap();
-        retired(&mut store, &row);
-        assert_eq!(
-            budget(&store.db),
-            before,
-            "retiring an original is not its physical release"
-        );
-        let row = ledger::load(&store.db, key(&v)).unwrap().unwrap();
-        assert!(!row.receipt.drained);
-        drop(held);
-        let observed = crate::desktop::custody::probe(&location, &record);
-        assert!(matches!(
-            observed,
-            crate::desktop::custody::Observation::Released { .. }
-        ));
-        let tx = store
-            .db
-            .transaction_with_behavior(TransactionBehavior::Immediate)
+        use crate::desktop::custody::Observation;
+        use std::os::fd::{AsRawFd, FromRawFd};
+        use std::time::{Duration, Instant};
+
+        for delayed_release in [false, true] {
+            let (_temp, location, mut store, epoch) = fixture();
+            let v = original(&location.configuration, &epoch);
+            let (record, held) = super::running(&mut store, &location, &v, &epoch);
+            let before = budget(&store.db);
+            assert_eq!((before.0, before.2), (1, 1));
+            assert!(matches!(
+                crate::desktop::custody::probe(&location, &record),
+                Observation::Held
+            ));
+            let row = ledger::load(&store.db, key(&v)).unwrap().unwrap();
+            retired(&mut store, &row);
+            assert_eq!(
+                budget(&store.db),
+                before,
+                "retiring an original is not its physical release"
+            );
+            let row = ledger::load(&store.db, key(&v)).unwrap().unwrap();
+            assert!(!row.receipt.drained);
+
+            // An unrelated fork can retain the same open-file description until
+            // exec closes it, even after the parent's only Arc has been dropped.
+            // Duplicate only this fd so the control cannot hold another test's
+            // descriptors. Its worker closes it only after a real Held probe.
+            let inherited = delayed_release.then(|| {
+                let fd = unsafe { libc::fcntl(held.as_raw_fd(), libc::F_DUPFD_CLOEXEC, 3) };
+                assert!(
+                    fd >= 0,
+                    "duplicate custody: {}",
+                    std::io::Error::last_os_error()
+                );
+                // SAFETY: fcntl returned a new descriptor owned by this control.
+                unsafe { std::fs::File::from_raw_fd(fd) }
+            });
+            let references = std::sync::Arc::strong_count(&held);
+            let descriptor = held.as_raw_fd();
+            assert_eq!(references, 1);
+            drop(held);
+            let observed = std::thread::scope(|scope| {
+                let (release, gate) = std::sync::mpsc::sync_channel(1);
+                let worker = inherited.map(|file| {
+                    scope.spawn(move || {
+                        // A failed assertion must still let the scoped worker join.
+                        let _ = gate.recv_timeout(Duration::from_secs(8));
+                        drop(file);
+                    })
+                });
+                let mut release = worker.as_ref().map(|_| release);
+                let until = Instant::now() + Duration::from_secs(8);
+                let observed = loop {
+                    let observed = crate::desktop::custody::probe(&location, &record);
+                    match &observed {
+                        Observation::Released { record: released, .. } => {
+                            assert_eq!(released.as_ref(), &record);
+                            break observed;
+                        }
+                        Observation::Held => {
+                            assert_eq!(budget(&store.db), before);
+                            assert!(!ledger::load(&store.db, key(&v)).unwrap().unwrap().receipt.drained);
+                            assert!(Instant::now() < until,
+                                "after drop: observation=Held; original_holder={record:?}; parent_references={references}; dropped_fd={descriptor}");
+                            if let Some(release) = release.take() {
+                                release.send(()).unwrap();
+                            }
+                            std::thread::sleep(Duration::from_millis(2));
+                        }
+                        Observation::Unavailable => panic!(
+                            "after drop: observation=Unavailable; original_holder={record:?}; parent_references={references}; dropped_fd={descriptor}"),
+                    }
+                };
+                assert!(
+                    release.is_none(),
+                    "an inherited descriptor must keep custody Held"
+                );
+                if let Some(worker) = worker {
+                    worker.join().unwrap();
+                }
+                observed
+            });
+            let tx = store
+                .db
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .unwrap();
+            ledger::drained(
+                tx,
+                row,
+                observed,
+                &wire::Read::Unknown(crate::desktop::deferred_answer::receipt::UNHELD),
+                crate::desktop::deferred_answer::receipt::Evidence::default(),
+            )
             .unwrap();
-        ledger::drained(
-            tx,
-            row,
-            observed,
-            &wire::Read::Unknown(crate::desktop::deferred_answer::receipt::UNHELD),
-            crate::desktop::deferred_answer::receipt::Evidence::default(),
-        )
-        .unwrap();
-        assert_eq!(budget(&store.db), (0, 0, 0));
-        let saved = retained(&store.db);
-        ledger::startup(&mut store.db).unwrap();
-        assert_eq!(retained(&store.db), saved);
-        assert_eq!(budget(&store.db), (0, 0, 0));
+            assert_eq!(budget(&store.db), (0, 0, 0));
+            let saved = retained(&store.db);
+            ledger::startup(&mut store.db).unwrap();
+            assert_eq!(retained(&store.db), saved);
+            assert_eq!(budget(&store.db), (0, 0, 0));
+        }
     }
     #[test]
     fn a_thirty_third_valid_row_is_corruption_not_unbounded_roster_work() {
