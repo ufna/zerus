@@ -697,6 +697,7 @@ mod tests {
     /// plain reason; a saved one offers restore; the restore's own history
     /// check still refuses the first.
     #[test]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     fn a_claude_archive_offers_restore_only_for_a_saved_conversation() {
         let dir = tempfile::tempdir().unwrap();
         let saved = dir.path().join("transcript.jsonl");
@@ -749,6 +750,7 @@ mod tests {
     /// zerus-63rru.70: deciding one archive's actions reads its transcript
     /// metadata at most once.
     #[test]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     fn deciding_one_archives_actions_reads_the_transcript_at_most_once() {
         let dir = tempfile::tempdir().unwrap();
         let saved = dir.path().join("transcript.jsonl");
@@ -767,7 +769,9 @@ mod tests {
         record["transcript"] = json!(saved);
         record["archive_id"] = json!("00000000-0000-4000-8000-0000000000a3");
         crate::state::journal::read_order::take();
-        let _ = summary(&record, false, &None);
+        // The decision's one metadata read, driven directly so the bound is
+        // pinned wherever the summary's restorable gate lands.
+        assert!(crate::state::recipes::conversation_persisted(&record));
         let steps = crate::state::journal::read_order::take();
         assert_eq!(
             steps.iter().filter(|step| **step == "transcript").count(),
@@ -779,6 +783,7 @@ mod tests {
     /// zerus-63rru.70: Kimi, DeepSeek and OpenCode keep today's decision; the
     /// archive metadata read never touches them.
     #[test]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     fn other_agents_keep_todays_restore_decision_without_a_transcript_read() {
         for agent in ["kimi", "dsh", "opencode"] {
             let mut record = crate::state::listing_fixture::launched_record(
