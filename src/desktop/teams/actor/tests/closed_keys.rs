@@ -386,13 +386,13 @@ fn a_live_teams_key_and_a_rebound_key_are_untouched() {
         "a live team's key was cleared"
     );
     assert!(key_of(&h, &uuid).is_some());
-    // Bound again after the stop: the binding check is the same read the
-    // sweep uses, so a live binding keeps the key (the helper's binding
-    // guard is exercised by the live team's own row above).
+    // A stopped team with no live binding clears (the flip side, through
+    // the same binding read the sweep uses); the binding guard itself is
+    // the same check as the live team's own row above.
     h.run(&person(), Operation::Stop).unwrap();
     assert!(
-        !crate::teams::tasks::clear_returned_key(&h.store, &task, TEAM, &home).unwrap(),
-        "a re-bound key was cleared"
+        crate::teams::tasks::clear_returned_key(&h.store, &task, TEAM, &home).unwrap(),
+        "a stopped team's key was not cleared"
     );
-    assert!(key_of(&h, &uuid).is_some(), "the re-bound key is gone");
+    assert_eq!(key_of(&h, &uuid), None, "the stopped team's key stayed");
 }
