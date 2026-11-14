@@ -578,7 +578,7 @@ fn record_write_cost_at_10k_and_100k_sessions() {
         );
         println!(
             "PROCESS_WRITER_BENCH {}",
-            json!({"sessions":count,"canonical_bytes":fs::metadata(&path).unwrap().len(),"database_bytes":fs::metadata(cache_path(root).unwrap()).unwrap().len(),"cold_owner_open_ms":cold_open_ms,"baseline_canonical_fsync":percentiles(baseline),"stable_binding_write":percentiles(stable),"binding_change_write":percentiles(changed),"stable_added_paired":percentiles(stable_added),"change_added_paired":percentiles(changed_added),"foreground_inventory_reads":0,"scope":"debug native publisher with canonical source fsync; 10 warmups then 100 samples; native system identity cached after first open; no process proof"})
+            json!({"sessions":count,"canonical_bytes":fs::metadata(&path).unwrap().len(),"database_bytes":fs::metadata(cache_path(root).unwrap()).unwrap().len(),"cold_owner_open_ms":cold_open_ms,"baseline_canonical_fsync":percentiles(baseline),"stable_binding_write":percentiles(stable),"binding_change_write":percentiles(changed),"stable_added_paired":percentiles(stable_added),"change_added_paired":percentiles(changed_added),"foreground_inventory_reads":0,"inventory_evidence":"source review: no directory inventory API in the writer path","scope":"debug native publisher with canonical source fsync; 10 warmups then 100 samples; native system identity cached after first open; no process proof"})
         );
     }
 }
@@ -631,4 +631,52 @@ fn a_busy_background_gate_preserves_the_existing_bounded_cursor() {
     assert!(state.is_some(), "a concurrent writer is a temporary yield");
     drop(owner);
     assert!(background_at(root.path(), &mut state).is_ok());
+}
+
+#[test]
+fn bootstrap_never_overwrites_a_settled_binding_with_stale_canonical_bytes() {
+    let (root, path, mut record) = fixture();
+    write(root.path(), &path, &mut record).unwrap();
+    let old_bytes = fs::read(&path).unwrap();
+    record["conversation_id"] = json!("newer-confirmed-conversation");
+    write(root.path(), &path, &mut record).unwrap();
+    let source = Source {
+        kind: Kind::Native,
+        key: record["session_id"].as_str().unwrap().into(),
+    };
+    let before = open(root.path()).current_source(&source).unwrap().unwrap();
+    fs::write(&path, &old_bytes).unwrap();
+    assert!(
+        finish_background(root.path()) > 0,
+        "an older canonical revision must report an unaccounted gap"
+    );
+    assert_eq!(
+        open(root.path()).current_source(&source).unwrap(),
+        Some(before),
+        "bootstrap cannot turn older bytes into a newer index revision"
+    );
+    assert_eq!(fs::read(&path).unwrap(), old_bytes);
+}
+
+#[test]
+fn matching_binding_with_a_stale_revision_witness_still_reports_a_gap() {
+    let (root, path, mut record) = fixture();
+    write(root.path(), &path, &mut record).unwrap();
+    let source = Source {
+        kind: Kind::Native,
+        key: record["session_id"].as_str().unwrap().into(),
+    };
+    let before = open(root.path()).current_source(&source).unwrap().unwrap();
+    record[WITNESS]["witness"]["revision"] = json!(0);
+    super::super::storage::atomic(&path, &format!("{record}\n")).unwrap();
+    let bytes = fs::read(&path).unwrap();
+    assert!(
+        finish_background(root.path()) > 0,
+        "matching payload is not a matching publication revision"
+    );
+    assert_eq!(
+        open(root.path()).current_source(&source).unwrap(),
+        Some(before)
+    );
+    assert_eq!(fs::read(&path).unwrap(), bytes);
 }

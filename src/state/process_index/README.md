@@ -72,7 +72,10 @@ operation or fsync can exceed it. Initialization performs constant namespace/sto
 I/O outside these scan-step budgets. The worker releases its index lock between
 steps. A new pass can restart after a crash. Only an exact surviving post-file
 witness can settle a pending write; bootstrap never publishes/deletes a canonical
-file. Pending retirements without a surviving witness remain pending. A completed
+file. Pending retirements without a surviving witness remain pending. A scan retains an
+existing settled publication, including its timestamp, and reports stale revision
+witnesses or changed canonical payloads as gaps; scanning never upgrades them into
+a newer binding revision. A completed
 pass never calls `Store::finish` and never claims negative coverage.
 
 Explicitly uncovered: older/unpinned writers, guarded recovery/picker keepers,

@@ -165,25 +165,30 @@ impl Files {
             }
         }
         let old = store.current_source(&source)?;
-        let mut revision = old.as_ref().map_or(1, |s| s.revision);
-        let publication = pin.publication(record, &source, location, revision, 0)?;
-        if old.as_ref().is_some_and(|s| {
-            fingerprint(&s.publication, location).ok() != fingerprint(&publication, location).ok()
-        }) {
-            revision = revision
-                .checked_add(1)
-                .ok_or_else(|| anyhow::anyhow!("Source version overflow"))?;
-        }
-        if record[WITNESS]["witness"]["epoch"] != self.epoch {
+        let revision = old.as_ref().map_or(1, |snapshot| snapshot.revision);
+        let publication = pin.publication(record, &source, location, revision, now())?;
+        let witness = &record[WITNESS]["witness"];
+        if witness["epoch"] != self.epoch || witness["revision"].as_u64() != Some(revision) {
             self.gap(
                 Some(&source),
-                "Canonical epoch/high-water witness is missing or belongs to another index",
+                "Canonical epoch/revision witness is missing or differs from the settled index",
             );
         }
+        if let Some(old) = old {
+            if fingerprint(&old.publication, location)? != fingerprint(&publication, location)? {
+                self.gap(
+                    Some(&source),
+                    "Canonical binding differs from the settled revision; retain the indexed claim",
+                );
+            }
+            // A scan is not a new binding write. Only exact intent settlement
+            // above may replace a known publication. Keep its original timestamp.
+            return Ok(Some(old));
+        }
         Ok(Some(Snapshot {
-            source: source.clone(),
+            source,
             revision,
-            publication: pin.publication(record, &source, location, revision, 0)?,
+            publication,
         }))
     }
 }
