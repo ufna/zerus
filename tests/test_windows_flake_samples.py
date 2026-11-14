@@ -58,7 +58,7 @@ class WorkflowSampling(unittest.TestCase):
         root = Path(__file__).resolve().parents[1]
         entry = (root/'.github/workflows/ci.yml').read_text()
         checks = (root/'.github/workflows/checks.yml').read_text()
-        self.assertIn("windows_flake_rounds: ${{ github.event_name == 'workflow_dispatch' && inputs.windows_flake_rounds || 0 }}", entry)
+        self.assertIn("windows_flake_rounds: ${{ github.event_name == 'workflow_dispatch' && fromJSON(format('{0}', inputs.windows_flake_rounds || 0)) || 0 }}", entry)
         selected = [('client-native-windows', 'Loaded native Windows task-mode samples'),
                     ('windows-desktop', 'Loaded native Windows transport samples')]
         for name, label in selected:
@@ -75,3 +75,24 @@ class WorkflowSampling(unittest.TestCase):
         self.assertIn('timeout-minutes: 6', normal)
         self.assertIn('--custody-only --timeout 300', normal)
         self.assertIn('python -m unittest -v test_windows_bootstrap test_remote_windows.WindowsNativeTransport', normal)
+
+    def test_manual_string_count_becomes_a_number_before_the_reusable_call(self):
+        from pathlib import Path
+        from types import SimpleNamespace
+        import json
+        import re
+        workflow = (Path(__file__).resolve().parents[1]/'.github/workflows/ci.yml').read_text()
+        expression = re.search(r'^      windows_flake_rounds: (\$\{\{.*\}\})$', workflow, re.M)[1]
+        expression = expression.removeprefix('${{ ').removesuffix(' }}')
+        expression = expression.replace('&&', ' and ').replace('||', ' or ')
+        for event, raw, expected in [('workflow_dispatch', '40', 40), ('workflow_dispatch', 40, 40),
+                                     ('workflow_dispatch', '0', 0), ('push', '40', 0),
+                                     ('pull_request', '40', 0)]:
+            with self.subTest(event=event, raw=raw):
+                value = eval(expression, {'__builtins__':{}}, {
+                    'github':SimpleNamespace(event_name=event),
+                    'inputs':SimpleNamespace(windows_flake_rounds=raw),
+                    'format':lambda template, *args: template.format(*args),
+                    'fromJSON':json.loads})
+                self.assertIs(type(value), int, 'called workflow requires a number, not a manual-input string')
+                self.assertEqual(value, expected)

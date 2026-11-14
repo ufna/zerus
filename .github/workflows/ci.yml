@@ -118,7 +118,7 @@ jobs:
       run_macos: ${{ github.event_name == 'push' || github.event_name == 'pull_request' || inputs.run_macos }}
       run_windows: ${{ inputs.run_windows || false }}
       windows_installer_version: ${{ inputs.windows_installer_version || '' }}
-      windows_flake_rounds: ${{ github.event_name == 'workflow_dispatch' && inputs.windows_flake_rounds || 0 }}
+      windows_flake_rounds: ${{ github.event_name == 'workflow_dispatch' && fromJSON(format('{0}', inputs.windows_flake_rounds || 0)) || 0 }}
       retain_membership_probe: ${{ github.event_name == 'workflow_dispatch' && inputs.retain_membership_probe || false }}
       run_ios: ${{ inputs.run_ios || false }}
       filter_pr_platforms: ${{ github.event_name == 'pull_request' }}
