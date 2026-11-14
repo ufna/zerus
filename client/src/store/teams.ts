@@ -142,7 +142,7 @@ export interface TeamProjectFacts { git: boolean; head: string; branch: string; 
 
 /** The data the views need from the platform; a test passes its own. */
 export interface TeamsTransport {
-  follow(follow: TeamFollow): Promise<void>;
+  follow(follow: TeamFollow, refresh?: boolean): Promise<void>;
   hidden(hidden: boolean): Promise<void>;
   tasksChanged(): Promise<void>;
   page(key: string, cursor: string | null): Promise<void>;
@@ -165,7 +165,7 @@ export function tauriTeams(): TeamsTransport {
     if (!inTauri()) throw new Error("Teams need a live hgs event stream.");
   };
   return {
-    async follow(follow) { live(); await invoke("teams_follow", { list: follow.list, waiting: follow.waiting, team: follow.team }); },
+    async follow(follow, refresh = false) { live(); await invoke("teams_follow", { list: follow.list, waiting: follow.waiting, team: follow.team, refresh }); },
     async hidden(hidden) { live(); await invoke("teams_hidden", { hidden }); },
     async tasksChanged() { live(); await invoke("teams_tasks_changed"); },
     async page(key, cursor) { live(); await invoke("teams_page", { key, cursor }); },
@@ -373,10 +373,10 @@ export function createTeams(transport: TeamsTransport = tauriTeams()) {
 
   const scope = (): TeamFollow => ({ list: true, waiting: true, team: followed() ?? null });
   const sameFollow = (a: TeamFollow | undefined, b: TeamFollow) => !!a && a.list === b.list && a.waiting === b.waiting && a.team === b.team;
-  function follow(next: TeamFollow): Promise<void> {
+  function follow(next: TeamFollow, refresh = false): Promise<void> {
     followGeneration++;
     lastFollow = next;
-    return transport.follow(next);
+    return transport.follow(next, refresh);
   }
 
   /** A positive off answer hides the entry points, unfollows and stops the reads;
@@ -499,7 +499,7 @@ export function createTeams(transport: TeamsTransport = tauriTeams()) {
           batch(() => { setAvailable(true); setOff(null); });
         } else if (entry.kind === "failed") {
           if (payload.code === "cursor_reset") { listSelected = null; requestedPages.clear(); }
-          setAvailable(true);
+          batch(() => { setAvailable(false); setOff("unavailable"); });
         } else if (entry.kind === "ended") {
           // The scope was retired: the reader forgot its page selection.
           listSelected = null; requestedPages.clear();
@@ -543,14 +543,14 @@ export function createTeams(transport: TeamsTransport = tauriTeams()) {
     if (probing) return;
     probing = true;
     stopped = false;
-    // The published list stays until a read replaces it: an unchanged follow
-    // starts no new scope, and the core sends an unchanged read only once.
+    // Keep the published list until a fresh read replaces it. Ask for the
+    // answer again even when the followed scope and reply are unchanged.
     try {
       await transport.hidden(false);
-      await follow(scope());
-    } catch {
+      await follow(scope(), true);
+    } catch (error) {
       stopped = true;
-      batch(() => { setAvailable(false); setOff("unavailable"); });
+      batch(() => { failRead("list", "unavailable", errorText(error)); setAvailable(false); setOff("unavailable"); });
     } finally { probing = false; }
   }
 

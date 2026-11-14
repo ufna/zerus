@@ -9,9 +9,9 @@ import type { TeamsOut } from "../types";
 const entry = (key: string, kind: string, payload: unknown): TeamsOut => ({ computer: "", key, kind, payload });
 
 function fake() {
-  const calls = { follow: [] as TeamFollow[], hidden: [] as boolean[], pages: [] as [string, string | null][] };
+  const calls = { follow: [] as TeamFollow[], refresh: [] as boolean[], hidden: [] as boolean[], pages: [] as [string, string | null][] };
   const transport: TeamsTransport = {
-    async follow(follow) { calls.follow.push(follow); },
+    async follow(follow, refresh = false) { calls.follow.push(follow); calls.refresh.push(refresh); },
     async hidden(hidden) { calls.hidden.push(hidden); },
     async tasksChanged() {},
     async page(key, cursor) { calls.pages.push([key, cursor]); },
@@ -25,6 +25,24 @@ function fake() {
 afterEach(() => { vi.useRealTimers(); });
 
 describe("discovery and visibility", () => {
+  it("an explicit retry asks for a fresh answer even with an unchanged follow", async () => {
+    const { transport, calls } = fake();
+    const store = createTeams(transport);
+    await store.probe();
+    await store.recheck();
+    expect(calls.follow[1]).toEqual(calls.follow[0]);
+    expect(calls.refresh).toEqual([true, true]);
+  });
+
+  it("a failed first read never defaults the preview to on and keeps its reason", () => {
+    const { transport } = fake();
+    const store = createTeams(transport);
+    store.apply([entry("list", "failed", { code: "invalid_reply", message: "team reply gives no actor" })]);
+    expect(store.available()).toBe(false);
+    expect(store.off()).toBe("unavailable");
+    expect(store.readFailureFor("list")?.message).toBe("team reply gives no actor");
+  });
+
   it("a positive off answer unfollows, stops the reads and hides the entry points", async () => {
     const { transport, calls } = fake();
     const store = createTeams(transport);

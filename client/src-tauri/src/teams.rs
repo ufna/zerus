@@ -57,6 +57,28 @@ impl Teams {
             poller.refresh();
         }
     }
+
+    fn follow(
+        &self,
+        hgs: std::path::PathBuf,
+        pump: crate::pump::Pump,
+        follow: TeamsFollow,
+        refresh: bool,
+    ) -> Result<(), String> {
+        let mut poller = self.poller();
+        if poller.is_none() {
+            let reader = TeamsPoller::spawn(hgs, move |change| pump.push(change))
+                .map_err(|error| format!("The Teams reader did not start: {error}"))?;
+            *poller = Some(reader);
+        }
+        if let Some(poller) = poller.as_ref() {
+            poller.follow(follow);
+            if refresh {
+                poller.recheck();
+            }
+        }
+        Ok(())
+    }
 }
 
 /// Follows the Teams views this window shows: the team list, what waits for
@@ -69,6 +91,7 @@ pub fn teams_follow(
     list: bool,
     waiting: bool,
     team: Option<String>,
+    refresh: Option<bool>,
 ) -> Result<(), String> {
     let team = team.filter(|team| !team.is_empty());
     if team.as_deref().is_some_and(|team| !valid_team(team)) {
@@ -79,19 +102,12 @@ pub fn teams_follow(
         waiting,
         team,
     };
-    let mut poller = teams.poller();
-    if poller.is_none() {
-        let pump = state.pump();
-        let reader = TeamsPoller::spawn(zerus_client_core::default_hgs(), move |change| {
-            pump.push(change)
-        })
-        .map_err(|error| format!("The Teams reader did not start: {error}"))?;
-        *poller = Some(reader);
-    }
-    if let Some(poller) = poller.as_ref() {
-        poller.follow(follow);
-    }
-    Ok(())
+    teams.follow(
+        zerus_client_core::default_hgs(),
+        state.pump(),
+        follow,
+        refresh.unwrap_or(false),
+    )
 }
 
 /// The Team tab was hidden (`true`) or shown again. A hidden tab reads nothing;
@@ -360,6 +376,8 @@ fn decode_team_reply(code: i32, stdout: &[u8], stderr: &[u8]) -> Result<Value, S
 // Runs a source-built command line through a Unix executable fixture.
 #[cfg(all(test, unix))]
 mod real_create;
+#[cfg(all(test, unix))]
+mod real_reads;
 #[cfg(all(test, target_os = "linux"))]
 mod real_preview;
 

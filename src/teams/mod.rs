@@ -161,6 +161,9 @@ fn turn_off(state: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
+#[cfg(all(test, unix))]
+mod preview_client_tests;
+
 #[cfg(test)]
 mod tests {
     use super::*;
