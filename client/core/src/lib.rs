@@ -485,6 +485,6 @@ mod hgs_tests {
     }
 }
 
-#[cfg(all(test, unix))]
+#[cfg(all(test, target_os = "linux"))]
 #[path = "../../../tests/support/executable.rs"]
 pub(crate) mod test_executable;

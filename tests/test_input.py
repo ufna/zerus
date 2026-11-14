@@ -41,6 +41,9 @@ original = termios.tcgetattr(fd)
 tty.setraw(fd)
 os.write(1, b'\x1b[?2004h\x1b[2J\x1b[H' + '\u203a '.encode())
 def screen(*args):
+    if (root / 'unreadable-environment').exists() and sys.platform.startswith('linux'):
+        import ctypes
+        assert ctypes.CDLL(None).prctl(4, 0, 0, 0, 0) == 0  # PR_SET_DUMPABLE
     os.write(1, (root / 'screen').read_bytes())
 signal.signal(signal.SIGUSR1, screen)
 children = []
@@ -134,6 +137,9 @@ class InputTransport(unittest.TestCase):
                         PATH=str(self.bin) + ":" + os.environ["PATH"])
         for variable in ("TMUX", "TMUX_PANE", "HGS_RUN_ID", "HGS_SESSION", "HGS_EXECUTABLE"):
             self.env.pop(variable, None)
+        self.env.pop('NO_COLOR', None)
+        if self._testMethodName.startswith('test_no_color_'):
+            self.env['NO_COLOR'] = '1'
         (self.bin / "hgs").symlink_to(HGS)
         self.script("tmux", '#!/bin/sh\nexec ' + TMUX + ' -S "' + str(self.socket) + '" -f /dev/null "$@"\n')
         (self.root / "agent.py").write_text(FAKE_AGENT)
@@ -1509,6 +1515,28 @@ os.execv('/bin/sh',['sh','-c',sys.argv[-1]])
         sample = json.loads((self.state / 'input_diagnostics/codex.json').read_text())
         self.assertFalse(sample['cursor_stable'])
         self.assertEqual(sample['cursor_row'], '')
+
+    def test_no_color_refusal_names_the_verified_agents_environment_and_keeps_drafts(self):
+        self.record.update(agent='claude', activity='busy', phase='tool', active_tools={'one': {}})
+        self.write_record()
+        reason = 'This agent was started with NO_COLOR, so Zerus cannot tell a queued message from a draft. Restart the session to fix sending.'
+        for text in ['Press up to edit queued messages', 'keep my real draft', 'Press up to edit queued messages\r\n  real continuation']:
+            self.screen('\x1b[2J\x1b[H' + '─' * 40 + '\r\n❯\u00a0' + text + '\r\n' + '─' * 40 + '\x1b[2;3H', '2:1')
+            request = self.payload()
+            self.assertIn(reason, self.send(request, success=False))
+            self.assertEqual(self.received(), b'')
+            self.assertFalse((self.state / 'input_receipts' / (request['request_id'] + '.json')).exists())
+
+    @unittest.skipUnless(os.sys.platform.startswith('linux'), 'Linux native environment permissions')
+    def test_no_color_unreadable_environment_keeps_the_generic_refusal(self):
+        self.record.update(agent='claude', activity='busy', phase='tool')
+        self.write_record()
+        (self.root / 'unreadable-environment').touch()
+        self.screen('\x1b[2J\x1b[H' + '─' * 40 + '\r\n❯\u00a0Press up to edit queued messages\r\n' + '─' * 40 + '\x1b[2;3H', '2:1')
+        refused = self.send(success=False)
+        self.assertIn('agent busy:', refused)
+        self.assertNotIn('This agent was started with NO_COLOR', refused)
+        self.assertEqual(self.received(), b'')
 
     def test_working_agent_accepts_next_message_without_interrupting(self):
         self.record.update(activity="busy", phase="tool", active_tools={"one": {}},

@@ -18,6 +18,11 @@ mod task;
 pub use attachment::{
     TaskAttachment, MAX_ATTACHMENT, MAX_ATTACHMENTS, MAX_ATTACHMENT_TOTAL, TASK_SCHEMA,
 };
+
+/// The largest serialized task document the phone can assemble: one current
+/// requirement's text and media plus one retained attachment generation.
+/// Attachment edits stop before a task document outgrows it.
+pub const MAX_TASK_DOCUMENT: usize = 2 * (MAX_DOCUMENT + MAX_ATTACHMENT_TOTAL.div_ceil(3) * 4);
 pub use error::{Error, ErrorKind, Result};
 pub use project::{CutoverHold, ProjectDoc, Settings};
 pub use render::{

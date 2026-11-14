@@ -77,16 +77,18 @@ impl OwnedFrontend {
             &invocation,
             &[],
             &AtomicBool::new(false),
-            move |command| {
+            move |command, input_spawn| {
                 proof.selected.revalidate().map_err(std::io::Error::other)?;
                 command
                     .env_remove("XDG_ACTIVATION_TOKEN")
                     .env_remove(wire::NAVIGATION_ENV);
-                platform::spawn_prepared_in_turn_before(until, || {
-                    proof.selected.revalidate().map_err(std::io::Error::other)?;
-                    Ok((std::mem::replace(command, Command::new("")), ()))
+                input_spawn.spawn_with(command, |command| {
+                    platform::spawn_prepared_in_turn_before(until, || {
+                        proof.selected.revalidate().map_err(std::io::Error::other)?;
+                        Ok((std::mem::replace(command, Command::new("")), ()))
+                    })
+                    .map(|(child, ())| child)
                 })
-                .map(|(child, ())| child)
             },
             resources,
         )

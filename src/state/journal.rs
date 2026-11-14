@@ -1125,6 +1125,8 @@ pub(super) fn inspection_with(
     output["compact_context_supported"] = json!(context_reason.is_none());
     output["compact_context_reason"] = json!(context_reason.clone().unwrap_or_default());
     output["compact_context_request"] = record["compact_context_request"].clone();
+    let pre_send = &record["last_send_compaction"];
+    output["pre_send_compaction"] = if pre_send["run_id"] == record["run_id"] && pre_send["conversation_id"] == record["conversation_id"] { pre_send.clone() } else { Value::Null };
     // The summary above verified a pending resume once; its message and
     // actions reuse that result instead of checking the terminal again.
     // So did the summary of an interrupted Claude turn's prompt.
