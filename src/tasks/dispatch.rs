@@ -255,7 +255,10 @@ pub(super) fn execute(config: &Config, action: &str, args: &[String]) -> Result<
     let mut store = super::store_until(config, &r.project.0, deadline)?;
     let mut task = store.find(&r.task).map_err(fail)?;
     super::attempts::pause_at(body["id"].as_str().unwrap_or_default(), "start_read");
-    super::teams::guard(config, &machines, &task, "send", args)?;
+    {
+        let mut meeting = crate::teams::tasks::Meeting::Projects(&store);
+        super::teams::guard(config, &machines, &task, "send", args, &mut meeting)?;
+    }
     let current = task.view().map_err(fail)?;
     let (selection, to) = if action == "start-plan" {
         let prepare: Prepare = serde_json::from_value(body.clone()).map_err(fail)?;
@@ -461,7 +464,8 @@ pub(super) fn execute(config: &Config, action: &str, args: &[String]) -> Result<
                     Ok(Err(Closed { node: None, reason }))
                 };
                 super::attempts::pause_at(&plan.id, "start_managed");
-                if let Err(error) = super::teams::guard(config, &machines, task, "send", args) {
+                let mut meeting = crate::teams::tasks::Meeting::Admitted(&mut *admitted);
+                if let Err(error) = super::teams::guard(config, &machines, task, "send", args, &mut meeting) {
                     return refuse("not_sendable", error.message);
                 }
                 // The frozen plan's business binding, against the task as
@@ -579,7 +583,10 @@ pub(super) fn execute(config: &Config, action: &str, args: &[String]) -> Result<
         store = super::store(config, &r.project.0)?;
         task = store.load(&uuid).map_err(fail)?;
         super::attempts::pause_at(&plan.id, "start_legacy");
-        super::teams::guard(config, &machines, &task, "send", args)?;
+        {
+            let mut meeting = crate::teams::tasks::Meeting::Projects(&store);
+            super::teams::guard(config, &machines, &task, "send", args, &mut meeting)?;
+        }
         let current = task.view().map_err(fail)?;
         return legacy(
             &store,

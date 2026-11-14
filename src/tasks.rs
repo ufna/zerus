@@ -1170,7 +1170,10 @@ fn change_guarded(config: &Config, action: &str, args: &[String], wait: Option<s
     };
 
     if let Some(guard) = guard { guard.check(&task)?; }
-    teams::guard(config, &machines, &task, action, args)?;
+    {
+        let mut meeting = crate::teams::tasks::Meeting::Projects(&store);
+        teams::guard(config, &machines, &task, action, args, &mut meeting)?;
+    }
     if let Some(team) = &team {
         let task_ref = zerus_team_plan::model::TaskRef { project:project_id.clone(), uuid:task.uuid().into() };
         drop(store);
@@ -1274,7 +1277,8 @@ fn change_guarded(config: &Config, action: &str, args: &[String], wait: Option<s
                     attempts::pause_at(&frozen.id, "legacy_reload");
                     let store = self::store(config, project_id)?;
                     let mut task = store.load(&uuid).map_err(fail)?;
-                    teams::guard(config, &machines, &task, action, args)?;
+                    let mut meeting = crate::teams::tasks::Meeting::Projects(&store);
+                    teams::guard(config, &machines, &task, action, args, &mut meeting)?;
                     enrich(&mut task, &machines)?;
                     (store, task)
                 }
