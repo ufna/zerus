@@ -90,3 +90,15 @@ pub(crate) fn hooks_trust_prompt() -> Value {
     )
     .expect("the hooks-trust producer wrote no card")
 }
+
+/// The sandbox setup producer's real startup card; never a team's folder grant.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub(crate) fn sandbox_setup_prompt() -> Value {
+    codex_sandbox::produced(
+        &record("codex"),
+        include_str!("../../tests/fixtures/codex-sandbox-setup-80.txt"),
+        80,
+        true,
+    )
+    .expect("native sandbox setup card")
+}

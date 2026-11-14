@@ -90,6 +90,7 @@ mod question_terminal;
 mod questions;
 mod codex_questions;
 mod codex_trust;
+mod codex_sandbox;
 mod codex_hooks_trust;
 mod codex_update;
 mod codex_goal_resume;

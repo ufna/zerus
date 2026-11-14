@@ -1201,7 +1201,7 @@ class NativeWindowsCodex(NativeAgent, host.HostCase):
         self.until('the separate Windows sandbox setup chooser', lambda: notice in self.capture(name))
         blocked = self.hgs('send', name, '--json', input=json.dumps(self.message(self.row(name), MESSAGES[0])), rc=None)
         self.assertNotEqual(blocked.returncode, 0, blocked.stdout)
-        self.assertIn('terminal has a draft, dialog, or unrecognized prompt', blocked.stderr)
+        self.assertIn('Codex is waiting for your sandbox setup choice', blocked.stderr)
         self.assertEqual(api.requests(self.api_root), [])
         self.assertFalse(any(q.get('source') == 'codex_folder_trust'
                              for q in self.inspect(name).get('pending_questions', [])))
@@ -1211,6 +1211,44 @@ class NativeWindowsCodex(NativeAgent, host.HostCase):
         self.until('sandbox setup dismissed in Terminal', lambda: notice not in self.capture(name))
         self.assertIsNone(tomllib.loads((self.agent_home / 'config.toml').read_text(encoding='utf-8')).get('windows', {}).get('sandbox'))
         self.deliver(name, MESSAGES[0])
+
+    def test_explicit_sandbox_setup_quit_is_bound_and_never_configures_or_replays(self):
+        name, trust, _ = self.untrusted_folder()
+        self.answer(name, trust, [dict(question_id='trust', selected_option_ids=['trust_0'], text='')])
+        card = self.card(name, 'codex_sandbox_setup')
+        screen = self.capture(name)
+        evidence = TESTS.parent / 'artifacts/test-results/codex-sandbox-setup-native.txt'
+        evidence.parent.mkdir(parents=True, exist_ok=True)
+        evidence.write_text(screen, encoding='utf-8')
+        self.assertEqual([o['label'] for o in card['questions'][0]['options']], [
+            'Set up default sandbox (requires Administrator permissions)',
+            'Use non-admin sandbox (higher risk if prompt injected)', 'Quit'])
+        self.assertEqual(card['answer_transport'], 'codex_tui')
+        self.assertEqual(card['run_id'], self.row(name)['run_id'])
+        self.assertEqual(api.requests(self.api_root), [])
+        original = self.record(name)
+        self.assertFalse(original.get('conversation_id'))
+        self.assertIsNone(tomllib.loads((self.agent_home/'config.toml').read_text(encoding='utf-8')).get('windows', {}).get('sandbox'))
+        # A stale card cannot drive even one navigation key. This is a new
+        # rejected request, not a retry of an uncertain submission.
+        stale = dict(request_id=str(uuid.uuid4()), expected_run_id=card['run_id'],
+                     expected_conversation_id='', question_id=card['question_id'], expected_question_hash='0'*64,
+                     answers=[dict(question_id='sandbox', selected_option_ids=['sandbox_2'], text='')])
+        rejected = self.hgs('answer', name, '--json', input=json.dumps(stale), rc=None)
+        self.assertNotEqual(rejected.returncode, 0, rejected.stdout)
+        self.assertEqual(self.card(name, 'codex_sandbox_setup')['question_hash'], card['question_hash'])
+        # Only this fixture person's explicit Quit is delivered. No setup
+        # executable is extracted; neither setup nor elevation is requested.
+        payload, receipt = self.answer(name, card, [dict(question_id='sandbox', selected_option_ids=['sandbox_2'], text='')])
+        self.assertEqual(self.json('answer', name, '--json', input=json.dumps(payload)), receipt)
+        self.until('the original Codex process to exit after Quit',
+                   lambda: not self.alive(original['pid'], original['process_start']))
+        self.assertEqual(api.requests(self.api_root), [])
+        current = self.record(name)
+        if current:
+            self.assertEqual((current.get('pid'), current.get('process_start'), current['run_id']),
+                             (original['pid'], original['process_start'], original['run_id']))
+        self.assertIsNone(tomllib.loads((self.agent_home/'config.toml').read_text(encoding='utf-8')).get('windows', {}).get('sandbox'))
 
     def test_explicit_folder_cancel_keeps_trust_unchanged(self):
         name, card, _ = self.untrusted_folder()

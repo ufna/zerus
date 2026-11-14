@@ -474,3 +474,16 @@ fn a_symlink_spelling_of_the_main_checkout_is_accepted() {
     assert!(super::same_checkout(spelling.to_str().unwrap(), main.to_str().unwrap()));
     assert!(!super::same_checkout(spelling.to_str().unwrap(), temp.path().join("elsewhere").to_str().unwrap()));
 }
+
+#[test]
+fn sandbox_setup_is_only_the_persons_choice_never_a_standing_folder_grant() {
+    let q = crate::state::trust_fixture::sandbox_setup_prompt();
+    let (mut b, _, mut s) = sample();
+    b.agent = "codex".into();
+    s.agent = b.agent.clone();
+    b.run = q["run_id"].as_str().unwrap().into();
+    s.run = b.run.clone();
+    s.questions = vec![q];
+    assert!(trust_candidate(&b, &s).is_none());
+    assert_eq!(trust(&b, &s).unwrap_err(), "This prompt needs a person");
+}
