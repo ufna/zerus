@@ -237,10 +237,51 @@ mod tests {
         assert_eq!(old.name, "Old role");
         let problem = save(dir.path(), &loaded).unwrap_err();
         assert_eq!(problem.code, code::INVALID_STATE, "{problem:?}");
-        let template = loaded.templates[0].name.clone();
+        // The stored role is used by no template: the refusal says so and
+        // names no template (round 3's attribution).
         assert!(
-            problem.message.contains(&template)
+            problem.message.contains("unused role")
                 && problem.message.contains("role ID"),
+            "{problem:?}"
+        );
+    }
+
+    /// Round 3, P3-1: the refusal names the template that uses the bad
+    /// role, not the first template; an unused role says it is unused.
+    #[test]
+    fn the_save_names_the_template_that_uses_the_bad_role_or_says_unused() {
+        let dir = temp();
+        let mut catalog = builtin();
+        let mut second = catalog.templates[0].clone();
+        second.id = "second".into();
+        second.name = "Second template".into();
+        second.roster.push(zerus_team_plan::catalog::Seat {
+            role: "role id".into(),
+            count: 1,
+            optional: false,
+        });
+        catalog.templates.push(second);
+        let mut old = catalog.roles[0].clone();
+        old.id = "role id".into();
+        old.name = "Old role".into();
+        catalog.roles.push(old);
+        let problem = save(dir.path(), &catalog).unwrap_err();
+        assert_eq!(problem.code, code::INVALID_STATE, "{problem:?}");
+        assert!(
+            problem.message.contains("Second template")
+                && problem.message.contains("role ID"),
+            "{problem:?}"
+        );
+        // An unused role names no template.
+        let mut catalog = builtin();
+        let mut orphan = catalog.roles[0].clone();
+        orphan.id = "role id".into();
+        orphan.name = "Orphan".into();
+        catalog.roles.push(orphan);
+        let problem = save(dir.path(), &catalog).unwrap_err();
+        assert_eq!(problem.code, code::INVALID_STATE, "{problem:?}");
+        assert!(
+            problem.message.contains("unused role"),
             "{problem:?}"
         );
     }

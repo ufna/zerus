@@ -21,8 +21,7 @@ use crate::problem::{code, Problem};
 pub fn forbidden_char(value: &str) -> Option<char> {
     value.chars().find(|ch| {
         let point = *ch as u32;
-        ch.is_control()
-            || matches!(point, 0x2028 | 0x2029 | 0x202A..=0x202E | 0x2066..=0x2069)
+        ch.is_control() || matches!(point, 0x2028 | 0x2029 | 0x202A..=0x202E | 0x2066..=0x2069)
     })
 }
 
@@ -38,7 +37,10 @@ pub fn name_problem(name: &str, field: &str, limit: usize) -> Option<Problem> {
     if let Some(ch) = forbidden_char(name) {
         return Some(Problem::new(
             code::INVALID_STATE,
-            format!("{field} contains U+{:04X}, which is not allowed.", ch as u32),
+            format!(
+                "{field} contains U+{:04X}, which is not allowed.",
+                ch as u32
+            ),
         ));
     }
     None
@@ -51,29 +53,41 @@ pub fn name_problem(name: &str, field: &str, limit: usize) -> Option<Problem> {
 /// save or import refuses it.
 pub fn admission_problems(catalog: &Catalog) -> Vec<Problem> {
     let mut problems = Vec::new();
-    let template = catalog
-        .templates
-        .first()
-        .map(|t| t.name.as_str())
-        .unwrap_or_default();
     for entry in &catalog.templates {
         if let Some(problem) = name_problem(&entry.name, "The template name", 256) {
             problems.push(problem);
         }
         if let Some(mut problem) = id_problem(&entry.id, "The template ID") {
-            problem.message = format!("Template {template}: {}", problem.message);
+            problem.message = format!("Template {}: {}", entry.name, problem.message);
             problems.push(problem);
         }
     }
     for role in &catalog.roles {
         if let Some(mut problem) = id_problem(&role.id, "The role ID") {
-            problem.message = format!("Template {template}: {}", problem.message);
+            // The refusal names the template that actually uses the role:
+            // the first that seats it, or none — an unused role says so
+            // (zerus-63rru.74 round 3).
+            problem.message = match catalog
+                .templates
+                .iter()
+                .find(|t| t.roster.iter().any(|seat| seat.role == role.id))
+            {
+                Some(t) => format!("Template {}: {}", t.name, problem.message),
+                None => format!("An unused role: {}", problem.message),
+            };
             problems.push(problem);
         }
     }
     for pipeline in &catalog.pipelines {
         if let Some(mut problem) = id_problem(&pipeline.id, "The pipeline ID") {
-            problem.message = format!("Template {template}: {}", problem.message);
+            problem.message = match catalog
+                .templates
+                .iter()
+                .find(|t| t.default_pipeline == pipeline.id)
+            {
+                Some(t) => format!("Template {}: {}", t.name, problem.message),
+                None => format!("An unused pipeline: {}", problem.message),
+            };
             problems.push(problem);
         }
     }
@@ -102,7 +116,9 @@ pub fn id_problem(id: &str, field: &str) -> Option<Problem> {
         None => {
             return Some(Problem::new(
                 code::INVALID_STATE,
-                format!("{field} is empty; IDs are [a-z0-9] then [a-z0-9_-], at most 64 characters."),
+                format!(
+                    "{field} is empty; IDs are [a-z0-9] then [a-z0-9_-], at most 64 characters."
+                ),
             ));
         }
     }

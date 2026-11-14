@@ -1872,8 +1872,8 @@ mod tests {
     #[test]
     fn each_bidirectional_character_is_refused_in_a_title() {
         for ch in [
-            '\u{202A}', '\u{202B}', '\u{202C}', '\u{202D}', '\u{202E}',
-            '\u{2066}', '\u{2067}', '\u{2068}', '\u{2069}',
+            '\u{202A}', '\u{202B}', '\u{202C}', '\u{202D}', '\u{202E}', '\u{2066}', '\u{2067}',
+            '\u{2068}', '\u{2069}',
         ] {
             let mut task = task(Stage::Todo);
             let error = task

@@ -28,8 +28,7 @@ pub use error::{Error, ErrorKind, Result};
 pub fn forbidden_char(value: &str) -> Option<char> {
     value.chars().find(|ch| {
         let point = *ch as u32;
-        ch.is_control()
-            || matches!(point, 0x2028 | 0x2029 | 0x202A..=0x202E | 0x2066..=0x2069)
+        ch.is_control() || matches!(point, 0x2028 | 0x2029 | 0x202A..=0x202E | 0x2066..=0x2069)
     })
 }
 pub use project::{CutoverHold, ProjectDoc, Settings};

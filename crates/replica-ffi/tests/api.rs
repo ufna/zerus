@@ -170,14 +170,13 @@ fn a_damaged_inventory_is_refused() {
     ));
 }
 
-
 /// zerus-63rru.75: the FFI's add refuses each of the nine bidirectional
 /// characters in a title, as the replica writer refuses them.
 #[test]
 fn a_title_with_a_bidirectional_character_is_refused_through_the_api() {
     for ch in [
-        '\u{202A}', '\u{202B}', '\u{202C}', '\u{202D}', '\u{202E}',
-        '\u{2066}', '\u{2067}', '\u{2068}', '\u{2069}',
+        '\u{202A}', '\u{202B}', '\u{202C}', '\u{202D}', '\u{202E}', '\u{2066}', '\u{2067}',
+        '\u{2068}', '\u{2069}',
     ] {
         let root = tempfile::tempdir().unwrap();
         let api = store(&root);
