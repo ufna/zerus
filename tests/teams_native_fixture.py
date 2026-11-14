@@ -971,7 +971,7 @@ class TeamFixture:
             rows.append(dict(id=entry['id'], at=entry.get('at'), session=entry['session'], provider=entry.get('provider'),
                              prompt=entry.get('prompt'), status=entry['status'], detail=detail.get('detail'),
                              source=fields['source'], question_id=fields['question_id'], run=fields['run_id'],
-                             categories=categories, saved_question=question))
+                             categories=categories, saved_question=question, scope=detail.get('scope')))
         return rows
 
     def audit_rows(self, session_name):
@@ -1114,15 +1114,29 @@ class TeamFixture:
 
     def worked(self, member_id, text):
         """The person sends one message and the member answers it: the model sees the
-        message and the member's turn ends (a Stop event after it) with a conversation,
-        which the agent has then persisted."""
+        message and the member's turn ends with a persisted conversation. Stop can
+        precede the TUI accepting its next input, so also read the empty composer
+        through the product before a native quit key is sent."""
         last = max([event.get('seq', 0) for event in self.inspect(member_id).get('events') or []] or [0])
         self.send(member_id, text)
         self.wait(f'{member_id} model received the person\'s message',
                   lambda: self.requests_with(lambda r: r.get('prompt') == text), BOUND['turn'], 1)
-        return self.wait(f'{member_id} answered the person\'s message', lambda: (lambda v: v if v.get('conversation_id') and any(
-            event.get('type') == 'Stop' and event.get('seq', 0) > last for event in v.get('events') or []) else None)(
-            self.inspect(member_id)), BOUND['turn'], 2)
+        def answered():
+            view = self.inspect(member_id)
+            if not view.get('conversation_id') or not any(event.get('type') == 'Stop' and event.get('seq', 0) > last
+                                                         for event in view.get('events') or []):
+                return None
+            read = self.hgs('terminal', self.sessions[member_id]['name'], '--json', ok=False, stdin=json.dumps(dict(
+                request_id=str(uuid.uuid4()), action='composer', expected_run_id=view['run_id'],
+                expected_conversation_id=view['conversation_id'])))
+            if read.returncode != 0:
+                return None
+            composer = json.loads(read.stdout)
+            if composer['composer']['state'] != 'empty' or view.get('activity') != 'idle':
+                return None
+            self.evidence.write('before-native-exit-composer.json', composer)
+            return view
+        return self.wait(f'{member_id} answered the person\'s message', answered, BOUND['turn'], 2)
 
     def add_task(self, title, text):
         reply = self.json('task', 'add', '--project', 'teams-fixture', '--team', self.team, '--title', title, '--json',
