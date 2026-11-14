@@ -1405,7 +1405,29 @@ is archived. Corrupt host preferences remain unknown. Native pages keep their
 768 KiB, within the 1 MiB response bound, so a valid 384 KiB preference can still
 be read. The compatibility preview remains capped at 128 KiB and omits an
 oversized row.
-The legacy `ls --json` default remains compatible. The native, read-only ABI is:
+Plain `ls --json` retains archived rows with the same session fields, including
+`archive_id`, `archived_at` and native action availability, but includes only a
+recent preview: at most 50 archives in `(archived_at, archive_id)` descending
+order, subject to the archive page's byte budget. Live and Saved rows remain
+complete. The additive host-level `archive_page` describes this preview without
+duplicating its rows: `total`, `total_capped`, `next_cursor`, `previous_cursor`,
+`position`, `from`, `until`, `query`, and `command: ["archives","--json","--bounded"]`.
+Its total counts at most 50 archives; `total_capped: true` means a lower bound,
+and an empty `next_cursor` means there are no older rows. To continue, pass
+`next_cursor` as `cursor` with the same range/query to the command in the
+descriptor. New completions appear on Refresh; additions do not shift a
+continuation's date/ID keyset. Agents must follow this cursor to enumerate the
+whole archive. `--no-archives` continues to omit archives and the preview
+descriptor, retaining `archive_paging` and `archive_revision` for client discovery.
+Only the preview's rows open summaries or check transcript metadata for actions;
+ordinary indexed polls do the same bounded work with 50 or 20,000 archives.
+Initial index creation and directory-generation reconciliation retain the
+existing one-time metadata indexing described below.
+`hgs status` forwards the preview's count as `sessions.archived`, with additive
+`archived_total_capped` when a preview is present; its text shows `50+ archived`
+for a capped count.
+
+The native, read-only archive ABI is:
 
 ```sh
 printf '%s' '{"from":0,"until":253402300800,"limit":50,"cursor":"","query":""}' | hgs archives --json

@@ -5,6 +5,7 @@ import shlex
 from pathlib import Path
 import sqlite3
 import subprocess
+import shutil
 import tempfile
 import unittest
 import uuid
@@ -122,6 +123,73 @@ class ArchivePages(unittest.TestCase):
         result=subprocess.run([str(HGS),'ls','--json','--local','--no-archives'],env=self.env,capture_output=True,text=True,timeout=20)
         self.assertEqual(result.returncode,0,result.stderr);snapshot=json.loads(result.stdout)
         self.assertTrue(snapshot['archive_paging']);self.assertEqual(snapshot['sessions'],[])
+        self.assertNotIn('archive_page',snapshot)
+    def test_default_listing_work_is_bounded_by_the_recent_preview(self):
+        transcript=self.root/'saved.jsonl';transcript.write_text('{}\n')
+        measurements=[];snapshots=[]
+        for count in (50,20000):
+            for index in range(0 if count==50 else 50,count):
+                self.record(index,100+index,base=['codex'],launch_dir=str(self.root),transcript=str(transcript))
+            # Existing files are indexed once; ordinary polls reuse that index.
+            self.run_query({'limit':1})
+            argv=[str(HGS),'ls','--json','--local']
+            trace=self.root/'listing.trace'
+            if shutil.which('strace'):
+                argv=['strace','-f','-qq','-e','trace=%file','-o',str(trace),*argv]
+            result=subprocess.run(argv,env=self.env,capture_output=True,text=True,timeout=120)
+            self.assertEqual(result.returncode,0,result.stderr)
+            snapshot=json.loads(result.stdout)
+            rows=[row for row in snapshot['sessions'] if row.get('state')=='archived']
+            self.assertEqual(len(rows),50,'Default ls must not summarize the whole archive')
+            self.assertEqual([row['run_id'] for row in rows],[f'run-{i}' for i in range(count-1,count-51,-1)])
+            snapshots.append(snapshot)
+            self.assertIn('restore',rows[0]['allowed_actions'])
+            if trace.exists():
+                lines=trace.read_text().splitlines()
+                files=sum('/archives/' in line for line in lines)
+                transcripts=sum(str(transcript) in line for line in lines)
+                self.assertLessEqual(files,100,'Only returned archives may be read')
+                self.assertLessEqual(transcripts,150,'Action lookup must stay within the preview')
+                measurements.append((len(lines),files,transcripts))
+        if measurements:
+            self.assertLessEqual(measurements[1][0],measurements[0][0]+100,'A larger archive must not add per-record I/O to ls')
+        for count,snapshot in zip((50,20000),snapshots):
+            descriptor=snapshot['archive_page']
+            self.assertEqual(descriptor['total'],50)
+            self.assertEqual(descriptor['total_capped'],count>50)
+            self.assertEqual(bool(descriptor['next_cursor']),count>50)
+            self.assertEqual(descriptor['command'],['archives','--json','--bounded'])
+            self.assertNotIn('sessions',descriptor)
+    def test_default_preview_cursor_continues_without_duplicates_after_an_insert(self):
+        for index in range(137):self.record(index,100+index//5)
+        result=subprocess.run([str(HGS),'ls','--json','--local'],env=self.env,capture_output=True,text=True,timeout=30)
+        self.assertEqual(result.returncode,0,result.stderr);snapshot=json.loads(result.stdout)
+        rows=snapshot['sessions'];self.assertEqual(len(rows),50)
+        descriptor=snapshot['archive_page'];self.assertTrue(descriptor['total_capped'])
+        self.record(200,1000)
+        query={key:descriptor[key] for key in ('from','until','query')}
+        cursor=descriptor['next_cursor']
+        while cursor:
+            page=self.run_query(dict(query,cursor=cursor),bounded=True)
+            rows.extend(page['sessions']);cursor=page['next_cursor']
+        identities=[row['archive_id'] for row in rows]
+        self.assertEqual(len(identities),137);self.assertEqual(len(set(identities)),137)
+        self.assertNotIn('run-200',[row['run_id'] for row in rows])
+        self.assertEqual([(r['archived_at'],r['archive_id']) for r in rows],sorted(((r['archived_at'],r['archive_id']) for r in rows),reverse=True))
+    def test_preview_preserves_the_original_journal_read_mark_and_row_fields(self):
+        owner='session:00000000-0000-4000-8000-000000000050'
+        record=self.record(0,journal_name=owner)
+        mark=dict(reply_id='read-reply',attention_signature=None,at=123)
+        (self.state/'read-marks.json').write_text(json.dumps(dict(version=1,sessions={owner:{record['conversation_id']:mark}})))
+        result=subprocess.run([str(HGS),'ls','--json','--local'],env=self.env,capture_output=True,text=True,timeout=30)
+        self.assertEqual(result.returncode,0,result.stderr);row=json.loads(result.stdout)['sessions'][0]
+        self.assertEqual(row['read'],mark)
+        self.assertEqual(row['optional_questions'],{'count':0})
+        self.assertIsNone(row['attention_signature'])
+        explicit=self.run_query()['sessions'][0]
+        self.assertNotIn('read',explicit,'Explicit pages retain their existing row projection')
+        for key in ('archive_id','archived_at','run_id','conversation_id','state','resumable','allowed_actions','action_reasons','notification_preferences'):
+            self.assertEqual(row[key],explicit[key],key)
     def test_archived_preferences_follow_the_original_journal_and_current_store(self):
         owner='session:00000000-0000-4000-8000-000000000050'
         row=self.record(0,journal_name=owner)
