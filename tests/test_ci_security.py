@@ -645,6 +645,18 @@ class WorkflowSecurityTests(unittest.TestCase):
         lines = step[match.end():].splitlines()[1:]
         return [line.strip() for line in takewhile(lambda line: line.startswith("            "), lines)]
 
+    def test_quick_budget_keeps_headroom_after_the_passing_regression_prelude(self):
+        quick = job((ROOT / ".github/workflows/checks.yml").read_text(), "quick")
+        budget = datetime.timedelta(minutes=int(field(quick, "timeout-minutes")))
+        # Main regression 43598533548/job132458211523: all 6058 root tests and
+        # the earlier crates passed; client-core only started after 19m07s.
+        # Its compile/tests, the desktop crates, notifications, notices and
+        # cache settlement must still have a bounded ten-minute work envelope.
+        started = datetime.datetime.fromisoformat("2026-11-14T13:12:11+00:00")
+        client_started = datetime.datetime.fromisoformat("2026-11-14T13:31:18+00:00")
+        self.assertGreaterEqual(budget - (client_started - started), datetime.timedelta(minutes=10))
+        self.assertLessEqual(budget, datetime.timedelta(minutes=45))
+
     def test_source_only_resolves_and_every_suite_starts_from_it(self):
         checks = (ROOT / ".github/workflows/checks.yml").read_text()
         steps = self.checks_steps("source")
