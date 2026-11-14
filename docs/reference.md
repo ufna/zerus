@@ -6912,14 +6912,32 @@ fsync, rename and directory fsync. Their states are `pending`, `submitted`, or
 Exclusivity is per request ID, never per computer (`zerus-hfw2s.5`): a
 witnessed submit holds `dsh/witness-locks/<request_id>.lock` from before its
 store check until after its send. `recorded()` takes the same lock, and so does
-an ordinary send around its receipt check, marker and send, inside the bindings
-lock. The witness path never takes the machine-wide `dsh/bindings.lock`, so one
+an ordinary send around its receipt check, marker and send, under its session
+guard without holding the machine-wide binding lock. The witness path never
+takes the machine-wide `dsh/bindings.lock`, so one
 slow host never delays a witnessed submit or `recorded()` for another session.
 The binding record is read without that lock: the run and conversation
 identity check before the marker is the gate, and the offer and its witness
-stay with the request's own conversation. A lock file is removed on release; a
+stay with the request's own conversation. A request lock file is removed on release; a
 crash leaves at most one per in-flight request, and that request's next use
 removes it.
+
+Ordinary send, settings, answer, interrupt and compact operations serialize by
+native conversation (`zerus-l75cn`), as do the binding-changing dispatch paths
+pause, resume, rename and forget. The guard in
+`dsh/session-locks/<native_identity_digest>.lock` is keyed by the stored native
+home and conversation ID; renaming a display label or resuming a run keeps the
+same guard. Its initial atomic metadata read only chooses the guard. After
+waiting, the binding is read again under the brief machine-wide file lock and
+a replaced native identity refuses. The order is always session guard first,
+then the machine-wide lock for binding reads/writes, never a session wait under
+the machine-wide lock. Binding updates recheck the full saved record before
+writing, so an intervening metadata writer is not overwritten. The per-request
+witness lock and pending-marker no-replay rules above are unchanged.
+
+Launch, fork, scoped lifecycle, parent/project/recovery metadata gates and the
+launch-project gate retain their existing wide lock scopes in this slice;
+`zerus-keboc` tracks their migration. They can still delay a binding transaction.
 
 A DeepSeek row in `hgs ls` and the GUI reports its background work without an
 inspection, so an idle session with a running background job shows

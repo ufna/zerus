@@ -442,9 +442,9 @@ fn unknown(code: UnknownCode, detail: &str) -> Witnessed {
 /// Exclusivity for one request ID (zerus-hfw2s.5): `dsh/witness-locks/<id>.lock`,
 /// held by a witnessed submit from before its store check until after its
 /// send, by `recorded`, and by an ordinary send around its receipt check,
-/// marker and send. Lock order is always the machine-wide bindings lock first,
-/// then a request lock; nothing takes the bindings lock while holding one, and
-/// the witness path never takes it at all.
+/// marker and send. Ordinary dispatch takes its per-session guard before the
+/// request lock, without holding the machine-wide binding lock. The witness
+/// path takes neither a session guard nor the machine-wide binding lock.
 ///
 /// The file is removed while still locked on release, so the number of files
 /// stays bounded; a waiter that locked the removed inode sees the path gone or
@@ -2102,18 +2102,19 @@ mod tests {
     #[test]
     fn the_witness_path_never_takes_the_bindings_lock() {
         let production = include_str!("witness.rs")
-            .split("#[cfg(test)]")
+            .split("#[cfg(test)]\nmod tests")
             .next()
             .unwrap();
         assert!(!production.contains("bindings.lock"));
         assert!(!production.contains("lock(Some("));
-        // The ordinary send takes the request lock only inside the bindings lock.
-        let dispatch = include_str!("../dsh.rs");
-        let global = dispatch
-            .find("Some(lock(Some(&root().join(\"dsh/bindings.lock\")))?)")
-            .unwrap();
+        assert!(!production.contains("dispatch_lock::"));
+        // Ordinary send serializes its own session before the shared request
+        // check, without a machine-wide binding lock held across either wait.
+        let dispatch = include_str!("../dsh.rs").split("pub(crate) fn dispatch(").nth(1).unwrap();
+        let session = dispatch.find("dispatch_lock::acquire(name)").unwrap();
         let request = dispatch.find("witness::request_lock(").unwrap();
-        assert!(global < request);
+        assert!(session < request);
+        assert!(!dispatch.contains("dsh/bindings.lock"));
         assert_eq!(dispatch.matches("witness::request_lock(").count(), 1);
     }
 }
