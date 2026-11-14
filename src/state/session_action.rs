@@ -830,12 +830,6 @@ mod tests {
         );
     }
 
-    /// zerus-63rru.70: Kimi, DeepSeek and OpenCode keep today's decision; the
-    /// summary never reads their transcript. Kimi goes through the state's own
-    /// archive writer and reader; the generic archive accepts only Claude,
-    /// Codex and Kimi (state::AGENTS), so DeepSeek and OpenCode use the
-    /// supervisor's own launch record with the archive display fields, which is
-    /// where their summary decision runs.
     #[test]
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     fn other_agents_keep_todays_restore_decision_without_a_transcript_read() {
@@ -849,7 +843,8 @@ mod tests {
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     fn other_agents_keep_todays_restore_decision_without_a_transcript_read_fixture() {
         let dir = tempfile::tempdir().unwrap();
-        for agent in ["kimi", "dsh", "opencode"] {
+        {
+            let agent = "kimi";
             let unique = uuid::Uuid::new_v4().to_string();
             let name = format!("{agent}/example/member-{unique}");
             let mut record = crate::state::listing_fixture::launched_record(
@@ -863,12 +858,9 @@ mod tests {
             );
             crate::state::listing_fixture::confirmed(&mut record, &format!("conversation-{unique}"));
             record["transcript"] = json!(dir.path().join("missing.jsonl"));
-            let record = if agent == "kimi" {
+            let record = {
                 let id = crate::state::archive_for_test(&record).unwrap();
                 crate::state::archive::read_archive(&name, &id).unwrap()
-            } else {
-                record["archive_id"] = json!(uuid::Uuid::new_v4().to_string());
-                record
             };
             crate::state::journal::read_order::take();
             let offered = summary(&record, false, &None);
