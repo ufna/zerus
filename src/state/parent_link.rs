@@ -246,8 +246,8 @@ pub(crate) fn decorate(sessions: &mut [Value]) {
     }
 }
 
-/// Native questions only the person may answer: folder and hook trust.
-const PERSON_ONLY_QUESTIONS: [&str; 4] = ["claude-trust:", "codex-trust:", "kimi-trust:", "codex-hooks-trust:"];
+/// Native questions only the person may answer: folder/hook trust and sandbox setup.
+const PERSON_ONLY_QUESTIONS: [&str; 5] = ["codex-sandbox:", "claude-trust:", "codex-trust:", "kimi-trust:", "codex-hooks-trust:"];
 
 /// Whether a live row holds a request only the person can answer (spec 2.2):
 /// a tool or permission approval, folder or hook trust, or signing in. A
@@ -1416,7 +1416,7 @@ mod tests {
         assert!(!human_request(&row("input"), None));
         assert!(!human_request(&row("idle"), Some(&[])));
         let asked = |id: &str| vec![json!({"question_id": id})];
-        for id in ["claude-trust:abc", "codex-trust:abc", "kimi-trust:abc", "codex-hooks-trust:abc"] {
+        for id in ["codex-sandbox:abc", "claude-trust:abc", "codex-trust:abc", "kimi-trust:abc", "codex-hooks-trust:abc"] {
             assert!(human_request(&row("input"), Some(&asked(id))), "{id}");
         }
         assert!(!human_request(&row("input"), Some(&asked("toolu_ask_user"))));

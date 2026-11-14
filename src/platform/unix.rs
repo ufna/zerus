@@ -1670,6 +1670,17 @@ extern "C" fn forward_signal(signal: libc::c_int) {
 }
 /// Keep terminal restoration in normal Rust control flow even on SIGINT/TERM/HUP.
 pub fn wait_interactive(command: &mut Command) -> Result<i32> {
+    wait_interactive_from(command, None)
+}
+/// Preserve interactive signal/exit handling while replaying a checked input
+/// file; the forwarding guard never rewrites the original answer bytes.
+pub fn wait_interactive_with_input(command: &mut Command, input: fs::File) -> Result<i32> {
+    wait_interactive_from(command, Some(input))
+}
+fn wait_interactive_from(command: &mut Command, input: Option<fs::File>) -> Result<i32> {
+    if let Some(input) = input {
+        command.stdin(input);
+    }
     struct Handlers(Vec<(i32, libc::sighandler_t)>);
     impl Drop for Handlers {
         fn drop(&mut self) {

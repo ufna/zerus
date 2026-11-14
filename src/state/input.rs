@@ -462,6 +462,9 @@ fn checked_bound_record_gate(
     if claude_trust::current(&record).is_some() {
         return Err(Gate::Waiting { reason: "Claude is waiting for folder trust approval. Choose an option in Activity or Terminal before sending a message.".into(), dialog: Some(Dialog::ClaudeTrust) });
     }
+    if codex_sandbox::current(&record).is_some() {
+        return Err(Gate::Waiting { reason: "Codex is waiting for your sandbox setup choice. Choose an option in Activity or Terminal before sending a message.".into(), dialog: None });
+    }
     if codex_trust::current(&record).is_some() {
         return Err(Gate::Waiting { reason: "Codex is waiting for folder trust approval. Choose an option in Activity or Terminal before sending a message.".into(), dialog: Some(Dialog::CodexTrust) });
     }

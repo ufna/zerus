@@ -39,6 +39,7 @@ mod inventory {
         ("codex_rate_limit", NativePrompt),
         ("codex_goal_resume", NativePrompt),
         ("codex_folder_trust", NativePrompt),
+        ("codex_sandbox_setup", NativePrompt),
         ("kimi_folder_trust", NativePrompt),
         ("kimi_cache_hint", NativePrompt),
         ("startup_terminal_choice", NativePrompt),

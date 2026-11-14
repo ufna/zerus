@@ -23,6 +23,7 @@ it("shows the durable pre-input refusal in Russian instead of a missing-delivery
 
 it("translates the retained draft, dialog and unrecognized-queue reasons with the actual catalog", () => {
   for (const reason of [
+    "Codex is waiting for your sandbox setup choice. Choose an option in Activity or Terminal before sending a message.",
     "terminal has a draft, dialog, or unrecognized prompt; open Terminal and return to an empty agent prompt",
     "agent busy: terminal queue prompt is unrecognized or contains a draft; wait for the agent or open Terminal; nothing was submitted",
     "Claude is waiting for tool or safety approval. Review the request in Activity or Terminal before sending a message.",

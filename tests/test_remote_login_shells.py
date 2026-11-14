@@ -524,6 +524,59 @@ class RemoteLoginShells(unittest.TestCase):
                     result, reached = run(form, extra)
                     self.assertTrue(reached, (name, result.stderr))
 
+    def test_agent_sandbox_answers_stop_before_ssh_and_other_answers_keep_exact_input(self):
+        # All SSH, including capability probes, goes to this private PATH fake.
+        bindir = self.root/'bin'; bindir.mkdir()
+        ssh = bindir/'ssh'; ssh.write_text(FAKE_SSH); ssh.chmod(0o700)
+        self.env.pop('HGS_SSH', None)
+        self.env['PATH'] = str(bindir)+os.pathsep+self.env['PATH']
+        executable = self.peer/'.local/bin/hgs'
+        executable.write_text(PEER_HGS.replace("'hooks-health-v1'", "'hooks-health-v1' 'guarded-create-v1'"))
+        shell = login_shells()['sh']
+        machine = '55555555-5555-4555-8555-555555555555'
+        forms = (['@peer', 'answer', 'codex/p/a', '--json'],
+                 ['@peer', '--expect-machine', machine, 'answer', 'codex/p/a', '--json'],
+                 ['@peer', '--expect-machine', machine, '--client', 'fixture', 'answer', 'codex/p/a', '--json'],
+                 ['@peer', '__state', 'answer', 'codex/p/a', '--json'],
+                 ['@peer', '--expect-machine', machine, '__state', 'answer', 'codex/p/a', '--json'],
+                 ['@peer', '--expect-machine', machine, '--client', 'fixture', '__state', 'answer', 'codex/p/a', '--json'])
+        callers = ({}, dict(HGS_SESSION='codex/fixture/agent', HGS_RUN_ID='fixture-run'), dict(HGS_AGENT='dsh'))
+        for form in forms:
+            for caller in callers:
+                for question in ('codex-sandbox:'+'a'*64, 'ordinary-question', 'other-source:'+'b'*64):
+                    with self.subTest(form=form, caller=caller, question=question):
+                        (self.root/'ssh-args.json').unlink(missing_ok=True)
+                        body = ' \n'+json.dumps(dict(question_id=question, request_id='fixture-request',
+                            expected_run_id='run', expected_conversation_id='',
+                            answers=[dict(question_id='sandbox', selected_option_ids=['sandbox_2'], text='Пример \\')]),
+                            ensure_ascii=False, indent=2)+'\n '
+                        result = subprocess.run([str(HGS), *form], input=body, text=True,
+                            capture_output=True, timeout=30, env=dict(self.env, REMOTE_LOGIN_SHELL=shell, **caller))
+                        protected = bool(caller) and question.startswith('codex-sandbox:')
+                        if protected:
+                            self.assertEqual(result.returncode, 1, result.stdout+result.stderr)
+                            self.assertIn('person', result.stderr)
+                            self.assertFalse((self.root/'ssh-args.json').exists())
+                        elif caller.get('HGS_AGENT') == 'dsh' and '--expect-machine' in form:
+                            # This pre-existing hosted-proof refusal also
+                            # stays intact for every other guarded answer.
+                            self.assertEqual(result.returncode, 1, result.stdout+result.stderr)
+                            self.assertIn('cannot prove its session', result.stderr)
+                            self.assertFalse((self.root/'ssh-args.json').exists())
+                        else:
+                            self.assertEqual(result.returncode, 0, result.stdout+result.stderr)
+                            _, received = self.received()
+                            self.assertEqual(received, body)
+
+    def test_oversized_agent_sandbox_answer_never_reaches_ssh(self):
+        body = json.dumps(dict(question_id='codex-sandbox:'+'a'*64, padding='x'*(128*1024)))
+        result = subprocess.run([str(HGS), '@peer', 'answer', 'codex/p/a', '--json'], input=body,
+            text=True, capture_output=True, timeout=30, env=dict(self.env,
+                REMOTE_LOGIN_SHELL=login_shells()['sh'], HGS_SESSION='codex/fixture/agent', HGS_RUN_ID='run'))
+        self.assertEqual(result.returncode, 1, result.stdout+result.stderr)
+        self.assertIn('answer payload exceeds128 KiB', result.stderr)
+        self.assertFalse((self.root/'ssh-args.json').exists())
+
 
 if __name__ == '__main__':
     unittest.main()
