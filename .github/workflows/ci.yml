@@ -40,6 +40,10 @@ on:
         description: Run Windows client and desktop tests and build the portable zip
         type: boolean
         default: true
+      windows_flake_rounds:
+        description: Opt-in loaded native Windows sample rounds (0 to 40; ordinary checks use 0)
+        type: number
+        default: 0
       retain_membership_probe:
         description: Retain the exact Windows test executable for private read-only membership qualification
         type: boolean
@@ -66,6 +70,9 @@ on:
         description: Optional Windows installer release version for a read-only build test
         type: string
         default: ''
+      windows_flake_rounds:
+        type: number
+        default: 0
       run_ios:
         type: boolean
         default: false
@@ -111,6 +118,7 @@ jobs:
       run_macos: ${{ github.event_name == 'push' || github.event_name == 'pull_request' || inputs.run_macos }}
       run_windows: ${{ inputs.run_windows || false }}
       windows_installer_version: ${{ inputs.windows_installer_version || '' }}
+      windows_flake_rounds: ${{ github.event_name == 'workflow_dispatch' && fromJSON(format('{0}', inputs.windows_flake_rounds || 0)) || 0 }}
       retain_membership_probe: ${{ github.event_name == 'workflow_dispatch' && inputs.retain_membership_probe || false }}
       run_ios: ${{ inputs.run_ios || false }}
       filter_pr_platforms: ${{ github.event_name == 'pull_request' }}

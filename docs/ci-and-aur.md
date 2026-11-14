@@ -278,6 +278,37 @@ metadata. Use the exact tested SHA recorded in the job summary when reviewing
 such a manual run. Automatic PR and push runs produce CI gate without a dispatch.
 Review and merging remain deliberate; successful CI does not auto-merge PRs.
 
+The existing CI workflow accepts `windows_flake_rounds` from 0 to 40 for opt-in
+native Windows qualification. Zero keeps ordinary runs unchanged. A selected
+run samples four independent sustained transports per round and serial mode
+round trips, each under two local hash workers. Successful changed-mode replies
+carry bounded Stop step timings; a no-op or missing timing cannot qualify a
+Stop sample. A fresh round explicitly Rearms after the prior passive rollback. Mode sampling stops at the first
+refused or unknown choice, retaining the original fixture custody; it never
+retries that choice. Per-invocation readiness, lease, Stop and cleanup bounds
+stay unchanged. Additional dispatch-only steps have their own aggregate CI
+allowance for the extra rounds; ordinary suite commands and limits are
+unchanged. Mode sampling requires that exact Windows shell/native step to
+succeed, while earlier independent failures stay visible. Use the PR's
+reviewed workflow and exact source pin;
+do not start a second full matrix while that SHA is already under verification.
+
+The sustained transport fixture gives startup and an exact framed-input marker
+one eight-second deadline, then gives the 20-chunk render its own 25 seconds.
+The marker must appear in the fake's complete input record before rendering
+starts; no renewal is queued between those events. This binds the 19-second
+render to the decoder's actual clock, which starts after `Add-Type`. The product
+lease remains 15 seconds. Native no-renewal controls must observe the original
+helper exit with code 127 before rendering completes, while stdin stays open.
+The 4 KiB paste marker fills the existing redirected-input buffer before EOF;
+the fixture's 8 KiB incoming pipe fits its data and framing before the decoder
+reads, so marker publication cannot block the startup deadline checks. See the
+[redirected stdin construction](https://github.com/microsoft/referencesource/blob/main/System/services/monitoring/system/diagnosticts/Process.cs)
+and [buffered writes](https://github.com/microsoft/referencesource/blob/main/mscorlib/system/io/filestream.cs#L1638)
+in the .NET Framework reference source.
+Readiness/marker and render diagnostics identify their separate stage and bound;
+cleanup keeps its existing 18-second wait, five-second fallback and reader joins.
+
 Arch is the Linux GUI build environment because the application uses Qt 6 and KDE
 Frameworks 6. Ubuntu remains useful for portable CLI and minimum-Rust checks.
 Linux CLI CI builds the pinned official tmux 3.7c archive with an exact SHA-256;
