@@ -2290,6 +2290,11 @@ can reconcile that family synchronously, then must validate every original and
 drain a complete snapshot before treating recovery as complete. A cursor from an
 incomplete snapshot requires a fresh chain after migration finishes. Locator
 coverage alone never proves an answer's submission.
+Codex terminal availability uses the same completed inspection snapshot and
+rechecks the live terminal identity without starting another receipt migration.
+Receipt readers open SQLite read-only with a bounded lock wait; a question
+inspection caps that wait at its remaining deadline. Actual answer input still
+requires fresh receipt recovery and the terminal's exact pending-question check.
 
 Reads from the selected remote machine show a yellow loading circle beside the
 session name only after two seconds. It remains visible while an actual read is
