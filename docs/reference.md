@@ -2691,9 +2691,20 @@ its original submitted or uncertain receipt is retained. A newer native input
 acceptance or the chooser disappearing clears this observation; an earlier turn
 ending does not accept the held message. The person's existing answer path stays
 available only with verified writable terminal mode; otherwise the options are
-read-only. Local agent callers cannot answer this source, and automatic approvals
-and question routing exclude it. Remote CLI answers retain their existing generic
-authority; a person-only remote boundary remains separate follow-up work.
+read-only. A verified agent caller of this child's exact recorded launch parent
+(`source=launch`) may explicitly answer **Compact and continue** only. This proof
+applies on the child's computer. The local machine, parent
+session/run/conversation and original child question hash/run/conversation must
+all match; a link or environment markers alone do not prove the caller. Siblings,
+grandparents, unrelated agents and adopted/manual/claimed/forwarded parent links
+cannot answer; assigning a parent grants no such authority. The exception never
+selects Start a new session, Continue as-is or Don't ask me again,
+and never retypes the held message. Each navigation step rechecks the parent;
+the existing durable receipt prevents a second input on replay or an uncertain
+result. The person's choices in Zerus or Terminal stay unchanged. Automatic
+approvals and question routing still exclude this chooser. Remote CLI answers
+retain their existing generic authority; a person-only remote boundary remains
+separate follow-up work.
 App-owned desktop and Android dialog action rows place **Cancel**, **Close** or
 the equivalent dismissal at the far right, after the available actions. Long
 Android rows wrap, keeping dismissal last and visible with larger text. Destructive

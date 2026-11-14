@@ -963,7 +963,7 @@ pub(super) fn dispatch(args: &[String]) -> Result<i32> {
         } else if string(&question, "source") == "kimi_folder_trust" {
             kimi_trust::available(&record, &question)?;
         } else if string(&question, "source") == "kimi_cache_hint" {
-            kimi_cache_hint::available(&record, &question)?;
+            kimi_cache_hint::available(&record, &question, &answers)?;
         } else if string(&question, "source") == kimi_plan::SOURCE {
             kimi_plan::available(&record, &question)?;
         } else if string(&question, "source") == kimi_approval::SOURCE {
