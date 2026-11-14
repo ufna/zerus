@@ -85,6 +85,7 @@ fn receipt(verified: &wire::Verified, phase: wire::Phase, drained: bool, code: &
         drained,
         code: code.into(),
         cli_exit: None,
+        refusal: None,
         outcome: (phase == wire::Phase::Recorded).then(|| wire::Outcome {
             request_id: verified.plan.request_id.clone(),
             status: wire::SUBMITTED.into(),

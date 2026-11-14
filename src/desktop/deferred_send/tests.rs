@@ -303,6 +303,7 @@ fn legacy_history(
                 String::new()
             },
             cli_exit: None,
+            refusal: None,
             outcome: (!unknown).then(|| wire::Outcome {
                 request_id: v.plan.request_id.clone(),
                 status: wire::SUBMITTED.into(),
@@ -463,6 +464,7 @@ fn budget_history_overflow_is_bounded_and_store_reports_null_not_zero() {
             drained: true,
             code: "deferred_send_interrupted".into(),
             cli_exit: None,
+            refusal: None,
             outcome: None,
         };
         tx.execute("INSERT INTO desktop_deferred_sends(request_id,session,fingerprint,source,checkpoint,plan,receipt,writer_epoch,phase,drained,created) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,'unknown',1,?9)",
@@ -1489,6 +1491,43 @@ mod actor {
             (Phase::Failed, wire::NOT_STARTED)
         );
         assert!(receipt.not_started(&original.plan));
+    }
+
+    #[test]
+    fn a_cli_refusal_record_keeps_its_reason_after_stdout_drain_without_delivery_or_replay() {
+        let reason = "terminal has a draft, dialog, or unrecognized prompt; open Terminal and return to an empty agent prompt";
+        let calls = Arc::new(AtomicUsize::new(0));
+        let sent = calls.clone();
+        let mut f = Fixture::new(move |state, plan, _, input, lock, resources| {
+            sent.fetch_add(1, Ordering::SeqCst);
+            let mut record = cli_record(plan, "refused_before_input");
+            record["refusal_schema"] = json!(1);
+            record["reason"] = json!(reason);
+            write_receipt(state, &plan.request_id, record.to_string().as_bytes());
+            child::run(
+                Path::new("/bin/sh"),
+                &["-c".into(), "cat >/dev/null; printf '%s\\n' \"$1\"; exit 1".into(),
+                    "stdout-refusal".into(), reason.into()],
+                input, lock, resources, Instant::now() + Duration::from_secs(5), |_| Ok(()),
+            )
+        });
+        let original = f.original();
+        assert!(f.admit(&original).accepted);
+        f.until("refusal drain", |f| f.row(&original).receipt.drained);
+        let receipt = f.row(&original).receipt;
+        let retained = serde_json::to_value(&receipt).unwrap();
+        assert_eq!(retained["refusal"]["reason"], reason, "the CLI's stdout reason must survive in the desktop receipt");
+        assert_eq!(receipt.code, "deferred_send_refused_before_input");
+        assert_eq!(receipt.phase, Phase::Unknown, "a refusal never becomes delivery");
+        assert!(receipt.outcome.is_none());
+        assert!(!receipt.not_started(&original.plan));
+        assert_eq!(receipt.result(&original.plan), None);
+        assert_eq!(f.admit(&original).receipt, Some(receipt.clone()), "duplicate admission only reads the original");
+        f.runtime.request_stop();
+        f.until("stopped", |f| f.runtime.drained());
+        ledger::startup(&mut f.store.db).unwrap();
+        assert_eq!(f.row(&original).receipt, receipt);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
     }
 
     #[test]

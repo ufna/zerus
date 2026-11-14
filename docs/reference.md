@@ -2400,7 +2400,7 @@ Delivery verifies the exact run, process, conversation and native input state.
 A busy Claude or Codex session can accept a message through its native queue
 when its empty composer is recognized. An unknown busy layout or a draft refuses
 with `agent busy` before submission; wait or inspect Terminal rather than typing
-through that refusal. Deliberate send refusals keep only the latest private
+through that refusal. Diagnostic screen samples keep only the latest private
 `input_diagnostics/codex.json` or `claude.json` under the session state directory.
 Each sample is at most 16 KiB: cursor coordinates, bounded cursor-row text and
 structural metadata for at most eight nearby rows. Text from other rows and the
@@ -2410,6 +2410,21 @@ retains its exit code and at most 1024 UTF-8 bytes of the first stderr line in
 the original receipt, without control characters. The failed Activity row shows
 that diagnostic. It never proves that nothing was sent: a missing input receipt
 stays Unknown, with the existing check-Terminal caution and no automatic retry.
+An ordinary public terminal send with a live `NotOffered` witness also retains
+an additive `refusal_schema: 1`, `status: refused_before_input` record in
+`input_receipts/<request_id>.json`, under the original input lock and before any
+settings or message input. It binds the exact request ID, session, run,
+conversation, stdin digest and terminal transport. Publication never replaces
+an existing record. The record is at most 8 KiB; its reason keeps only the first
+1024 UTF-8 bytes of the first line, without control characters, and no message
+or attachment body. The original request UUID stays spent after the refusal.
+After the child drains, the desktop retains this exact refusal as a bounded
+diagnostic on its Unknown receipt and shows its reason in Activity, including
+after read-only recovery. Known native reasons are translated in the English
+and Russian interfaces; other native diagnostics remain verbatim. This negative
+record never counts as submission, releases no retry authority and never clears
+the draft. Missing, mismatched or unreadable evidence and possible prior input
+remain Unknown. Only exact `submitted` evidence can mark the message delivered.
 For Claude and Kimi messages ending in a literal backslash, the paste includes a
 final newline so the single Enter submits the unchanged message instead of
 activating the agent's backslash-Enter line continuation. This is verified

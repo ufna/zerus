@@ -51,6 +51,9 @@ pub const RECEIPT_INVALID: &str = "deferred_send_receipt_invalid";
 /// Diagnostic only: the child's exit never proves whether input was sent.
 pub const STDERR_BYTES: usize = 1024;
 
+pub mod refusal;
+pub use refusal::Refusal;
+
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct CliExit {
@@ -684,6 +687,8 @@ struct CliReceipt {
     digest: String,
     status: String,
     transport: String,
+    #[serde(default)]
+    refusal_schema: Option<u32>,
 }
 impl Outcome {
     pub fn matches(&self, plan: &Plan) -> bool {
@@ -709,7 +714,7 @@ impl Outcome {
             && receipt.conversation_id == plan.conversation_id
             && receipt.digest == plan.input_sha256
             && receipt.transport == "terminal";
-        if !exact {
+        if !exact || receipt.refusal_schema.is_some() {
             return Err(RECEIPT_MISMATCH);
         }
         match receipt.status.as_str() {
@@ -738,6 +743,10 @@ pub struct Receipt {
     /// Omitted for old receipts so their serialized CAS identity stays unchanged.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cli_exit: Option<CliExit>,
+    /// An exact CLI pre-input refusal, read from the original store after drain.
+    /// Old receipts keep their serialized CAS identity when this is absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refusal: Option<Refusal>,
 }
 impl std::fmt::Debug for Receipt {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -763,6 +772,10 @@ impl Receipt {
             && (!self.drained || self.phase.terminal())
             && self.cli_exit.as_ref().is_none_or(|exit| {
                 exit.valid() && matches!(self.phase, Phase::Recorded | Phase::Unknown)
+            })
+            && (self.code == refusal::CODE) == self.refusal.is_some()
+            && self.refusal.as_ref().is_none_or(|refusal| {
+                self.phase == Phase::Unknown && self.drained && refusal.agrees(&self.binding)
             })
             && match self.phase {
                 Phase::Recorded => self.drained && self.outcome.is_some(),

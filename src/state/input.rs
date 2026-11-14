@@ -15,6 +15,7 @@ use std::time::Duration;
 
 pub(crate) mod composer;
 mod diagnostic;
+mod refusal;
 pub(crate) mod settle;
 pub(crate) mod task_refusal;
 
@@ -1245,7 +1246,7 @@ pub(super) fn dispatch(args: &[String]) -> Result<i32> {
         println!("{}", result?);
         return Ok(0);
     }
-    let receipt = submit(&args[0], &input, None)?;
+    let receipt = submit_with(&args[0], &input, Origin::Person, true)?;
     println!("{receipt}");
     Ok(0)
 }
@@ -1495,7 +1496,7 @@ pub(super) fn task_reply_receipt_bound(
 }
 
 pub(super) fn submit(name: &str, input: &[u8], recovery_id: Option<&str>) -> Result<Value> {
-    submit_with(name, input, recovery_id.map_or(Origin::Person, Origin::Recovery))
+    submit_with(name, input, recovery_id.map_or(Origin::Person, Origin::Recovery), false)
 }
 
 /// Who a submission comes from. Only the person's own input cancels automatic
@@ -1511,7 +1512,7 @@ enum Origin<'a> {
 /// A keep-warm ping (`keep_warm::TEXT`) for ping `id`. Like a task reply it
 /// tells a refusal before any input from a possibly delivered ping.
 pub(super) fn submit_keep_warm(name: &str, input: &[u8], id: &str) -> Submission {
-    match submit_core(name, input, Origin::KeepWarm(id)) {
+    match submit_core(name, input, Origin::KeepWarm(id), false) {
         Ok(receipt) => Submission::Receipt(receipt),
         Err(Failure::NotOffered(witness)) => Submission::NotOffered(*witness),
         Err(Failure::Unknown(error)) => Submission::Unknown(error),
@@ -1523,11 +1524,11 @@ pub(super) fn submit_keep_warm(name: &str, input: &[u8], id: &str) -> Submission
 /// answer's own paste may reach the pane, so a refusal proves nothing was
 /// sent.
 pub(super) fn submit_answer(name: &str, input: &[u8]) -> Result<Value> {
-    submit_with(name, input, Origin::Answer)
+    submit_with(name, input, Origin::Answer, false)
 }
 
-fn submit_with(name: &str, input: &[u8], origin: Origin) -> Result<Value> {
-    submit_core(name, input, origin).map_err(|failure| match failure {
+fn submit_with(name: &str, input: &[u8], origin: Origin, retain_refusal: bool) -> Result<Value> {
+    submit_core(name, input, origin, retain_refusal).map_err(|failure| match failure {
         Failure::NotOffered(witness) => witness.reason.clone(),
         Failure::Unknown(error) => error,
     })
@@ -1593,7 +1594,7 @@ pub(crate) enum Submission {
 /// `submit` for a task reply that must tell a refusal before any input from
 /// one that may have delivered it.
 pub(super) fn submit_witnessed(name: &str, input: &[u8]) -> Submission {
-    match submit_core(name, input, Origin::Person) {
+    match submit_core(name, input, Origin::Person, false) {
         Ok(receipt) => Submission::Receipt(receipt),
         Err(Failure::NotOffered(witness)) => Submission::NotOffered(*witness),
         Err(Failure::Unknown(error)) => Submission::Unknown(error),
@@ -1660,6 +1661,20 @@ fn before_input(typed: bool, witness: NotOffered) -> Failure {
     } else {
         Failure::NotOffered(Box::new(witness))
     }
+}
+
+/// Only the public send retains this negative, while submit_core still owns
+/// the input lock. Internal task/answer/keep-warm witnesses keep their contract.
+fn remember_before_input(typed: bool, witness: NotOffered, retain: bool) -> Failure {
+    let failure = before_input(typed, witness);
+    if retain {
+        if let Failure::NotOffered(witness) = &failure {
+            if let Err(error) = refusal::remember(witness) {
+                return Failure::Unknown(format!("could not retain the pre-input refusal: {error}"));
+            }
+        }
+    }
+    failure
 }
 
 /// zerus-iitw8.5: a Claude send releases the state lock while it waits for its
@@ -1733,6 +1748,7 @@ fn submit_core(
     name: &str,
     input: &[u8],
     origin: Origin,
+    retain_refusal: bool,
 ) -> std::result::Result<Value, Failure> {
     let unknown = Failure::Unknown;
     let request: Request =
@@ -1767,12 +1783,12 @@ fn submit_core(
         waiting,
         dialog,
     };
-    let refused = |typed: bool, reason: String| before_input(typed, witness(reason, false, None));
+    let refused = |typed: bool, reason: String| remember_before_input(typed, witness(reason, false, None), retain_refusal);
     // The terminal gate's own refusal keeps its cause.
     let gated = |typed: bool, gate: Gate| {
         let waiting = matches!(gate, Gate::Waiting { .. });
         let dialog = gate.dialog().map(|d| d.name());
-        before_input(typed, witness(gate.reason(), waiting, dialog))
+        remember_before_input(typed, witness(gate.reason(), waiting, dialog), retain_refusal)
     };
     let record = checked_record_gate(name, &request).map_err(|gate| gated(typed, gate))?;
     if matches!(origin, Origin::Answer) && effort::pending_applies(&record) {

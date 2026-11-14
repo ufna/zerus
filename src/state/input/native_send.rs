@@ -663,6 +663,17 @@ mod tests {
         // any gate also fails this guard. before_input owns the common
         // post-publication refusal persistence for both kinds of gate.
         let mut original = format!("fn submit_core({body}");
+        // The public send's durable negative adds only a retention parameter
+        // and routes the same two live witnesses through its publisher. Keep
+        // the previous complete core hash and all delivery guards unchanged.
+        for (retained, previous) in [
+            ("    origin: Origin,\n    retain_refusal: bool,\n", "    origin: Origin,\n"),
+            ("remember_before_input(typed, witness(reason, false, None), retain_refusal)", "before_input(typed, witness(reason, false, None))"),
+            ("remember_before_input(typed, witness(gate.reason(), waiting, dialog), retain_refusal)", "before_input(typed, witness(gate.reason(), waiting, dialog))"),
+        ] {
+            assert_eq!(original.matches(retained).count(), 1, "refusal retention projection changed");
+            original = original.replacen(retained, previous, 1);
+        }
         for (teams, main) in [
             (r###"    let witness = |reason: String, waiting: bool, dialog: Option<&'static str>| NotOffered {
         request_id: request_id.clone(),
