@@ -303,7 +303,7 @@ class WindowsTarget(unittest.TestCase):
         self.assertEqual(self.operations(),[{'argv':['send','codex/project/tag','--json'],'stdin':'{"text":"synthetic"}'}])
 
 
-def async_stdin_pipe():
+def async_stdin_pipe(buffer_size=4096):
     """Match Windows OpenSSH's inherited overlapped stdin, not Popen's sync pipe."""
     import ctypes
     from ctypes import wintypes
@@ -323,7 +323,7 @@ def async_stdin_pipe():
     name = r'\\.\pipe\hgs-ssh-stdin-' + uuid.uuid4().hex
     security = Security(ctypes.sizeof(Security), None, True)
     # Inbound, first-instance, overlapped byte pipe; the sole writer is synchronous.
-    read = kernel.CreateNamedPipeW(name, 1 | 0x80000 | 0x40000000, 0, 1, 4096, 4096, 0,
+    read = kernel.CreateNamedPipeW(name, 1 | 0x80000 | 0x40000000, 0, 1, buffer_size, buffer_size, 0,
                                   ctypes.byref(security))
     invalid = ctypes.c_void_p(-1).value
     if read == invalid: raise ctypes.WinError(ctypes.get_last_error())
@@ -344,6 +344,11 @@ def async_stdin_pipe():
             if write is not None: kernel.CloseHandle(write)
     finally:
         if read is not None: kernel.CloseHandle(read)
+
+
+# A single paste token fills redirected stdin's existing 4 KiB .NET buffer,
+# so the input witness is visible before EOF without changing the transport.
+DECODER_MARKER = b'\x1b[200~' + b'hgs-lease-clock'.ljust(4084, b'x') + b'\x1b[201~'
 
 
 def decoder_failure_snapshot(root, child, readers, *, shell, sustained, started, budget, renewals,
@@ -425,7 +430,9 @@ class WindowsNativeTransport(unittest.TestCase):
                               +encoded+"'))))"+'"')
                 argv, executable = '"'+str(cmd)+'" /d /s /c "'+invocation+'"', str(cmd)
             self.assertLess(len(invocation), 8000)
-            reader, writer = async_stdin_pipe() if sustained else (None, None)
+            # Fit the marker and both headers before the decoder starts reading;
+            # a blocked writer must not bypass the startup deadline checks.
+            reader, writer = async_stdin_pipe(buffer_size=len(DECODER_MARKER)*2) if sustained else (None, None)
             try:
                 child = subprocess.Popen(argv, executable=executable, cwd=root, env=env,
                                          stdin=reader if sustained else subprocess.PIPE,
@@ -456,7 +463,7 @@ class WindowsNativeTransport(unittest.TestCase):
             budget = 8
             stage = 'startup'
             marker_observed = False
-            marker = b'hgs-lease-clock' if sustained else b''
+            marker = DECODER_MARKER if sustained else b''
             startup_ms = render_ms = None
             marker_sent = lease_elapsed_ms = None
             renewals = 0

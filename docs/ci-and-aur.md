@@ -300,6 +300,12 @@ starts; no renewal is queued between those events. This binds the 19-second
 render to the decoder's actual clock, which starts after `Add-Type`. The product
 lease remains 15 seconds. Native no-renewal controls must observe the original
 helper exit with code 127 before rendering completes, while stdin stays open.
+The 4 KiB paste marker fills the existing redirected-input buffer before EOF;
+the fixture's 8 KiB incoming pipe fits its data and framing before the decoder
+reads, so marker publication cannot block the startup deadline checks. See the
+[redirected stdin construction](https://github.com/microsoft/referencesource/blob/main/System/services/monitoring/system/diagnosticts/Process.cs)
+and [buffered writes](https://github.com/microsoft/referencesource/blob/main/mscorlib/system/io/filestream.cs#L1638)
+in the .NET Framework reference source.
 Readiness/marker and render diagnostics identify their separate stage and bound;
 cleanup keeps its existing 18-second wait, five-second fallback and reader joins.
 

@@ -186,10 +186,25 @@ class DecoderStages(unittest.TestCase):
                 eof = False
                 frames = []
                 events = []
+                stdin_buffer = b''
+                pipe_capacity = 4096
 
                 def row(self, value):
                     with (self.root/'record.jsonl').open('a', encoding='utf-8') as file:
                         file.write(json.dumps(value)+'\n')
+
+                def delivered(self):
+                    if not self.stdin_buffer:
+                        return
+                    body, self.stdin_buffer = self.stdin_buffer, b''
+                    self.frames.append(body)
+                    row = json.dumps(dict(hex=body.hex()))
+                    with (self.root/'record.jsonl').open('a', encoding='utf-8') as file:
+                        file.write(row+('' if partial_marker and len(self.frames) == 1 else '\n'))
+                    if len(self.frames) == 1:
+                        self.events.append(('marker', self.now))
+                        self.marker_at = self.now
+                        self.marker_complete = not partial_marker
 
                 def update(self):
                     if self.root is None or child.returncode is not None:
@@ -230,6 +245,8 @@ class DecoderStages(unittest.TestCase):
                 pending = b''
 
                 def write(self, data):
+                    if not model.frames and len(data) > 4:
+                        assert len(data)+4 <= model.pipe_capacity, 'marker can block before startup deadline checks'
                     self.pending += data
                     while len(self.pending) >= 4:
                         length = struct.unpack('<I', self.pending[:4])[0]
@@ -240,17 +257,15 @@ class DecoderStages(unittest.TestCase):
                         elif length == 0:
                             self.pending = self.pending[4:]
                             model.eof = True
+                            model.delivered()
                         elif len(self.pending) >= length+4:
                             body, self.pending = self.pending[4:4+length], self.pending[4+length:]
                             model.last_renew = model.now
-                            model.frames.append(body)
-                            row = json.dumps(dict(hex=body.hex()))
-                            with (model.root/'record.jsonl').open('a', encoding='utf-8') as file:
-                                file.write(row+('' if partial_marker and len(model.frames) == 1 else '\n'))
-                            if len(model.frames) == 1:
-                                model.events.append(('marker', model.now))
-                                model.marker_at = model.now
-                                model.marker_complete = not partial_marker
+                            # .NET Framework's synchronous redirected stdin
+                            # buffers small writes until a full buffer or EOF.
+                            model.stdin_buffer += body
+                            if len(model.stdin_buffer) >= 4096:
+                                model.delivered()
                         else:
                             break
                     return len(data)
@@ -259,6 +274,10 @@ class DecoderStages(unittest.TestCase):
             child.stdin = writer
             reader_fd, unused = os.pipe()
             os.close(unused)
+
+            def pipe(buffer_size=4096):
+                model.pipe_capacity = buffer_size
+                return reader_fd, writer
 
             def launch(*args, **kwargs):
                 model.root = kwargs['cwd']
@@ -295,7 +314,7 @@ class DecoderStages(unittest.TestCase):
             with mock.patch.dict(os.environ, {'HGS_TEST_FAKE_AGENT':str(fake), 'SystemRoot':name}), \
                     mock.patch.object(remote.subprocess, 'Popen', side_effect=launch), \
                     mock.patch.object(remote.subprocess, 'CREATE_NO_WINDOW', 0, create=True), \
-                    mock.patch.object(remote, 'async_stdin_pipe', return_value=(reader_fd, writer)), \
+                    mock.patch.object(remote, 'async_stdin_pipe', side_effect=pipe), \
                     mock.patch('threading.Thread', Capture), \
                     mock.patch.object(remote.time, 'monotonic', side_effect=lambda: model.now), \
                     mock.patch.object(remote.time, 'sleep', side_effect=model.sleep), \
