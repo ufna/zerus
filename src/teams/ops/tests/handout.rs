@@ -294,6 +294,67 @@ fn a_stage_after_a_reassignment_refuses_every_earlier_implementer() {
     refused(intent(&mut h, "m1"), code::INVALID_STATE);
 }
 
+/// zerus-63rru.20: the kernel's staffing names every earlier implementer
+/// in the unstaffed reading (the lead's card).
+#[test]
+fn the_unstaffed_reading_names_every_earlier_implementer() {
+    let mut h = Harness::new();
+    let (parent, _lead) = h.reported();
+    h.bind("m2");
+    h.run(
+        &person(),
+        Operation::Reassign {
+            node: parent,
+            member: "m2".into(),
+            reason: "Take the next round over".into(),
+        },
+    )
+    .unwrap();
+    let reopen = h.reopen(parent, "m2");
+    h.reopen_outcome(
+        &reopen,
+        HandoutOutcome::Submitted {
+            receipt: "Reopen receipt".into(),
+        },
+    );
+    h.observe(parent, TaskStage::InProgress);
+    h.report(parent, "m2");
+    let stage = h.add(&person(), 2);
+    let mut s = h.node(stage);
+    s.kind = NodeKind::Stage;
+    s.role = h.node(parent).role.clone();
+    s.stage_of = Some(parent);
+    s.round = h.node(parent).round;
+    s.implementer = h.node(parent).implementer.clone();
+    h.store
+        .db
+        .as_ref()
+        .unwrap()
+        .execute(
+            "UPDATE nodes SET data=?3 WHERE team=?1 AND id=?2",
+            params![TEAM, stage, rows::node_payload(&s).unwrap()],
+        )
+        .unwrap();
+    h.run(&service(), Operation::ReconcileUnstaffed).unwrap();
+    let unstaffed: Vec<String> = h
+        .store
+        .inbox(TEAM, 200, None)
+        .unwrap()
+        .rows
+        .into_iter()
+        .filter(|i| i.kind.starts_with("unstaffed:"))
+        .map(|i| i.text)
+        .collect();
+    assert!(
+        unstaffed.iter().any(|text| text.contains("m1") && text.contains("m2")),
+        "{unstaffed:?}"
+    );
+}
+
+/// The cap: past it the target is marked full and the stage's hand-out
+/// fails closed instead of handing to an unrecorded member silently
+/// (zerus-63rru.20).
+#[test]
 fn past_the_cap_a_stage_is_not_handed_to_an_unrecorded_member() {
     let mut h = Harness::new();
     let (parent, _) = h.reported();
@@ -334,12 +395,14 @@ fn past_the_cap_a_stage_is_not_handed_to_an_unrecorded_member() {
         },
     )
     .unwrap();
+    // The unrecorded developer with the stage's role is refused by the
+    // fail-closed marker alone.
     refused(
         h.run(
             &service(),
             Operation::HandoutIntent {
                 node: stage,
-                member: "m3".into(),
+                member: "m2".into(),
                 effect_request_id: uuid::Uuid::new_v4().to_string(),
             },
         ),
