@@ -78,6 +78,22 @@ class CacheHint(unittest.TestCase):
         p=fixtures.InputTransport.payload(self)
         e=fixtures.InputTransport.send(self,p,success=False)
         self.assertIn('context choice',e);self.assertEqual(self.received(),b'')
+    def test_input_summary_names_the_choice_from_both_busy_and_idle_records(self):
+        for activity, phase in [('busy','working'),('idle','idle')]:
+            self.record.update(activity=activity,phase=phase);self.write_record()
+            before=self.record_path.read_bytes();received=self.received()
+            info=self.inspect()
+            listing=subprocess.run([str(fixtures.HGS),'ls','--local','--json'],env=self.env,
+                                   text=True,capture_output=True,timeout=12)
+            self.assertEqual(listing.returncode,0,listing.stderr)
+            row=next(r for r in json.loads(listing.stdout)['sessions'] if r['name']==self.name)
+            for shown in (info,row):
+                self.assertEqual(shown['phase'],'input')
+                self.assertEqual(shown['activity_summary'],'Needs attention',activity)
+            self.assertEqual(len(info['pending_questions']),1)
+            self.assertEqual(info['pending_questions'][0]['source'],'kimi_cache_hint')
+            self.assertEqual(self.record_path.read_bytes(),before)
+            self.assertEqual(self.received(),received)
     def test_context_actions_wait_for_the_choice_as_dispatch_does(self):
         # The saved record stays idle; the terminal chooser alone keeps both
         # actions unavailable, with the reason, as dispatch refuses them.

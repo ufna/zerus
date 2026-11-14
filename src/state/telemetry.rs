@@ -300,6 +300,15 @@ fn newest(previews: &mut Vec<Value>) {
     }
 }
 
+/// Apply only the display label after the caller has observed its questions.
+/// Phase, attention identity, work and answer authority remain the caller's.
+pub(super) fn pending_input_summary(output: &mut Value, pending: bool) {
+    // This specific label also identifies a request only the person may answer.
+    if pending && output["phase"] == "input" && output["activity_summary"] != "Sign in required" {
+        output["activity_summary"] = json!("Needs attention");
+    }
+}
+
 pub(super) fn summary(
     record: &Value,
     activity: &Value,
@@ -408,6 +417,37 @@ pub(super) fn remaining_work() -> Vec<(&'static str, Value)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pending_input_summary_is_provider_independent_and_changes_only_the_label() {
+        for agent in ["claude", "codex", "kimi", "dsh", "opencode"] {
+            for earlier in ["Working", "Ready", "Bash", "Waiting for input"] {
+                let before = json!({"agent":agent,"activity_summary":earlier,"phase":"input",
+                    "activity":"busy","attention_id":"question","process_work":{"count":1},
+                    "run_id":"run","conversation_id":"conversation","pending_questions":[{"can_answer":false}]});
+                let mut expected = before.clone();
+                expected["activity_summary"] = json!("Needs attention");
+                let mut shown = before.clone();
+                pending_input_summary(&mut shown, true);
+                assert_eq!(shown, expected);
+                let mut unknown = before.clone();
+                pending_input_summary(&mut unknown, false);
+                assert_eq!(unknown, before);
+                let mut sign_in = before.clone();
+                sign_in["activity_summary"] = json!("Sign in required");
+                let original = sign_in.clone();
+                pending_input_summary(&mut sign_in, true);
+                assert_eq!(sign_in, original);
+                for phase in ["approval", "error", "working", "compacting", "idle", "ended"] {
+                    let mut shown = before.clone();
+                    shown["phase"] = json!(phase);
+                    let original = shown.clone();
+                    pending_input_summary(&mut shown, true);
+                    assert_eq!(shown, original, "{agent}: {phase}");
+                }
+            }
+        }
+    }
     #[test]
     fn a_replaced_kimi_hook_child_is_no_work_and_listed_work_remains() {
         let stale = stale_hook_child();

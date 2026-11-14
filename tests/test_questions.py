@@ -254,6 +254,13 @@ class Questions(unittest.TestCase):
         self.assertEqual(self.card['source'],'kimi_wire')
         self.assertEqual(len(self.card['questions']),3)
         self.assertTrue(self.card['can_answer'],self.card['answer_unavailable_reason'])
+        listing=subprocess.run([str(HGS),'ls','--local','--json'],env=self.env,
+                               text=True,capture_output=True,timeout=12)
+        self.assertEqual(listing.returncode,0,listing.stderr)
+        row=next(r for r in json.loads(listing.stdout)['sessions'] if r['name']==self.name)
+        for shown in (self.inspect(),row):
+            self.assertEqual(shown['phase'],'input')
+            self.assertEqual(shown['activity_summary'],'Needs attention')
         self.assertEqual(self.received(),b'')
 
     def test_answers_options_multi_and_other_then_confirms_native_wire_receipt(self):
