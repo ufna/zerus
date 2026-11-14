@@ -257,13 +257,10 @@ pub fn page(reply: &Map<String, Value>) -> Result<Page, String> {
 /// the service's folder-trust grant and any other standing kind it writes
 /// (zerus-63rru.66 round 5). Kept out of the ordinary category names.
 pub(crate) fn standing_kind(value: &Value) -> Option<String> {
-    value
-        .as_array()?
-        .iter()
-        .find_map(|id| match id.as_str()? {
-            "team_folder_trust" => Some("team_folder_trust".to_owned()),
-            _ => None,
-        })
+    value.as_array()?.iter().find_map(|id| match id.as_str()? {
+        "team_folder_trust" => Some("team_folder_trust".to_owned()),
+        _ => None,
+    })
 }
 
 /// The category IDs this client knows, in the page's order.

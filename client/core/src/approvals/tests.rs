@@ -122,15 +122,21 @@ fn the_page_carries_the_standing_trust_kind_for_each_outcome() {
             json!({"id": 1, "at": 1, "host": "h", "session": "s", "prompt": "Trust this folder?",
                 "status": status, "categories": ["team_folder_trust"], "scope": "/fixture/main"})
         })
-        .chain([json!({"id": 2, "at": 2, "host": "h", "session": "s", "prompt": "Resume?",
-            "status": "approved", "categories": ["team_resume"], "scope": "/fixture/main"})])
+        .chain([
+            json!({"id": 2, "at": 2, "host": "h", "session": "s", "prompt": "Resume?",
+            "status": "approved", "categories": ["team_resume"], "scope": "/fixture/main"}),
+        ])
         .collect();
     let reply = json!({"entries": rows, "next": null, "previous": null});
     let page = page(reply.as_object().unwrap()).unwrap();
     assert_eq!(page.entries.len(), 6);
     for (entry, (_, result, confirmed)) in page.entries.iter().zip(cases.iter()) {
         assert_eq!(entry.result, *result, "{entry:?}");
-        assert_eq!(entry.standing.as_deref(), Some("team_folder_trust"), "{entry:?}");
+        assert_eq!(
+            entry.standing.as_deref(),
+            Some("team_folder_trust"),
+            "{entry:?}"
+        );
         assert_eq!(
             trust_sentence(
                 entry.scope.as_deref(),
@@ -147,9 +153,16 @@ fn the_page_carries_the_standing_trust_kind_for_each_outcome() {
         );
     }
     let resume = page.entries.last().unwrap();
-    assert_eq!(resume.standing, None, "a resume row carries no standing kind");
     assert_eq!(
-        trust_sentence(resume.scope.as_deref(), &json!(["team_resume"]), Some("approved")),
+        resume.standing, None,
+        "a resume row carries no standing kind"
+    );
+    assert_eq!(
+        trust_sentence(
+            resume.scope.as_deref(),
+            &json!(["team_resume"]),
+            Some("approved")
+        ),
         None
     );
 }
@@ -191,13 +204,23 @@ fn the_real_service_reply_projects_into_the_committed_page_fixture() {
         let text = detail(detail_reply.as_object().unwrap());
         projected["entries"][i]["detail"] = json!(text);
     }
-    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../src/ui/screens/settings/approvals-page.r6.fixture.json");
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../src/ui/screens/settings/approvals-page.r6.fixture.json"
+    );
     if std::env::var_os("HGS_R6_WRITE_FIXTURE").is_some() {
-        std::fs::write(path, serde_json::to_string_pretty(&projected).unwrap() + "\n").unwrap();
+        std::fs::write(
+            path,
+            serde_json::to_string_pretty(&projected).unwrap() + "\n",
+        )
+        .unwrap();
     }
     let committed: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
-    assert_eq!(projected, committed, "the core page output drifted; regenerate with HGS_R6_WRITE_FIXTURE");
+    assert_eq!(
+        projected, committed,
+        "the core page output drifted; regenerate with HGS_R6_WRITE_FIXTURE"
+    );
 }
 
 #[test]
@@ -227,11 +250,19 @@ fn a_detail_shows_the_question_and_the_answer_chosen() {
         );
     }
     assert_eq!(
-        trust_sentence(Some("/fixture/main"), &json!(["team_folder_trust"]), Some("approved")),
+        trust_sentence(
+            Some("/fixture/main"),
+            &json!(["team_folder_trust"]),
+            Some("approved")
+        ),
         Some("Trusted for /fixture/main and its subfolders on this account".to_owned())
     );
     assert_eq!(
-        trust_sentence(Some("/fixture/main"), &json!(["team_resume"]), Some("approved")),
+        trust_sentence(
+            Some("/fixture/main"),
+            &json!(["team_resume"]),
+            Some("approved")
+        ),
         None,
         "a resume record shows no trust sentence"
     );
@@ -249,7 +280,11 @@ fn a_detail_shows_the_question_and_the_answer_chosen() {
         "Approved once\n\nTrusted for /fixture/main and its subfolders on this account"
     );
     assert_eq!(
-        detail(json!({"status": "approved", "detail": ""}).as_object().unwrap()),
+        detail(
+            json!({"status": "approved", "detail": ""})
+                .as_object()
+                .unwrap()
+        ),
         "Approved once"
     );
     let categorized = json!({"status": "approved", "detail": "", "categories": ["shell", "paid"]});
