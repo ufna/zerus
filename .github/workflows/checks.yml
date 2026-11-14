@@ -236,15 +236,7 @@ jobs:
           cargo +1.99.1 test --locked --bin hgs desktop::delivery::tests::actual_root_projection_is_consumed_by_the_client_without_ready_json_fixtures -- --exact --nocapture |
             python3 client/scripts/generate-delivery-status-fixture.py --check
       - name: Replica crates (format, lints, tests, golden vectors, the mobile binding surface)
-        run: |
-          rustup component add --toolchain 1.99.1 rustfmt clippy
-          cargo +1.99.1 fmt --check --manifest-path crates/replica/Cargo.toml
-          cargo +1.99.1 clippy --locked --manifest-path crates/replica/Cargo.toml --target-dir target --all-targets -- -D warnings
-          cargo +1.99.1 test --locked --manifest-path crates/replica/Cargo.toml --target-dir target
-          cargo +1.99.1 test --locked --manifest-path crates/replica/Cargo.toml --target-dir target --features test-without-team
-          cargo +1.99.1 fmt --check --manifest-path crates/replica-ffi/Cargo.toml
-          cargo +1.99.1 clippy --locked --manifest-path crates/replica-ffi/Cargo.toml --target-dir target --all-targets -- -D warnings
-          cargo +1.99.1 test --locked --manifest-path crates/replica-ffi/Cargo.toml --target-dir target
+        run: bash scripts/ci/replica.sh
       - name: Disk usage after replica tests
         if: ${{ !cancelled() }}
         run: python3 scripts/ci/ubuntu-disk.py report after-replica-tests
@@ -270,10 +262,7 @@ jobs:
           cargo +1.99.1 clippy --locked --manifest-path crates/team-plan/Cargo.toml --target-dir target --all-targets -- -D warnings
           cargo +1.99.1 test --locked --manifest-path crates/team-plan/Cargo.toml --target-dir target
       - name: Desktop client core crate (format, lints, tests)
-        run: |
-          cargo +1.99.1 fmt --check --manifest-path client/core/Cargo.toml
-          cargo +1.99.1 clippy --locked --manifest-path client/core/Cargo.toml --target-dir target --all-targets -- -D warnings
-          cargo +1.99.1 test --locked --manifest-path client/core/Cargo.toml --target-dir target
+        run: bash scripts/ci/client-core.sh
       # hgs and client/core take these by path, which builds them but never runs their tests.
       # Every Quick Cargo check shares target: compatible dependencies are built once.
       - name: Disk usage after client core tests
@@ -1051,11 +1040,7 @@ jobs:
             target
           key: ${{ steps.rust-cache.outputs.cache-primary-key }}
       - name: Keyless latest Codex, Claude Code and OpenCode compatibility
-        run: |
-          python3 scripts/ci/native-effort-seed.py build --source-sha '${{ needs.source.outputs.commit }}' \
-            --hgs "$GITHUB_WORKSPACE/target/debug/hgs" --image "$GITHUB_WORKSPACE/target/debug/hgs-effort-seed" \
-            --receipt "$GITHUB_WORKSPACE/target/debug/hgs-effort-seed.json"
-          python3 scripts/ci/agent-compatibility.py
+        run: bash scripts/ci/native-compatibility.sh '${{ needs.source.outputs.commit }}'
       - name: Retain test logs
         if: always() && (github.event_name != 'schedule' || failure())
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

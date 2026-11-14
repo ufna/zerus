@@ -8,7 +8,7 @@ Nothing from the caller's uncommitted tree is added to the tested source.
 python3 scripts/ci/local-linux.py --sha COMMIT \
   --output /path/to/new-private-results \
   --cache /path/to/private-local-ci-cache \
-  --online --workers 12
+  --online --workers 4 --heavy /path/to/shared-heavy
 ```
 
 The host needs Python with PyYAML, bubblewrap with unprivileged user namespaces,
@@ -23,11 +23,18 @@ private network and an original labelled container, without published host ports
 They never connect to a pre-existing database. Package installation on the host
 is not part of this command.
 
-The default worker limit is 12. CPU affinity, Cargo/libtest and Python worker
+The default and maximum worker limit is four. CPU affinity, Cargo/libtest and Python worker
 counts are capped. Before starting each check, the runner waits if the one-minute
 host load exceeds 20; ten minutes above that ceiling leaves the check not run.
 It lets an already running check finish. A 40 GiB free-space floor stops new work.
 Use `--workers` and `--max-load` to lower those limits for a busy host.
+
+`--heavy` names the operator's shared build wrapper (or `heavy` on PATH).
+Every check acquires one slot before starting its namespace, then retains it
+until that original namespace and its network helper settle. Queue time does
+not consume the check's execution timeout. The wrapper and its control files
+stay outside the test namespace. A refused or prematurely ended slot cannot
+produce a passing check. Checks run one at a time.
 
 Each job uses its own detached clean checkout, private home, PID/network/IPC
 namespaces, short temporary socket directory and D-Bus session. It inherits no
@@ -47,6 +54,9 @@ are rebuilt before Python integration; failure refuses reuse of an older binary.
 The CLI's debug, shell smoke, Python and release-build bodies are read from its
 own script. Shell failure does not conceal the later Python failures. An unknown
 script layout refuses rather than guessing how to split it.
+Replica (including `test-without-team`), client-core format/lint/test and latest-agent
+steps call the same scripts as GitHub. The runner substitutes only the resolved
+source commit in that native step; unknown workflow expressions remain not run.
 
 `report.json` is saved after checks, with the commit, workflow/runner hashes,
 step bodies and hashes, tool versions, exit codes and raw-log SHA256 values.

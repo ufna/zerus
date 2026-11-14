@@ -535,6 +535,8 @@ class WorkflowSecurityTests(unittest.TestCase):
     def test_every_crate_is_formatted_linted_and_tested(self):
         # A crate taken by path is only built by its users; its own tests run nowhere else.
         quick = job((ROOT / ".github/workflows/checks.yml").read_text(), "quick")
+        self.assertIn('run: bash scripts/ci/replica.sh\n', quick)
+        quick += '\n' + (ROOT / 'scripts/ci/replica.sh').read_text()
         crates = sorted(path.parent.name for path in (ROOT / "crates").glob("*/Cargo.toml"))
         self.assertIn("desktop-read-policy", crates)
         for crate in crates:
@@ -651,6 +653,8 @@ class WorkflowSecurityTests(unittest.TestCase):
         self.assertIn("\n        id: revision\n", steps[1])
         quick = job(checks, "quick")
         self.assertEqual(field(quick, "name"), "Quick checks (source and Rust 1.99)")
+        self.assertIn('run: bash scripts/ci/replica.sh\n', quick)
+        quick += '\n' + (ROOT / 'scripts/ci/replica.sh').read_text()
         for line in ("run: python3 scripts/ci/check-source.py", "-p 'test_*publication.py'", "-p test_ci_security.py",
                      "sha256sum --check --ignore-missing actionlint_1.7.12_checksums.txt",
                      "run: cargo +1.99.1 test --locked",
