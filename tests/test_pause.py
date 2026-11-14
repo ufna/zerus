@@ -733,7 +733,17 @@ class Harness(unittest.TestCase):
         self.remove_fixture_root()
 
     def remove_fixture_root(self):
-        shutil.rmtree(self.root)
+        wal = Path(self.env["HGS_STATE_DIR"]) / "delivery-receipts-v1.sqlite3-wal"
+
+        def failed(function, path, exception):
+            # SQLite can remove this sidecar after rmtree enumerates it.
+            # Keep every other cleanup failure visible, including permissions.
+            error = exception[1]
+            if function is os.unlink and Path(path) == wal and isinstance(error, FileNotFoundError):
+                return
+            raise error.with_traceback(exception[2])
+
+        shutil.rmtree(self.root, onerror=failed)
 
     def script(self, name, text):
         path = self.bin / name
@@ -1122,6 +1132,61 @@ class Harness(unittest.TestCase):
         path = state / (hashlib.sha256(name.encode()).hexdigest() + ".json")
         path.write_text(json.dumps(record) + "\n")
         return record, path
+
+
+class FixtureRootCleanup(unittest.TestCase):
+    def fixture(self, root):
+        fixture = Harness()
+        fixture.root = root / "fixture"
+        state = fixture.root / "state"
+        state.mkdir(parents=True)
+        fixture.env = {"HGS_STATE_DIR": str(state)}
+        return fixture, state / "delivery-receipts-v1.sqlite3-wal"
+
+    def test_receipt_wal_can_vanish_between_the_walk_and_unlink(self):
+        with tempfile.TemporaryDirectory(prefix="receipt-wal-cleanup-") as temporary:
+            fixture, wal = self.fixture(Path(temporary))
+            wal.write_bytes(b"synthetic WAL")
+            unlink = os.unlink
+            vanished = []
+
+            def concurrent_unlink(path, *args, **kwargs):
+                if Path(path).name == wal.name:
+                    unlink(path, *args, **kwargs)
+                    vanished.append(wal)
+                return unlink(path, *args, **kwargs)
+
+            with mock.patch.object(os, "unlink", side_effect=concurrent_unlink):
+                fixture.remove_fixture_root()
+            self.assertEqual(vanished, [wal])
+            self.assertFalse(fixture.root.exists())
+
+    def test_other_cleanup_errors_remain_failures(self):
+        with tempfile.TemporaryDirectory(prefix="receipt-wal-errors-") as temporary:
+            fixture, wal = self.fixture(Path(temporary))
+            cases = [(os.unlink, wal, PermissionError("denied")),
+                     (os.unlink, wal.with_name("other.json"), FileNotFoundError("other file")),
+                     (os.unlink, fixture.root / "other" / wal.name, FileNotFoundError("other state")),
+                     (os.rmdir, wal, FileNotFoundError("not an unlink"))]
+            for function, path, error in cases:
+                with self.subTest(function=function.__name__, path=path.name, error=type(error).__name__):
+                    # Deliver the traversal error explicitly on every Python
+                    # version, including versions that suppress descendant ENOENT.
+                    def rmtree(root, onerror=None):
+                        if onerror is None:
+                            raise error
+                        onerror(function, str(path), (type(error), error, None))
+                    with mock.patch.object(shutil, "rmtree", side_effect=rmtree):
+                        with self.assertRaises(type(error)) as caught:
+                            fixture.remove_fixture_root()
+                    self.assertIs(caught.exception, error)
+
+    def test_a_missing_fixture_root_still_fails(self):
+        with tempfile.TemporaryDirectory(prefix="receipt-wal-root-") as temporary:
+            fixture, _ = self.fixture(Path(temporary))
+            shutil.rmtree(fixture.root)
+            with self.assertRaises(FileNotFoundError):
+                fixture.remove_fixture_root()
 
 
 class SessionIdentity(Harness):
