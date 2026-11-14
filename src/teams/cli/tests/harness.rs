@@ -82,7 +82,11 @@ impl Harness {
         let temp = tempfile::tempdir().expect("a temporary folder");
         let state = temp.path().join("state");
         let dir = temp.path().join("config");
-        std::fs::create_dir_all(&state).unwrap();
+        // Private, as hgs keeps its state folder: the desktop service's
+        // status is then read the same way on every platform. A Unix folder
+        // open to others could not be read, and Windows passes on a private
+        // profile folder, so status differed (zerus-63rru.115).
+        crate::platform::private_dir(&state).unwrap();
         std::fs::create_dir_all(&dir).unwrap();
         crate::platform::private_dir(&state.join("teams")).unwrap();
         std::fs::write(state.join("teams/preview"), "on\n").unwrap();
