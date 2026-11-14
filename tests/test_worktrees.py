@@ -10,6 +10,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from unittest import mock
 import time
 import unittest
 import uuid
@@ -64,10 +65,58 @@ class Worktrees(Repository,unittest.TestCase):
                 '--branch',branch,'--base','HEAD','--destination',str(destination or self.root/'receipt-checkout'),
                 '--request-id',request,'--receipt','--json']
 
-    def receipt_control(self, action, request):
+    def receipt_control(self, action, request, *, polling=False):
         result=subprocess.run([str(HGS),'worktrees',action,'--request-id',request,'--json'],env=self.env,text=True,capture_output=True,timeout=5)
+        if (polling and action=='status' and result.returncode==1 and result.stdout==''
+                and result.stderr=='hgs: Worktree receipt changed while reading\n'):
+            return None
         self.assertEqual(result.returncode,0,result.stderr)
         return json.loads(result.stdout)
+
+    def poll_receipt(self, request, end):
+        status=self.receipt_control('status',request,polling=True)
+        # The worker can settle between reading the receipt and checking its lock.
+        while (status is None or status['status'] in ('running','unconfirmed')) and time.monotonic()<end:
+            time.sleep(.01);status=self.receipt_control('status',request,polling=True)
+        self.assertIsNotNone(status,'Receipt kept changing through the original status-poll deadline')
+        return status
+
+    @unittest.skipUnless(sys.platform=='linux' and shutil.which('cc'), 'Linux read interposition control')
+    def test_status_poll_retries_a_forced_concurrent_receipt_write(self):
+        library=self.root/'receipt-read-race.so'
+        subprocess.run(['cc','-shared','-fPIC','-Wall','-Wextra','-Werror',
+                        str(REPO/'tests/fixtures/worktree-receipt-read-race.c'),'-o',str(library),'-ldl'],check=True,timeout=15)
+        request=str(uuid.uuid4())
+        created=subprocess.run(self.receipt_create(request),env=self.env,text=True,capture_output=True,timeout=10)
+        self.assertEqual(created.returncode,0,created.stderr)
+        expected=self.receipt_control('status',request)
+        receipt=Path(self.env['HGS_STATE_DIR'])/'worktree-requests'/f'{request}.json'
+        original=receipt.read_bytes();before=receipt.stat()
+        ready=self.root/'read-ready';done=self.root/'write-done'
+        def write_while_reading():
+            end=time.monotonic()+4
+            while not ready.exists() and time.monotonic()<end:time.sleep(.001)
+            if not ready.exists():raise AssertionError('Receipt reader did not reach its original read')
+            receipt.write_bytes(original+b'\n')
+            done.touch()
+        calls=[];run=subprocess.run
+        def observed(*args,**kwargs):
+            result=run(*args,**kwargs);calls.append(result);return result
+        self.env.update(LD_PRELOAD=str(library),ZERUS_POLL_RECEIPT=str(receipt),
+                        ZERUS_POLL_READ_READY=str(ready),ZERUS_POLL_WRITE_DONE=str(done))
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as worker:
+            writing=worker.submit(write_while_reading)
+            try:
+                with mock.patch('test_worktrees.subprocess.run',side_effect=observed):
+                    actual=self.poll_receipt(request,time.monotonic()+5)
+            finally:writing.result(timeout=5)
+        self.assertTrue(done.exists())
+        self.assertEqual(receipt.stat().st_ino,before.st_ino)
+        self.assertNotEqual(receipt.stat().st_size,before.st_size)
+        self.assertEqual(calls[0].returncode,1)
+        self.assertEqual(calls[0].stderr,'hgs: Worktree receipt changed while reading\n')
+        self.assertGreaterEqual(len(calls),2)
+        self.assertEqual(actual,expected)
 
     def test_explicit_stop_seals_future_starts_without_inventing_a_past_result(self):
         state=Path(self.env['HGS_STATE_DIR']);store=state/'worktree-requests'
@@ -226,12 +275,7 @@ class Worktrees(Repository,unittest.TestCase):
         while not ready.exists() and time.monotonic()<end:time.sleep(.01)
         self.assertTrue(ready.exists(),'Original checkout hook did not start')
         child.kill();child.communicate(timeout=5)
-        end=time.monotonic()+5;status=self.receipt_control('status',request)
-        # A status reader can read the old running receipt just before the worker
-        # writes its terminal receipt and releases its lock. That one snapshot
-        # is conservatively unconfirmed; wait for the persisted terminal result.
-        while status['status'] in ('running','unconfirmed') and time.monotonic()<end:
-            time.sleep(.01);status=self.receipt_control('status',request)
+        status=self.poll_receipt(request,time.monotonic()+5)
         self.assertEqual(status['status'],'failed',status)
         self.assertTrue((self.root/'receipt-checkout').exists())
 
@@ -1331,5 +1375,32 @@ print(json.dumps(dict(pid=os.getpid(),rc=p.returncode,stdout=p.stdout,stderr=p.s
         row=self.row(tree);self.assertIn('nested_repository',codes(row['reasons']));self.assertFalse(row['discardable'])
         shutil.rmtree(tree/'artifacts');state=self.root/'state';state.mkdir(exist_ok=True);broken=state/('f'*64+'.json');broken.write_text('{broken')
         row=self.row(tree);self.assertIn('sessions_unavailable',codes(row['reasons']));self.assertFalse(row['discardable'])
+
+class ReceiptPollPolicy(unittest.TestCase):
+    receipt_control=Worktrees.receipt_control
+    poll_receipt=Worktrees.poll_receipt
+    env={}
+
+    def test_only_the_exact_status_read_race_is_pending(self):
+        exact='hgs: Worktree receipt changed while reading\n'
+        for action,code,stdout,stderr in [
+            ('cancel',1,'',exact),('status',2,'',exact),('status',1,'{}',exact),
+            ('status',1,'','hgs: Worktree receipt object changed\n'),
+            ('status',1,'',exact+'another failure\n'),('status',1,'','permission denied'),
+        ]:
+            with self.subTest(action=action,code=code,stderr=stderr):
+                result=subprocess.CompletedProcess([],code,stdout,stderr)
+                with mock.patch('test_worktrees.subprocess.run',return_value=result),self.assertRaises(AssertionError):
+                    self.receipt_control(action,'fixture-request',polling=True)
+        result=subprocess.CompletedProcess([],1,'',exact)
+        with mock.patch('test_worktrees.subprocess.run',return_value=result):
+            self.assertIsNone(self.receipt_control('status','fixture-request',polling=True))
+            with self.assertRaises(AssertionError):self.receipt_control('status','fixture-request')
+
+    def test_repeated_read_races_keep_the_original_deadline(self):
+        result=subprocess.CompletedProcess([],1,'','hgs: Worktree receipt changed while reading\n')
+        with mock.patch('test_worktrees.subprocess.run',return_value=result),mock.patch('test_worktrees.time.monotonic',return_value=5.),mock.patch('test_worktrees.time.sleep',side_effect=AssertionError('Poll slept after its original deadline')):
+            with self.assertRaisesRegex(AssertionError,'original status-poll deadline'):
+                self.poll_receipt('fixture-request',5.)
 
 if __name__=='__main__':unittest.main()
