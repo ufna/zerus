@@ -196,6 +196,7 @@ mod worktree_programs;
 pub(crate) use worktree_programs::{ProgramRemovalClaim, ProgramStopClaim};
 mod worktree_lifecycle;
 mod worktree_lock;
+mod worktree_references;
 mod worktree_maintenance;
 
 /// Read the selected account's native catalog without starting an agent.
