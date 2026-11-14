@@ -331,7 +331,7 @@ change.
 The ignored `desktop::original_child::spawn_cost::unix_spawn_cost` root test
 measures 12 mechanisms; the ignored Tauri `instance::unix_spawn_cost_pidfd`
 test adds Linux's pidfd-spawn family when glibc provides it. Both use only
-synthetic `/bin/true` and `/bin/cat` children, 8 warm-ups and 64 samples per
+synthetic `/usr/bin/true` and `/bin/cat` children, 8 warm-ups and 64 samples per
 family, and report median, p95 and minimum microseconds. They start no agent,
 GUI or owner session. Most timings stop at spawn return; the two explicitly
 named round-trip families include their existing I/O/deadline/wait loop.

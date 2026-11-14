@@ -18,7 +18,7 @@ fn measure(label: &str, mut sample: impl FnMut() -> Duration) {
     );
 }
 fn command() -> Command {
-    let mut command = Command::new("/bin/true");
+    let mut command = Command::new("/usr/bin/true");
     command
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -65,7 +65,7 @@ fn unix_spawn_cost() {
         let before = Instant::now();
         System
             .start(&Start {
-                program: "/bin/true".into(),
+                program: "/usr/bin/true".into(),
                 arguments: Vec::new(),
                 directory: "/".into(),
                 window: Window::Plain,
@@ -130,7 +130,7 @@ fn unix_spawn_cost() {
     });
     measure("forkpty-start", || {
         let target = Target {
-            hgs: "/bin/true".into(),
+            hgs: "/usr/bin/true".into(),
             host: String::new(),
             name: "spawn-cost".into(),
             run_id: String::new(),

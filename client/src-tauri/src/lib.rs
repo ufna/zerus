@@ -2450,7 +2450,7 @@ mod unix_spawn_policy_tests {
     #[test]
     fn path_shared_environment_uses_the_linked_core_gate() {
         shared_gate_excludes(|| {
-            let mut command = std::process::Command::new("/bin/true");
+            let mut command = std::process::Command::new("/usr/bin/true");
             command
                 .stdin(std::process::Stdio::null())
                 .stdout(std::process::Stdio::null())
@@ -2469,7 +2469,7 @@ mod unix_spawn_policy_tests {
                 .build()
                 .unwrap();
             runtime.block_on(async {
-                let mut command = tokio::process::Command::new("/bin/true");
+                let mut command = tokio::process::Command::new("/usr/bin/true");
                 command
                     .stdin(std::process::Stdio::null())
                     .stdout(std::process::Stdio::piped())

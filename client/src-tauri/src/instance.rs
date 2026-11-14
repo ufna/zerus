@@ -2943,7 +2943,7 @@ fn unix_spawn_cost_pidfd() {
     let mut samples = Vec::new();
     for n in 0..72 {
         let before = Instant::now();
-        let Some((mut child, output)) = spawn_held("/bin/true", &[]) else {
+        let Some((mut child, output)) = spawn_held("/usr/bin/true", &[]) else {
             println!("SPAWN_COST {{\"family\":\"tauri-pidfd\",\"available\":false}}");
             return;
         };

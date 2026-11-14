@@ -50,7 +50,7 @@ fn unix_spawn_cost_tokio() {
         for shared in [false, true] {
             let mut samples = Vec::new();
             for n in 0..72 {
-                let mut command = tokio::process::Command::new("/bin/true");
+                let mut command = tokio::process::Command::new("/usr/bin/true");
                 command
                     .stdin(std::process::Stdio::piped())
                     .stdout(std::process::Stdio::piped())

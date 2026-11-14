@@ -171,7 +171,7 @@ mod tests {
         assert!(first.try_wait().unwrap().is_none());
         let (sent, received) = mpsc::channel();
         let worker = std::thread::spawn(move || {
-            let mut command = Command::new("/bin/true");
+            let mut command = Command::new("/usr/bin/true");
             let mut child = spawn(&mut command).unwrap();
             sent.send(child.wait().unwrap().success()).unwrap();
         });

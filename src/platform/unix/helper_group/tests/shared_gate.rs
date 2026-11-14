@@ -37,7 +37,7 @@ fn the_root_turn_also_excludes_the_core_helper() {
             request_id: None,
         };
         assert!(matches!(
-            run::run(Path::new("/bin/true"), &invocation),
+            run::run(Path::new("/usr/bin/true"), &invocation),
             Exit::Code { code: 0, .. }
         ));
     });
@@ -46,7 +46,7 @@ fn the_root_turn_also_excludes_the_core_helper() {
 fn the_root_turn_also_excludes_the_core_pty() {
     root_turn_excludes(|| {
         let target = Target {
-            hgs: "/bin/true".into(),
+            hgs: "/usr/bin/true".into(),
             host: String::new(),
             name: "spawn-fixture".into(),
             run_id: String::new(),
