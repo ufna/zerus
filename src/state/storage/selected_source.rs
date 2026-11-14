@@ -1,4 +1,4 @@
-//! Dormant, bounded data snapshot of one already-resolved stored record slot.
+//! Bounded data snapshot of one already-resolved stored record slot.
 //! No name lookup, repair, native observation or mutation authority. This keeps
 //! a logical source, not an original-object pin, exclusion or native lease.
 use super::*;

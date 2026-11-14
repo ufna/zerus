@@ -4,8 +4,7 @@ use sha2::{Digest, Sha256};
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 
-// Dormant selected-slot data capture; no constructor or native admission uses it.
-#[allow(dead_code)]
+// Read-only selected-slot source fence for saved Start fresh.
 pub(super) mod selected_source;
 #[cfg(test)]
 mod selected_source_tests;
