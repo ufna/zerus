@@ -1,8 +1,106 @@
 //! Public-send negative journal publication, reachable only from a live witness
-//! under the original input lock. It cannot type, overwrite or replay anything.
+//! under the original input lock. Only an exact public negative may re-enter
+//! ordinary guards; all other existing records retain their previous behavior.
 use super::*;
 use crate::state::repositories::directory::Directory;
+use std::io::Read;
 use zerus_client_core::desktop::deferred_send::{refusal, Refusal};
+
+fn retained(receipts: &Directory, filename: &str) -> Result<Refusal> {
+    if !receipts.private()? {
+        return Err("Pre-input refusal store changed".into());
+    }
+    let mut bytes = Vec::new();
+    receipts
+        .read_private(filename)?
+        .take(refusal::BYTES as u64 + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|e| e.to_string())?;
+    receipts.verify()?;
+    Refusal::from_cli_record(&bytes).map_err(str::to_owned)
+}
+
+fn bound(
+    value: &Refusal,
+    id: &str,
+    name: &str,
+    run: &str,
+    conversation: &str,
+    digest: &str,
+) -> bool {
+    value.request_id == id
+        && value.session == name
+        && value.run_id == run
+        && value.conversation_id == conversation
+        && value.input_sha256 == digest
+}
+
+/// Called only under the input lock. An exact negative is absence of possible
+/// input, not a cached success. The caller still runs every ordinary guard.
+pub(super) fn admit(
+    path: &Path,
+    digest: &str,
+    name: &str,
+    id: &str,
+    request: &Request,
+    public: bool,
+) -> Existing {
+    let previous = super::existing(path, digest, name);
+    if public && matches!(previous, Existing::Unknown(_)) {
+        let exact = (|| -> Result<bool> {
+            let receipts = Directory::open(path.parent().ok_or("Invalid input receipt path")?)?;
+            let value = retained(&receipts, &format!("{id}.json"))?;
+            Ok(bound(
+                &value,
+                id,
+                name,
+                &request.expected_run_id,
+                &request.expected_conversation_id,
+                digest,
+            ))
+        })();
+        if exact == Ok(true) {
+            return Existing::Absent;
+        }
+    }
+    previous
+}
+
+/// Pending settings precede the message's ordinary input marker. Retire an
+/// exact negative before settings can type, including an uncertain failure.
+pub(super) fn prepare(witness: &NotOffered) -> Result<()> {
+    match fs::symlink_metadata(&witness.receipts) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error.to_string()),
+        Ok(_) => {}
+    }
+    let receipts = Directory::open(
+        witness
+            .receipts
+            .parent()
+            .ok_or("Invalid input receipt path")?,
+    )?;
+    let value = retained(&receipts, &format!("{}.json", witness.request_id))?;
+    if !bound(
+        &value,
+        &witness.request_id,
+        &witness.name,
+        &witness.run_id,
+        &witness.conversation_id,
+        &witness.digest,
+    ) {
+        return Err("Pre-input refusal binding changed".into());
+    }
+    receipt_index::persist(
+        &witness.receipts,
+        &json!({
+            "request_id": witness.request_id, "name": witness.name,
+            "run_id": witness.run_id, "conversation_id": witness.conversation_id,
+            "first_message": witness.conversation_id.is_empty(), "digest": witness.digest,
+            "status": "preparing", "transport": "terminal"
+        }),
+    )
+}
 
 pub(super) fn remember(witness: &NotOffered) -> Result<()> {
     let value = Refusal::new(
@@ -30,9 +128,22 @@ pub(super) fn remember(witness: &NotOffered) -> Result<()> {
     if receipts.path.join(&filename) != witness.receipts || !receipts.private()? {
         return Err("Pre-input refusal store changed".into());
     }
-    // The maintained publisher syncs private staging bytes, publishes without
-    // replacement, and syncs the original directory. Any failure stays Unknown.
-    receipts.write_new(&filename, &bytes)?;
+    // Only the original exact negative can be renewed under caller-held input
+    // exclusion. Never replace positive, unknown, malformed or foreign evidence.
+    if retained(&receipts, &filename).is_ok_and(|old| {
+        bound(
+            &old,
+            &witness.request_id,
+            &witness.name,
+            &witness.run_id,
+            &witness.conversation_id,
+            &witness.digest,
+        )
+    }) {
+        receipts.replace_file(&filename, &bytes)?;
+    } else {
+        receipts.write_new(&filename, &bytes)?;
+    }
     root.verify()?;
     receipts.verify()
 }
@@ -57,7 +168,7 @@ mod tests {
         }
     }
     #[test]
-    fn only_the_public_untyped_witness_publishes_and_a_duplicate_cannot_replace_it() {
+    fn only_the_public_untyped_witness_publishes_and_an_exact_refusal_can_be_renewed() {
         let private = tempfile::tempdir().unwrap();
         let root = private.path().canonicalize().unwrap();
         let w = witness(&root, "original draft refusal");
@@ -79,16 +190,17 @@ mod tests {
         assert!(before.len() <= refusal::BYTES);
         assert!(
             matches!(existing(&path, &digest, &name), Existing::Unknown(_)),
-            "negative UUIDs cannot replay"
+            "negative evidence is never a submitted acknowledgement"
         );
         let mut duplicate = witness(&root, "replacement reason");
         duplicate.request_id = record["request_id"].as_str().unwrap().into();
         duplicate.receipts = path.clone();
         assert!(matches!(
             remember_before_input(false, duplicate, true),
-            Failure::Unknown(_)
+            Failure::NotOffered(_)
         ));
-        assert_eq!(fs::read(&path).unwrap(), before);
+        let renewed: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(renewed["reason"], "replacement reason");
         for (typed, retain) in [(true, true), (false, false)] {
             let w = witness(&root, "never a public pre-input negative");
             let path = w.receipts.clone();
@@ -114,5 +226,126 @@ mod tests {
             fs::read(root.join("input_receipts")).unwrap(),
             b"foreign object"
         );
+    }
+
+    fn request(w: &NotOffered) -> Request {
+        Request {
+            request_id: w.request_id.clone(),
+            text: "same original message".into(),
+            expected_run_id: w.run_id.clone(),
+            expected_conversation_id: w.conversation_id.clone(),
+            attachments: vec![],
+            expected_compaction_id: String::new(),
+        }
+    }
+
+    #[test]
+    fn only_an_exact_public_negative_may_retry_and_all_other_records_keep_their_behavior() {
+        let private = tempfile::tempdir().unwrap();
+        let root = private.path().canonicalize().unwrap();
+        let w = witness(&root, "a real composer draft");
+        remember(&w).unwrap();
+        let original: Value = serde_json::from_slice(&fs::read(&w.receipts).unwrap()).unwrap();
+        let inspect = |public| {
+            admit(
+                &w.receipts,
+                &w.digest,
+                &w.name,
+                &w.request_id,
+                &request(&w),
+                public,
+            )
+        };
+        assert!(matches!(inspect(true), Existing::Absent));
+        assert!(
+            matches!(inspect(false), Existing::Unknown(_)),
+            "internal callers keep their contract"
+        );
+        for (key, value) in [
+            ("request_id", json!(uuid::Uuid::new_v4().to_string())),
+            ("name", json!("claude/another-session")),
+            ("run_id", json!("another-run")),
+            ("conversation_id", json!("another-conversation")),
+            ("digest", json!("b".repeat(64))),
+            ("transport", json!("host")),
+            ("first_message", json!(true)),
+            ("refusal_schema", json!(2)),
+            ("status", json!("in_progress")),
+            ("status", json!("preparing")),
+            ("status", json!("unknown")),
+        ] {
+            let mut changed = original.clone();
+            changed[key] = value;
+            let bytes = serde_json::to_vec(&changed).unwrap();
+            fs::write(&w.receipts, &bytes).unwrap();
+            assert!(
+                matches!(inspect(true), Existing::Unknown(_)),
+                "retry accepted different {key}"
+            );
+            assert!(remember(&w).is_err(), "renewal replaced different {key}");
+            assert_eq!(fs::read(&w.receipts).unwrap(), bytes);
+        }
+        let mut submitted = original.clone();
+        submitted["status"] = json!("submitted");
+        fs::write(&w.receipts, submitted.to_string()).unwrap();
+        assert!(matches!(inspect(true), Existing::Submitted(value) if value == submitted));
+        assert!(remember(&w).is_err());
+        for bytes in [
+            b"{unreadable JSON".to_vec(),
+            {
+                let mut large = original.clone();
+                large["additive_field"] = json!("x".repeat(refusal::BYTES));
+                serde_json::to_vec(&large).unwrap()
+            },
+            {
+                let body = original.to_string();
+                format!("{{\"run_id\":\"another-run\",{}", &body[1..]).into_bytes()
+            },
+        ] {
+            fs::write(&w.receipts, &bytes).unwrap();
+            assert!(matches!(inspect(true), Existing::Unknown(_)));
+            assert!(remember(&w).is_err());
+            assert_eq!(fs::read(&w.receipts).unwrap(), bytes);
+        }
+        #[cfg(unix)]
+        {
+            let target = root.join("aliased-refusal.json");
+            fs::write(&target, original.to_string()).unwrap();
+            fs::remove_file(&w.receipts).unwrap();
+            std::os::unix::fs::symlink(&target, &w.receipts).unwrap();
+            assert!(
+                matches!(inspect(true), Existing::Unknown(_)),
+                "aliases are not retry evidence"
+            );
+        }
+    }
+
+    #[test]
+    fn pending_settings_retire_negative_evidence_before_any_possible_input() {
+        let private = tempfile::tempdir().unwrap();
+        let root = private.path().canonicalize().unwrap();
+        let w = witness(&root, "a real composer draft");
+        remember(&w).unwrap();
+        prepare(&w).unwrap();
+        let bytes = fs::read(&w.receipts).unwrap();
+        let record: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(record["status"], "preparing");
+        assert!(record.get("refusal_schema").is_none());
+        assert!(matches!(
+            admit(
+                &w.receipts,
+                &w.digest,
+                &w.name,
+                &w.request_id,
+                &request(&w),
+                true
+            ),
+            Existing::Unknown(_)
+        ));
+        assert!(
+            remember(&w).is_err(),
+            "possible settings input must never become retryable negative evidence"
+        );
+        assert_eq!(fs::read(&w.receipts).unwrap(), bytes);
     }
 }

@@ -59,7 +59,7 @@ class KimiExpiry(unittest.TestCase):
  def send(self,p=None,timeout=40):
   return subprocess.run([str(test_input.HGS),'send',self.name,'--json'],input=json.dumps(p or self.payload()),env=self.env,text=True,capture_output=True,timeout=timeout)
  def receipt(self,p):return json.loads((self.state/'input_receipts'/f"{p['request_id']}.json").read_text())
- def assert_sent_once(self,p,result,status='completed'):
+ def assert_sent_once(self,p,result,status='completed',refused=()):
   self.assertEqual(result.returncode,0,result.stderr)
   receipt=json.loads(result.stdout);self.assertEqual(receipt['request_id'],p['request_id']);self.assertEqual(receipt,self.receipt(p))
   self.assertEqual(receipt['status'],'submitted');self.assertEqual(receipt['pre_send_compaction']['outcome']['status'],status)
@@ -67,7 +67,11 @@ class KimiExpiry(unittest.TestCase):
   self.assertEqual((self.root/'messages').read_text(),p['text']+'\n')
   self.assertEqual(self.received().count(b'/compact'),1)
   before=self.received();again=self.send(p);self.assertEqual(again.returncode,0,again.stderr);self.assertEqual(self.receipt(p),receipt);self.assertEqual(before,self.received())
-  self.assertEqual(len(list((self.state/'input_receipts').glob('*.json'))),1)
+  expected={p['request_id']}
+  for other in refused:
+   test_input.InputTransport.assert_refusal(self,other)
+   expected.add(other['request_id'])
+  self.assertEqual({path.stem for path in (self.state/'input_receipts').glob('*.json')},expected)
  def test_expired_compact_then_send_original_request_once(self):
   p=self.payload(text='kept original message');self.assert_sent_once(p,self.send(p))
  def test_failed_compact_falls_back_to_ordinary_send_once(self):
@@ -116,14 +120,15 @@ class KimiExpiry(unittest.TestCase):
 
  def test_original_and_competing_send_cannot_reenter_during_compaction(self):
   (self.root/'mode').write_text('hold');p=self.payload(text='only this one')
+  competitor=self.payload(text='competitor')
   proc=subprocess.Popen([str(test_input.HGS),'send',self.name,'--json'],stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE,env=self.env,text=True)
   proc.stdin.write(json.dumps(p));proc.stdin.close();proc.stdin=None
   try:
    self.wait_for(lambda:(self.root/'compact-started').exists())
-   for other in [p,self.payload(text='competitor')]:
+   for other in [p,competitor]:
     result=self.send(other);self.assertNotEqual(result.returncode,0,result.stderr)
    self.assertEqual(self.received(),b'/compact  \r');self.assertEqual(self.receipt(p)['status'],'preparing')
   finally:(self.root/'release-compact').touch()
   out,err=proc.communicate(timeout=15);self.assertEqual(proc.returncode,0,err)
-  self.assert_sent_once(p,subprocess.CompletedProcess([],0,out,err))
+  self.assert_sent_once(p,subprocess.CompletedProcess([],0,out,err),refused=(competitor,))
 if __name__=='__main__':unittest.main()

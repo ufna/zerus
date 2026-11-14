@@ -664,9 +664,13 @@ mod tests {
         // post-publication refusal persistence for both kinds of gate.
         let mut original = format!("fn submit_core({body}");
         // The public send's durable negative adds only a retention parameter
-        // and routes the same two live witnesses through its publisher. Keep
+        // and routes the same two live witnesses through its publisher. Exact
+        // negative retries re-enter the guards and retire before settings input. Keep
         // the previous complete core hash and all delivery guards unchanged.
         for (retained, previous) in [
+            ("match refusal::admit(&receipt_path, &digest, name, &request_id, &request, retain_refusal)", "match existing(&receipt_path, &digest, name)"),
+            ("// From here no possible-input receipt existed for this ID.", "// From here no receipt existed for this ID."),
+            ("    if retain_refusal && typed { refusal::prepare(&witness(String::new(), false, None)).map_err(unknown)?; }\n", ""),
             ("    origin: Origin,\n    retain_refusal: bool,\n", "    origin: Origin,\n"),
             ("remember_before_input(typed, witness(reason, false, None), retain_refusal)", "before_input(typed, witness(reason, false, None))"),
             ("remember_before_input(typed, witness(gate.reason(), waiting, dialog), retain_refusal)", "before_input(typed, witness(gate.reason(), waiting, dialog))"),
