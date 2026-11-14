@@ -347,6 +347,7 @@ pub(crate) fn read(state: &Path, team: &str, running: Option<bool>, now: i64) ->
     if !crate::teams::enabled(state) {
         return None;
     }
+    let state = crate::platform::canonical(state).ok()?;
     let directory = state.join("teams");
     if !crate::platform::verify_private(&directory, crate::platform::Private::Directory).ok()? {
         return None;

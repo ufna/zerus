@@ -296,6 +296,8 @@ fn record_handle(config: &Config, team: &str, member: &Member, id: &str, hint: &
     }
 }
 fn connection(config: &Config) -> Result<Connection> {
+    // Location resolves the configured state directory; SQLite still refuses
+    // symlinks below it, including the database leaf.
     let location = Location::new(config).map_err(|_| problem("Fleet location unavailable"))?;
     location
         .check_existing()
