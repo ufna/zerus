@@ -80,10 +80,12 @@ pub fn admission_problems(catalog: &Catalog) -> Vec<Problem> {
     }
     for pipeline in &catalog.pipelines {
         if let Some(mut problem) = id_problem(&pipeline.id, "The pipeline ID") {
+            // A template uses a pipeline as its default or through a seated
+            // role's own pipeline, as its bundle counts it.
             problem.message = match catalog
                 .templates
                 .iter()
-                .find(|t| t.default_pipeline == pipeline.id)
+                .find(|t| used_pipelines(catalog, t).contains(pipeline.id.as_str()))
             {
                 Some(t) => format!("Template {}: {}", t.name, problem.message),
                 None => format!("An unused pipeline: {}", problem.message),
@@ -547,6 +549,46 @@ mod tests {
 
     fn ids<T>(items: &[T], id: impl Fn(&T) -> &str) -> Vec<String> {
         items.iter().map(|item| id(item).to_owned()).collect()
+    }
+
+    #[test]
+    fn a_bad_pipeline_id_names_the_template_whose_seated_role_uses_it() {
+        // zerus-63rru.74 round 4: a pipeline reached only through a seated
+        // role's own pipeline is used by that template, not "unused".
+        let mut catalog = builtin();
+        let mut pipeline = catalog.pipelines[0].clone();
+        pipeline.id = "pipeline id".into();
+        catalog.pipelines.push(pipeline);
+        let mut role = catalog.roles[0].clone();
+        role.id = "own".into();
+        role.pipeline = "pipeline id".into();
+        catalog.roles.push(role);
+        let template = catalog.templates[0].name.clone();
+        catalog.templates[0].roster.push(Seat {
+            role: "own".into(),
+            count: 1,
+            optional: false,
+        });
+        let problems = admission_problems(&catalog);
+        let message = problems
+            .iter()
+            .map(|problem| problem.message.as_str())
+            .find(|message| message.contains("pipeline ID"))
+            .expect("the pipeline ID is refused");
+        assert!(
+            message.starts_with(&format!("Template {template}: ")),
+            "{message}"
+        );
+
+        // Unseated, the same role no longer uses it: the pipeline is unused.
+        catalog.templates[0].roster.pop();
+        let problems = admission_problems(&catalog);
+        let message = problems
+            .iter()
+            .map(|problem| problem.message.as_str())
+            .find(|message| message.contains("pipeline ID"))
+            .expect("the pipeline ID is refused");
+        assert!(message.starts_with("An unused pipeline: "), "{message}");
     }
 
     #[test]
