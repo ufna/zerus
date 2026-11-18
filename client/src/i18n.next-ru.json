@@ -2107,6 +2107,7 @@
   "The selected text is on the clipboard": "Выделенный текст скопирован в буфер обмена",
   "The selection is not confirmed. Check the original action in the Team tab.": "Выбор не подтверждён. Проверьте исходное действие на вкладке команды.",
   "The service closed reopen notices that no longer need the lead's attention": "Служба закрыла уведомления о повторном открытии, которые больше не требуют внимания лида",
+  "The service confirmed a member's Codex hook review under the team's trust setting": "Служба подтвердила проверку доверия к хукам Codex участника по настройке доверия команды",
   "The session ID is on the clipboard": "ID сессии скопирован в буфер обмена",
   "The session changed. Refresh it and try again.": "Сессия изменилась. Обновите её и попробуйте снова.",
   "The session has no confirmed conversation yet.": "У сессии ещё нет подтверждённого разговора.",
