@@ -163,6 +163,11 @@ mod tests {
         let q = crate::state::trust_fixture::startup_card("claude");
         let mut p = json!({"host":"machine-1","session":"claude/example/member","provider":"claude","question":q});
         assert_eq!(begin(&mut db, &p).unwrap()["eligible"], false);
+        // The hooks kind admits only Codex's own hooks card (zerus-f67qp).
+        assert_eq!(
+            begin_team(&mut db, &p, TeamKind::HookTrust).unwrap()["eligible"],
+            false
+        );
         let trust = begin_team(&mut db, &p, TeamKind::FolderTrust).unwrap();
         assert_eq!(trust["fresh"], true);
         assert_eq!(
