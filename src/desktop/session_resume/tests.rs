@@ -2634,6 +2634,9 @@ else:
         const CASE: &str = "HGS_TEST_SESSION_RESUME_REAL_CASE";
         /// Names the CLI image the child's runtime pins.
         const PINNED: &str = "HGS_TEST_SESSION_RESUME_REAL_PINNED";
+        /// Name the tmux program and the private socket the parent owns.
+        const TMUX_PROGRAM: &str = "HGS_TEST_SESSION_RESUME_REAL_TMUX";
+        const SOCKET: &str = "HGS_TEST_SESSION_RESUME_REAL_SOCKET";
         /// The pin's own bound on an image (`Pin::open`).
         const PIN_BYTES: u64 = 256 << 20;
         const PROMPT: &str = "❯ ";
@@ -2673,6 +2676,26 @@ else:
             assert!(std::fs::metadata(&copy).unwrap().len() <= PIN_BYTES);
             copy
         }
+        /// The first `name` on the parent's own PATH.
+        fn on_path(name: &str) -> PathBuf {
+            std::env::split_paths(&std::env::var_os("PATH").unwrap())
+                .map(|dir| dir.join(name))
+                .find(|path| crate::platform::executable(path))
+                .unwrap_or_else(|| panic!("{name} is required"))
+        }
+        /// Ends the private tmux server, and every pane in it, on any exit.
+        struct Server(PathBuf, PathBuf);
+        impl Drop for Server {
+            fn drop(&mut self) {
+                if self.1.exists() {
+                    let _ = Command::new(&self.0)
+                        .arg("-S")
+                        .arg(&self.1)
+                        .args(["-f", "/dev/null", "kill-server"])
+                        .output();
+                }
+            }
+        }
         fn fake_agent(cli: &Path) -> PathBuf {
             std::env::var_os("HGS_TEST_FAKE_AGENT")
                 .map(PathBuf::from)
@@ -2697,6 +2720,7 @@ else:
                 agent.display()
             );
             let pinned = pinnable(&cli);
+            let program = on_path("tmux");
             // A tmux socket path must stay short.
             let base = ["/dev/shm", "/tmp"]
                 .into_iter()
@@ -2710,6 +2734,8 @@ else:
                     .unwrap();
                 let tmp = dir.path().join("t");
                 std::fs::create_dir(&tmp).unwrap();
+                // Whatever happens, the private server and its panes end.
+                let server = Server(program.clone(), dir.path().join("tmux.sock"));
                 let mut command = Command::new(std::env::current_exe().unwrap());
                 command
                     .args([
@@ -2734,25 +2760,12 @@ else:
                     .env("TMPDIR", &tmp)
                     .env("HGS_TEST_BIN", &cli)
                     .env(PINNED, &pinned)
+                    .env(TMUX_PROGRAM, &server.0)
+                    .env(SOCKET, &server.1)
                     .env("HGS_TEST_FAKE_AGENT", &agent)
                     .output()
                     .unwrap();
-                // Whatever happened, the private server and its panes end.
-                let socket = tmp
-                    .read_dir()
-                    .ok()
-                    .into_iter()
-                    .flatten()
-                    .flatten()
-                    .map(|entry| entry.path().join("tmux.sock"))
-                    .find(|path| path.exists());
-                if let Some(socket) = socket {
-                    let _ = Command::new("tmux")
-                        .arg("-S")
-                        .arg(&socket)
-                        .args(["-f", "/dev/null", "kill-server"])
-                        .output();
-                }
+                drop(server);
                 let stdout = String::from_utf8_lossy(&output.stdout);
                 println!("case {case}:\n{stdout}");
                 assert!(
@@ -2825,12 +2838,19 @@ else:
                 std::fs::write(bin.join(name), text).unwrap();
                 mode(&bin.join(name), 0o755);
             };
-            // Only this private socket, never the person's server.
+            // Only the parent's private socket, never the person's server.
+            let server = Server(
+                std::env::var_os(TMUX_PROGRAM)
+                    .expect("set by the parent")
+                    .into(),
+                std::env::var_os(SOCKET).expect("set by the parent").into(),
+            );
             script(
                 "tmux",
                 format!(
-                    "#!/bin/sh\nexec /usr/bin/tmux -S {} -f /dev/null \"$@\"\n",
-                    root.join("tmux.sock").display()
+                    "#!/bin/sh\nexec {} -S {} -f /dev/null \"$@\"\n",
+                    server.0.display(),
+                    server.1.display()
                 ),
             );
             script(
@@ -3067,7 +3087,7 @@ else:
                 }
                 other => panic!("unknown case {other}"),
             }
-            tmux(&["kill-server"]);
+            drop(server);
             println!("SESSION_RESUME_REAL_EXECUTED={case}");
         }
     }
