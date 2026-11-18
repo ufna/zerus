@@ -27,7 +27,8 @@ else:
 if args[3] == "model-settings":
     print(json.dumps({"account_id": profile["id"], "provider": profile["provider"], "revision": catalog["revision"],
         "models": [{"id": "model-a", "label": "Example model", "effort_options": ["low", "high"]}],
-        "effort_supported": True, "defaults": profile.get("model_defaults", {"model": "", "effort": ""}),
+        # As the real CLI (src/accounts/model_defaults.rs effort_supported): Kimi keeps effort native.
+        "effort_supported": profile["provider"] in ("codex", "claude", "dsh"), "defaults": profile.get("model_defaults", {"model": "", "effort": ""}),
         "provider_defaults": {"model": "model-a", "effort": "low"}}))
     sys.exit()
 assert args[args.index("--revision") + 1] == catalog["revision"]

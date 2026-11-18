@@ -616,6 +616,14 @@ export async function accountEditOpen(account: string, profile: string, kind: Ac
   if (!inTauri()) throw new Error(DESKTOP_ONLY);
   return invoke("account_edit_open", { account, profile, kind });
 }
+/** Teams Add member and Swap (zerus-efeo3 G16): one local account's model
+ * catalog, the one Default model and effort reads. Read only; the native side
+ * keeps it for the accounts revision it was read at. */
+export interface MemberModels { account: string; revision: string; catalog: AccountModelCatalog }
+export async function teamMemberModels(agent: string, account: string): Promise<MemberModels> {
+  if (!inTauri()) throw new Error(DESKTOP_ONLY);
+  return invoke("team_member_models", { agent, account });
+}
 export async function accountEditApply(handle: string, values: AccountEditValues): Promise<AccountEditResult> {
   if (!inTauri()) throw new Error(DESKTOP_ONLY);
   return invoke("account_edit_apply", { request: { handle, ...values } });

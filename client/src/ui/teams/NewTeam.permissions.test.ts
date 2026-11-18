@@ -9,7 +9,7 @@ import { afterEach, expect, it, vi } from "vitest";
 import { createComponent, createSignal } from "solid-js";
 import { render } from "solid-js/web";
 import { NewTeam, pipelineLines, settingLines, type NewTeamInput } from "./NewTeam";
-import { catalog as fixture } from "./fixtures";
+import { catalog as fixture, projectsView } from "./fixtures";
 import type { TeamCatalog, TeamCatalogTemplate } from "../../store/teams";
 
 let dispose: (() => void) | undefined;
@@ -23,7 +23,7 @@ function setup(start: TeamCatalog = fixture) {
   document.body.append(host);
   dispose = render(() => createComponent(NewTeam, {
     get catalog() { return catalog(); }, busy: false, machineId: "00000000-0000-4000-8000-0000000000aa",
-    defaultProject: "example-project", defaultFolder: "/workspace/example",
+    defaultProject: "", defaultFolder: "/workspace/example", projects: projectsView.projects,
     onCheckFolder: async () => ({ git: true, head: "0123456789abcdef0123456789abcdef01234567", branch: "main", reason: "" }),
     onCreate: async (input) => { created.push(input); return { outcome: "done", receipt: {}, request_id: input.request_id }; },
     // As the store does: the save, then the command line's catalog read, which gives the saved template its digest.
@@ -120,7 +120,7 @@ it("a catalog read's or a template save's refusal is shown without its code", as
   document.body.append(host);
   dispose = render(() => createComponent(NewTeam, {
     catalog: fixture, catalogError: "store_busy: The team store is busy. Nothing was written; try again.", busy: false,
-    machineId: "00000000-0000-4000-8000-0000000000aa", defaultProject: "example-project", defaultFolder: "/workspace/example",
+    machineId: "00000000-0000-4000-8000-0000000000aa", defaultProject: "", defaultFolder: "/workspace/example", projects: projectsView.projects,
     onCheckFolder: async () => ({ git: true, head: "0123456789abcdef0123456789abcdef01234567", branch: "main", reason: "" }),
     onCreate: async (input) => ({ outcome: "done", receipt: {}, request_id: input.request_id }),
     onSaveTemplate: async (template) => { failing.push(template); throw "invalid_state: The built-in template is read-only."; },

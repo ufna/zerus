@@ -35,13 +35,14 @@ type Store = typeof import("../../store/teams");
 let store: Store["teams"];
 let NewTeam: typeof import("./NewTeam").NewTeam;
 let catalog: typeof import("./fixtures").catalog;
+let projectsView: typeof import("./fixtures").projectsView;
 const disposers: (() => void)[] = [];
 
 beforeEach(async () => {
   vi.resetModules();
   ({ teams: store } = await import("../../store/teams"));
   ({ NewTeam } = await import("./NewTeam"));
-  ({ catalog } = await import("./fixtures"));
+  ({ catalog, projectsView } = await import("./fixtures"));
   f.acts = []; f.again = []; f.dismissed = [];
   f.act = (call) => Promise.resolve({ outcome: "uncertain", detail: "reply lost", request_id: call.request_id });
   f.actAgain = (call) => Promise.resolve({ outcome: "uncertain", detail: "still unknown", request_id: call.request_id });
@@ -55,7 +56,7 @@ function open(closed = vi.fn()) {
   document.body.append(host);
   disposers.push(render(() => createComponent(NewTeam, {
     catalog, get busy() { return store.busy(); }, machineId: "00000000-0000-4000-8000-0000000000aa",
-    defaultProject: "example-project", defaultFolder: "/workspace/example",
+    defaultProject: "", defaultFolder: "/workspace/example", projects: projectsView.projects,
     onCheckFolder: (path) => store.project(path),
     onCreate: (input) => store.run({ team: input.team, team_name: input.name, request_id: input.request_id, action: { kind: "create", name: input.name } }, "new-team"),
     onSaveTemplate: async () => {}, onClose: closed,
@@ -139,7 +140,7 @@ it("a form whose busy flag says nothing still locks while its create is in fligh
   const host = document.createElement("div");
   document.body.append(host);
   disposers.push(render(() => createComponent(NewTeam, {
-    catalog, busy: false, machineId: "00000000-0000-4000-8000-0000000000aa", defaultProject: "example-project", defaultFolder: "/workspace/example",
+    catalog, busy: false, machineId: "00000000-0000-4000-8000-0000000000aa", defaultProject: "", defaultFolder: "/workspace/example", projects: projectsView.projects,
     onCheckFolder: (path) => store.project(path), onCreate: async () => { throw new Error("no second create"); }, onSaveTemplate: async () => {}, onClose: () => {},
   }), host));
   expect((host.querySelector("[data-check-folder]") as HTMLButtonElement).disabled).toBe(true);

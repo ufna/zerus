@@ -1,0 +1,1254 @@
+{
+  "binding_evidence": [
+    {
+      "host": "",
+      "provider": "claude",
+      "id": "claude-work",
+      "home": "/home/example/claude-work",
+      "group": "account:claude\nemail:claude-work@example.com\n"
+    },
+    {
+      "host": "",
+      "provider": "claude",
+      "id": "claude-spare",
+      "home": "/home/example/claude-spare",
+      "group": "profile:\u001fclaude-spare"
+    },
+    {
+      "host": "",
+      "provider": "kimi",
+      "id": "kimi-work",
+      "home": "/home/example/kimi-work",
+      "group": "account:kimi\nemail:kimi-work@example.com\n"
+    },
+    {
+      "host": "",
+      "provider": "codex",
+      "id": "codex-work",
+      "home": "/home/example/codex-work",
+      "group": "account:codex\nemail:codex-work@example.com\n"
+    }
+  ],
+  "binding_evidence_complete": true,
+  "catalog_loading": false,
+  "hosts": [
+    {
+      "computer": "",
+      "name": "workstation",
+      "label": "workstation (this machine)",
+      "online": true
+    }
+  ],
+  "accounts": [
+    {
+      "key": "account:claude\nemail:claude-work@example.com\n",
+      "label": "Work",
+      "provider": "claude",
+      "installed": true,
+      "machines": [
+        "workstation"
+      ],
+      "members": [
+        {
+          "key": "\u001fclaude-work",
+          "host": "",
+          "machine": "workstation",
+          "id": "claude-work",
+          "label": "Work",
+          "provider": "claude",
+          "native": false,
+          "installed": true,
+          "is_default": false,
+          "home": "/home/example/claude-work",
+          "auth_revision": "a1",
+          "online": true,
+          "state": "ready",
+          "detail": {
+            "source": "Ready on %1.",
+            "args": [
+              {
+                "kind": "verbatim",
+                "value": "workstation"
+              }
+            ]
+          },
+          "signed_in": true,
+          "permission": "unknown",
+          "permission_mode": "provider",
+          "permission_default": false,
+          "permission_label": {
+            "source": "Unverified"
+          },
+          "permission_hint": {
+            "source": "%1\n%2\n%3",
+            "args": [
+              {
+                "kind": "text",
+                "value": {
+                  "source": "From provider settings"
+                }
+              },
+              {
+                "kind": "text",
+                "value": {
+                  "source": "Provider defaults have not been verified."
+                }
+              },
+              {
+                "kind": "text",
+                "value": {
+                  "source": "Applies to new and resumed sessions; a running session may use a different mode."
+                }
+              }
+            ]
+          },
+          "model_supported": false,
+          "compact_on_expiry_supported": false,
+          "compact_on_expiry": true,
+          "model_text": {
+            "source": "New sessions: Provider settings"
+          },
+          "model": "",
+          "effort": "",
+          "permission_scope": "",
+          "mark_color": "",
+          "mark_emoji": "",
+          "marks_supported": false,
+          "usage": {
+            "id": "claude-work",
+            "status": "ok",
+            "provider": "claude",
+            "label": "Work",
+            "auth_status": "",
+            "checked_at": null,
+            "retry_at": null,
+            "identity": {
+              "email": "claude-work@example.com",
+              "name": "",
+              "plan": "",
+              "organization": "",
+              "account_id": "",
+              "auth_method": ""
+            },
+            "windows": [],
+            "balances": [],
+            "balance_available": null,
+            "spend": null,
+            "local_usage": null,
+            "credits": null,
+            "refreshing": false,
+            "refresh_error": false,
+            "offline": false,
+            "seeded": false
+          },
+          "opencode": null
+        }
+      ],
+      "usage": {
+        "id": "claude-work",
+        "status": "ok",
+        "provider": "claude",
+        "label": "Work",
+        "auth_status": "",
+        "checked_at": null,
+        "retry_at": null,
+        "identity": {
+          "email": "claude-work@example.com",
+          "name": "",
+          "plan": "",
+          "organization": "",
+          "account_id": "",
+          "auth_method": ""
+        },
+        "windows": [],
+        "balances": [],
+        "balance_available": null,
+        "spend": null,
+        "local_usage": null,
+        "credits": null,
+        "refreshing": false,
+        "refresh_error": false,
+        "offline": false,
+        "seeded": false
+      },
+      "permission": {
+        "source": "Unverified"
+      },
+      "permissions_per_computer": false,
+      "model_differs": false,
+      "permission_differs": false,
+      "identity_lines": [
+        {
+          "source": "%1",
+          "args": [
+            {
+              "kind": "verbatim",
+              "value": "claude-work@example.com"
+            }
+          ]
+        }
+      ],
+      "identity_note": null
+    },
+    {
+      "key": "profile:\u001fclaude-spare",
+      "label": "Spare",
+      "provider": "claude",
+      "installed": true,
+      "machines": [
+        "workstation"
+      ],
+      "members": [
+        {
+          "key": "\u001fclaude-spare",
+          "host": "",
+          "machine": "workstation",
+          "id": "claude-spare",
+          "label": "Spare",
+          "provider": "claude",
+          "native": false,
+          "installed": true,
+          "is_default": false,
+          "home": "/home/example/claude-spare",
+          "auth_revision": "a1",
+          "online": true,
+          "state": "signed-out",
+          "detail": {
+            "source": "Sign in on %1 to use this account.",
+            "args": [
+              {
+                "kind": "verbatim",
+                "value": "workstation"
+              }
+            ]
+          },
+          "signed_in": false,
+          "permission": "unknown",
+          "permission_mode": "provider",
+          "permission_default": false,
+          "permission_label": {
+            "source": "Unverified"
+          },
+          "permission_hint": {
+            "source": "%1\n%2\n%3",
+            "args": [
+              {
+                "kind": "text",
+                "value": {
+                  "source": "From provider settings"
+                }
+              },
+              {
+                "kind": "text",
+                "value": {
+                  "source": "Provider defaults have not been verified."
+                }
+              },
+              {
+                "kind": "text",
+                "value": {
+                  "source": "Applies to new and resumed sessions; a running session may use a different mode."
+                }
+              }
+            ]
+          },
+          "model_supported": false,
+          "compact_on_expiry_supported": false,
+          "compact_on_expiry": true,
+          "model_text": {
+            "source": "New sessions: Provider settings"
+          },
+          "model": "",
+          "effort": "",
+          "permission_scope": "",
+          "mark_color": "",
+          "mark_emoji": "",
+          "marks_supported": false,
+          "usage": {
+            "id": "claude-spare",
+            "status": "signed_out",
+            "provider": "claude",
+            "label": "Spare",
+            "auth_status": "",
+            "checked_at": null,
+            "retry_at": null,
+            "identity": {
+              "email": "claude-spare@example.com",
+              "name": "",
+              "plan": "",
+              "organization": "",
+              "account_id": "",
+              "auth_method": ""
+            },
+            "windows": [],
+            "balances": [],
+            "balance_available": null,
+            "spend": null,
+            "local_usage": null,
+            "credits": null,
+            "refreshing": false,
+            "refresh_error": false,
+            "offline": false,
+            "seeded": false
+          },
+          "opencode": null
+        }
+      ],
+      "usage": {
+        "id": "claude-spare",
+        "status": "signed_out",
+        "provider": "claude",
+        "label": "Spare",
+        "auth_status": "",
+        "checked_at": null,
+        "retry_at": null,
+        "identity": {
+          "email": "claude-spare@example.com",
+          "name": "",
+          "plan": "",
+          "organization": "",
+          "account_id": "",
+          "auth_method": ""
+        },
+        "windows": [],
+        "balances": [],
+        "balance_available": null,
+        "spend": null,
+        "local_usage": null,
+        "credits": null,
+        "refreshing": false,
+        "refresh_error": false,
+        "offline": false,
+        "seeded": false
+      },
+      "permission": {
+        "source": "Unverified"
+      },
+      "permissions_per_computer": false,
+      "model_differs": false,
+      "permission_differs": false,
+      "identity_lines": [
+        {
+          "source": "%1",
+          "args": [
+            {
+              "kind": "verbatim",
+              "value": "claude-spare@example.com"
+            }
+          ]
+        }
+      ],
+      "identity_note": null
+    },
+    {
+      "key": "account:kimi\nemail:kimi-work@example.com\n",
+      "label": "Kimi work",
+      "provider": "kimi",
+      "installed": true,
+      "machines": [
+        "workstation"
+      ],
+      "members": [
+        {
+          "key": "\u001fkimi-work",
+          "host": "",
+          "machine": "workstation",
+          "id": "kimi-work",
+          "label": "Kimi work",
+          "provider": "kimi",
+          "native": false,
+          "installed": true,
+          "is_default": false,
+          "home": "/home/example/kimi-work",
+          "auth_revision": "a1",
+          "online": true,
+          "state": "ready",
+          "detail": {
+            "source": "Ready on %1.",
+            "args": [
+              {
+                "kind": "verbatim",
+                "value": "workstation"
+              }
+            ]
+          },
+          "signed_in": true,
+          "permission": "unknown",
+          "permission_mode": "provider",
+          "permission_default": false,
+          "permission_label": {
+            "source": "Unverified"
+          },
+          "permission_hint": {
+            "source": "%1\n%2\n%3",
+            "args": [
+              {
+                "kind": "text",
+                "value": {
+                  "source": "From provider settings"
+                }
+              },
+              {
+                "kind": "text",
+                "value": {
+                  "source": "Provider defaults have not been verified."
+                }
+              },
+              {
+                "kind": "text",
+                "value": {
+                  "source": "Applies to new and resumed sessions; a running session may use a different mode."
+                }
+              }
+            ]
+          },
+          "model_supported": false,
+          "compact_on_expiry_supported": false,
+          "compact_on_expiry": true,
+          "model_text": {
+            "source": "New sessions: Provider settings"
+          },
+          "model": "",
+          "effort": "",
+          "permission_scope": "",
+          "mark_color": "",
+          "mark_emoji": "",
+          "marks_supported": false,
+          "usage": {
+            "id": "kimi-work",
+            "status": "ok",
+            "provider": "kimi",
+            "label": "Kimi work",
+            "auth_status": "",
+            "checked_at": null,
+            "retry_at": null,
+            "identity": {
+              "email": "kimi-work@example.com",
+              "name": "",
+              "plan": "",
+              "organization": "",
+              "account_id": "",
+              "auth_method": ""
+            },
+            "windows": [],
+            "balances": [],
+            "balance_available": null,
+            "spend": null,
+            "local_usage": null,
+            "credits": null,
+            "refreshing": false,
+            "refresh_error": false,
+            "offline": false,
+            "seeded": false
+          },
+          "opencode": null
+        }
+      ],
+      "usage": {
+        "id": "kimi-work",
+        "status": "ok",
+        "provider": "kimi",
+        "label": "Kimi work",
+        "auth_status": "",
+        "checked_at": null,
+        "retry_at": null,
+        "identity": {
+          "email": "kimi-work@example.com",
+          "name": "",
+          "plan": "",
+          "organization": "",
+          "account_id": "",
+          "auth_method": ""
+        },
+        "windows": [],
+        "balances": [],
+        "balance_available": null,
+        "spend": null,
+        "local_usage": null,
+        "credits": null,
+        "refreshing": false,
+        "refresh_error": false,
+        "offline": false,
+        "seeded": false
+      },
+      "permission": {
+        "source": "Unverified"
+      },
+      "permissions_per_computer": false,
+      "model_differs": false,
+      "permission_differs": false,
+      "identity_lines": [
+        {
+          "source": "%1",
+          "args": [
+            {
+              "kind": "verbatim",
+              "value": "kimi-work@example.com"
+            }
+          ]
+        }
+      ],
+      "identity_note": null
+    },
+    {
+      "key": "account:codex\nemail:codex-work@example.com\n",
+      "label": "Codex work",
+      "provider": "codex",
+      "installed": true,
+      "machines": [
+        "workstation"
+      ],
+      "members": [
+        {
+          "key": "\u001fcodex-work",
+          "host": "",
+          "machine": "workstation",
+          "id": "codex-work",
+          "label": "Codex work",
+          "provider": "codex",
+          "native": false,
+          "installed": true,
+          "is_default": false,
+          "home": "/home/example/codex-work",
+          "auth_revision": "a1",
+          "online": true,
+          "state": "ready",
+          "detail": {
+            "source": "Ready on %1.",
+            "args": [
+              {
+                "kind": "verbatim",
+                "value": "workstation"
+              }
+            ]
+          },
+          "signed_in": true,
+          "permission": "unknown",
+          "permission_mode": "provider",
+          "permission_default": false,
+          "permission_label": {
+            "source": "Unverified"
+          },
+          "permission_hint": {
+            "source": "%1\n%2\n%3",
+            "args": [
+              {
+                "kind": "text",
+                "value": {
+                  "source": "From provider settings"
+                }
+              },
+              {
+                "kind": "text",
+                "value": {
+                  "source": "Provider defaults have not been verified."
+                }
+              },
+              {
+                "kind": "text",
+                "value": {
+                  "source": "Applies to new and resumed sessions; a running session may use a different mode."
+                }
+              }
+            ]
+          },
+          "model_supported": false,
+          "compact_on_expiry_supported": false,
+          "compact_on_expiry": true,
+          "model_text": {
+            "source": "New sessions: Provider settings"
+          },
+          "model": "",
+          "effort": "",
+          "permission_scope": "",
+          "mark_color": "",
+          "mark_emoji": "",
+          "marks_supported": false,
+          "usage": {
+            "id": "codex-work",
+            "status": "ok",
+            "provider": "codex",
+            "label": "Codex work",
+            "auth_status": "",
+            "checked_at": null,
+            "retry_at": null,
+            "identity": {
+              "email": "codex-work@example.com",
+              "name": "",
+              "plan": "",
+              "organization": "",
+              "account_id": "",
+              "auth_method": ""
+            },
+            "windows": [],
+            "balances": [],
+            "balance_available": null,
+            "spend": null,
+            "local_usage": null,
+            "credits": null,
+            "refreshing": false,
+            "refresh_error": false,
+            "offline": false,
+            "seeded": false
+          },
+          "opencode": null
+        }
+      ],
+      "usage": {
+        "id": "codex-work",
+        "status": "ok",
+        "provider": "codex",
+        "label": "Codex work",
+        "auth_status": "",
+        "checked_at": null,
+        "retry_at": null,
+        "identity": {
+          "email": "codex-work@example.com",
+          "name": "",
+          "plan": "",
+          "organization": "",
+          "account_id": "",
+          "auth_method": ""
+        },
+        "windows": [],
+        "balances": [],
+        "balance_available": null,
+        "spend": null,
+        "local_usage": null,
+        "credits": null,
+        "refreshing": false,
+        "refresh_error": false,
+        "offline": false,
+        "seeded": false
+      },
+      "permission": {
+        "source": "Unverified"
+      },
+      "permissions_per_computer": false,
+      "model_differs": false,
+      "permission_differs": false,
+      "identity_lines": [
+        {
+          "source": "%1",
+          "args": [
+            {
+              "kind": "verbatim",
+              "value": "codex-work@example.com"
+            }
+          ]
+        }
+      ],
+      "identity_note": null
+    }
+  ],
+  "overview": [
+    {
+      "key": "account:claude\nemail:claude-work@example.com\n",
+      "label": "Work",
+      "provider": "claude",
+      "installed": true,
+      "machines": [
+        "workstation"
+      ],
+      "members": [
+        {
+          "key": "\u001fclaude-work",
+          "host": "",
+          "machine": "workstation",
+          "id": "claude-work",
+          "label": "Work",
+          "provider": "claude",
+          "native": false,
+          "installed": true,
+          "is_default": false,
+          "home": "/home/example/claude-work",
+          "auth_revision": "a1",
+          "online": true,
+          "state": "ready",
+          "detail": {
+            "source": "Ready on %1.",
+            "args": [
+              {
+                "kind": "verbatim",
+                "value": "workstation"
+              }
+            ]
+          },
+          "signed_in": true,
+          "permission": "unknown",
+          "permission_mode": "provider",
+          "permission_default": false,
+          "permission_label": {
+            "source": "Unverified"
+          },
+          "permission_hint": {
+            "source": "%1\n%2\n%3",
+            "args": [
+              {
+                "kind": "text",
+                "value": {
+                  "source": "From provider settings"
+                }
+              },
+              {
+                "kind": "text",
+                "value": {
+                  "source": "Provider defaults have not been verified."
+                }
+              },
+              {
+                "kind": "text",
+                "value": {
+                  "source": "Applies to new and resumed sessions; a running session may use a different mode."
+                }
+              }
+            ]
+          },
+          "model_supported": false,
+          "compact_on_expiry_supported": false,
+          "compact_on_expiry": true,
+          "model_text": {
+            "source": "New sessions: Provider settings"
+          },
+          "model": "",
+          "effort": "",
+          "permission_scope": "",
+          "mark_color": "",
+          "mark_emoji": "",
+          "marks_supported": false,
+          "usage": {
+            "id": "claude-work",
+            "status": "ok",
+            "provider": "claude",
+            "label": "Work",
+            "auth_status": "",
+            "checked_at": null,
+            "retry_at": null,
+            "identity": {
+              "email": "claude-work@example.com",
+              "name": "",
+              "plan": "",
+              "organization": "",
+              "account_id": "",
+              "auth_method": ""
+            },
+            "windows": [],
+            "balances": [],
+            "balance_available": null,
+            "spend": null,
+            "local_usage": null,
+            "credits": null,
+            "refreshing": false,
+            "refresh_error": false,
+            "offline": false,
+            "seeded": false
+          },
+          "opencode": null
+        }
+      ],
+      "usage": {
+        "id": "claude-work",
+        "status": "ok",
+        "provider": "claude",
+        "label": "Work",
+        "auth_status": "",
+        "checked_at": null,
+        "retry_at": null,
+        "identity": {
+          "email": "claude-work@example.com",
+          "name": "",
+          "plan": "",
+          "organization": "",
+          "account_id": "",
+          "auth_method": ""
+        },
+        "windows": [],
+        "balances": [],
+        "balance_available": null,
+        "spend": null,
+        "local_usage": null,
+        "credits": null,
+        "refreshing": false,
+        "refresh_error": false,
+        "offline": false,
+        "seeded": false
+      },
+      "permission": {
+        "source": "Unverified"
+      },
+      "permissions_per_computer": false,
+      "model_differs": false,
+      "permission_differs": false,
+      "identity_lines": [
+        {
+          "source": "%1",
+          "args": [
+            {
+              "kind": "verbatim",
+              "value": "claude-work@example.com"
+            }
+          ]
+        }
+      ],
+      "identity_note": null
+    },
+    {
+      "key": "profile:\u001fclaude-spare",
+      "label": "Spare",
+      "provider": "claude",
+      "installed": true,
+      "machines": [
+        "workstation"
+      ],
+      "members": [
+        {
+          "key": "\u001fclaude-spare",
+          "host": "",
+          "machine": "workstation",
+          "id": "claude-spare",
+          "label": "Spare",
+          "provider": "claude",
+          "native": false,
+          "installed": true,
+          "is_default": false,
+          "home": "/home/example/claude-spare",
+          "auth_revision": "a1",
+          "online": true,
+          "state": "signed-out",
+          "detail": {
+            "source": "Sign in on %1 to use this account.",
+            "args": [
+              {
+                "kind": "verbatim",
+                "value": "workstation"
+              }
+            ]
+          },
+          "signed_in": false,
+          "permission": "unknown",
+          "permission_mode": "provider",
+          "permission_default": false,
+          "permission_label": {
+            "source": "Unverified"
+          },
+          "permission_hint": {
+            "source": "%1\n%2\n%3",
+            "args": [
+              {
+                "kind": "text",
+                "value": {
+                  "source": "From provider settings"
+                }
+              },
+              {
+                "kind": "text",
+                "value": {
+                  "source": "Provider defaults have not been verified."
+                }
+              },
+              {
+                "kind": "text",
+                "value": {
+                  "source": "Applies to new and resumed sessions; a running session may use a different mode."
+                }
+              }
+            ]
+          },
+          "model_supported": false,
+          "compact_on_expiry_supported": false,
+          "compact_on_expiry": true,
+          "model_text": {
+            "source": "New sessions: Provider settings"
+          },
+          "model": "",
+          "effort": "",
+          "permission_scope": "",
+          "mark_color": "",
+          "mark_emoji": "",
+          "marks_supported": false,
+          "usage": {
+            "id": "claude-spare",
+            "status": "signed_out",
+            "provider": "claude",
+            "label": "Spare",
+            "auth_status": "",
+            "checked_at": null,
+            "retry_at": null,
+            "identity": {
+              "email": "claude-spare@example.com",
+              "name": "",
+              "plan": "",
+              "organization": "",
+              "account_id": "",
+              "auth_method": ""
+            },
+            "windows": [],
+            "balances": [],
+            "balance_available": null,
+            "spend": null,
+            "local_usage": null,
+            "credits": null,
+            "refreshing": false,
+            "refresh_error": false,
+            "offline": false,
+            "seeded": false
+          },
+          "opencode": null
+        }
+      ],
+      "usage": {
+        "id": "claude-spare",
+        "status": "signed_out",
+        "provider": "claude",
+        "label": "Spare",
+        "auth_status": "",
+        "checked_at": null,
+        "retry_at": null,
+        "identity": {
+          "email": "claude-spare@example.com",
+          "name": "",
+          "plan": "",
+          "organization": "",
+          "account_id": "",
+          "auth_method": ""
+        },
+        "windows": [],
+        "balances": [],
+        "balance_available": null,
+        "spend": null,
+        "local_usage": null,
+        "credits": null,
+        "refreshing": false,
+        "refresh_error": false,
+        "offline": false,
+        "seeded": false
+      },
+      "permission": {
+        "source": "Unverified"
+      },
+      "permissions_per_computer": false,
+      "model_differs": false,
+      "permission_differs": false,
+      "identity_lines": [
+        {
+          "source": "%1",
+          "args": [
+            {
+              "kind": "verbatim",
+              "value": "claude-spare@example.com"
+            }
+          ]
+        }
+      ],
+      "identity_note": null
+    },
+    {
+      "key": "account:kimi\nemail:kimi-work@example.com\n",
+      "label": "Kimi work",
+      "provider": "kimi",
+      "installed": true,
+      "machines": [
+        "workstation"
+      ],
+      "members": [
+        {
+          "key": "\u001fkimi-work",
+          "host": "",
+          "machine": "workstation",
+          "id": "kimi-work",
+          "label": "Kimi work",
+          "provider": "kimi",
+          "native": false,
+          "installed": true,
+          "is_default": false,
+          "home": "/home/example/kimi-work",
+          "auth_revision": "a1",
+          "online": true,
+          "state": "ready",
+          "detail": {
+            "source": "Ready on %1.",
+            "args": [
+              {
+                "kind": "verbatim",
+                "value": "workstation"
+              }
+            ]
+          },
+          "signed_in": true,
+          "permission": "unknown",
+          "permission_mode": "provider",
+          "permission_default": false,
+          "permission_label": {
+            "source": "Unverified"
+          },
+          "permission_hint": {
+            "source": "%1\n%2\n%3",
+            "args": [
+              {
+                "kind": "text",
+                "value": {
+                  "source": "From provider settings"
+                }
+              },
+              {
+                "kind": "text",
+                "value": {
+                  "source": "Provider defaults have not been verified."
+                }
+              },
+              {
+                "kind": "text",
+                "value": {
+                  "source": "Applies to new and resumed sessions; a running session may use a different mode."
+                }
+              }
+            ]
+          },
+          "model_supported": false,
+          "compact_on_expiry_supported": false,
+          "compact_on_expiry": true,
+          "model_text": {
+            "source": "New sessions: Provider settings"
+          },
+          "model": "",
+          "effort": "",
+          "permission_scope": "",
+          "mark_color": "",
+          "mark_emoji": "",
+          "marks_supported": false,
+          "usage": {
+            "id": "kimi-work",
+            "status": "ok",
+            "provider": "kimi",
+            "label": "Kimi work",
+            "auth_status": "",
+            "checked_at": null,
+            "retry_at": null,
+            "identity": {
+              "email": "kimi-work@example.com",
+              "name": "",
+              "plan": "",
+              "organization": "",
+              "account_id": "",
+              "auth_method": ""
+            },
+            "windows": [],
+            "balances": [],
+            "balance_available": null,
+            "spend": null,
+            "local_usage": null,
+            "credits": null,
+            "refreshing": false,
+            "refresh_error": false,
+            "offline": false,
+            "seeded": false
+          },
+          "opencode": null
+        }
+      ],
+      "usage": {
+        "id": "kimi-work",
+        "status": "ok",
+        "provider": "kimi",
+        "label": "Kimi work",
+        "auth_status": "",
+        "checked_at": null,
+        "retry_at": null,
+        "identity": {
+          "email": "kimi-work@example.com",
+          "name": "",
+          "plan": "",
+          "organization": "",
+          "account_id": "",
+          "auth_method": ""
+        },
+        "windows": [],
+        "balances": [],
+        "balance_available": null,
+        "spend": null,
+        "local_usage": null,
+        "credits": null,
+        "refreshing": false,
+        "refresh_error": false,
+        "offline": false,
+        "seeded": false
+      },
+      "permission": {
+        "source": "Unverified"
+      },
+      "permissions_per_computer": false,
+      "model_differs": false,
+      "permission_differs": false,
+      "identity_lines": [
+        {
+          "source": "%1",
+          "args": [
+            {
+              "kind": "verbatim",
+              "value": "kimi-work@example.com"
+            }
+          ]
+        }
+      ],
+      "identity_note": null
+    },
+    {
+      "key": "account:codex\nemail:codex-work@example.com\n",
+      "label": "Codex work",
+      "provider": "codex",
+      "installed": true,
+      "machines": [
+        "workstation"
+      ],
+      "members": [
+        {
+          "key": "\u001fcodex-work",
+          "host": "",
+          "machine": "workstation",
+          "id": "codex-work",
+          "label": "Codex work",
+          "provider": "codex",
+          "native": false,
+          "installed": true,
+          "is_default": false,
+          "home": "/home/example/codex-work",
+          "auth_revision": "a1",
+          "online": true,
+          "state": "ready",
+          "detail": {
+            "source": "Ready on %1.",
+            "args": [
+              {
+                "kind": "verbatim",
+                "value": "workstation"
+              }
+            ]
+          },
+          "signed_in": true,
+          "permission": "unknown",
+          "permission_mode": "provider",
+          "permission_default": false,
+          "permission_label": {
+            "source": "Unverified"
+          },
+          "permission_hint": {
+            "source": "%1\n%2\n%3",
+            "args": [
+              {
+                "kind": "text",
+                "value": {
+                  "source": "From provider settings"
+                }
+              },
+              {
+                "kind": "text",
+                "value": {
+                  "source": "Provider defaults have not been verified."
+                }
+              },
+              {
+                "kind": "text",
+                "value": {
+                  "source": "Applies to new and resumed sessions; a running session may use a different mode."
+                }
+              }
+            ]
+          },
+          "model_supported": false,
+          "compact_on_expiry_supported": false,
+          "compact_on_expiry": true,
+          "model_text": {
+            "source": "New sessions: Provider settings"
+          },
+          "model": "",
+          "effort": "",
+          "permission_scope": "",
+          "mark_color": "",
+          "mark_emoji": "",
+          "marks_supported": false,
+          "usage": {
+            "id": "codex-work",
+            "status": "ok",
+            "provider": "codex",
+            "label": "Codex work",
+            "auth_status": "",
+            "checked_at": null,
+            "retry_at": null,
+            "identity": {
+              "email": "codex-work@example.com",
+              "name": "",
+              "plan": "",
+              "organization": "",
+              "account_id": "",
+              "auth_method": ""
+            },
+            "windows": [],
+            "balances": [],
+            "balance_available": null,
+            "spend": null,
+            "local_usage": null,
+            "credits": null,
+            "refreshing": false,
+            "refresh_error": false,
+            "offline": false,
+            "seeded": false
+          },
+          "opencode": null
+        }
+      ],
+      "usage": {
+        "id": "codex-work",
+        "status": "ok",
+        "provider": "codex",
+        "label": "Codex work",
+        "auth_status": "",
+        "checked_at": null,
+        "retry_at": null,
+        "identity": {
+          "email": "codex-work@example.com",
+          "name": "",
+          "plan": "",
+          "organization": "",
+          "account_id": "",
+          "auth_method": ""
+        },
+        "windows": [],
+        "balances": [],
+        "balance_available": null,
+        "spend": null,
+        "local_usage": null,
+        "credits": null,
+        "refreshing": false,
+        "refresh_error": false,
+        "offline": false,
+        "seeded": false
+      },
+      "permission": {
+        "source": "Unverified"
+      },
+      "permissions_per_computer": false,
+      "model_differs": false,
+      "permission_differs": false,
+      "identity_lines": [
+        {
+          "source": "%1",
+          "args": [
+            {
+              "kind": "verbatim",
+              "value": "codex-work@example.com"
+            }
+          ]
+        }
+      ],
+      "identity_note": null
+    }
+  ],
+  "snapshot": true,
+  "loading": false,
+  "pending": 0,
+  "loaded_machines": 1,
+  "busy": false,
+  "notices": [],
+  "truncated": 0,
+  "no_hosts": null
+}

@@ -13,7 +13,11 @@ import { withoutCode } from "../../store/sentences";
 import { NewTeamHowTo, NewTeamIntroSteps } from "./NewTeamGuide";
 import { NewTeamPage } from "./NewTeamPage";
 import { TextInput } from "../lib/TextField";
+import { Dropdown } from "../lib/Dropdown";
 import { Icon } from "../lib/icons";
+import { pickLocalFolder } from "../../bridge";
+import { loadProjects, projectsPage } from "../../store/projects";
+import type { Project } from "../../types";
 import "../styles/newteam.css";
 
 // New team (Qt's NewTeamWindow, the fork's form adapted to M1): a dialog from a
@@ -122,8 +126,13 @@ export interface NewTeamProps {
   catalogError?: string;
   busy: boolean;
   machineId: string;
+  /** A catalog project's ID to start from; else the project of `defaultFolder`. */
   defaultProject: string;
   defaultFolder: string;
+  /** The Projects catalog: the team's project is one of its projects (G8). */
+  projects?: Project[];
+  /** Browse… for the project folder: the chosen path, null when none. */
+  onBrowseFolder?: (start: string) => Promise<string | null>;
   onCheckFolder: (path: string) => Promise<TeamProjectFacts>;
   onCreate: (input: NewTeamInput) => Promise<import("../../store/teams").TeamOutcome>;
   onSaveTemplate: (template: TeamCatalogTemplate) => Promise<void>;
@@ -150,6 +159,26 @@ export function NewTeam(props: NewTeamProps): JSX.Element {
   const [planning, setPlanning] = createSignal(false);
   const [project, setProject] = createSignal(props.defaultProject);
   const [folder, setFolder] = createSignal(props.defaultFolder);
+  // The team service places members from the project's one folder on this
+  // computer (src/desktop/teams/native.rs): the catalog's folders whose
+  // computer identity is this one's.
+  const listed = createMemo(() => (props.projects ?? []).filter((candidate) => candidate.accessible));
+  const here = (candidate: Project) => candidate.folders.filter((entry) => !!props.machineId && entry.machine_id === props.machineId);
+  const chosenProject = () => listed().find((candidate) => candidate.id === project());
+  const owner = (path: string) => {
+    const owners = listed().filter((candidate) => here(candidate).some((entry) => entry.path === path));
+    return owners.length === 1 ? owners[0] : undefined;
+  };
+  // The catalog can arrive after the dialog opens: the selected session's
+  // folder names its project once, never over a person's choice.
+  createEffect(on(listed, () => { if (!chosenProject() && !project()) setProject(owner(folder().trim())?.id ?? ""); }));
+  const projectFolders = () => {
+    const chosen = chosenProject();
+    if (!chosen) return "";
+    const count = here(chosen).length;
+    return count === 1 ? "" : count === 0 ? tr("This project has no folder on this computer. Add one on the Projects screen.")
+      : tr("This project has several folders on this computer; a team needs exactly one.");
+  };
   const [branch, setBranch] = createSignal("");
   const [facts, setFacts] = createSignal<{ path: string; generation: number; facts: TeamProjectFacts }>();
   const [checking, setChecking] = createSignal(false);
@@ -214,12 +243,29 @@ export function NewTeam(props: NewTeamProps): JSX.Element {
     if (template()!.unknown_fields?.length) return tr("This version cannot show everything the template sets. Update Zerus to create a team.");
     if (!name().trim()) return tr("Name the team.");
     if (planning() && !goal().trim()) return tr("Name the planning goal.");
-    if (!project().trim()) return tr("Name the project.");
+    if (!chosenProject()) return tr("Choose the project.");
+    if (projectFolders()) return projectFolders();
     if (!checkedFolder()?.git) return tr("Check the project folder: it must be a Git folder.");
     if (locked()) return tr("Wait for the team to be created.");
     return "";
   });
 
+  /** Choosing a project fills the folder from its one folder here and checks it. */
+  const chooseProject = (id: string) => {
+    setProject(id);
+    const chosen = chosenProject(), folders = chosen ? here(chosen) : [];
+    if (folders.length !== 1 || folders[0].path === folder().trim()) return;
+    setFolder(folders[0].path); setFacts(undefined); void check();
+  };
+  /** Browse… with the existing folder picker; the chosen folder is checked,
+   * and names its project when no project is chosen yet. */
+  const browse = async () => {
+    const chosen = await props.onBrowseFolder?.(folder().trim()).catch(() => null);
+    if (!chosen) return;
+    setFolder(chosen); setFacts(undefined);
+    if (!chosenProject()) setProject(owner(chosen)?.id ?? project());
+    void check();
+  };
   // A check belongs to the exact path it asked for: an answer for another path
   // (or an older generation) never writes the facts Create reads.
   const check = async () => {
@@ -335,9 +381,11 @@ export function NewTeam(props: NewTeamProps): JSX.Element {
             <TextInput class="field" value={goal()} disabled={locked()} onInput={(event) => setGoal(event.currentTarget.value)} placeholder={tr("What should the team work on?")} historyKey="team-goal" />
           </label>
         </div>
-        <label class="nt-field">{tr("Project")}
-          <TextInput class="field" value={project()} disabled={locked()} onInput={(event) => setProject(event.currentTarget.value)} historyKey="team-project" />
-        </label>
+        <div class="nt-field">{tr("Project")}
+          <Dropdown class="field" aria-label={tr("Project")} value={chosenProject() ? project() : ""} disabled={locked()} onChange={chooseProject}
+            options={[{ value: "", label: tr("Choose a project"), disabled: true }, ...listed().map((candidate) => ({ value: candidate.id, label: candidate.name || candidate.id }))]} />
+          <Show when={projectFolders()}><span class="nt-foot-bad" role="status" data-project-folders>{projectFolders()}</span></Show>
+        </div>
       </section>
       <Show when={template()}>
         {(chosen) => (
@@ -346,7 +394,9 @@ export function NewTeam(props: NewTeamProps): JSX.Element {
             <div class="box nt-template-summary">
               <div class="nt-pair">
                 <section class="nt-field" aria-label={tr("Roster")}>
-                  <b>{tr("Roster")}</b>
+                  <span class="nt-inline"><b>{tr("Roster")}</b>
+                    <Show when={props.onOpenCatalog}><button type="button" class="btn ghost small" disabled={locked()} onClick={() => props.onOpenCatalog?.()}>{tr("Edit roster in Catalog")}</button></Show>
+                  </span>
                   <ul class="nt-list"><For each={rosterLines(props.catalog!, chosen())}>{(line) => <li>{line}</li>}</For></ul>
                 </section>
                 <section class="nt-field" aria-label={tr("Pipelines")}>
@@ -378,6 +428,7 @@ export function NewTeam(props: NewTeamProps): JSX.Element {
         <h2>{tr("Project folder")}</h2>
         <div class="nt-inline">
           <TextInput class="field mono" aria-label={tr("Project folder")} value={folder()} disabled={locked()} onInput={(event) => { setFolder(event.currentTarget.value); setFacts(undefined); }} historyKey="team-folder" />
+          <Show when={props.onBrowseFolder}><button type="button" class="btn" disabled={locked()} onClick={() => void browse()}>{tr("Browse…")}</button></Show>
           <button type="button" class="btn" data-check-folder disabled={checking() || locked() || !folder().trim()} onClick={() => void check()}>{tr("Check folder")}</button>
         </div>
         <Show when={checkedFolder()}>
@@ -433,6 +484,9 @@ export function NewTeamDialog() {
   });
   onCleanup(() => { if (dialog?.open) dialog.close(); if (origin?.isConnected) origin.focus(); });
   const close = () => teams.closeNewTeam();
+  // The project chooser reads the Projects catalog; the Teams page keeps it
+  // fresh, another page reads it once when the dialog opens.
+  createEffect(on(open, (shown) => { if (shown && !projectsPage().loaded) void loadProjects().catch(() => undefined); }));
   return (
     <Show when={open()}>
       <dialog ref={dialog} class="dlg newteam-page-dialog" aria-labelledby="new-team-title"
@@ -443,8 +497,10 @@ export function NewTeamDialog() {
             catalogError={teams.catalogError()}
             busy={teams.busy()}
             machineId={machineCards[""]?.machine_id ?? ""}
-            defaultProject={selected()?.project ?? ""}
+            defaultProject=""
             defaultFolder={selected()?.gitRoot || selected()?.cwdPath || ""}
+            projects={projectsPage().projects}
+            onBrowseFolder={(start) => pickLocalFolder(start)}
             onCheckFolder={(path) => teams.project(path)}
             onCreate={async (input) => {
               const call: TeamCall = {

@@ -1,0 +1,81 @@
+{
+  "claude": {
+    "account": "claude-work",
+    "catalog": {
+      "defaults": {
+        "effort": "",
+        "model": ""
+      },
+      "effort_supported": true,
+      "models": [
+        {
+          "effort_options": [
+            "low",
+            "high"
+          ],
+          "id": "model-a",
+          "label": "Example model"
+        }
+      ],
+      "provider_defaults": {
+        "effort": "low",
+        "model": "model-a"
+      }
+    },
+    "revision": "r1"
+  },
+  "codex": {
+    "account": "codex-work",
+    "catalog": {
+      "defaults": {
+        "effort": "",
+        "model": ""
+      },
+      "effort_supported": true,
+      "models": [
+        {
+          "effort_options": [
+            "low",
+            "high"
+          ],
+          "id": "model-a",
+          "label": "Example model"
+        }
+      ],
+      "provider_defaults": {
+        "effort": "low",
+        "model": "model-a"
+      }
+    },
+    "revision": "r1"
+  },
+  "kimi": {
+    "account": "kimi-work",
+    "catalog": {
+      "defaults": {
+        "effort": "",
+        "model": ""
+      },
+      "effort_supported": false,
+      "models": [
+        {
+          "effort_options": [
+            "low",
+            "high"
+          ],
+          "id": "model-a",
+          "label": "Example model"
+        }
+      ],
+      "provider_defaults": {
+        "effort": "low",
+        "model": "model-a"
+      }
+    },
+    "revision": "r1"
+  },
+  "refusals": {
+    "changed": "Accounts changed on this machine. Refresh before saving.",
+    "no_signed_in": "No signed-in account of this agent here."
+  }
+}
