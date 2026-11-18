@@ -39,6 +39,13 @@ fi
 # The native stand-in agent of tests/test_fake_agent.py, tests/test_backend_contract.py
 # and later terminal suites.
 cargo build --locked --example fake_agent
+if [ "$(uname -s)" = Linux ]; then
+    # zerus-5sl7r: the session resume runtime runs its real resume and send
+    # children from its pinned image against a private tmux and this agent.
+    HGS_TEST_BIN="$PWD/target/debug/hgs" cargo test --locked --bin hgs \
+        desktop::session_resume::tests::actor::real_cli::real_cli_resume_from_the_pinned_image_starts_its_supervisor_and_sends \
+        -- --ignored --exact --test-threads=1
+fi
 fi
 if [ "$phase" != debug ]; then
 export HGS_TEST_BIN="$PWD/target/debug/hgs"

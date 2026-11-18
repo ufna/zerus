@@ -1231,7 +1231,8 @@ pub(super) fn resume_scoped(names: &[String], dry: bool, scope: Option<&session_
         // Value per prepared recipe. Conversion cannot refresh the source.
         recipes.push((name, spec, binding, new_run, source.into_fence()));
     }
-    let _guard = lock(None)?;
+    let guard = lock(None)?;
+    let mut started = None;
     for (name, spec, original_binding, new_run, source) in recipes {
         let changed = || format!("{name}: saved source changed or is unavailable; select the session again before resuming");
         let current_snapshot = live()?;
@@ -1257,10 +1258,79 @@ pub(super) fn resume_scoped(names: &[String], dry: bool, scope: Option<&session_
         } else {
             if let Some(scope)=scope {scope.changing();}
             backend::current().start(&spec)?;
-            if let Some(scope)=scope {scope.result(&name,&new_run,string(&current,"conversation_id"),None);} else {println!("hgs: resuming {name}");}
+            if scope.is_some() {
+                started = Some((
+                    name,
+                    spec.name,
+                    new_run,
+                    string(&current, "conversation_id").to_owned(),
+                ));
+            } else {
+                println!("hgs: resuming {name}");
+            }
         }
     }
+    // The supervisor writes its record under this same lock.
+    drop(guard);
+    if let (Some(scope), Some((name, terminal, run, conversation))) = (scope, started) {
+        supervisor_started(&name, &terminal, &run, scope, SUPERVISOR_START_WAIT)?;
+        scope.result(&name, &run, &conversation, None);
+    }
     Ok(0)
+}
+
+/// How long a scoped resume waits for its supervisor's first record.
+const SUPERVISOR_START_WAIT: Duration = Duration::from_secs(15);
+
+/// A scoped resume (`hgs session-action`, whose receipt the desktop and the
+/// phone act on) reports its result only once the resumed run's supervisor
+/// wrote the session's record of that run (zerus-5sl7r): until then nothing
+/// shows that the terminal's command ran. A terminal that is gone first,
+/// with no such record, started nothing and left nothing, a definite
+/// failure; a dead pane that stays, or no record within `wait`, is
+/// uncertain.
+fn supervisor_started(
+    name: &str,
+    terminal: &str,
+    run: &str,
+    scope: &session_action::Scope,
+    wait: Duration,
+) -> Result<()> {
+    let recorded = || read(name).is_ok_and(|record| string(&record, "run_id") == run);
+    let until = Instant::now() + wait;
+    loop {
+        if recorded() {
+            return Ok(());
+        }
+        let backend = backend::current();
+        let gone = !backend.session_exists(terminal);
+        let dead = !gone
+            && backend
+                .probe(backend::Target::Name(terminal), &[backend::PaneField::Dead])
+                .is_some_and(|info| info.fields() == ["1"]);
+        // Its record may have landed just before the end.
+        if (gone || dead) && recorded() {
+            return Ok(());
+        }
+        if gone {
+            scope.unchanged();
+            return Err(format!(
+                "{name}: the resumed terminal ended before its supervisor started; nothing was resumed"
+            ));
+        }
+        if dead {
+            return Err(format!(
+                "{name}: the resumed terminal's command ended before its supervisor started; its dead pane {terminal} remains"
+            ));
+        }
+        if Instant::now() >= until {
+            return Err(format!(
+                "{name}: the resumed supervisor did not record its start within {} s; inspect the session",
+                wait.as_secs()
+            ));
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
 }
 
 /// `hgs resume <session> --fresh`: the stopped session's own launch recipe,

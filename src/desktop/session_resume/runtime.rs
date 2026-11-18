@@ -81,6 +81,11 @@ const PROBE_EVERY: Duration = Duration::from_millis(250);
 pub(super) const WAIT: Duration = Duration::from_secs(180);
 /// How often the waiting operation reads the resumed session again.
 const POLL_EVERY: Duration = Duration::from_millis(500);
+/// How long from the wait's start no readable record of the resumed run
+/// keeps it (zerus-5sl7r). `hgs session-action` reports the resume only after
+/// that record exists, so a later absence is the run gone or replaced, and
+/// this only covers a passing read failure.
+pub(super) const RECORD_GRACE: Duration = Duration::from_secs(10);
 /// The deadline of one observation of a resumed Codex, never past the
 /// wait's own (zerus-5wmh.66.4.10).
 pub(super) const OBSERVATION_WAIT: Duration = Duration::from_secs(5);
@@ -180,6 +185,8 @@ enum Work {
         token: Arc<()>,
         probe: Option<ReadyProbe>,
         until: Instant,
+        /// The end of the grace ([`RECORD_GRACE`]) for a missing record.
+        recorded_by: Instant,
         next: Instant,
     },
 }
@@ -215,6 +222,8 @@ pub(in crate::desktop) struct Runtime {
     wait: Duration,
     poll_every: Duration,
     chain: Duration,
+    /// The grace for a missing record of the resumed run ([`RECORD_GRACE`]).
+    record_grace: Duration,
     /// One observation's deadline ([`OBSERVATION_WAIT`]).
     observation_wait: Duration,
     /// Stands in for the observation child.
@@ -268,6 +277,7 @@ impl Runtime {
             read_wait: READ_WAIT,
             wait: WAIT,
             poll_every: POLL_EVERY,
+            record_grace: RECORD_GRACE,
             chain: CHAIN,
             observation_wait: OBSERVATION_WAIT,
             #[cfg(test)]
@@ -732,8 +742,21 @@ impl Runtime {
                     token,
                     probe,
                     until,
+                    recorded_by,
                     next,
-                } => return self.wait(store, id, consent, roots, token, probe, until, next),
+                } => {
+                    return self.wait(
+                        store,
+                        id,
+                        consent,
+                        roots,
+                        token,
+                        probe,
+                        until,
+                        recorded_by,
+                        next,
+                    )
+                }
             }
             return Ok(());
         }
@@ -927,6 +950,7 @@ impl Runtime {
                             token: token.clone(),
                             probe: None,
                             until,
+                            recorded_by: (Instant::now() + self.record_grace).min(until),
                             next: Instant::now(),
                         });
                     } else {
@@ -1041,6 +1065,7 @@ impl Runtime {
         token: Arc<()>,
         probe: Option<ReadyProbe>,
         until: Instant,
+        recorded_by: Instant,
         next: Instant,
     ) -> Result<()> {
         // A read in flight finishes first: it holds the loans, and it is
@@ -1054,6 +1079,7 @@ impl Runtime {
                     token,
                     probe: Some(probe),
                     until,
+                    recorded_by,
                     next,
                 });
                 return Ok(());
@@ -1088,7 +1114,12 @@ impl Runtime {
             }
             Some(Readiness::Ready) => return self.end_wait(store, &id, expired),
             Some(Readiness::Ended(code)) => return self.end_wait(store, &id, code),
-            Some(Readiness::Waiting) | None => {}
+            // The resume was reported only after its record existed: one
+            // that stays unreadable past the grace is gone (zerus-5sl7r).
+            Some(Readiness::Unrecorded) if Instant::now() >= recorded_by => {
+                return self.end_wait(store, &id, ready::READY_GONE)
+            }
+            Some(Readiness::Waiting | Readiness::Unrecorded) | None => {}
         }
         let now = Instant::now();
         if now >= until {
@@ -1102,6 +1133,7 @@ impl Runtime {
                 token,
                 probe: None,
                 until,
+                recorded_by,
                 next,
             });
             return Ok(());
@@ -1154,6 +1186,7 @@ impl Runtime {
             token,
             probe: Some(ReadyProbe { worker, result }),
             until,
+            recorded_by,
             next: now + self.poll_every,
         });
         Ok(())
@@ -1238,6 +1271,11 @@ impl Runtime {
         self.poll_every = every;
         self.chain = chain;
     }
+    /// Sets the grace for a missing record of the resumed run.
+    #[cfg(test)]
+    pub(super) fn fixture_record_grace(&mut self, grace: Duration) {
+        self.record_grace = grace;
+    }
     /// `Some(None)` proves a live queued consent whose own turn has not
     /// started its clock; `None` means no such original was admitted.
     #[cfg(test)]
@@ -1291,7 +1329,7 @@ fn observe(
             if consent.cancel.load(Ordering::Acquire) || !image.current() {
                 return Err(std::io::ErrorKind::PermissionDenied.into());
             }
-            image.inherit(command)
+            crate::desktop::original_child::inherit_pinned(&image, command)
         });
     }
     let _ = (args, input, until, consent);
@@ -1396,7 +1434,7 @@ fn original(
                 if !current() || !image.current() {
                     return Err(std::io::ErrorKind::PermissionDenied.into());
                 }
-                image.inherit(command)
+                crate::desktop::original_child::inherit_pinned(&image, command)
             },
         );
     }

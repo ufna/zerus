@@ -28,13 +28,23 @@ fn original(configuration: &str, epoch: &str) -> Verified {
 }
 /// [`original`] for the session `session`.
 fn original_of(configuration: &str, epoch: &str, session: &str) -> Verified {
+    original_at(configuration, epoch, session, RUN, CONVERSATION)
+}
+/// [`original_of`] for the stopped run `run` of `conversation`.
+fn original_at(
+    configuration: &str,
+    epoch: &str,
+    session: &str,
+    run: &str,
+    conversation: &str,
+) -> Verified {
     let text = "after resume";
     let checkpoint = Checkpoint::reserve_session_resume(checkpoint::Intent {
         kind: checkpoint::Kind::ResumeToSend,
         draft_revision: 3,
         message_sha256: checkpoint::message_sha256(text, Vec::<(&str, &str, &str, &[u8])>::new()),
-        run_id: RUN.into(),
-        conversation_id: CONVERSATION.into(),
+        run_id: run.into(),
+        conversation_id: conversation.into(),
         question: None,
         start: Some(checkpoint::Start::Resume),
         retry_of: None,
@@ -42,9 +52,9 @@ fn original_of(configuration: &str, epoch: &str, session: &str) -> Verified {
     })
     .unwrap();
     let resume = json!({"request_id": checkpoint.request_id, "action": "resume",
-        "expected_run_id": RUN, "expected_conversation_id": CONVERSATION});
+        "expected_run_id": run, "expected_conversation_id": conversation});
     let stdin = json!({"request_id": checkpoint.send_request_id, "text": text, "attachments": [],
-        "expected_run_id": RUN, "expected_conversation_id": CONVERSATION});
+        "expected_run_id": run, "expected_conversation_id": conversation});
     Intent {
         scope: wire::Scope {
             configuration: configuration.into(),
@@ -720,7 +730,7 @@ fn the_resume_observation_reads_only_the_exact_private_action_receipt() {
 /// changed session ends it.
 #[test]
 fn only_the_resumed_runs_ready_record_lets_the_send_start() {
-    use ready::{Readiness, READY_ENDED, ROOT_CHANGED};
+    use ready::{Readiness, READY_ENDED, READY_GONE, ROOT_CHANGED};
     let temp = tempfile::tempdir().unwrap();
     let parent = temp.path().canonicalize().unwrap();
     let state = state_root(&parent);
@@ -734,9 +744,10 @@ fn only_the_resumed_runs_ready_record_lets_the_send_start() {
         let roots = receipt::Roots::open(state, receipt::RESUME_FOLDER).unwrap();
         ready::read(&roots, plan, RESUMED, later(), never)
     };
-    // The original run's record still: not written yet.
+    // The original run's record still: none of the resumed run, which the
+    // runtime waits for only within its grace (zerus-5sl7r).
     session_record(&state, SESSION, "claude", RUN, json!({}));
-    assert_eq!(read(&state), Readiness::Waiting);
+    assert_eq!(read(&state), Readiness::Unrecorded);
     resumed_record(&state, false);
     assert_eq!(read(&state), Readiness::Waiting);
     resumed_record(&state, true);
@@ -764,6 +775,22 @@ fn only_the_resumed_runs_ready_record_lets_the_send_start() {
             "process_start": start}),
     );
     assert_eq!(read(&state), Readiness::Ended(READY_ENDED));
+    // Its supervisor no longer runs and recorded no end: gone, however its
+    // agent's fields read (zerus-5sl7r).
+    for ready in [false, true] {
+        resumed_record(&state, ready);
+        let path = state.join(format!(
+            "{:x}.json",
+            <sha2::Sha256 as sha2::Digest>::digest(SESSION.as_bytes())
+        ));
+        let mut record: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        record["supervisor"] = json!({"pid": pid, "start": "an earlier process"});
+        session_record(&state, SESSION, "claude", RESUMED, record.clone());
+        assert_eq!(read(&state), Readiness::Ended(READY_GONE), "{ready}");
+        record["supervisor"] = json!({"pid": pid, "start": start});
+        session_record(&state, SESSION, "claude", RESUMED, record);
+        assert_ne!(read(&state), Readiness::Ended(READY_GONE), "{ready}");
+    }
     // A replaced root ends the wait.
     resumed_record(&state, true);
     let roots = receipt::Roots::open(&state, receipt::RESUME_FOLDER).unwrap();
@@ -804,9 +831,10 @@ fn a_resumed_codex_is_ready_only_by_the_sends_own_observation() {
             reply.map(<[u8]>::to_vec)
         })
     };
-    // Its resumed record is not written yet: nothing is observed.
+    // No record of its resumed run: nothing is observed (zerus-5sl7r: the
+    // runtime waits for one only within its grace).
     session_record(&state, CODEX, "codex", RUN, json!({}));
-    assert_eq!(read(Some(OBSERVED_READY), later()), Readiness::Waiting);
+    assert_eq!(read(Some(OBSERVED_READY), later()), Readiness::Unrecorded);
     assert!(asked.borrow().is_empty());
     // Pending its first message, the record alone never says ready.
     codex_pending_record(&state, CODEX);
@@ -955,7 +983,10 @@ mod actor {
             Self::build(None)
         }
         fn build(execute: Option<Arc<Execute>>) -> Self {
-            let temp = tempfile::tempdir().unwrap();
+            Self::build_in(tempfile::tempdir().unwrap(), execute)
+        }
+        /// [`Self::build`] in the prepared directory `temp`.
+        fn build_in(temp: tempfile::TempDir, execute: Option<Arc<Execute>>) -> Self {
             let root = temp.path().canonicalize().unwrap();
             let config = Config {
                 home: root.to_str().unwrap().into(),
@@ -1446,6 +1477,105 @@ mod actor {
             );
             assert!(f.row(&original).send.is_none(), "{name}: never reserved");
             assert_eq!(ran.counts(), (1, 0), "{name}");
+        }
+    }
+
+    /// zerus-5sl7r: a resumed run that is gone ends the wait at once instead
+    /// of holding every later operation for the whole budget: its record
+    /// names a supervisor that no longer runs, or no record of it can be read
+    /// past the grace (the CLI reports a resume only after its supervisor
+    /// wrote one). A record that appears within the grace still sends.
+    #[test]
+    fn a_gone_resumed_run_ends_the_wait_without_holding_the_queue() {
+        let mut ended = std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .unwrap();
+        let (gone, birth) = (ended.id(), started(ended.id()));
+        assert!(!birth.is_empty());
+        ended.kill().unwrap();
+        ended.wait().unwrap();
+        for case in ["supervisor gone", "never recorded", "recorded late"] {
+            let ran = Arc::new(Ran::default());
+            let resumes = ran.clone();
+            let birth = birth.clone();
+            let mut f = Fixture::with(Arc::new(move |state, plan, args, input, _, _| {
+                assert_eq!(
+                    args[0], "session-action",
+                    "{case}: no send before the record"
+                );
+                resumes.resumes.fetch_add(1, Ordering::SeqCst);
+                action_receipt(state, plan, input, "completed");
+                if case == "supervisor gone" {
+                    let pid = std::process::id();
+                    session_record(
+                        state,
+                        SESSION,
+                        "claude",
+                        RESUMED,
+                        json!({"expected_id": "", "activity": "unknown", "phase": "unknown",
+                            "error": "", "pid": pid, "process_start": started(pid),
+                            "supervisor": {"pid": gone, "start": birth}}),
+                    );
+                }
+                Ended::Exited { code: 0 }
+            }));
+            // The whole budget is far longer than any of these may take.
+            f.runtime.fixture_wait(
+                Duration::from_secs(120),
+                Duration::from_millis(5),
+                runtime::CHAIN,
+            );
+            f.runtime
+                .fixture_record_grace(Duration::from_millis(if case == "recorded late" {
+                    30_000
+                } else {
+                    300
+                }));
+            let original = f.original();
+            f.admit(&original);
+            f.until(case, |f| {
+                f.row(&original).receipt.resume.step == Step::Recorded
+            });
+            let recorded = Instant::now();
+            if case == "recorded late" {
+                for _ in 0..50 {
+                    f.runtime.poll(&mut f.store, Some(f.exclusion.clone()));
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+                assert_eq!(f.row(&original).receipt.send.step, Step::Queued, "{case}");
+                // Its send runs through the shared executor rules.
+                let sends = executor(ran.clone(), Resume::Completed { ready: true });
+                f.runtime.fixture_executor(MACHINE, {
+                    let state = f.state.clone();
+                    Arc::new(move |plan, args, input, lock, resources| {
+                        sends(&state, plan, args, input, lock, resources)
+                    })
+                });
+                resumed_record(&f.state, true);
+            }
+            f.until(case, |f| f.row(&original).receipt.drained);
+            let receipt = f.row(&original).receipt;
+            if case == "recorded late" {
+                assert_eq!(receipt.send.step, Step::Recorded, "{case}");
+                assert_eq!(ran.counts(), (1, 1), "{case}");
+                continue;
+            }
+            assert!(
+                recorded.elapsed() < Duration::from_secs(30),
+                "{case}: {:?}",
+                recorded.elapsed()
+            );
+            assert_eq!(
+                (
+                    receipt.resume.step,
+                    receipt.send.step,
+                    receipt.code.as_str()
+                ),
+                (Step::Recorded, Step::NotStarted, ready::READY_GONE),
+                "{case}"
+            );
+            assert_eq!(ran.counts(), (1, 0), "{case}");
         }
     }
 
@@ -2485,6 +2615,428 @@ else:
         });
         assert_eq!(super::reservation_budget::budget(&f.store.db), (0, 0, 0));
         assert_eq!(ran.counts(), (1, 0));
+    }
+
+    /// zerus-5sl7r regression through the real desktop child path: the
+    /// runtime pins a real, separately built `hgs` (`HGS_TEST_BIN`) and runs
+    /// its own `hgs session-action <session> --json` and `hgs send <session>
+    /// --json` children from that sealed memfd copy, as the service does,
+    /// against a real session of `examples/fake_agent` (as `claude`) under a
+    /// private tmux server. Before the fix the resumed pane's command named
+    /// `/memfd:… (deleted)`, the pane died, the resume still said completed
+    /// and the operation waited its whole budget without a send.
+    #[cfg(target_os = "linux")]
+    mod real_cli {
+        use super::*;
+        use std::process::Command;
+
+        /// Names the private case of the child test process.
+        const CASE: &str = "HGS_TEST_SESSION_RESUME_REAL_CASE";
+        /// Names the CLI image the child's runtime pins.
+        const PINNED: &str = "HGS_TEST_SESSION_RESUME_REAL_PINNED";
+        /// The pin's own bound on an image (`Pin::open`).
+        const PIN_BYTES: u64 = 256 << 20;
+        const PROMPT: &str = "❯ ";
+        const SENT: &str = "after resume";
+
+        fn cli() -> PathBuf {
+            std::fs::canonicalize(
+                std::env::var_os("HGS_TEST_BIN").expect("explicit separately built production CLI"),
+            )
+            .unwrap()
+        }
+        /// The CLI the runtime pins: `cli` itself, or, for a debug build
+        /// over the pin's bound, a copy without its debug sections beside it.
+        fn pinnable(cli: &Path) -> PathBuf {
+            if std::fs::metadata(cli).unwrap().len() <= PIN_BYTES {
+                return cli.to_path_buf();
+            }
+            let copy = cli.with_file_name("hgs-session-resume-pinnable");
+            let fresh = |copy: &Path| {
+                std::fs::metadata(copy).and_then(|m| m.modified()).ok()
+                    >= std::fs::metadata(cli).and_then(|m| m.modified()).ok()
+            };
+            if !fresh(&copy) {
+                let next = cli.with_file_name(format!(
+                    "hgs-session-resume-pinnable.{}",
+                    std::process::id()
+                ));
+                let status = Command::new("objcopy")
+                    .arg("--strip-debug")
+                    .arg(cli)
+                    .arg(&next)
+                    .status()
+                    .unwrap();
+                assert!(status.success(), "objcopy --strip-debug {}", cli.display());
+                std::fs::rename(&next, &copy).unwrap();
+            }
+            assert!(std::fs::metadata(&copy).unwrap().len() <= PIN_BYTES);
+            copy
+        }
+        fn fake_agent(cli: &Path) -> PathBuf {
+            std::env::var_os("HGS_TEST_FAKE_AGENT")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| cli.parent().unwrap().join("examples/fake_agent"))
+        }
+
+        /// Each case runs alone in a child test process whose environment
+        /// names only private folders, a private tmux socket and fake agents.
+        #[test]
+        #[ignore = "Explicit exact-source HGS_TEST_BIN and examples/fake_agent after cargo build; real resume and send children from the pinned image under a private tmux"]
+        fn real_cli_resume_from_the_pinned_image_starts_its_supervisor_and_sends() {
+            let cli = cli();
+            assert_ne!(
+                crate::platform::file_identity(&cli),
+                crate::platform::file_identity(&std::env::current_exe().unwrap()),
+                "never run the libtest image as a CLI"
+            );
+            let agent = fake_agent(&cli);
+            assert!(
+                agent.is_file(),
+                "{} is missing; cargo build --example fake_agent",
+                agent.display()
+            );
+            let pinned = pinnable(&cli);
+            // A tmux socket path must stay short.
+            let base = ["/dev/shm", "/tmp"]
+                .into_iter()
+                .map(Path::new)
+                .find(|p| p.is_dir())
+                .unwrap();
+            for case in ["resume", "replaced"] {
+                let dir = tempfile::Builder::new()
+                    .prefix("hgs-rs-")
+                    .tempdir_in(base)
+                    .unwrap();
+                let tmp = dir.path().join("t");
+                std::fs::create_dir(&tmp).unwrap();
+                let mut command = Command::new(std::env::current_exe().unwrap());
+                command
+                    .args([
+                        "--exact",
+                        "desktop::session_resume::tests::actor::real_cli::private_case",
+                        "--ignored",
+                        "--nocapture",
+                        "--test-threads=1",
+                    ])
+                    .env_clear();
+                for (key, value) in std::env::vars_os() {
+                    let text = key.to_string_lossy();
+                    if !["HGS_", "TMUX", "FAKE_AGENT_", "CLAUDE_", "CODEX_", "KIMI_"]
+                        .iter()
+                        .any(|prefix| text.starts_with(prefix))
+                    {
+                        command.env(key, value);
+                    }
+                }
+                let output = command
+                    .env(CASE, case)
+                    .env("TMPDIR", &tmp)
+                    .env("HGS_TEST_BIN", &cli)
+                    .env(PINNED, &pinned)
+                    .env("HGS_TEST_FAKE_AGENT", &agent)
+                    .output()
+                    .unwrap();
+                // Whatever happened, the private server and its panes end.
+                let socket = tmp
+                    .read_dir()
+                    .ok()
+                    .into_iter()
+                    .flatten()
+                    .flatten()
+                    .map(|entry| entry.path().join("tmux.sock"))
+                    .find(|path| path.exists());
+                if let Some(socket) = socket {
+                    let _ = Command::new("tmux")
+                        .arg("-S")
+                        .arg(&socket)
+                        .args(["-f", "/dev/null", "kill-server"])
+                        .output();
+                }
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                println!("case {case}:\n{stdout}");
+                assert!(
+                    output.status.success()
+                        && stdout.contains(&format!("SESSION_RESUME_REAL_EXECUTED={case}")),
+                    "{case}:\n{stdout}\n{}",
+                    String::from_utf8_lossy(&output.stderr)
+                );
+            }
+        }
+
+        fn hgs(args: &[&str]) -> std::process::Output {
+            let output = Command::new(cli())
+                .args(args)
+                .stdin(std::process::Stdio::null())
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "hgs {args:?}: {}{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            output
+        }
+        fn tmux(args: &[&str]) -> std::process::Output {
+            Command::new("tmux").args(args).output().unwrap()
+        }
+        /// The session's current record, wherever its layout keeps it.
+        fn record_of(state: &Path, name: &str) -> Value {
+            let folders = [
+                state.to_path_buf(),
+                state.join("bindings"),
+                state.join("sessions"),
+            ];
+            folders
+                .iter()
+                .filter_map(|folder| folder.read_dir().ok())
+                .flatten()
+                .flatten()
+                .filter(|entry| entry.path().extension().is_some_and(|e| e == "json"))
+                .filter_map(|entry| std::fs::read(entry.path()).ok())
+                .filter_map(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+                .find(|record| record["name"] == name && record.get("rename_shadow").is_none())
+                .unwrap_or(Value::Null)
+        }
+        fn wait_for(what: &str, mut done: impl FnMut() -> bool) {
+            let until = Instant::now() + Duration::from_secs(60);
+            while !done() {
+                assert!(Instant::now() < until, "timed out: {what}");
+                std::thread::sleep(Duration::from_millis(50));
+            }
+        }
+
+        #[test]
+        #[ignore = "Run only by real_cli_resume_from_the_pinned_image_starts_its_supervisor_and_sends in its private environment"]
+        fn private_case() {
+            let case = std::env::var(CASE).expect("run only by its parent test");
+            let cli = cli();
+            let temp = tempfile::tempdir().unwrap();
+            let root = temp.path().canonicalize().unwrap();
+            let bin = root.join(".local/bin");
+            let project = root.join("project");
+            let folders = [&bin, &project, &root.join("tmux")];
+            for folder in folders {
+                std::fs::create_dir_all(folder).unwrap();
+            }
+            mode(&root.join("tmux"), 0o700);
+            let script = |name: &str, text: String| {
+                std::fs::write(bin.join(name), text).unwrap();
+                mode(&bin.join(name), 0o755);
+            };
+            // Only this private socket, never the person's server.
+            script(
+                "tmux",
+                format!(
+                    "#!/bin/sh\nexec /usr/bin/tmux -S {} -f /dev/null \"$@\"\n",
+                    root.join("tmux.sock").display()
+                ),
+            );
+            script(
+                "shell",
+                "#!/bin/sh\nshift\ncommand=$1; shift\ncase $command in exec\\ *) ;; *) command=\"exec $command\" ;; esac\nexec /bin/sh -c \"$command\" \"$@\"\n".into(),
+            );
+            std::os::unix::fs::symlink(fake_agent(&cli), bin.join("claude")).unwrap();
+            // Single-threaded: nothing else runs in this process yet.
+            for (key, value) in [
+                ("HOME", root.display().to_string()),
+                ("HGS_CONFIG_DIR", root.join("config").display().to_string()),
+                ("HGS_STATE_DIR", root.join("state").display().to_string()),
+                ("HGS_SELF", "test".into()),
+                ("HGS_PEERS", String::new()),
+                ("HGS_TAB", "0".into()),
+                ("TERM", "xterm-256color".into()),
+                ("TMUX_TMPDIR", root.join("tmux").display().to_string()),
+                ("SHELL", bin.join("shell").display().to_string()),
+                (
+                    "PATH",
+                    format!("{}:{}", bin.display(), std::env::var("PATH").unwrap()),
+                ),
+                (
+                    "FAKE_AGENT_RECORD",
+                    root.join("agents.jsonl").display().to_string(),
+                ),
+                (
+                    "FAKE_AGENT_READY",
+                    root.join("ready.json").display().to_string(),
+                ),
+                (
+                    "FAKE_AGENT_CONTROL",
+                    root.join("control").display().to_string(),
+                ),
+                (
+                    "FAKE_AGENT_TRANSCRIPT_DIR",
+                    root.join("history").display().to_string(),
+                ),
+                ("FAKE_AGENT_PROMPT", PROMPT.into()),
+                // The paste shows in the composer, as Claude shows it: the
+                // send presses Enter only once it is settled there.
+                ("FAKE_AGENT_ECHO", "1".into()),
+                ("FAKE_AGENT_PROBE_TEXT", "2.1.296 (Claude Code)".into()),
+            ] {
+                std::env::set_var(key, value);
+            }
+            // The image the runtime pins: the CLI itself, or a copy that an
+            // update replaces before the resume.
+            let image = PathBuf::from(std::env::var_os(PINNED).expect("set by the parent test"));
+            let pinned = if case == "replaced" {
+                let copy = root.join("installed/hgs");
+                std::fs::create_dir(copy.parent().unwrap()).unwrap();
+                std::fs::copy(&image, &copy).unwrap();
+                mode(&copy, 0o755);
+                copy
+            } else {
+                image
+            };
+            let mut f = Fixture::build_in(temp, None);
+            assert_eq!(f.state, root.join("state"));
+            // The fixture's synthetic stopped session is not this test's.
+            std::fs::remove_file(f.state.join(format!(
+                "{:x}.json",
+                <sha2::Sha256 as sha2::Digest>::digest(SESSION.as_bytes())
+            )))
+            .unwrap();
+            f.runtime.fixture_image(&pinned);
+
+            // A real session, started and paused by the real CLI.
+            let name = "claude/project/resumed";
+            hgs(&[
+                "claude",
+                project.to_str().unwrap(),
+                "--new",
+                "-n",
+                "resumed",
+                "-d",
+            ]);
+            wait_for("the started session to be idle", || {
+                let record = record_of(&f.state, name);
+                record["activity"] == "idle"
+                    && record["conversation_id"]
+                        .as_str()
+                        .is_some_and(|c| !c.is_empty())
+            });
+            // This private server outlives its last session to keep its options.
+            tmux(&["set-option", "-g", "exit-empty", "off"]);
+            hgs(&["pause", name]);
+            wait_for("the paused terminal to end", || {
+                !tmux(&["has-session", "-t", &format!("={name}")])
+                    .status
+                    .success()
+            });
+            let stopped = record_of(&f.state, name);
+            let (run, conversation) = (
+                stopped["run_id"].as_str().unwrap().to_owned(),
+                stopped["conversation_id"].as_str().unwrap().to_owned(),
+            );
+            // Keep a dying pane readable on this private server only.
+            assert!(tmux(&["set-option", "-gw", "remain-on-exit", "on"])
+                .status
+                .success());
+            if case == "replaced" {
+                // An update replaces the installed file under the pin.
+                let next = root.join("installed/hgs.next");
+                std::fs::write(&next, b"#!/bin/sh\nexit 0\n").unwrap();
+                mode(&next, 0o755);
+                std::fs::rename(&next, &pinned).unwrap();
+            }
+
+            let original = original_at(
+                &f.location.configuration,
+                &f.epoch,
+                name,
+                &run,
+                &conversation,
+            );
+            assert!(f.admit(&original).accepted);
+            let admitted = Instant::now();
+            f.until("the operation to settle", |f| {
+                f.row(&original).receipt.drained
+            });
+            let receipt = f.row(&original).receipt;
+            let panes = String::from_utf8_lossy(
+                &tmux(&[
+                    "list-panes",
+                    "-a",
+                    "-F",
+                    "#{session_name}\t#{pane_dead}\t#{pane_start_command}",
+                ])
+                .stdout,
+            )
+            .into_owned();
+            let agents = std::fs::read_to_string(root.join("agents.jsonl")).unwrap_or_default();
+            println!("receipt: {}", serde_json::to_string(&receipt).unwrap());
+            println!("settled after {:?}", admitted.elapsed());
+            println!("panes:\n{panes}");
+            assert!(!panes.contains("memfd"), "{panes}");
+            match case.as_str() {
+                "resume" => {
+                    assert_eq!(
+                        (
+                            receipt.resume.step,
+                            receipt.send.step,
+                            receipt.code.as_str()
+                        ),
+                        (Step::Recorded, Step::Recorded, ""),
+                        "{panes}\n{agents}"
+                    );
+                    let resumed = receipt
+                        .resume
+                        .outcome
+                        .as_ref()
+                        .unwrap()
+                        .result_target
+                        .run_id
+                        .clone();
+                    assert_ne!(resumed, run);
+                    let record = record_of(&f.state, name);
+                    assert_eq!(record["run_id"], resumed.as_str());
+                    // The resumed run's supervisor runs the pin's own installed file.
+                    assert_eq!(record["hgs"], pinned.to_str().unwrap());
+                    assert!(
+                        panes
+                            .lines()
+                            .any(|line| line.starts_with(&format!("{name}\t0\t"))
+                                && line.contains(pinned.to_str().unwrap())),
+                        "{panes}"
+                    );
+                    // The resumed agent received the person's text.
+                    let typed = agents
+                        .lines()
+                        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+                        .filter_map(|event| {
+                            event["hex"].as_str().and_then(|hex| {
+                                (0..hex.len())
+                                    .step_by(2)
+                                    .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).ok())
+                                    .collect::<Option<Vec<u8>>>()
+                            })
+                        })
+                        .flatten()
+                        .collect::<Vec<u8>>();
+                    assert!(String::from_utf8_lossy(&typed).contains(SENT), "{agents}");
+                }
+                "replaced" => {
+                    // The pin no longer matches its installed file: no child
+                    // starts, nothing runs, and the row settles at once.
+                    assert_eq!(
+                        (receipt.resume.step, receipt.send.step),
+                        (Step::NotStarted, Step::NotStarted),
+                        "{panes}"
+                    );
+                    assert!(
+                        !panes
+                            .lines()
+                            .any(|line| line.starts_with(&format!("{name}\t"))),
+                        "{panes}"
+                    );
+                    assert_eq!(record_of(&f.state, name)["run_id"], run.as_str());
+                }
+                other => panic!("unknown case {other}"),
+            }
+            tmux(&["kill-server"]);
+            println!("SESSION_RESUME_REAL_EXECUTED={case}");
+        }
     }
 }
 /// Reservation accounting controls use only synthetic originals and private Store fixtures.

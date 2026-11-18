@@ -73,7 +73,9 @@ impl Scope {
     pub(super) fn opencode_error(&self) {
         self.opencode_error.set(true);
     }
-    /// Only a supported native adapter may explicitly attest zero side effects.
+    /// Only a supported native adapter may explicitly attest zero side effects,
+    /// or a resume whose new terminal is gone with no record of its run
+    /// (zerus-5sl7r): it started nothing and left nothing.
     pub(super) fn unchanged(&self) {
         self.changed.set(false);
     }

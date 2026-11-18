@@ -326,6 +326,20 @@ pub(crate) fn resumed_readiness(record: &Value) -> Readiness {
     Readiness::Ready
 }
 
+/// Whether `record` names a supervisor that no longer runs (zerus-5sl7r):
+/// its pid and start are recorded and no process with that pid has that
+/// start. Its terminal ended without the supervisor recording an end, so the
+/// run will never take a message. A record without both says nothing.
+pub(crate) fn resumed_supervisor_gone(record: &Value) -> bool {
+    let supervisor = &record["supervisor"];
+    let start = string(supervisor, "start");
+    let pid = supervisor["pid"]
+        .as_u64()
+        .and_then(|pid| u32::try_from(pid).ok())
+        .unwrap_or(0);
+    pid > 0 && !start.is_empty() && process_start(pid) != start
+}
+
 /// Whether the agent has not confirmed the last input hgs typed (zerus-iitw8).
 /// Only an input-acceptance event (UserPromptSubmit, a queued prompt, a turn or
 /// task start) or hgs's own native proof sets `input_seen_at`; a busy agent's
@@ -2426,6 +2440,51 @@ mod tests {
             let args: Vec<String> = args.map(str::to_owned).into();
             let refusal = crate::state::dispatch(&args).unwrap_err();
             assert!(refusal.contains("is taken only as"), "{args:?}: {refusal}");
+        }
+    }
+
+    /// zerus-5sl7r: a recorded supervisor that no longer runs (another start,
+    /// or no process) is gone; a live one, or a record without both its pid
+    /// and start, says nothing.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn a_resumed_record_s_supervisor_is_gone_only_by_its_recorded_identity() {
+        let pid = std::process::id();
+        let record =
+            |supervisor: Value| json!({"name": "claude/resumed", "supervisor": supervisor});
+        assert!(!resumed_supervisor_gone(&record(
+            json!({"pid": pid, "start": process_start(pid)})
+        )));
+        assert!(resumed_supervisor_gone(&record(
+            json!({"pid": pid, "start": "another birth"})
+        )));
+        // A finished child of this test: its pid no longer has that start.
+        let mut child = std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .unwrap();
+        let (gone, start) = (child.id(), process_start(child.id()));
+        assert!(!start.is_empty());
+        assert!(!resumed_supervisor_gone(&record(
+            json!({"pid": gone, "start": start})
+        )));
+        child.kill().unwrap();
+        child.wait().unwrap();
+        assert!(resumed_supervisor_gone(&record(
+            json!({"pid": gone, "start": start})
+        )));
+        for unknown in [
+            json!({}),
+            json!(null),
+            json!({"pid": pid}),
+            json!({"start": "birth"}),
+            json!({"pid": 0, "start": "birth"}),
+            json!({"pid": pid, "start": ""}),
+        ] {
+            assert!(
+                !resumed_supervisor_gone(&record(unknown.clone())),
+                "{unknown}"
+            );
         }
     }
 
