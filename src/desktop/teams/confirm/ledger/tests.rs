@@ -221,3 +221,52 @@ fn a_waiting_claim_may_be_cancelled_but_never_settled_or_started_directly() {
     db.save(&row).unwrap();
     assert!(!db.claim(&plan, "epoch-2", 200).unwrap().fresh);
 }
+
+/// An approved hooks trust stays pending in the real ledger until its one
+/// feed line is recorded; an approved folder trust owes none (zerus-f67qp).
+#[test]
+fn an_approved_hooks_trust_stays_pending_until_its_feed_line() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut db = Ledger::open(temp.path()).unwrap();
+    let approve = |db: &mut Ledger, plan: &Plan| {
+        let mut row = db.claim(plan, "epoch-1", 100).unwrap().record;
+        row.audit = Some(Audit {
+            id: 1,
+            request: uuid::Uuid::new_v4().to_string(),
+            answers: serde_json::json!([]),
+            fresh: true,
+        });
+        row.audit_done = true;
+        row.state = "approved".into();
+        db.save(&row).unwrap();
+        row
+    };
+    let (mut b, _, mut s) = sample();
+    let card = crate::state::trust_fixture::resumed_hooks_trust_prompt("conversation-1");
+    b.agent = "codex".into();
+    b.run = card["run_id"].as_str().unwrap().into();
+    b.conversation = "conversation-1".into();
+    s.agent = "codex".into();
+    s.run = b.run.clone();
+    s.conversation = b.conversation.clone();
+    s.questions = vec![card.clone()];
+    let mut row = approve(&mut db, &engine::candidate(&b, &s, Kind::Trust, card));
+    assert_eq!(
+        db.unsettled(&b).unwrap(),
+        Some(row.clone()),
+        "the feed line is still owed"
+    );
+    row.card_done = true;
+    db.save(&row).unwrap();
+    assert_eq!(db.unsettled(&b).unwrap(), None);
+    let (b, _, s) = sample();
+    approve(
+        &mut db,
+        &engine::candidate(&b, &s, Kind::Trust, s.questions[0].clone()),
+    );
+    assert_eq!(
+        db.unsettled(&b).unwrap(),
+        None,
+        "a folder trust owes no line"
+    );
+}

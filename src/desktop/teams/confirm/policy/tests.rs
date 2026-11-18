@@ -628,3 +628,17 @@ fn the_hook_count_may_be_one_or_many() {
         assert!(trust(&binding, &snapshot).is_err(), "{to}");
     }
 }
+
+/// A hooks-trust card in a conversation the member's binding did not resume
+/// is refused, though the session is the member's (zerus-f67qp).
+#[test]
+fn a_hooks_trust_card_in_a_conversation_the_binding_did_not_resume_is_refused() {
+    let (mut binding, snapshot) = hooks_sample(Some("conversation-1"));
+    trust(&binding, &snapshot).unwrap();
+    binding.conversation = String::new();
+    session(&binding, &snapshot).unwrap();
+    assert_eq!(
+        trust(&binding, &snapshot).unwrap_err(),
+        "The hooks prompt is not at the startup of the member's own conversation"
+    );
+}

@@ -201,6 +201,7 @@ mod tests {
     /// startup and at a resumed one's (zerus-f67qp): only the hook kind
     /// admits it, only for Codex, with its own category and the answer Trust
     /// all and continue; the folder kind and the ordinary admission never do.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[test]
     fn a_codex_hooks_trust_card_is_its_own_kind_and_category() {
         let dir = tempfile::tempdir().unwrap();

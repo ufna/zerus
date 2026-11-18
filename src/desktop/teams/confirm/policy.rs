@@ -140,7 +140,11 @@ pub(super) fn trust(b: &Binding, s: &Snapshot) -> Result<Value, String> {
     // resumed one names the conversation the member's binding resumed.
     need(
         s.conversation.is_empty() || hook && s.conversation == b.conversation,
-        "The folder prompt is not a startup prompt",
+        if hook {
+            "The hooks prompt is not at the startup of the member's own conversation"
+        } else {
+            "The folder prompt is not a startup prompt"
+        },
     )?;
     let expected = provider(&b.agent)?;
     need(
