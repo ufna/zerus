@@ -166,7 +166,10 @@ fn exact_previous_store_upgrade_adds_only_the_independent_send_leaf() {
     );
     // This leaf, then the later deferred answer and compact-to-send leaves.
     // ... and the question route leaves' tables (zerus-sa9qn.8, .32, .50, .36 and .52).
-    assert_eq!(tables(&store.db), before + 2 + 2 + 2 + 2 + 1 + 2 + 2 + 1 + 1);
+    assert_eq!(
+        tables(&store.db),
+        before + 2 + 2 + 2 + 2 + 1 + 2 + 2 + 1 + 1 + 1
+    );
     assert_eq!(ledger::undrained(&store.db).unwrap(), 0);
     assert_eq!(
         store.operation_status()["kinds"]["deferred_send"]["undrained"],
@@ -1423,7 +1426,8 @@ mod actor {
         );
     }
 
-    /// The person turn through the real admission (zerus-46l1q).
+    /// The person mark and turn through the real admission (zerus-46l1q).
+    mod person;
     #[cfg(target_os = "linux")]
     mod person_real;
 

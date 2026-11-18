@@ -2299,6 +2299,9 @@ fn submit_core(
     // Preserve attachments after any possible input: the agent may read them later.
     let _ = attachments.map(tempfile::TempDir::keep);
     acceptance::bind_native_context(&mut record, &receipt);
+    // Any input from anyone ends the person turn; the person's own next
+    // message starts a new one at its own prompt (zerus-46l1q).
+    super::person_turn::end(&mut record);
     record["input_pending_at"] = json!(submitted_at);
     // Clear input reads this send's receipt to tell an input still in its proof
     // window from one left uncertain or stuck (zerus-wkj9l.1).

@@ -478,6 +478,8 @@ fn mark_input(owner: &Arc<owner::Owner>, at: f64) -> Result<()> {
         Ok(())
     })?;
     let mut record = owner.snapshot()?.0;
+    // This send is input too: it ends any person turn (zerus-46l1q).
+    crate::state::person_turn::end(&mut record);
     record["input_pending_at"] = json!(at);
     record["input_pending_request"] = json!(header(owner)?.request_id);
     if header(owner)?.agent == "claude" {

@@ -121,6 +121,27 @@ HGS path variables, never HGS session/run identity. `self` never routes to a pee
 and refuses `--dry-run`. Claimed identity never enters send/graph attribution,
 task ownership or permission proof.
 
+`person_request` in the JSON reply shows whether the person's own message lets
+this session act for the person now (zerus-46l1q): `request_id`, `origin`
+(`desktop`), `age_seconds` and `expires_in_seconds`, or `null`. A desktop
+composer message the window admits through its deferred send writes a person
+mark in the desktop store, in the same transaction as its original row, naming
+the exact session, run, conversation and `hgs send` stdin digest. Question
+routes, `hgs send`, launches, team hand-outs, task dispatch, timers, recovery
+and keep-warm never write one; a first message to a conversation not yet known,
+a full ledger (4096 marks) and macOS, which refuses every deferred send
+original, write none. The Claude, Codex or Kimi prompt hook that reports exactly
+that receipt's text, after it was sent and outside any running tool call, starts
+the person turn; one message starts at most one, within twelve hours of its
+admission. Any later prompt of the main agent, any input receipt, an agent's
+answer, a session start, a run or conversation change, or twelve hours end it.
+Each command proves it again from the live record, the mark and the receipt;
+the mark is read only from the store of its own configuration, so a copied or
+redirected state folder carries none. Nothing is exported to an environment
+variable, flag, file, child or team member, and a process outside the agent's
+ancestry has none. This guards against accidental use; a process of the same
+user that writes Zerus state files directly is outside it.
+
 `hgs [@host] guide [send|wait|launch|stop]` prints compact instructions for
 agents that read, message, wait for, launch or stop other sessions. The text is
 compiled into hgs and stays small because agents read it into their context;

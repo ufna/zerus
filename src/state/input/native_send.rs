@@ -802,6 +802,11 @@ mod tests {
 "###;
         assert_eq!(original.matches(acceptance_fences).count(), 1);
         original = original.replacen(acceptance_fences, "", 1);
+        // zerus-46l1q ends the person turn at every receipt: project that one
+        // metadata addition away; the original body seal stays unchanged.
+        let person_turn = "    // Any input from anyone ends the person turn; the person's own next\n    // message starts a new one at its own prompt (zerus-46l1q).\n    super::person_turn::end(&mut record);\n";
+        assert_eq!(original.matches(person_turn).count(), 1);
+        original = original.replacen(person_turn, "", 1);
         assert_eq!(
             format!("{:x}", Sha256::digest(original.as_bytes())),
             "59613e90dd2487deb1c88ce9820f0194714dcbab6ea0f7b580cf9f50598f36bd"

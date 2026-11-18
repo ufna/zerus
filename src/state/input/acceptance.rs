@@ -289,6 +289,13 @@ fn stored_receipt(record: &Value) -> Option<Value> {
     Some(receipt)
 }
 
+/// The CLI's own receipt of the record's pending request, checked against
+/// the record as the acceptance rule checks it; the person turn binds only
+/// such a receipt (zerus-46l1q).
+pub(in crate::state) fn pending_receipt_of(record: &Value) -> Option<Value> {
+    stored_receipt(record)
+}
+
 fn bound_receipt(record: &Value, bootstrap: bool) -> Option<Value> {
     let receipt = stored_receipt(record)?;
     (receipt["conversation_id"] == record["conversation_id"]

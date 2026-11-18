@@ -360,12 +360,13 @@ impl Runtime {
             }
             // From here on nothing proves the request was not admitted.
             proof = Proof::Admitting;
-            let row = ledger::admit(
-                &tx,
-                &live.original,
-                &lease.writer_epoch,
-                chrono::Utc::now().timestamp_millis(),
-            )?;
+            let at = chrono::Utc::now().timestamp_millis();
+            let row = ledger::admit(&tx, &live.original, &lease.writer_epoch, at)?;
+            // The person's own message, admitted by their window permit: its
+            // mark commits with its original, never for a repeat (zerus-46l1q).
+            if original.is_none() {
+                crate::desktop::person_mark::record(&tx, &live.original, at)?;
+            }
             tx.commit()?;
             // The same original again gets only its own receipt; only the
             // first admission holds the live admission.
