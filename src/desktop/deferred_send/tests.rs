@@ -43,6 +43,43 @@ fn original_text(configuration: &str, epoch: &str, text: &str) -> Verified {
     .verify()
     .unwrap()
 }
+/// The person's original for `session`, `run` and `conversation` with
+/// `text`, exactly as the window's checkpoint and stdin name it.
+fn original_for(
+    configuration: &str,
+    epoch: &str,
+    session: &str,
+    run: &str,
+    conversation: &str,
+    text: &str,
+) -> Verified {
+    let checkpoint = Checkpoint::reserve(checkpoint::Intent {
+        kind: checkpoint::Kind::Send,
+        draft_revision: 3,
+        message_sha256: checkpoint::message_sha256(text, Vec::<(&str, &str, &str, &[u8])>::new()),
+        run_id: run.into(),
+        conversation_id: conversation.into(),
+        question: None,
+        start: None,
+        retry_of: None,
+        consent: true,
+    });
+    let stdin = json!({"request_id": checkpoint.request_id, "text": text, "attachments": [],
+        "expected_run_id": run, "expected_conversation_id": conversation});
+    Intent {
+        scope: wire::Scope {
+            configuration: configuration.into(),
+            service_epoch: epoch.into(),
+        },
+        session: session.into(),
+        request_id: checkpoint.request_id.clone(),
+        checkpoint: serde_json::to_string(&checkpoint).unwrap(),
+        original: stdin.to_string(),
+    }
+    .verify()
+    .unwrap()
+}
+
 /// The CLI's own record of `plan`'s request with `status`, as `hgs send`
 /// writes it.
 fn cli_record(plan: &wire::Plan, status: &str) -> Value {
@@ -1250,7 +1287,11 @@ mod actor {
             Self::build(None)
         }
         fn build(execute: Option<Arc<Execute>>) -> Self {
-            let temp = tempfile::tempdir().unwrap();
+            Self::build_in(tempfile::tempdir().unwrap(), execute)
+        }
+        /// The fixture over the private root `temp`, which a real CLI under
+        /// test also names as its home, state and configuration.
+        fn build_in(temp: tempfile::TempDir, execute: Option<Arc<Execute>>) -> Self {
             let root = temp.path().canonicalize().unwrap();
             let config = Config {
                 home: root.to_str().unwrap().into(),
@@ -1381,6 +1422,10 @@ mod actor {
             cli_record(plan, wire::SUBMITTED).to_string().as_bytes(),
         );
     }
+
+    /// The person turn through the real admission (zerus-46l1q).
+    #[cfg(target_os = "linux")]
+    mod person_real;
 
     #[test]
     fn an_admitted_send_runs_once_and_settles_only_from_its_cli_receipt() {

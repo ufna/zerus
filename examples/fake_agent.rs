@@ -95,7 +95,8 @@
 //!   with the cursor after the text.
 //!   `--session-id ID` fixes the ID; otherwise agent arguments `--resume ID`,
 //!   `-r ID`, `--session ID`, `resume ID` (resumed) or `--session-id ID` choose
-//!   it, else a random UUID.
+//!   it, else a random UUID. A resumed ID with `--fork-session` becomes a new
+//!   random UUID, as Claude Code forks.
 //! - `--probe-text TEXT`: when the agent arguments are just `--version` or
 //!   `--help`, print TEXT and exit 0 at once, recording nothing: the answer to
 //!   the capability probes hgs runs before a tracked agent starts.
@@ -2276,6 +2277,16 @@ fn main() {
         (Some(id), (_, resumed)) => (id.clone(), resumed),
         (None, (Some(id), resumed)) => (id, resumed),
         (None, (None, _)) => (random_uuid(), false),
+    };
+    // Claude Code's --fork-session continues a resumed conversation under a
+    // new ID.
+    let session_id = if resumed
+        && config.session_id.is_none()
+        && config.argv.iter().any(|arg| arg == "--fork-session")
+    {
+        random_uuid()
+    } else {
+        session_id
     };
     let transcript = config.transcript_dir.as_ref().map(|directory| {
         let path = directory.join(format!("{session_id}.jsonl"));
