@@ -62,11 +62,12 @@ pub(super) fn execute(config: &Config, args: &[String]) -> Result<Value> {
     // No delegation, --agent forwarding or team service identity can become
     // Person. Parsed text values are never reinterpreted as actor options.
     let who = actor(&machines.here, &[], false)?;
-    if who != Actor::Person {
-        return Err(fail(
-            "only the person abandons an attempt whose delivery is unknown",
-        ));
-    }
+    // The person, or an agent carrying out the person's own request
+    // (zerus-46l1q), which every history entry of this write records.
+    let person = super::person_request_for(
+        &who,
+        "only the person, or an agent at the person's own request, abandons an attempt whose delivery is unknown",
+    )?;
     let reference = reference(config, &request.reference, &who)?;
     let store = store(config, &reference.project.0)?;
     let mut task = find(&store, &reference.task)?;
@@ -77,6 +78,8 @@ pub(super) fn execute(config: &Config, args: &[String]) -> Result<Value> {
             .map_err(|error| fail(format!("{}: {}", error.code, error.message)))?;
     let before = task.revision();
     attempts::pause_at(&request.attempt, "cancel_attempt");
+    super::recheck(person.as_ref())?;
+    task.at_request(person.as_ref().map(|person| person.reference()));
     task.cancel_attempt(&request.attempt, &request.reason, &who, now())
         .map_err(fail)?;
     let repeated = task.revision() == before;

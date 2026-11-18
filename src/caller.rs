@@ -19,8 +19,6 @@ use serde_json::{json, Value};
 
 /// The proven request of the person's message, for one command. Neither
 /// `Clone` nor `Deserialize`: only [`person_request`] makes one.
-// The task writers (S2) are the first to record its identity.
-#[allow(dead_code)]
 #[derive(Debug)]
 pub(crate) struct PersonRequest {
     machine: String,
@@ -45,7 +43,6 @@ pub(crate) const ASK: &str = "on macOS the person's own message does not yet let
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
 pub(crate) const ASK: &str = "on Windows the person's own message does not let an agent act for them; ask the person to do this themselves";
 
-#[allow(dead_code)]
 impl PersonRequest {
     /// The message identity a writer records with the action.
     pub(crate) fn identity(&self) -> Value {
@@ -54,8 +51,27 @@ impl PersonRequest {
             "request_id": self.request_id, "origin": self.origin})
     }
 
-    pub(crate) fn request_id(&self) -> &str {
-        &self.request_id
+    /// The message identity as the task history records it.
+    pub(crate) fn reference(&self) -> zerus_replica::PersonRequestRef {
+        zerus_replica::PersonRequestRef {
+            machine: self.machine.clone(),
+            session: self.session.clone(),
+            session_id: self.session_id.clone(),
+            run_id: self.run_id.clone(),
+            conversation_id: self.conversation_id.clone(),
+            request_id: self.request_id.clone(),
+            origin: self.origin.clone(),
+        }
+    }
+
+    /// Whether the request belongs to the acting session `own`.
+    pub(crate) fn is_of(&self, own: &zerus_replica::SessionKey) -> bool {
+        self.machine == own.machine
+            && if own.session_id.is_empty() {
+                self.session == own.session
+            } else {
+                self.session_id == own.session_id
+            }
     }
 
     /// What `hgs self` shows: the request, its origin and its age.

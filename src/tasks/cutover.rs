@@ -8,7 +8,6 @@ use crate::swarm::{self, TaskMember};
 use serde_json::{json, Value};
 use std::time::UNIX_EPOCH;
 use std::time::Duration;
-use zerus_replica::Actor;
 
 /// One fence check's whole budget, counted once from its start (C3).
 const FENCE_BUDGET: Duration = Duration::from_secs(15);
@@ -35,9 +34,12 @@ pub(super) fn cutover(config: &Config, args: &[String]) -> Result<Value> {
             "off" => false,
             _ => return Err(fail("--hold takes on or off")),
         };
-        if !matches!(who, Actor::Person) {
-            return Err(fail("only a person sets or clears the cutover hold"));
-        }
+        // The person, or an agent carrying out the person's own request
+        // (zerus-46l1q), recorded with the hold.
+        let request = super::person_request_for(
+            &who,
+            "only a person, or an agent at the person's own request, sets or clears the cutover hold",
+        )?;
         // Clearing it lets the project's cutover begin: an explicit choice.
         if !on && !flag(args, "--confirm") {
             return Err(fail(
@@ -46,7 +48,10 @@ pub(super) fn cutover(config: &Config, args: &[String]) -> Result<Value> {
             ));
         }
         let mut doc = store.project().map_err(fail)?;
-        doc.set_cutover_hold(on, &who, now()).map_err(fail)?;
+        super::recheck(request.as_ref())?;
+        let reference = request.as_ref().map(|request| request.reference());
+        doc.set_cutover_hold_for(on, &who, reference.as_ref(), now())
+            .map_err(fail)?;
         store.save_project(&doc).map_err(fail)?;
     }
     let hold = store.project().map_err(fail)?.cutover_hold();
@@ -79,7 +84,8 @@ pub(super) fn cutover(config: &Config, args: &[String]) -> Result<Value> {
         "project": {"id": id, "name": name},
         "phase": phase,
         "hold": match hold {
-            Some(hold) => json!({"on": hold.on, "by": hold.by, "at": hold.at}),
+            Some(hold) => json!({"on": hold.on, "by": hold.by, "at": hold.at,
+                "person_request": hold.person_request}),
             None => json!({"on": false, "by": null, "at": null}),
         },
         "cut_over_tasks": cut_over,

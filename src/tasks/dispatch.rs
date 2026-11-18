@@ -273,7 +273,7 @@ pub(super) fn execute(config: &Config, action: &str, args: &[String]) -> Result<
     super::attempts::pause_at(body["id"].as_str().unwrap_or_default(), "start_read");
     {
         let mut meeting = crate::teams::tasks::Meeting::Projects(&store);
-        super::teams::guard(config, &machines, &task, "send", args, &mut meeting)?;
+        super::teams::guard(config, &machines, &mut task, "send", args, &mut meeting)?;
     }
     let current = task.view().map_err(fail)?;
     let (selection, to) = if action == "start-plan" {
@@ -595,7 +595,7 @@ pub(super) fn execute(config: &Config, action: &str, args: &[String]) -> Result<
         super::attempts::pause_at(&plan.id, "start_legacy");
         {
             let mut meeting = crate::teams::tasks::Meeting::Projects(&store);
-            super::teams::guard(config, &machines, &task, "send", args, &mut meeting)?;
+            super::teams::guard(config, &machines, &mut task, "send", args, &mut meeting)?;
         }
         let current = task.view().map_err(fail)?;
         return legacy(

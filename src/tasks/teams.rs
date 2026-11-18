@@ -252,7 +252,7 @@ pub(super) fn annotate(mut out: Value) -> Value {
 pub(super) fn guard(
     config: &Config,
     machines: &Machines,
-    task: &TaskDoc,
+    task: &mut TaskDoc,
     action: &str,
     args: &[String],
     meeting: &mut bridge::Meeting<'_, '_>,
@@ -269,13 +269,26 @@ pub(super) fn guard(
         bridge::meet(&config.state, &machines.here, task, meeting).map_err(problem)?;
         return Ok(());
     }
-    bridge::guard(
-        &caller(config, machines, args, true).map_err(problem)?,
-        meeting,
-        task,
-        action,
-    )
-    .map_err(problem)
+    let caller = caller(config, machines, args, true).map_err(problem)?;
+    let refused = match bridge::guard(&caller, meeting, task, action) {
+        Ok(()) => return Ok(()),
+        Err(refused) => refused,
+    };
+    // The person's own request in the agent's conversation (zerus-46l1q)
+    // admits what the person could do, and this write's history records it.
+    let Actor::Agent(own) = &caller.actor else {
+        return Err(problem(refused));
+    };
+    match crate::caller::person_request() {
+        Ok(request) if request.is_of(own) => {
+            task.at_request(Some(request.reference()));
+            Ok(())
+        }
+        _ => Err(fail(format!(
+            "{}: {} Or ask the person in your own conversation; their own message lets you act for them.",
+            refused.code, refused.message
+        ))),
+    }
 }
 pub(super) fn clear(config: &Config, here: &str, task: &mut TaskDoc, who: &Actor) -> Result<()> {
     bridge::retarget(&config.state, here, task, who).map_err(problem)

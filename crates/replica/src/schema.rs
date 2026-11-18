@@ -95,6 +95,22 @@ pub enum Actor {
     Agent(SessionKey),
 }
 
+/// The person's own message whose request an agent carried out
+/// (zerus-46l1q): the asking session's exact identity and the message's
+/// request. It records evidence only; the writer that admitted the action
+/// proved the request itself.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PersonRequestRef {
+    pub machine: String,
+    pub session: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub session_id: String,
+    pub run_id: String,
+    pub conversation_id: String,
+    pub request_id: String,
+    pub origin: String,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LogEntry {
     pub kind: String,
@@ -129,6 +145,9 @@ pub struct LogEntry {
     /// of that exact attempt record (`Attempt::fingerprint`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub of: Option<String>,
+    /// The person's message an agent's entry carried out (zerus-46l1q).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub person_request: Option<PersonRequestRef>,
 }
 
 /// A task message's durable outbox reservation. Submission is not consumption.

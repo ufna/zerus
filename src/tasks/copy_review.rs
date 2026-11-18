@@ -3,7 +3,7 @@ use super::{actor, fail, machines, option, project_arg, Result};
 use crate::config::Config;
 use serde_json::{json, Value};
 use std::time::Duration;
-use zerus_replica::{Actor, ProjectStore};
+use zerus_replica::ProjectStore;
 
 pub(super) fn execute(config: &Config, args: &[String]) -> Result<Value> {
     let mut index = 0;
@@ -26,11 +26,15 @@ pub(super) fn execute(config: &Config, args: &[String]) -> Result<Value> {
     let uuid =
         option(args, "--uuid")?.ok_or_else(|| fail("review-copy requires the exact task UUID"))?;
     let confirmation = option(args, "--confirm")?;
-    if confirmation.is_some() && !matches!(who, Actor::Person) {
-        return Err(fail(
-            "only a person confirms moving a damaged local task copy aside",
-        ));
-    }
+    // The person, or an agent carrying out the person's own request
+    // (zerus-46l1q), whose identity the reply records.
+    let person = match confirmation {
+        Some(_) => super::person_request_for(
+            &who,
+            "only a person, or an agent at the person's own request, confirms moving a damaged local task copy aside",
+        )?,
+        None => None,
+    };
     let mut store =
         ProjectStore::open_copy_review(&config.state.join("replica"), &id, Duration::from_secs(2))
             .map_err(fail)?
@@ -51,6 +55,10 @@ pub(super) fn execute(config: &Config, args: &[String]) -> Result<Value> {
                     .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
             {
                 return Err(fail("review-copy requires its exact review fingerprint"));
+            }
+            super::recheck(person.as_ref())?;
+            if let Some(person) = &person {
+                reply["person_request"] = person.identity();
             }
             match store.move_reviewed_copy(uuid, expected) {
                 Ok(outcome) => {

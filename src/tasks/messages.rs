@@ -39,7 +39,7 @@ pub(super) fn execute(config: &Config, args: &[String]) -> Result<Value> {
     if let Some(actor) = super::teams::actor_for_marked_task(config, &machines, args, true, &task)? { who = actor; }
     {
         let mut meeting = crate::teams::tasks::Meeting::Projects(&store);
-        super::teams::guard(config, &machines, &task, "message", args, &mut meeting)?;
+        super::teams::guard(config, &machines, &mut task, "message", args, &mut meeting)?;
     }
     let mut before = task.view().map_err(fail)?;
     let existing = before
@@ -170,7 +170,7 @@ pub(super) fn execute(config: &Config, args: &[String]) -> Result<Value> {
             store = super::store(config, &r.project.0)?;
             task = store.load(&uuid).map_err(fail)?;
             let mut meeting = crate::teams::tasks::Meeting::Projects(&store);
-            super::teams::guard(config, &machines, &task, "message", args, &mut meeting)?;
+            super::teams::guard(config, &machines, &mut task, "message", args, &mut meeting)?;
             before = task.view().map_err(fail)?;
         }
     }

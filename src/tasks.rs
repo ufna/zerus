@@ -357,6 +357,32 @@ impl Machines {
     }
 }
 
+/// What an agent needs for an action reserved to the person: the person's own
+/// request in its own conversation (zerus-46l1q). `None` for the person; a
+/// refusal names `rule` and how to ask. The writer records the request's
+/// identity with the action and checks it again before it writes.
+pub(super) fn person_request_for(
+    who: &Actor,
+    rule: &str,
+) -> Result<Option<crate::caller::PersonRequest>> {
+    let Actor::Agent(own) = who else {
+        return Ok(None);
+    };
+    let request = crate::caller::person_request().map_err(|why| fail(format!("{rule}: {why}")))?;
+    if !request.is_of(own) {
+        return Err(fail(format!(
+            "{rule}: the person's request belongs to another session; {}",
+            crate::caller::ASK
+        )));
+    }
+    Ok(Some(request))
+}
+
+/// Checks `request` again just before its writer writes.
+pub(super) fn recheck(request: Option<&crate::caller::PersonRequest>) -> Result<()> {
+    request.map_or(Ok(()), |request| request.recheck().map_err(fail))
+}
+
 /// The refusal for a resident DeepSeek host's tool call (`HGS_AGENT=dsh`)
 /// whose session cannot be proven.
 const UNPROVEN_HOSTED_AGENT: &str = "a DeepSeek agent's tool call (HGS_AGENT=dsh) never acts as the person, and its session cannot be proven here; run person actions from a terminal outside the DeepSeek host";
@@ -1158,11 +1184,20 @@ fn add(config: &Config, args: &[String]) -> Result<Value> {
     if option(args, "--host")?.is_some() && matches!(option(args, "--target")?, None | Some("any")) {
         return Err(fail("--host needs a --target session"));
     }
+    // ... unless the person asked the agent for it in its own conversation
+    // (zerus-46l1q), which the new task's history records.
+    let mut filed_for = None;
     let target = if team.is_some() { Target::Any } else { match (&author, option(args, "--target")?) {
-        (Actor::Agent(_), Some(_)) => {
-            return Err(fail(
-                "a task an agent files is pinned to its own session; --target is for people",
-            ))
+        (Actor::Agent(_), Some(session)) => {
+            filed_for = person_request_for(
+                &author,
+                "a task an agent files is pinned to its own session; --target is for people, or for an agent the person asked in its own conversation",
+            )?;
+            if session == "any" {
+                Target::Any
+            } else {
+                Target::Session(machines.target(machines.node(option(args, "--host")?)?, session, args)?)
+            }
         }
         (Actor::Agent(own), None) => Target::Session(own.clone()),
         (Actor::Person, None | Some("any")) => Target::Any,
@@ -1170,6 +1205,7 @@ fn add(config: &Config, args: &[String]) -> Result<Value> {
     }};
     let position = position_index(args)?.map_or(Position::End, Position::Index);
     let store = store(config, &id)?;
+    recheck(filed_for.as_ref())?;
     let request = option(args, "--request-id")?;
     let (mut task, created) = placed(&store, |placement| if let Some(title) = title {
         store.new_named_task_placed(placement, title, &text, content.attachments.as_deref().unwrap_or_default(), stage, target, author.clone(), &position, &name, now(), request, flag(args, "--start")).map_err(fail)
@@ -1181,6 +1217,10 @@ fn add(config: &Config, args: &[String]) -> Result<Value> {
     })?;
     if created {
         if title.is_none() && flag(args, "--start") { task.record_start(&author, now()).map_err(fail)?; }
+        if let Some(person) = &filed_for {
+            task.at_request(Some(person.reference()));
+            task.record_at_request(&author, "Filed for another session at the person's request", now()).map_err(fail)?;
+        }
         store.save(&mut task).map_err(fail)?;
     }
     let (store, task, team_reply) = if let Some(team) = &team {
@@ -1338,7 +1378,7 @@ fn change_guarded(
     }
     {
         let mut meeting = crate::teams::tasks::Meeting::Projects(&store);
-        teams::guard(config, &machines, &task, action, args, &mut meeting)?;
+        teams::guard(config, &machines, &mut task, action, args, &mut meeting)?;
     }
     if let Some(team) = &team {
         let task_ref = zerus_team_plan::model::TaskRef {
@@ -1471,7 +1511,7 @@ fn change_guarded(
                     let store = self::store(config, project_id)?;
                     let mut task = store.load(&uuid).map_err(fail)?;
                     let mut meeting = crate::teams::tasks::Meeting::Projects(&store);
-                    teams::guard(config, &machines, &task, action, args, &mut meeting)?;
+                    teams::guard(config, &machines, &mut task, action, args, &mut meeting)?;
                     enrich(&mut task, &machines)?;
                     (store, task)
                 }
@@ -1939,18 +1979,24 @@ fn cancel(
         .ok_or_else(|| fail("only a task In progress can be cancelled"))?;
     let resolved = machines.resolve(&stored_session);
     let session = resolved.as_ref().unwrap_or(&stored_session);
-    if let Actor::Agent(own) = who {
-        if own == session {
-            return Err(fail(format!(
-                "You cannot cancel {project_name}/{}, a task you were sent. If it cannot be done, report what is left undone.",
+    // A task sent to the agent itself: only at the person's own request
+    // (zerus-46l1q), which its history records.
+    let person = match who {
+        Actor::Agent(own) if own == session => person_request_for(
+            who,
+            &format!(
+                "You cannot cancel {project_name}/{}, a task you were sent, unless the person asks you to in your own conversation. If it cannot be done, report what is left undone",
                 task.id()
-            )));
-        }
-    }
+            ),
+        )?,
+        _ => None,
+    };
     let settings = store.project().map_err(fail)?.settings();
     settings
         .check_agent(who, session, false, 0)
         .map_err(fail)?;
+    recheck(person.as_ref())?;
+    task.at_request(person.as_ref().map(|person| person.reference()));
     task.record_cancel(reason, who, now()).map_err(fail)?;
     store.save(task).map_err(fail)?;
     cancel_notice(machines, task, project_name, who, &settings, undelivered)

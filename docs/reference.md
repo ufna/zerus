@@ -5253,7 +5253,8 @@ not queued feedback and is never delivered by itself, and only the receipt
 moves the task back to In progress. Feedback to a task In progress
 (`--mode send`) stays an ordinary message.
 
-When recovery cannot settle an unknown delivery, the person can use
+When recovery cannot settle an unknown delivery, the person, or an agent at
+the person's own request, can use
 `hgs task cancel-attempt REF --attempt UUID [--reason TEXT]`. This abandons
 only that exact unknown attempt, records a `Cancelled` fact and an
 `attempt_cancelled` audit entry, and releases its hold. Delivery remains
@@ -5264,6 +5265,22 @@ attempts refuse. Other unknown attempts still hold the task. A later send
 uses a new attempt, and an old request is never replayed.
 The reply contains one task row; read its audit through the bounded task
 history command.
+
+Person requests in task commands (zerus-46l1q). An agent whose own session
+holds the person's request (`person_request` in `hgs self --json`) may take the
+task actions otherwise reserved to the person: set or clear the cutover hold,
+abandon an attempt whose delivery is unknown, confirm `review-copy`, cancel a
+task it was sent, file a task for another session with `--target`, and take
+the actions an agent cannot take on a live team's task. The request is proven
+again for the command (`caller::person_request`), and again under the
+project's store before the write; another agent, a child, a forwarded
+`--agent` command or a command outside the agent's ancestry has none. Every
+history entry the action writes keeps `actor` as that agent and adds
+`person_request` with the message's `machine`, `session`, `session_id`,
+`run_id`, `conversation_id`, `request_id` and `origin`; the cutover hold keeps
+the same field, a task filed for another session gets one `person_request`
+entry, and `review-copy`'s reply names it. Starting a plan or delivery (`start-plan`,
+`start-deliver`) stays the window's. Older readers ignore the field.
 
 The task inspector's **Saved execution** section shows the saved attempt,
 generation, requirement revisions, executor and recorded events. Submitted does
@@ -5775,7 +5792,8 @@ names who set it and when (concurrent changes: the last writer wins). While on,
 no task of the project takes a new floor or a first attempt (the attempt
 writer refuses them as cutting over); it never lowers anything, and a
 task that never cut over keeps the legacy Start. Only a person sets or clears it,
-and clearing it takes `--hold off --confirm`. A hold that cannot be read is
+or an agent at the person's own request, which the hold records as
+`person_request`; clearing it takes `--hold off --confirm`. A hold that cannot be read is
 on. Times are in milliseconds.
 
 `task cutover --project P --task T --check` reads the task's writer universe

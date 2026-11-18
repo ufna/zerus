@@ -161,6 +161,31 @@ fn hgs(args: &[&str]) -> std::process::Output {
     );
     output
 }
+/// The person's own command in a terminal outside every agent.
+fn person(args: &[&str], input: &str) -> Value {
+    use std::io::Write;
+    let mut child = Command::new(cli())
+        .args(args)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(input.as_bytes())
+        .unwrap();
+    let output = child.wait_with_output().unwrap();
+    assert!(
+        output.status.success(),
+        "hgs {args:?}: {}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    serde_json::from_slice(&output.stdout).unwrap_or(Value::Null)
+}
 fn tmux(args: &[&str]) -> std::process::Output {
     Command::new("tmux").args(args).output().unwrap()
 }
@@ -465,6 +490,119 @@ impl World {
             ))
             .unwrap();
     }
+    /// A live team of this computer and one of its queued tasks, as the
+    /// team task harness models the window's admission; its reference.
+    fn live_team_task(&self) -> String {
+        use crate::teams::ops::{self, tests as fixtures};
+        let config = &self.f.config;
+        let state = &config.state;
+        crate::platform::private_dir(&state.join("teams")).unwrap();
+        std::fs::write(state.join("teams/preview"), "on").unwrap();
+        let machine = crate::swarm::local_node_id(config).unwrap();
+        let mut store = crate::teams::store::Store::open(state).unwrap();
+        let mut create = fixtures::create();
+        if let ops::Operation::Create { home, .. } = &mut create {
+            *home = machine.clone();
+        }
+        fixtures::apply_fixture(
+            &mut store,
+            &fixtures::person(),
+            &fixtures::request(0, create),
+            1234,
+        )
+        .unwrap();
+        drop(store);
+        let tasks =
+            zerus_replica::ProjectStore::open(&state.join("replica"), "example-project").unwrap();
+        let mut document = tasks
+            .new_task(
+                "A team task",
+                zerus_replica::Stage::Todo,
+                zerus_replica::Target::Any,
+                zerus_replica::Actor::Person,
+                &zerus_replica::Position::End,
+                PROJECT,
+                1,
+            )
+            .unwrap();
+        tasks.save(&mut document).unwrap();
+        let id = document.id().to_owned();
+        let reference = zerus_team_plan::model::TaskRef {
+            project: "example-project".into(),
+            uuid: document.uuid().into(),
+        };
+        drop(tasks);
+        let admitted = crate::teams::tasks::models::send(
+            &crate::teams::tasks::Caller {
+                state,
+                machine: &machine,
+                actor: zerus_replica::Actor::Person,
+            },
+            &reference,
+            fixtures::TEAM,
+            None,
+            None,
+        )
+        .unwrap();
+        assert!(admitted.queued, "{admitted:?}");
+        format!("{PROJECT}/{id}")
+    }
+    /// The history of task `reference`, read from the project store in Rust:
+    /// the person's own task commands refuse under the agent this test may
+    /// run in, and are never rerouted around that refusal.
+    fn log(&self, reference: &str) -> Vec<zerus_replica::LogEntry> {
+        let id = reference.rsplit('/').next().unwrap();
+        zerus_replica::ProjectStore::open(&self.f.config.state.join("replica"), "example-project")
+            .unwrap()
+            .find(id)
+            .unwrap()
+            .view()
+            .unwrap()
+            .log
+    }
+    /// A task the person sent to `name`, produced in Rust as the person's
+    /// dispatch records it; no input reaches the agent.
+    fn sent_task(&self, name: &str) -> String {
+        let record = self.record(name);
+        let machine = crate::swarm::local_node_id(&self.f.config).unwrap();
+        let tasks = zerus_replica::ProjectStore::open(
+            &self.f.config.state.join("replica"),
+            "example-project",
+        )
+        .unwrap();
+        let mut document = tasks
+            .new_task(
+                "Sent to the asked agent",
+                zerus_replica::Stage::Todo,
+                zerus_replica::Target::Any,
+                zerus_replica::Actor::Person,
+                &zerus_replica::Position::End,
+                PROJECT,
+                1,
+            )
+            .unwrap();
+        let holder = zerus_replica::SessionKey {
+            machine,
+            session: name.into(),
+            session_id: crate::teams::caller::identity(&record),
+        };
+        document
+            .record_send(
+                &holder,
+                &uuid::Uuid::new_v4().to_string(),
+                &zerus_replica::Actor::Person,
+                2,
+            )
+            .unwrap();
+        tasks.save(&mut document).unwrap();
+        format!("{PROJECT}/{}", document.id())
+    }
+    /// What `script` printed as JSON inside the agent of `name`.
+    fn agent_json(&self, name: &str, script: &str) -> (Ran, Value) {
+        let ran = self.agent(name, script);
+        let value = serde_json::from_str(ran.out.trim()).unwrap_or(Value::Null);
+        (ran, value)
+    }
     fn none(&self, name: &str, step: &str) {
         assert!(self.turn(name).is_null(), "{step}: {}", self.turn(name));
         assert!(self.person_request(name).is_null(), "{step}");
@@ -603,6 +741,13 @@ fn private_case() {
         root: root.clone(),
         project,
     };
+    // The task project the person keeps, with a fixed identity.
+    person(
+        &["swarm", "initialize"],
+        &format!(
+            r##"{{"projects":[{{"id":"example-project","name":"{PROJECT}","color":"#123456","folders":[],"sessions":[]}}]}}"##
+        ),
+    );
     let asked = w.launch("asked");
     let peer = w.launch("peer");
     tmux(&["set-option", "-g", "exit-empty", "off"]);
@@ -776,6 +921,11 @@ fn private_case() {
     w.none(&forked, "forked");
     assert_eq!(w.person_request(&asked)["request_id"], live.as_str());
 
+    // S2: the task writers reserved to the person accept the person's own
+    // request in the agent's conversation, and record its message.
+    let tasks = person_tasks(&mut w, &asked, &peer);
+    println!("PERSON_REQUEST_TASKS={tasks}");
+
     // A session whose agent reports no prompt hook of its own: the input
     // stays pending while its agent reports prompts, one bind rule at a
     // time.
@@ -913,4 +1063,161 @@ fn private_case() {
     println!("marks: {marks}, first: {first}");
     drop(server);
     println!("PERSON_REQUEST_REAL_EXECUTED");
+}
+
+/// The task steps (S2), each refused for an agent without the person's
+/// request and taken, with its message recorded, at the person's request.
+fn person_tasks(w: &mut World, asked: &str, peer: &str) -> usize {
+    let mut steps = 0;
+    let refused = |ran: &Ran, step: &str| {
+        assert_ne!(ran.code, 0, "{step}: {}", ran.out);
+        assert!(
+            ran.err.contains("ask the person in your own conversation")
+                || ran.err.contains("asks you to in your own conversation")
+                || ran.err.contains("ask the person in your"),
+            "{step}: {}",
+            ran.err
+        );
+    };
+    // T3: the project's cutover hold.
+    let live = w.bound(asked, "please hold the project's cutover");
+    let (ran, hold) = w.agent_json(
+        asked,
+        &format!("hgs task cutover --project {PROJECT} --hold on --json"),
+    );
+    assert_eq!(ran.code, 0, "{}", ran.err);
+    assert_eq!(hold["hold"]["on"], true, "{hold}");
+    assert_eq!(
+        hold["hold"]["person_request"]["request_id"],
+        live.as_str(),
+        "{hold}"
+    );
+    assert_eq!(hold["hold"]["person_request"]["session"], asked);
+    let ran = w.agent(
+        peer,
+        &format!("hgs task cutover --project {PROJECT} --hold on --json"),
+    );
+    refused(&ran, "cutover-hold-refused");
+    println!("PERSON_REQUEST_STEP=task-cutover-hold ok");
+    steps += 1;
+
+    // T9: a task filed for another session.
+    let file = format!("printf 'For the peer' | hgs task add --project {PROJECT} --title 'Filed for the peer' --target '{peer}' --json");
+    let ran = w.agent(
+        peer,
+        &file.replace(&format!("'{peer}'"), &format!("'{asked}'")),
+    );
+    refused(&ran, "task-target-refused");
+    let (ran, filed) = w.agent_json(asked, &file);
+    assert_eq!(ran.code, 0, "{}", ran.err);
+    let filed_ref = filed["task"]["ref"].as_str().unwrap().to_owned();
+    assert_eq!(filed["task"]["target"]["session"], peer, "{filed}");
+    let entry = w.log(&filed_ref).pop().unwrap();
+    assert_eq!(entry.kind, "person_request", "{entry:?}");
+    assert_eq!(
+        entry.person_request.map(|r| r.request_id),
+        Some(live.clone())
+    );
+    println!("PERSON_REQUEST_STEP=task-target ok");
+    steps += 1;
+
+    // T4 and T5 reach their own checks past the person rule.
+    let attempt = uuid::Uuid::new_v4().to_string();
+    let abandon = format!("hgs task cancel-attempt {filed_ref} --attempt {attempt}");
+    let ran = w.agent(peer, &abandon);
+    refused(&ran, "cancel-attempt-refused");
+    let ran = w.agent(asked, &abandon);
+    assert_ne!(ran.code, 0);
+    assert!(
+        ran.err.contains("is not an attempt of this task"),
+        "{}",
+        ran.err
+    );
+    println!("PERSON_REQUEST_STEP=task-cancel-attempt-gate ok");
+    steps += 1;
+    let uuid = filed["task"]["uuid"].as_str().unwrap().to_owned();
+    let review = format!(
+        "hgs task review-copy --project {PROJECT} --uuid {uuid} --confirm {} --json",
+        "0".repeat(64)
+    );
+    let ran = w.agent(peer, &review);
+    refused(&ran, "review-copy-refused");
+    let (ran, reviewed) = w.agent_json(asked, &review);
+    assert_eq!(ran.code, 0, "{}", ran.err);
+    assert_eq!(
+        reviewed["person_request"]["request_id"],
+        live.as_str(),
+        "{reviewed}"
+    );
+    println!("PERSON_REQUEST_STEP=task-review-copy-gate ok");
+    steps += 1;
+
+    // T8: a live team's task.
+    let team_task = w.live_team_task();
+    let rename = format!("printf 'Renamed at the request' | hgs task rename {team_task} --json");
+    let ran = w.agent(peer, &rename);
+    assert_ne!(ran.code, 0);
+    assert!(ran.err.contains("not_allowed"), "{}", ran.err);
+    let (ran, renamed) = w.agent_json(asked, &rename);
+    assert_eq!(ran.code, 0, "{}", ran.err);
+    assert_eq!(
+        renamed["task"]["title"], "Renamed at the request",
+        "{renamed}"
+    );
+    let log = w.log(&team_task);
+    let by_request = |entry: &zerus_replica::LogEntry| {
+        entry
+            .person_request
+            .as_ref()
+            .is_some_and(|r| r.request_id == live)
+    };
+    assert!(
+        log.iter().any(by_request)
+            && log.iter().all(|entry| {
+                !matches!(entry.actor, zerus_replica::Actor::Agent(_)) || by_request(entry)
+            }),
+        "{log:?}"
+    );
+    println!("PERSON_REQUEST_STEP=team-task ok");
+    steps += 1;
+
+    // The hold back off, at a new request.
+    let off = w.bound(asked, "clear the cutover hold");
+    let (ran, hold) = w.agent_json(
+        asked,
+        &format!("hgs task cutover --project {PROJECT} --hold off --confirm --json"),
+    );
+    assert_eq!(ran.code, 0, "{}", ran.err);
+    assert_eq!(hold["hold"]["on"], false, "{hold}");
+    assert_eq!(
+        hold["hold"]["person_request"]["request_id"],
+        off.as_str(),
+        "{hold}"
+    );
+    steps += 1;
+
+    // T7: a task the person sent to the agent itself, once another agent's
+    // input has ended the turn, and again at the person's new message. Its
+    // cancel notice reaches the agent's own blocked hook, so it comes last.
+    let own = w.sent_task(asked);
+    w.agent_sends(peer, asked, "cancel the task you were sent", "");
+    assert!(w.person_request(asked).is_null());
+    let cancel = format!("hgs task cancel {own} --reason 'The person asked' --json");
+    let ran = w.agent(asked, &cancel);
+    refused(&ran, "own-cancel-refused");
+    let again = w.bound(asked, "please cancel the task I sent you");
+    let ran = w.agent(asked, &cancel);
+    assert_eq!(ran.code, 0, "{}", ran.err);
+    let log = w.log(&own);
+    assert!(
+        log.iter().any(|entry| entry
+            .person_request
+            .as_ref()
+            .is_some_and(|r| r.request_id == again)),
+        "{log:?}"
+    );
+    println!("PERSON_REQUEST_STEP=task-cancel-own ok");
+    steps += 1;
+
+    steps
 }
