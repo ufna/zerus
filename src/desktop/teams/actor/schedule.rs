@@ -90,15 +90,22 @@ impl Runtime {
         store: &mut Store,
         ports: &mut impl Ports,
         team: &Team,
-        m: &Member,
+        (m, held): (&Member, Option<&EffectIntent>),
         now: i64,
     ) -> Result<Option<Availability>> {
         let key = format!("member_free:{}", m.id);
         if !self.due(store, team, &key, "", now)? {
             return Ok(None);
         }
-        match ports.availability(team, m) {
-            Ok(answer) => {
+        let answer = match held.filter(|effect| effect.state == "submitted") {
+            Some(effect) => ports.held_availability(store, team, m, effect, now),
+            None => ports.availability(team, m).map(|answer| (answer, None)),
+        };
+        match answer {
+            Ok((answer, stopped)) => {
+                if let Some(binding) = stopped {
+                    self.provider_stop_confirmed(store, team, m, binding, now)?;
+                }
                 self.recovered(store, team, &key, now)?;
                 Ok(Some(answer))
             }
@@ -151,10 +158,9 @@ impl Runtime {
         // pass delivers nothing. Once its time passed, the first ready task
         // is the probe; the check below stops the pass unless the probe
         // ended the fact.
-        let lapsed = self.project_limit_state(store, team, now)? == ProjectState::Lapsed;
-        if self.project_limit_state(store, team, now)? == ProjectState::Standing {
-            return Ok(());
-        }
+        let limit = self.project_limit_state(store, team, now)?;
+        let lapsed = limit == ProjectState::Lapsed;
+        let standing = limit == ProjectState::Standing;
         // One readiness read: uncooled for the unstaffed comparison, then
         // cooled for the hand-outs. The bounded effects read also finds
         // holders whose task has started; members are read once when either
@@ -177,7 +183,9 @@ impl Runtime {
         // The unstaffed comparison (and its stale-episode page) runs on every
         // pass of a running team, a pass with no ready task included: it ends
         // the episodes of nodes that left the set.
-        self.unstaffed(store, team, &raw, &all_members, &effects, now)?;
+        if !standing {
+            self.unstaffed(store, team, &raw, &all_members, &effects, now)?;
+        }
         let mut r = self.cooled_readiness(store, team, raw, now)?;
         let initial = PlanView {
             phases: &r.phases,
@@ -187,7 +195,7 @@ impl Runtime {
             integration: team.settings.integration,
         };
         let ready = ready::ready(&initial);
-        let ready_work = !ready.is_empty();
+        let ready_work = !standing && !ready.is_empty();
         // A task already handed out stays ready in the kernel's view until
         // its observation moves, and the store refuses a second intent for
         // it (zerus-63rru.71). Held here like a cooling task, it takes no
@@ -221,7 +229,7 @@ impl Runtime {
                 // An occupied seat remains unavailable for new work. Only
                 // an undecidable binding or first-message readiness needs
                 // this card: decisive ends use delivery recovery (.85).
-                self.member_free(store, ports, team, &m, now)?
+                self.member_free(store, ports, team, (&m, held), now)?
             } else if ready_work
                 && m.id != team.lead
                 && m.state == MemberState::Active
@@ -240,9 +248,9 @@ impl Runtime {
                     // Tried again: a card for it stays as it is this pass.
                     TerminalState::Lapsed => {
                         needs.unread.insert(m.id.clone());
-                        self.member_free(store, ports, team, &m, now)?
+                        self.member_free(store, ports, team, (&m, held), now)?
                     }
-                    TerminalState::None => self.member_free(store, ports, team, &m, now)?,
+                    TerminalState::None => self.member_free(store, ports, team, (&m, held), now)?,
                 }
             } else {
                 // A member out of the active set that holds started work is
@@ -289,6 +297,11 @@ impl Runtime {
             lead: &team.lead,
             integration: team.settings.integration,
         };
+        // Capacity blocks new delivery, but a stopped holder can still
+        // return its existing work and close the matching unreadable card.
+        if standing {
+            return Ok(());
+        }
         if !needs.unreadable.is_empty() {
             let mut handed: BTreeSet<u32> = effects.iter().map(|e| e.node).collect();
             for id in ready::ready(&view) {

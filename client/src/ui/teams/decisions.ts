@@ -49,6 +49,30 @@ export function waitingKindLabel(item: Pick<WaitingItem, "kind">): string {
   }
 }
 
+export function isProviderStopNote(note: ServiceNote): boolean {
+  return note.code.startsWith("provider_stop_") && [3, 4].includes(note.parameters?.length ?? 0);
+}
+
+function providerStopNote(note: ServiceNote): string | undefined {
+  const parameters = note.parameters;
+  if (!parameters || !isProviderStopNote(note)) return undefined;
+  let reason: string;
+  switch (note.code) {
+    case "provider_stop_quota": reason = tr("hit its usage limit"); break;
+    case "provider_stop_session_limit": reason = tr("hit its provider session limit"); break;
+    case "provider_stop_authentication": reason = tr("could not authenticate with its provider"); break;
+    case "provider_stop_provider_policy": reason = tr("was stopped by its provider's policy"); break;
+    case "provider_stop_context_limit": reason = tr("hit its context limit"); break;
+    case "provider_stop_model_unavailable": reason = tr("could not use its selected model"); break;
+    case "provider_stop_provider": reason = tr("stopped after a provider error"); break;
+    default: return undefined;
+  }
+  const [member, agent, task, stage] = parameters;
+  return stage
+    ? tr("Member %1 (%2) %3 during stage #%4 for task #%5. The review returned to the lead. Review the changes or choose the next action.", member, agent, reason, stage, task)
+    : tr("Member %1 (%2) %3 while holding task #%4. The task is back with the lead.", member, agent, reason, task);
+}
+
 /** The service's own sentence for one note beside a quoted report. Known
  * codes keep their reviewed words; an unknown code shows its own text, or the
  * code itself, never another note's sentence. */
@@ -56,7 +80,14 @@ export function waitingNote(note: ServiceNote): string {
   switch (note.code) {
     case "text_shortened": return tr("The report text was shortened.");
     case "worktree_dirty": return tr("The member's worktree had uncommitted changes.");
-    default: return note.text && note.text.length > 0 ? note.text : note.code;
+    case "lead_member_added": {
+      const values = note.parameters;
+      if (values?.length === 3) {
+        return tr("The lead added member %1 (%2) to staff the %3 role.", values[0], values[1], values[2]);
+      }
+      return note.text || note.code;
+    }
+    default: return providerStopNote(note) ?? (note.text || note.code);
   }
 }
 

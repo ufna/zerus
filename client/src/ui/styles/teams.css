@@ -112,6 +112,7 @@
   .team-account { overflow-wrap: anywhere; }
   .team-member-session { display: block; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
+  .team-canvas.team-task-drop { outline: 2px solid var(--z-color-accent); outline-offset: -2px; }
   .team-task-detail { flex: 1; min-height: 0; min-width: 0; display: flex; flex-direction: column; }
   .team-task-detail-head { display: flex; flex: none; align-items: flex-start; gap: 8px; padding: 10px; border-bottom: 1px solid var(--z-color-divider); }
   .team-task-detail-head h3 { flex: 1; min-width: 0; font-size: var(--fs-md); margin: 0; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; }

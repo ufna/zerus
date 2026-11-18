@@ -5,6 +5,7 @@ import { Icon } from "../lib/icons";
 import { memberActions, taskButtons, type TaskButton } from "./actions";
 import { barActions } from "./actions";
 import type { MemberView, TaskView, TeamView } from "./types";
+import type { MemberSession } from "./member-session";
 
 // The Team tab's action buttons. They only name the operation and call the view's
 // one action callback; the store sends it and the core decides the outcome.
@@ -58,11 +59,11 @@ export function TaskActions(props: {
 }
 
 /** A member's operations in its card. */
-export function MemberActions(props: { member: MemberView; teamStatus: string; busy: boolean; onAction: (kind: string, member: string) => void; onDetails?: () => void; detailsOpen?: boolean }) {
+export function MemberActions(props: { member: MemberView; teamStatus: string; busy: boolean; onAction: (kind: string, member: string) => void; onDetails?: () => void; detailsOpen?: boolean; session?: MemberSession; onOpenSession?: () => void }) {
   let items: MenuEntry[] | undefined;
   onCleanup(() => { if (items && menu()?.items === items) setMenu(undefined); });
   return (
-    <Show when={memberActions(props.member, props.teamStatus).length || props.onDetails}>
+    <Show when={memberActions(props.member, props.teamStatus).length || props.onDetails || props.session}>
       <span class="team-member-actions" data-member-actions>
         <button type="button" class="icon-btn small team-member-more" aria-label={tr("Member actions")} title={tr("Member actions")} aria-haspopup="menu" disabled={props.busy}
           onClick={(event) => {
@@ -70,6 +71,9 @@ export function MemberActions(props: { member: MemberView; teamStatus: string; b
             items = [
               // An item like its neighbours, with its icon; it says Hide while the details are open.
               ...(props.onDetails ? [{ label: props.detailsOpen ? tr("Hide member details") : tr("Member details"), icon: "info", action: () => { trigger.focus(); props.onDetails?.(); } }] : []),
+              // The member's own session, by its bound machine and launch; a reason when it cannot be opened.
+              ...(props.session ? [{ label: tr("Open session"), icon: "external-link", disabled: !props.session.row, hint: props.session.reason,
+                action: () => { if (props.session?.row) props.onOpenSession?.(); } }] : []),
               ...memberActions(props.member, props.teamStatus).map((action) => ({
               label: action.text, icon: action.id.startsWith("pause") ? "pause" : action.id.startsWith("resume") ? "play" : action.id.startsWith("stop") ? "square" : action.id === "swap_member" ? "refresh-cw" : "trash",
               danger: action.danger, disabled: props.busy || action.disabled, hint: action.reason,

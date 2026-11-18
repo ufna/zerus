@@ -1384,12 +1384,15 @@ pub(super) fn journal_name(record: &Value) -> &str {
 pub(super) const REVIVED_KIMI_SETTLE_SECONDS: f64 = 60.0;
 
 pub(super) fn update_activity(record: &mut Value, event: &Value) {
+    update_activity_at(record, event, now());
+}
+
+pub(super) fn update_activity_at(record: &mut Value, event: &Value, timestamp: f64) {
     if stale_kimi_turn(record, event) { return; }
     repair_kimi_main(record);
     repair_claude_internal(record);
     let was_busy = record["activity"] == "busy";
     let kind = string(event, "hook_event_name");
-    let timestamp = now();
     record["last_event_at"] = json!(timestamp);
     let mut children = record["subagents"].as_object().cloned().unwrap_or_default();
     let root_agent = string(record, "agent") == "kimi" && string(event, "agent_id") == "main";

@@ -21,6 +21,7 @@ import { taskProject as project, projectSessions as sessions, findTaskSession as
 import "../styles/tasks.css";
 import { tr, trNoop } from "../../i18n";
 import { copyReviewOutcomes } from "../../store/taskCopyReview";
+import { teamTaskAt } from "../../store/teamTaskIntake";
 
 const TaskCreate = lazy(() => import("./TaskCreate"));
 const TaskCopyReview = lazy(() => import("./TaskCopyReview"));
@@ -130,6 +131,8 @@ export function TasksPanel() {
       const tile = el?.closest<HTMLElement>(".tk-tile[data-filter]")?.dataset.filter as Filter | undefined;
       if (tile) return { tile };
       if (el && scroller.contains(el)) return { board: true };
+      const team = teamTaskAt(el, projectId);
+      if (team) return { team };
       return { assign: taskAssignmentAt(el, projectId) };
     };
     pointerDrag(e, {
@@ -155,6 +158,7 @@ export function TasksPanel() {
         if (action) void actOnTask(projectId, task, action);
         else if (gap) void actOnTask(projectId, task, { kind: "reorder", anchor: gap.anchor, before: gap.before });
         else if (at.assign) void assign(at.assign.project, task, at.assign.row);
+        else if (at.team) void sendToTeam(at.team.project, task, at.team.id, at.team.name);
       },
       cancel: stop,
       scroller: () => scroller,

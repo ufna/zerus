@@ -14,7 +14,7 @@ pub(super) use overrides::{
     released_stage, task_ended,
 };
 use stages::want_stage;
-pub(super) use stages::{current_stage, end_stage, retire_stage};
+pub(super) use stages::{current_stage, end_stage, reassign_stopped_stage, retire_stage};
 
 fn spec<'a>(ctx: &'a Context<'_>, n: &Node) -> Result<&'a Pipeline> {
     ctx.team
@@ -33,6 +33,7 @@ pub(super) fn reported(ctx: &mut Context<'_>, n: &Node, body: &str) -> Result<()
             ctx,
             n,
             "A stage gives a verdict; it does not report a result.",
+            None,
         );
     }
     ctx.db.execute("INSERT INTO pipeline_runs(team,node,generation,state) VALUES(?1,?2,?3,'active') ON CONFLICT(team,node) DO UPDATE SET generation=excluded.generation,state='active',stage=NULL",params![ctx.team.id,n.id,ctx.generation(n.id)?]).map_err(storage)?;
@@ -200,16 +201,27 @@ fn require_holder(ctx: &Context<'_>, n: &Node) -> Result<()> {
     Ok(())
 }
 pub(super) fn to_lead(ctx: &mut Context<'_>, n: &Node, why: &str) -> Result<()> {
+    to_lead_with_note(ctx, n, why, None)
+}
+pub(super) fn to_lead_with_note(
+    ctx: &mut Context<'_>,
+    n: &Node,
+    why: &str,
+    note: Option<ReportNote>,
+) -> Result<()> {
     state(ctx, n.id, "lead", None)?;
     queue::hand_back(ctx, n.id, false)?;
-    report_item(ctx, n, why)
+    report_item(ctx, n, why, note)
 }
-fn report_item(ctx: &mut Context<'_>, n: &Node, why: &str) -> Result<()> {
+fn report_item(ctx: &mut Context<'_>, n: &Node, why: &str, note: Option<ReportNote>) -> Result<()> {
     // The member's block is quoted and delimited; its notes are stored beside
     // it in their own column and never appended into its text.
-    let (text, notes) = report_row(ctx, n)?;
+    let (text, mut notes) = report_row(ctx, n)?;
+    if let Some(note) = note {
+        notes.insert(0, note);
+    }
     let mut body = quoted_report(&text);
-    if !spec(ctx, n)?.stages.is_empty() {
+    if !why.is_empty() && !spec(ctx, n)?.stages.is_empty() {
         body.push('\n');
         body.push_str(why);
         let mut end = body.len().min(16_384);
@@ -218,7 +230,15 @@ fn report_item(ctx: &mut Context<'_>, n: &Node, why: &str) -> Result<()> {
         }
         body.truncate(end);
     }
-    ctx.reply.item = Some(ctx.inbox_notes(n.id, "report", &body, &notes)?);
+    // Reassigning a retired stage keeps the parent's report generation.
+    // Return the current report to the inbox if the replacement ends early.
+    ctx.reply.item = Some(ctx.db.query_row(
+        "INSERT INTO inbox(team,kind,node,generation,actor,text,notes,created_ms) VALUES(?1,'report',?2,?3,?4,?5,?6,?7)
+         ON CONFLICT(team,kind,node,generation) DO UPDATE SET actor=excluded.actor,text=excluded.text,notes=excluded.notes,state='open',reply=NULL,reply_actor=NULL,created_ms=excluded.created_ms
+         RETURNING seq",
+        params![ctx.team.id, n.id, ctx.generation(n.id)?, encode(ctx.actor)?, body, encode(&notes)?, ctx.now],
+        |row| row.get(0),
+    ).map_err(storage)?);
     Ok(())
 }
 /// A report as a delimited quote: the member's text is unchanged inside its

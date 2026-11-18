@@ -34,7 +34,7 @@ it("keeps Graph and Board beside drawers and Settings without losing the graph",
   host.querySelector<HTMLButtonElement>('[data-team-drawer="feed"]')!.click();
   for (let n = 0; n < 8; n++) await Promise.resolve();
   const drawer = host.querySelector('[data-team-drawer-panel="feed"]');
-  expect(drawer?.textContent).toContain(pages.feed.rows[0].text);
+  expect(drawer?.querySelector(`[data-feed-seq="${pages.feed.rows[0].seq}"]`)?.getAttribute("title")).toBe(pages.feed.rows[0].text);
   expect(host.querySelector("[data-team-graph]")).toBe(canvas);
   drawer!.querySelector<HTMLButtonElement>('[aria-label="Close"]')!.click();
   expect(host.querySelector("[data-team-drawer-panel]")).toBeNull();

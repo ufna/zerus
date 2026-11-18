@@ -49,5 +49,5 @@ Never
 - Send, move, cancel or accept team tasks yourself.
 - Name another session as yourself; its ID binds the attempt.
 
-Your prompt is the task's authority. Your lead uses hgs guide team-lead.
+Follow your task's prompt. Lead staffing is in hgs guide team-lead.
 Commands in a private process namespace are refused; run outside it.

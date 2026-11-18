@@ -49,6 +49,14 @@ pub(super) fn reply(ctx: &mut Context<'_>) -> Result<()> {
     }
     timers::mark_answer(ctx, *item)
 }
+
+pub(super) fn close_stale_reopen_notices(ctx: &mut Context<'_>) -> Result<()> {
+    if store::non_delivery::close_stale_reopen_notices(ctx.db, &ctx.team.id)? == 0 {
+        return Err(invalid("No stale reopen notices to close."));
+    }
+    Ok(())
+}
+
 pub(super) fn open_card(ctx: &mut Context<'_>) -> Result<()> {
     let Operation::OpenCard {
         kind,

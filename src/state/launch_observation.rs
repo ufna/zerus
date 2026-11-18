@@ -33,7 +33,6 @@ pub(crate) fn observe(state: &Path, launch: &str, deadline: Instant) -> Observat
     }
 }
 
-#[cfg(any(target_os = "linux", target_os = "macos"))]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct TeamRecord {
     pub launch_id: String,
@@ -44,6 +43,8 @@ pub(crate) struct TeamRecord {
     pub run_id: String,
     pub conversation_id: String,
     pub cwd: String,
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    pub provider: Option<Box<super::team_provider_stop::ProviderObservation>>,
 }
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -100,7 +101,20 @@ pub(crate) fn observe_team_session(
     hint: &str,
     deadline: Instant,
 ) -> TeamSession {
-    team::session(state, session, launch, agent, hint, deadline)
+    team::session(state, session, launch, agent, hint, deadline, false)
+}
+/// The availability scan reads the main-turn provider evidence with the
+/// same pinned identity. Other Teams readers need only that identity.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub(crate) fn observe_team_session_for_availability(
+    state: &Path,
+    session: &str,
+    launch: &str,
+    agent: &str,
+    hint: &str,
+    deadline: Instant,
+) -> TeamSession {
+    team::session(state, session, launch, agent, hint, deadline, true)
 }
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 mod team;

@@ -1,0 +1,16 @@
+/* A member's name and "Session linked" open its session (zerus-rzvct G2):
+   they read as links, keep the card's type size and truncate like the text
+   they replace. In the member line the role chip may shrink before the
+   member's own short ID does: a translated built-in role (G7) is longer than
+   its ID, and the card must still name the member. */
+@layer components {
+  .team-member-link { background: none; border: 0; padding: 0; font: inherit; text-align: left; cursor: pointer; color: var(--z-color-accent); }
+  .team-member-link:hover, .team-member-link:focus-visible { text-decoration: underline; }
+  .team-member-name.team-member-link { font-size: var(--fs-xs); font-weight: 400; color: var(--z-color-accent); }
+  .team-member-line > .role-badge { flex: 0 1 auto; min-width: 2.5em; }
+  .team-member-line > .team-member-name { flex: none; max-width: 40%; }
+  /* A member whose ID equals its role: its role chip is the link. */
+  .team-member-line > .team-member-name.team-member-chip-link { display: inline-flex; flex: 0 1 auto; max-width: none; min-width: 2.5em; }
+  .team-member-chip-link > .role-badge { min-width: 0; }
+  .team-member-chip-link:hover > .role-badge, .team-member-chip-link:focus-visible > .role-badge { text-decoration: underline; }
+}

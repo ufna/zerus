@@ -11,6 +11,125 @@ fn input(h: &Harness, fields: serde_json::Value) -> String {
     fields.insert("expected_revision".into(), json!(h.revision()));
     serde_json::Value::Object(fields).to_string()
 }
+
+#[test]
+fn lead_add_member_uses_the_pinned_role_and_existing_member_choices() {
+    let h = Harness::new();
+    h.create();
+    h.bind("lead", LEAD_SESSION);
+    let request = input(
+        &h,
+        json!({"role":"developer","agent":"codex","model":"seat-model","effort":"high",
+            "account":{"mode":"named","account":"example-account"}}),
+    );
+    let lead = Caller::Session(key(LEAD_SESSION));
+    let (reply, exit) = h.cli(&lead, "lead-add-member", &request);
+    assert_eq!(exit, 0, "{reply}");
+    let member = h
+        .store()
+        .member(TEAM, reply["member"].as_str().unwrap())
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        (member.role.as_str(), member.agent.as_str()),
+        ("developer", "codex")
+    );
+    let launch = member.launch.as_ref().unwrap();
+    assert_eq!(
+        (launch.model.as_str(), launch.effort.as_str()),
+        ("seat-model", "high")
+    );
+    assert_eq!(
+        launch.account,
+        zerus_team_plan::catalog::AccountChoice::Named {
+            account: "example-account".to_owned(),
+        }
+    );
+    let inbox = h.store().inbox(TEAM, 200, None).unwrap().rows;
+    assert_eq!(inbox.len(), 1);
+    assert_eq!(inbox[0].kind, "lead_member_added:m4");
+    assert_eq!(inbox[0].state, "closed");
+    assert_eq!(inbox[0].notes[0].parameters, ["m4", "Codex", "developer"]);
+    assert_eq!(reply["item"].as_u64(), Some(inbox[0].seq));
+    assert!(h.store().cards(TEAM, 200, None).unwrap().rows.is_empty());
+    let journal = h.store().journal(TEAM, 200, None).unwrap().rows;
+    assert_eq!(
+        journal
+            .iter()
+            .filter(
+                |row| row.kind == "lead_add_member" && row.refs.contains(&"member:m4".to_owned())
+            )
+            .count(),
+        1
+    );
+    assert_eq!(h.cli(&lead, "lead-add-member", &request), (reply, exit));
+    assert_eq!(h.store().inbox(TEAM, 200, None).unwrap().rows, inbox);
+    assert_eq!(h.store().journal(TEAM, 200, None).unwrap().rows, journal);
+}
+
+#[test]
+fn lead_add_member_refuses_other_callers_and_a_stale_revision() {
+    let h = Harness::new();
+    h.create();
+    h.bind("lead", LEAD_SESSION);
+    h.bind("m1", M1_SESSION);
+    let fields = json!({"role":"reviewer","agent":"codex"});
+    let request = input(&h, fields.clone());
+    let before = h.revision();
+    for (caller, error) in [
+        (Caller::Session(key(M1_SESSION)), "not_allowed"),
+        (Caller::Person, "person_gesture_required"),
+    ] {
+        let (reply, exit) = h.cli(&caller, "lead-add-member", &request);
+        assert_eq!((exit, code(&reply)), (1, error), "{reply}");
+    }
+    let lead = Caller::Session(key(LEAD_SESSION));
+    let (reply, exit) = h.cli(&lead, "add-member", &request);
+    assert_eq!((exit, code(&reply)), (1, "not_allowed"), "{reply}");
+    assert_eq!(h.revision(), before);
+    h.apply(
+        &person(),
+        crate::teams::ops::Operation::SetGoal {
+            goal: "Updated".into(),
+        },
+    );
+    let (reply, exit) = h.cli(&lead, "lead-add-member", &request);
+    assert_eq!((exit, code(&reply)), (1, "stale_revision"), "{reply}");
+    assert_eq!(h.revision(), before + 1);
+    assert_eq!(h.store().members(TEAM, 200, None).unwrap().rows.len(), 4);
+    assert!(h.store().inbox(TEAM, 200, None).unwrap().rows.is_empty());
+}
+
+#[test]
+fn lead_add_member_refuses_a_missing_role_an_unsupported_agent_and_the_cap() {
+    let h = Harness::new();
+    h.create();
+    h.bind("lead", LEAD_SESSION);
+    let lead = Caller::Session(key(LEAD_SESSION));
+    let mut settings = h.store().team(TEAM).unwrap().unwrap().settings;
+    settings.caps.max_members = 3;
+    h.apply(
+        &person(),
+        crate::teams::ops::Operation::ChangeSettings { settings },
+    );
+    let before = h.revision();
+    for (role, agent, error) in [
+        ("missing", "codex", "unknown_role"),
+        ("reviewer", "opencode", "invalid_state"),
+        ("reviewer", "codex", "over_cap"),
+    ] {
+        let (reply, exit) = h.cli(
+            &lead,
+            "lead-add-member",
+            &input(&h, json!({"role":role,"agent":agent})),
+        );
+        assert_eq!((exit, code(&reply)), (1, error), "{reply}");
+    }
+    assert_eq!(h.revision(), before);
+    assert_eq!(h.store().members(TEAM, 200, None).unwrap().rows.len(), 4);
+    assert!(h.store().inbox(TEAM, 200, None).unwrap().rows.is_empty());
+}
+
 #[test]
 fn editing_commands_return_member_identity_and_status_keeps_pinned_choices() {
     let h = Harness::new();

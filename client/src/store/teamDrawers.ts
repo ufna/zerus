@@ -11,6 +11,8 @@ export interface TimingSnapshot { schema: number; revision: number }
 export interface DrawerRow {
   timing?: RecordedFacts;
   seq: number; kind: string; by: string; text: string; text_truncated: boolean; at_ms: number;
+  /** The actor's kind (`person`, `service`, `session`) and the task and member a journal event is about. */
+  by_kind?: string; subject_node?: number | null; subject_member?: string | null;
   node: number | null; generation: number | null; state: string; reply: string | null;
   notes: ServiceNote[]; card: WaitingItem | null;
 }

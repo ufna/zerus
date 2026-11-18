@@ -130,3 +130,68 @@ fn handwritten_long_text_is_marked_and_the_cursor_is_preserved_exactly() {
     assert_eq!(page.rows[0].text.chars().count(), TEXT_CHARS);
     assert!(page.rows[0].text_truncated);
 }
+
+/// zerus-rzvct G6/G7: a feed row says who acted (its actor's kind, so the
+/// window can tell the person, the team service and a member apart) and which
+/// task and member it is about, from the product-written journal's refs.
+#[test]
+fn feed_rows_name_their_actor_kind_task_and_member() {
+    let page = decode(&asked(DrawerKind::Feed), exit(fixture(DrawerKind::Feed))).unwrap();
+    let rows = serde_json::to_value(&page).unwrap()["rows"].clone();
+    let row = |seq: u64| -> Value {
+        rows.as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row["seq"] == seq)
+            .unwrap()
+            .clone()
+    };
+    let facts = |seq: u64| {
+        let row = row(seq);
+        (
+            row["by_kind"].clone(),
+            row["subject_node"].clone(),
+            row["subject_member"].clone(),
+        )
+    };
+    // create (person), set_member_session member:lead (service),
+    // handout_intent node:2 member:m1 (service), ask node:2 (session m1).
+    assert_eq!(facts(1), (json!("person"), json!(null), json!(null)));
+    assert_eq!(facts(2), (json!("service"), json!(null), json!("lead")));
+    assert_eq!(facts(8), (json!("service"), json!(2), json!("m1")));
+    assert_eq!(facts(15), (json!("session"), json!(2), json!(null)));
+    assert_eq!(row(15)["by"], json!("m1"));
+    // add_task names its task by UUID only: no invented node.
+    assert_eq!(facts(4), (json!("person"), json!(null), json!(null)));
+}
+
+#[test]
+fn handwritten_refs_never_invent_a_subject() {
+    let mut raw = fixture(DrawerKind::Feed);
+    raw["rows"][7]["refs"] = json!(["node:0", "node:x", "member:", 5]);
+    raw["rows"][1].as_object_mut().unwrap().remove("refs");
+    let page = decode(&asked(DrawerKind::Feed), exit(raw)).unwrap();
+    let rows = serde_json::to_value(&page).unwrap()["rows"].clone();
+    assert_eq!(rows[7]["subject_node"], json!(null));
+    assert_eq!(rows[7]["subject_member"], json!(null));
+    assert_eq!(rows[1]["subject_member"], json!(null));
+    assert_eq!(rows[1]["by_kind"], json!("service"));
+}
+
+#[test]
+fn inbox_and_card_rows_carry_their_actor_kind() {
+    for (kind, kinds) in [
+        (DrawerKind::Inbox, ["service", "session"]),
+        (DrawerKind::Cards, ["person", "person"]),
+    ] {
+        let page = decode(&asked(kind), exit(fixture(kind))).unwrap();
+        let rows = serde_json::to_value(&page).unwrap()["rows"].clone();
+        for (index, expected) in kinds.iter().enumerate().take(page.rows.len()) {
+            assert_eq!(
+                rows[index]["by_kind"],
+                json!(expected),
+                "{kind:?} row {index}"
+            );
+        }
+    }
+}

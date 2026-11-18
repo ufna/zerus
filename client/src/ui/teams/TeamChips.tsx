@@ -1,5 +1,5 @@
 import { Show } from "solid-js";
-import { tr } from "../../i18n";
+import { tr, trc } from "../../i18n";
 import { Icon } from "../lib/icons";
 import { AgentTile } from "../sessions/SessionCard";
 import { agentKind } from "../../store/catalog";
@@ -20,10 +20,23 @@ export function roleIcon(role: string, lead = false): string {
   return "code";
 }
 export const stageIcon = (stage: Pick<StageView, "kind">) => stage.kind === "test" ? "flask-conical" : stage.kind === "land" ? "git-merge" : stage.kind === "review" ? "search-check" : "workflow";
-export const stageLabel = (stage: Pick<StageView, "kind" | "role">) => stage.kind === "review" ? tr("Review") : stage.kind === "test" ? tr("Test") : stage.kind === "land" ? tr("Landing") : stage.role;
+// A stage chip names the stage as a noun; the shared "Review" and "Test" read
+// as verbs in Russian, so the chip uses its own disambiguation (zerus-rzvct G7).
+export const stageLabel = (stage: Pick<StageView, "kind" | "role">) => stage.kind === "review" ? trc("team stage", "Review") : stage.kind === "test" ? trc("team stage", "Test") : stage.kind === "land" ? tr("Landing") : roleLabel(stage.role);
+/** A role chip's words: the built-in roles in the interface language, any
+ * other role as its catalog ID. The chip's title keeps the ID. */
+export function roleLabel(role: string): string {
+  switch (role) {
+    case "lead": return tr("Lead");
+    case "developer": return tr("Developer");
+    case "reviewer": return tr("Reviewer");
+    case "tester": return tr("Tester");
+    default: return role;
+  }
+}
 
-export function RoleChip(props: { role: string; lead?: boolean }) {
-  return <span class="role-badge" classList={{ "team-member-lead": props.lead }} style={roleStyle(props.role, props.lead)} title={props.role}><Icon name={roleIcon(props.role, props.lead)} size={11} /><span>{props.role}</span></span>;
+export function RoleChip(props: { role: string; lead?: boolean; title?: string }) {
+  return <span class="role-badge" classList={{ "team-member-lead": props.lead }} style={roleStyle(props.role, props.lead)} title={props.title ?? props.role}><Icon name={roleIcon(props.role, props.lead)} size={11} /><span>{roleLabel(props.role)}</span></span>;
 }
 export function TeamAgent(props: { agent: string }) {
   return <span class="team-agent" aria-label={props.agent}><AgentTile agent={agentKind(props.agent)} size={20} /></span>;

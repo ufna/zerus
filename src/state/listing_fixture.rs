@@ -181,6 +181,17 @@ pub(crate) fn saved_record(name: &str) -> Result<Value> {
     storage::read(name)
 }
 
+/// The accepted hook's main activity update and normal record writer, with
+/// a clock supplied by the fixture that admitted the hand-out.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub(crate) fn record_activity_hook(name: &str, event: &Value, at: f64) -> Result<Value> {
+    let _guard = lock(None)?;
+    let mut record = storage::read(name)?;
+    journal::update_activity_at(&mut record, event, at);
+    storage::write(&mut record)?;
+    Ok(record)
+}
+
 /// Temporarily withhold the saved source without changing its bytes or the
 /// index. Tests use a private root and restore the same source to recover.
 #[cfg(any(target_os = "linux", target_os = "macos"))]

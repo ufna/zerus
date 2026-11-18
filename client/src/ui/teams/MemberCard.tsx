@@ -6,13 +6,19 @@ import { memberStatus } from "./team-model";
 import { MemberActions } from "./TeamActions";
 import { RoleChip, StageChip, TeamAgent } from "./TeamChips";
 import { memberWork, type MemberWork } from "./pipeline-view";
+import { memberSessions, openMemberSession, type MemberSession } from "./member-session";
+import "../styles/team-member-link.css";
 import type { MemberView, TaskView } from "./types";
 
 // The reference's compact right-side member card. Only current page assignments
 // establish its work line/queue; missing model, findings and full-queue data are
-// omitted, never inferred from a role or a live session.
-export function MemberCard(props: { member: MemberView; teamStatus: string; cards?: readonly TaskView[]; busy: boolean; onAction: (kind: string, member: string) => void; onSelect?: (node: number) => void }) {
+// omitted, never inferred from a role or a live session. The member's name,
+// "Session linked" and Open session in its menu open the member's own bound
+// session; `session` is the members panel's one lookup for every member.
+export function MemberCard(props: { member: MemberView; teamStatus: string; cards?: readonly TaskView[]; busy: boolean; onAction: (kind: string, member: string) => void; onSelect?: (node: number) => void; session?: MemberSession }) {
   const [detailsOpen, setDetailsOpen] = createSignal(false);
+  const session = createMemo(() => props.session ?? memberSessions([props.member]).get(props.member.id)!);
+  const openSession = () => { const row = session().row; if (row) openMemberSession(row); };
   const status = () => memberStatus(props.member);
   const work = createMemo(() => memberWork(props.member, props.cards ?? []));
   const current = () => work().find((item) => (item.stage?.state ?? item.card.state) === "in_progress") ?? work()[0];
@@ -39,11 +45,22 @@ export function MemberCard(props: { member: MemberView; teamStatus: string; card
     <TeamAgent agent={props.member.agent} />
     <div class="team-member-content">
       <div class="team-member-line">
-        <RoleChip role={props.member.role || props.member.id} lead={props.member.lead} />
-        <Show when={props.member.id !== props.member.role}><b class="team-member-name ell" title={props.member.id}>{props.member.id}</b></Show>
+        {/* A member whose ID equals its role shows only its role chip: that
+            chip is its displayed name, so it opens the session too. */}
+        <Show when={props.member.id === props.member.role && session().row} fallback={<RoleChip role={props.member.role || props.member.id} lead={props.member.lead} />}>
+          <button type="button" class="team-member-name team-member-link team-member-chip-link" title={tr("Open this member's session")} onClick={openSession}>
+            <RoleChip role={props.member.role || props.member.id} lead={props.member.lead} title={tr("Open this member's session")} />
+          </button>
+        </Show>
+        <Show when={props.member.id !== props.member.role}>
+          <Show when={session().row} fallback={<b class="team-member-name ell" title={props.member.id}>{props.member.id}</b>}>
+            <button type="button" class="team-member-name team-member-link ell" title={tr("Open this member's session")} onClick={openSession}>{props.member.id}</button>
+          </Show>
+        </Show>
         <span class="team-member-agent ell" title={props.member.model || props.member.agent}>{props.member.model || props.member.agent}</span>
         <Show when={props.member.state !== "active"}><span class="team-member-state tm-state-badge" data-tone={status().tone}>{status().label}</span></Show>
-        <MemberActions member={props.member} teamStatus={props.teamStatus} busy={props.busy} onAction={props.onAction} detailsOpen={detailsOpen()} onDetails={() => setDetailsOpen(!detailsOpen())} />
+        <MemberActions member={props.member} teamStatus={props.teamStatus} busy={props.busy} onAction={props.onAction} detailsOpen={detailsOpen()} onDetails={() => setDetailsOpen(!detailsOpen())}
+          session={session()} onOpenSession={openSession} />
       </div>
       {/* A member who is not active shows its state chip alone; a line under
           the name that repeated the chip said nothing more. */}
@@ -60,7 +77,12 @@ export function MemberCard(props: { member: MemberView; teamStatus: string; card
         </div>
       </Show>
       <Show when={detailsOpen()}><div class="team-member-details-body"><span class="team-account">{accountLabel(props.member)}</span>
-        <span class="team-member-session">{props.member.session ? tr("Session linked") : tr("No linked session")}</span>
+        <Show when={session().row} fallback={<>
+          <span class="team-member-session">{props.member.session ? tr("Session linked") : tr("No linked session")}</span>
+          <Show when={props.member.session}><span class="dim">{session().reason}</span></Show>
+        </>}>
+          <button type="button" class="team-member-session team-member-link" title={tr("Open this member's session")} onClick={openSession}>{tr("Session linked")}</button>
+        </Show>
       </div></Show>
     </div>
   </div>;

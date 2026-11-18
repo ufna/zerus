@@ -171,7 +171,7 @@ pub(super) fn reconcile(ctx: &mut Context<'_>) -> Result<()> {
         ctx.inbox(*node, &format!("{UNSTAFFED_KIND}{revision}"), text)?;
     }
     for (stage, reason) in &changes.stages {
-        stage_to_lead(ctx, *stage, reason)?;
+        stage_to_lead(ctx, *stage, reason, None)?;
     }
     Ok(())
 }
@@ -218,7 +218,12 @@ pub fn unstaffed_stages(readiness: &Readiness) -> BTreeSet<u32> {
 /// creation superseded), retired through the one retirement function, and
 /// its parent is handed to the lead with the kernel's reason. A stage that is
 /// no longer its parent's current one is retired alone.
-fn stage_to_lead(ctx: &mut Context<'_>, stage: u32, reason: &str) -> Result<()> {
+pub(super) fn stage_to_lead(
+    ctx: &mut Context<'_>,
+    stage: u32,
+    reason: &str,
+    note: Option<ReportNote>,
+) -> Result<()> {
     let n = ctx.node(stage)?;
     let parent = n.stage_of.ok_or_else(missing)?;
     let current = pipeline::current_stage(ctx, stage, parent)?;
@@ -230,7 +235,7 @@ fn stage_to_lead(ctx: &mut Context<'_>, stage: u32, reason: &str) -> Result<()> 
         // hand-back (`want_stage`); handing the run to the lead ends that
         // hand-back, as at the stage's creation, and never an explicit
         // hold: a person's or the lead's Hold stays its owner's.
-        pipeline::to_lead(ctx, &parent, reason)?;
+        pipeline::to_lead_with_note(ctx, &parent, reason, note)?;
     }
     Ok(())
 }

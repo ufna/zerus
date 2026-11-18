@@ -143,7 +143,8 @@ describe("interface string coverage", () => {
   });
 
   it("keeps only used sources in the Next-only supplement", () => {
-    expect(Object.keys(supplement).filter((source) => !sources.has(source) && !marked.has(source))).toEqual([]);
+    // A disambiguated entry ("disambiguation\u0004source") is used by its trc() literal.
+    expect(Object.keys(supplement).filter((source) => !sources.has(source) && !marked.has(source) && !disambiguated.has(source))).toEqual([]);
   });
 
   it("translates computed values only in reviewed files", () => {

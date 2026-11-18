@@ -1,0 +1,385 @@
+[
+  {
+    "uuid": "11111111-1111-4111-8111-111111111111",
+    "id": "T-aaaa01",
+    "project": "example-project",
+    "schema": 4,
+    "writable": true,
+    "created_at": 1790000000000,
+    "stage_at": 1790000000000,
+    "author": {
+      "kind": "person"
+    },
+    "stage": "backlog",
+    "target": {
+      "kind": "any"
+    },
+    "rank": "V",
+    "session": null,
+    "summary": "",
+    "cancelled_at": null,
+    "cancel_reason": "",
+    "title": "Check team intake",
+    "text": "Check team intake",
+    "log": [
+      {
+        "kind": "created",
+        "actor": {
+          "kind": "person"
+        },
+        "at": 1790000000000
+      }
+    ]
+  },
+  {
+    "uuid": "11111111-1111-4111-8111-111111111111",
+    "id": "T-aaaa01",
+    "project": "example-project",
+    "schema": 4,
+    "writable": true,
+    "created_at": 1790000000000,
+    "stage_at": 1790000001000,
+    "author": {
+      "kind": "person"
+    },
+    "stage": "todo",
+    "target": {
+      "kind": "any"
+    },
+    "rank": "V",
+    "session": null,
+    "summary": "",
+    "cancelled_at": null,
+    "cancel_reason": "",
+    "title": "Check team intake",
+    "text": "Check team intake",
+    "log": [
+      {
+        "kind": "created",
+        "actor": {
+          "kind": "person"
+        },
+        "at": 1790000000000
+      },
+      {
+        "kind": "stage",
+        "actor": {
+          "kind": "person"
+        },
+        "at": 1790000001000,
+        "text": "todo"
+      }
+    ]
+  },
+  {
+    "uuid": "11111111-1111-4111-8111-111111111111",
+    "id": "T-aaaa01",
+    "project": "example-project",
+    "schema": 4,
+    "writable": true,
+    "created_at": 1790000000000,
+    "stage_at": 1790000002000,
+    "author": {
+      "kind": "person"
+    },
+    "stage": "active",
+    "target": {
+      "kind": "any"
+    },
+    "rank": "V",
+    "session": {
+      "machine": "00000000-0000-4000-8000-000000000001",
+      "session": "codex/example/worker",
+      "session_id": "launch_id:00000000-0000-4000-8000-000000000002"
+    },
+    "summary": "",
+    "cancelled_at": null,
+    "cancel_reason": "",
+    "title": "Check team intake",
+    "text": "Check team intake",
+    "log": [
+      {
+        "kind": "created",
+        "actor": {
+          "kind": "person"
+        },
+        "at": 1790000000000
+      },
+      {
+        "kind": "stage",
+        "actor": {
+          "kind": "person"
+        },
+        "at": 1790000001000,
+        "text": "todo"
+      },
+      {
+        "kind": "started",
+        "actor": {
+          "kind": "agent",
+          "machine": "00000000-0000-4000-8000-000000000001",
+          "session": "codex/example/worker",
+          "session_id": "launch_id:00000000-0000-4000-8000-000000000002"
+        },
+        "at": 1790000002000,
+        "session": {
+          "machine": "00000000-0000-4000-8000-000000000001",
+          "session": "codex/example/worker",
+          "session_id": "launch_id:00000000-0000-4000-8000-000000000002"
+        }
+      }
+    ],
+    "execution": {
+      "requirement": 1,
+      "attempts": 0,
+      "current": {
+        "generation": 0,
+        "origin": "start",
+        "executor": {
+          "machine": "00000000-0000-4000-8000-000000000001",
+          "session": "codex/example/worker",
+          "session_id": "launch_id:00000000-0000-4000-8000-000000000002"
+        },
+        "requirement": 1,
+        "phase": "running",
+        "at": 1790000002000,
+        "began_at": 1790000002000,
+        "legacy": true
+      }
+    }
+  },
+  {
+    "uuid": "11111111-1111-4111-8111-111111111111",
+    "id": "T-aaaa01",
+    "project": "example-project",
+    "schema": 4,
+    "writable": true,
+    "created_at": 1790000000000,
+    "stage_at": 1790000003000,
+    "author": {
+      "kind": "person"
+    },
+    "stage": "review",
+    "target": {
+      "kind": "any"
+    },
+    "rank": "V",
+    "session": {
+      "machine": "00000000-0000-4000-8000-000000000001",
+      "session": "codex/example/worker",
+      "session_id": "launch_id:00000000-0000-4000-8000-000000000002"
+    },
+    "summary": "Ready for review",
+    "cancelled_at": null,
+    "cancel_reason": "",
+    "title": "Check team intake",
+    "text": "Check team intake",
+    "log": [
+      {
+        "kind": "created",
+        "actor": {
+          "kind": "person"
+        },
+        "at": 1790000000000
+      },
+      {
+        "kind": "stage",
+        "actor": {
+          "kind": "person"
+        },
+        "at": 1790000001000,
+        "text": "todo"
+      },
+      {
+        "kind": "started",
+        "actor": {
+          "kind": "agent",
+          "machine": "00000000-0000-4000-8000-000000000001",
+          "session": "codex/example/worker",
+          "session_id": "launch_id:00000000-0000-4000-8000-000000000002"
+        },
+        "at": 1790000002000,
+        "session": {
+          "machine": "00000000-0000-4000-8000-000000000001",
+          "session": "codex/example/worker",
+          "session_id": "launch_id:00000000-0000-4000-8000-000000000002"
+        }
+      },
+      {
+        "kind": "report",
+        "actor": {
+          "kind": "agent",
+          "machine": "00000000-0000-4000-8000-000000000001",
+          "session": "codex/example/worker",
+          "session_id": "launch_id:00000000-0000-4000-8000-000000000002"
+        },
+        "at": 1790000003000,
+        "text": "Ready for review"
+      }
+    ]
+  },
+  {
+    "uuid": "11111111-1111-4111-8111-111111111111",
+    "id": "T-aaaa01",
+    "project": "example-project",
+    "schema": 4,
+    "writable": true,
+    "created_at": 1790000000000,
+    "stage_at": 1790000004000,
+    "author": {
+      "kind": "person"
+    },
+    "stage": "done",
+    "target": {
+      "kind": "any"
+    },
+    "rank": "V",
+    "session": {
+      "machine": "00000000-0000-4000-8000-000000000001",
+      "session": "codex/example/worker",
+      "session_id": "launch_id:00000000-0000-4000-8000-000000000002"
+    },
+    "summary": "Ready for review",
+    "cancelled_at": null,
+    "cancel_reason": "",
+    "title": "Check team intake",
+    "text": "Check team intake",
+    "log": [
+      {
+        "kind": "created",
+        "actor": {
+          "kind": "person"
+        },
+        "at": 1790000000000
+      },
+      {
+        "kind": "stage",
+        "actor": {
+          "kind": "person"
+        },
+        "at": 1790000001000,
+        "text": "todo"
+      },
+      {
+        "kind": "started",
+        "actor": {
+          "kind": "agent",
+          "machine": "00000000-0000-4000-8000-000000000001",
+          "session": "codex/example/worker",
+          "session_id": "launch_id:00000000-0000-4000-8000-000000000002"
+        },
+        "at": 1790000002000,
+        "session": {
+          "machine": "00000000-0000-4000-8000-000000000001",
+          "session": "codex/example/worker",
+          "session_id": "launch_id:00000000-0000-4000-8000-000000000002"
+        }
+      },
+      {
+        "kind": "report",
+        "actor": {
+          "kind": "agent",
+          "machine": "00000000-0000-4000-8000-000000000001",
+          "session": "codex/example/worker",
+          "session_id": "launch_id:00000000-0000-4000-8000-000000000002"
+        },
+        "at": 1790000003000,
+        "text": "Ready for review"
+      },
+      {
+        "kind": "stage",
+        "actor": {
+          "kind": "person"
+        },
+        "at": 1790000004000,
+        "text": "done"
+      }
+    ]
+  },
+  {
+    "uuid": "11111111-1111-4111-8111-111111111111",
+    "id": "T-aaaa01",
+    "project": "example-project",
+    "schema": 9,
+    "writable": false,
+    "created_at": 1790000000000,
+    "stage_at": 1790000005000,
+    "author": {
+      "kind": "person"
+    },
+    "stage": "todo",
+    "target": {
+      "kind": "any"
+    },
+    "rank": "V",
+    "session": {
+      "machine": "00000000-0000-4000-8000-000000000001",
+      "session": "codex/example/worker",
+      "session_id": "launch_id:00000000-0000-4000-8000-000000000002"
+    },
+    "summary": "Ready for review",
+    "cancelled_at": null,
+    "cancel_reason": "",
+    "title": "Check team intake",
+    "text": "Check team intake",
+    "log": [
+      {
+        "kind": "created",
+        "actor": {
+          "kind": "person"
+        },
+        "at": 1790000000000
+      },
+      {
+        "kind": "stage",
+        "actor": {
+          "kind": "person"
+        },
+        "at": 1790000001000,
+        "text": "todo"
+      },
+      {
+        "kind": "started",
+        "actor": {
+          "kind": "agent",
+          "machine": "00000000-0000-4000-8000-000000000001",
+          "session": "codex/example/worker",
+          "session_id": "launch_id:00000000-0000-4000-8000-000000000002"
+        },
+        "at": 1790000002000,
+        "session": {
+          "machine": "00000000-0000-4000-8000-000000000001",
+          "session": "codex/example/worker",
+          "session_id": "launch_id:00000000-0000-4000-8000-000000000002"
+        }
+      },
+      {
+        "kind": "report",
+        "actor": {
+          "kind": "agent",
+          "machine": "00000000-0000-4000-8000-000000000001",
+          "session": "codex/example/worker",
+          "session_id": "launch_id:00000000-0000-4000-8000-000000000002"
+        },
+        "at": 1790000003000,
+        "text": "Ready for review"
+      },
+      {
+        "kind": "stage",
+        "actor": {
+          "kind": "person"
+        },
+        "at": 1790000004000,
+        "text": "done"
+      },
+      {
+        "kind": "stage",
+        "actor": {
+          "kind": "person"
+        },
+        "at": 1790000005000,
+        "text": "todo"
+      }
+    ]
+  }
+]

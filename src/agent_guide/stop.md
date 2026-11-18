@@ -1,7 +1,7 @@
 Interrupt or stop a session (hgs guide stop)
 
-Ask the owner before stopping, killing or archiving a session you did not
-start for this task. Check every exit code.
+Stop, kill or archive a session you did not start for this task only when
+the person asks you. Check every exit code.
 
   hgs [@h] interrupt SESSION --json
       End the current turn and keep the session. JSON stdin: request_id,
@@ -17,7 +17,7 @@ start for this task. Check every exit code.
       sessions are not touched.
   hgs [@h] terminate SESSION --with-children
   hgs [@h] archive SESSION --with-children
-      Only with the owner's approval: after the session itself, the same
+      Only when the person asks: after the session itself, the same
       action for every live child session under it on that computer, at every
       level. A parent link names them, not who started them, so they may not
       be yours; add --dry-run first to list them. Each child keeps its own

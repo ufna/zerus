@@ -27,10 +27,16 @@ it("the bar offers all six drawers and marks the selected one", () => {
   (host.querySelector('[data-team-drawer="cards"]') as HTMLButtonElement).click(); expect(open).toHaveBeenCalledWith("cards");
 });
 
-it("the feed renders the engine's exact journal text and actor without inventing detail", () => {
+it("the feed keeps the engine's exact journal text and actor without inventing detail", () => {
   const host = mount(() => createComponent(TeamFeed, { rows: feed.rows }));
   expect(host.querySelectorAll("[data-feed-seq]")).toHaveLength(feed.rows.length);
-  expect(host.textContent).toContain(feed.rows[0].text); expect(host.textContent).toContain(feed.rows[0].by);
+  // The sentence is shown; the exact journal text stays as the row's title.
+  for (const row of feed.rows) expect(host.querySelector(`[data-feed-seq="${row.seq}"]`)?.getAttribute("title")).toBe(row.text);
+  // A row without task or member refs gets neither chip.
+  const created = host.querySelector(`[data-feed-seq="${feed.rows[0].seq}"]`)!;
+  expect(created.querySelector("[data-feed-task]")).toBeNull(); expect(created.querySelector("[data-feed-member]")).toBeNull();
+  const asked = feed.rows.find((row) => row.by_kind === "session")!;
+  expect(host.querySelector(`[data-feed-seq="${asked.seq}"] [data-feed-actor]`)?.textContent).toBe(asked.by);
 });
 
 it("reports accept and return the product-written report node, with a reason", () => {

@@ -89,7 +89,7 @@ export interface TeamView {
 }
 
 /** One service note beside a quoted report: a code and optional text. */
-export interface ServiceNote { code: string; text?: string | null }
+export interface ServiceNote { code: string; text?: string | null; parameters?: string[] }
 
 /** One open owner card that waits for the person. */
 export interface WaitingItem {

@@ -99,6 +99,13 @@ pub(super) fn append(ctx: &Context<'_>, request: &Request) -> Result<u64> {
             refs.push(reference);
         }
     }
+    let replacement_node = match ctx.op {
+        Operation::Reassign { node, .. } => ctx.reply.node.filter(|id| id != node),
+        _ => None,
+    };
+    if let Some(replacement) = replacement_node {
+        refs.push(format!("node:{replacement}"));
+    }
     if let Some(earlier) = ctx.superseded {
         let (old, new) = replacement(ctx, earlier)?;
         body.push_str(&format!(

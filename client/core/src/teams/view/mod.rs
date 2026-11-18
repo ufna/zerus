@@ -105,6 +105,8 @@ pub struct ServiceNote {
     pub code: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub text: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub parameters: Vec<String>,
 }
 
 /// A row's `notes`: entries with a short lower-case code, at most
@@ -129,7 +131,35 @@ pub(crate) fn service_notes(row: &Value) -> Vec<ServiceNote> {
             .and_then(Value::as_str)
             .map(|text| cut(text, NOTE_TEXT_CHARS))
             .filter(|text| !text.is_empty());
-        kept.push(ServiceNote { code, text });
+        let values = array(entry, "parameters");
+        let formatted_note = (code.starts_with("provider_stop_")
+            && (3..=4).contains(&values.len()))
+            || (code == "lead_member_added" && values.len() == 3);
+        let parameters = if formatted_note {
+            values
+                .iter()
+                .map(|value| {
+                    value
+                        .as_str()
+                        .filter(|value| {
+                            !value.is_empty()
+                                && value.len() <= 64
+                                && value
+                                    .bytes()
+                                    .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-'))
+                        })
+                        .map(str::to_owned)
+                })
+                .collect::<Option<Vec<_>>>()
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+        kept.push(ServiceNote {
+            code,
+            text,
+            parameters,
+        });
     }
     kept
 }

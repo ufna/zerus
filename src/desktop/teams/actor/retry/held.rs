@@ -176,7 +176,7 @@ impl Runtime {
 }
 /// The decision and generation a held row stands for, also in the rows of
 /// earlier builds, whose stamp carried the reason as well.
-fn held_by(row: &Row) -> Option<(u64, u32, Option<String>)> {
+pub(super) fn held_by(row: &Row) -> Option<(u64, u32, Option<String>)> {
     serde_json::from_str(row.data.get("revision")?.as_str()?).ok()
 }
 impl Runtime {

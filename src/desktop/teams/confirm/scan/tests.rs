@@ -213,9 +213,13 @@ fn unknown_fixture() {
     let first = existing(&h.store);
     assert_eq!(first.len(), 1);
     assert_eq!(first[0].state, "open");
-    assert!(first[0]
-        .text
-        .contains("ended is unknown (No exact unique exit archive)"));
+    assert!(
+        first[0]
+            .text
+            .contains("ended is unknown (No exact unique exit archive)"),
+        "card text: {:?}",
+        first[0].text
+    );
     assert_eq!(first[0].decisions, ["retry", "acknowledged"]);
     assert!(!state.join("archive-catalog-v2/teams-attempt.json").exists());
     assert!(

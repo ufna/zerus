@@ -13,6 +13,21 @@ const ROWS: &str = "gate:unreadable:";
 const ARCHIVE: &str = "an archive from its session is missing from the archive catalog";
 
 const CONFIRMATION: &str = "unreadable_confirmation:";
+const PROVIDER_STOP: &str = "The service confirmed that the member stopped after a provider error.";
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub(in crate::desktop::teams) fn provider_binding_stamp(
+    launch: &str,
+    session: &str,
+    run: &str,
+    conversation: &str,
+) -> String {
+    use sha2::{Digest, Sha256};
+    format!(
+        "{:x}",
+        Sha256::digest(serde_json::json!([launch, session, run, conversation]).to_string())
+    )
+}
 
 pub(super) fn key_is_unreadable(key: &str) -> bool {
     key.starts_with("unreadable:") || key.starts_with(CONFIRMATION)
@@ -35,6 +50,13 @@ impl Runtime {
         let Some((binding, error)) = fault else {
             return self.recovered(store, team, &key, now);
         };
+        if self
+            .provider_stops
+            .get(&(team.id.clone(), member.id.clone()))
+            .is_some_and(|stop| stop == binding)
+        {
+            return Ok(());
+        }
         let reason = format!(
             "Member {} ({}) needs attention. {}. The service will check again.",
             member.id, member.role, crate::desktop::teams::reason_text(error).trim_end_matches('.')
@@ -46,6 +68,39 @@ impl Runtime {
 }
 
 impl Runtime {
+    pub(in crate::desktop::teams::actor) fn provider_stop_confirmed(
+        &mut self,
+        store: &mut Store,
+        team: &Team,
+        member: &Member,
+        binding: String,
+        now: i64,
+    ) -> Result<()> {
+        let key = format!("{CONFIRMATION}{}", member.id);
+        let same = self
+            .ledger
+            .get(&team.id, &format!("gate:{key}"))?
+            .as_ref()
+            .and_then(super::held::held_by)
+            .and_then(|(_, _, binding)| binding)
+            .as_ref()
+            == Some(&binding);
+        self.provider_stops
+            .insert((team.id.clone(), member.id.clone()), binding);
+        self.for_row(|a| {
+            if same {
+                a.close_gate(store, team, &key, PROVIDER_STOP, now)?;
+            }
+            a.close_gate(
+                store,
+                team,
+                &format!("unreadable:{}", member.id),
+                PROVIDER_STOP,
+                now,
+            )
+        })
+    }
+
     /// A reservation can discover the first-send gate after selection. Keep
     /// that first observation on the same named row the next pass carries.
     pub(in crate::desktop::teams::actor) fn first_message_wait(

@@ -1,6 +1,8 @@
 mod card;
 mod held;
 mod unreadable;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub(in crate::desktop::teams) use unreadable::provider_binding_stamp;
 use super::*;
 use serde::{Deserialize, Serialize};
 

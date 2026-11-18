@@ -153,6 +153,7 @@ fn record(value: Value, launch: &str) -> Checked<TeamObservation> {
         run_id: get("run_id", 256)?,
         conversation_id: get("conversation_id", 2048)?,
         cwd: get("cwd", 4096)?,
+        provider: None,
         account: if account.is_empty() {
             format!("native-{agent}")
         } else {
@@ -307,6 +308,7 @@ fn selected_session(
     agent: &str,
     hint: &str,
     r: &mut Reads<'_>,
+    provider: bool,
 ) -> Checked<TeamSession> {
     if !canonical(id) || !canonical(launch) {
         return Err(Fault);
@@ -325,8 +327,41 @@ fn selected_session(
             TeamSession::LaunchChanged
         });
     }
+    let progress = provider
+        .then(|| {
+            ["last_main_progress_at", "turn_started"]
+                .iter()
+                .filter_map(|field| v[field].as_f64())
+                .reduce(f64::max)
+                .map(|t| (t * 1000.0).round() as i64)
+        })
+        .flatten();
+    let mut stop = provider
+        .then(|| crate::state::team_provider_stop::saved_stop(&v))
+        .flatten();
+    if stop.is_some_and(|stop| {
+        stop.kind == crate::state::team_provider_stop::ProviderStopKind::Provider
+    }) {
+        let owner = crate::state::storage::owner_key(&v);
+        let job = state.join("recovery/jobs").join(format!("{owner}.json"));
+        match r.read(&job, RAW) {
+            Ok(job)
+                if !job
+                    .as_ref()
+                    .is_some_and(|job| crate::state::recovery::same_active_failure(&v, job)) => {}
+            _ => stop = None,
+        }
+    }
     match record(v, launch)? {
-        TeamObservation::Record(found) => Ok(TeamSession::Record(found)),
+        TeamObservation::Record(mut found) => {
+            found.provider = provider.then(|| {
+                Box::new(crate::state::team_provider_stop::ProviderObservation {
+                    stop,
+                    progress_ms: progress,
+                })
+            });
+            Ok(TeamSession::Record(found))
+        }
         _ => Err(Fault),
     }
 }
@@ -337,6 +372,7 @@ pub(super) fn session(
     agent: &str,
     hint: &str,
     deadline: Instant,
+    provider: bool,
 ) -> TeamSession {
     let Ok(state) = configured_root(state, deadline) else {
         return TeamSession::Unavailable;
@@ -346,7 +382,7 @@ pub(super) fn session(
         ..Counts::default()
     };
     let mut r = Reads::new(&mut counts);
-    let result = selected_session(&state, id, launch, agent, hint, &mut r)
+    let result = selected_session(&state, id, launch, agent, hint, &mut r, provider)
         .and_then(|result| r.finish().map(|()| result));
     if Instant::now() >= deadline {
         return TeamSession::Unavailable;

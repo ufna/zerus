@@ -51,7 +51,7 @@ it("keeps a linked session as a plain localized fact without a technical keyboar
   const { host, openDetails } = setup(member());
   openDetails();
   expect(host.querySelector(".team-member-name")?.textContent).toBe("m1");
-  expect(host.querySelector(".role-badge")?.textContent).toBe("developer");
+  expect(host.querySelector(".role-badge")?.textContent).toBe("Developer");
   expect(host.querySelector(".tm-state-badge")).toBeNull();
   expect(host.textContent).toContain("account-example");
   const session = host.querySelector(".team-member-session")!;
@@ -66,7 +66,7 @@ it("marks the lead and a state's tone", () => {
   expect(host.querySelector(".team-member-card")?.classList.contains("team-lead")).toBe(true);
   expect(host.querySelector(".tm-state-badge")).toBeNull();
   expect(host.querySelector(".team-member-card")?.getAttribute("data-state-color")).toBe("info");
-  expect(host.querySelector(".team-member-lead")?.textContent).toBe("lead");
+  expect(host.querySelector(".team-member-lead")?.textContent).toBe("Lead");
 });
 
 it("shows a not-created member without a session", () => {
@@ -82,10 +82,10 @@ it("offers member operations and a disabled swap, and sends by member id", () =>
   const { host, onAction } = setup(member());
   (host.querySelector('[aria-label="Member actions"]') as HTMLButtonElement).click();
   const buttons = [...host.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')].filter((button) => button.textContent !== "Member details");
-  expect(buttons.map((button) => button.textContent)).toEqual(["Pause", "Stop", "Swap…", "Remove"]);
+  expect(buttons.map((button) => button.textContent)).toEqual(["Open session", "Pause", "Stop", "Swap…", "Remove"]);
   expect(buttons.filter((button) => button.classList.contains("danger"))).toHaveLength(2);
   expect(buttons.find((button) => button.textContent === "Swap…")?.getAttribute("aria-disabled")).toBe("true");
-  buttons[0].click();
+  buttons[1].click();
   expect(onAction).toHaveBeenCalledWith("pause_member", "m1");
 });
 
@@ -93,7 +93,7 @@ it("offers resume only to a paused member", () => {
   const { host } = setup(member({ state: "paused" }));
   (host.querySelector('[aria-label="Member actions"]') as HTMLButtonElement).click();
   const buttons = [...host.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')].filter((button) => button.textContent !== "Member details");
-  expect(buttons.map((button) => button.textContent)).toEqual(["Resume", "Stop", "Swap…", "Remove"]);
+  expect(buttons.map((button) => button.textContent)).toEqual(["Open session", "Resume", "Stop", "Swap…", "Remove"]);
 });
 
 it("shows Stop disabled with its reason for a member the person stopped, and Resume open", () => {
@@ -110,8 +110,8 @@ it("keeps lead Pause/Stop and offers no Remove, which the store refuses for the 
   const { host, onAction } = setup(member({ lead: true }));
   (host.querySelector('[aria-label="Member actions"]') as HTMLButtonElement).click();
   const buttons = [...host.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')].filter((button) => button.textContent !== "Member details");
-  expect(buttons.map((button) => button.textContent)).toEqual(["Pause", "Stop", "Swap…"]);
-  buttons[1].click(); expect(onAction).toHaveBeenCalledWith("stop_member", "m1");
+  expect(buttons.map((button) => button.textContent)).toEqual(["Open session", "Pause", "Stop", "Swap…"]);
+  buttons[2].click(); expect(onAction).toHaveBeenCalledWith("stop_member", "m1");
 });
 
 // Second confirmation: a member who is not active shows its state chip alone;

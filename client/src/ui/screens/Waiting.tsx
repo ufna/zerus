@@ -17,7 +17,9 @@ import "../styles/teams.css";
 // bounded page at a time, opened on its first page) and, from the desktop's
 // own session attention data, the requests of team sessions that only a
 // person can answer, by the lead and member sessions of each live team's list
-// row. A card is decided in place through the Teams store; a
+// row. A card's age compares its creation time in milliseconds with the
+// application's clock, which ticks in seconds. A card is decided in place
+// through the Teams store; a
 // session request opens the session. Open team and Open task find the lead's
 // row by the same machine and launch binding the Team tab uses. With the
 // preview off the rail entry does not exist and this page reads nothing.
@@ -89,7 +91,7 @@ export function WaitingScreen() {
         </Show>
         <Show when={view()} fallback={<div class="team-empty dim">{tr("Reading what waits for you…")}</div>}>
           {(shown) => (
-            <WaitingList view={shown()} teamNames={names()} now={now()} busy={busy()}
+            <WaitingList view={shown()} teamNames={names()} now={now() * 1000} busy={busy()}
               onDecide={(item, decision) => void decide(item, decision)} onOpenTeam={(item) => open(item, false)} onOpenTask={(item) => open(item, true)}
               onPage={(cursor) => void teams.pageWaiting(cursor)} onFirst={() => void teams.firstWaitingPage()} />
           )}

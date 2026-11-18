@@ -185,6 +185,7 @@ fn report_validates_service_note_codes_and_bounds() {
             op(vec![ReportNote {
                 code: "Not A Token".into(),
                 text: None,
+                parameters: Vec::new(),
             }]),
         ),
         code::INVALID_STATE,
@@ -197,6 +198,7 @@ fn report_validates_service_note_codes_and_bounds() {
             op(vec![ReportNote {
                 code: "text_Shortened".into(),
                 text: None,
+                parameters: Vec::new(),
             }]),
         ),
         code::INVALID_STATE,
@@ -207,6 +209,7 @@ fn report_validates_service_note_codes_and_bounds() {
             op(vec![ReportNote {
                 code: "text_shortened".into(),
                 text: Some("x".repeat(501)),
+                parameters: Vec::new(),
             }]),
         ),
         code::OVER_CAP,
@@ -220,6 +223,7 @@ fn report_validates_service_note_codes_and_bounds() {
                 .map(|_| ReportNote {
                     code: "worktree_dirty".into(),
                     text: None,
+                    parameters: Vec::new(),
                 })
                 .collect()),
         ),
@@ -231,6 +235,7 @@ fn report_validates_service_note_codes_and_bounds() {
         op(vec![ReportNote {
             code: "text_shortened".into(),
             text: Some("Why it was cut".into()),
+            parameters: Vec::new(),
         }]),
     )
     .unwrap();
@@ -240,7 +245,8 @@ fn report_validates_service_note_codes_and_bounds() {
         report.notes,
         vec![ReportNote {
             code: "text_shortened".into(),
-            text: Some("Why it was cut".into())
+            text: Some("Why it was cut".into()),
+            parameters: Vec::new(),
         }]
     );
 }
@@ -691,6 +697,7 @@ fn readiness_view_contains_only_live_nodes_and_their_archived_direct_leaves() {
         team: &team,
         op: &op,
         request_id: TEAM,
+        provider_stop: None,
         task_custody: None,
         now: 1234,
         reply: Reply {

@@ -162,12 +162,12 @@ fn apply_observation(
 ) -> Result<()> {
     let (team, member, binding) = scope;
     let stamp = observation.as_ref().err().map(|_| {
-        engine::key(&serde_json::json!([
-            binding.launch,
-            binding.session,
-            binding.run,
-            binding.conversation,
-        ]))
+        actor::provider_binding_stamp(
+            &binding.launch,
+            &binding.session,
+            &binding.run,
+            &binding.conversation,
+        )
     });
     let fault = stamp
         .as_deref()

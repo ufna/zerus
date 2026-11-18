@@ -172,9 +172,12 @@ mod workspace;
 mod git_status;
 pub(crate) mod repositories;
 mod launch_observation;
+pub(crate) mod team_provider_stop;
+pub(crate) use launch_observation::TeamRecord;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub(crate) use launch_observation::{
-    observe_team_launch, observe_team_session, TeamObservation, TeamRecord, TeamSession,
+    observe_team_launch, observe_team_session, observe_team_session_for_availability,
+    TeamObservation, TeamSession,
 };
 pub(crate) use questions::native_identity;
 #[cfg(all(test, any(target_os = "linux", target_os = "macos")))]

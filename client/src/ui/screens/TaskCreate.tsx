@@ -10,6 +10,7 @@ import { tr } from "../../i18n";
 import { Dropdown } from "../lib/Dropdown";
 import { TeamChip } from "../teams/TeamChips";
 import { teams } from "../../store/teams";
+import { teamTaskCreation, setTeamTaskCreation } from "../../store/taskCreation";
 
 /** Mockup's inline new-card title; Escape retains its private per-project draft. */
 export default function TaskCreate(props: { project?: string; scope: string; backlog: boolean; accessible: boolean; children: JSX.Element }) {
@@ -26,7 +27,14 @@ export default function TaskCreate(props: { project?: string; scope: string; bac
   createEffect(on(() => props.project, () => recovery.dismiss(), { defer: true }));
   let field!: HTMLInputElement;
   /** The project's teams on the list's first page, while the preview is on: the card can join one's queue. */
-  const teamChoices = createMemo(() => taskTeamChoices(teams.available(), teams.list()?.teams ?? [], props.project));
+  const teamChoices = createMemo(() => {
+    const rows = teams.list()?.teams ?? [], current = teams.team?.()?.bar;
+    // The open board may be beyond the bounded list page or chooser limit.
+    const listed = current && rows.find((row) => row.id === current.id);
+    const preferred = current && current.project === props.project
+      ? listed && listed.revision > current.revision ? listed : { ...current, home: listed?.home ?? "" } : undefined;
+    return taskTeamChoices(teams.available(), preferred ? [preferred, ...rows.filter((row) => row.id !== preferred.id)] : rows, props.project);
+  });
   createEffect(on(() => [props.project, props.accessible] as const, ([project, accessible]) => { setCreating(false); newCard.follow(project && accessible ? { project, task: "", mode: "new_card" } : undefined); }));
   onCleanup(() => newCard.follow());
   const view = () => newCard.view()?.project === props.project ? newCard.view() : undefined;
@@ -35,6 +43,17 @@ export default function TaskCreate(props: { project?: string; scope: string; bac
   // Compared by value: an edit of the title is a new view of the same card and keeps the choice.
   const binding = createMemo(() => JSON.stringify([props.project ?? "", props.accessible, teams.available() ?? null, view()?.handle ?? null, !!view()?.recovery]));
   createEffect(on(binding, () => { setTeam(""); setRefusal(""); }, { defer: true }));
+  createEffect(() => {
+    const request = teamTaskCreation();
+    if (!request) return;
+    if (request.project !== props.project || !props.accessible) { setTeamTaskCreation(undefined); return; }
+    // Opening may still expose the old handle while its draft save settles.
+    // Apply the choice only after the active handle's binding has settled;
+    // recovery retains its original team.
+    if (newCard.opening() || !view()?.handle) return;
+    setCreating(true); setTeam(view()?.recovery ? "" : request.team); setRefusal("");
+    setTeamTaskCreation(undefined);
+  });
   /** A reserved card keeps the destination it was reserved with. */
   const reserved = () => view()?.recovery ? view()?.team ?? "" : undefined;
   const reservedName = () => teamChoices().find((candidate) => candidate.id === reserved())?.label ?? reserved() ?? "";

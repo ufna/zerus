@@ -137,6 +137,16 @@ pub(in crate::desktop::teams) trait Ports {
             Availability::Busy
         })
     }
+    fn held_availability(
+        &mut self,
+        _store: &mut Store,
+        team: &Team,
+        member: &Member,
+        _effect: &crate::teams::store::EffectIntent,
+        _now: i64,
+    ) -> Result<(Availability, Option<String>)> {
+        Ok((self.availability(team, member)?, None))
+    }
     /// A stamp of what the member's current fleet row says, by the values
     /// the actor reads (`fleet::stamp`), or None when it has no row now
     /// (zerus-63rru.79). A changed stamp is a changed row. An adapter that

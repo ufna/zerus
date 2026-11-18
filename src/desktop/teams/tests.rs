@@ -162,7 +162,7 @@ impl Effects for FakeEffects {
             account: plan.account.clone(),
             worktree: tree.clone(),
             parent: None,
-            name: format!("claude/example/{}", plan.member),
+            name: format!("{}/example/{}", plan.agent, plan.member),
             session_id: uuid::Uuid::new_v4().to_string(),
             run_id: uuid::Uuid::new_v4().to_string(),
             conversation_id: if self.empty_conversation {
@@ -235,6 +235,39 @@ fn row(h: &Harness, member: &str) -> super::ledger::Row {
         .get(ops::tests::TEAM, member)
         .unwrap()
         .unwrap()
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub(super) fn launch_codex_reviewer(
+    h: &mut Harness,
+    member: &str,
+) -> (zerus_team_plan::model::Member, ObservedSession) {
+    let mut account = account("review-account");
+    account.agent = "codex".into();
+    let mut effects = FakeEffects {
+        accounts: vec![account],
+        ..Default::default()
+    };
+    let mut runtime = runtime(h);
+    until(&mut runtime, h, &mut effects, |h, _| {
+        h.store
+            .member(ops::tests::TEAM, member)
+            .unwrap()
+            .unwrap()
+            .state
+            == MemberState::Active
+    });
+    assert_eq!(effects.plans.len(), 1);
+    let plan = &effects.plans[0];
+    assert_eq!(plan.member, member);
+    assert_eq!(plan.role, "reviewer");
+    assert_eq!(plan.agent, "codex");
+    assert_eq!(plan.model, "seat-model");
+    assert_eq!(plan.effort, "high");
+    assert_eq!(plan.account, "review-account");
+    assert!(plan.parent.is_some());
+    let bound = h.store.member(ops::tests::TEAM, member).unwrap().unwrap();
+    (bound, row(h, member).observed.unwrap())
 }
 
 #[test]

@@ -98,8 +98,7 @@ pub struct InboxItem {
     pub generation: u32,
     pub actor: Value,
     pub text: String,
-    /// The service's statements about the quoted report, apart from its text.
-    /// Every other item has none, and so does a row from before notes.
+    /// Service statements beside an inbox item. Rows from before notes have none.
     #[serde(default)]
     pub notes: Vec<ReportNote>,
     pub state: String,

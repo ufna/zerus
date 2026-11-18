@@ -4,17 +4,28 @@ import { For, Show, createSignal } from "solid-js";
 import { tr } from "../../i18n";
 import { TextInput } from "../lib/TextField";
 import type { DrawerRow } from "../../store/teamDrawers";
-import { waitingNote } from "./decisions";
-import { reportRows } from "./feed";
+import { isProviderStopNote, waitingNote } from "./decisions";
+import { actorLabel, itemState, reportRows } from "./feed";
 
 export type DrawerAction = (kind: string, fields: Record<string, unknown>) => void;
 
 export function InboxText(props: { row: DrawerRow }) {
+  const localized = () => {
+    const { kind, notes } = props.row;
+    if (kind.startsWith("lead_member_added:")) {
+      return notes.find((note) => note.code === "lead_member_added");
+    }
+    return kind.startsWith("provider_stop:") ? notes.find(isProviderStopNote) : undefined;
+  };
+  const text = () => {
+    const note = localized();
+    return note ? waitingNote(note) : props.row.text;
+  };
   return <>
-    <pre class="team-drawer-text">{props.row.text}</pre>
+    <pre class="team-drawer-text">{text()}</pre>
     <Show when={props.row.text_truncated}><p class="dim">{tr("Only the beginning of this text is shown.")}</p></Show>
-    <Show when={props.row.notes.length}><p class="dim">{tr("Service notes")}</p>
-      <For each={props.row.notes}>{(note) => <p class="dim">{waitingNote(note)}</p>}</For>
+    <Show when={props.row.notes.some((note) => note !== localized())}><p class="dim">{tr("Service notes")}</p>
+      <For each={props.row.notes.filter((note) => note !== localized())}>{(note) => <p class="dim">{waitingNote(note)}</p>}</For>
     </Show>
     <Show when={props.row.reply}>{(reply) => <p class="team-drawer-reply">{tr("Reply: %1", reply())}</p>}</Show>
   </>;
@@ -25,7 +36,7 @@ export function Report(props: { row: DrawerRow; busy: boolean; onAction: DrawerA
   const [reason, setReason] = createSignal("");
   const actionable = () => props.row.state === "open" && props.row.node !== null;
   return <article class="team-report" data-report={props.row.seq}>
-    <header><b>{tr("Task %1", props.row.node ?? "")}</b><span class="dim">{props.row.by}</span><span class="dim">{props.row.state}</span></header>
+    <header><b>{tr("Task %1", props.row.node ?? "")}</b><span class="dim">{actorLabel(props.row)}</span><span class="dim">{itemState(props.row.state)}</span></header>
     <InboxText row={props.row} />
     <Show when={actionable()}>
       <div class="team-drawer-actions">

@@ -40,6 +40,7 @@ pub fn authority(actor: &Actor, op: &Operation, team: &Team) -> Result<()> {
         | Operation::PublicationTaskProblem { .. }
         | Operation::ReconcilePhase { .. } => service,
         Operation::RejectPhase { .. } | Operation::UndoRejectPhase { .. } => person,
+        Operation::LeadAddMember { .. } => lead,
         Operation::Verdict { .. } => member,
         Operation::CloseCard { .. } => service,
         Operation::RecordTimingFact { .. }
@@ -63,7 +64,9 @@ pub fn authority(actor: &Actor, op: &Operation, team: &Team) -> Result<()> {
         | Operation::RecordCancel { .. }
         | Operation::ReconcileLeadQueue
         | Operation::ReconcileUnstaffed
+        | Operation::ReleaseProviderStop { .. }
         | Operation::EndStaleUnstaffed
+        | Operation::CloseStaleReopenNotices
         | Operation::SettleLeftHandout { .. }
         | Operation::UnbindMember { .. }
         | Operation::TellPausedStarted { .. }

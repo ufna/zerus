@@ -7,7 +7,7 @@ import { RecordedPageExport, exportRecordedPage, type PageExportPort } from "../
 import { Icon } from "../lib/icons";
 import { TextInput } from "../lib/TextField";
 import { TeamDrawerRead, readTeamDrawer, type DrawerKind, type DrawerRow, type TeamDrawer, type DrawerPort } from "../../store/teamDrawers";
-import { feedClock, historyLine, inboxKind } from "./feed";
+import { actorLabel, feedClock, historyLine, inboxKind, itemState, journalDetail, journalSentence } from "./feed";
 import { InboxText, Report, TeamReports, type DrawerAction } from "./TeamReports";
 import { ProposalCards } from "./ProposalCards";
 import type { TeamView } from "./types";
@@ -30,10 +30,15 @@ export function TeamDrawerButtons(props: { value: TeamDrawer | null; onOpen: (ki
 export function TeamFeed(props: { rows: DrawerRow[] }) {
   return <div class="team-drawer-rows" aria-label={tr("Feed")}>
     <For each={props.rows} fallback={<p class="dim">{tr("No events on this page.")}</p>}>{(row) =>
-      <article class="team-drawer-row" data-feed-seq={row.seq}>
-        <time class="mono" title={row.at_ms ? new Date(row.at_ms).toLocaleString() : ""}>{feedClock(row.at_ms)}</time>
-        <span class="dim">{row.by}</span><span class="team-pill">{row.kind}</span>
-        <pre class="team-drawer-text">{historyLine(row)}</pre>
+      <article class="team-drawer-row" data-feed-seq={row.seq} title={historyLine(row)}>
+        <header>
+          <time class="mono" title={row.at_ms ? new Date(row.at_ms).toLocaleString() : ""}>{feedClock(row.at_ms)}</time>
+          <span class="dim" data-feed-actor>{actorLabel(row)}</span>
+          <b data-feed-sentence>{journalSentence(row.kind)}</b>
+          <Show when={row.subject_node}>{(node) => <span class="team-pill" data-feed-task>#{node()}</span>}</Show>
+          <Show when={row.subject_member}>{(member) => <span class="team-pill" data-feed-member>{member()}</span>}</Show>
+        </header>
+        <Show when={journalDetail(row)}>{(detail) => <p class="team-drawer-text" data-feed-detail>{detail()}</p>}</Show>
         <Show when={row.text_truncated}><span class="dim">{tr("Only the beginning of this text is shown.")}</span></Show>
       </article>
     }</For>
@@ -44,7 +49,7 @@ function InboxRow(props: { row: DrawerRow; busy: boolean; onAction: DrawerAction
   const [answer, setAnswer] = createSignal("");
   return <Show when={props.row.kind !== "report"} fallback={<Report row={props.row} busy={props.busy} onAction={props.onAction} />}>
     <article class="team-drawer-row" data-inbox={props.row.seq}>
-      <header><span class="team-pill">{inboxKind(props.row.kind)}</span><b>{props.row.by}</b><span class="dim">{props.row.state}</span></header>
+      <header><span class="team-pill">{inboxKind(props.row.kind)}</span><b>{actorLabel(props.row)}</b><span class="dim">{itemState(props.row.state)}</span></header>
       <InboxText row={props.row} />
       <Show when={props.row.state === "open" && props.row.kind.startsWith("question:")}><div class="team-drawer-actions">
         <TextInput class="field" maxlength={4000} value={answer()} aria-label={tr("Your answer")} disabled={props.busy} onInput={(event) => setAnswer(event.currentTarget.value)} />

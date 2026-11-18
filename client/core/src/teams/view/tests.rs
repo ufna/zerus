@@ -386,11 +386,13 @@ fn waiting_carries_the_service_notes_apart_from_the_card_text() {
         vec![
             ServiceNote {
                 code: "text_shortened".into(),
-                text: None
+                text: None,
+                parameters: Vec::new(),
             },
             ServiceNote {
                 code: "worktree_dirty".into(),
-                text: None
+                text: None,
+                parameters: Vec::new(),
             }
         ]
     );
@@ -424,15 +426,18 @@ fn waiting_carries_the_service_notes_apart_from_the_card_text() {
         vec![
             ServiceNote {
                 code: "text_shortened".into(),
-                text: None
+                text: None,
+                parameters: Vec::new(),
             },
             ServiceNote {
                 code: "worktree_dirty".into(),
-                text: None
+                text: None,
+                parameters: Vec::new(),
             },
             ServiceNote {
                 code: "other_note".into(),
-                text: Some("A service sentence.".into())
+                text: Some("A service sentence.".into()),
+                parameters: Vec::new(),
             }
         ]
     );
