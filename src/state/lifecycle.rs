@@ -1285,9 +1285,10 @@ const SUPERVISOR_START_WAIT: Duration = Duration::from_secs(15);
 /// A scoped resume (`hgs session-action`, whose receipt the desktop and the
 /// phone act on) reports its result only once the resumed run's supervisor
 /// wrote the session's record of that run (zerus-5sl7r): until then nothing
-/// shows that the terminal's command ran. A terminal that is gone first,
-/// with no such record, started nothing and left nothing, a definite
-/// failure; a dead pane that stays, or no record within `wait`, is
+/// shows that the terminal's command ran. A terminal that is gone first while
+/// the session's record still names the stopped run it resumed (the scope's)
+/// started nothing and left nothing, a definite failure; a dead pane that
+/// stays, a record that moved on otherwise, or no record within `wait` is
 /// uncertain.
 fn supervisor_started(
     name: &str,
@@ -1312,10 +1313,15 @@ fn supervisor_started(
         if (gone || dead) && recorded() {
             return Ok(());
         }
-        if gone {
+        if gone && read(name).is_ok_and(|record| scope.check_base(&record).is_ok()) {
             scope.unchanged();
             return Err(format!(
                 "{name}: the resumed terminal ended before its supervisor started; nothing was resumed"
+            ));
+        }
+        if gone {
+            return Err(format!(
+                "{name}: the resumed terminal ended and the session's record no longer names the run it resumed; inspect the session"
             ));
         }
         if dead {

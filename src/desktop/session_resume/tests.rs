@@ -2703,7 +2703,7 @@ else:
                 .map(Path::new)
                 .find(|p| p.is_dir())
                 .unwrap();
-            for case in ["resume", "replaced"] {
+            for case in ["resume", "replaced", "dies"] {
                 let dir = tempfile::Builder::new()
                     .prefix("hgs-rs-")
                     .tempdir_in(base)
@@ -2941,6 +2941,18 @@ else:
                 std::fs::rename(&next, &pinned).unwrap();
             }
 
+            if case == "dies" {
+                // The service names an executable that ends at once: the
+                // resumed terminal ends before any supervisor starts. The
+                // dead pane is not kept, so nothing of the resume remains.
+                let broken = bin.join("broken-hgs");
+                std::fs::write(&broken, "#!/bin/sh\nexit 3\n").unwrap();
+                mode(&broken, 0o755);
+                std::env::set_var("HGS_EXECUTABLE", &broken);
+                assert!(tmux(&["set-option", "-gwu", "remain-on-exit"])
+                    .status
+                    .success());
+            }
             let original = original_at(
                 &f.location.configuration,
                 &f.epoch,
@@ -3023,6 +3035,27 @@ else:
                         (receipt.resume.step, receipt.send.step),
                         (Step::NotStarted, Step::NotStarted),
                         "{panes}"
+                    );
+                    assert!(
+                        !panes
+                            .lines()
+                            .any(|line| line.starts_with(&format!("{name}\t"))),
+                        "{panes}"
+                    );
+                    assert_eq!(record_of(&f.state, name)["run_id"], run.as_str());
+                }
+                "dies" => {
+                    // A definite failure, never "completed": nothing started
+                    // and nothing remains, and the row settles at once.
+                    assert_eq!(
+                        (receipt.resume.step, receipt.send.step),
+                        (Step::Failed, Step::NotStarted),
+                        "{panes}"
+                    );
+                    assert!(
+                        admitted.elapsed() < Duration::from_secs(25),
+                        "{:?}",
+                        admitted.elapsed()
                     );
                     assert!(
                         !panes
