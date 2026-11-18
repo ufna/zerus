@@ -205,7 +205,31 @@ fn settle(p: &mut impl Ports, row: &mut Record) -> Result<()> {
         row.card_done = true;
         p.save(row)?;
     }
+    // An approved hooks trust has no card; its `card_done` records its one
+    // feed line instead (zerus-f67qp).
+    if row.state == "approved" && feed_line(&row.plan) && !row.card_done {
+        p.note(row)?;
+        row.card_done = true;
+        p.save(row)?;
+    }
     audit_error.map_or(Ok(()), Err)
+}
+
+/// Whether an approved `plan` writes one feed line: Codex's hooks trust,
+/// which the team's person sees in its feed (zerus-f67qp).
+pub(super) fn feed_line(plan: &Plan) -> bool {
+    plan.kind == Kind::Trust && policy::hooks(&plan.question)
+}
+
+/// The feed line of an approved hooks trust: the member and the hook count
+/// sentence Codex showed (zerus-f67qp).
+pub(super) fn feed_text(plan: &Plan) -> String {
+    let body = plan.question["questions"][0]["body"].as_str().unwrap_or("");
+    let count = body.split_once(". ").map_or(body, |(count, _)| count);
+    format!(
+        "Zerus confirmed Codex hook trust for member {}: {count}.",
+        plan.binding.member
+    )
 }
 
 pub(super) fn validate(p: &mut impl Ports, plan: &Plan) -> Result<()> {
@@ -221,7 +245,12 @@ pub(super) fn validate(p: &mut impl Ports, plan: &Plan) -> Result<()> {
     match plan.kind {
         Kind::Trust => {
             if !facts.team.settings.delegations.confirm_trust {
-                return Err("Folder-trust delegation is off".into());
+                return Err(if policy::hooks(&plan.question) {
+                    "Trust delegation is off"
+                } else {
+                    "Folder-trust delegation is off"
+                }
+                .into());
             }
             if policy::trust(b, &snapshot)? != plan.question {
                 return Err("The exact prompt or its hash changed".into());
@@ -260,7 +289,20 @@ pub(super) fn candidate(b: &Binding, s: &Snapshot, kind: Kind, question: Value) 
     } else {
         "resume"
     };
-    let key = key(&json!([b.team, b.member, b.launch, s.run, tag]));
+    // Codex's hooks trust is its own question of the run, after its folder
+    // trust: another hash is another question (zerus-f67qp).
+    let key = if kind == Kind::Trust && policy::hooks(&question) {
+        key(&json!([
+            b.team,
+            b.member,
+            b.launch,
+            s.run,
+            "hooks_trust",
+            question["question_hash"]
+        ]))
+    } else {
+        key(&json!([b.team, b.member, b.launch, s.run, tag]))
+    };
     let text = format!("You are a member of team {} in role {}. Read `hgs team current` for your current team and work.", b.team, b.role);
     let question = if kind == Kind::Resume {
         synthetic(b, s, &text, "resume")

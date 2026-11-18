@@ -39,6 +39,9 @@ impl Ports for Seeded<'_> {
     fn card(&mut self, r: &Record) -> Result<()> {
         self.native.card(r)
     }
+    fn note(&mut self, r: &Record) -> Result<()> {
+        self.native.note(r)
+    }
     fn original(&mut self, r: &Record, check: &mut dyn FnMut(&mut Self) -> Result<()>) -> Outcome {
         if let Err(why) = check(self) {
             return Outcome::NotStarted(why);

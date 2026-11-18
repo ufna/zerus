@@ -177,6 +177,18 @@ impl Ports for World {
             .unwrap();
         Ok(())
     }
+    fn note(&mut self, row: &Record) -> Result<()> {
+        self.h
+            .run(
+                &service(),
+                Operation::NoteConfirmation {
+                    member: row.plan.binding.member.clone(),
+                    text: engine::feed_text(&row.plan),
+                },
+            )
+            .unwrap();
+        Ok(())
+    }
     fn original(
         &mut self,
         row: &Record,

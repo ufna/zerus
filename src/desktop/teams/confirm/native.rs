@@ -139,7 +139,9 @@ impl Ports for Native<'_> {
         self.ledger.save(row)
     }
     fn audit_begin(&mut self, plan: &Plan) -> Result<Audit> {
-        let kind = if plan.kind == Kind::Trust {
+        let kind = if plan.kind == Kind::Trust && super::policy::hooks(&plan.question) {
+            crate::approval_log::TeamKind::HookTrust
+        } else if plan.kind == Kind::Trust {
             crate::approval_log::TeamKind::FolderTrust
         } else if plan.kind == Kind::Brief {
             crate::approval_log::TeamKind::Brief
@@ -180,6 +182,9 @@ impl Ports for Native<'_> {
     fn card(&mut self, row: &Record) -> Result<()> {
         self.owner_card(row)
     }
+    fn note(&mut self, row: &Record) -> Result<()> {
+        self.owner_note(row)
+    }
     fn original(
         &mut self,
         row: &Record,
@@ -193,7 +198,7 @@ impl Ports for Native<'_> {
 }
 impl Native<'_> {
     fn owner_card(&mut self, row: &Record) -> Result<()> {
-        use crate::teams::ops::{self, Actor, Operation, Request};
+        use crate::teams::ops::{Operation, Request};
         self.store.refresh().map_err(|e| e.to_string())?;
         let team = self
             .store
@@ -238,14 +243,48 @@ impl Native<'_> {
             self.ledger.save_card(&row.plan.key, Some(&request))?;
             request
         };
+        self.service_write(row, &request)
+    }
+    /// The approved hooks trust's one feed line (zerus-f67qp): the service's
+    /// journal row naming the member, under the row's saved request, so a
+    /// retry after a crash replays that request and never writes a second.
+    fn owner_note(&mut self, row: &Record) -> Result<()> {
+        use crate::teams::ops::{Operation, Request};
+        self.store.refresh().map_err(|e| e.to_string())?;
+        let team = self
+            .store
+            .team(&row.plan.binding.team)
+            .map_err(|e| e.to_string())?
+            .ok_or("Team disappeared")?;
+        let request = if let Some(request) = self.ledger.card_request(&row.plan.key)? {
+            request
+        } else {
+            let request = Request {
+                request_id: uuid::Uuid::new_v4().to_string(),
+                team: team.id.clone(),
+                expected_revision: team.revision,
+                operation: Operation::NoteConfirmation {
+                    member: row.plan.binding.member.clone(),
+                    text: super::engine::feed_text(&row.plan),
+                },
+            };
+            self.ledger.save_card(&row.plan.key, Some(&request))?;
+            request
+        };
+        self.service_write(row, &request)
+    }
+    /// The service applies the row's saved request. A stale revision drops
+    /// the saved request; the next pass writes a fresh one.
+    fn service_write(&mut self, row: &Record, request: &crate::teams::ops::Request) -> Result<()> {
+        use crate::teams::ops::{self, Actor};
         let actor = Actor::Service {
             person: row.plan.binding.person.clone(),
-            team: team.id,
+            team: request.team.clone(),
         };
         match ops::apply(
             self.store,
             &actor,
-            &request,
+            request,
             chrono::Utc::now().timestamp_millis(),
         ) {
             Ok(_) => Ok(()),
@@ -304,6 +343,122 @@ mod tests {
             .unwrap();
         let saved: serde_json::Value = serde_json::from_str(&saved).unwrap();
         assert!(saved.get("scope").is_none(), "{saved}");
+    }
+
+    /// The approved hooks trust's feed line through the store the product
+    /// wrote (zerus-f67qp): one service journal row naming the member; a
+    /// retry after a crash replays its saved request and writes no second.
+    #[test]
+    fn an_approved_hooks_trusts_feed_line_is_one_service_journal_row() {
+        use crate::teams::ops::tests::TEAM;
+        let mut h = crate::desktop::teams::tests::bound151_fixture();
+        let state = h.temp.path().to_owned();
+        let config = Config {
+            home: String::new(),
+            dir: state.join("config"),
+            state: state.clone(),
+            selves: vec![],
+            peers: vec![],
+            base_peers: vec![],
+            peers_from_environment: false,
+            machines: Default::default(),
+            tab: false,
+            tab_colors: String::new(),
+        };
+        let (b, name) = launch_binding(&config, TEAM, "m1").unwrap();
+        let card = crate::state::trust_fixture::resumed_hooks_trust_prompt("conversation-1");
+        let (_, _, mut s) = super::super::policy::tests::sample();
+        s.name = name;
+        s.questions = vec![card.clone()];
+        let plan = super::super::engine::candidate(&b, &s, Kind::Trust, card);
+        let row = Record {
+            plan,
+            original: uuid::Uuid::new_v4().to_string(),
+            epoch: "epoch-1".into(),
+            state: "approved".into(),
+            audit: None,
+            audit_done: true,
+            result: None,
+            detail: String::new(),
+            card_request: uuid::Uuid::new_v4().to_string(),
+            card_done: false,
+            at: 100,
+        };
+        let before = h.store.journal(TEAM, 200, None).unwrap().rows.len();
+        let stop = Arc::new(AtomicBool::new(false));
+        let mut native = Native::new(&config, &b.machine, &stop, &mut h.store).unwrap();
+        native.note(&row).unwrap();
+        native.note(&row).unwrap();
+        drop(native);
+        let rows = h.store.journal(TEAM, 200, None).unwrap().rows;
+        assert_eq!(rows.len(), before + 1, "one row for the replayed request");
+        let line = rows.last().unwrap();
+        assert_eq!(line.kind, "note_confirmation");
+        assert_eq!(
+            line.text,
+            "Zerus confirmed Codex hook trust for member m1: 4 hooks are new or changed."
+        );
+        assert_eq!(
+            serde_json::to_value(&line.actor).unwrap()["kind"],
+            "service",
+            "{:?}",
+            line.actor
+        );
+    }
+
+    /// A Codex member's hooks-trust plan reserves its own team audit
+    /// (zerus-f67qp): the hook answer, Trust all and continue, in the
+    /// team_hook_trust category, with no folder scope; a second reservation
+    /// of the same question is not fresh.
+    #[test]
+    fn a_hooks_trust_plans_audit_reserves_the_hook_answer_in_its_own_category() {
+        let temp = tempfile::tempdir().unwrap();
+        let config = Config {
+            home: String::new(),
+            dir: temp.path().join("config"),
+            state: temp.path().join("state"),
+            selves: vec![],
+            peers: vec![],
+            base_peers: vec![],
+            peers_from_environment: false,
+            machines: Default::default(),
+            tab: false,
+            tab_colors: String::new(),
+        };
+        crate::platform::private_dir(&config.state.join("teams")).unwrap();
+        std::fs::write(config.state.join("teams/preview"), "on").unwrap();
+        let mut store = Store::open(&config.state).unwrap();
+        let stop = Arc::new(AtomicBool::new(false));
+        let (mut b, _, mut s) = super::super::policy::tests::sample();
+        let card = crate::state::trust_fixture::resumed_hooks_trust_prompt("conversation-1");
+        b.agent = "codex".into();
+        b.run = card["run_id"].as_str().unwrap().into();
+        b.conversation = "conversation-1".into();
+        s.agent = "codex".into();
+        s.run = b.run.clone();
+        s.conversation = b.conversation.clone();
+        s.questions = vec![card.clone()];
+        let plan = super::super::engine::candidate(&b, &s, Kind::Trust, card);
+        let mut native = Native::new(&config, &b.machine, &stop, &mut store).unwrap();
+        let audit = native.audit_begin(&plan).unwrap();
+        assert!(audit.fresh);
+        assert_eq!(
+            audit.answers,
+            json!([{"question_id":"hooks_trust","selected_option_ids":["trust"],"text":""}])
+        );
+        let db = crate::approval_log::open(&config.state.join("approval-audit")).unwrap();
+        let saved: String = db
+            .query_row(
+                "SELECT question FROM attempts WHERE id=?1",
+                [audit.id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let saved: serde_json::Value = serde_json::from_str(&saved).unwrap();
+        assert_eq!(saved["categories"], json!(["team_hook_trust"]), "{saved}");
+        assert!(saved.get("scope").is_none(), "{saved}");
+        assert_eq!(saved["question"], plan.question);
+        assert!(!native.audit_begin(&plan).unwrap().fresh);
     }
 
     #[test]

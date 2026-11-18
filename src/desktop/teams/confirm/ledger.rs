@@ -128,7 +128,8 @@ impl Ledger {
         let pending = matches!(old.state.as_str(), "prepared" | "waiting")
             || (old.audit.is_none() && old.plan.kind != Kind::Notice)
             || (old.audit.is_some() && !old.audit_done)
-            || (old.state != "approved" && !old.card_done);
+            || (old.state != "approved" && !old.card_done)
+            || (old.state == "approved" && engine::feed_line(&old.plan) && !old.card_done);
         tx.execute(
             "UPDATE standing_effects SET pending=?1,body=?2 WHERE key=?3",
             params![pending, encode(&old)?, old.plan.key],

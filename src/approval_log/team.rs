@@ -6,6 +6,8 @@ use super::*;
 #[derive(PartialEq)]
 pub(crate) enum TeamKind {
     FolderTrust,
+    /// Codex's startup hooks-trust prompt of a team member (zerus-f67qp).
+    HookTrust,
     Resume,
     /// Launch context through the guarded send, before a conversation exists.
     Brief,
@@ -19,6 +21,13 @@ pub(crate) fn begin_team(db: &mut Connection, payload: &Value, kind: TeamKind) -
                 return Ok(json!({"eligible":false}));
             };
             payload["categories"] = json!(["team_folder_trust"]);
+            answers
+        }
+        TeamKind::HookTrust => {
+            let Some(answers) = hook_answers(&payload) else {
+                return Ok(json!({"eligible":false}));
+            };
+            payload["categories"] = json!(["team_hook_trust"]);
             answers
         }
         TeamKind::Resume | TeamKind::Brief => {
@@ -36,7 +45,49 @@ pub(crate) fn begin_team(db: &mut Connection, payload: &Value, kind: TeamKind) -
             json!([])
         }
     };
-    reserve(db, &payload, answers, matches!(kind, TeamKind::FolderTrust | TeamKind::Brief))
+    reserve(
+        db,
+        &payload,
+        answers,
+        matches!(
+            kind,
+            TeamKind::FolderTrust | TeamKind::HookTrust | TeamKind::Brief
+        ),
+    )
+}
+
+/// Codex's own hooks-trust card (zerus-f67qp): its native title and its
+/// three native choices, of which the answer is Trust all and continue. A
+/// new run's card has no conversation; a resumed run's names its own.
+fn hook_answers(payload: &Value) -> Option<Value> {
+    let q = &payload["question"];
+    if payload["provider"] != "codex"
+        || q["source"] != "codex_hooks_trust"
+        || q["answer_transport"] != "codex_tui"
+        || q["can_answer"] != true
+    {
+        return None;
+    }
+    let items = q["questions"].as_array()?;
+    if items.len() != 1
+        || items[0]["id"] != "hooks_trust"
+        || items[0]["question"] != "Hooks need review"
+        || items[0]["multi_select"] == true
+        || items[0]["allow_other"] == true
+    {
+        return None;
+    }
+    let options = items[0]["options"].as_array()?;
+    if options.len() != 3
+        || options
+            .iter()
+            .filter(|o| o["id"] == "trust" && o["label"] == "Trust all and continue")
+            .count()
+            != 1
+    {
+        return None;
+    }
+    Some(json!([{"question_id":"hooks_trust","selected_option_ids":["trust"],"text":""}]))
 }
 
 fn folder_answers(payload: &Value) -> Option<Value> {
@@ -143,6 +194,90 @@ mod tests {
         assert_eq!(
             begin_team(&mut db, &p, TeamKind::FolderTrust).unwrap()["fresh"],
             false
+        );
+    }
+
+    /// Codex's hooks-trust card, as its producer writes it at a new run's
+    /// startup and at a resumed one's (zerus-f67qp): only the hook kind
+    /// admits it, only for Codex, with its own category and the answer Trust
+    /// all and continue; the folder kind and the ordinary admission never do.
+    #[test]
+    fn a_codex_hooks_trust_card_is_its_own_kind_and_category() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut db = open(&dir.path().join("audit")).unwrap();
+        let expected =
+            json!([{"question_id":"hooks_trust","selected_option_ids":["trust"],"text":""}]);
+        for q in [
+            crate::state::trust_fixture::hooks_trust_prompt(),
+            crate::state::trust_fixture::resumed_hooks_trust_prompt("conversation-1"),
+        ] {
+            let p = payload("codex", &q);
+            assert_eq!(begin(&mut db, &p).unwrap()["eligible"], false);
+            assert_eq!(
+                begin_team(&mut db, &p, TeamKind::FolderTrust).unwrap()["eligible"],
+                false
+            );
+            let reserved = begin_team(&mut db, &p, TeamKind::HookTrust).unwrap();
+            assert_eq!(
+                (reserved["fresh"].clone(), reserved["answers"].clone()),
+                (json!(true), expected.clone())
+            );
+            assert_eq!(
+                begin_team(&mut db, &p, TeamKind::HookTrust).unwrap()["fresh"],
+                false
+            );
+            for agent in ["claude", "kimi"] {
+                assert_eq!(
+                    begin_team(&mut db, &payload(agent, &q), TeamKind::HookTrust).unwrap()
+                        ["eligible"],
+                    false
+                );
+            }
+            for change in [
+                "transport",
+                "cannot_answer",
+                "title",
+                "item",
+                "multi",
+                "other",
+                "choices",
+                "label",
+            ] {
+                let mut changed = q.clone();
+                let item = &mut changed["questions"][0];
+                match change {
+                    "transport" => changed["answer_transport"] = json!("claude_tui"),
+                    "cannot_answer" => changed["can_answer"] = json!(false),
+                    "title" => item["question"] = json!("Trust this folder?"),
+                    "item" => item["id"] = json!("trust"),
+                    "multi" => item["multi_select"] = json!(true),
+                    "other" => item["allow_other"] = json!(true),
+                    "choices" => {
+                        item["options"].as_array_mut().unwrap().pop();
+                    }
+                    _ => item["options"][1]["label"] = json!("Always trust"),
+                }
+                let reserved =
+                    begin_team(&mut db, &payload("codex", &changed), TeamKind::HookTrust).unwrap();
+                assert_eq!(reserved["eligible"], false, "{change}");
+            }
+        }
+        let folder = crate::state::trust_fixture::startup_card("codex");
+        assert_eq!(
+            begin_team(&mut db, &payload("codex", &folder), TeamKind::HookTrust).unwrap()
+                ["eligible"],
+            false
+        );
+        let rows = list(&db, &json!({})).unwrap();
+        let categories: Vec<_> = rows["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|e| e["categories"].clone())
+            .collect();
+        assert_eq!(
+            categories,
+            [json!(["team_hook_trust"]), json!(["team_hook_trust"])]
         );
     }
 

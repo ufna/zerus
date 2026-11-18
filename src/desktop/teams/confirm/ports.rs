@@ -17,6 +17,8 @@ pub(super) trait Ports: Sized {
     fn audit_begin(&mut self, plan: &Plan) -> Result<Audit>;
     fn audit_finish(&mut self, row: &Record) -> Result<()>;
     fn card(&mut self, row: &Record) -> Result<()>;
+    /// The one feed line of an approved effect that has one ([`super::engine::feed_line`]).
+    fn note(&mut self, row: &Record) -> Result<()>;
     fn original(&mut self, row: &Record, check: &mut dyn FnMut(&mut Self) -> Result<()>)
         -> Outcome;
 }

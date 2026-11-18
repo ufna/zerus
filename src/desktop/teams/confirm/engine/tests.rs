@@ -6,6 +6,7 @@ struct Durable {
     rows: BTreeMap<String, Record>,
     audits: BTreeMap<String, String>,
     cards: BTreeMap<String, String>,
+    notes: Vec<String>,
     resumes: Vec<i64>,
 }
 
@@ -101,6 +102,7 @@ impl Ports for Fake {
                 r.state == "prepared"
                     || (r.audit.is_none() && r.plan.kind != Kind::Notice)
                     || (r.state != "approved" && !r.card_done)
+                    || (r.state == "approved" && feed_line(&r.plan) && !r.card_done)
                     || (r.audit.is_some() && !r.audit_done)
             })
             .cloned())
@@ -212,6 +214,13 @@ impl Ports for Fake {
             .insert(row.card_request.clone(), row.detail.clone());
         if self.crash_after_card {
             return Err("Restart after the local card committed".into());
+        }
+        Ok(())
+    }
+    fn note(&mut self, row: &Record) -> Result<()> {
+        self.durable.borrow_mut().notes.push(feed_text(&row.plan));
+        if self.crash_after_card {
+            return Err("Restart after the local note committed".into());
         }
         Ok(())
     }
@@ -708,9 +717,12 @@ fn nothing(f: &Fake, what: &str) {
     assert_eq!(f.answers, 0, "{what}");
 }
 
+/// The questions a member's standing confirmation never answers. Codex's
+/// hooks-trust prompt is one of them for every agent but Codex: a Codex
+/// member's own hooks-trust prompt joined the confirmation (zerus-f67qp).
 fn others(agent: &str) -> Vec<(&'static str, Value)> {
     use crate::state::trust_fixture as produced;
-    vec![
+    let mut others = vec![
         (
             "the agent's own question",
             produced::ordinary_question(agent, CONVERSATION),
@@ -719,8 +731,11 @@ fn others(agent: &str) -> Vec<(&'static str, Value)> {
             "a permission prompt",
             produced::permission_prompt(CONVERSATION),
         ),
-        ("Codex's hooks-trust prompt", produced::hooks_trust_prompt()),
-    ]
+    ];
+    if agent != "codex" {
+        others.push(("Codex's hooks-trust prompt", produced::hooks_trust_prompt()));
+    }
+    others
 }
 
 #[test]
@@ -969,8 +984,24 @@ fn an_earlier_trust_row_of_the_same_run_leaves_its_folder_trust_prompt_to_the_pe
     let prompt = f.snapshot.questions[0].clone();
     f.snapshot.questions = vec![crate::state::trust_fixture::hooks_trust_prompt()];
     let question = f.snapshot.questions[0].clone();
-    let plan = candidate(&f.binding, &f.snapshot, Kind::Trust, question);
-    execute(&mut f, plan, "epoch-0", 50).unwrap();
+    // The earlier code's row: the run's "trust" key, and the policy of that
+    // code refused the hooks prompt, so the row is its notice.
+    let mut plan = candidate(&f.binding, &f.snapshot, Kind::Trust, question);
+    plan.key = key(&json!([
+        f.binding.team,
+        f.binding.member,
+        f.binding.launch,
+        f.snapshot.run,
+        "trust"
+    ]));
+    execute_refusal(
+        &mut f,
+        plan,
+        "epoch-0",
+        50,
+        Some("This prompt needs a person".into()),
+    )
+    .unwrap();
     let rows = f.durable.borrow().rows.clone();
     let cards = f.durable.borrow().cards.clone();
     assert_eq!((rows.len(), cards.len()), (1, 1));
@@ -1009,4 +1040,219 @@ fn an_exited_member_with_another_question_plans_nothing() {
     f.run("epoch-2", 200).unwrap();
     assert_eq!(f.resumes, 0);
     nothing(&f, "an exited member's other question");
+}
+
+/// A Codex member at Codex's hooks-trust prompt, as its producer writes it
+/// (`state::trust_fixture`), in its worktree.
+fn at_hooks_trust(f: &mut Fake, card: Value, conversation: &str) {
+    at_startup(f, "codex");
+    f.binding.run = card["run_id"].as_str().unwrap().into();
+    f.binding.conversation = conversation.into();
+    f.facts.binding = f.binding.clone();
+    f.snapshot.run = f.binding.run.clone();
+    f.snapshot.conversation = conversation.into();
+    f.snapshot.questions = vec![card];
+}
+
+/// The member resumed in its saved conversation meets Codex's hooks-trust
+/// prompt before its SessionStart, as after an update changed its hook
+/// definitions (zerus-f67qp).
+fn at_resumed_hooks_trust(f: &mut Fake) {
+    let card = crate::state::trust_fixture::resumed_hooks_trust_prompt(CONVERSATION);
+    at_hooks_trust(f, card, CONVERSATION);
+}
+
+/// The producer's card for the resumed run at `screen`.
+fn resumed_hooks_card(screen: &str) -> Option<Value> {
+    use crate::state::trust_fixture as produced;
+    produced::hooks_trust_card(&produced::resumed_record("codex", CONVERSATION), screen)
+}
+
+#[test]
+fn a_codex_hooks_trust_prompt_at_a_resumed_startup_is_answered_once() {
+    let mut f = Fake::new();
+    at_resumed_hooks_trust(&mut f);
+    f.run("epoch-1", 100).unwrap();
+    assert_eq!(f.answers, 1);
+    assert!(f.durable.borrow().cards.is_empty());
+    let rows = f.durable.borrow().rows.clone();
+    assert_eq!(rows.len(), 1);
+    let row = rows.values().next().unwrap();
+    assert_eq!(row.state, "approved");
+    assert_eq!(row.plan.kind, Kind::Trust);
+    assert_eq!(row.plan.question, f.snapshot.questions[0]);
+    assert!(f
+        .durable
+        .borrow()
+        .audits
+        .values()
+        .all(|state| state == "approved"));
+    assert_eq!(
+        f.durable.borrow().notes,
+        [format!(
+            "Zerus confirmed Codex hook trust for member {}: 4 hooks are new or changed.",
+            f.binding.member
+        )]
+    );
+    // The prompt is still on screen at the next pass: never answered again.
+    f.run("epoch-2", 200).unwrap();
+    f.run("epoch-3", 300).unwrap();
+    assert_eq!(f.answers, 1);
+    assert_eq!(f.durable.borrow().rows.len(), 1);
+    assert_eq!(f.durable.borrow().notes.len(), 1, "one feed line");
+}
+
+#[test]
+fn a_crash_after_the_feed_line_commits_writes_it_once_more_under_its_request_and_never_answers_again(
+) {
+    let mut f = Fake::new();
+    at_resumed_hooks_trust(&mut f);
+    f.crash_after_card = true;
+    assert!(f.run("epoch-1", 100).is_err());
+    assert_eq!(f.answers, 1);
+    let row = f.durable.borrow().rows.values().next().unwrap().clone();
+    assert_eq!(
+        (row.state.as_str(), row.card_done),
+        ("approved", false),
+        "the note is still owed"
+    );
+    f.crash_after_card = false;
+    f.snapshot.questions.clear();
+    f.run("epoch-2", 200).unwrap();
+    f.run("epoch-3", 300).unwrap();
+    assert_eq!(f.answers, 1);
+    // The real port replays the saved request (owner_note); the fake counts calls.
+    assert_eq!(f.durable.borrow().notes.len(), 2);
+    assert!(f.durable.borrow().rows.values().all(|row| row.card_done));
+}
+
+#[test]
+fn a_codex_hooks_trust_prompt_after_its_folder_trust_in_the_same_run_is_answered() {
+    let mut f = Fake::new();
+    at_startup(&mut f, "codex");
+    f.run("epoch-1", 100).unwrap();
+    assert_eq!(f.answers, 1, "the folder trust");
+    // The same new run, still before its SessionStart, then shows its hooks.
+    f.snapshot.questions = vec![crate::state::trust_fixture::hooks_trust_prompt()];
+    f.run("epoch-1", 200).unwrap();
+    f.run("epoch-2", 300).unwrap();
+    assert_eq!(f.answers, 2, "the hooks trust has its own key");
+    assert_eq!(f.durable.borrow().rows.len(), 2);
+    assert!(f.durable.borrow().cards.is_empty());
+    assert_eq!(
+        f.durable.borrow().notes.len(),
+        1,
+        "only the hooks trust has a feed line"
+    );
+}
+
+#[test]
+fn with_the_delegation_off_a_hooks_trust_prompt_is_the_persons() {
+    let mut f = Fake::new();
+    f.facts.team.settings.delegations.confirm_trust = false;
+    at_resumed_hooks_trust(&mut f);
+    f.run("epoch-1", 100).unwrap();
+    f.run("epoch-2", 200).unwrap();
+    assert_eq!(f.answers, 0);
+    assert_eq!(f.durable.borrow().cards.len(), 1);
+    assert!(f
+        .durable
+        .borrow()
+        .rows
+        .values()
+        .all(|row| row.plan.kind == Kind::Notice));
+    assert!(f.durable.borrow().notes.is_empty());
+    assert!(f
+        .durable
+        .borrow()
+        .cards
+        .values()
+        .all(|text| text == "Trust delegation is off"));
+}
+
+#[test]
+fn a_codex_hooks_trust_card_of_another_agents_member_plans_nothing() {
+    for agent in ["claude", "kimi"] {
+        let mut f = Fake::new();
+        at_resumed_hooks_trust(&mut f);
+        f.binding.agent = agent.into();
+        f.facts.member.agent = agent.into();
+        f.facts.binding = f.binding.clone();
+        f.snapshot.agent = agent.into();
+        f.run("epoch-1", 100).unwrap();
+        f.run("epoch-2", 200).unwrap();
+        nothing(&f, agent);
+    }
+}
+
+#[test]
+fn an_unknown_hooks_trust_delivery_is_never_repeated_and_a_changed_hash_is_a_new_question() {
+    let mut f = Fake::new();
+    at_resumed_hooks_trust(&mut f);
+    f.unknown = true;
+    f.run("epoch-1", 100).unwrap();
+    f.run("epoch-2", 200).unwrap();
+    f.unknown = false;
+    f.run("epoch-3", 300).unwrap();
+    assert_eq!(f.answers, 1, "an unknown delivery is never replayed");
+    assert_eq!(f.durable.borrow().cards.len(), 1);
+    assert!(
+        f.durable.borrow().notes.is_empty(),
+        "an unknown delivery has no feed line"
+    );
+    // Codex shows another panel in the same run: another hook count is
+    // another hash, a new question, answered once.
+    let screen = crate::state::trust_fixture::HOOKS_TRUST_SCREEN.replace("4 hooks", "5 hooks");
+    let card = resumed_hooks_card(&screen).unwrap();
+    assert_ne!(
+        card["question_hash"],
+        f.snapshot.questions[0]["question_hash"]
+    );
+    f.snapshot.questions = vec![card];
+    f.run("epoch-4", 400).unwrap();
+    f.run("epoch-5", 500).unwrap();
+    assert_eq!(f.answers, 2);
+    assert_eq!(f.durable.borrow().rows.len(), 2);
+}
+
+/// A stale hash: the prompt changed between the read and the answer. The
+/// read's plan is never delivered and goes to the person; the changed prompt
+/// is a new question with its own key, answered once.
+#[test]
+fn a_hooks_trust_hash_changed_between_read_and_answer_is_never_delivered_and_the_new_prompt_is_its_own_question(
+) {
+    let mut f = Fake::new();
+    at_resumed_hooks_trust(&mut f);
+    let read = f.snapshot.questions[0]["question_hash"].clone();
+    f.before_original = Some(|f| f.snapshot.questions[0]["question_hash"] = json!("cd".repeat(32)));
+    f.run("epoch-1", 100).unwrap();
+    assert_eq!(f.answers, 0, "the stale plan is never delivered");
+    assert_eq!(f.durable.borrow().cards.len(), 1);
+    let rows = f.durable.borrow().rows.clone();
+    assert_eq!(rows.len(), 1);
+    let stale = rows.values().next().unwrap();
+    assert_eq!(
+        (stale.state.as_str(), &stale.plan.question["question_hash"]),
+        ("cancelled", &read)
+    );
+    f.run("epoch-2", 200).unwrap();
+    f.run("epoch-3", 300).unwrap();
+    assert_eq!(f.answers, 1, "the new prompt is answered once");
+    assert_eq!(f.durable.borrow().rows.len(), 2);
+    assert_eq!(f.durable.borrow().cards.len(), 1);
+}
+
+#[test]
+fn an_unfamiliar_hooks_trust_disclosure_goes_to_the_person() {
+    let screen = crate::state::trust_fixture::HOOKS_TRUST_SCREEN.replace(
+        "Hooks can run outside the sandbox after you trust them.\n",
+        "Hooks can run outside the sandbox after you trust them.\nFailed to trust hooks: hook configuration changed\n",
+    );
+    let card = resumed_hooks_card(&screen).expect("the producer shows the error verbatim");
+    let mut f = Fake::new();
+    at_hooks_trust(&mut f, card, CONVERSATION);
+    f.run("epoch-1", 100).unwrap();
+    f.run("epoch-2", 200).unwrap();
+    assert_eq!(f.answers, 0);
+    assert_eq!(f.durable.borrow().cards.len(), 1);
 }

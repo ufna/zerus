@@ -212,6 +212,15 @@ impl Ports for WriterPorts {
         )?
         .card(r)
     }
+    fn note(&mut self, r: &Record) -> Result<()> {
+        Native::new(
+            &self.config,
+            &r.plan.binding.machine,
+            &self.stop,
+            &mut self.store,
+        )?
+        .note(r)
+    }
     fn original(&mut self, _r: &Record, check: &mut dyn FnMut(&mut Self) -> Result<()>) -> Outcome {
         if let Err(e) = check(self) {
             return Outcome::NotStarted(e);

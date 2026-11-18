@@ -694,6 +694,16 @@ answer for you:
   **Settings > Approvals** records the scope: only a confirmed grant says
   "Trusted for %1 and its subfolders on this account"; failed, cancelled or
   unconfirmed attempts say trust was requested but not confirmed.
+- **Codex hook trust.** Under the same permission, Codex's "Hooks need
+  review" prompt of such a member is answered with **Trust all and
+  continue**: at a new run's startup and when the member's saved
+  conversation is resumed, for example after an update changed the hook
+  definitions. Only Codex's own prompt with its reviewed wording and its
+  three choices is answered, once per prompt: a changed hook count or
+  another change of the prompt is a new prompt, and a prompt with a native
+  error or any other text goes to you. The approval journal records it in
+  its own category, and the team's feed gets one line, "Zerus confirmed
+  Codex hook trust for member %1: %2 hooks are new or changed."
 - **Resume.** A member whose agent exited by itself is resumed in the same
   conversation, at most three times an hour, with a short brief that points
   it at `hgs team current`.

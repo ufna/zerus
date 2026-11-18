@@ -489,3 +489,142 @@ fn sandbox_setup_is_only_the_persons_choice_never_a_standing_folder_grant() {
     assert!(trust_candidate(&b, &s).is_none());
     assert_eq!(trust(&b, &s).unwrap_err(), "This prompt needs a person");
 }
+
+/// A Codex member at Codex's hooks-trust prompt, as its producer writes it
+/// (zerus-f67qp): at a new run's startup, or when its saved conversation is
+/// resumed.
+fn hooks_sample(conversation: Option<&str>) -> (Binding, Snapshot) {
+    use crate::state::trust_fixture as produced;
+    let (mut binding, _, mut snapshot) = sample();
+    let card = match conversation {
+        Some(conversation) => produced::resumed_hooks_trust_prompt(conversation),
+        None => produced::hooks_trust_prompt(),
+    };
+    binding.agent = "codex".into();
+    binding.run = card["run_id"].as_str().unwrap().into();
+    binding.conversation = conversation.unwrap_or("").into();
+    snapshot.agent = "codex".into();
+    snapshot.run = binding.run.clone();
+    snapshot.conversation = binding.conversation.clone();
+    snapshot.questions = vec![card];
+    (binding, snapshot)
+}
+
+#[test]
+fn codex_hooks_trust_at_a_new_or_resumed_startup_is_eligible() {
+    for conversation in [None, Some("conversation-1")] {
+        let (binding, snapshot) = hooks_sample(conversation);
+        assert_eq!(
+            trust_candidate(&binding, &snapshot),
+            Some(&snapshot.questions[0])
+        );
+        assert_eq!(
+            trust(&binding, &snapshot).unwrap(),
+            snapshot.questions[0],
+            "{conversation:?}"
+        );
+    }
+}
+
+#[test]
+fn every_hooks_trust_field_is_required() {
+    for field in [
+        "claude",
+        "kimi",
+        "transport",
+        "cannot_answer",
+        "run",
+        "conversation",
+        "hash",
+        "question_id",
+        "items",
+        "item_id",
+        "title",
+        "count",
+        "disclosure",
+        "error",
+        "empty_body",
+        "multi",
+        "other",
+        "two_choices",
+        "four_choices",
+        "label",
+        "trust_id",
+        "duplicate_trust",
+        "folder_source",
+        "two",
+        "paused",
+        "ended",
+        "not_live",
+    ] {
+        let (mut binding, mut snapshot) = hooks_sample(Some("conversation-1"));
+        let q = &mut snapshot.questions[0];
+        match field {
+            "claude" | "kimi" => {
+                binding.agent = field.into();
+                snapshot.agent = field.into();
+            }
+            "transport" => q["answer_transport"] = json!("claude_tui"),
+            "cannot_answer" => q["can_answer"] = json!(false),
+            "run" => q["run_id"] = json!("other"),
+            "conversation" => q["conversation_id"] = json!("other"),
+            "hash" => q["question_hash"] = json!("short"),
+            "question_id" => q["question_id"] = json!(""),
+            "items" => q["questions"].as_array_mut().unwrap().push(json!({})),
+            "item_id" => q["questions"][0]["id"] = json!("trust"),
+            "title" => q["questions"][0]["question"] = json!("Trust this folder?"),
+            "count" => q["questions"][0]["body"] = json!("Some hooks are new or changed. Hooks can run outside the sandbox after you trust them."),
+            "disclosure" => q["questions"][0]["body"] = json!("4 hooks are new or changed. Hooks can now also run during review."),
+            "error" => q["questions"][0]["body"] = json!("4 hooks are new or changed. Hooks can run outside the sandbox after you trust them. Failed to trust hooks: hook configuration changed"),
+            "empty_body" => q["questions"][0]["body"] = json!(""),
+            "multi" => q["questions"][0]["multi_select"] = json!(true),
+            "other" => q["questions"][0]["allow_other"] = json!(true),
+            "two_choices" => {
+                q["questions"][0]["options"].as_array_mut().unwrap().remove(2);
+            }
+            "four_choices" => q["questions"][0]["options"]
+                .as_array_mut()
+                .unwrap()
+                .push(json!({"id":"always","label":"Always trust"})),
+            "label" => q["questions"][0]["options"][1]["label"] = json!("Trust all hooks forever"),
+            "trust_id" => q["questions"][0]["options"][1]["id"] = json!("trust_0"),
+            "duplicate_trust" => q["questions"][0]["options"][2]["id"] = json!("trust"),
+            "folder_source" => q["source"] = json!("codex_folder_trust"),
+            "two" => snapshot.questions.push(snapshot.questions[0].clone()),
+            "paused" => snapshot.paused = true,
+            "ended" => snapshot.ended = true,
+            "not_live" => snapshot.live = false,
+            _ => unreachable!(),
+        }
+        assert!(trust(&binding, &snapshot).is_err(), "{field}");
+    }
+}
+
+#[test]
+fn the_hook_count_may_be_one_or_many() {
+    use crate::state::trust_fixture as produced;
+    for (from, to) in [("4 hooks are", "1 hook is"), ("4 hooks", "10 hooks")] {
+        let screen = produced::HOOKS_TRUST_SCREEN.replace(from, to);
+        let (binding, mut snapshot) = hooks_sample(Some("conversation-1"));
+        snapshot.questions[0] = produced::hooks_trust_card(
+            &produced::resumed_record("codex", "conversation-1"),
+            &screen,
+        )
+        .unwrap();
+        trust(&binding, &snapshot).unwrap();
+    }
+    for (from, to) in [
+        ("4 hooks are", "1 hooks are"),
+        ("4 hooks are", "0 hooks are"),
+        ("4 hooks are", "4 hook is"),
+    ] {
+        let screen = produced::HOOKS_TRUST_SCREEN.replace(from, to);
+        let (binding, mut snapshot) = hooks_sample(Some("conversation-1"));
+        snapshot.questions[0] = produced::hooks_trust_card(
+            &produced::resumed_record("codex", "conversation-1"),
+            &screen,
+        )
+        .unwrap();
+        assert!(trust(&binding, &snapshot).is_err(), "{to}");
+    }
+}

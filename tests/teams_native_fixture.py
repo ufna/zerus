@@ -886,6 +886,12 @@ class TeamFixture:
         return [ref[len('member:'):] for row in rows if row.get('kind') == 'handout_intent' and f'node:{node}' in (row.get('refs') or [])
                 for ref in row.get('refs') or [] if ref.startswith('member:')]
 
+    def feed_lines(self, member_id):
+        """The team feed's standing-confirmation lines naming one member (zerus-f67qp)."""
+        rows = self.listed(self.json('team', 'journal', '--team', self.team, '--limit', '200', '--json'), 'rows', 'team journal')
+        return [row.get('text') for row in rows if row.get('kind') == 'note_confirmation'
+                and f'member:{member_id}' in (row.get('refs') or [])]
+
     def tmux_server(self):
         out = subprocess.run(['tmux', 'display-message', '-p', '#{pid}'], env=self.env, capture_output=True, text=True)
         return int(out.stdout.strip()) if out.stdout.strip().isdigit() else os.getpid()
