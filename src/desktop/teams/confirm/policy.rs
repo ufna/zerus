@@ -227,6 +227,15 @@ fn hooks_item(item: &Value) -> Result<(), String> {
     )
 }
 
+/// The hook count Codex's hooks-trust card states.
+pub(super) fn hooks_count(question: &Value) -> Option<usize> {
+    let body = question["questions"][0]["body"].as_str()?;
+    if !hooks_disclosure(body) {
+        return None;
+    }
+    body.split(' ').next()?.parse().ok()
+}
+
 /// "1 hook is" or "N hooks are" (N of at least 2, written without a leading
 /// zero), then the rest of the reviewed disclosure word for word.
 fn hooks_disclosure(body: &str) -> bool {

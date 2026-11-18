@@ -212,14 +212,35 @@ impl Ports for WriterPorts {
         )?
         .card(r)
     }
-    fn note(&mut self, r: &Record) -> Result<()> {
+    fn hook_grant(&mut self, plan: &Plan) -> Result<Grant> {
+        Native::new(
+            &self.config,
+            &plan.binding.machine,
+            &self.stop,
+            &mut self.store,
+        )?
+        .hook_grant(plan)
+    }
+    fn hook_trust_saved(&mut self, r: &Record) -> Result<bool> {
         Native::new(
             &self.config,
             &r.plan.binding.machine,
             &self.stop,
             &mut self.store,
         )?
-        .note(r)
+        .hook_trust_saved(r)
+    }
+    fn notes_owed(&mut self, b: &Binding) -> Result<Vec<Plan>> {
+        Native::new(&self.config, &b.machine, &self.stop, &mut self.store)?.notes_owed(b)
+    }
+    fn note(&mut self, plan: &Plan) -> Result<()> {
+        Native::new(
+            &self.config,
+            &plan.binding.machine,
+            &self.stop,
+            &mut self.store,
+        )?
+        .note(plan)
     }
     fn original(&mut self, _r: &Record, check: &mut dyn FnMut(&mut Self) -> Result<()>) -> Outcome {
         if let Err(e) = check(self) {

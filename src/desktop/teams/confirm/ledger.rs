@@ -31,7 +31,10 @@ impl Ledger {
           CREATE TABLE IF NOT EXISTS standing_bindings (
             team TEXT NOT NULL, member TEXT NOT NULL, launch TEXT NOT NULL, parent TEXT NOT NULL,
             body TEXT NOT NULL, receipt_ms INTEGER NOT NULL, PRIMARY KEY(team,member,launch));
-          CREATE TABLE IF NOT EXISTS standing_cards (key TEXT PRIMARY KEY, request TEXT NOT NULL);")
+          CREATE TABLE IF NOT EXISTS standing_cards (key TEXT PRIMARY KEY, request TEXT NOT NULL);
+          CREATE TABLE IF NOT EXISTS standing_notes (key TEXT PRIMARY KEY, team TEXT NOT NULL, member TEXT NOT NULL,
+            launch TEXT NOT NULL, request TEXT, done INTEGER NOT NULL);
+          CREATE INDEX IF NOT EXISTS standing_notes_owed ON standing_notes(team,member,launch,done,key);")
             .map_err(err)?;
         Ok(Self(db))
     }
@@ -128,13 +131,22 @@ impl Ledger {
         let pending = matches!(old.state.as_str(), "prepared" | "waiting")
             || (old.audit.is_none() && old.plan.kind != Kind::Notice)
             || (old.audit.is_some() && !old.audit_done)
-            || (old.state != "approved" && !old.card_done)
-            || (old.state == "approved" && engine::feed_line(&old.plan) && !old.card_done);
+            || (old.state != "approved" && !old.card_done);
         tx.execute(
             "UPDATE standing_effects SET pending=?1,body=?2 WHERE key=?3",
             params![pending, encode(&old)?, old.plan.key],
         )
         .map_err(err)?;
+        // The approval and its owed feed line commit together; the line is
+        // kept apart from the row's own settlement (zerus-f67qp review).
+        if old.state == "approved" && engine::feed_line(&old.plan) {
+            let b = &old.plan.binding;
+            tx.execute(
+                "INSERT OR IGNORE INTO standing_notes VALUES(?1,?2,?3,?4,NULL,0)",
+                params![old.plan.key, b.team, b.member, b.launch],
+            )
+            .map_err(err)?;
+        }
         if old.state == "approved" && old.plan.kind == Kind::Resume {
             if let Some(target) = &old.result {
                 completed(&old.plan.snapshot, target)?;
@@ -225,6 +237,68 @@ impl Ledger {
         }
         let plan = engine::lead_brief(b, s, team);
         Ok(self.get(&plan.key)?.is_none().then_some(plan))
+    }
+    /// Approved effects of this member launch whose feed line is owed, a
+    /// bounded page in key order.
+    pub fn notes_owed(&self, b: &Binding) -> Result<Vec<Plan>> {
+        let mut statement = self
+            .0
+            .prepare("SELECT key FROM standing_notes WHERE team=?1 AND member=?2 AND launch=?3 AND done=0 ORDER BY key LIMIT 8")
+            .map_err(err)?;
+        let keys = statement
+            .query_map(params![b.team, b.member, b.launch], |r| {
+                r.get::<_, String>(0)
+            })
+            .map_err(err)?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(err)?;
+        keys.iter()
+            .map(|key| {
+                Ok(record(&self.0, key)?
+                    .ok_or("An owed feed line has no effect row")?
+                    .plan)
+            })
+            .collect()
+    }
+    pub fn note_request(&self, key: &str) -> Result<Option<crate::teams::ops::Request>> {
+        let raw: Option<Option<String>> = self
+            .0
+            .query_row(
+                "SELECT request FROM standing_notes WHERE key=?1",
+                [key],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(err)?;
+        raw.flatten()
+            .map(|raw| serde_json::from_str(&raw).map_err(err))
+            .transpose()
+    }
+    pub fn save_note_request(
+        &self,
+        key: &str,
+        request: Option<&crate::teams::ops::Request>,
+    ) -> Result<()> {
+        let raw = request
+            .map(serde_json::to_string)
+            .transpose()
+            .map_err(err)?;
+        if raw.as_ref().is_some_and(|raw| raw.len() > ROW_LIMIT) {
+            return Err("Feed line request exceeds 128 KiB".into());
+        }
+        self.0
+            .execute(
+                "UPDATE standing_notes SET request=?2 WHERE key=?1",
+                params![key, raw],
+            )
+            .map_err(err)?;
+        Ok(())
+    }
+    pub fn note_done(&self, key: &str) -> Result<()> {
+        self.0
+            .execute("UPDATE standing_notes SET done=1 WHERE key=?1", [key])
+            .map_err(err)?;
+        Ok(())
     }
     pub fn card_request(&self, key: &str) -> Result<Option<crate::teams::ops::Request>> {
         let raw:Option<Option<String>>=self.0.query_row(

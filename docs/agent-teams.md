@@ -118,7 +118,7 @@ shows everything the template brings, for you to confirm:
 |---|---|
 | **Accept results** | "The lead may accept a team task's result without you." |
 | **Answer members** | "The lead answers members' questions and permission requests without you." |
-| **Confirm folder trust** | "Zerus confirms the trust prompt of a folder it created for the team; on the member's account the agent records the trust for the team repository's main checkout and its subfolders." |
+| **Confirm folder and Zerus hook trust** | "Zerus confirms the trust prompt of a folder it created for the team, and Codex's review of the hooks there when each is Zerus's own or committed in the team's base commit; on the member's account the agent records the folder trust for the team repository's main checkout and its subfolders." |
 | **Resume exited members** | "Zerus resumes a member whose agent exited by itself." |
 | **Merge accepted work** | "An accepted result is merged into the integration branch without your approval." |
 
@@ -702,7 +702,7 @@ nobody doing anything. A refused hand-out is never forced.
 
 ## What the service confirms by itself
 
-Two permissions of the team, **Confirm folder trust** (`confirm_trust`) and
+Two permissions of the team, **Confirm folder and Zerus hook trust** (`confirm_trust`) and
 **Resume exited members** (`resume_exited`), and nothing else, let the service
 answer for you:
 
@@ -715,15 +715,21 @@ answer for you:
   "Trusted for %1 and its subfolders on this account"; failed, cancelled or
   unconfirmed attempts say trust was requested but not confirmed.
 - **Codex hook trust.** Under the same permission, Codex's "Hooks need
-  review" prompt of such a member is answered with **Trust all and
-  continue**: at a new run's startup and when the member's saved
-  conversation is resumed, for example after an update changed the hook
-  definitions. Only Codex's own prompt with its reviewed wording and its
-  three choices is answered, once per prompt: a changed hook count or
-  another change of the prompt is a new prompt, and a prompt with a native
-  error or any other text goes to you. The approval journal records it in
-  its own category, and the team's feed gets one line, "Zerus confirmed
-  Codex hook trust for member %1: %2 hooks are new or changed."
+  review" prompt of such a member, at a new run's startup or when its saved
+  conversation is resumed, is answered with **Trust all and continue** only
+  when every hook Codex would trust is covered. Zerus first asks the member's
+  own Codex for its list of new or changed hooks (each with its key and
+  hash), and each must be Zerus's own state hook, exactly as this Zerus writes
+  it into the account's `hooks.json`, or a project hook in a `.codex` file that
+  is byte for byte the team's base commit's. That covers Zerus's hooks after
+  an update and the repository's committed hooks. A hook a member changed in
+  its worktree, any other account hook, a plugin's hook, a list Codex cannot
+  give completely, or a count other than the prompt's goes to you, on one card
+  naming the hooks. After answering, Zerus checks that Codex saved trust for
+  exactly those hooks; otherwise the outcome is unknown and is not repeated.
+  The approval journal records it as **Codex hook trust**, and the team's feed
+  gets one line, "Zerus confirmed Codex hook trust for member %1: %2 hooks are
+  new or changed."
 - **Resume.** A member whose agent exited by itself is resumed in the same
   conversation, at most three times an hour, with a short brief that points
   it at `hgs team current`.

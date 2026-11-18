@@ -7,6 +7,8 @@ struct Durable {
     audits: BTreeMap<String, String>,
     cards: BTreeMap<String, String>,
     notes: Vec<String>,
+    /// Feed lines owed, by effect key, and whether each was written.
+    owed: BTreeMap<String, bool>,
     resumes: Vec<i64>,
 }
 
@@ -26,6 +28,11 @@ struct Fake {
     crash_after_card: bool,
     fail_audit: bool,
     fail_finish: bool,
+    /// What Codex's inventory gives a hooks plan (`Ports::hook_grant`).
+    grant: std::result::Result<Grant, String>,
+    /// Whether Codex saved exactly the granted trust after delivery.
+    trust_saved: bool,
+    fail_note: bool,
 }
 
 impl Fake {
@@ -57,6 +64,9 @@ impl Fake {
             crash_after_card: false,
             fail_audit: false,
             fail_finish: false,
+            grant: Ok(Vec::new()),
+            trust_saved: true,
+            fail_note: false,
         }
     }
     fn run(&mut self, epoch: &str, now: i64) -> Result<()> {
@@ -102,7 +112,6 @@ impl Ports for Fake {
                 r.state == "prepared"
                     || (r.audit.is_none() && r.plan.kind != Kind::Notice)
                     || (r.state != "approved" && !r.card_done)
-                    || (r.state == "approved" && feed_line(&r.plan) && !r.card_done)
                     || (r.audit.is_some() && !r.audit_done)
             })
             .cloned())
@@ -169,6 +178,14 @@ impl Ports for Fake {
             .borrow_mut()
             .rows
             .insert(row.plan.key.clone(), row.clone());
+        // As the ledger does: the approval and its owed line commit together.
+        if row.state == "approved" && feed_line(&row.plan) {
+            self.durable
+                .borrow_mut()
+                .owed
+                .entry(row.plan.key.clone())
+                .or_insert(false);
+        }
         if row.state == "approved" && row.plan.kind == Kind::Resume {
             if let Some(target) = &row.result {
                 if self.binding.run != target.run {
@@ -217,11 +234,30 @@ impl Ports for Fake {
         }
         Ok(())
     }
-    fn note(&mut self, row: &Record) -> Result<()> {
-        self.durable.borrow_mut().notes.push(feed_text(&row.plan));
-        if self.crash_after_card {
-            return Err("Restart after the local note committed".into());
+    fn hook_grant(&mut self, plan: &Plan) -> Result<Grant> {
+        assert!(super::super::policy::hooks(&plan.question));
+        self.grant.clone()
+    }
+    fn hook_trust_saved(&mut self, row: &Record) -> Result<bool> {
+        assert!(feed_line(&row.plan));
+        Ok(self.trust_saved)
+    }
+    fn notes_owed(&mut self, _: &Binding) -> Result<Vec<Plan>> {
+        let db = self.durable.borrow();
+        Ok(db
+            .owed
+            .iter()
+            .filter(|(_, written)| !**written)
+            .map(|(key, _)| db.rows[key].plan.clone())
+            .collect())
+    }
+    fn note(&mut self, plan: &Plan) -> Result<()> {
+        if self.fail_note {
+            return Err("The feed write failed".into());
         }
+        let mut db = self.durable.borrow_mut();
+        db.notes.push(feed_text(plan));
+        db.owed.insert(plan.key.clone(), true);
         Ok(())
     }
     fn original(
@@ -1046,12 +1082,22 @@ fn an_exited_member_with_another_question_plans_nothing() {
 /// (`state::trust_fixture`), in its worktree.
 fn at_hooks_trust(f: &mut Fake, card: Value, conversation: &str) {
     at_startup(f, "codex");
+    covered(f, &card);
     f.binding.run = card["run_id"].as_str().unwrap().into();
     f.binding.conversation = conversation.into();
     f.facts.binding = f.binding.clone();
     f.snapshot.run = f.binding.run.clone();
     f.snapshot.conversation = conversation.into();
     f.snapshot.questions = vec![card];
+}
+
+/// Codex's inventory lists exactly the pending hooks `card` counts, each one
+/// the team's trust setting covers.
+fn covered(f: &mut Fake, card: &Value) {
+    let count = super::super::policy::hooks_count(card).unwrap_or(0);
+    f.grant = Ok((0..count)
+        .map(|n| (format!("hook-{n}"), format!("sha256:{n}")))
+        .collect());
 }
 
 /// The member resumed in its saved conversation meets Codex's hooks-trust
@@ -1102,28 +1148,114 @@ fn a_codex_hooks_trust_prompt_at_a_resumed_startup_is_answered_once() {
     assert_eq!(f.durable.borrow().notes.len(), 1, "one feed line");
 }
 
+/// The approval settles under the rules every build reads; its feed line is
+/// owed apart (zerus-f67qp review). A line that cannot be written yet is
+/// retried each pass, is written once, and never holds the member's later
+/// confirmations.
 #[test]
-fn a_crash_after_the_feed_line_commits_writes_it_once_more_under_its_request_and_never_answers_again(
-) {
+fn an_owed_feed_line_is_retried_once_written_and_never_holds_later_confirmations() {
     let mut f = Fake::new();
     at_resumed_hooks_trust(&mut f);
-    f.crash_after_card = true;
-    assert!(f.run("epoch-1", 100).is_err());
+    f.fail_note = true;
+    assert!(
+        f.run("epoch-1", 100).is_err(),
+        "the failed feed write is reported"
+    );
     assert_eq!(f.answers, 1);
     let row = f.durable.borrow().rows.values().next().unwrap().clone();
-    assert_eq!(
-        (row.state.as_str(), row.card_done),
-        ("approved", false),
-        "the note is still owed"
+    assert_eq!(row.state, "approved");
+    let binding = f.binding.clone();
+    assert!(
+        f.unsettled(&binding).unwrap().is_none(),
+        "the approval is settled"
     );
-    f.crash_after_card = false;
+    // Codex then shows another review in the same run: a new question, still
+    // answered while the earlier line is owed.
+    let screen = crate::state::trust_fixture::HOOKS_TRUST_SCREEN.replace("4 hooks", "5 hooks");
+    let card = resumed_hooks_card(&screen).unwrap();
+    at_hooks_trust(&mut f, card, CONVERSATION);
+    assert!(f.run("epoch-2", 200).is_err());
+    assert_eq!(
+        f.answers, 2,
+        "an owed line never holds a later confirmation"
+    );
+    assert!(f.durable.borrow().notes.is_empty());
+    f.fail_note = false;
     f.snapshot.questions.clear();
+    f.run("epoch-3", 300).unwrap();
+    f.run("epoch-4", 400).unwrap();
+    assert_eq!(
+        f.durable.borrow().notes.len(),
+        2,
+        "each owed line is written once"
+    );
+    assert_eq!(f.answers, 2);
+}
+
+/// Codex's inventory decides: a hook the setting does not cover, or an
+/// inventory that cannot be read, keeps the review with the person in one
+/// card naming why, and nothing is answered.
+#[test]
+fn a_hook_the_setting_does_not_cover_or_an_unread_inventory_goes_to_the_person() {
+    for why in [
+        "Codex asks to trust hooks that the team's trust setting does not cover: user /home/example/.codex/hooks.json sessionStart (echo other)",
+        "Codex's hook inventory is unavailable: Codex did not answer in time",
+    ] {
+        let mut f = Fake::new();
+        at_resumed_hooks_trust(&mut f);
+        f.grant = Err(why.into());
+        f.run("epoch-1", 100).unwrap();
+        f.run("epoch-2", 200).unwrap();
+        assert_eq!(f.answers, 0, "{why}");
+        let cards = f.durable.borrow().cards.clone();
+        assert_eq!(cards.values().collect::<Vec<_>>(), [why], "one card naming why");
+        assert!(f.durable.borrow().notes.is_empty());
+    }
+}
+
+/// The card counts 4 hooks; an inventory of another count is not that review.
+#[test]
+fn an_inventory_of_another_count_than_the_card_goes_to_the_person() {
+    for count in [3, 5] {
+        let mut f = Fake::new();
+        at_resumed_hooks_trust(&mut f);
+        f.grant = Ok((0..count)
+            .map(|n| (format!("hook-{n}"), format!("sha256:{n}")))
+            .collect());
+        f.run("epoch-1", 100).unwrap();
+        assert_eq!(f.answers, 0, "{count}");
+        assert_eq!(f.durable.borrow().cards.len(), 1);
+    }
+}
+
+/// The panel going away is not trust saved: without Codex's saved trust for
+/// exactly the reviewed hooks the delivery is unknown, has one card and no
+/// feed line, and is never repeated.
+#[test]
+fn a_delivery_without_the_reviewed_trust_saved_is_unknown_and_never_repeated() {
+    let mut f = Fake::new();
+    at_resumed_hooks_trust(&mut f);
+    f.trust_saved = false;
+    f.run("epoch-1", 100).unwrap();
     f.run("epoch-2", 200).unwrap();
+    f.trust_saved = true;
     f.run("epoch-3", 300).unwrap();
     assert_eq!(f.answers, 1);
-    // The real port replays the saved request (owner_note); the fake counts calls.
-    assert_eq!(f.durable.borrow().notes.len(), 2);
-    assert!(f.durable.borrow().rows.values().all(|row| row.card_done));
+    let rows = f.durable.borrow().rows.clone();
+    assert_eq!(
+        rows.values()
+            .map(|row| row.state.as_str())
+            .collect::<Vec<_>>(),
+        ["unknown"]
+    );
+    assert_eq!(f.durable.borrow().cards.len(), 1);
+    assert!(f.durable.borrow().notes.is_empty());
+    assert!(f
+        .durable
+        .borrow()
+        .audits
+        .values()
+        .all(|state| state == "unknown"));
 }
 
 #[test]
@@ -1133,7 +1265,9 @@ fn a_codex_hooks_trust_prompt_after_its_folder_trust_in_the_same_run_is_answered
     f.run("epoch-1", 100).unwrap();
     assert_eq!(f.answers, 1, "the folder trust");
     // The same new run, still before its SessionStart, then shows its hooks.
-    f.snapshot.questions = vec![crate::state::trust_fixture::hooks_trust_prompt()];
+    let card = crate::state::trust_fixture::hooks_trust_prompt();
+    covered(&mut f, &card);
+    f.snapshot.questions = vec![card];
     f.run("epoch-1", 200).unwrap();
     f.run("epoch-2", 300).unwrap();
     assert_eq!(f.answers, 2, "the hooks trust has its own key");
@@ -1208,6 +1342,7 @@ fn an_unknown_hooks_trust_delivery_is_never_repeated_and_a_changed_hash_is_a_new
         card["question_hash"],
         f.snapshot.questions[0]["question_hash"]
     );
+    covered(&mut f, &card);
     f.snapshot.questions = vec![card];
     f.run("epoch-4", 400).unwrap();
     f.run("epoch-5", 500).unwrap();

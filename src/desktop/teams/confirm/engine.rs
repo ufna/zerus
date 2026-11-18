@@ -33,6 +33,22 @@ pub(super) fn key(parts: &Value) -> String {
 }
 
 pub(super) fn step(p: &mut impl Ports, b: &Binding, epoch: &str, now: i64) -> Result<()> {
+    let effects = effects(p, b, epoch, now);
+    // Owed feed lines live apart from the effect rows, so a row is settled
+    // under the same rules every build reads, and a line still owed never
+    // holds the member's later confirmations (zerus-f67qp review).
+    let feed = feed(p, b);
+    effects.and(feed)
+}
+
+fn feed(p: &mut impl Ports, b: &Binding) -> Result<()> {
+    for plan in p.notes_owed(b)? {
+        p.note(&plan)?;
+    }
+    Ok(())
+}
+
+fn effects(p: &mut impl Ports, b: &Binding, epoch: &str, now: i64) -> Result<()> {
     if let Some(mut row) = p.unsettled(b)? {
         if row.state == "waiting" {
             if let Err(why) = validate(p, &row.plan) {
@@ -156,6 +172,17 @@ fn deliver(p: &mut impl Ports, row: &mut Record) {
             row.state = "waiting".into();
             row.detail = "Admission lock busy; the original child never started".into();
         }
+        // Codex's hook review is approved only when Codex saved trust for
+        // exactly the reviewed hooks: the panel going away, which a person's
+        // own input in Terminal can also cause, is not that evidence.
+        Outcome::Approved(_)
+            if feed_line(&row.plan) && !matches!(p.hook_trust_saved(row), Ok(true)) =>
+        {
+            row.state = "unknown".into();
+            row.detail =
+                "Codex did not save trust for exactly the reviewed hooks; nothing is repeated"
+                    .into();
+        }
         Outcome::Approved(target) => {
             row.state = "approved".into();
             row.detail = "The exact native receipt confirmed the original request".into();
@@ -205,18 +232,11 @@ fn settle(p: &mut impl Ports, row: &mut Record) -> Result<()> {
         row.card_done = true;
         p.save(row)?;
     }
-    // An approved hooks trust has no card; its `card_done` records its one
-    // feed line instead (zerus-f67qp).
-    if row.state == "approved" && feed_line(&row.plan) && !row.card_done {
-        p.note(row)?;
-        row.card_done = true;
-        p.save(row)?;
-    }
     audit_error.map_or(Ok(()), Err)
 }
 
-/// Whether an approved `plan` writes one feed line: Codex's hooks trust,
-/// which the team's person sees in its feed (zerus-f67qp).
+/// Whether `plan` is Codex's hooks trust, whose approval writes one feed line
+/// the team's person sees (zerus-f67qp).
 pub(super) fn feed_line(plan: &Plan) -> bool {
     plan.kind == Kind::Trust && policy::hooks(&plan.question)
 }
@@ -254,6 +274,17 @@ pub(super) fn validate(p: &mut impl Ports, plan: &Plan) -> Result<()> {
             }
             if policy::trust(b, &snapshot)? != plan.question {
                 return Err("The exact prompt or its hash changed".into());
+            }
+            if policy::hooks(&plan.question) {
+                // Every hook the answer would trust must be one the setting
+                // covers, and Codex's own count must be that inventory's.
+                let grant = p.hook_grant(plan)?;
+                if policy::hooks_count(&plan.question) != Some(grant.len()) {
+                    return Err(format!(
+                        "Codex's hook review counts other hooks than its inventory lists ({} listed)",
+                        grant.len()
+                    ));
+                }
             }
         }
         Kind::Resume => {

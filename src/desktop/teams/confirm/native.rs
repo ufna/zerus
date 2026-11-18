@@ -1,6 +1,7 @@
 //! Production effects use the native CLI, the original child custodian and
 //! receipts read through the original held store. Reads confer no authority.
 mod binding;
+pub(super) mod hooks;
 #[cfg(test)]
 pub(super) use binding::launch_binding;
 mod observation;
@@ -31,6 +32,13 @@ pub(super) struct Native<'a> {
     capture: Option<(Snapshot, Value)>,
     pub observation: Option<Result<()>>,
     pins: Vec<ownership::Pin>,
+    /// The last hooks grant, with Codex's saved trust before delivery and the
+    /// account it was read from (zerus-f67qp).
+    hook_check: Option<(
+        Grant,
+        std::collections::BTreeMap<String, String>,
+        std::path::PathBuf,
+    )>,
 }
 impl<'a> Native<'a> {
     pub fn new(
@@ -48,12 +56,14 @@ impl<'a> Native<'a> {
             capture: None,
             observation: None,
             pins: Vec::new(),
+            hook_check: None,
         })
     }
     pub fn reset(&mut self) {
         self.capture = None;
         self.observation = None;
         self.pins.clear();
+        self.hook_check = None;
     }
     fn read(&self, args: Vec<String>, input: Option<&[u8]>) -> Result<Value> {
         let mut scoped = vec!["--expect-machine".into(), self.machine.into()];
@@ -182,8 +192,40 @@ impl Ports for Native<'_> {
     fn card(&mut self, row: &Record) -> Result<()> {
         self.owner_card(row)
     }
-    fn note(&mut self, row: &Record) -> Result<()> {
-        self.owner_note(row)
+    fn hook_grant(&mut self, plan: &Plan) -> Result<Grant> {
+        self.hook_check = None;
+        let b = &plan.binding;
+        let raw = &self
+            .capture
+            .as_ref()
+            .ok_or("No exact native observation is held")?
+            .1;
+        let home = std::path::PathBuf::from(
+            raw["agent_home"]
+                .as_str()
+                .filter(|home| !home.is_empty())
+                .ok_or("The member's Codex account is unknown")?,
+        );
+        let base = self.fresh_facts(b)?.team.base_commit;
+        let main = super::policy::main_checkout(&b.folder);
+        let (grant, before) = hooks::check(
+            &home,
+            std::path::Path::new(&b.folder),
+            main.as_deref().map(std::path::Path::new),
+            &base,
+        )?;
+        self.hook_check = Some((grant.clone(), before, home));
+        Ok(grant)
+    }
+    fn hook_trust_saved(&mut self, _row: &Record) -> Result<bool> {
+        let (grant, before, home) = self.hook_check.take().ok_or("No hooks grant was checked")?;
+        hooks::confirmed(&grant, &before, &home)
+    }
+    fn notes_owed(&mut self, b: &Binding) -> Result<Vec<Plan>> {
+        self.ledger.notes_owed(b)
+    }
+    fn note(&mut self, plan: &Plan) -> Result<()> {
+        self.owner_note(plan)
     }
     fn original(
         &mut self,
@@ -246,17 +288,19 @@ impl Native<'_> {
         self.service_write(row, &request)
     }
     /// The approved hooks trust's one feed line (zerus-f67qp): the service's
-    /// journal row naming the member, under the row's saved request, so a
+    /// journal row naming the member, under the line's saved request, so a
     /// retry after a crash replays that request and never writes a second.
-    fn owner_note(&mut self, row: &Record) -> Result<()> {
-        use crate::teams::ops::{Operation, Request};
+    /// A definite refusal other than a stale revision cannot be written later
+    /// either: the line is then no longer owed.
+    fn owner_note(&mut self, plan: &Plan) -> Result<()> {
+        use crate::teams::ops::{self, Actor, Operation, Request};
         self.store.refresh().map_err(|e| e.to_string())?;
         let team = self
             .store
-            .team(&row.plan.binding.team)
+            .team(&plan.binding.team)
             .map_err(|e| e.to_string())?
             .ok_or("Team disappeared")?;
-        let request = if let Some(request) = self.ledger.card_request(&row.plan.key)? {
+        let request = if let Some(request) = self.ledger.note_request(&plan.key)? {
             request
         } else {
             let request = Request {
@@ -264,14 +308,36 @@ impl Native<'_> {
                 team: team.id.clone(),
                 expected_revision: team.revision,
                 operation: Operation::NoteConfirmation {
-                    member: row.plan.binding.member.clone(),
-                    text: super::engine::feed_text(&row.plan),
+                    member: plan.binding.member.clone(),
+                    text: super::engine::feed_text(plan),
                 },
             };
-            self.ledger.save_card(&row.plan.key, Some(&request))?;
+            self.ledger.save_note_request(&plan.key, Some(&request))?;
             request
         };
-        self.service_write(row, &request)
+        let actor = Actor::Service {
+            person: plan.binding.person.clone(),
+            team: request.team.clone(),
+        };
+        match ops::apply(
+            self.store,
+            &actor,
+            &request,
+            chrono::Utc::now().timestamp_millis(),
+        ) {
+            Ok(_) => self.ledger.note_done(&plan.key),
+            Err(p) if p.code == zerus_team_plan::problem::code::STALE_REVISION => {
+                self.ledger.save_note_request(&plan.key, None)?;
+                Err("Feed line revision changed; it is written next pass".into())
+            }
+            Err(p)
+                if p.code == zerus_team_plan::problem::code::STORE_BUSY
+                    || p.code == zerus_team_plan::problem::code::STORAGE_FAILED =>
+            {
+                Err(p.to_string())
+            }
+            Err(_) => self.ledger.note_done(&plan.key),
+        }
     }
     /// The service applies the row's saved request. A stale revision drops
     /// the saved request; the next pass writes a fresh one.
@@ -371,24 +437,39 @@ mod tests {
         s.name = name;
         s.questions = vec![card.clone()];
         let plan = super::super::engine::candidate(&b, &s, Kind::Trust, card);
-        let row = Record {
-            plan,
-            original: uuid::Uuid::new_v4().to_string(),
-            epoch: "epoch-1".into(),
-            state: "approved".into(),
-            audit: None,
-            audit_done: true,
-            result: None,
-            detail: String::new(),
-            card_request: uuid::Uuid::new_v4().to_string(),
-            card_done: false,
-            at: 100,
-        };
+        // The approval as the engine saves it: the real ledger owes its line.
+        let mut ledger = Ledger::open(&config.state).unwrap();
+        let mut row = ledger.claim(&plan, "epoch-1", 100).unwrap().record;
+        row.audit = Some(Audit {
+            id: 1,
+            request: uuid::Uuid::new_v4().to_string(),
+            answers: json!([]),
+            fresh: true,
+        });
+        row.audit_done = true;
+        row.state = "approved".into();
+        ledger.save(&row).unwrap();
+        drop(ledger);
         let before = h.store.journal(TEAM, 200, None).unwrap().rows.len();
         let stop = Arc::new(AtomicBool::new(false));
         let mut native = Native::new(&config, &b.machine, &stop, &mut h.store).unwrap();
-        native.note(&row).unwrap();
-        native.note(&row).unwrap();
+        assert_eq!(native.notes_owed(&b).unwrap(), [plan.clone()]);
+        // A crash after the journal row committed, before the line was marked
+        // written: the retry replays the saved request.
+        let request = {
+            native.note(&plan).unwrap();
+            native.ledger.note_request(&plan.key).unwrap().unwrap()
+        };
+        rusqlite::Connection::open(config.state.join("teams/standing-v1/journal.sqlite3"))
+            .unwrap()
+            .execute("UPDATE standing_notes SET done=0 WHERE key=?1", [&plan.key])
+            .unwrap();
+        native.note(&plan).unwrap();
+        assert_eq!(
+            native.ledger.note_request(&plan.key).unwrap().unwrap(),
+            request
+        );
+        assert!(native.notes_owed(&b).unwrap().is_empty());
         drop(native);
         let rows = h.store.journal(TEAM, 200, None).unwrap().rows;
         assert_eq!(rows.len(), before + 1, "one row for the replayed request");

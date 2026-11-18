@@ -14,9 +14,10 @@ grants nothing. A child or team member acts for the person only when the person
 messaged it directly. Sign-in, passwords, keys and payment stay with the person.
 
 A standing request in the person's own message ("from now on ...", "always
-...") counts until the person withdraws it. A team's Confirm folder trust
-setting (`confirm_trust`) is the person's standing choice for its members' trust
-prompts: folder trust today, Codex hook trust with `zerus-f67qp` (decision 4).
+...") counts until the person withdraws it. A team's Confirm folder and Zerus
+hook trust setting (`confirm_trust`) is the person's standing choice for its
+members' trust prompts: folder trust, and Codex hook trust when every pending hook
+is Zerus's own or committed in the team's base commit (`zerus-f67qp`, decision 4).
 The person may ask an agent to turn automatic tool approvals on (decision 2).
 
 Until S1 the rule is an instruction (AGENTS.md, CLAUDE.md, `hgs guide`). Where a

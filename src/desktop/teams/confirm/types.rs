@@ -123,6 +123,10 @@ pub(super) struct Record {
     pub at: i64,
 }
 
+/// The pending Codex hooks a hooks-trust answer would trust, each key with
+/// its current hash, as Codex lists them (zerus-f67qp).
+pub(super) type Grant = Vec<(String, String)>;
+
 pub(super) enum Outcome {
     /// The bounded admission lock was busy; no child started.
     Retry,

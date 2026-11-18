@@ -1258,6 +1258,20 @@ pub(super) fn health_version(path: &Path, program: &str) -> Option<(u64, u64, u6
     (value["executable"] == identity).then(|| version::version_in(value["version"].as_str()?))?
 }
 
+/// The hook entry this installation writes into a Codex account's `hooks.json`
+/// for each of its events: the command line, its timeout and the events, as
+/// `install_hooks` writes them. A Teams standing confirmation of Codex's hook
+/// review compares each pending entry with it (zerus-f67qp).
+#[cfg(unix)]
+pub(crate) fn codex_hook_definition() -> Result<(String, u64, Vec<&'static str>)> {
+    let executable = runner_executable()?;
+    Ok((
+        fresh_command(&executable)?,
+        HOOK_TIMEOUT,
+        health_events("codex"),
+    ))
+}
+
 pub(super) fn health_events(agent: &str) -> Vec<&'static str> {
     events(agent).into_iter().chain(versioned_events(agent).iter().map(|(event,_)| *event)).collect()
 }

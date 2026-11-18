@@ -222,10 +222,12 @@ fn a_waiting_claim_may_be_cancelled_but_never_settled_or_started_directly() {
     assert!(!db.claim(&plan, "epoch-2", 200).unwrap().fresh);
 }
 
-/// An approved hooks trust stays pending in the real ledger until its one
-/// feed line is recorded; an approved folder trust owes none (zerus-f67qp).
+/// An approved hooks trust is settled in the real ledger by the rules every
+/// build reads: its effect row is not pending, so an older engine after a
+/// rollback is never held by it (zerus-f67qp review). Its one feed line is
+/// owed apart, until written; an approved folder trust owes none.
 #[test]
-fn an_approved_hooks_trust_stays_pending_until_its_feed_line() {
+fn an_approved_hooks_trust_is_settled_and_owes_its_feed_line_apart() {
     let temp = tempfile::tempdir().unwrap();
     let mut db = Ledger::open(temp.path()).unwrap();
     let approve = |db: &mut Ledger, plan: &Plan| {
@@ -250,23 +252,35 @@ fn an_approved_hooks_trust_stays_pending_until_its_feed_line() {
     s.run = b.run.clone();
     s.conversation = b.conversation.clone();
     s.questions = vec![card.clone()];
-    let mut row = approve(&mut db, &engine::candidate(&b, &s, Kind::Trust, card));
-    assert_eq!(
-        db.unsettled(&b).unwrap(),
-        Some(row.clone()),
-        "the feed line is still owed"
-    );
-    row.card_done = true;
+    let row = approve(&mut db, &engine::candidate(&b, &s, Kind::Trust, card));
+    assert_eq!(db.unsettled(&b).unwrap(), None, "the approval is settled");
+    let pending: i64 =
+        db.0.query_row(
+            "SELECT pending FROM standing_effects WHERE key=?1",
+            [&row.plan.key],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(pending, 0);
+    assert_eq!(db.notes_owed(&b).unwrap(), [row.plan.clone()]);
+    // Saving the same approval again owes no second line.
     db.save(&row).unwrap();
-    assert_eq!(db.unsettled(&b).unwrap(), None);
+    assert_eq!(db.notes_owed(&b).unwrap().len(), 1);
+    db.note_done(&row.plan.key).unwrap();
+    assert!(db.notes_owed(&b).unwrap().is_empty());
+    drop(db);
+    let mut db = Ledger::open(temp.path()).unwrap();
+    assert!(
+        db.notes_owed(&b).unwrap().is_empty(),
+        "written stays written"
+    );
     let (b, _, s) = sample();
     approve(
         &mut db,
         &engine::candidate(&b, &s, Kind::Trust, s.questions[0].clone()),
     );
-    assert_eq!(
-        db.unsettled(&b).unwrap(),
-        None,
+    assert!(
+        db.notes_owed(&b).unwrap().is_empty(),
         "a folder trust owes no line"
     );
 }

@@ -17,8 +17,16 @@ pub(super) trait Ports: Sized {
     fn audit_begin(&mut self, plan: &Plan) -> Result<Audit>;
     fn audit_finish(&mut self, row: &Record) -> Result<()>;
     fn card(&mut self, row: &Record) -> Result<()>;
-    /// The one feed line of an approved effect that has one ([`super::engine::feed_line`]).
-    fn note(&mut self, row: &Record) -> Result<()>;
+    /// What a Codex hooks-trust plan may trust: every pending hook Codex
+    /// lists, each covered by the team's trust setting (`native::hooks`).
+    fn hook_grant(&mut self, plan: &Plan) -> Result<Grant>;
+    /// After delivery: whether Codex saved trust for exactly the hooks the
+    /// last grant named, and for no other.
+    fn hook_trust_saved(&mut self, row: &Record) -> Result<bool>;
+    /// Approved effects of this member launch whose one feed line is owed.
+    fn notes_owed(&mut self, binding: &Binding) -> Result<Vec<Plan>>;
+    /// Writes one owed feed line, once ([`super::engine::feed_line`]).
+    fn note(&mut self, plan: &Plan) -> Result<()>;
     fn original(&mut self, row: &Record, check: &mut dyn FnMut(&mut Self) -> Result<()>)
         -> Outcome;
 }

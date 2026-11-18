@@ -34,6 +34,13 @@ describe("trustSentence", () => {
   ])("a folder-trust record whose outcome is %s says its own sentence", (result, sentence) => {
     expect(trustSentence({ ...base, result })).toBe(sentence);
   });
+  it.each([
+    ["Approved once", "Codex hook trust confirmed for Zerus's own and the team's committed hooks"],
+    ["Failed", "Codex hook trust was requested; it was not confirmed"],
+    ["Unconfirmed", "Codex hook trust was requested; it was not confirmed"],
+  ])("a team's Codex hook-trust record whose outcome is %s says what it covered, without a scope", (result, sentence) => {
+    expect(trustSentence({ ...base, standing: "team_hook_trust", scope: null, result })).toBe(sentence);
+  });
   it("records that are not folder trust, or have no scope, say nothing", () => {
     expect(trustSentence({ ...base, standing: null })).toBeNull();
     expect(trustSentence({ ...base, standing: "other" })).toBeNull();

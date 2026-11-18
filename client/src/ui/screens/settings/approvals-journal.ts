@@ -9,8 +9,14 @@ export interface Entry { id: number; at: number; host: string; session: string; 
 
 /** The trust sentence a row's scope yields (zerus-63rru.66 round 4): only a
  * folder-trust record shows one, and only a confirmed grant claims the
- * trust; anything else says trust was requested. */
+ * trust; anything else says trust was requested. A team's Codex hook-trust
+ * record says what it covered, by the same rule (zerus-f67qp). */
 export function trustSentence(entry: Entry): string | null {
+  if (entry.standing === "team_hook_trust") {
+    return entry.result === "Approved once"
+      ? tr("Codex hook trust confirmed for Zerus's own and the team's committed hooks")
+      : tr("Codex hook trust was requested; it was not confirmed");
+  }
   const scope = entry.scope?.trim();
   if (!scope || entry.standing !== "team_folder_trust") return null;
   return entry.result === "Approved once"

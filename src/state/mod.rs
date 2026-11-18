@@ -41,6 +41,8 @@ mod external_agents;
 mod fork;
 mod goals;
 mod hooks;
+#[cfg(unix)]
+pub(crate) use hooks::codex_hook_definition;
 mod hook_caller;
 pub(crate) mod hook_health;
 mod input;

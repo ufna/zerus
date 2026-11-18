@@ -177,17 +177,26 @@ impl Ports for World {
             .unwrap();
         Ok(())
     }
-    fn note(&mut self, row: &Record) -> Result<()> {
+    fn hook_grant(&mut self, _: &Plan) -> Result<Grant> {
+        Ok(Vec::new())
+    }
+    fn hook_trust_saved(&mut self, _: &Record) -> Result<bool> {
+        Ok(true)
+    }
+    fn notes_owed(&mut self, b: &Binding) -> Result<Vec<Plan>> {
+        self.ledger.notes_owed(b)
+    }
+    fn note(&mut self, plan: &Plan) -> Result<()> {
         self.h
             .run(
                 &service(),
                 Operation::NoteConfirmation {
-                    member: row.plan.binding.member.clone(),
-                    text: engine::feed_text(&row.plan),
+                    member: plan.binding.member.clone(),
+                    text: engine::feed_text(plan),
                 },
             )
             .unwrap();
-        Ok(())
+        self.ledger.note_done(&plan.key)
     }
     fn original(
         &mut self,
