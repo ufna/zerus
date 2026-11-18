@@ -330,6 +330,7 @@ pub(crate) fn resumed_readiness(record: &Value) -> Readiness {
 /// its pid and start are recorded and no process with that pid has that
 /// start. Its terminal ended without the supervisor recording an end, so the
 /// run will never take a message. A record without both says nothing.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 pub(crate) fn resumed_supervisor_gone(record: &Value) -> bool {
     let supervisor = &record["supervisor"];
     let start = string(supervisor, "start");
