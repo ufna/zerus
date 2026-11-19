@@ -252,3 +252,92 @@ it("closes the model list after a pick and names each list without wrapping it i
   expect(combo(host, "Model")!.getAttribute("aria-expanded")).toBe("false");
   expect(document.querySelector('[role="listbox"]')).toBeNull();
 });
+
+// #2533 delta review (P2-1; review2529-cx's MemberChoices.round3-review and
+// delta-extra probes adopted). Only a stopped member's own saved model keeps
+// a plain "not in the current catalog" option. An Add preset or a new pick
+// that the freest account does not offer becomes its "(only on <account>)"
+// choice when one account offers it, else the account's defaults, with a
+// note; a catalog refresh never turns the person's pick into a plain option.
+function addWith(model: string, effort = "") {
+  const roles = view.member_roles!.map((role) => role.id === "developer" ? { ...role, model, effort } : role);
+  const sent: unknown[] = [];
+  const host = mount(AddMemberDialog, { view: { ...view, member_roles: roles }, busy: false, error: "", close: () => {}, submit: async (kind: string, input: unknown) => { sent.push([kind, input]); } });
+  return { host, sent };
+}
+const adjusted = (host: HTMLElement) => host.querySelector("[data-member-choice-adjusted]")?.textContent ?? "";
+
+it("names the one account that offers a role's preset model instead of sending it with the freest account", async () => {
+  const { host, sent } = addWith("model-b");
+  await flush(); await flush();
+  expect(f.reads).toEqual(["claude/", "claude/claude-spare"]);
+  expect(host.querySelector<HTMLSelectElement>('select[aria-label="Account"]')!.value).toBe("claude-spare");
+  expect(adjusted(host)).toBe("Second model is only on Spare, so that account is chosen.");
+  const options = await offered(host, "Model");
+  expect(options.some(([, label]) => label?.includes("not in the current catalog")), "no plain fallback").toBe(false);
+  submit(host).click(); await flush();
+  expect(sent).toEqual([["add_member", { role: "developer", agent: "claude", model: "model-b", effort: "", account: { mode: "named", account: "claude-spare" } }]]);
+});
+
+it("falls back to the account's defaults, saying so, for a preset model no account offers", async () => {
+  const { host, sent } = addWith("gone-model", "high");
+  await flush(); await flush();
+  expect(adjusted(host)).toBe("gone-model is not offered here, so the account's defaults apply.");
+  expect(combo(host, "Model")!.textContent).toContain("Account defaults");
+  expect((await offered(host, "Model")).map(([value]) => value)).toEqual(["", "model-a", "@claude-spare/model-b"]);
+  submit(host).click(); await flush();
+  expect(sent).toEqual([["add_member", { role: "developer", agent: "claude", model: "", effort: "", account: { mode: "freest" } }]]);
+});
+
+it("does not treat a newly picked model as the stopped member's legacy model when a refresh removes it", async () => {
+  const member = { ...view.members.find((m) => m.agent === "claude" && !m.lead)!, state: "paused", person_stopped: true, open_work: 0,
+    model: "retired-model", effort: "", account_choice: { mode: "freest" } } as TeamMember;
+  const sent: unknown[] = [];
+  const host = mount(SwapMemberDialog, { member, busy: false, error: "", close: () => {}, submit: async (kind: string, input: unknown) => { sent.push([kind, input]); } });
+  await flush();
+  await pick(host, "Model", "model-a");
+  const { loadAccounts } = await import("../../store/accounts");
+  f.accounts = { ...(f.accounts as { revision?: number }), revision: 57 };
+  f.replies.freest.claude.revision = "r2";
+  f.replies.freest.claude.catalog.models[0].id = "replacement";
+  await loadAccounts(true); await flush(); await flush();
+  const options = await offered(host, "Model");
+  expect(options).toContainEqual(["retired-model", "retired-model (not in the current catalog)"]);
+  expect(options.some(([value]) => value === "model-a"), "the new pick never becomes a plain option").toBe(false);
+  expect(adjusted(host)).toBe("model-a is not offered here, so the account's defaults apply.");
+  submit(host).click(); await flush();
+  expect(sent).toEqual([["swap_member", { member: member.id, agent: "claude", model: "", effort: "", account: { mode: "freest" } }]]);
+});
+
+it("pins the one account that still offers a picked model after a refresh", async () => {
+  const { host, sent } = addMember();
+  await flush();
+  await pick(host, "Model", "model-a");
+  const { loadAccounts } = await import("../../store/accounts");
+  f.accounts = { ...(f.accounts as { revision?: number }), revision: 58 };
+  const claude = f.replies.freest.claude as unknown as { revision: string; catalog: { models: unknown[] }; on_some: { id: string; label: string; accounts: string[] }[] };
+  claude.revision = "r3";
+  claude.catalog.models = [];
+  claude.on_some = [{ id: "model-a", label: "Example model", accounts: ["claude-work"] }];
+  await loadAccounts(true); await flush(); await flush();
+  expect(host.querySelector<HTMLSelectElement>('select[aria-label="Account"]')!.value).toBe("claude-work");
+  expect(adjusted(host)).toBe("Example model is only on Work, so that account is chosen.");
+  submit(host).click(); await flush();
+  expect(sent).toEqual([["add_member", { role: "developer", agent: "claude", model: "model-a", effort: "", account: { mode: "named", account: "claude-work" } }]]);
+});
+
+// The round-1 exception stays exact: a stopped member's own saved model keeps
+// its plain choice even when only some accounts list it, beside the
+// "(only on <account>)" choice; it is not settled away, and Swap can send it.
+it("keeps a stopped member's saved model that only some accounts list as its own choice", async () => {
+  const member = { ...view.members.find((m) => m.agent === "claude" && !m.lead)!, state: "paused", person_stopped: true, open_work: 0,
+    model: "model-b", effort: "", account_choice: { mode: "freest" } } as TeamMember;
+  const sent: unknown[] = [];
+  const host = mount(SwapMemberDialog, { member, busy: false, error: "", close: () => {}, submit: async (kind: string, input: unknown) => { sent.push([kind, input]); } });
+  await flush(); await flush();
+  expect(await offered(host, "Model")).toEqual([["", "Account defaults"], ["model-a", "Example model"], ["@claude-spare/model-b", "Second model (only on Spare)"], ["model-b", "model-b (not in the current catalog)"]]);
+  expect(adjusted(host)).toBe("");
+  expect(submit(host).disabled).toBe(false);
+  submit(host).click(); await flush();
+  expect(sent).toEqual([["swap_member", { member: member.id, agent: "claude", model: "model-b", effort: "", account: { mode: "freest" } }]]);
+});

@@ -148,6 +148,87 @@ fn a_model_the_chosen_account_does_not_offer_is_refused_with_its_reason() {
         ("b", "only-on-b", "high")
     );
 }
+/// #2533 delta review (P2-2; review2529-cx's `a_removed_model_is_refused_before_start`
+/// adopted): the plan's model was checked when the account was chosen, and the
+/// account's list can change before the launch. The last step reads it again
+/// and refuses with the same reason, once: the row waits on its card, no retry
+/// loop reads the list again, and nothing launches with defaults instead.
+fn refused_before_start(models: serde_json::Value, reason: &str) {
+    let (mut h, mut r, mut e) = started();
+    let before = e.plans.len();
+    let added = h
+        .run(
+            &person(),
+            Operation::AddMember {
+                role: "developer".into(),
+                agent: "claude".into(),
+                model: "seat-model".into(),
+                effort: "low".into(),
+                account: AccountChoice::Named {
+                    account: "b".into(),
+                },
+            },
+        )
+        .unwrap()
+        .member
+        .unwrap();
+    until(&mut r, &mut h, &mut e, |h, _| {
+        Ledger::open(h.temp.path())
+            .unwrap()
+            .get(TEAM, &added)
+            .unwrap()
+            .is_some_and(|entry| entry.state == State::WorktreeDone)
+    });
+    assert_eq!(e.plans.len(), before);
+    let reads_before = e.catalog_reads.len();
+    assert_eq!(e.catalog_reads.last().map(String::as_str), Some("b"));
+    e.catalogs.insert(
+        "b".into(),
+        serde_json::json!({
+            "account_id": "b",
+            "provider": "claude",
+            "revision": "r2",
+            "effort_supported": true,
+            "models": models
+        }),
+    );
+    advance(&mut r, &mut h, &mut e, 30);
+    let started = e.plans.iter().find(|plan| plan.member == added);
+    assert!(
+        started.is_none(),
+        "worker passed the removed model to its launch effect"
+    );
+    let refused = row(&h, &added);
+    assert_eq!(refused.state, State::Blocked, "no retry loop");
+    assert_eq!(refused.problem.unwrap().message, reason);
+    assert_eq!(
+        e.catalog_reads.len() - reads_before,
+        1,
+        "one read at the last step"
+    );
+    assert!(cards(&h).iter().any(|card| card.text.contains(reason)));
+    // Later passes neither read the list again nor launch.
+    for now in [61_234, 181_234, 3_601_234] {
+        r.tick(&mut h.store, &mut e, TEAM, now).unwrap();
+    }
+    assert_eq!(e.catalog_reads.len() - reads_before, 1);
+    assert!(!e.plans.iter().any(|plan| plan.member == added));
+}
+#[test]
+fn a_removed_model_is_refused_before_start() {
+    refused_before_start(
+        serde_json::json!([{"id": "replacement", "effort_options": ["low"]}]),
+        "Account \"b\" does not offer model \"seat-model\". Choose one of its models, the account's defaults, or an account that offers it.",
+    );
+}
+/// The same last-step read refuses an effort the model no longer offers.
+#[test]
+fn a_removed_effort_is_refused_before_start() {
+    refused_before_start(
+        serde_json::json!([{"id": "seat-model", "effort_options": ["high"]}]),
+        "Model \"seat-model\" on account \"b\" does not offer effort \"low\". Choose one of its efforts or the default effort.",
+    );
+}
 #[test]
 fn stopped_swap_retains_identity_checkout_and_old_receipts_without_replay() {
     for target in ["lead", "m1"] {

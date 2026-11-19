@@ -221,6 +221,23 @@ impl Runtime {
 /// service catalog, which this path never asks.
 const OFFERED_AGENTS: [&str; 3] = ["claude", "codex", "kimi"];
 
+/// The plan's model and effort, checked again against the launch account's
+/// own list right before the launch (bounded: one `account model-settings`
+/// read). A plan without a model override, or for an agent whose model is
+/// not checked, needs no read.
+pub(super) fn still_offered(effects: &mut impl Effects, plan: &Plan) -> Result<()> {
+    if plan.model.is_empty() || !OFFERED_AGENTS.contains(&plan.agent.as_str()) {
+        return Ok(());
+    }
+    let settings = effects.model_catalog(&plan.agent, &plan.account)?;
+    offered(
+        &plan.agent,
+        &plan.account,
+        &plan.model,
+        &plan.effort,
+        &settings,
+    )
+}
 /// Whether `account`'s model list (`hgs account model-settings`) offers the
 /// launch's `model` and, when set, its `effort`. A refusal names both and
 /// what to choose instead.
