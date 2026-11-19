@@ -262,7 +262,7 @@ fn an_approved_hooks_trust_is_settled_and_owes_its_feed_line_apart() {
         )
         .unwrap();
     assert_eq!(pending, 0);
-    assert_eq!(db.notes_owed(&b).unwrap(), [row.plan.clone()]);
+    assert_eq!(db.notes_owed(&b).unwrap(), std::slice::from_ref(&row.plan));
     // Saving the same approval again owes no second line.
     db.save(&row).unwrap();
     assert_eq!(db.notes_owed(&b).unwrap().len(), 1);

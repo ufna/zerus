@@ -70,8 +70,11 @@ pub(in crate::desktop::teams::confirm) fn check(
     base: &str,
 ) -> Result<(Grant, BTreeMap<String, String>), String> {
     let expected = Expected::current(home)?;
-    let listed = inventory(home, folder)?;
-    let grant = grant(&listed, &expected, &mut |path| committed(path, folder, main, base))?;
+    let (listed, warnings) = inventory(home, folder)?;
+    benign(&warnings, &expected)?;
+    let grant = grant(&listed, &expected, &mut |path| {
+        committed(path, folder, main, base)
+    })?;
     Ok((grant, trusted(home)?))
 }
 
@@ -99,7 +102,7 @@ pub(in crate::desktop::teams::confirm) fn confirmed(
 /// entries of the one `hooks/list` result for that folder. A result with an
 /// error or a warning (a hook Codex skipped or could not read), for another
 /// folder, or not answered in time is not an inventory.
-pub(super) fn inventory(home: &Path, folder: &Path) -> Result<Vec<Value>, String> {
+pub(super) fn inventory(home: &Path, folder: &Path) -> Result<(Vec<Value>, Vec<String>), String> {
     let unavailable = |why: &str| format!("Codex's hook inventory is unavailable: {why}");
     let mut cmd = crate::platform::agent_command(&["codex".to_owned()])
         .map_err(|_| unavailable("Codex was not found"))?;
@@ -164,11 +167,13 @@ pub(super) fn inventory(home: &Path, folder: &Path) -> Result<Vec<Value>, String
     listed(&answer, folder)
 }
 
-/// The entries of `answer`, Codex's `hooks/list` response, for `folder`.
+/// The entries of `answer`, Codex's `hooks/list` response, for `folder`, and
+/// its warnings. A result with an error, for another folder, or without its
+/// lists is not an inventory.
 pub(in crate::desktop::teams::confirm) fn listed(
     answer: &Value,
     folder: &Path,
-) -> Result<Vec<Value>, String> {
+) -> Result<(Vec<Value>, Vec<String>), String> {
     let data = answer["result"]["data"]
         .as_array()
         .ok_or("Codex's hook inventory has no result")?;
@@ -178,22 +183,66 @@ pub(in crate::desktop::teams::confirm) fn listed(
         return Err("Codex's hook inventory names another folder".into());
     }
     let entry = &data[0];
-    for (key, what) in [("errors", "an error"), ("warnings", "a warning")] {
-        let list = entry[key]
-            .as_array()
-            .ok_or("Codex's hook inventory is incomplete")?;
-        if let Some(first) = list.first() {
-            let text = first["message"].as_str().or(first.as_str()).unwrap_or("");
+    let errors = entry["errors"]
+        .as_array()
+        .ok_or("Codex's hook inventory is incomplete")?;
+    if let Some(first) = errors.first() {
+        let text = first["message"].as_str().unwrap_or("");
+        return Err(format!(
+            "Codex's hook inventory has an error: {}",
+            text.chars().take(200).collect::<String>()
+        ));
+    }
+    let warnings = entry["warnings"]
+        .as_array()
+        .ok_or("Codex's hook inventory is incomplete")?
+        .iter()
+        .map(|warning| warning.as_str().map(str::to_owned))
+        .collect::<Option<Vec<_>>>()
+        .ok_or("Codex's hook inventory is incomplete")?;
+    let hooks = entry["hooks"]
+        .as_array()
+        .cloned()
+        .ok_or("Codex's hook inventory lists no hooks")?;
+    Ok((hooks, warnings))
+}
+
+/// Codex 0.170.0 caps SessionEnd and Interrupt hook timeouts at three seconds
+/// (`normalize_command_hook`) and warns that it did; Zerus writes fifteen for
+/// every event, so its own `hooks.json` always gets those two warnings, with
+/// the hooks still loaded. Any other warning, such as a hook Codex skipped,
+/// means the inventory is not complete.
+pub(in crate::desktop::teams::confirm) fn benign(
+    warnings: &[String],
+    expected: &Expected,
+) -> Result<(), String> {
+    for warning in warnings {
+        let clamped = ["SessionEnd", "Interrupt"].iter().any(|event| {
+            warning
+                .strip_prefix(&format!("clamping {event} hook timeout to {CLAMP}s in "))
+                .is_some_and(|path| canonical(Path::new(path)) == expected.hooks_json)
+        });
+        if !clamped {
             return Err(format!(
-                "Codex's hook inventory has {what}: {}",
-                text.chars().take(200).collect::<String>()
+                "Codex's hook inventory has a warning: {}",
+                warning.chars().take(200).collect::<String>()
             ));
         }
     }
-    entry["hooks"]
-        .as_array()
-        .cloned()
-        .ok_or_else(|| "Codex's hook inventory lists no hooks".into())
+    Ok(())
+}
+
+/// Codex's cap of SessionEnd and Interrupt hook timeouts, in seconds.
+const CLAMP: u64 = 3;
+
+/// The timeout Codex lists for Zerus's own entry of `event`: what Zerus
+/// writes, as Codex normalizes it.
+fn timeout(event: &str, written: u64) -> u64 {
+    if matches!(event, "sessionEnd" | "interrupt") {
+        written.clamp(1, CLAMP)
+    } else {
+        written.max(1)
+    }
 }
 
 /// The keys and hashes the answer would trust: every entry Codex lists as
@@ -255,7 +304,7 @@ fn zerus(hook: &Value, expected: &Expected) -> bool {
     canonical(Path::new(hook["sourcePath"].as_str().unwrap_or(""))) == expected.hooks_json
         && hook["command"] == expected.command.as_str()
         && hook["async"] != true
-        && hook["timeoutSec"] == expected.timeout
+        && hook["timeoutSec"] == timeout(hook["eventName"].as_str().unwrap_or(""), expected.timeout)
         && hook["matcher"].is_null()
         && hook["statusMessage"].is_null()
         && hook["eventName"]

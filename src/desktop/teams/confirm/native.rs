@@ -453,7 +453,7 @@ mod tests {
         let before = h.store.journal(TEAM, 200, None).unwrap().rows.len();
         let stop = Arc::new(AtomicBool::new(false));
         let mut native = Native::new(&config, &b.machine, &stop, &mut h.store).unwrap();
-        assert_eq!(native.notes_owed(&b).unwrap(), [plan.clone()]);
+        assert_eq!(native.notes_owed(&b).unwrap(), std::slice::from_ref(&plan));
         // A crash after the journal row committed, before the line was marked
         // written: the retry replays the saved request.
         let request = {

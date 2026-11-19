@@ -1,6 +1,8 @@
 //! The inventory check against Codex 0.170.0's own `hooks/list` answer, as a
-//! real app server gave it (paths made synthetic): Zerus's own hook in the
-//! account's `hooks.json` and the repository's committed Beads hooks.
+//! real app server gave it (paths made synthetic): Zerus's own hooks in the
+//! account's `hooks.json` (SessionStart, SessionEnd, Stop and Interrupt; Codex
+//! caps the SessionEnd and Interrupt timeouts at three seconds and warns that
+//! it did) and the repository's committed Beads hooks.
 use super::*;
 
 const LISTED: &str = include_str!("../../../../../../tests/fixtures/codex-hooks-list-0.170.0.json");
@@ -10,19 +12,25 @@ fn answer() -> Value {
 }
 
 fn hooks() -> Vec<Value> {
-    listed(&answer(), Path::new("/work/repository")).unwrap()
+    listed(&answer(), Path::new("/work/repository")).unwrap().0
 }
 
 /// This installation's entry, as the fixture's account holds it.
 fn expected() -> Expected {
     Expected {
         hooks_json: PathBuf::from("/work/account/hooks.json"),
-        command: "'/opt/zerus/bin/hgs' __state hook".into(),
+        command: "/opt/zerus/bin/hgs __state hook".into(),
         timeout: 15,
-        events: ["SessionStart", "PreToolUse", "Stop"]
-            .iter()
-            .map(|e| camel(e))
-            .collect(),
+        events: [
+            "SessionStart",
+            "SessionEnd",
+            "Stop",
+            "Interrupt",
+            "PreToolUse",
+        ]
+        .iter()
+        .map(|e| camel(e))
+        .collect(),
     }
 }
 
@@ -30,18 +38,23 @@ fn committed_all(_: &Path) -> Result<bool, String> {
     Ok(true)
 }
 
+fn grant_of(hooks: &[Value]) -> Result<Grant, String> {
+    grant(hooks, &expected(), &mut committed_all)
+}
+
 #[test]
 fn zerus_entries_and_committed_project_hooks_are_granted_with_codexs_keys_and_hashes() {
     let hooks = hooks();
-    let grant = grant(&hooks, &expected(), &mut committed_all).unwrap();
-    assert_eq!(grant.len(), 5);
-    assert_eq!(
-        grant[0],
-        (
-            "/work/account/hooks.json:session_start:0:0".to_owned(),
-            "sha256:a8cfcb2317e4e42a8496aa6a270f62f41b090f13894f55efaf4401acd4227808".to_owned()
-        )
-    );
+    assert_eq!(hooks.len(), 8);
+    let grant = grant_of(&hooks).unwrap();
+    assert_eq!(grant.len(), 8);
+    for (hook, (key, hash)) in hooks.iter().zip(&grant) {
+        assert_eq!(hook["key"], key.as_str());
+        assert_eq!(hook["currentHash"], hash.as_str());
+    }
+    assert!(grant
+        .iter()
+        .any(|(key, _)| key == "/work/account/hooks.json:session_end:0:0"));
     // Trusted entries are not pending: nothing to grant for them.
     let mut trusted = hooks.clone();
     for hook in &mut trusted {
@@ -51,11 +64,7 @@ fn zerus_entries_and_committed_project_hooks_are_granted_with_codexs_keys_and_ha
     // A modified entry is pending as an untrusted one is.
     let mut modified = hooks.clone();
     modified[0]["trustStatus"] = json!("modified");
-    assert_eq!(grant_of(&modified).unwrap().len(), 5);
-}
-
-fn grant_of(hooks: &[Value]) -> Result<Grant, String> {
-    grant(hooks, &expected(), &mut committed_all)
+    assert_eq!(grant_of(&modified).unwrap().len(), 8);
 }
 
 #[test]
@@ -133,6 +142,28 @@ fn every_other_pending_hook_keeps_the_review_with_the_person_and_is_named() {
         .contains("without its key or hash"));
 }
 
+/// Codex lists Zerus's SessionEnd and Interrupt entries with its own cap of
+/// three seconds: that is Zerus's definition as Codex normalizes it, and
+/// nothing else is.
+#[test]
+fn zerus_session_end_and_interrupt_are_covered_only_at_codexs_cap() {
+    let hooks = hooks();
+    let end = hooks
+        .iter()
+        .position(|h| h["source"] == "user" && h["eventName"] == "sessionEnd")
+        .unwrap();
+    assert_eq!(hooks[end]["timeoutSec"], 3);
+    for listed in [15, 1, 2] {
+        let mut changed = hooks.clone();
+        changed[end]["timeoutSec"] = json!(listed);
+        assert!(grant_of(&changed).is_err(), "{listed}");
+    }
+    assert_eq!(timeout("sessionEnd", 15), 3);
+    assert_eq!(timeout("interrupt", 15), 3);
+    assert_eq!(timeout("stop", 15), 15);
+    assert_eq!(timeout("interrupt", 2), 2);
+}
+
 #[test]
 fn many_uncovered_hooks_are_named_within_a_bound() {
     let mut hooks = hooks();
@@ -147,8 +178,9 @@ fn many_uncovered_hooks_are_named_within_a_bound() {
 }
 
 #[test]
-fn an_inventory_with_an_error_a_warning_or_another_folder_is_not_read() {
-    assert_eq!(hooks().len(), 5);
+fn an_inventory_with_an_error_another_folder_or_missing_lists_is_not_read() {
+    let (hooks, warnings) = listed(&answer(), Path::new("/work/repository")).unwrap();
+    assert_eq!((hooks.len(), warnings.len()), (8, 2));
     for (what, change) in [
         (
             "error",
@@ -157,9 +189,6 @@ fn an_inventory_with_an_error_a_warning_or_another_folder_is_not_read() {
                     json!([{"path":"/work/repository/.codex/hooks.json","message":"bad json"}])
             }) as fn(&mut Value),
         ),
-        ("warning", |a| {
-            a["result"]["data"][0]["warnings"] = json!(["skipping plugin hook in /x: failed"])
-        }),
         ("folder", |a| {
             a["result"]["data"][0]["cwd"] = json!("/work/other")
         }),
@@ -169,6 +198,12 @@ fn an_inventory_with_an_error_a_warning_or_another_folder_is_not_read() {
         }),
         ("no hooks", |a| {
             a["result"]["data"][0]["hooks"] = Value::Null
+        }),
+        ("no warnings list", |a| {
+            a["result"]["data"][0]["warnings"] = Value::Null
+        }),
+        ("a warning that is not text", |a| {
+            a["result"]["data"][0]["warnings"] = json!([{"message":"x"}])
         }),
         ("no result", |a| a["result"] = Value::Null),
         (
@@ -181,6 +216,35 @@ fn an_inventory_with_an_error_a_warning_or_another_folder_is_not_read() {
         assert!(
             listed(&answer, Path::new("/work/repository")).is_err(),
             "{what}"
+        );
+    }
+}
+
+/// Only Codex's clamp of Zerus's own SessionEnd and Interrupt timeouts, in
+/// the account's `hooks.json`, is a benign warning.
+#[test]
+fn only_codexs_clamp_of_zeruss_own_file_is_a_benign_warning() {
+    let (_, warnings) = listed(&answer(), Path::new("/work/repository")).unwrap();
+    assert_eq!(
+        warnings,
+        [
+            "clamping SessionEnd hook timeout to 3s in /work/account/hooks.json",
+            "clamping Interrupt hook timeout to 3s in /work/account/hooks.json"
+        ]
+    );
+    benign(&warnings, &expected()).unwrap();
+    benign(&[], &expected()).unwrap();
+    for warning in [
+        "clamping SessionEnd hook timeout to 3s in /work/repository/.codex/hooks.json",
+        "clamping Stop hook timeout to 3s in /work/account/hooks.json",
+        "clamping SessionEnd hook timeout to 5s in /work/account/hooks.json",
+        "skipping plugin hook in /work/plugins/x/hooks.json: failed to migrate hook trust: x",
+        "loading hooks from both /work/account/hooks.json and /work/account/config.toml; prefer a single representation for this layer",
+    ] {
+        let why = benign(&[warning.to_owned()], &expected()).unwrap_err();
+        assert!(
+            why.starts_with("Codex's hook inventory has a warning: "),
+            "{why}"
         );
     }
 }
