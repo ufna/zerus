@@ -130,7 +130,9 @@ fn proven(
     {
         return Err(none());
     }
-    let machine = crate::swarm::local_node_id(config).map_err(|e| e.to_string())?;
+    // One bounded read of the existing machine identity: a proof never loads,
+    // locks or saves the catalog, which a writer may already hold.
+    let machine = state::session_graph::caller_machine(config).map_err(str::to_owned)?;
     Ok(PersonRequest {
         machine,
         session: text(record, "name"),
