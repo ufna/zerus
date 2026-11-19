@@ -109,9 +109,12 @@ it("offers the open team's roles and pipelines and sends the chosen ones", async
   expect([...role.options].map((option) => option.value)).toEqual(["", "developer", "reviewer"]);
   expect(role.options[0].textContent).toBe("Template default");
   role.value = "developer"; role.dispatchEvent(new Event("change", { bubbles: true }));
+  // The store routes a person's task only by a pipeline its role implements
+  // (ops validation.rs route_valid), so a chosen role takes one of its own
+  // pipelines, never the template's default (review of the B4 mutants).
   const pipeline = host.querySelector<HTMLSelectElement>("[data-new-task-pipeline]")!;
-  expect([...pipeline.options].map((option) => option.value)).toEqual(["", "reviewed"]);
-  pipeline.value = "reviewed"; pipeline.dispatchEvent(new Event("change", { bubbles: true }));
+  expect([...pipeline.options].map((option) => option.value)).toEqual(["reviewed"]);
+  expect(pipeline.value).toBe("reviewed");
   const input = host.querySelector("input.tk-newtitle") as HTMLInputElement;
   input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
   await vi.waitFor(() => expect(f.create).toHaveBeenCalled());
@@ -126,4 +129,18 @@ it("a team whose routing is not known, or Template default, sends no role or pip
   input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
   await vi.waitFor(() => expect(f.create).toHaveBeenCalled());
   expect(f.create).toHaveBeenCalledWith("example-project", false, undefined, TEAM);
+});
+
+it("handwritten a role whose only pipeline is not the default takes that pipeline", async () => {
+  const placement = (await import("../teams/fixtures/task-placement-view.json")).default;
+  f.view = { ...placement.before, bar: { ...placement.before.bar, id: TEAM, project: "example-project" } };
+  const host = setup();
+  chooser(host)!.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
+  const role = host.querySelector<HTMLSelectElement>("[data-new-task-role]")!;
+  role.value = "reviewer"; role.dispatchEvent(new Event("change", { bubbles: true }));
+  expect(host.querySelector<HTMLSelectElement>("[data-new-task-pipeline]")!.value).toBe("analysis");
+  const input = host.querySelector("input.tk-newtitle") as HTMLInputElement;
+  input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+  await vi.waitFor(() => expect(f.create).toHaveBeenCalled());
+  expect(f.create).toHaveBeenCalledWith("example-project", false, undefined, TEAM, { role: "reviewer", pipeline: "analysis" });
 });

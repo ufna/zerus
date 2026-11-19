@@ -81,7 +81,7 @@ export default function TaskCreate(props: { project?: string; scope: string; bac
     }
     setRefusal(""); recovery.dismiss();
     const name = teamChoices().find((candidate) => candidate.id === chosen)?.label ?? chosen;
-    const route = chosen && routing() && role() ? { role: role(), ...(pipeline() ? { pipeline: pipeline() } : {}) } : undefined;
+    const route = chosen && routing() && role() && pipeline() ? { role: role(), pipeline: pipeline() } : undefined;
     if (await (route ? createCard(project, false, selected(), chosen, route) : createCard(project, chosen ? false : props.backlog, selected(), chosen || undefined))) {
       // The answer settles this submit only: its project's card, and the team
       // choice it sent, never one the person made meanwhile.
@@ -103,12 +103,15 @@ export default function TaskCreate(props: { project?: string; scope: string; bac
       <Dropdown class="field tk-team" aria-label={tr("Team")} title={tr("Send the new task to a team's queue")}
         value={team()} onChange={(value) => { setTeam(value); setRefusal(""); }} options={[{ value: "", label: tr("No team") }, ...teamChoices().map((candidate) => ({ value: candidate.id, textValue: candidate.label, label: () => <TeamChip name={candidate.label} /> }))]} />
     </Show><Show when={creating() && reserved() === undefined && routing()}>
-      <select class="field tk-team-role" data-new-task-role aria-label={tr("Role")} value={role()} onChange={(event) => { setRole(event.currentTarget.value); setPipeline(""); }}>
+      <select class="field tk-team-role" data-new-task-role aria-label={tr("Role")} value={role()} onChange={(event) => { setRole(event.currentTarget.value); setPipeline(pipelines()[0]?.id ?? ""); }}>
         <option value="" selected={!role()}>{tr("Template default")}</option>
         <For each={roles()}>{(id) => <option value={id} selected={id === role()}>{roleLabel(id) !== id ? roleLabel(id) : id}</option>}</For>
       </select>
+      {/* The store routes a person's task only by a pipeline its role
+          implements (ops validation.rs route_valid): a chosen role takes one
+          of its own pipelines, and the template's default only with no role. */}
       <select class="field tk-team-pipeline" data-new-task-pipeline aria-label={tr("Pipeline")} value={pipeline()} disabled={!role()} onChange={(event) => setPipeline(event.currentTarget.value)}>
-        <option value="" selected={!pipeline()}>{tr("Template default")}</option>
+        <Show when={!role()}><option value="" selected={!pipeline()}>{tr("Template default")}</option></Show>
         <For each={pipelines()}>{(choice) => <option value={choice.id} selected={choice.id === pipeline()}>{choice.name || choice.id}</option>}</For>
       </select>
     </Show><button class="tk-sq add" aria-label={tr("New task")} title={tr("New task")} disabled={!props.project || !props.accessible} onClick={() => { setCreating(true); queueMicrotask(() => field?.focus()); }}><Icon name="plus" size={16} /></button>{props.children}</div>

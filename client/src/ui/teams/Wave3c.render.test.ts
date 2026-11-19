@@ -97,6 +97,19 @@ it("handwritten a task whose fields could not all be read keeps them, and says w
   expect(actions).toHaveBeenCalledWith("route", expect.objectContaining({ keep_task_fields: true }), view.revision, view.bar.id);
 });
 
+it("an edited form whose card refreshes as incomplete keeps the fields instead of sending what it edited", () => {
+  const [task, setTask] = createSignal({ ...pending, writes: ["src/labels.rs"] } as TaskView);
+  const actions = vi.fn();
+  const host = mount(() => createComponent(TaskPlacement, { view, get task() { return task(); }, busy: false, unresolved: false, otherFormOpen: false, onOpen: () => {}, onAction: actions }));
+  host.querySelector<HTMLButtonElement>('[data-task-action="route"]')!.click();
+  const form = host.querySelector<HTMLFormElement>('[data-placement-form="route"]')!;
+  type(writesField(form), "src/labels.rs\ntests/labels.rs");
+  setTask({ ...task(), fields_incomplete: true });
+  expect(form.textContent).toContain("This task's dependencies or write paths could not all be read, so Route keeps its assignment and write paths.");
+  form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+  expect(actions).toHaveBeenCalledWith("route", { node: pending.node, role: "developer", pipeline: "reviewed", keep_task_fields: true }, view.revision, view.bar.id);
+});
+
 // ---------------------------------------------------------------- B5 soft dependency
 it("a dependency can be added as soft", () => {
   const card = view.groups.flatMap((group) => group.cards).find((candidate) => candidate.deps_editable)! as TaskView;
