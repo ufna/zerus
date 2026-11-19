@@ -422,11 +422,35 @@ impl World {
             .join("\n");
         self.agent(name, &script)
     }
+    /// A prompt hook for `text` with a prompt ID of its own: no transcript
+    /// row is that prompt (review D1).
     fn prompt(&self, name: &str, text: &str) -> Ran {
+        let id = uuid::Uuid::new_v4().to_string();
         self.hook(
             name,
-            &[json!({"hook_event_name": "UserPromptSubmit", "prompt": text})],
+            &[json!({"hook_event_name": "UserPromptSubmit", "prompt": text, "prompt_id": id})],
         )
+    }
+    /// The prompt hook of the agent's own last prompt of `text`, with the
+    /// `promptId` its transcript user row records.
+    fn native_prompt(&self, name: &str, text: &str) -> Ran {
+        let id = self.prompt_id(name, text);
+        self.hook(
+            name,
+            &[json!({"hook_event_name": "UserPromptSubmit", "prompt": text, "prompt_id": id})],
+        )
+    }
+    /// The `promptId` of the last transcript user row of `text`.
+    fn prompt_id(&self, name: &str, text: &str) -> String {
+        let record = self.record(name);
+        let transcript = std::fs::read_to_string(record["transcript"].as_str().unwrap()).unwrap();
+        transcript
+            .lines()
+            .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+            .filter(|row| row["type"] == "user" && row["message"]["content"] == text)
+            .last()
+            .and_then(|row| row["promptId"].as_str().map(str::to_owned))
+            .unwrap_or_else(|| panic!("no transcript row of {text:?} in {name}"))
     }
     /// Moves one mark `by` milliseconds into the past.
     fn age_mark(&mut self, request: &str, by: i64) {
@@ -773,24 +797,36 @@ fn private_case() {
         &[
             json!({"hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_use_id": "tool-1",
                 "tool_input": {"command": "true"}}),
-            json!({"hook_event_name": "UserPromptSubmit", "prompt": "quiet two"}),
+            json!({"hook_event_name": "UserPromptSubmit", "prompt": "quiet two",
+                "prompt_id": w.prompt_id(&quiet, "quiet two")}),
         ],
     );
     w.none(&quiet, "bind-inside-tool-call");
     // A message admitted more than twelve hours before its prompt.
     let old = w.person_says(&quiet, "quiet three");
     w.age_mark(&old, 12 * 3600 * 1000 + 1000);
-    w.prompt(&quiet, "quiet three");
+    w.native_prompt(&quiet, "quiet three");
     w.none(&quiet, "bind-old-mark");
-    // The exact marked message, reported outside any tool call, binds.
+    // Review D1: the marked text reported as another prompt than the one
+    // Claude recorded for it binds a turn by content, but no delivery of
+    // that prompt exists: it grants nothing.
+    let five = w.person_says(&quiet, "quiet five");
+    w.prompt(&quiet, "quiet five");
+    assert_eq!(w.turn(&quiet)["request_id"], five.as_str());
+    assert!(w.person_request(&quiet).is_null(), "{}", w.turn(&quiet));
+    println!("PERSON_REQUEST_STEP=bind-other-prompt ok");
+    w.prompt(&quiet, "something else");
+    assert!(w.turn(&quiet).is_null());
+    // The exact marked message, reported outside any tool call as the
+    // prompt Claude recorded it as, binds and grants.
     let four = w.person_says(&quiet, "quiet four");
-    w.prompt(&quiet, "quiet four");
+    w.native_prompt(&quiet, "quiet four");
     assert_eq!(w.turn(&quiet)["request_id"], four.as_str());
     assert_eq!(w.person_request(&quiet)["request_id"], four.as_str());
     println!("PERSON_REQUEST_STEP=bind-exact ok");
     // Another prompt ends it, and the same message never binds again.
     w.prompt(&quiet, "something else");
-    w.prompt(&quiet, "quiet four");
+    w.native_prompt(&quiet, "quiet four");
     w.none(&quiet, "bind-spent");
     // An agent's send that takes the window's queued request ID first.
     let record = w.record(&quiet);
@@ -817,7 +853,7 @@ fn private_case() {
     assert_eq!(ran.code, 0, "{}", ran.err);
     // The agent's prompt names the marked request with the agent's stdin:
     // no turn, checked before any later prompt could end one.
-    w.prompt(&quiet, "agent six");
+    w.native_prompt(&quiet, "agent six");
     assert!(w.turn(&quiet).is_null(), "{}", w.turn(&quiet));
     w.prompt(&quiet, "quiet six");
     assert!(w.turn(&quiet).is_null(), "{}", w.turn(&quiet));

@@ -135,9 +135,13 @@ that receipt's text, after it was sent and outside any running tool call, starts
 the person turn; one message starts at most one, within twelve hours of its
 admission. Any later prompt of the main agent, any input receipt, any answer
 delivered into the session, a run or conversation change, or twelve hours end
-it. It grants nothing until the native agent itself shows it accepted exactly
-that send: Claude's own transcript or queue record seen by the send writer, or
-the exact user input in the Codex or Kimi native source.
+it. The hook records the native identity of the input it reports (Claude's
+`prompt_id`, Codex's `turn_id`, Kimi's user `turn_id`), and the turn grants
+nothing until the native agent itself shows it accepted exactly that send as
+that input: Claude's transcript user row of that `promptId` with the text, or
+the exact user input of that turn in the Codex or Kimi native source. A queue
+entry alone or the same text in another turn proves nothing. Only Linux writes
+marks; on macOS and Windows the person's own message lets no agent act yet.
 Each command proves it again from the live record, the mark and the receipt;
 the mark is read only from the store of its own configuration, so a copied or
 redirected state folder carries none. Nothing is exported to an environment

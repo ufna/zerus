@@ -84,7 +84,9 @@
 //!   `reason` (`--end-reason TEXT`, default `other`) and, with
 //!   `--transcript-dir DIR`, a `transcript_path` that holds the session ID line.
 //!   With Claude's hooks, each submitted prompt is then appended to it as a
-//!   `{"type":"user"}` row after UserPromptSubmit, as Claude Code records it.
+//!   `{"type":"user"}` row after UserPromptSubmit, as Claude Code records it;
+//!   each UserPromptSubmit then carries a fresh `prompt_id`, which that row
+//!   repeats as `promptId`.
 //! - Ctrl+U deletes the composer's current line, echoed as a cleared row; on an
 //!   empty line it does nothing, as Claude Code, Codex and Kimi do.
 //! - `--swallow-enter 1` ignores Enter: the composer keeps its text and no
@@ -1666,6 +1668,11 @@ struct Agent {
     /// Record each submitted prompt in the transcript as Claude Code does
     /// (zerus-iitw8): set when the hooks are Claude's and a transcript exists.
     claude_rows: bool,
+    /// Claude Code's hooks: each UserPromptSubmit carries a fresh `prompt_id`,
+    /// which the prompt's transcript user row repeats as `promptId`.
+    claude_hooks: bool,
+    /// The ID of the prompt being submitted, for its UserPromptSubmit hook.
+    prompt_id: Option<String>,
     stop_at: Option<Instant>,
     exit_at: Option<(Instant, i32, String)>,
     exit_now: Option<(i32, String)>,
@@ -1960,6 +1967,9 @@ impl Agent {
         if prompt.is_empty() || !self.started {
             return;
         }
+        // Claude Code gives every prompt its own ID before its hook.
+        let id = self.claude_hooks.then(|| uuid::Uuid::new_v4().to_string());
+        self.prompt_id = id.clone();
         self.hook("submit", Some(&prompt));
         // Claude Code writes the user row after its UserPromptSubmit hook.
         if self.claude_rows {
@@ -1967,7 +1977,11 @@ impl Agent {
                 // Typed, and stamped like Claude's rows: hgs counts only a typed
                 // row stamped after its paste (zerus-iitw8.4).
                 let at = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
-                let row = json!({"type": "user", "promptSource": "typed", "timestamp": at, "message": {"role": "user", "content": prompt}});
+                let mut row = json!({"type": "user", "promptSource": "typed", "timestamp": at, "message": {"role": "user", "content": prompt}});
+                if let Some(id) = &id {
+                    row["promptId"] = json!(id);
+                    row["uuid"] = json!(uuid::Uuid::new_v4().to_string());
+                }
                 if let Err(error) = fs::OpenOptions::new().append(true).open(path).and_then(|mut file| {
                     std::io::Write::write_all(&mut file, format!("{row}\n").as_bytes())
                 }) {
@@ -2016,7 +2030,17 @@ impl Agent {
         }
         match event {
             "start" => payload["source"] = json!(if self.resumed { "resume" } else { "startup" }),
-            "submit" => payload["prompt"] = json!(prompt.unwrap_or_default()),
+            "submit" => {
+                payload["prompt"] = json!(prompt.unwrap_or_default());
+                if self.claude_hooks {
+                    // A prompt's own ID, or a fresh one for a hook alone.
+                    let id = self
+                        .prompt_id
+                        .take()
+                        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+                    payload["prompt_id"] = json!(id);
+                }
+            }
             "stop" => payload["stop_hook_active"] = json!(false),
             _ => payload["reason"] = json!(self.config.end_reason),
         }
@@ -2308,6 +2332,7 @@ fn main() {
             .then(|| config.name.clone())
     });
     let claude_rows = style.as_deref() == Some("claude") && transcript.is_some();
+    let claude_hooks = style.as_deref() == Some("claude");
     let (hooks, info) = match style {
         Some(agent) => {
             let (hooks, info) = load_hooks(&agent);
@@ -2352,6 +2377,8 @@ fn main() {
         resumed,
         transcript,
         claude_rows,
+        claude_hooks,
+        prompt_id: None,
         stop_at: None,
         exit_at: None,
         exit_now: None,

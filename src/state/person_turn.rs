@@ -129,6 +129,28 @@ pub(crate) fn marked_pending(
     .then(|| (request.to_owned(), receipt, mark))
 }
 
+/// The native identity of the input a binding `event` reports, which the
+/// delivery proof must show for exactly that input (zerus-46l1q, review D1):
+/// Claude's `prompt_id` (its transcript's `promptId`), Codex's `turn_id` (its
+/// rollout's turn), Kimi's user `turn_id`. Without one nothing binds.
+fn native_identity(agent: &str, event: &Value) -> Option<Value> {
+    match agent {
+        "claude" => event["prompt_id"]
+            .as_str()
+            .filter(|id| {
+                uuid::Uuid::parse_str(id)
+                    .is_ok_and(|uuid| !uuid.is_nil() && uuid.to_string() == *id)
+            })
+            .map(Value::from),
+        "codex" => input::acceptance::codex_turn(event),
+        "kimi" => event["turn_id"]
+            .as_u64()
+            .filter(|id| *id <= i64::MAX as u64)
+            .map(Value::from),
+        _ => None,
+    }
+}
+
 /// What one main prompt event does to the person turn.
 #[derive(Debug, PartialEq)]
 pub(super) enum Decision {
@@ -179,7 +201,9 @@ pub(super) fn decide(
     let Some((request, receipt, mark)) = pending else {
         return Decision::End;
     };
+    let native = native_identity(agent, event);
     let bound = binding_event(agent, event)
+        && native.is_some()
         // A message binds within twelve hours of its admission.
         && (0..=crate::desktop::person_mark::TURN_MS).contains(&(now_ms - mark.at))
         && record[SPENT] != request.as_str()
@@ -198,23 +222,29 @@ pub(super) fn decide(
         "conversation_id": record["conversation_id"],
         "admitted_at": mark.at,
         "bound_at": now_ms,
-        "native_turn": if agent == "kimi" { event["turn_id"].clone() } else { Value::Null },
+        "native_turn": native,
     }))
 }
 
 /// Whether the native agent itself proves that exactly this receipt's input
-/// was delivered and accepted (zerus-46l1q, review S1-1). For Claude the send
-/// writer saw Claude's own record of the message (a typed transcript row or
-/// its queue entry) after the paste; for Codex and Kimi their native source
-/// holds it as the main user's input after the send. Until then a bound turn
-/// grants nothing; a send left uncertain never does.
-pub(crate) fn delivered(record: &Value, receipt: &Value) -> bool {
-    if receipt["status"] != "submitted" {
+/// was delivered and accepted as the native input `native` that the person
+/// turn bound (zerus-46l1q, reviews S1-1 and D1). For Claude the send writer
+/// saw Claude's own record of the message, and its transcript holds that
+/// text as the user row of exactly that prompt; for Codex and Kimi their
+/// native source holds it as the main user's input of exactly that turn,
+/// after the send. A queue entry alone, or the same text in another turn,
+/// proves nothing. Until then a bound turn grants nothing; a send left
+/// uncertain never does.
+pub(crate) fn delivered(record: &Value, receipt: &Value, native: &Value) -> bool {
+    if receipt["status"] != "submitted" || native.is_null() {
         return false;
     }
     match string(record, "agent") {
-        "claude" => matches!(receipt["native"].as_str(), Some("transcript" | "queue")),
-        "codex" | "kimi" => input::acceptance::native_delivery(record, receipt),
+        "claude" => {
+            matches!(receipt["native"].as_str(), Some("transcript" | "queue"))
+                && input::acceptance::claude_delivery(record, receipt, native)
+        }
+        "codex" | "kimi" => input::acceptance::native_delivery(record, receipt, native),
         _ => false,
     }
 }
@@ -303,7 +333,7 @@ mod tests {
     #[test]
     fn codex_binds_at_its_prompt_submission_of_exactly_the_marked_text() {
         let (record, before, marked) = pending("codex", "hold the cutover");
-        let submit = |text: &str| json!({"hook_event_name": "UserPromptSubmit", "prompt": text});
+        let submit = |text: &str| json!({"hook_event_name": "UserPromptSubmit", "prompt": text, "turn_id": "turn-7"});
         let Decision::Bind(turn) = decide(
             &record,
             &submit("hold the cutover"),
@@ -313,9 +343,21 @@ mod tests {
         ) else {
             panic!("the marked prompt binds");
         };
+        // The bound turn names its native turn, which delivery must show
+        // (review D1); a prompt without one binds nothing.
         assert_eq!(
             (turn["request_id"].as_str(), turn["native_turn"].clone()),
-            (Some("r1"), Value::Null)
+            (Some("r1"), json!("turn-7"))
+        );
+        assert_eq!(
+            decide(
+                &record,
+                &json!({"hook_event_name": "UserPromptSubmit", "prompt": "hold the cutover"}),
+                &before,
+                Some(&marked),
+                NOW
+            ),
+            Decision::End
         );
         assert_eq!(
             decide(
@@ -431,32 +473,87 @@ mod tests {
 
     #[test]
     fn claude_delivery_is_only_claudes_own_record_of_a_submitted_send() {
-        let record = json!({"agent": "claude"});
-        let receipt = |status: &str, native: Value| json!({"status": status, "native": native});
+        // The prompt's own transcript row is there; the receipt decides.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("transcript.jsonl");
+        let prompt = uuid::Uuid::new_v4().to_string();
+        let row = json!({"type":"user","promptSource":"typed","timestamp":"1970-01-01T00:00:11Z",
+            "promptId":prompt,"message":{"role":"user","content":"words"}});
+        std::fs::write(&path, format!("{row}\n")).unwrap();
+        let record = json!({"agent": "claude", "transcript": path, "input_pending_at": 10.0});
+        let receipt = |status: &str, native: Value| json!({"status": status, "native": native, "submitted_text": "words"});
+        let bound = json!(prompt);
         assert!(delivered(
             &record,
-            &receipt("submitted", json!("transcript"))
+            &receipt("submitted", json!("transcript")),
+            &bound
         ));
-        assert!(delivered(&record, &receipt("submitted", json!("queue"))));
-        // An emptied composer, an uncertain or unfinished send, or no proof
-        // grant nothing.
+        assert!(delivered(
+            &record,
+            &receipt("submitted", json!("queue")),
+            &bound
+        ));
+        // An emptied composer, an uncertain or unfinished send, no proof, or
+        // no bound prompt grant nothing.
         assert!(!delivered(
             &record,
-            &receipt("submitted", json!("composer"))
-        ));
-        assert!(!delivered(&record, &receipt("submitted", Value::Null)));
-        assert!(!delivered(
-            &record,
-            &receipt("in_progress", json!("transcript"))
+            &receipt("submitted", json!("composer")),
+            &bound
         ));
         assert!(!delivered(
             &record,
-            &receipt("uncertain", json!("transcript"))
+            &receipt("submitted", Value::Null),
+            &bound
+        ));
+        assert!(!delivered(
+            &record,
+            &receipt("in_progress", json!("transcript")),
+            &bound
+        ));
+        assert!(!delivered(
+            &record,
+            &receipt("uncertain", json!("transcript")),
+            &bound
+        ));
+        assert!(!delivered(
+            &record,
+            &receipt("submitted", json!("transcript")),
+            &Value::Null
         ));
         assert!(!delivered(
             &json!({"agent": "opencode"}),
-            &receipt("submitted", json!("transcript"))
+            &receipt("submitted", json!("transcript")),
+            &bound
         ));
+    }
+
+    #[test]
+    fn every_agent_binds_only_with_the_native_identity_of_its_input() {
+        let prompt = uuid::Uuid::new_v4().to_string();
+        assert_eq!(
+            native_identity("claude", &json!({"prompt_id": prompt})),
+            Some(json!(prompt))
+        );
+        for bad in [
+            json!(null),
+            json!(""),
+            json!("not-a-uuid"),
+            json!(7),
+            json!(uuid::Uuid::nil().to_string()),
+        ] {
+            assert_eq!(native_identity("claude", &json!({"prompt_id": bad})), None);
+        }
+        assert_eq!(
+            native_identity("codex", &json!({"turn_id": "turn-1"})),
+            Some(json!("turn-1"))
+        );
+        assert_eq!(native_identity("codex", &json!({})), None);
+        assert_eq!(
+            native_identity("kimi", &json!({"turn_id": 4})),
+            Some(json!(4))
+        );
+        assert_eq!(native_identity("kimi", &json!({"turn_id": "4"})), None);
+        assert_eq!(native_identity("opencode", &json!({"turn_id": "4"})), None);
     }
 
     #[test]

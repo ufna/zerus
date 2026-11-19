@@ -35,8 +35,15 @@ pub(crate) struct PersonRequest {
 }
 
 /// Why no person request holds for this command; its text tells the agent
-/// what to do.
-pub(crate) const ASK: &str = "ask the person in your own conversation; only their own message to this session lets an agent act for them";
+/// what to do. Only Linux marks the person's own message today; on macOS
+/// (until its own mark, zerus-uav2j) and on Windows it never lets an agent
+/// act for them (review D4).
+#[cfg(target_os = "linux")]
+pub(crate) const ASK: &str = "ask the person in your own conversation; only their own message to this session, typed in the Zerus window, lets an agent act for them";
+#[cfg(target_os = "macos")]
+pub(crate) const ASK: &str = "on macOS the person's own message does not yet let an agent act for them; ask the person to do this themselves";
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+pub(crate) const ASK: &str = "on Windows the person's own message does not let an agent act for them; ask the person to do this themselves";
 
 #[allow(dead_code)]
 impl PersonRequest {
@@ -102,11 +109,10 @@ fn proven(
     if !turn.is_object() || record["state"] == "archived" {
         return Err(none());
     }
-    let (request, receipt, mark) =
-        person_turn::marked_pending(config, record).ok_or_else(none)?;
+    let (request, receipt, mark) = person_turn::marked_pending(config, record).ok_or_else(none)?;
     // Delivery first: an admitted message that the native agent has not
     // shown it accepted grants nothing, whatever a hook reported (S1-1).
-    if !person_turn::delivered(record, &receipt) {
+    if !person_turn::delivered(record, &receipt, &turn["native_turn"]) {
         return Err(format!(
             "the person's message is not yet proven delivered to this session; {ASK}"
         ));

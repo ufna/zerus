@@ -144,10 +144,14 @@ and leaves evidence. The window gesture stays for decisions made in the window.
   Any other main prompt, any input receipt, any answer delivered into the
   session, a run or conversation change, or 12 hours from the hook end it.
 - **Delivery.** A recorded turn grants nothing until the native agent itself
-  shows that it accepted exactly that send. For Claude, the send writer saw
-  Claude's own transcript row or queue entry of it. For Codex and Kimi, their
-  native source holds exactly that text as the main user's input after the
-  send. A send left uncertain never grants anything.
+  shows that it accepted exactly that send as the input the turn bound. The
+  hook records that input's native identity: Claude's `prompt_id`, Codex's
+  `turn_id`, Kimi's user `turn_id`; without one nothing binds. For Claude the
+  send writer saw Claude's own record of the message, and the transcript holds
+  its text as the user row of exactly that `promptId`; for Codex and Kimi the
+  native source holds it as the main user's input of exactly that turn, after
+  the send. A queue entry alone, the same text in another turn, or a send left
+  uncertain never grants anything.
 - **Use.** `caller::person_request()` proves all of it again for each command
   from the caller's live record, the mark (read only from the store of its own
   configuration) and the receipt; `hgs self --json` shows `person_request`.
@@ -183,16 +187,19 @@ Sizes: S < 300, M 300-1000, L > 1000 changed lines.
 
 1. S0, text (S): AGENTS.md, CLAUDE.md, `hgs guide` index, tasks, launch and
    stop, and `docs/reference.md`; this file.
-2. S1, desktop mark and person turn (M): Linux and macOS, local sessions;
-   tests through the real deferred-send and hook writers.
-3. S2, tasks (S): T3-T5, T7-T9 with history fields; I2 and I7 text.
-4. S3, Teams (M): writers, front door (the person's terminal and
+2. S1, desktop mark and person turn (M): Linux, local sessions; tests through
+   the real deferred-send and hook writers. macOS and Windows write no mark
+   (see Platforms), so the person's own message lets no agent act there; a
+   refusal says so on those platforms.
+3. S1c, macOS mark for the window's direct send (M), `zerus-uav2j`.
+4. S2, tasks (S): T3-T5, T7-T9 with history fields; I2 and I7 text.
+5. S3, Teams (M): writers, front door (the person's terminal and
    `PersonRequest`), preview, catalog, template; I6 text; closes
    `zerus-63rru.31`.
-5. S1b, phone mark (S-M).
-6. S4, answers (S).
-7. S5, window-only settings, automatic approvals included (M).
-8. S6, remote (L).
+6. S1b, phone mark (S-M).
+7. S4, answers (S).
+8. S5, window-only settings, automatic approvals included (M).
+9. S6, remote (L).
 
 ## Owner decisions (2026-11-18)
 

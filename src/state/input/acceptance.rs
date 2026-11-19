@@ -49,6 +49,19 @@ fn stamp(file: &fs::File) -> Option<(u64, u64, u64, std::time::SystemTime)> {
 // A held regular file, bounded header + tail. A clipped row, replacement,
 // truncation, concurrent append, gap or malformed row yields unknown.
 fn source(path: &Path, conversation: Option<&str>) -> Option<Source> {
+    // Codex tool-result rows can exceed 1MiB. They still share the SAME
+    // 16MiB aggregate tail and row count; parse them rather than treating
+    // unrelated tool output as lost exact-user evidence. Kimi is unchanged.
+    let row_bytes = if conversation.is_some() {
+        BYTES as usize
+    } else {
+        1 << 20
+    };
+    source_bounded(path, conversation, row_bytes)
+}
+
+/// [`source`] with an explicit bound on one row.
+fn source_bounded(path: &Path, conversation: Option<&str>, row_bytes: usize) -> Option<Source> {
     if !path.is_absolute() {
         return None;
     }
@@ -82,14 +95,6 @@ fn source(path: &Path, conversation: Option<&str>) -> Option<Source> {
         if start > 0 && index == 0 {
             continue;
         }
-        // Codex tool-result rows can exceed 1MiB. They still share the SAME
-        // 16MiB aggregate tail and row count; parse them rather than treating
-        // unrelated tool output as lost exact-user evidence. Kimi is unchanged.
-        let row_bytes = if conversation.is_some() {
-            BYTES as usize
-        } else {
-            1 << 20
-        };
         if !line.ends_with(b"\n") || line.len() > row_bytes || rows.len() == ROWS {
             return None;
         }
@@ -182,6 +187,20 @@ fn consumed(
     submitted: &str,
     after: Option<u64>,
 ) -> Option<(f64, Option<u64>)> {
+    scan(rows, agent, pending, after, |input, _| input == submitted)
+        .map(|(at, native)| (at, native.and_then(|id| id.as_u64())))
+}
+
+/// The first main user input of `rows` after `pending` that `pick` takes,
+/// given its text and its native identity (Codex's turn, Kimi's turn): its
+/// time and that identity.
+fn scan(
+    rows: &[Value],
+    agent: &str,
+    pending: f64,
+    after: Option<u64>,
+    mut pick: impl FnMut(&str, Option<&Value>) -> bool,
+) -> Option<(f64, Option<Value>)> {
     let mut turn = None;
     for row in rows {
         let (at, input, native_id) = if agent == "codex" {
@@ -208,7 +227,7 @@ fn consumed(
             let Some(at) = timestamp(row) else {
                 continue;
             };
-            let Some((started, _)) = &turn else {
+            let Some((started, id)) = &turn else {
                 continue;
             };
             if *started <= pending || *started > at {
@@ -217,7 +236,7 @@ fn consumed(
             let Some(input) = text(&payload["content"], "input_text") else {
                 continue;
             };
-            (at, input, None)
+            (at, input, Some(id.clone()))
         } else {
             if row["type"] != "turn.prompt"
                 || row["agentId"] != "main"
@@ -234,9 +253,9 @@ fn consumed(
             if after.is_some_and(|floor| id <= floor) {
                 continue;
             }
-            (at / 1000.0, input, Some(id))
+            (at / 1000.0, input, Some(Value::from(id)))
         };
-        if at.is_finite() && at > pending && at <= now() && input == submitted {
+        if at.is_finite() && at > pending && at <= now() && pick(&input, native_id.as_ref()) {
             return Some((at, native_id));
         }
     }
@@ -297,10 +316,12 @@ pub(in crate::state) fn pending_receipt_of(record: &Value) -> Option<Value> {
 }
 
 /// Whether the Codex or Kimi agent's own native record holds exactly this
-/// pending receipt's text as the main user's input after it was sent: the
-/// held native source read by the same bounded rules as acceptance repair
-/// (zerus-46l1q). A missing, changed or ambiguous source is no proof.
-pub(in crate::state) fn native_delivery(record: &Value, receipt: &Value) -> bool {
+/// pending receipt's text as the main user's input after it was sent, in
+/// exactly the native turn `native` that the person turn bound: the held
+/// native source read by the same bounded rules as acceptance repair
+/// (zerus-46l1q, review D1). The same text in another turn, a missing,
+/// changed or ambiguous source is no proof.
+pub(in crate::state) fn native_delivery(record: &Value, receipt: &Value, native: &Value) -> bool {
     let agent = string(record, "agent");
     let (source, after) = match agent {
         "codex" => (
@@ -321,15 +342,47 @@ pub(in crate::state) fn native_delivery(record: &Value, receipt: &Value) -> bool
     let Some(source) = source else {
         return false;
     };
-    consumed(
-        &source.rows,
-        agent,
-        record["input_pending_at"].as_f64().unwrap_or(f64::INFINITY),
-        string(receipt, "submitted_text"),
-        after,
-    )
-    .is_some()
+    let submitted = string(receipt, "submitted_text");
+    !native.is_null()
+        && scan(
+            &source.rows,
+            agent,
+            record["input_pending_at"].as_f64().unwrap_or(f64::INFINITY),
+            after,
+            |input, id| input == submitted && id == Some(native),
+        )
+        .is_some()
         && source.current()
+}
+
+/// Whether Claude's own transcript holds exactly this pending receipt's text
+/// as the main user's prompt `prompt` (its `promptId`, which the person
+/// turn's hook reported as `prompt_id`), recorded no earlier than the send
+/// (zerus-46l1q, review D1). A queue entry alone, a sidechain or meta row,
+/// another prompt's row of the same text, or a changed or unreadable
+/// transcript is no proof.
+pub(in crate::state) fn claude_delivery(record: &Value, receipt: &Value, prompt: &Value) -> bool {
+    let Some(prompt) = prompt.as_str().filter(|id| !id.is_empty()) else {
+        return false;
+    };
+    let Some(source) = source_bounded(
+        Path::new(string(record, "transcript")),
+        None,
+        BYTES as usize,
+    ) else {
+        return false;
+    };
+    let pending = record["input_pending_at"].as_f64().unwrap_or(f64::INFINITY);
+    let submitted = string(receipt, "submitted_text");
+    source.rows.iter().any(|row| {
+        row["type"] == "user"
+            && row["isSidechain"] != true
+            && row["isMeta"] != true
+            && row["promptId"].as_str() == Some(prompt)
+            && super::settle::user_text(row)
+                .is_some_and(|text| super::settle::same(submitted, &text))
+            && super::settle::stamped(row).is_some_and(|at| at >= pending && at <= now())
+    }) && source.current()
 }
 
 fn bound_receipt(record: &Value, bootstrap: bool) -> Option<Value> {
@@ -599,6 +652,11 @@ pub(in crate::state) fn native_idle(record: &Value) -> bool {
     ended && source.current()
 }
 
+/// A Codex hook event's or rollout event's turn ID, as acceptance reads it.
+pub(in crate::state) fn codex_turn(payload: &Value) -> Option<Value> {
+    native_turn("codex", payload)
+}
+
 fn native_turn(agent: &str, payload: &Value) -> Option<Value> {
     if agent == "kimi" {
         return payload["turnId"]
@@ -642,26 +700,156 @@ mod tests {
         let record = json!({"agent":"codex","conversation_id":"conversation-1",
             "transcript":path,"input_pending_at":10.0});
         let receipt = json!({"submitted_text":"hold the cutover"});
+        let turn = json!("turn-1");
         fs::write(&path, rows("hold the cutover", "1970-01-01T00:00:11Z")).unwrap();
-        assert!(native_delivery(&record, &receipt));
+        assert!(native_delivery(&record, &receipt, &turn));
+        // The bound turn must be that row's own turn (review D1).
+        assert!(!native_delivery(&record, &receipt, &json!("turn-2")));
+        assert!(!native_delivery(&record, &receipt, &Value::Null));
         // Another text, a row before the send, another conversation or no
         // readable rollout prove nothing.
         fs::write(&path, rows("hold the cutover now", "1970-01-01T00:00:11Z")).unwrap();
-        assert!(!native_delivery(&record, &receipt));
+        assert!(!native_delivery(&record, &receipt, &turn));
         fs::write(&path, rows("hold the cutover", "1970-01-01T00:00:11Z")).unwrap();
         let mut late = record.clone();
         late["input_pending_at"] = json!(12.0);
-        assert!(!native_delivery(&late, &receipt));
+        assert!(!native_delivery(&late, &receipt, &turn));
         let mut other = record.clone();
         other["conversation_id"] = json!("conversation-2");
-        assert!(!native_delivery(&other, &receipt));
+        assert!(!native_delivery(&other, &receipt, &turn));
         let mut missing = record.clone();
         missing["transcript"] = json!(dir.path().join("absent.jsonl"));
-        assert!(!native_delivery(&missing, &receipt));
+        assert!(!native_delivery(&missing, &receipt, &turn));
         // A Claude record never takes this route.
         let mut claude = record.clone();
         claude["agent"] = json!("claude");
-        assert!(!native_delivery(&claude, &receipt));
+        assert!(!native_delivery(&claude, &receipt, &turn));
+    }
+
+    #[test]
+    fn two_identical_texts_in_successive_turns_prove_only_their_own_turn() {
+        // zerus-46l1q review D1: the person's turn bound turn B; the same
+        // text as turn A's input is no delivery of B, and B's own row is.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("rollout.jsonl");
+        let started = |turn: &str, at: &str| json!({"type":"event_msg","timestamp":at,"payload":{"type":"task_started","turn_id":turn}});
+        let complete = |turn: &str, at: &str| json!({"type":"event_msg","timestamp":at,"payload":{"type":"task_complete","turn_id":turn}});
+        let user = |at: &str| json!({"timestamp":at,"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"same words"}]}});
+        let write = |rows: &[Value]| {
+            let mut all = vec![json!({"type":"session_meta","payload":{"id":"conversation-1"}})];
+            all.extend_from_slice(rows);
+            fs::write(
+                &path,
+                all.iter().map(|row| format!("{row}\n")).collect::<String>(),
+            )
+            .unwrap();
+        };
+        let record = json!({"agent":"codex","conversation_id":"conversation-1",
+            "transcript":path,"input_pending_at":10.0});
+        let receipt = json!({"submitted_text":"same words"});
+        let first = [
+            started("turn-a", "1970-01-01T00:00:11Z"),
+            user("1970-01-01T00:00:11.500Z"),
+            complete("turn-a", "1970-01-01T00:00:12Z"),
+        ];
+        write(&first);
+        assert!(!native_delivery(&record, &receipt, &json!("turn-b")));
+        let mut both = first.to_vec();
+        both.extend([
+            started("turn-b", "1970-01-01T00:00:13Z"),
+            user("1970-01-01T00:00:13.500Z"),
+        ]);
+        write(&both);
+        assert!(native_delivery(&record, &receipt, &json!("turn-b")));
+        assert!(native_delivery(&record, &receipt, &json!("turn-a")));
+        // A turn that started but holds no user row of it yet proves nothing.
+        write(&[started("turn-b", "1970-01-01T00:00:13Z")]);
+        assert!(!native_delivery(&record, &receipt, &json!("turn-b")));
+    }
+
+    #[test]
+    fn kimi_delivery_is_the_user_prompt_of_exactly_the_bound_turn() {
+        let rows = vec![
+            json!({"type":"turn.prompt","agentId":"main","origin":{"kind":"user"},"turnId":5,"time":11_000.0,"input":[{"type":"text","text":"same words"}]}),
+            json!({"type":"turn.prompt","agentId":"main","origin":{"kind":"user"},"turnId":6,"time":12_000.0,"input":[{"type":"text","text":"same words"}]}),
+        ];
+        let pick = |native: Value| {
+            scan(&rows, "kimi", 10.0, None, |input, id| {
+                input == "same words" && id == Some(&native)
+            })
+            .is_some()
+        };
+        assert!(pick(json!(5)));
+        assert!(pick(json!(6)));
+        assert!(
+            !pick(json!(7)),
+            "a turn without its own prompt row is no delivery"
+        );
+        // Only the later turn when the earlier one is not this send's.
+        assert!(scan(&rows[..1], "kimi", 10.0, None, |_, id| id
+            == Some(&json!(6)))
+        .is_none());
+    }
+
+    #[test]
+    fn claude_delivery_is_the_user_row_of_exactly_the_bound_prompt() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("transcript.jsonl");
+        let user = |prompt: &str, at: &str, extra: Value| {
+            let mut row = json!({"type":"user","promptSource":"typed","timestamp":at,"promptId":prompt,
+                "uuid":uuid::Uuid::new_v4().to_string(),"message":{"role":"user","content":"same words"}});
+            for (key, value) in extra.as_object().unwrap() {
+                row[key] = value.clone();
+            }
+            row
+        };
+        let write = |rows: &[Value]| {
+            fs::write(
+                &path,
+                rows.iter()
+                    .map(|row| format!("{row}\n"))
+                    .collect::<String>(),
+            )
+            .unwrap();
+        };
+        let (first, second) = (
+            uuid::Uuid::new_v4().to_string(),
+            uuid::Uuid::new_v4().to_string(),
+        );
+        let record = json!({"agent":"claude","transcript":path,"input_pending_at":10.0});
+        let receipt =
+            json!({"submitted_text":"same words","status":"submitted","native":"transcript"});
+        // The same text as another prompt's row is no delivery of this one.
+        write(&[user(&first, "1970-01-01T00:00:11Z", json!({}))]);
+        assert!(claude_delivery(&record, &receipt, &json!(first)));
+        assert!(!claude_delivery(&record, &receipt, &json!(second)));
+        write(&[
+            user(&first, "1970-01-01T00:00:11Z", json!({})),
+            user(&second, "1970-01-01T00:00:12Z", json!({})),
+        ]);
+        assert!(claude_delivery(&record, &receipt, &json!(second)));
+        // A queued entry that never started its turn is no delivery.
+        write(&[
+            json!({"type":"queue-operation","operation":"enqueue","timestamp":"1970-01-01T00:00:11Z","content":"same words"}),
+        ]);
+        assert!(!claude_delivery(&record, &receipt, &json!(first)));
+        // A sidechain or meta row, a row before the send, or another text.
+        for extra in [
+            json!({"isSidechain":true}),
+            json!({"isMeta":true}),
+            json!({"message":{"role":"user","content":"other words"}}),
+        ] {
+            write(&[user(&first, "1970-01-01T00:00:11Z", extra)]);
+            assert!(!claude_delivery(&record, &receipt, &json!(first)));
+        }
+        write(&[user(&first, "1970-01-01T00:00:09Z", json!({}))]);
+        assert!(!claude_delivery(&record, &receipt, &json!(first)));
+        // No bound prompt, or a missing transcript.
+        write(&[user(&first, "1970-01-01T00:00:11Z", json!({}))]);
+        assert!(!claude_delivery(&record, &receipt, &Value::Null));
+        let mut missing = record.clone();
+        missing["transcript"] = json!(dir.path().join("absent.jsonl"));
+        assert!(!claude_delivery(&missing, &receipt, &json!(first)));
     }
 
     #[test]

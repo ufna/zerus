@@ -752,29 +752,48 @@ pub(in crate::state) fn confirm(
 /// `remove`/`dequeue` operation, and this send's own enqueue would come first.
 fn row_proof(row: &Value, message: &str, pasted_at: f64) -> Option<Proof> {
     let (proof, text) = match row["type"].as_str()? {
-        "user" if row["isMeta"] != true && row.get("promptSource").is_none_or(|source| source == "typed") => {
-            let text = match &row["message"]["content"] {
-                Value::String(text) => text.clone(),
-                Value::Array(blocks) => blocks
-                    .iter()
-                    .filter(|block| block["type"] == "text")
-                    .filter_map(|block| block["text"].as_str())
-                    .collect::<Vec<_>>()
-                    .join("\n"),
-                _ => return None,
-            };
-            (Proof::Transcript, text)
+        "user"
+            if row["isMeta"] != true
+                && row
+                    .get("promptSource")
+                    .is_none_or(|source| source == "typed") =>
+        {
+            (Proof::Transcript, user_text(row)?)
         }
-        "queue-operation" if row["operation"] == "enqueue" => (Proof::Queued, row["content"].as_str()?.to_owned()),
+        "queue-operation" if row["operation"] == "enqueue" => {
+            (Proof::Queued, row["content"].as_str()?.to_owned())
+        }
         _ => return None,
     };
-    let stamped = chrono::DateTime::parse_from_rfc3339(row["timestamp"].as_str()?).ok()?;
-    let stamped = stamped.timestamp_millis() as f64 / 1000.0;
+    let stamped = stamped(row)?;
     // Claude may write a row well after it made it (an earlier enqueue lands
     // after this send's start offset), so the stamp, not the position, shows
     // the row is newer than the paste. This send's own row is made at its
     // Enter, after at least the settle's stable time, on the same clock.
     (stamped >= pasted_at && same(message, &text)).then_some(proof)
+}
+
+/// The text of a Claude transcript user row: its string content, or its text
+/// blocks joined by line breaks.
+pub(in crate::state) fn user_text(row: &Value) -> Option<String> {
+    match &row["message"]["content"] {
+        Value::String(text) => Some(text.clone()),
+        Value::Array(blocks) => Some(
+            blocks
+                .iter()
+                .filter(|block| block["type"] == "text")
+                .filter_map(|block| block["text"].as_str())
+                .collect::<Vec<_>>()
+                .join("\n"),
+        ),
+        _ => None,
+    }
+}
+
+/// A Claude transcript row's own time stamp, in Unix seconds.
+pub(in crate::state) fn stamped(row: &Value) -> Option<f64> {
+    let stamped = chrono::DateTime::parse_from_rfc3339(row["timestamp"].as_str()?).ok()?;
+    Some(stamped.timestamp_millis() as f64 / 1000.0)
 }
 
 /// A line Claude may turn into an image attachment: only a path (quoted or
