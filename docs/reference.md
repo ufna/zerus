@@ -8810,7 +8810,7 @@ use. `hgs listing-index disable --json` remains an explicit kill switch;
 `enable --json` and `status --json` remain available for diagnostics. Existing
 disabled, malformed or unreadable policy is preserved. A coalesced background
 worker establishes coverage independently of automatic recovery policy. Ordinary
-unpaged listing retries publication races for up to one second, including first
+unpaged listing retries publication races for up to two seconds, including first
 use. Each attempt observes the terminal and index again. Status distinguishes disabled,
 building, ready and unavailable. macOS/Windows activation and desktop watch
 consumption are separate follow-ups; their existing paths remain in use.

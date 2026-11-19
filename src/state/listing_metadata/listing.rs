@@ -53,7 +53,7 @@ pub(crate) fn retry(
     const BACKOFF: Duration = Duration::from_millis(20);
     let started = Instant::now();
     let until = started + Duration::from_secs(10);
-    let retry_until = started + Duration::from_secs(1);
+    let retry_until = started + Duration::from_secs(2);
     loop {
         match attempt(until) {
             Err(error)
