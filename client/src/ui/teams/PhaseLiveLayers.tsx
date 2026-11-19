@@ -2,7 +2,7 @@ import { For, Show, createMemo, createSignal } from "solid-js";
 import { tr } from "../../i18n";
 import { teamPlanPreferences } from "../../store/ui";
 import { sectionCollapsed } from "../../store/teamPlan";
-import { openTask } from "../../store/taskNavigation";
+import { openTeamTask } from "./team-task-navigation";
 import type { PhaseDraft, PhaseLiveNode, PhaseNodeSnapshot } from "../../store/team-phases";
 import type { TeamCard } from "../../store/teams";
 import { PlanToolbar } from "./PlanToolbar";
@@ -51,7 +51,7 @@ export function PhaseLiveLayers(props: { team: string; draft: PhaseDraft; live: 
               <Show when={open() === placed.id}><Show when={props.draft.nodes.find((n) => n.id === placed.id)}>{(approved) => <><b>{tr("Approved description")}</b><p class="phase-description">{approved().text}</p></>}</Show>
                 <Show when={criteria().length > 0}><b>{tr("Acceptance criteria")}</b><ul><For each={criteria()}>{(c) => <li>{c}</li>}</For></ul></Show>
                 <For each={props.draft.graph.edges.filter((edge) => edge.to === placed.id)}>{(edge) => <p class="dim">{edge.external ? tr("Depends on task #%1 outside this phase", edge.from) : tr("Depends on task #%1", edge.from)} <span>{edge.kind === "hard" ? tr("Hard") : tr("Soft")}</span></p>}</For>
-                <Show when={node().task}>{(task) => <button type="button" class="btn small" onClick={() => openTask(task().project, task().uuid)}>{tr("Open task")}</button>}</Show>
+                <Show when={node().task}>{(task) => <button type="button" class="btn small" onClick={() => openTeamTask(task().project, task().uuid)}>{tr("Open task")}</button>}</Show>
               </Show>
             </article>;
           }}</For>

@@ -6,8 +6,8 @@ import { openTeamCatalog } from "../teams/catalog-navigation";
 import { teams, type TeamFailure, type TeamProgress, type TeamSummary } from "../../store/teams";
 import { Icon } from "../lib/icons";
 import type { Session } from "../sessions/types";
-import { openTeamLead } from "../teams/lead-navigation";
-import { rowIsSession, rowSessionKeys, sessionKey } from "../teams/session-binding";
+import { openTeamPage } from "../teams/team-navigation";
+import { rowSessionKeys, sessionKey } from "../teams/session-binding";
 import { stateLabel, stateTone } from "../teams/team-model";
 import { TeamsHeader, TeamsRow } from "../teams/TeamsScreenFrame";
 import "../styles/teams.css";
@@ -70,11 +70,8 @@ export function TeamsScreen(props: TeamsScreenProps = {}) {
     return found;
   });
   const project = (id: string) => projectsPage().projects.find((candidate) => candidate.id === id)?.name ?? id;
-  const open = (team: TeamSummary) => {
-    if (!team.lead_session) { setNotice(tr("The team's lead has no session yet.")); return; }
-    const row = orderedRows().find((candidate) => rowIsSession(candidate, team.lead_session));
-    if (!row || !openTeamLead(team, row)) setNotice(tr("The team's lead session is not on the session list."));
-  };
+  // A row opens its team's page, lead session or not (zerus-63rru.198).
+  const open = (team: TeamSummary) => openTeamPage(team.id);
   const move = async (cursor: string | null) => {
     if (pending()) return;
     setNotice(""); setPending({ cursor, failure: readFailure() });
