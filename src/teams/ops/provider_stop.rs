@@ -6,11 +6,22 @@ use crate::state::{
     TeamRecord,
 };
 
-pub(super) struct Proof<'a> {
+pub(crate) struct ProviderConfirmation {
+    pub binding: String,
+    pub card: Option<u64>,
+    pub notice: Option<Request>,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct ProviderStopProof<'a> {
     pub member: &'a Member,
     pub record: &'a TeamRecord,
     pub stop: ProviderStop,
+    pub confirmation: Option<&'a ProviderConfirmation>,
 }
+
+pub(crate) const CONFIRMATION_CLOSED: &str =
+    "The service confirmed that the member stopped after a provider error.";
 
 pub(crate) const CHANGED: &str = "team_provider_stop_changed";
 
@@ -30,7 +41,7 @@ pub(super) fn release(ctx: &mut Context<'_>) -> Result<()> {
     else {
         unreachable!()
     };
-    let proof = ctx.provider_stop.as_ref().ok_or_else(|| {
+    let proof = ctx.provider_stop.ok_or_else(|| {
         Problem::new(
             code::NOT_ALLOWED,
             "A current native provider stop is required.",
@@ -42,7 +53,6 @@ pub(super) fn release(ctx: &mut Context<'_>) -> Result<()> {
     let Some(session) = &m.session else {
         return Err(changed());
     };
-    let launch = session.session_id.strip_prefix("launch_id:");
     if ctx.team.status != TeamStatus::Running
         || m.id == ctx.team.lead
         || m.state != MemberState::Active
@@ -51,17 +61,25 @@ pub(super) fn release(ctx: &mut Context<'_>) -> Result<()> {
         || m.agent != record.agent
         || m.account != record.account
         || session.machine != ctx.team.home
-        || launch != Some(record.launch_id.as_str())
     {
         return Err(changed());
     }
-    let bound: bool = ctx.db.query_row(
-        "SELECT EXISTS(SELECT 1 FROM member_handles WHERE team=?1 AND member=?2 AND launch=?3 AND session_id=?4 AND machine=?5)",
-        params![ctx.team.id, member, record.launch_id, record.session_id, session.machine],
-        |row| row.get(0),
-    ).map_err(storage)?;
-    if !bound {
-        return Err(changed());
+    if let Some(run) = session.session_id.strip_prefix("run_id:") {
+        if run != record.run_id {
+            return Err(changed());
+        }
+    } else {
+        if session.session_id.strip_prefix("launch_id:") != Some(record.launch_id.as_str()) {
+            return Err(changed());
+        }
+        let bound: bool = ctx.db.query_row(
+            "SELECT EXISTS(SELECT 1 FROM member_handles WHERE team=?1 AND member=?2 AND launch=?3 AND session_id=?4 AND machine=?5)",
+            params![ctx.team.id, member, record.launch_id, record.session_id, session.machine],
+            |row| row.get(0),
+        ).map_err(storage)?;
+        if !bound {
+            return Err(changed());
+        }
     }
 
     let n = ctx.live_node(*node)?;
@@ -120,8 +138,39 @@ pub(super) fn release(ctx: &mut Context<'_>) -> Result<()> {
             .map_err(storage)?;
         ctx.reply.item = Some(item);
     }
+    ctx.closed_confirmation_card = close_confirmation(ctx, &proof)?;
     ctx.reply.node = Some(*node);
     Ok(())
+}
+
+fn close_confirmation(ctx: &Context<'_>, proof: &ProviderStopProof<'_>) -> Result<Option<u64>> {
+    let record = proof.record;
+    let Some(confirmation) = proof.confirmation.filter(|pending| {
+        pending.binding
+            == crate::state::team_provider_stop::binding_stamp(
+                &record.launch_id,
+                &record.session_id,
+                &record.run_id,
+                &record.conversation_id,
+            )
+    }) else {
+        return Ok(None);
+    };
+    // A committed opener can precede the ledger update that would save its
+    // card ID. Read the original receipt without replaying an unopened card.
+    let card = match (confirmation.card, &confirmation.notice) {
+        (Some(card), _) => Some(card),
+        (None, Some(notice)) => super::apply::replay(ctx.db, ctx.actor, notice)?
+            .and_then(|saved| saved.ok())
+            .and_then(|reply| reply.item),
+        (None, None) => None,
+    };
+    if let Some(card) = card {
+        if talk::close_owned_card(ctx, card, Some("team_actor_blocked"))? {
+            return Ok(Some(card));
+        }
+    }
+    Ok(None)
 }
 
 fn note(member: &Member, node: &Node, kind: ProviderStopKind) -> ReportNote {

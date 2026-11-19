@@ -34,9 +34,14 @@ export function TaskActions(props: {
   busy: boolean;
   onAction: (kind: string) => void;
   onReason: (button: TaskButton) => void;
+  /** Why Accept and Return wait: the evidence beside them is of another revision. */
+  evidenceUpdating?: string;
 }) {
   // A task with no action has no row: neither its divider nor an empty line.
-  const buttons = () => taskButtons(props.card, props.teamStatus);
+  const buttons = () => {
+    const shown = taskButtons(props.card, props.teamStatus), waiting = props.evidenceUpdating;
+    return waiting ? shown.map((button) => (button.id === "accept" || button.id === "return") && !button.blocked ? { ...button, blocked: waiting } : button) : shown;
+  };
   /** Why a shown decision is disabled, each reason once. */
   const why = () => [...new Set(buttons().flatMap((button) => button.blocked ? [button.blocked] : []))];
   /** What an open decision does now, each line once. */

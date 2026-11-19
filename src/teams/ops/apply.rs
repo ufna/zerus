@@ -117,17 +117,15 @@ pub(crate) fn apply_with_native_context(
 enum Admission<'a> {
     None,
     Person(crate::desktop::teams::person_actions::kernel::Permit<'a>),
-    ProviderStop(provider_stop::Proof<'a>),
+    ProviderStop(ProviderStopProof<'a>),
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub(crate) fn apply_provider_stop(
     store: &mut Store,
     team: &Team,
-    member: &Member,
     effect: &store::EffectIntent,
-    record: &crate::state::TeamRecord,
-    stop: crate::state::team_provider_stop::ProviderStop,
+    proof: ProviderStopProof<'_>,
     now: i64,
 ) -> Result<Reply> {
     let current = store.team(&team.id)?.ok_or_else(missing)?;
@@ -143,18 +141,14 @@ pub(crate) fn apply_provider_stop(
             expected_revision: current.revision,
             operation: Operation::ReleaseProviderStop {
                 node: effect.node,
-                member: member.id.clone(),
+                member: proof.member.id.clone(),
                 effect_request_id: effect.request_id.clone(),
             },
         },
         now,
         None,
         &|_| Err(invalid("No repository read in a provider hand-back.")),
-        Admission::ProviderStop(provider_stop::Proof {
-            member,
-            record,
-            stop,
-        }),
+        Admission::ProviderStop(proof),
     )
 }
 
@@ -244,6 +238,7 @@ fn apply_inputs(
         op: &request.operation,
         request_id: &request.request_id,
         provider_stop,
+        closed_confirmation_card: None,
         task_custody: task_custody.as_ref(),
         now,
         reply: Reply {
@@ -254,6 +249,7 @@ fn apply_inputs(
             item: None,
         },
         event: None,
+        land_skipped_for: None,
         superseded: None,
         timing: None,
     };
@@ -509,6 +505,7 @@ fn dispatch(ctx: &mut Context<'_>, config: Option<&crate::config::Config>) -> Re
         Operation::ReconcileLeadQueue => lead_queue::reconcile(ctx),
         Operation::ReleaseProviderStop { .. } => provider_stop::release(ctx),
         Operation::ReconcileUnstaffed => unstaffed::reconcile(ctx),
+        Operation::RecordMemberReadability { .. } => unstaffed::record_readability(ctx),
         Operation::EndStaleUnstaffed => unstaffed::end_stale(ctx),
         Operation::CloseStaleReopenNotices => talk::close_stale_reopen_notices(ctx),
         Operation::SettleLeftHandout { .. } => members::settle_left(ctx),
@@ -558,6 +555,7 @@ pub(crate) fn observe_native_intake(
         op: &request.operation,
         request_id: &request.request_id,
         provider_stop: None,
+        closed_confirmation_card: None,
         task_custody: None,
         now,
         reply: Reply {
@@ -568,6 +566,7 @@ pub(crate) fn observe_native_intake(
             item: None,
         },
         event: None,
+        land_skipped_for: None,
         superseded: None,
         timing: None,
     };

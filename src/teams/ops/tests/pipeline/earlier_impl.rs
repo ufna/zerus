@@ -400,6 +400,7 @@ fn the_real_reconcile_retires_a_wanted_unstaffed_stage_and_tells_the_lead() {
         &readiness,
         &members,
         &std::collections::BTreeSet::new(),
+        &std::collections::BTreeSet::new(),
     );
     assert_eq!(
         unstaffed.iter().map(|u| u.node).collect::<Vec<_>>(),

@@ -116,6 +116,19 @@ pub(crate) fn observe_team_session_for_availability(
 ) -> TeamSession {
     team::session(state, session, launch, agent, hint, deadline, true)
 }
+/// Resolve an exact run using its bounded catalog route and the same pinned
+/// record reader as launch-bound provider stops.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub(crate) fn observe_team_run_for_provider(
+    state: &Path,
+    run: &str,
+    session: &str,
+    agent: &str,
+    hint: &str,
+    deadline: Instant,
+) -> TeamSession {
+    team::run(state, run, session, agent, hint, deadline)
+}
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 mod team;
 #[cfg(any(target_os = "linux", target_os = "macos"))]

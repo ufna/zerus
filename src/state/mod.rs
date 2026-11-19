@@ -56,6 +56,9 @@ pub(crate) use input::{Lookup as ReceiptLookup, Submission};
 // platforms only.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub(crate) use input::{first_message_ready, resumed_readiness, Readiness as ResumedReadiness};
+// Only the session resume leaf, Linux and macOS, reads it.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub(crate) use input::ResumedSupervisor;
 mod input_queue;
 mod journal;
 mod keep_warm;
@@ -176,8 +179,8 @@ pub(crate) mod team_provider_stop;
 pub(crate) use launch_observation::TeamRecord;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub(crate) use launch_observation::{
-    observe_team_launch, observe_team_session, observe_team_session_for_availability,
-    TeamObservation, TeamSession,
+    observe_team_launch, observe_team_run_for_provider, observe_team_session,
+    observe_team_session_for_availability, TeamObservation, TeamSession,
 };
 pub(crate) use questions::native_identity;
 #[cfg(all(test, any(target_os = "linux", target_os = "macos")))]

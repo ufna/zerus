@@ -1,0 +1,17 @@
+{
+  "seq": 1,
+  "kind": "unstaffed:10",
+  "by": "local",
+  "by_kind": "service",
+  "subject_node": null,
+  "subject_member": null,
+  "text": "Task 1 is ready. The service cannot read any eligible member (m1, m2). It will check again.",
+  "text_truncated": false,
+  "at_ms": 10180000,
+  "node": 1,
+  "generation": 1,
+  "state": "open",
+  "reply": null,
+  "notes": [],
+  "card": null
+}

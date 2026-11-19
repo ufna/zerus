@@ -4,6 +4,7 @@ import { existsSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { probeSpawns } from './dsh-spawn.mjs';
 const require = createRequire(process.env.HGS_DSH_TEST_PACKAGE + '/package.json');
 const { LlmAdapter } = await import(pathToFileURL(require.resolve('@deepseek-ai/dsh-llm')));
 const { defineTool } = await import(pathToFileURL(require.resolve('@deepseek-ai/dsh-tools')));
@@ -36,6 +37,14 @@ class Adapter extends LlmAdapter {
     }
     if (text.includes('PROVIDER_CAPACITY_FIXTURE')) throw Object.assign(new Error('Selected model is at capacity. Please try a different model.'), {code:'model_capacity'});
     const last = options.messages.at(-1);
+    if (text.startsWith('HGS_SPAWN_FIXTURE ') && last?.role !== 'tool') {
+      const args = JSON.stringify({action: text.slice('HGS_SPAWN_FIXTURE '.length)});
+      const name = 'hgs_test_spawns';
+      yield {type:'block-start',index:0,blockType:'tool-call'};
+      yield {type:'tool-call-delta',index:0,id:'spawn-probe',name,argumentsDelta:args};
+      yield {type:'block-end',index:0,block:{type:'tool-call',id:'spawn-probe',name,arguments:args}};
+      yield {type:'finish',reason:{kind:'tool-calls'}};return;
+    }
     if (text.startsWith('HGS_SELF_NATIVE_FIXTURE ') && last?.role !== 'tool') {
       const args=JSON.stringify({command:text.slice('HGS_SELF_NATIVE_FIXTURE '.length),description:'Read fixture native identity and launch a child'});
       yield {type:'block-start',index:0,blockType:'tool-call'};
@@ -148,6 +157,13 @@ export function apply(ctx,config) {
   adapter.holds = config?.holds;
   adapter.schedule = () => ctx.get('schedule');
   ctx.llm.registerAdapter(['hgs-test'],adapter);
+  ctx.tools.register(defineTool({name:'hgs_test_spawns',description:'Exercise the private native subprocess fixture',
+    parameters:{action:{type:'string',required:true}},
+    output:{schema:{type:'string'},render:(_args,value)=>[{type:'text',text:value}]},
+    async execute({action}, exec) {
+      return JSON.stringify(await probeSpawns(ctx, exec.agent.session.header.cwd, action, config.holds));
+    }
+  }));
   // Instrument the SAME upstream serializer, without supplying a second queue.
   // The second entry proves an image prompt reached admission while settings
   // was blocked in native model resolution inside the first queue entry.

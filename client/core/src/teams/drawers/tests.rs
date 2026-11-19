@@ -68,6 +68,47 @@ fn product_written_drawer_pages_reach_the_client() {
     );
 }
 
+fn staffing_inbox() -> Value {
+    serde_json::from_str(include_str!("../fixtures/lead-staffing-inbox.json")).unwrap()
+}
+
+#[test]
+fn product_staffing_inbox_keeps_the_localization_parameters() {
+    let page = decode(&asked(DrawerKind::Inbox), exit(staffing_inbox())).unwrap();
+    assert_eq!(page.rows.len(), 1);
+    let row = &page.rows[0];
+    assert_eq!(row.kind, "lead_member_added:m4");
+    assert_eq!(row.by, "lead");
+    assert_eq!(row.state, "closed");
+    assert_eq!(row.notes.len(), 1);
+    let note = &row.notes[0];
+    assert_eq!(note.code, "lead_member_added");
+    assert_eq!(note.parameters, ["m4", "Codex", "reviewer"]);
+    assert_eq!(note.text.as_deref(), Some(row.text.as_str()));
+}
+
+#[test]
+fn handwritten_staffing_parameters_must_be_three_short_ascii_tokens() {
+    for parameters in [
+        json!(["m4", "Codex"]),
+        json!(["m4", "Codex", "reviewer", "extra"]),
+        json!(["m4", "Codex", 13]),
+        json!(["m4", "Codex", ""]),
+        json!(["m4", "Codex", "r".repeat(65)]),
+        json!(["m4", "Codex", "reviewer\u{202e}"]),
+    ] {
+        let mut raw = staffing_inbox();
+        raw["rows"][0]["notes"][0]["parameters"] = parameters;
+        let page = decode(&asked(DrawerKind::Inbox), exit(raw)).unwrap();
+        assert_eq!(page.rows.len(), 1);
+        let row = &page.rows[0];
+        let note = &row.notes[0];
+        assert_eq!(note.code, "lead_member_added");
+        assert_eq!(note.text.as_deref(), Some(row.text.as_str()));
+        assert!(note.parameters.is_empty());
+    }
+}
+
 #[test]
 fn each_drawer_uses_the_existing_page_and_child_bounds() {
     for kind in [DrawerKind::Feed, DrawerKind::Inbox, DrawerKind::Cards] {

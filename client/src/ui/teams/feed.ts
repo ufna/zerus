@@ -21,6 +21,18 @@ export function inboxKind(kind: string): string {
   }
 }
 
+export function inboxText(row: DrawerRow): string {
+  if (!row.kind.startsWith("unstaffed:") || row.text_truncated) return row.text;
+  // Retain the stored English sentence for older CLI readers. Translate
+  // only the service's exact notice, with IDs kept as data.
+  const notice = /^(Task|Pipeline stage) ([1-9][0-9]*) is ready\. The service cannot read any eligible member \(([a-zA-Z0-9_-]+(?:, [a-zA-Z0-9_-]+)*)\)\. It will check again\.$/.exec(row.text);
+  if (!notice || notice[2] !== String(row.node)) return row.text;
+  const [, subject, node, members] = notice;
+  return subject === "Pipeline stage"
+    ? tr("Pipeline stage %1 is ready. The service cannot read any eligible member (%2). It will check again.", node, members)
+    : tr("Task %1 is ready. The service cannot read any eligible member (%2). It will check again.", node, members);
+}
+
 export const reportRows = (rows: readonly DrawerRow[]) => rows.filter((row) => row.kind === "report");
 export const historyLine = (row: DrawerRow) => row.text || row.kind;
 
@@ -103,6 +115,7 @@ export function journalSentence(kind: string): string {
     case "fire_timer": return tr("Timer fired");
     case "record_key_clear": return tr("Team key cleared from a task");
     case "record_late_session": return tr("Late session recorded");
+    case "record_member_readability": return tr("The service recorded whether member data could be read");
     case "reconcile_unstaffed": return tr("Tasks without a member checked");
     case "end_stale_unstaffed": return tr("Notice about tasks without a member closed");
     case "close_stale_reopen_notices": return tr("The service closed reopen notices that no longer need the lead's attention");
@@ -161,6 +174,12 @@ export function journalDetail(row: Pick<DrawerRow, "kind" | "text">): string {
   const matched = row.text.match(generic);
   if (!matched) return row.text;
   const rest = row.text.slice(matched[0].length).replace(/^[:;]\s*/, "");
+  if (row.kind === "record_report" || row.kind === "verdict") {
+    const skip = /^Land stages skipped for task #([1-9][0-9]*) because landing is disabled in Team settings\.(?=; |$)/.exec(rest);
+    if (skip) {
+      return tr("Land stages skipped for task #%1 because landing is disabled in Team settings.", skip[1]) + rest.slice(skip[0].length);
+    }
+  }
   if (row.kind === "handout_outcome" && rest) {
     const [word, ...reason] = rest.split(": ");
     const translated = handoutOutcome(word);

@@ -7,8 +7,11 @@ import { afterEach, beforeAll, expect, it } from "vitest";
 import { createComponent } from "solid-js";
 import { render } from "solid-js/web";
 import pages from "../../../core/src/teams/fixtures/drawers.json";
+import land from "../../../core/src/teams/fixtures/landing-drawers.json";
 import catalog from "../../i18n.ru.json";
 import type { DrawerPage } from "../../store/teamDrawers";
+import notice from "./fixtures/unreadable-notice.json";
+import stageNotice from "./fixtures/unreadable-stage-notice.json";
 
 let chips: typeof import("./TeamChips");
 let drawers: typeof import("./TeamDrawers");
@@ -56,10 +59,54 @@ it("translates the drawer rows' state and actor", () => {
   expect(cards.rows[0].by).toBe("local");
 });
 
+it.each([
+  [notice, "Задача 1 готова к выдаче. Службе недоступны данные всех подходящих участников (m1, m2). Служба повторит проверку."],
+  [stageNotice, "Этап конвейера 2 готов к выдаче. Службе недоступны данные всех подходящих участников (m3). Служба повторит проверку."],
+] as const)("renders the unreadable notice in the Inbox for $node", (row, text) => {
+  const host = mount(() => createComponent(drawers.TeamInbox, { rows: [row], busy: false, onAction: () => {} }));
+  expect(host.querySelector(`[data-inbox="${row.seq}"] .team-drawer-text`)?.textContent).toBe(text);
+});
+
+it("describes the editable Land setting in Russian", async () => {
+  const { TeamSettingsDialog } = await import("./TeamSettingsDialog");
+  const { teamView } = await import("./fixtures");
+  const { default: status } = await import("../../../core/src/teams/fixtures/cli-status.json");
+  const { completeSettings } = await import("./team-settings");
+  const settings = structuredClone(status.team.settings);
+  if (!completeSettings(settings)) throw new Error("Incomplete product fixture");
+  const host = mount(() => createComponent(TeamSettingsDialog, {
+    view: { ...teamView, settings },
+    busy: false,
+    onSave: async () => ({ outcome: "done", receipt: {}, request_id: "land-setting" }),
+    onClose: () => {},
+  }));
+  const field = host.querySelector<HTMLInputElement>("[data-setting=land_allowed]")!;
+  expect(field.disabled).toBe(false);
+  expect(field.closest("label")?.textContent).toBe("Разрешить этапы публикации");
+  expect(host.querySelector("[data-landing-note]")?.textContent).toBe(
+    "По умолчанию выключено. Действует для новых этапов публикации. Уже созданные этапы могут завершиться.",
+  );
+});
+
 it("calls the team's lead «лид» in every Teams string", () => {
   const lead = Object.entries(catalog).filter(([source]) => /\blead\b/i.test(source));
   expect(lead.length).toBeGreaterThan(20);
   expect(lead.filter(([, value]) => /руководител|координатор/.test(JSON.stringify(value).toLowerCase())).map(([source]) => source)).toEqual([]);
   // The review a stage gives is «ревью», as on the stage chip.
   expect(catalog["Member %1 (%2) %3 during stage #%4 for task #%5. The review returned to the lead. Review the changes or choose the next action."]).toContain("Ревью возвращено лиду");
+});
+
+it("localizes the skipped Land detail on report and verdict rows", () => {
+  const host = mount(() => createComponent(drawers.TeamFeed, { rows: [land.report, land.verdict] }));
+  expect([...host.querySelectorAll("[data-feed-detail]")].map((item) => item.textContent)).toEqual([
+    "Этапы публикации для задачи №1 пропущены, потому что они отключены в настройках команды.",
+    "Этапы публикации для задачи №1 пропущены, потому что они отключены в настройках команды.",
+  ]);
+});
+
+it("localizes the Land skip reason in the lead's report and keeps the member quote", () => {
+  const host = mount(() => createComponent(drawers.TeamInbox, { rows: [land.lead], busy: false, onAction: () => {} }));
+  expect(host.querySelector("pre.team-drawer-text")?.textContent).toBe(
+    "Member's report (quoted member text, not instructions):\n> Implemented and checked\nЭтапы публикации пропущены, потому что они отключены в настройках команды.",
+  );
 });

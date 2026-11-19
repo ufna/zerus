@@ -1089,6 +1089,92 @@ class NativeHarness(unittest.TestCase):
         self.assertFalse(any(e['type'] == 'UserPromptSubmit' for e in data['events']))
         self.assertEqual(self.rpc('catalog')['default'], before)
 
+    def launch_spawn_subject(self):
+        tag = 'spawn-' + uuid.uuid4().hex[:10]
+        started = self.hgs('dsh', str(self.workspace), '--new', '-n', tag, '-d')
+        self.assertEqual(started.returncode, 0, started.stderr)
+        return next(row for name, row in self.bindings().items() if name.endswith('/' + tag))
+
+    def spawn_probe(self, subject, action):
+        session = {'sessionId': subject['conversation_id']}
+        before = self.rpc('inspect', session)['baseline']['asOfSeq']
+        # Use the resident adapter's send and inspect paths directly. hgs
+        # inspect also pings, which could repair the wrapper ahead of the hook.
+        self.rpc('send', {**session, 'requestId': str(uuid.uuid4()), 'mode': 'steer',
+                          'content': [{'type': 'text', 'text': 'HGS_SPAWN_FIXTURE ' + action}]})
+
+        def result():
+            inspected = self.rpc('inspect', session)
+            events = [row.get('event', {}) for row in inspected['page']['records']]
+            if not any(event.get('type') == 'turn/end' and event['seq'] > before for event in events):
+                return None
+            for event in events:
+                if event.get('type') != 'tool/result' or event['seq'] <= before:
+                    continue
+                message = event['data']['message']
+                if message.get('toolCallId') == 'spawn-probe':
+                    self.assertFalse(message.get('isError'), message['content'])
+                    return message['content'][0]['text']
+            return None
+
+        return json.loads(self.wait(result, timeout=30))
+
+    def test_spawn_wrappers_survive_repeated_native_reads(self):
+        first, second = self.launch_spawn_subject(), self.launch_spawn_subject()
+        born, generation = host_process(self.proc.pid), self.rpc('ping')['generation']
+        initial = self.spawn_probe(first, 'once')
+        self.assertEqual(initial.get('completed'), 1, initial)
+        self.assertGreater(initial['minDepth'], 0, initial)
+        for _ in range(5000):
+            self.assertTrue(self.rpc('ping')['shellIdentity'])
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as workers:
+            results = [workers.submit(self.spawn_probe, subject, 'bulk') for subject in (first, second)]
+            for result in results:
+                value = result.result()
+                self.assertEqual(value.get('completed'), 500, value)
+                self.assertEqual(value['minDepth'], initial['minDepth'], value)
+                self.assertEqual(value['maxDepth'], initial['maxDepth'], value)
+                self.assertEqual(value['installation'], initial['installation'],
+                                 'Repeated checks replaced the installed native spawn wrapper')
+                print(f"Native spawns completed: {value['completed']}, stack depth {value['minDepth']}–{value['maxDepth']}", flush=True)
+        self.assertEqual(self.rpc('ping')['generation'], generation)
+        self.assertEqual(host_process(self.proc.pid)[1], born[1])
+
+    def test_recursive_spawn_chain_recovers_on_the_same_host(self):
+        first, second = self.launch_spawn_subject(), self.launch_spawn_subject()
+        born, generation = host_process(self.proc.pid), self.rpc('ping')['generation']
+        initial = self.spawn_probe(first, 'once')
+        self.assertEqual(initial.get('completed'), 1, initial)
+        failed = self.spawn_probe(first, 'damage')
+        self.assertEqual(failed, {'error': 'RangeError: Maximum call stack size exceeded'})
+        repaired = self.spawn_probe(first, 'once')
+        self.assertNotEqual(repaired.get('installation'), initial['installation'])
+        self.assertEqual(repaired, {**initial, 'installation': repaired.get('installation')})
+        self.assertEqual(self.spawn_probe(second, 'once'), repaired)
+        self.assertEqual(self.rpc('ping')['generation'], generation)
+        self.assertEqual(host_process(self.proc.pid)[1], born[1])
+
+    def test_spawn_wrappers_are_restored_when_private_bridge_unloads(self):
+        subject = self.launch_spawn_subject()
+        born, generation = host_process(self.proc.pid), self.rpc('ping')['generation']
+        self.rpc('send', {'sessionId': subject['conversation_id'], 'requestId': str(uuid.uuid4()),
+                          'mode': 'steer',
+                          'content': [{'type': 'text', 'text': 'HGS_SPAWN_FIXTURE cleanup'}]})
+        evidence = self.root / 'holds' / 'spawn-cleanup.json'
+        self.wait(evidence.is_file, timeout=30)
+        result = json.loads(evidence.read_text())
+        self.assertEqual(result, {'wrapped': [True, True], 'restored': [True, True]})
+
+        def reloaded():
+            try:
+                ping = self.rpc('ping')
+            except OSError:
+                return None
+            return ping if ping['generation'] != generation else None
+
+        self.assertTrue(self.wait(reloaded)['shellIdentity'])
+        self.assertEqual(host_process(self.proc.pid)[1], born[1])
+
     def test_pause_resume_preserves_identity_and_other_agent(self):
         a, b = self.create(), self.create()
         self.cli('pause', a)

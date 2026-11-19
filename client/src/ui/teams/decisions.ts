@@ -49,11 +49,11 @@ export function waitingKindLabel(item: Pick<WaitingItem, "kind">): string {
   }
 }
 
-export function isProviderStopNote(note: ServiceNote): boolean {
+function isProviderStopNote(note: ServiceNote): boolean {
   return note.code.startsWith("provider_stop_") && [3, 4].includes(note.parameters?.length ?? 0);
 }
 
-function providerStopNote(note: ServiceNote): string | undefined {
+export function providerStopNote(note: ServiceNote): string | undefined {
   const parameters = note.parameters;
   if (!parameters || !isProviderStopNote(note)) return undefined;
   let reason: string;

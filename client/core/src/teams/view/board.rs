@@ -226,6 +226,7 @@ pub fn team(status: &Value, queue: &Value) -> TeamView {
         settings: crate::teams::settings::complete(&team["settings"]),
         members: member_cards(status),
         member_roles: super::editing::roles(status),
+        routing_pipelines: routing_pipelines(team),
         edit_goal: super::editing::goal(status),
         groups,
         truncated,
@@ -233,4 +234,31 @@ pub fn team(status: &Value, queue: &Value) -> TeamView {
         revision,
         after: None,
     }
+}
+
+fn routing_pipelines(team: &Value) -> Vec<RoutingPipeline> {
+    let bundle = &team["bundle"];
+    let roles = array(bundle, "roles")
+        .iter()
+        .take(MEMBERS_KEPT)
+        .filter_map(|role| role.get("id")?.as_str())
+        .collect::<std::collections::BTreeSet<_>>();
+    array(bundle, "pipelines")
+        .iter()
+        .take(MEMBERS_KEPT)
+        .filter_map(|pipeline| {
+            let id = name(pipeline, "id");
+            let role = name(pipeline, "implementer");
+            if zerus_team_plan::id_problem(&id, "pipeline").is_some()
+                || !roles.contains(role.as_str())
+            {
+                return None;
+            }
+            Some(RoutingPipeline {
+                id,
+                role,
+                name: text(pipeline, "name", LINE_CHARS),
+            })
+        })
+        .collect()
 }

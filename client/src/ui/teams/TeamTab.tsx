@@ -22,6 +22,8 @@ import type { TeamView } from "./types";
 import { boardColumns, stageAgrees, type BoardColumn } from "./pipeline-view";
 import { followTeamScope, type TeamScope } from "./team-tab-scope";
 import { TaskDependencies } from "./TaskDependencies";
+import { TaskPlacement } from "./TaskPlacement";
+import { TaskEvidence } from "./TaskEvidence";
 import { PlanView } from "./PlanView";
 import { LanesView } from "./LanesView";
 import { TeamTaskCard } from "./TeamTaskCard";
@@ -69,6 +71,7 @@ export function TeamWorkspace(props: {
   onAddTask: () => void;
   onSettingsSave?: (call: TeamCall) => Promise<TeamOutcome>;
   settingsBlocked?: boolean;
+  placementUnresolved?: (node: number) => boolean;
 }) {
   const [planMode, setPlanMode] = createSignal<"board" | "graph" | "lanes" | "layers">("board");
   const [settingsView, setSettingsView] = createSignal<TeamView>();
@@ -188,6 +191,11 @@ export function TeamWorkspace(props: {
     dismissPreview();
   };
   const card = createMemo(() => all().find((candidate) => candidate.node === selectedNode()) ?? null);
+  /** The inspector's evidence is of another revision than its decisions (review of #2531). */
+  const [evidenceUpdating, setEvidenceUpdating] = createSignal(false);
+  const evidenceWait = () => evidenceUpdating() ? tr("The report and verdicts are being read again.") : undefined;
+  /** Why an open reason form's Send waits: Accept and Return wait for matching evidence. */
+  const formWaits = (button: TaskButton) => button.id === "accept" || button.id === "return" ? evidenceWait() : undefined;
   const inspectorOpen = () => !!card() || membersOpen();
   createEffect(on(() => [narrow(), card()?.node, membersOpen()] as const, () => {
     if (!narrow() || !inspectorOpen()) return;
@@ -311,7 +319,9 @@ export function TeamWorkspace(props: {
                       </dl>
                     </Show>
                     <TaskDependencies task={shown()} status={props.view.bar.status} busy={props.busy} onSetDeps={(deps) => send("set_deps", { node: shown().node, deps })} />
+                    <TaskEvidence team={props.view.bar.id} card={shown()} revision={props.view.revision} onUpdating={setEvidenceUpdating} />
                     <TaskActions card={shown()} teamStatus={props.view.bar.status} busy={props.busy} onAction={(kind) => send(kind, { node: shown().node })}
+                      evidenceUpdating={evidenceWait()}
                       onReason={(button) => { setAsking(button); setReason(""); }} />
                     <Show when={asking()}>
                       {(button) => (
@@ -319,12 +329,18 @@ export function TeamWorkspace(props: {
                           <TextInput class="field" aria-label={tr("Reason")} historyKey={`team-reason-${shown().node}`}
                             placeholder={button().id === "return" ? tr("What must change?") : tr("Why is it cancelled?")}
                             value={reason()} onInput={(event) => setReason(event.currentTarget.value)} />
-                          <button type="button" class="btn small primary" disabled={!reason().trim()}
+                          {/* An open Return waits with the toolbar while the evidence is of
+                              another revision; its draft is kept (review of #2531). */}
+                          <button type="button" class="btn small primary" disabled={!reason().trim() || !!formWaits(button())}
+                            title={formWaits(button())} data-reason-send
                             onClick={() => send(button().id, { node: shown().node, reason: reason() })}>{tr("Send")}</button>
                           <button type="button" class="btn small" onClick={() => setAsking(null)}>{tr("Cancel")}</button>
                         </div>
                       )}
                     </Show>
+                    <TaskPlacement view={props.view} task={shown()} busy={props.busy}
+                      unresolved={!!props.placementUnresolved?.(shown().node)} otherFormOpen={!!asking()}
+                      onOpen={() => setAsking(null)} onAction={props.onAction} />
                   </div>
                 </div>
               )}
@@ -422,6 +438,8 @@ export function TeamTab() {
       providerHome={teams.listed().find((row) => row.id === current().bar.id && row.project === current().bar.project)?.home}
       onSettingsSave={(call) => teams.run(call, source())}
       settingsBlocked={teams.unresolved().some((entry) => entry.call.team === current().bar.id && ["settings", "validation_config"].includes(entry.call.action.kind))}
+      placementUnresolved={(node) => teams.unresolved().some(({ call }) => call.team === current().bar.id
+        && call.action.node === node && (call.action.kind === "reassign" || call.action.kind === "route"))}
       onAction={act} onPage={(cursor) => void teams.page(`team:${current().bar.id}`, cursor)} onAddTask={() => { const fresh = view(); if (fresh) requestTeamTask(fresh.bar); }} />}</Show>
     <Show when={!view() && actionReason(source())}>{(reason) => <div class="notice danger team-notice" role="alert" data-team-action-failure><Icon name="triangle-alert" size={16} /><span>{reason()}</span></div>}</Show>
     <TeamUnresolvedList entries={teams.unresolved()} busy={teams.busy()} onCheck={(entry) => void teams.check(entry, source())} onDismiss={(entry) => void teams.dismiss(entry, source())} />

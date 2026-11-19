@@ -298,6 +298,9 @@ fn review(config: &Config, scope: &Scope, plan: Arc<wire::Plan>) -> Result<Value
 fn review_details(change: &TeamAction, pretty: bool) -> Result<Vec<(String, String)>> {
     let mut details = Vec::new();
     for (key, value) in change.input() {
+        if key == "keep_task_fields" {
+            continue;
+        }
         let text = if pretty {
             serde_json::to_string_pretty(&value)
         } else {

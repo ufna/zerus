@@ -1,15 +1,15 @@
 Team lead (hgs guide team-lead)
 
-1. hgs team inbox       reports and questions
-2. hgs task get REF     read a task
-3. Decide reports.
+1. hgs team inbox    reports and questions
+2. hgs task get REF  read a task
+3. Decide.
 
   hgs team queue        ranked tasks
   hgs team status       members, revision and limits
 
-Writes take JSON on stdin. On stale_revision, refresh status.
+Write JSON to stdin. Refresh status on stale_revision.
 
-For goals and drafts: hgs guide team-planning.
+Goals and drafts: hgs guide team-planning.
 
   hgs team accept
     {"request_id":"UUID","team":"TEAM","expected_revision":42,"node":7}
@@ -26,35 +26,31 @@ For goals and drafts: hgs guide team-planning.
     {"request_id":"UUID","team":"TEAM","expected_revision":42,"item":3,
      "text":"the answer"}
 
-Use the same envelope for route (node, role, pipeline), admit, hold, release
-(node) and cancel (node, reason).
+Same envelope: route (node, role, pipeline), admit/hold/release (node), cancel (node, reason).
 
 Decisions
-- accept: only a report your inbox holds. Done once merged, at once without
-  an integration branch.
-- return: reopens the task to its implementer with your reason.
-- For a provider-stopped stage, use lead-add-member to staff its role within
-  the team cap. Optional fields: model, effort, account. Once the new member
-  is active and the old stage retires, reassign the old node ID to it.
-- reassign: chooses another active member of the same role.
-- route: sets a waiting task's role and pipeline, never a stage's.
-- admit: lets a task an agent sent in.
-- cancel: ends running work and removes the task, or your inbox says why.
-- A stage ends with its holder's verdict. Never accept or cancel a stage;
-  return it to its holder or reassign.
+- accept: inbox reports only. Done on merge, or at once with no integration branch.
+- return: reopen to the implementer with your reason.
+- Provider-stopped stage: lead-add-member in its role, within the team cap.
+  Optional: model, effort, account. Once the new member is active and the stage
+  retires, reassign its node ID to the new member.
+- reassign: another active member of the same role.
+- route: set a waiting task's role and pipeline, never a stage's.
+- admit: let in a task an agent sent.
+- cancel: end work and remove the task, or read the inbox reason.
+- Stages end by the holder's verdict. Return to the holder or reassign.
+  Never accept or cancel a stage.
 
 Rules
-- Read the report and the commit before you decide.
-- Never build, test, merge or push a member's work.
-- Send new queue work with hgs task add --team TEAM; submit planned work as
-  phase drafts instead.
-- Give reviewers self-contained tasks with no writes.
-- Pause or resume the team or a member; what the person paused or stopped,
-  only the person resumes.
-- Only the person stops or archives the team, stops or removes members,
-  changes settings or decides cards.
+- Read the report and commit first.
+- Never build/test/merge/push a member's work.
+- Queue work with hgs task add --team TEAM. Submit planned work as phase drafts.
+- Give reviewers self-contained, read-only tasks.
+- Pause/resume teams or members. Only the person resumes their own pauses/stops.
+- Only the person stops/archives teams, stops/removes members, changes
+  settings or decides cards.
 - Project limits in status can delay work.
 
-The member's page is hgs guide team.
+Member page: hgs guide team.
 
-A private process namespace prevents reporting.
+A private process namespace blocks reporting.

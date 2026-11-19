@@ -8,11 +8,13 @@ pub(super) struct Context<'a> {
     pub team: &'a Team,
     pub op: &'a Operation,
     pub request_id: &'a str,
-    pub provider_stop: Option<provider_stop::Proof<'a>>,
+    pub provider_stop: Option<ProviderStopProof<'a>>,
+    pub closed_confirmation_card: Option<u64>,
     pub task_custody: Option<&'a Result<store::phase_controls::task_custody::TaskCustody>>,
     pub now: i64,
     pub reply: Reply,
     pub event: Option<&'static str>,
+    pub land_skipped_for: Option<u32>,
     /// The earlier decision this operation's decision replaced, for the
     /// journal.
     pub superseded: Option<u64>,

@@ -6049,6 +6049,7 @@ hgs team waiting [--limit 1..200] [--after CURSOR]
 hgs team status [--team TEAM] [--bundle]
 hgs team inbox|queue|cards|journal [--team TEAM] [--limit 1..200] [--after CURSOR]
 hgs team journal [--team TEAM] [--limit 1..200] [--after CURSOR] --recorded-timings
+hgs team evidence [--team TEAM] --node N
 hgs team current
 hgs team settings|pause|resume|stop|archive|decide < request.json
 hgs team admit|route|accept|return|reassign|hold|release|cancel|reply < request.json
@@ -6056,6 +6057,19 @@ hgs team pause-member|resume-member|stop-member|archive-member < request.json
 hgs team add-member|swap-member|rename-team|set-goal < request.json
 hgs team ask|verdict < request.json
 ```
+
+`evidence --node N` reads the evidence beside one task's decision: the task's
+latest report (`generation`; as `member`, the member that generation was handed
+to, which a later Reassign does not change, or `null` when that hand-out is
+gone; `commit`, `text` and the service's `notes`) and its stages, newest first,
+each with its
+`kind` and `round` from the team's pinned bundle, its stored `state` and its
+latest `verdict` (`generation`, the stage holder as `member`, `pass`, the
+findings as `text`), or `null` when there is none. At most 24 stages are
+returned; `more_stages` says whether older ones exist. `revision` is the
+team's revision in the same read as the evidence. A stage node is refused
+with `invalid_state` (its verdict is read with its task) and an unknown task
+with `not_found`. The desktop's task inspector reads it for the task it shows.
 
 The optional `journal --recorded-timings` read joins only the effect and stage
 records referenced by that page, using indexed point lookups in the same
@@ -6144,6 +6158,7 @@ its operation: `op`, `actor` and any other foreign field are refused.
 | `waiting` | yes | | | none |
 | `status` | yes | yes | yes | none |
 | `inbox`, `queue`, `cards`, `journal` | yes | yes | | none |
+| `evidence --node N` | yes | yes | | none |
 | `phases`, `phase --phase N` | yes | yes | | none |
 | `submit-draft-phase` | yes | yes | | `phase`, `draft` |
 | `edit-draft-phase` | yes | yes | | `phase`, `generation`, `draft` |
