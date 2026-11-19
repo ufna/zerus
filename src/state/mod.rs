@@ -1079,9 +1079,16 @@ pub(crate) fn inspect_reference(reference: &crate::session_reference::Reference)
 /// ([`submit_task_message_admitted`]).
 pub(crate) struct PersonAuthority(#[allow(dead_code)] storage::Guard);
 
-/// Takes the person-authority serialization point; see [`PersonAuthority`].
-pub(crate) fn person_authority() -> Result<PersonAuthority> {
-    Ok(PersonAuthority(storage::lock(None)?))
+/// Takes the person-authority serialization point, waiting no later than
+/// `deadline` (review R3-2): it is always the last lock taken, and a writer
+/// that cannot have it in time fails closed with a refusal it may retry,
+/// never blocking on it. See [`PersonAuthority`].
+pub(crate) fn person_authority_until(deadline: std::time::Instant) -> Result<PersonAuthority> {
+    storage::writer_until(deadline)?
+        .map(PersonAuthority)
+        .ok_or_else(|| {
+            "the session state stayed busy; nothing was written; run the command again".into()
+        })
 }
 
 /// [`submit_task_message`] for a writer acting at the person's request

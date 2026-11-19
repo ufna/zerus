@@ -595,6 +595,25 @@ impl World {
     fn race(&self, name: &str, other: &str, command: &str, step: &str) -> Ran {
         let pause = self.root.join(format!("pause-{step}"));
         std::fs::create_dir_all(&pause).unwrap();
+        // The other agent's input is ready first and waits for `go`, so it
+        // starts the moment the command is held, with no agent start-up time
+        // spent inside the command's own budget.
+        let target = self.record(name);
+        let payload = json!({"request_id": uuid::Uuid::new_v4().to_string(), "text": format!("{step}: another agent's input"),
+            "expected_run_id": target["run_id"], "expected_conversation_id": target["conversation_id"]});
+        let file = self.root.join("tools").join(format!("{step}.json"));
+        std::fs::write(&file, payload.to_string()).unwrap();
+        let go = pause.join("go");
+        let send = format!(
+            "while [ ! -e '{}' ]; do sleep 0.05; done; hgs send '{name}' --json < '{}'",
+            go.display(),
+            file.display()
+        );
+        self.agent_start(other, &send);
+        let running = self.root.join("tools").join(key(other)).join("running");
+        wait_for(&format!("{step}'s other input to be ready"), || {
+            running.exists()
+        });
         let held = format!(
             "HGS_TEST_ATTEMPT_PAUSE='{}' HGS_TEST_ATTEMPT_PAUSE_AT=person_commit sh -c \"{}\"",
             pause.display(),
@@ -609,18 +628,15 @@ impl World {
             let ran = self.agent_end(name, &held);
             panic!("{step} ended before its commit: {} {}", ran.out, ran.err);
         }
-        let target = self.record(name);
-        let payload = json!({"request_id": uuid::Uuid::new_v4().to_string(), "text": format!("{step}: another agent's input"),
-            "expected_run_id": target["run_id"], "expected_conversation_id": target["conversation_id"]});
-        let file = self.root.join("tools").join(format!("{step}.json"));
-        std::fs::write(&file, payload.to_string()).unwrap();
-        let send = format!("hgs send '{name}' --json < '{}'", file.display());
-        self.agent_start(other, &send);
         // The other input cannot end the turn while the commit is held.
-        std::thread::sleep(Duration::from_millis(800));
+        std::fs::write(&go, "").unwrap();
+        std::thread::sleep(Duration::from_millis(1500));
+        let seen = self.record(name);
         assert!(
             !self.turn(name).is_null(),
-            "{step}: the other input ended the turn during the held commit"
+            "{step}: the other input ended the turn during the held commit: spent={} pending={}",
+            seen["person_turn_spent"],
+            seen["input_pending_request"]
         );
         std::fs::write(pause.join("release"), "").unwrap();
         let ran = self.agent_end(name, &held);
@@ -631,6 +647,19 @@ impl World {
         });
         self.idle(name);
         ran
+    }
+    /// Whether this computer's live team still binds task `reference`.
+    fn team_bound(&self, reference: &str) -> bool {
+        let id = reference.rsplit('/').next().unwrap();
+        let task = zerus_replica::ProjectStore::open(
+            &self.f.config.state.join("replica"),
+            "example-project",
+        )
+        .unwrap()
+        .find(id)
+        .unwrap();
+        let machine = crate::swarm::local_node_id(&self.f.config).unwrap();
+        crate::teams::tasks::guarded(&self.f.config.state, &machine, &task).unwrap()
     }
     /// A task of the project whose kept copy is damaged, and the fingerprint
     /// of its review, read in Rust (the review itself is read-only).
@@ -1313,7 +1342,6 @@ fn person_tasks(w: &mut World, asked: &str, peer: &str) -> usize {
     println!("PERSON_REQUEST_STEP=task-cutover-no-store ok");
     steps += 1;
 
-
     // Review S2-2: a live team's task held by another session, cancelled at
     // the request: the cancel keeps the request its guard needed.
     let held_task = w.held_team_task(peer);
@@ -1504,6 +1532,127 @@ fn person_tasks(w: &mut World, asked: &str, peer: &str) -> usize {
     .unwrap();
     assert_eq!(confirmed["person_request"]["request_id"], raced.as_str());
     println!("PERSON_REQUEST_STEP=race-review-copy ok");
+    steps += 1;
+
+    // Review R3-3: the request ends before a live team's retarget writes
+    // anything: the check comes before its first write (the Teams
+    // observation), so the task keeps its team binding.
+    let team_target = w.live_team_task();
+    let ended = w.bound(asked, "please give the team task to the holder");
+    let pause = w.root.join("pause-target");
+    std::fs::create_dir_all(&pause).unwrap();
+    let held = format!(
+        "HGS_TEST_ATTEMPT_PAUSE='{}' HGS_TEST_ATTEMPT_PAUSE_AT=person_recheck hgs task target {team_target} '{holder}' --json",
+        pause.display()
+    );
+    w.agent_start(asked, &held);
+    wait_for("the target to reach its check", || {
+        pause.join("ready").exists()
+    });
+    let target = w.record(asked);
+    let payload = json!({"request_id": uuid::Uuid::new_v4().to_string(), "text": "another agent's input before the target",
+        "expected_run_id": target["run_id"], "expected_conversation_id": target["conversation_id"]});
+    let file = w.root.join("tools").join("before-target.json");
+    std::fs::write(&file, payload.to_string()).unwrap();
+    let send = format!("hgs send '{asked}' --json < '{}'", file.display());
+    w.agent_start(peer, &send);
+    wait_for("the other input to end the turn before the target", || {
+        w.turn(asked).is_null()
+    });
+    std::fs::write(pause.join("release"), "").unwrap();
+    let ran = w.agent_end(asked, &held);
+    let after = w.agent_end(peer, &send);
+    println!("the other input: {}", after.code);
+    refused(&ran, "target-request-ends-before-first-write");
+    assert!(
+        w.team_bound(&team_target),
+        "the Teams observation was written"
+    );
+    assert!(!w.log(&team_target).iter().any(|entry| entry
+        .person_request
+        .as_ref()
+        .is_some_and(|r| r.request_id == ended)));
+    w.idle(asked);
+    println!("PERSON_REQUEST_STEP=target-request-ends-before-first-write ok");
+    steps += 1;
+    // And at a live request, held at its check while another input arrives:
+    // the retarget and its Teams observation commit under it.
+    let raced = w.bound(asked, "please give the team task to the holder now");
+    let targeted = w.race(
+        asked,
+        peer,
+        &format!("hgs task target {team_target} '{holder}' --json"),
+        "race-target-team",
+    );
+    assert_eq!(targeted.code, 0, "{}", targeted.err);
+    assert!(
+        !w.team_bound(&team_target),
+        "the Teams observation is written"
+    );
+    assert!(w.log(&team_target).iter().any(|entry| entry
+        .person_request
+        .as_ref()
+        .is_some_and(|r| r.request_id == raced)));
+    println!("PERSON_REQUEST_STEP=race-target-team ok");
+    steps += 1;
+
+    // Review R3-2: one lock order, Root last. An input writer holds the
+    // state lock while a managed send at the request holds the catalog and
+    // the project and waits for Root. The writer's attribution reads this
+    // machine's ID without the catalog lock, so both finish at once: the send
+    // refuses because the input ended its request, never on a busy lock.
+    let send_task = w.live_team_task();
+    w.bound(
+        asked,
+        "please send the team task while another input arrives",
+    );
+    let hold = w.root.join("pause-receipt");
+    std::fs::create_dir_all(&hold).unwrap();
+    let target = w.record(asked);
+    let payload = json!({"request_id": uuid::Uuid::new_v4().to_string(), "text": "an input under the state lock",
+        "expected_run_id": target["run_id"], "expected_conversation_id": target["conversation_id"]});
+    let file = w.root.join("tools").join("lock-order.json");
+    std::fs::write(&file, payload.to_string()).unwrap();
+    let input = format!(
+        "HGS_TEST_RECEIPT_PAUSE='{}' hgs send '{asked}' --json < '{}'",
+        hold.display(),
+        file.display()
+    );
+    w.agent_start(peer, &input);
+    wait_for("the input writer to hold the state lock", || {
+        hold.join("ready").exists()
+    });
+    // The managed send takes the catalog and the project, then is held right
+    // before it waits for Root, which the input writer holds.
+    let wait = w.root.join("pause-wait");
+    std::fs::create_dir_all(&wait).unwrap();
+    let sending = format!(
+        "HGS_TEST_ATTEMPT_PAUSE='{}' HGS_TEST_ATTEMPT_PAUSE_AT=person_wait hgs task send {send_task} --session '{holder}' --json",
+        wait.display()
+    );
+    w.agent_start(asked, &sending);
+    wait_for("the managed send to hold the catalog", || {
+        wait.join("ready").exists()
+    });
+    std::fs::write(wait.join("release"), "").unwrap();
+    std::thread::sleep(Duration::from_millis(500));
+    // Both orders are now in place: the writer goes on under Root.
+    let started = Instant::now();
+    std::fs::write(hold.join("release"), "").unwrap();
+    let sent = w.agent_end(asked, &sending);
+    let elapsed = started.elapsed();
+    let other = w.agent_end(peer, &input);
+    assert_eq!(other.code, 0, "{}", other.err);
+    println!("lock-order: both finished; the send ended {elapsed:?} after the writer went on");
+    assert!(
+        elapsed < Duration::from_secs(10),
+        "lock-order took {elapsed:?}"
+    );
+    refused(&sent, "lock-order-send");
+    assert!(!sent.err.contains("stayed busy"), "{}", sent.err);
+    w.idle(asked);
+    w.idle(&holder);
+    println!("PERSON_REQUEST_STEP=lock-order ok");
     steps += 1;
 
     // Review S2-1: another input ends the request after the guard admitted

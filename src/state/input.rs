@@ -2336,6 +2336,8 @@ fn submit_core(
     if pre_send_compaction.is_object() {
         receipt["pre_send_compaction"] = pre_send_compaction;
     }
+    #[cfg(any(test, debug_assertions))]
+    session_graph::receipt_pause();
     if let Some(target) = session_graph::target_receipt(&record) {
         delivery::bind(&mut receipt, &record, &target);
         receipt["graph_target"] = target;

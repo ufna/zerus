@@ -115,8 +115,10 @@ requires a live person turn and the matching mark, and returns a non-Clone,
 non-Deserialize `PersonRequest`. Writers accept it where they now require
 Person or the window permit and check the same request a last time at the one
 person-authority serialization point, the state lock that every end of a
-person turn takes, held through their commit (a send: under the input
-writer's own lock before anything is typed). Each writer stores
+person turn takes, before their first durable write and held through their
+last (a send: under the input writer's own lock before anything is typed).
+That lock is always taken last, and a writer waits for it no longer than its
+deadline, then refuses, nothing written. Each writer stores
 `person_request {machine, session_id, run_id, conversation_id, request_id,
 origin}` with the acting session: tasks keep `Actor::Agent` plus this field (no
 new Actor variant in replicated documents); Teams adds

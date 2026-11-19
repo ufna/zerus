@@ -5274,9 +5274,11 @@ task it was sent, file a task for another session with `--target`, and take
 the actions an agent cannot take on a live team's task. The request is proven
 again for the command (`caller::person_request`), and each writer checks the
 same request a last time while it holds the state lock that every end of a
-person turn takes, and holds that lock through its commit: an answer or other
-input that ends the request lands before that check (nothing is written) or
-after the commit. A send checks it under the input writer's own lock before
+person turn takes, before the command's first durable write, and holds that
+lock through its last: an answer or other input that ends the request lands
+before that check (nothing is written) or after the commit. The state lock is
+always the last lock taken, and its wait is bounded by the command's deadline:
+a busy lock is a refusal to retry, with nothing written. A send checks it under the input writer's own lock before
 anything is typed; once admitted, its outcome stands. `review-copy` checks it
 after the review and its hashing, right before its confirmation record and the
 move. Another agent, a child, a forwarded `--agent` command or a command

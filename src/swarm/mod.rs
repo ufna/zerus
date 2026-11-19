@@ -383,6 +383,14 @@ pub(crate) fn save_test_node_id(config: &Config, id: &str) -> Result<()> {
     store.save()
 }
 
+/// This machine's ID from its existing catalog: one bounded read, without the
+/// catalog lock, never creating or saving anything. `None` when no valid
+/// catalog exists yet.
+pub(crate) fn existing_local_node_id(config: &Config) -> Option<String> {
+    let bytes = read_regular(&config.dir.join("swarm/catalog.json"), 128 * 1024 * 1024).ok()?;
+    existing_node_id(&bytes).ok()
+}
+
 /// Validate an already admitted existing catalog without loading, initializing
 /// or saving a store. The receipt reader owns its bounded private file read.
 pub(crate) fn existing_node_id(bytes: &[u8]) -> Result<String> {

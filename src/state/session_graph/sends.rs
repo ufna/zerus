@@ -117,8 +117,18 @@ pub(crate) fn caller_binding_reads() -> usize {
     caller_binding::reads()
 }
 
+/// This machine's ID for a receipt's attribution. Receipts are written under
+/// the state lock, which is always taken last: the existing catalog is read
+/// without its lock, and only a machine with no catalog yet creates one
+/// (zerus-46l1q, review R3-2).
 fn machine() -> Option<String> {
     let config = crate::config::Config::load().ok()?;
+    if let Some(machine) = crate::swarm::existing_local_node_id(&config) {
+        return Some(machine);
+    }
+    if config.dir.join("swarm/catalog.json").exists() {
+        return None;
+    }
     crate::swarm::local_node_id(&config).ok()
 }
 
@@ -126,6 +136,25 @@ fn machine() -> Option<String> {
 /// attribution. Do not add it to an old receipt on replay.
 pub(crate) fn target_receipt(record: &Value) -> Option<Value> {
     target_receipt_for_machine(record, &machine()?)
+}
+
+/// Test/debug builds only: a test may hold the input writer here, under the
+/// state lock, right before its receipt's attribution reads this machine's
+/// ID (`HGS_TEST_RECEIPT_PAUSE`, a folder for its `ready` and `release`
+/// files).
+#[cfg(any(test, debug_assertions))]
+pub(crate) fn receipt_pause() {
+    let Some(folder) = std::env::var_os("HGS_TEST_RECEIPT_PAUSE") else {
+        return;
+    };
+    let folder = std::path::PathBuf::from(folder);
+    if std::fs::write(folder.join("ready"), b"held").is_err() {
+        return;
+    }
+    let until = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    while !folder.join("release").exists() && std::time::Instant::now() < until {
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
 }
 
 /// The same target from an already verified, existing machine identity.

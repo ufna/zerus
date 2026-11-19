@@ -79,7 +79,8 @@ pub(super) fn execute(config: &Config, args: &[String]) -> Result<Value> {
     let before = task.revision();
     attempts::pause_at(&request.attempt, "cancel_attempt");
     // Checked again and held through the save that commits it (review D3).
-    let authority = super::recheck_held(person.as_ref(), &request.attempt)?;
+    let authority =
+        super::recheck_held(person.as_ref(), &request.attempt, super::person_deadline())?;
     task.at_request(person.as_ref().map(|person| person.reference()));
     task.cancel_attempt(&request.attempt, &request.reason, &who, now())
         .map_err(fail)?;

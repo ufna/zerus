@@ -392,14 +392,23 @@ pub(super) fn recheck(request: Option<&crate::caller::PersonRequest>) -> Result<
 pub(super) fn recheck_held(
     request: Option<&crate::caller::PersonRequest>,
     task: &str,
+    deadline: std::time::Instant,
 ) -> Result<Option<crate::state::PersonAuthority>> {
     let Some(request) = request else {
         return Ok(None);
     };
-    let authority = crate::state::person_authority().map_err(fail)?;
+    // Bounded by the command's deadline: a busy state lock is a refusal to
+    // retry, never a wait that holds the project's locks (review R3-2).
+    let authority = crate::state::person_authority_until(deadline).map_err(fail)?;
     request.recheck().map_err(fail)?;
     attempts::pause_at(task, "person_commit");
     Ok(Some(authority))
+}
+
+/// The deadline of a writer's person-authority wait, when the command has
+/// no attempt deadline of its own.
+pub(super) fn person_deadline() -> std::time::Instant {
+    std::time::Instant::now() + attempts::BUDGET
 }
 
 /// The refusal for a resident DeepSeek host's tool call (`HGS_AGENT=dsh`)
@@ -1224,7 +1233,9 @@ fn add(config: &Config, args: &[String]) -> Result<Value> {
     }};
     let position = position_index(args)?.map_or(Position::End, Position::Index);
     let store = store(config, &id)?;
-    recheck(filed_for.as_ref())?;
+    // Checked again before the first durable write (placement may renumber
+    // and save other tasks) and held through the card's save (review R3-3).
+    let authority = recheck_held(filed_for.as_ref(), &id, person_deadline())?;
     let request = option(args, "--request-id")?;
     let (mut task, created) = placed(&store, |placement| if let Some(title) = title {
         store.new_named_task_placed(placement, title, &text, content.attachments.as_deref().unwrap_or_default(), stage, target, author.clone(), &position, &name, now(), request, flag(args, "--start")).map_err(fail)
@@ -1240,11 +1251,9 @@ fn add(config: &Config, args: &[String]) -> Result<Value> {
             task.at_request(Some(person.reference()));
             task.record_at_request(&author, "Filed for another session at the person's request", now()).map_err(fail)?;
         }
-        // Checked again right before the save and held through it (review D3).
-        let authority = recheck_held(filed_for.as_ref(), task.uuid())?;
         store.save(&mut task).map_err(fail)?;
-        drop(authority);
     }
+    drop(authority);
     let (store, task, team_reply) = if let Some(team) = &team {
         let task_ref = zerus_team_plan::model::TaskRef { project:id.clone(), uuid:task.uuid().into() };
         drop(store);
@@ -1568,6 +1577,19 @@ fn change_guarded(
         }
         None => (store, task),
     };
+    // A send or a cancel commits its effect under the request itself (the
+    // send's admission, the cancel's own save), never under this lock, and
+    // keeps that outcome. Every other change is checked again here, at the
+    // one serialization point, before its first durable write (a target's
+    // Teams observation, a move's or stage's renumbering) and holds it through
+    // its last (reviews D3 and R3-3). A debug test may hold the command
+    // right before that check.
+    let authority = if matches!(action, "send" | "handoff" | "cancel") {
+        None
+    } else {
+        attempts::pause_at(task.uuid(), "person_recheck");
+        recheck_held(person.as_ref(), task.uuid(), deadline)?
+    };
     let text = text.unwrap_or_default();
     let mut extra = json!({});
     let mut destination = String::new();
@@ -1735,17 +1757,6 @@ fn change_guarded(
         }
         _ => return Err(fail(USAGE)),
     }
-    // A send or a cancel committed its effect under the request already (the
-    // send's admission, the cancel's own save): its outcome stands and is
-    // recorded here. Every other change commits now, its request checked
-    // again at the one serialization point and held through this save
-    // (review D3). A debug test may hold the command before that recheck.
-    let authority = if matches!(action, "send" | "handoff" | "cancel") {
-        None
-    } else {
-        attempts::pause_at(task.uuid(), "person_recheck");
-        recheck_held(person.as_ref(), task.uuid())?
-    };
     store.save(&mut task).map_err(|e| {
         // The prompt is in the session already: say so, never "refused".
         if matches!(action, "send" | "handoff") {
@@ -2092,7 +2103,7 @@ fn cancel(
         .map_err(fail)?;
     // Checked again and held through this save, which commits the cancel;
     // its notice is delivered only after it (review D3).
-    let authority = recheck_held(person, task.uuid())?;
+    let authority = recheck_held(person, task.uuid(), person_deadline())?;
     if let Some(person) = person {
         task.at_request(Some(person.reference()));
     }

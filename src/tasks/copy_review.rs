@@ -67,11 +67,13 @@ pub(super) fn execute(config: &Config, args: &[String]) -> Result<Value> {
             let refused = std::cell::RefCell::new(None);
             let moved =
                 store.move_reviewed_copy_admitted(uuid, expected, &who, reference.as_ref(), || {
-                    super::recheck_held(person.as_ref(), uuid).map_err(|error| {
-                        let message = error.message.clone();
-                        *refused.borrow_mut() = Some(error);
-                        message
-                    })
+                    super::recheck_held(person.as_ref(), uuid, super::person_deadline()).map_err(
+                        |error| {
+                            let message = error.message.clone();
+                            *refused.borrow_mut() = Some(error);
+                            message
+                        },
+                    )
                 });
             if let Some(error) = refused.into_inner() {
                 return Err(error);

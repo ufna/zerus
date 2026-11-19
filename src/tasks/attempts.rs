@@ -334,11 +334,16 @@ pub(super) fn pause(id: &str) {
 fn held_authority(
     person: Option<&crate::caller::PersonRequest>,
     id: &str,
+    deadline: Instant,
 ) -> std::result::Result<Option<crate::state::PersonAuthority>, String> {
     let Some(person) = person else {
         return Ok(None);
     };
-    let authority = crate::state::person_authority()?;
+    // A debug test may hold the admission here, inside the attempt fence.
+    pause_at(id, "person_wait");
+    // The attempt's own deadline bounds the wait: the fence's catalog and
+    // project locks are never held past it for this (review R3-2).
+    let authority = crate::state::person_authority_until(deadline)?;
     person.recheck()?;
     pause_at(id, "person_commit");
     Ok(Some(authority))
@@ -356,7 +361,8 @@ pub(super) fn pause_at(id: &str, phase: &str) {
     if std::fs::write(folder.join("ready"), id).is_err() {
         return;
     }
-    let until = Instant::now() + Duration::from_secs(8);
+    // Bounded, and long enough for a test's other agent to start its command.
+    let until = Instant::now() + Duration::from_secs(30);
     while !folder.join("release").exists() && Instant::now() < until {
         std::thread::sleep(Duration::from_millis(2));
     }
@@ -555,7 +561,7 @@ pub(super) fn send(
         // That exact request still holds, checked again at the one
         // serialization point and held through this reservation's save: the
         // reserved delivery then settles under it (review D3).
-        let authority = match held_authority(person.as_ref(), &frozen.id) {
+        let authority = match held_authority(person.as_ref(), &frozen.id, deadline) {
             Ok(authority) => authority,
             Err(why) => return refuse("not_sendable", why),
         };
@@ -829,7 +835,7 @@ pub(super) fn reopen(
         // That exact request still holds, checked again at the one
         // serialization point and held through this reservation's save
         // (review D3).
-        let authority = match held_authority(person.as_ref(), id) {
+        let authority = match held_authority(person.as_ref(), id, deadline) {
             Ok(authority) => authority,
             Err(why) => return refuse("not_sendable", why),
         };

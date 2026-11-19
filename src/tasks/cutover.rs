@@ -57,7 +57,7 @@ pub(super) fn cutover(config: &Config, args: &[String]) -> Result<Value> {
     if let Some((on, request)) = change {
         let mut doc = store.project().map_err(fail)?;
         // Checked again and held through the save that commits it (review D3).
-        let authority = super::recheck_held(request.as_ref(), &id)?;
+        let authority = super::recheck_held(request.as_ref(), &id, super::person_deadline())?;
         let reference = request.as_ref().map(|request| request.reference());
         doc.set_cutover_hold_for(on, &who, reference.as_ref(), now())
             .map_err(fail)?;
