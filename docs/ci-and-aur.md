@@ -1462,8 +1462,8 @@ part of the Dev gate or of Nightly: a red run is visible and holds nothing back.
 - **Static tests.** Run the suite's static parts from the repository root with the
   tests folder on the path, as `scripts/ci/python-tests.py` does:
   `PYTHONPATH=tests python3 -m unittest test_ci_security test_kimi_native_ci
-  test_agent_compatibility test_teams_native`. The native classes skip without a pinned
-  agent.
+  test_agent_compatibility test_teams_native test_check_no_person_fixture`. The native
+  classes skip without a pinned agent.
 - **Setup.** Each class creates one private root (`hgs-tn-*` in `TMPDIR`)
   with:
   - `HOME`, every XDG folder and a 0700 `XDG_RUNTIME_DIR`;
@@ -1474,11 +1474,53 @@ part of the Dev gate or of Nightly: a red run is visible and holds nothing back.
   - `PATH` limited to the root's wrappers and the system folders.
 
   It then starts a private `hgs desktop serve --background` with the Teams preview
-  turned on by the person, and creates one team: a lead and one member of the agent
-  under test. The service launches both.
+  turned on by the person, and the person creates one team: a lead and one member of
+  the agent under test. The service launches both.
+- **The person's native Team actions.**
+  - **The refusal, proven first.** The shipped `hgs` refuses a person's `team create`,
+    `team stop` and `task add --team` without the window's native confirmation
+    (`person_gesture_required`). Each class proves it first: the real `hgs team create`
+    must answer with that refusal.
+  - **How the three steps run.** The person's create, stop and sending of a task to the
+    team then run through the ignored contract entry of the hgs unit-test executable
+    (`cargo test --no-run --bin hgs`, passed as `--person-bin`, `HGS_TEAMS_PERSON_BIN`).
+    The entry performs the native Person action the window confirms: plan staging, the
+    review that binds the intent, the original and the writer. It models only the
+    window's proof. A task is first added to the project by the person's ordinary
+    `task add`.
+  - **Only the private root.** The entry acts only on the class's marked private root
+    (`.zerus-teams-contract-root` with the class's nonce, and the state, configuration
+    and home inside it). It refuses a root that holds the account's own home or lies in
+    its default Zerus folders.
+  - **The rest stays real.** Every other command, the desktop service and the agents use
+    the hgs under test.
+  - **Test-only, checked in CI.** The entry is test-only (`#[cfg(all(test, unix))]`).
+    Each Teams job and the Linux CLI job run `scripts/ci/check-no-person-fixture.py`,
+    which fails the job unless:
+    - the debug and release `hgs` hold neither the entry's marker nor its name, nor,
+      where they keep symbols, a test-only model's symbol; and
+    - the unit-test executable holds them (the positive control).
+  - **Not runnable from an agent.** The Teams caller proof refuses every person command
+    below a live agent, team reads included, so these classes cannot run from an agent's
+    shell. Hosted CI is their evidence.
 - **Model.** A keyless loopback fixture (`tests/model_api_fixture.py`) answers text,
   or a scripted shell step for a delivered task prompt or a typed `ZT-RUN <step>`.
   No account and no model quota are used, and only fixture keys exist in the root.
+  Claude Code 2.1.328 sends pasted text, as `hgs` delivers a task, inside
+  `<pasted_content id="…">`. The fixture reads only the inner text as the prompt, as the
+  product's journal does (`pasted_text` in `src/state/journal.rs`). A recording of the
+  real agent's request is kept in `tests/fixtures/claude-pasted-prompt.json`.
+- **Listings.** On Linux, `hgs ls` answers from its metadata index and never returns a
+  partial body. While the index is incomplete it refuses with "Session listing is
+  building, stale or unavailable", for example seconds after a member exits. The
+  first `hgs ls` of a fresh state root starts the index's worker and can also answer
+  `hgs: Missing private file` before the index exists. The fixture reads the listing
+  again for up to 30 seconds:
+  - after either refusal, but after the second only until one listing has succeeded;
+  - recording each read in `transient-reads.jsonl`.
+
+  Any other failure fails, and so does a listing still incomplete at the bound. A
+  refusal is never read as an empty listing.
 
 It runs these steps in order:
 
@@ -1570,9 +1612,11 @@ Each class checks its own isolation and fails rather than skipping:
   `HOME/.kimi-code`): auto-update off, plugins off and the provider's base URL on
   loopback where the agent allows it.
 - **Teardown.** It terminates the team's sessions as the person, stops the service
-  (exit 0 on SIGTERM) and ends the private tmux server. It then requires that no
-  process refers to the root by its working folder, executable or environment.
-  Otherwise the root is kept and the class fails.
+  (exit 0 on SIGTERM) and ends the private tmux server. The listing metadata worker
+  that a Linux `hgs ls` starts runs until its state root's listing index is disabled,
+  so teardown runs `hgs listing-index disable` and waits until the worker releases its
+  lock. It then requires that no process refers to the root by its working folder,
+  executable or environment. Otherwise the root is kept and the class fails.
 - **A killed run.** A run killed after a session started (the row's bound, a
   cancelled job) runs no teardown. What remains is the evidence written as it goes:
   the calls, waits, census, model requests, account inspection, preflight, and the

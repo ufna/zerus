@@ -146,7 +146,10 @@ exactly what the dialog showed you:
 
 Create team requires native confirmation in the Zerus window. A Person call
 to `hgs team create`, including through `@host`, returns
-`person_gesture_required` before creating anything.
+`person_gesture_required` before creating anything. The hosted real-agent
+contracts confirm the person's create, stop and task intake through a test-only
+model of the window's action that no shipped `hgs` contains
+([CI](ci-and-aur.md#agent-teams-real-agents)).
 
 Team and template names may use ordinary Unicode letters. Creating a team,
 saving a catalog or importing a template refuses control characters, line

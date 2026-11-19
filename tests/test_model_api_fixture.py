@@ -80,6 +80,49 @@ class Plans(unittest.TestCase):
         self.assertEqual(events[-1][1]["response"]["output"][0]["content"][0]["text"], "Fixture reply.")
 
 
+class PastedPrompt(unittest.TestCase):
+    """Claude Code 2.1.328 sends text pasted into its prompt, as hgs delivers a team task,
+    inside `<pasted_content id="…">`; the person sent only the inner text, which is what
+    src/state/journal.rs pasted_text keeps. The block is the real producer's recording
+    (tests/fixtures/claude-pasted-prompt.json)."""
+
+    def test_a_pasted_prompt_is_the_text_that_was_pasted(self):
+        recorded = json.loads((Path(__file__).resolve().parent / "fixtures/claude-pasted-prompt.json")
+                              .read_text(encoding="utf-8"))
+        self.assertTrue(recorded["block"].lstrip().startswith("<pasted_content id="), "the recording is framed")
+        message = user("<system-reminder>context</system-reminder>", recorded["block"])
+        self.assertEqual(api.typed_parts(message), [recorded["pasted"]])
+        self.assertEqual(api.typed(claude_request(message, tools=("Bash",))), recorded["pasted"])
+        # The pasted message starts a turn: an earlier tool result is not its own.
+        earlier = {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t", "content": "old"}]}
+        self.assertEqual(api.results(claude_request(user("Before."), {"role": "assistant", "content": []},
+                                                    earlier, message)), [])
+
+    def test_unwrapping_reads_a_paste_as_the_product_does(self):
+        # The cases of claude_pasted_content_keeps_only_the_text_the_person_sent in
+        # src/state/journal.rs.
+        sent = 'Activity misses replies\n\nInspect the attached image at "/private/one.png"'
+        for framed, expected in (
+                (f'<pasted_content id="1b93">\n{sent}\n</pasted_content id="1b93">', sent),
+                ('See <pasted_content id="a">\none\n</pasted_content id="a"> and '
+                 '<pasted_content id="b">two</pasted_content id="b">.', "See one and two."),
+                (f'\n\n<pasted_content id="c9a0">\n{sent}\n</pasted_content id="c9a0">\n', sent),
+                (f'\n\n<pasted_content id="c9a0">\n\n{sent}\n\n</pasted_content id="c9a0">\n', f"\n{sent}\n"),
+                ('\n<pasted_content id="a">\none\n</pasted_content id="a">\n\n'
+                 '<pasted_content id="b">\ntwo\n</pasted_content id="b">\n', "one\n\ntwo"),
+                ('Look:\n\n<pasted_content id="a">\none\n</pasted_content id="a">\n', "Look:\n\none\n"),
+                ('\n\n<pasted_content id="a">\none\n</pasted_content id="a">\nThanks', "\n\none\nThanks"),
+                ('\n\n<pasted_content id="a">\none\n</pasted_content id="a">\n<pasted_content id="b">open',
+                 '\n\none\n<pasted_content id="b">open'),
+                ('<pasted_content id="a b">\none\n</pasted_content id="a b">', '<pasted_content id="a b">\none\n'
+                 '</pasted_content id="a b">'),
+                ("Plain text.", "Plain text.")):
+            self.assertEqual(api.pasted_text(framed), expected, framed)
+        source = (Path(__file__).resolve().parents[1] / "src/state/journal.rs").read_text(encoding="utf-8")
+        self.assertIn('assert_eq!(pasted_text("Look:\\n\\n<pasted_content id=\\"a\\">\\none\\n</pasted_content id=\\"a\\">'
+                      '\\n"), "Look:\\n\\none\\n");', source, "the product's reading is unchanged")
+
+
 class Server(unittest.TestCase):
     """The script as the suites run it: `python -I -X utf8`, on loopback, logging each request."""
 

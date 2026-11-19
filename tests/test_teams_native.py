@@ -27,8 +27,10 @@ the owner's decision zerus-63rru.66 and for zerus-63rru.73) and the resume of an
 exited member (Claude Code and Codex selected).
 The model is a keyless loopback fixture; no account and no model quota are used.
 Run through `scripts/ci/agent-compatibility.py --contract teams`, or directly with
-HGS_TEST_BIN and HGS_CLAUDE_TEST_BIN or HGS_CODEX_TEST_BIN, outside any agent
-session: the Teams caller proof refuses a person command below a live agent.
+HGS_TEST_BIN, HGS_TEAMS_PERSON_BIN (the hgs unit-test executable, whose contract entry
+performs the person's native create, stop and task intake) and HGS_CLAUDE_TEST_BIN or
+HGS_CODEX_TEST_BIN, outside any agent session: the Teams caller proof refuses every
+person command below a live agent, team reads included.
 The Kimi class runs only in the hosted Kimi workflow.
 """
 from contextlib import closing, contextmanager, nullcontext
@@ -40,6 +42,7 @@ import re
 import shutil
 import shlex
 import socket
+import stat
 import subprocess
 import tempfile
 import time
@@ -402,12 +405,12 @@ class TeamsContract(ClassFixture):
 
         def stop():
             # The service may change the team between the person's read and the stop (a
-            # hand-out of the task above): a stale revision changes nothing, so the person
-            # refreshes and asks again with a new request.
+            # hand-out of the task above). The window's review then refuses the stale action
+            # without naming why and changes nothing, so the person refreshes and confirms
+            # again, but only when the team's revision really moved.
             revision = fx.status()['team']['revision']
-            reply = fx.json('team', 'stop', '--json', ok=False, stdin=json.dumps(dict(
-                request_id=str(uuid.uuid4()), team=fx.team, expected_revision=revision)))
-            if (reply.get('error') or {}).get('code') == 'stale_revision':
+            reply = fx.person_team_action(dict(kind='stop'), revision)
+            if reply.get('ok') is not True and fx.status()['team']['revision'] != revision:
                 refusals.append(revision)
                 return None
             return reply
@@ -777,6 +780,7 @@ class TeamsFixtureIsolation(unittest.TestCase):
         native.write_text('#!/bin/sh\n')
         native.chmod(0o755)
         patches = [mock.patch.object(fixture, 'REAL_TMUX', str(stand_in)), mock.patch.object(fixture, 'HGS', str(native)),
+                   mock.patch.object(fixture, 'PERSON', str(native)),
                    mock.patch.dict(os.environ, ZERUS_TEAMS_EVIDENCE=str(self.base / 'evidence'))]
         for patch in patches:
             patch.start()
@@ -790,6 +794,75 @@ class TeamsFixtureIsolation(unittest.TestCase):
         server = socket.socket(socket.AF_UNIX)
         self.addCleanup(server.close)
         server.bind(str(self.outside / 'default'))
+
+    def test_no_state_of_a_built_fixture_hides_one_of_its_methods(self):
+        # A run once failed every class at bring-up: an instance flag `listed` hid the
+        # `listed()` helper ("'bool' object is not callable", hosted run 44474231340).
+        hidden = sorted(name for name in vars(self.fx) if callable(getattr(type(self.fx), name, None)))
+        self.assertEqual(hidden, [])
+        self.assertTrue(callable(self.fx.listed))
+
+    def test_preflight_needs_the_person_executable_and_the_root_is_marked(self):
+        self.fx.preflight()
+        self.assertEqual((self.fx.root / fixture.ROOT_FILE).read_text(), f'{fixture.PERSON_MARKER}\n{self.fx.nonce}\n')
+        self.assertEqual(stat.S_IMODE(os.stat(self.fx.root / fixture.ROOT_FILE).st_mode), 0o600)
+        for value in ('', 'relative/hgs-unit-tests', str(self.base / 'missing')):
+            with self.subTest(person=value), mock.patch.object(fixture, 'PERSON', value), \
+                    self.assertRaisesRegex(AssertionError, 'HGS_TEAMS_PERSON_BIN'):
+                self.fx.preflight()
+
+    def test_the_state_folder_is_private_whatever_the_umask(self):
+        """The window's first Create binds only a private state folder; a runner's umask
+        022 must not leave the fixture's open (hosted run 44462168438)."""
+        previous = os.umask(0o022)
+        try:
+            fx = fixture.TeamFixture('claude', self.base / 'agent', 'Umask')
+            self.addCleanup(shutil.rmtree, fx.root, True)
+            fx.build()
+        finally:
+            os.umask(previous)
+        self.assertEqual(stat.S_IMODE(os.stat(fx.env['HGS_STATE_DIR']).st_mode), 0o700)
+        fx.preflight()
+        os.chmod(fx.env['HGS_STATE_DIR'], 0o755)
+        with self.assertRaisesRegex(AssertionError, 'mode HGS_STATE_DIR'):
+            fx.preflight()
+
+    def test_a_listing_is_read_again_until_its_body_is_complete_and_never_read_as_empty(self):
+        from types import SimpleNamespace
+        listed = json.dumps({'sessions': [{'name': 'codex/p/one', 'run_id': 'r1'}]})
+        answer = lambda stderr='', stdout='', code=1: SimpleNamespace(returncode=code, stdout=stdout, stderr=stderr)
+        complete, bootstrap, building = answer(stdout=listed, code=0), answer(fixture.LS_RACE + '\n'), answer(
+            fixture.LS_BUILDING + '\n')
+
+        def read(*answers, bound=30):
+            self.fx.hgs = mock.Mock(side_effect=list(answers))
+            self.fx.evidence = mock.Mock()
+            with mock.patch.dict(fixture.BOUND, listing=bound), mock.patch.object(fixture.time, 'sleep'):
+                rows = [row['name'] for row in self.fx.rows()]
+            return rows, self.fx.hgs.call_count, self.fx.evidence.append.call_count
+
+        # Hosted run 44476290302: a complete listing, then "building" seconds later.
+        self.assertEqual(read(bootstrap, building, complete), (['codex/p/one'], 3, 2))
+        self.assertEqual(read(building, building, complete), (['codex/p/one'], 3, 2))
+        # The bootstrap refusal only before the first complete listing; never another failure.
+        for refused in (bootstrap, answer('hgs: Missing state folder\n'), answer(fixture.LS_RACE + ' and more\n')):
+            with self.assertRaises(AssertionError, msg=refused.stderr):
+                read(refused, complete)
+        # A listing that stays incomplete past its bound fails; it is never an empty list.
+        with self.assertRaisesRegex(AssertionError, 'building, stale or unavailable'):
+            read(building, building, complete, bound=0)
+
+    def test_a_first_listing_may_meet_the_bootstrap_refusal(self):
+        from types import SimpleNamespace
+        self.fx.listed_once = False
+        listed = json.dumps({'sessions': [{'name': 'codex/p/one', 'run_id': 'r1'}]})
+        self.fx.hgs = mock.Mock(side_effect=[SimpleNamespace(returncode=1, stdout='', stderr=fixture.LS_RACE + '\n'),
+                                             SimpleNamespace(returncode=0, stdout=listed, stderr='')])
+        self.fx.evidence = mock.Mock()
+        with mock.patch.object(fixture.time, 'sleep'):
+            self.assertEqual([row['name'] for row in self.fx.rows()], ['codex/p/one'])
+        self.assertTrue(self.fx.listed_once)
+        self.assertEqual(self.fx.evidence.append.call_args[0][0], 'transient-reads.jsonl')
 
     def tmux(self, *argv, **env):
         self.marker.unlink(missing_ok=True)
@@ -922,6 +995,48 @@ class TeamsFixtureIsolation(unittest.TestCase):
         answered.assert_called_once_with(['tmux', 'send-keys', '-t', '=kimi/example/team:', 'Enter'], env={}, check=True)
         changed = chooser.replace('❯ Trust and continue', '  Trust and continue').replace('     Exit', '   ❯ Exit')
         self.assertFalse(answer(changed, False).call_count, 'a changed selection must stay in Terminal for the person')
+
+
+@unittest.skipUnless(fixture.HGS and os.uname().sysname == 'Linux', 'Set HGS_TEST_BIN (Linux)')
+class TeamsListingWorker(unittest.TestCase):
+    """The listing metadata worker that a supported Linux `hgs ls` starts for the fixture's
+    state root stays until teardown stops it (every class of hosted run 44464876721 left
+    one process). The real hgs; a stand-in agent, person and tmux."""
+
+    def test_teardown_stops_the_worker_that_hgs_ls_starts(self):
+        temporary = tempfile.TemporaryDirectory(prefix='hgs-teams-listing-')
+        self.addCleanup(temporary.cleanup)
+        base = Path(temporary.name).resolve()
+        stand_in = base / 'stand-in'
+        stand_in.write_text('#!/bin/sh\n')
+        stand_in.chmod(0o755)
+        for patch in (mock.patch.object(fixture, 'REAL_TMUX', str(stand_in)),
+                      mock.patch.object(fixture, 'PERSON', str(stand_in)),
+                      mock.patch.dict(os.environ, ZERUS_TEAMS_EVIDENCE=str(base / 'evidence'))):
+            patch.start()
+            self.addCleanup(patch.stop)
+        fx = fixture.TeamFixture('claude', stand_in, 'ListingWorker')
+        self.addCleanup(shutil.rmtree, fx.root, True)
+        fx.build()
+        state = Path(fx.env['HGS_STATE_DIR'])
+        # Whatever happens below, the worker ends: the product's own disable stops it.
+        self.addCleanup(lambda: state.is_dir() and fx.hgs('listing-index', 'disable', '--json', ok=False))
+        lock = state / 'listing-metadata/worker.lock'
+
+        def started():
+            fx.hgs('ls', '--json', ok=False)
+            return fx.owned_left() or None
+        fx.wait('hgs ls started the listing worker', started, 60, 0.5)
+        time.sleep(3)
+        self.assertTrue(fx.owned_left(), 'without a stop the worker stays')
+        self.assertTrue(lock.is_file())
+        self.assertEqual(fx.teardown(), [])
+        self.assertEqual(fx.owned_left(), [])
+        calls = [json.loads(line)['argv'] for line in (fx.evidence.folder / 'hgs-calls.jsonl').read_text().splitlines()]
+        self.assertIn(['listing-index', 'disable', '--json'], calls)
+        self.assertFalse(fx.root.exists(), 'a clean teardown removes the root')
+        # Without a state root the stop is a no-op that names nothing.
+        self.assertIsNone(fx.stop_listing_worker())
 
 
 class TeamsWaitingList(unittest.TestCase):
@@ -1298,6 +1413,129 @@ class TeamsFixtureDiagnostics(unittest.TestCase):
         self.assertEqual(out['policy_file'], {'enabled': True})
         self.assertIsNone(out['last_result'])
         self.assertEqual([r['file'] for r in out['owned_receipts']], ['owned-a.json'])
+
+
+class TeamsPersonSteps(unittest.TestCase):
+    """The person's native Team actions (zerus-63rru.182) without an agent: the fixture
+    proves the shipped hgs still refuses the person's create, then performs create, stop
+    and task intake by the contract entry of the hgs unit-test executable, only on its
+    marked private root; the step shapes are the ones the entry reads."""
+
+    STEPS = Path(__file__).resolve().parent / 'fixtures/teams-contract-person-steps.json'
+
+    def offline(self):
+        """A fixture object with its identity set and no root, process or agent."""
+        fx = fixture.TeamFixture.__new__(fixture.TeamFixture)
+        fx.agent, fx.count, fx.pinned = 'codex', 1, None
+        fx.team, fx.machine, fx.commit = None, 'machine-fixture', 'c' * 40
+        fx.delegations = dict(fixture.TeamFixture.DELEGATIONS_OFF)
+        fx.evidence = mock.Mock()
+        return fx
+
+    def cli(self, refusal):
+        """The shipped hgs's replies, with `refusal` as its answer to the person's create."""
+        def json_(*argv, stdin=None, ok=True):
+            if argv[:2] == ('team', 'preview'):
+                return dict(ok=True)
+            if argv[:3] == ('team', 'template', 'import'):
+                return dict(ok=True)
+            if argv[:2] == ('team', 'create'):
+                return refusal
+            if argv[:3] == ('team', 'catalog', 'show'):
+                return dict(catalog=dict(templates=[dict(id='zt-codex', digest='d' * 64)]))
+            if argv[:2] == ('task', 'add'):
+                return dict(task=dict(ref='teams-fixture/7', uuid=str(uuid.UUID(int=7)), project='teams-fixture'))
+            raise AssertionError(argv)
+        return json_
+
+    def test_the_answer_is_found_on_the_test_name_line_or_its_own(self):
+        value = {'reply': {'ok': True, 'revision': 1}}
+        line = fixture.PERSON_MARKER + ' ' + json.dumps(value)
+        self.assertEqual(fixture.person_answer('test x::contract_person_step ... ' + line + '\nok\n'), value)
+        self.assertEqual(fixture.person_answer('running 1 test\n' + line + '\n'), value)
+        self.assertEqual(fixture.person_answer(line + ' ok'), value)
+        self.assertIsNone(fixture.person_answer('test x ... ok\n'))
+        self.assertIsNone(fixture.person_answer(fixture.PERSON_MARKER + ' not json'))
+
+    def test_a_step_runs_the_entry_on_the_marked_root_and_refuses_any_other_outcome(self):
+        temporary = tempfile.TemporaryDirectory(prefix='hgs-person-step-')
+        self.addCleanup(temporary.cleanup)
+        base = Path(temporary.name).resolve()
+        seen = base / 'seen.json'
+        entry = base / 'entry'
+        answer = json.dumps({'reply': {'ok': True, 'revision': 3}})
+        for case, script in (
+                ('answered', f'cp "$ZERUS_TEAMS_CONTRACT_STEP" {seen}\necho "$@" > {base}/argv\n'
+                             f"echo 'test x ... {fixture.PERSON_MARKER} {answer}'\necho ok\n"),
+                ('refused', f'echo \'{fixture.PERSON_MARKER} {{"refused":"no marker"}}\'\nexit 101\n'),
+                ('silent', 'echo running\n'),
+                ('failed', f"echo '{fixture.PERSON_MARKER} {answer}'\nexit 101\n")):
+            entry.write_text('#!/bin/sh\n' + script)
+            entry.chmod(0o755)
+            fx = self.offline()
+            fx.root, fx.nonce, fx.env = base, 'nonce-0000000000000000', dict(PATH='/usr/bin:/bin')
+            with mock.patch.object(fixture, 'PERSON', str(entry)):
+                if case != 'answered':
+                    with self.assertRaises(AssertionError, msg=case):
+                        fx.person_step(dict(kind='team', plan={}))
+                    continue
+                self.assertEqual(fx.person_step(dict(kind='team', plan={'p': 1})), {'ok': True, 'revision': 3})
+            self.assertEqual(json.loads(seen.read_text()),
+                             dict(root=str(base), nonce='nonce-0000000000000000', action=dict(kind='team', plan={'p': 1})))
+            self.assertEqual((base / 'argv').read_text().split(),
+                             ['--exact', fixture.PERSON_ENTRY, '--ignored', '--nocapture', '--test-threads=1'])
+            row = fx.evidence.append.call_args[0]
+            self.assertEqual((row[0], row[1]['root'], row[1]['kind'], row[1]['exit']),
+                             ('person-steps.jsonl', str(base), 'team', 0))
+
+    def test_the_person_create_needs_the_shipped_refusal_first(self):
+        for refusal in (dict(ok=True), dict(ok=False, error=dict(code='stale_revision')), dict(ok=False)):
+            fx = self.offline()
+            fx.json = self.cli(refusal)
+            fx.person_step = mock.Mock(return_value=dict(ok=True))
+            with self.assertRaises(AssertionError, msg=refusal):
+                fx.create_team()
+            fx.person_step.assert_not_called()
+        fx = self.offline()
+        fx.json = self.cli(dict(ok=False, error=dict(code='person_gesture_required')))
+        fx.person_step = mock.Mock(return_value=dict(ok=False, code='team_person_action_evidence_unavailable'))
+        with self.assertRaises(AssertionError):
+            fx.create_team()
+
+    def test_a_task_is_added_by_the_person_then_sent_by_the_native_intake(self):
+        fx = self.offline()
+        fx.team = str(uuid.UUID(int=1))
+        fx.json = self.cli(None)
+        fx.person_step = mock.Mock(return_value=dict(ok=True, team=dict(queued=True)))
+        self.assertEqual(fx.add_task('Title', 'Text'), ('teams-fixture/7', str(uuid.UUID(int=7))))
+        draft = fx.person_step.call_args[0][0]['draft']
+        self.assertEqual(draft['action'], dict(kind='intake', project='teams-fixture', task=str(uuid.UUID(int=7)),
+                                               revision='', role=None, pipeline=None))
+        fx.person_step = mock.Mock(return_value=dict(ok=True, team=dict(queued=False)))
+        with self.assertRaises(AssertionError):
+            fx.add_task('Title', 'Text')
+
+    def test_the_steps_are_the_committed_shapes_the_entry_reads(self):
+        """The fixture's create, stop and intake steps, as it builds them, are the committed
+        shapes the Rust contract tests run (src/desktop/teams/person_actions/contract)."""
+        fx = self.offline()
+        fx.json = self.cli(dict(ok=False, error=dict(code='person_gesture_required')))
+        captured = []
+        fx.person_step = lambda action: captured.append(action) or dict(ok=True, team=dict(queued=True))
+        fx.create_team()
+        fx.add_task('Title', 'Text')
+        fx.person_team_action(dict(kind='stop'), 5)
+        team = fx.team
+        def normal(value):
+            if isinstance(value, dict):
+                return {k: ('@request@' if k == 'request_id' else normal(v)) for k, v in value.items()}
+            if isinstance(value, list):
+                return [normal(v) for v in value]
+            return '@team@' if value == team else value
+        steps = [normal(step) for step in captured]
+        if os.environ.get('ZERUS_WRITE_FIXTURES'):
+            self.STEPS.write_text(json.dumps(steps, indent=2, sort_keys=True) + '\n')
+        self.assertEqual(steps, json.loads(self.STEPS.read_text()))
 
 
 class TeamsFixtureProducers(unittest.TestCase):

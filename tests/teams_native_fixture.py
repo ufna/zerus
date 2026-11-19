@@ -19,6 +19,7 @@ names what it waits for, has an explicit bound and logs its measured duration as
 fixture's own processes and fails on any peer that is neither loopback nor an
 allow-listed host of the agent under test.
 """
+import fcntl
 import json
 import os
 from pathlib import Path
@@ -40,6 +41,21 @@ import uuid
 import model_api_fixture as api
 
 HGS = os.environ.get('HGS_TEST_BIN', '')
+# The person's native Team actions (zerus-63rru.182): the shipped hgs refuses a person's
+# team create, team stop and task add --team without the window's native confirmation.
+# These three steps run through the ignored contract entry of the hgs unit-test executable
+# (`cargo test --no-run --bin hgs`), which performs the very native Person action the window
+# confirms and models only the window's proof. It acts only on this fixture's marked private
+# root. Every other command, the desktop service and the agents use HGS_TEST_BIN.
+PERSON = os.environ.get('HGS_TEAMS_PERSON_BIN', '')
+PERSON_ENTRY = 'desktop::teams::person_actions::contract::contract_person_step'
+PERSON_MARKER = 'zerus-teams-contract-person-fixture/v1'
+ROOT_FILE = '.zerus-teams-contract-root'
+# Listing answers that mean "no complete body yet", which rows() reads again; see rows().
+# The first listing of a fresh state root may answer this one before its index exists.
+LS_RACE = 'hgs: Missing private file'
+# The indexed Linux listing never returns a partial body (src/state/listing_metadata/listing.rs).
+LS_BUILDING = 'hgs: Session listing is building, stale or unavailable; no complete body returned'
 # Set by a runner that keeps custody of private roots (scripts/ci/kimi-native.py
 # --teams): called with the case name and the root as soon as the root exists.
 ROOT_CREATED = None
@@ -62,7 +78,7 @@ ALLOWED_HOSTS = {
 # Bounds are about three times the duration measured on a loaded development host
 # (the upstream canary has no Teams step yet); the logged durations tighten them.
 BOUND = dict(service=60, bound=420, listed=90, card=180, ready=180, parent=200, handout=240, turn=180,
-             doorbell=240, cancel=240, stop=180, exit=60, teardown=60)
+             doorbell=240, cancel=240, stop=180, exit=60, teardown=60, listing=30)
 # The private root's name. It is short so that a member worktree in a hosted runner's
 # /tmp (`/tmp/hgs-tn-XXXXXXXX/work/zerus-team-<uuid>`, 73 columns) fits one row of
 # Codex's Folder access panel; a local root inside the worktree's target/ wraps.
@@ -71,6 +87,19 @@ ROOT_PREFIX = 'hgs-tn-'
 # member's 80-column pane (measured with Codex 0.167.2); a longer folder continues on
 # the rows below.
 CODEX_PANEL_COLUMNS = 76
+
+
+def person_answer(stdout):
+    """The contract entry's one answer: the marker and a JSON value, which libtest may print on
+    the line of the test's own name. None when it gave none."""
+    for line in stdout.splitlines():
+        if PERSON_MARKER + ' ' in line:
+            text = line.split(PERSON_MARKER + ' ', 1)[1].strip()
+            try:
+                return json.JSONDecoder().raw_decode(text)[0]
+            except ValueError:
+                return None
+    return None
 
 
 def hosted_runner(env=None):
@@ -542,6 +571,9 @@ class TeamFixture:
         self.panes = {}
         base = os.environ.get('TMPDIR') or tempfile.gettempdir()
         self.root = Path(tempfile.mkdtemp(prefix=ROOT_PREFIX, dir=base)).resolve()
+        # The private root's mark: the contract entry acts only on a root holding it.
+        self.nonce = str(uuid.uuid4())
+        self.listed_once = False
         if ROOT_CREATED is not None:
             ROOT_CREATED(case, self.root)
         folder = os.environ.get('ZERUS_TEAMS_EVIDENCE') or str(self.root / 'evidence')
@@ -561,8 +593,16 @@ class TeamFixture:
                     'home/.local/state', 'run', 'tmux', 'tmp', 'state', 'cfg', 'scripts', 'out', 'model', 'work'):
             (r / sub).mkdir(parents=True, exist_ok=True)
         os.chmod(r / 'run', 0o700)
+        # Private, as hgs keeps its own state folder: the window's first Create binds only a
+        # private state folder (person_actions::birth), whatever the runner's umask.
+        os.chmod(r / 'state', 0o700)
         # The person's answers start as an empty log, so a reader can tell "none" from "lost".
         (self.evidence.folder / 'person-answers.jsonl').write_text('')
+        (self.evidence.folder / 'person-steps.jsonl').write_text('')
+        marker = r / ROOT_FILE
+        marker.write_text(f'{PERSON_MARKER}\n{self.nonce}\n')
+        marker.chmod(0o600)
+        self.evidence.write('person-root.json', dict(root=str(r), marker=str(marker), nonce=self.nonce))
         os.chmod(r / 'tmux', 0o700)
         for name, text in (('tmux', TMUX_WRAPPER), ('ssh', REFUSE), ('scp', REFUSE), ('systemd-run', REFUSE), ('hgs', REFUSE)):
             path = r / 'bin' / name
@@ -621,7 +661,7 @@ class TeamFixture:
         named = sorted(key for key, value in env.items() if value == account)
         if named:
             failures.append('the runner account name is the value of ' + ','.join(named))
-        for key in ('TMUX_TMPDIR', 'XDG_RUNTIME_DIR'):
+        for key in ('TMUX_TMPDIR', 'XDG_RUNTIME_DIR', 'HGS_STATE_DIR'):
             if stat.S_IMODE(os.stat(env[key]).st_mode) != 0o700:
                 failures.append('mode ' + key)
         if os.path.exists(os.path.join(env['XDG_RUNTIME_DIR'], 'systemd/private')):
@@ -639,6 +679,8 @@ class TeamFixture:
             failures.append('service socket path length')
         if not (os.path.isabs(HGS) and os.access(HGS, os.X_OK)):
             failures.append('HGS_TEST_BIN is not an absolute executable')
+        if not (os.path.isabs(PERSON) and os.access(PERSON, os.X_OK)):
+            failures.append('HGS_TEAMS_PERSON_BIN is not an absolute executable')
         self.evidence.write('preflight.json', dict(root=r, failures=failures))
         if failures:
             raise AssertionError('Teams fixture preflight failed: ' + ', '.join(failures))
@@ -654,6 +696,31 @@ class TeamFixture:
 
     def json(self, *argv, **kw):
         return json.loads(self.hgs(*argv, **kw).stdout)
+
+    def person_step(self, action, timeout=120):
+        """One native Person action the window would confirm, by the contract entry of the
+        hgs unit-test executable, on this fixture's marked private root (see PERSON)."""
+        steps = self.root / 'steps'
+        steps.mkdir(mode=0o700, exist_ok=True)
+        path = steps / f'{uuid.uuid4()}.json'
+        path.write_text(json.dumps(dict(root=str(self.root), nonce=self.nonce, action=action)))
+        run = subprocess.run([PERSON, '--exact', PERSON_ENTRY, '--ignored', '--nocapture', '--test-threads=1'],
+                             env=dict(self.env, ZERUS_TEAMS_CONTRACT_STEP=str(path)), stdin=subprocess.DEVNULL,
+                             capture_output=True, text=True, timeout=timeout)
+        answer = person_answer(run.stdout)
+        self.evidence.append('person-steps.jsonl', dict(at=time.time(), root=str(self.root), marker=str(self.root / ROOT_FILE),
+                                                       kind=action.get('kind'), exit=run.returncode, answer=answer,
+                                                       stderr=run.stderr[-2000:]))
+        if run.returncode != 0 or not isinstance(answer, dict) or 'reply' not in answer:
+            raise AssertionError(f'person step {action.get("kind")} exited {run.returncode}: '
+                                 f'{run.stdout[-800:]} {run.stderr[-800:]}')
+        return answer['reply']
+
+    def person_team_action(self, change, revision):
+        """The person confirms one team action in the window, at the team's read revision."""
+        return self.person_step(dict(kind='team', plan=dict(request_id=str(uuid.uuid4()), team=self.team,
+                                                            expected_revision=revision,
+                                                            action=dict(kind='team', change=change))))
 
     def wait(self, label, predicate, bound, step=1.0):
         start = now()
@@ -774,11 +841,24 @@ class TeamFixture:
                                  'outside live-agent ancestry: ' + json.dumps(preview)[:800])
         self.json('team', 'template', 'import', '--json', stdin=json.dumps(self.bundle()))
         self.team = str(uuid.uuid4())
-        reply = self.json('team', 'create', '--template', 'zt-' + self.agent, '--json', stdin=json.dumps({
-            'request_id': str(uuid.uuid4()), 'team': self.team, 'expected_revision': 0, 'project': 'teams-fixture',
-            'name': 'Teams fixture', 'goal': 'Real-agent contract.', 'home': self.machine,
-            'integration_branch': 'zerus/team/fixture-' + self.agent, 'base_commit': self.commit,
-            'delegations': self.delegations}))
+        template = 'zt-' + self.agent
+        fields = dict(project='teams-fixture', name='Teams fixture', goal='Real-agent contract.', home=self.machine,
+                      integration_branch='zerus/team/fixture-' + self.agent, base_commit=self.commit)
+        # The negative control: the shipped hgs still refuses the person's create without
+        # the window's native confirmation.
+        refused = self.json('team', 'create', '--template', template, '--json', ok=False, stdin=json.dumps(dict(
+            request_id=str(uuid.uuid4()), team=self.team, expected_revision=0, delegations=self.delegations, **fields)))
+        self.evidence.write('create-refused.json', refused)
+        if refused.get('ok') is not False or (refused.get('error') or {}).get('code') != 'person_gesture_required':
+            raise AssertionError('the shipped hgs did not refuse the person create: ' + json.dumps(refused)[:800])
+        # The window's create: the template as the catalog read shows it, with its digest.
+        catalog = self.json('team', 'catalog', 'show', '--json')
+        shown = next((t for t in (catalog.get('catalog') or {}).get('templates') or [] if t.get('id') == template), None)
+        if not shown or not shown.get('digest'):
+            raise AssertionError('the catalog read shows no digest for ' + template + ': ' + json.dumps(catalog)[:800])
+        reply = self.person_team_action(dict(kind='create', template=template, integration='branch',
+                                             expected_template=shown['digest'], delegations=self.delegations,
+                                             **fields), 0)
         if reply.get('ok') is not True:
             raise AssertionError('team create: ' + json.dumps(reply)[:800])
 
@@ -815,7 +895,27 @@ class TeamFixture:
             elif isinstance(value, list):
                 for child in value:
                     walk(child)
-        walk(self.json('ls', '--json'))
+        # A Linux listing answers from its metadata index and never returns a partial body.
+        # Until the index is complete it refuses with LS_BUILDING (seen seconds after a
+        # member exited, hosted run 44476290302). The first listing of a fresh state root
+        # starts the index's worker and can also answer LS_RACE (zerus-kfyot; once per
+        # class in hosted run 44464876721), but only before any listing has succeeded.
+        # Either is read again, recorded, until a complete body or the bound; an empty
+        # list is never read from a refusal.
+        end = now() + BOUND['listing']
+        while True:
+            run = self.hgs('ls', '--json', ok=False)
+            refused = run.stderr.strip()
+            transient = refused == LS_BUILDING or (refused == LS_RACE and not self.listed_once)
+            if run.returncode == 0 or not transient or now() >= end:
+                break
+            self.evidence.append('transient-reads.jsonl', dict(at=time.time(), argv=['ls', '--json'],
+                                                               stderr=run.stderr[-300:]))
+            time.sleep(0.5)
+        if run.returncode != 0:
+            raise AssertionError(f'hgs ls exited {run.returncode}: {run.stdout[-600:]} {run.stderr[-600:]}')
+        walk(json.loads(run.stdout))
+        self.listed_once = True
         return found
 
     def session_of(self, member):
@@ -1171,9 +1271,15 @@ class TeamFixture:
         return self.wait(f'{member_id} answered the person\'s message', answered, BOUND['turn'], 2)
 
     def add_task(self, title, text):
-        reply = self.json('task', 'add', '--project', 'teams-fixture', '--team', self.team, '--title', title, '--json',
-                          stdin=text)
+        """The person adds a task to the project, then sends it to the team with the window's
+        native action (the shipped hgs refuses a person's task add --team without it)."""
+        reply = self.json('task', 'add', '--project', 'teams-fixture', '--title', title, '--json', stdin=text)
         task = reply.get('task') or reply
+        sent = self.person_step(dict(kind='task', draft=dict(
+            request_id=str(uuid.uuid4()), team=self.team,
+            action=dict(kind='intake', project=task['project'], task=task['uuid'], revision='', role=None, pipeline=None))))
+        if sent.get('ok') is not True or (sent.get('team') or {}).get('queued') is not True:
+            raise AssertionError('the person could not send the task to the team: ' + json.dumps(sent)[:800])
         return task['ref'], task['uuid']
 
     def node_of(self, uuid_):
@@ -1222,6 +1328,38 @@ class TeamFixture:
         return found[0][1]
 
     # ---- teardown --------------------------------------------------------------
+    def stop_listing_worker(self):
+        """Stop the listing metadata worker of this state root, or say why not.
+
+        A supported Linux `hgs ls` starts one resident worker per state root
+        (src/state/listing_metadata/worker.rs) that runs until the root's listing index
+        is disabled, so it would outlive the class. Teardown disables the index with the
+        product's own command, as tests/test_pending_placement.py does, and waits until
+        the worker has released its lock. None when no worker is left."""
+        directory = Path(self.env['HGS_STATE_DIR']) / 'listing-metadata'
+        if not directory.is_dir():
+            return None
+        run = self.hgs('listing-index', 'disable', '--json', ok=False, timeout=30)
+        if run.returncode != 0:
+            return f'hgs listing-index disable exited {run.returncode}: {run.stderr.strip()[-300:]}'
+
+        def released():
+            try:
+                held = (directory / 'worker.lock').open('rb')
+            except FileNotFoundError:
+                return True
+            with held:
+                try:
+                    fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except BlockingIOError:
+                    return None
+            return True
+        try:
+            self.wait('listing metadata worker stopped', released, BOUND['teardown'], 0.2)
+        except AssertionError as error:
+            return str(error)
+        return None
+
     def owned_left(self):
         parents = Census.table()
         left = []
@@ -1470,6 +1608,9 @@ class TeamFixture:
         if self.model is not None:
             self.model.shutdown()
             self.model.server_close()
+        problem = self.stop_listing_worker()
+        if problem:
+            problems.append(problem)
         try:
             left = self.wait('no owned process left', lambda: not self.owned_left() or None, BOUND['teardown'], 1)
         except AssertionError:

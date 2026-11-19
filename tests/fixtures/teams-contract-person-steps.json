@@ -1,0 +1,61 @@
+[
+  {
+    "kind": "team",
+    "plan": {
+      "action": {
+        "change": {
+          "base_commit": "cccccccccccccccccccccccccccccccccccccccc",
+          "delegations": {
+            "accept_results": false,
+            "answer_members": false,
+            "confirm_trust": false,
+            "merge_accepted": false,
+            "resume_exited": false
+          },
+          "expected_template": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "goal": "Real-agent contract.",
+          "home": "machine-fixture",
+          "integration": "branch",
+          "integration_branch": "zerus/team/fixture-codex",
+          "kind": "create",
+          "name": "Teams fixture",
+          "project": "teams-fixture",
+          "template": "zt-codex"
+        },
+        "kind": "team"
+      },
+      "expected_revision": 0,
+      "request_id": "@request@",
+      "team": "@team@"
+    }
+  },
+  {
+    "draft": {
+      "action": {
+        "kind": "intake",
+        "pipeline": null,
+        "project": "teams-fixture",
+        "revision": "",
+        "role": null,
+        "task": "00000000-0000-0000-0000-000000000007"
+      },
+      "request_id": "@request@",
+      "team": "@team@"
+    },
+    "kind": "task"
+  },
+  {
+    "kind": "team",
+    "plan": {
+      "action": {
+        "change": {
+          "kind": "stop"
+        },
+        "kind": "team"
+      },
+      "expected_revision": 5,
+      "request_id": "@request@",
+      "team": "@team@"
+    }
+  }
+]

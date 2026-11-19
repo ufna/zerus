@@ -3,6 +3,8 @@ mod birth;
 mod intake;
 pub(crate) mod kernel;
 #[cfg(all(test, unix))]
+mod contract;
+#[cfg(all(test, unix))]
 pub(crate) mod models;
 mod original;
 mod plans;
