@@ -807,6 +807,23 @@ mod tests {
         let person_turn = "    // Any input from anyone ends the person turn; the person's own next\n    // message starts a new one at its own prompt (zerus-46l1q).\n    super::person_turn::end(&mut record);\n";
         assert_eq!(original.matches(person_turn).count(), 1);
         original = original.replacen(person_turn, "", 1);
+        // zerus-46l1q review R3-1: Claude's proof also records the exact row
+        // it saw; project that addition back to the reviewed lines.
+        for (witnessed, reviewed) in [
+            ("settle::confirm_witnessed(terminal", "settle::confirm(terminal"),
+            (
+                "matches!(proof, Ok((proof, _)) if proof.recorded())",
+                "matches!(proof, Ok(proof) if proof.recorded())",
+            ),
+            ("            Ok((proof, witnessed)) => {\n", "            Ok(proof) => {\n"),
+            (
+                "                // The exact native input this send saw (zerus-46l1q, R3-1).\n                if !witnessed.is_null() {\n                    receipt[\"native_input\"] = witnessed;\n                }\n",
+                "",
+            ),
+        ] {
+            assert_eq!(original.matches(witnessed).count(), 1, "{witnessed}");
+            original = original.replacen(witnessed, reviewed, 1);
+        }
         assert_eq!(
             format!("{:x}", Sha256::digest(original.as_bytes())),
             "59613e90dd2487deb1c88ce9820f0194714dcbab6ea0f7b580cf9f50598f36bd"

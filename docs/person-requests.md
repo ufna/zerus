@@ -143,15 +143,17 @@ and leaves evidence. The window gesture stays for decisions made in the window.
   outside any running tool call, within 12 hours of admission, once per message.
   Any other main prompt, any input receipt, any answer delivered into the
   session, a run or conversation change, or 12 hours from the hook end it.
-- **Delivery.** A recorded turn grants nothing until the native agent itself
-  shows that it accepted exactly that send as the input the turn bound. The
-  hook records that input's native identity: Claude's `prompt_id`, Codex's
-  `turn_id`, Kimi's user `turn_id`; without one nothing binds. For Claude the
-  send writer saw Claude's own record of the message, and the transcript holds
-  its text as the user row of exactly that `promptId`; for Codex and Kimi the
-  native source holds it as the main user's input of exactly that turn, after
-  the send. A queue entry alone, the same text in another turn, or a send left
-  uncertain never grants anything.
+- **Delivery.** A recorded turn grants nothing until the send itself witnessed
+  that the native agent accepted exactly that input. The hook records the
+  native identity of the input it reports (Claude's `prompt_id`, Codex's
+  `turn_id`, Kimi's user `turn_id`); without one nothing binds. Claude's send
+  writer records the exact typed user row that proved its submission in its
+  receipt (`native_input`: the row's `promptId` and `uuid`), and use requires
+  the hook's `prompt_id` to be exactly that `promptId`; no fresh text-and-time
+  match is made. A queue entry, which no recorded consumer joins to a turn,
+  witnesses nothing, and neither do Codex and Kimi sends, whose senders record
+  no native input identity: those sends still work, but grant nothing. A send
+  left uncertain never grants anything.
 - **Use.** `caller::person_request()` proves all of it again for each command
   from the caller's live record, the mark (read only from the store of its own
   configuration) and the receipt; `hgs self --json` shows `person_request`.

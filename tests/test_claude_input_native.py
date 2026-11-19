@@ -8,11 +8,40 @@ import test_input as fixtures
 import test_claude_questions_native as native
 
 
+def identity_recorder(root):
+    """A hook command that appends each payload it receives to a log."""
+    import shlex
+    path = root / 'observe-native-hook.py'
+    path.write_text('import json, sys\nfrom pathlib import Path\n'
+                    'event = json.load(sys.stdin)\n'
+                    'with Path(sys.argv[1]).open(\'a\') as output:\n'
+                    '    output.write(json.dumps(event) + \'\\n\')\n')
+    log = root / 'native-hook.jsonl'
+    return log, shlex.join([sys.executable, str(path), str(log)])
+
+
+def identity_rows(path):
+    if not path.is_file():
+        return []
+    return [json.loads(line) for line in path.read_bytes().splitlines(keepends=True)
+            if line.endswith(b'\n')]
+
+
+def canonical_uuid(value):
+    import uuid
+    return isinstance(value, str) and str(uuid.UUID(value)) == value
+
+
 @unittest.skipUnless(native.CLAUDE, 'Set HGS_CLAUDE_TEST_BIN for isolated native message coverage')
 class NativeClaudeInput(unittest.TestCase):
     message_fixture = True
     native_env = ('DISABLE_AUTOUPDATER=1',)
     def native_settings(self, work):
+        if 'native_identity' in self._testMethodName:
+            # A recorder of Claude's own UserPromptSubmit payloads.
+            self.hook_log, command = identity_recorder(self.root)
+            return {'hooks': {'UserPromptSubmit': [{'hooks': [
+                {'type': 'command', 'command': command, 'timeout': 5}]}]}}
         if 'pending_settings_then_message' not in self._testMethodName:
             return {}
         import copy
@@ -92,6 +121,59 @@ class NativeClaudeInput(unittest.TestCase):
 
     def test_id_hidden_pending_settings_then_message_makes_one_model_call_and_keeps_defaults(self):
         self.pending_message()
+
+    def test_native_identity_the_send_witnessed_is_the_hooks_prompt(self):
+        # zerus-46l1q review R3-1 (the reviewer's probe): one natural
+        # UserPromptSubmit, one typed user row and the send's own receipt name
+        # the same prompt, so the person turn's hook joins exactly the input
+        # the send saw.
+        text = 'Review fixture: check a normal Claude input identity.'
+        receipt = self.send(self.payload(text=text))
+        self.assertEqual(receipt['status'], 'submitted')
+        self.wait_for(lambda: self.accepted(text))
+        hooks = [event for event in identity_rows(self.hook_log) if event.get('prompt') == text]
+        rows = [row for row in native.records(self.record['transcript'])
+                if row.get('type') == 'user' and row.get('message', {}).get('content') == text]
+        self.assertEqual((len(hooks), len(rows)), (1, 1))
+        self.assertTrue(canonical_uuid(hooks[0].get('prompt_id')))
+        self.assertEqual(hooks[0]['prompt_id'], rows[0].get('promptId'))
+        self.assertEqual(receipt['native'], 'transcript')
+        self.assertEqual(receipt['native_input'],
+                         {'prompt_id': rows[0]['promptId'], 'uuid': rows[0]['uuid']})
+
+    def test_pending_settings_then_message_keeps_its_receipt_identity(self):
+        # zerus-46l1q review R3-4 (the reviewer's probe): after an ordinary
+        # send, a message that applies pending settings first publishes the
+        # same acceptance metadata as the ordinary writer for its new input.
+        import hashlib
+        text = 'Review fixture: complete an ordinary send before scheduling model settings.'
+        original = self.send(self.payload(text=text))
+        self.wait_for(lambda: self.accepted(text))
+        current = json.loads(self.record_path.read_bytes())
+        self.assertEqual(current['input_pending_request'], original['request_id'])
+        self.assertEqual(current['input_pending_digest'], original['digest'])
+        # This private model fixture observes the reply directly instead of
+        # installing the Zerus activity hook: supply that settled observation.
+        current['last_event_at'] = time.time()
+        current['input_seen_at'] = current['last_event_at']
+        current['main_done'] = True
+        current['active_tools'] = {}
+        current['activity'] = current['phase'] = 'idle'
+        self.record = current
+        self.write_record()
+        newest, _ = self.pending_message()
+        actual = json.loads(self.record_path.read_bytes())
+        self.assertEqual(actual['input_pending_request'], newest['request_id'])
+        self.assertEqual(actual.get('input_pending_digest'), newest['digest'],
+                         'the pending-settings writer kept the previous input digest')
+        self.assertEqual(actual.get('input_pending_text_sha256'),
+                         hashlib.sha256(newest['submitted_text'].encode()).hexdigest())
+        # Its own Claude proof records the exact row it saw, like the
+        # ordinary writer's.
+        rows = [row for row in native.records(self.record['transcript'])
+                if row.get('type') == 'user' and row.get('promptId') == newest.get('native_input', {}).get('prompt_id')]
+        self.assertEqual(newest['native'], 'transcript', newest)
+        self.assertEqual([row['uuid'] for row in rows], [newest['native_input']['uuid']])
 
     def pending_message(self):
         import native_effort_id as identity

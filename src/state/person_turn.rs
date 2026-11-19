@@ -226,25 +226,26 @@ pub(super) fn decide(
     }))
 }
 
-/// Whether the native agent itself proves that exactly this receipt's input
-/// was delivered and accepted as the native input `native` that the person
-/// turn bound (zerus-46l1q, reviews S1-1 and D1). For Claude the send writer
-/// saw Claude's own record of the message, and its transcript holds that
-/// text as the user row of exactly that prompt; for Codex and Kimi their
-/// native source holds it as the main user's input of exactly that turn,
-/// after the send. A queue entry alone, or the same text in another turn,
-/// proves nothing. Until then a bound turn grants nothing; a send left
-/// uncertain never does.
+/// Whether the send itself witnessed that the native agent accepted exactly
+/// this receipt's input as the native input `native` that the person turn's
+/// hook bound (zerus-46l1q, reviews S1-1, D1 and R3-1). For Claude the send
+/// writer saw Claude's own typed user row of the message and recorded that
+/// row's `promptId` in the receipt (`native_input`); the hook's `prompt_id`
+/// must be exactly that. No fresh text-and-time match is made at use. A
+/// queue entry, which no recorded consumer joins to a turn, witnesses
+/// nothing; neither does a Codex or Kimi send, whose sender records no native
+/// input identity: those sends still work, but grant nothing. Until then a
+/// bound turn grants nothing; a send left uncertain never does.
 pub(crate) fn delivered(record: &Value, receipt: &Value, native: &Value) -> bool {
     if receipt["status"] != "submitted" || native.is_null() {
         return false;
     }
     match string(record, "agent") {
         "claude" => {
-            matches!(receipt["native"].as_str(), Some("transcript" | "queue"))
-                && input::acceptance::claude_delivery(record, receipt, native)
+            receipt["native"] == "transcript"
+                && receipt["native_input"]["prompt_id"].as_str().is_some()
+                && receipt["native_input"]["prompt_id"] == *native
         }
-        "codex" | "kimi" => input::acceptance::native_delivery(record, receipt, native),
         _ => false,
     }
 }
@@ -472,59 +473,58 @@ mod tests {
     }
 
     #[test]
-    fn claude_delivery_is_only_claudes_own_record_of_a_submitted_send() {
-        // The prompt's own transcript row is there; the receipt decides.
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("transcript.jsonl");
+    fn claude_delivery_is_only_the_send_witnessed_row_of_the_bound_prompt() {
+        // zerus-46l1q review R3-1: the receipt carries the exact row the send
+        // saw; the hook's bound prompt must be that row's promptId.
         let prompt = uuid::Uuid::new_v4().to_string();
-        let row = json!({"type":"user","promptSource":"typed","timestamp":"1970-01-01T00:00:11Z",
-            "promptId":prompt,"message":{"role":"user","content":"words"}});
-        std::fs::write(&path, format!("{row}\n")).unwrap();
-        let record = json!({"agent": "claude", "transcript": path, "input_pending_at": 10.0});
-        let receipt = |status: &str, native: Value| json!({"status": status, "native": native, "submitted_text": "words"});
+        let record = json!({"agent": "claude"});
+        let receipt = |status: &str, native: Value, input: Value| json!({"status": status, "native": native, "native_input": input});
+        let witnessed = json!({"prompt_id": prompt, "uuid": uuid::Uuid::new_v4().to_string()});
         let bound = json!(prompt);
         assert!(delivered(
             &record,
-            &receipt("submitted", json!("transcript")),
+            &receipt("submitted", json!("transcript"), witnessed.clone()),
             &bound
         ));
-        assert!(delivered(
-            &record,
-            &receipt("submitted", json!("queue")),
-            &bound
-        ));
-        // An emptied composer, an uncertain or unfinished send, no proof, or
-        // no bound prompt grant nothing.
+        // Another prompt, no witness, a queue entry, an emptied composer, an
+        // uncertain or unfinished send, or no bound prompt grant nothing.
         assert!(!delivered(
             &record,
-            &receipt("submitted", json!("composer")),
-            &bound
+            &receipt("submitted", json!("transcript"), witnessed.clone()),
+            &json!(uuid::Uuid::new_v4().to_string())
         ));
         assert!(!delivered(
             &record,
-            &receipt("submitted", Value::Null),
+            &receipt("submitted", json!("transcript"), Value::Null),
             &bound
         ));
+        for native in [json!("queue"), json!("composer"), Value::Null] {
+            assert!(!delivered(
+                &record,
+                &receipt("submitted", native, witnessed.clone()),
+                &bound
+            ));
+        }
+        for status in ["in_progress", "uncertain"] {
+            assert!(!delivered(
+                &record,
+                &receipt(status, json!("transcript"), witnessed.clone()),
+                &bound
+            ));
+        }
         assert!(!delivered(
             &record,
-            &receipt("in_progress", json!("transcript")),
-            &bound
-        ));
-        assert!(!delivered(
-            &record,
-            &receipt("uncertain", json!("transcript")),
-            &bound
-        ));
-        assert!(!delivered(
-            &record,
-            &receipt("submitted", json!("transcript")),
+            &receipt("submitted", json!("transcript"), witnessed.clone()),
             &Value::Null
         ));
-        assert!(!delivered(
-            &json!({"agent": "opencode"}),
-            &receipt("submitted", json!("transcript")),
-            &bound
-        ));
+        // Codex and Kimi senders witness no native input: no grant.
+        for agent in ["codex", "kimi", "opencode"] {
+            assert!(!delivered(
+                &json!({"agent": agent}),
+                &receipt("submitted", json!("transcript"), witnessed.clone()),
+                &bound
+            ));
+        }
     }
 
     #[test]

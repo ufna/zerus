@@ -419,7 +419,7 @@ fn fixture() {
                 crate::state::storage::id_record_path(string(&record, "session_id")).unwrap(),
             )
             .unwrap();
-            assert!(mark_input(&owner, now())
+            assert!(mark_input(&owner, now(), &json!({}))
                 .unwrap_err()
                 .contains("requires settled Stage"));
             assert!(
