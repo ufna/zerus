@@ -111,6 +111,40 @@ fn existing(reference: &TaskRef, revision: &str) -> wire::TaskDraft {
 }
 
 #[test]
+fn native_intake_reviews_show_project_task_and_team_names_from_the_bound_documents() {
+    use zerus_client_core::{desktop::team_confirmation, text::Text};
+
+    let (h, config, scope) = sample();
+    let (reference, revision) = document(&config);
+    let team = h.store.team(TEAM).unwrap().unwrap();
+    for (draft, title) in [
+        (new(), "Native original control"),
+        (existing(&reference, &revision), "Existing native control"),
+    ] {
+        let value = review(&config, &scope, draft).unwrap();
+        let plan = serde_json::from_value(value["plan"].clone()).unwrap();
+        let review: wire::Review = serde_json::from_value(value["review"].clone()).unwrap();
+        let labels: team_confirmation::Labels =
+            serde_json::from_value(value["labels"].clone()).unwrap();
+        assert_eq!(labels.facts, review.intent.facts);
+        assert_eq!(labels.project.as_deref(), Some("example"));
+        let prompt = team_confirmation::action(&plan, &review, &labels).unwrap();
+        let body = prompt
+            .body
+            .iter()
+            .map(Text::english)
+            .collect::<Vec<_>>()
+            .join("\n");
+        for visible in [title, "example", team.name.as_str()] {
+            assert!(body.contains(visible), "{body}");
+        }
+        for hidden in [TEAM, &reference.project, &reference.uuid, &review.intent.plan.request_id] {
+            assert!(!body.contains(hidden), "{body}");
+        }
+    }
+}
+
+#[test]
 fn native_intake_unknown_after_document_save_never_resumes_or_admits_a_second_uuid() {
     let (h, config, scope) = sample();
     let (reference, revision) = document(&config);

@@ -294,6 +294,8 @@ fn read(
                         && card.decisions.contains(&plan.decision),
                     "owner card changed"
                 );
+                let labels = super::confirmation_labels::card_labels(&tx, &team, &card, &facts)
+                    .map_err(anyhow::Error::msg)?;
                 let review = wire::Review {
                     intent: wire::Intent {
                         scope,
@@ -309,7 +311,7 @@ fn read(
                     card_notes: card.notes.iter().map(ops::ReportNote::sentence).collect(),
                 };
                 ensure!(review.valid(), "owner review exceeds bounds");
-                Ok(json!({"ok":true,"review":review}))
+                Ok(json!({"ok":true,"review":review,"labels":labels}))
             }
             Query::Result { intent } => {
                 ensure!(

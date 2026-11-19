@@ -85,7 +85,7 @@ pub(super) fn review(config: &Config, scope: &Scope, draft: wire::TaskDraft) -> 
         wire::Action::NewTask { project, .. } | wire::Action::Intake { project, .. } => project,
         _ => return Err(required()),
     };
-    crate::tasks::native_team::project_name(config, project)?;
+    let project_name = crate::tasks::native_team::project_name(config, project)?;
     // Canonical task read and project custody precede the Teams snapshot.
     // An unset draft clock requests preparation only, never execution.
     let mut held = if let wire::Action::Intake {
@@ -121,6 +121,12 @@ pub(super) fn review(config: &Config, scope: &Scope, draft: wire::TaskDraft) -> 
     let machine = original::machine(config)?;
     native::check(&store, &config.state, &machine, &prepared.request)?;
     let (_, facts) = prepared.bound_facts(&tx, Some(config))?;
+    use zerus_client_core::desktop::team_confirmation::{Labels, TaskLabel};
+    let mut labels = Labels {
+        facts: facts.clone(),
+        project: Some(project_name),
+        ..Default::default()
+    };
     let reference = task(&prepared.request)?;
     let mut details = vec![
         ("Project".into(), json!(reference.project).to_string()),
@@ -138,10 +144,15 @@ pub(super) fn review(config: &Config, scope: &Scope, draft: wire::TaskDraft) -> 
             let (_, document) = held.as_mut().ok_or_else(required)?;
             check_document(&plan, document)?;
             native::prepare(&store, &config.state, &machine, &prepared.request, document)?;
-            details.push((
-                "Title".into(),
-                json!(document.view().map_err(store::storage)?.title).to_string(),
-            ));
+            let view = document.view().map_err(store::storage)?;
+            labels.task = Some(TaskLabel {
+                number: view.id,
+                title: view.title.clone(),
+                stage: false,
+            });
+            (labels.role, labels.pipeline) =
+                super::super::confirmation_labels::placement(&team, role.as_deref(), pipeline.as_deref());
+            details.push(("Title".into(), json!(view.title).to_string()));
             details.push((
                 "Stage".into(),
                 json!(document.stage().map_err(store::storage)?.as_str()).to_string(),
@@ -170,7 +181,7 @@ pub(super) fn review(config: &Config, scope: &Scope, draft: wire::TaskDraft) -> 
     if !review.valid() {
         return Err(required());
     }
-    Ok(json!({"ok":true,"plan":plan,"review":review}))
+    Ok(json!({"ok":true,"plan":plan,"review":review,"labels":labels}))
 }
 
 struct Custody {

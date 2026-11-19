@@ -237,15 +237,15 @@ fn review(config: &Config, scope: &Scope, plan: Arc<wire::Plan>) -> Result<Value
     } else {
         (None, prepared.empty_facts()?)
     };
-    let team_name = if let Some(team) = team {
-        ops::authority(&prepared::actor(), &prepared.request.operation, &team)?;
+    let team_name = if let Some(team) = &team {
+        ops::authority(&prepared::actor(), &prepared.request.operation, team)?;
         if team.revision != plan.expected_revision {
             return Err(Problem::new(
                 code::STALE_REVISION,
                 "Read the current team before confirming its action.",
             ));
         }
-        team.name
+        team.name.clone()
     } else {
         match &prepared.request.operation {
             ops::Operation::Create { name, .. } | ops::Operation::StartPlanning { name, .. }
@@ -292,7 +292,15 @@ fn review(config: &Config, scope: &Scope, plan: Arc<wire::Plan>) -> Result<Value
     if !review.valid() {
         return Err(required());
     }
-    Ok(json!({"ok":true,"review":review}))
+    let labels = super::super::confirmation_labels::action(
+        tx.as_deref(),
+        config,
+        team.as_ref(),
+        &prepared.request,
+        &review.intent.facts,
+        &review.intent.machine,
+    )?;
+    Ok(json!({"ok":true,"review":review,"labels":labels}))
 }
 
 fn review_details(change: &TeamAction, pretty: bool) -> Result<Vec<(String, String)>> {
