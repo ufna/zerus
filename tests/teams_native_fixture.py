@@ -570,7 +570,7 @@ class TeamFixture:
         self.root = Path(tempfile.mkdtemp(prefix=ROOT_PREFIX, dir=base)).resolve()
         # The private root's mark: the contract entry acts only on a root holding it.
         self.nonce = str(uuid.uuid4())
-        self.listed = False
+        self.listed_once = False
         if ROOT_CREATED is not None:
             ROOT_CREATED(case, self.root)
         folder = os.environ.get('ZERUS_TEAMS_EVIDENCE') or str(self.root / 'evidence')
@@ -893,7 +893,7 @@ class TeamFixture:
                 for child in value:
                     walk(child)
         run = self.hgs('ls', '--json', ok=False)
-        if run.returncode != 0 and run.stderr.strip() == LS_RACE and not self.listed:
+        if run.returncode != 0 and run.stderr.strip() == LS_RACE and not self.listed_once:
             # The first listing of a fresh state root starts its metadata worker and can
             # answer this before the worker has created its index (zerus-kfyot); every
             # class of hosted run 44464876721 met it once, at its first read. Until one
@@ -905,7 +905,7 @@ class TeamFixture:
         if run.returncode != 0:
             raise AssertionError(f'hgs ls exited {run.returncode}: {run.stdout[-600:]} {run.stderr[-600:]}')
         walk(json.loads(run.stdout))
-        self.listed = True
+        self.listed_once = True
         return found
 
     def session_of(self, member):

@@ -795,6 +795,13 @@ class TeamsFixtureIsolation(unittest.TestCase):
         self.addCleanup(server.close)
         server.bind(str(self.outside / 'default'))
 
+    def test_no_state_of_a_built_fixture_hides_one_of_its_methods(self):
+        # A run once failed every class at bring-up: an instance flag `listed` hid the
+        # `listed()` helper ("'bool' object is not callable", hosted run 44474231340).
+        hidden = sorted(name for name in vars(self.fx) if callable(getattr(type(self.fx), name, None)))
+        self.assertEqual(hidden, [])
+        self.assertTrue(callable(self.fx.listed))
+
     def test_preflight_needs_the_person_executable_and_the_root_is_marked(self):
         self.fx.preflight()
         self.assertEqual((self.fx.root / fixture.ROOT_FILE).read_text(), f'{fixture.PERSON_MARKER}\n{self.fx.nonce}\n')
