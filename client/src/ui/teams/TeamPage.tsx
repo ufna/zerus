@@ -43,6 +43,9 @@ export function TeamPage() {
   };
   const service = () => desktopService.enabled() && !desktopService.state()?.connected
     ? tr("Connect this window to its desktop service before changing a team.") : undefined;
+  // An archived team opens by its ID like any other (the #2558 review), read-only.
+  const archived = () => status() === "archived" ? tr("This team is archived. It is shown read-only.") : undefined;
+  const readOnly = () => archived() ?? home() ?? service();
   return <section class="team-page" data-team-page aria-label={tr("Team")}>
     <header class="team-page-head">
       <button type="button" class="btn ghost small" data-team-page-back onClick={closeTeamPage}><Icon name="chevron-left" size={14} />{tr("Back")}</button>
@@ -51,12 +54,13 @@ export function TeamPage() {
       <Show when={status()}>{(shown) => <span class={`tm-state-badge tone-${stateTone(shown())}`}>{stateLabel(shown())}</span>}</Show>
     </header>
     <Show when={teams.available() !== false} fallback={<p class="notice team-notice" role="status">{teams.off() === "unavailable" ? tr("Teams are unavailable on this computer.") : tr("Teams are off on this computer.")}</p>}>
+      <Show when={archived()}>{(reason) => <p class="notice team-notice" role="status" data-team-page-archived>{reason()}</p>}</Show>
       <Show when={home()}>{(reason) => <p class="notice team-notice" role="status" data-team-page-home>{reason()}</p>}</Show>
       <Show when={service()}>{(reason) => <p class="notice team-notice" role="status" data-team-page-service>{reason()}</p>}</Show>
       <Show when={view()} fallback={<div class="team-loading" role="status" data-team-waiting>
         <span class="dim">{readFailure() ? tr("Teams read failed: %1", readFailure()!.message) : tr("Reading the team…")}</span>
       </div>}>{(current) => <TeamBody view={current()} source={source()} openSettings={untrack(() => takeTeamSettings(current().bar.id))}
-        readOnly={home() ?? service()} addTaskBlocked={home() ?? service() ?? teamPageAddTaskBlocked(current().bar)}
+        readOnly={readOnly()} addTaskBlocked={readOnly() ?? teamPageAddTaskBlocked(current().bar)}
         onAddTask={() => addTeamTaskFromPage(current().bar)} />}</Show>
       <Show when={!view() && teams.failureFor(source())}>{(reason) => <ActionFailureNotice failure={reason()} onDismiss={() => teams.clearFailure(source())} />}</Show>
       <TeamUnresolvedList entries={teams.unresolved()} busy={teams.busy()} onCheck={(entry) => void teams.check(entry, source())} onDismiss={(entry) => void teams.dismiss(entry, source())} />

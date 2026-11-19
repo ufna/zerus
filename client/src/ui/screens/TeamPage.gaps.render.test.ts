@@ -66,7 +66,7 @@ async function openPage(summary: TeamSummary = listed()) {
 }
 async function openChat(element: HTMLElement) {
   button(element, "Lead chat")!.click();
-  await vi.waitFor(() => expect(element.querySelector(".team-lead-chat")).not.toBeNull());
+  await vi.waitFor(() => expect(element.querySelector(".team-lead-chat")).not.toBeNull(), { timeout: 10_000 }); // the lazy drawer loads the Composer
   return element.querySelector<HTMLElement>(".team-lead-chat")!;
 }
 beforeEach(async () => {

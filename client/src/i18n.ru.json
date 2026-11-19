@@ -4386,6 +4386,7 @@
   "This task could not be read.": "Не удалось прочитать задачу.",
   "This task is already finished.": "Эта задача уже завершена.",
   "This team cannot change task assignments.": "В этой команде нельзя менять назначения задач.",
+  "This team is archived. It is shown read-only.": "Эта команда в архиве. Она показана только для чтения.",
   "This team's home is another computer (%1). Open it there.": "Домашний компьютер этой команды другой (%1). Откройте её там.",
   "This team's project has no session on the session list to add a task from.": "В списке сессий нет сессии проекта этой команды, из которой можно добавить задачу.",
   "This team's routing choices are unavailable.": "Варианты распределения для этой команды недоступны.",
