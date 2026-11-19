@@ -1778,3 +1778,45 @@ fn one_way_confirmations_say_they_cannot_be_undone() {
     });
     assert!(remove.contains("cannot be undone"), "{remove}");
 }
+
+/// zerus-3u5yu (6, mutant rs5 of the #2527 review): a window Route that keeps
+/// the task's fields names none of them itself; the service binds them.
+#[test]
+fn a_route_that_keeps_the_task_fields_names_none_of_them() {
+    let route = |deps: Vec<zerus_team_plan::model::Dep>,
+                 writes: Vec<String>,
+                 assignee: Option<String>| TeamAction::Route {
+        node: 2,
+        role: "developer".into(),
+        pipeline: "reviewed".into(),
+        keep_task_fields: true,
+        deps,
+        writes,
+        assignee,
+    };
+    assert_eq!(route(Vec::new(), Vec::new(), None).check(), Ok(()));
+    let refusal = Err(
+        "A placement edit cannot also change the task's dependencies, write paths or assignee."
+            .to_owned(),
+    );
+    assert_eq!(
+        route(
+            vec![zerus_team_plan::model::Dep {
+                node: 1,
+                kind: zerus_team_plan::model::DepKind::Soft
+            }],
+            Vec::new(),
+            None
+        )
+        .check(),
+        refusal
+    );
+    assert_eq!(
+        route(Vec::new(), vec!["src/example.rs".into()], None).check(),
+        refusal
+    );
+    assert_eq!(
+        route(Vec::new(), Vec::new(), Some("m1".into())).check(),
+        refusal
+    );
+}
