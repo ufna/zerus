@@ -16,7 +16,7 @@ use zerus_client_core::{
         team_person_actions as wire,
         ui_requests::Request,
     },
-    teams::action::{classify, TeamCall, TeamOutcome},
+    teams::action::{classify, TeamAction, TeamCall, TeamOutcome},
 };
 
 #[derive(Default)]
@@ -193,6 +193,8 @@ pub(crate) fn run(
                         // An older service refuses a window Route's kept
                         // fields; say what to update (zerus-3u5yu 3).
                         "Update the selected desktop service to route or reassign tasks from this window."
+                    } else if marker == wire::LEAD_CONTACT_MARKER {
+                        "Update the selected desktop service to use messages for the lead."
                     } else {
                         "Update the selected desktop service to use native team confirmation."
                     },
@@ -314,6 +316,16 @@ fn confirm(
     labels: &Labels,
 ) -> Result<Confirmed, String> {
     let window = crate::main_window(app).ok_or("The main window is unavailable.")?;
+    // Opening a notification is also its read receipt. The same native
+    // original binds that exact card, and the store limits it to lead notices.
+    if matches!(&plan.action, wire::Action::Team { change } if matches!(change.as_ref(), TeamAction::ReadLeadNotice { .. })) {
+        if plan.reference().as_ref() == Some(&review.intent.plan)
+            && review.intent.facts == labels.facts && review.valid()
+        {
+            return Ok(Confirmed(review.intent));
+        }
+        return Err("Read the exact lead notice again.".into());
+    }
     let prompt = team_confirmation::action(plan, &review, labels)
         .ok_or("Read the exact team action again before confirming.")?;
     let accepted = show_confirmation(app, &window, &prompt);

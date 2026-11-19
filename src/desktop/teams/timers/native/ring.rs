@@ -29,10 +29,12 @@ pub(super) fn deliver(n: &Native<'_>, store: &Store, ring: &Ring) -> Rung {
     let Some(db) = store.db.as_ref() else {
         return Rung::NotStarted("The team store is unavailable".into());
     };
-    let input = serde_json::json!({"request_id":ring.id,"expected_run_id":ring.run,
-        "expected_conversation_id":ring.conversation,"text":ring.text})
-    .to_string()
-    .into_bytes();
+    let mut input = serde_json::json!({"request_id":ring.id,"expected_run_id":ring.run,
+        "expected_conversation_id":ring.conversation,"text":ring.text});
+    if ring.only_when_idle {
+        input["only_when_idle"] = serde_json::json!(true);
+    }
+    let input = input.to_string().into_bytes();
     let root = if ring.agent == "dsh" { n.config.state.join("dsh") } else { n.config.state.clone() };
     let folder = if ring.agent == "dsh" { "receipts" } else { "input_receipts" };
     let Ok(roots) = Roots::open(&root, folder) else {

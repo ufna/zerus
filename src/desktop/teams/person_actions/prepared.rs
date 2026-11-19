@@ -92,6 +92,11 @@ impl Prepared {
             TeamAction::Settings { .. } => "change_settings".into(),
             TeamAction::ValidationConfig { .. } => "set_validation_config".into(),
             TeamAction::Decide { .. } => "decide_card".into(),
+            TeamAction::LeaveLeadNote { .. } => {
+                fields.insert("kind".into(), json!(store::person_contact::NOTE));
+                fields.insert("decisions".into(), json!([]));
+                "open_card".into()
+            }
             // Ask is member-only even when a Person could name a node.
             TeamAction::Ask { .. } => return Err(required()),
             _ => change.op().replace('-', "_"),
@@ -312,6 +317,12 @@ impl Prepared {
         } else {
             rows::team(db, id)?
         };
+        if let Some(team) = current.as_ref().filter(|_| matches!(&self.plan.action, wire::Action::Team { change }
+            if matches!(change.as_ref(), TeamAction::AskLead { .. } | TeamAction::LeaveLeadNote { .. })))
+        {
+            facts.push(point(db, "members", "team", id, Some(("id", &json!(team.lead))),
+                "data,state,person_stopped,machine,session_id", 65536)?);
+        }
         let digest = wire::digest(&(&self.request, facts)).ok_or_else(required)?;
         Ok((current, digest))
     }

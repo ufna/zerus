@@ -10,6 +10,7 @@ import { createComponent } from "solid-js";
 import { render } from "solid-js/web";
 import type { TeamsOut } from "../../types";
 import { teamView } from "../teams/fixtures";
+import contact from "../../../core/src/teams/fixtures/person-lead-contact.json";
 
 const MACHINE = "00000000-0000-4000-8000-0000000000aa";
 const TEAM = "00000000-0000-4000-8000-00000000beef";
@@ -159,4 +160,18 @@ it("a member's person-only request shows from the team's list row, with no team 
   // The same row's status decides: a stopped team's member is not listed.
   store.apply([entry("list", "list", { teams: [{ ...live, status: "stopped" }], truncated: false, next: null })]);
   await vi.waitFor(() => expect(host.querySelector('[data-waiting-request="member"]')).toBeNull());
+});
+
+
+it("opens the producer's reply and sends a read receipt instead of a decision", async () => {
+  store.apply([entry("list", "list", contact.list),
+    entry("waiting", "waiting", { items: [contact.reply], next: null })]);
+  const host = show();
+  expect(host.textContent).not.toContain(contact.reply.text);
+  button(host, "Open reply").click();
+  expect(host.querySelector("[data-opened-lead-reply]")?.textContent).toContain(contact.reply.text);
+  await vi.waitFor(() => expect(f.follows.some((request) => JSON.stringify(request).includes(TEAM))).toBe(true));
+  store.apply([entry(`team:${TEAM}`, "team", { ...teamView, revision: contact.list.teams[0].revision })]);
+  await vi.waitFor(() => expect(f.acts).toHaveLength(1));
+  expect(f.acts[0]).toMatchObject({ team: TEAM, expected_revision: contact.list.teams[0].revision, action: { kind: "read_lead_notice", card: contact.reply.card } });
 });

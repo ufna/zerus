@@ -55,6 +55,8 @@ pub(super) fn variant(command: &str) -> Option<&'static str> {
         "release" => "release",
         "cancel" => "cancel",
         "reply" => "reply",
+        "reply-to-person" => "reply_to_person",
+        "acknowledge-note" => "acknowledge_lead_note",
         "ask" => "ask",
         "verdict" => "verdict",
         "pause-member" => "pause_member",

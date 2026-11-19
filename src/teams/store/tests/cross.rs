@@ -192,7 +192,7 @@ fn archived_teams_and_closed_cards_do_not_delay_the_first_live_page() {
     let db = h.store.db.as_ref().unwrap();
     for (sql, index) in [
         (reads::teams_sql(true), "teams_planning_live"),
-        (reads::WAITING_SQL.to_owned(), "cards_waiting"),
+        (reads::WAITING_SQL.to_owned(), "person_owner_waiting"),
     ] {
         let mut s = db.prepare(&format!("EXPLAIN QUERY PLAN {sql}")).unwrap();
         let plan = s

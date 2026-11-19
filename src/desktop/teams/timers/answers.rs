@@ -95,6 +95,7 @@ fn one(
         return Ok(());
     };
     let ring = Ring {
+        only_when_idle: false,
         id: id.clone(),
         gate: Gate::Answer(AnswerBell {
             team: team.id.clone(),

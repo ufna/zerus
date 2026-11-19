@@ -107,7 +107,7 @@ fn a_restart_between_the_reservation_and_the_send_never_sends_it() {
     let newest = w.h.store.inbox_view(TEAM).unwrap().unwrap().newest;
     assert!(w
         .ledger
-        .reserve(&binding, newest, 1, 120_000, "epoch-1", T0)
+        .reserve(&binding, newest, 1, 0, 120_000, "epoch-1", T0)
         .unwrap()
         .is_some());
     w.restart("epoch-2");
@@ -246,5 +246,36 @@ fn every_ledger_read_searches_an_index() {
             assert!(!access || line.contains("USING"), "{name}: {line}");
             assert!(!line.contains("TEMP B-TREE"), "{name}: {line}");
         }
+    }
+}
+
+#[test]
+fn person_question_and_note_ring_on_the_next_idle_lead_turn() {
+    for contact in [
+        Operation::AskLead { text: "private question body".into() },
+        Operation::OpenCard {
+            kind: "person_note_to_lead".into(),
+            text: "private note body".into(),
+            node: None,
+            decisions: Some(vec![]),
+            parameters: None,
+        },
+    ] {
+        let mut w = World::new();
+        w.reported();
+        w.pass(T0);
+        assert_eq!(w.effects.rang.len(), 1, "ordinary reminder first");
+        w.h.run(&person(), contact).unwrap();
+        w.sessions.working("lead");
+        w.pass(T0 + 4_500);
+        assert_eq!(w.effects.rang.len(), 1, "the lead's turn is still running");
+        w.sessions.idle("lead", "run-1");
+        w.pass(T0 + 9_000);
+        assert_eq!(w.effects.rang.len(), 2, "the first idle turn receives the new contact");
+        assert_eq!(w.effects.rang[1].text, super::super::doorbell::text(2, TEAM));
+        assert!(w.effects.rang[1].only_when_idle);
+        w.restart("epoch-2");
+        w.pass(T0 + 10_000);
+        assert_eq!(w.effects.rang.len(), 2, "restart does not send the same reminder again");
     }
 }

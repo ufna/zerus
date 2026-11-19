@@ -253,6 +253,8 @@ fn all_native_action_kinds_render_from_the_real_plan_encoder() {
             json!({"kind":"reply","item":987654,"text":"Here is the answer."}),
             "Reply",
         ),
+        (json!({"kind":"ask_lead","text":"Line one\nLine two"}), "Ask the lead…"),
+        (json!({"kind":"leave_lead_note","text":"Line one\nLine two"}), "Leave a note"),
     ];
     for (kind, expected) in [
         ("create", "Create team"),
@@ -262,7 +264,7 @@ fn all_native_action_kinds_render_from_the_real_plan_encoder() {
         fields["kind"] = json!(kind);
         cases.push((fields, expected));
     }
-    assert_eq!(cases.len(), 45);
+    assert_eq!(cases.len(), 47);
     for (fields, expected) in cases {
         let change: TeamAction = serde_json::from_value(fields.clone()).unwrap();
         let op = change.op();
@@ -271,6 +273,9 @@ fn all_native_action_kinds_render_from_the_real_plan_encoder() {
             action(&plan, &review(&plan), &labels()).unwrap_or_else(|| panic!("{op} presentation"));
         assert_eq!(prompt.title.english(), expected, "{op}");
         let body = rendered(&prompt);
+        if matches!(op, "ask-lead" | "leave-lead-note") {
+            assert!(body.ends_with("\nLine one\nLine two"), "{op}: {body}");
+        }
         let team = if plan.expected_revision == 0 {
             "New team name"
         } else {

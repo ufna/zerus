@@ -104,6 +104,9 @@ impl TeamAction {
             Self::Cancel { .. } => "cancel",
             Self::Reply { .. } => "reply",
             Self::Ask { .. } => "ask",
+            Self::AskLead { .. } => "ask-lead",
+            Self::LeaveLeadNote { .. } => "leave-lead-note",
+            Self::ReadLeadNotice { .. } => "read-lead-notice",
         }
     }
 
@@ -256,6 +259,8 @@ impl TeamAction {
             Self::Hold { node } | Self::Release { node } => json!({"node": node}),
             Self::Cancel { node, reason } => json!({"node": node, "reason": reason}),
             Self::Reply { item, text } => json!({"item": item, "text": text}),
+            Self::AskLead { text } | Self::LeaveLeadNote { text } => json!({"text": text}),
+            Self::ReadLeadNotice { card } => json!({"card": card}),
             Self::Ask {
                 node,
                 generation,
@@ -376,6 +381,9 @@ impl TeamAction {
                 reason: why,
             } => check_cancel(*id, why),
             Self::Reply { item, text } => check_reply(*item, text),
+            Self::AskLead { text } | Self::LeaveLeadNote { text } =>
+                zerus_team_plan::lead_message(text).map_err(|problem| problem.message),
+            Self::ReadLeadNotice { card: id } => card(*id),
             Self::Ask {
                 node: id,
                 generation: _,

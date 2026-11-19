@@ -19,6 +19,7 @@ pub(crate) mod lead_queue;
 mod members;
 pub(crate) mod observed_timing;
 mod phase_controls;
+mod person_contact;
 pub(crate) use phase_controls::prepare as prepare_phase_controls;
 mod phase_review;
 mod pipeline;

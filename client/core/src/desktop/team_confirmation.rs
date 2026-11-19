@@ -735,7 +735,17 @@ fn team_action(change: &TeamAction, team: &str, labels: &Labels) -> Option<Promp
         Decide { decision, .. } => {
             return card_action(team, labels.card_kind.as_deref()?, decision, labels)
         }
-        Ask { .. } => return None,
+        // Plan validation checks the message's plain text and size. Its
+        // separate line keeps the exact body, including embedded line feeds.
+        AskLead { text } => Prompt::new(
+            text!("Ask the lead…"),
+            text!("Save this question in the inbox for the lead of team “%1”.", team),
+        ).with(Text::verbatim(text)),
+        LeaveLeadNote { text } => Prompt::new(
+            text!("Leave a note"),
+            text!("Save this note for the lead of team “%1” to acknowledge.", team),
+        ).with(Text::verbatim(text)),
+        Ask { .. } | ReadLeadNotice { .. } => return None,
     };
 
     details(&mut prompt.body, change, labels);
