@@ -144,6 +144,20 @@ impl Reader {
 }
 
 impl Reader {
+    /// Only for archive display. The caller still verifies the complete
+    /// generation before publishing its listing.
+    pub fn has_label(&self, name: &str) -> anyhow::Result<bool> {
+        let mut query = self.0.db.prepare_cached(
+            "SELECT EXISTS(
+                SELECT 1 FROM sources AS locator INDEXED BY sources_name
+                CROSS JOIN snapshots AS s
+                WHERE locator.tombstone=0 AND json_extract(locator.seed,'$.record.name')=?1
+                  AND s.generation=?2 AND s.source=locator.source
+            )",
+        )?;
+        Ok(query.query_row(params![name, self.generation()?], |row| row.get(0))?)
+    }
+
     pub fn parent(&self, link: &Value) -> anyhow::Result<Option<(String, Value)>> {
         let generation: i64 =
             self.0

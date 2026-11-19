@@ -261,6 +261,11 @@ jobs:
           cargo +1.99.1 fmt --check --manifest-path crates/team-plan/Cargo.toml
           cargo +1.99.1 clippy --locked --manifest-path crates/team-plan/Cargo.toml --target-dir target --all-targets -- -D warnings
           cargo +1.99.1 test --locked --manifest-path crates/team-plan/Cargo.toml --target-dir target
+      - name: Mobile task edit crate (format, lints, tests)
+        run: |
+          cargo +1.99.1 fmt --check --manifest-path crates/mobile-task-edit/Cargo.toml
+          cargo +1.99.1 clippy --locked --manifest-path crates/mobile-task-edit/Cargo.toml --target-dir target --all-targets -- -D warnings
+          cargo +1.99.1 test --locked --manifest-path crates/mobile-task-edit/Cargo.toml --target-dir target
       # hgs and client/core take these by path, which builds them but never runs their tests.
       # Every Quick Cargo check shares target: compatible dependencies are built once.
       - name: Desktop crates (format, lints, tests)

@@ -8,6 +8,7 @@ import { createComponent } from "solid-js";
 import { render } from "solid-js/web";
 import pages from "../../../core/src/teams/fixtures/drawers.json";
 import providerStop from "../../../core/src/teams/fixtures/provider-stop-feed.json";
+import memberRemoved from "../../../core/src/teams/fixtures/member-removed-feed.json";
 import land from "../../../core/src/teams/fixtures/landing-drawers.json";
 import catalog from "../../i18n.ru.json";
 import type { DrawerPage } from "../../store/teamDrawers";
@@ -47,12 +48,17 @@ it.each([
     onDecide: () => {}, onOpenTeam: () => {},
   }));
   expect(host.querySelector("[data-kind-sentence]")?.textContent).toBe(
-    `Для участника ${row.parameters[0][1]} нужен хост DeepSeek с поддержкой команд Zerus.`,
+    `Для участника ${row.parameters[0][1]} нужен хост DeepSeek с поддержкой Agent Teams.`,
   );
   expect(host.querySelector(".waiting-text")?.textContent).toBe(
     `Остановите простаивающие сессии DeepSeek или перезапустите хост самостоятельно, а когда он снова заработает, ${action}, поскольку Zerus не повторит этот запуск.`,
   );
   expect(host.textContent).not.toContain("invalid_state");
+});
+
+it("localizes the removal reason written by the launch service", () => {
+  const host = mount(() => createComponent(drawers.TeamFeed, { rows: [memberRemoved] }));
+  expect(host.querySelector("[data-feed-detail]")?.textContent).toBe("Участник удалён");
 });
 
 it("names the review and test stages as nouns", () => {

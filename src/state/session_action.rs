@@ -124,14 +124,20 @@ pub(super) const NO_CONVERSATION: &str =
 
 /// A presentation gate, never a substitute for the locked action checks.
 /// `resumed` is the summary's single verification of a pending resume.
-pub(super) fn summary(record: &Value, live_pane: bool, resumed: &Option<Result<()>>) -> Value {
+/// Ordinary listing supplies name availability from its bounded observation.
+pub(super) fn summary(
+    record: &Value,
+    live_pane: bool,
+    resumed: &Option<Result<()>>,
+    archive_name_taken: Option<bool>,
+) -> Value {
     let archived = !string(record, "archive_id").is_empty();
     let terminating = terminating::pending(record);
     let changing = record.get("pausing").is_some() || record["resume_pending"] == true;
     let confirmed = !string(record, "conversation_id").is_empty();
     let native_archive = archived && record["backend"] == "dsh";
     let recipe = if native_archive {
-        Path::new(string(record, "cwd")).is_dir()
+        Path::new(string(record, "cwd")).is_dir() || super::worktree_lifecycle::restorable(record)
     } else {
         record["base"].is_array() && (Path::new(string(record, "launch_dir")).is_dir() || super::worktree_lifecycle::restorable(record))
     };
@@ -139,11 +145,15 @@ pub(super) fn summary(record: &Value, live_pane: bool, resumed: &Option<Result<(
     let restore_pending = !string(record, "restore_archive_id").is_empty() || cleanup_pending;
     let name = string(record, "name");
     let native_pending = native_archive && dsh::retirement::restore_source_held(record) == Ok(true);
-    let restorable = native_pending || archived && recipe && !cleanup_pending && if native_archive {
-        dsh::retirement::restore_name_busy(name) == Ok(false)
-    } else {
-        !record_path(name).exists()
-    };
+    let restorable = native_pending
+        || archived
+            && recipe
+            && !cleanup_pending
+            && if native_archive {
+                dsh::retirement::restore_name_busy(name) == Ok(false)
+            } else {
+                !archive_name_taken.unwrap_or_else(|| record_path(name).exists())
+            };
     // The restore's own history check decides, through the shared code:
     // one bounded metadata read, only for a Claude or Codex archive that
     // may otherwise restore (zerus-63rru.70). Kimi, DeepSeek and OpenCode
@@ -657,7 +667,7 @@ mod tests {
                 "base": [agent], "launch_dir": launch_dir, "transcript": transcript})
         };
         let restore = |record: &Value| {
-            let summary = summary(record, false, &None);
+            let summary = summary(record, false, &None, None);
             let allowed = summary["allowed_actions"]
                 .as_array()
                 .unwrap()
@@ -785,14 +795,14 @@ mod tests {
         // The conversation that was never saved: no transcript file.
         let before_first =
             archived_record("claude/example/never-saved", &dir.path().join("missing.jsonl"));
-        let offered = summary(&before_first, false, &None);
+        let offered = summary(&before_first, false, &None, None);
         assert!(!offered_restore(&offered), "{offered}");
         assert_eq!(offered["action_reasons"]["restore"], NO_CONVERSATION);
         // The restore command's own check still refuses it, unchanged.
         assert!(crate::state::recipes::verify_history(&before_first, true).is_err());
         // The saved conversation offers restore and passes its own check.
         let persisted = archived_record("claude/example/saved", &saved);
-        let offered = summary(&persisted, false, &None);
+        let offered = summary(&persisted, false, &None, None);
         assert!(offered_restore(&offered), "{offered}");
         assert!(crate::state::recipes::verify_history(&persisted, true).is_ok());
     }
@@ -816,7 +826,7 @@ mod tests {
         std::fs::write(&saved, "{\"type\":\"user\"}\n").unwrap();
         let record = archived_record("claude/example/counted", &saved);
         crate::state::journal::read_order::take();
-        let offered = summary(&record, false, &None);
+        let offered = summary(&record, false, &None, None);
         let steps = crate::state::journal::read_order::take();
         assert!(offered_restore(&offered), "{offered}");
         assert_eq!(
@@ -841,7 +851,7 @@ mod tests {
         let unconfirmed =
             crate::state::archive::read_archive("claude/example/unconfirmed", &id).unwrap();
         crate::state::journal::read_order::take();
-        let offered = summary(&unconfirmed, false, &None);
+        let offered = summary(&unconfirmed, false, &None, None);
         let steps = crate::state::journal::read_order::take();
         assert!(!offered_restore(&offered), "{offered}");
         assert!(
@@ -883,7 +893,7 @@ mod tests {
                 crate::state::archive::read_archive(&name, &id).unwrap()
             };
             crate::state::journal::read_order::take();
-            let offered = summary(&record, false, &None);
+            let offered = summary(&record, false, &None, None);
             let steps = crate::state::journal::read_order::take();
             assert!(offered_restore(&offered), "{agent}: {offered}");
             assert!(

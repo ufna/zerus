@@ -3,6 +3,7 @@
 import json
 import os
 import subprocess
+import sys
 import unittest
 import uuid
 
@@ -39,9 +40,19 @@ os.execv(__TMUX__, [__TMUX__, "-S", __SOCKET__, "-f", "/dev/null", *sys.argv[1:]
 
 @unittest.skipUnless(os.name == "posix" and pause.TMUX, "requires private Unix tmux")
 class ArchiveRestoreSource(pause.Harness):
-    rows = pause.Archive.rows
-    archived = pause.Archive.archived
     save_archive = pause.Archive.save_archive
+
+    def archived(self, name):
+        # Restore selects an archive, so use its own bounded catalog. The
+        # ordinary listing's asynchronous session index has a separate test.
+        self.hgs("__state", "archive-catalog-worker")
+        result = subprocess.run([str(pause.HGS), "archives", "--json", "--bounded"],
+                                input="{}", env=self.env, capture_output=True,
+                                text=True, timeout=20)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        page = json.loads(result.stdout)
+        self.assertIsNot(page.get("catalog_complete"), False, page)
+        return [row for row in page["sessions"] if row["name"] == name]
 
     def replace_on_writer_read(self, archive, replacement, at):
         (self.root / "archive-replace.json").write_text(json.dumps({
@@ -49,6 +60,49 @@ class ArchiveRestoreSource(pause.Harness):
         }))
         self.script("tmux", TERMINAL.replace("__TMUX__", repr(pause.TMUX))
                     .replace("__SOCKET__", repr(self.socket)))
+
+    def assert_restore_hint_tracks_name_reuse(self, indexed):
+        _, _, unused = self.save_archive(tag="unused")
+        reused, _, occupied = self.save_archive(tag="reused")
+        self.assertEqual(self.start(tag="reused"), reused)
+        # A saved occupant has no terminal. The listing must see its binding.
+        self.hgs("pause", reused)
+        self.assertTrue(self.binding(reused))
+        if indexed:
+            self.hgs("listing-index", "enable", "--json")
+            self.wait(lambda: json.loads(self.hgs("listing-index", "status", "--json"))["state"] == "ready")
+        else:
+            self.hgs("listing-index", "disable", "--json")
+        page = {}
+
+        def ready():
+            result = subprocess.run([str(pause.HGS), "ls", "--local", "--json"],
+                                    env=self.env, capture_output=True, text=True, timeout=6)
+            stale = {
+                "hgs: Session listing is building, stale or unavailable; no complete body returned",
+                "hgs: Session listing changed before publication; no complete body returned",
+                "hgs: Session listing changed before publication",
+                "hgs: Session listing membership changed before publication",
+            }
+            if result.returncode == 1 and not result.stdout and result.stderr.strip() in stale:
+                return False
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            page.update(json.loads(result.stdout))
+            return True
+
+        self.wait(ready)
+        self.assertIsNot(page["archive_page"].get("catalog_complete"), False, page)
+        rows = {row["archive_id"]: row for row in page["sessions"] if row.get("state") == "archived"}
+        self.assertEqual(set(rows), {unused["archive_id"], occupied["archive_id"]})
+        self.assertIn("restore", rows[unused["archive_id"]]["allowed_actions"])
+        self.assertNotIn("restore", rows[occupied["archive_id"]]["allowed_actions"])
+
+    @unittest.skipUnless(sys.platform.startswith("linux"), "indexed listing is qualified on Linux")
+    def test_archive_listing_restore_hint_tracks_name_reuse(self):
+        self.assert_restore_hint_tracks_name_reuse(indexed=True)
+
+    def test_canonical_archive_listing_restore_hint_tracks_name_reuse(self):
+        self.assert_restore_hint_tracks_name_reuse(indexed=False)
 
     def test_changed_archive_with_same_run_and_conversation_refuses_before_start(self):
         name, _, selected = self.save_archive()

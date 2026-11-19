@@ -217,17 +217,17 @@ pub(in crate::state) fn restore(
             scope.changing();
         }
         settle(&mut record, outcome)?;
-        if outcome == Outcome::Refused {
+        if let Some(reason) = outcome.refusal() {
             if let Some(scope) = scope {
                 scope.unchanged();
             }
-            return Err("The earlier DeepSeek restore did not start. The archive is available for a new Restore".into());
+            return Err(reason.into());
         }
         restored(scope, &record, id);
         return Ok(0);
     }
 
-    if !Path::new(string(archived, "cwd")).is_dir() {
+    if !Path::new(string(archived, "cwd")).is_dir() && !worktree_lifecycle::restorable(archived) {
         return Err("DeepSeek restore requires its original session folder".into());
     }
     let inspected = view(archived)?;
@@ -245,7 +245,9 @@ pub(in crate::state) fn restore(
         return Ok(0);
     }
 
+    worktree_lifecycle::restore(archived)?;
     let mut record = archived.clone();
+    capture_worktree(&mut record, Path::new(string(archived, "cwd")));
     for key in [
         "archive_id",
         "archived_at",
@@ -258,6 +260,7 @@ pub(in crate::state) fn restore(
         "session_end",
         "last_restore_error",
         "native_archive_through_seq",
+        "worktree_cleanup",
         "permissions_pending",
         "layout",
     ] {
@@ -312,6 +315,29 @@ pub(in crate::state) fn restore(
 enum Outcome {
     Resumed,
     Refused,
+    HostChanged,
+}
+
+impl Outcome {
+    fn tag(self) -> &'static str {
+        match self {
+            Self::Resumed => "resumed",
+            Self::Refused => "refused",
+            Self::HostChanged => "host_changed",
+        }
+    }
+
+    fn refusal(self) -> Option<&'static str> {
+        match self {
+            Self::Resumed => None,
+            Self::Refused => Some(
+                "The earlier DeepSeek restore did not start. The archive is available for a new Restore",
+            ),
+            Self::HostChanged => Some(
+                "The DeepSeek host restarted before the earlier restore could be confirmed. The archive is available for a new Restore",
+            ),
+        }
+    }
 }
 
 fn proof_path(record: &Value) -> Result<PathBuf> {
@@ -328,7 +354,7 @@ fn proof(record: &Value, outcome: Outcome) -> Value {
     json!({"archive_id":record["restore_archive_id"], "run_id":record["run_id"],
          "session_id":record["session_id"], "conversation_id":record["conversation_id"],
          "generation":record["restore_host_generation"],
-         "status":if outcome == Outcome::Resumed { "resumed" } else { "refused" }})
+         "status":outcome.tag()})
 }
 
 // Keep an exact acknowledgement even when the provider lock is busy for
@@ -345,7 +371,7 @@ fn outcome(record: &Value) -> Result<Option<Outcome>> {
         labels::read_file(&proof_path(record)?, 4096).map_err(|error| error.to_string())?
     {
         let saved: Value = serde_json::from_slice(&raw).map_err(|error| error.to_string())?;
-        for result in [Outcome::Resumed, Outcome::Refused] {
+        for result in [Outcome::Resumed, Outcome::Refused, Outcome::HostChanged] {
             if saved == proof(record, result) {
                 return Ok(Some(result));
             }
@@ -356,8 +382,21 @@ fn outcome(record: &Value) -> Result<Option<Outcome>> {
     if generation.is_empty() {
         return Ok(None);
     }
-    let request = json!({"sessionId": record["conversation_id"], "generation": generation,
-                        "requestId": record["run_id"]});
+    let result = observe_outcome(record, generation);
+    if let Some(result) = result {
+        remember(record, result)?;
+    }
+    Ok(result)
+}
+
+fn changed_generation(value: &Value, original: &str) -> bool {
+    let observed = string(value, "generation");
+    observed != original && session_id::canonical(observed)
+}
+
+fn observe_outcome(record: &Value, generation: &str) -> Option<Outcome> {
+    let request = json!({"sessionId":record["conversation_id"], "generation":generation,
+                        "requestId":record["run_id"]});
     if let Ok(observed) = rpc_within(
         record,
         "session-resume-status",
@@ -366,34 +405,43 @@ fn outcome(record: &Value) -> Result<Option<Outcome>> {
     ) {
         if observed["sessionId"] == record["conversation_id"]
             && observed["requestId"] == record["run_id"]
-            && observed["generation"] == generation
         {
-            if observed["status"] == "failed" {
-                return Ok(Some(Outcome::Refused));
+            if changed_generation(&observed, generation) {
+                return Some(Outcome::HostChanged);
             }
-            if observed["status"] == "completed" {
-                return Ok(Some(Outcome::Resumed));
+            if observed["generation"] == generation {
+                match observed["status"].as_str() {
+                    Some("failed") => return Some(Outcome::Refused),
+                    Some("completed") => return Some(Outcome::Resumed),
+                    _ => {}
+                }
             }
         }
     }
     // An older resident adapter has no receipt read. Its exact owned live
-    // handle in the original generation is still a positive proof. Silence,
-    // an opening handle, or a stopped session could precede the original RPC.
-    let view = rpc_within(
+    // handle in the original generation is still positive proof. Only a
+    // different generation fences an original the older adapter cannot name.
+    if let Ok(view) = rpc_within(
         record,
         "inspect",
         json!({"sessionId":record["conversation_id"],"includeProcesses":false}),
         Duration::from_secs(2),
-    );
-    Ok(view
-        .ok()
-        .filter(|view| {
-            view["generation"] == generation
-                && view["live"] == true
-                && view["owned"] == true
-                && offers(view, "forget")
-        })
-        .map(|_| Outcome::Resumed))
+    ) {
+        if changed_generation(&view, generation) {
+            return Some(Outcome::HostChanged);
+        }
+        if view["generation"] == generation
+            && view["live"] == true
+            && view["owned"] == true
+            && offers(&view, "forget")
+        {
+            return Some(Outcome::Resumed);
+        }
+        return None;
+    }
+    let ping = rpc_within(record, "ping", json!({}), Duration::from_secs(2)).ok()?;
+    (ping["sessionActions"] == true && changed_generation(&ping, generation))
+        .then_some(Outcome::HostChanged)
 }
 
 fn clear_restore_fields(record: &mut Value) {
@@ -420,7 +468,7 @@ fn settle(record: &mut Value, result: Outcome) -> Result<()> {
         if source.is_none() && !string(record, "expected_id").is_empty() {
             return Err("DeepSeek restore source is unavailable".into());
         }
-        if result == Outcome::Refused {
+        if result != Outcome::Resumed {
             remove(record)?;
         } else {
             record.as_object_mut().unwrap().remove("expected_id");
@@ -443,8 +491,8 @@ pub(super) fn ready(record: &mut Value) -> Result<bool> {
     }
     let result = outcome(record)?.ok_or(RESTORE_PENDING)?;
     settle(record, result)?;
-    if result == Outcome::Refused {
-        return Err("The earlier DeepSeek restore did not start. The archive is available for a new Restore".into());
+    if let Some(reason) = result.refusal() {
+        return Err(reason.into());
     }
     Ok(true)
 }
