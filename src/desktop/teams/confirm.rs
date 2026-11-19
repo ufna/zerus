@@ -11,6 +11,7 @@
 //! Ownership/launch proofs, native record, stop and preview are checked last
 //! inside the section. Those external facts retain the window of spawn itself.
 mod engine;
+pub(super) mod hook_trust;
 mod ledger;
 mod native;
 mod policy;

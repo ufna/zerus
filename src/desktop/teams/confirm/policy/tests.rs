@@ -489,3 +489,44 @@ fn sandbox_setup_is_only_the_persons_choice_never_a_standing_folder_grant() {
     assert!(trust_candidate(&b, &s).is_none());
     assert_eq!(trust(&b, &s).unwrap_err(), "This prompt needs a person");
 }
+
+/// A Codex member at Codex's hooks-trust prompt, as its producer writes it
+/// (zerus-f67qp): at a new run's startup, or when its saved conversation is
+/// resumed.
+fn hooks_sample(conversation: Option<&str>) -> (Binding, Snapshot) {
+    use crate::state::trust_fixture as produced;
+    let (mut binding, _, mut snapshot) = sample();
+    let card = match conversation {
+        Some(conversation) => produced::resumed_hooks_trust_prompt(conversation),
+        None => produced::hooks_trust_prompt(),
+    };
+    binding.agent = "codex".into();
+    binding.run = card["run_id"].as_str().unwrap().into();
+    binding.conversation = conversation.unwrap_or("").into();
+    snapshot.agent = "codex".into();
+    snapshot.run = binding.run.clone();
+    snapshot.conversation = binding.conversation.clone();
+    snapshot.questions = vec![card];
+    (binding, snapshot)
+}
+
+/// Codex's hooks panel is a candidate of a Codex member only, so the person
+/// gets one card naming what Codex lists; it is never eligible to be
+/// answered (zerus-f67qp delta).
+#[test]
+fn codex_hooks_panel_is_a_codex_candidate_never_eligible() {
+    for conversation in [None, Some("conversation-1")] {
+        let (mut binding, mut snapshot) = hooks_sample(conversation);
+        assert_eq!(
+            trust_candidate(&binding, &snapshot),
+            Some(&snapshot.questions[0])
+        );
+        assert!(hooks(&snapshot.questions[0]));
+        assert!(trust(&binding, &snapshot).is_err(), "{conversation:?}");
+        for agent in ["claude", "kimi"] {
+            binding.agent = agent.into();
+            snapshot.agent = agent.into();
+            assert_eq!(trust_candidate(&binding, &snapshot), None, "{agent}");
+        }
+    }
+}

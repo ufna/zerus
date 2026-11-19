@@ -33,6 +33,22 @@ pub(super) fn key(parts: &Value) -> String {
 }
 
 pub(super) fn step(p: &mut impl Ports, b: &Binding, epoch: &str, now: i64) -> Result<()> {
+    let effects = effects(p, b, epoch, now);
+    // Owed feed lines live apart from the effect rows, so a row is settled
+    // under the same rules every build reads, and a line still owed never
+    // holds the member's later confirmations (zerus-f67qp review).
+    let feed = feed(p, b);
+    effects.and(feed)
+}
+
+fn feed(p: &mut impl Ports, b: &Binding) -> Result<()> {
+    for note in p.notes_owed(b)? {
+        p.note(&note)?;
+    }
+    Ok(())
+}
+
+fn effects(p: &mut impl Ports, b: &Binding, epoch: &str, now: i64) -> Result<()> {
     if let Some(mut row) = p.unsettled(b)? {
         if row.state == "waiting" {
             if let Err(why) = validate(p, &row.plan) {
@@ -91,8 +107,28 @@ pub(super) fn step(p: &mut impl Ports, b: &Binding, epoch: &str, now: i64) -> Re
 }
 
 fn execute(p: &mut impl Ports, plan: Plan, epoch: &str, now: i64) -> Result<()> {
+    if plan.kind == Kind::Trust && policy::hooks(&plan.question) {
+        return hooks_notice(p, plan, epoch, now);
+    }
     let refusal = validate(p, &plan).err();
     execute_refusal(p, plan, epoch, now, refusal)
+}
+/// Zerus never answers Codex's hooks panel: "Trust all and continue" trusts
+/// whatever the panel captured, not what Zerus verified (zerus-f67qp). The
+/// person gets one card naming what Codex lists, read once per panel: a
+/// later pass finds the claim and reads nothing again.
+fn hooks_notice(p: &mut impl Ports, mut plan: Plan, epoch: &str, now: i64) -> Result<()> {
+    plan.kind = Kind::Notice;
+    let claim = p.claim(&plan, epoch, now)?;
+    let mut row = claim.record;
+    if claim.fresh {
+        row.state = "cancelled".into();
+        row.detail = p.hook_listing(&plan).unwrap_or_else(|why| {
+            format!("Codex asks you to review its hooks; their list is unavailable: {why}")
+        });
+        p.save(&row)?;
+    }
+    settle(p, &mut row)
 }
 fn execute_refusal(p: &mut impl Ports, mut plan: Plan, epoch: &str, now: i64, refusal: Option<String>) -> Result<()> {
     if refusal.is_some() {
@@ -150,6 +186,12 @@ fn reserve_audit(p: &mut impl Ports, row: &mut Record) -> Result<bool> {
     Ok(true)
 }
 fn deliver(p: &mut impl Ports, row: &mut Record) {
+    // Codex trusts the member's covered hooks before it starts again, so its
+    // resumed run shows no panel for them (zerus-f67qp). Its outcome is
+    // journaled on its own and never holds the resume.
+    if row.plan.kind == Kind::Resume && row.plan.binding.agent == "codex" {
+        p.before_start(&row.plan);
+    }
     let outcome = p.original(row, &mut |p| validate(p, &row.plan));
     match outcome {
         Outcome::Retry => {
@@ -220,6 +262,10 @@ pub(super) fn validate(p: &mut impl Ports, plan: &Plan) -> Result<()> {
     }
     match plan.kind {
         Kind::Trust => {
+            // Zerus never answers Codex's hooks panel ([`hooks_notice`]).
+            if policy::hooks(&plan.question) {
+                return Err(p.hook_listing(plan)?);
+            }
             if !facts.team.settings.delegations.confirm_trust {
                 return Err("Folder-trust delegation is off".into());
             }
@@ -260,7 +306,20 @@ pub(super) fn candidate(b: &Binding, s: &Snapshot, kind: Kind, question: Value) 
     } else {
         "resume"
     };
-    let key = key(&json!([b.team, b.member, b.launch, s.run, tag]));
+    // Codex's hooks trust is its own question of the run, after its folder
+    // trust: another hash is another question (zerus-f67qp).
+    let key = if kind == Kind::Trust && policy::hooks(&question) {
+        key(&json!([
+            b.team,
+            b.member,
+            b.launch,
+            s.run,
+            "hooks_trust",
+            question["question_hash"]
+        ]))
+    } else {
+        key(&json!([b.team, b.member, b.launch, s.run, tag]))
+    };
     let text = format!("You are a member of team {} in role {}. Read `hgs team current` for your current team and work.", b.team, b.role);
     let question = if kind == Kind::Resume {
         synthetic(b, s, &text, "resume")

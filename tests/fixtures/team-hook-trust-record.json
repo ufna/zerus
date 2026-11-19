@@ -1,0 +1,55 @@
+{
+  "approved_detail": "Codex saved trust for exactly these hooks",
+  "question": {
+    "can_answer": false,
+    "conversation_id": "conversation-1",
+    "hooks": [
+      {
+        "hash": "sha256:282b55722571b5580a290580cdccb6d292691c40f79cfa742765a488b779a5d2",
+        "key": "/work/account/hooks.json:session_start:0:0"
+      },
+      {
+        "hash": "sha256:29a4cbe92d1fec4717e6d97c227d474ad0621c40fb6d255dd0b340100b8436c1",
+        "key": "/work/account/hooks.json:session_end:0:0"
+      },
+      {
+        "hash": "sha256:b1324beb1b6c65ec98c7f1d350b644e324bbb0832915be68d3fbc8eea13ab316",
+        "key": "/work/account/hooks.json:stop:0:0"
+      },
+      {
+        "hash": "sha256:f72da1ac2ee4f116c876e192190009b7d59bb9fb92679832c04dbeb27c4a5a69",
+        "key": "/work/account/hooks.json:interrupt:0:0"
+      },
+      {
+        "hash": "sha256:1f647821c1b2d16b397ca09bb1c76c71f74b04e8e13abf4abcd044a1ae82e0f7",
+        "key": "/work/repository/.codex/hooks.json:pre_compact:0:0"
+      },
+      {
+        "hash": "sha256:53280fbd74d122ef0607f320dacf407b21cba0e448f2cf5982c6d5b1074933c8",
+        "key": "/work/repository/.codex/hooks.json:post_compact:0:0"
+      },
+      {
+        "hash": "sha256:392a61a090ba7d6aab6ab0fb0f82f3df3d6a380ee81f60f00af3bd42025d51a9",
+        "key": "/work/repository/.codex/hooks.json:session_start:0:0"
+      },
+      {
+        "hash": "sha256:61bc468420addc4d83d288a4311e1409cc89cbbd9f44fec2e1039512d20fab86",
+        "key": "/work/repository/.codex/hooks.json:user_prompt_submit:0:0"
+      }
+    ],
+    "question_hash": "bdbe6ff210d4865949f3234a841c8ad56008e5494179464ed9400a6a29b29590",
+    "question_id": "hooks:launch-1:bdbe6ff210d48659",
+    "questions": [
+      {
+        "body": "Hooks to trust: 8",
+        "header": "Hook trust",
+        "id": "hooks_trust",
+        "options": [],
+        "question": "Trust Zerus's own and the team's committed Codex hooks"
+      }
+    ],
+    "run_id": "run-1",
+    "source": "team_hook_trust"
+  },
+  "unknown_detail": "Codex's saved trust is not exactly these hooks"
+}

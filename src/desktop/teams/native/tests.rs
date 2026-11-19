@@ -371,3 +371,53 @@ fn native_created_worktree_with_unavailable_ownership_defers_only_its_read() {
 }
 
 mod parent;
+
+/// The launch path's Codex pre-trust runs only under the team's trust
+/// setting (zerus-f67qp): with it on, the pre-trust is tried (here an account
+/// whose folder cannot exist, so nothing is written anywhere); with it off,
+/// or without a Codex account, nothing is tried.
+#[test]
+fn a_codex_members_launch_pretrust_follows_the_teams_trust_setting() {
+    use crate::desktop::teams::confirm::hook_trust::Pretrust;
+    let mut h = crate::desktop::teams::tests::bound151_fixture();
+    let state = h.temp.path().to_owned();
+    let config = Config {
+        home: String::new(),
+        dir: state.join("config"),
+        state: state.clone(),
+        selves: vec![],
+        peers: vec![],
+        base_peers: vec![],
+        peers_from_environment: false,
+        machines: Default::default(),
+        tab: false,
+        tab_colors: String::new(),
+    };
+    let mut plan = super::super::ledger::Ledger::open(&state)
+        .unwrap()
+        .get(crate::teams::ops::tests::TEAM, "lead")
+        .unwrap()
+        .and_then(|row| row.plan)
+        .unwrap();
+    plan.agent = "codex".into();
+    let worktree = Worktree {
+        path: state.join("worktree").to_str().unwrap().into(),
+        ownership_nonce: "nonce".into(),
+    };
+    let blocker = state.join("not-a-folder");
+    std::fs::write(&blocker, "file").unwrap();
+    let home = blocker.join("codex-home");
+    let native = Native {
+        config,
+        machine: plan.machine.clone(),
+        stop: Arc::new(AtomicBool::new(false)),
+    };
+    assert!(matches!(
+        native.pretrust_at(&plan, &worktree, Some(home.clone())),
+        Some(Pretrust::Refused(_))
+    ));
+    assert_eq!(native.pretrust_at(&plan, &worktree, None), None);
+    h.settings(|s| s.delegations.confirm_trust = false);
+    assert_eq!(native.pretrust_at(&plan, &worktree, Some(home)), None);
+    assert!(!blocker.join("codex-home").exists());
+}

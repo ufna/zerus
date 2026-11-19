@@ -39,6 +39,18 @@ impl Ports for Seeded<'_> {
     fn card(&mut self, r: &Record) -> Result<()> {
         self.native.card(r)
     }
+    fn before_start(&mut self, plan: &Plan) {
+        self.native.before_start(plan)
+    }
+    fn hook_listing(&mut self, plan: &Plan) -> Result<String> {
+        self.native.hook_listing(plan)
+    }
+    fn notes_owed(&mut self, b: &Binding) -> Result<Vec<Note>> {
+        self.native.notes_owed(b)
+    }
+    fn note(&mut self, note: &Note) -> Result<()> {
+        self.native.note(note)
+    }
     fn original(&mut self, r: &Record, check: &mut dyn FnMut(&mut Self) -> Result<()>) -> Outcome {
         if let Err(why) = check(self) {
             return Outcome::NotStarted(why);

@@ -87,15 +87,35 @@ pub(super) fn ownership(b: &Binding, o: &Ownership) -> Result<(), String> {
     )
 }
 
-/// The member's pending folder-trust prompt: the only question the standing
+/// The member's pending trust prompt: the only question the standing
 /// confirmation considers (zerus-63rru.73). It is decided here, once, by the
 /// producer's source: the folder-trust source of the member's own agent
-/// ([`provider`]). Every other pending question is the person's, through the
-/// session's ordinary attention, and plans nothing here: the agent's own
-/// question, a permission prompt, another startup or terminal choice.
+/// ([`provider`]), and for a Codex member Codex's own hooks-trust prompt
+/// (zerus-f67qp, owner decision 2026-11-18). Every other pending question is
+/// the person's, through the session's ordinary attention, and plans nothing
+/// here: the agent's own question, a permission prompt, another startup or
+/// terminal choice.
 pub(super) fn trust_candidate<'a>(b: &Binding, s: &'a Snapshot) -> Option<&'a Value> {
     let (source, ..) = provider(&b.agent).ok()?;
-    s.questions.iter().find(|q| q["source"] == source)
+    s.questions
+        .iter()
+        .find(|q| q["source"] == source)
+        .or_else(|| {
+            if b.agent == "codex" {
+                s.questions.iter().find(|q| hooks(q))
+            } else {
+                None
+            }
+        })
+}
+
+/// Codex's startup prompt to trust its new or changed hooks, by its
+/// producer's source (`state::codex_hooks_trust`). It is never answered: a
+/// Codex member's panel gets one card naming what Codex lists, since the
+/// trust the setting covers is recorded before Codex starts (zerus-f67qp,
+/// `hook_trust`).
+pub(super) fn hooks(question: &Value) -> bool {
+    question["source"] == "codex_hooks_trust"
 }
 
 pub(super) fn trust(b: &Binding, s: &Snapshot) -> Result<Value, String> {

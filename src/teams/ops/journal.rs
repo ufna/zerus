@@ -73,6 +73,7 @@ pub(super) fn append(ctx: &Context<'_>, request: &Request) -> Result<u64> {
             format!("Base advanced from {} to {commit} via {reference}. Earlier hand-outs keep their assigned base.",ctx.team.base_commit)
         }
         Operation::CloseCard { reason, .. } => reason.clone(),
+        Operation::NoteConfirmation { text, .. } => text.clone(),
         Operation::ObserveTask { node, observation }
             if ctx.event == Some("person_override") && observation.key != KeyState::Ours =>
         {

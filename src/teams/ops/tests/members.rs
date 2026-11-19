@@ -329,3 +329,55 @@ fn the_service_records_an_ended_binding_as_unbound_once() {
     // The refusal wrote nothing.
     assert!(h.store.member(TEAM, "m1").unwrap().unwrap().session.is_none());
 }
+
+fn note(member: &str, text: &str) -> Operation {
+    Operation::NoteConfirmation {
+        member: member.into(),
+        text: text.into(),
+    }
+}
+
+/// A standing confirmation's feed line (zerus-f67qp): only the service
+/// writes it, for one of the team's members, as one bounded line; the
+/// journal row's text is the line and names the member, and nothing else
+/// of the team changes.
+#[test]
+fn only_the_service_writes_a_confirmation_note_and_its_journal_row_is_the_line() {
+    let mut h = Harness::new();
+    let lead = h.bind("lead");
+    let m1 = h.bind("m1");
+    let line = "Zerus confirmed Codex hook trust for member m1: 10 hooks are new or changed.";
+    for actor in [person(), lead, m1, other()] {
+        refused(h.run(&actor, note("m1", line)), code::NOT_ALLOWED);
+    }
+    let before = h.store.team(TEAM).unwrap().unwrap();
+    let members = h.store.member(TEAM, "m1").unwrap().unwrap();
+    h.run(&service(), note("m1", line)).unwrap();
+    let rows = h.store.journal(TEAM, 200, None).unwrap().rows;
+    let row = rows.last().unwrap();
+    assert_eq!(
+        (row.kind.as_str(), row.text.as_str()),
+        ("note_confirmation", line)
+    );
+    assert!(row.refs.contains(&"member:m1".to_owned()), "{:?}", row.refs);
+    let after = h.store.team(TEAM).unwrap().unwrap();
+    assert_eq!(after.revision, before.revision + 1);
+    assert_eq!(
+        (after.status, after.settings),
+        (before.status, before.settings)
+    );
+    assert_eq!(h.store.member(TEAM, "m1").unwrap().unwrap(), members);
+    for (member, text) in [
+        ("m9", line.to_owned()),
+        ("m1", String::new()),
+        ("m1", "   ".into()),
+        ("m1", "two\nlines".into()),
+        ("m1", "x".repeat(513)),
+    ] {
+        assert!(
+            h.run(&service(), note(member, &text)).is_err(),
+            "{member}: {text:?}"
+        );
+    }
+    h.run(&service(), note("m1", &"x".repeat(512))).unwrap();
+}

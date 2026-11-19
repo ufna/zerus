@@ -123,6 +123,20 @@ pub(super) struct Record {
     pub at: i64,
 }
 
+/// Pending Codex hooks, each key with its current hash, as Codex lists them
+/// (zerus-f67qp).
+pub(in crate::desktop::teams) type Grant = Vec<(String, String)>;
+
+/// One owed feed line of a member launch (zerus-f67qp).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct Note {
+    pub key: String,
+    pub team: String,
+    pub member: String,
+    pub person: String,
+    pub text: String,
+}
+
 pub(super) enum Outcome {
     /// The bounded admission lock was busy; no child started.
     Retry,

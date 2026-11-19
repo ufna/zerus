@@ -565,7 +565,8 @@ class CodexTrustContract(ClassFixture):
     which card was answered even when it precedes the fixture's first look.
     The ordinary Codex startup case retains the physical 80x24 panel variants."""
     delegations = {'confirm_trust': True}
-    service_answers = ('codex_folder_trust',)
+    # Codex's startup hooks review joined the delegation (zerus-f67qp).
+    service_answers = ('codex_folder_trust', 'codex_hooks_trust')
 
     def test_1_the_service_answers_the_repository_scope_and_records_the_grant(self):
         fx = self.fx
@@ -596,10 +597,27 @@ class CodexTrustContract(ClassFixture):
                 self.assertLessEqual(len(seen), 1)
                 if seen:
                     self.assertEqual(seen[0]['question_id'], card['question_id'])
+        for member_id in ('lead', 'm1'):
+            with self.subTest(member=member_id, prompt='hooks'):
+                rows = fx.audit_rows(fx.sessions[member_id]['name'])
+                hooks = [r for r in rows if r['source'] == 'codex_hooks_trust']
+                self.assertEqual(len(hooks), 1, 'one product-written grant for the startup hooks review')
+                self.assertEqual((hooks[0]['status'], hooks[0]['categories']), ('approved', ['team_hook_trust']))
+                card = hooks[0]['saved_question']
+                self.assertEqual(card['run_id'], fx.sessions[member_id]['run'])
+                self.assertIsNone(card['conversation_id'], 'the grant answered the startup card')
+                self.assertEqual(card['questions'][0]['question'], 'Hooks need review')
+                self.assertFalse([a for a in answered if a['member'] == member_id and a['source'] == 'codex_hooks_trust'],
+                                 'the person did not answer the delegated hooks review')
+                self.assertFalse([q for q in fx.pending(member_id) if q.get('source') == 'codex_hooks_trust'])
+                count = card['questions'][0]['body'].split('. ', 1)[0]
+                self.assertEqual(fx.feed_lines(member_id),
+                                 [f'Zerus confirmed Codex hook trust for member {member_id}: {count}.'])
         fx.evidence.write('codex-trust-cards.json', fx.cards())
         self.assertFalse([c for c in fx.cards() if 'needs your attention' in c.get('text', '')])
-        journal_is(self, [(m, 'codex_folder_trust', ('team_folder_trust',), 'approved') for m in ('lead', 'm1')],
-                   'the journal holds exactly the two startup grants')
+        journal_is(self, sorted([(m, 'codex_folder_trust', ('team_folder_trust',), 'approved') for m in ('lead', 'm1')]
+                                + [(m, 'codex_hooks_trust', ('team_hook_trust',), 'approved') for m in ('lead', 'm1')]),
+                   'the journal holds exactly the startup folder and hooks grants')
         records = fx.codex_trust_records()
         fx.evidence.write('codex-trust-records-asserted.json', records)
         accounts = {str(codex_config(fx, member)) for member in ('lead', 'm1')}
