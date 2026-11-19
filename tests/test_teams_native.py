@@ -804,6 +804,39 @@ class TeamsFixtureIsolation(unittest.TestCase):
                     self.assertRaisesRegex(AssertionError, 'HGS_TEAMS_PERSON_BIN'):
                 self.fx.preflight()
 
+    def test_the_state_folder_is_private_whatever_the_umask(self):
+        """The window's first Create binds only a private state folder; a runner's umask
+        022 must not leave the fixture's open (hosted run 44462168438)."""
+        previous = os.umask(0o022)
+        try:
+            fx = fixture.TeamFixture('claude', self.base / 'agent', 'Umask')
+            self.addCleanup(shutil.rmtree, fx.root, True)
+            fx.build()
+        finally:
+            os.umask(previous)
+        self.assertEqual(stat.S_IMODE(os.stat(fx.env['HGS_STATE_DIR']).st_mode), 0o700)
+        fx.preflight()
+        os.chmod(fx.env['HGS_STATE_DIR'], 0o755)
+        with self.assertRaisesRegex(AssertionError, 'mode HGS_STATE_DIR'):
+            fx.preflight()
+
+    def test_a_listing_read_tolerates_only_the_queue_race_and_records_it(self):
+        from types import SimpleNamespace
+        listed = json.dumps({'sessions': [{'name': 'codex/p/one', 'run_id': 'r1'}]})
+        for stdout, stderr, code, outcome in (
+                (listed, '', 0, ['codex/p/one']),
+                ('', fixture.LS_RACE + '\n', 1, []),
+                ('', 'hgs: Missing state folder\n', 1, AssertionError),
+                ('', fixture.LS_RACE + ' and more\n', 1, AssertionError)):
+            self.fx.hgs = mock.Mock(return_value=SimpleNamespace(returncode=code, stdout=stdout, stderr=stderr))
+            self.fx.evidence = mock.Mock()
+            if outcome is AssertionError:
+                with self.assertRaises(AssertionError, msg=stderr):
+                    self.fx.rows()
+                continue
+            self.assertEqual([row['name'] for row in self.fx.rows()], outcome)
+            self.assertEqual(self.fx.evidence.append.called, code != 0)
+
     def tmux(self, *argv, **env):
         self.marker.unlink(missing_ok=True)
         run = subprocess.run([str(self.fx.root / 'bin/tmux'), *argv], env=dict(self.fx.env, **env),

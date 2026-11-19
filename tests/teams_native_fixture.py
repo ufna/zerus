@@ -50,6 +50,8 @@ PERSON = os.environ.get('HGS_TEAMS_PERSON_BIN', '')
 PERSON_ENTRY = 'desktop::teams::person_actions::contract::contract_person_step'
 PERSON_MARKER = 'zerus-teams-contract-person-fixture/v1'
 ROOT_FILE = '.zerus-teams-contract-root'
+# The one listing refusal a read during the service's first launches may meet; see rows().
+LS_RACE = 'hgs: Missing private file'
 # Set by a runner that keeps custody of private roots (scripts/ci/kimi-native.py
 # --teams): called with the case name and the root as soon as the root exists.
 ROOT_CREATED = None
@@ -586,6 +588,9 @@ class TeamFixture:
                     'home/.local/state', 'run', 'tmux', 'tmp', 'state', 'cfg', 'scripts', 'out', 'model', 'work'):
             (r / sub).mkdir(parents=True, exist_ok=True)
         os.chmod(r / 'run', 0o700)
+        # Private, as hgs keeps its own state folder: the window's first Create binds only a
+        # private state folder (person_actions::birth), whatever the runner's umask.
+        os.chmod(r / 'state', 0o700)
         # The person's answers start as an empty log, so a reader can tell "none" from "lost".
         (self.evidence.folder / 'person-answers.jsonl').write_text('')
         (self.evidence.folder / 'person-steps.jsonl').write_text('')
@@ -651,7 +656,7 @@ class TeamFixture:
         named = sorted(key for key, value in env.items() if value == account)
         if named:
             failures.append('the runner account name is the value of ' + ','.join(named))
-        for key in ('TMUX_TMPDIR', 'XDG_RUNTIME_DIR'):
+        for key in ('TMUX_TMPDIR', 'XDG_RUNTIME_DIR', 'HGS_STATE_DIR'):
             if stat.S_IMODE(os.stat(env[key]).st_mode) != 0o700:
                 failures.append('mode ' + key)
         if os.path.exists(os.path.join(env['XDG_RUNTIME_DIR'], 'systemd/private')):
@@ -885,7 +890,17 @@ class TeamFixture:
             elif isinstance(value, list):
                 for child in value:
                     walk(child)
-        walk(self.json('ls', '--json'))
+        run = self.hgs('ls', '--json', ok=False)
+        if run.returncode != 0 and run.stderr.strip() == LS_RACE:
+            # A listing read while the service starts its first launches can meet a queue
+            # entry consumed under it (filed apart from zerus-63rru.182). It counts as not yet
+            # listed, is recorded, and every wait still ends at its own bound.
+            self.evidence.append('transient-reads.jsonl', dict(at=time.time(), argv=['ls', '--json'],
+                                                               stderr=run.stderr[-300:]))
+            return found
+        if run.returncode != 0:
+            raise AssertionError(f'hgs ls exited {run.returncode}: {run.stdout[-600:]} {run.stderr[-600:]}')
+        walk(json.loads(run.stdout))
         return found
 
     def session_of(self, member):
