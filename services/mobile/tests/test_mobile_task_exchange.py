@@ -95,10 +95,11 @@ class TaskExchangeEndToEnd(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(receipt["state"], "completed", receipt)
         return receipt["result"]
 
-    async def phone_exchange(self, program, *, add=None):
+    async def phone_exchange(self, program, snapshot, *, add=None):
+        features = (snapshot.get("mobile_capabilities") or {}).get("features") or []
         args = (add,) if add is not None else ()
         process = await asyncio.create_subprocess_exec(
-            program, str(self.root / "phone"), "project-1", "orchard", *args,
+            program, str(self.root / "phone"), "project-1", "orchard", json.dumps(features), *args,
             stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE, cwd=self.root, limit=1 << 20,
         )
@@ -154,7 +155,7 @@ class TaskExchangeEndToEnd(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(snapshot["mobile_projects"]["projects"][0]["tasks_digest"], here)
             # An empty phone gets the live task (the project document was never saved).
             [task] = self.hgs(self.computer, "task", "list", "--project", "orchard")["tasks"]
-            received, answers = await self.phone_exchange(phone_program)
+            received, answers = await self.phone_exchange(phone_program, snapshot)
             answer = answers[0]
             self.assertEqual((answer["more"], answer["digest"], answer["refused"]), (False, here, []))
             self.assertEqual([update["task"] for update in answer["updates"]], [task["uuid"]])
@@ -164,7 +165,7 @@ class TaskExchangeEndToEnd(unittest.IsolatedAsyncioTestCase):
             }])
             self.assertEqual(received["digest"], here)
             # File through the app's local writer, then send what the computer lacks.
-            after, answers = await self.phone_exchange(phone_program, add="Filed on the phone")
+            after, answers = await self.phone_exchange(phone_program, snapshot, add="Filed on the phone")
             self.assertEqual(sum(answer["imported"] for answer in answers), 1)
             filed = next(task for task in after["tasks"] if task["text"] == "Filed on the phone")
             tasks = self.hgs(self.computer, "task", "list", "--project", "orchard")["tasks"]
