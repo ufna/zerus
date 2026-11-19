@@ -48,6 +48,8 @@ fn new() -> wire::TaskDraft {
             project: "example-project".into(),
             title: "Native original control".into(),
             backlog: false,
+            role: None,
+            pipeline: None,
         },
     }
 }

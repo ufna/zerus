@@ -127,12 +127,26 @@ pub(super) fn review(config: &Config, scope: &Scope, draft: wire::TaskDraft) -> 
         ("Task identity".into(), json!(reference.uuid).to_string()),
     ];
     match &plan.action {
-        wire::Action::NewTask { title, backlog, .. } => {
+        wire::Action::NewTask {
+            title,
+            backlog,
+            role,
+            pipeline,
+            ..
+        } => {
             details.push(("Title".into(), json!(title).to_string()));
             details.push((
                 "Stage".into(),
                 json!(if *backlog { "backlog" } else { "todo" }).to_string(),
             ));
+            // A routed new task names its role and pipeline; an unrouted one
+            // keeps the older review (zerus-63rru.199 B4).
+            if let Some(role) = role {
+                details.push(("Role".into(), json!(role).to_string()));
+            }
+            if let Some(pipeline) = pipeline {
+                details.push(("Pipeline".into(), json!(pipeline).to_string()));
+            }
         }
         wire::Action::Intake { role, pipeline, .. } => {
             let (_, document) = held.as_mut().ok_or_else(required)?;

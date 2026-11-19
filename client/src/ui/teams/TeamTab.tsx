@@ -1,7 +1,8 @@
 import { For, Show, batch, createEffect, createMemo, createSignal, on, onCleanup, onMount } from "solid-js";
 import { tr } from "../../i18n";
 import { selected } from "../../store/ui";
-import { canDropTeamTask, requestTeamTask, teamTaskDragOver, teamTaskDrop } from "../../store/teamTaskIntake";
+import { canDropTeamTask, requestTeamTask, teamTaskBlocked, teamTaskDragOver, teamTaskDrop } from "../../store/teamTaskIntake";
+import { tasks } from "../../store/tasks";
 import { machineCards } from "../../store/machines";
 import { openTask } from "../../store/taskNavigation";
 import { newRequestId, teams, type TeamCall, type TeamFailure, type TeamOutcome, type UnresolvedCall } from "../../store/teams";
@@ -212,6 +213,7 @@ export function TeamWorkspace(props: {
     });
   }));
   const editors = createTeamEditors(() => props.view, props.onAction);
+  const addTaskWhy = () => teamTaskBlocked(props.view.bar, tasks.project());
   const send = (kind: string, fields: Record<string, unknown> = {}) => { if (kind === "swap_member") { editors.open(kind, String(fields.member)); return; } props.onAction(kind, fields); setAsking(null); setReason(""); };
   return (
     <div ref={workspace} class="team-tab" data-team-tab on:keydown={dismissKey}>
@@ -237,7 +239,7 @@ export function TeamWorkspace(props: {
       </Show>
       <div class="team-body">
         <section class="team-main">
-          <header class="team-board-head"><Icon name="columns-3" size={14} /><button type="button" class="btn small" aria-pressed={planMode() === "board"} onClick={() => setPlanMode("board")}>{tr("Board")}</button><button type="button" class="btn small" data-team-graph-mode aria-pressed={planMode() === "graph"} onClick={() => setPlanMode("graph")}>{tr("Graph")}</button><button type="button" class="btn small" data-team-lanes-mode aria-pressed={planMode() === "lanes"} onClick={() => setPlanMode("lanes")}>{tr("Lanes")}</button><button type="button" class="btn small" data-team-layers-mode aria-pressed={planMode() === "layers"} onClick={() => { setSelectedNode(null); setPlanMode("layers"); }}>{tr("Layers")}</button><span class="grow" /><button type="button" class="btn small team-members-toggle" data-team-members-toggle onClick={showMembers}><Icon name="users" size={12} />{tr("Members")}</button><button type="button" class="btn small" disabled={!["running", "paused"].includes(props.view.bar.status)} onClick={props.onAddTask}><Icon name="plus" size={12} />{tr("Add task")}</button></header>
+          <header class="team-board-head"><Icon name="columns-3" size={14} /><button type="button" class="btn small" aria-pressed={planMode() === "board"} onClick={() => setPlanMode("board")}>{tr("Board")}</button><button type="button" class="btn small" data-team-graph-mode aria-pressed={planMode() === "graph"} onClick={() => setPlanMode("graph")}>{tr("Graph")}</button><button type="button" class="btn small" data-team-lanes-mode aria-pressed={planMode() === "lanes"} onClick={() => setPlanMode("lanes")}>{tr("Lanes")}</button><button type="button" class="btn small" data-team-layers-mode aria-pressed={planMode() === "layers"} onClick={() => { setSelectedNode(null); setPlanMode("layers"); }}>{tr("Layers")}</button><span class="grow" /><button type="button" class="btn small team-members-toggle" data-team-members-toggle onClick={showMembers}><Icon name="users" size={12} />{tr("Members")}</button><button type="button" class="btn small" data-team-add-task disabled={!!addTaskWhy()} title={addTaskWhy()} onClick={props.onAddTask}><Icon name="plus" size={12} />{tr("Add task")}</button></header>
           <div class="team-canvas" data-team-task-drop={planMode() === "board" ? props.view.bar.id : undefined} classList={{ "team-canvas-board": planMode() === "board", "team-task-drop": planMode() === "board" && canDropTeamTask(props.view.bar) }}
             onDragOver={(event) => { if (planMode() === "board") teamTaskDragOver(event, props.view.bar); }}
             onDrop={(event) => { if (planMode() === "board") teamTaskDrop(event, props.view.bar); }}>
@@ -273,6 +275,9 @@ export function TeamWorkspace(props: {
           </div>
           <div class="team-toolbar">
             <Show when={planMode() === "board" && ["running", "paused"].includes(props.view.bar.status)}><span class="team-note">{tr("Drop a Backlog or To do task here to send it to this team.")}</span></Show>
+            {/* Add task says why it cannot open the form here, in the board's own
+                toolbar row so the board keeps its grid (zerus-63rru.199 A6). */}
+            <Show when={addTaskWhy()}>{(why) => <span class="team-note" data-team-add-task-why>{why()}</span>}</Show>
             <Show when={props.view.truncated}><span class="team-note">{tr("Some cards are not shown.")}</span></Show>
             <span class="grow" />
             <Show when={props.view.after}><button type="button" class="btn small" data-team-first-page onClick={() => props.onPage(null)}>{tr("First page")}</button></Show>

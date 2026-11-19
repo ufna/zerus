@@ -49,6 +49,11 @@ fn account(value: &Value) -> Option<AccountChoice> {
 /// Editing never saves a display-truncated goal back over its unseen suffix.
 pub(super) fn goal(status: &Value) -> Option<String> {
     status.get("member_roles")?.as_array()?;
-    let goal = status.get("team")?.get("goal")?.as_str()?;
+    // The store omits an empty goal (`Team.goal` skips an empty string), so a
+    // current reply without one means the team has none yet (zerus-63rru.199 C3).
+    let goal = match status.get("team")?.get("goal") {
+        None => "",
+        Some(value) => value.as_str()?,
+    };
     (goal.len() <= 16_384).then(|| goal.to_owned())
 }

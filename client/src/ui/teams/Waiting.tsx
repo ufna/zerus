@@ -21,6 +21,7 @@ export function WaitingCard(props: {
   onOpenTeam: (item: WaitingItem) => void;
   onOpenTask?: (item: WaitingItem) => void;
 }) {
+  const acceptance = () => props.item.kind === "pipeline_acceptance" && props.item.node !== null && !!props.onOpenTask;
   return (
     <article class="waiting-card" data-waiting={props.item.id} data-kind={props.item.kind}>
       <div class="waiting-card-head">
@@ -40,16 +41,23 @@ export function WaitingCard(props: {
           </For>
         </div>
       </Show>
+      <Show when={acceptance()}><p class="waiting-kind-sentence dim" data-acceptance-evidence>{tr("Read the report and verdicts in the task before you approve.")}</p></Show>
       <div class="waiting-decisions">
+        {/* Work acceptance is decided beside its report and verdicts: Open task
+            comes first (zerus-63rru.199 A5). */}
+        <Show when={acceptance()}>
+          <button type="button" class="btn small primary" disabled={props.busy} data-open-task
+            onClick={() => props.onOpenTask?.(props.item)}>{tr("Open task")}</button>
+        </Show>
         <For each={waitingDecisions(props.item)}>
           {(choice, index) => (
-            <button type="button" class="btn small" classList={{ danger: choice.danger, primary: index() === 0 && !choice.danger }}
+            <button type="button" class="btn small" classList={{ danger: choice.danger, primary: index() === 0 && !choice.danger && !acceptance() }}
               disabled={props.busy} data-decision={choice.decision}
               onClick={() => props.onDecide(props.item, choice.decision)}>{choice.text}</button>
           )}
         </For>
         <Show when={props.item.phase_reference}>{(reference) => <button type="button" class="btn small" disabled={props.busy} data-open-phase onClick={() => { openPhase(props.item.team,reference().phase); props.onOpenTeam(props.item); }}>{tr("Open phase")}</button>}</Show>
-        <Show when={props.item.node !== null}>
+        <Show when={props.item.node !== null && !acceptance()}>
           <button type="button" class="btn small" disabled={props.busy} data-open-task
             onClick={() => props.onOpenTask?.(props.item)}>{tr("Open task")}</button>
         </Show>

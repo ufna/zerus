@@ -455,6 +455,7 @@
         }
       },
       "goal": "",
+      "home": "00000000-0000-4000-8000-0000000000aa",
       "id": "00000000-0000-4000-8000-00000000b007",
       "integration_branch": "zerus/team/browse-7",
       "lead": "lead",
@@ -463,6 +464,7 @@
       "revision": 2,
       "status": "running"
     },
+    "edit_goal": "",
     "groups": [
       {
         "cards": [],

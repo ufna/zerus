@@ -194,7 +194,7 @@ it("sends the reviewed revision, and Review again binds a stale Route to the cur
   button(host, "route").click();
   const form = host.querySelector<HTMLFormElement>('[data-placement-form="route"]')!;
   const submit = form.querySelector<HTMLButtonElement>('[type="submit"]')!;
-  const [role, pipeline] = [...form.querySelectorAll("select")].map((select) => select.value);
+  const [role, pipeline] = [...form.querySelectorAll<HTMLSelectElement>("select:not([data-route-assignee])")].map((select) => select.value);
   expect(submit.disabled).toBe(false);
   expect(form.querySelector("[data-placement-review-again]")).toBeNull();
   const after = boardFixture.after as unknown as TeamView;
@@ -205,7 +205,7 @@ it("sends the reviewed revision, and Review again binds a stale Route to the cur
   form.querySelector<HTMLButtonElement>("[data-placement-review-again]")!.click();
   expect(form.querySelector("[data-placement-review-again]")).toBeNull();
   expect(submit.disabled).toBe(false);
-  expect([...form.querySelectorAll("select")].map((select) => select.value)).toEqual([role, pipeline]);
+  expect([...form.querySelectorAll<HTMLSelectElement>("select:not([data-route-assignee])")].map((select) => select.value)).toEqual([role, pipeline]);
   form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
   await vi.waitFor(() => expect(calls()).toHaveLength(1));
   expect(calls()[0][1].call).toMatchObject({ expected_revision: after.revision,

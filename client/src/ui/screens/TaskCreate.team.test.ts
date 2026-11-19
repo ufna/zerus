@@ -10,6 +10,7 @@ const f = vi.hoisted(() => ({
   follow: vi.fn(), edit: vi.fn(), flush: vi.fn(async () => {}),
   rows: [] as { id: string; project: string; name: string; status: string }[],
   teams: (() => true) as () => boolean,
+  view: undefined as unknown,
 }));
 const TEAM = "33333333-3333-4333-8333-333333333333";
 vi.mock("../../store/taskForms", () => ({
@@ -26,12 +27,13 @@ vi.mock("../../store/teams", () => ({
   teams: {
     available: () => f.teams(),
     list: () => ({ teams: f.rows, truncated: false, next: null }),
+    team: () => f.view,
   },
 }));
 import TaskCreate from "./TaskCreate";
 
 let dispose: (() => void) | undefined;
-afterEach(() => { dispose?.(); dispose = undefined; document.body.replaceChildren(); vi.clearAllMocks(); f.rows = []; });
+afterEach(() => { dispose?.(); dispose = undefined; document.body.replaceChildren(); vi.clearAllMocks(); f.rows = []; f.view = undefined; });
 
 function setup(teamsOn = true) {
   f.teams = () => teamsOn;
@@ -93,4 +95,52 @@ it("offers only live teams and disambiguates identical names", () => {
   expect(button.textContent).toContain("Fixes (44444444)");
   button.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
   expect(button.textContent).toContain("Fixes (44444444)");
+});
+
+// zerus-63rru.199 (B4): with the chosen team's routing known (its open Team
+// tab, from the placement view the command line writes), the form offers its
+// roles and pipelines; Template default sends neither.
+it("offers the open team's roles and pipelines and sends the chosen ones", async () => {
+  const placement = (await import("../teams/fixtures/task-placement-view.json")).default;
+  f.view = { ...placement.before, bar: { ...placement.before.bar, id: TEAM, project: "example-project" } };
+  const host = setup();
+  chooser(host)!.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
+  const role = host.querySelector<HTMLSelectElement>("[data-new-task-role]")!;
+  expect([...role.options].map((option) => option.value)).toEqual(["", "developer", "reviewer"]);
+  expect(role.options[0].textContent).toBe("Template default");
+  role.value = "developer"; role.dispatchEvent(new Event("change", { bubbles: true }));
+  // The store routes a person's task only by a pipeline its role implements
+  // (ops validation.rs route_valid), so a chosen role takes one of its own
+  // pipelines, never the template's default (review of the B4 mutants).
+  const pipeline = host.querySelector<HTMLSelectElement>("[data-new-task-pipeline]")!;
+  expect([...pipeline.options].map((option) => option.value)).toEqual(["reviewed"]);
+  expect(pipeline.value).toBe("reviewed");
+  const input = host.querySelector("input.tk-newtitle") as HTMLInputElement;
+  input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+  await vi.waitFor(() => expect(f.create).toHaveBeenCalled());
+  expect(f.create).toHaveBeenCalledWith("example-project", false, undefined, TEAM, { role: "developer", pipeline: "reviewed" });
+});
+
+it("a team whose routing is not known, or Template default, sends no role or pipeline", async () => {
+  const host = setup();
+  chooser(host)!.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
+  expect(host.querySelector("[data-new-task-role]")).toBeNull();
+  const input = host.querySelector("input.tk-newtitle") as HTMLInputElement;
+  input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+  await vi.waitFor(() => expect(f.create).toHaveBeenCalled());
+  expect(f.create).toHaveBeenCalledWith("example-project", false, undefined, TEAM);
+});
+
+it("handwritten a role whose only pipeline is not the default takes that pipeline", async () => {
+  const placement = (await import("../teams/fixtures/task-placement-view.json")).default;
+  f.view = { ...placement.before, bar: { ...placement.before.bar, id: TEAM, project: "example-project" } };
+  const host = setup();
+  chooser(host)!.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
+  const role = host.querySelector<HTMLSelectElement>("[data-new-task-role]")!;
+  role.value = "reviewer"; role.dispatchEvent(new Event("change", { bubbles: true }));
+  expect(host.querySelector<HTMLSelectElement>("[data-new-task-pipeline]")!.value).toBe("analysis");
+  const input = host.querySelector("input.tk-newtitle") as HTMLInputElement;
+  input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+  await vi.waitFor(() => expect(f.create).toHaveBeenCalled());
+  expect(f.create).toHaveBeenCalledWith("example-project", false, undefined, TEAM, { role: "reviewer", pipeline: "analysis" });
 });

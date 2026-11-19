@@ -13,8 +13,11 @@ export interface FormSubmit {
   catalog_key: string | null; session_id: string | null;
   /** The team whose queue takes the card (`task add --team`), when chosen. */
   team?: string | null;
+  /** The role and pipeline chosen for the team's new card; absent means the
+   * template's own default (zerus-63rru.199 B4). */
+  team_role?: string; team_pipeline?: string;
 }
-let creation: Pick<FormSubmit, "backlog" | "target" | "catalog_key" | "session_id" | "team"> | undefined;
+let creation: Pick<FormSubmit, "backlog" | "target" | "catalog_key" | "session_id" | "team" | "team_role" | "team_pipeline"> | undefined;
 function makeForm(kind: FormKind) {
   const form = createTaskEditor<FormKind>({
     open: taskFormOpen, edit: (input) => taskFormEdit(kind, input),
@@ -27,12 +30,13 @@ function makeForm(kind: FormKind) {
   return form;
 }
 export const taskTitle = makeForm("title"), newCard = makeForm("new_card");
-export async function createCard(project: string, backlog: boolean, session?: Session, team?: string) {
+export async function createCard(project: string, backlog: boolean, session?: Session, team?: string, route?: { role?: string; pipeline?: string }) {
   if (newCard.locked() || newCard.view()?.project !== project) return false;
   if (session && groupOf(session.key) !== project) { notify("error", tr("The selected project changed. The new task draft was kept.")); return false; }
   const id = session && session.tracked && session.state !== "archived" ? sessionIdentity(session) : "";
   creation = { backlog, target: team ? null : id && session ? { computer: session.computer, name: session.name, run_id: session.runId ?? "", conversation_id: session.conversationId ?? "" } : null,
-    catalog_key: team ? null : id ? session!.catalogKey : null, session_id: team ? null : id || null, ...(team ? { team } : {}) };
+    catalog_key: team ? null : id ? session!.catalogKey : null, session_id: team ? null : id || null, ...(team ? { team } : {}),
+    ...(team && route?.role ? { team_role: route.role } : {}), ...(team && route?.pipeline ? { team_pipeline: route.pipeline } : {}) };
   try { return await newCard.submit(!!newCard.view()?.recovery); }
   finally { creation = undefined; }
 }
