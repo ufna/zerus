@@ -46,7 +46,10 @@ fn payload() -> Value {
         archived.bind_for(&id, "lead", &format!("launch_id:{}", uid(0x5000 + n)));
     }
     let gone = uid(0x4002);
-    for operation in [crate::teams::ops::Operation::Stop, crate::teams::ops::Operation::Archive] {
+    for operation in [
+        crate::teams::ops::Operation::Stop,
+        crate::teams::ops::Operation::Archive,
+    ] {
         let reply = archived.apply_for(&gone, &person(), operation);
         assert!(reply.ok, "{reply:?}");
     }
