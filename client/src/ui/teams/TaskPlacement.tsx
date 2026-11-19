@@ -1,6 +1,6 @@
 import { createEffect, createMemo, createSignal, createUniqueId, For, on, Show } from "solid-js";
 import { tr } from "../../i18n";
-import { TextInput } from "../lib/TextField";
+import { TextArea, TextInput } from "../lib/TextField";
 import { activeTeam, liveTask } from "./actions";
 import { roleLabel } from "./TeamChips";
 import type { EditAction } from "./TeamEditors";
@@ -170,7 +170,7 @@ export function TaskPlacement(props: {
           </label>
           <label class="team-block">
             <span class="team-block">{tr("Write paths, one per line")}</span>
-            <textarea class="field" data-route-writes rows={3} value={writes()} disabled={!!props.task.fields_incomplete}
+            <TextArea class="field" data-route-writes rows={3} value={writes()} maxLength={200 * 4097} disabled={!!props.task.fields_incomplete}
               onInput={(event) => setWrites(event.currentTarget.value)} />
           </label>
           <Show when={props.task.fields_incomplete}>

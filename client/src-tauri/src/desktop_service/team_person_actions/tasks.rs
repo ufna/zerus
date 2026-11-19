@@ -232,6 +232,8 @@ mod tests {
                 project: "example".into(),
                 title: "Bound task".into(),
                 backlog: false,
+                role: None,
+                pipeline: None,
             },
         };
         review.intent.plan = plan.reference().unwrap();
@@ -278,6 +280,8 @@ mod tests {
                 project: "example".into(),
                 title: "Original title".into(),
                 backlog: false,
+                role: None,
+                pipeline: None,
             },
         };
         let plan = draft.plan(8).unwrap();
@@ -303,6 +307,8 @@ mod tests {
             project: "example".into(),
             title: "Other title".into(),
             backlog: false,
+            role: None,
+            pipeline: None,
         };
         assert!(!matches(&changed, &original));
         let value = json!({"intent":original.intent,"reply":{"ok":true,"request_id":draft.request_id,"actor":{"kind":"person","person":"local","origin":"desktop_ui"},"task_exists":true,"task":{"uuid":draft.request_id,"project":"example"},"team":{"id":draft.team,"queued":true}}});
