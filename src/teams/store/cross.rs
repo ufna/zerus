@@ -1,7 +1,7 @@
 use super::*;
 
 pub(super) const LIVE_PREDICATE: &str = "status IN ('\"planning\"','\"running\"','\"paused\"')";
-pub(super) const WAITING_SQL: &str = "SELECT seq,kind,node,actor,text,state,decision,decided_actor,created_ms,decisions,notes,team,parameters FROM cards WHERE state='open' AND seq>?1 AND seq<=?2 ORDER BY seq LIMIT ?3";
+pub(super) const WAITING_SQL: &str = "SELECT seq,kind,node,actor,text,state,decision,decided_actor,created_ms,decisions,notes,team,parameters FROM cards INDEXED BY person_owner_waiting WHERE state='open' AND kind NOT IN ('person_note_to_lead','lead_note_ack') AND seq>?1 AND seq<=?2 ORDER BY seq LIMIT ?3";
 pub(super) fn teams_sql(live: bool) -> String {
     let filter = if live {
         format!(" AND {LIVE_PREDICATE}")

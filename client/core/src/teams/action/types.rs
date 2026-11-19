@@ -296,6 +296,15 @@ pub enum TeamAction {
         item: u64,
         text: String,
     },
+    AskLead {
+        text: String,
+    },
+    LeaveLeadNote {
+        text: String,
+    },
+    ReadLeadNotice {
+        card: u64,
+    },
     /// A member's question to its lead (`hgs team ask`).
     Ask {
         node: NodeId,

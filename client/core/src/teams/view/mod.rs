@@ -19,6 +19,7 @@ pub mod phases;
 pub mod planning;
 
 pub use board::team;
+pub(super) use list::card_item;
 pub use list::{list, waiting};
 
 use serde::Serialize;
@@ -303,6 +304,8 @@ pub struct TeamSummary {
     /// Bounded list projection; absent from an older CLI.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub progress: Option<TeamProgress>,
+    #[serde(skip_serializing_if = "lead_notices_empty")]
+    pub lead_notices: u64,
 }
 
 /// The list's capped counts. A `*_more` flag denotes a lower bound.
@@ -461,6 +464,12 @@ pub struct TeamCounts {
     pub inbox: u64,
     /// The person's open cards.
     pub cards: u64,
+    #[serde(skip_serializing_if = "lead_notices_empty")]
+    pub lead_notices: u64,
+}
+
+fn lead_notices_empty(count: &u64) -> bool {
+    *count == 0
 }
 
 /// One stage of a card: the review or test node its pipeline created.
@@ -660,6 +669,8 @@ pub struct TeamView {
 /// here: the desktop's session attention data already carries it.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
 pub struct WaitingItem {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decision: Option<String>,
     /// Team and card sequence, for the decision that answers it.
     pub id: String,
     pub team: String,

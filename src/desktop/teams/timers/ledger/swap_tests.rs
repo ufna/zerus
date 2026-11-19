@@ -30,7 +30,7 @@ fn swap159_refuses_reserved_or_unknown_lead_doorbells_but_keeps_known_receipts()
             conversation: &native.conversation_id,
         };
         let saved = ledger
-            .reserve(&binding, 1, 1, 0, "epoch", 1234)
+            .reserve(&binding, 1, 1, 0, 0, "epoch", 1234)
             .unwrap()
             .unwrap();
         let uncertain = !matches!(outcome, Some(Rung::Submitted));

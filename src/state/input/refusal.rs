@@ -257,6 +257,7 @@ mod tests {
             expected_conversation_id: w.conversation_id.clone(),
             attachments: vec![],
             expected_compaction_id: String::new(),
+            only_when_idle: false,
         }
     }
 

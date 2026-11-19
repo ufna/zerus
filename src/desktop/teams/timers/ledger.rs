@@ -4,7 +4,7 @@
 use super::super::ledger::{Ledger as Launches, Row, State};
 use super::ports::{Result, Rung};
 use crate::teams::store::storage;
-use rusqlite::{params, Connection, Transaction, TransactionBehavior};
+use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
 use std::path::Path;
 use zerus_team_plan::model::SessionKey;
 
@@ -35,7 +35,7 @@ fn outcome(rung: &Rung) -> (&'static str, String) {
 pub(super) mod sql {
     /// The mark of a binding: what its last doorbell that may have rung counted.
     pub const MARK: &str = "SELECT COALESCE(MAX(mark),0) FROM timer_doorbells WHERE team=?1 AND run=?2 AND conversation=?3 AND state IN ('reserved','submitted','uncertain')";
-    pub const LAST: &str = "SELECT MAX(at_ms) FROM timer_doorbells WHERE team=?1";
+    pub const LAST: &str = "SELECT at_ms,run,conversation,mark FROM timer_doorbells WHERE team=?1 ORDER BY at_ms DESC,rowid DESC LIMIT 1";
     pub const INTERRUPTED: &str = "UPDATE timer_doorbells SET state='uncertain',detail='The service turn ended before its outcome was recorded; never sent again' WHERE team=?1 AND state='reserved'";
     pub const PRUNE: &str = "DELETE FROM timer_doorbells WHERE rowid IN (SELECT d.rowid FROM timer_doorbells d WHERE d.team=?1 AND d.at_ms<?2 AND d.state<>'reserved' AND (d.run<>?3 OR d.state IN ('refused','not_started') OR d.mark<(SELECT MAX(m.mark) FROM timer_doorbells m WHERE m.team=d.team AND m.run=d.run AND m.conversation=d.conversation AND m.state IN ('reserved','submitted','uncertain'))) LIMIT 64)";
     pub const LATE: &str = "SELECT data FROM originals WHERE (team,member)>(?1,?2) AND json_extract(data,'$.late_after_stop')=1 AND json_extract(data,'$.state') IN ('launch_intent','submitted','launch_unknown') ORDER BY team,member LIMIT ?3";
@@ -79,11 +79,13 @@ impl Ledger {
     }
     /// Reserve a doorbell when an open item is newer than the binding's mark
     /// and the team's interval has passed since its last reservation.
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn reserve(
         &self,
         b: &Binding<'_>,
         newest: u64,
         count: u32,
+        person_message: u64,
         interval: i64,
         epoch: &str,
         now: i64,
@@ -95,10 +97,18 @@ impl Ledger {
                 r.get(0)
             })
             .map_err(storage)?;
-        let last: Option<i64> = tx
-            .query_row(sql::LAST, [b.team], |r| r.get(0))
+        let last: Option<(i64, String, String, u64)> = tx
+            .query_row(sql::LAST, [b.team], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+            .optional()
             .map_err(storage)?;
-        if newest <= mark || last.is_some_and(|last| now < last.saturating_add(interval)) {
+        // The first attempt for a new Person message can use the next idle
+        // turn. A definite refusal returns to the normal rate for that item.
+        let limited = last.is_some_and(|(at, run, conversation, tried)| {
+            let prompt = person_message > mark
+                && (run != b.run || conversation != b.conversation || person_message > tried);
+            !prompt && now < at.saturating_add(interval)
+        });
+        if newest <= mark || limited {
             return Ok(None);
         }
         let id = uuid::Uuid::new_v4().to_string();

@@ -19,7 +19,7 @@ pub(crate) fn native_doorbell_for_test(config: &crate::config::Config, gate: cra
     let machine = text("machine");
     let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let mut native = native::Native { config, machine:&machine, stop:&stop };
-    let ring = Ring { id:text("request_id"), gate, agent:"dsh".into(), name:text("name"), run:text("run_id"), conversation:text("conversation_id"), text:text("text") };
+    let ring = Ring { only_when_idle:false, id:text("request_id"), gate, agent:"dsh".into(), name:text("name"), run:text("run_id"), conversation:text("conversation_id"), text:text("text") };
     let store = crate::teams::store::Store::open(&config.state).unwrap();
     let program = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("target/debug/hgs");
     assert!(program.exists(), "Build the private worktree's hgs before the reviewed doorbell test");

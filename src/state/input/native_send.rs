@@ -31,6 +31,8 @@ struct Guard<'a> {
     expected_compaction_id: Cow<'a, str>,
     #[serde(default, borrow)]
     attachments: Vec<AttachmentSize<'a>>,
+    #[serde(default)]
+    only_when_idle: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -485,7 +487,7 @@ fn snapshot(name: &str, raw: &[u8]) -> Option<Candidate> {
     let guard: Guard<'_> = serde_json::from_slice(raw).ok()?;
     // This coarse pure gate avoids decoding requests that cannot fit. Exact
     // decoded sizes are checked on the validated Payload before selection.
-    if guard.attachments.len() > PENDING_ATTACHMENTS
+    if guard.only_when_idle || guard.attachments.len() > PENDING_ATTACHMENTS
         || guard.attachments.iter().any(|attachment| {
             attachment.data_base64.len() > PENDING_ATTACHMENT_BYTES.div_ceil(3) * 4
         })
@@ -854,6 +856,7 @@ mod tests {
             expected_run_id: Cow::Borrowed("run"),
             expected_conversation_id: Cow::Borrowed("cid"),
             expected_compaction_id: Cow::Borrowed(""),
+            only_when_idle: false,
             attachments: Vec::new(),
         };
         (record, receipt, guard)
