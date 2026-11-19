@@ -54,3 +54,12 @@ it("text the core did not write is never translated", () => {
     "Одобрено один раз", "May I run this command?", "printf done", "Выбранный ответ: Yes", "Granted once.",
   ]);
 });
+
+it("the journal shows a selected entry's detail through that translation", async () => {
+  let shown: import("./approvals-journal").JournalState | undefined;
+  const io = { list: async () => ({ entries: [], next: 0, previous: 0 }), detail: async () => hookTrust.approved };
+  journal.createJournal(io, () => ({ host: "", session: "" }), (state) => { shown = state; }).select("1");
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  expect(shown?.detail?.split("\n\n")).toEqual(journal.localizedDetail(hookTrust.approved).split("\n\n"));
+  expect(shown?.detail?.startsWith("Одобрено один раз")).toBe(true);
+});
