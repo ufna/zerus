@@ -56,15 +56,18 @@ export function MemberChoices(props: { initial: MemberChoice; disabled: boolean;
     if (account()) return "";
     return of.length === 1 ? tr("Models of %1.", of[0].label) : tr("Models every account of this agent offers. A model only some offer is listed with its account.");
   };
+  // A Dropdown is named by a sibling label, never wrapped in one: a wrapping
+  // label forwards an option's click to the list's button after the list
+  // closes, and WebKitGTK reopened it.
   return <div class="team-member-edit-fields">
     <label>{tr("Agent")}<select class="field" aria-label={tr("Agent")} value={agent()} disabled={props.disabled} onChange={(e) => { const next = e.currentTarget.value; batch(() => { setAgent(next); setAccount(""); setModel(""); setEffort(""); }); changed(); }}>
       <For each={MEMBER_AGENTS}>{(a) => <option value={a}>{a === "dsh" ? "DeepSeek" : a}</option>}</For>
     </select></label>
     <Show when={view().modelShown}>
-      <label>{tr("Model")}<Dropdown class="field" aria-label={tr("Model")} aria-describedby={id} value={model()} disabled={props.disabled} onChange={chooseModel} options={view().models} /></label>
+      <div class="team-member-field"><label for={`${id}-model`}>{tr("Model")}</label><Dropdown id={`${id}-model`} class="field" aria-label={tr("Model")} aria-describedby={id} value={model()} disabled={props.disabled} onChange={chooseModel} options={view().models} /></div>
     </Show>
     <Show when={view().effortShown}>
-      <label>{tr("Effort")}<Dropdown class="field" aria-label={tr("Effort")} value={effort()} disabled={props.disabled || !model()} onChange={(value) => { setEffort(value); changed(); }} options={view().efforts} /></label>
+      <div class="team-member-field"><label for={`${id}-effort`}>{tr("Effort")}</label><Dropdown id={`${id}-effort`} class="field" aria-label={tr("Effort")} value={effort()} disabled={props.disabled || !model()} onChange={(value) => { setEffort(value); changed(); }} options={view().efforts} /></div>
     </Show>
     <label>{tr("Account")}<select class="field" aria-label={tr("Account")} value={account()} disabled={props.disabled} onChange={(e) => { const next = e.currentTarget.value; batch(() => { setAccount(next); setModel(""); setEffort(""); }); changed(); }}>
       <option value="">{tr("The freest account")}</option>

@@ -8,7 +8,7 @@
   "%1 (PID %2)": "%1 (PID %2)",
   "%1 (no HGS archive)": "%1 (без архива HGS)",
   "%1 (not in the current catalog)": "%1 (нет в текущем каталоге)",
-  "%1 (only on %2)": "%1 (только в учётной записи %2)",
+  "%1 (only on %2)": "%1 (только в %2)",
   "%1 (signed out)": "%1 (вход не выполнен)",
   "%1 / %2: notifications cannot change for this session now": "%1 / %2: уведомления этой сессии сейчас нельзя изменить",
   "%1 active": "активно: %1",

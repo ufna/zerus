@@ -236,3 +236,19 @@ it("a first read that failed recovers in the same open dialog when the Accounts 
   await loadAccounts(true); await flush();
   expect((await offered(host, "Model")).map(([value]) => value)).toEqual(["", "model-a", "@claude-spare/model-b"]);
 });
+
+// WebKitGTK reopened the list after every pick: a <label> around the
+// Dropdown forwards the option's click to its control once the closing list
+// has left the label. The fields name their Dropdowns with a sibling label.
+it("closes the model list after a pick and names each list without wrapping it in a label", async () => {
+  const { host } = addMember();
+  await flush();
+  for (const name of ["Model", "Effort"]) {
+    const box = combo(host, name)!;
+    expect(box.closest("label"), `${name} is not inside a label`).toBeNull();
+    expect(host.querySelector<HTMLLabelElement>(`label[for="${box.id}"]`)?.textContent).toBe(name);
+  }
+  await pick(host, "Model", "model-a");
+  expect(combo(host, "Model")!.getAttribute("aria-expanded")).toBe("false");
+  expect(document.querySelector('[role="listbox"]')).toBeNull();
+});
