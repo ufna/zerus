@@ -56,6 +56,8 @@ struct Slot {
     error: String,
     /// The queue chosen in this submit, when the New task form names one.
     team: Option<String>,
+    /// The role and pipeline chosen for that queue (zerus-63rru.199 B4).
+    route: Route,
     /// A card created for a team whose queue did not take it: the task, the
     /// team and the team's reason, for this submit's answer only.
     not_queued: Option<Value>,
@@ -158,6 +160,7 @@ fn opened(
         unsaved: false,
         error: loaded.storage_error.unwrap_or_default(),
         team: None,
+        route: Route::default(),
         not_queued: None,
     };
     if blocked {
@@ -311,6 +314,69 @@ struct Request {
     /// The queue the card is reserved for (`task add --team`), when chosen.
     #[serde(default)]
     team: Option<String>,
+    /// The role and pipeline chosen for that queue; absent is the template's
+    /// default, and an older reservation names neither (zerus-63rru.199 B4).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    role: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pipeline: Option<String>,
+}
+/// A new team card's role and pipeline, as the New task form chose them.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct Route {
+    role: Option<String>,
+    pipeline: Option<String>,
+}
+fn route_word(word: &Option<String>) -> bool {
+    word.as_deref().is_none_or(|word| {
+        !word.trim().is_empty() && word.len() <= 200 && !word.chars().any(char::is_control)
+    })
+}
+/// The route a submit names: only for a team's new card, and a reserved card
+/// keeps the route it was reserved with, as it keeps its team.
+fn route_choice(slot: &mut Slot, route: Route) -> Result<(), String> {
+    if !route_word(&route.role) || !route_word(&route.pipeline) {
+        return Err("Not a role or pipeline. Nothing was sent.".into());
+    }
+    if route != Route::default() && slot.team.is_none() {
+        return Err("A role or pipeline needs a team. Nothing was sent.".into());
+    }
+    if slot.stored.form_state.contains_key("request") {
+        let reserved = request(slot)?.1;
+        let reserved = Route {
+            role: reserved.role,
+            pipeline: reserved.pipeline,
+        };
+        if route != Route::default() && route != reserved {
+            return Err("The reserved card keeps its role and pipeline. Nothing was sent.".into());
+        }
+        slot.route = reserved;
+    } else {
+        slot.route = route;
+    }
+    Ok(())
+}
+/// The native draft of a team's new card: the older NewTask exactly when no
+/// role or pipeline was chosen (zerus-63rru.199 B4).
+fn new_task_draft(
+    request: &Request,
+) -> Result<zerus_client_core::desktop::team_person_actions::TaskDraft, String> {
+    use zerus_client_core::desktop::team_person_actions as wire;
+    let team = request
+        .team
+        .as_ref()
+        .ok_or("The reserved team is unavailable.")?;
+    Ok(wire::TaskDraft {
+        request_id: request.request_id.clone(),
+        team: team.clone(),
+        action: wire::Action::NewTask {
+            project: request.project.clone(),
+            title: request.title.clone(),
+            backlog: request.stage == "backlog",
+            role: request.role.clone(),
+            pipeline: request.pipeline.clone(),
+        },
+    })
 }
 fn request(slot: &Slot) -> Result<(Value, Request), String> {
     let raw = slot
@@ -336,6 +402,9 @@ fn request(slot: &Slot) -> Result<(Value, Request), String> {
             .as_deref()
             .is_some_and(|team| !uuid::Uuid::parse_str(team).is_ok())
         || (parsed.team.is_some() && parsed.session != "any")
+        || !route_word(&parsed.role)
+        || !route_word(&parsed.pipeline)
+        || (parsed.team.is_none() && (parsed.role.is_some() || parsed.pipeline.is_some()))
     {
         return Err("The reserved card is invalid. Nothing was sent.".into());
     }
@@ -421,6 +490,7 @@ fn submitted_native(
     }
     slot.not_queued = None;
     let team = slot.team.clone();
+    let route = slot.route.clone();
     let wanted = if slot.kind == Kind::NewCard && slot.stored.form_state.contains_key("request") {
         request(slot)?.1.title
     } else {
@@ -476,6 +546,19 @@ fn submitted_native(
             }
             slot.stored.form_state.insert("schema".into(), json!(1));
             slot.stored.form_state.insert("request".into(),json!({"project":slot.project,"title":wanted,"request_id":uuid::Uuid::new_v4().to_string(),"stage":if backlog {"backlog"} else {"todo"},"session":if target.session.is_empty(){"any"}else{&target.session},"host":target.host,"session_id":target.session_id,"team":team}));
+            if let Some(request) = slot
+                .stored
+                .form_state
+                .get_mut("request")
+                .and_then(Value::as_object_mut)
+            {
+                if let Some(role) = &route.role {
+                    request.insert("role".into(), json!(role));
+                }
+                if let Some(pipeline) = &route.pipeline {
+                    request.insert("pipeline".into(), json!(pipeline));
+                }
+            }
             checkpoint(slot, store)?;
         } else if !recover {
             return Err("Creation was interrupted. Press Enter to recover this same card.".into());
@@ -549,19 +632,7 @@ fn submit_team_native(
     request: &Request,
 ) -> Result<serde_json::Map<String, Value>, String> {
     use zerus_client_core::desktop::team_person_actions as wire;
-    let team = request
-        .team
-        .as_ref()
-        .ok_or("The reserved team is unavailable.")?;
-    let draft = wire::TaskDraft {
-        request_id: request.request_id.clone(),
-        team: team.clone(),
-        action: wire::Action::NewTask {
-            project: request.project.clone(),
-            title: request.title.clone(),
-            backlog: request.stage == "backlog",
-        },
-    };
+    let draft = new_task_draft(request)?;
     let original = slot
         .stored
         .form_state
@@ -661,6 +732,11 @@ pub struct Submit {
     session_id: Option<String>,
     /// A queue chosen in the New task form (`task add --team`).
     team: Option<String>,
+    /// The role and pipeline chosen for that queue (zerus-63rru.199 B4).
+    #[serde(default)]
+    team_role: Option<String>,
+    #[serde(default)]
+    team_pipeline: Option<String>,
 }
 #[tauri::command]
 pub async fn task_form_submit(
@@ -682,6 +758,8 @@ pub async fn task_form_submit(
         catalog_key,
         session_id,
         team,
+        team_role,
+        team_pipeline,
     } = input;
     if crate::actions::blocked() {
         return Err(crate::screens::REPLAY_NEEDS_HGS.into());
@@ -709,6 +787,13 @@ pub async fn task_form_submit(
             return Err("A queued card names no session. Nothing was sent.".into());
         }
         destination(slot, team.clone())?;
+        route_choice(
+            slot,
+            Route {
+                role: team_role,
+                pipeline: team_pipeline,
+            },
+        )?;
         let assignment = if kind == Kind::NewCard
             && !slot.stored.form_state.contains_key("request")
             && team.is_none()
@@ -1416,6 +1501,48 @@ mod tests {
         let mut later = sent;
         later["queue_position"] = json!("top");
         assert!(serde_json::from_value::<Submit>(later).is_err());
+    }
+
+    /// zerus-63rru.199 (B4): a team's new card may carry the chosen role and
+    /// pipeline; the native draft sends them, and one without them is the
+    /// older NewTask exactly.
+    #[test]
+    fn a_routed_team_card_sends_its_role_and_pipeline_in_the_native_draft() {
+        let sent = json!({"kind": "new_card", "handle": 1, "rev": 2, "recover": false, "backlog": false,
+            "target": null, "catalog_key": null, "session_id": null, "team": "33333333-3333-4333-8333-333333333333",
+            "team_role": "developer", "team_pipeline": "reviewed"});
+        let submit = serde_json::from_value::<Submit>(sent).unwrap();
+        assert_eq!(submit.team_role.as_deref(), Some("developer"));
+        assert_eq!(submit.team_pipeline.as_deref(), Some("reviewed"));
+        let request = |role: Option<&str>, pipeline: Option<&str>| Request {
+            project: "example".into(),
+            title: "Trim long labels".into(),
+            request_id: "11111111-1111-4111-8111-111111111111".into(),
+            stage: "todo".into(),
+            session: "any".into(),
+            host: String::new(),
+            session_id: String::new(),
+            team: Some("33333333-3333-4333-8333-333333333333".into()),
+            role: role.map(str::to_owned),
+            pipeline: pipeline.map(str::to_owned),
+        };
+        use zerus_client_core::desktop::team_person_actions as wire;
+        let routed = new_task_draft(&request(Some("developer"), Some("reviewed"))).unwrap();
+        assert_eq!(
+            routed.action,
+            wire::Action::NewTask {
+                project: "example".into(),
+                title: "Trim long labels".into(),
+                backlog: false,
+                role: Some("developer".into()),
+                pipeline: Some("reviewed".into()),
+            }
+        );
+        let plain = new_task_draft(&request(None, None)).unwrap();
+        assert_eq!(
+            serde_json::to_value(&plain.action).unwrap(),
+            json!({"kind": "new_task", "project": "example", "title": "Trim long labels", "backlog": false})
+        );
     }
     /// zerus-63rru.19: a storage failure of the team store keeps its code on
     /// the notice, so the form does not call the queue's answer a refusal.

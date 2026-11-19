@@ -112,10 +112,18 @@ pub(crate) fn run_task(
     }
     let read = Read::new(service)
         .map_err(|_| TaskError::not_sent("Connect this window to its desktop service."))?;
-    if !read.supports(wire::HELP_MARKER).unwrap_or(false) {
-        return Err(TaskError::not_sent(
-            "Update the selected desktop service to confirm team intake.",
-        ));
+    for marker in wire::action_markers(&draft.action) {
+        if !read.supports(marker).unwrap_or(false) {
+            return Err(TaskError::not_sent(
+                if marker == wire::NEW_TASK_ROUTE_MARKER {
+                    // An older service refuses a new task's role and pipeline;
+                    // say what to update (zerus-63rru.199 B4).
+                    "Update the selected desktop service to choose a role or pipeline for a new team task."
+                } else {
+                    "Update the selected desktop service to confirm team intake."
+                },
+            ));
+        }
     }
     if let Some(original) = original {
         if !matches(draft, &original) {

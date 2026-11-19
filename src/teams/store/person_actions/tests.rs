@@ -20,6 +20,8 @@ fn header(h: &Harness) -> Header {
             project: task.project.clone(),
             title: "A native intake control".into(),
             backlog: false,
+            role: None,
+            pipeline: None,
         },
     };
     let request = ops::Request {

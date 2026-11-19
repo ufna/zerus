@@ -43,9 +43,17 @@ impl Prepared {
         }
         let wire::Action::Team { change } = &plan.action else {
             let (project, uuid, role, pipeline) = match &plan.action {
-                wire::Action::NewTask { project, .. } => {
-                    (project, plan.request_id.clone(), None, None)
-                }
+                wire::Action::NewTask {
+                    project,
+                    role,
+                    pipeline,
+                    ..
+                } => (
+                    project,
+                    plan.request_id.clone(),
+                    role.clone(),
+                    pipeline.clone(),
+                ),
                 wire::Action::Intake {
                     project,
                     task,
