@@ -1,13 +1,12 @@
-import { For, Show, batch, createEffect, createMemo, createSignal, on, onCleanup, onMount } from "solid-js";
+import { For, Show, batch, createEffect, createMemo, createSignal, on, onCleanup, onMount, type JSX } from "solid-js";
 import { tr } from "../../i18n";
 import { selected } from "../../store/ui";
 import { canDropTeamTask, requestTeamTask, teamTaskDragOver, teamTaskDrop } from "../../store/teamTaskIntake";
 import { machineCards } from "../../store/machines";
-import { openTask } from "../../store/taskNavigation";
-import { newRequestId, teams, type TeamCall, type TeamFailure, type TeamOutcome, type UnresolvedCall } from "../../store/teams";
+import { teams, type TeamCall, type TeamFailure, type TeamOutcome, type UnresolvedCall } from "../../store/teams";
 import { rowIdentity, rowIsSession } from "./session-binding";
 import { navigationTeamFor } from "./lead-navigation";
-import { teamCall, type TaskButton } from "./actions";
+import type { TaskButton } from "./actions";
 import { createTeamEditors, TeamEditButtons, type EditAction } from "./TeamEditors";
 import { MemberCard } from "./MemberCard";
 import { memberSessions } from "./member-session";
@@ -35,6 +34,8 @@ import { phaseFocus } from "../../store/team-phases";
 import { TeamDrawerButtons, TeamDrawers } from "./TeamDrawers";
 import type { TeamDrawer } from "../../store/teamDrawers";
 import { openTeamNode, setOpenTeamNode } from "./openNode";
+import { OpenTeamPageButton, openTeamTask } from "./team-navigation";
+import { TeamBody } from "./TeamBody";
 import "../styles/teams.css";
 import "../styles/team-scroll.css";
 
@@ -75,9 +76,16 @@ export function TeamWorkspace(props: {
   onSettingsSave?: (call: TeamCall) => Promise<TeamOutcome>;
   settingsBlocked?: boolean;
   placementUnresolved?: (node: number) => boolean;
+  /** Why Add task cannot run from here, shown on its disabled button. */
+  addTaskBlocked?: string;
+  /** An extra control in the team bar (the tab's Open team page). */
+  barExtra?: JSX.Element;
+  /** Open Settings once when the workspace first shows (the row menu's Settings…). */
+  openSettings?: boolean;
 }) {
   const [planMode, setPlanMode] = createSignal<"board" | "graph" | "lanes" | "layers">("board");
   const [settingsView, setSettingsView] = createSignal<TeamView>();
+  onMount(() => { if (props.openSettings && props.onSettingsSave) setSettingsView(props.view); });
   const [selectedNode, setSelectedNode] = createSignal<number | null>(null);
   const [drawer, setDrawer] = createSignal<TeamDrawer | null>(null);
   const [advance, setAdvance] = createSignal(false);
@@ -217,7 +225,7 @@ export function TeamWorkspace(props: {
     <div ref={workspace} class="team-tab" data-team-tab on:keydown={dismissKey}>
       <TeamBar view={props.view} busy={props.busy} onAction={(kind) => kind === "advance_base" ? setAdvance(true) : send(kind)}
         onSettings={props.onSettingsSave ? () => setSettingsView(props.view) : undefined} settingsBlocked={props.settingsBlocked}
-        drawers={<TeamDrawerButtons value={drawer()} onOpen={(kind) => setDrawer(drawer() === kind ? null : kind)} />} />
+        drawers={<><TeamDrawerButtons value={drawer()} onOpen={(kind) => setDrawer(drawer() === kind ? null : kind)} />{props.barExtra}</>} />
       <Show when={settingsView()}><TeamSettingsDialog view={props.view} providerHome={props.providerHome} busy={props.busy || !!props.settingsBlocked}
         onSave={(call) => props.onSettingsSave!(call)} onClose={() => setSettingsView(undefined)} /></Show>
       <Show when={advance()}><TeamAdvanceBase team={props.view.bar.id} busy={props.busy}
@@ -237,7 +245,7 @@ export function TeamWorkspace(props: {
       </Show>
       <div class="team-body">
         <section class="team-main">
-          <header class="team-board-head"><Icon name="columns-3" size={14} /><button type="button" class="btn small" aria-pressed={planMode() === "board"} onClick={() => setPlanMode("board")}>{tr("Board")}</button><button type="button" class="btn small" data-team-graph-mode aria-pressed={planMode() === "graph"} onClick={() => setPlanMode("graph")}>{tr("Graph")}</button><button type="button" class="btn small" data-team-lanes-mode aria-pressed={planMode() === "lanes"} onClick={() => setPlanMode("lanes")}>{tr("Lanes")}</button><button type="button" class="btn small" data-team-layers-mode aria-pressed={planMode() === "layers"} onClick={() => { setSelectedNode(null); setPlanMode("layers"); }}>{tr("Layers")}</button><span class="grow" /><button type="button" class="btn small team-members-toggle" data-team-members-toggle onClick={showMembers}><Icon name="users" size={12} />{tr("Members")}</button><button type="button" class="btn small" disabled={!["running", "paused"].includes(props.view.bar.status)} onClick={props.onAddTask}><Icon name="plus" size={12} />{tr("Add task")}</button></header>
+          <header class="team-board-head"><Icon name="columns-3" size={14} /><button type="button" class="btn small" aria-pressed={planMode() === "board"} onClick={() => setPlanMode("board")}>{tr("Board")}</button><button type="button" class="btn small" data-team-graph-mode aria-pressed={planMode() === "graph"} onClick={() => setPlanMode("graph")}>{tr("Graph")}</button><button type="button" class="btn small" data-team-lanes-mode aria-pressed={planMode() === "lanes"} onClick={() => setPlanMode("lanes")}>{tr("Lanes")}</button><button type="button" class="btn small" data-team-layers-mode aria-pressed={planMode() === "layers"} onClick={() => { setSelectedNode(null); setPlanMode("layers"); }}>{tr("Layers")}</button><span class="grow" /><button type="button" class="btn small team-members-toggle" data-team-members-toggle onClick={showMembers}><Icon name="users" size={12} />{tr("Members")}</button><button type="button" class="btn small" data-team-add-task disabled={!["running", "paused"].includes(props.view.bar.status) || !!props.addTaskBlocked} title={props.addTaskBlocked} onClick={props.onAddTask}><Icon name="plus" size={12} />{tr("Add task")}</button></header>
           <div class="team-canvas" data-team-task-drop={planMode() === "board" ? props.view.bar.id : undefined} classList={{ "team-canvas-board": planMode() === "board", "team-task-drop": planMode() === "board" && canDropTeamTask(props.view.bar) }}
             onDragOver={(event) => { if (planMode() === "board") teamTaskDragOver(event, props.view.bar); }}
             onDrop={(event) => { if (planMode() === "board") teamTaskDrop(event, props.view.bar); }}>
@@ -300,7 +308,7 @@ export function TeamWorkspace(props: {
                           {/* The task by its project with Open task; its UUID only in the tooltip (G15). */}
                           {(task) => <span class="team-task-ref" data-task-ref title={tr("Task %1 in %2", task().uuid, task().project)}>
                             <span class="team-block">{task().project}</span>
-                            <button type="button" class="btn small" data-open-task onClick={() => openTask(task().project, task().uuid)}>{tr("Open task")}</button>
+                            <button type="button" class="btn small" data-open-task onClick={() => openTeamTask(task().project, task().uuid)}>{tr("Open task")}</button>
                           </span>}
                         </Show>
                       </dd>
@@ -425,29 +433,14 @@ export function TeamTab() {
     const current = target(), ready = scope.ready(), shown = teams.team();
     return !leadChanged() && ready?.key === current.key && ready.team === current.team && shown?.bar.id === current.team ? shown : undefined;
   });
-  const readFailure = () => target().team ? teams.readFailureFor(`team:${target().team}`) : null;
-  const act: EditAction = (kind: string, fields: Record<string, unknown> = {}, revision?: number, team?: string) => {
-    const current = view();
-    if (!current || (team !== undefined && team !== current.bar.id)) return {
-      outcome: "failed", request_id: "", detail: tr("The selected team changed. Reopen the form."),
-    };
-    const call: TeamCall = teamCall(current, newRequestId(), kind, fields);
-    if (revision !== undefined) call.expected_revision = revision;
-    return teams.run(call, source());
-  };
   return <>
     <Show when={scope.failure()}>{(reason) => <div class="notice danger team-notice" role="alert"><Icon name="triangle-alert" size={16} /><span>{reason()}</span></div>}</Show>
     <Show when={view()} fallback={
       <div class="team-loading" role="status" data-team-waiting>
         <span class="dim">{leadChanged() ? tr("The team's lead session has changed. Open it from Teams again.") : binding().state === "none" ? tr("This session is not a team lead.") : binding().exhausted ? tr("Could not find this session's team here. Open it from Teams.") : tr("Finding the team of this session…")}</span>
       </div>
-    }>{(current) => <TeamWorkspace view={current()} busy={teams.busy(current().bar.id)} failure={readFailure()} actionFailure={actionReason(source())} onDismissFailure={() => teams.clearFailure(source())}
-      providerHome={teams.listed().find((row) => row.id === current().bar.id && row.project === current().bar.project)?.home}
-      onSettingsSave={(call) => teams.run(call, source())}
-      settingsBlocked={teams.unresolved().some((entry) => entry.call.team === current().bar.id && ["settings", "validation_config"].includes(entry.call.action.kind))}
-      placementUnresolved={(node) => teams.unresolved().some(({ call }) => call.team === current().bar.id
-        && call.action.node === node && (call.action.kind === "reassign" || call.action.kind === "route"))}
-      onAction={act} onPage={(cursor) => void teams.page(`team:${current().bar.id}`, cursor)} onAddTask={() => { const fresh = view(); if (fresh) requestTeamTask(fresh.bar); }} />}</Show>
+    }>{(current) => <TeamBody view={current()} source={source()} barExtra={<OpenTeamPageButton team={current().bar.id} />}
+      onAddTask={() => { const fresh = view(); if (fresh) requestTeamTask(fresh.bar); }} />}</Show>
     <Show when={!view() && actionReason(source())}>{(reason) => <ActionFailureNotice failure={reason()} onDismiss={() => teams.clearFailure(source())} />}</Show>
     <TeamUnresolvedList entries={teams.unresolved()} busy={teams.busy()} onCheck={(entry) => void teams.check(entry, source())} onDismiss={(entry) => void teams.dismiss(entry, source())} />
     <TeamConfirmDialog source={source()} />
