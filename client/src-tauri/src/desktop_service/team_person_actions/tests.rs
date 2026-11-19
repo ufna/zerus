@@ -38,10 +38,15 @@ pub(super) fn review(call: &TeamCall) -> wire::Review {
 #[test]
 fn native_confirmation_keeps_a_percent_sign_in_a_bound_team_name_literal() {
     let mut call = call();
-    call.action = TeamAction::RenameTeam { name: "Launch at 50%".into() };
+    call.action = TeamAction::RenameTeam {
+        name: "Launch at 50%".into(),
+    };
     let plan = wire::Plan::from_call(&call).unwrap();
     let review = review(&call);
-    let labels = Labels { facts: review.intent.facts.clone(), ..Default::default() };
+    let labels = Labels {
+        facts: review.intent.facts.clone(),
+        ..Default::default()
+    };
     let prompt = team_confirmation::action(&plan, &review, &labels).unwrap();
     let body = confirmation_body(&prompt.body);
     if cfg!(target_os = "linux") {

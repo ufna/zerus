@@ -137,7 +137,7 @@ pub(super) fn summary(
     let confirmed = !string(record, "conversation_id").is_empty();
     let native_archive = archived && record["backend"] == "dsh";
     let recipe = if native_archive {
-        Path::new(string(record, "cwd")).is_dir()
+        Path::new(string(record, "cwd")).is_dir() || super::worktree_lifecycle::restorable(record)
     } else {
         record["base"].is_array() && (Path::new(string(record, "launch_dir")).is_dir() || super::worktree_lifecycle::restorable(record))
     };

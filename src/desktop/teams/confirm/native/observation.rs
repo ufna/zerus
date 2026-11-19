@@ -449,18 +449,7 @@ mod tests {
     #[ignore = "run by its isolated wrapper"]
     fn no_restore_fixture() {
         let (config, _, _) = store_env();
-        let (b, _, record) = real_codex(|record| {
-            // A member that has worked: its transcript exists and begins with
-            // Codex's session header, so its question index can be read.
-            let transcript = std::path::Path::new(record["transcript"].as_str().unwrap());
-            std::fs::create_dir_all(transcript.parent().unwrap()).unwrap();
-            let header = json!({"type":"session_meta","payload":{"id":record["conversation_id"]}});
-            std::fs::write(transcript, format!("{header}\n")).unwrap();
-            record["completion_source"] = json!("supervisor");
-            record["completion_reason"] = json!("clean_exit");
-            record["exit_code"] = json!(0);
-            record["exited_at"] = json!(1000.0);
-        });
+        let (b, _, record) = real_codex(codex_self_exit);
         crate::state::archive_for_test(&record).unwrap();
         let roots = Roots::open(&config.state, "question_receipts").unwrap();
         let name = record["name"].as_str().unwrap();
@@ -487,30 +476,48 @@ mod tests {
         );
     }
 
+    fn codex_self_exit(record: &mut Value) {
+        // A worked member's transcript starts with the Codex session header,
+        // which lets the real question index read it.
+        let transcript = Path::new(record["transcript"].as_str().unwrap());
+        std::fs::create_dir_all(transcript.parent().unwrap()).unwrap();
+        let header = json!({"type":"session_meta","payload":{"id":record["conversation_id"]}});
+        std::fs::write(transcript, format!("{header}\n")).unwrap();
+        record["completion_source"] = json!("supervisor");
+        record["completion_reason"] = json!("clean_exit");
+        record["exit_code"] = json!(0);
+        record["exited_at"] = json!(1000.0);
+    }
+
     #[test]
     fn an_archive_is_found_by_run_as_soon_as_it_is_written() {
         isolated("desktop::teams::confirm::native::observation::tests::archive_fixture");
     }
     #[test]
-    fn an_untracked_exit_with_incomplete_coverage_requests_catalog_repair() {
+    fn an_archive_with_incomplete_coverage_is_observed_after_repair() {
         isolated("desktop::teams::confirm::native::observation::tests::repair_exit_catalog_child");
     }
 
     #[test]
     #[ignore = "run by its isolated wrapper"]
     fn repair_exit_catalog_child() {
-        let (config, _, _) = store_env();
-        let (b, _, record) = real_codex(|_| ());
+        use crate::desktop::teams::confirm::test_inspect;
+        use std::io::Write;
+        let (config, mut store, stop) = store_env();
+        let (mut b, _, record) = real_codex(codex_self_exit);
+        b.machine = crate::swarm::local_node_id(&config).unwrap();
+        b.conversation = text(&record, "conversation_id");
         let id = crate::state::listing_fixture::archive_with_catalog_gap(&record).unwrap();
-        assert!(config.state.join("archive-catalog-v1.sqlite3").is_file());
-        let roots = Roots::open(&config.state, "question_receipts").unwrap();
         let name = record["name"].as_str().unwrap();
+        let native = Native::new(&config, &b.machine, &stop, &mut store).unwrap();
+        test_inspect::use_cli_inspection();
+
+        // The original exists, but a rolled-back catalog write leaves the
+        // first observation unknown. The lookup requests repair without
+        // waiting for the worker or inspecting an unproved archive.
+        let error = observed(name, native.current(&b, name)).unwrap_err();
         assert_eq!(
-            observed(
-                name,
-                archive(&config.state, &roots, &b, name).map(|_| unreachable!())
-            )
-            .unwrap_err(),
+            error,
             format!(
                 "Whether member session {name} ended is unknown ({}); nothing was resumed",
                 crate::state::archive_catalog::INCOMPLETE
@@ -518,11 +525,52 @@ mod tests {
         );
         let admitted = config.state.join("archive-catalog-v2/teams-attempt.json");
         assert!(admitted.is_file(), "the confirmation requested bounded repair");
-        assert!(config
-            .state
-            .join("archives")
-            .join(format!("{id}.json"))
-            .is_file());
+        let original = config.state.join("archives").join(format!("{id}.json"));
+        assert!(original.is_file());
+
+        // Run the maintained writer explicitly in this test executable.
+        // Only the next observation can use the now-covered exact archive.
+        assert_eq!(
+            crate::state::dispatch_test_archive_catalog_worker().unwrap(),
+            0
+        );
+        crate::state::listing_fixture::complete_questions(&record).unwrap();
+        let (snapshot, raw) = native.current(&b, name).unwrap();
+        assert_eq!(snapshot.archive.as_deref(), Some(id.as_str()));
+        assert_eq!(raw["archive_id"], id);
+        assert!(snapshot.ended && snapshot.self_exit);
+        let reason = snapshot
+            .restore_refusal
+            .as_deref()
+            .expect("fresh CLI inspection must refuse Restore for this archive");
+        let refusal = crate::desktop::teams::confirm::policy::resume(&snapshot).unwrap_err();
+        assert!(refusal.contains(reason), "{refusal}");
+
+        let mut replaced = b.clone();
+        replaced.nonce = "replacement-owner".into();
+        assert_eq!(
+            native.current(&replaced, name).unwrap_err(),
+            "The fresh member inspection is incomplete or changed"
+        );
+        let mut later = b.clone();
+        later.run = uuid::Uuid::new_v4().to_string();
+        assert_eq!(
+            native.current(&later, name).unwrap_err(),
+            "No exact unique exit archive"
+        );
+
+        // A stale catalog still has the same matching row when the native
+        // file changes in place. The next read needs fresh coverage again.
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(original)
+            .unwrap()
+            .write_all(b"\n")
+            .unwrap();
+        assert_eq!(
+            native.current(&b, name).unwrap_err(),
+            crate::state::archive_catalog::INCOMPLETE
+        );
     }
     #[test]
     fn a_persons_pause_reads_as_paused_not_as_an_exit_to_resume() {

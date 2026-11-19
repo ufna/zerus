@@ -23,6 +23,22 @@ pub struct Labels {
     pub branch: Option<String>,
     pub computer: Option<String>,
     pub card_kind: Option<String>,
+    pub kept_route: Option<KeptRoute>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct KeptRoute {
+    pub deps: Vec<Dep>,
+    pub writes: Vec<String>,
+    pub assignment: Option<KeptAssignment>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct KeptAssignment {
+    pub member: String,
+    pub cleared: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -55,21 +71,39 @@ impl Prompt {
         if reason.trim().is_empty() {
             self
         } else {
-            self.with(text!("The reason given is %1.", visible(reason)))
+            self.with(text!("Reason — “%1”", visible(reason)))
+        }
+    }
+
+    fn comment(self, comment: &str) -> Self {
+        if comment.trim().is_empty() {
+            self
+        } else {
+            self.with(text!("Comment — “%1”", visible(comment)))
         }
     }
 }
 
-/// Remove control and bidi characters from user-authored captions. Internal
-/// IDs and digests are bound by the review and have no display field.
+/// Keep reviewed text within its own line and quote delimiters. Control and
+/// bidirectional formatting marks have no role in a consent caption.
 fn visible(value: &str) -> String {
-    value
-        .chars()
-        .filter(|c| {
-            (!c.is_control() || *c == '\n')
-                && !matches!(*c, '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}')
-        })
-        .collect()
+    let mut display = String::with_capacity(value.len());
+    for c in value.chars() {
+        match c {
+            '\n' | '\r' | '\t' | '\u{85}' | '\u{2028}' | '\u{2029}' => display.push(' '),
+            '\\' | '"' | '“' | '”' | '«' | '»' => {
+                display.push('\\');
+                display.push(c);
+            }
+            _ if !c.is_control()
+                && !matches!(c, '\u{61c}' | '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}') =>
+            {
+                display.push(c)
+            }
+            _ => {}
+        }
+    }
+    display
 }
 
 fn name(value: Option<&str>, fallback: &str) -> String {
@@ -313,6 +347,7 @@ fn team_action(change: &TeamAction, team: &str, labels: &Labels) -> Option<Promp
     let p = |number| phase(number, labels.phase.as_deref());
     let t = |node| task(labels, Some(node));
     let m = |id: &str| member(labels, id);
+    let shared = |target| change.confirmation_text(team, target);
     let mut prompt = match change {
         Create { name: new, .. } => Prompt::new(
             text!("Create team"),
@@ -344,31 +379,11 @@ fn team_action(change: &TeamAction, team: &str, labels: &Labels) -> Option<Promp
             text!("Resume team"),
             text!("Resume handing out work for team “%1”.", team),
         ),
-        Stop {} => Prompt::new(
-            text!("Stop team"),
-            text!(
-                "Permanently stop team “%1” and cancel its open tasks.",
-                team
-            ),
-        )
-        .with(text!("The team cannot be resumed after stopping.")),
-        Archive {} => Prompt::new(
-            text!("Archive team"),
-            text!(
-                "Move team “%1” out of the active teams list and keep its history.",
-                team
-            ),
-        )
-        .with(text!(
-            "An archived team cannot be returned to the active list."
-        )),
+        Stop {} => Prompt::new(text!("Stop team"), shared(None)?),
+        Archive {} => Prompt::new(text!("Archive team"), shared(None)?),
         AdvanceBase { commit } => Prompt::new(
             text!("Advance base"),
-            text!(
-                "Use commit %1 as the base for future work in team “%2”.",
-                short_commit(commit),
-                team
-            ),
+            shared(Some(Text::verbatim(short_commit(commit))))?,
         )
         .with(text!(
             "This advance cannot be reversed by moving the base back."
@@ -381,15 +396,8 @@ fn team_action(change: &TeamAction, team: &str, labels: &Labels) -> Option<Promp
                 team
             ),
         ),
-        SwapMember { member, .. } => Prompt::new(
-            text!("Swap member"),
-            text!(
-                "Replace %1 in team “%2” with a new member.",
-                m(member),
-                team
-            ),
-        )
-        .with(text!("The replacement starts with a new conversation.")),
+        SwapMember { member, .. } => Prompt::new(text!("Swap member"), shared(Some(m(member)))?)
+            .with(text!("The replacement starts with a new conversation.")),
         PauseMember { member } => Prompt::new(
             text!("Pause member"),
             text!(
@@ -402,25 +410,9 @@ fn team_action(change: &TeamAction, team: &str, labels: &Labels) -> Option<Promp
             text!("Resume member"),
             text!("Let team “%2” give work to %1 again.", m(member), team),
         ),
-        StopMember { member } => Prompt::new(
-            text!("Stop member"),
-            text!(
-                "Stop giving work to %1 in team “%2” until you resume them.",
-                m(member),
-                team
-            ),
-        ),
-        ArchiveMember { member } => Prompt::new(
-            text!("Remove"),
-            text!(
-                "Remove %1 from team “%2” and return their unfinished work to the lead.",
-                m(member),
-                team
-            ),
-        )
-        .with(text!(
-            "This member slot cannot be restored. Its session and history are kept."
-        )),
+        StopMember { member } => Prompt::new(text!("Stop member"), shared(Some(m(member)))?),
+        ArchiveMember { member } => Prompt::new(text!("Remove"), shared(Some(m(member)))?)
+            .with(text!("Unfinished work returns to the lead.")),
         ValidationConfig { selection } => Prompt::new(
             text!("Tests and Builds"),
             text!(
@@ -464,7 +456,21 @@ fn team_action(change: &TeamAction, team: &str, labels: &Labels) -> Option<Promp
                 .body
                 .extend(placement(Some(role), Some(pipeline), labels));
             if *keep_task_fields {
-                result = result.with(text!("Keep the task’s dependencies and write scope. Changing its role clears the previous assignment."));
+                let kept = labels.kept_route.as_ref()?;
+                result = result.with(text!("Keep the task’s dependencies and write paths."));
+                result.body.extend(dependencies(&kept.deps));
+                write_scope(&mut result.body, &kept.writes);
+                if let Some(assignment) = &kept.assignment {
+                    let target = member(&Labels::default(), &assignment.member);
+                    result = result.with(if assignment.cleared {
+                        text!(
+                            "Clear the assignment to %1. The task will be unassigned.",
+                            target
+                        )
+                    } else {
+                        text!("Keep the assignment to %1.", target)
+                    });
+                }
             }
             result
         }
@@ -524,12 +530,20 @@ fn team_action(change: &TeamAction, team: &str, labels: &Labels) -> Option<Promp
                 team
             ),
         ),
-        Cancel { node, reason } => Prompt::new(
-            text!("Cancel task"),
-            text!("Cancel %1 in team “%2”.", t(*node), team),
-        )
-        .reason(reason)
-        .with(text!("The team cannot continue the cancelled attempt.")),
+        Cancel { node, reason } => {
+            let summary = match &labels.task {
+                Some(task) if task.stage => text!("Cancel %1 in team “%2”.", t(*node), team),
+                Some(task) => shared(Some(text!(
+                    "%1 “%2”",
+                    visible(&task.number),
+                    visible(&task.title)
+                )))?,
+                None => shared(None)?,
+            };
+            Prompt::new(text!("Cancel task"), summary)
+                .reason(reason)
+                .with(text!("The team cannot continue the cancelled attempt."))
+        }
         Reply { text: reply, .. } => Prompt::new(
             text!("Reply"),
             if labels.task.is_some() {
@@ -542,7 +556,7 @@ fn team_action(change: &TeamAction, team: &str, labels: &Labels) -> Option<Promp
                 text!("Answer the member’s question in team “%1”.", team)
             },
         )
-        .with(Text::verbatim(visible(reply)))
+        .with(text!("Reply — “%1”", visible(reply)))
         .with(text!("The reply cannot be recalled after delivery.")),
         SetPhaseBarrier { scope, barrier } => {
             Prompt::new(
@@ -631,7 +645,7 @@ fn team_action(change: &TeamAction, team: &str, labels: &Labels) -> Option<Promp
                 team
             ),
         )
-        .reason(comment),
+        .comment(comment),
         SubmitPhaseCorrections { phase, .. } => Prompt::new(
             text!("Submit corrections"),
             text!(
@@ -664,7 +678,7 @@ fn team_action(change: &TeamAction, team: &str, labels: &Labels) -> Option<Promp
                 team
             ),
         )
-        .reason(comment),
+        .comment(comment),
         UndoPhaseCorrectionRejection { phase, .. } => Prompt::new(
             text!("Undo correction rejection"),
             text!(
@@ -689,7 +703,7 @@ fn team_action(change: &TeamAction, team: &str, labels: &Labels) -> Option<Promp
             text!("Reject phase"),
             text!("Reject the draft of %1 in team “%2”.", p(*phase), team),
         )
-        .reason(comment),
+        .comment(comment),
         UndoRejectPhase { phase, .. } => Prompt::new(
             text!("Undo phase rejection"),
             text!("Undo the rejection of %1 in team “%2”.", p(*phase), team),
@@ -914,12 +928,12 @@ fn draft_lines(lines: &mut Vec<Text>, draft: &zerus_team_plan::draft::DraftInput
             NodeKind::Stage => text!("Stage #%1 “%2”", id, title),
         });
         if !node.text.trim().is_empty() {
-            lines.push(Text::verbatim(visible(&node.text)));
+            lines.push(text!("Task description — “%1”", visible(&node.text)));
         }
         lines.extend(
             node.criteria
                 .iter()
-                .map(|criterion| text!("Required result — %1", visible(criterion))),
+                .map(|criterion| text!("Required result — “%1”", visible(criterion))),
         );
         lines.extend(placement(
             Some(&node.role),

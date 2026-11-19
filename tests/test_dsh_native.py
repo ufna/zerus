@@ -54,6 +54,28 @@ def host_process(pid, end=None):
     return state[0], birth
 
 
+def start_private_host(cls):
+    cls.proc = subprocess.Popen([DSH, '--profile', 'web', '--patch', str(cls.overlay), '--no-open',
+                                 '--host', '127.0.0.1', '--port', '0'], env=cls.env, cwd=cls.workspace,
+                                stdin=subprocess.DEVNULL, stdout=cls.log, stderr=cls.log, start_new_session=True)
+    deadline = time.monotonic() + 40
+    while not Path(cls.sock).exists() and cls.proc.poll() is None and time.monotonic() < deadline:
+        time.sleep(.1)
+    if not Path(cls.sock).exists():
+        cls.proc.terminate(); cls.proc.wait(timeout=10)
+        raise RuntimeError('Native test host did not start: ' + (cls.root / 'host.log').read_text()[-2500:])
+
+
+def stop_private_host(cls):
+    if cls.proc.poll() is None:
+        cls.proc.terminate()
+        try:
+            cls.proc.wait(timeout=15)
+        except subprocess.TimeoutExpired:
+            cls.proc.kill(); cls.proc.wait(timeout=5)
+    Path(cls.sock).unlink(missing_ok=True)
+
+
 @unittest.skipUnless(fixture.required() or DSH and HGS.exists(), 'official dsh and built hgs required')
 class NativeHarness(unittest.TestCase):
     @classmethod
@@ -95,8 +117,8 @@ class NativeHarness(unittest.TestCase):
         else:
             # A profile can still disable it; the other suites keep that profile.
             patch.append({'id': 'schedule', 'disabled': True})
-        overlay = cls.root / 'patch.json'
-        overlay.write_text(json.dumps(patch))
+        cls.overlay = cls.root / 'patch.json'
+        cls.overlay.write_text(json.dumps(patch))
         # hgs ls and the recovery worker also list tmux sessions. An existing
         # private TMUX_TMPDIR keeps them off the user's default server; a
         # missing directory would silently fall back to it.
@@ -109,23 +131,11 @@ class NativeHarness(unittest.TestCase):
                    'TMUX_TMPDIR': str(tmux)}
         Path(cls.env['HOME']).mkdir()
         cls.log = (cls.root / 'host.log').open('w')
-        cls.proc = subprocess.Popen([DSH, '--profile', 'web', '--patch', str(overlay), '--no-open',
-                                     '--host', '127.0.0.1', '--port', '0'], env=cls.env, cwd=cls.workspace,
-                                    stdin=subprocess.DEVNULL, stdout=cls.log, stderr=cls.log, start_new_session=True)
-        deadline = time.monotonic() + 40
-        while not Path(cls.sock).exists() and cls.proc.poll() is None and time.monotonic() < deadline:
-            time.sleep(.1)
-        if not Path(cls.sock).exists():
-            cls.proc.terminate(); cls.proc.wait(timeout=10)
-            raise RuntimeError('Native test host did not start: ' + (cls.root / 'host.log').read_text()[-2500:])
+        start_private_host(cls)
 
     @classmethod
     def tearDownClass(cls):
-        cls.proc.terminate()
-        try:
-            cls.proc.wait(timeout=15)
-        except subprocess.TimeoutExpired:
-            cls.proc.kill(); cls.proc.wait(timeout=5)
+        stop_private_host(cls)
         cls.log.close(); cls.temp.cleanup()
 
     @classmethod
@@ -1157,16 +1167,13 @@ class NativeHarness(unittest.TestCase):
         self.assertEqual(self.rpc('ping')['generation'], generation)
         self.assertEqual(host_process(self.proc.pid)[1], born[1])
 
-    def test_spawn_wrappers_are_restored_when_private_bridge_unloads(self):
-        subject = self.launch_spawn_subject()
-        born, generation = host_process(self.proc.pid), self.rpc('ping')['generation']
+    def unload_spawn_bridge(self, subject, action, evidence_file, generation):
         self.rpc('send', {'sessionId': subject['conversation_id'], 'requestId': str(uuid.uuid4()),
                           'mode': 'steer',
-                          'content': [{'type': 'text', 'text': 'HGS_SPAWN_FIXTURE cleanup'}]})
-        evidence = self.root / 'holds' / 'spawn-cleanup.json'
+                          'content': [{'type': 'text', 'text': 'HGS_SPAWN_FIXTURE ' + action}]})
+        evidence = self.root / 'holds' / evidence_file
         self.wait(evidence.is_file, timeout=30)
         result = json.loads(evidence.read_text())
-        self.assertEqual(result, {'wrapped': [True, True], 'restored': [True, True]})
 
         def reloaded():
             try:
@@ -1176,6 +1183,37 @@ class NativeHarness(unittest.TestCase):
             return ping if ping['generation'] != generation else None
 
         self.assertTrue(self.wait(reloaded)['shellIdentity'])
+        return result
+
+    def test_spawn_wrappers_are_restored_when_private_bridge_unloads(self):
+        subject = self.launch_spawn_subject()
+        born, generation = host_process(self.proc.pid), self.rpc('ping')['generation']
+        result = self.unload_spawn_bridge(subject, 'cleanup', 'spawn-cleanup.json', generation)
+        self.assertEqual(result, {'wrapped': [True, True], 'restored': [True, True]})
+        self.assertEqual(host_process(self.proc.pid)[1], born[1])
+
+    def test_spawn_wrappers_follow_replaced_cordis_service_on_same_host(self):
+        subject = self.launch_spawn_subject()
+        born, generation = host_process(self.proc.pid), self.rpc('ping')['generation']
+        initial = self.spawn_probe(subject, 'once')
+        changed = self.spawn_probe(subject, 'swap')
+        try:
+            # The next real tool hook sees the new Cordis service and spawns
+            # through it. The resident bridge stays active during this swap.
+            updated = self.spawn_probe(subject, 'once')
+            self.assertEqual(self.rpc('ping')['generation'], generation)
+        finally:
+            result = self.unload_spawn_bridge(subject, 'cleanup-swap', 'spawn-swap-cleanup.json', generation)
+
+        self.assertEqual(changed, {'replacementNative': [True, True]})
+        self.assertEqual(initial.get('completed'), 1, initial)
+        self.assertEqual(updated.get('completed'), 1, updated)
+        self.assertNotEqual(updated['installation'], initial['installation'])
+        self.assertEqual(result.get('wrapped'), [True, True], result)
+        self.assertEqual(result.get('previousRestored'), [True, True],
+                         'The previous service kept the HGS wrapper after the swap')
+        self.assertEqual(result.get('restored'), [True, True],
+                         'The replacement service kept the HGS wrapper after bridge unload')
         self.assertEqual(host_process(self.proc.pid)[1], born[1])
 
     def test_pause_resume_preserves_identity_and_other_agent(self):
@@ -1190,9 +1228,9 @@ class NativeHarness(unittest.TestCase):
         self.assertEqual(self.cli('inspect', a)['conversation_id'], a['conversation_id'])
         self.assertTrue(self.rpc('inspect', {'sessionId': a['conversation_id']})['live'])
 
-    def launch_archive_subject(self, tag=None):
+    def launch_archive_subject(self, tag=None, folder=None):
         tag = tag or 'archive-' + uuid.uuid4().hex[:12]
-        launched = self.hgs('dsh', str(self.workspace), '--new', '-n', tag, '-d')
+        launched = self.hgs('dsh', str(folder or self.workspace), '--new', '-n', tag, '-d')
         self.assertEqual(launched.returncode, 0, launched.stderr)
         return next(json.loads(path.read_text())
                     for path in (self.state / 'dsh/bindings').glob('*.json')
@@ -1261,6 +1299,117 @@ class NativeHarness(unittest.TestCase):
         result = self.hgs('session-action', subject['name'], '--json', request=request)
         self.assertEqual(result.returncode, 0, result.stderr)
         return json.loads(result.stdout)
+
+    def test_lost_restore_request_is_fenced_before_releasing_archive(self):
+        subject, archive = self.archived_subject()
+        dropped = []
+
+        def intercept(request, forward):
+            if request['method'] == 'session-action' and request['params'].get('action') == 'resume':
+                dropped.append(request['params'])
+                return None
+            return forward(request)
+
+        with self.archive_rpc_proxy(intercept):
+            receipt = self.scoped_archive_action(subject, 'restore', archive_id=archive)
+            self.assertEqual(receipt['status'], 'uncertain', receipt)
+            settled = self.scoped_archive_action(subject, 'restore', archive_id=archive)
+            self.assertEqual(settled['status'], 'failed', settled)
+            self.assertIn('available for a new Restore', json.dumps(settled))
+        [original] = dropped
+        self.assertEqual(self.archive_row(subject), archive)
+        self.assertEqual(self.rpc('session-action', original)['status'], 'failed')
+        self.assertFalse(self.rpc('inspect', {'sessionId': subject['conversation_id']})['live'])
+        retry = self.scoped_archive_action(subject, 'restore', archive_id=archive)
+        self.assertEqual(retry['status'], 'completed', retry)
+
+    def test_restart_fences_restore_with_a_lost_acknowledgement(self):
+        subject, archive = self.archived_subject()
+        resumes = []
+
+        def intercept(request, forward):
+            reply = forward(request)
+            if request['method'] == 'session-action' and request['params'].get('action') == 'resume':
+                resumes.append(reply['value']['status'])
+                return None
+            return reply
+
+        with self.archive_rpc_proxy(intercept):
+            receipt = self.scoped_archive_action(subject, 'restore', archive_id=archive)
+            self.assertEqual(receipt['status'], 'uncertain', receipt)
+        generation = self.rpc('ping')['generation']
+        self.assertTrue(self.rpc('inspect', {'sessionId': subject['conversation_id']})['live'])
+        stop_private_host(type(self))
+        start_private_host(type(self))
+        self.assertNotEqual(self.rpc('ping')['generation'], generation)
+        with self.archive_rpc_proxy(intercept):
+            settled = self.scoped_archive_action(subject, 'restore', archive_id=archive)
+            self.assertEqual(settled['status'], 'failed', settled)
+            self.assertIn('host restarted', json.dumps(settled))
+            self.assertIn('available for a new Restore', json.dumps(settled))
+        self.assertEqual(resumes, ['completed'])
+        self.assertEqual(self.archive_row(subject), archive)
+        retry = self.scoped_archive_action(subject, 'restore', archive_id=archive)
+        self.assertEqual(retry['status'], 'completed', retry)
+
+    def test_managed_worktree_removal_preserves_native_archive_restore(self):
+        repo = self.root / ('repo-' + uuid.uuid4().hex[:8])
+        checkout = repo.with_suffix('.checkout')
+
+        def git(*args):
+            return subprocess.check_output(['git', *args], env=self.env, stderr=subprocess.PIPE, text=True).strip()
+
+        git('init', '-q', '-b', 'main', str(repo))
+        git('-C', str(repo), '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.test',
+            'commit', '--allow-empty', '-qm', 'initial')
+        created = self.hgs('worktrees', 'create', '--path', str(repo), '--destination', str(checkout),
+                           '--branch', 'native-session', '--json')
+        self.assertEqual(created.returncode, 0, created.stderr)
+        subject = self.launch_archive_subject(folder=checkout)
+        retired = self.hgs('terminate', subject['name'])
+        self.assertEqual(retired.returncode, 0, retired.stderr)
+        archive = self.archive_row(subject)
+        reviewed = self.hgs('worktrees', 'review', '--path', str(repo), '--worktree', str(checkout), '--json')
+        self.assertEqual(reviewed.returncode, 0, reviewed.stderr)
+        [row] = json.loads(reviewed.stdout)['worktrees']
+        self.assertEqual(row['archived_sessions'], 1, row)
+        consent = []
+        if row.get('process_fingerprint'):
+            consent = ['--process-fingerprint', row['process_fingerprint']]
+        removed = self.hgs('worktrees', 'remove', '--path', str(checkout), '--common-dir', str(repo / '.git'),
+                           '--fingerprint', row['fingerprint'], '--ignored-fingerprint', row['ignored_fingerprint'],
+                           '--preserve-archive-restore', '--json', *consent)
+        self.assertEqual(removed.returncode, 0, removed.stderr)
+        self.assertFalse(checkout.exists())
+
+        import sqlite3
+        database = self.state / 'dsh/archives-v1.sqlite3'
+        with sqlite3.connect(database.as_uri() + '?mode=ro', uri=True) as db:
+            body = db.execute('SELECT body FROM archive_rows WHERE id = ?', (archive,)).fetchone()
+        marked = json.loads(body[0])
+        self.assertEqual(marked['session_id'], subject['session_id'])
+        self.assertEqual(marked['worktree_cleanup']['status'], 'removal_pending')
+        self.assertEqual(marked['worktree_cleanup']['owner']['id'], row['ownership_id'])
+        detail = self.hgs('inspect', subject['name'], '--archive', archive)
+        self.assertEqual(detail.returncode, 0, detail.stderr)
+        self.assertIn('restore', json.loads(detail.stdout)['allowed_actions'])
+
+        def refuse_resume(request, forward):
+            if request['method'] == 'session-action' and request['params'].get('action') == 'resume':
+                request['params']['permissionMode'] = 'invalid-fixture-mode'
+            return forward(request)
+
+        with self.archive_rpc_proxy(refuse_resume):
+            refused = self.scoped_archive_action(subject, 'restore', archive_id=archive)
+            self.assertEqual(refused['status'], 'failed', refused)
+        self.assertTrue(checkout.is_dir(), 'the checkout was recreated before native admission')
+        self.assertEqual(self.archive_row(subject), archive)
+        restored = self.scoped_archive_action(subject, 'restore', archive_id=archive)
+        self.assertEqual(restored['status'], 'completed', restored)
+        binding = self.bindings()[subject['name']]
+        self.assertEqual(binding['conversation_id'], subject['conversation_id'])
+        self.assertNotEqual(binding['worktree_owner']['id'], row['ownership_id'])
+        self.assertNotIn('worktree_cleanup', binding)
 
     def test_lost_restore_ack_can_be_checked_without_replaying_resume(self):
         for status_available in (True, False):
@@ -1890,7 +2039,7 @@ class NativeInputWitness(unittest.TestCase):
     @classmethod
     def restart(cls):
         """kill -9 this class's private host and start a fresh one on the same home."""
-        os.killpg(cls.proc.pid, signal.SIGKILL)
+        cls.proc.kill()
         cls.proc.wait(timeout=10)
         Path(cls.sock).unlink(missing_ok=True)
         cls.proc = subprocess.Popen([DSH, '--profile', 'web', '--patch', str(cls.root / 'patch.json'), '--no-open',

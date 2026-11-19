@@ -2,6 +2,7 @@
 //! anything runs: the store's own bounds for text, nodes and write paths, and
 //! the confirmation a destructive action needs.
 use super::types::*;
+use crate::{text, text::Text};
 use serde_json::{json, Map, Value};
 use zerus_team_plan::model::{Integration, NodeId};
 
@@ -390,58 +391,63 @@ impl TeamAction {
         } else {
             team_name.trim()
         };
-        let ask = |dialog: &str, title: &str, text: String, action: &str| Confirmation {
-            name: dialog.to_owned(),
-            title: title.to_owned(),
-            text,
-            action: action.to_owned(),
-        };
-        match self {
-            Self::AdvanceBase { commit } => Some(ask(
-                "teamAdvanceBaseConfirm", "Advance base?",
-                format!("Advance the base of {name} to {commit}? Future hand-outs use it. Earlier hand-outs keep their assigned base. Branches are unchanged."),
-                "Advance base",
-            )),
-            Self::SwapMember { member, .. } => Some(ask(
-                "teamSwapMemberConfirm", "Swap member?",
-                format!("Replace the agent for {member} of {name}? The old session stays outside the team. The member keeps its ID, task history, folder and branch. Only a person-stopped member with no open or unsettled work can be swapped."), "Swap member",
-            )),
-            Self::Stop {} => Some(ask(
-                "teamStopConfirm",
-                "Stop team?",
-                format!(
-                    "Stop {name}? Every open task is cancelled and no task is handed out again. Member sessions keep running; their current turns finish."
-                ),
-                "Stop team",
-            )),
-            Self::Archive {} => Some(ask(
-                "teamArchiveConfirm",
-                "Archive team?",
-                format!(
-                    "Archive {name}? Its history, tasks and reports stay; the team leaves the list of teams."
-                ),
-                "Archive",
-            )),
-            Self::StopMember { member } => Some(ask(
-                "teamStopMemberConfirm",
-                "Stop member?",
-                format!("Stop {member} of {name}? Its current turn finishes and it takes no new task."),
-                "Stop member",
-            )),
-            Self::ArchiveMember { member } => Some(ask(
+        let (dialog, title, action) = match self {
+            Self::AdvanceBase { .. } => ("teamAdvanceBaseConfirm", "Advance base?", "Advance base"),
+            Self::SwapMember { .. } => ("teamSwapMemberConfirm", "Swap member?", "Swap member"),
+            Self::Stop {} => ("teamStopConfirm", "Stop team?", "Stop team"),
+            Self::Archive {} => ("teamArchiveConfirm", "Archive team?", "Archive"),
+            Self::StopMember { .. } => ("teamStopMemberConfirm", "Stop member?", "Stop member"),
+            Self::ArchiveMember { .. } => (
                 "teamArchiveMemberConfirm",
                 "Remove member?",
-                format!("Remove {member} from {name}? Its history and reports stay."),
                 "Remove member",
-            )),
-            Self::Cancel { node, .. } => Some(ask(
-                "teamCancelConfirm",
-                "Cancel task?",
-                format!("Cancel task #{node} of {name}? Its work stops and its result is not accepted."),
-                "Cancel task",
-            )),
-            _ => None,
-        }
+            ),
+            Self::Cancel { .. } => ("teamCancelConfirm", "Cancel task?", "Cancel task"),
+            _ => return None,
+        };
+        Some(Confirmation {
+            name: dialog.into(),
+            title: title.into(),
+            action: action.into(),
+            text: self.confirmation_text(name, None)?.english(),
+        })
+    }
+
+    /// Common summary for the window and the native dialog. The native
+    /// caller can supply the target's label from its verified review.
+    pub(crate) fn confirmation_text(&self, team: &str, target: Option<Text>) -> Option<Text> {
+        let target = |fallback| target.unwrap_or_else(|| Text::verbatim(fallback));
+        Some(match self {
+            Self::AdvanceBase { commit } => text!(
+                "Advance the base of %1 to %2? Future hand-outs use it. Earlier hand-outs keep their assigned base. Branches are unchanged.",
+                team, target(commit.clone())
+            ),
+            Self::SwapMember { member, .. } => text!(
+                "Replace the agent for %1 of %2? The old session stays outside the team. The member keeps its ID, task history, folder and branch. Only a person-stopped member with no open or unsettled work can be swapped.",
+                target(member.clone()), team
+            ),
+            Self::Stop {} => text!(
+                "Stop %1? Every open task is cancelled and no task is handed out again. Member sessions keep running; their current turns finish. A stopped team cannot be started again; use Pause to stop it for a while.",
+                team
+            ),
+            Self::Archive {} => text!(
+                "Archive %1? Its history, tasks and reports stay. The list of teams shows it under Show archived. Archiving cannot be undone.",
+                team
+            ),
+            Self::StopMember { member } => text!(
+                "Stop %1 of %2? Its current turn finishes and it takes no new task.",
+                target(member.clone()), team
+            ),
+            Self::ArchiveMember { member } => text!(
+                "Remove %1 from %2? Its history and reports stay. Removing a member cannot be undone; add a new member to take its place.",
+                target(member.clone()), team
+            ),
+            Self::Cancel { node, .. } => text!(
+                "Cancel task #%1 of %2? Its work stops and its result is not accepted.",
+                target(node.to_string()), team
+            ),
+            _ => return None,
+        })
     }
 }
 

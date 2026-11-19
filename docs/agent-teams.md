@@ -320,12 +320,20 @@ why and leaves the decisions as they are.
 A card's decisions are **Admit** for a task that waits for admission,
 **Accept** and **Return** for reported work, **Hold** or **Release**, and
 **Cancel task**. Return and Cancel task ask for a reason. **Reassign** asks
-for another active member of the same role and a reason. **Route** selects a
-role and one of its pipelines for a waiting or pending queue task. Routing
-keeps the dependencies and write paths. Changing the role clears the
-assignment. Both actions use the window's native confirmation. A stage's
-role follows its pipeline. Routing an approved task requires a logged plan
-edit.
+for another active member of the same role and a reason; a stage's Reassign
+leaves out the members who implemented any round of its task. **Route**
+selects a role and one of its pipelines for a waiting or pending queue task.
+Routing keeps the dependencies and write paths, and the assignment while the
+role stays the same and the assigned member can still take it. Changing the
+role, or a removed assigned member, clears the assignment. Both actions use
+the window's native confirmation, which lists what Route keeps and clears;
+the selected desktop service must be updated for Route if it is older. An
+open form stays open while the team changes and keeps its choices, but it
+sends only the team revision you reviewed. When another change arrives, the
+form says so and waits until you check the choices and press **Review
+again**. The service refuses a request whose revision is no longer current.
+A stage's role follows its pipeline. Routing an approved task requires a
+logged plan edit.
 
 **Add task** opens the New task form in the Tasks side panel with this team
 preselected. If a previous draft is still saving, the team choice waits for

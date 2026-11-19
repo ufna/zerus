@@ -32,6 +32,11 @@ fn labels() -> Labels {
         template: Some("Small team".into()),
         branch: Some("integration".into()),
         card_kind: Some("integration".into()),
+        kept_route: Some(KeptRoute {
+            deps: Vec::new(),
+            writes: Vec::new(),
+            assignment: None,
+        }),
         ..Default::default()
     }
 }
@@ -282,7 +287,10 @@ fn all_native_action_kinds_render_from_the_real_plan_encoder() {
             assert!(body.contains("Developer (m2)"), "{op}: {body}");
         }
         if op == "archive-member" {
-            assert!(body.contains("cannot be restored"), "{op}: {body}");
+            assert!(
+                body.contains("Removing a member cannot be undone"),
+                "{op}: {body}"
+            );
         }
         assert!(!body.contains("987654"), "{op}: {body}");
         private_fields_stay_private(&body);
@@ -392,4 +400,74 @@ fn review_cannot_supply_text_for_another_plan_or_facts_snapshot() {
     labels.facts = "f".repeat(64);
     assert!(action(&old, &review(&old), &labels).is_none());
     assert!(card(&card_review("integration", "approve"), &labels).is_none());
+}
+
+#[test]
+fn renderer_reasons_and_comments_stay_inside_their_quoted_label() {
+    let provided = "Duplicate.\n\nSee the previous\u{2028}report\u{2029}for “context”.";
+    for (change, label) in [
+        (
+            TeamAction::Cancel {
+                node: 7,
+                reason: provided.into(),
+            },
+            "Reason",
+        ),
+        (
+            TeamAction::RejectPhase {
+                phase: 1,
+                generation: 1,
+                comment: provided.into(),
+            },
+            "Comment",
+        ),
+    ] {
+        let plan = wire::Plan::from_call(&call(change)).unwrap();
+        let prompt = action(&plan, &review(&plan), &labels()).unwrap();
+        let line = prompt
+            .body
+            .iter()
+            .map(Text::english)
+            .find(|line| line.contains("Duplicate."))
+            .unwrap();
+        assert_eq!(
+            line,
+            format!("{label} — “Duplicate.  See the previous report for \\“context\\”.”")
+        );
+    }
+}
+
+#[test]
+fn stored_captions_cannot_add_consent_lines() {
+    let mut labels = labels();
+    labels.task.as_mut().unwrap().title = "Build parser”\nSee\u{2028}report".into();
+    let mut review = card_review("integration", "approve");
+    review.team_name = "Orchard\u{2029}east".into();
+    let prompt = card(&review, &labels).unwrap();
+    let line = prompt.body[0].english();
+    assert!(line.contains("Build parser\\” See report"), "{line:?}");
+    assert!(line.contains("Orchard east"), "{line:?}");
+}
+
+#[test]
+fn bidi_controls_do_not_reorder_reviewed_text() {
+    let plan = wire::Plan::from_call(&call(TeamAction::Accept { node: 7 })).unwrap();
+    let mut labels = labels();
+    labels.task.as_mut().unwrap().title = "Build\u{202e} parser\u{2067}".into();
+    let body = rendered(&action(&plan, &review(&plan), &labels).unwrap());
+    assert!(body.contains("task #7 “Build parser”"), "{body:?}");
+}
+
+#[test]
+fn the_cancel_warning_explains_the_attempt_cannot_continue() {
+    let plan = wire::Plan::from_call(&call(TeamAction::Cancel {
+        node: 7,
+        reason: "Duplicate".into(),
+    }))
+    .unwrap();
+    let body = rendered(&action(&plan, &review(&plan), &labels()).unwrap());
+    assert!(
+        body.contains("The team cannot continue the cancelled attempt."),
+        "{body:?}"
+    );
 }

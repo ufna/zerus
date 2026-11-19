@@ -103,6 +103,7 @@ fn card(node: &Value) -> QueueCard {
         pipeline: name(node, "pipeline"),
         assignee: name(node, "assignee"),
         implementer: name(node, "implementer"),
+        earlier_implementers: earlier_implementers(node),
         rank: name(node, "rank"),
         round: count(node, "round"),
         kind: row_kind(node),
@@ -122,6 +123,24 @@ fn card(node: &Value) -> QueueCard {
             }
         }),
     }
+}
+
+/// A stage row's earlier implementers of its target: valid member names
+/// only, at most 200 (zerus-3u5yu).
+fn earlier_implementers(node: &Value) -> Vec<String> {
+    node.get("earlier_implementers")
+        .and_then(Value::as_array)
+        .map(|ids| {
+            ids.iter()
+                .filter_map(Value::as_str)
+                .filter(|id| {
+                    !id.is_empty() && id.chars().take(NAME_CHARS + 1).count() <= NAME_CHARS
+                })
+                .take(200)
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// Folds the stage rows into the card they check, keeping every group in

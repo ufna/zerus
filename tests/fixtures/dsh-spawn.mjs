@@ -5,7 +5,14 @@ import { join } from 'node:path';
 const rawService = Symbol.for('cordis.original');
 const spawnOriginal = Symbol.for('hgs.dsh.spawn.original');
 const installations = new WeakMap();
+const previousServices = new WeakMap();
+const spawnMethods = ['spawn', 'spawnTerminal'];
 let nextInstallation = 0;
+
+function nativeMethods(service) {
+  return spawnMethods.map(method => !Object.hasOwn(service, method)
+    && service[method] === Object.getPrototypeOf(service)[method]);
+}
 
 function installationNumber(service) {
   const spawn = service.spawn;
@@ -24,25 +31,42 @@ function spawnUnderProbe(ctx, cwd) {
 
 export async function probeSpawns(ctx, cwd, action, evidenceDir) {
   const service = ctx.get('subprocess')[rawService];
-  if (action === 'cleanup') {
+  if (action === 'swap') {
+    // Use the real Cordis registry and a second native runtime. The isolated
+    // registration lets us construct it without disposing the original.
+    const replacement = new service.constructor(ctx.isolate('subprocess'));
+    service.ctx.set('subprocess', replacement);
+    if (ctx.get('subprocess')[rawService] !== replacement) {
+      service.ctx.set('subprocess', service);
+      throw new Error('The private Cordis subprocess service did not change');
+    }
+    previousServices.set(replacement, service);
+    return { replacementNative: nativeMethods(replacement) };
+  }
+  if (action === 'cleanup' || action === 'cleanup-swap') {
+    const previous = action === 'cleanup-swap' && previousServices.get(service);
+    if (action === 'cleanup-swap' && !previous) throw new Error('The private subprocess swap is missing');
+    const previousRestored = previous && nativeMethods(previous);
     const bridge = [...ctx.get('loader').entries()].find(({ options }) =>
       options?.id === 'hgs-native-dsh' || options?.id?.endsWith(':hgs-native-dsh'));
     if (!bridge) throw new Error('Private HGS bridge entry is missing');
-    const methods = ['spawn', 'spawnTerminal'];
-    const wrapped = methods.map(method => Object.hasOwn(service, method));
+    const wrapped = spawnMethods.map(method => Object.hasOwn(service, method));
     // Run outside the tool call. The bridge cleanup also closes its own agents.
     setImmediate(async () => {
       let result;
       try {
         await bridge.update({ disabled: true });
-        const restored = methods.map(method => !Object.hasOwn(service, method)
-          && service[method] === Object.getPrototypeOf(service)[method]);
+        const restored = nativeMethods(service);
+        if (previous) {
+          previous.ctx.set('subprocess', previous);
+          previousServices.delete(service);
+        }
         await bridge.update({ disabled: null });
-        result = { wrapped, restored };
+        result = previous ? { wrapped, restored, previousRestored } : { wrapped, restored };
       } catch (error) {
         result = { error: String(error) };
       }
-      const file = join(evidenceDir, 'spawn-cleanup.json');
+      const file = join(evidenceDir, previous ? 'spawn-swap-cleanup.json' : 'spawn-cleanup.json');
       writeFileSync(file + '.new', JSON.stringify(result));
       renameSync(file + '.new', file);
     });

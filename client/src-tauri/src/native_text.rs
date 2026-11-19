@@ -163,6 +163,9 @@ mod tests {
     fn every_native_team_prompt_source_has_russian_words_and_the_same_arguments() {
         let source = include_str!("../../core/src/desktop/team_confirmation.rs");
         let mut sources = zerus_client_core::text::marked_sources(source);
+        sources.extend(zerus_client_core::text::marked_sources(include_str!(
+            "../../core/src/teams/action/input.rs"
+        )));
         sources.sort_unstable();
         sources.dedup();
         assert!(sources.len() >= 150);
@@ -180,7 +183,7 @@ mod tests {
     }
 
     #[test]
-    fn both_native_languages_render_the_bound_member_removal_and_its_warning() {
+    fn both_native_languages_render_member_removal_and_keep_reasons_quoted() {
         use zerus_client_core::{
             desktop::{
                 creation_clone::Scope,
@@ -190,7 +193,7 @@ mod tests {
             teams::action::{TeamAction, TeamCall},
         };
         const TEAM: &str = "11111111-1111-4111-8111-111111111111";
-        let plan = wire::Plan::from_call(&TeamCall {
+        let call = TeamCall {
             team: TEAM.into(),
             team_name: "Renderer caption".into(),
             action: TeamAction::ArchiveMember {
@@ -199,8 +202,8 @@ mod tests {
             expected_revision: Some(3),
             confirmed: false,
             request_id: "22222222-2222-4222-8222-222222222222".into(),
-        })
-        .unwrap();
+        };
+        let plan = wire::Plan::from_call(&call).unwrap();
         let facts = "f".repeat(64);
         let review = wire::Review {
             intent: wire::Intent {
@@ -221,24 +224,47 @@ mod tests {
             subject: "archive member".into(),
             details: vec![("legacy".into(), format!("{{\"team\":\"{TEAM}\"}}"))],
         };
-        let prompt = team_confirmation::action(
-            &plan,
-            &review,
-            &Labels {
-                facts,
-                member: Some("Reviewer".into()),
-                ..Default::default()
-            },
-        )
-        .unwrap();
+        let labels = Labels {
+            facts,
+            member: Some("Reviewer".into()),
+            ..Default::default()
+        };
+        let prompt = team_confirmation::action(&plan, &review, &labels).unwrap();
         assert_eq!(render_in(&prompt.title, false), "Remove");
         assert_eq!(render_in(&prompt.title, true), "Удалить");
-        assert_eq!(render_in(&prompt.body[0], false),
-            "Remove Reviewer (m2) from team “Orchard” and return their unfinished work to the lead.");
-        assert_eq!(render_in(&prompt.body[0], true),
-            "Удалить участника из команды «Orchard» — Reviewer (m2). Его незавершённая работа вернётся руководителю.");
-        assert!(render_in(&prompt.body[1], true).contains("нельзя"));
-        assert!(render_in(&prompt.body[1], false).contains("cannot be restored"));
+        let en = render_in(&prompt.body[0], false);
+        let ru = render_in(&prompt.body[0], true);
+        assert!(en.starts_with("Remove Reviewer (m2) from Orchard?"), "{en}");
+        assert!(en.contains("cannot be undone"), "{en}");
+        assert!(
+            ru.starts_with("Удалить Reviewer (m2) из команды Orchard?"),
+            "{ru}"
+        );
+        assert!(ru.contains("нельзя отменить"), "{ru}");
+        assert_eq!(
+            render_in(&prompt.body[1], true),
+            "Незавершённая работа вернётся лиду."
+        );
+
+        let plan = wire::Plan::from_call(&TeamCall {
+            action: TeamAction::Cancel {
+                node: 7,
+                reason: "Duplicate.\nSee «context»\u{2028}in the report.".into(),
+            },
+            ..call
+        })
+        .unwrap();
+        let mut review = review;
+        review.intent.plan = plan.reference().unwrap();
+        let prompt = team_confirmation::action(&plan, &review, &labels).unwrap();
+        assert_eq!(
+            render_in(&prompt.body[1], false),
+            "Reason — “Duplicate. See \\«context\\» in the report.”"
+        );
+        assert_eq!(
+            render_in(&prompt.body[1], true),
+            "Причина — «Duplicate. See \\«context\\» in the report.»"
+        );
     }
 
     #[test]

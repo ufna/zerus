@@ -225,7 +225,11 @@ pub(crate) fn run(
         );
     };
     let Some(prompt) = team_confirmation::card(&review, &labels) else {
-        return failed(&call, "owner_card_changed", "Read the exact owner card again before confirming.");
+        return failed(
+            &call,
+            "owner_card_changed",
+            "Read the exact owner card again before confirming.",
+        );
     };
     let accepted = super::team_person_actions::show_confirmation(&app, &window, &prompt);
     let Some(confirmed) = Confirmed::after_dialog(review, accepted) else {
