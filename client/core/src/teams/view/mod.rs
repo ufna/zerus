@@ -597,6 +597,14 @@ pub struct TeamBar {
     pub counts: TeamCounts,
 }
 
+/// A role and pipeline from this team's pinned bundle.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct RoutingPipeline {
+    pub id: String,
+    pub name: String,
+    pub role: String,
+}
+
 /// `hgs team status` and `hgs team queue` for the Team tab.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
 pub struct TeamView {
@@ -611,6 +619,8 @@ pub struct TeamView {
     pub members: Vec<MemberCard>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub member_roles: Vec<MemberRole>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub routing_pipelines: Vec<RoutingPipeline>,
     /// Complete bounded goal for editing; the bar keeps its display preview.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub edit_goal: Option<String>,

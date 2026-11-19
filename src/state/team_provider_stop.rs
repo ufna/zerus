@@ -137,3 +137,11 @@ mod unix {
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub(crate) use unix::{projected_stop, saved_stop, ProviderWriter};
+
+pub(crate) fn binding_stamp(launch: &str, session: &str, run: &str, conversation: &str) -> String {
+    use sha2::{Digest, Sha256};
+    format!(
+        "{:x}",
+        Sha256::digest(serde_json::json!([launch, session, run, conversation]).to_string())
+    )
+}

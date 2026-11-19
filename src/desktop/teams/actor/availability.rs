@@ -140,14 +140,41 @@ fn read(
             Some(id) => named.launch == id,
             None => true,
         };
-    if let Some(record) = record.filter(|record| {
+    let bound_run_record = if provider && identity && record.is_none() {
+        match crate::state::observe_team_run_for_provider(
+            &config.state,
+            run,
+            value["session_id"].as_str().unwrap_or_default(),
+            &member.agent,
+            named.name,
+            Instant::now() + Duration::from_millis(300),
+        ) {
+            crate::state::TeamSession::Record(record)
+                if record.cwd == member.worktree && record.account == member.account =>
+            {
+                Some(record)
+            }
+            _ => None,
+        }
+    } else {
+        None
+    };
+    if let Some(record) = record.or(bound_run_record.as_ref()).filter(|record| {
         provider
             && identity
             && named.conversation == record.conversation_id
             && value["agent"] == record.agent
     }) {
-        let progress = record.provider.as_ref().and_then(|provider| provider.progress_ms);
-        if let Some(stop) = team_provider_stop::projected_stop(&value, progress) {
+        let progress = record
+            .provider
+            .as_ref()
+            .and_then(|provider| provider.progress_ms);
+        let stop = record
+            .provider
+            .as_ref()
+            .and_then(|provider| provider.stop)
+            .or_else(|| team_provider_stop::projected_stop(&value, progress));
+        if let Some(stop) = stop {
             return Ok(Read::Stopped(Box::new(record.clone()), stop));
         }
     }

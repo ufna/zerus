@@ -22,6 +22,7 @@ import type { TeamView } from "./types";
 import { boardColumns, stageAgrees, type BoardColumn } from "./pipeline-view";
 import { followTeamScope, type TeamScope } from "./team-tab-scope";
 import { TaskDependencies } from "./TaskDependencies";
+import { TaskPlacement } from "./TaskPlacement";
 import { PlanView } from "./PlanView";
 import { LanesView } from "./LanesView";
 import { TeamTaskCard } from "./TeamTaskCard";
@@ -69,6 +70,7 @@ export function TeamWorkspace(props: {
   onAddTask: () => void;
   onSettingsSave?: (call: TeamCall) => Promise<TeamOutcome>;
   settingsBlocked?: boolean;
+  placementUnresolved?: (node: number) => boolean;
 }) {
   const [planMode, setPlanMode] = createSignal<"board" | "graph" | "lanes" | "layers">("board");
   const [settingsView, setSettingsView] = createSignal<TeamView>();
@@ -325,6 +327,9 @@ export function TeamWorkspace(props: {
                         </div>
                       )}
                     </Show>
+                    <TaskPlacement view={props.view} task={shown()} busy={props.busy}
+                      unresolved={!!props.placementUnresolved?.(shown().node)} otherFormOpen={!!asking()}
+                      onOpen={() => setAsking(null)} onAction={props.onAction} />
                   </div>
                 </div>
               )}
@@ -422,6 +427,8 @@ export function TeamTab() {
       providerHome={teams.listed().find((row) => row.id === current().bar.id && row.project === current().bar.project)?.home}
       onSettingsSave={(call) => teams.run(call, source())}
       settingsBlocked={teams.unresolved().some((entry) => entry.call.team === current().bar.id && ["settings", "validation_config"].includes(entry.call.action.kind))}
+      placementUnresolved={(node) => teams.unresolved().some(({ call }) => call.team === current().bar.id
+        && call.action.node === node && (call.action.kind === "reassign" || call.action.kind === "route"))}
       onAction={act} onPage={(cursor) => void teams.page(`team:${current().bar.id}`, cursor)} onAddTask={() => { const fresh = view(); if (fresh) requestTeamTask(fresh.bar); }} />}</Show>
     <Show when={!view() && actionReason(source())}>{(reason) => <div class="notice danger team-notice" role="alert" data-team-action-failure><Icon name="triangle-alert" size={16} /><span>{reason()}</span></div>}</Show>
     <TeamUnresolvedList entries={teams.unresolved()} busy={teams.busy()} onCheck={(entry) => void teams.check(entry, source())} onDismiss={(entry) => void teams.dismiss(entry, source())} />

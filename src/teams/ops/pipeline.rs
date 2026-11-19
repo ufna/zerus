@@ -230,8 +230,10 @@ fn report_item(ctx: &mut Context<'_>, n: &Node, why: &str, note: Option<ReportNo
         }
         body.truncate(end);
     }
-    // Reassigning a retired stage keeps the parent's report generation.
-    // Return the current report to the inbox if the replacement ends early.
+    // A generation has one source report per team and node. The inbox key
+    // also includes kind='report', so this only updates that report's item.
+    // Reassigning a retired stage keeps the generation. If the replacement
+    // ends early, reopen the parent's item with that same source report.
     ctx.reply.item = Some(ctx.db.query_row(
         "INSERT INTO inbox(team,kind,node,generation,actor,text,notes,created_ms) VALUES(?1,'report',?2,?3,?4,?5,?6,?7)
          ON CONFLICT(team,kind,node,generation) DO UPDATE SET actor=excluded.actor,text=excluded.text,notes=excluded.notes,state='open',reply=NULL,reply_actor=NULL,created_ms=excluded.created_ms

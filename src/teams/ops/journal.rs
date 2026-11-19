@@ -93,6 +93,11 @@ pub(super) fn append(ctx: &Context<'_>, request: &Request) -> Result<u64> {
         _ => format!("{kind} at revision {}", ctx.reply.revision),
     };
     let mut refs = references(request)?;
+    if let Some(card) = ctx.closed_confirmation_card {
+        body.push_str(". ");
+        body.push_str(CONFIRMATION_CLOSED);
+        refs.push(format!("card:{card}"));
+    }
     if let Some(member) = &ctx.reply.member {
         let reference = format!("member:{member}");
         if !refs.contains(&reference) {

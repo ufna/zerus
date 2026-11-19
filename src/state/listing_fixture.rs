@@ -85,7 +85,7 @@ pub(crate) fn launched_record(
         hgs: "/fixture/bin/hgs".into(),
         shell: "/bin/sh".into(),
         startup_kind: "new",
-        launch: Some(launch.to_owned()),
+        launch: (!launch.is_empty()).then(|| launch.to_owned()),
         account: Some(account.to_owned()),
         home: None,
         session: Some(session),

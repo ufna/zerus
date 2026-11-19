@@ -311,6 +311,7 @@ impl super::super::ports::Ports for Production {
         team: &zerus_team_plan::model::Team,
         member: &Member,
         effect: &crate::teams::store::EffectIntent,
+        confirmation: Option<&crate::teams::ops::ProviderConfirmation>,
         now: i64,
     ) -> super::super::ports::Result<(super::super::ports::Availability, Option<String>)> {
         super::super::ports::Ports::held_availability(
@@ -319,6 +320,7 @@ impl super::super::ports::Ports for Production {
             team,
             member,
             effect,
+            confirmation,
             now,
         )
     }

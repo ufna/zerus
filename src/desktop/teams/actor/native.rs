@@ -317,6 +317,7 @@ impl Ports for Native {
         team: &Team,
         member: &Member,
         effect: &crate::teams::store::EffectIntent,
+        confirmation: Option<&ops::ProviderConfirmation>,
         now: i64,
     ) -> Result<(ports::Availability, Option<String>)> {
         if !member
@@ -334,7 +335,16 @@ impl Ports for Native {
             member,
             |record, failure| {
                 match crate::teams::ops::apply_provider_stop(
-                    store, team, member, effect, record, failure, now,
+                    store,
+                    team,
+                    effect,
+                    ops::ProviderStopProof {
+                        member,
+                        record,
+                        stop: failure,
+                        confirmation,
+                    },
+                    now,
                 ) {
                     Ok(_) => {
                         stopped = Some(super::provider_binding_stamp(

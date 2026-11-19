@@ -416,6 +416,28 @@ assert.equal(fresh.spawn, original);
 assert.equal(wrapSpawns({}, () => env).installed, false);
 """)
 
+    def test_repeated_install_keeps_both_callables_and_restores_the_prototype(self):
+        self.run_js("""
+const native = { spawn() { return this; }, spawnTerminal() { return this; } };
+const service = Object.create(native);
+const environment = () => null;
+const installed = wrapSpawns(service, environment);
+const spawn = service.spawn, terminal = service.spawnTerminal;
+for (let i = 0; i < 1000; i++) {
+  const repeated = wrapSpawns(service, environment);
+  assert.equal(repeated, installed);
+  assert.equal(service.spawn, spawn);
+  assert.equal(service.spawnTerminal, terminal);
+}
+assert.equal(service.spawn({}), service);
+assert.equal(service.spawnTerminal({}), service);
+installed.restore();
+assert.equal(Object.hasOwn(service, 'spawn'), false);
+assert.equal(Object.hasOwn(service, 'spawnTerminal'), false);
+assert.equal(service.spawn, native.spawn);
+assert.equal(service.spawnTerminal, native.spawnTerminal);
+""")
+
     def test_a_call_token_names_its_conversation_while_the_call_or_its_jobs_live(self):
         self.run_js("""
 assert.equal(CALL_TOKEN, 'HGS_DSH_CALL_TOKEN');

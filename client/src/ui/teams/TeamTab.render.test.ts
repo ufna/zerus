@@ -86,7 +86,7 @@ it("a task whose decision has not settled shows its blocked actions with the rea
   const { host } = setup({ view, actionFailure: "The previous decision has not settled." });
   (host.querySelector('.team-task-card[data-node="2"]') as HTMLButtonElement).click();
   const looks = [...host.querySelectorAll<HTMLButtonElement>("[data-team-detail] [data-task-action]")].map((button) => [button.dataset.taskAction, button.disabled]);
-  expect(looks).toEqual([["accept", true], ["return", true], ["hold", false], ["cancel", true]]);
+  expect(looks).toEqual([["accept", true], ["return", true], ["hold", false], ["cancel", true], ["reassign", true], ["route", true]]);
   expect(host.querySelector("[data-team-detail] [data-task-action='accept']")?.getAttribute("title")).toBe("The task's previous decision has not settled yet.");
   expect(host.querySelector("[data-team-detail] [data-action-why]")?.textContent).toBe("The task's previous decision has not settled yet.");
   expect(host.querySelector("[data-team-action-failure]")?.textContent, "the store's refusal is still shown").toContain("The previous decision has not settled.");
@@ -102,12 +102,14 @@ it("each pending case of the core's board view offers what the store takes (zeru
     };
   };
   const waiting = "The task's previous decision has not settled yet.";
-  expect(shown(1)).toEqual({ buttons: { accept: false, return: true, hold: true, cancel: true }, lines: [waiting, "A new decision here replaces the pending return."] });
-  expect(shown(2)).toEqual({ buttons: { accept: false, return: false, hold: true, cancel: false }, lines: [waiting] });
-  expect(shown(3), "an acceptance is never replaced").toEqual({ buttons: { accept: false, return: false, hold: true, cancel: false }, lines: [waiting] });
-  expect(shown(4)).toEqual({ buttons: { release: false, cancel: true }, lines: [waiting, "A new decision here replaces the pending reassignment."] });
-  expect(shown(5), "a row from an older hgs").toEqual({ buttons: { accept: false, return: false, hold: true, cancel: false }, lines: [waiting] });
-  expect(shown(6)).toEqual({ buttons: { accept: false, return: true, hold: true, cancel: true }, lines: [waiting, "A new decision here replaces the pending decision (route)."] });
+  const placement = { reassign: false, route: false };
+  expect(shown(1)).toEqual({ buttons: { accept: false, return: true, hold: true, cancel: true, ...placement }, lines: [waiting, "A new decision here replaces the pending return."] });
+  expect(host.querySelector("[data-task-placement]")?.textContent).toContain("No other active member of this role has a session.");
+  expect(shown(2)).toEqual({ buttons: { accept: false, return: false, hold: true, cancel: false, ...placement }, lines: [waiting] });
+  expect(shown(3), "an acceptance is never replaced").toEqual({ buttons: { accept: false, return: false, hold: true, cancel: false, ...placement }, lines: [waiting] });
+  expect(shown(4)).toEqual({ buttons: { release: false, cancel: true, ...placement }, lines: [waiting, "A new decision here replaces the pending reassignment."] });
+  expect(shown(5), "a row from an older hgs").toEqual({ buttons: { accept: false, return: false, hold: true, cancel: false, ...placement }, lines: [waiting] });
+  expect(shown(6)).toEqual({ buttons: { accept: false, return: true, hold: true, cancel: true, ...placement }, lines: [waiting, "A new decision here replaces the pending decision (route)."] });
 });
 
 it("asks for a reason before a return", () => {

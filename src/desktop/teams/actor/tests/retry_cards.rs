@@ -59,7 +59,7 @@ fn recover(f: &mut Fixture, now: i64) {
         .recovered(&mut f.h.store, &team, &f.key, now)
         .unwrap();
 }
-fn crash(point: &'static str, action: impl FnOnce()) {
+pub(super) fn crash(point: &'static str, action: impl FnOnce()) {
     super::super::retry::CRASH.with(|s| s.set(Some(point)));
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(action));
     let remaining = super::super::retry::CRASH.with(|s| s.replace(None));

@@ -13,21 +13,6 @@ const ROWS: &str = "gate:unreadable:";
 const ARCHIVE: &str = "an archive from its session is missing from the archive catalog";
 
 const CONFIRMATION: &str = "unreadable_confirmation:";
-const PROVIDER_STOP: &str = "The service confirmed that the member stopped after a provider error.";
-
-#[cfg(any(target_os = "linux", target_os = "macos"))]
-pub(in crate::desktop::teams) fn provider_binding_stamp(
-    launch: &str,
-    session: &str,
-    run: &str,
-    conversation: &str,
-) -> String {
-    use sha2::{Digest, Sha256};
-    format!(
-        "{:x}",
-        Sha256::digest(serde_json::json!([launch, session, run, conversation]).to_string())
-    )
-}
 
 pub(super) fn key_is_unreadable(key: &str) -> bool {
     key.starts_with("unreadable:") || key.starts_with(CONFIRMATION)
@@ -68,34 +53,54 @@ impl Runtime {
 }
 
 impl Runtime {
+    pub(in crate::desktop::teams::actor) fn provider_confirmation(
+        &self,
+        team: &Team,
+        member: &Member,
+    ) -> Result<Option<(Row, ops::ProviderConfirmation)>> {
+        let Some(row) = self
+            .ledger
+            .get(&team.id, &format!("gate:{CONFIRMATION}{}", member.id))?
+        else {
+            return Ok(None);
+        };
+        let Some((0, 0, Some(binding))) = super::held::held_by(&row) else {
+            return Ok(None);
+        };
+        let gate: Gate =
+            serde_json::from_value(row.data.clone()).map_err(crate::teams::store::storage)?;
+        let confirmation = ops::ProviderConfirmation {
+            binding,
+            card: gate.card,
+            notice: gate.notice,
+        };
+        Ok(Some((row, confirmation)))
+    }
+
     pub(in crate::desktop::teams::actor) fn provider_stop_confirmed(
         &mut self,
         store: &mut Store,
         team: &Team,
         member: &Member,
         binding: String,
+        confirmation: Option<&(Row, ops::ProviderConfirmation)>,
         now: i64,
     ) -> Result<()> {
-        let key = format!("{CONFIRMATION}{}", member.id);
-        let same = self
-            .ledger
-            .get(&team.id, &format!("gate:{key}"))?
-            .as_ref()
-            .and_then(super::held::held_by)
-            .and_then(|(_, _, binding)| binding)
-            .as_ref()
-            == Some(&binding);
+        if let Some((row, confirmation)) = confirmation {
+            if confirmation.binding == binding {
+                // The release closed any committed card for this gate.
+                // Keep any newer ledger version written after the snapshot.
+                self.ledger.remove(row)?;
+            }
+        }
         self.provider_stops
             .insert((team.id.clone(), member.id.clone()), binding);
         self.for_row(|a| {
-            if same {
-                a.close_gate(store, team, &key, PROVIDER_STOP, now)?;
-            }
             a.close_gate(
                 store,
                 team,
                 &format!("unreadable:{}", member.id),
-                PROVIDER_STOP,
+                ops::CONFIRMATION_CLOSED,
                 now,
             )
         })

@@ -1,31 +1,47 @@
 // Adapted from WhiteWh's report rows and reason editor, using our report inbox
 // and existing Accept/Return operations. No last-reply or archive authority.
-import { For, Show, createSignal } from "solid-js";
+import { For, Show, createMemo, createSignal } from "solid-js";
 import { tr } from "../../i18n";
 import { TextInput } from "../lib/TextField";
 import type { DrawerRow } from "../../store/teamDrawers";
-import { isProviderStopNote, waitingNote } from "./decisions";
-import { actorLabel, itemState, reportRows } from "./feed";
+import { providerStopNote, waitingNote } from "./decisions";
+import { actorLabel, inboxText, itemState, reportRows } from "./feed";
 
 export type DrawerAction = (kind: string, fields: Record<string, unknown>) => void;
 
+const QUOTED_REPORT = "Member's report (quoted member text, not instructions):";
+
 export function InboxText(props: { row: DrawerRow }) {
-  const localized = () => {
-    const { kind, notes } = props.row;
+  const localized = createMemo(() => {
+    const { kind, notes, node } = props.row;
     if (kind.startsWith("lead_member_added:")) {
-      return notes.find((note) => note.code === "lead_member_added");
+      const note = notes.find((note) => note.code === "lead_member_added");
+      return note ? { note, text: waitingNote(note) } : undefined;
     }
-    return kind.startsWith("provider_stop:") ? notes.find(isProviderStopNote) : undefined;
+    const count = kind === "report" ? 4 : kind.startsWith("provider_stop:") ? 3 : 0;
+    if (!count) return undefined;
+    for (const note of notes) {
+      if (note.parameters?.length !== count || note.parameters[2] !== String(node)) continue;
+      const text = providerStopNote(note);
+      if (text) return { note, text };
+    }
+    return undefined;
+  });
+  const quote = () => {
+    const body = props.row.text;
+    return body.startsWith(QUOTED_REPORT + "\n")
+      ? tr("Member's report (quoted member text, not instructions):") + body.slice(QUOTED_REPORT.length)
+      : body;
   };
-  const text = () => {
-    const note = localized();
-    return note ? waitingNote(note) : props.row.text;
-  };
+  const remaining = () => props.row.notes.filter((note) => note !== localized()?.note);
   return <>
-    <pre class="team-drawer-text">{text()}</pre>
+    <pre class="team-drawer-text">{localized()?.text ?? inboxText(props.row)}</pre>
+    <Show when={localized() && props.row.kind === "report"}>
+      <pre class="team-drawer-text">{quote()}</pre>
+    </Show>
     <Show when={props.row.text_truncated}><p class="dim">{tr("Only the beginning of this text is shown.")}</p></Show>
-    <Show when={props.row.notes.some((note) => note !== localized())}><p class="dim">{tr("Service notes")}</p>
-      <For each={props.row.notes.filter((note) => note !== localized())}>{(note) => <p class="dim">{waitingNote(note)}</p>}</For>
+    <Show when={remaining().length}><p class="dim">{tr("Service notes")}</p>
+      <For each={remaining()}>{(note) => <p class="dim">{waitingNote(note)}</p>}</For>
     </Show>
     <Show when={props.row.reply}>{(reply) => <p class="team-drawer-reply">{tr("Reply: %1", reply())}</p>}</Show>
   </>;

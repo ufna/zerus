@@ -67,6 +67,46 @@ fn lead_add_member_uses_the_pinned_role_and_existing_member_choices() {
     assert_eq!(h.store().journal(TEAM, 200, None).unwrap().rows, journal);
 }
 
+const LEAD_STAFFING_INBOX: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/client/core/src/teams/fixtures/lead-staffing-inbox.json"
+);
+
+fn lead_staffing_inbox() -> serde_json::Value {
+    let h = Harness::new();
+    h.create();
+    h.bind("lead", LEAD_SESSION);
+    h.apply(
+        &member("lead", LEAD_SESSION),
+        crate::teams::ops::Operation::LeadAddMember {
+            role: "reviewer".into(),
+            agent: "codex".into(),
+            model: String::new(),
+            effort: String::new(),
+            account: Default::default(),
+        },
+    );
+    let lead = Caller::Session(key(LEAD_SESSION));
+    let (inbox, exit) = h.cli(&lead, &format!("inbox --team {TEAM}"), "");
+    assert_eq!(exit, 0, "{inbox}");
+    inbox
+}
+
+#[test]
+fn staffing_inbox_fixture_matches_the_product_writer_and_cli_read() {
+    let pinned: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(LEAD_STAFFING_INBOX).unwrap()).unwrap();
+    assert_eq!(lead_staffing_inbox(), pinned);
+}
+
+#[test]
+#[ignore = "regenerates the staffing inbox from the product writer and CLI"]
+fn regenerate_lead_staffing_inbox_fixture() {
+    let mut text = serde_json::to_string_pretty(&lead_staffing_inbox()).unwrap();
+    text.push('\n');
+    std::fs::write(LEAD_STAFFING_INBOX, text).unwrap();
+}
+
 #[test]
 fn lead_add_member_refuses_other_callers_and_a_stale_revision() {
     let h = Harness::new();

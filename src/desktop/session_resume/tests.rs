@@ -730,7 +730,7 @@ fn the_resume_observation_reads_only_the_exact_private_action_receipt() {
 /// changed session ends it.
 #[test]
 fn only_the_resumed_runs_ready_record_lets_the_send_start() {
-    use ready::{Readiness, READY_ENDED, ROOT_CHANGED};
+    use ready::{Readiness, READY_ENDED, READY_GONE, ROOT_CHANGED};
     let temp = tempfile::tempdir().unwrap();
     let parent = temp.path().canonicalize().unwrap();
     let state = state_root(&parent);
@@ -744,9 +744,10 @@ fn only_the_resumed_runs_ready_record_lets_the_send_start() {
         let roots = receipt::Roots::open(state, receipt::RESUME_FOLDER).unwrap();
         ready::read(&roots, plan, RESUMED, later(), never)
     };
-    // The original run's record still: not written yet.
+    // The original run's record still: none of the resumed run, which the
+    // runtime waits for only within its grace (zerus-5sl7r).
     session_record(&state, SESSION, "claude", RUN, json!({}));
-    assert_eq!(read(&state), Readiness::Waiting);
+    assert_eq!(read(&state), Readiness::Unrecorded);
     resumed_record(&state, false);
     assert_eq!(read(&state), Readiness::Waiting);
     resumed_record(&state, true);
@@ -774,6 +775,34 @@ fn only_the_resumed_runs_ready_record_lets_the_send_start() {
             "process_start": start}),
     );
     assert_eq!(read(&state), Readiness::Ended(READY_ENDED));
+    // Its supervisor no longer runs and recorded no end: gone, however its
+    // agent's fields read (zerus-5sl7r). A live supervisor whose recorded
+    // start differs from what its process shows now (a clock set since) is
+    // not: the start is wall-clock text.
+    let mut child = std::process::Command::new("sleep")
+        .arg("30")
+        .spawn()
+        .unwrap();
+    let (ended, ended_start) = (child.id(), started(child.id()));
+    child.kill().unwrap();
+    child.wait().unwrap();
+    for ready in [false, true] {
+        resumed_record(&state, ready);
+        let path = state.join(format!(
+            "{:x}.json",
+            <sha2::Sha256 as sha2::Digest>::digest(SESSION.as_bytes())
+        ));
+        let mut record: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        record["supervisor"] = json!({"pid": ended, "start": ended_start});
+        session_record(&state, SESSION, "claude", RESUMED, record.clone());
+        assert_eq!(read(&state), Readiness::Ended(READY_GONE), "{ready}");
+        record["supervisor"] = json!({"pid": pid, "start": "Thu Jan  1 00:00:03 1970"});
+        session_record(&state, SESSION, "claude", RESUMED, record.clone());
+        assert_ne!(read(&state), Readiness::Ended(READY_GONE), "{ready}");
+        record["supervisor"] = json!({"pid": pid, "start": start});
+        session_record(&state, SESSION, "claude", RESUMED, record);
+        assert_ne!(read(&state), Readiness::Ended(READY_GONE), "{ready}");
+    }
     // A replaced root ends the wait.
     resumed_record(&state, true);
     let roots = receipt::Roots::open(&state, receipt::RESUME_FOLDER).unwrap();
@@ -814,9 +843,10 @@ fn a_resumed_codex_is_ready_only_by_the_sends_own_observation() {
             reply.map(<[u8]>::to_vec)
         })
     };
-    // Its resumed record is not written yet: nothing is observed.
+    // No record of its resumed run: nothing is observed (zerus-5sl7r: the
+    // runtime waits for one only within its grace).
     session_record(&state, CODEX, "codex", RUN, json!({}));
-    assert_eq!(read(Some(OBSERVED_READY), later()), Readiness::Waiting);
+    assert_eq!(read(Some(OBSERVED_READY), later()), Readiness::Unrecorded);
     assert!(asked.borrow().is_empty());
     // Pending its first message, the record alone never says ready.
     codex_pending_record(&state, CODEX);
@@ -1459,6 +1489,158 @@ mod actor {
             );
             assert!(f.row(&original).send.is_none(), "{name}: never reserved");
             assert_eq!(ran.counts(), (1, 0), "{name}");
+        }
+    }
+
+    /// zerus-5sl7r: the wait ends early only on exact evidence that the
+    /// resumed run is gone. A record naming a supervisor that exited ends it
+    /// at once; a read gap ends it only after the grace, measured from its
+    /// first unreadable sample, and only when the last proven supervisor
+    /// exited. A run never recorded, or a gap while its supervisor runs,
+    /// keeps the wait, and a record readable again still sends.
+    #[test]
+    fn only_exact_exit_evidence_ends_the_wait_for_a_resumed_run() {
+        let exited = || {
+            let child = std::process::Command::new("sleep")
+                .arg("30")
+                .spawn()
+                .unwrap();
+            let (pid, birth) = (child.id(), started(child.id()));
+            assert!(!birth.is_empty());
+            (child, pid, birth)
+        };
+        let record_path = |state: &Path| {
+            state.join(format!(
+                "{:x}.json",
+                <sha2::Sha256 as sha2::Digest>::digest(SESSION.as_bytes())
+            ))
+        };
+        let busy = |state: &Path, supervisor: (u32, &str)| {
+            let pid = std::process::id();
+            session_record(
+                state,
+                SESSION,
+                "claude",
+                RESUMED,
+                json!({"expected_id": "", "activity": "busy", "phase": "working",
+                    "error": "", "pid": pid, "process_start": started(pid),
+                    "supervisor": {"pid": supervisor.0, "start": supervisor.1}}),
+            );
+        };
+        for case in [
+            "supervisor exited",
+            "never recorded",
+            "gap while its supervisor runs",
+            "gap after its supervisor exited",
+        ] {
+            let ran = Arc::new(Ran::default());
+            let resumes = ran.clone();
+            let mut f = Fixture::with(Arc::new(move |state, plan, args, input, _, _| {
+                assert_eq!(
+                    args[0], "session-action",
+                    "{case}: no send before the record"
+                );
+                resumes.resumes.fetch_add(1, Ordering::SeqCst);
+                action_receipt(state, plan, input, "completed");
+                Ended::Exited { code: 0 }
+            }));
+            let (budget, grace) = match case {
+                "never recorded" => (Duration::from_millis(1500), Duration::from_millis(100)),
+                "gap after its supervisor exited" => {
+                    (Duration::from_secs(120), Duration::from_secs(2))
+                }
+                _ => (Duration::from_secs(120), Duration::from_millis(100)),
+            };
+            f.runtime
+                .fixture_wait(budget, Duration::from_millis(5), runtime::CHAIN);
+            f.runtime.fixture_record_grace(grace);
+            let original = f.original();
+            f.admit(&original);
+            f.until(case, |f| {
+                f.row(&original).receipt.resume.step == Step::Recorded
+            });
+            let poll_for = |f: &mut Fixture, time: Duration| {
+                let until = Instant::now() + time;
+                while Instant::now() < until {
+                    f.runtime.poll(&mut f.store, Some(f.exclusion.clone()));
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+            };
+            let queued = |f: &Fixture| {
+                let receipt = f.row(&original).receipt;
+                assert!(!receipt.drained, "{case}: {receipt:?}");
+                assert_eq!(receipt.send.step, Step::Queued, "{case}");
+            };
+            let settled = |f: &mut Fixture, code: &str| {
+                f.until(case, |f| f.row(&original).receipt.drained);
+                let receipt = f.row(&original).receipt;
+                assert_eq!(
+                    (
+                        receipt.resume.step,
+                        receipt.send.step,
+                        receipt.code.as_str()
+                    ),
+                    (Step::Recorded, Step::NotStarted, code),
+                    "{case}"
+                );
+                assert_eq!(ran.counts(), (1, 0), "{case}");
+            };
+            match case {
+                "supervisor exited" => {
+                    let (mut child, pid, birth) = exited();
+                    child.kill().unwrap();
+                    child.wait().unwrap();
+                    busy(&f.state, (pid, &birth));
+                    let recorded = Instant::now();
+                    settled(&mut f, ready::READY_GONE);
+                    assert!(recorded.elapsed() < Duration::from_secs(30), "{case}");
+                }
+                "never recorded" => {
+                    // No exit evidence: only the wait's own budget ends it.
+                    settled(&mut f, ledger::WAIT_EXPIRED);
+                }
+                "gap while its supervisor runs" => {
+                    let (mut child, pid, birth) = exited();
+                    busy(&f.state, (pid, &birth));
+                    poll_for(&mut f, Duration::from_millis(300));
+                    std::fs::remove_file(record_path(&f.state)).unwrap();
+                    // Many graces long: the gap alone never ends it.
+                    poll_for(&mut f, Duration::from_millis(1000));
+                    queued(&f);
+                    // Its record is readable again and ready: it sends.
+                    let sends = executor(ran.clone(), Resume::Completed { ready: true });
+                    f.runtime.fixture_executor(MACHINE, {
+                        let state = f.state.clone();
+                        Arc::new(move |plan, args, input, lock, resources| {
+                            sends(&state, plan, args, input, lock, resources)
+                        })
+                    });
+                    resumed_record(&f.state, true);
+                    f.until(case, |f| f.row(&original).receipt.drained);
+                    assert_eq!(f.row(&original).receipt.send.step, Step::Recorded, "{case}");
+                    assert_eq!(ran.counts(), (1, 1), "{case}");
+                    child.kill().unwrap();
+                    child.wait().unwrap();
+                }
+                "gap after its supervisor exited" => {
+                    let (mut child, pid, birth) = exited();
+                    busy(&f.state, (pid, &birth));
+                    // Readable for longer than the grace: none of it counts.
+                    poll_for(&mut f, Duration::from_millis(2500));
+                    queued(&f);
+                    std::fs::remove_file(record_path(&f.state)).unwrap();
+                    child.kill().unwrap();
+                    child.wait().unwrap();
+                    let gap = Instant::now();
+                    // Within the grace from the first unreadable sample it
+                    // still waits, however long the wait ran before.
+                    poll_for(&mut f, Duration::from_millis(1000));
+                    queued(&f);
+                    settled(&mut f, ready::READY_GONE);
+                    assert!(gap.elapsed() >= Duration::from_secs(2), "{case}");
+                }
+                other => panic!("unknown case {other}"),
+            }
         }
     }
 
@@ -2508,6 +2690,12 @@ else:
     /// private tmux server. Before the fix the resumed pane's command named
     /// `/memfd:… (deleted)`, the pane died, the resume still said completed
     /// and the operation waited its whole budget without a send.
+    ///
+    /// The stricter waits act only on exact evidence: a terminal gone before
+    /// any record fails at once (`dies`), while one failed or hung
+    /// observation, a login shell slower than session-action's own wait, or a
+    /// moment's unreadable record of a run still starting all still send
+    /// (the independent review of #2510).
     #[cfg(target_os = "linux")]
     mod real_cli {
         use super::*;
@@ -2579,6 +2767,52 @@ else:
                 }
             }
         }
+        /// Puts the private server's socket back where a case moved it,
+        /// ending first a server a case started in its place.
+        struct Restore {
+            program: PathBuf,
+            socket: PathBuf,
+            hidden: PathBuf,
+        }
+        impl Restore {
+            fn now(&self) {
+                if !self.hidden.exists() {
+                    return;
+                }
+                if self.socket.exists() {
+                    let _ = Command::new(&self.program)
+                        .arg("-S")
+                        .arg(&self.socket)
+                        .args(["-f", "/dev/null", "kill-server"])
+                        .output();
+                    let _ = std::fs::remove_file(&self.socket);
+                }
+                std::fs::rename(&self.hidden, &self.socket).unwrap();
+            }
+        }
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                if self.hidden.exists() {
+                    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.now()));
+                }
+            }
+        }
+        /// The lines of the shim's log of the resume's terminal observations.
+        fn observations(root: &Path) -> Vec<String> {
+            std::fs::read_to_string(root.join("observe.log"))
+                .unwrap_or_default()
+                .lines()
+                .map(str::to_owned)
+                .collect()
+        }
+        /// `text`, a start as `ps` prints it, `seconds` later.
+        fn shifted(text: &str, seconds: i64) -> String {
+            const FORMAT: &str = "%a %b %e %H:%M:%S %Y";
+            (chrono::NaiveDateTime::parse_from_str(text, FORMAT).unwrap()
+                + chrono::TimeDelta::seconds(seconds))
+            .format(FORMAT)
+            .to_string()
+        }
         fn fake_agent(cli: &Path) -> PathBuf {
             std::env::var_os("HGS_TEST_FAKE_AGENT")
                 .map(PathBuf::from)
@@ -2610,7 +2844,27 @@ else:
                 .map(Path::new)
                 .find(|p| p.is_dir())
                 .unwrap();
-            for case in ["resume", "replaced"] {
+            for case in [
+                "resume",
+                "replaced",
+                "dies",
+                "respawned",
+                "tmux_read_error",
+                "blocked_probe",
+                "slow_start",
+                "late_gap",
+                "moved_socket",
+                "replacement_server",
+                "cutoff_gap",
+                "clock_shift",
+                "shifted_record",
+            ]
+            .into_iter()
+            .filter(|case| {
+                // A comma list here runs only those cases (a mutant's own).
+                std::env::var("HGS_TEST_SESSION_RESUME_REAL_ONLY")
+                    .map_or(true, |only| only.split(',').any(|named| named == *case))
+            }) {
                 let dir = tempfile::Builder::new()
                     .prefix("hgs-rs-")
                     .tempdir_in(base)
@@ -2695,6 +2949,29 @@ else:
                 .find(|record| record["name"] == name && record.get("rename_shadow").is_none())
                 .unwrap_or(Value::Null)
         }
+        /// The file of the session's current record.
+        fn record_path_of(state: &Path, name: &str) -> PathBuf {
+            [
+                state.to_path_buf(),
+                state.join("bindings"),
+                state.join("sessions"),
+            ]
+            .iter()
+            .filter_map(|folder| folder.read_dir().ok())
+            .flatten()
+            .flatten()
+            .map(|entry| entry.path())
+            .filter(|path| path.extension().is_some_and(|e| e == "json"))
+            .find(|path| {
+                std::fs::read(path)
+                    .ok()
+                    .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+                    .is_some_and(|record| {
+                        record["name"] == name && record.get("rename_shadow").is_none()
+                    })
+            })
+            .expect("the session's record")
+        }
         fn wait_for(what: &str, mut done: impl FnMut() -> bool) {
             let until = Instant::now() + Duration::from_secs(60);
             while !done() {
@@ -2707,6 +2984,34 @@ else:
         #[ignore = "Run only by real_cli_resume_from_the_pinned_image_starts_its_supervisor_and_sends in its private environment"]
         fn private_case() {
             let case = std::env::var(CASE).expect("run only by its parent test");
+            if case == "clock_shift" {
+                // The review's classifier probe (zerus-5sl7r P2): a live
+                // process whose recorded start is three seconds off, as a
+                // supervisor records it under a boot wall time read before
+                // the clock was set. It is not an exit; only its end is.
+                let mut child = Command::new("sleep").arg("30").spawn().unwrap();
+                let pid = child.id();
+                let start = crate::platform::process_start_time(pid).unwrap();
+                let named = |start: &str| {
+                    crate::state::ResumedSupervisor::of(
+                        &json!({"supervisor": {"pid": pid, "start": start}}),
+                    )
+                    .unwrap()
+                };
+                let (mut earlier, mut exact) = (named(&shifted(&start, -3)), named(&start));
+                let live = (earlier.exited(), exact.exited());
+                assert!(child.try_wait().unwrap().is_none());
+                child.kill().unwrap();
+                child.wait().unwrap();
+                let ended = (earlier.exited(), exact.exited());
+                println!(
+                    "live pid {pid}: start {start:?}, recorded {:?}: exited while live {live:?}, after its end {ended:?}",
+                    shifted(&start, -3)
+                );
+                assert_eq!((live, ended), ((false, false), (true, true)));
+                println!("SESSION_RESUME_REAL_EXECUTED={case}");
+                return;
+            }
             let cli = cli();
             let temp = tempfile::tempdir().unwrap();
             let root = temp.path().canonicalize().unwrap();
@@ -2728,19 +3033,134 @@ else:
                     .into(),
                 std::env::var_os(SOCKET).expect("set by the parent").into(),
             );
+            let hidden = server.1.with_extension("hidden");
+            let _restore = Restore {
+                program: server.0.clone(),
+                socket: server.1.clone(),
+                hidden: hidden.clone(),
+            };
+            // The reviewers' cases of zerus-5sl7r, on the resume's terminal
+            // observations (`display-message` of the launched pane with the
+            // server's start time), each logged with its answer:
+            // - the next ones fail (`fail-reads` counts them down) or one
+            //   hangs (`hang-one-read`);
+            // - those from 8.6 s to 12.1 s after the launch fail as a reset
+            //   connection would (`gap-window`);
+            // - right after the launch the socket is moved away
+            //   (`hide-socket`), and a sessionless server is started at its
+            //   path (`replace-server`);
+            // - the launched command's pane, once dead, is respawned with
+            //   another process before the first observation
+            //   (`respawn-dead`).
+            // The login shell starts late (`shell-delay`), the agent too
+            // (`agent-delay`).
             script(
                 "tmux",
                 format!(
-                    "#!/bin/sh\nexec {} -S {} -f /dev/null \"$@\"\n",
-                    server.0.display(),
-                    server.1.display()
+                    r#"#!/bin/sh
+tmux() {{ {program} -S {socket} -f /dev/null "$@"; }}
+if test "$1" = new-session; then
+    test -e '{root}/gap-window' && date +%s%N > '{root}/launched-at'
+    if test -e '{root}/respawn-dead'; then
+        rm '{root}/respawn-dead'
+        tmux "$@" > '{root}/launched' || exit
+        pane=$(cut -d : -f 3 '{root}/launched')
+        n=0
+        until test "$(tmux display-message -p -t "$pane" '#{{pane_dead}}')" = 1; do
+            n=$((n + 1))
+            test "$n" -lt 250 || exit 2
+            sleep 0.02
+        done
+        tmux display-message -p -t "$pane" '#{{pane_dead}}:#{{pane_pid}}' > '{root}/dead'
+        tmux respawn-pane -t "$pane" sleep 45 || exit
+        tmux display-message -p -t "$pane" '#{{pane_dead}}:#{{pane_pid}}:#{{pane_start_command}}' > '{root}/respawned'
+        cat '{root}/launched'
+        exit 0
+    fi
+    if test -e '{root}/hide-socket'; then
+        rm '{root}/hide-socket'
+        tmux "$@" || exit
+        mv {socket} {hidden}
+        if test -e '{root}/replace-server'; then
+            printf 'set -g exit-empty off\n' > '{root}/replacement.conf'
+            {program} -S {socket} -f '{root}/replacement.conf' start-server >/dev/null 2>&1
+            tmux display-message -p '#{{pid}}' > '{root}/replacement-pid' 2>&1
+        fi
+        exit 0
+    fi
+    exec {program} -S {socket} -f /dev/null "$@"
+fi
+case "$*" in *'#{{start_time}}'*) observed=$1 ;; *) observed= ;; esac
+if test "$observed" = display-message; then
+    log() {{ echo "$(date +%s%N) $*" >> '{root}/observe.log'; }}
+    if test -s '{root}/fail-reads' && test "$(cat '{root}/fail-reads')" -gt 0; then
+        echo $(($(cat '{root}/fail-reads') - 1)) > '{root}/fail-reads'
+        log injected exit 127
+        echo 'synthetic tmux observation error' >&2
+        exit 127
+    fi
+    if test -e '{root}/hang-one-read'; then
+        rm '{root}/hang-one-read'
+        log injected hang
+        exec sleep 60
+    fi
+    age=
+    if test -e '{root}/launched-at'; then
+        age=$(( $(date +%s%N) - $(cat '{root}/launched-at') ))
+        if test "$age" -ge 8600000000 && test "$age" -le 12100000000; then
+            log injected reset at $age
+            echo 'error connecting to temporary fixture (Connection reset by peer)' >&2
+            exit 1
+        fi
+    fi
+    tmux "$@" > '{root}/answer' 2> '{root}/answer-error'
+    rc=$?
+    log "rc=$rc out=$(tr '\t\n' '| ' < '{root}/answer') err=$(tr '\n' ' ' < '{root}/answer-error') age=$age"
+    cat '{root}/answer'
+    cat '{root}/answer-error' >&2
+    exit $rc
+fi
+exec {program} -S {socket} -f /dev/null "$@"
+"#,
+                    root = root.display(),
+                    program = server.0.display(),
+                    socket = server.1.display(),
+                    hidden = hidden.display()
                 ),
             );
             script(
-                "shell",
-                "#!/bin/sh\nshift\ncommand=$1; shift\ncase $command in exec\\ *) ;; *) command=\"exec $command\" ;; esac\nexec /bin/sh -c \"$command\" \"$@\"\n".into(),
+                "bash",
+                r#"#!/bin/sh
+if test -f "$HOME/shell-exits"; then
+    exit 23
+fi
+if test -f "$HOME/shell-delay"; then
+    sleep "$(cat "$HOME/shell-delay")"
+fi
+shift
+command=$1; shift
+case $command in exec\ *) ;; *) command="exec $command" ;; esac
+exec /bin/sh -c "$command" "$@"
+"#
+                .into(),
             );
-            std::os::unix::fs::symlink(fake_agent(&cli), bin.join("claude")).unwrap();
+            let native = root.join("native");
+            std::fs::create_dir(&native).unwrap();
+            std::os::unix::fs::symlink(fake_agent(&cli), native.join("claude")).unwrap();
+            script(
+                "claude",
+                format!(
+                    r#"#!/bin/sh
+case "$1" in --help|--version) ;; *)
+    if test -f "$HOME/agent-delay"; then
+        sleep "$(cat "$HOME/agent-delay")"
+    fi ;;
+esac
+exec '{}' "$@"
+"#,
+                    native.join("claude").display()
+                ),
+            );
             // Single-threaded: nothing else runs in this process yet.
             for (key, value) in [
                 ("HOME", root.display().to_string()),
@@ -2751,7 +3171,7 @@ else:
                 ("HGS_TAB", "0".into()),
                 ("TERM", "xterm-256color".into()),
                 ("TMUX_TMPDIR", root.join("tmux").display().to_string()),
-                ("SHELL", bin.join("shell").display().to_string()),
+                ("SHELL", bin.join("bash").display().to_string()),
                 (
                     "PATH",
                     format!("{}:{}", bin.display(), std::env::var("PATH").unwrap()),
@@ -2846,6 +3266,59 @@ else:
                 std::fs::rename(&next, &pinned).unwrap();
             }
 
+            if case == "dies" {
+                // The service names an executable that ends at once: the
+                // resumed terminal ends before any supervisor starts. The
+                // dead pane is not kept, so nothing of the resume remains.
+                let broken = bin.join("broken-hgs");
+                std::fs::write(&broken, "#!/bin/sh\nexit 3\n").unwrap();
+                mode(&broken, 0o755);
+                std::env::set_var("HGS_EXECUTABLE", &broken);
+                assert!(tmux(&["set-option", "-gwu", "remain-on-exit"])
+                    .status
+                    .success());
+            }
+            let marker = |file: &str| std::fs::write(root.join(file), "").unwrap();
+            match case.as_str() {
+                // Observations fail, several in a row, while the pane lives.
+                "tmux_read_error" => {
+                    std::fs::write(root.join("shell-delay"), "3").unwrap();
+                    std::fs::write(root.join("fail-reads"), "3").unwrap();
+                }
+                // The first observation never ends by itself.
+                "blocked_probe" => {
+                    std::fs::write(root.join("shell-delay"), "3").unwrap();
+                    marker("hang-one-read");
+                }
+                // Past session-action's own wait, in a live terminal.
+                "slow_start" => std::fs::write(root.join("shell-delay"), "18").unwrap(),
+                "late_gap" => std::fs::write(root.join("agent-delay"), "14").unwrap(),
+                // The server's socket is moved away right after the launch;
+                // the original server and its pane run on.
+                "moved_socket" => {
+                    std::fs::write(root.join("shell-delay"), "4").unwrap();
+                    marker("hide-socket");
+                }
+                // ... and a new, sessionless server runs at its path.
+                "replacement_server" => {
+                    std::fs::write(root.join("shell-delay"), "4").unwrap();
+                    marker("hide-socket");
+                    marker("replace-server");
+                }
+                // Observations of a slow start fail across the 10 s cutoff.
+                "cutoff_gap" => {
+                    std::fs::write(root.join("shell-delay"), "18").unwrap();
+                    marker("gap-window");
+                }
+                "shifted_record" => std::fs::write(root.join("agent-delay"), "8").unwrap(),
+                // The launched login shell exits at once; its kept dead pane
+                // is respawned with another process (the review's case).
+                "respawned" => {
+                    marker("shell-exits");
+                    marker("respawn-dead");
+                }
+                _ => (),
+            }
             let original = original_at(
                 &f.location.configuration,
                 &f.epoch,
@@ -2855,6 +3328,105 @@ else:
             );
             assert!(f.admit(&original).accepted);
             let admitted = Instant::now();
+            if case == "late_gap" {
+                // The run is recorded and still starting; past the grace of
+                // the wait's start, its record is unreadable for a moment,
+                // as an atomic update can make one held read.
+                f.until("the recorded resume", |f| {
+                    f.row(&original).receipt.resume.step == Step::Recorded
+                });
+                let recorded = Instant::now();
+                let path = record_path_of(&f.state, name);
+                f.until("the run to stay unready past the grace", |_| {
+                    recorded.elapsed() >= runtime::RECORD_GRACE + Duration::from_millis(200)
+                });
+                assert_eq!(f.row(&original).receipt.send.step, Step::Queued);
+                let aside = root.join("withheld-record");
+                std::fs::rename(&path, &aside).unwrap();
+                let withheld = Instant::now();
+                f.until("the withheld moment", |_| {
+                    withheld.elapsed() >= Duration::from_millis(350)
+                });
+                // A newer record written meanwhile stays.
+                if path.exists() {
+                    std::fs::remove_file(&aside).unwrap();
+                } else {
+                    std::fs::rename(&aside, &path).unwrap();
+                }
+                println!(
+                    "withheld the record {:?} after the resume was recorded, for {:?}",
+                    recorded.elapsed(),
+                    withheld.elapsed()
+                );
+            }
+            if matches!(case.as_str(), "moved_socket" | "replacement_server") {
+                // Two observations in a row reach no server, or another one:
+                // what #2516's first head took for a gone terminal.
+                let answered_by_other = |line: &String| {
+                    let replacement =
+                        std::fs::read_to_string(root.join("replacement-pid")).unwrap_or_default();
+                    !replacement.trim().is_empty()
+                        && line.contains(&format!("rc=0 out={}:", replacement.trim()))
+                };
+                f.until("two observations without the original server", |_| {
+                    let lines = observations(&root);
+                    if case == "moved_socket" {
+                        lines
+                            .iter()
+                            .filter(|line| line.contains("(No such file or directory)"))
+                            .count()
+                            >= 2
+                    } else {
+                        lines.iter().filter(|line| answered_by_other(line)).count() >= 2
+                    }
+                });
+                assert!(!f.row(&original).receipt.drained);
+                _restore.now();
+                println!(
+                    "socket restored after {:?}; observations so far:\n{}",
+                    admitted.elapsed(),
+                    observations(&root).join("\n")
+                );
+            }
+            if case == "shifted_record" {
+                // The recorded start of the live supervisor reads three
+                // seconds earlier than its process shows, as a boot wall time
+                // read before the clock was set makes it (zerus-5sl7r P2).
+                f.until("the recorded resume", |f| {
+                    f.row(&original).receipt.resume.step == Step::Recorded
+                });
+                let path = record_path_of(&f.state, name);
+                let mut record: Value =
+                    serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+                let start = record["supervisor"]["start"].as_str().unwrap().to_owned();
+                let pid = record["supervisor"]["pid"].as_u64().unwrap() as u32;
+                assert_eq!(
+                    crate::platform::process_start_time(pid).as_deref(),
+                    Some(start.as_str())
+                );
+                let earlier = shifted(&start, -3);
+                record["supervisor"]["start"] = json!(earlier);
+                let next = path.with_extension("shifting");
+                std::fs::write(&next, serde_json::to_vec(&record).unwrap()).unwrap();
+                std::fs::rename(&next, &path).unwrap();
+                let since = Instant::now();
+                f.until("several reads of the shifted record", |_| {
+                    since.elapsed() >= Duration::from_millis(2500)
+                });
+                let read: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+                assert_eq!(read["supervisor"]["start"], earlier.as_str());
+                assert!(
+                    !f.row(&original).receipt.drained,
+                    "a shifted start ended the wait"
+                );
+                record["supervisor"]["start"] = json!(start);
+                std::fs::write(&next, serde_json::to_vec(&record).unwrap()).unwrap();
+                std::fs::rename(&next, &path).unwrap();
+                println!(
+                    "the live supervisor {pid} was recorded as started at {earlier:?}, not {start:?}, for {:?}",
+                    since.elapsed()
+                );
+            }
             f.until("the operation to settle", |f| {
                 f.row(&original).receipt.drained
             });
@@ -2874,8 +3446,39 @@ else:
             println!("settled after {:?}", admitted.elapsed());
             println!("panes:\n{panes}");
             assert!(!panes.contains("memfd"), "{panes}");
+            let observed = observations(&root);
+            println!("observations:\n{}", observed.join("\n"));
             match case.as_str() {
-                "resume" => {
+                "resume" | "tmux_read_error" | "blocked_probe" | "slow_start" | "late_gap"
+                | "moved_socket" | "replacement_server" | "cutoff_gap" | "shifted_record" => {
+                    let count =
+                        |text: &str| observed.iter().filter(|line| line.contains(text)).count();
+                    match case.as_str() {
+                        "tmux_read_error" => assert_eq!(count("injected exit 127"), 3),
+                        "blocked_probe" => assert_eq!(count("injected hang"), 1),
+                        "slow_start" => assert!(admitted.elapsed() >= Duration::from_secs(18)),
+                        "cutoff_gap" => {
+                            // Good answers, then only failed ones across the
+                            // 10 s cutoff, then good ones again.
+                            let ages = |marker: &str| -> Vec<u64> {
+                                observed
+                                    .iter()
+                                    .filter(|line| line.contains(marker))
+                                    .filter_map(|line| line.rsplit_once(['=', ' ']))
+                                    .filter_map(|(_, age)| age.trim().parse().ok())
+                                    .collect()
+                            };
+                            let (good, reset) = (ages("rc=0 out="), ages("injected reset at "));
+                            assert!(
+                                good.iter().filter(|&&age| age < 8_600_000_000).count() >= 2,
+                                "{good:?}"
+                            );
+                            assert!(reset.iter().any(|&age| age > 10_000_000_000), "{reset:?}");
+                            assert!(good.iter().any(|&age| age > 12_100_000_000), "{good:?}");
+                            assert!(admitted.elapsed() >= Duration::from_secs(18));
+                        }
+                        _ => (),
+                    }
                     assert_eq!(
                         (
                             receipt.resume.step,
@@ -2928,6 +3531,62 @@ else:
                         (receipt.resume.step, receipt.send.step),
                         (Step::NotStarted, Step::NotStarted),
                         "{panes}"
+                    );
+                    assert!(
+                        !panes
+                            .lines()
+                            .any(|line| line.starts_with(&format!("{name}\t"))),
+                        "{panes}"
+                    );
+                    assert_eq!(record_of(&f.state, name)["run_id"], run.as_str());
+                }
+                "respawned" => {
+                    // Never "completed": the launched command ended, and the
+                    // live process in its pane is another one.
+                    let dead = std::fs::read_to_string(root.join("dead")).unwrap();
+                    let respawned = std::fs::read_to_string(root.join("respawned")).unwrap();
+                    let launched = std::fs::read_to_string(root.join("launched")).unwrap();
+                    println!("launched {launched:?}, dead {dead:?}, respawned {respawned:?}");
+                    assert!(dead.starts_with("1:"), "{dead}");
+                    assert!(
+                        respawned.starts_with("0:") && respawned.contains("sleep 45"),
+                        "{respawned}"
+                    );
+                    let process = launched.trim().rsplit(':').next().unwrap();
+                    assert_ne!(respawned.split(':').nth(1), Some(process));
+                    assert_eq!(
+                        (receipt.resume.step, receipt.send.step),
+                        (Step::Unknown, Step::NotStarted),
+                        "{panes}"
+                    );
+                    assert!(
+                        admitted.elapsed() < Duration::from_secs(9),
+                        "{:?}",
+                        admitted.elapsed()
+                    );
+                    let cli = std::fs::read_to_string(
+                        f.state
+                            .join("action_receipts")
+                            .join(format!("{}.json", original.plan.resume_request_id)),
+                    )
+                    .unwrap();
+                    assert!(cli.contains("another process runs in its pane"), "{cli}");
+                    assert!(observed.iter().any(|line| line
+                        .contains(&format!(":0:{}", respawned.split(':').nth(1).unwrap()))));
+                    assert_eq!(record_of(&f.state, name)["run_id"], run.as_str());
+                }
+                "dies" => {
+                    // A definite failure, never "completed": nothing started
+                    // and nothing remains, and the row settles at once.
+                    assert_eq!(
+                        (receipt.resume.step, receipt.send.step),
+                        (Step::Failed, Step::NotStarted),
+                        "{panes}"
+                    );
+                    assert!(
+                        admitted.elapsed() < Duration::from_secs(25),
+                        "{:?}",
+                        admitted.elapsed()
                     );
                     assert!(
                         !panes

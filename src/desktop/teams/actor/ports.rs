@@ -143,6 +143,7 @@ pub(in crate::desktop::teams) trait Ports {
         team: &Team,
         member: &Member,
         _effect: &crate::teams::store::EffectIntent,
+        _confirmation: Option<&crate::teams::ops::ProviderConfirmation>,
         _now: i64,
     ) -> Result<(Availability, Option<String>)> {
         Ok((self.availability(team, member)?, None))

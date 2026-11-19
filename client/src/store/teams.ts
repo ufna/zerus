@@ -81,6 +81,7 @@ export interface TeamView {
   /** Complete bounded goal for the editor, distinct from the bar preview. */
   edit_goal?: string | null;
   member_roles?: Array<{ id: string; name: string; agent: string; model: string; effort: string; account: { mode: string; account?: string } }>;
+  routing_pipelines?: Array<{ id: string; name: string; role: string }>;
   /** Absent when an older core or an incomplete/unknown read cannot show them whole. */
   settings?: import("./team-settings").TeamSettings | null;
   bar: TeamBar; members: TeamMember[]; groups: TeamGroup[]; truncated: boolean; next: string | null; revision: number;

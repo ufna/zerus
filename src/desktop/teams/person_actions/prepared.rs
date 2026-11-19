@@ -83,6 +83,27 @@ impl Prepared {
             _ => change.op().replace('-', "_"),
         };
         fields.insert("op".into(), json!(variant));
+        if let TeamAction::Route {
+            node,
+            role,
+            keep_task_fields: true,
+            ..
+        } = change.as_ref()
+        {
+            // Resolve the exact fields on the service. The request digest
+            // covers this ordinary Route, and commit rechecks its revision
+            // and the native review's facts while holding the writer.
+            let store = store::Store::person_evidence(&config.state)?;
+            let task = store.node(&plan.team, *node)?.ok_or_else(|| {
+                Problem::new(code::INVALID_STATE, "The task is no longer on this team.")
+            })?;
+            fields.remove("keep_task_fields");
+            fields.insert("deps".into(), json!(task.deps));
+            fields.insert("writes".into(), json!(task.writes));
+            if task.role == *role {
+                fields.insert("assignee".into(), json!(task.assignee));
+            }
+        }
         if let TeamAction::Create {
             template,
             expected_template,

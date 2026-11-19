@@ -1,9 +1,9 @@
 mod card;
 mod held;
 mod unreadable;
-#[cfg(any(target_os = "linux", target_os = "macos"))]
-pub(in crate::desktop::teams) use unreadable::provider_binding_stamp;
 use super::*;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub(in crate::desktop::teams) use crate::state::team_provider_stop::binding_stamp as provider_binding_stamp;
 use serde::{Deserialize, Serialize};
 
 const RECOVERED_REASON: &str = "The service check recovered";

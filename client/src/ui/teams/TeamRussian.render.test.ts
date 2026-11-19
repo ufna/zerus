@@ -9,6 +9,8 @@ import { render } from "solid-js/web";
 import pages from "../../../core/src/teams/fixtures/drawers.json";
 import catalog from "../../i18n.ru.json";
 import type { DrawerPage } from "../../store/teamDrawers";
+import notice from "./fixtures/unreadable-notice.json";
+import stageNotice from "./fixtures/unreadable-stage-notice.json";
 
 let chips: typeof import("./TeamChips");
 let drawers: typeof import("./TeamDrawers");
@@ -54,6 +56,14 @@ it("translates the drawer rows' state and actor", () => {
   expect(host.querySelector('[data-feed-seq="1"] [data-feed-sentence]')?.textContent).toBe("Команда создана");
   expect(host.querySelector('[data-feed-seq="9"] [data-feed-detail]')?.textContent).toBe("Отправлено");
   expect(cards.rows[0].by).toBe("local");
+});
+
+it.each([
+  [notice, "Задача 1 готова к выдаче. Службе недоступны данные всех подходящих участников (m1, m2). Служба повторит проверку."],
+  [stageNotice, "Этап конвейера 2 готов к выдаче. Службе недоступны данные всех подходящих участников (m3). Служба повторит проверку."],
+] as const)("renders the unreadable notice in the Inbox for $node", (row, text) => {
+  const host = mount(() => createComponent(drawers.TeamInbox, { rows: [row], busy: false, onAction: () => {} }));
+  expect(host.querySelector(`[data-inbox="${row.seq}"] .team-drawer-text`)?.textContent).toBe(text);
 });
 
 it("calls the team's lead «лид» in every Teams string", () => {

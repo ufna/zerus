@@ -20,6 +20,7 @@ mod member_sessions;
 mod phase_controls;
 mod phase_metrics;
 mod phases;
+mod placement;
 mod planning;
 mod progress;
 mod progress157;
