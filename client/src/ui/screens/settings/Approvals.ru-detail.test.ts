@@ -18,7 +18,7 @@ beforeAll(async () => {
   journal = await import("./approvals-journal");
 });
 
-const ru = catalog as Record<string, string>;
+const ru = (source: string) => String((catalog as Record<string, string | string[]>)[source]);
 
 it("a team's Codex hook-trust record reads in Russian, every line of it", () => {
   expect(journal.localizedDetail(hookTrust.approved).split("\n\n")).toEqual([
@@ -29,7 +29,7 @@ it("a team's Codex hook-trust record reads in Russian, every line of it", () => 
     "Codex сохранил доверие ровно к этим хукам",
   ]);
   expect(journal.localizedDetail(hookTrust.unknown).split("\n\n")).toEqual([
-    ru["Unconfirmed"],
+    ru("Unconfirmed"),
     "Доверие к хукам Codex запрошено, но не подтверждено",
     "Доверять собственным хукам Zerus и хукам Codex из коммита команды",
     "Хуков для доверия: 8",
@@ -41,7 +41,7 @@ it("a folder-trust record's own sentences translate and its native question stay
   const entries = page.entries as { detail: string }[];
   expect(journal.localizedDetail(entries[0].detail).split("\n\n")).toEqual([
     "Одобрено один раз",
-    ru["Trusted for %1 and its subfolders on this account"].replace("%1", "/fixture/main"),
+    ru("Trusted for %1 and its subfolders on this account").replace("%1", "/fixture/main"),
     "Trust this folder?",
     "/fixture/main",
   ]);
