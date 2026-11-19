@@ -566,7 +566,7 @@ pub fn merge_listing_archives(mut box_value: Value, ids: &BTreeMap<String, Strin
             .ok_or("invalid session")?
             .extend(telemetry::unavailable().as_object().unwrap().clone());
     }
-    let mut archive_page = if include_archives { Some(archive_catalog::preview(&marks)?) } else { None };
+    let mut archive_page = if include_archives { Some(archive_catalog::preview(&marks, None)?) } else { None };
     let archived: &[Value] = archive_page.as_ref().and_then(|page| page["sessions"].as_array()).map_or(&[], Vec::as_slice);
     // Archive preparation does not consume the live question-indexing budget.
     let shared = Shared { marks: &marks, preferences: notification_preferences.as_ref(), keep_warm: keep_warm_settings.as_ref(), question_routing: question_routing.as_ref(), route_outcomes: route_outcomes.as_ref(), budget: read_marks::question_budget() };

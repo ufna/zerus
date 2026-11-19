@@ -70,6 +70,105 @@ fn deepseek_host_cards_match_the_waiting_view_fixtures() {
     assert_eq!(waiting_fixture(true).3, fixtures["lead"]);
 }
 
+fn member_removed_feed(h: &Harness) -> Value {
+    use zerus_client_core::{
+        actions::Exit,
+        teams::drawers::{decode, DrawerKind, DrawerRead},
+    };
+    let rows: Vec<_> = h
+        .store
+        .journal(TEAM, 200, None)
+        .unwrap()
+        .rows
+        .into_iter()
+        .filter(|entry| entry.kind == "close_card")
+        .collect();
+    assert_eq!(rows.len(), 1);
+    let page = decode(
+        &DrawerRead {
+            team: TEAM.into(),
+            kind: DrawerKind::Feed,
+            after: None,
+            recorded_timings: false,
+            timing_seqs: None,
+            timing_next: None,
+        },
+        Exit::Code {
+            code: 0,
+            stdout: serde_json::to_vec(&json!({
+                "ok": true, "actor": person(), "team": TEAM, "rows": rows, "next": null
+            }))
+            .unwrap(),
+            stderr: String::new(),
+        },
+    )
+    .unwrap();
+    serde_json::to_value(&page.rows[0]).unwrap()
+}
+
+#[test]
+fn removing_a_member_keeps_an_uncertain_launch_visible_until_acknowledged() {
+    let mut h = Harness::new();
+    let mut effects = FakeEffects::default();
+    let mut service = runtime(&h);
+    advance(&mut service, &mut h, &mut effects, 45);
+    let mut codex = account("codex-account");
+    codex.agent = "codex".into();
+    effects.accounts.push(codex);
+    effects.unknown = true;
+    let member = h
+        .run(
+            &person(),
+            Operation::AddMember {
+                role: "developer".into(),
+                agent: "codex".into(),
+                model: String::new(),
+                effort: String::new(),
+                account: AccountChoice::Freest,
+            },
+        )
+        .unwrap()
+        .member
+        .unwrap();
+    let mut now = 10_000;
+    for _ in 0..40 {
+        service.tick(&mut h.store, &mut effects, TEAM, now).unwrap();
+        now += 30_000;
+    }
+    let launch = row(&h, &member);
+    assert_eq!(launch.state, State::Blocked);
+    let card = launch.card_id.unwrap();
+    let opened = h.store.card(TEAM, card).unwrap().unwrap();
+    assert_eq!(
+        (opened.kind.as_str(), opened.state.as_str()),
+        ("launch_uncertain", "open")
+    );
+    h.run(&person(), Operation::ArchiveMember { member }).unwrap();
+    for _ in 0..3 {
+        service.tick(&mut h.store, &mut effects, TEAM, now).unwrap();
+        now += 60_000;
+    }
+    assert_eq!(h.store.card(TEAM, card).unwrap().unwrap().state, "open");
+    assert!(h
+        .store
+        .waiting(10, None)
+        .unwrap()
+        .rows
+        .iter()
+        .any(|item| item.card.seq == card));
+    h.run(
+        &person(),
+        Operation::DecideCard {
+            card,
+            decision: "acknowledged".into(),
+        },
+    )
+    .unwrap();
+    let acknowledged = h.store.card(TEAM, card).unwrap().unwrap();
+    assert_eq!(acknowledged.state, "closed");
+    assert_eq!(acknowledged.decision.as_deref(), Some("acknowledged"));
+}
+
 #[test]
 fn an_older_deepseek_host_requires_a_new_member_after_recovery() {
     let (mut h, mut effects, member, card) = waiting_fixture(false);
@@ -92,6 +191,20 @@ fn an_older_deepseek_host_requires_a_new_member_after_recovery() {
         },
     )
     .unwrap();
+    let card_id = card["card"].as_u64().unwrap();
+    for now in [4_000_000, 5_000_000, 6_000_000] {
+        service.tick(&mut h.store, &mut effects, TEAM, now).unwrap();
+    }
+    assert_eq!(
+        h.store.card(TEAM, card_id).unwrap().unwrap().state,
+        "closed"
+    );
+    assert!(h.store.waiting(10, None).unwrap().rows.is_empty());
+    let expected: Value = serde_json::from_str(include_str!(
+        "../../../../client/core/src/teams/fixtures/member-removed-feed.json"
+    ))
+    .unwrap();
+    assert_eq!(member_removed_feed(&h), expected);
     let replacement = add_deepseek_member(&mut h);
     assert_ne!(replacement, member);
     until(&mut service, &mut h, &mut effects, |h, _| {

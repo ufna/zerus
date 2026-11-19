@@ -499,12 +499,20 @@ const SUMMARY_PAGE_BYTES: usize = 250_000;
 const SINGLE_SUMMARY_BYTES: usize = 768 * 1024;
 
 /// The page's bounded session summaries: read after the catalog lock is released.
-fn sessions_of(rows: &[Listed], records: &[Value], marks: Option<&Value>) -> Result<Vec<Value>> {
+fn sessions_of(
+    rows: &[Listed],
+    records: &[Value],
+    marks: Option<&Value>,
+    name_taken: Option<&dyn Fn(&str) -> bool>,
+) -> Result<Vec<Value>> {
     let preferences = notifications::load();
     let mut summaries = Vec::new();
     for ((id, name, at), record) in rows.iter().zip(records) {
         let parts: Vec<_> = name.splitn(3, '/').collect();
-        let mut row = journal::summary(record, false);
+        let mut row = match name_taken {
+            Some(taken) => journal::archive_summary(record, taken(name)),
+            None => journal::summary(record, false),
+        };
         row.as_object_mut().ok_or("invalid archive summary")?.extend(json!({"name":name,"cmd":record["agent"],"project":parts.get(1),"tag":parts.get(2),"attached":0,"clients":[],"created":record["created"],"state":"archived","resumable":!string(record,"conversation_id").is_empty(),"archive_id":id,"archived_at":at}).as_object().unwrap().clone());
         if let Some(title) = record["title"].as_str() {
             row["title"] = json!(title.chars().take(1024).collect::<String>());
@@ -539,12 +547,12 @@ fn sessions_of(rows: &[Listed], records: &[Value], marks: Option<&Value>) -> Res
 /// One archive page; `bounded` (zerus-080n8) caps its counts and scans, and
 /// without it the page is exactly what older clients read.
 pub(crate) fn page_with(value: &Value, bounded: bool) -> Result<Value> {
-    page_with_bounds(value, bounded.then_some(BOUNDS), None, true)
+    page_with_bounds(value, bounded.then_some(BOUNDS), None, None, true)
 }
 
 /// Plain `ls` retains a recent archive window. Even its count reads only one
 /// row past that window; older rows are reached through the ordinary cursor.
-pub(super) fn preview(marks: &Value) -> Result<Value> {
+pub(super) fn preview(marks: &Value, name_taken: Option<&dyn Fn(&str) -> bool>) -> Result<Value> {
     let mut page = match page_with_bounds(
         &json!({}),
         Some(Bounds {
@@ -552,6 +560,7 @@ pub(super) fn preview(marks: &Value) -> Result<Value> {
             examine: 51,
         }),
         Some(marks),
+        name_taken,
         true,
     ) {
         Ok(page) => page,
@@ -565,7 +574,13 @@ pub(super) fn preview(marks: &Value) -> Result<Value> {
     Ok(page)
 }
 
-fn page_with_bounds(value: &Value, bounds: Option<Bounds>, marks: Option<&Value>, include_native: bool) -> Result<Value> {
+fn page_with_bounds(
+    value: &Value,
+    bounds: Option<Bounds>,
+    marks: Option<&Value>,
+    name_taken: Option<&dyn Fn(&str) -> bool>,
+    include_native: bool,
+) -> Result<Value> {
     let q = validate(value)?;
     let _guard = lock(None)?;
     let db = catalog()?;
@@ -606,7 +621,7 @@ fn page_with_bounds(value: &Value, bounds: Option<Bounds>, marks: Option<&Value>
         let records = records_of(&nearest, q.limit)?;
         drop(db);
         drop(_guard); // Journal summaries never block live hooks or lifecycle writers.
-        let mut sessions = sessions_of(&nearest, &records, marks)?;
+        let mut sessions = sessions_of(&nearest, &records, marks, name_taken)?;
         let encode = |at: f64, id: &str, newer: bool| encode_cursor(&q, &catalog, at, id, newer);
         let (mut next, mut previous, mut position) =
             (w.next.clone(), w.previous.clone(), w.position);
@@ -683,7 +698,7 @@ fn page_with_bounds(value: &Value, bounds: Option<Bounds>, marks: Option<&Value>
     let records = records_of(&rows, q.limit)?;
     drop(db);
     drop(_guard); // Journal summaries never block live hooks or lifecycle writers.
-    let sessions = sessions_of(&rows, &records, marks)?;
+    let sessions = sessions_of(&rows, &records, marks, name_taken)?;
     let encode = |at: f64, id: &str, newer: bool| -> Result<String> {
         Ok(URL_SAFE_NO_PAD.encode(
             serde_json::to_vec(&Cursor {
@@ -733,7 +748,11 @@ fn supported_provider(provider: &Value) -> bool {
 /// before indexing/counting. Keep its bounded totals and cursors unchanged.
 /// Refuse an inconsistent page instead of guessing a filtered total.
 pub(crate) fn page_scoped(value: &Value, windows_mobile: bool) -> Result<Value> {
-    let result = if windows_mobile { page_with_bounds(value, None, None, false)? } else { page(value)? };
+    let result = if windows_mobile {
+        page_with_bounds(value, None, None, None, false)?
+    } else {
+        page(value)?
+    };
     if windows_mobile && !result["sessions"].as_array().is_some_and(|rows|
         rows.iter().all(|row|supported_provider(&row["cmd"]))) {
         return Err("archive provider scope is unavailable".into());

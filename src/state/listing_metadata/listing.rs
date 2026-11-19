@@ -398,7 +398,21 @@ pub(in crate::state) fn merge(
             budget: read_marks::question_budget(),
         };
         let mut archive_page = if archives {
-            Some(checked(archive_catalog::preview(&marks))?)
+            // Reuse this observation for the archive's advisory Restore hint.
+            // Looking up an absent live record would invalidate the listing.
+            let name_taken = |name: &str| {
+                snapshot.contains_key(name)
+                    || match &reader {
+                        Some(reader) => reader.has_label(name).unwrap_or(true),
+                        None => canonical
+                            .as_ref()
+                            .unwrap()
+                            .rows
+                            .iter()
+                            .any(|(_, seed)| seed["record"]["name"] == name),
+                    }
+            };
+            Some(checked(archive_catalog::preview(&marks, Some(&name_taken)))?)
         } else {
             None
         };

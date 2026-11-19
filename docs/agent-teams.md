@@ -789,9 +789,11 @@ tool approvals.
   accept phases; send-back rework and phase controls follow in later slices.
 - DeepSeek can be a lead or member with a host that proves each tool call
   with its per-call token, witnesses task input and reports its lifecycle.
-  A host lacking those capabilities stays unavailable; Zerus never reloads
-  or restarts a live host to add them. OpenCode's shared-service sessions
-  cannot be a lead or member in this milestone.
+  If the host lacks those capabilities, stop idle DeepSeek sessions or restart
+  the host yourself. After the host is back, remove the blocked member and add
+  a replacement. For a blocked lead, stop the team and create a new one.
+  Zerus does not retry the blocked start or restart a live host. OpenCode's
+  shared-service sessions cannot be a lead or member in this milestone.
 - On Linux, `hgs team` from a shell inside a sandbox with its own user
   namespace is refused, whether a person or an agent runs it, so a member
   whose agent runs its commands in such a sandbox cannot take part.

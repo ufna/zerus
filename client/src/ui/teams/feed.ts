@@ -170,6 +170,7 @@ function handoutOutcome(word: string): string | undefined {
  * decision, or a sentence the service wrote. The generic "<kind> at revision
  * N" says nothing more and gives "". The exact text stays the row's title. */
 export function journalDetail(row: Pick<DrawerRow, "kind" | "text">): string {
+  if (row.kind === "close_card" && row.text === "Member removed") return tr("Member removed");
   const generic = new RegExp(`^${row.kind.replace(/[^a-z_]/g, "")} at revision \\d+`);
   const matched = row.text.match(generic);
   if (!matched) return row.text;

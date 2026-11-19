@@ -1652,7 +1652,7 @@ mod fresh_pause_tests {
         assert!(pausable(&record, || false));
         pause_recipe(&record).unwrap();
         assert!(record["conversation_id"].is_null());
-        let allowed = session_action::summary(&record, true, &None);
+        let allowed = session_action::summary(&record, true, &None, None);
         assert!(allowed["allowed_actions"]
             .as_array()
             .unwrap()
