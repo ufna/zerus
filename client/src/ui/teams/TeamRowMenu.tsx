@@ -56,6 +56,8 @@ export function TeamRowMenu(props: { team: TeamSummary }) {
           action: () => { if (row) openTeamLead(team, row); } },
         { label: tr("Settings…"), icon: "settings", disabled: !!settingsWhy, note: settingsWhy, hint: settingsWhy,
           action: () => { if (!settingsWhy) openTeamPage(team.id, { settings: true }); } },
+        // Pausing planning needs its planning state, which only the page reads.
+        ...(team.status === "planning" ? [{ label: tr("Pause or resume planning…"), icon: "pause", action: () => openTeamPage(team.id) } satisfies MenuEntry] : []),
         ...rowActions(team.status).map((action): MenuEntry => ({
           label: action.text, icon: action.id === "pause" ? "pause" : action.id === "resume" ? "play" : action.id === "stop" ? "square" : "archive",
           danger: action.danger, disabled: busy,

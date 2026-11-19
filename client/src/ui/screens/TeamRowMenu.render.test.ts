@@ -72,7 +72,10 @@ it("offers the page, the lead session, Settings and the status's lifecycle actio
   const host = await page([running, stopped, planning, paused]);
   expect(labels(host, running)).toEqual(["Open", "Open lead session", "Settings…", "Pause", "Stop…"]);
   expect(labels(host, paused)).toEqual(["Open", "Open lead session", "Settings…", "Resume", "Stop…"]);
-  expect(labels(host, planning)).toEqual(["Open", "Open lead session", "Settings…", "Stop…"]);
+  // Pausing planning needs the team's planning state, which only the page reads.
+  expect(labels(host, planning)).toEqual(["Open", "Open lead session", "Settings…", "Pause or resume planning…", "Stop…"]);
+  pick(host, planning, "Pause or resume planning…").action!();
+  expect(ui.page()).toBe("team"); expect(f.actions).toEqual([]); ui.setPage("teams");
   expect(labels(host, stopped)).toEqual(["Open", "Open lead session", "Settings…", "Archive…"]);
   expect(pick(host, stopped, "Settings…")).toMatchObject({ disabled: true, note: "Settings are available while the team runs or is paused." });
 });
