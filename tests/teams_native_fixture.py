@@ -893,7 +893,7 @@ class TeamFixture:
         run = self.hgs('ls', '--json', ok=False)
         if run.returncode != 0 and run.stderr.strip() == LS_RACE:
             # A listing read while the service starts its first launches can meet a queue
-            # entry consumed under it (filed apart from zerus-63rru.182). It counts as not yet
+            # entry consumed under it (zerus-63rru.204). It counts as not yet
             # listed, is recorded, and every wait still ends at its own bound.
             self.evidence.append('transient-reads.jsonl', dict(at=time.time(), argv=['ls', '--json'],
                                                                stderr=run.stderr[-300:]))
