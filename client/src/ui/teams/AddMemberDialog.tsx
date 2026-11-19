@@ -15,13 +15,14 @@ export function AddMemberDialog(props: { view: TeamView; busy: boolean; locked?:
     return supportedChoice({ agent: r?.agent || "claude", model: r?.model || "", effort: r?.effort || "", account: r?.account.mode === "named" && r.account.account ? { mode: "named", account: r.account.account } : { mode: "freest" } });
   };
   const [choice, setChoice] = createSignal(initial());
-  return <TeamEditDialog title={tr("Add member")} action={tr("Add member")} busy={props.busy} disabled={!role() || props.locked} error={props.error} close={props.close}
+  const [valid, setValid] = createSignal(true);
+  return <TeamEditDialog title={tr("Add member")} action={tr("Add member")} busy={props.busy} disabled={!role() || props.locked || !valid()} error={props.error} close={props.close}
     submit={() => props.submit("add_member", { role: role()!.id, ...choice() })}>
     <p>{tr("The new member launches in its own folder. Existing members keep their sessions and work.")}</p>
     <label>{tr("Role")}<select class="field" aria-label={tr("Role")} value={role()?.id ?? ""} disabled={props.busy} onChange={(e) => { setRole(roles.find((r) => r.id === e.currentTarget.value)); setChoice(initial()); }}>
       <For each={roles}>{(r) => <option value={r.id}>{r.name || r.id}</option>}</For>
     </select></label>
-    <Show when={role()} keyed>{(_role) => <MemberChoices initial={initial()} onChange={setChoice} disabled={props.busy} />}</Show>
+    <Show when={role()} keyed>{(_role) => <MemberChoices initial={initial()} onChange={setChoice} onValid={setValid} disabled={props.busy} />}</Show>
     <Show when={!roles.length}><p class="dim">{tr("Refresh the team to read its pinned roles.")}</p></Show>
   </TeamEditDialog>;
 }

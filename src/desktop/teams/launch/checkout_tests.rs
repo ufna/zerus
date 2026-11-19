@@ -15,6 +15,9 @@ impl Effects for Verified {
     fn accounts(&mut self, _: &str) -> Result<Vec<zerus_team_plan::accounts::AccountUsage>> {
         unreachable!()
     }
+    fn model_catalog(&mut self, _: &str, _: &str) -> Result<serde_json::Value> {
+        unreachable!()
+    }
     fn worktree(&mut self, _: &Plan, _: &str) -> Effect<Option<p::Worktree>> {
         Effect::Submitted(Some(self.0.clone()))
     }

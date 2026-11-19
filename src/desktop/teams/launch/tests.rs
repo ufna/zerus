@@ -494,6 +494,9 @@ impl super::super::ports::Effects for Never {
     fn accounts(&mut self, _: &str) -> super::super::ports::Result<Vec<zerus_team_plan::accounts::AccountUsage>> {
         unreachable!("the observed session is already set")
     }
+    fn model_catalog(&mut self, _: &str, _: &str) -> super::super::ports::Result<serde_json::Value> {
+        unreachable!("the observed session is already set")
+    }
     fn worktree(&mut self, _: &super::super::ports::Plan, _: &str) -> super::super::ports::Effect<Option<super::super::ports::Worktree>> {
         unreachable!("the observed session is already set")
     }
@@ -797,5 +800,56 @@ fn advance_base_keeps_a_completed_integration_creation_plan_valid_without_git_wr
     assert_eq!(
         runtime.ledger().get(TEAM, BRANCH).unwrap().unwrap().state,
         State::BranchDone
+    );
+}
+
+/// #2533 review: the launch's model check reads `hgs account model-settings`
+/// as the CLI writes it, here a Codex account's own models cache.
+#[test]
+fn the_launch_model_check_reads_the_real_model_settings_reply() {
+    let root = tempfile::tempdir().unwrap();
+    let dir = root.path().join("config");
+    std::fs::create_dir_all(dir.join("accounts/work")).unwrap();
+    std::fs::write(
+        dir.join("accounts.json"),
+        r#"{"profiles":{"work":{"provider":"codex","label":"Work"}}}"#,
+    )
+    .unwrap();
+    let cache = serde_json::json!({"models": [{"slug": "example-model", "display_name": "Example model",
+        "visibility": "list", "priority": 1, "supported_reasoning_levels": [{"effort": "low"}, {"effort": "high"}]}]});
+    std::fs::write(
+        dir.join("accounts/work/models_cache.json"),
+        cache.to_string(),
+    )
+    .unwrap();
+    let config = crate::config::Config {
+        home: root.path().to_string_lossy().into_owned(),
+        dir,
+        state: root.path().join("state"),
+        selves: vec![],
+        peers: vec![],
+        base_peers: vec![],
+        peers_from_environment: false,
+        machines: Default::default(),
+        tab: false,
+        tab_colors: String::new(),
+    };
+    let settings = crate::accounts::model_settings(&config, "work").unwrap();
+    let check = |agent: &str, model: &str, effort: &str| {
+        super::member::offered(agent, "work", model, effort, &settings).map_err(|p| p.message)
+    };
+    assert_eq!(check("codex", "example-model", "high"), Ok(()));
+    assert_eq!(check("codex", "example-model", ""), Ok(()));
+    assert_eq!(
+        check("codex", "missing-model", ""),
+        Err("Account \"work\" does not offer model \"missing-model\". Choose one of its models, the account's defaults, or an account that offers it.".into())
+    );
+    assert_eq!(
+        check("codex", "example-model", "max"),
+        Err("Model \"example-model\" on account \"work\" does not offer effort \"max\". Choose one of its efforts or the default effort.".into())
+    );
+    assert_eq!(
+        check("claude", "example-model", ""),
+        Err("Account model list identity changed".into())
     );
 }

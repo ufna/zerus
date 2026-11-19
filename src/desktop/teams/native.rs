@@ -206,6 +206,14 @@ impl Effects for Native {
         }
         Ok(accounts)
     }
+    fn model_catalog(&mut self, _agent: &str, account: &str) -> Result<Value> {
+        let deadline = Instant::now() + Duration::from_secs(30);
+        self.read_until(
+            &["account".into(), "model-settings".into(), account.into()],
+            None,
+            deadline,
+        )
+    }
     fn worktree(&mut self, plan: &Plan, original: &str) -> Effect<Option<Worktree>> {
         // Saved pre-upgrade plans retain their branch; diagnose their namespace
         // before any new worktree command, without replaying an unknown original.

@@ -34,6 +34,7 @@
 
 pub mod account_edits;
 pub mod machine_setup;
+pub mod member_models;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
@@ -290,6 +291,7 @@ type SessionNotify = Arc<dyn Fn() + Send + Sync>;
 
 struct Shared {
     edits: account_edits::Edits,
+    member_models: member_models::Cache,
     hub: Mutex<Hub>,
     hgs: PathBuf,
     allowed: bool,
@@ -372,6 +374,7 @@ impl Screens {
         Self(Arc::new(Shared {
             hub: Mutex::new(Hub::default()),
             edits: account_edits::Edits::default(),
+            member_models: member_models::Cache::default(),
             hgs,
             allowed,
             spawn,

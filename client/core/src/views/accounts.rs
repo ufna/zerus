@@ -2179,6 +2179,70 @@ mod tests {
         assert_eq!(view.truncated, 6 * 256 - 1024);
         assert_eq!(view.notices.len(), 16);
     }
+
+    /// Teams Add member and Swap (zerus-efeo3 G16) list this computer's
+    /// accounts of an agent from this projection. The frontend fixture is this
+    /// test's output; set ZERUS_UPDATE_MEMBER_ACCOUNTS_FIXTURE=1 to write it.
+    #[test]
+    fn the_member_accounts_fixture_is_this_projection() {
+        let local = entry("", "live", 0);
+        let row = |id: &str, provider: &str, label: &str| {
+            json!({"id": id, "provider": provider, "label": label, "home": format!("/home/example/{id}"),
+                   "installed": true, "auth_revision": "a1"})
+        };
+        let mut state = AccountsState::default();
+        state.catalogs.insert(
+            ComputerId::local(),
+            CatalogSlot {
+                requested: Some(0),
+                data: Some(json!({"host": "workstation", "revision": "r1", "removed_profiles": [], "profiles": [
+                    row("claude-work", "claude", "Work"),
+                    row("claude-spare", "claude", "Spare"),
+                    row("kimi-work", "kimi", "Kimi work"),
+                    row("codex-work", "codex", "Codex work"),
+                ]})),
+                ..CatalogSlot::default()
+            },
+        );
+        // Each account's own inspection says whether it is signed in.
+        for (id, provider, status) in [
+            ("claude-work", "claude", "ok"),
+            ("claude-spare", "claude", "signed_out"),
+            ("kimi-work", "kimi", "ok"),
+            ("codex-work", "codex", "ok"),
+        ] {
+            let home = format!("/home/example/{id}");
+            let reply = json!({"id": id, "home": home, "provider": provider, "status": status,
+                "identity": {"email": format!("{id}@example.com")}, "windows": [], "balances": []});
+            inspected(&mut state, "", id, &home, "a1", reply);
+        }
+        let view = project(
+            std::slice::from_ref(&local),
+            &state,
+            &mut AccountsDisplay::default(),
+        );
+        let members: Vec<_> = view
+            .accounts
+            .iter()
+            .flat_map(|a| a.members.iter())
+            .collect();
+        let signed = |id: &str| members.iter().find(|m| m.id == id).map(|m| m.signed_in);
+        assert_eq!(
+            (signed("claude-work"), signed("claude-spare")),
+            (Some(true), Some(false))
+        );
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../src/ui/teams/fixtures/member-accounts.json");
+        let written = serde_json::to_string_pretty(&view).unwrap() + "\n";
+        if std::env::var_os("ZERUS_UPDATE_MEMBER_ACCOUNTS_FIXTURE").is_some() {
+            std::fs::write(&path, &written).unwrap();
+        }
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap_or_default(),
+            written,
+            "regenerate with ZERUS_UPDATE_MEMBER_ACCOUNTS_FIXTURE=1"
+        );
+    }
 }
 
 #[cfg(test)]

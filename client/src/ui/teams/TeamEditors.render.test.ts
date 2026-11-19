@@ -46,10 +46,11 @@ it("adds a pinned role with explicit seat choices; changing agent clears incompa
   click(host, "Add member"); expect(action).not.toHaveBeenCalled();
   const agent = host.querySelector<HTMLSelectElement>('select[aria-label="Agent"]')!;
   agent.value = "codex"; agent.dispatchEvent(new Event("change", { bubbles: true }));
-  const model = host.querySelector<HTMLInputElement>('input[aria-label="Model"]')!;
-  model.value = "example-model"; model.dispatchEvent(new Event("input", { bubbles: true }));
+  // Model and effort are chosen from the account's catalog, never typed
+  // (MemberChoices.models.render.test.ts); without one, the account's defaults.
+  expect(host.querySelector('input[aria-label="Model"]')).toBeNull();
   click(host.querySelector("dialog")!, "Add member"); await flush();
-  expect(action).toHaveBeenCalledExactlyOnceWith("add_member", { role: "developer", agent: "codex", model: "example-model", effort: "", account: { mode: "freest" } }, 20, teamView.bar.id);
+  expect(action).toHaveBeenCalledExactlyOnceWith("add_member", { role: "developer", agent: "codex", model: "", effort: "", account: { mode: "freest" } }, 20, teamView.bar.id);
 });
 it("an unknown result is never submitted again and the form remains closeable", async () => {
   const { host, action } = setup({ outcome: "uncertain", request_id: "example", detail: "Lost answer" });

@@ -160,6 +160,14 @@ impl Runtime {
             }
             let taken = taken(store, self.ledger(), &team.id)?;
             let account = pick_account(&member.agent, choice, &accounts, &taken)?;
+            // The planner chose the account: a model or effort override must
+            // be one that account lists (#2533 review), or the launch is
+            // refused with its reason instead of started with a model the
+            // account does not know.
+            if !model.is_empty() && OFFERED_AGENTS.contains(&member.agent.as_str()) {
+                let settings = effects.model_catalog(&member.agent, &account)?;
+                offered(&member.agent, &account, model, effort, &settings)?;
+            }
             Ok(Plan {
                 id: uuid::Uuid::new_v4().to_string(),
                 team: team.id.clone(),
@@ -207,6 +215,61 @@ impl Runtime {
             }
         }
     }
+}
+/// The agents whose launch model is checked against the account's own list.
+/// DeepSeek refuses a model override at launch, and OpenCode keeps its own
+/// service catalog, which this path never asks.
+const OFFERED_AGENTS: [&str; 3] = ["claude", "codex", "kimi"];
+
+/// The plan's model and effort, checked again against the launch account's
+/// own list right before the launch (bounded: one `account model-settings`
+/// read). A plan without a model override, or for an agent whose model is
+/// not checked, needs no read.
+pub(super) fn still_offered(effects: &mut impl Effects, plan: &Plan) -> Result<()> {
+    if plan.model.is_empty() || !OFFERED_AGENTS.contains(&plan.agent.as_str()) {
+        return Ok(());
+    }
+    let settings = effects.model_catalog(&plan.agent, &plan.account)?;
+    offered(
+        &plan.agent,
+        &plan.account,
+        &plan.model,
+        &plan.effort,
+        &settings,
+    )
+}
+/// Whether `account`'s model list (`hgs account model-settings`) offers the
+/// launch's `model` and, when set, its `effort`. A refusal names both and
+/// what to choose instead.
+pub(super) fn offered(
+    agent: &str,
+    account: &str,
+    model: &str,
+    effort: &str,
+    settings: &serde_json::Value,
+) -> Result<()> {
+    if settings["account_id"] != account || settings["provider"] != agent {
+        return Err(invalid("Account model list identity changed"));
+    }
+    let models = settings["models"]
+        .as_array()
+        .ok_or_else(|| invalid("Account model list unavailable"))?;
+    let Some(chosen) = models.iter().take(256).find(|entry| entry["id"] == model) else {
+        return Err(invalid(&format!(
+            "Account {account:?} does not offer model {model:?}. Choose one of its models, the account's defaults, or an account that offers it."
+        )));
+    };
+    let listed = || {
+        chosen["effort_options"]
+            .as_array()
+            .is_some_and(|options| options.iter().take(64).any(|option| option == effort))
+    };
+    if !effort.is_empty() && !(settings["effort_supported"] == true && listed()) {
+        return Err(invalid(&format!(
+            "Model {model:?} on account {account:?} does not offer effort {effort:?}. Choose one of its efforts or the default effort."
+        )));
+    }
+    Ok(())
 }
 fn role<'a>(team: &'a Team, member: &Member) -> Result<(&'a AccountChoice, &'a str, &'a str)> {
     if member.id == team.lead {

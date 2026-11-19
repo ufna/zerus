@@ -77,6 +77,24 @@ class Accounts(unittest.TestCase):
         self.assertFalse(kimi(catalog())['compact_on_expiry'])
         self.assertFalse((self.home/'.kimi-code/tui.toml').exists())
 
+    def test_a_provider_listing_reads_only_that_provider_and_never_asks_opencode(self):
+        """Teams' member model pickers read one agent's accounts (#2533 review, P3):
+        `account ls --provider P` lists only P's rows, with the whole catalog's
+        revision, and never runs or asks OpenCode or another provider's host."""
+        self.add('work','kimi'); self.add('code','codex')
+        # Adding prints the whole listing, which asks OpenCode: start the log afresh.
+        self.opencode_calls.unlink(missing_ok=True)
+        scoped=json.loads(self.run_hgs('account','ls','--provider','kimi').stdout)
+        self.assertFalse(self.opencode_calls.exists(),'a Kimi listing ran OpenCode')
+        self.assertEqual({p['provider'] for p in scoped['profiles']+scoped['removed_profiles']},{'kimi'})
+        self.assertEqual(sorted(p['id'] for p in scoped['profiles']),['native-kimi','work'])
+        full=self.ls()
+        # The whole listing does ask OpenCode: the logging fake is the one hgs runs.
+        self.assertIn('--version',self.opencode_calls.read_text().splitlines())
+        self.assertEqual(scoped['revision'],full['revision'])
+        self.assertEqual([p for p in full['profiles'] if p['provider']=='kimi'],scoped['profiles'])
+        self.run_hgs('account','ls','--provider','unknown',ok=False)
+        self.run_hgs('account','ls','--provider',ok=False)
     def test_opencode_full_catalog_never_starts_and_checks_its_folder(self):
         catalog=json.loads(self.run_hgs('account','models','native-opencode','--json').stdout)
         self.assertEqual((catalog['catalog_state'],catalog['models'],catalog['model_options']),('not_running',[],[]))

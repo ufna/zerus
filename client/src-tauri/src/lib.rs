@@ -1871,6 +1871,7 @@ fn handler() -> impl Fn(tauri::ipc::Invoke) -> bool + Send + Sync + 'static {
         screens::account_edits::account_edit_open,
         screens::account_edits::account_edit_apply,
         screens::account_edits::account_edit_close,
+        screens::member_models::team_member_models,
         screens::account_edits::account_mark_migrate,
         screens::account_edits::setup::account_setup_open,
         screens::account_edits::setup::account_setup_apply,
