@@ -102,7 +102,15 @@ fn proven(
     if !turn.is_object() || record["state"] == "archived" {
         return Err(none());
     }
-    let (request, _, mark) = person_turn::marked_pending(config, record).ok_or_else(none)?;
+    let (request, receipt, mark) =
+        person_turn::marked_pending(config, record).ok_or_else(none)?;
+    // Delivery first: an admitted message that the native agent has not
+    // shown it accepted grants nothing, whatever a hook reported (S1-1).
+    if !person_turn::delivered(record, &receipt) {
+        return Err(format!(
+            "the person's message is not yet proven delivered to this session; {ASK}"
+        ));
+    }
     let text = |value: &Value, key: &str| value[key].as_str().unwrap_or_default().to_owned();
     let bound_at = turn["bound_at"].as_i64().unwrap_or(0);
     // The turn lasts at most twelve hours from the hook that bound it.

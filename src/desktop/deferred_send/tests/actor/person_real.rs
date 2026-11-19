@@ -345,6 +345,34 @@ impl World {
         self.idle(to);
         ran
     }
+    /// The person's message to `name` whose delivery the agent never
+    /// confirms: the window admits it, its `hgs send` child ends without
+    /// native proof. Returns the request and the window's receipt.
+    fn person_says_unconfirmed(&mut self, name: &str, text: &str) -> (String, wire::Receipt) {
+        let record = self.record(name);
+        let original = original_for(
+            &self.f.location.configuration,
+            &self.f.epoch,
+            name,
+            record["run_id"].as_str().unwrap(),
+            record["conversation_id"].as_str().unwrap(),
+            text,
+        );
+        assert!(self.f.admit(&original).accepted);
+        // The send waits out its whole native proof window first.
+        let until = Instant::now() + Duration::from_secs(40);
+        while !self.f.row(&original).receipt.drained {
+            assert!(Instant::now() < until, "the unconfirmed send never settled");
+            self.f
+                .runtime
+                .poll(&mut self.f.store, Some(self.f.exclusion.clone()));
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        (
+            original.plan.request_id.clone(),
+            self.f.row(&original).receipt,
+        )
+    }
     fn bound(&mut self, name: &str, text: &str) -> String {
         let id = self.person_says(name, text);
         wait_for(&format!("{name}'s person turn"), || {
@@ -801,6 +829,27 @@ fn private_case() {
         serde_json::to_string(&w.f.row(&original).receipt).unwrap()
     );
     w.none(&quiet, "bind-preempted-request");
+
+    // A message the window admitted but whose delivery the agent never
+    // confirmed (its Enter swallowed): a prompt of exactly that text, from
+    // anyone, may record the turn, but grants nothing (review S1-1).
+    std::fs::write(
+        root.join("agentenv")
+            .join(key(&format!("claude/{PROJECT}/stuck"))),
+        "export FAKE_AGENT_SWALLOW_ENTER=1\nexport FAKE_AGENT_HOOK_EVENTS=start,stop,end\n",
+    )
+    .unwrap();
+    let stuck = w.launch("stuck");
+    let (id, receipt) = w.person_says_unconfirmed(&stuck, "a message never confirmed");
+    println!(
+        "unconfirmed window send: {}",
+        serde_json::to_string(&receipt).unwrap()
+    );
+    assert_ne!(receipt.phase, Phase::Recorded);
+    w.prompt(&stuck, "a message never confirmed");
+    println!("stuck turn: {}", w.turn(&stuck));
+    assert!(w.person_request(&stuck).is_null(), "{id}");
+    println!("PERSON_REQUEST_STEP=undelivered ok");
 
     // A paused and resumed session is a new run.
     hgs(&["pause", &asked]);

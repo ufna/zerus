@@ -11,12 +11,13 @@
 //!   turn then lasts at most twelve hours from this hook);
 //! - the CLI's own receipt of that request carries exactly the stdin the window
 //!   admitted (the mark's digest), and the prompt is that receipt's text;
+//! - (for any use) the native agent itself proved that delivery ([`delivered`]);
 //! - the hook reports it after the request was sent, through the input gate;
 //! - no main tool call is running: a prompt is never reported from inside one;
 //! - that request has not started a person turn before.
 //!
 //! Every other prompt of the main agent ends the turn, and so does every
-//! receipt [`end`]. Nothing is copied into an environment variable, a flag, a
+//! receipt and every answer delivered into the session [`end`]. Nothing is copied into an environment variable, a flag, a
 //! child or a team member; `caller::person_request` reads this record, the
 //! mark and the receipt again for each command.
 use super::*;
@@ -51,20 +52,6 @@ pub(crate) fn end(record: &mut Value) {
             fields.insert(SPENT.into(), turn["request_id"].clone());
         }
     }
-}
-
-/// Whether an agent runs this hgs: it claims or proves a session, or a
-/// process above it carries a session's markers. Its input is another
-/// sender's, never the person's.
-pub(super) fn agent_input() -> bool {
-    if crate::cli::agent_caller() {
-        return true;
-    }
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
-    if crate::tasks::person::check().is_err() {
-        return true;
-    }
-    false
 }
 
 fn main_event(record: &Value, event: &Value) -> bool {
@@ -213,6 +200,23 @@ pub(super) fn decide(
         "bound_at": now_ms,
         "native_turn": if agent == "kimi" { event["turn_id"].clone() } else { Value::Null },
     }))
+}
+
+/// Whether the native agent itself proves that exactly this receipt's input
+/// was delivered and accepted (zerus-46l1q, review S1-1). For Claude the send
+/// writer saw Claude's own record of the message (a typed transcript row or
+/// its queue entry) after the paste; for Codex and Kimi their native source
+/// holds it as the main user's input after the send. Until then a bound turn
+/// grants nothing; a send left uncertain never does.
+pub(crate) fn delivered(record: &Value, receipt: &Value) -> bool {
+    if receipt["status"] != "submitted" {
+        return false;
+    }
+    match string(record, "agent") {
+        "claude" => matches!(receipt["native"].as_str(), Some("transcript" | "queue")),
+        "codex" | "kimi" => input::acceptance::native_delivery(record, receipt),
+        _ => false,
+    }
 }
 
 /// Binds or ends the person turn for one admitted main hook event, after the

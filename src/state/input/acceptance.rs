@@ -296,6 +296,42 @@ pub(in crate::state) fn pending_receipt_of(record: &Value) -> Option<Value> {
     stored_receipt(record)
 }
 
+/// Whether the Codex or Kimi agent's own native record holds exactly this
+/// pending receipt's text as the main user's input after it was sent: the
+/// held native source read by the same bounded rules as acceptance repair
+/// (zerus-46l1q). A missing, changed or ambiguous source is no proof.
+pub(in crate::state) fn native_delivery(record: &Value, receipt: &Value) -> bool {
+    let agent = string(record, "agent");
+    let (source, after) = match agent {
+        "codex" => (
+            source(
+                Path::new(string(record, "transcript")),
+                Some(string(record, "conversation_id")),
+            ),
+            None,
+        ),
+        "kimi" => {
+            let Some(after) = kimi_order::pending(record) else {
+                return false;
+            };
+            (kimi(record), after)
+        }
+        _ => return false,
+    };
+    let Some(source) = source else {
+        return false;
+    };
+    consumed(
+        &source.rows,
+        agent,
+        record["input_pending_at"].as_f64().unwrap_or(f64::INFINITY),
+        string(receipt, "submitted_text"),
+        after,
+    )
+    .is_some()
+        && source.current()
+}
+
 fn bound_receipt(record: &Value, bootstrap: bool) -> Option<Value> {
     let receipt = stored_receipt(record)?;
     (receipt["conversation_id"] == record["conversation_id"]
