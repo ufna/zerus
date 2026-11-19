@@ -42,8 +42,8 @@ pub(super) fn step(p: &mut impl Ports, b: &Binding, epoch: &str, now: i64) -> Re
 }
 
 fn feed(p: &mut impl Ports, b: &Binding) -> Result<()> {
-    for plan in p.notes_owed(b)? {
-        p.note(&plan)?;
+    for note in p.notes_owed(b)? {
+        p.note(&note)?;
     }
     Ok(())
 }
@@ -107,8 +107,28 @@ fn effects(p: &mut impl Ports, b: &Binding, epoch: &str, now: i64) -> Result<()>
 }
 
 fn execute(p: &mut impl Ports, plan: Plan, epoch: &str, now: i64) -> Result<()> {
+    if plan.kind == Kind::Trust && policy::hooks(&plan.question) {
+        return hooks_notice(p, plan, epoch, now);
+    }
     let refusal = validate(p, &plan).err();
     execute_refusal(p, plan, epoch, now, refusal)
+}
+/// Zerus never answers Codex's hooks panel: "Trust all and continue" trusts
+/// whatever the panel captured, not what Zerus verified (zerus-f67qp). The
+/// person gets one card naming what Codex lists, read once per panel: a
+/// later pass finds the claim and reads nothing again.
+fn hooks_notice(p: &mut impl Ports, mut plan: Plan, epoch: &str, now: i64) -> Result<()> {
+    plan.kind = Kind::Notice;
+    let claim = p.claim(&plan, epoch, now)?;
+    let mut row = claim.record;
+    if claim.fresh {
+        row.state = "cancelled".into();
+        row.detail = p.hook_listing(&plan).unwrap_or_else(|why| {
+            format!("Codex asks you to review its hooks; their list is unavailable: {why}")
+        });
+        p.save(&row)?;
+    }
+    settle(p, &mut row)
 }
 fn execute_refusal(p: &mut impl Ports, mut plan: Plan, epoch: &str, now: i64, refusal: Option<String>) -> Result<()> {
     if refusal.is_some() {
@@ -166,22 +186,17 @@ fn reserve_audit(p: &mut impl Ports, row: &mut Record) -> Result<bool> {
     Ok(true)
 }
 fn deliver(p: &mut impl Ports, row: &mut Record) {
+    // Codex trusts the member's covered hooks before it starts again, so its
+    // resumed run shows no panel for them (zerus-f67qp). Its outcome is
+    // journaled on its own and never holds the resume.
+    if row.plan.kind == Kind::Resume && row.plan.binding.agent == "codex" {
+        p.before_start(&row.plan);
+    }
     let outcome = p.original(row, &mut |p| validate(p, &row.plan));
     match outcome {
         Outcome::Retry => {
             row.state = "waiting".into();
             row.detail = "Admission lock busy; the original child never started".into();
-        }
-        // Codex's hook review is approved only when Codex saved trust for
-        // exactly the reviewed hooks: the panel going away, which a person's
-        // own input in Terminal can also cause, is not that evidence.
-        Outcome::Approved(_)
-            if feed_line(&row.plan) && !matches!(p.hook_trust_saved(row), Ok(true)) =>
-        {
-            row.state = "unknown".into();
-            row.detail =
-                "Codex did not save trust for exactly the reviewed hooks; nothing is repeated"
-                    .into();
         }
         Outcome::Approved(target) => {
             row.state = "approved".into();
@@ -235,23 +250,6 @@ fn settle(p: &mut impl Ports, row: &mut Record) -> Result<()> {
     audit_error.map_or(Ok(()), Err)
 }
 
-/// Whether `plan` is Codex's hooks trust, whose approval writes one feed line
-/// the team's person sees (zerus-f67qp).
-pub(super) fn feed_line(plan: &Plan) -> bool {
-    plan.kind == Kind::Trust && policy::hooks(&plan.question)
-}
-
-/// The feed line of an approved hooks trust: the member and the hook count
-/// sentence Codex showed (zerus-f67qp).
-pub(super) fn feed_text(plan: &Plan) -> String {
-    let body = plan.question["questions"][0]["body"].as_str().unwrap_or("");
-    let count = body.split_once(". ").map_or(body, |(count, _)| count);
-    format!(
-        "Zerus confirmed Codex hook trust for member {}: {count}.",
-        plan.binding.member
-    )
-}
-
 pub(super) fn validate(p: &mut impl Ports, plan: &Plan) -> Result<()> {
     let b = &plan.binding;
     let facts = p.facts(b)?;
@@ -264,27 +262,15 @@ pub(super) fn validate(p: &mut impl Ports, plan: &Plan) -> Result<()> {
     }
     match plan.kind {
         Kind::Trust => {
+            // Zerus never answers Codex's hooks panel ([`hooks_notice`]).
+            if policy::hooks(&plan.question) {
+                return Err(p.hook_listing(plan)?);
+            }
             if !facts.team.settings.delegations.confirm_trust {
-                return Err(if policy::hooks(&plan.question) {
-                    "Trust delegation is off"
-                } else {
-                    "Folder-trust delegation is off"
-                }
-                .into());
+                return Err("Folder-trust delegation is off".into());
             }
             if policy::trust(b, &snapshot)? != plan.question {
                 return Err("The exact prompt or its hash changed".into());
-            }
-            if policy::hooks(&plan.question) {
-                // Every hook the answer would trust must be one the setting
-                // covers, and Codex's own count must be that inventory's.
-                let grant = p.hook_grant(plan)?;
-                if policy::hooks_count(&plan.question) != Some(grant.len()) {
-                    return Err(format!(
-                        "Codex's hook review counts other hooks than its inventory lists ({} listed)",
-                        grant.len()
-                    ));
-                }
             }
         }
         Kind::Resume => {

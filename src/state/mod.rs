@@ -42,7 +42,7 @@ mod fork;
 mod goals;
 mod hooks;
 #[cfg(unix)]
-pub(crate) use hooks::codex_hook_definition;
+pub(crate) use hooks::{codex_hook_definition, codex_hook_group, install_codex_hooks};
 mod hook_caller;
 pub(crate) mod hook_health;
 mod input;

@@ -222,65 +222,64 @@ fn a_waiting_claim_may_be_cancelled_but_never_settled_or_started_directly() {
     assert!(!db.claim(&plan, "epoch-2", 200).unwrap().fresh);
 }
 
-/// An approved hooks trust is settled in the real ledger by the rules every
-/// build reads: its effect row is not pending, so an older engine after a
-/// rollback is never held by it (zerus-f67qp review). Its one feed line is
-/// owed apart, until written; an approved folder trust owes none.
+/// A feed line is owed apart from the effect rows (zerus-f67qp review): once
+/// per key, to its own member launch, in a bounded page, until written; an
+/// approved effect owes none.
 #[test]
-fn an_approved_hooks_trust_is_settled_and_owes_its_feed_line_apart() {
+fn a_feed_line_is_owed_once_to_its_member_launch_until_written() {
     let temp = tempfile::tempdir().unwrap();
     let mut db = Ledger::open(temp.path()).unwrap();
-    let approve = |db: &mut Ledger, plan: &Plan| {
-        let mut row = db.claim(plan, "epoch-1", 100).unwrap().record;
-        row.audit = Some(Audit {
-            id: 1,
-            request: uuid::Uuid::new_v4().to_string(),
-            answers: serde_json::json!([]),
-            fresh: true,
-        });
-        row.audit_done = true;
-        row.state = "approved".into();
-        db.save(&row).unwrap();
-        row
-    };
-    let (mut b, _, mut s) = sample();
-    let card = crate::state::trust_fixture::resumed_hooks_trust_prompt("conversation-1");
-    b.agent = "codex".into();
-    b.run = card["run_id"].as_str().unwrap().into();
-    b.conversation = "conversation-1".into();
-    s.agent = "codex".into();
-    s.run = b.run.clone();
-    s.conversation = b.conversation.clone();
-    s.questions = vec![card.clone()];
-    let row = approve(&mut db, &engine::candidate(&b, &s, Kind::Trust, card));
-    assert_eq!(db.unsettled(&b).unwrap(), None, "the approval is settled");
-    let pending: i64 =
-        db.0.query_row(
-            "SELECT pending FROM standing_effects WHERE key=?1",
-            [&row.plan.key],
-            |r| r.get(0),
-        )
-        .unwrap();
-    assert_eq!(pending, 0);
-    assert_eq!(db.notes_owed(&b).unwrap(), std::slice::from_ref(&row.plan));
-    // Saving the same approval again owes no second line.
-    db.save(&row).unwrap();
-    assert_eq!(db.notes_owed(&b).unwrap().len(), 1);
-    db.note_done(&row.plan.key).unwrap();
-    assert!(db.notes_owed(&b).unwrap().is_empty());
-    drop(db);
-    let mut db = Ledger::open(temp.path()).unwrap();
-    assert!(
-        db.notes_owed(&b).unwrap().is_empty(),
-        "written stays written"
-    );
     let (b, _, s) = sample();
-    approve(
-        &mut db,
-        &engine::candidate(&b, &s, Kind::Trust, s.questions[0].clone()),
-    );
+    let mut row = db
+        .claim(
+            &engine::candidate(&b, &s, Kind::Trust, s.questions[0].clone()),
+            "epoch-1",
+            100,
+        )
+        .unwrap()
+        .record;
+    row.audit = Some(Audit {
+        id: 1,
+        request: uuid::Uuid::new_v4().to_string(),
+        answers: serde_json::json!([]),
+        fresh: true,
+    });
+    db.save(&row).unwrap();
+    row.audit_done = true;
+    row.state = "approved".into();
+    db.save(&row).unwrap();
     assert!(
         db.notes_owed(&b).unwrap().is_empty(),
-        "a folder trust owes no line"
+        "an approval owes none"
+    );
+    let owe = |db: &Ledger, key: &str, launch: &str, text: &str| {
+        db.owe_note(key, &b.team, &b.member, launch, &b.person, text)
+            .unwrap()
+    };
+    owe(&db, "hooks:request-1", &b.launch, "first");
+    owe(&db, "hooks:request-1", &b.launch, "again");
+    owe(&db, "hooks:request-2", "another-launch", "other");
+    let owed = db.notes_owed(&b).unwrap();
+    assert_eq!(
+        owed,
+        [Note {
+            key: "hooks:request-1".into(),
+            team: b.team.clone(),
+            member: b.member.clone(),
+            person: b.person.clone(),
+            text: "first".into(),
+        }]
+    );
+    for n in 0..12 {
+        owe(&db, &format!("hooks:page-{n:02}"), &b.launch, "page");
+    }
+    assert_eq!(db.notes_owed(&b).unwrap().len(), 8, "a bounded page");
+    db.note_done("hooks:request-1").unwrap();
+    drop(db);
+    let db = Ledger::open(temp.path()).unwrap();
+    let owed = db.notes_owed(&b).unwrap();
+    assert!(
+        owed.iter().all(|note| note.key.starts_with("hooks:page-")),
+        "written stays written"
     );
 }

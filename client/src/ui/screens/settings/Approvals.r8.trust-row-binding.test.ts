@@ -35,7 +35,7 @@ describe("trustSentence", () => {
     expect(trustSentence({ ...base, result })).toBe(sentence);
   });
   it.each([
-    ["Approved once", "Codex hook trust confirmed for Zerus's own and the team's committed hooks"],
+    ["Approved once", "Codex hook trust recorded before start for Zerus's own and the team's committed hooks"],
     ["Failed", "Codex hook trust was requested; it was not confirmed"],
     ["Unconfirmed", "Codex hook trust was requested; it was not confirmed"],
   ])("a team's Codex hook-trust record whose outcome is %s says what it covered, without a scope", (result, sentence) => {

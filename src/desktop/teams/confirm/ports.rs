@@ -17,16 +17,17 @@ pub(super) trait Ports: Sized {
     fn audit_begin(&mut self, plan: &Plan) -> Result<Audit>;
     fn audit_finish(&mut self, row: &Record) -> Result<()>;
     fn card(&mut self, row: &Record) -> Result<()>;
-    /// What a Codex hooks-trust plan may trust: every pending hook Codex
-    /// lists, each covered by the team's trust setting (`native::hooks`).
-    fn hook_grant(&mut self, plan: &Plan) -> Result<Grant>;
-    /// After delivery: whether Codex saved trust for exactly the hooks the
-    /// last grant named, and for no other.
-    fn hook_trust_saved(&mut self, row: &Record) -> Result<bool>;
-    /// Approved effects of this member launch whose one feed line is owed.
-    fn notes_owed(&mut self, binding: &Binding) -> Result<Vec<Plan>>;
-    /// Writes one owed feed line, once ([`super::engine::feed_line`]).
-    fn note(&mut self, plan: &Plan) -> Result<()>;
+    /// Just before a resume of a Codex member under the trust setting:
+    /// Codex's trust recorded for exactly the covered pending hooks
+    /// (`hook_trust::before_start`). Its outcome is journaled there.
+    fn before_start(&mut self, plan: &Plan);
+    /// What a Codex hooks panel the person must answer lists: the pending
+    /// hooks Zerus did not trust, named (`hook_trust`).
+    fn hook_listing(&mut self, plan: &Plan) -> Result<String>;
+    /// Feed lines this member launch owes.
+    fn notes_owed(&mut self, binding: &Binding) -> Result<Vec<Note>>;
+    /// Writes one owed feed line, once.
+    fn note(&mut self, note: &Note) -> Result<()>;
     fn original(&mut self, row: &Record, check: &mut dyn FnMut(&mut Self) -> Result<()>)
         -> Outcome;
 }

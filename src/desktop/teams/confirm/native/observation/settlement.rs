@@ -212,35 +212,31 @@ impl Ports for WriterPorts {
         )?
         .card(r)
     }
-    fn hook_grant(&mut self, plan: &Plan) -> Result<Grant> {
+    fn before_start(&mut self, plan: &Plan) {
+        if let Ok(mut native) = Native::new(
+            &self.config,
+            &plan.binding.machine,
+            &self.stop,
+            &mut self.store,
+        ) {
+            native.before_start(plan);
+        }
+    }
+    fn hook_listing(&mut self, plan: &Plan) -> Result<String> {
         Native::new(
             &self.config,
             &plan.binding.machine,
             &self.stop,
             &mut self.store,
         )?
-        .hook_grant(plan)
+        .hook_listing(plan)
     }
-    fn hook_trust_saved(&mut self, r: &Record) -> Result<bool> {
-        Native::new(
-            &self.config,
-            &r.plan.binding.machine,
-            &self.stop,
-            &mut self.store,
-        )?
-        .hook_trust_saved(r)
-    }
-    fn notes_owed(&mut self, b: &Binding) -> Result<Vec<Plan>> {
+    fn notes_owed(&mut self, b: &Binding) -> Result<Vec<Note>> {
         Native::new(&self.config, &b.machine, &self.stop, &mut self.store)?.notes_owed(b)
     }
-    fn note(&mut self, plan: &Plan) -> Result<()> {
-        Native::new(
-            &self.config,
-            &plan.binding.machine,
-            &self.stop,
-            &mut self.store,
-        )?
-        .note(plan)
+    fn note(&mut self, note: &Note) -> Result<()> {
+        let machine = self.binding.machine.clone();
+        Native::new(&self.config, &machine, &self.stop, &mut self.store)?.note(note)
     }
     fn original(&mut self, _r: &Record, check: &mut dyn FnMut(&mut Self) -> Result<()>) -> Outcome {
         if let Err(e) = check(self) {

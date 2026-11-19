@@ -118,7 +118,7 @@ shows everything the template brings, for you to confirm:
 |---|---|
 | **Accept results** | "The lead may accept a team task's result without you." |
 | **Answer members** | "The lead answers members' questions and permission requests without you." |
-| **Confirm folder and Zerus hook trust** | "Zerus confirms the trust prompt of a folder it created for the team, and Codex's review of the hooks there when each is Zerus's own or committed in the team's base commit; on the member's account the agent records the folder trust for the team repository's main checkout and its subfolders." |
+| **Confirm folder and Zerus hook trust** | "Zerus confirms the trust prompt of a folder it created for the team; on the member's account the agent records the folder trust for the team repository's main checkout and its subfolders. Before a Codex member starts, Zerus records Codex's trust for its own hooks and for those committed in the team's base commit; Codex asks you about any other hook." |
 | **Resume exited members** | "Zerus resumes a member whose agent exited by itself." |
 | **Merge accepted work** | "An accepted result is merged into the integration branch without your approval." |
 
@@ -726,22 +726,27 @@ answer for you:
   **Settings > Approvals** records the scope: only a confirmed grant says
   "Trusted for %1 and its subfolders on this account"; failed, cancelled or
   unconfirmed attempts say trust was requested but not confirmed.
-- **Codex hook trust.** Under the same permission, Codex's "Hooks need
-  review" prompt of such a member, at a new run's startup or when its saved
-  conversation is resumed, is answered with **Trust all and continue** only
-  when every hook Codex would trust is covered. Zerus first asks the member's
-  own Codex for its list of new or changed hooks (each with its key and
-  hash), and each must be Zerus's own state hook, exactly as this Zerus writes
-  it into the account's `hooks.json`, or a project hook in a `.codex` file that
-  is byte for byte the team's base commit's. That covers Zerus's hooks after
-  an update and the repository's committed hooks. A hook a member changed in
-  its worktree, any other account hook, a plugin's hook, a list Codex cannot
-  give completely, or a count other than the prompt's goes to you, on one card
-  naming the hooks. After answering, Zerus checks that Codex saved trust for
-  exactly those hooks; otherwise the outcome is unknown and is not repeated.
-  The approval journal records it as **Codex hook trust**, and the team's feed
-  gets one line, "Zerus confirmed Codex hook trust for member %1: %2 hooks are
-  new or changed."
+- **Codex hook trust.** Under the same permission, just before Zerus starts
+  or resumes a Codex member, it records Codex's trust for that member's
+  covered hooks, so Codex does not ask about them. Zerus first brings its own
+  state hooks in the member's account up to date, as a session start does, then
+  asks the member's own Codex for its list of new or changed hooks, each with
+  its key and hash. Covered are Zerus's own state hook, exactly the entry this
+  Zerus writes into the account's `hooks.json`, and a project hook in a
+  `.codex` file that is byte for byte the team's base commit's. Zerus writes
+  trust for exactly those keys and hashes through Codex's own configuration
+  request, the one Codex's review panel uses. It then checks that nothing else
+  in the account's `config.toml` changed and that Codex lists them as trusted.
+  Zerus never answers Codex's "Hooks need review" panel. If the panel still
+  appears (another hook, a hook a member changed, or a list Codex could not
+  give), it stays with you, and one card names what Codex lists. The approval
+  journal records each write as **Codex hook trust**, with its keys and
+  hashes; an unconfirmed write is not repeated. The team's feed gets one line,
+  "Zerus trusted %1 of its own and the team's committed Codex hooks for member
+  %2 before its agent started." Codex lists a repository's project hooks only
+  once the account trusts that folder. So at a member's first start in a
+  repository the account has never trusted, only Zerus's own hooks are
+  recorded, and Codex asks you about the committed ones that once.
 - **Resume.** A member whose agent exited by itself is resumed in the same
   conversation, at most three times an hour, with a short brief that points
   it at `hgs team current`.

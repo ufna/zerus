@@ -119,7 +119,7 @@ export function journalSentence(kind: string): string {
     case "reconcile_unstaffed": return tr("Tasks without a member checked");
     case "end_stale_unstaffed": return tr("Notice about tasks without a member closed");
     case "close_stale_reopen_notices": return tr("The service closed reopen notices that no longer need the lead's attention");
-    case "note_confirmation": return tr("The service confirmed a member's Codex hook review under the team's trust setting");
+    case "note_confirmation": return tr("The service recorded a member's Codex hook trust before its agent started");
     case "reconcile_lead_queue": return tr("Lead queue checked");
     case "tell_paused_started": return tr("Start during a pause reported");
     case "close_paused_started": return tr("Start during a pause notice closed");

@@ -110,9 +110,10 @@ pub(super) fn trust_candidate<'a>(b: &Binding, s: &'a Snapshot) -> Option<&'a Va
 }
 
 /// Codex's startup prompt to trust its new or changed hooks, by its
-/// producer's source (`state::codex_hooks_trust`). Under the team's trust
-/// delegation it is answered for a Codex member in a worktree Zerus created
-/// for the team, as the folder-trust prompt is (zerus-f67qp).
+/// producer's source (`state::codex_hooks_trust`). It is never answered: a
+/// Codex member's panel gets one card naming what Codex lists, since the
+/// trust the setting covers is recorded before Codex starts (zerus-f67qp,
+/// `hook_trust`).
 pub(super) fn hooks(question: &Value) -> bool {
     question["source"] == "codex_hooks_trust"
 }
@@ -134,25 +135,13 @@ pub(super) fn trust(b: &Binding, s: &Snapshot) -> Result<Value, String> {
             && crate::state::native_identity(q, "conversation_id") == Some(s.conversation.as_str()),
         "The prompt identity changed",
     )?;
-    let hook = hooks(q);
-    // A hooks-trust prompt precedes the SessionStart of a new run or of the
-    // member's resumed conversation; its producer writes it only then. A
-    // resumed one names the conversation the member's binding resumed.
     need(
-        s.conversation.is_empty() || hook && s.conversation == b.conversation,
-        if hook {
-            "The hooks prompt is not at the startup of the member's own conversation"
-        } else {
-            "The folder prompt is not a startup prompt"
-        },
+        s.conversation.is_empty(),
+        "The folder prompt is not a startup prompt",
     )?;
     let expected = provider(&b.agent)?;
     need(
-        if hook {
-            b.agent == "codex" && q["answer_transport"] == "codex_tui"
-        } else {
-            q["source"] == expected.0 && q["answer_transport"] == expected.1
-        },
+        q["source"] == expected.0 && q["answer_transport"] == expected.1,
         "This prompt needs a person",
     )?;
     need(
@@ -171,92 +160,15 @@ pub(super) fn trust(b: &Binding, s: &Snapshot) -> Result<Value, String> {
         .as_array()
         .ok_or("The prompt has no question")?;
     need(items.len() == 1, "The prompt contains multiple questions")?;
-    if hook {
-        hooks_item(&items[0])?;
-    } else {
-        folder_item(
-            &items[0],
-            &b.folder,
-            expected.2,
-            expected.3,
-            b.agent == "kimi",
-            b.agent == "codex",
-        )?;
-    }
+    folder_item(
+        &items[0],
+        &b.folder,
+        expected.2,
+        expected.3,
+        b.agent == "kimi",
+        b.agent == "codex",
+    )?;
     Ok(q.clone())
-}
-
-/// Codex's hooks-trust card as its producer writes it (zerus-f67qp): the
-/// native title, the reviewed disclosure whose only variable is the hook
-/// count, and exactly the three native choices in their order. A native
-/// error line or any other disclosure stays the person's.
-fn hooks_item(item: &Value) -> Result<(), String> {
-    const CHOICES: [(&str, &str); 3] = [
-        ("review", "Review hooks"),
-        ("trust", "Trust all and continue"),
-        (
-            "continue_without_trusting",
-            "Continue without trusting (hooks won't run)",
-        ),
-    ];
-    need(
-        item["id"] == "hooks_trust" && item["question"] == "Hooks need review",
-        "The prompt grants a different scope",
-    )?;
-    need(
-        item["multi_select"] != true && item["allow_other"] != true,
-        "The prompt has other answer modes",
-    )?;
-    let body = item["body"]
-        .as_str()
-        .ok_or("The prompt carries no disclosure")?;
-    need(
-        hooks_disclosure(body),
-        "The hooks prompt carries an unfamiliar disclosure",
-    )?;
-    let choices = item["options"]
-        .as_array()
-        .ok_or("The prompt has no choices")?;
-    need(
-        choices.len() == CHOICES.len()
-            && choices
-                .iter()
-                .zip(CHOICES)
-                .all(|(o, (id, label))| o["id"] == id && o["label"] == label),
-        "The reviewed hooks-trust choices changed",
-    )
-}
-
-/// The hook count Codex's hooks-trust card states.
-pub(super) fn hooks_count(question: &Value) -> Option<usize> {
-    let body = question["questions"][0]["body"].as_str()?;
-    if !hooks_disclosure(body) {
-        return None;
-    }
-    body.split(' ').next()?.parse().ok()
-}
-
-/// "1 hook is" or "N hooks are" (N of at least 2, written without a leading
-/// zero), then the rest of the reviewed disclosure word for word.
-fn hooks_disclosure(body: &str) -> bool {
-    const REST: &str = " new or changed. Hooks can run outside the sandbox after you trust them.";
-    let Some((count, noun)) = body
-        .strip_suffix(REST)
-        .and_then(|head| head.split_once(' '))
-    else {
-        return false;
-    };
-    let Ok(n) = count.parse::<u32>() else {
-        return false;
-    };
-    if !count.bytes().all(|b| b.is_ascii_digit()) || count.starts_with('0') {
-        return false;
-    }
-    match noun {
-        "hook is" => n == 1,
-        "hooks are" => n >= 2,
-        _ => false,
-    }
 }
 
 fn provider(

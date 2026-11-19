@@ -296,7 +296,8 @@ pub fn trust_sentence(
         .is_some_and(|ids| ids.iter().any(|id| id == "team_hook_trust"))
     {
         return Some(if status == Some("approved") {
-            "Codex hook trust confirmed for Zerus's own and the team's committed hooks".to_owned()
+            "Codex hook trust recorded before start for Zerus's own and the team's committed hooks"
+                .to_owned()
         } else {
             "Codex hook trust was requested; it was not confirmed".to_owned()
         });

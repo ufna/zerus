@@ -510,135 +510,23 @@ fn hooks_sample(conversation: Option<&str>) -> (Binding, Snapshot) {
     (binding, snapshot)
 }
 
+/// Codex's hooks panel is a candidate of a Codex member only, so the person
+/// gets one card naming what Codex lists; it is never eligible to be
+/// answered (zerus-f67qp delta).
 #[test]
-fn codex_hooks_trust_at_a_new_or_resumed_startup_is_eligible() {
+fn codex_hooks_panel_is_a_codex_candidate_never_eligible() {
     for conversation in [None, Some("conversation-1")] {
-        let (binding, snapshot) = hooks_sample(conversation);
+        let (mut binding, mut snapshot) = hooks_sample(conversation);
         assert_eq!(
             trust_candidate(&binding, &snapshot),
             Some(&snapshot.questions[0])
         );
-        assert_eq!(
-            trust(&binding, &snapshot).unwrap(),
-            snapshot.questions[0],
-            "{conversation:?}"
-        );
-    }
-}
-
-#[test]
-fn every_hooks_trust_field_is_required() {
-    for field in [
-        "claude",
-        "kimi",
-        "transport",
-        "cannot_answer",
-        "run",
-        "conversation",
-        "hash",
-        "question_id",
-        "items",
-        "item_id",
-        "title",
-        "count",
-        "disclosure",
-        "error",
-        "empty_body",
-        "multi",
-        "other",
-        "two_choices",
-        "four_choices",
-        "label",
-        "trust_id",
-        "duplicate_trust",
-        "folder_source",
-        "two",
-        "paused",
-        "ended",
-        "not_live",
-    ] {
-        let (mut binding, mut snapshot) = hooks_sample(Some("conversation-1"));
-        let q = &mut snapshot.questions[0];
-        match field {
-            "claude" | "kimi" => {
-                binding.agent = field.into();
-                snapshot.agent = field.into();
-            }
-            "transport" => q["answer_transport"] = json!("claude_tui"),
-            "cannot_answer" => q["can_answer"] = json!(false),
-            "run" => q["run_id"] = json!("other"),
-            "conversation" => q["conversation_id"] = json!("other"),
-            "hash" => q["question_hash"] = json!("short"),
-            "question_id" => q["question_id"] = json!(""),
-            "items" => q["questions"].as_array_mut().unwrap().push(json!({})),
-            "item_id" => q["questions"][0]["id"] = json!("trust"),
-            "title" => q["questions"][0]["question"] = json!("Trust this folder?"),
-            "count" => q["questions"][0]["body"] = json!("Some hooks are new or changed. Hooks can run outside the sandbox after you trust them."),
-            "disclosure" => q["questions"][0]["body"] = json!("4 hooks are new or changed. Hooks can now also run during review."),
-            "error" => q["questions"][0]["body"] = json!("4 hooks are new or changed. Hooks can run outside the sandbox after you trust them. Failed to trust hooks: hook configuration changed"),
-            "empty_body" => q["questions"][0]["body"] = json!(""),
-            "multi" => q["questions"][0]["multi_select"] = json!(true),
-            "other" => q["questions"][0]["allow_other"] = json!(true),
-            "two_choices" => {
-                q["questions"][0]["options"].as_array_mut().unwrap().remove(2);
-            }
-            "four_choices" => q["questions"][0]["options"]
-                .as_array_mut()
-                .unwrap()
-                .push(json!({"id":"always","label":"Always trust"})),
-            "label" => q["questions"][0]["options"][1]["label"] = json!("Trust all hooks forever"),
-            "trust_id" => q["questions"][0]["options"][1]["id"] = json!("trust_0"),
-            "duplicate_trust" => q["questions"][0]["options"][2]["id"] = json!("trust"),
-            "folder_source" => q["source"] = json!("codex_folder_trust"),
-            "two" => snapshot.questions.push(snapshot.questions[0].clone()),
-            "paused" => snapshot.paused = true,
-            "ended" => snapshot.ended = true,
-            "not_live" => snapshot.live = false,
-            _ => unreachable!(),
+        assert!(hooks(&snapshot.questions[0]));
+        assert!(trust(&binding, &snapshot).is_err(), "{conversation:?}");
+        for agent in ["claude", "kimi"] {
+            binding.agent = agent.into();
+            snapshot.agent = agent.into();
+            assert_eq!(trust_candidate(&binding, &snapshot), None, "{agent}");
         }
-        assert!(trust(&binding, &snapshot).is_err(), "{field}");
     }
-}
-
-#[test]
-fn the_hook_count_may_be_one_or_many() {
-    use crate::state::trust_fixture as produced;
-    for (from, to) in [("4 hooks are", "1 hook is"), ("4 hooks", "10 hooks")] {
-        let screen = produced::HOOKS_TRUST_SCREEN.replace(from, to);
-        let (binding, mut snapshot) = hooks_sample(Some("conversation-1"));
-        snapshot.questions[0] = produced::hooks_trust_card(
-            &produced::resumed_record("codex", "conversation-1"),
-            &screen,
-        )
-        .unwrap();
-        trust(&binding, &snapshot).unwrap();
-    }
-    for (from, to) in [
-        ("4 hooks are", "1 hooks are"),
-        ("4 hooks are", "0 hooks are"),
-        ("4 hooks are", "4 hook is"),
-    ] {
-        let screen = produced::HOOKS_TRUST_SCREEN.replace(from, to);
-        let (binding, mut snapshot) = hooks_sample(Some("conversation-1"));
-        snapshot.questions[0] = produced::hooks_trust_card(
-            &produced::resumed_record("codex", "conversation-1"),
-            &screen,
-        )
-        .unwrap();
-        assert!(trust(&binding, &snapshot).is_err(), "{to}");
-    }
-}
-
-/// A hooks-trust card in a conversation the member's binding did not resume
-/// is refused, though the session is the member's (zerus-f67qp).
-#[test]
-fn a_hooks_trust_card_in_a_conversation_the_binding_did_not_resume_is_refused() {
-    let (mut binding, snapshot) = hooks_sample(Some("conversation-1"));
-    trust(&binding, &snapshot).unwrap();
-    binding.conversation = String::new();
-    session(&binding, &snapshot).unwrap();
-    assert_eq!(
-        trust(&binding, &snapshot).unwrap_err(),
-        "The hooks prompt is not at the startup of the member's own conversation"
-    );
 }

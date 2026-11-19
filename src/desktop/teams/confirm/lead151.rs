@@ -177,26 +177,24 @@ impl Ports for World {
             .unwrap();
         Ok(())
     }
-    fn hook_grant(&mut self, _: &Plan) -> Result<Grant> {
-        Ok(Vec::new())
+    fn before_start(&mut self, _: &Plan) {}
+    fn hook_listing(&mut self, _: &Plan) -> Result<String> {
+        Ok("Codex asks you to review hooks it lists".into())
     }
-    fn hook_trust_saved(&mut self, _: &Record) -> Result<bool> {
-        Ok(true)
-    }
-    fn notes_owed(&mut self, b: &Binding) -> Result<Vec<Plan>> {
+    fn notes_owed(&mut self, b: &Binding) -> Result<Vec<Note>> {
         self.ledger.notes_owed(b)
     }
-    fn note(&mut self, plan: &Plan) -> Result<()> {
+    fn note(&mut self, note: &Note) -> Result<()> {
         self.h
             .run(
                 &service(),
                 Operation::NoteConfirmation {
-                    member: plan.binding.member.clone(),
-                    text: engine::feed_text(plan),
+                    member: note.member.clone(),
+                    text: note.text.clone(),
                 },
             )
             .unwrap();
-        self.ledger.note_done(&plan.key)
+        self.ledger.note_done(&note.key)
     }
     fn original(
         &mut self,
