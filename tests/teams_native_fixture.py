@@ -51,8 +51,11 @@ PERSON = os.environ.get('HGS_TEAMS_PERSON_BIN', '')
 PERSON_ENTRY = 'desktop::teams::person_actions::contract::contract_person_step'
 PERSON_MARKER = 'zerus-teams-contract-person-fixture/v1'
 ROOT_FILE = '.zerus-teams-contract-root'
-# The one refusal the first listing of a fresh state root may answer; see rows().
+# Listing answers that mean "no complete body yet", which rows() reads again; see rows().
+# The first listing of a fresh state root may answer this one before its index exists.
 LS_RACE = 'hgs: Missing private file'
+# The indexed Linux listing never returns a partial body (src/state/listing_metadata/listing.rs).
+LS_BUILDING = 'hgs: Session listing is building, stale or unavailable; no complete body returned'
 # Set by a runner that keeps custody of private roots (scripts/ci/kimi-native.py
 # --teams): called with the case name and the root as soon as the root exists.
 ROOT_CREATED = None
@@ -75,7 +78,7 @@ ALLOWED_HOSTS = {
 # Bounds are about three times the duration measured on a loaded development host
 # (the upstream canary has no Teams step yet); the logged durations tighten them.
 BOUND = dict(service=60, bound=420, listed=90, card=180, ready=180, parent=200, handout=240, turn=180,
-             doorbell=240, cancel=240, stop=180, exit=60, teardown=60)
+             doorbell=240, cancel=240, stop=180, exit=60, teardown=60, listing=30)
 # The private root's name. It is short so that a member worktree in a hosted runner's
 # /tmp (`/tmp/hgs-tn-XXXXXXXX/work/zerus-team-<uuid>`, 73 columns) fits one row of
 # Codex's Folder access panel; a local root inside the worktree's target/ wraps.
@@ -892,16 +895,23 @@ class TeamFixture:
             elif isinstance(value, list):
                 for child in value:
                     walk(child)
-        run = self.hgs('ls', '--json', ok=False)
-        if run.returncode != 0 and run.stderr.strip() == LS_RACE and not self.listed_once:
-            # The first listing of a fresh state root starts its metadata worker and can
-            # answer this before the worker has created its index (zerus-kfyot); every
-            # class of hosted run 44464876721 met it once, at its first read. Until one
-            # listing has succeeded it counts as not yet listed and is recorded; every
-            # wait still ends at its own bound.
+        # A Linux listing answers from its metadata index and never returns a partial body.
+        # Until the index is complete it refuses with LS_BUILDING (seen seconds after a
+        # member exited, hosted run 44476290302). The first listing of a fresh state root
+        # starts the index's worker and can also answer LS_RACE (zerus-kfyot; once per
+        # class in hosted run 44464876721), but only before any listing has succeeded.
+        # Either is read again, recorded, until a complete body or the bound; an empty
+        # list is never read from a refusal.
+        end = now() + BOUND['listing']
+        while True:
+            run = self.hgs('ls', '--json', ok=False)
+            refused = run.stderr.strip()
+            transient = refused == LS_BUILDING or (refused == LS_RACE and not self.listed_once)
+            if run.returncode == 0 or not transient or now() >= end:
+                break
             self.evidence.append('transient-reads.jsonl', dict(at=time.time(), argv=['ls', '--json'],
                                                                stderr=run.stderr[-300:]))
-            return found
+            time.sleep(0.5)
         if run.returncode != 0:
             raise AssertionError(f'hgs ls exited {run.returncode}: {run.stdout[-600:]} {run.stderr[-600:]}')
         walk(json.loads(run.stdout))

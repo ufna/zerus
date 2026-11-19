@@ -827,25 +827,42 @@ class TeamsFixtureIsolation(unittest.TestCase):
         with self.assertRaisesRegex(AssertionError, 'mode HGS_STATE_DIR'):
             fx.preflight()
 
-    def test_only_a_first_listing_may_meet_the_bootstrap_refusal_and_it_is_recorded(self):
+    def test_a_listing_is_read_again_until_its_body_is_complete_and_never_read_as_empty(self):
         from types import SimpleNamespace
         listed = json.dumps({'sessions': [{'name': 'codex/p/one', 'run_id': 'r1'}]})
-        for stdout, stderr, code, outcome in (
-                ('', 'hgs: Missing state folder\n', 1, AssertionError),
-                ('', fixture.LS_RACE + ' and more\n', 1, AssertionError),
-                ('', fixture.LS_RACE + '\n', 1, []),
-                ('', fixture.LS_RACE + '\n', 1, []),
-                (listed, '', 0, ['codex/p/one']),
-                # Once a listing has succeeded the index exists; the refusal fails.
-                ('', fixture.LS_RACE + '\n', 1, AssertionError)):
-            self.fx.hgs = mock.Mock(return_value=SimpleNamespace(returncode=code, stdout=stdout, stderr=stderr))
+        answer = lambda stderr='', stdout='', code=1: SimpleNamespace(returncode=code, stdout=stdout, stderr=stderr)
+        complete, bootstrap, building = answer(stdout=listed, code=0), answer(fixture.LS_RACE + '\n'), answer(
+            fixture.LS_BUILDING + '\n')
+
+        def read(*answers, bound=30):
+            self.fx.hgs = mock.Mock(side_effect=list(answers))
             self.fx.evidence = mock.Mock()
-            if outcome is AssertionError:
-                with self.assertRaises(AssertionError, msg=stderr):
-                    self.fx.rows()
-                continue
-            self.assertEqual([row['name'] for row in self.fx.rows()], outcome)
-            self.assertEqual(self.fx.evidence.append.called, code != 0)
+            with mock.patch.dict(fixture.BOUND, listing=bound), mock.patch.object(fixture.time, 'sleep'):
+                rows = [row['name'] for row in self.fx.rows()]
+            return rows, self.fx.hgs.call_count, self.fx.evidence.append.call_count
+
+        # Hosted run 44476290302: a complete listing, then "building" seconds later.
+        self.assertEqual(read(bootstrap, building, complete), (['codex/p/one'], 3, 2))
+        self.assertEqual(read(building, building, complete), (['codex/p/one'], 3, 2))
+        # The bootstrap refusal only before the first complete listing; never another failure.
+        for refused in (bootstrap, answer('hgs: Missing state folder\n'), answer(fixture.LS_RACE + ' and more\n')):
+            with self.assertRaises(AssertionError, msg=refused.stderr):
+                read(refused, complete)
+        # A listing that stays incomplete past its bound fails; it is never an empty list.
+        with self.assertRaisesRegex(AssertionError, 'building, stale or unavailable'):
+            read(building, building, complete, bound=0)
+
+    def test_a_first_listing_may_meet_the_bootstrap_refusal(self):
+        from types import SimpleNamespace
+        self.fx.listed_once = False
+        listed = json.dumps({'sessions': [{'name': 'codex/p/one', 'run_id': 'r1'}]})
+        self.fx.hgs = mock.Mock(side_effect=[SimpleNamespace(returncode=1, stdout='', stderr=fixture.LS_RACE + '\n'),
+                                             SimpleNamespace(returncode=0, stdout=listed, stderr='')])
+        self.fx.evidence = mock.Mock()
+        with mock.patch.object(fixture.time, 'sleep'):
+            self.assertEqual([row['name'] for row in self.fx.rows()], ['codex/p/one'])
+        self.assertTrue(self.fx.listed_once)
+        self.assertEqual(self.fx.evidence.append.call_args[0][0], 'transient-reads.jsonl')
 
     def tmux(self, *argv, **env):
         self.marker.unlink(missing_ok=True)

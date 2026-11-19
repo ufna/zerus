@@ -1510,11 +1510,17 @@ part of the Dev gate or of Nightly: a red run is visible and holds nothing back.
   `<pasted_content id="…">`. The fixture reads only the inner text as the prompt, as the
   product's journal does (`pasted_text` in `src/state/journal.rs`). A recording of the
   real agent's request is kept in `tests/fixtures/claude-pasted-prompt.json`.
-- **The first listing.** The first `hgs ls` of a fresh state root starts its listing
-  metadata worker. It can answer `hgs: Missing private file` before that worker has
-  created its index. Until one listing has succeeded, the fixture counts exactly that
-  refusal as "nothing listed yet" and records it in `transient-reads.jsonl`. Any other
-  failed read fails, and every wait keeps its bound.
+- **Listings.** On Linux, `hgs ls` answers from its metadata index and never returns a
+  partial body. While the index is incomplete it refuses with "Session listing is
+  building, stale or unavailable", for example seconds after a member exits. The
+  first `hgs ls` of a fresh state root starts the index's worker and can also answer
+  `hgs: Missing private file` before the index exists. The fixture reads the listing
+  again for up to 30 seconds:
+  - after either refusal, but after the second only until one listing has succeeded;
+  - recording each read in `transient-reads.jsonl`.
+
+  Any other failure fails, and so does a listing still incomplete at the bound. A
+  refusal is never read as an empty listing.
 
 It runs these steps in order:
 
