@@ -23,7 +23,9 @@ pub(crate) mod native;
 mod policy;
 pub(crate) mod timing;
 pub(crate) use intake::{preflight, send};
-pub(crate) use policy::{clear, clear_named, guard, guarded, meet};
+#[cfg(test)]
+pub(crate) use policy::guard;
+pub(crate) use policy::{clear, clear_named, decide, guarded, meet, Decision};
 
 /// The person's exact unknown-attempt disposition is separate from ordinary
 /// task cancellation. A live team owns its retained reply; a terminal team

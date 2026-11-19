@@ -26,6 +26,9 @@ pub struct CutoverHold {
     pub by: Option<Actor>,
     /// When, in milliseconds; none when the stored value could not be read.
     pub at: Option<i64>,
+    /// The person's message an agent set it for (zerus-46l1q).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub person_request: Option<crate::PersonRequestRef>,
 }
 
 impl Default for Settings {
@@ -142,6 +145,7 @@ impl ProjectDoc {
             on: true,
             by: None,
             at: None,
+            person_request: None,
         }))
     }
 
@@ -165,13 +169,31 @@ impl ProjectDoc {
     /// names who set it and when. Only a person sets it; an agent or an
     /// automatic process never does.
     pub fn set_cutover_hold(&mut self, on: bool, by: &Actor, at: i64) -> Result<()> {
-        if !matches!(by, Actor::Person) {
-            return Err(Error::new("only a person sets or clears the cutover hold"));
+        self.set_cutover_hold_for(on, by, None, at)
+    }
+
+    /// The person sets or clears the hold, or an agent does at the person's
+    /// own request, which is recorded with it (zerus-46l1q).
+    pub fn set_cutover_hold_for(
+        &mut self,
+        on: bool,
+        by: &Actor,
+        request: Option<&crate::PersonRequestRef>,
+        at: i64,
+    ) -> Result<()> {
+        if !matches!(
+            (by, request),
+            (Actor::Person, None) | (Actor::Agent(_), Some(_))
+        ) {
+            return Err(Error::new(
+                "only a person, or an agent at the person's own request, sets or clears the cutover hold",
+            ));
         }
         let hold = CutoverHold {
             on,
             by: Some(by.clone()),
             at: Some(at),
+            person_request: request.cloned(),
         };
         self.doc
             .get_map("settings")
@@ -270,6 +292,45 @@ mod tests {
         assert!(settings.check_agent(&agent, &own, true, 1).is_ok());
         assert!(settings.check_agent(&agent, &own, true, 2).is_err());
         assert!(settings.check_agent(&agent, &own, false, 2).is_ok());
+    }
+
+    #[test]
+    fn an_agent_sets_the_hold_only_at_the_persons_request_which_the_hold_records() {
+        let mut project = ProjectDoc::new();
+        let agent = Actor::Agent(SessionKey {
+            machine: "m1".into(),
+            session: "codex/api".into(),
+            session_id: "launch_id:api".into(),
+        });
+        let request = crate::PersonRequestRef {
+            machine: "m1".into(),
+            session: "codex/api".into(),
+            session_id: "launch_id:api".into(),
+            run_id: "run-1".into(),
+            conversation_id: "conversation-1".into(),
+            request_id: "44444444-4444-4444-8444-444444444444".into(),
+            origin: "desktop".into(),
+        };
+        assert!(project.set_cutover_hold_for(true, &agent, None, 5).is_err());
+        // The person needs no request, and is never recorded as one.
+        assert!(project
+            .set_cutover_hold_for(true, &Actor::Person, Some(&request), 5)
+            .is_err());
+        assert_eq!(project.cutover_hold(), None);
+        project
+            .set_cutover_hold_for(true, &agent, Some(&request), 10)
+            .unwrap();
+        let hold = project.cutover_hold().unwrap();
+        assert_eq!(
+            (hold.on, hold.by, hold.at, hold.person_request),
+            (true, Some(agent), Some(10), Some(request))
+        );
+        // A stored hold without the field, as an older build wrote it, reads.
+        let old: CutoverHold =
+            serde_json::from_str(r#"{"on":false,"by":{"kind":"person"},"at":3}"#).unwrap();
+        assert_eq!(old.person_request, None);
+        project.set_cutover_hold(false, &Actor::Person, 11).unwrap();
+        assert_eq!(project.cutover_hold().unwrap().person_request, None);
     }
 
     #[test]

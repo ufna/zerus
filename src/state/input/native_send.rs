@@ -824,6 +824,20 @@ mod tests {
             assert_eq!(original.matches(witnessed).count(), 1, "{witnessed}");
             original = original.replacen(witnessed, reviewed, 1);
         }
+        // zerus-46l1q review D2: a writer at the person's request checks it
+        // under Root before anything is typed; project that addition away.
+        let admit = "    admit: Option<&dyn Fn() -> std::result::Result<(), String>>,\n";
+        assert_eq!(original.matches(admit).count(), 1);
+        original = original.replacen(admit, "", 1);
+        let admitted = "    // A writer acting at the person's request checks it here, under Root and\n    // before anything is typed (zerus-46l1q, review D2): every revocation\n    // comes before this send's admission (nothing is sent) or after it.\n    if let Some(Err(why)) = admit.map(|admit| admit()) {\n        return Err(refused(typed, why));\n    }\n";
+        assert_eq!(original.matches(admitted).count(), 1);
+        original = original.replacen(admitted, "", 1);
+        // zerus-46l1q review R3-2: a debug-only pause under Root, for the
+        // lock-order test; project it away.
+        let pause =
+            "    #[cfg(any(test, debug_assertions))]\n    session_graph::receipt_pause();\n";
+        assert_eq!(original.matches(pause).count(), 1);
+        original = original.replacen(pause, "", 1);
         assert_eq!(
             format!("{:x}", Sha256::digest(original.as_bytes())),
             "59613e90dd2487deb1c88ce9820f0194714dcbab6ea0f7b580cf9f50598f36bd"

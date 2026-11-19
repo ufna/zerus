@@ -1069,6 +1069,47 @@ pub(crate) fn inspect_reference(reference: &crate::session_reference::Reference)
     Ok(output)
 }
 
+/// The one person-authority serialization point (zerus-46l1q, review D3):
+/// the state Root lock. Every revocation of a person turn writes its session
+/// record under it (an answer, any input receipt, a prompt hook, a run or
+/// conversation change), so a writer that holds this from its final recheck
+/// of the person's request through its commit sees a revocation in that
+/// recheck or not before its commit. Never held across an input delivery:
+/// the input writer takes Root itself and checks a held request there
+/// ([`submit_task_message_admitted`]).
+pub(crate) struct PersonAuthority(#[allow(dead_code)] storage::Guard);
+
+/// Takes the person-authority serialization point, waiting no later than
+/// `deadline` (review R3-2): it is always the last lock taken, and a writer
+/// that cannot have it in time fails closed with a refusal it may retry,
+/// never blocking on it. See [`PersonAuthority`].
+pub(crate) fn person_authority_until(deadline: std::time::Instant) -> Result<PersonAuthority> {
+    storage::writer_until(deadline)?
+        .map(PersonAuthority)
+        .ok_or_else(|| {
+            "the session state stayed busy; nothing was written; run the command again".into()
+        })
+}
+
+/// [`submit_task_message`] for a writer acting at the person's request
+/// (review D2): `admit` runs under the input writer's own Root, after its
+/// duplicate check and before anything is typed or counted, so the request
+/// is checked again at the send's first effect, ordered with every
+/// revocation. Its refusal sends nothing. A DeepSeek session, whose
+/// delivery holds no Root, is refused at the person's request.
+pub(crate) fn submit_task_message_admitted(
+    session: &zerus_replica::SessionKey,
+    text: &str,
+    attachments: &[Value],
+    admit: &dyn Fn() -> std::result::Result<(), String>,
+) -> Result<Value> {
+    local_sessions()?;
+    if session.session.starts_with("dsh/") {
+        return Err("a DeepSeek session does not take a task at the person's request; ask the person to send it".into());
+    }
+    input::submit_task_admitted(session, text, attachments, admit)
+}
+
 /// Pastes a task prompt or cancel message into `name` for its current run and
 /// conversation, the way `hgs send` does, and returns the durable receipt.
 pub(crate) fn submit_task_message(session: &zerus_replica::SessionKey, text: &str, attachments: &[Value]) -> Result<Value> {
