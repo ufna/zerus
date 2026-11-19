@@ -320,7 +320,7 @@ pub(super) fn show_confirmation(
 ) -> bool {
     let title = crate::native_text::render(&prompt.title);
     app.dialog()
-        .message(crate::native_text::lines(&prompt.body))
+        .message(confirmation_body(&prompt.body))
         .title(title.clone())
         .parent(window)
         .kind(MessageDialogKind::Warning)
@@ -329,6 +329,17 @@ pub(super) fn show_confirmation(
             crate::native_text::render(&zerus_client_core::text!("Cancel")),
         ))
         .blocking_show()
+}
+
+fn confirmation_body(lines: &[zerus_client_core::text::Text]) -> String {
+    let body = crate::native_text::lines(lines);
+    // rfd's GTK backend passes the secondary text to GTK as a format string.
+    // Quote percent signs at that boundary so captions remain literal.
+    if cfg!(target_os = "linux") {
+        body.replace('%', "%%")
+    } else {
+        body
+    }
 }
 
 mod tasks;
