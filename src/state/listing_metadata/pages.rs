@@ -114,7 +114,7 @@ impl Reader {
         Ok(())
     }
     pub fn open(root: &Path) -> anyhow::Result<Self> {
-        Ok(Self(Store::read(root)?, std::cell::Cell::new(BYTES)))
+        Ok(Self(Store::read_listing(root)?, std::cell::Cell::new(BYTES)))
     }
     pub fn page(&self, cursor: Option<&Cursor>) -> anyhow::Result<Page> {
         self.page_limit(cursor, ROWS)

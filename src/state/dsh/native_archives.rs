@@ -4,6 +4,9 @@ use super::*;
 use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
 use std::time::{Duration, Instant};
 
+#[cfg(test)]
+mod tests;
+
 const FILE: &str = "dsh/archives-v1.sqlite3";
 const SCHEMA: &str = "
     CREATE TABLE IF NOT EXISTS archive_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);

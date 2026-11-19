@@ -755,5 +755,5 @@ pub(in crate::state) fn merge(
         }
         Ok(value)
     };
-    run().map_err(|error| error.to_string())
+    run().map_err(|error| public_index_error(&error))
 }

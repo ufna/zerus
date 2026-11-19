@@ -91,6 +91,7 @@ export async function probeSpawns(ctx, cwd, action, evidenceDir) {
   }
 
   const count = action === 'bulk' ? 500 : 1;
+  const wrapperMarked = spawnMethods.map(method => typeof service[method]?.[spawnOriginal] === 'function');
   const installation = installationNumber(service);
   const depths = [];
   const select = service.selectContainmentMode;
@@ -120,5 +121,5 @@ export async function probeSpawns(ctx, cwd, action, evidenceDir) {
     if (result.exitCode !== 0) return { completed, error: `Spawn exit ${result.exitCode}` };
     completed++;
   }
-  return { completed, installation, minDepth: Math.min(...depths), maxDepth: Math.max(...depths) };
+  return { completed, installation, wrapperMarked, minDepth: Math.min(...depths), maxDepth: Math.max(...depths) };
 }

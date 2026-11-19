@@ -1,11 +1,16 @@
 #!/usr/bin/env python3
 """Restore source controls with private state, fake agents and a private tmux."""
+from contextlib import closing, contextmanager
 import json
 import os
+import sqlite3
 import subprocess
 import sys
 import unittest
 import uuid
+
+if os.name == "posix":
+    import fcntl
 
 import test_pause as pause
 
@@ -73,11 +78,55 @@ class ArchiveRestoreSource(pause.Harness):
             self.wait(lambda: json.loads(self.hgs("listing-index", "status", "--json"))["state"] == "ready")
         else:
             self.hgs("listing-index", "disable", "--json")
+        page = self.ready_listing()
+        self.assertIsNot(page["archive_page"].get("catalog_complete"), False, page)
+        rows = {row["archive_id"]: row for row in page["sessions"] if row.get("state") == "archived"}
+        self.assertEqual(set(rows), {unused["archive_id"], occupied["archive_id"]})
+        self.assertIn("restore", rows[unused["archive_id"]]["allowed_actions"])
+        self.assertNotIn("restore", rows[occupied["archive_id"]]["allowed_actions"])
+
+    @unittest.skipUnless(sys.platform.startswith("linux"), "indexed listing is qualified on Linux")
+    def test_archive_listing_restore_hint_tracks_name_reuse(self):
+        self.assert_restore_hint_tracks_name_reuse(indexed=True)
+
+    def test_canonical_archive_listing_restore_hint_tracks_name_reuse(self):
+        self.assert_restore_hint_tracks_name_reuse(indexed=False)
+
+    @contextmanager
+    def indexed_database(self):
+        self.hgs("listing-index", "enable", "--json")
+        self.wait(lambda: json.loads(self.hgs("listing-index", "status", "--json"))["state"] == "ready")
+        self.ready_listing()
+        directory = self.root / "state/listing-metadata"
+        enabled = directory / "enabled"
+        held = directory / "fixture-held-enabled"
+        with (directory / "worker.lock").open("rb") as lease:
+            def acquire():
+                try:
+                    fcntl.flock(lease, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except BlockingIOError:
+                    return False
+                return True
+
+            enabled.rename(held)
+            try:
+                self.wait(acquire)
+            finally:
+                held.rename(enabled)
+            try:
+                yield directory / "index.sqlite3"
+            finally:
+                self.hgs("listing-index", "disable", "--json")
+
+    def ordinary_listing(self):
+        return subprocess.run([str(pause.HGS), "ls", "--local", "--json"],
+                              env=self.env, capture_output=True, text=True, timeout=6)
+
+    def ready_listing(self):
         page = {}
 
         def ready():
-            result = subprocess.run([str(pause.HGS), "ls", "--local", "--json"],
-                                    env=self.env, capture_output=True, text=True, timeout=6)
+            result = self.ordinary_listing()
             stale = {
                 "hgs: Session listing is building, stale or unavailable; no complete body returned",
                 "hgs: Session listing changed before publication; no complete body returned",
@@ -91,18 +140,64 @@ class ArchiveRestoreSource(pause.Harness):
             return True
 
         self.wait(ready)
-        self.assertIsNot(page["archive_page"].get("catalog_complete"), False, page)
-        rows = {row["archive_id"]: row for row in page["sessions"] if row.get("state") == "archived"}
-        self.assertEqual(set(rows), {unused["archive_id"], occupied["archive_id"]})
-        self.assertIn("restore", rows[unused["archive_id"]]["allowed_actions"])
-        self.assertNotIn("restore", rows[occupied["archive_id"]]["allowed_actions"])
+        return page
+
+    def archive_actions(self, archive_id):
+        result = self.ordinary_listing()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        body = json.loads(result.stdout)
+        self.assertIsNot(body["archive_page"].get("catalog_complete"), False, body)
+        [row] = [row for row in body["sessions"] if row.get("archive_id") == archive_id]
+        return row["allowed_actions"]
 
     @unittest.skipUnless(sys.platform.startswith("linux"), "indexed listing is qualified on Linux")
-    def test_archive_listing_restore_hint_tracks_name_reuse(self):
-        self.assert_restore_hint_tracks_name_reuse(indexed=True)
+    def test_index_error_withholds_the_archive_restore_hint(self):
+        name, _, selected = self.save_archive()
+        with self.indexed_database() as path:
+            archive_id = selected["archive_id"]
+            self.assertIn("restore", self.archive_actions(archive_id))
+            # Damage only the advisory label lookup in the otherwise valid generation.
+            with closing(sqlite3.connect(path)) as db:
+                db.execute("DROP INDEX sources_name")
+                with self.assertRaisesRegex(sqlite3.OperationalError, "no such index: sources_name"):
+                    db.execute("SELECT 1 FROM sources INDEXED BY sources_name")
+            self.assertFalse(self.binding(name))
+            self.assertNotIn("restore", self.archive_actions(archive_id))
 
-    def test_canonical_archive_listing_restore_hint_tracks_name_reuse(self):
-        self.assert_restore_hint_tracks_name_reuse(indexed=False)
+    def test_untracked_terminal_withholds_the_archive_restore_hint(self):
+        name, _, selected = self.save_archive()
+        self.hgs("listing-index", "disable", "--json")
+        archive_id = selected["archive_id"]
+        self.assertIn("restore", self.archive_actions(archive_id))
+        self.t("new-session", "-d", "-s", name, "sleep 30")
+        self.assertFalse(self.binding(name))
+        self.assertNotIn("restore", self.archive_actions(archive_id))
+
+    @unittest.skipUnless(sys.platform.startswith("linux"), "indexed listing is qualified on Linux")
+    def test_unavailable_index_explains_the_failure_without_a_partial_body(self):
+        self.save_archive()
+        with self.indexed_database() as path:
+            def assert_failure(reason):
+                result = self.ordinary_listing()
+                self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+                self.assertEqual(result.stdout, "")
+                self.assertEqual(result.stderr.strip(), "hgs: " + reason)
+
+            with self.subTest("busy"), closing(sqlite3.connect(path, isolation_level=None)) as db:
+                db.execute("PRAGMA journal_mode=DELETE")
+                db.execute("BEGIN EXCLUSIVE")
+                assert_failure("The session listing is busy. Try again shortly.")
+            backup = path.with_suffix(".held")
+            path.rename(backup)
+            try:
+                with self.subTest("missing"):
+                    assert_failure("The session listing index is still being built. Try again shortly.")
+                with self.subTest("unreadable"):
+                    path.write_bytes(b"Invalid SQLite header in a private test.")
+                    path.chmod(0o600)
+                    assert_failure("The session listing index cannot be read. Rebuild it and try again.")
+            finally:
+                backup.replace(path)
 
     def test_changed_archive_with_same_run_and_conversation_refuses_before_start(self):
         name, _, selected = self.save_archive()
