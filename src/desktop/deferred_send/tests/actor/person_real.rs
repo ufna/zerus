@@ -586,6 +586,88 @@ impl World {
         tasks.save(&mut document).unwrap();
         reference
     }
+    /// Review D3: `command`, run by `name` at its live person turn, held
+    /// right after its final recheck (inside the person-authority
+    /// serialization point) while `other` sends `name` another input, which
+    /// ends that turn. The input waits for the commit: while the command is
+    /// held the turn stays bound; the command commits under its request, and
+    /// only then does the input end the turn. Returns the command's result.
+    fn race(&self, name: &str, other: &str, command: &str, step: &str) -> Ran {
+        let pause = self.root.join(format!("pause-{step}"));
+        std::fs::create_dir_all(&pause).unwrap();
+        let held = format!(
+            "HGS_TEST_ATTEMPT_PAUSE='{}' HGS_TEST_ATTEMPT_PAUSE_AT=person_commit sh -c \"{}\"",
+            pause.display(),
+            command.replace('"', "\\\"")
+        );
+        self.agent_start(name, &held);
+        let tools = self.root.join("tools").join(key(name));
+        wait_for(&format!("{step} to hold its commit"), || {
+            pause.join("ready").exists() || tools.join("code").exists()
+        });
+        if !pause.join("ready").exists() {
+            let ran = self.agent_end(name, &held);
+            panic!("{step} ended before its commit: {} {}", ran.out, ran.err);
+        }
+        let target = self.record(name);
+        let payload = json!({"request_id": uuid::Uuid::new_v4().to_string(), "text": format!("{step}: another agent's input"),
+            "expected_run_id": target["run_id"], "expected_conversation_id": target["conversation_id"]});
+        let file = self.root.join("tools").join(format!("{step}.json"));
+        std::fs::write(&file, payload.to_string()).unwrap();
+        let send = format!("hgs send '{name}' --json < '{}'", file.display());
+        self.agent_start(other, &send);
+        // The other input cannot end the turn while the commit is held.
+        std::thread::sleep(Duration::from_millis(800));
+        assert!(
+            !self.turn(name).is_null(),
+            "{step}: the other input ended the turn during the held commit"
+        );
+        std::fs::write(pause.join("release"), "").unwrap();
+        let ran = self.agent_end(name, &held);
+        let sent = self.agent_end(other, &send);
+        assert_eq!(sent.code, 0, "{step}: {}", sent.err);
+        wait_for(&format!("{step}'s other input to end the turn"), || {
+            self.turn(name).is_null()
+        });
+        self.idle(name);
+        ran
+    }
+    /// A task of the project whose kept copy is damaged, and the fingerprint
+    /// of its review, read in Rust (the review itself is read-only).
+    fn damaged_copy(&self) -> (String, String) {
+        let root = self.f.config.state.join("replica");
+        let tasks = zerus_replica::ProjectStore::open(&root, "example-project").unwrap();
+        let mut document = tasks
+            .new_task(
+                "A task whose copy breaks",
+                zerus_replica::Stage::Todo,
+                zerus_replica::Target::Any,
+                zerus_replica::Actor::Person,
+                &zerus_replica::Position::End,
+                PROJECT,
+                1,
+            )
+            .unwrap();
+        tasks.save(&mut document).unwrap();
+        let uuid = document.uuid().to_owned();
+        drop(tasks);
+        let folder = root
+            .join(format!(
+                "{:x}",
+                <sha2::Sha256 as sha2::Digest>::digest(b"example-project")
+            ))
+            .join("tasks");
+        std::fs::write(folder.join(format!("{uuid}.loro")), b"damaged").unwrap();
+        let mut review = zerus_replica::ProjectStore::open_copy_review(
+            &root,
+            "example-project",
+            Duration::from_secs(2),
+        )
+        .unwrap()
+        .unwrap();
+        let fingerprint = review.prepare_copy_review(&uuid).unwrap().fingerprint;
+        (uuid, fingerprint)
+    }
     /// The history of task `reference`, read from the project store in Rust:
     /// the person's own task commands refuse under the agent this test may
     /// run in, and are never rerouted around that refusal.
@@ -1231,13 +1313,206 @@ fn person_tasks(w: &mut World, asked: &str, peer: &str) -> usize {
     println!("PERSON_REQUEST_STEP=task-cutover-no-store ok");
     steps += 1;
 
+
+    // Review S2-2: a live team's task held by another session, cancelled at
+    // the request: the cancel keeps the request its guard needed.
+    let held_task = w.held_team_task(peer);
+    let cancel_live = w.bound(asked, "please cancel the team task the peer holds");
+    let ran = w.agent(
+        asked,
+        &format!("hgs task cancel {held_task} --reason 'The person asked' --json"),
+    );
+    assert_eq!(ran.code, 0, "{}", ran.err);
+    let log = w.log(&held_task);
+    assert!(
+        log.iter().any(|entry| entry.kind.contains("cancel")
+            && entry
+                .person_request
+                .as_ref()
+                .is_some_and(|r| r.request_id == cancel_live)),
+        "{log:?}"
+    );
+    w.idle(peer);
+    println!("PERSON_REQUEST_STEP=team-task-cancel-keeps-request ok");
+    steps += 1;
+
+    // Review D3: every writer holds the person-authority serialization point
+    // from its final recheck through its commit; another input that would
+    // end the request waits for that commit (`World::race`).
+    let json = |ran: &Ran| -> Value {
+        assert_eq!(ran.code, 0, "{}", ran.err);
+        serde_json::from_str(&ran.out).unwrap()
+    };
+    // The change path (T8): a live team's rename.
+    let raced = w.bound(asked, "please rename the team task during the race");
+    let renamed = json(&w.race(
+        asked,
+        peer,
+        &format!("printf 'Renamed during the race' | hgs task rename {team_task} --json"),
+        "race-rename",
+    ));
+    assert_eq!(renamed["task"]["title"], "Renamed during the race");
+    assert!(
+        w.log(&team_task).iter().any(|entry| entry
+            .person_request
+            .as_ref()
+            .is_some_and(|r| r.request_id == raced)),
+        "race-rename"
+    );
+    println!("PERSON_REQUEST_STEP=race-rename ok");
+    steps += 1;
+    // T9: a task filed for another session.
+    let raced = w.bound(asked, "please file a task for the peer during the race");
+    let filed = json(&w.race(
+        asked,
+        peer,
+        &format!("printf 'Raced' | hgs task add --project {PROJECT} --title 'Filed during the race' --target '{peer}' --json"),
+        "race-target",
+    ));
+    let entry = w.log(filed["task"]["ref"].as_str().unwrap()).pop().unwrap();
+    assert_eq!(entry.person_request.map(|r| r.request_id), Some(raced));
+    println!("PERSON_REQUEST_STEP=race-target ok");
+    steps += 1;
+    // A third session holds or receives the raced task, so the agent that
+    // sends the other input is never the target of the writer's own effect.
+    let holder = w.launch("holder");
+    // The cancel path (T8, and T7's same writer): a team task another
+    // session holds.
+    let held_task = w.held_team_task(&holder);
+    let raced = w.bound(asked, "please cancel that team task during the race");
+    json(&w.race(
+        asked,
+        peer,
+        &format!("hgs task cancel {held_task} --reason 'The person asked' --json"),
+        "race-cancel",
+    ));
+    assert!(
+        w.log(&held_task)
+            .iter()
+            .any(|entry| entry.kind.contains("cancel")
+                && entry
+                    .person_request
+                    .as_ref()
+                    .is_some_and(|r| r.request_id == raced)),
+        "race-cancel"
+    );
+    w.idle(&holder);
+    println!("PERSON_REQUEST_STEP=race-cancel ok");
+    steps += 1;
+    // T3: the hold back off, at a new request, raced; sends follow it.
+    let off = w.bound(asked, "clear the cutover hold");
+    let hold = json(&w.race(
+        asked,
+        peer,
+        &format!("hgs task cutover --project {PROJECT} --hold off --confirm --json"),
+        "race-cutover",
+    ));
+    assert_eq!(hold["hold"]["on"], false, "{hold}");
+    assert_eq!(
+        hold["hold"]["person_request"]["request_id"],
+        off.as_str(),
+        "{hold}"
+    );
+    println!("PERSON_REQUEST_STEP=race-cutover ok");
+    steps += 1;
+    // Review D2: a live team's task sent to the holder at the request; the
+    // send's own admission (under Root, before any effect) is held.
+    let send_task = w.live_team_task();
+    let raced = w.bound(
+        asked,
+        "please send the team task to the holder during the race",
+    );
+    let sent = json(&w.race(
+        asked,
+        peer,
+        &format!("hgs task send {send_task} --session '{holder}' --json"),
+        "race-send",
+    ));
+    assert_eq!(sent["receipt"]["status"], "submitted", "{sent}");
+    assert!(
+        w.log(&send_task).iter().any(|entry| entry
+            .person_request
+            .as_ref()
+            .is_some_and(|r| r.request_id == raced)),
+        "race-send"
+    );
+    w.idle(&holder);
+    println!("PERSON_REQUEST_STEP=race-send ok");
+    steps += 1;
+    // Review D2: the request ends after the send's early check and before
+    // its admission: the input writer's own check under Root refuses it and
+    // nothing reaches the destination or the task's history.
+    let send_task = w.live_team_task();
+    let ended = w.bound(asked, "please send that other team task to the holder");
+    let before = w.record(&holder)["input_pending_request"].clone();
+    let pause = w.root.join("pause-admit");
+    std::fs::create_dir_all(&pause).unwrap();
+    let held = format!(
+        "HGS_TEST_ATTEMPT_PAUSE='{}' HGS_TEST_ATTEMPT_PAUSE_AT=admission hgs task send {send_task} --session '{holder}' --json",
+        pause.display()
+    );
+    w.agent_start(asked, &held);
+    wait_for("the send to reach its admission", || {
+        pause.join("ready").exists()
+    });
+    let target = w.record(asked);
+    let payload = json!({"request_id": uuid::Uuid::new_v4().to_string(), "text": "another agent's input before the admission",
+        "expected_run_id": target["run_id"], "expected_conversation_id": target["conversation_id"]});
+    let file = w.root.join("tools").join("before-admission.json");
+    std::fs::write(&file, payload.to_string()).unwrap();
+    let send = format!("hgs send '{asked}' --json < '{}'", file.display());
+    w.agent_start(peer, &send);
+    wait_for(
+        "the other input to end the turn before the admission",
+        || w.turn(asked).is_null(),
+    );
+    std::fs::write(pause.join("release"), "").unwrap();
+    let ran = w.agent_end(asked, &held);
+    let after = w.agent_end(peer, &send);
+    println!("the other input: {}", after.code);
+    refused(&ran, "send-request-ends-before-admission");
+    assert_eq!(w.record(&holder)["input_pending_request"], before);
+    assert!(
+        !w.log(&send_task).iter().any(|entry| entry
+            .person_request
+            .as_ref()
+            .is_some_and(|r| r.request_id == ended)),
+        "send-request-ends-before-admission"
+    );
+    w.idle(asked);
+    println!("PERSON_REQUEST_STEP=send-request-ends-before-admission ok");
+    steps += 1;
+    // T5: a damaged copy moved aside; the request is checked after the
+    // review and its hashing, right before the confirmation and the move.
+    let (uuid, fingerprint) = w.damaged_copy();
+    let raced = w.bound(asked, "please move the damaged copy aside during the race");
+    let moved = json(&w.race(
+        asked,
+        peer,
+        &format!(
+            "hgs task review-copy --project {PROJECT} --uuid {uuid} --confirm {fingerprint} --json"
+        ),
+        "race-review-copy",
+    ));
+    assert_eq!(moved["state"], "moved", "{moved}");
+    let confirmed: Value = serde_json::from_slice(
+        &std::fs::read(
+            std::path::Path::new(moved["backup"].as_str().unwrap()).join("confirmed.json"),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(confirmed["person_request"]["request_id"], raced.as_str());
+    println!("PERSON_REQUEST_STEP=race-review-copy ok");
+    steps += 1;
+
     // Review S2-1: another input ends the request after the guard admitted
-    // a live team's rename and before its commit: nothing is written.
+    // a live team's rename and before its final recheck: nothing is written.
     let ended = w.bound(asked, "please rename the team task once more");
     let pause = w.root.join("pause-commit");
     std::fs::create_dir_all(&pause).unwrap();
     let held = format!(
-        "HGS_TEST_ATTEMPT_PAUSE='{}' HGS_TEST_ATTEMPT_PAUSE_AT=person_commit sh -c \"printf 'Renamed after it ended' | hgs task rename {team_task} --json\"",
+        "HGS_TEST_ATTEMPT_PAUSE='{}' HGS_TEST_ATTEMPT_PAUSE_AT=person_recheck sh -c \"printf 'Renamed after it ended' | hgs task rename {team_task} --json\"",
         pause.display()
     );
     w.agent_start(asked, &held);
@@ -1274,43 +1549,6 @@ fn person_tasks(w: &mut World, asked: &str, peer: &str) -> usize {
     println!("the other input: {}", after.code);
     w.idle(asked);
     println!("PERSON_REQUEST_STEP=team-task-request-ends-before-commit ok");
-    steps += 1;
-
-    // Review S2-2: a live team's task held by another session, cancelled at
-    // the request: the cancel keeps the request its guard needed.
-    let held_task = w.held_team_task(peer);
-    let cancel_live = w.bound(asked, "please cancel the team task the peer holds");
-    let ran = w.agent(
-        asked,
-        &format!("hgs task cancel {held_task} --reason 'The person asked' --json"),
-    );
-    assert_eq!(ran.code, 0, "{}", ran.err);
-    let log = w.log(&held_task);
-    assert!(
-        log.iter().any(|entry| entry.kind.contains("cancel")
-            && entry
-                .person_request
-                .as_ref()
-                .is_some_and(|r| r.request_id == cancel_live)),
-        "{log:?}"
-    );
-    w.idle(peer);
-    println!("PERSON_REQUEST_STEP=team-task-cancel-keeps-request ok");
-    steps += 1;
-
-    // The hold back off, at a new request.
-    let off = w.bound(asked, "clear the cutover hold");
-    let (ran, hold) = w.agent_json(
-        asked,
-        &format!("hgs task cutover --project {PROJECT} --hold off --confirm --json"),
-    );
-    assert_eq!(ran.code, 0, "{}", ran.err);
-    assert_eq!(hold["hold"]["on"], false, "{hold}");
-    assert_eq!(
-        hold["hold"]["person_request"]["request_id"],
-        off.as_str(),
-        "{hold}"
-    );
     steps += 1;
 
     // T7: a task the person sent to the agent itself, once another agent's

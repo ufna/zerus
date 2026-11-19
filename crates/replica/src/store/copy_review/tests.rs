@@ -157,6 +157,7 @@ fn a_failure_after_moving_files_is_unknown_and_keeps_the_mark_and_backups() {
             &review.fingerprint,
             &crate::Actor::Person,
             None,
+            || Ok(()),
             || {
                 Err(std::io::Error::new(
                     ErrorKind::PermissionDenied,

@@ -235,15 +235,31 @@ impl ProjectStore {
         actor: &crate::Actor,
         request: Option<&crate::PersonRequestRef>,
     ) -> Result<CopyReviewOutcome> {
-        self.move_reviewed_copy_with(uuid, expected, actor, request, || Ok(()))
+        self.move_reviewed_copy_admitted(uuid, expected, actor, request, || Ok(()))
     }
 
-    fn move_reviewed_copy_with(
+    /// [`Self::move_reviewed_copy_as`] whose `admit` runs after the review
+    /// and its fingerprint check, right before the confirmation record and
+    /// the move; what it returns is held until the move ends, and its refusal
+    /// writes and moves nothing (zerus-46l1q, review D3).
+    pub fn move_reviewed_copy_admitted<G>(
         &mut self,
         uuid: &str,
         expected: &str,
         actor: &crate::Actor,
         request: Option<&crate::PersonRequestRef>,
+        admit: impl FnOnce() -> std::result::Result<G, String>,
+    ) -> Result<CopyReviewOutcome> {
+        self.move_reviewed_copy_with(uuid, expected, actor, request, admit, || Ok(()))
+    }
+
+    fn move_reviewed_copy_with<G>(
+        &mut self,
+        uuid: &str,
+        expected: &str,
+        actor: &crate::Actor,
+        request: Option<&crate::PersonRequestRef>,
+        admit: impl FnOnce() -> std::result::Result<G, String>,
         before_mark: impl FnOnce() -> std::io::Result<()>,
     ) -> Result<CopyReviewOutcome> {
         let review = self.prepare_copy_review(uuid)?;
@@ -252,6 +268,7 @@ impl ProjectStore {
                 "the task copy changed; review it again before confirming",
             ));
         }
+        let _admitted = admit().map_err(Error::failed)?;
         let folder = self.dir.join("tasks");
         let backup = folder.join(format!("{uuid}.review-{}", ids::new_uuid()));
         #[cfg(unix)]

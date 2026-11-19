@@ -1537,7 +1537,7 @@ pub(super) fn dispatch(args: &[String]) -> Result<i32> {
         return Ok(0);
     }
     if terminal_outcome {
-        return match submit_core(&args[0], &input, Origin::Person, true, true) {
+        return match submit_core(&args[0], &input, Origin::Person, true, true, None) {
             Ok(receipt) => { println!("{receipt}"); Ok(0) }
             Err(Failure::TerminalRefusal(value)) => {
                 println!("{value}");
@@ -1635,6 +1635,38 @@ pub(super) fn submit_task(session: &zerus_replica::SessionKey, text: &str, attac
         "expected_run_id": string(&record, "run_id"),
         "expected_conversation_id": string(&record, "conversation_id"), "attachments": attachments});
     submit(name, request.to_string().as_bytes(), None)
+}
+
+/// [`submit_task`] whose `admit` check runs under Root right before the
+/// first effect; see [`super::submit_task_message_admitted`].
+pub(super) fn submit_task_admitted(
+    session: &zerus_replica::SessionKey,
+    text: &str,
+    attachments: &[Value],
+    admit: &dyn Fn() -> std::result::Result<(), String>,
+) -> Result<Value> {
+    let name = session.session.as_str();
+    let record = read(name)?;
+    if !session.session_id.is_empty() {
+        let key = if string(&record, "launch_id").is_empty() {
+            "run_id"
+        } else {
+            "launch_id"
+        };
+        if session.session_id != format!("{key}:{}", string(&record, key)) {
+            return Err("task session identity changed; refresh the task".into());
+        }
+    }
+    let request = json!({"request_id": uuid::Uuid::new_v4().to_string(), "text": text,
+        "expected_run_id": string(&record, "run_id"),
+        "expected_conversation_id": string(&record, "conversation_id"), "attachments": attachments});
+    submit_admitted(
+        name,
+        request.to_string().as_bytes(),
+        Origin::Person,
+        false,
+        Some(admit),
+    )
 }
 
 /// How a task input is bound to the task's original dispatch when it
@@ -1814,7 +1846,7 @@ enum Origin<'a> {
 /// A keep-warm ping (`keep_warm::TEXT`) for ping `id`. Like a task reply it
 /// tells a refusal before any input from a possibly delivered ping.
 pub(super) fn submit_keep_warm(name: &str, input: &[u8], id: &str) -> Submission {
-    match submit_core(name, input, Origin::KeepWarm(id), false, false) {
+    match submit_core(name, input, Origin::KeepWarm(id), false, false, None) {
         Ok(receipt) => Submission::Receipt(receipt),
         Err(Failure::NotOffered(witness)) => Submission::NotOffered(*witness),
         Err(Failure::Unknown(error)) => Submission::Unknown(error),
@@ -1831,11 +1863,25 @@ pub(super) fn submit_answer(name: &str, input: &[u8]) -> Result<Value> {
 }
 
 fn submit_with(name: &str, input: &[u8], origin: Origin, retain_refusal: bool) -> Result<Value> {
-    submit_core(name, input, origin, retain_refusal, false).map_err(|failure| match failure {
-        Failure::NotOffered(witness) => witness.reason.clone(),
-        Failure::Unknown(error) => error,
-        Failure::TerminalRefusal(_) => "Terminal refusal is unavailable to internal callers".into(),
-    })
+    submit_admitted(name, input, origin, retain_refusal, None)
+}
+
+fn submit_admitted(
+    name: &str,
+    input: &[u8],
+    origin: Origin,
+    retain_refusal: bool,
+    admit: Option<&dyn Fn() -> std::result::Result<(), String>>,
+) -> Result<Value> {
+    submit_core(name, input, origin, retain_refusal, false, admit).map_err(
+        |failure| match failure {
+            Failure::NotOffered(witness) => witness.reason.clone(),
+            Failure::Unknown(error) => error,
+            Failure::TerminalRefusal(_) => {
+                "Terminal refusal is unavailable to internal callers".into()
+            }
+        },
+    )
 }
 
 /// A live, closed witness that ONE exact request's payload was never offered
@@ -1898,7 +1944,7 @@ pub(crate) enum Submission {
 /// `submit` for a task reply that must tell a refusal before any input from
 /// one that may have delivered it.
 pub(super) fn submit_witnessed(name: &str, input: &[u8]) -> Submission {
-    match submit_core(name, input, Origin::Person, false, false) {
+    match submit_core(name, input, Origin::Person, false, false, None) {
         Ok(receipt) => Submission::Receipt(receipt),
         Err(Failure::NotOffered(witness)) => Submission::NotOffered(*witness),
         Err(Failure::Unknown(error)) => Submission::Unknown(error),
@@ -2068,6 +2114,7 @@ fn submit_core(
     origin: Origin,
     retain_refusal: bool,
     terminal_outcome: bool,
+    admit: Option<&dyn Fn() -> std::result::Result<(), String>>,
 ) -> std::result::Result<Value, Failure> {
     let unknown = Failure::Unknown;
     let request: Request =
@@ -2115,6 +2162,12 @@ fn submit_core(
         remember_send_refusal(typed, witness(gate.reason(), waiting, dialog), retain_refusal, terminal_outcome)
     };
     let record = checked_record_gate(name, &request).map_err(|gate| gated(typed, gate))?;
+    // A writer acting at the person's request checks it here, under Root and
+    // before anything is typed (zerus-46l1q, review D2): every revocation
+    // comes before this send's admission (nothing is sent) or after it.
+    if let Some(Err(why)) = admit.map(|admit| admit()) {
+        return Err(refused(typed, why));
+    }
     if codex_tasks::multiple(&record) && effort::pending_applies(&record) {
         return Err(refused(
             typed,

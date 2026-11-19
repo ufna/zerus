@@ -56,14 +56,27 @@ pub(super) fn execute(config: &Config, args: &[String]) -> Result<Value> {
             {
                 return Err(fail("review-copy requires its exact review fingerprint"));
             }
-            super::recheck(person.as_ref())?;
             if let Some(person) = &person {
                 reply["person_request"] = person.identity();
             }
             // Who confirmed it, and at whose request, is written durably
-            // with the move (review S2-3).
+            // with the move (review S2-3). The request is checked again
+            // after the review and its hashing, right before that record
+            // and the move, and held through them (review D3).
             let reference = person.as_ref().map(|person| person.reference());
-            match store.move_reviewed_copy_as(uuid, expected, &who, reference.as_ref()) {
+            let refused = std::cell::RefCell::new(None);
+            let moved =
+                store.move_reviewed_copy_admitted(uuid, expected, &who, reference.as_ref(), || {
+                    super::recheck_held(person.as_ref(), uuid).map_err(|error| {
+                        let message = error.message.clone();
+                        *refused.borrow_mut() = Some(error);
+                        message
+                    })
+                });
+            if let Some(error) = refused.into_inner() {
+                return Err(error);
+            }
+            match moved {
                 Ok(outcome) => {
                     reply["state"] = json!(outcome.state);
                     reply["backup"] = json!(outcome.backup);

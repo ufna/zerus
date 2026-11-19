@@ -282,10 +282,14 @@ pub(super) fn guard(
         bridge::Decision::Allowed => return Ok(None),
         bridge::Decision::AgentRefused(refused) => refused,
     };
+    // What works instead depends on the platform (review D4): the shared
+    // text says whether the person's own message lets the agent act here.
     let ask = || {
         fail(format!(
-            "{}: {} Or ask the person in your own conversation; their own message lets you act for them.",
-            refused.code, refused.message
+            "{}: {} Or {}.",
+            refused.code,
+            refused.message,
+            crate::caller::ASK
         ))
     };
     let Actor::Agent(own) = &caller.actor else {

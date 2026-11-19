@@ -56,11 +56,13 @@ pub(super) fn cutover(config: &Config, args: &[String]) -> Result<Value> {
     let store = store(config, &id)?;
     if let Some((on, request)) = change {
         let mut doc = store.project().map_err(fail)?;
-        super::recheck(request.as_ref())?;
+        // Checked again and held through the save that commits it (review D3).
+        let authority = super::recheck_held(request.as_ref(), &id)?;
         let reference = request.as_ref().map(|request| request.reference());
         doc.set_cutover_hold_for(on, &who, reference.as_ref(), now())
             .map_err(fail)?;
         store.save_project(&doc).map_err(fail)?;
+        drop(authority);
     }
     let hold = store.project().map_err(fail)?.cutover_hold();
     // A bounded count: past its budget the phase is unknown, never a guess,

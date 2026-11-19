@@ -78,7 +78,8 @@ pub(super) fn execute(config: &Config, args: &[String]) -> Result<Value> {
             .map_err(|error| fail(format!("{}: {}", error.code, error.message)))?;
     let before = task.revision();
     attempts::pause_at(&request.attempt, "cancel_attempt");
-    super::recheck(person.as_ref())?;
+    // Checked again and held through the save that commits it (review D3).
+    let authority = super::recheck_held(person.as_ref(), &request.attempt)?;
     task.at_request(person.as_ref().map(|person| person.reference()));
     task.cancel_attempt(&request.attempt, &request.reason, &who, now())
         .map_err(fail)?;
@@ -86,6 +87,7 @@ pub(super) fn execute(config: &Config, args: &[String]) -> Result<Value> {
     if !repeated {
         store.save(&mut task).map_err(fail)?;
     }
+    drop(authority);
     Ok(json!({
         // One bounded task row: the selected history is read separately.
         "task": view(&task, &reference.project.1, false, &machines)?,

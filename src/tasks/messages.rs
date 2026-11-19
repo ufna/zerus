@@ -284,8 +284,11 @@ pub(super) fn execute(config: &Config, args: &[String]) -> Result<Value> {
         Err(error) => return Err(fail(error)),
     };
     // The project lock serializes local reservations. A save failure stops before input.
-    super::recheck(person.as_ref())?;
+    // Checked again and held through the save that commits the reservation;
+    // its delivery below settles under it (review D3).
+    let authority = super::recheck_held(person.as_ref(), task.uuid())?;
     store.save(&mut task).map_err(fail)?;
+    drop(authority);
     if let Some(to) = to.as_ref().filter(|_| !delivery.run_id.is_empty() && matches!(delivery.state.as_str(), "reserved" | "uncertain")) {
         let request = request.unwrap_or_else(|| {
             json!({"request_id":id,"text":delivery.prompt,"attachments":files,

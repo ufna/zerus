@@ -328,6 +328,22 @@ pub(super) fn pause(id: &str) {
     pause_at(id, "admission");
 }
 
+/// The person's request `person`, checked again under the person-authority
+/// serialization point that the returned guard holds (zerus-46l1q, review
+/// D3); nothing without a request.
+fn held_authority(
+    person: Option<&crate::caller::PersonRequest>,
+    id: &str,
+) -> std::result::Result<Option<crate::state::PersonAuthority>, String> {
+    let Some(person) = person else {
+        return Ok(None);
+    };
+    let authority = crate::state::person_authority()?;
+    person.recheck()?;
+    pause_at(id, "person_commit");
+    Ok(Some(authority))
+}
+
 #[cfg(any(test, debug_assertions))]
 pub(super) fn pause_at(id: &str, phase: &str) {
     if std::env::var("HGS_TEST_ATTEMPT_PAUSE_AT").unwrap_or_else(|_| "admission".into()) != phase {
@@ -536,11 +552,15 @@ pub(super) fn send(
         if let Err(error) = task.reserve_attempt(&frozen.id, origin, to, native, who, now()) {
             return refuse("not_sendable", error.to_string());
         }
-        // That exact request still holds, under the writer's admission.
-        if let Some(Err(why)) = person.as_ref().map(|person| person.recheck()) {
-            return refuse("not_sendable", why);
-        }
+        // That exact request still holds, checked again at the one
+        // serialization point and held through this reservation's save: the
+        // reserved delivery then settles under it (review D3).
+        let authority = match held_authority(person.as_ref(), &frozen.id) {
+            Ok(authority) => authority,
+            Err(why) => return refuse("not_sendable", why),
+        };
         admitted.save(task)?;
+        drop(authority);
         Ok(Ok(()))
     })?;
     match admission {
@@ -806,12 +826,16 @@ pub(super) fn reopen(
         if let Err(error) = task.reserve_attempt(id, origin, to, native, who, now()) {
             return refuse("not_sendable", error.to_string());
         }
-        // That exact request still holds, under the writer's admission.
-        if let Some(Err(why)) = person.as_ref().map(|person| person.recheck()) {
-            return refuse("not_sendable", why);
-        }
+        // That exact request still holds, checked again at the one
+        // serialization point and held through this reservation's save
+        // (review D3).
+        let authority = match held_authority(person.as_ref(), id) {
+            Ok(authority) => authority,
+            Err(why) => return refuse("not_sendable", why),
+        };
         // ONE save for both: never the note alone.
         admitted.save(task)?;
+        drop(authority);
         Ok(Ok(()))
     })?;
     let (state, error) = match admission {

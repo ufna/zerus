@@ -383,6 +383,25 @@ pub(super) fn recheck(request: Option<&crate::caller::PersonRequest>) -> Result<
     request.map_or(Ok(()), |request| request.recheck().map_err(fail))
 }
 
+/// The final recheck of the person's request `request` under the one
+/// person-authority serialization point (zerus-46l1q, review D3): the guard
+/// it returns is held through the commit that follows, so a revocation
+/// either comes first (refused here) or after that commit. A debug test may
+/// hold the command right after it (`person_commit`). Without a request
+/// nothing is taken. The guard is never held across an input delivery.
+pub(super) fn recheck_held(
+    request: Option<&crate::caller::PersonRequest>,
+    task: &str,
+) -> Result<Option<crate::state::PersonAuthority>> {
+    let Some(request) = request else {
+        return Ok(None);
+    };
+    let authority = crate::state::person_authority().map_err(fail)?;
+    request.recheck().map_err(fail)?;
+    attempts::pause_at(task, "person_commit");
+    Ok(Some(authority))
+}
+
 /// The refusal for a resident DeepSeek host's tool call (`HGS_AGENT=dsh`)
 /// whose session cannot be proven.
 const UNPROVEN_HOSTED_AGENT: &str = "a DeepSeek agent's tool call (HGS_AGENT=dsh) never acts as the person, and its session cannot be proven here; run person actions from a terminal outside the DeepSeek host";
@@ -1221,7 +1240,10 @@ fn add(config: &Config, args: &[String]) -> Result<Value> {
             task.at_request(Some(person.reference()));
             task.record_at_request(&author, "Filed for another session at the person's request", now()).map_err(fail)?;
         }
+        // Checked again right before the save and held through it (review D3).
+        let authority = recheck_held(filed_for.as_ref(), task.uuid())?;
         store.save(&mut task).map_err(fail)?;
+        drop(authority);
     }
     let (store, task, team_reply) = if let Some(team) = &team {
         let task_ref = zerus_team_plan::model::TaskRef { project:id.clone(), uuid:task.uuid().into() };
@@ -1695,6 +1717,7 @@ fn change_guarded(
                 &who,
                 action == "handoff",
                 deadline,
+                person.as_ref(),
             )
             .map_err(|e| refuse(e, &destination))?;
         }
@@ -1712,9 +1735,17 @@ fn change_guarded(
         }
         _ => return Err(fail(USAGE)),
     }
-    // A debug test may hold the command here: its change made, not saved.
-    attempts::pause_at(task.uuid(), "person_commit");
-    recheck(person.as_ref())?;
+    // A send or a cancel committed its effect under the request already (the
+    // send's admission, the cancel's own save): its outcome stands and is
+    // recorded here. Every other change commits now, its request checked
+    // again at the one serialization point and held through this save
+    // (review D3). A debug test may hold the command before that recheck.
+    let authority = if matches!(action, "send" | "handoff" | "cancel") {
+        None
+    } else {
+        attempts::pause_at(task.uuid(), "person_recheck");
+        recheck_held(person.as_ref(), task.uuid())?
+    };
     store.save(&mut task).map_err(|e| {
         // The prompt is in the session already: say so, never "refused".
         if matches!(action, "send" | "handoff") {
@@ -1723,6 +1754,7 @@ fn change_guarded(
             fail(e)
         }
     })?;
+    drop(authority);
     let at = if action == "move" {
         place(&store, &task)?
     } else {
@@ -1945,10 +1977,16 @@ fn send(
     who: &Actor,
     handoff: bool,
     deadline: std::time::Instant,
+    held: Option<&crate::caller::PersonRequest>,
 ) -> Result<Value> {
     // Everything that could stop the send from being recorded is checked
     // before the paste; only I/O can fail after it.
     if handoff { task.check_handoff(who).map_err(fail)?; } else { task.check_send().map_err(fail)?; }
+    // At the person's request: checked before counting or rendering, and
+    // again by the input writer under Root right before its first effect
+    // (review D2). Once that admits the send, its outcome stands, even when
+    // the input ends the caller's own request.
+    recheck(held)?;
     let view = task.view().map_err(fail)?;
     let settings = store.project().map_err(fail)?.settings();
     // Only an agent's start under a limit is counted.
@@ -1965,7 +2003,15 @@ fn send(
             .map_err(fail)?;
     }
     let (prompt, attachments) = dispatch_content(&settings, &task.view().map_err(fail)?, project_name, matches!(view.target, Target::Subagent { .. }))?;
-    let receipt = crate::state::submit_task_message(&session, &prompt, &attachments).map_err(fail)?;
+    let receipt = match held {
+        Some(held) => {
+            crate::state::submit_task_message_admitted(&session, &prompt, &attachments, &|| {
+                held.recheck()
+            })
+        }
+        None => crate::state::submit_task_message(&session, &prompt, &attachments),
+    }
+    .map_err(fail)?;
     let request_id = receipt["request_id"].as_str().unwrap_or_default().to_owned();
     (if handoff { task.record_handoff(&session, &request_id, who, now()) }
      else { task.record_send(&session, &request_id, who, now()) })
@@ -2026,19 +2072,33 @@ fn cancel(
         )?,
         _ => None,
     };
+    // The request this cancel needs is recorded with it and never cleared
+    // by the other rule (review S2-2). A request a live team's guard held is
+    // never replaced by a fresh one for the self-cancel rule: both rules
+    // stand on the same request, or nothing is written (review D3).
+    let person = match (own.as_ref(), held) {
+        (Some(own), Some(held)) if !own.same(held) => {
+            return Err(fail(format!(
+                "the person's request changed during this command; nothing was written; {}",
+                crate::caller::ASK
+            )))
+        }
+        (_, Some(held)) => Some(held),
+        (own, None) => own,
+    };
     let settings = store.project().map_err(fail)?.settings();
     settings
         .check_agent(who, session, false, 0)
         .map_err(fail)?;
-    // The request this cancel needs is recorded with it and never cleared
-    // by the other rule (review S2-2).
-    let person = own.as_ref().or(held);
-    recheck(person)?;
+    // Checked again and held through this save, which commits the cancel;
+    // its notice is delivered only after it (review D3).
+    let authority = recheck_held(person, task.uuid())?;
     if let Some(person) = person {
         task.at_request(Some(person.reference()));
     }
     task.record_cancel(reason, who, now()).map_err(fail)?;
     store.save(task).map_err(fail)?;
+    drop(authority);
     cancel_notice(machines, task, project_name, who, &settings, undelivered)
 }
 
