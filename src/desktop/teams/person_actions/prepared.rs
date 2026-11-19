@@ -20,6 +20,10 @@ mod phases;
 pub(super) struct Prepared {
     pub plan: Arc<wire::Plan>,
     pub request: ops::Request,
+    /// What a window Route keeps from the stored task, for the native review
+    /// (zerus-3u5yu): the dependencies and write paths it binds, and the
+    /// assignee it keeps (`m1`) or clears (`m1 → none`). Empty otherwise.
+    pub kept: Vec<(&'static str, Value)>,
 }
 
 pub(super) fn actor() -> ops::Actor {
@@ -66,7 +70,11 @@ impl Prepared {
                     pipeline,
                 },
             };
-            return Ok(Self { plan, request });
+            return Ok(Self {
+                plan,
+                request,
+                kept: Vec::new(),
+            });
         };
         let call = plan.call().ok_or_else(required)?;
         let (invocation, _) =
@@ -83,6 +91,7 @@ impl Prepared {
             _ => change.op().replace('-', "_"),
         };
         fields.insert("op".into(), json!(variant));
+        let mut kept = Vec::new();
         if let TeamAction::Route {
             node,
             role,
@@ -100,8 +109,34 @@ impl Prepared {
             fields.remove("keep_task_fields");
             fields.insert("deps".into(), json!(task.deps));
             fields.insert("writes".into(), json!(task.writes));
-            if task.role == *role {
-                fields.insert("assignee".into(), json!(task.assignee));
+            // The stored assignee is kept only for the same role and only
+            // while that member can take it: not the lead and not removed,
+            // as the Route writer requires (zerus-3u5yu). Otherwise the
+            // Route clears it, and the review says so.
+            let lead = store.team(&plan.team)?.map(|team| team.lead);
+            let bound = match &task.assignee {
+                Some(id) if task.role == *role => store
+                    .member(&plan.team, id)?
+                    .filter(|member| {
+                        member.role == *role
+                            && Some(&member.id) != lead.as_ref()
+                            && member.state != zerus_team_plan::model::MemberState::Removed
+                    })
+                    .map(|member| member.id),
+                _ => None,
+            };
+            if let Some(id) = &bound {
+                fields.insert("assignee".into(), json!(id));
+            }
+            kept.push(("deps", json!(task.deps)));
+            kept.push(("writes", json!(task.writes)));
+            if let Some(id) = &task.assignee {
+                let shown = if bound.is_some() {
+                    id.clone()
+                } else {
+                    format!("{id} → none")
+                };
+                kept.push(("assignee", Value::String(shown)));
             }
         }
         if let TeamAction::Create {
@@ -133,7 +168,11 @@ impl Prepared {
         if store::encode(&request)?.len() > wire::PLAN_BYTES {
             return Err(required());
         }
-        Ok(Self { plan, request })
+        Ok(Self {
+            plan,
+            request,
+            kept,
+        })
     }
 
     pub fn matches(&self, who: &ops::Actor, request: &ops::Request, intent: &wire::Intent) -> bool {

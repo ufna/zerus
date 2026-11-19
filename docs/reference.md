@@ -6468,6 +6468,8 @@ carry `stop_outcome: {code, reason?}` for its current recorded stop. Codes are
 `cancelled`, `released`, `cancel_refused`, `key_cleared`, `key_clear_refused`,
 `pending` and `unchanged`; refusal reasons are data, not a code inferred from
 text. An older stop without a recorded stop identity carries no such field.
+A stage's row also carries `earlier_implementers`: the members who implemented
+any round of its target, whom the stage's Reassign and hand-out refuse.
 
 Report, inbox and waiting-card reads keep member `text` separate from the
 service's additive `notes: [{code, text?}]`. Known codes are `text_shortened`

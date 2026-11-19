@@ -535,6 +535,11 @@ pub struct QueueCard {
     pub pipeline: String,
     pub assignee: String,
     pub implementer: String,
+    /// For a stage card, the members who implemented any round of its
+    /// target, whom the stage's Reassign refuses (zerus-3u5yu). Empty, and
+    /// omitted, for any other card and for older replies.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub earlier_implementers: Vec<String>,
     /// The task's board rank: the queue's order.
     pub rank: String,
     pub round: u64,

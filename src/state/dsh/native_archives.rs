@@ -2,7 +2,7 @@
 //! archive directory and its catalog, including for live terminal actions.
 use super::*;
 use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 const FILE: &str = "dsh/archives-v1.sqlite3";
 const SCHEMA: &str = "
@@ -130,23 +130,111 @@ pub(in crate::state) fn by_id(id: &str) -> Result<Option<Value>> {
             |row| row.get(0),
         )
         .optional())?;
-    raw.map(|raw| {
-        if raw.len() as u64 > storage::ID_RECORD_BYTES {
-            return Err("DeepSeek archive is too large".into());
+    raw.map(|raw| decode(id, &raw)).transpose()
+}
+
+fn decode(id: &str, raw: &[u8]) -> Result<Value> {
+    if raw.len() as u64 > storage::ID_RECORD_BYTES {
+        return Err("DeepSeek archive is too large".into());
+    }
+    let mut record: Value = serde_json::from_slice(raw).map_err(|error| error.to_string())?;
+    rename::normalize_archive(&mut record)?;
+    if !session_id::canonical(id)
+        || record["version"] != 1
+        || record["archive_id"] != id
+        || record["agent"] != "dsh"
+        || record["backend"] != "dsh"
+        || !string(&record, "name").starts_with("dsh/")
+    {
+        return Err("invalid DeepSeek archive record".into());
+    }
+    Ok(record)
+}
+
+/// A complete, bounded read of native archive references. Archive bodies are
+/// saved binding metadata. Native history stays in the provider's own store.
+pub(in crate::state) fn visit_references(
+    until: Instant,
+    max_rows: usize,
+    max_bytes: usize,
+    mut visit: impl FnMut(Value) -> Result<()>,
+) -> Result<()> {
+    const COVERAGE: &str = "DeepSeek archive references exceeded their review bound";
+    let Some(path) = existing_path()? else {
+        return Ok(());
+    };
+    let db = open(&path, false)?;
+    sql(db.busy_timeout(until.saturating_duration_since(Instant::now())))?;
+    db.progress_handler(1000, Some(move || Instant::now() >= until));
+    let mut query = sql(db.prepare(
+        "SELECT substr(CAST(id AS BLOB),1,37), substr(CAST(body AS BLOB),1,?1),
+         CASE WHEN length(CAST(body AS BLOB)) < ?1 AND json_valid(body)
+           THEN coalesce(json_extract(body,'$.name')=name
+                     AND json_extract(body,'$.run_id')=run
+                     AND json_extract(body,'$.conversation_id')=conversation, 0) ELSE 0 END
+         FROM archive_rows ORDER BY id LIMIT ?2",
+    ))?;
+    let mut rows = sql(query.query(params![storage::ID_RECORD_BYTES + 1, max_rows + 1]))?;
+    let mut count = 0;
+    let mut bytes = 0;
+    while let Some(row) = sql(rows.next())? {
+        count += 1;
+        if count > max_rows || Instant::now() >= until {
+            return Err(COVERAGE.into());
         }
-        let mut record: Value = serde_json::from_slice(&raw).map_err(|error| error.to_string())?;
-        rename::normalize_archive(&mut record)?;
-        if record["version"] != 1
-            || record["archive_id"] != id
-            || record["agent"] != "dsh"
-            || record["backend"] != "dsh"
-            || !string(&record, "name").starts_with("dsh/")
-        {
-            return Err("invalid DeepSeek archive record".into());
+        let id = std::str::from_utf8(sql(row.get_ref(0))?.as_blob().map_err(|e| e.to_string())?)
+            .map_err(|error| error.to_string())?;
+        let raw = sql(row.get_ref(1))?.as_blob().map_err(|e| e.to_string())?;
+        bytes += raw.len();
+        if bytes > max_bytes {
+            return Err(COVERAGE.into());
         }
-        Ok(record)
-    })
-    .transpose()
+        if !sql(row.get::<_, bool>(2))? {
+            return Err("DeepSeek archive reference identity changed".into());
+        }
+        visit(decode(id, raw)?)?;
+    }
+    if Instant::now() >= until {
+        return Err(COVERAGE.into());
+    }
+    Ok(())
+}
+
+/// Called under the state writer after a complete removal census.
+pub(in crate::state) fn mark_worktree_removal(record: &Value, cleanup: &Value) -> Result<()> {
+    let id = string(record, "archive_id");
+    let path = existing_path()?.ok_or("DeepSeek archive disappeared before removal preparation")?;
+    let db = open(&path, true)?;
+    let prior: Vec<u8> = sql(db.query_row(
+        "SELECT substr(CAST(body AS BLOB), 1, ?2) FROM archive_rows WHERE id=?1",
+        params![id, storage::ID_RECORD_BYTES + 1],
+        |row| row.get(0),
+    ))?;
+    if decode(id, &prior)? != *record {
+        return Err("DeepSeek archive changed before removal preparation".into());
+    }
+    let mut updated = record.clone();
+    updated["worktree_cleanup"] = cleanup.clone();
+    let body = updated.to_string();
+    if body.len() as u64 > storage::ID_RECORD_BYTES {
+        return Err("DeepSeek archive is too large".into());
+    }
+    let changed = sql(db.execute(
+        "UPDATE archive_rows SET body=?1
+         WHERE id=?2 AND CAST(body AS BLOB)=?3 AND name=?4 AND run=?5 AND conversation=?6",
+        params![
+            body,
+            id,
+            prior,
+            record["name"].as_str(),
+            record["run_id"].as_str(),
+            record["conversation_id"].as_str()
+        ],
+    ))?;
+    if changed != 1 {
+        return Err("DeepSeek archive changed before removal preparation".into());
+    }
+    Ok(())
 }
 
 pub(super) fn publish(record: &Value) -> Result<String> {
