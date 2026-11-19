@@ -9,6 +9,7 @@ use std::{
 };
 mod changes;
 pub(super) mod control;
+mod coverage;
 pub(super) mod listing;
 mod model;
 mod publication;
@@ -23,6 +24,26 @@ use model::{Key, Seed};
 pub(super) use publication::Publication;
 pub(super) use repair::background_at;
 use store::Store;
+
+/// A reader can try a new observation while a publication settles.
+#[derive(Debug)]
+struct PublicationPending(&'static str);
+
+impl std::fmt::Display for PublicationPending {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.0)
+    }
+}
+
+impl std::error::Error for PublicationPending {}
+
+fn sqlite_busy(error: &anyhow::Error) -> bool {
+    matches!(
+        error.downcast_ref::<rusqlite::Error>(),
+        Some(rusqlite::Error::SqliteFailure(code, _))
+            if matches!(code.code, rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked)
+    )
+}
 
 // Absent opt-in costs one metadata lookup,
 // with no directory creation, projection, SQLite, lock or coverage write.

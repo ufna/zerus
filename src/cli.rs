@@ -2556,6 +2556,20 @@ fn local_json_archives_with(
     archives: bool,
     ordinary: Option<&state::ListingQuery>,
 ) -> Result<Value> {
+    state::retry_ordinary_listing(ordinary, |until| {
+        local_json_archives_attempt(config, archives, ordinary, until)
+    })
+    .map_err(|error| match error.downcast::<Error>() {
+        Ok(error) => error,
+        Err(error) => Error::new(1, error.to_string()),
+    })
+}
+fn local_json_archives_attempt(
+    config: &Config,
+    archives: bool,
+    ordinary: Option<&state::ListingQuery>,
+    until: Instant,
+) -> anyhow::Result<Value> {
     if !platform::local_sessions() {
         // A control console: no tmux, session state or local projects. Absent
         // `local_sessions` means true, so Unix listings stay as they were.
@@ -2595,10 +2609,9 @@ fn local_json_archives_with(
     // A session renamed before merge_listing reads the panes keeps its ID.
     let ids = state::listed_ids(&listing);
     let mut merged = match ordinary {
-        Some(query) => state::merge_ordinary_listing(raw, &ids, archives, query),
-        None => state::merge_listing_archives(raw, &ids, archives),
-    }
-    .map_err(|e| Error::new(1, e))?;
+        Some(query) => state::merge_ordinary_listing(raw, &ids, archives, query, until),
+        None => state::merge_listing_archives(raw, &ids, archives).map_err(anyhow::Error::msg),
+    }?;
     merged["archive_paging"] = json!(true);
     merged["archive_revision"] = json!(state::archive_catalog::revision().map_err(|e|Error::new(1,e))?);
     let ended = launches.ended(merged["sessions"].as_array().map_or(&[], Vec::as_slice));
