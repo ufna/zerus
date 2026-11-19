@@ -86,7 +86,7 @@ fn exact_previous_store_upgrade_adds_only_the_independent_message_leaf() {
     // ... and the question route leaves' tables (zerus-sa9qn.8, .32, .50, .36 and .52).
     assert_eq!(
         tables(&store.db),
-        before + 2 + 2 + 2 + 2 + 2 + 2 + 1 + 2 + 2 + 1 + 1
+        before + 2 + 2 + 2 + 2 + 2 + 2 + 1 + 2 + 2 + 1 + 1 + 1
     );
     assert_eq!(ledger::undrained(&store.db).unwrap(), 0);
 }
@@ -109,7 +109,7 @@ fn the_input_upgrade_adds_only_its_two_tables_with_no_charge() {
     // ... and the question route leaves' tables (zerus-sa9qn.8, .32, .50, .36 and .52).
     assert_eq!(
         tables(&store.db),
-        before + 2 + 2 + 2 + 2 + 2 + 1 + 2 + 2 + 1 + 1
+        before + 2 + 2 + 2 + 2 + 2 + 1 + 2 + 2 + 1 + 1 + 1
     );
     assert_eq!(inputs::totals(&store.db).unwrap(), (0, 0));
 }

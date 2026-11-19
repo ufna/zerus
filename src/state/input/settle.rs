@@ -672,11 +672,12 @@ impl Transcript {
         )
     }
 
-    /// The first new row that records `message` as submitted or queued.
-    fn proof(&mut self, message: &str, pasted_at: f64) -> Option<Proof> {
-        self.rows()?
-            .iter()
-            .find_map(|row| row_proof(row, message, pasted_at))
+    /// The first new row that records `message` as submitted or queued, and
+    /// the native identity of that exact row ([`witness`]).
+    fn proof(&mut self, message: &str, pasted_at: f64) -> Option<(Proof, Value)> {
+        self.rows()?.iter().find_map(|row| {
+            row_proof(row, message, pasted_at).map(|proof| (proof, witness(proof, row)))
+        })
     }
 }
 
@@ -710,15 +711,19 @@ impl Proof {
 
 /// Waits for Claude's own record of the submission until `deadline`. Err
 /// holds the composer's text then, as evidence. `pasted_at` is the wall clock
-/// just before the paste: no proving row may be older.
-pub(in crate::state) fn confirm(
+/// just before the paste: no proving row may be older. With the proof comes
+/// the native identity of the exact row that proved it ([`witness`]): the
+/// sender records what it witnessed, so the person turn's hook can be joined
+/// to exactly that input (zerus-46l1q, review R3-1); null when the proof
+/// names no such row.
+pub(in crate::state) fn confirm_witnessed(
     terminal: &dyn backend::TerminalBackend,
     claim: &backend::InputClaim,
     mut transcript: Option<&mut Transcript>,
     message: &str,
     pasted_at: f64,
     deadline: Instant,
-) -> std::result::Result<Proof, Option<String>> {
+) -> std::result::Result<(Proof, Value), Option<String>> {
     loop {
         match transcript.as_deref_mut() {
             Some(transcript) => {
@@ -728,8 +733,10 @@ pub(in crate::state) fn confirm(
             }
             None => {
                 if let Some((screen, x, y)) = frame(terminal, claim) {
-                    if !pasting(&screen) && composer_empty_for_model(claim.agent, &screen, x, y, None) {
-                        return Ok(Proof::Composer);
+                    if !pasting(&screen)
+                        && composer_empty_for_model(claim.agent, &screen, x, y, None)
+                    {
+                        return Ok((Proof::Composer, Value::Null));
                     }
                 }
             }
@@ -752,29 +759,67 @@ pub(in crate::state) fn confirm(
 /// `remove`/`dequeue` operation, and this send's own enqueue would come first.
 fn row_proof(row: &Value, message: &str, pasted_at: f64) -> Option<Proof> {
     let (proof, text) = match row["type"].as_str()? {
-        "user" if row["isMeta"] != true && row.get("promptSource").is_none_or(|source| source == "typed") => {
-            let text = match &row["message"]["content"] {
-                Value::String(text) => text.clone(),
-                Value::Array(blocks) => blocks
-                    .iter()
-                    .filter(|block| block["type"] == "text")
-                    .filter_map(|block| block["text"].as_str())
-                    .collect::<Vec<_>>()
-                    .join("\n"),
-                _ => return None,
-            };
-            (Proof::Transcript, text)
+        "user"
+            if row["isMeta"] != true
+                && row
+                    .get("promptSource")
+                    .is_none_or(|source| source == "typed") =>
+        {
+            (Proof::Transcript, user_text(row)?)
         }
-        "queue-operation" if row["operation"] == "enqueue" => (Proof::Queued, row["content"].as_str()?.to_owned()),
+        "queue-operation" if row["operation"] == "enqueue" => {
+            (Proof::Queued, row["content"].as_str()?.to_owned())
+        }
         _ => return None,
     };
-    let stamped = chrono::DateTime::parse_from_rfc3339(row["timestamp"].as_str()?).ok()?;
-    let stamped = stamped.timestamp_millis() as f64 / 1000.0;
+    let stamped = stamped(row)?;
     // Claude may write a row well after it made it (an earlier enqueue lands
     // after this send's start offset), so the stamp, not the position, shows
     // the row is newer than the paste. This send's own row is made at its
     // Enter, after at least the settle's stable time, on the same clock.
     (stamped >= pasted_at && same(message, &text)).then_some(proof)
+}
+
+/// The native identity of the row that proved a submission: for Claude's own
+/// typed user row of the message, its `promptId` (which its UserPromptSubmit
+/// hook reports as `prompt_id`) and its row `uuid`. A queue entry, which no
+/// recorded consumer joins to a turn, and a row without both canonical IDs
+/// witness nothing (zerus-46l1q, review R3-1).
+fn witness(proof: Proof, row: &Value) -> Value {
+    let canonical = |key: &str| {
+        row[key].as_str().filter(|id| {
+            uuid::Uuid::parse_str(id).is_ok_and(|uuid| !uuid.is_nil() && uuid.to_string() == *id)
+        })
+    };
+    match (proof, canonical("promptId"), canonical("uuid")) {
+        (Proof::Transcript, Some(prompt), Some(uuid)) => {
+            serde_json::json!({"prompt_id": prompt, "uuid": uuid})
+        }
+        _ => Value::Null,
+    }
+}
+
+/// The text of a Claude transcript user row: its string content, or its text
+/// blocks joined by line breaks.
+pub(in crate::state) fn user_text(row: &Value) -> Option<String> {
+    match &row["message"]["content"] {
+        Value::String(text) => Some(text.clone()),
+        Value::Array(blocks) => Some(
+            blocks
+                .iter()
+                .filter(|block| block["type"] == "text")
+                .filter_map(|block| block["text"].as_str())
+                .collect::<Vec<_>>()
+                .join("\n"),
+        ),
+        _ => None,
+    }
+}
+
+/// A Claude transcript row's own time stamp, in Unix seconds.
+pub(in crate::state) fn stamped(row: &Value) -> Option<f64> {
+    let stamped = chrono::DateTime::parse_from_rfc3339(row["timestamp"].as_str()?).ok()?;
+    Some(stamped.timestamp_millis() as f64 / 1000.0)
 }
 
 /// A line Claude may turn into an image attachment: only a path (quoted or
@@ -841,6 +886,51 @@ pub(in crate::state) fn same(message: &str, recorded: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// The proof kind of `message` in the rows `transcript` reads next.
+    fn kind(transcript: &mut Transcript, message: &str) -> Option<Proof> {
+        transcript.proof(message, pasted()).map(|(proof, _)| proof)
+    }
+    /// The proof kind [`confirm_witnessed`] waits for.
+    fn confirm(
+        terminal: &dyn backend::TerminalBackend,
+        claim: &backend::InputClaim,
+        transcript: Option<&mut Transcript>,
+        message: &str,
+        pasted_at: f64,
+        deadline: Instant,
+    ) -> std::result::Result<Proof, Option<String>> {
+        confirm_witnessed(terminal, claim, transcript, message, pasted_at, deadline)
+            .map(|(proof, _)| proof)
+    }
+
+    #[test]
+    fn only_claudes_typed_row_with_its_own_prompt_and_row_ids_is_witnessed() {
+        // zerus-46l1q review R3-1: the sender records the exact native input
+        // it saw; a queue entry or a row without both IDs witnesses nothing.
+        let prompt = uuid::Uuid::new_v4().to_string();
+        let row_id = uuid::Uuid::new_v4().to_string();
+        let typed = json!({"type":"user","promptSource":"typed","timestamp":"2026-11-19T00:00:10Z",
+            "promptId":prompt,"uuid":row_id,"message":{"role":"user","content":"words"}});
+        assert_eq!(
+            row_proof(&typed, "words", 0.0).map(|proof| witness(proof, &typed)),
+            Some(json!({"prompt_id": prompt, "uuid": row_id}))
+        );
+        let queued = json!({"type":"queue-operation","operation":"enqueue",
+            "timestamp":"2026-11-19T00:00:10Z","content":"words","promptId":prompt,"uuid":row_id});
+        assert_eq!(row_proof(&queued, "words", 0.0), Some(Proof::Queued));
+        assert_eq!(witness(Proof::Queued, &queued), Value::Null);
+        for (key, value) in [
+            ("promptId", Value::Null),
+            ("uuid", Value::Null),
+            ("promptId", json!("not-a-uuid")),
+            ("uuid", json!(uuid::Uuid::nil().to_string())),
+        ] {
+            let mut row = typed.clone();
+            row[key] = value;
+            assert_eq!(witness(Proof::Transcript, &row), Value::Null, "{row}");
+        }
+        assert_eq!(witness(Proof::Composer, &typed), Value::Null);
+    }
     use std::sync::Mutex;
 
     fn rule() -> String {
@@ -1361,7 +1451,7 @@ mod tests {
         json!({"type":"user","promptSource":"typed","timestamp":at,"message":{"role":"user","content":content}})
     }
     fn proof(path: &Path, offset: u64, message: &str) -> Option<Proof> {
-        Transcript::at(path.to_owned(), offset).proof(message, pasted())
+        kind(&mut Transcript::at(path.to_owned(), offset), message)
     }
 
     #[test]
@@ -1465,19 +1555,19 @@ mod tests {
         let row = typed(json!("continue"), PASTED).to_string();
         let mut file = fs::OpenOptions::new().append(true).open(&path).unwrap();
         writeln!(file, "{other}").unwrap();
-        assert_eq!(transcript.proof("continue", pasted()), None);
+        assert_eq!(kind(&mut transcript, "continue"), None);
         assert_eq!(transcript.next, other.len() as u64 + 1, "the complete line was consumed");
         // A row written in two parts is read whole once its newline lands,
         // also when the read that found its first part ended a complete row.
         let (head, tail) = row.split_at(row.len() / 2);
         write!(file, "{other}\n{head}").unwrap();
-        assert_eq!(transcript.proof("continue", pasted()), None);
+        assert_eq!(kind(&mut transcript, "continue"), None);
         assert_eq!(transcript.partial, head.as_bytes());
         writeln!(file, "{tail}").unwrap();
-        assert_eq!(transcript.proof("continue", pasted()), Some(Proof::Transcript));
+        assert_eq!(kind(&mut transcript, "continue"), Some(Proof::Transcript));
         assert_eq!(transcript.read, (2 * other.len() + row.len() + 3) as u64, "every byte read once");
         // Rows consumed once are not read again.
-        assert_eq!(transcript.proof("another prompt", pasted()), None);
+        assert_eq!(kind(&mut transcript, "another prompt"), None);
         // At most TRANSCRIPT_BYTES after the start, in all the reads together.
         let mut spent = Transcript::at(path.clone(), 0);
         spent.read = TRANSCRIPT_BYTES;

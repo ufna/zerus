@@ -60,6 +60,8 @@ pub(crate) mod program_stop;
 #[allow(dead_code)] // The private final-cleanup adapter is the next caller.
 pub(crate) mod program_cleanup;
 mod protocol;
+/// The person message marks of the person-request leaf (zerus-46l1q, S1).
+pub(crate) mod person_mark;
 /// The owner-approved question route leaf (zerus-sa9qn.8, slice a).
 pub(crate) mod question_route;
 mod registration;

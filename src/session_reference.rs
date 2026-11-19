@@ -271,6 +271,15 @@ pub(crate) fn current(config: &Config, args: &[String]) -> cli::Result<i32> {
     if source == "hosted_call" {
         fields["proof_limit"] = json!(state::session_graph::HOSTED_LIMIT);
     }
+    // Whether the person's own message lets this session act for them now
+    // (zerus-46l1q); a claimed or hosted identity never has one.
+    fields["person_request"] = if source == "process" {
+        crate::caller::person_request()
+            .map(|request| request.summary(chrono::Utc::now().timestamp_millis()))
+            .unwrap_or(Value::Null)
+    } else {
+        Value::Null
+    };
     print(&reference, as_json, fields)
 }
 

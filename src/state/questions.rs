@@ -1024,6 +1024,15 @@ pub(super) fn dispatch(args: &[String]) -> Result<i32> {
             "question_id":request.question_id,"question_hash":request.expected_question_hash,"digest":digest,
             "submitted_at":now(),"answers":answers});
         receipt_index::persist(&receipt_path, &receipt)?;
+        // Every answer delivered into the session is input from someone the
+        // receiving side cannot prove to be the person (an agent's answer can
+        // arrive forwarded, without its ancestry): it ends the person turn
+        // before any delivery, whoever appears to call (zerus-46l1q, S1-2).
+        let mut record = record;
+        if record.get(person_turn::FIELD).is_some() {
+            person_turn::end(&mut record);
+            write(&mut record)?;
+        }
         (record, question, answers, receipt)
     };
     let tui_choice =

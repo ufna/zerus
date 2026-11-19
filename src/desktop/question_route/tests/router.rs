@@ -982,7 +982,7 @@ fn exact_previous_store_upgrade_adds_only_the_route_leaf() {
     );
     // This leaf's table, then the later switch leaf's two (schema 37), the
     // latch leaf's two (schema 39) and the retention counter (schema 40).
-    assert_eq!(tables(&store.db), before + 1 + 2 + 2 + 1 + 1);
+    assert_eq!(tables(&store.db), before + 1 + 2 + 2 + 1 + 1 + 1);
     assert!(ledger::reserved(&store.db, 8).unwrap().is_empty());
 }
 
@@ -1085,6 +1085,9 @@ fn the_actor_admits_a_route_only_with_its_own_reservation() {
         (receipt.binding.kind, receipt.phase),
         (wire::Kind::RouteQuestion, wire::Phase::Queued)
     );
+    // A route is never the person's own message: it writes no person mark
+    // (zerus-46l1q).
+    assert_eq!(crate::desktop::person_mark::count(&f.store.db), 0);
     // The same request is never admitted again.
     let routed = f
         .send
@@ -1454,7 +1457,7 @@ fn exact_previous_store_upgrade_adds_only_the_switch_leaf_switched_on() {
     );
     // This leaf's two tables, then the later latch leaf's two (schema 39)
     // and the retention counter (schema 40).
-    assert_eq!(tables(&store.db), before + 2 + 2 + 1 + 1);
+    assert_eq!(tables(&store.db), before + 2 + 2 + 1 + 1 + 1);
     assert!(
         super::super::policy::enabled(&store.db).unwrap(),
         "on by default"
@@ -1763,10 +1766,11 @@ fn exact_previous_store_upgrade_adds_only_the_activity_indexes() {
     );
     // The two partial indexes, then the later latch leaf's two tables, its
     // receipt index and their two primary key indexes (schema 39), then the
-    // retention counter and the settled index (schema 40).
+    // retention counter and the settled index (schema 40), then the person
+    // mark table, its primary key and time indexes (schema 43).
     assert_eq!(
         objects(&store.db),
-        (tables + 2 + 1 + 1, indexes + 2 + 3 + 1 + 1)
+        (tables + 2 + 1 + 1 + 1, indexes + 2 + 3 + 1 + 1 + 2)
     );
     // The route settled before the upgrade is indexed and shown.
     let reply = super::super::activity_request(
@@ -2012,7 +2016,7 @@ fn exact_previous_store_upgrade_adds_only_the_latch_leaf() {
         crate::desktop::store::SCHEMA
     );
     // This leaf's two tables, then the retention counter (schema 40).
-    assert_eq!(tables(&store.db), before + 2 + 1 + 1);
+    assert_eq!(tables(&store.db), before + 2 + 1 + 1 + 1);
     assert!(!super::super::latch::latched(&store.db, CHILD_ID).unwrap());
 }
 
@@ -2786,8 +2790,12 @@ fn exact_previous_store_upgrade_adds_only_the_retention_leaf() {
             .unwrap(),
         crate::desktop::store::SCHEMA
     );
-    // The counter table and the settled index.
-    assert_eq!(objects(&store.db), (tables + 1 + 1, indexes + 1 + 1));
+    // The counter table and the settled index, then the person mark table,
+    // its primary key and time indexes (schema 43).
+    assert_eq!(
+        objects(&store.db),
+        (tables + 1 + 1 + 1, indexes + 1 + 1 + 2)
+    );
     assert_eq!(ledger::count(&store.db).unwrap(), 2);
     let runs: i64 = store
         .db

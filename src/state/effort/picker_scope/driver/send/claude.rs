@@ -186,8 +186,9 @@ pub(in crate::state::effort::picker_scope::driver) fn submit(
         owner.release_send_root()?;
     }
     owner.release_send_root()?;
-    let proof = settle::confirm(terminal, &claim, transcript, text, pasted_at, deadline)
-        .map_err(|_| "Claude recorded no submission of this message")?;
+    let (proof, witnessed) =
+        settle::confirm_witnessed(terminal, &claim, transcript, text, pasted_at, deadline)
+            .map_err(|_| "Claude recorded no submission of this message")?;
     if !proof.recorded() {
         return Err("Claude recorded no typed message or new enqueue for this send".into());
     }
@@ -197,6 +198,10 @@ pub(in crate::state::effort::picker_scope::driver) fn submit(
     retire(owner, true)?;
     with(owner, |held| {
         held.value["native"] = json!(proof.name());
+        // The exact native input this send saw (zerus-46l1q, review R3-1).
+        if !witnessed.is_null() {
+            held.value["native_input"] = witnessed;
+        }
         Ok(())
     })
 }

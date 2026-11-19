@@ -74,7 +74,7 @@ fn exact_previous_store_upgrade_adds_only_the_independent_launch_leaf() {
     // ... and the question route leaves' tables (zerus-sa9qn.8, .32, .50, .36 and .52).
     assert_eq!(
         tables(&store.db),
-        before + 2 + 1 + 2 + 2 + 2 + 2 + 2 + 2 + 2 + 1 + 2 + 1 + 1
+        before + 2 + 1 + 2 + 2 + 2 + 2 + 2 + 2 + 2 + 1 + 2 + 1 + 1 + 1
     );
     assert_eq!(ledger::undrained(&store.db).unwrap(), 0);
 }

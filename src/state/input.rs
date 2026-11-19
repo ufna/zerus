@@ -2299,6 +2299,9 @@ fn submit_core(
     // Preserve attachments after any possible input: the agent may read them later.
     let _ = attachments.map(tempfile::TempDir::keep);
     acceptance::bind_native_context(&mut record, &receipt);
+    // Any input from anyone ends the person turn; the person's own next
+    // message starts a new one at its own prompt (zerus-46l1q).
+    super::person_turn::end(&mut record);
     record["input_pending_at"] = json!(submitted_at);
     // Clear input reads this send's receipt to tell an input still in its proof
     // window from one left uncertain or stuck (zerus-wkj9l.1).
@@ -2458,13 +2461,17 @@ fn submit_core(
         // it records the message: wait for the proof without holding it. The
         // typing marker keeps other input out meanwhile.
         drop(guard.take());
-        let proof = settle::confirm(terminal, &claim, transcript.as_mut(), &text, pasted_at, deadline);
+        let proof = settle::confirm_witnessed(terminal, &claim, transcript.as_mut(), &text, pasted_at, deadline);
         let _guard = lock(None).map_err(unknown)?;
-        end_typing(name, &record, &request_id, submitted_at, matches!(proof, Ok(proof) if proof.recorded()));
+        end_typing(name, &record, &request_id, submitted_at, matches!(proof, Ok((proof, _)) if proof.recorded()));
         match proof {
-            Ok(proof) => {
+            Ok((proof, witnessed)) => {
                 receipt["status"] = json!("submitted");
                 receipt["native"] = json!(proof.name());
+                // The exact native input this send saw (zerus-46l1q, R3-1).
+                if !witnessed.is_null() {
+                    receipt["native_input"] = witnessed;
+                }
                 receipt_index::persist(&receipt_path, &receipt).map_err(unknown)?;
             }
             Err(composer) => {
