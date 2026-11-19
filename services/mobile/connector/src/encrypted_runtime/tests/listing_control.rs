@@ -284,6 +284,117 @@ impl Drop for Receiver {
 }
 
 #[tokio::test]
+async fn native_task_edits_are_advertised_only_from_the_canonical_configuration() {
+    use crate::capabilities::{
+        Flags, TASK_EDIT_FEATURE, TASK_EDIT_HELP_MARKER, TASK_UPLOAD_HELP_MARKER,
+    };
+
+    const PRIVATE_XDG: &str = "ZERUS_CONNECTOR_ADVERTISEMENT_TEST_XDG";
+    let Some(xdg) = std::env::var_os(PRIVATE_XDG) else {
+        // Canonical configuration selection uses the original process's environment.
+        let root = tempfile::tempdir().unwrap();
+        let case = std::thread::current().name().unwrap().to_owned();
+        let output = tokio::time::timeout(
+            std::time::Duration::from_secs(30),
+            tokio::process::Command::new(std::env::current_exe().unwrap())
+                .args([&case, "--exact", "--test-threads=1"])
+                .env(PRIVATE_XDG, root.path())
+                .env("XDG_CONFIG_HOME", root.path())
+                .env("HOME", root.path())
+                .kill_on_drop(true)
+                .output(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            output.status.success() && stdout.contains("1 passed"),
+            "{stdout}\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    };
+    assert_eq!(std::env::var_os("XDG_CONFIG_HOME"), Some(xdg.clone()));
+    let root = std::path::PathBuf::from(xdg);
+    let canonical = root.join("hgs/mobile/connector.json");
+    let foreign = canonical.with_file_name("other-connector.json");
+
+    let mut fixture = Fixture::new();
+    let receiver = Receiver::new();
+    let profile = receiver.bind(&mut fixture);
+    let config = json!({
+        "server_url": profile.server_url,
+        "node_token": profile.node_token,
+        "state_dir": root.join("journal"),
+    });
+    std::fs::create_dir_all(canonical.parent().unwrap()).unwrap();
+    for path in [&canonical, &foreign] {
+        crate::workspace_cli::replace_config(path, "", &config).unwrap();
+    }
+    let environment = crate::config::Environment::current().unwrap();
+    let marker = format!("hgs task exchange|digests --json\n{TASK_UPLOAD_HELP_MARKER}\n");
+    let supported = Flags::from_help(&format!("{marker}{TASK_EDIT_HELP_MARKER}\n"));
+    let older = Flags::from_help(&marker);
+    let gateway = profile.identity.device.device_id.as_str();
+    let peer = "00000000-0000-4000-8000-000000000030";
+
+    for (path, route, flags, expected) in [
+        (&canonical, gateway, supported, true),
+        (&foreign, gateway, supported, false),
+        (&canonical, gateway, older, false),
+        (&canonical, peer, supported, false),
+    ] {
+        let started = crate::start(path, true, &environment, crate::now()).unwrap();
+        let mut engine = fixture.engine();
+        engine.native_edits_slot =
+            crate::session_labels::Selection::allows_native_edits(started.labels.as_ref());
+        engine.connector.flags.set(flags);
+        let snapshot = json!({
+            "host": "test",
+            "sessions": [],
+            "mobile_capabilities": flags.advertised(false),
+        });
+        let start = receiver.requests().len();
+        engine
+            .snapshot(
+                &profile,
+                MACHINE,
+                route,
+                "Private computer",
+                snapshot,
+                Value::Null,
+            )
+            .await
+            .unwrap();
+        let posts = receiver.requests();
+        let (request, body) = &posts[start];
+        assert!(request.starts_with("POST /v2/node/snapshot "));
+        let envelope: EncryptedEnvelope = serde_json::from_value(body["envelope"].clone()).unwrap();
+        let plain = crypto::open(
+            &fixture.phone,
+            &profile.identity.device,
+            &envelope.header,
+            &envelope,
+        )
+        .unwrap();
+        let opened: Value = serde_json::from_slice(&plain).unwrap();
+        let features = opened["snapshot"]["mobile_capabilities"]["features"]
+            .as_array()
+            .unwrap();
+        assert!(features.contains(&json!(crate::capabilities::TASK_UPLOAD_FEATURE)));
+        assert_eq!(
+            features.contains(&json!(TASK_EDIT_FEATURE)),
+            expected,
+            "configuration {}, route {route}, native edit capability {}",
+            path.file_name().unwrap().to_string_lossy(),
+            flags.task_admitted_edit,
+        );
+    }
+    receiver.finish().await;
+}
+
+#[tokio::test]
 async fn exact_plaintext_ceiling_accepts_one_mib_and_refuses_next_byte_before_live_receiver() {
     let mut f = Fixture::new();
     let receiver = Receiver::new();
