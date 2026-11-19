@@ -37,12 +37,26 @@ fn payload() -> Value {
         assert!(pages.len() < 8, "the bounded fixture's cursor must advance");
     }
     let progress = super::progress::payload();
+    // zerus-63rru.197 (C2): one live team and one the person stopped and
+    // archived, through the product's own Stop and Archive operations.
+    let archived = Harness::new();
+    for (n, name) in [(1, "Live team"), (2, "Archived team")] {
+        let id = uid(0x4000 + n);
+        archived.create_team(&id, name, &format!("zerus/team/archived-{n}"));
+        archived.bind_for(&id, "lead", &format!("launch_id:{}", uid(0x5000 + n)));
+    }
+    let gone = uid(0x4002);
+    for operation in [crate::teams::ops::Operation::Stop, crate::teams::ops::Operation::Archive] {
+        let reply = archived.apply_for(&gone, &person(), operation);
+        assert!(reply.ok, "{reply:?}");
+    }
     json!({
         "pages": pages,
         "empty": view::list(&read(&Harness::new(), "list")),
         "team": view::team(&read(&h, &format!("status --team {last}")), &read(&h, &format!("queue --team {last}"))),
         "running": view::list(&progress["running"]),
         "stuck": view::list(&progress["stuck"]),
+        "archived": view::list(&read(&archived, "list")),
     })
 }
 
