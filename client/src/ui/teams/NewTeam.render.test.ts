@@ -113,8 +113,9 @@ it("drops a late folder check for a folder that is no longer shown", async () =>
   const folder = host.querySelector<HTMLInputElement>('input[aria-label="Project folder"]')!;
   folder.value = "/workspace/a"; folder.dispatchEvent(new Event("input", { bubbles: true }));
   find(host, "Check folder").click();
-  // The person edits the folder while the check is in flight.
-  folder.value = "/workspace/not-checked"; folder.dispatchEvent(new Event("input", { bubbles: true }));
+  // The person edits the folder while the check is in flight, back to the
+  // chosen project's own folder (another folder would block Create by itself).
+  folder.value = "/workspace/example"; folder.dispatchEvent(new Event("input", { bubbles: true }));
   resolveFirst({ git: true, head: "0123456789abcdef0123456789abcdef01234567", branch: "main", reason: "" });
   await vi.waitFor(() => expect(find(host, "Check folder").disabled).toBe(false));
   expect(host.querySelector("[data-folder-ok]")).toBeNull();

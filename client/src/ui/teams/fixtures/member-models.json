@@ -1,81 +1,254 @@
 {
-  "claude": {
-    "account": "claude-work",
-    "catalog": {
-      "defaults": {
-        "effort": "",
-        "model": ""
-      },
-      "effort_supported": true,
-      "models": [
+  "freest": {
+    "claude": {
+      "account": "",
+      "accounts": [
         {
-          "effort_options": [
-            "low",
-            "high"
-          ],
-          "id": "model-a",
-          "label": "Example model"
+          "id": "claude-work",
+          "label": "Work"
+        },
+        {
+          "id": "claude-spare",
+          "label": "Spare"
         }
       ],
-      "provider_defaults": {
-        "effort": "low",
-        "model": "model-a"
-      }
+      "catalog": {
+        "defaults": {
+          "effort": "",
+          "model": ""
+        },
+        "effort_supported": true,
+        "models": [
+          {
+            "effort_options": [
+              "low",
+              "high"
+            ],
+            "id": "model-a",
+            "label": "Example model"
+          }
+        ],
+        "provider_defaults": {
+          "effort": "",
+          "model": ""
+        }
+      },
+      "on_some": [
+        {
+          "accounts": [
+            "claude-spare"
+          ],
+          "id": "model-b",
+          "label": "Second model"
+        }
+      ],
+      "revision": "r1"
     },
-    "revision": "r1"
+    "codex": {
+      "account": "",
+      "accounts": [
+        {
+          "id": "codex-work",
+          "label": "codex-work"
+        }
+      ],
+      "catalog": {
+        "defaults": {
+          "effort": "",
+          "model": ""
+        },
+        "effort_supported": true,
+        "models": [
+          {
+            "effort_options": [
+              "low",
+              "high"
+            ],
+            "id": "model-a",
+            "label": "Example model"
+          }
+        ],
+        "provider_defaults": {
+          "effort": "",
+          "model": ""
+        }
+      },
+      "on_some": [],
+      "revision": "r1"
+    },
+    "kimi": {
+      "account": "",
+      "accounts": [
+        {
+          "id": "kimi-work",
+          "label": "kimi-work"
+        }
+      ],
+      "catalog": {
+        "defaults": {
+          "effort": "",
+          "model": ""
+        },
+        "effort_supported": false,
+        "models": [
+          {
+            "effort_options": [
+              "low",
+              "high"
+            ],
+            "id": "model-a",
+            "label": "Example model"
+          }
+        ],
+        "provider_defaults": {
+          "effort": "",
+          "model": ""
+        }
+      },
+      "on_some": [],
+      "revision": "r1"
+    }
   },
-  "codex": {
-    "account": "codex-work",
-    "catalog": {
-      "defaults": {
-        "effort": "",
-        "model": ""
-      },
-      "effort_supported": true,
-      "models": [
+  "named": {
+    "claude-spare": {
+      "account": "claude-spare",
+      "accounts": [
         {
-          "effort_options": [
-            "low",
-            "high"
-          ],
-          "id": "model-a",
-          "label": "Example model"
+          "id": "claude-spare",
+          "label": "Spare"
         }
       ],
-      "provider_defaults": {
-        "effort": "low",
-        "model": "model-a"
-      }
-    },
-    "revision": "r1"
-  },
-  "kimi": {
-    "account": "kimi-work",
-    "catalog": {
-      "defaults": {
-        "effort": "",
-        "model": ""
+      "catalog": {
+        "defaults": {
+          "effort": "",
+          "model": ""
+        },
+        "effort_supported": true,
+        "models": [
+          {
+            "effort_options": [
+              "low",
+              "high"
+            ],
+            "id": "model-a",
+            "label": "Example model"
+          },
+          {
+            "effort_options": [
+              "low"
+            ],
+            "id": "model-b",
+            "label": "Second model"
+          }
+        ],
+        "provider_defaults": {
+          "effort": "low",
+          "model": "model-a"
+        }
       },
-      "effort_supported": false,
-      "models": [
+      "on_some": [],
+      "revision": "r1"
+    },
+    "claude-work": {
+      "account": "claude-work",
+      "accounts": [
         {
-          "effort_options": [
-            "low",
-            "high"
-          ],
-          "id": "model-a",
-          "label": "Example model"
+          "id": "claude-work",
+          "label": "Work"
         }
       ],
-      "provider_defaults": {
-        "effort": "low",
-        "model": "model-a"
-      }
+      "catalog": {
+        "defaults": {
+          "effort": "",
+          "model": ""
+        },
+        "effort_supported": true,
+        "models": [
+          {
+            "effort_options": [
+              "low",
+              "high"
+            ],
+            "id": "model-a",
+            "label": "Example model"
+          }
+        ],
+        "provider_defaults": {
+          "effort": "low",
+          "model": "model-a"
+        }
+      },
+      "on_some": [],
+      "revision": "r1"
     },
-    "revision": "r1"
+    "codex-work": {
+      "account": "codex-work",
+      "accounts": [
+        {
+          "id": "codex-work",
+          "label": "codex-work"
+        }
+      ],
+      "catalog": {
+        "defaults": {
+          "effort": "",
+          "model": ""
+        },
+        "effort_supported": true,
+        "models": [
+          {
+            "effort_options": [
+              "low",
+              "high"
+            ],
+            "id": "model-a",
+            "label": "Example model"
+          }
+        ],
+        "provider_defaults": {
+          "effort": "low",
+          "model": "model-a"
+        }
+      },
+      "on_some": [],
+      "revision": "r1"
+    },
+    "kimi-work": {
+      "account": "kimi-work",
+      "accounts": [
+        {
+          "id": "kimi-work",
+          "label": "kimi-work"
+        }
+      ],
+      "catalog": {
+        "defaults": {
+          "effort": "",
+          "model": ""
+        },
+        "effort_supported": false,
+        "models": [
+          {
+            "effort_options": [
+              "low",
+              "high"
+            ],
+            "id": "model-a",
+            "label": "Example model"
+          }
+        ],
+        "provider_defaults": {
+          "effort": "low",
+          "model": "model-a"
+        }
+      },
+      "on_some": [],
+      "revision": "r1"
+    }
   },
   "refusals": {
     "changed": "Accounts changed on this machine. Refresh before saving.",
-    "no_signed_in": "No signed-in account of this agent here."
+    "no_account": "No account of this agent is on this computer.",
+    "too_many": "This agent has too many accounts to compare their models; choose an account."
   }
 }

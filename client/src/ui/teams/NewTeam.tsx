@@ -1,4 +1,4 @@
-import { For, Show, createEffect, createMemo, createSignal, createUniqueId, on, onCleanup, onMount } from "solid-js";
+import { For, Show, batch, createEffect, createMemo, createSignal, createUniqueId, on, onCleanup, onMount } from "solid-js";
 import type { JSX } from "solid-js";
 import { openTeamCatalog } from "./catalog-navigation";
 import { tr } from "../../i18n";
@@ -31,6 +31,12 @@ import "../styles/newteam.css";
 export const TEMPLATE_CHANGED = "template_changed";
 
 /** A URL-safe template id from a name. */
+/** One folder path written two ways: surrounding blanks and trailing separators aside. */
+export function samePath(a: string, b: string): boolean {
+  const plain = (path: string) => { const trimmed = path.trim(); return trimmed.replace(/[\\/]+$/, "") || trimmed; };
+  return plain(a) === plain(b);
+}
+
 export function slug(text: string): string {
   return text.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 60) || "team";
 }
@@ -165,10 +171,9 @@ export function NewTeam(props: NewTeamProps): JSX.Element {
   const listed = createMemo(() => (props.projects ?? []).filter((candidate) => candidate.accessible));
   const here = (candidate: Project) => candidate.folders.filter((entry) => !!props.machineId && entry.machine_id === props.machineId);
   const chosenProject = () => listed().find((candidate) => candidate.id === project());
-  const owner = (path: string) => {
-    const owners = listed().filter((candidate) => here(candidate).some((entry) => entry.path === path));
-    return owners.length === 1 ? owners[0] : undefined;
-  };
+  /** The catalog projects whose folder on this computer is `path`. */
+  const owners = (path: string) => listed().filter((candidate) => here(candidate).some((entry) => samePath(entry.path, path)));
+  const owner = (path: string) => { const found = owners(path); return found.length === 1 ? found[0] : undefined; };
   // The catalog can arrive after the dialog opens: the selected session's
   // folder names its project once, never over a person's choice.
   createEffect(on(listed, () => { if (!chosenProject() && !project()) setProject(owner(folder().trim())?.id ?? ""); }));
@@ -178,6 +183,20 @@ export function NewTeam(props: NewTeamProps): JSX.Element {
     const count = here(chosen).length;
     return count === 1 ? "" : count === 0 ? tr("This project has no folder on this computer. Add one on the Projects screen.")
       : tr("This project has several folders on this computer; a team needs exactly one.");
+  };
+  // The team is created from the folder's Git HEAD and placed from the
+  // project's folder (#2533 review): the two must be the same folder.
+  const unowned = () => {
+    const path = folder().trim();
+    if (!path) return "";
+    const found = owners(path).length;
+    return found === 0 ? tr("This folder belongs to no project on this computer. Add it on the Projects screen.")
+      : found > 1 ? tr("Several projects use this folder; choose the project.") : "";
+  };
+  const foreignFolder = () => {
+    const chosen = chosenProject();
+    return chosen && here(chosen).length === 1 && !samePath(here(chosen)[0].path, folder())
+      ? tr("The folder is not the chosen project's folder on this computer.") : "";
   };
   const [branch, setBranch] = createSignal("");
   const [facts, setFacts] = createSignal<{ path: string; generation: number; facts: TeamProjectFacts }>();
@@ -243,8 +262,9 @@ export function NewTeam(props: NewTeamProps): JSX.Element {
     if (template()!.unknown_fields?.length) return tr("This version cannot show everything the template sets. Update Zerus to create a team.");
     if (!name().trim()) return tr("Name the team.");
     if (planning() && !goal().trim()) return tr("Name the planning goal.");
-    if (!chosenProject()) return tr("Choose the project.");
+    if (!chosenProject()) return unowned() || tr("Choose the project.");
     if (projectFolders()) return projectFolders();
+    if (foreignFolder()) return foreignFolder();
     if (!checkedFolder()?.git) return tr("Check the project folder: it must be a Git folder.");
     if (locked()) return tr("Wait for the team to be created.");
     return "";
@@ -254,16 +274,16 @@ export function NewTeam(props: NewTeamProps): JSX.Element {
   const chooseProject = (id: string) => {
     setProject(id);
     const chosen = chosenProject(), folders = chosen ? here(chosen) : [];
-    if (folders.length !== 1 || folders[0].path === folder().trim()) return;
+    if (folders.length !== 1 || samePath(folders[0].path, folder())) return;
     setFolder(folders[0].path); setFacts(undefined); void check();
   };
-  /** Browse… with the existing folder picker; the chosen folder is checked,
-   * and names its project when no project is chosen yet. */
+  /** Browse… with the existing folder picker. The chosen folder is checked
+   * and decides the project every time: the one project it belongs to here,
+   * or none, so Create says why (#2533 review). */
   const browse = async () => {
     const chosen = await props.onBrowseFolder?.(folder().trim()).catch(() => null);
     if (!chosen) return;
-    setFolder(chosen); setFacts(undefined);
-    if (!chosenProject()) setProject(owner(chosen)?.id ?? project());
+    batch(() => { setFolder(chosen); setFacts(undefined); setProject(owner(chosen)?.id ?? ""); });
     void check();
   };
   // A check belongs to the exact path it asked for: an answer for another path

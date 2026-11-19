@@ -14,19 +14,21 @@ import replies from "./fixtures/member-models.json";
 import lanes from "./fixtures/lanes-view.json";
 import type { TeamMember, TeamView } from "../../store/teams";
 
-type Reply = { account: string };
-const f = vi.hoisted(() => ({ reads: [] as string[], fail: new Set<string>(), unsigned: new Set<string>(), accounts: undefined as unknown,
-  replies: {} as { claude: Reply; kimi: Reply; codex: Reply; refusals: { no_signed_in: string; changed: string } } }));
+type Reply = { account: string; revision: string; catalog: { models: { id: string }[] } };
+type Replies = { freest: Record<string, Reply>; named: Record<string, Reply>; refusals: { no_account: string; too_many: string; changed: string } };
+const f = vi.hoisted(() => ({ reads: [] as string[], fail: new Set<string>(), none: new Set<string>(), many: new Set<string>(), accounts: undefined as unknown,
+  replies: {} as Replies }));
 vi.mock("../../bridge", async (original) => ({ ...(await original<object>()), inTauri: () => true }));
 vi.mock("@tauri-apps/api/core", () => ({ isTauri: () => false, invoke: async (command: string, args: { agent: string; account: string }) => {
   if (command === "accounts_view") return f.accounts;
   if (command === "team_member_models") {
     f.reads.push(`${args.agent}/${args.account}`);
-    // The command's replies for the freest account ("") and a named one, and
-    // its own refusals (the fixture holds their exact text).
-    const reply = (f.replies as unknown as Record<string, Reply>)[args.agent];
-    if (!args.account && f.unsigned.has(args.agent)) throw f.replies.refusals.no_signed_in;
-    if (f.fail.has(args.agent) || !reply || (args.account && reply.account !== args.account)) throw f.replies.refusals.changed;
+    // The command's replies for the freest account ("") per agent and for a
+    // named account, and its own refusals (the fixture holds their text).
+    if (!args.account && f.none.has(args.agent)) throw f.replies.refusals.no_account;
+    if (!args.account && f.many.has(args.agent)) throw f.replies.refusals.too_many;
+    const reply = args.account ? f.replies.named[args.account] : f.replies.freest[args.agent];
+    if (f.fail.has(args.agent) || !reply) throw f.replies.refusals.changed;
     return reply;
   }
   throw new Error(`Unexpected invoke ${command}`);
@@ -40,7 +42,7 @@ let SwapMemberDialog: typeof import("./SwapMemberDialog").SwapMemberDialog;
 beforeEach(async () => {
   // The bridge's own calls ask whether this is the desktop window.
   Object.defineProperty(window, "__TAURI_INTERNALS__", { value: {}, configurable: true });
-  vi.resetModules(); f.reads = []; f.fail = new Set(); f.unsigned = new Set(); f.accounts = structuredClone(accounts); f.replies = structuredClone(replies) as typeof f.replies;
+  vi.resetModules(); f.reads = []; f.fail = new Set(); f.none = new Set(); f.many = new Set(); f.accounts = structuredClone(accounts); f.replies = structuredClone(replies) as unknown as Replies;
   ({ AddMemberDialog } = await import("./AddMemberDialog")); ({ SwapMemberDialog } = await import("./SwapMemberDialog"));
 });
 afterEach(() => { while (disposers.length) disposers.pop()!(); document.body.replaceChildren(); delete (window as unknown as Record<string, unknown>).__TAURI_INTERNALS__; });
@@ -69,16 +71,17 @@ const chooseNative = async (host: HTMLElement, name: string, value: string) => {
 };
 const submit = (host: HTMLElement) => host.querySelector<HTMLButtonElement>('button[type="submit"]')!;
 
-it("lists the freest account's models, read by the native side from its stand-in account, and no free text", async () => {
+it("lists the models every account of the agent offers for the freest account, and no free text", async () => {
   const { host, sent } = addMember();
   await flush();
   expect(host.querySelector('input[aria-label="Model"]'), "no free-text model").toBeNull();
   expect(host.querySelector('input[aria-label="Effort"]'), "no free-text effort").toBeNull();
-  // The role's agent is claude and its account the freest: the command picks
-  // the stand-in (claude-work, signed in when last inspected) and names it.
+  // The role's agent is claude and its account the freest: the launch may
+  // pick Work or Spare, so model-a (both) is a plain choice and model-b (Spare
+  // only) comes with Spare.
   expect(f.reads).toEqual(["claude/"]);
-  expect(await offered(host, "Model")).toEqual([["", "Account defaults"], ["model-a", "Example model"]]);
-  expect(host.textContent).toContain("Models of Work.");
+  expect(await offered(host, "Model")).toEqual([["", "Account defaults"], ["model-a", "Example model"], ["@claude-spare/model-b", "Second model (only on Spare)"]]);
+  expect(host.textContent).toContain("Models every account of this agent offers. A model only some offer is listed with its account.");
   await pick(host, "Model", "model-a");
   expect(await offered(host, "Effort")).toEqual([["", "Default effort"], ["low", "low"], ["high", "high"]]);
   await pick(host, "Effort", "high");
@@ -91,11 +94,13 @@ it("reads a named account's own catalog, and the freest again after the agent ch
   await flush();
   await chooseNative(host, "Account", "claude-work");
   expect(f.reads).toEqual(["claude/", "claude/claude-work"]);
-  expect(host.textContent, "a named account needs no stand-in note").not.toContain("Models of");
+  expect(host.textContent, "a named account needs no note").not.toContain("Models every account");
+  expect(await offered(host, "Model")).toEqual([["", "Account defaults"], ["model-a", "Example model"]]);
   await chooseNative(host, "Agent", "codex");
   // The agent change clears the account in the same change: no codex read of claude-work.
   expect(f.reads).toEqual(["claude/", "claude/claude-work", "codex/"]);
   expect(await offered(host, "Model")).toEqual([["", "Account defaults"], ["model-a", "Example model"]]);
+  expect(host.textContent, "one codex account: its own name").toContain("Models of codex-work.");
 });
 
 it("hides effort for Kimi, whose catalog has no effort list", async () => {
@@ -111,14 +116,14 @@ it("hides effort for Kimi, whose catalog has no effort list", async () => {
 });
 
 it("falls back to the account's defaults with a hint when nothing can be read", async () => {
-  // No local codex account was signed in when last inspected.
-  f.unsigned.add("codex");
+  // No codex account on this computer.
+  f.none.add("codex");
   const { host, sent } = addMember();
   await flush();
   await chooseNative(host, "Agent", "codex");
   expect(f.reads).toEqual(["claude/", "codex/"]);
   expect(await offered(host, "Model")).toEqual([["", "Account defaults"]]);
-  expect(host.textContent).toContain("No signed-in account of this agent here: its account's defaults apply.");
+  expect(host.textContent).toContain("No account of this agent is on this computer.");
   // A read that fails says so and keeps the defaults.
   f.fail.add("claude");
   await chooseNative(host, "Agent", "claude");
@@ -135,7 +140,7 @@ it("keeps Swap's current model and effort selectable and marked when the catalog
   const sent: unknown[] = [];
   const host = mount(SwapMemberDialog, { member, busy: false, error: "", close: () => {}, submit: async (kind: string, input: unknown) => { sent.push([kind, input]); } });
   await flush();
-  expect(await offered(host, "Model")).toEqual([["", "Account defaults"], ["model-a", "Example model"], ["retired-model", "retired-model (not in the current catalog)"]]);
+  expect(await offered(host, "Model")).toEqual([["", "Account defaults"], ["model-a", "Example model"], ["@claude-spare/model-b", "Second model (only on Spare)"], ["retired-model", "retired-model (not in the current catalog)"]]);
   expect(combo(host, "Model")!.textContent).toContain("retired-model (not in the current catalog)");
   expect(await offered(host, "Effort")).toEqual([["", "Default effort"], ["max", "max (not in the current catalog)"]]);
   expect(submit(host).disabled).toBe(false);
@@ -174,7 +179,60 @@ it("says why a role's effort without a model cannot be added until a model is ch
   expect(sent).toEqual([["add_member", { role: "developer", agent: "claude", model: "model-a", effort: "high", account: { mode: "freest" } }]]);
 });
 
-it("uses the command's own refusal text for no signed-in account", async () => {
-  const { NO_SIGNED_IN } = await import("./member-edit");
-  expect(NO_SIGNED_IN).toBe(replies.refusals.no_signed_in);
+it("uses the command's own refusal texts", async () => {
+  const { NO_ACCOUNT, TOO_MANY } = await import("./member-edit");
+  expect([NO_ACCOUNT, TOO_MANY]).toEqual([replies.refusals.no_account, replies.refusals.too_many]);
+});
+
+// #2533 review (P2 freest): a model only some accounts offer is chosen with
+// one of them, named, so the launch uses an account that has it.
+it("choosing a model only one account offers names that account and reads its catalog", async () => {
+  const { host, sent } = addMember();
+  await flush();
+  await pick(host, "Model", "@claude-spare/model-b");
+  expect(f.reads).toEqual(["claude/", "claude/claude-spare"]);
+  expect(host.querySelector<HTMLSelectElement>('select[aria-label="Account"]')!.value).toBe("claude-spare");
+  expect(combo(host, "Model")!.textContent).toContain("Second model");
+  expect(await offered(host, "Effort")).toEqual([["", "Default effort"], ["low", "low"]]);
+  submit(host).click(); await flush();
+  expect(sent).toEqual([["add_member", { role: "developer", agent: "claude", model: "model-b", effort: "", account: { mode: "named", account: "claude-spare" } }]]);
+});
+
+it("says why the freest account cannot list models when the agent has too many accounts", async () => {
+  f.many.add("kimi");
+  const { host } = addMember();
+  await flush();
+  await chooseNative(host, "Agent", "kimi");
+  expect(host.textContent).toContain("This agent has too many accounts to compare their models; choose an account.");
+  expect(await offered(host, "Model")).toEqual([["", "Account defaults"]]);
+});
+
+// #2533 review (P2 refresh; Review2533.models.test.ts adopted): an open
+// chooser follows the Accounts revision. A newer projection reads the
+// catalog again, also after a first read that failed.
+it("an open chooser reads its catalog again when the Accounts revision moves", async () => {
+  const { host } = addMember();
+  await flush();
+  expect(f.reads).toEqual(["claude/"]);
+  const { loadAccounts } = await import("../../store/accounts");
+  f.accounts = { ...(f.accounts as { revision?: number }), revision: 55 };
+  const claude = f.replies.freest.claude;
+  claude.revision = "r2";
+  claude.catalog.models[0].id = "replacement-model";
+  await loadAccounts(true);
+  await flush();
+  expect(f.reads).toEqual(["claude/", "claude/"]);
+  expect((await offered(host, "Model")).map(([value]) => value)).toEqual(["", "replacement-model", "@claude-spare/model-b"]);
+});
+
+it("a first read that failed recovers in the same open dialog when the Accounts revision moves", async () => {
+  f.fail.add("claude");
+  const { host } = addMember();
+  await flush();
+  expect(host.textContent).toContain("The account's models could not be read: its defaults apply.");
+  f.fail.clear();
+  const { loadAccounts } = await import("../../store/accounts");
+  f.accounts = { ...(f.accounts as { revision?: number }), revision: 56 };
+  await loadAccounts(true); await flush();
+  expect((await offered(host, "Model")).map(([value]) => value)).toEqual(["", "model-a", "@claude-spare/model-b"]);
 });

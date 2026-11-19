@@ -616,10 +616,21 @@ export async function accountEditOpen(account: string, profile: string, kind: Ac
   if (!inTauri()) throw new Error(DESKTOP_ONLY);
   return invoke("account_edit_open", { account, profile, kind });
 }
-/** Teams Add member and Swap (zerus-efeo3 G16): one local account's model
- * catalog, the one Default model and effort reads. Read only; the native side
- * keeps it for the accounts revision it was read at. */
-export interface MemberModels { account: string; revision: string; catalog: AccountModelCatalog }
+/** Teams Add member and Swap (zerus-efeo3 G16; #2533 review): a named
+ * account's own catalog, the one Default model and effort reads, or for the
+ * freest account the models every account of the agent lists. Read only,
+ * from the agent's own account rows; the native side keeps each catalog for
+ * the accounts revision it was read at. */
+export interface MemberModels {
+  /** The named account, or "" for the freest. */
+  account: string; revision: string;
+  /** The named account's catalog, or the models every account of the agent lists. */
+  catalog: AccountModelCatalog;
+  /** The named account, or every account of the agent (the launch planner's inputs). */
+  accounts: { id: string; label: string }[];
+  /** The freest account's models that only some accounts list, and which. */
+  on_some: { id: string; label: string; accounts: string[] }[];
+}
 export async function teamMemberModels(agent: string, account: string): Promise<MemberModels> {
   if (!inTauri()) throw new Error(DESKTOP_ONLY);
   return invoke("team_member_models", { agent, account });
