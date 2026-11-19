@@ -10,6 +10,7 @@ import { openTeamLead } from "../teams/lead-navigation";
 import { rowIsSession, rowSessionKeys, sessionKey } from "../teams/session-binding";
 import { stateLabel, stateTone } from "../teams/team-model";
 import { TeamsHeader, TeamsRow } from "../teams/TeamsScreenFrame";
+import { TeamsOffNotice } from "../teams/TeamsOff";
 import "../styles/teams.css";
 import "../styles/teams-screen.css";
 
@@ -49,6 +50,11 @@ export interface TeamsScreenProps {
 
 export function TeamsScreen(props: TeamsScreenProps = {}) {
   const [notice, setNotice] = createSignal("");
+  /** Archived teams stay listed by the store; the page shows them on request
+   * (zerus-63rru.197 C2). The choice is this page's view state only. */
+  const [showArchived, setShowArchived] = createSignal(false);
+  const archived = () => (view()?.teams ?? []).filter((team) => team.status === "archived").length;
+  const visible = () => (view()?.teams ?? []).filter((team) => showArchived() || team.status !== "archived");
   const [pending, setPending] = createSignal<{ cursor: string | null; failure: TeamFailure | null }>();
   const view = () => teams.listPage() ?? teams.list();
   const readFailure = () => teams.readFailureFor("list");
@@ -88,20 +94,24 @@ export function TeamsScreen(props: TeamsScreenProps = {}) {
     </>}>
       <button type="button" class="btn primary" disabled={teams.available() !== true} onClick={() => void teams.openNewTeam()}><Icon name="plus" size={14} />{tr("New team")}</button>
     </TeamsHeader>
-    <Show when={teams.available() !== false} fallback={<p class="notice team-notice" role="status">{teams.off() === "unavailable" ? tr("Teams are unavailable on this computer.") : tr("Teams are off on this computer.")}</p>}>
+    <Show when={teams.available() !== false} fallback={<p class="notice team-notice" role="status"><TeamsOffNotice /></p>}>
       <Show when={notice()}><p class="notice danger team-notice" role="alert">{notice()}</p></Show>
       <Show when={readFailure()}>{(failure) => <p class="notice danger team-notice" role="alert">{tr("Teams could not be read: %1", failure().message)}</p>}</Show>
       <Show when={pending()}><p class="teams-reading dim" role="status">{tr("Reading teams…")}</p></Show>
       <Show when={view()} fallback={<p class="team-empty dim" role="status">{tr("Reading teams…")}</p>}>
         {(shown) => <>
           <Show when={shown().truncated}><p class="notice team-notice" role="status">{tr("Some teams could not be shown.")}</p></Show>
-          <Show when={shown().teams.length} fallback={<div class="teams-empty team-empty" data-teams-empty>
+          <Show when={archived()}>
+            <p class="teams-archived dim"><button type="button" class="btn small" data-teams-archived aria-pressed={showArchived()} onClick={() => setShowArchived(!showArchived())}>
+              {showArchived() ? tr("Hide archived") : tr("Show archived (%1)", archived())}</button></p>
+          </Show>
+          <Show when={visible().length} fallback={<Show when={!archived()} fallback={<p class="team-empty dim" data-teams-only-archived>{tr("Only archived teams are on this page.")}</p>}><div class="teams-empty team-empty" data-teams-empty>
             <Icon name="users" size={28} /><h2>{shown().after || shown().next || shown().truncated ? tr("No teams on this page.") : tr("No teams yet.")}</h2>
             <Show when={!shown().after && !shown().next && !shown().truncated}><p>{tr("Create a team to work on project tasks together.")}</p></Show>
             <button type="button" class="btn primary" onClick={() => void teams.openNewTeam()}>{tr("New team")}</button>
-          </div>}>
+          </div></Show>}>
             <ul class="teams-list">
-              <For each={shown().teams}>{(team) => <TeamsRow team={team} onOpen={() => open(team)} actions={props.rowActions?.(team)} details={props.rowDetails?.(team)}>
+              <For each={visible()}>{(team) => <TeamsRow team={team} onOpen={() => open(team)} actions={props.rowActions?.(team)} details={props.rowDetails?.(team)}>
                   <span class="teams-row-head"><Icon name="users" size={18} /><b class="teams-row-name">{team.name}</b><span class={`tm-state-badge tone-${stateTone(team.status)}`}>{stateLabel(team.status)}</span></span>
                   <span class="teams-row-meta"><span title={team.project}><Icon name="folder" size={13} />{project(team.project)}</span><span><span class="dim teams-row-label">{tr("Lead")}</span><span class="teams-row-value">{leads().get(sessionKey(team.lead_session))?.name ?? team.lead}</span></span></span>
                   <Show when={team.progress}>{(progress) => <TeamMetrics progress={progress()} />}</Show>

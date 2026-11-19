@@ -4,6 +4,7 @@ import { TextInput } from "../lib/TextField";
 import { activeTeam, liveTask } from "./actions";
 import { roleLabel } from "./TeamChips";
 import type { EditAction } from "./TeamEditors";
+import { openPhase } from "../../store/team-phases";
 import type { TaskView, TeamView } from "./types";
 
 type Placement = "reassign" | "route";
@@ -56,7 +57,10 @@ export function TaskPlacement(props: {
       if (!members().length) return tr("No other active member of this role has a session.");
     } else {
       if (task.kind === "stage") return tr("A stage's role comes from its pipeline. Reassign the stage to change its member.");
-      if (task.phase) return tr("Changing an approved task's route requires a plan edit.");
+      // No logged plan edit exists yet; an approved phase changes its tasks
+      // through a send-back with corrections, which its phase offers once every
+      // task is decided (ops rework.rs send_back, zerus-63rru.197 A2).
+      if (task.phase) return tr("To change an approved phase's tasks, send the phase back with corrections once all its tasks are decided.");
       if (task.state !== "waiting" && task.state !== "pending") return tr("Only waiting or pending tasks can be routed.");
       if (!routes().length) return tr("This team's routing choices are unavailable.");
     }
@@ -112,6 +116,9 @@ export function TaskPlacement(props: {
       <Show when={!blocked("reassign") && props.task.pending_replaceable}>
         <span class="team-action-why dim">{tr("Reassign replaces the pending decision.")}</span>
       </Show>
+      <Show when={props.task.kind !== "stage" && props.task.phase}>{(phase) =>
+        <button type="button" class="btn small" data-placement-open-phase onClick={() => openPhase(props.view.bar.id, phase())}>{tr("Open phase %1", phase())}</button>
+      }</Show>
     </div>
     {/* A refreshed view rebuilds the option lists; each option carries its own
         selected state so the form keeps showing the choice it will send. */}

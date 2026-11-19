@@ -4,7 +4,7 @@ import { Icon } from "../lib/icons";
 import { openPhase } from "../../store/team-phases";
 import { TeamChip } from "./TeamChips";
 import type { WaitingItem, WaitingView } from "../../store/teams";
-import { waitingAge, waitingDecisions, waitingKindIcon, waitingKindLabel, waitingKindSentence, waitingNote, waitingText } from "./decisions";
+import { PHASE_CARD_HIDE, waitingAge, waitingDecisions, waitingKindIcon, waitingKindLabel, waitingKindSentence, waitingNote, waitingText } from "./decisions";
 
 // Waiting for you (the fork's Waiting.tsx, adapted to M1): the open owner
 // cards of every team, oldest first, each with its team, its kind and the
@@ -40,15 +40,17 @@ export function WaitingCard(props: {
           </For>
         </div>
       </Show>
+      <Show when={props.item.phase_reference}><p class="dim" data-phase-card-hide>{PHASE_CARD_HIDE()}</p></Show>
       <div class="waiting-decisions">
+        {/* A phase card is decided on its phase: Open phase comes first (zerus-63rru.197 C5). */}
+        <Show when={props.item.phase_reference}>{(reference) => <button type="button" class="btn small primary" disabled={props.busy} data-open-phase onClick={() => { openPhase(props.item.team,reference().phase); props.onOpenTeam(props.item); }}>{tr("Open phase")}</button>}</Show>
         <For each={waitingDecisions(props.item)}>
           {(choice, index) => (
-            <button type="button" class="btn small" classList={{ danger: choice.danger, primary: index() === 0 && !choice.danger }}
+            <button type="button" class="btn small" classList={{ danger: choice.danger, primary: index() === 0 && !choice.danger && !props.item.phase_reference }}
               disabled={props.busy} data-decision={choice.decision}
               onClick={() => props.onDecide(props.item, choice.decision)}>{choice.text}</button>
           )}
         </For>
-        <Show when={props.item.phase_reference}>{(reference) => <button type="button" class="btn small" disabled={props.busy} data-open-phase onClick={() => { openPhase(props.item.team,reference().phase); props.onOpenTeam(props.item); }}>{tr("Open phase")}</button>}</Show>
         <Show when={props.item.node !== null}>
           <button type="button" class="btn small" disabled={props.busy} data-open-task
             onClick={() => props.onOpenTask?.(props.item)}>{tr("Open task")}</button>

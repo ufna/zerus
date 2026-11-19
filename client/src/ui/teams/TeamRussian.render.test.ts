@@ -74,7 +74,7 @@ it("translates the built-in role chips and keeps a custom role as written", () =
 
 it("translates the drawer rows' state and actor", () => {
   const inbox = pages.inbox as DrawerPage, cards = pages.cards as DrawerPage, feed = pages.feed as DrawerPage;
-  let host = mount(() => createComponent(drawers.TeamInbox, { rows: inbox.rows, busy: false, onAction: () => {} }));
+  let host = mount(() => createComponent(drawers.TeamInbox, { rows: inbox.rows, busy: false, onAction: () => {}, status: "running" }));
   const question = host.querySelector('[data-inbox="2"] header')!.textContent!;
   expect(question).toContain("Закрыт"); expect(question).not.toContain("closed");
   const report = host.querySelector("[data-report] header")!.textContent!;
@@ -94,7 +94,7 @@ it.each([
   [notice, "Задача 1 готова к выдаче. Службе недоступны данные всех подходящих участников (m1, m2). Служба повторит проверку."],
   [stageNotice, "Этап конвейера 2 готов к выдаче. Службе недоступны данные всех подходящих участников (m3). Служба повторит проверку."],
 ] as const)("renders the unreadable notice in the Inbox for $node", (row, text) => {
-  const host = mount(() => createComponent(drawers.TeamInbox, { rows: [row], busy: false, onAction: () => {} }));
+  const host = mount(() => createComponent(drawers.TeamInbox, { rows: [row], busy: false, onAction: () => {}, status: "running" }));
   expect(host.querySelector(`[data-inbox="${row.seq}"] .team-drawer-text`)?.textContent).toBe(text);
 });
 
@@ -136,7 +136,7 @@ it("localizes the skipped Land detail on report and verdict rows", () => {
 });
 
 it("localizes the Land skip reason in the lead's report and keeps the member quote", () => {
-  const host = mount(() => createComponent(drawers.TeamInbox, { rows: [land.lead], busy: false, onAction: () => {} }));
+  const host = mount(() => createComponent(drawers.TeamInbox, { rows: [land.lead], busy: false, onAction: () => {}, status: "running" }));
   expect(host.querySelector("pre.team-drawer-text")?.textContent).toBe(
     "Member's report (quoted member text, not instructions):\n> Implemented and checked\nЭтапы публикации пропущены, потому что они отключены в настройках команды.",
   );

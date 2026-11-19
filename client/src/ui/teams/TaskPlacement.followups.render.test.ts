@@ -38,7 +38,7 @@ it("handwritten_a_stage_cannot_be_routed_and_says_why", () => {
 it("handwritten_an_approved_phase_task_cannot_be_routed_and_says_why", () => {
   const { host } = mount({ ...pending, phase: 3 });
   expect(button(host, "route").disabled).toBe(true);
-  expect(button(host, "route").title).toBe("Changing an approved task's route requires a plan edit.");
+  expect(button(host, "route").title).toBe("To change an approved phase's tasks, send the phase back with corrections once all its tasks are decided.");
 });
 
 it("handwritten_a_replaceable_pending_decision_still_blocks_route_but_not_reassign", () => {

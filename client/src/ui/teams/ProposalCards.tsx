@@ -4,7 +4,8 @@ import { For, Show } from "solid-js";
 import { tr } from "../../i18n";
 import type { DrawerRow } from "../../store/teamDrawers";
 import type { DrawerAction } from "./TeamReports";
-import { waitingDecisions, waitingKindLabel, waitingKindSentence, waitingNote, waitingText } from "./decisions";
+import { PHASE_CARD_HIDE, waitingDecisions, waitingKindLabel, waitingKindSentence, waitingNote, waitingText } from "./decisions";
+import { openPhase } from "../../store/team-phases";
 import { actorLabel, itemState } from "./feed";
 import { setOpenTeamNode } from "./openNode";
 
@@ -33,7 +34,11 @@ export function ProposalCards(props: { rows: DrawerRow[]; busy: boolean; onActio
         <Show when={(card().notes ?? []).length}><p class="dim">{tr("Service notes")}</p>
           <For each={card().notes}>{(note) => <p class="dim">{waitingNote(note)}</p>}</For>
         </Show>
+        <Show when={card().state === "open" && card().phase_reference}><p class="dim" data-phase-card-hide>{PHASE_CARD_HIDE()}</p></Show>
         <Show when={card().state === "open"}><div class="team-drawer-actions">
+          {/* A phase card is decided on its phase (zerus-63rru.197 C5). */}
+          <Show when={props.team ? card().phase_reference : undefined}>{(reference) => <button type="button" class="btn small primary" disabled={props.busy} data-open-phase
+            onClick={() => { openPhase(props.team!, reference().phase); props.onOpenNode?.(); }}>{tr("Open phase")}</button>}</Show>
           <For each={waitingDecisions(card())}>{(choice) => <button type="button" class="btn small" classList={{ danger: choice.danger }} disabled={props.busy} data-card-decision={choice.decision}
             onClick={() => props.onAction("decide", { card: card().card, decision: choice.decision })}>{choice.text}</button>}</For>
         </div></Show>
