@@ -1698,3 +1698,83 @@ fn advance_base_requires_confirmation_and_keeps_revision_and_identity() {
         assert!(prepare(&call).is_err());
     }
 }
+
+/// Every confirmation the core asks for, with the call it was asked for
+/// (`fixtures/confirmations.json`, which the window's dialog test reads to
+/// check that its localized words are the core's in English). zerus-63rru.197.
+fn confirmations() -> Vec<Value> {
+    let samples = [
+        TeamAction::AdvanceBase {
+            commit: "0123456789abcdef0123456789abcdef01234567".into(),
+        },
+        TeamAction::SwapMember {
+            member: "m2".into(),
+            agent: "codex".into(),
+            model: "".into(),
+            effort: "".into(),
+            account: Default::default(),
+        },
+        TeamAction::Stop {},
+        TeamAction::Archive {},
+        TeamAction::StopMember {
+            member: "m2".into(),
+        },
+        TeamAction::ArchiveMember {
+            member: "m2".into(),
+        },
+        TeamAction::Cancel {
+            node: 7,
+            reason: "No longer needed".into(),
+        },
+    ];
+    let mut rows = Vec::new();
+    for team_name in ["Fixes", ""] {
+        for action in &samples {
+            let mut call = a_call(TEAM, 7, action.clone());
+            call.team_name = team_name.into();
+            let asked = action
+                .confirmation(&call.team_name)
+                .expect("a destructive action asks first");
+            rows.push(json!({ "call": call, "confirmation": asked }));
+        }
+    }
+    rows
+}
+
+#[test]
+#[ignore = "writes the shared confirmation fixture from the core's own confirmations"]
+fn regenerate_confirmations() {
+    std::fs::write(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("src/teams/fixtures/confirmations.json"),
+        serde_json::to_string_pretty(&confirmations()).unwrap() + "\n",
+    )
+    .unwrap();
+}
+
+#[test]
+fn the_confirmations_are_the_shared_fixture() {
+    let shared: Vec<Value> =
+        serde_json::from_str(include_str!("../fixtures/confirmations.json")).unwrap();
+    assert_eq!(confirmations(), shared);
+}
+
+/// zerus-63rru.197 (C1, A3): each one-way step says so before it is sent,
+/// and Stop names the step that can be undone.
+#[test]
+fn one_way_confirmations_say_they_cannot_be_undone() {
+    let text = |action: TeamAction| action.confirmation("Fixes").unwrap().text;
+    let stop = text(TeamAction::Stop {});
+    assert!(
+        stop.contains("A stopped team cannot be started again"),
+        "{stop}"
+    );
+    assert!(stop.contains("Pause"), "{stop}");
+    let archive = text(TeamAction::Archive {});
+    assert!(archive.contains("cannot be undone"), "{archive}");
+    assert!(!archive.contains("leaves the list of teams"), "{archive}");
+    let remove = text(TeamAction::ArchiveMember {
+        member: "m2".into(),
+    });
+    assert!(remove.contains("cannot be undone"), "{remove}");
+}

@@ -410,7 +410,7 @@ impl TeamAction {
                 "teamStopConfirm",
                 "Stop team?",
                 format!(
-                    "Stop {name}? Every open task is cancelled and no task is handed out again. Member sessions keep running; their current turns finish."
+                    "Stop {name}? Every open task is cancelled and no task is handed out again. Member sessions keep running; their current turns finish. A stopped team cannot be started again; use Pause to stop it for a while."
                 ),
                 "Stop team",
             )),
@@ -418,7 +418,7 @@ impl TeamAction {
                 "teamArchiveConfirm",
                 "Archive team?",
                 format!(
-                    "Archive {name}? Its history, tasks and reports stay; the team leaves the list of teams."
+                    "Archive {name}? Its history, tasks and reports stay. The list of teams shows it under Show archived. Archiving cannot be undone."
                 ),
                 "Archive",
             )),
@@ -431,7 +431,7 @@ impl TeamAction {
             Self::ArchiveMember { member } => Some(ask(
                 "teamArchiveMemberConfirm",
                 "Remove member?",
-                format!("Remove {member} from {name}? Its history and reports stay."),
+                format!("Remove {member} from {name}? Its history and reports stay. Removing a member cannot be undone; add a new member to take its place."),
                 "Remove member",
             )),
             Self::Cancel { node, .. } => Some(ask(
