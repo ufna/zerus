@@ -1506,6 +1506,15 @@ part of the Dev gate or of Nightly: a red run is visible and holds nothing back.
 - **Model.** A keyless loopback fixture (`tests/model_api_fixture.py`) answers text,
   or a scripted shell step for a delivered task prompt or a typed `ZT-RUN <step>`.
   No account and no model quota are used, and only fixture keys exist in the root.
+  Claude Code 2.1.328 sends pasted text, as `hgs` delivers a task, inside
+  `<pasted_content id="…">`. The fixture reads only the inner text as the prompt, as the
+  product's journal does (`pasted_text` in `src/state/journal.rs`). A recording of the
+  real agent's request is kept in `tests/fixtures/claude-pasted-prompt.json`.
+- **The first listing.** The first `hgs ls` of a fresh state root starts its listing
+  metadata worker. It can answer `hgs: Missing private file` before that worker has
+  created its index. Until one listing has succeeded, the fixture counts exactly that
+  refusal as "nothing listed yet" and records it in `transient-reads.jsonl`. Any other
+  failed read fails, and every wait keeps its bound.
 
 It runs these steps in order:
 
@@ -1597,9 +1606,11 @@ Each class checks its own isolation and fails rather than skipping:
   `HOME/.kimi-code`): auto-update off, plugins off and the provider's base URL on
   loopback where the agent allows it.
 - **Teardown.** It terminates the team's sessions as the person, stops the service
-  (exit 0 on SIGTERM) and ends the private tmux server. It then requires that no
-  process refers to the root by its working folder, executable or environment.
-  Otherwise the root is kept and the class fails.
+  (exit 0 on SIGTERM) and ends the private tmux server. The listing metadata worker
+  that a Linux `hgs ls` starts runs until its state root's listing index is disabled,
+  so teardown runs `hgs listing-index disable` and waits until the worker releases its
+  lock. It then requires that no process refers to the root by its working folder,
+  executable or environment. Otherwise the root is kept and the class fails.
 - **A killed run.** A run killed after a session started (the row's bound, a
   cancelled job) runs no teardown. What remains is the evidence written as it goes:
   the calls, waits, census, model requests, account inspection, preflight, and the

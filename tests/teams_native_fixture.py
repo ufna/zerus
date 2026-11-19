@@ -19,6 +19,7 @@ names what it waits for, has an explicit bound and logs its measured duration as
 fixture's own processes and fails on any peer that is neither loopback nor an
 allow-listed host of the agent under test.
 """
+import fcntl
 import json
 import os
 from pathlib import Path
@@ -50,7 +51,7 @@ PERSON = os.environ.get('HGS_TEAMS_PERSON_BIN', '')
 PERSON_ENTRY = 'desktop::teams::person_actions::contract::contract_person_step'
 PERSON_MARKER = 'zerus-teams-contract-person-fixture/v1'
 ROOT_FILE = '.zerus-teams-contract-root'
-# The one listing refusal a read during the service's first launches may meet; see rows().
+# The one refusal the first listing of a fresh state root may answer; see rows().
 LS_RACE = 'hgs: Missing private file'
 # Set by a runner that keeps custody of private roots (scripts/ci/kimi-native.py
 # --teams): called with the case name and the root as soon as the root exists.
@@ -569,6 +570,7 @@ class TeamFixture:
         self.root = Path(tempfile.mkdtemp(prefix=ROOT_PREFIX, dir=base)).resolve()
         # The private root's mark: the contract entry acts only on a root holding it.
         self.nonce = str(uuid.uuid4())
+        self.listed = False
         if ROOT_CREATED is not None:
             ROOT_CREATED(case, self.root)
         folder = os.environ.get('ZERUS_TEAMS_EVIDENCE') or str(self.root / 'evidence')
@@ -891,16 +893,19 @@ class TeamFixture:
                 for child in value:
                     walk(child)
         run = self.hgs('ls', '--json', ok=False)
-        if run.returncode != 0 and run.stderr.strip() == LS_RACE:
-            # A listing read while the service starts its first launches can meet a queue
-            # entry consumed under it (zerus-63rru.204). It counts as not yet
-            # listed, is recorded, and every wait still ends at its own bound.
+        if run.returncode != 0 and run.stderr.strip() == LS_RACE and not self.listed:
+            # The first listing of a fresh state root starts its metadata worker and can
+            # answer this before the worker has created its index (zerus-kfyot); every
+            # class of hosted run 44464876721 met it once, at its first read. Until one
+            # listing has succeeded it counts as not yet listed and is recorded; every
+            # wait still ends at its own bound.
             self.evidence.append('transient-reads.jsonl', dict(at=time.time(), argv=['ls', '--json'],
                                                                stderr=run.stderr[-300:]))
             return found
         if run.returncode != 0:
             raise AssertionError(f'hgs ls exited {run.returncode}: {run.stdout[-600:]} {run.stderr[-600:]}')
         walk(json.loads(run.stdout))
+        self.listed = True
         return found
 
     def session_of(self, member):
@@ -1313,6 +1318,38 @@ class TeamFixture:
         return found[0][1]
 
     # ---- teardown --------------------------------------------------------------
+    def stop_listing_worker(self):
+        """Stop the listing metadata worker of this state root, or say why not.
+
+        A supported Linux `hgs ls` starts one resident worker per state root
+        (src/state/listing_metadata/worker.rs) that runs until the root's listing index
+        is disabled, so it would outlive the class. Teardown disables the index with the
+        product's own command, as tests/test_pending_placement.py does, and waits until
+        the worker has released its lock. None when no worker is left."""
+        directory = Path(self.env['HGS_STATE_DIR']) / 'listing-metadata'
+        if not directory.is_dir():
+            return None
+        run = self.hgs('listing-index', 'disable', '--json', ok=False, timeout=30)
+        if run.returncode != 0:
+            return f'hgs listing-index disable exited {run.returncode}: {run.stderr.strip()[-300:]}'
+
+        def released():
+            try:
+                held = (directory / 'worker.lock').open('rb')
+            except FileNotFoundError:
+                return True
+            with held:
+                try:
+                    fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except BlockingIOError:
+                    return None
+            return True
+        try:
+            self.wait('listing metadata worker stopped', released, BOUND['teardown'], 0.2)
+        except AssertionError as error:
+            return str(error)
+        return None
+
     def owned_left(self):
         parents = Census.table()
         left = []
@@ -1561,6 +1598,9 @@ class TeamFixture:
         if self.model is not None:
             self.model.shutdown()
             self.model.server_close()
+        problem = self.stop_listing_worker()
+        if problem:
+            problems.append(problem)
         try:
             left = self.wait('no owned process left', lambda: not self.owned_left() or None, BOUND['teardown'], 1)
         except AssertionError:

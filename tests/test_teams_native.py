@@ -820,14 +820,17 @@ class TeamsFixtureIsolation(unittest.TestCase):
         with self.assertRaisesRegex(AssertionError, 'mode HGS_STATE_DIR'):
             fx.preflight()
 
-    def test_a_listing_read_tolerates_only_the_queue_race_and_records_it(self):
+    def test_only_a_first_listing_may_meet_the_bootstrap_refusal_and_it_is_recorded(self):
         from types import SimpleNamespace
         listed = json.dumps({'sessions': [{'name': 'codex/p/one', 'run_id': 'r1'}]})
         for stdout, stderr, code, outcome in (
-                (listed, '', 0, ['codex/p/one']),
-                ('', fixture.LS_RACE + '\n', 1, []),
                 ('', 'hgs: Missing state folder\n', 1, AssertionError),
-                ('', fixture.LS_RACE + ' and more\n', 1, AssertionError)):
+                ('', fixture.LS_RACE + ' and more\n', 1, AssertionError),
+                ('', fixture.LS_RACE + '\n', 1, []),
+                ('', fixture.LS_RACE + '\n', 1, []),
+                (listed, '', 0, ['codex/p/one']),
+                # Once a listing has succeeded the index exists; the refusal fails.
+                ('', fixture.LS_RACE + '\n', 1, AssertionError)):
             self.fx.hgs = mock.Mock(return_value=SimpleNamespace(returncode=code, stdout=stdout, stderr=stderr))
             self.fx.evidence = mock.Mock()
             if outcome is AssertionError:
@@ -968,6 +971,48 @@ class TeamsFixtureIsolation(unittest.TestCase):
         answered.assert_called_once_with(['tmux', 'send-keys', '-t', '=kimi/example/team:', 'Enter'], env={}, check=True)
         changed = chooser.replace('❯ Trust and continue', '  Trust and continue').replace('     Exit', '   ❯ Exit')
         self.assertFalse(answer(changed, False).call_count, 'a changed selection must stay in Terminal for the person')
+
+
+@unittest.skipUnless(fixture.HGS and os.uname().sysname == 'Linux', 'Set HGS_TEST_BIN (Linux)')
+class TeamsListingWorker(unittest.TestCase):
+    """The listing metadata worker that a supported Linux `hgs ls` starts for the fixture's
+    state root stays until teardown stops it (every class of hosted run 44464876721 left
+    one process). The real hgs; a stand-in agent, person and tmux."""
+
+    def test_teardown_stops_the_worker_that_hgs_ls_starts(self):
+        temporary = tempfile.TemporaryDirectory(prefix='hgs-teams-listing-')
+        self.addCleanup(temporary.cleanup)
+        base = Path(temporary.name).resolve()
+        stand_in = base / 'stand-in'
+        stand_in.write_text('#!/bin/sh\n')
+        stand_in.chmod(0o755)
+        for patch in (mock.patch.object(fixture, 'REAL_TMUX', str(stand_in)),
+                      mock.patch.object(fixture, 'PERSON', str(stand_in)),
+                      mock.patch.dict(os.environ, ZERUS_TEAMS_EVIDENCE=str(base / 'evidence'))):
+            patch.start()
+            self.addCleanup(patch.stop)
+        fx = fixture.TeamFixture('claude', stand_in, 'ListingWorker')
+        self.addCleanup(shutil.rmtree, fx.root, True)
+        fx.build()
+        state = Path(fx.env['HGS_STATE_DIR'])
+        # Whatever happens below, the worker ends: the product's own disable stops it.
+        self.addCleanup(lambda: state.is_dir() and fx.hgs('listing-index', 'disable', '--json', ok=False))
+        lock = state / 'listing-metadata/worker.lock'
+
+        def started():
+            fx.hgs('ls', '--json', ok=False)
+            return fx.owned_left() or None
+        fx.wait('hgs ls started the listing worker', started, 60, 0.5)
+        time.sleep(3)
+        self.assertTrue(fx.owned_left(), 'without a stop the worker stays')
+        self.assertTrue(lock.is_file())
+        self.assertEqual(fx.teardown(), [])
+        self.assertEqual(fx.owned_left(), [])
+        calls = [json.loads(line)['argv'] for line in (fx.evidence.folder / 'hgs-calls.jsonl').read_text().splitlines()]
+        self.assertIn(['listing-index', 'disable', '--json'], calls)
+        self.assertFalse(fx.root.exists(), 'a clean teardown removes the root')
+        # Without a state root the stop is a no-op that names nothing.
+        self.assertIsNone(fx.stop_listing_worker())
 
 
 class TeamsWaitingList(unittest.TestCase):
