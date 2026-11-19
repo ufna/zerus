@@ -326,6 +326,13 @@ def hosted_paths(args, env):
         raise ValueError('the checkout is not the declared workspace')
     if any(not path.resolve().is_relative_to(temporary) for path in (args.hgs, args.tmux)):
         raise ValueError('hgs and tmux must be private runner-temporary builds')
+    # The Teams class's person steps run by the unit-test executable's contract entry
+    # (zerus-63rru.182); it is a private build like hgs, and only the Teams class takes it.
+    person = getattr(args, 'person_bin', None)
+    if getattr(args, 'teams', False) != (person is not None):
+        raise ValueError("--person-bin is the Teams class's, and the Teams class needs it")
+    if person is not None and not person.resolve().is_relative_to(temporary):
+        raise ValueError('the unit-test executable must be a private runner-temporary build')
     # The Teams class takes no Effort seed (--teams refuses one); the original cases require it.
     if not getattr(args, 'teams', False) and (getattr(args,'effort_seed_receipt',None) is None
                                               or not args.effort_seed_receipt.resolve().is_relative_to(temporary)):
@@ -549,6 +556,8 @@ def main():
     parser.add_argument('--effort-seed-receipt', type=Path)
     parser.add_argument('--output', required=True, type=Path)
     parser.add_argument('--teams', action='store_true', help='Run only the Agent Teams Kimi class, in its own child')
+    parser.add_argument('--person-bin', type=Path,
+                        help="The hgs unit-test executable; the Teams class's person steps run by its contract entry")
     args = parser.parse_args()
     hosted_paths(args, os.environ)
     if args.teams and args.effort_seed_receipt is not None:
@@ -584,10 +593,15 @@ def main():
     hgs = args.hgs.resolve(strict=True)
     hgs.chmod(0o500)
     env = environment(runtime, helpers, hgs)
+    person = args.person_bin.resolve(strict=True) if args.teams else None
+    if person is not None:
+        person.chmod(0o500)
+        env['HGS_TEAMS_PERSON_BIN'] = str(person)
     if effort_seed is not None:
         env.update(seed_helper().environment(effort_seed))
     source, hgs_sha = source_map(), digest(hgs)
-    tools = {str(path): digest(path) for path in (Path(sys.executable).resolve(), args.tmux.resolve(), Path('/usr/bin/cc'))}
+    tools = {str(path): digest(path) for path in (Path(sys.executable).resolve(), args.tmux.resolve(), Path('/usr/bin/cc'),
+                                                  *((person,) if person is not None else ()))}
     write(evidence / 'plan.json', dict(source_sha=args.source_sha, platform=platform_id, methods=methods,
           native_cases=len(methods), mac_shim_compiles=len(methods) if platform_id == 'darwin-arm64' and not args.teams else 0,
           hgs_sha256=hgs_sha, tools=tools, environment=env, runtime=str(runtime), no_retries=True))

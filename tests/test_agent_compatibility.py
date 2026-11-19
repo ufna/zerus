@@ -696,7 +696,7 @@ class AgentCompatibility(unittest.TestCase):
                                                'USERPROFILE': 'C:\\Users\\fixture-runner'}), \
                 patch('sys.stdout', io.StringIO()):
             row = compat.qualify(agent, package, work, results, Path('hgs-under-test'),effort_seed=effort_seed,
-                                 teams=teams)
+                                 teams=teams, person=Path('/fixture/hgs-unit-tests') if teams else None)
         return row, runs, results / agent / '1.2.3', profiles
 
     def test_private_seed_is_bound_and_forwarded_to_all_original_codex_cases(self):
@@ -1018,6 +1018,8 @@ class AgentCompatibility(unittest.TestCase):
                 self.assertEqual(suites, compat.TEAMS_CLASSES[agent])
                 self.assertEqual(timeout, compat.TEAMS_TIMEOUT)
                 self.assertEqual(env['ZERUS_TEAMS_EVIDENCE'], str(results / 'teams-evidence'))
+                # The person's native steps run by the unit-test executable (zerus-63rru.182).
+                self.assertEqual(env['HGS_TEAMS_PERSON_BIN'], '/fixture/hgs-unit-tests')
                 self.assertNotIn('HGS_CODEX_TEST_SIZE', env)
                 self.assertNotIn('ZERUS_PICKER_EFFORT_SEED_IMAGE', env)
                 self.assertNotIn('HGS_SESSION', env)
@@ -1025,18 +1027,27 @@ class AgentCompatibility(unittest.TestCase):
     def test_teams_contract_selects_claude_and_codex_and_takes_no_seed(self):
         qualified = []
 
-        def qualify(agent, package, work, results, hgs, teams=False):
+        def qualify(agent, package, work, results, hgs, teams=False, person=None):
             qualified.append((agent, teams))
+            self.assertEqual(person, unit_tests.resolve())
             return {'agent': agent, 'version': package['version'], 'target': package['target'], 'status': 'passed'}
 
+        executable = tempfile.TemporaryDirectory()
+        self.addCleanup(executable.cleanup)
+        unit_tests = Path(executable.name) / 'hgs-unit-tests'
+        unit_tests.write_text('#!/bin/sh\n')
+        unit_tests.chmod(0o755)
+        person = ['--person-bin', str(unit_tests)]
         for target, arguments, expected in [
-                ('linux-x64', [], [('codex', True), ('claude', True)]),
-                ('linux-x64', ['--agent', 'claude'], [('claude', True)]),
-                ('linux-x64', ['--agent', 'opencode'], SystemExit),
-                ('linux-x64', ['--agent', 'kimi'], SystemExit),
-                ('linux-x64', ['--effort-seed-receipt', '/fixture/receipt'], SystemExit),
-                ('darwin-arm64', [], [('claude', True)]),
-                ('win32-x64', [], SystemExit)]:
+                ('linux-x64', person, [('codex', True), ('claude', True)]),
+                ('linux-x64', [], SystemExit),
+                ('linux-x64', ['--person-bin', str(Path(executable.name) / 'missing')], SystemExit),
+                ('linux-x64', ['--agent', 'claude', *person], [('claude', True)]),
+                ('linux-x64', ['--agent', 'opencode', *person], SystemExit),
+                ('linux-x64', ['--agent', 'kimi', *person], SystemExit),
+                ('linux-x64', ['--effort-seed-receipt', '/fixture/receipt', *person], SystemExit),
+                ('darwin-arm64', person, [('claude', True)]),
+                ('win32-x64', person, SystemExit)]:
             qualified.clear()
             responses = self.registry()
             with self.subTest(target=target, arguments=arguments), tempfile.TemporaryDirectory() as temporary, \

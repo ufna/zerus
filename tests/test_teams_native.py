@@ -27,8 +27,10 @@ the owner's decision zerus-63rru.66 and for zerus-63rru.73) and the resume of an
 exited member (Claude Code and Codex selected).
 The model is a keyless loopback fixture; no account and no model quota are used.
 Run through `scripts/ci/agent-compatibility.py --contract teams`, or directly with
-HGS_TEST_BIN and HGS_CLAUDE_TEST_BIN or HGS_CODEX_TEST_BIN, outside any agent
-session: the Teams caller proof refuses a person command below a live agent.
+HGS_TEST_BIN, HGS_TEAMS_PERSON_BIN (the hgs unit-test executable, whose contract entry
+performs the person's native create, stop and task intake) and HGS_CLAUDE_TEST_BIN or
+HGS_CODEX_TEST_BIN, outside any agent session: the Teams caller proof refuses every
+person command below a live agent, team reads included.
 The Kimi class runs only in the hosted Kimi workflow.
 """
 from contextlib import closing, contextmanager, nullcontext
@@ -402,12 +404,12 @@ class TeamsContract(ClassFixture):
 
         def stop():
             # The service may change the team between the person's read and the stop (a
-            # hand-out of the task above): a stale revision changes nothing, so the person
-            # refreshes and asks again with a new request.
+            # hand-out of the task above). The window's review then refuses the stale action
+            # without naming why and changes nothing, so the person refreshes and confirms
+            # again, but only when the team's revision really moved.
             revision = fx.status()['team']['revision']
-            reply = fx.json('team', 'stop', '--json', ok=False, stdin=json.dumps(dict(
-                request_id=str(uuid.uuid4()), team=fx.team, expected_revision=revision)))
-            if (reply.get('error') or {}).get('code') == 'stale_revision':
+            reply = fx.person_team_action(dict(kind='stop'), revision)
+            if reply.get('ok') is not True and fx.status()['team']['revision'] != revision:
                 refusals.append(revision)
                 return None
             return reply
@@ -1298,6 +1300,129 @@ class TeamsFixtureDiagnostics(unittest.TestCase):
         self.assertEqual(out['policy_file'], {'enabled': True})
         self.assertIsNone(out['last_result'])
         self.assertEqual([r['file'] for r in out['owned_receipts']], ['owned-a.json'])
+
+
+class TeamsPersonSteps(unittest.TestCase):
+    """The person's native Team actions (zerus-63rru.182) without an agent: the fixture
+    proves the shipped hgs still refuses the person's create, then performs create, stop
+    and task intake by the contract entry of the hgs unit-test executable, only on its
+    marked private root; the step shapes are the ones the entry reads."""
+
+    STEPS = Path(__file__).resolve().parent / 'fixtures/teams-contract-person-steps.json'
+
+    def offline(self):
+        """A fixture object with its identity set and no root, process or agent."""
+        fx = fixture.TeamFixture.__new__(fixture.TeamFixture)
+        fx.agent, fx.count, fx.pinned = 'codex', 1, None
+        fx.team, fx.machine, fx.commit = None, 'machine-fixture', 'c' * 40
+        fx.delegations = dict(fixture.TeamFixture.DELEGATIONS_OFF)
+        fx.evidence = mock.Mock()
+        return fx
+
+    def cli(self, refusal):
+        """The shipped hgs's replies, with `refusal` as its answer to the person's create."""
+        def json_(*argv, stdin=None, ok=True):
+            if argv[:2] == ('team', 'preview'):
+                return dict(ok=True)
+            if argv[:3] == ('team', 'template', 'import'):
+                return dict(ok=True)
+            if argv[:2] == ('team', 'create'):
+                return refusal
+            if argv[:3] == ('team', 'catalog', 'show'):
+                return dict(catalog=dict(templates=[dict(id='zt-codex', digest='d' * 64)]))
+            if argv[:2] == ('task', 'add'):
+                return dict(task=dict(ref='teams-fixture/7', uuid=str(uuid.UUID(int=7)), project='teams-fixture'))
+            raise AssertionError(argv)
+        return json_
+
+    def test_the_answer_is_found_on_the_test_name_line_or_its_own(self):
+        value = {'reply': {'ok': True, 'revision': 1}}
+        line = fixture.PERSON_MARKER + ' ' + json.dumps(value)
+        self.assertEqual(fixture.person_answer('test x::contract_person_step ... ' + line + '\nok\n'), value)
+        self.assertEqual(fixture.person_answer('running 1 test\n' + line + '\n'), value)
+        self.assertEqual(fixture.person_answer(line + ' ok'), value)
+        self.assertIsNone(fixture.person_answer('test x ... ok\n'))
+        self.assertIsNone(fixture.person_answer(fixture.PERSON_MARKER + ' not json'))
+
+    def test_a_step_runs_the_entry_on_the_marked_root_and_refuses_any_other_outcome(self):
+        temporary = tempfile.TemporaryDirectory(prefix='hgs-person-step-')
+        self.addCleanup(temporary.cleanup)
+        base = Path(temporary.name).resolve()
+        seen = base / 'seen.json'
+        entry = base / 'entry'
+        answer = json.dumps({'reply': {'ok': True, 'revision': 3}})
+        for case, script in (
+                ('answered', f'cp "$ZERUS_TEAMS_CONTRACT_STEP" {seen}\necho "$@" > {base}/argv\n'
+                             f"echo 'test x ... {fixture.PERSON_MARKER} {answer}'\necho ok\n"),
+                ('refused', f'echo \'{fixture.PERSON_MARKER} {{"refused":"no marker"}}\'\nexit 101\n'),
+                ('silent', 'echo running\n'),
+                ('failed', f"echo '{fixture.PERSON_MARKER} {answer}'\nexit 101\n")):
+            entry.write_text('#!/bin/sh\n' + script)
+            entry.chmod(0o755)
+            fx = self.offline()
+            fx.root, fx.nonce, fx.env = base, 'nonce-0000000000000000', dict(PATH='/usr/bin:/bin')
+            with mock.patch.object(fixture, 'PERSON', str(entry)):
+                if case != 'answered':
+                    with self.assertRaises(AssertionError, msg=case):
+                        fx.person_step(dict(kind='team', plan={}))
+                    continue
+                self.assertEqual(fx.person_step(dict(kind='team', plan={'p': 1})), {'ok': True, 'revision': 3})
+            self.assertEqual(json.loads(seen.read_text()),
+                             dict(root=str(base), nonce='nonce-0000000000000000', action=dict(kind='team', plan={'p': 1})))
+            self.assertEqual((base / 'argv').read_text().split(),
+                             ['--exact', fixture.PERSON_ENTRY, '--ignored', '--nocapture', '--test-threads=1'])
+            row = fx.evidence.append.call_args[0]
+            self.assertEqual((row[0], row[1]['root'], row[1]['kind'], row[1]['exit']),
+                             ('person-steps.jsonl', str(base), 'team', 0))
+
+    def test_the_person_create_needs_the_shipped_refusal_first(self):
+        for refusal in (dict(ok=True), dict(ok=False, error=dict(code='stale_revision')), dict(ok=False)):
+            fx = self.offline()
+            fx.json = self.cli(refusal)
+            fx.person_step = mock.Mock(return_value=dict(ok=True))
+            with self.assertRaises(AssertionError, msg=refusal):
+                fx.create_team()
+            fx.person_step.assert_not_called()
+        fx = self.offline()
+        fx.json = self.cli(dict(ok=False, error=dict(code='person_gesture_required')))
+        fx.person_step = mock.Mock(return_value=dict(ok=False, code='team_person_action_evidence_unavailable'))
+        with self.assertRaises(AssertionError):
+            fx.create_team()
+
+    def test_a_task_is_added_by_the_person_then_sent_by_the_native_intake(self):
+        fx = self.offline()
+        fx.team = str(uuid.UUID(int=1))
+        fx.json = self.cli(None)
+        fx.person_step = mock.Mock(return_value=dict(ok=True, team=dict(queued=True)))
+        self.assertEqual(fx.add_task('Title', 'Text'), ('teams-fixture/7', str(uuid.UUID(int=7))))
+        draft = fx.person_step.call_args[0][0]['draft']
+        self.assertEqual(draft['action'], dict(kind='intake', project='teams-fixture', task=str(uuid.UUID(int=7)),
+                                               revision='', role=None, pipeline=None))
+        fx.person_step = mock.Mock(return_value=dict(ok=True, team=dict(queued=False)))
+        with self.assertRaises(AssertionError):
+            fx.add_task('Title', 'Text')
+
+    def test_the_steps_are_the_committed_shapes_the_entry_reads(self):
+        """The fixture's create, stop and intake steps, as it builds them, are the committed
+        shapes the Rust contract tests run (src/desktop/teams/person_actions/contract)."""
+        fx = self.offline()
+        fx.json = self.cli(dict(ok=False, error=dict(code='person_gesture_required')))
+        captured = []
+        fx.person_step = lambda action: captured.append(action) or dict(ok=True, team=dict(queued=True))
+        fx.create_team()
+        fx.add_task('Title', 'Text')
+        fx.person_team_action(dict(kind='stop'), 5)
+        team = fx.team
+        def normal(value):
+            if isinstance(value, dict):
+                return {k: ('@request@' if k == 'request_id' else normal(v)) for k, v in value.items()}
+            if isinstance(value, list):
+                return [normal(v) for v in value]
+            return '@team@' if value == team else value
+        steps = [normal(step) for step in captured]
+        if os.environ.get('ZERUS_WRITE_FIXTURES'):
+            self.STEPS.write_text(json.dumps(steps, indent=2, sort_keys=True) + '\n')
+        self.assertEqual(steps, json.loads(self.STEPS.read_text()))
 
 
 class TeamsFixtureProducers(unittest.TestCase):

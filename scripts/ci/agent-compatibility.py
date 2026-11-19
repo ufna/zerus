@@ -565,7 +565,8 @@ def seed_inputs(receipt, hgs):
     return dict(receipt=str(Path(receipt).resolve(strict=True)), value=helper.verify(ROOT, receipt, hgs))
 
 
-def qualify(agent, package, work, results, hgs, hint_inputs=None, package_cache=None, effort_seed=None, teams=False):
+def qualify(agent, package, work, results, hgs, hint_inputs=None, package_cache=None, effort_seed=None, teams=False,
+            person=None):
     # Hint selection has one original 1200-second row end, preparation included.
     # Its fixtures reserve the last 60 seconds for their existing owned cleanup.
     hint_end = time.monotonic() + 1200 if hint_inputs is not None else None
@@ -627,8 +628,11 @@ def qualify(agent, package, work, results, hgs, hint_inputs=None, package_cache=
                          for mode, animations in (('animated', 'true'), ('reduced', 'false'))}
         row['cases'] = {}
         if teams:
-            # Teams adds no terminal-geometry behaviour: one case, its own bound.
-            cases = {'teams': dict(ZERUS_TEAMS_EVIDENCE=str(directory / 'teams-evidence'))}
+            # Teams adds no terminal-geometry behaviour: one case, its own bound. The person's
+            # native create, stop and task intake run by the unit-test executable's contract
+            # entry (zerus-63rru.182).
+            cases = {'teams': dict(ZERUS_TEAMS_EVIDENCE=str(directory / 'teams-evidence'),
+                                   HGS_TEAMS_PERSON_BIN=str(person))}
         if hint_inputs is not None:
             # Context delivery is a separate named contract, not four extra
             # claims about geometry/animation. The default UI matrix is intact.
@@ -729,6 +733,9 @@ def main():
                         help='Exact-source private Rust test-image receipt for Unix Claude/Codex ID Effort')
     parser.add_argument('--contract', choices=['agent-hint', 'teams'],
                         help='Select the fixed hint-output contract or the Agent Teams contract instead of default UI suites')
+    parser.add_argument('--person-bin', type=Path,
+                        help="The hgs unit-test executable (cargo test --no-run --bin hgs); the teams contract's person "
+                             'steps run by its contract entry')
     parser.add_argument('--pre-feature-hgs', type=Path, help='Reviewed real ad328 main CLI for the migration case')
     parser.add_argument('--hook-observer', type=Path, help='Reviewed build of the fixture-only session_start_observer example')
     parser.add_argument('--hgs-source', help='Complete source object bound to --hgs by the reviewed build receipt')
@@ -744,7 +751,11 @@ def main():
             parser.error('The teams contract takes no hint inputs and no Effort seed')
         if args.agent and any(agent not in TEAMS_CLASSES for agent in args.agent):
             parser.error('The teams contract covers Claude Code and Codex; Kimi runs in its hosted workflow')
-    elif args.contract:
+        if not args.person_bin or not os.access(args.person_bin, os.X_OK):
+            parser.error('The teams contract needs --person-bin, the hgs unit-test executable')
+    elif args.person_bin:
+        parser.error('--person-bin belongs to the teams contract')
+    if not teams and args.contract:
         if args.latest or not args.pre_feature_hgs or not args.hook_observer or not args.native_package_cache:
             parser.error('agent-hint requires sealed CLI/observer inputs and --native-package-cache; --latest is separate')
         try:
@@ -820,7 +831,8 @@ def main():
         for agent in agents:
             for package in packages[agent]:
                 if teams:
-                    row = qualify(agent, package, Path(temporary), results, args.hgs.resolve(), teams=True)
+                    row = qualify(agent, package, Path(temporary), results, args.hgs.resolve(), teams=True,
+                                  person=args.person_bin.resolve())
                 elif hint_inputs is None:
                     if effort_seed is not None and agent in ('claude', 'codex'):
                         row = qualify(agent, package, Path(temporary), results, args.hgs.resolve(), effort_seed=effort_seed)

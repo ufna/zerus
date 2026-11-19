@@ -1462,8 +1462,8 @@ part of the Dev gate or of Nightly: a red run is visible and holds nothing back.
 - **Static tests.** Run the suite's static parts from the repository root with the
   tests folder on the path, as `scripts/ci/python-tests.py` does:
   `PYTHONPATH=tests python3 -m unittest test_ci_security test_kimi_native_ci
-  test_agent_compatibility test_teams_native`. The native classes skip without a pinned
-  agent.
+  test_agent_compatibility test_teams_native test_check_no_person_fixture`. The native
+  classes skip without a pinned agent.
 - **Setup.** Each class creates one private root (`hgs-tn-*` in `TMPDIR`)
   with:
   - `HOME`, every XDG folder and a 0700 `XDG_RUNTIME_DIR`;
@@ -1474,8 +1474,35 @@ part of the Dev gate or of Nightly: a red run is visible and holds nothing back.
   - `PATH` limited to the root's wrappers and the system folders.
 
   It then starts a private `hgs desktop serve --background` with the Teams preview
-  turned on by the person, and creates one team: a lead and one member of the agent
-  under test. The service launches both.
+  turned on by the person, and the person creates one team: a lead and one member of
+  the agent under test. The service launches both.
+- **The person's native Team actions** (zerus-63rru.182).
+  - **The refusal, proven first.** The shipped `hgs` refuses a person's `team create`,
+    `team stop` and `task add --team` without the window's native confirmation
+    (`person_gesture_required`). Each class proves it first: the real `hgs team create`
+    must answer with that refusal.
+  - **How the three steps run.** The person's create, stop and sending of a task to the
+    team then run through the ignored contract entry of the hgs unit-test executable
+    (`cargo test --no-run --bin hgs`, passed as `--person-bin`, `HGS_TEAMS_PERSON_BIN`).
+    The entry performs the native Person action the window confirms: plan staging, the
+    review that binds the intent, the original and the writer. It models only the
+    window's proof. A task is first added to the project by the person's ordinary
+    `task add`.
+  - **Only the private root.** The entry acts only on the class's marked private root
+    (`.zerus-teams-contract-root` with the class's nonce, and the state, configuration
+    and home inside it). It refuses a root that holds the account's own home or lies in
+    its default Zerus folders.
+  - **The rest stays real.** Every other command, the desktop service and the agents use
+    the hgs under test.
+  - **Test-only, checked in CI.** The entry is test-only (`#[cfg(all(test, unix))]`).
+    Each Teams job and the Linux CLI job run `scripts/ci/check-no-person-fixture.py`,
+    which fails the job unless:
+    - the debug and release `hgs` hold neither the entry's marker nor its name, nor,
+      where they keep symbols, a test-only model's symbol; and
+    - the unit-test executable holds them (the positive control).
+  - **Not runnable from an agent.** The Teams caller proof refuses every person command
+    below a live agent, team reads included, so these classes cannot run from an agent's
+    shell. Hosted CI is their evidence.
 - **Model.** A keyless loopback fixture (`tests/model_api_fixture.py`) answers text,
   or a scripted shell step for a delivered task prompt or a typed `ZT-RUN <step>`.
   No account and no model quota are used, and only fixture keys exist in the root.

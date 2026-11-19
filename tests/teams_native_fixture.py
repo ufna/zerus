@@ -40,6 +40,16 @@ import uuid
 import model_api_fixture as api
 
 HGS = os.environ.get('HGS_TEST_BIN', '')
+# The person's native Team actions (zerus-63rru.182): the shipped hgs refuses a person's
+# team create, team stop and task add --team without the window's native confirmation.
+# These three steps run through the ignored contract entry of the hgs unit-test executable
+# (`cargo test --no-run --bin hgs`), which performs the very native Person action the window
+# confirms and models only the window's proof. It acts only on this fixture's marked private
+# root. Every other command, the desktop service and the agents use HGS_TEST_BIN.
+PERSON = os.environ.get('HGS_TEAMS_PERSON_BIN', '')
+PERSON_ENTRY = 'desktop::teams::person_actions::contract::contract_person_step'
+PERSON_MARKER = 'zerus-teams-contract-person-fixture/v1'
+ROOT_FILE = '.zerus-teams-contract-root'
 # Set by a runner that keeps custody of private roots (scripts/ci/kimi-native.py
 # --teams): called with the case name and the root as soon as the root exists.
 ROOT_CREATED = None
@@ -71,6 +81,19 @@ ROOT_PREFIX = 'hgs-tn-'
 # member's 80-column pane (measured with Codex 0.167.2); a longer folder continues on
 # the rows below.
 CODEX_PANEL_COLUMNS = 76
+
+
+def person_answer(stdout):
+    """The contract entry's one answer: the marker and a JSON value, which libtest may print on
+    the line of the test's own name. None when it gave none."""
+    for line in stdout.splitlines():
+        if PERSON_MARKER + ' ' in line:
+            text = line.split(PERSON_MARKER + ' ', 1)[1].strip()
+            try:
+                return json.JSONDecoder().raw_decode(text)[0]
+            except ValueError:
+                return None
+    return None
 
 
 def hosted_runner(env=None):
@@ -542,6 +565,8 @@ class TeamFixture:
         self.panes = {}
         base = os.environ.get('TMPDIR') or tempfile.gettempdir()
         self.root = Path(tempfile.mkdtemp(prefix=ROOT_PREFIX, dir=base)).resolve()
+        # The private root's mark: the contract entry acts only on a root holding it.
+        self.nonce = str(uuid.uuid4())
         if ROOT_CREATED is not None:
             ROOT_CREATED(case, self.root)
         folder = os.environ.get('ZERUS_TEAMS_EVIDENCE') or str(self.root / 'evidence')
@@ -563,6 +588,11 @@ class TeamFixture:
         os.chmod(r / 'run', 0o700)
         # The person's answers start as an empty log, so a reader can tell "none" from "lost".
         (self.evidence.folder / 'person-answers.jsonl').write_text('')
+        (self.evidence.folder / 'person-steps.jsonl').write_text('')
+        marker = r / ROOT_FILE
+        marker.write_text(f'{PERSON_MARKER}\n{self.nonce}\n')
+        marker.chmod(0o600)
+        self.evidence.write('person-root.json', dict(root=str(r), marker=str(marker), nonce=self.nonce))
         os.chmod(r / 'tmux', 0o700)
         for name, text in (('tmux', TMUX_WRAPPER), ('ssh', REFUSE), ('scp', REFUSE), ('systemd-run', REFUSE), ('hgs', REFUSE)):
             path = r / 'bin' / name
@@ -639,6 +669,8 @@ class TeamFixture:
             failures.append('service socket path length')
         if not (os.path.isabs(HGS) and os.access(HGS, os.X_OK)):
             failures.append('HGS_TEST_BIN is not an absolute executable')
+        if not (os.path.isabs(PERSON) and os.access(PERSON, os.X_OK)):
+            failures.append('HGS_TEAMS_PERSON_BIN is not an absolute executable')
         self.evidence.write('preflight.json', dict(root=r, failures=failures))
         if failures:
             raise AssertionError('Teams fixture preflight failed: ' + ', '.join(failures))
@@ -654,6 +686,31 @@ class TeamFixture:
 
     def json(self, *argv, **kw):
         return json.loads(self.hgs(*argv, **kw).stdout)
+
+    def person_step(self, action, timeout=120):
+        """One native Person action the window would confirm, by the contract entry of the
+        hgs unit-test executable, on this fixture's marked private root (see PERSON)."""
+        steps = self.root / 'steps'
+        steps.mkdir(mode=0o700, exist_ok=True)
+        path = steps / f'{uuid.uuid4()}.json'
+        path.write_text(json.dumps(dict(root=str(self.root), nonce=self.nonce, action=action)))
+        run = subprocess.run([PERSON, '--exact', PERSON_ENTRY, '--ignored', '--nocapture', '--test-threads=1'],
+                             env=dict(self.env, ZERUS_TEAMS_CONTRACT_STEP=str(path)), stdin=subprocess.DEVNULL,
+                             capture_output=True, text=True, timeout=timeout)
+        answer = person_answer(run.stdout)
+        self.evidence.append('person-steps.jsonl', dict(at=time.time(), root=str(self.root), marker=str(self.root / ROOT_FILE),
+                                                       kind=action.get('kind'), exit=run.returncode, answer=answer,
+                                                       stderr=run.stderr[-2000:]))
+        if run.returncode != 0 or not isinstance(answer, dict) or 'reply' not in answer:
+            raise AssertionError(f'person step {action.get("kind")} exited {run.returncode}: '
+                                 f'{run.stdout[-800:]} {run.stderr[-800:]}')
+        return answer['reply']
+
+    def person_team_action(self, change, revision):
+        """The person confirms one team action in the window, at the team's read revision."""
+        return self.person_step(dict(kind='team', plan=dict(request_id=str(uuid.uuid4()), team=self.team,
+                                                            expected_revision=revision,
+                                                            action=dict(kind='team', change=change))))
 
     def wait(self, label, predicate, bound, step=1.0):
         start = now()
@@ -774,11 +831,24 @@ class TeamFixture:
                                  'outside live-agent ancestry: ' + json.dumps(preview)[:800])
         self.json('team', 'template', 'import', '--json', stdin=json.dumps(self.bundle()))
         self.team = str(uuid.uuid4())
-        reply = self.json('team', 'create', '--template', 'zt-' + self.agent, '--json', stdin=json.dumps({
-            'request_id': str(uuid.uuid4()), 'team': self.team, 'expected_revision': 0, 'project': 'teams-fixture',
-            'name': 'Teams fixture', 'goal': 'Real-agent contract.', 'home': self.machine,
-            'integration_branch': 'zerus/team/fixture-' + self.agent, 'base_commit': self.commit,
-            'delegations': self.delegations}))
+        template = 'zt-' + self.agent
+        fields = dict(project='teams-fixture', name='Teams fixture', goal='Real-agent contract.', home=self.machine,
+                      integration_branch='zerus/team/fixture-' + self.agent, base_commit=self.commit)
+        # The negative control: the shipped hgs still refuses the person's create without
+        # the window's native confirmation.
+        refused = self.json('team', 'create', '--template', template, '--json', ok=False, stdin=json.dumps(dict(
+            request_id=str(uuid.uuid4()), team=self.team, expected_revision=0, delegations=self.delegations, **fields)))
+        self.evidence.write('create-refused.json', refused)
+        if refused.get('ok') is not False or (refused.get('error') or {}).get('code') != 'person_gesture_required':
+            raise AssertionError('the shipped hgs did not refuse the person create: ' + json.dumps(refused)[:800])
+        # The window's create: the template as the catalog read shows it, with its digest.
+        catalog = self.json('team', 'catalog', 'show', '--json')
+        shown = next((t for t in (catalog.get('catalog') or {}).get('templates') or [] if t.get('id') == template), None)
+        if not shown or not shown.get('digest'):
+            raise AssertionError('the catalog read shows no digest for ' + template + ': ' + json.dumps(catalog)[:800])
+        reply = self.person_team_action(dict(kind='create', template=template, integration='branch',
+                                             expected_template=shown['digest'], delegations=self.delegations,
+                                             **fields), 0)
         if reply.get('ok') is not True:
             raise AssertionError('team create: ' + json.dumps(reply)[:800])
 
@@ -1171,9 +1241,15 @@ class TeamFixture:
         return self.wait(f'{member_id} answered the person\'s message', answered, BOUND['turn'], 2)
 
     def add_task(self, title, text):
-        reply = self.json('task', 'add', '--project', 'teams-fixture', '--team', self.team, '--title', title, '--json',
-                          stdin=text)
+        """The person adds a task to the project, then sends it to the team with the window's
+        native action (the shipped hgs refuses a person's task add --team without it)."""
+        reply = self.json('task', 'add', '--project', 'teams-fixture', '--title', title, '--json', stdin=text)
         task = reply.get('task') or reply
+        sent = self.person_step(dict(kind='task', draft=dict(
+            request_id=str(uuid.uuid4()), team=self.team,
+            action=dict(kind='intake', project=task['project'], task=task['uuid'], revision='', role=None, pipeline=None))))
+        if sent.get('ok') is not True or (sent.get('team') or {}).get('queued') is not True:
+            raise AssertionError('the person could not send the task to the team: ' + json.dumps(sent)[:800])
         return task['ref'], task['uuid']
 
     def node_of(self, uuid_):
