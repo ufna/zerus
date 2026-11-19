@@ -1,7 +1,6 @@
 import { batch, createSignal } from "solid-js";
 import { tr } from "../../i18n";
 import { page, setPage, type Page } from "../../store/ui";
-import { openTask, openTasks } from "../../store/taskNavigation";
 
 // The team page (zerus-63rru.198): a team opened by its ID alone, with or
 // without its lead's session. One page and one return destination, as the
@@ -35,13 +34,6 @@ export function takeTeamSettings(team: string): boolean {
   if (target?.team !== team || !target.settings) return false;
   setTeamPage({ team });
   return true;
-}
-
-/** A team task's Open task: the Sessions Task View, switching there from the
- * team page (`openTask` alone does not change the page). */
-export function openTeamTask(project: string, uuid: string) {
-  if (page() === "team") openTasks(project, undefined, uuid);
-  else openTask(project, uuid);
 }
 
 /** The lead session's Team tab keeps the workspace and links to the page. */

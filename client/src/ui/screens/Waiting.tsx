@@ -1,4 +1,4 @@
-import { For, Show, createEffect, createMemo, createSignal, onCleanup, onMount, untrack } from "solid-js";
+import { For, Show, createMemo, createSignal, onCleanup, onMount } from "solid-js";
 import { tr } from "../../i18n";
 import { Icon } from "../lib/icons";
 import { actionNeeded } from "../../store/attention";
@@ -9,7 +9,8 @@ import { WaitingList } from "../teams/Waiting";
 import { TeamConfirmDialog } from "../teams/TeamConfirmDialog";
 import { TeamUncertain } from "../teams/TeamTab";
 import { setOpenTeamNode } from "../teams/openNode";
-import { rowIsSession, rowSessionKeys } from "../teams/session-binding";
+import { openTeamPage } from "../teams/team-navigation";
+import { rowSessionKeys } from "../teams/session-binding";
 import { teamRequests, teamSessions, type RequestRow, type TeamRequest } from "./waiting-requests";
 import "../styles/teams.css";
 
@@ -20,9 +21,9 @@ import "../styles/teams.css";
 // row. A card's age compares its creation time in milliseconds with the
 // application's clock, which ticks in seconds. A card is decided in place
 // through the Teams store; a
-// session request opens the session. Open team and Open task find the lead's
-// row by the same machine and launch binding the Team tab uses. With the
-// preview off the rail entry does not exist and this page reads nothing.
+// session request opens the session. Open team and Open task open the team's
+// page by its ID. With the preview off the rail entry does not exist and this
+// page reads nothing.
 
 /** The session rows that could be a person's request, read lazily: the
  * matcher stops at its limit. */
@@ -36,8 +37,6 @@ function* requestRows(): Generator<RequestRow> {
 export function WaitingScreen() {
   const [busy, setBusy] = createSignal(false);
   const [notice, setNotice] = createSignal("");
-  /** An Open team or Open task whose team is still being looked up in the list. */
-  const [opening, setOpening] = createSignal<{ item: WaitingItem; task: boolean } | null>(null);
   onMount(() => { void teams.openWaiting().catch(() => {}); });
   // Leaving the page goes back to the first page, which the rail counts.
   onCleanup(() => { void teams.firstWaitingPage().catch(() => {}); teams.clearFailure("waiting"); });
@@ -45,22 +44,6 @@ export function WaitingScreen() {
   const names = createMemo(() => new Map(teams.listed().map((team) => [team.id, team.name])));
   const sessions = createMemo(() => teamSessions(teams.listed()));
   const requests = createMemo<TeamRequest[]>(() => teamRequests(requestRows(), sessions()));
-  createEffect(() => {
-    const asked = opening();
-    if (!asked) return;
-    const found = teams.summaryOf(asked.item.team);
-    if (found.state === "reading") { setNotice(tr("Reading the team list…")); return; }
-    setOpening(null);
-    if (found.state !== "found") {
-      setNotice(found.state === "none" ? tr("The team is not on this computer's team list.") : tr("The team is not on the pages of the team list that were read."));
-      return;
-    }
-    const row = untrack(() => orderedRows().find((candidate) => rowIsSession(candidate, found.summary.lead_session)));
-    if (!row) { setNotice(tr("The team's lead session is not on the session list.")); return; }
-    setNotice("");
-    if (asked.task && asked.item.node !== null) setOpenTeamNode({ team: asked.item.team, node: asked.item.node });
-    setPage("sessions"); setSelectedKey(row.key); setDetailTab("team");
-  });
   const decide = async (item: WaitingItem, decision: string) => {
     if (busy()) return;
     setBusy(true); setNotice(""); teams.clearFailure("waiting");
@@ -72,8 +55,14 @@ export function WaitingScreen() {
     } finally { setBusy(false); }
   };
   /** Open team, and Open task with the node selected, so the decision on its
-   * reported work is made on the board, not here. */
-  const open = (item: WaitingItem, task: boolean) => { if (!task || item.node !== null) setOpening({ item, task }); };
+   * reported work is made on the board, not here. The team's page opens by
+   * the card's team ID alone, with or without its lead's session (zerus-63rru.198). */
+  const open = (item: WaitingItem, task: boolean) => {
+    if (task && item.node === null) return;
+    setNotice("");
+    if (task) setOpenTeamNode({ team: item.team, node: item.node! });
+    openTeamPage(item.team);
+  };
   const openRequest = (request: TeamRequest) => {
     setPage("sessions"); setSelectedKey(request.key); setDetailTab("activity");
   };
