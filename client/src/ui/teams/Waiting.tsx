@@ -4,7 +4,7 @@ import { Icon } from "../lib/icons";
 import { openPhase } from "../../store/team-phases";
 import { TeamChip } from "./TeamChips";
 import type { WaitingItem, WaitingView } from "../../store/teams";
-import { waitingAge, waitingDecisions, waitingKindIcon, waitingKindLabel, waitingKindSentence, waitingNote } from "./decisions";
+import { waitingAge, waitingDecisions, waitingKindIcon, waitingKindLabel, waitingKindSentence, waitingNote, waitingText } from "./decisions";
 
 // Waiting for you (the fork's Waiting.tsx, adapted to M1): the open owner
 // cards of every team, oldest first, each with its team, its kind and the
@@ -31,7 +31,7 @@ export function WaitingCard(props: {
         <span class="waiting-age dim">{waitingAge(props.item.created_ms, props.now)}</span>
       </div>
       <p class="waiting-kind-sentence dim" data-kind-sentence>{waitingKindSentence(props.item)}</p>
-      <p class="waiting-text">{props.item.text}</p>
+      <p class="waiting-text">{waitingText(props.item)}</p>
       <Show when={(props.item.notes ?? []).length > 0}>
         <div class="waiting-notes" data-notes>
           <p class="waiting-notes-heading dim">{tr("Service notes")}</p>

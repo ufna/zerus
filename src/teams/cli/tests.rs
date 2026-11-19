@@ -8,6 +8,7 @@ mod dependencies;
 mod dispatch;
 mod drawer_pages;
 mod editing;
+mod evidence;
 mod estimate_preview;
 mod fixtures;
 mod guides;

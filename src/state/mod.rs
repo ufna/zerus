@@ -880,8 +880,7 @@ pub fn fork_session(
 pub(crate) fn reference_details(name: &str, archive: &str, agent: &str) -> Result<Value> {
     local_sessions()?;
     if opencode::exists(name) { if !archive.is_empty() {return Err("OpenCode archives are unavailable".into());} return opencode::inspect(name, if agent.is_empty() {None} else {Some(agent)}); }
-    if dsh::exists(name) {
-        if !archive.is_empty() { return Err("DeepSeek archives are unavailable".into()); }
+    if archive.is_empty() && dsh::exists(name) {
         return dsh::inspect(name, if agent.is_empty() { None } else { Some(agent) });
     }
     let archive = if archive.is_empty() { None } else { Some(archive) };
@@ -906,7 +905,9 @@ fn matches_reference(reference: &crate::session_reference::Reference, record: &V
 pub(crate) fn resolve_reference(reference: &crate::session_reference::Reference) -> Result<String> {
     local_sessions()?;
     let _guard = lock(None)?;
-    let mut candidates = if reference.archive.is_empty() { records()? } else { archive::records()? };
+    let mut candidates = if reference.archive.is_empty() { records()? }
+        else if reference.name.starts_with("dsh/") { dsh::native_archives::by_id(&reference.archive)?.into_iter().collect() }
+        else { archive::records()? };
     if reference.archive.is_empty() { candidates.extend(dsh::snapshots()?); candidates.extend(opencode::snapshots()?); }
     let mut matching = candidates.iter().filter(|record| matches_reference(reference, record));
     let first = matching.next().ok_or("The referenced conversation is no longer bound to a saved session; it may have been cleared or forgotten")?;
@@ -1751,7 +1752,9 @@ pub fn dispatch(args: &[String]) -> Result<i32> {
     if args.first().is_some_and(|name| opencode::exists(name)) {
         return opencode::dispatch(command, args);
     }
-    if args.first().is_some_and(|name| dsh::exists(name)) {
+    let explicit_archive = matches!(command.as_str(), "inspect" | "resume" | "rename" | "forget")
+        && args.iter().any(|arg| arg == "--archive");
+    if !explicit_archive && args.first().is_some_and(|name| dsh::exists(name)) {
         return dsh::dispatch(command, args);
     }
     if command == "settings" {

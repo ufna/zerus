@@ -175,6 +175,16 @@ export function journalDetail(row: Pick<DrawerRow, "kind" | "text">): string {
   const matched = row.text.match(generic);
   if (!matched) return row.text;
   const rest = row.text.slice(matched[0].length).replace(/^[:;]\s*/, "");
+  if (row.kind === "record_report" || row.kind === "verdict") {
+    const skip = /^Land stages skipped for task #([1-9][0-9]*) because landing is disabled in Team settings\.(?=; |$)/.exec(rest);
+    if (skip) {
+      return tr("Land stages skipped for task #%1 because landing is disabled in Team settings.", skip[1]) + rest.slice(skip[0].length);
+    }
+  }
+  if (row.kind === "release_provider_stop"
+      && rest === ". The service confirmed that the member stopped after a provider error.") {
+    return tr("The service confirmed that the member stopped after a provider error.");
+  }
   if (row.kind === "handout_outcome" && rest) {
     const [word, ...reason] = rest.split(": ");
     const translated = handoutOutcome(word);

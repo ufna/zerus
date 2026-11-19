@@ -9,6 +9,8 @@ import { WaitingList } from "./Waiting";
 import { translateWithCatalog } from "../../i18n";
 import russian from "../../i18n.ru.json";
 import reportNotesCard from "../../../core/src/teams/fixtures/report-notes-card.json";
+import oldDeepSeekCards from "./fixtures/deepseek-host-cards-legacy.json";
+import deepSeekCards from "./fixtures/deepseek-host-cards.json";
 import type { WaitingItem, WaitingView } from "../../store/teams";
 
 let dispose: (() => void) | undefined;
@@ -70,6 +72,32 @@ it("lists the cards oldest first with their team, kind, text and age", () => {
   expect(cards[1].textContent).toContain("Integration");
   expect(cards[1].textContent).toContain("Docs");
   expect(cards[1].textContent).toContain("2 h");
+});
+
+it.each([
+  [deepSeekCards.member, "remove this member and add a replacement"],
+  [deepSeekCards.lead, "stop this team and create a new one"],
+  [oldDeepSeekCards.member, "remove this member and add a replacement"],
+  [oldDeepSeekCards.lead, "stop this team and create a new one"],
+] as const)("explains the recovery from a DeepSeek host refusal for $id", (row, action) => {
+  const { host } = setup({ view: { items: [row as WaitingItem], next: null } });
+  const card = host.querySelector("[data-waiting]")!;
+  expect(card.querySelector("[data-kind-sentence]")?.textContent).toBe(
+    `Member ${row.parameters[0][1]} needs a DeepSeek host with Agent Teams support.`,
+  );
+  expect(card.querySelector(".waiting-text")?.textContent).toBe(
+    `Stop idle DeepSeek sessions or restart the host yourself, then ${action} once the host is back, since Zerus will not retry this start.`,
+  );
+  expect(card.textContent).not.toContain("invalid_state");
+  expect(card.textContent).not.toContain("/work/example/.dsh");
+  expect([...card.querySelectorAll("[data-decision]")].map((button) => button.getAttribute("data-decision"))).toEqual(["acknowledged"]);
+});
+
+it("keeps a legacy refusal as written when its member parameter conflicts", () => {
+  const row = oldDeepSeekCards.member;
+  const mismatched = { ...row, parameters: [["member", "m999"], row.parameters[1]] } as WaitingItem;
+  const { host } = setup({ view: { items: [mismatched], next: null } });
+  expect(host.querySelector(".waiting-text")?.textContent).toBe(row.text);
 });
 
 it("shows the service's notes under their own heading, apart from the member's text", () => {

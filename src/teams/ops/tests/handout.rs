@@ -709,6 +709,7 @@ fn readiness_view_contains_only_live_nodes_and_their_archived_direct_leaves() {
             item: None,
         },
         event: None,
+        land_skipped_for: None,
         superseded: None,
         timing: None,
     };

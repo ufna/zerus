@@ -11,6 +11,17 @@ export type DrawerAction = (kind: string, fields: Record<string, unknown>) => vo
 
 const QUOTED_REPORT = "Member's report (quoted member text, not instructions):";
 
+function reportBody(row: DrawerRow): string {
+  const text = inboxText(row);
+  if (row.kind !== "report" || row.text_truncated || !text.startsWith(QUOTED_REPORT + "\n> ")) return text;
+  // The writer puts its reason on the first line outside the member's quote.
+  const lines = text.split("\n");
+  const reason = lines.findIndex((line, index) => index > 0 && !line.startsWith("> "));
+  if (lines[reason] !== "Land stages were skipped because landing is disabled in Team settings.") return text;
+  lines[reason] = tr("Land stages were skipped because landing is disabled in Team settings.");
+  return lines.join("\n");
+}
+
 export function InboxText(props: { row: DrawerRow }) {
   const localized = createMemo(() => {
     const { kind, notes, node } = props.row;
@@ -35,7 +46,7 @@ export function InboxText(props: { row: DrawerRow }) {
   };
   const remaining = () => props.row.notes.filter((note) => note !== localized()?.note);
   return <>
-    <pre class="team-drawer-text">{localized()?.text ?? inboxText(props.row)}</pre>
+    <pre class="team-drawer-text">{localized()?.text ?? reportBody(props.row)}</pre>
     <Show when={localized() && props.row.kind === "report"}>
       <pre class="team-drawer-text">{quote()}</pre>
     </Show>

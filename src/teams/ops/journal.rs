@@ -92,6 +92,11 @@ pub(super) fn append(ctx: &Context<'_>, request: &Request) -> Result<u64> {
         ),
         _ => format!("{kind} at revision {}", ctx.reply.revision),
     };
+    if let Some(node) = ctx.land_skipped_for {
+        body.push_str(&format!(
+            ": Land stages skipped for task #{node} because landing is disabled in Team settings."
+        ));
+    }
     let mut refs = references(request)?;
     if let Some(card) = ctx.closed_confirmation_card {
         body.push_str(". ");

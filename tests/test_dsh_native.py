@@ -3,6 +3,7 @@ No user credentials, live terminals, real model requests, or browser opening.
 """
 import base64
 import concurrent.futures
+from contextlib import contextmanager
 import hashlib
 import json
 import os
@@ -10,8 +11,10 @@ import re
 from pathlib import Path
 import shutil
 import socket
+from socketserver import StreamRequestHandler, ThreadingUnixStreamServer
 import subprocess
 import tempfile
+import threading
 import time
 import unittest
 import uuid
@@ -1154,6 +1157,27 @@ class NativeHarness(unittest.TestCase):
         self.assertEqual(self.rpc('ping')['generation'], generation)
         self.assertEqual(host_process(self.proc.pid)[1], born[1])
 
+    def test_spawn_wrappers_are_restored_when_private_bridge_unloads(self):
+        subject = self.launch_spawn_subject()
+        born, generation = host_process(self.proc.pid), self.rpc('ping')['generation']
+        self.rpc('send', {'sessionId': subject['conversation_id'], 'requestId': str(uuid.uuid4()),
+                          'mode': 'steer',
+                          'content': [{'type': 'text', 'text': 'HGS_SPAWN_FIXTURE cleanup'}]})
+        evidence = self.root / 'holds' / 'spawn-cleanup.json'
+        self.wait(evidence.is_file, timeout=30)
+        result = json.loads(evidence.read_text())
+        self.assertEqual(result, {'wrapped': [True, True], 'restored': [True, True]})
+
+        def reloaded():
+            try:
+                ping = self.rpc('ping')
+            except OSError:
+                return None
+            return ping if ping['generation'] != generation else None
+
+        self.assertTrue(self.wait(reloaded)['shellIdentity'])
+        self.assertEqual(host_process(self.proc.pid)[1], born[1])
+
     def test_pause_resume_preserves_identity_and_other_agent(self):
         a, b = self.create(), self.create()
         self.cli('pause', a)
@@ -1165,6 +1189,325 @@ class NativeHarness(unittest.TestCase):
         self.cli('resume', a)
         self.assertEqual(self.cli('inspect', a)['conversation_id'], a['conversation_id'])
         self.assertTrue(self.rpc('inspect', {'sessionId': a['conversation_id']})['live'])
+
+    def launch_archive_subject(self, tag=None):
+        tag = tag or 'archive-' + uuid.uuid4().hex[:12]
+        launched = self.hgs('dsh', str(self.workspace), '--new', '-n', tag, '-d')
+        self.assertEqual(launched.returncode, 0, launched.stderr)
+        return next(json.loads(path.read_text())
+                    for path in (self.state / 'dsh/bindings').glob('*.json')
+                    if json.loads(path.read_text())['name'].endswith('/' + tag))
+
+    def archive_row(self, subject):
+        self.assertNotIn(subject['name'], self.bindings())
+        listing = self.hgs('archives', '--json', '--bounded', request={})
+        self.assertEqual(listing.returncode, 0, listing.stderr)
+        rows = [row for row in json.loads(listing.stdout)['sessions']
+                if row['name'] == subject['name']]
+        [archived] = rows
+        self.assertEqual(archived['state'], 'archived')
+        for key in ('session_id', 'run_id', 'conversation_id'):
+            self.assertEqual(archived[key], subject[key])
+        return archived['archive_id']
+
+    @contextmanager
+    def archive_rpc_proxy(self, intercept):
+        """Interpose on this fixture's CLI socket without restarting its resident host."""
+        address = Path(self.sock)
+        upstream = address.with_name('real.sock')
+        address.rename(upstream)
+
+        class Handler(StreamRequestHandler):
+            def handle(self):
+                line = self.rfile.readline()
+                if not line:
+                    return
+
+                def forward(request):
+                    with socket.socket(socket.AF_UNIX) as client:
+                        client.settimeout(20)
+                        client.connect(str(upstream))
+                        client.sendall((json.dumps(request) + '\n').encode())
+                        with client.makefile('rb') as reader:
+                            return json.loads(reader.readline())
+
+                if (response := intercept(json.loads(line), forward)) is not None:
+                    self.wfile.write((json.dumps(response) + '\n').encode())
+
+        try:
+            with ThreadingUnixStreamServer(self.sock, Handler) as server:
+                address.chmod(0o600)
+                thread = threading.Thread(target=server.serve_forever, kwargs={'poll_interval': 0.05})
+                thread.start()
+                try:
+                    yield
+                finally:
+                    server.shutdown()
+                    thread.join()
+        finally:
+            address.unlink(missing_ok=True)
+            upstream.rename(address)
+
+    def archived_subject(self):
+        subject = self.launch_archive_subject()
+        retired = self.hgs('terminate', subject['name'])
+        self.assertEqual(retired.returncode, 0, retired.stderr)
+        return subject, self.archive_row(subject)
+
+    def scoped_archive_action(self, subject, action, **fields):
+        return self.archive_action_request(subject, self.payload(subject, action=action, **fields))
+
+    def archive_action_request(self, subject, request):
+        result = self.hgs('session-action', subject['name'], '--json', request=request)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return json.loads(result.stdout)
+
+    def test_lost_restore_ack_can_be_checked_without_replaying_resume(self):
+        for status_available in (True, False):
+            with self.subTest(receipt_read=status_available):
+                subject, archive = self.archived_subject()
+                acknowledgements = []
+                readable = False
+
+                def intercept(request, forward):
+                    method, params = request['method'], request['params']
+                    if params.get('sessionId') == subject['conversation_id']:
+                        if method == 'session-action' and params.get('action') == 'resume':
+                            acknowledgements.append(forward(request))
+                            return None
+                        if method == 'session-resume-status' and (not readable or not status_available):
+                            return None
+                        if method == 'inspect' and acknowledgements and not readable:
+                            return None
+                    return forward(request)
+
+                request = self.payload(subject, action='restore', archive_id=archive)
+                with self.archive_rpc_proxy(intercept):
+                    unknown = self.archive_action_request(subject, request)
+                    self.assertEqual(unknown['status'], 'uncertain', unknown)
+                    self.assertEqual(self.archive_action_request(subject, request), unknown)
+                    current = self.bindings()[subject['name']]
+                    refused = self.hgs('send', subject['name'], request=self.payload(current, text='blocked'))
+                    self.assertNotEqual(refused.returncode, 0, refused.stdout)
+                    self.assertIn('restore is awaiting native confirmation', refused.stderr)
+                    detail = self.hgs('inspect', subject['name'], '--archive', archive)
+                    self.assertEqual(detail.returncode, 0, detail.stderr)
+                    inspected = json.loads(detail.stdout)
+                    self.assertTrue(inspected['restore_pending'])
+                    self.assertIn('restore', inspected['allowed_actions'])
+                    listing = self.hgs('archives', '--json', '--bounded', request={'query': archive})
+                    self.assertEqual(listing.returncode, 0, listing.stderr)
+                    [row] = json.loads(listing.stdout)['sessions']
+                    self.assertTrue(row['restore_pending'])
+                    self.assertEqual(row['allowed_actions'], ['restore'])
+                    readable = True
+                    completed = self.scoped_archive_action(subject, 'restore', archive_id=archive)
+                self.assertEqual(completed['status'], 'completed', completed)
+                self.assertEqual(completed['result_target']['run_id'], current['run_id'])
+                self.assertEqual([reply['value']['status'] for reply in acknowledgements], ['completed'])
+                self.assertNotIn('expected_id', self.bindings()[subject['name']])
+                consumed = self.hgs('inspect', subject['name'], '--archive', archive)
+                self.assertIn(f'cannot read archive {archive}', consumed.stderr)
+                self.wait_for_archive_fixture_reply(current, 'The settled native conversation still replies')
+
+    def test_lost_restore_refusal_releases_the_archive_for_a_new_request(self):
+        subject, archive = self.archived_subject()
+        acknowledgements = []
+
+        def intercept(request, forward):
+            if request['method'] == 'session-action' and request['params'].get('action') == 'resume':
+                request['params']['permissionMode'] = 'invalid-fixture-mode'
+                acknowledgements.append(forward(request))
+                return None
+            return forward(request)
+
+        with self.archive_rpc_proxy(intercept):
+            unknown = self.scoped_archive_action(subject, 'restore', archive_id=archive)
+            self.assertEqual(unknown['status'], 'uncertain', unknown)
+            checked = self.scoped_archive_action(subject, 'restore', archive_id=archive)
+            self.assertEqual(checked['status'], 'failed', checked)
+            self.assertIn('available for a new Restore', json.dumps(checked))
+        self.assertEqual([reply['value']['status'] for reply in acknowledgements], ['failed'])
+        self.assertEqual(self.archive_row(subject), archive)
+        self.assertFalse(self.rpc('inspect', {'sessionId': subject['conversation_id']})['live'])
+        completed = self.scoped_archive_action(subject, 'restore', archive_id=archive)
+        self.assertEqual(completed['status'], 'completed', completed)
+
+    def test_archive_writes_wait_for_bindings_lock_after_native_ack(self):
+        import fcntl
+
+        subject = self.launch_archive_subject()
+        timers = []
+
+        def intercept(request, forward):
+            response = forward(request)
+            if request['method'] == 'session-action':
+                lock = (self.state / 'dsh/bindings.lock').open('a')
+                fcntl.flock(lock, fcntl.LOCK_EX)
+                timer = threading.Timer(3, lock.close)
+                timers.append(timer)
+                timer.start()
+            return response
+
+        def wait_for_unlocks():
+            for timer in timers:
+                timer.join()
+
+        self.addCleanup(wait_for_unlocks)
+        with self.archive_rpc_proxy(intercept):
+            retired = self.scoped_archive_action(subject, 'terminate')
+            self.assertEqual(retired['status'], 'completed', retired)
+            archive = self.archive_row(subject)
+            restored = self.scoped_archive_action(subject, 'restore', archive_id=archive)
+            self.assertEqual(restored['status'], 'completed', restored)
+        self.assertEqual(len(timers), 2)
+        self.assertNotIn('expected_id', self.bindings()[subject['name']])
+
+    def test_restore_recovers_known_outcomes_after_the_lock_wait_expires(self):
+        import fcntl
+
+        for native_accepts in (True, False):
+            with self.subTest(native_accepts=native_accepts):
+                subject, archive = self.archived_subject()
+                lock = (self.state / 'dsh/bindings.lock').open('a')
+                self.addCleanup(lock.close)
+                outcomes = []
+
+                def intercept(request, forward):
+                    if request['method'] == 'session-action' and request['params'].get('action') == 'resume':
+                        if not native_accepts:
+                            request['params']['permissionMode'] = 'invalid-fixture-mode'
+                        reply = forward(request)
+                        outcomes.append(reply['value']['status'])
+                        fcntl.flock(lock, fcntl.LOCK_EX)
+                        return reply
+                    if outcomes and request['method'] in ('inspect', 'session-resume-status'):
+                        return None
+                    return forward(request)
+
+                with self.archive_rpc_proxy(intercept):
+                    first = self.scoped_archive_action(subject, 'restore', archive_id=archive)
+                    self.assertEqual(first['status'], 'uncertain', first)
+                    self.assertIn('bindings are busy', first['error'])
+                    fcntl.flock(lock, fcntl.LOCK_UN)
+                    checked = self.scoped_archive_action(subject, 'restore', archive_id=archive)
+                if native_accepts:
+                    self.assertEqual(outcomes, ['completed'])
+                    self.assertEqual(checked['status'], 'completed', checked)
+                    self.assertNotIn('expected_id', self.bindings()[subject['name']])
+                else:
+                    self.assertEqual(outcomes, ['failed'])
+                    self.assertIn('available for a new Restore', checked['error'])
+                    self.assertEqual(self.archive_row(subject), archive)
+
+    def test_terminate_does_not_archive_without_confirming_stop(self):
+        subject = self.launch_archive_subject()
+
+        def intercept(request, forward):
+            if request['method'] == 'session-action' and request['params'].get('action') == 'forget':
+                fields = {key: request['params'][key] for key in ('sessionId', 'generation', 'action')}
+                return {'ok': True, 'value': dict(fields, status='completed')}
+            return forward(request)
+
+        with self.archive_rpc_proxy(intercept):
+            retired = self.scoped_archive_action(subject, 'terminate')
+        self.assertEqual(retired['status'], 'uncertain', retired)
+        self.assertIn('shutdown was not confirmed', json.dumps(retired))
+        self.assertEqual(self.bindings()[subject['name']], subject)
+        self.assertTrue(self.rpc('inspect', {'sessionId': subject['conversation_id']})['live'])
+        listing = self.hgs('archives', '--json', '--bounded', request={})
+        self.assertEqual(listing.returncode, 0, listing.stderr)
+        self.assertNotIn(subject['name'], [row['name'] for row in json.loads(listing.stdout)['sessions']])
+
+    def wait_for_archive_fixture_reply(self, subject, text):
+        receipt = self.cli('send', subject, self.payload(subject, text=text))
+        self.assertEqual(receipt['status'], 'submitted')
+        return self.wait(lambda: next((event['detail']
+                         for event in self.cli('inspect', subject)['events']
+                         if event['type'] == 'AgentMessage' and text in event['detail']), None))
+
+    def test_terminate_archives_and_restores_one_native_session(self):
+        retired, other = self.launch_archive_subject(), self.launch_archive_subject()
+        born = host_process(self.proc.pid)
+        generation = self.rpc('ping')['generation']
+        history = 'Retain this native transcript in Archive'
+        self.wait_for_archive_fixture_reply(retired, history)
+
+        stale = self.hgs('terminate', retired['name'], '--expected-run-id', str(uuid.uuid4()))
+        self.assertNotEqual(stale.returncode, 0)
+        self.assertTrue(self.rpc('inspect', {'sessionId': retired['conversation_id']})['live'])
+        stopped = self.hgs('terminate', retired['name'], '--expected-run-id', retired['run_id'])
+        self.assertEqual(stopped.returncode, 0, stopped.stderr)
+        self.assertFalse(self.rpc('inspect', {'sessionId': retired['conversation_id']})['live'])
+
+        archive = self.archive_row(retired)
+        detail = self.hgs('inspect', retired['name'], '--archive', archive, '--skip-processes')
+        self.assertEqual(detail.returncode, 0, detail.stderr)
+        inspected = json.loads(detail.stdout)
+        self.assertEqual(inspected['archive_id'], archive)
+        self.assertIn('restore', inspected['allowed_actions'])
+        self.assertTrue(any(history in event['detail'] for event in inspected['events']
+                            if event['type'] == 'AgentMessage'))
+
+        self.wait_for_archive_fixture_reply(other, 'This second native session is still working')
+        self.assertEqual(self.cli('inspect', other)['run_id'], other['run_id'])
+        self.assertEqual(self.rpc('ping')['generation'], generation)
+        self.assertEqual(host_process(self.proc.pid)[1], born[1])
+
+        restored = self.hgs('resume', retired['name'], '--archive', archive, '-d')
+        self.assertEqual(restored.returncode, 0, restored.stderr)
+        current = self.cli('inspect', retired)
+        self.assertNotEqual(current['run_id'], retired['run_id'])
+        for key in ('session_id', 'conversation_id'):
+            self.assertEqual(current[key], retired[key])
+        consumed = self.hgs('inspect', retired['name'], '--archive', archive)
+        self.assertIn(f'cannot read archive {archive}', consumed.stderr)
+        self.assertEqual(self.rpc('ping')['generation'], generation)
+        self.assertTrue(self.rpc('inspect', {'sessionId': other['conversation_id']})['live'])
+        self.wait_for_archive_fixture_reply(current, 'This restored native session also replies')
+
+    def test_archive_requires_a_stopped_native_session(self):
+        subject = self.launch_archive_subject()
+        active = self.hgs('archive', subject['name'])
+        self.assertNotEqual(active.returncode, 0)
+        self.assertTrue(self.rpc('inspect', {'sessionId': subject['conversation_id']})['live'])
+        self.cli('pause', subject)
+        archived = self.hgs('archive', subject['name'])
+        self.assertEqual(archived.returncode, 0, archived.stderr)
+        archive = self.archive_row(subject)
+        stale = self.payload(subject, action='restore', archive_id=archive)
+        stale['expected_run_id'] = str(uuid.uuid4())
+        def action(request):
+            result = self.hgs('session-action', subject['name'], '--json', request=request)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            return json.loads(result.stdout)
+
+        refused = action(stale)
+        self.assertEqual(refused['status'], 'failed')
+        self.assertEqual(self.archive_row(subject), archive)
+
+        restore = self.payload(subject, action='restore', archive_id=archive)
+        receipt = action(restore)
+        self.assertEqual(receipt['status'], 'completed', receipt)
+        self.assertEqual(receipt['result_target']['conversation_id'], subject['conversation_id'])
+        self.assertNotEqual(receipt['result_target']['run_id'], subject['run_id'])
+        self.assertEqual(action(restore), receipt)
+
+    def test_archive_inspection_and_restore_select_the_exact_saved_conversation(self):
+        archived = self.launch_archive_subject()
+        retired = self.hgs('terminate', archived['name'])
+        self.assertEqual(retired.returncode, 0, retired.stderr)
+        archive = self.archive_row(archived)
+        replacement = self.launch_archive_subject(archived['name'].rsplit('/', 1)[1])
+        self.assertNotEqual(replacement['conversation_id'], archived['conversation_id'])
+        detail = self.hgs('inspect', archived['name'], '--archive', archive)
+        self.assertEqual(detail.returncode, 0, detail.stderr)
+        inspected = json.loads(detail.stdout)
+        self.assertEqual(inspected['conversation_id'], archived['conversation_id'])
+        self.assertNotIn('restore', inspected['allowed_actions'])
+        refused = self.hgs('resume', archived['name'], '--archive', archive, '-d')
+        self.assertIn('already uses this name', refused.stderr)
+        self.assertEqual(self.cli('inspect', replacement)['run_id'], replacement['run_id'])
 
     def test_question_answer_is_bound_to_current_native_request(self):
         b = self.create()
@@ -1223,13 +1566,13 @@ class NativeHarness(unittest.TestCase):
                 self.assertIn('different content',refused.stderr)
 
     def test_inspect_refuses_an_archive_instead_of_the_live_session(self):
-        """zerus-a4mub.33: DeepSeek has no archive inspection, with or without --current-read."""
+        """An explicit missing archive cannot fall back to a live DeepSeek session."""
         b = self.create()
         archive = str(uuid.uuid4())
         for extra in ([], ['--current-read']):
             proc = self.hgs('inspect', b['name'], '--archive', archive, *extra)
             self.assertNotEqual(proc.returncode, 0, proc.stdout)
-            self.assertIn('DeepSeek archives are unavailable', proc.stderr)
+            self.assertIn(f'cannot read archive {archive}', proc.stderr)
             self.assertNotIn('current_read', proc.stdout)
         self.assertEqual(self.cli('inspect', b)['conversation_id'], b['conversation_id'])
 

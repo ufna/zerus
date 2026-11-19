@@ -13,6 +13,7 @@ pub(crate) mod dependency_edit;
 mod disposition;
 pub(crate) mod drafts;
 pub(crate) mod editing;
+pub(crate) mod evidence;
 mod holder;
 pub(crate) mod layout;
 pub(crate) mod phase_controls;

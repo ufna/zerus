@@ -79,13 +79,36 @@ fn decode(q: &Query) -> Result<Cursor> {
     }
     Ok(c)
 }
-fn stamp(path: &Path) -> Result<String> {
+pub(super) fn stamp(path: &Path) -> Result<String> {
     let m = fs::metadata(path).map_err(|e| e.to_string())?;
     Ok(format!(
         "{}:{:?}",
         m.len(),
         m.modified().map_err(|e| e.to_string())?
     ))
+}
+pub(super) fn search_text(record: &Value) -> String {
+    [
+        "name",
+        "archive_id",
+        "agent",
+        "conversation_id",
+        "run_id",
+        "cwd",
+        "launch_dir",
+        "title",
+    ]
+    .iter()
+    .map(|key| {
+        if *key == "title" {
+            string(record, key).chars().take(1024).collect::<String>()
+        } else {
+            string(record, key).to_owned()
+        }
+    })
+    .collect::<Vec<_>>()
+    .join(" ")
+    .to_lowercase()
 }
 fn sql<T>(r: rusqlite::Result<T>) -> Result<T> {
     r.map_err(|e| format!("archive metadata index: {e}"))
@@ -236,7 +259,11 @@ pub(crate) fn revision() -> Result<String> {
         Err(error) if error.kind() == io::ErrorKind::NotFound => String::new(),
         _ => return Err(INCOMPLETE.into()),
     };
-    Ok(query_hash(&format!("{directory}\n{published}")))
+    let legacy = format!("{directory}\n{published}");
+    Ok(query_hash(&match dsh::native_archives::revision()? {
+        Some(native) => format!("{legacy}\n{native}"),
+        None => legacy,
+    }))
 }
 
 pub(crate) fn read_query() -> Result<Value> {
@@ -275,13 +302,11 @@ pub(crate) fn lookup(value: &Value) -> Result<Value> { lookup_scoped(value,false
 pub(crate) fn lookup_scoped(value: &Value, windows_mobile: bool) -> Result<Value> {
     let (name, id) = validate_lookup(value)?;
     let _guard = lock(None)?;
-    let path = archive::path(id)?;
-    if !fs::symlink_metadata(&path)
-        .map_err(|e| e.to_string())?
-        .file_type()
-        .is_file()
-    {
-        return Err("archive record is not a regular file".into());
+    if !name.starts_with("dsh/") {
+        let path = archive::path(id)?;
+        if !fs::symlink_metadata(&path).map_err(|e| e.to_string())?.file_type().is_file() {
+            return Err("archive record is not a regular file".into());
+        }
     }
     let record = archive::read_archive(name, id)?;
     let mut result=json!({"version":1,"name":name,"archive_id":id,
@@ -514,7 +539,7 @@ fn sessions_of(rows: &[Listed], records: &[Value], marks: Option<&Value>) -> Res
 /// One archive page; `bounded` (zerus-080n8) caps its counts and scans, and
 /// without it the page is exactly what older clients read.
 pub(crate) fn page_with(value: &Value, bounded: bool) -> Result<Value> {
-    page_with_bounds(value, bounded.then_some(BOUNDS), None)
+    page_with_bounds(value, bounded.then_some(BOUNDS), None, true)
 }
 
 /// Plain `ls` retains a recent archive window. Even its count reads only one
@@ -527,6 +552,7 @@ pub(super) fn preview(marks: &Value) -> Result<Value> {
             examine: 51,
         }),
         Some(marks),
+        true,
     ) {
         Ok(page) => page,
         Err(error) => {
@@ -539,7 +565,7 @@ pub(super) fn preview(marks: &Value) -> Result<Value> {
     Ok(page)
 }
 
-fn page_with_bounds(value: &Value, bounds: Option<Bounds>, marks: Option<&Value>) -> Result<Value> {
+fn page_with_bounds(value: &Value, bounds: Option<Bounds>, marks: Option<&Value>, include_native: bool) -> Result<Value> {
     let q = validate(value)?;
     let _guard = lock(None)?;
     let db = catalog()?;
@@ -549,6 +575,13 @@ fn page_with_bounds(value: &Value, bounds: Option<Bounds>, marks: Option<&Value>
         [],
         |r| r.get(0),
     ))?;
+    let catalog = if include_native {
+        match dsh::native_archives::attach(&db)? {
+            Some(id) if db.path().is_none_or(str::is_empty) => id,
+            Some(id) => query_hash(&format!("{catalog}\n{id}")),
+            None => catalog,
+        }
+    } else { catalog };
     let cursor = if q.cursor.is_empty() {
         None
     } else {
@@ -700,7 +733,7 @@ fn supported_provider(provider: &Value) -> bool {
 /// before indexing/counting. Keep its bounded totals and cursors unchanged.
 /// Refuse an inconsistent page instead of guessing a filtered total.
 pub(crate) fn page_scoped(value: &Value, windows_mobile: bool) -> Result<Value> {
-    let result=page(value)?;
+    let result = if windows_mobile { page_with_bounds(value, None, None, false)? } else { page(value)? };
     if windows_mobile && !result["sessions"].as_array().is_some_and(|rows|
         rows.iter().all(|row|supported_provider(&row["cmd"]))) {
         return Err("archive provider scope is unavailable".into());

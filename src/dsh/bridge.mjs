@@ -374,6 +374,7 @@ export function apply(ctx, config) {
   const control = api.agents;
   const models = modelSelectionAdapter(control);
   const owned = new Map(), opening = new Map(), questions = new Map();
+  const scopedResumes = new Map();
   registerAgentHint(ctx, config?.agentHint, owned);
   const generation = randomUUID();
   // An end is the host's own lifecycle event, never a failed list/inspect
@@ -400,7 +401,7 @@ export function apply(ctx, config) {
     return next.installed;
   }
   callEnvironmentInstalled();
-  ctx.on('dispose', () => spawns?.restore());
+  ctx.effect(() => () => spawns?.restore());
   const jobRegistry = ctx.get('jobs');
   if (jobRegistry) ctx.on('dispose',jobRegistry.events.subscribe({owners:'scope'},event => {
     // A job a tool call registers keeps that call's token until it settles.
@@ -1075,9 +1076,28 @@ export function apply(ctx, config) {
         if (p.title) await api.rename({ sessionId, title: p.title });
         return { sessionId, generation };
       }
+      case 'session-resume-status': {
+        const result = scopedResumes.get(p.requestId);
+        return { generation, requestId: p.requestId, sessionId: p.sessionId,
+          status: p.generation === generation && result && result.sessionId === p.sessionId ? result.status : 'unknown' };
+      }
       case 'session-action': {
         let changed = false;
-        const answer = (status, error) => ({ sessionId:p.sessionId, action:p.action, generation, status, ...(error ? {error} : {}) });
+        const requestId = p.action === 'resume' && p.generation === generation
+          && typeof p.requestId === 'string' && /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/.test(p.requestId)
+          ? p.requestId : null;
+        const result = (status, error) => ({ sessionId:p.sessionId, action:p.action, generation, status, ...(error ? {error} : {}) });
+        if (requestId) {
+          const prior = scopedResumes.get(requestId);
+          if (prior) return prior.sessionId === p.sessionId ? prior : result('failed', 'Native resume request identity changed');
+          scopedResumes.set(requestId, result('pending'));
+          if (scopedResumes.size > 1024) scopedResumes.delete(scopedResumes.keys().next().value);
+        }
+        const answer = (status, error) => {
+          const value = result(status, error);
+          if (requestId && scopedResumes.has(requestId)) scopedResumes.set(requestId, value);
+          return value;
+        };
         try {
           const listed = p.action === 'pause' ? await api.list({},new AbortController().signal) : null;
           if (p.generation !== generation) throw new Error('DeepSeek host changed; refresh before this action');

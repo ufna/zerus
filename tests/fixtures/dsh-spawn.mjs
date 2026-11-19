@@ -1,4 +1,7 @@
 // Private test tool using the official resident subprocess service.
+import { renameSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+
 const rawService = Symbol.for('cordis.original');
 const spawnOriginal = Symbol.for('hgs.dsh.spawn.original');
 const installations = new WeakMap();
@@ -19,8 +22,32 @@ function spawnUnderProbe(ctx, cwd) {
   return ctx.get('subprocess').spawn(spec(cwd));
 }
 
-export async function probeSpawns(ctx, cwd, action) {
+export async function probeSpawns(ctx, cwd, action, evidenceDir) {
   const service = ctx.get('subprocess')[rawService];
+  if (action === 'cleanup') {
+    const bridge = [...ctx.get('loader').entries()].find(({ options }) =>
+      options?.id === 'hgs-native-dsh' || options?.id?.endsWith(':hgs-native-dsh'));
+    if (!bridge) throw new Error('Private HGS bridge entry is missing');
+    const methods = ['spawn', 'spawnTerminal'];
+    const wrapped = methods.map(method => Object.hasOwn(service, method));
+    // Run outside the tool call. The bridge cleanup also closes its own agents.
+    setImmediate(async () => {
+      let result;
+      try {
+        await bridge.update({ disabled: true });
+        const restored = methods.map(method => !Object.hasOwn(service, method)
+          && service[method] === Object.getPrototypeOf(service)[method]);
+        await bridge.update({ disabled: null });
+        result = { wrapped, restored };
+      } catch (error) {
+        result = { error: String(error) };
+      }
+      const file = join(evidenceDir, 'spawn-cleanup.json');
+      writeFileSync(file + '.new', JSON.stringify(result));
+      renameSync(file + '.new', file);
+    });
+    return { scheduled: true };
+  }
   if (action === 'damage') {
     // Install a recognizable chain of stale HGS layers, then observe the
     // real failure before returning control to the native tool hook.

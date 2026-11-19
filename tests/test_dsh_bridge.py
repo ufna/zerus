@@ -438,6 +438,26 @@ assert.equal(service.spawn, native.spawn);
 assert.equal(service.spawnTerminal, native.spawnTerminal);
 """)
 
+    def test_fresh_module_unwraps_another_installations_marked_methods(self):
+        self.run_js("""
+// Each module has a separate WeakMap. Only the marks connect them.
+const other = await import(process.argv[2] + '?independent-installation');
+const native = { spawn(spec) { return spec; }, spawnTerminal(spec) { return spec; } };
+const service = Object.create(native);
+const first = wrapSpawns(service, () => ({ HGS_SESSION: 'old', OLD_ONLY: 'stale' }));
+const second = other.wrapSpawns(service, () => ({ HGS_SESSION: 'current' }));
+first.restore();
+for (const method of ['spawn', 'spawnTerminal']) {
+  assert.deepEqual(service[method]({ env: { INPUT: 'kept' } }).env,
+    { INPUT: 'kept', HGS_SESSION: 'current' }, method);
+}
+second.restore();
+for (const method of ['spawn', 'spawnTerminal']) {
+  assert.equal(Object.hasOwn(service, method), false, method);
+  assert.equal(service[method], native[method], method);
+}
+""")
+
     def test_a_call_token_names_its_conversation_while_the_call_or_its_jobs_live(self):
         self.run_js("""
 assert.equal(CALL_TOKEN, 'HGS_DSH_CALL_TOKEN');
@@ -681,7 +701,7 @@ const ctx = {{
     const list = handlers.get(event) ?? handlers.set(event, []).get(event);
     list.push(fn);
   }},
-  effect(fn) {{ fn().catch(() => {{}}); }},
+  effect(fn) {{ Promise.resolve(fn()).catch(() => {{}}); }},
   agents: new Map(),
 }};
 apply(ctx, {{ socket: sock }});
@@ -728,7 +748,7 @@ const ctx = {{
     const list = handlers.get(event) ?? handlers.set(event, []).get(event);
     list.push(fn);
   }},
-  effect(fn) {{ fn().catch(() => {{}}); }},
+  effect(fn) {{ Promise.resolve(fn()).catch(() => {{}}); }},
   agents: new Map(),
 }};
 apply(ctx, {{ socket: sock }});

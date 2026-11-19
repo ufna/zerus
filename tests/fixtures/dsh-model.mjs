@@ -161,7 +161,7 @@ export function apply(ctx,config) {
     parameters:{action:{type:'string',required:true}},
     output:{schema:{type:'string'},render:(_args,value)=>[{type:'text',text:value}]},
     async execute({action}, exec) {
-      return JSON.stringify(await probeSpawns(ctx, exec.agent.session.header.cwd, action));
+      return JSON.stringify(await probeSpawns(ctx, exec.agent.session.header.cwd, action, config.holds));
     }
   }));
   // Instrument the SAME upstream serializer, without supplying a second queue.
