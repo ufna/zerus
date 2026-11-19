@@ -446,9 +446,9 @@ impl World {
         let transcript = std::fs::read_to_string(record["transcript"].as_str().unwrap()).unwrap();
         transcript
             .lines()
+            .rev()
             .filter_map(|line| serde_json::from_str::<Value>(line).ok())
-            .filter(|row| row["type"] == "user" && row["message"]["content"] == text)
-            .last()
+            .find(|row| row["type"] == "user" && row["message"]["content"] == text)
             .and_then(|row| row["promptId"].as_str().map(str::to_owned))
             .unwrap_or_else(|| panic!("no transcript row of {text:?} in {name}"))
     }

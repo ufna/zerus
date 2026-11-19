@@ -255,7 +255,7 @@ fn scan(
             }
             (at / 1000.0, input, Some(Value::from(id)))
         };
-        if at.is_finite() && at > pending && at <= now() && pick(&input, native_id.as_ref()) {
+        if at.is_finite() && at > pending && at <= now() && pick(input, native_id.as_ref()) {
             return Some((at, native_id));
         }
     }
