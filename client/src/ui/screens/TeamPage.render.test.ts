@@ -86,3 +86,20 @@ it("keeps the lead session's tab as a shortcut that opens the same page", async 
   expect(ui.page()).toBe("team");
   expect(navigation.teamPage()?.team).toBe(view.bar.id);
 });
+
+it("opens the team's Settings once when the row menu's Settings… opened the page", async () => {
+  navigation.openTeamPage(view.bar.id, { settings: true });
+  const { TeamPage } = await load<typeof import("../teams/TeamPage")>("../teams/TeamPage");
+  const host = await mount(async () => () => createComponent(Show, { keyed: true, get when() { return ui.page() === "team"; }, get children() { return createComponent(TeamPage, {}); } }), {});
+  await flush();
+  expect(host.querySelector("[data-team-settings]")).toBeNull();
+  teams.apply([entry(`team:${view.bar.id}`, "team", view)]);
+  await flush();
+  expect(host.querySelector("[data-team-settings]")).not.toBeNull();
+  expect(navigation.teamPage()).toEqual({ team: view.bar.id });
+  // Opening the page again without Settings… shows the workspace alone.
+  ui.setPage("teams"); await flush(); navigation.openTeamPage(view.bar.id); await flush();
+  teams.apply([entry(`team:${view.bar.id}`, "team", view)]); await flush();
+  expect(host.querySelector("[data-team-tab]")).not.toBeNull();
+  expect(host.querySelector("[data-team-settings]")).toBeNull();
+});
