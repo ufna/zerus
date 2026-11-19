@@ -49,10 +49,12 @@ export interface OnSomeOption { value: string; account: string; model: string }
  * and an effort that model offers. For the freest account the catalog is the
  * models every account of the agent lists; a model only some list is offered
  * with one of those accounts, which choosing it names. The member's current
- * values stay selectable, marked, while the catalog lacks them (zerus-efeo3 G16). */
+ * values stay selectable, marked, while the catalog lacks them (zerus-efeo3 G16),
+ * but only beside a catalog the command returned: with no reply (a failed
+ * or unfinished read) only Account defaults can be sent (#2533 delta round 2). */
 export function memberModelView(reply: MemberModels | undefined, now: { agent: string; model: string; effort: string }, saved?: SavedChoice) {
   const catalog = reply?.catalog;
-  const current = !!saved && now.agent === saved.agent;
+  const current = !!reply && !!saved && now.agent === saved.agent;
   const rows = (catalog?.models ?? []).slice(0, 256);
   const models: ModelOption[] = [{ value: "", label: tr("Account defaults") }, ...rows.map((m) => ({ value: m.id, label: m.label }))];
   const label = (account: string) => reply?.accounts.find((a) => a.id === account)?.label || account;

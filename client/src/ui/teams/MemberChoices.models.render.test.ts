@@ -341,3 +341,44 @@ it("keeps a stopped member's saved model that only some accounts list as its own
   submit(host).click(); await flush();
   expect(sent).toEqual([["swap_member", { member: member.id, agent: "claude", model: "model-b", effort: "", account: { mode: "freest" } }]]);
 });
+
+// #2533 delta round 2 (review2533c-cx): the reviewer's renderer probe and its
+// control. A stopped member's saved override is offered only beside a
+// catalog the command actually returned; a failed read blocks sending it,
+// with the reason Add and an edited Swap give, and Account defaults stay sendable.
+function mountSwap(model = "retired-model", effort = "") {
+  const member = { ...view.members.find((m) => m.agent === "claude" && !m.lead)!, state: "paused", person_stopped: true,
+    open_work: 0, model, effort, account_choice: { mode: "freest" } } as TeamMember;
+  const sent: unknown[] = [];
+  const host = mount(SwapMemberDialog, { member, busy: false, error: "", close: () => {}, submit: async (kind: string, input: unknown) => { sent.push([kind, input]); } });
+  return { host, member, sent };
+}
+async function send(host: HTMLElement) {
+  host.querySelector("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+  await flush();
+}
+
+it("keeps a stopped member's saved model after a successful catalog read (review2533c control)", async () => {
+  const { host, member, sent } = mountSwap("retired-model", "max");
+  await flush();
+  expect(await offered(host, "Model")).toContainEqual(["retired-model", "retired-model (not in the current catalog)"]);
+  await send(host);
+  expect(sent).toEqual([["swap_member", { member: member.id, agent: "claude", model: "retired-model", effort: "max", account: { mode: "freest" } }]]);
+});
+
+it("a saved Swap override waits for a successful catalog read, and Account defaults stay sendable (review2533c P2)", async () => {
+  f.fail.add("claude");
+  const { host, member, sent } = mountSwap("retired-model", "max");
+  await flush();
+  expect(f.reads).toEqual(["claude/"]);
+  expect(host.querySelector("[data-member-choice-problem]")?.textContent).toBe("Choose a model this account offers, or Account defaults.");
+  expect(submit(host).disabled).toBe(true);
+  expect(await offered(host, "Model")).toEqual([["", "Account defaults"]]);
+  await send(host);
+  expect(sent).toEqual([]);
+  await pick(host, "Model", "");
+  expect(host.querySelector("[data-member-choice-problem]")).toBeNull();
+  expect(submit(host).disabled).toBe(false);
+  await send(host);
+  expect(sent).toEqual([["swap_member", { member: member.id, agent: "claude", model: "", effort: "", account: { mode: "freest" } }]]);
+});
