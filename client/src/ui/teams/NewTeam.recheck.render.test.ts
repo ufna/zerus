@@ -6,7 +6,7 @@ import { afterEach, expect, it, vi } from "vitest";
 import { createComponent } from "solid-js";
 import { render } from "solid-js/web";
 import { NewTeam } from "./NewTeam";
-import { catalog } from "./fixtures";
+import { catalog, projectsView } from "./fixtures";
 
 let dispose: (() => void) | undefined;
 afterEach(() => { dispose?.(); dispose = undefined; document.body.replaceChildren(); });
@@ -21,7 +21,9 @@ function setup(answers: { git: boolean; head: string; branch: string; reason: st
   const asked: string[] = [];
   dispose = render(() => createComponent(NewTeam, {
     busy: false, machineId: "00000000-0000-4000-8000-0000000000aa", catalog,
-    defaultProject: "example-project", defaultFolder: "/workspace/example",
+    // The project comes from the Projects catalog (#2533): /workspace/example
+    // is the Orders API project's one folder on this computer.
+    defaultProject: "", defaultFolder: "/workspace/example", projects: projectsView.projects,
     onCheckFolder: async (path: string) => { asked.push(path); return answers[Math.min(asked.length - 1, answers.length - 1)]; },
     onCreate: async (input) => ({ outcome: "done", receipt: {}, request_id: input.request_id }), onSaveTemplate: async () => {}, onClose: () => {},
   }), host);
