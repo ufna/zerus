@@ -180,6 +180,10 @@ export function journalDetail(row: Pick<DrawerRow, "kind" | "text">): string {
       return tr("Land stages skipped for task #%1 because landing is disabled in Team settings.", skip[1]) + rest.slice(skip[0].length);
     }
   }
+  if (row.kind === "release_provider_stop"
+      && rest === ". The service confirmed that the member stopped after a provider error.") {
+    return tr("The service confirmed that the member stopped after a provider error.");
+  }
   if (row.kind === "handout_outcome" && rest) {
     const [word, ...reason] = rest.split(": ");
     const translated = handoutOutcome(word);

@@ -13,7 +13,8 @@ export function memberStateColor(kind: string): MemberStateColor {
   switch (kind) {
     case "active": return "info";
     case "paused": return "warn";
-    case "removed": return "danger";
+    case "removed":
+    case "stopped": return "danger";
     case "not_created": return "dim";
     default: return "muted";
   }
@@ -28,12 +29,14 @@ export interface MemberStatus {
 
 const MEMBER_STATUS: Readonly<Record<string, () => string>> = {
   not_created: () => tr("not created"), active: () => tr("active"),
-  paused: () => tr("paused"), removed: () => tr("removed"),
+  paused: () => tr("paused"), stopped: () => tr("stopped"), removed: () => tr("removed"),
 };
 
 /** What a member's card says about it. */
 export function memberStatus(member: MemberView): MemberStatus {
-  const state = member.state || "not_created";
+  // The store keeps a member the person stopped paused, with person_stopped:
+  // its card says Stopped, apart from a member that is only paused (G9).
+  const state = member.state === "paused" && member.person_stopped ? "stopped" : member.state || "not_created";
   return { state, label: MEMBER_STATUS[state]?.() ?? state, tone: memberStateColor(state), lead: member.lead };
 }
 

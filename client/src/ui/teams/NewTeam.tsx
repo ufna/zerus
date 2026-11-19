@@ -451,10 +451,13 @@ export function NewTeam(props: NewTeamProps): JSX.Element {
           <Show when={props.onBrowseFolder}><button type="button" class="btn" disabled={locked()} onClick={() => void browse()}>{tr("Browse…")}</button></Show>
           <button type="button" class="btn" data-check-folder disabled={checking() || locked() || !folder().trim()} onClick={() => void check()}>{tr("Check folder")}</button>
         </div>
+        {/* The newest answer decides the line: a check of the same path again
+            replaces it, also from refused to passed and back (G11). */}
         <Show when={checkedFolder()}>
-          {(checked) => checked().git
-            ? <span class="nt-ok" role="status" data-folder-ok>{tr("A Git folder at %1, base commit %2.", checked().branch || tr("detached"), checked().head.slice(0, 12))}</span>
-            : <span class="nt-foot-bad" role="status" data-folder-bad>{tr("Not a Git folder: %1", checked().reason)}</span>}
+          {(checked) => <Show when={checked().git}
+            fallback={<span class="nt-foot-bad" role="status" data-folder-bad>{tr("Not a Git folder: %1", checked().reason)}</span>}>
+            <span class="nt-ok" role="status" data-folder-ok>{tr("A Git folder at %1, base commit %2.", checked().branch || tr("detached"), checked().head.slice(0, 12))}</span>
+          </Show>}
         </Show>
         <label class="nt-field">{tr("Integration branch")}
           <TextInput class="field mono" value={proposed()} onInput={(event) => setBranch(event.currentTarget.value)}
@@ -464,7 +467,7 @@ export function NewTeam(props: NewTeamProps): JSX.Element {
       <Show when={changed()}>
         <div class="notice warn nt-error" role="status" data-template-changed><Icon name="triangle-alert" size={16} /><span>{tr("The template changed since you saw it, and nothing was created: review it as it is now, then create the team again.")}</span></div>
       </Show>
-      <Show when={shownError()}><div class="notice danger nt-error" role="alert" data-new-team-error><Icon name="triangle-alert" size={16} /><span>{shownError()}</span></div></Show>
+      {/* A refusal is said once, in the footer beside Create team (G10). */}
       <Show when={sendingCreate() && !intentCall()}>
         <div class="notice nt-note" role="status" data-create-sending><Icon name="loader-circle" size={16} /><span>{tr("The team is being created.")}</span></div>
       </Show>

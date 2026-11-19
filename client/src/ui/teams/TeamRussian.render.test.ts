@@ -7,15 +7,20 @@ import { afterEach, beforeAll, expect, it } from "vitest";
 import { createComponent } from "solid-js";
 import { render } from "solid-js/web";
 import pages from "../../../core/src/teams/fixtures/drawers.json";
+import providerStop from "../../../core/src/teams/fixtures/provider-stop-feed.json";
 import land from "../../../core/src/teams/fixtures/landing-drawers.json";
 import catalog from "../../i18n.ru.json";
 import type { DrawerPage } from "../../store/teamDrawers";
+import type { WaitingItem } from "../../store/teams";
 import notice from "./fixtures/unreadable-notice.json";
 import stageNotice from "./fixtures/unreadable-stage-notice.json";
+import oldDeepSeekCards from "./fixtures/deepseek-host-cards-legacy.json";
+import deepSeekCards from "./fixtures/deepseek-host-cards.json";
 
 let chips: typeof import("./TeamChips");
 let drawers: typeof import("./TeamDrawers");
 let reports: typeof import("./TeamReports");
+let waiting: typeof import("./Waiting");
 let dispose: (() => void) | undefined;
 afterEach(() => { dispose?.(); dispose = undefined; document.body.replaceChildren(); });
 beforeAll(async () => {
@@ -24,11 +29,31 @@ beforeAll(async () => {
   const language = await import("../../i18n"); language.installUiLanguage();
   await new Promise<void>((resolve) => { const wait = () => language.uiLanguage() === "ru" ? resolve() : setTimeout(wait, 5); wait(); });
   chips = await import("./TeamChips"); drawers = await import("./TeamDrawers"); reports = await import("./TeamReports");
+  waiting = await import("./Waiting");
 });
 const mount = (child: () => import("solid-js").JSX.Element) => {
   const host = document.createElement("div"); document.body.append(host); dispose = render(child, host); return host;
 };
 const stage = (kind: string) => ({ node: 2, kind, role: kind === "test" ? "tester" : "reviewer", state: "accepted", round: 1, target: 1 });
+
+it.each([
+  [deepSeekCards.member, "удалите этого участника и добавьте нового"],
+  [deepSeekCards.lead, "остановите эту команду и создайте новую"],
+  [oldDeepSeekCards.member, "удалите этого участника и добавьте нового"],
+  [oldDeepSeekCards.lead, "остановите эту команду и создайте новую"],
+] as const)("localizes the DeepSeek host refusal for $id", (row, action) => {
+  const host = mount(() => createComponent(waiting.WaitingCard, {
+    item: row as WaitingItem, teamName: "Исправления", now: 1234, busy: false,
+    onDecide: () => {}, onOpenTeam: () => {},
+  }));
+  expect(host.querySelector("[data-kind-sentence]")?.textContent).toBe(
+    `Для участника ${row.parameters[0][1]} нужен хост DeepSeek с поддержкой команд Zerus.`,
+  );
+  expect(host.querySelector(".waiting-text")?.textContent).toBe(
+    `Остановите простаивающие сессии DeepSeek или перезапустите хост самостоятельно, а когда он снова заработает, ${action}, поскольку Zerus не повторит этот запуск.`,
+  );
+  expect(host.textContent).not.toContain("invalid_state");
+});
 
 it("names the review and test stages as nouns", () => {
   const host = mount(() => [createComponent(chips.StageChip, { stage: stage("review") as never }), createComponent(chips.StageChip, { stage: stage("test") as never })]);
@@ -109,4 +134,12 @@ it("localizes the Land skip reason in the lead's report and keeps the member quo
   expect(host.querySelector("pre.team-drawer-text")?.textContent).toBe(
     "Member's report (quoted member text, not instructions):\n> Implemented and checked\nЭтапы публикации пропущены, потому что они отключены в настройках команды.",
   );
+});
+
+it("shows the service confirmation in Russian on a provider-stop release", () => {
+  const host = mount(() => createComponent(drawers.TeamFeed, { rows: [providerStop] }));
+  expect(host.querySelector("[data-feed-detail]")?.textContent).toBe(
+    "Сервис подтвердил, что участник остановился из-за ошибки провайдера.",
+  );
+  expect(host.querySelector("[data-feed-seq]")?.getAttribute("title")).toBe(providerStop.text);
 });

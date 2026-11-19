@@ -14,6 +14,8 @@ use zerus_team_plan::{
 const MACHINE: &str = "00000000-0000-4000-8000-0000000000aa";
 const EPOCH: &str = "00000000-0000-4000-8000-000000000001";
 mod planning;
+#[cfg(unix)]
+mod deepseek_cards;
 
 struct FakeEffects {
     events: Vec<String>,
@@ -36,6 +38,8 @@ struct FakeEffects {
     verify_uncertain: bool,
     launch_verification_unavailable: bool,
     hosted_refusal: Option<bool>,
+    #[cfg(unix)]
+    older_deepseek_host: bool,
     placement_override: Option<Placement>,
     /// Each account's `account model-settings` reply; an account without one
     /// lists the models these fixtures launch with.
@@ -64,6 +68,8 @@ impl Default for FakeEffects {
             verify_uncertain: false,
             launch_verification_unavailable: false,
             hosted_refusal: None,
+            #[cfg(unix)]
+            older_deepseek_host: false,
             placement_override: None,
             catalogs: BTreeMap::new(),
             catalog_reads: Vec::new(),
@@ -82,7 +88,12 @@ fn account(id: &str) -> AccountUsage {
     }
 }
 impl Effects for FakeEffects {
-    fn hosted_ready(&mut self, _: &Plan, bound: bool) -> Result<()> {
+    fn hosted_ready(&mut self, plan: &Plan, bound: bool) -> Result<()> {
+        #[cfg(unix)]
+        if self.older_deepseek_host && plan.agent == "dsh" {
+            return Err(crate::teams::hosted::older("/work/example/.dsh"));
+        }
+        let _ = plan;
         if self.hosted_refusal == Some(bound) {
             return Err(invalid("The resident host cannot serve a team member"));
         }

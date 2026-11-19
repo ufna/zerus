@@ -1,10 +1,12 @@
 //! Ordinary ls only. Watch and canonical/action readers retain their own paths.
 use super::*;
+use zerus_client_core::source;
 
 const COMPAT_ENTRIES: usize = 256;
 const COMPAT_BYTES: u64 = 16 << 20;
 const BODY_BYTES: usize = 64 << 20;
 const PAGE_BYTES: usize = 512 << 10;
+const OVERLAY_DEADLINE: &str = source!("Selected listing overlay deadline exceeded");
 
 // One original request clock surrounds each public observation. The operating
 // system call may overrun cooperatively; no following observation may start.
@@ -12,15 +14,9 @@ pub(super) fn observe_until<T>(
     until: Instant,
     observe: impl FnOnce() -> anyhow::Result<T>,
 ) -> anyhow::Result<T> {
-    anyhow::ensure!(
-        Instant::now() < until,
-        "Selected listing overlay deadline exceeded"
-    );
+    anyhow::ensure!(Instant::now() < until, OVERLAY_DEADLINE);
     let value = observe()?;
-    anyhow::ensure!(
-        Instant::now() < until,
-        "Selected listing overlay deadline exceeded"
-    );
+    anyhow::ensure!(Instant::now() < until, OVERLAY_DEADLINE);
     Ok(value)
 }
 
@@ -183,12 +179,9 @@ pub(super) fn selected_record(
 ) -> anyhow::Result<Value> {
     anyhow::ensure!(
         *files < max_files,
-        "Selected listing overlays exceeded their file limit"
+        source!("Selected listing overlays exceeded their file limit")
     );
-    anyhow::ensure!(
-        Instant::now() < until,
-        "Selected listing overlay deadline exceeded"
-    );
+    anyhow::ensure!(Instant::now() < until, OVERLAY_DEADLINE);
     let key = Key(source.into());
     key.validate()?;
     let parent = checked(Directory::open(root))?;
@@ -451,10 +444,7 @@ pub(in crate::state) fn merge(
             let mut opencode = Vec::new();
             let start_count = rows.len();
             for (source, seed) in batch {
-                anyhow::ensure!(
-                    Instant::now() < until,
-                    "Selected listing overlay deadline exceeded"
-                );
+                anyhow::ensure!(Instant::now() < until, OVERLAY_DEADLINE);
                 let mut record = seed["record"].clone();
                 if source.starts_with("dsh/") {
                     deepseek.push(record);
@@ -503,14 +493,14 @@ pub(in crate::state) fn merge(
                             );
                             if public {
                                 let stamp = seed["native_stamp"].as_str().ok_or_else(|| {
-                                    anyhow::anyhow!("Missing public native version")
+                                    anyhow::anyhow!(source!("Missing public native version"))
                                 })?;
                                 reader.as_ref().unwrap().verify_source(&source, stamp)?;
                                 witness_bytes += source.len() + stamp.len();
                                 anyhow::ensure!(
                                     witness_bytes
                                         <= if query.paged { PAGE_BYTES } else { BODY_BYTES },
-                                    "Public listing witnesses exceeded their bound"
+                                    source!("Public listing witnesses exceeded their bound")
                                 );
                                 public_witnesses.push((source.clone(), stamp.to_owned()));
                                 let _public = storage::listing_scope::Public::enter(&record);
@@ -738,7 +728,7 @@ pub(in crate::state) fn merge(
             for (source, stamp) in public_witnesses {
                 anyhow::ensure!(
                     Instant::now() < until,
-                    "Public listing verification deadline exceeded"
+                    source!("Public listing verification deadline exceeded")
                 );
                 reader.verify_source(&source, &stamp)?;
             }

@@ -103,7 +103,7 @@ it("a second window cannot grant permissions different from those shown (the rev
   await vi.waitFor(() => expect(host.querySelector("[data-template-changed]")).not.toBeNull());
   await vi.waitFor(() => expect(shown(host).merge_accepted).toBe(true));
   expect(f.reads).toBe(2);
-  expect(host.querySelector("[data-new-team-error]"), "said in the form's words, not as the refusal's").toBeNull();
+  expect(host.querySelector("[data-create-error]"), "said in the form's words, not as the refusal's").toBeNull();
   await settle();
   expect(f.acts).toHaveLength(1);
   expect(store.createIntent(), "the refused create is settled, not left uncertain").toBeNull();
@@ -206,7 +206,7 @@ it("a changed template is shown as it is now: choices stay only where their perm
   await settle();
   expect(f.acts).toHaveLength(1);
   expect(f.grants).toEqual([]);
-  expect(host.querySelector("[data-new-team-error]"), "the refusal's own words are not shown as an error").toBeNull();
+  expect(host.querySelector("[data-create-error]"), "the refusal's own words are not shown as an error").toBeNull();
 });
 
 it("a permission this version does not know keeps Create blocked and sends nothing (the review's B1, taken over)", async () => {

@@ -81,7 +81,8 @@ export function MemberActions(props: { member: MemberView; teamStatus: string; b
                 action: () => { if (props.session?.row) props.onOpenSession?.(); } }] : []),
               ...memberActions(props.member, props.teamStatus).map((action) => ({
               label: action.text, icon: action.id.startsWith("pause") ? "pause" : action.id.startsWith("resume") ? "play" : action.id.startsWith("stop") ? "square" : action.id === "swap_member" ? "refresh-cw" : "trash",
-              danger: action.danger, disabled: props.busy || action.disabled, hint: action.reason,
+              // A closed item says why under it, not only in its hover title (G9).
+              danger: action.danger, disabled: props.busy || action.disabled, hint: action.reason, note: action.disabled ? action.reason : undefined,
               action: () => { if (props.busy || action.disabled) return; trigger.focus(); props.onAction(action.id, memberId); },
             }))];
             setMenu({ x: box.right - 200, y: box.bottom + 4, items });

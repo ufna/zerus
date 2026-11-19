@@ -48,6 +48,8 @@ export function ProviderSettings(props: { view: TeamView; home?: string; locked:
     } catch { setUnknown(true); setChecked(undefined); setError(tr("The selection is not confirmed. Check the original action in the Team tab.")); }
     finally { setBusy(false); }
   };
+  let advanced: HTMLDetailsElement | undefined;
+  createEffect(() => { if (shown()?.override_config && advanced) advanced.open = true; });
   return <section data-provider-settings>
     <h3>{tr("Tests and Builds")}</h3>
     <p class="hint">{tr("Tests and builds remain tasks for member agents. Opening or checking this section runs nothing and saves nothing.")}</p>
@@ -59,8 +61,17 @@ export function ProviderSettings(props: { view: TeamView; home?: string; locked:
       <For each={value().diagnostics}>{(d) => <p class="notice danger" data-provider-diagnostic>{d.code}: {d.message}</p>}</For>
       <ul><For each={value().providers}>{(p) => <li>{p.name} ({p.provider}, {p.kind}){p.disabled ? tr(", off") : ""}</li>}</For></ul>
     </>}</Show>
-    <p class="hint">{tr("Override as JSON. Providers replace matching names. Empty uses the project file, or detected metadata when the file is absent.")}</p>
-    <TextArea rows={7} aria-label={tr("Provider override")} data-provider-override value={text()} disabled={busy() || props.locked || unknown()} onInput={(e) => { setText(e.currentTarget.value); setChecked(undefined); }} />
+    {/* The detected providers lead; the JSON override waits in a closed section,
+        opened while an override is in effect (zerus-uiy9p G13). */}
+    <details class="team-provider-advanced" ref={(node) => { advanced = node; }}>
+      {/* A saved override stays named here whatever the draft or a checked
+          candidate shows, also with the section closed (review of #2535). */}
+      <summary>{tr("Advanced: override as JSON")}<Show when={shown()?.saved?.override_config}>
+        <span class="dim team-provider-saved" data-provider-saved-override>{tr("A saved override is in effect.")}</span>
+      </Show></summary>
+      <p class="hint">{tr("Override as JSON. Providers replace matching names. Empty uses the project file, or detected metadata when the file is absent.")}</p>
+      <TextArea rows={7} aria-label={tr("Provider override")} data-provider-override value={text()} disabled={busy() || props.locked || unknown()} onInput={(e) => { setText(e.currentTarget.value); setChecked(undefined); }} />
+    </details>
     <div class="row"><button type="button" class="btn" data-provider-check disabled={busy() || props.locked || unknown()} onClick={() => void read(true)}>{tr("Check")}</button>
       <button type="button" class="btn" data-provider-read disabled={busy() || props.locked || unknown()} onClick={() => void read()}>{tr("Read again")}</button>
       <button type="button" class="btn" data-provider-save disabled={!checked() || busy() || props.locked || unknown()} onClick={() => void save()}>{tr("Save provider selection")}</button></div>

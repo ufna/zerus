@@ -94,7 +94,9 @@ it("sends one revision-bound Reassign through the same Tauri command as Accept a
     action: { kind: "reassign", node: boardFixture.reported, member: "m2", reason: reason.value },
   });
   expect(calls()[0][1].call.confirmed).toBeUndefined();
-  await vi.waitFor(() => expect(host.querySelector("[data-team-action-failure]")?.textContent).toBe("The team changed before confirmation."));
+  await vi.waitFor(() => expect(host.querySelector("[data-team-action-failure-message]")?.textContent).toBe("The team changed before confirmation."));
+  // zerus-uiy9p G10: the banner names the refused action.
+  expect(host.querySelector("[data-team-action-failure-action]")?.textContent).toBe("Reassign");
 });
 
 it("shows the reason that a reported task cannot be routed", async () => {

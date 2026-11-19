@@ -1413,11 +1413,20 @@ hgs resume codex/my-project/review --archive ID -d
 hgs kill codex/my-project/review --archive ID        # forget only this binding
 ```
 
-Archives live in `archives/`, each with an independent ID. A new launch with the
+Terminal archives live in `archives/`, each with an independent ID. A new launch with the
 same name preserves the archive. Restore refuses an occupied live or Saved name
 and removes an archive binding only after the native agent confirms the expected
 conversation. Failed restore keeps it. **Forget archive** preserves native history;
 `resume --all` excludes archives.
+
+For native DeepSeek sessions, `terminate` stops the selected session on its
+resident host and archives it. `archive` requires a stopped or paused session.
+DeepSeek archives use a separate local store so earlier CLIs can still use
+terminal archives after a rollback.
+Retirement requires the resident host to confirm the session is stopped. Restore
+resumes the archived conversation on that host. When the first restore result is
+unclear, Restore checks the original outcome without sending a second resume.
+Other sessions on the host stay available throughout.
 
 Desktop Restore keeps the opened conversation and its message draft when the
 resumed row confirms the archived conversation ID. Text, attachments and editor
@@ -3066,6 +3075,10 @@ only while Terminal shows exactly that chooser, using its number key and, for
 Revise, pasting the feedback before Enter; Kimi's recorded decision, including
 the exact feedback, confirms delivery. A clipped or different chooser, or one
 already in Revise feedback mode, stays read-only with **Open Terminal**.
+Kimi Code 2.6.3 hands the agent an approved plan's ExitPlanMode result marked as
+a tool error ("ERROR: Tool execution failed." before its "Exited plan mode." text
+and the approved plan), whoever approved it, in Terminal or in Activity; plan mode
+does end, and Kimi records the decision as approved.
 
 Kimi CreateGoal approval shows the full objective and completion criterion literally,
 with Kimi's own mode choices for Always Ask or Ask When Needed. **Switch to Never

@@ -9,6 +9,7 @@ import { createComponent } from "solid-js";
 import { render } from "solid-js/web";
 import { TeamFeed } from "./TeamDrawers";
 import pages from "../../../core/src/teams/fixtures/drawers.json";
+import providerStop from "../../../core/src/teams/fixtures/provider-stop-feed.json";
 import land from "../../../core/src/teams/fixtures/landing-drawers.json";
 import type { DrawerPage, DrawerRow } from "../../store/teamDrawers";
 
@@ -79,4 +80,15 @@ it("keeps the English skip detail for the task named by the writer", () => {
       title: row.text,
     });
   }
+});
+
+it("shows the confirmation sentence on a provider-stop release", () => {
+  const host = show([providerStop]);
+  expect(read(host, providerStop.seq)).toMatchObject({
+    sentence: "Task of a member stopped by its provider returned",
+    detail: "The service confirmed that the member stopped after a provider error.",
+    task: "#21",
+    member: "m3",
+    title: providerStop.text,
+  });
 });

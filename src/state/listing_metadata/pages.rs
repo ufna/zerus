@@ -1,6 +1,7 @@
 //! Immutable observed generations with a separate read-only listing view.
 use super::*;
 use serde::{Deserialize, Serialize};
+use zerus_client_core::source;
 pub(super) const TERMINAL_CANDIDATES: &str = "SELECT substr(s.source,1,257),CASE WHEN length(CAST(s.seed AS BLOB))<=262144 THEN s.seed ELSE NULL END,substr(s.stamp,1,1025) FROM sources AS locator INDEXED BY sources_name CROSS JOIN snapshots AS s WHERE locator.tombstone=0 AND json_extract(locator.seed,'$.record.name')=?1 AND s.generation=?2 AND s.source=locator.source LIMIT 3";
 const ROWS: usize = 128;
 const BYTES: usize = 512 << 10;
@@ -108,7 +109,7 @@ impl Reader {
         key.validate()?;
         anyhow::ensure!(
             stamp.len() <= 1024 && self.0.source_stamp(&key)?.as_deref() == Some(stamp),
-            "Public listing source changed before publication"
+            source!("Public listing source changed before publication")
         );
         Ok(())
     }

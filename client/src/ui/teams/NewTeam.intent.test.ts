@@ -101,7 +101,7 @@ it.each(["pending", "uncertain"] as const)("a refused Dismiss keeps the %s creat
   expect(store.createIntent()).toEqual(first);
   expect(store.unresolved()).toHaveLength(1);
   expect(button(host, "Create team")).toBeUndefined();
-  expect(host.querySelector("[data-new-team-error]")?.textContent).toContain(state === "pending" ? "Only an uncertain action" : "offline");
+  expect(host.querySelector("[data-create-error] span")?.textContent).toContain(state === "pending" ? "Only an uncertain action" : "offline");
   expect(f.acts).toHaveLength(1);
 });
 
@@ -179,7 +179,7 @@ it("a refusal ends the intent and shows its reason, also in a dialog reopened af
   release();
   await vi.waitFor(() => expect(store.createIntent()).toBeNull());
   const second = open();
-  expect(second.querySelector("[data-new-team-error]")?.textContent).toContain("The template was refused.");
+  expect(second.querySelector("[data-create-error] span")?.textContent).toContain("The template was refused.");
   await fill(second);
   expect(button(second, "Create team")).toBeDefined();
 });

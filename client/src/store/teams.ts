@@ -251,7 +251,8 @@ export interface UnresolvedCall { call: TeamCall; detail: string; state: "uncert
  * the person has seen it or the view changes. A read failure never replaces
  * a view's reason: it is read with `teams.readFailureFor(key)` and goes when
  * that key reads again. `teams.failure()` is the newest reason of any kind. */
-export interface TeamFailure { key: string; code: string; message: string; source: string }
+/** `action` is the refused call's kind (G10): the banner names it. */
+export interface TeamFailure { key: string; code: string; message: string; source: string; action?: string }
 
 /** The New team dialog's one create intent: its team and request ids, kept in
  * the store so that closing the dialog keeps them. */
@@ -272,6 +273,8 @@ export const REVISION_WAIT_MS = 35 * 1000;
 export const FAILURES_KEPT = 16;
 /** Read keys whose failure is kept: `list`, `waiting` and a few teams. */
 const READ_FAILURES_KEPT = 8;
+/** Views whose newest applied action feedback is remembered for ordering. */
+const ORDER_KEPT = 64;
 
 const OFF_CODES = new Set(["teams_inactive", "unavailable"]);
 
@@ -367,8 +370,8 @@ export function createTeams(transport: TeamsTransport = tauriTeams()) {
 
   // ----------------------------------------------------------- failures
 
-  function failAction(source: string, code: string, message: string) {
-    const reason: TeamFailure = { key: "action", code, message, source };
+  function failAction(source: string, code: string, message: string, action?: string) {
+    const reason: TeamFailure = { key: "action", code, message, source, ...(action ? { action } : {}) };
     const next = new Map(actionFailures());
     next.delete(source);
     next.set(source, reason);
@@ -791,9 +794,45 @@ export function createTeams(transport: TeamsTransport = tauriTeams()) {
     if (except !== undefined) ids.delete(except);
     return ids.size;
   }
+  // A view's feedback follows the order of its actions (review of #2535).
+  // Every action, Check and Dismiss takes the next number of one store-wide
+  // counter when it is dispatched. A terminal outcome changes its view's
+  // reason only when no later action of that view has already applied its
+  // own; its request settles either way. The newest ORDER_KEPT views are
+  // remembered.
+  // A view's record is kept while it has an outstanding outcome: only such an
+  // outcome can arrive with an older order than one already applied. Beyond
+  // ORDER_KEPT, records of views with nothing outstanding are pruned, oldest
+  // first (delta review of #2535). A shown banner needs no record: no older
+  // outcome of its view is still to come.
+  let dispatched = 0;
+  const appliedFor = new Map<string, number>();
+  const outstanding = new Map<string, number>();
+  /** The next order for a view's action whose outcome is still to come. */
+  function dispatch(source: string): number {
+    outstanding.set(source, (outstanding.get(source) ?? 0) + 1);
+    return ++dispatched;
+  }
+  /** The view's outcome arrived, whatever it was. */
+  function arrived(source: string) {
+    const left = (outstanding.get(source) ?? 1) - 1;
+    if (left > 0) outstanding.set(source, left);
+    else outstanding.delete(source);
+  }
+  function inOrder(source: string, order: number): boolean {
+    if (order < (appliedFor.get(source) ?? 0)) return false;
+    appliedFor.delete(source);
+    appliedFor.set(source, order);
+    for (const oldest of [...appliedFor.keys()]) {
+      if (appliedFor.size <= ORDER_KEPT) break;
+      if (oldest !== source && !outstanding.has(oldest)) appliedFor.delete(oldest);
+    }
+    return true;
+  }
+
   const refuseFull = (call: TeamCall, source: string): TeamOutcome => {
     const detail = "There are too many unresolved actions. Check or dismiss them first.";
-    failAction(source, "unresolved_full", detail);
+    if (inOrder(source, ++dispatched)) failAction(source, "unresolved_full", detail, call.action.kind);
     // Nothing was sent: a create intent refused here has no other trace.
     if (!unresolvedOf(call.request_id) && createIntent()?.request_id === call.request_id) setCreateIntent(null);
     return { outcome: "failed", detail, code: "unresolved_full", request_id: call.request_id };
@@ -814,10 +853,12 @@ export function createTeams(transport: TeamsTransport = tauriTeams()) {
     return send(call, source, () => transport.actAgain(call));
   }
   async function send(call: TeamCall, source: string, act: () => Promise<TeamOutcome>): Promise<TeamOutcome> {
+    const order = dispatch(source);
     setInFlight((old) => new Map(old).set(call.request_id, call.team));
     try {
-      const outcome = await act();
-      return accept(call, outcome, source);
+      let outcome: TeamOutcome;
+      try { outcome = await act(); } finally { arrived(source); }
+      return accept(call, outcome, source, order);
     } catch (error) {
       const detail = errorText(error);
       putUnresolved(call, detail, "uncertain");
@@ -826,14 +867,19 @@ export function createTeams(transport: TeamsTransport = tauriTeams()) {
       setInFlight((old) => { const next = new Map(old); next.delete(call.request_id); return next; });
     }
   }
-  function accept(call: TeamCall, outcome: TeamOutcome, source: string): TeamOutcome {
+  function accept(call: TeamCall, outcome: TeamOutcome, source: string, order: number): TeamOutcome {
     switch (outcome?.outcome) {
       case "confirm": setConfirmation({ call: { ...call, confirmed: false }, confirmation: outcome.confirmation }); return outcome;
       case "pending": putUnresolved(call, "The action waits for the team.", "pending"); return outcome;
-      case "done": settled(call.request_id); return outcome;
+      case "done":
+        settled(call.request_id);
+        // The asking view's next action that went through retires its reason
+        // (G10), unless a later action of that view has already answered.
+        if (source && inOrder(source, order)) clearFailure(source);
+        return outcome;
       case "failed":
         settled(call.request_id);
-        failAction(source, outcome.code ?? "", outcome.detail);
+        if (inOrder(source, order)) failAction(source, outcome.code ?? "", outcome.detail, call.action.kind);
         return outcome;
       case "uncertain": putUnresolved(call, outcome.detail, "uncertain"); return outcome;
       default: {
@@ -863,12 +909,16 @@ export function createTeams(transport: TeamsTransport = tauriTeams()) {
     const asking = entry ?? unresolved()[0];
     if (!asking) return false;
     if (sending().includes(asking.call.request_id)) return false;
+    const order = dispatch(source);
     try {
-      await transport.dismiss(asking.call);
+      try { await transport.dismiss(asking.call); } finally { arrived(source); }
       settled(asking.call.request_id);
+      // A Dismiss that went through answers for its view too: an older
+      // Dismiss of the view that fails later shows nothing.
+      inOrder(source, order);
       return true;
     } catch (error) {
-      failAction(source, "dismiss_failed", errorText(error));
+      if (inOrder(source, order)) failAction(source, "dismiss_failed", errorText(error));
       return false;
     }
   }

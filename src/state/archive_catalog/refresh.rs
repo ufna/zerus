@@ -301,27 +301,7 @@ impl Row {
             .filter(|at| at.is_finite() && *at >= 0.0 && *at < MAX_DATE as f64)
             .unwrap_or(0.0);
         let at = if at == 0.0 { 0.0 } else { at };
-        let search = [
-            "name",
-            "archive_id",
-            "agent",
-            "conversation_id",
-            "run_id",
-            "cwd",
-            "launch_dir",
-            "title",
-        ]
-        .iter()
-        .map(|key| {
-            if *key == "title" {
-                string(&record, key).chars().take(1024).collect::<String>()
-            } else {
-                string(&record, key).to_owned()
-            }
-        })
-        .collect::<Vec<_>>()
-        .join(" ")
-        .to_lowercase();
+        let search = super::search_text(&record);
         Ok(Self {
             id: id.into(),
             name,

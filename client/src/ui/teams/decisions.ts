@@ -128,14 +128,39 @@ function cardParameters(raw: WaitingItem["parameters"]): ParsedParameters {
  * legitimately carries none (F5). */
 const NAMES_A_MEMBER = new Set(["launch_blocked", "launch_uncertain", "standing_confirmation"]);
 
+type CardCopy = Pick<WaitingItem, "kind" | "parameters" | "text">;
+
+function olderDeepSeekMember(item: CardCopy, parameters = cardParameters(item.parameters)): string | undefined {
+  if (item.kind !== "launch_blocked" || parameters.state === "invalid") return undefined;
+  const values = parameters.state === "valid" ? parameters.values : undefined;
+  const member = values?.get("member");
+  if (member && /^(lead|m[1-9][0-9]{0,9})$/.test(member) && values?.get("code") === "invalid_state"
+    && values.get("reason") === "older_deepseek_host") return member;
+
+  // Existing cards carry the older writer's fixed diagnostic around a host path.
+  const legacy = /^Member (lead|m[1-9][0-9]{0,9}): invalid_state\. The DeepSeek host that serves .+ lacks the caller, task-input or lifecycle capabilities required by Agent Teams\. They become available after its next own start, which Zerus never forces\./.exec(item.text);
+  if (legacy && (!values?.size || (member === legacy[1] && values.get("code") === "invalid_state"))) return legacy[1];
+  return undefined;
+}
+
+export function waitingText(item: CardCopy): string {
+  const member = olderDeepSeekMember(item);
+  if (!member) return item.text;
+  return member === "lead"
+    ? tr("Stop idle DeepSeek sessions or restart the host yourself, then stop this team and create a new one once the host is back, since Zerus will not retry this start.")
+    : tr("Stop idle DeepSeek sessions or restart the host yourself, then remove this member and add a replacement once the host is back, since Zerus will not retry this start.");
+}
+
 /** One sentence that says what a card of this kind is about. The kinds whose
  * writer sends bounded parameters substitute them (zerus-63rru.34); an
  * invalid parameter, an absent one on a card that names a member, or a kind
  * this version does not describe keeps the stored sentence itself, never a
  * generic description. The capacity notice is team-wide: the budget marker is
  * not a member (F5). */
-export function waitingKindSentence(item: Pick<WaitingItem, "kind" | "parameters" | "text">): string {
+export function waitingKindSentence(item: CardCopy): string {
   const parameters = cardParameters(item.parameters);
+  const deepSeek = olderDeepSeekMember(item, parameters);
+  if (deepSeek) return tr("Member %1 needs a DeepSeek host with Agent Teams support.", deepSeek);
   if (parameters.state === "invalid") return item.text;
   if (parameters.state === "absent" && NAMES_A_MEMBER.has(item.kind)) return item.text;
   // The ledger's internal markers (@budget, @branch) are not member names:

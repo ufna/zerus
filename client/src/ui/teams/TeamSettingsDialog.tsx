@@ -138,7 +138,7 @@ export function TeamSettingsDialog(props: TeamSettingsDialogProps): JSX.Element 
           </label>}</For></div></section>
           <section><h3>{tr("Timers")}</h3><div class="team-settings-grid"><For each={TIMERS}>{(key) => <label>
             <span id={`${title}-${key}-label`}>{numberLabel(key)}</span><TextInput aria-labelledby={`${title}-${key}-label`} type="number" min={0} max={0xffffffff} step={1} disabled={key === "resume_limit_per_hour"} aria-invalid={!!fieldError("timers", key)} aria-describedby={fieldError("timers", key) ? `${title}-${key}-error` : undefined} data-setting={key} value={numbers()[key]} onInput={(event) => editNumber("timers", key, event.currentTarget.value)} />
-            <small class="hint">{key === "resume_limit_per_hour" ? tr("Fixed at 3 per hour") : tr("From %1 to %2", 0, 0xffffffff)}</small>
+            <small class="hint">{key === "resume_limit_per_hour" ? tr("Fixed at 3 per hour") : tr("0 or more")}</small>
             <Show when={fieldError("timers", key)}>{(message) => <small class="danger" role="alert" id={`${title}-${key}-error`}>{message()}</small>}</Show>
           </label>}</For></div></section>
           <section><h3>{tr("Workflow")}</h3>

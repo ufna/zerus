@@ -1047,6 +1047,10 @@ pub(super) fn inspection_with(
     } else {
         read(name)?
     };
+    if archive_id.is_some() && record["backend"] == "dsh" {
+        drop(_guard);
+        return dsh::retirement::inspect(&record, after);
+    }
     if archive_id.is_none() {
         input::acceptance::reconcile_locked(&mut record)?;
     }

@@ -1088,6 +1088,9 @@ fn resume_archive(name: &str, id: &str, dry: bool, scope: Option<&session_action
     // A restore never creates the ID layout in P3a: it is written at its
     // label's path and needs a free label, whatever its archive says.
     let mut archived = archive::read_archive(name, id)?;
+    if archived["backend"] == "dsh" {
+        return dsh::retirement::restore(&archived, dry, scope);
+    }
     let source = archive_source::Source::capture(&archived);
     if let Some(fields) = archived.as_object_mut() {
         fields.remove("layout");

@@ -106,7 +106,7 @@ export function TeamDrawers(props: { kind: TeamDrawer; view: TeamView; busy: boo
         <Match when={props.kind === "feed"}><TeamFeed rows={page().rows} /></Match>
         <Match when={props.kind === "inbox"}><TeamInbox rows={page().rows} busy={busy()} onAction={act} /></Match>
         <Match when={props.kind === "reports"}><TeamReports rows={page().rows} busy={busy()} onAction={act} /></Match>
-        <Match when={props.kind === "cards"}><ProposalCards rows={page().rows} busy={busy()} onAction={act} /></Match>
+        <Match when={props.kind === "cards"}><ProposalCards rows={page().rows} busy={busy()} onAction={act} team={props.view.bar.id} onOpenNode={props.onClose} /></Match>
       </Switch>
       <footer class="team-drawer-actions"><span class="dim">{tr("One page is shown. Refresh reads this page again.")}</span><span class="grow" />
         <Show when={page().after}><button type="button" class="btn small" disabled={read().loading} data-drawer-first onClick={() => model.first()}>{tr("First page")}</button></Show>

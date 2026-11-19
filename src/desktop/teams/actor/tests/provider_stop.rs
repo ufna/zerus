@@ -1,3 +1,5 @@
+mod guards;
+
 use super::real_rows::{self, Production};
 use crate::state::listing_fixture as producer;
 use crate::teams::ops::{tests::*, HandoutOutcome, Operation, StageTaskOutcome, TaskStage};
@@ -464,6 +466,9 @@ fn confirmation_with_another_binding() {
     let cards = h.store.cards(TEAM, 200, None).unwrap().rows;
     assert_eq!(cards.len(), 1);
     assert_eq!(cards[0].state, "open");
+    let (gate, proof) = actor.provider_confirmation(&team, &reviewer).unwrap().unwrap();
+    assert_eq!(proof.binding, old);
+    assert_eq!(proof.card, Some(cards[0].seq));
     publish(
         &ports,
         &hook(
@@ -478,6 +483,19 @@ fn confirmation_with_another_binding() {
         .unwrap();
     assert!(h.store.attempt_holder(TEAM, 21).unwrap().is_none());
     assert_eq!(h.store.cards(TEAM, 200, None).unwrap().rows, cards);
+    assert_eq!(
+        actor.provider_confirmation(&team, &reviewer).unwrap().map(|(row, _)| row),
+        Some(gate),
+        "release discarded another binding's confirmation ledger row"
+    );
+    actor
+        .confirmation_observation(&mut h.store, &team, &reviewer, None, FAILURE + 4_500, |_| {})
+        .unwrap();
+    let recovered = h.store.cards(TEAM, 200, None).unwrap().rows;
+    assert_eq!(recovered.len(), 1);
+    assert_eq!(recovered[0].seq, cards[0].seq);
+    assert_eq!(recovered[0].state, "closed");
+    assert!(actor.provider_confirmation(&team, &reviewer).unwrap().is_none());
 }
 
 fn provider_projection(key: &str, item: &crate::teams::store::InboxItem) {

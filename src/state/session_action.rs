@@ -129,11 +129,21 @@ pub(super) fn summary(record: &Value, live_pane: bool, resumed: &Option<Result<(
     let terminating = terminating::pending(record);
     let changing = record.get("pausing").is_some() || record["resume_pending"] == true;
     let confirmed = !string(record, "conversation_id").is_empty();
-    let recipe = record["base"].is_array() && (Path::new(string(record, "launch_dir")).is_dir() || super::worktree_lifecycle::restorable(record));
+    let native_archive = archived && record["backend"] == "dsh";
+    let recipe = if native_archive {
+        Path::new(string(record, "cwd")).is_dir()
+    } else {
+        record["base"].is_array() && (Path::new(string(record, "launch_dir")).is_dir() || super::worktree_lifecycle::restorable(record))
+    };
     let cleanup_pending = clear_context::cleanup_pending(record);
     let restore_pending = !string(record, "restore_archive_id").is_empty() || cleanup_pending;
-    let restorable =
-        archived && recipe && !cleanup_pending && !record_path(string(record, "name")).exists();
+    let name = string(record, "name");
+    let native_pending = native_archive && dsh::retirement::restore_source_held(record) == Ok(true);
+    let restorable = native_pending || archived && recipe && !cleanup_pending && if native_archive {
+        dsh::retirement::restore_name_busy(name) == Ok(false)
+    } else {
+        !record_path(name).exists()
+    };
     // The restore's own history check decides, through the shared code:
     // one bounded metadata read, only for a Claude or Codex archive that
     // may otherwise restore (zerus-63rru.70). Kimi, DeepSeek and OpenCode
@@ -152,14 +162,14 @@ pub(super) fn summary(record: &Value, live_pane: bool, resumed: &Option<Result<(
             !archived && !live_pane && !changing && confirmed && recipe && !cleanup_pending,
         ),
         ("archive", !archived && !live_pane && !changing && confirmed && !cleanup_pending),
-        ("rename", !changing),
+        ("rename", !changing && !native_pending),
         (
             "fork",
             !changing && fork::summary(record, live_pane)["fork_supported"] == true,
         ),
         ("terminate", !archived),
         ("restore", restorable && conversation),
-        ("forget", !changing && !restore_pending),
+        ("forget", !changing && !restore_pending && !native_pending),
     ];
     let mut allowed = Vec::new();
     let mut reasons = serde_json::Map::new();
@@ -185,7 +195,11 @@ pub(super) fn summary(record: &Value, live_pane: bool, resumed: &Option<Result<(
             );
         }
     }
-    json!({"allowed_actions":allowed,"action_reasons":reasons})
+    let mut result = json!({"allowed_actions":allowed,"action_reasons":reasons});
+    if native_pending {
+        result["restore_pending"] = json!(true);
+    }
+    result
 }
 
 fn validate(request: &Request, name: &str) -> Result<()> {
@@ -299,7 +313,7 @@ fn perform(request: &Request, name: &str, scope: &Scope) -> Result<()> {
     if request.action == "remove_queued" {
         return Err("Only OpenCode sessions have removable queued messages".into());
     }
-    if dsh::exists(name) {
+    if request.archive_id.is_none() && dsh::exists(name) {
         if request.action == "fork" {
             return dsh::fork(name, request.tag.as_deref(), Some(&request.expected_run_id),
                 Some(&request.expected_conversation_id), false, Some(scope)).map(|_| ());
@@ -388,7 +402,11 @@ where
     }
     // zerus-ucck P3c: the request's identities select among sessions that
     // share the label, before anything is claimed.
-    expect(name, &request.expected_run_id, &request.expected_conversation_id)?;
+    if request.archive_id.is_some() && name.starts_with("dsh/") {
+        let _ = session_id::take_deferred(name);
+    } else {
+        expect(name, &request.expected_run_id, &request.expected_conversation_id)?;
+    }
     atomic(path, &receipt(request, name, hash, "claimed").to_string())?;
     let scope = Scope {
         name: name.into(),
