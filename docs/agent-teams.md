@@ -108,7 +108,9 @@ shows everything the template brings, for you to confirm:
 
 - **Roster**: each role and how many members take it.
 - **Pipelines**: each pipeline the team uses, its stages, and who accepts its
-  work: "the lead accepts", "you accept" or "it accepts by itself".
+  work: "the lead accepts", "you accept" or "it accepts by itself". The roles
+  and pipelines are fixed when the team is created; to change them, edit the
+  template first.
 - **Integration**, **Queue**, **Routing** and **Land stage**.
 - **Permissions**: "What the lead and the service may do without you." Each is
   a checkbox that starts as the template sets it; the built-in templates turn
@@ -270,8 +272,11 @@ opening or refreshing a drawer never repeats it.
 
 **Lead chat** uses the selected lead's ordinary composer and its saved draft,
 shared with Activity. The bound computer and session must match, and its run
-and conversation must be available. Sends keep the normal guarded delivery
-and durable request identity; an uncertain delivery is never replayed.
+and conversation must be available. When they are not, Lead chat names the
+cause and its fix: open the lead's session, close an open subagent, start the
+lead's session, or wait for its conversation to load. Sends keep the normal
+guarded delivery and durable request identity; an uncertain delivery is never
+replayed.
 
 **Members** lists each member with its role, what it works on ("Working on
 #%1", "Reviewing #%1", "Testing #%1") and whether its session is linked. The
@@ -324,7 +329,10 @@ for another active member of the same role and a reason; a stage's Reassign
 leaves out the members who implemented any round of its task. **Route**
 selects a role and one of its pipelines for a waiting or pending queue task.
 Routing keeps the dependencies and write paths, and the assignment while the
-role stays the same and the assigned member can still take it. Changing the
+role stays the same and the assigned member can still take it. **Assign to**
+and **Write paths** show the task's current values; changing either sends the
+whole placement, with the task's dependencies, instead. A task whose
+dependencies or write paths could not all be read keeps them, and says so. Changing the
 role, or a removed assigned member, clears the assignment. Both actions use
 the window's native confirmation, which lists what Route keeps and clears;
 the selected desktop service must be updated for Route if it is older. An
@@ -338,7 +346,14 @@ logged plan edit.
 **Add task** opens the New task form in the Tasks side panel with this team
 preselected. If a previous draft is still saving, the team choice waits for
 the reopened form's active editor. A reserved card keeps its original
-destination. Stopped and archived teams offer no Add task.
+destination, role and pipeline. Stopped and archived teams offer no Add task,
+and Add task says why it is unavailable while the task panel shows another
+project. While the team's tab is open, the form also offers its **Role** and
+**Pipeline**; **Template default** leaves the choice to the team's template.
+An older desktop service is asked to update before a role or pipeline is sent.
+
+A task's **Dependencies** can be added as soft: a soft dependency orders the
+work without blocking its start.
 
 On a stopped or archived team's board, a task also shows what the current
 stop recorded: cancellation, release, key clearing, a refusal and its reason,
@@ -370,8 +385,9 @@ desktop service together.
 
 ## Preparing phase drafts
 
-Open **Layers** in the Team tab to read planned phases. **New phase draft**
-creates a proposed phase; **Edit draft** changes its title, barrier and tasks.
+Open **Layers** in the Team tab to read planned phases, one page at a time:
+**More phases** reads the next page and **First page** returns to the first.
+**New phase draft** creates a proposed phase; **Edit draft** changes its title, barrier and tasks.
 Each task has a description, acceptance criteria, pipeline, optional assignee,
 dependencies, write paths and estimate. Layers uses the shared dependency
 projection; opening a task shows its original description and criteria.
@@ -453,7 +469,8 @@ its native account. The member gets its own readable session and worktree throug
 service. Existing members keep their sessions and work.
 
 **Rename team** and **Edit goal** change the team's name and goal. Clearing the
-goal is allowed. A rename keeps existing session, folder and branch names.
+goal is allowed, and a team without a goal can be given one. When the window
+cannot read the complete goal, Edit goal is greyed and says why. A rename keeps existing session, folder and branch names.
 All four edits are yours alone and refuse a stale team revision; reopening the
 form after a refresh shows the current values.
 
@@ -502,7 +519,7 @@ changes nothing else.
 |---|---|
 | **Integration** | The lead accepted a result, and merging it waits for you because Merge accepted work is off. **Approve**: the service merges it and finishes the task. **Reject**: no new merge is authorized; the task stays in review. A merge already recorded is not undone and opens the card below |
 | **Rejected result is merged** | A result reached the integration branch before its Integration card was rejected. The card and the lead's inbox name the task, commit and branch. Rejection did not undo that merge; only a revert on the integration branch removes it |
-| **Work acceptance** | Every stage of a pipeline whose acceptance is yours has passed. **Approve**: the task is accepted, and merged where the team integrates. **Reject**: the task goes to the lead |
+| **Work acceptance** | Every stage of a pipeline whose acceptance is yours has passed. **Open task** comes first: read the report and verdicts beside the task. **Approve**: the task is accepted, and merged where the team integrates. **Reject**: the task goes to the lead |
 | **Member not started** | A member could not be started; the card says why and whether Zerus tries again |
 | **Start not confirmed** | Whether a member started is not known; Zerus checks before it starts anything again |
 | **No room for members** | New members wait until there is room for another session or account |
@@ -894,7 +911,8 @@ merges using the base actually assigned to the reported task generation.
 ### Tests and Builds provider metadata
 
 Team settings can inspect the native-selected project folder and save a
-person-reviewed provider selection. Opening the section and **Check** only read
+person-reviewed provider selection. The team's home computer comes from the
+team list, or else from the team's own status. Opening the section and **Check** only read
 bounded metadata; neither saves a choice nor starts a program. Tests and builds
 remain ordinary member-agent tasks. Direct runners, executable templates,
 validation requests, report import and mandatory gates are unsupported.

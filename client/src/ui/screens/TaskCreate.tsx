@@ -8,7 +8,7 @@ import { requestTaskDescription } from "../../store/taskNavigation";
 import { Icon } from "../lib/icons";
 import { tr } from "../../i18n";
 import { Dropdown } from "../lib/Dropdown";
-import { TeamChip } from "../teams/TeamChips";
+import { roleLabel, TeamChip } from "../teams/TeamChips";
 import { teams } from "../../store/teams";
 import { teamTaskCreation, setTeamTaskCreation } from "../../store/taskCreation";
 
@@ -17,6 +17,10 @@ export default function TaskCreate(props: { project?: string; scope: string; bac
   const [creating, setCreating] = createSignal(false);
   /** The team chosen in this form, for this project only. */
   const [team, setTeam] = createSignal("");
+  /** The role and pipeline for the chosen team's new card; "" is the template's default (zerus-63rru.199 B4). */
+  const [role, setRole] = createSignal("");
+  const [pipeline, setPipeline] = createSignal("");
+  createEffect(on(team, () => { setRole(""); setPipeline(""); }, { defer: true }));
   const [refusal, setRefusal] = createSignal("");
   /** A card the command line created and the team's queue did not take: the
    * task exists, so the way on is Send to team for that task, never a new card. */
@@ -54,6 +58,13 @@ export default function TaskCreate(props: { project?: string; scope: string; bac
     setCreating(true); setTeam(view()?.recovery ? "" : request.team); setRefusal("");
     setTeamTaskCreation(undefined);
   });
+  /** The chosen team's routing choices, known only while its Team tab shows it. */
+  const routing = createMemo(() => {
+    const chosen = team(), open = teams.team?.();
+    return chosen && open?.bar.id === chosen && open.routing_pipelines?.length ? open.routing_pipelines : undefined;
+  });
+  const roles = createMemo(() => [...new Set((routing() ?? []).map((choice) => choice.role))]);
+  const pipelines = createMemo(() => (routing() ?? []).filter((choice) => choice.role === role()));
   /** A reserved card keeps the destination it was reserved with. */
   const reserved = () => view()?.recovery ? view()?.team ?? "" : undefined;
   const reservedName = () => teamChoices().find((candidate) => candidate.id === reserved())?.label ?? reserved() ?? "";
@@ -70,7 +81,8 @@ export default function TaskCreate(props: { project?: string; scope: string; bac
     }
     setRefusal(""); recovery.dismiss();
     const name = teamChoices().find((candidate) => candidate.id === chosen)?.label ?? chosen;
-    if (await createCard(project, chosen ? false : props.backlog, selected(), chosen || undefined)) {
+    const route = chosen && routing() && role() ? { role: role(), ...(pipeline() ? { pipeline: pipeline() } : {}) } : undefined;
+    if (await (route ? createCard(project, false, selected(), chosen, route) : createCard(project, chosen ? false : props.backlog, selected(), chosen || undefined))) {
       // The answer settles this submit only: its project's card, and the team
       // choice it sent, never one the person made meanwhile.
       setCreating(false); if (team() === chosen) setTeam("");
@@ -90,6 +102,15 @@ export default function TaskCreate(props: { project?: string; scope: string; bac
     </Show><Show when={creating() && reserved() === undefined && teamChoices().length}>
       <Dropdown class="field tk-team" aria-label={tr("Team")} title={tr("Send the new task to a team's queue")}
         value={team()} onChange={(value) => { setTeam(value); setRefusal(""); }} options={[{ value: "", label: tr("No team") }, ...teamChoices().map((candidate) => ({ value: candidate.id, textValue: candidate.label, label: () => <TeamChip name={candidate.label} /> }))]} />
+    </Show><Show when={creating() && reserved() === undefined && routing()}>
+      <select class="field tk-team-role" data-new-task-role aria-label={tr("Role")} value={role()} onChange={(event) => { setRole(event.currentTarget.value); setPipeline(""); }}>
+        <option value="" selected={!role()}>{tr("Template default")}</option>
+        <For each={roles()}>{(id) => <option value={id} selected={id === role()}>{roleLabel(id) !== id ? roleLabel(id) : id}</option>}</For>
+      </select>
+      <select class="field tk-team-pipeline" data-new-task-pipeline aria-label={tr("Pipeline")} value={pipeline()} disabled={!role()} onChange={(event) => setPipeline(event.currentTarget.value)}>
+        <option value="" selected={!pipeline()}>{tr("Template default")}</option>
+        <For each={pipelines()}>{(choice) => <option value={choice.id} selected={choice.id === pipeline()}>{choice.name || choice.id}</option>}</For>
+      </select>
     </Show><button class="tk-sq add" aria-label={tr("New task")} title={tr("New task")} disabled={!props.project || !props.accessible} onClick={() => { setCreating(true); queueMicrotask(() => field?.focus()); }}><Icon name="plus" size={16} /></button>{props.children}</div>
     <Show when={(refusal() || newCard.error()) && creating()}><div class="tk-create-error" role="alert">{refusal() || newCard.error()}</div></Show>
     <Show when={recovery.notice()?.project === props.project ? recovery.notice() : undefined}>{(created) => <div class="tk-create-error" role="alert" data-not-queued>

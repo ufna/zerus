@@ -64,6 +64,11 @@ export interface TeamCard {
   holder?: string | null;
   /** The kind of the decision that has not settled, when one is pending. */
   pending_decision?: string | null;
+  /** Files or folders the task may change; absent when it names none (zerus-63rru.199 B3). */
+  writes?: string[];
+  /** The core could not read every dependency or write path of this row, so
+   * the window never sends a placement that would drop one (zerus-63rru.199 B3). */
+  fields_incomplete?: boolean;
   /** The pending decision has not started and a new Return, Reassign or
    * Cancel replaces it; absent (an older hgs) reads as false. */
   pending_replaceable?: boolean;
@@ -76,6 +81,8 @@ export interface TeamGroup { state: string; cards: TeamCard[] }
 export interface TeamBar {
   id: string; project: string; name: string; status: string; goal: string; lead: string;
   integration_branch: string; base_commit: string; revision: number; counts: TeamCounts;
+  /** The computer the team lives on, from its status (zerus-63rru.199 C10); absent on an older read. */
+  home?: string;
 }
 export interface TeamView {
   planning?: { known: boolean; paused: boolean; goal: string } | null;
