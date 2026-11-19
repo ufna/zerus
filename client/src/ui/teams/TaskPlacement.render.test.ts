@@ -137,17 +137,99 @@ it("uses only pipelines for the chosen pinned role and checks the original after
   expect(calls()).toHaveLength(1);
 });
 
-it("keeps an open Route bound to the displayed revision and refuses its stale submit", async () => {
+// zerus-3u5yu (7), review of #2548 P2-1: an open form stays open across another
+// team write (here the product's Hold of the same task) and keeps its choices,
+// but it is bound to the revision the person reviewed. A newer revision marks
+// it stale; nothing is sent until Review again binds the current revision.
+// The first three tests are the reviewer's probes, adopted unchanged.
+it("review2548 a Route draft from another revision is refused before transport", async () => {
+  const host = await open(boardFixture.pending);
+  button(host, "route").click();
+  const form = host.querySelector<HTMLFormElement>('[data-placement-form="route"]')!;
+  const after = boardFixture.after as unknown as TeamView;
+  expect(after.revision).not.toBe(view.revision);
+  publish(after);
+  expect(host.querySelector('[data-placement-form="route"]')).toBe(form);
+  form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+  if (calls().length) {
+    console.log(JSON.stringify({ opening: view.revision, displayed: after.revision, submitted: calls()[0][1].call.expected_revision }));
+  }
+  expect(calls()).toHaveLength(0);
+});
+
+it("shows a selected old-service Route refusal to the person", async () => {
+  const host = await open(boardFixture.pending);
+  button(host, "route").click();
+  const form = host.querySelector<HTMLFormElement>('[data-placement-form="route"]')!;
+  const detail = "Update the selected desktop service to route or reassign tasks from this window.";
+  transport.invoke.mockImplementation(async (command: string, payload?: { call: TeamCall }) =>
+    command === "team_action" ? { outcome: "failed", code: "person_gesture_required", detail, request_id: payload!.call.request_id } : undefined);
+  form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+  await vi.waitFor(() => expect(host.querySelector("[data-team-action-failure-message]")?.textContent).toBe(detail));
+  expect(host.querySelector("[data-team-action-failure-action]")?.textContent).toBe("Route");
+  expect(host.querySelector("[data-team-action-failure]")?.getAttribute("role")).toBe("alert");
+  expect(calls()).toHaveLength(1);
+  console.log(JSON.stringify({ alert: detail, sends: calls().length }));
+});
+
+it("refuses submitting a Reassign draft after the team revision changes", async () => {
+  const host = await open(boardFixture.reported);
+  button(host, "reassign").click();
+  const form = host.querySelector<HTMLFormElement>('[data-placement-form="reassign"]')!;
+  choose(form.querySelector("select")!, "m2");
+  const reason = form.querySelector<HTMLInputElement>("input")!;
+  reason.value = "Continue with the replacement";
+  reason.dispatchEvent(new Event("input", { bubbles: true }));
+  const after = boardFixture.after as unknown as TeamView;
+  expect(after.revision).not.toBe(view.revision);
+  publish(after);
+  expect(host.querySelector('[data-placement-form="reassign"]')).toBe(form);
+  form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+  console.log(JSON.stringify({ opening: view.revision, displayed: after.revision, submitted: calls()[0]?.[1].call.expected_revision }));
+  expect(calls()).toHaveLength(0);
+});
+
+it("sends the reviewed revision, and Review again binds a stale Route to the current one with its choices kept", async () => {
   const host = await open(boardFixture.pending);
   button(host, "route").click();
   const form = host.querySelector<HTMLFormElement>('[data-placement-form="route"]')!;
   const submit = form.querySelector<HTMLButtonElement>('[type="submit"]')!;
+  const [role, pipeline] = [...form.querySelectorAll("select")].map((select) => select.value);
   expect(submit.disabled).toBe(false);
-  publish(boardFixture.after as unknown as TeamView);
+  expect(form.querySelector("[data-placement-review-again]")).toBeNull();
+  const after = boardFixture.after as unknown as TeamView;
+  publish(after);
+  expect(host.querySelector('[data-placement-form="route"]')).toBe(form);
   expect(submit.disabled).toBe(true);
-  expect(form.textContent).toContain("The team changed. Close this form and open it again.");
+  expect(form.textContent).toContain("The team changed after you opened this form. Review the choices, then use Review again.");
+  form.querySelector<HTMLButtonElement>("[data-placement-review-again]")!.click();
+  expect(form.querySelector("[data-placement-review-again]")).toBeNull();
+  expect(submit.disabled).toBe(false);
+  expect([...form.querySelectorAll("select")].map((select) => select.value)).toEqual([role, pipeline]);
   form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
-  expect(calls()).toHaveLength(0);
+  await vi.waitFor(() => expect(calls()).toHaveLength(1));
+  expect(calls()[0][1].call).toMatchObject({ expected_revision: after.revision,
+    action: { kind: "route", node: boardFixture.pending, role, pipeline, keep_task_fields: true } });
+});
+
+it("keeps showing the chosen member after another write, and Review again sends it with the current revision", async () => {
+  const host = await open(boardFixture.reported);
+  button(host, "reassign").click();
+  const form = host.querySelector<HTMLFormElement>('[data-placement-form="reassign"]')!;
+  choose(form.querySelector("select")!, "m2");
+  const reason = form.querySelector<HTMLInputElement>("input")!;
+  reason.value = "Continue with the replacement";
+  reason.dispatchEvent(new Event("input", { bubbles: true }));
+  const after = boardFixture.after as unknown as TeamView;
+  publish(after);
+  expect(form.querySelector("select")!.value).toBe("m2");
+  expect(form.querySelector<HTMLButtonElement>('[type="submit"]')!.disabled).toBe(true);
+  form.querySelector<HTMLButtonElement>("[data-placement-review-again]")!.click();
+  expect(form.querySelector("select")!.value).toBe("m2");
+  form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+  await vi.waitFor(() => expect(calls()).toHaveLength(1));
+  expect(calls()[0][1].call).toMatchObject({ expected_revision: after.revision,
+    action: { kind: "reassign", node: boardFixture.reported, member: "m2", reason: "Continue with the replacement" } });
 });
 
 it("renders the disabled action and its reason in Russian", async () => {

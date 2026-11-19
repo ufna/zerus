@@ -79,6 +79,7 @@ pub(crate) const USAGE: &str = r#"usage: hgs [@host] <cmd> [project] [-c [ID]] [
        Desktop deferred answer ABI: desktop-deferred-answer-v1
        Desktop Teams Person ABI: desktop-team-person-v1
        Desktop Teams Person actions ABI: desktop-team-person-actions-v2
+       Desktop Teams Person placement fields: desktop-team-person-placement-v1
        Desktop deferred answer update phase: desktop-deferred-answer-update-phase-v1
        Desktop deferred compact to send ABI: desktop-deferred-compact-to-send-v1
        Desktop deferred session resume ABI: desktop-deferred-session-resume-v1
@@ -552,6 +553,7 @@ fn unix_only_usage(line: &str) -> bool {
         zerus_client_core::desktop::deferred_answer::HELP_MARKER,
         zerus_client_core::desktop::team_person::HELP_MARKER,
         zerus_client_core::desktop::team_person_actions::HELP_MARKER,
+        zerus_client_core::desktop::team_person_actions::PLACEMENT_MARKER,
         zerus_client_core::desktop::deferred_answer::UPDATE_PHASE_MARKER,
         zerus_client_core::desktop::compact_to_send::HELP_MARKER,
         zerus_client_core::desktop::session_resume::HELP_MARKER,
@@ -2561,6 +2563,7 @@ fn local_json_archives_with(
     })
     .map_err(|error| match error.downcast::<Error>() {
         Ok(error) => error,
+        Err(error) if ordinary.is_some() => Error::new(1, state::listing_public_error(&error)),
         Err(error) => Error::new(1, error.to_string()),
     })
 }
@@ -4545,6 +4548,14 @@ mod tests {
         assert!(resume_stands(1, 0, 5, true));
     }
 
+    /// zerus-3u5yu (3): the service says it resolves a window Route's kept
+    /// fields, so an older one can be told apart before a plan is staged.
+    #[test]
+    fn usage_advertises_the_team_placement_marker() {
+        let marker = zerus_client_core::desktop::team_person_actions::PLACEMENT_MARKER;
+        assert!(USAGE.lines().any(|line| line.trim() == marker));
+    }
+
     #[test]
     fn usage_names_tmux_only_where_it_hosts_the_sessions() {
         // Unix keeps tmux's text byte for byte, capability markers included.
@@ -4654,6 +4665,10 @@ mod tests {
                 )
                 .replace(
                     "       Desktop Teams Person actions ABI: desktop-team-person-actions-v2\n",
+                    ""
+                )
+                .replace(
+                    "       Desktop Teams Person placement fields: desktop-team-person-placement-v1\n",
                     ""
                 )
                 .replace(

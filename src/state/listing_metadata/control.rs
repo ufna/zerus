@@ -111,8 +111,12 @@ pub(super) fn status_at(root: &Path) -> Value {
             .unwrap()
             .extend(status.as_object().unwrap().clone()),
         Err(error) => {
-            value["state"] = json!("unavailable");
-            value["reason"] = json!(error.to_string());
+            value["state"] = json!(if error.is::<PublicationPending>() {
+                "building"
+            } else {
+                "unavailable"
+            });
+            value["reason"] = json!(public_index_error(&error));
         }
     }
     value

@@ -164,7 +164,7 @@ pub(in crate::state) fn entry() -> Result<i32> {
                     let busy = sqlite_busy(&error);
                     if last_state != "unavailable" || !busy {
                         gap(&root.path);
-                        status(&root.path, "unavailable", &error.to_string());
+                        status(&root.path, "unavailable", &public_index_error(&error));
                     }
                     last_state = "unavailable".into();
                     work = None;

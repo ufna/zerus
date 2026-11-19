@@ -167,3 +167,144 @@ fn native_placement_reassign_refuses_a_stale_revision_and_records_the_reason_on_
         "The replacement has the needed context."
     );
 }
+
+/// zerus-3u5yu (1), adopted from the #2527 review probe: the native
+/// confirmation of a window Route shows what the service binds. The kept
+/// dependencies and write paths, and an assignment the role change clears,
+/// are named in the details the person confirms.
+#[test]
+fn a_role_changing_route_shows_the_kept_fields_and_the_cleared_assignee() {
+    let mut h = Harness::empty();
+    let mut create = create();
+    let ops::Operation::Create { bundle, .. } = &mut create else {
+        unreachable!()
+    };
+    let mut alternate = bundle.pipelines[0].clone();
+    alternate.id = "analysis".into();
+    alternate.implementer = "reviewer".into();
+    alternate.stages.clear();
+    bundle.pipelines.push(alternate);
+    h.run(&person(), create).unwrap();
+    let (mut h, mut runtime, _, _owner) = sample_for(h);
+    h.bind("m1");
+    let prerequisite = h.add(&person(), 1);
+    let node = h.add(&person(), 2);
+    h.run(
+        &person(),
+        ops::Operation::Route {
+            node,
+            role: "developer".into(),
+            pipeline: "reviewed".into(),
+            deps: vec![Dep {
+                node: prerequisite,
+                kind: DepKind::Soft,
+            }],
+            writes: vec!["src/example.rs".into()],
+            assignee: Some("m1".into()),
+        },
+    )
+    .unwrap();
+    let changed = plan(&h, route(node, "reviewer", "analysis"));
+    let reviewed = review(&mut runtime, &changed);
+    let detail = |key: &str| {
+        reviewed
+            .details
+            .iter()
+            .filter(|(name, _)| name.starts_with(key))
+            .map(|(_, value)| value.as_str())
+            .collect::<Vec<_>>()
+            .join("")
+    };
+    assert_eq!(detail("assignee"), "m1 → none", "{:?}", reviewed.details);
+    assert!(
+        detail("deps").contains(&prerequisite.to_string()),
+        "{:?}",
+        reviewed.details
+    );
+    assert!(
+        detail("writes").contains("src/example.rs"),
+        "{:?}",
+        reviewed.details
+    );
+    let result = execute(&mut runtime, reviewed.intent);
+    assert_eq!(result["ok"], true, "{result}");
+    assert_eq!(h.node(node).assignee, None);
+}
+
+/// zerus-3u5yu (2), adopted from the #2527 review probe: a same-role window
+/// Route of a task whose assignee was removed is not refused for that
+/// assignee. The removed member is not bound again; the dialog says the
+/// assignment is cleared, and the Route succeeds with no assignee.
+#[test]
+fn a_same_role_route_after_the_assignee_was_removed_clears_it_and_says_so() {
+    let (mut h, mut runtime, _, _owner) = sample();
+    h.bind("m1");
+    h.bind("m2");
+    let node = h.add(&person(), 1);
+    h.run(
+        &person(),
+        ops::Operation::Route {
+            node,
+            role: "developer".into(),
+            pipeline: "reviewed".into(),
+            deps: vec![],
+            writes: vec![],
+            assignee: Some("m1".into()),
+        },
+    )
+    .unwrap();
+    h.run(
+        &person(),
+        ops::Operation::ArchiveMember {
+            member: "m1".into(),
+        },
+    )
+    .unwrap();
+    assert_eq!(h.node(node).assignee.as_deref(), Some("m1"));
+    let same = plan(&h, route(node, "developer", "reviewed"));
+    let reviewed = review(&mut runtime, &same);
+    let assignee: Vec<_> = reviewed
+        .details
+        .iter()
+        .filter(|(name, _)| name.starts_with("assignee"))
+        .map(|(_, value)| value.clone())
+        .collect();
+    assert_eq!(assignee, ["m1 → none"], "{:?}", reviewed.details);
+    let result = execute(&mut runtime, reviewed.intent);
+    assert_eq!(result["ok"], true, "{result}");
+    assert_eq!(h.node(node).assignee, None);
+    assert_eq!(h.node(node).role, "developer");
+}
+
+/// A same-role Route keeps an assignee who can still take the task, and the
+/// dialog names it as kept.
+#[test]
+fn a_same_role_route_keeps_an_active_assignee_and_names_it() {
+    let (mut h, mut runtime, _, _owner) = sample();
+    h.bind("m1");
+    let node = h.add(&person(), 1);
+    h.run(
+        &person(),
+        ops::Operation::Route {
+            node,
+            role: "developer".into(),
+            pipeline: "reviewed".into(),
+            deps: vec![],
+            writes: vec![],
+            assignee: Some("m1".into()),
+        },
+    )
+    .unwrap();
+    let same = plan(&h, route(node, "developer", "reviewed"));
+    let reviewed = review(&mut runtime, &same);
+    let assignee: Vec<_> = reviewed
+        .details
+        .iter()
+        .filter(|(name, _)| name.starts_with("assignee"))
+        .map(|(_, value)| value.clone())
+        .collect();
+    assert_eq!(assignee, ["m1"], "{:?}", reviewed.details);
+    let result = execute(&mut runtime, reviewed.intent);
+    assert_eq!(result["ok"], true, "{result}");
+    assert_eq!(h.node(node).assignee.as_deref(), Some("m1"));
+}

@@ -89,6 +89,7 @@ mod process_index;
 mod listing_metadata;
 pub(crate) use listing_metadata::control::MARKER as LISTING_METADATA_MARKER;
 pub(crate) use listing_metadata::listing::retry as retry_ordinary_listing;
+pub(crate) use listing_metadata::public_index_error as listing_public_error;
 pub(crate) use listing_metadata::listing::Query as ListingQuery;
 pub(crate) fn display_name(row: &Value) -> &str {
     string(row, "name")

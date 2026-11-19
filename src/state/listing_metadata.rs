@@ -29,6 +29,9 @@ use store::Store;
 #[derive(Debug)]
 struct PublicationPending(&'static str);
 
+const INDEX_BUILDING: PublicationPending =
+    PublicationPending("The session listing index is still being built. Try again shortly.");
+
 impl std::fmt::Display for PublicationPending {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(self.0)
@@ -75,6 +78,16 @@ fn enabled(root: &Path) -> bool {
 
 fn checked<T>(value: Result<T>) -> anyhow::Result<T> {
     value.map_err(anyhow::Error::msg)
+}
+
+pub(crate) fn public_index_error(error: &anyhow::Error) -> String {
+    if sqlite_busy(error) {
+        "The session listing is busy. Try again shortly.".into()
+    } else if error.is::<rusqlite::Error>() {
+        "The session listing index cannot be read. Try again shortly.".into()
+    } else {
+        error.to_string()
+    }
 }
 
 fn gap(root: &Path) {

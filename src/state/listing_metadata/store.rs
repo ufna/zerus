@@ -8,6 +8,9 @@ fn wal_budget(dir: &Directory) -> anyhow::Result<()> {
     }
     Ok(())
 }
+fn index_file(dir: &Directory) -> anyhow::Result<File> {
+    checked(dir.read_private_optional("index.sqlite3"))?.ok_or_else(|| INDEX_BUILDING.into())
+}
 pub(super) struct Store {
     pub db: Connection,
     pub root: Directory,
@@ -125,16 +128,25 @@ impl Store {
     /// A pinned reader never takes the advisory writer gate or initializes
     /// schema. WAL readers cannot force ordinary publishers to lose coverage.
     pub(super) fn read(path: &Path) -> anyhow::Result<Self> {
+        Self::read_with_busy_timeout(path, Duration::ZERO)
+    }
+
+    pub(super) fn read_listing(path: &Path) -> anyhow::Result<Self> {
+        // SQLite can briefly hold an exclusive lock during WAL recovery.
+        // Give the foreground admission read time to obtain its snapshot.
+        Self::read_with_busy_timeout(path, Duration::from_millis(100))
+    }
+
+    fn read_with_busy_timeout(path: &Path, timeout: Duration) -> anyhow::Result<Self> {
         anyhow::ensure!(enabled(path), "Display index is disabled");
         let root = checked(Directory::open(&crate::platform::canonical(path)?))?;
         let dir = checked(root.child("listing-metadata"))?;
         wal_budget(&dir)?;
-        let file = checked(dir.read_private_optional("index.sqlite3"))?
-            .ok_or(PublicationPending("Listing metadata is still rebuilding"))?;
+        let file = index_file(&dir)?;
         // Leave the empty database to its creator. A SQLite reader can hold
         // a lock which prevents that writer from first switching to WAL.
         if file.metadata()?.len() == 0 {
-            return Err(PublicationPending("Listing metadata is still rebuilding").into());
+            return Err(INDEX_BUILDING.into());
         }
         let db = Connection::open_with_flags(
             dir.path.join("index.sqlite3"),
@@ -142,17 +154,31 @@ impl Store {
                 | OpenFlags::SQLITE_OPEN_NO_MUTEX
                 | OpenFlags::SQLITE_OPEN_NOFOLLOW,
         )?;
-        db.busy_timeout(Duration::ZERO)?;
+        db.busy_timeout(timeout)?;
         db.execute_batch("BEGIN DEFERRED")?;
         let version: i64 = db.query_row("PRAGMA user_version", [], |r| r.get(0))?;
-        if version == 0 {
-            return Err(PublicationPending("Listing metadata is still rebuilding").into());
+        if matches!(version, 0..=2) {
+            return Err(INDEX_BUILDING.into());
         }
-        anyhow::ensure!(version == 3, "Display snapshot requires metadata repair");
-        let identity: String =
-            db.query_row("SELECT root FROM meta WHERE id=1 AND version=1", [], |r| {
-                r.get(0)
-            })?;
+        anyhow::ensure!(
+            version == 3,
+            "The session listing index uses an unsupported format."
+        );
+        let identity: String = match db.query_row(
+            "SELECT root FROM meta WHERE id=1 AND version=1",
+            [],
+            |row| row.get(0),
+        ) {
+            // An older publisher could write user_version before committing
+            // the schema or root row. The worker can rebuild that cache.
+            Err(rusqlite::Error::QueryReturnedNoRows) => return Err(INDEX_BUILDING.into()),
+            Err(rusqlite::Error::SqliteFailure(_, Some(message)))
+                if message == "no such table: meta" =>
+            {
+                return Err(INDEX_BUILDING.into());
+            }
+            result => result?,
+        };
         anyhow::ensure!(
             identity == serde_json::to_string(&checked(root.object())?)?,
             "Display root/store identity changed"
@@ -177,7 +203,7 @@ impl Store {
             );
         }
         checked(self.dir.verify())?;
-        let current = checked(self.dir.read_private("index.sqlite3"))?;
+        let current = index_file(&self.dir)?;
         let at = crate::platform::FileIdentity::of(&current)?;
         anyhow::ensure!(
             self.object()? == (at.device, at.inode),

@@ -55,6 +55,8 @@ export interface TeamCard {
   deps?: TeamDependency[]; phase?: number | null; origin?: number | null; layer?: number | null;
   node: number; title: string; state: string; task: TeamTaskRef | null; role: string; pipeline: string;
   assignee: string; implementer: string; rank: string; round: number; held: boolean; admitted: boolean;
+  /** For a stage card, its target's earlier implementers, whom its Reassign refuses (zerus-3u5yu). */
+  earlier_implementers?: string[];
   integrated: boolean; decided_by: string; stages: TeamStage[];
   kind?: "task" | "stage" | null; rounds?: number | null;
   /** Who holds the attempt (the holder the store's decisions use): null when
