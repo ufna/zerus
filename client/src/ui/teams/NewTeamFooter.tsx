@@ -23,7 +23,8 @@ export function NewTeamFooter(props: NewTeamFooterProps) {
   return (
     <footer class="nt-foot" data-new-team-footer>
       <Show when={props.error}>
-        <div class="notice danger nt-blocker" role="alert" data-create-error>
+        {/* Focusable, so a refusal longer than its box scrolls from the keyboard too. */}
+        <div class="notice danger nt-blocker" role="alert" tabindex="0" data-create-error>
           <b>{tr("New team did not go through:")}</b> <span>{props.error}</span>
         </div>
       </Show>
