@@ -625,6 +625,46 @@ mod tests {
         super::consumed(rows, agent, pending, text, None).map(|(at, _)| at)
     }
     #[test]
+    fn codex_native_delivery_needs_its_own_user_row_of_exactly_the_text_after_the_send() {
+        // zerus-46l1q S1-1: the held rollout, not a hook, proves delivery.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("rollout.jsonl");
+        let rows = |text: &str, at: &str| {
+            [
+                json!({"type":"session_meta","payload":{"id":"conversation-1"}}),
+                json!({"type":"event_msg","timestamp":"1970-01-01T00:00:10.500Z","payload":{"type":"task_started","turn_id":"turn-1"}}),
+                json!({"timestamp":at,"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":text}]}}),
+            ]
+            .iter()
+            .map(|row| format!("{row}\n"))
+            .collect::<String>()
+        };
+        let record = json!({"agent":"codex","conversation_id":"conversation-1",
+            "transcript":path,"input_pending_at":10.0});
+        let receipt = json!({"submitted_text":"hold the cutover"});
+        fs::write(&path, rows("hold the cutover", "1970-01-01T00:00:11Z")).unwrap();
+        assert!(native_delivery(&record, &receipt));
+        // Another text, a row before the send, another conversation or no
+        // readable rollout prove nothing.
+        fs::write(&path, rows("hold the cutover now", "1970-01-01T00:00:11Z")).unwrap();
+        assert!(!native_delivery(&record, &receipt));
+        fs::write(&path, rows("hold the cutover", "1970-01-01T00:00:11Z")).unwrap();
+        let mut late = record.clone();
+        late["input_pending_at"] = json!(12.0);
+        assert!(!native_delivery(&late, &receipt));
+        let mut other = record.clone();
+        other["conversation_id"] = json!("conversation-2");
+        assert!(!native_delivery(&other, &receipt));
+        let mut missing = record.clone();
+        missing["transcript"] = json!(dir.path().join("absent.jsonl"));
+        assert!(!native_delivery(&missing, &receipt));
+        // A Claude record never takes this route.
+        let mut claude = record.clone();
+        claude["agent"] = json!("claude");
+        assert!(!native_delivery(&claude, &receipt));
+    }
+
+    #[test]
     fn native_hook_text_accepts_only_the_complete_native_input() {
         let kimi = json!({"prompt":[{"type":"text","text":"literal"}]});
         assert_eq!(hook_text("kimi", &kimi), Some("literal"));

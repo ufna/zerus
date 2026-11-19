@@ -133,8 +133,11 @@ a full ledger (4096 marks) and macOS, which refuses every deferred send
 original, write none. The Claude, Codex or Kimi prompt hook that reports exactly
 that receipt's text, after it was sent and outside any running tool call, starts
 the person turn; one message starts at most one, within twelve hours of its
-admission. Any later prompt of the main agent, any input receipt, an agent's
-answer, a session start, a run or conversation change, or twelve hours end it.
+admission. Any later prompt of the main agent, any input receipt, any answer
+delivered into the session, a run or conversation change, or twelve hours end
+it. It grants nothing until the native agent itself shows it accepted exactly
+that send: Claude's own transcript or queue record seen by the send writer, or
+the exact user input in the Codex or Kimi native source.
 Each command proves it again from the live record, the mark and the receipt;
 the mark is read only from the store of its own configuration, so a copied or
 redirected state folder carries none. Nothing is exported to an environment

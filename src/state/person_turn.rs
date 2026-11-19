@@ -430,6 +430,36 @@ mod tests {
     }
 
     #[test]
+    fn claude_delivery_is_only_claudes_own_record_of_a_submitted_send() {
+        let record = json!({"agent": "claude"});
+        let receipt = |status: &str, native: Value| json!({"status": status, "native": native});
+        assert!(delivered(
+            &record,
+            &receipt("submitted", json!("transcript"))
+        ));
+        assert!(delivered(&record, &receipt("submitted", json!("queue"))));
+        // An emptied composer, an uncertain or unfinished send, or no proof
+        // grant nothing.
+        assert!(!delivered(
+            &record,
+            &receipt("submitted", json!("composer"))
+        ));
+        assert!(!delivered(&record, &receipt("submitted", Value::Null)));
+        assert!(!delivered(
+            &record,
+            &receipt("in_progress", json!("transcript"))
+        ));
+        assert!(!delivered(
+            &record,
+            &receipt("uncertain", json!("transcript"))
+        ));
+        assert!(!delivered(
+            &json!({"agent": "opencode"}),
+            &receipt("submitted", json!("transcript"))
+        ));
+    }
+
+    #[test]
     fn only_a_single_text_part_is_a_kimi_prompt() {
         let one = json!({"prompt":[{"type":"text","text":"exact"}]});
         assert_eq!(prompt_text("kimi", &one), Some("exact"));
