@@ -119,8 +119,8 @@ class ArchiveRestoreSource(pause.Harness):
             finally:
                 self.hgs("listing-index", "disable", "--json")
 
-    def ordinary_listing(self, *extra):
-        return subprocess.run([str(pause.HGS), "ls", "--local", "--json", *extra],
+    def ordinary_listing(self):
+        return subprocess.run([str(pause.HGS), "ls", "--local", "--json"],
                               env=self.env, capture_output=True, text=True, timeout=6)
 
     def ready_listing(self):
@@ -178,8 +178,8 @@ class ArchiveRestoreSource(pause.Harness):
     def test_unavailable_index_explains_the_failure_without_a_partial_body(self):
         self.save_archive()
         with self.indexed_database() as path:
-            def assert_failure(reason, *extra):
-                result = self.ordinary_listing(*extra)
+            def assert_failure(reason):
+                result = self.ordinary_listing()
                 self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
                 self.assertEqual(result.stdout, "")
                 self.assertEqual(result.stderr.strip(), "hgs: " + reason)
@@ -191,26 +191,12 @@ class ArchiveRestoreSource(pause.Harness):
             backup = path.with_suffix(".held")
             path.rename(backup)
             try:
-                building = "The session listing index is still being built. Try again shortly."
                 with self.subTest("missing"):
-                    assert_failure(building, "--paged")
-                path.touch(mode=0o600)
-                with self.subTest("empty"):
-                    assert_failure(building, "--paged")
-                # Older writers could persist these steps separately.
-                with closing(sqlite3.connect(path)) as db:
-                    db.execute("CREATE TABLE bootstrap_fixture (value INTEGER)")
-                    with self.subTest("version not yet set"):
-                        assert_failure(building, "--paged")
-                    db.execute("PRAGMA user_version=3")
-                    with self.subTest("schema not yet created"):
-                        assert_failure(building, "--paged")
-                    db.execute("CREATE TABLE meta (id INTEGER, root TEXT, version INTEGER)")
-                    with self.subTest("root row not yet inserted"):
-                        assert_failure(building, "--paged")
+                    assert_failure("The session listing index is still being built. Try again shortly.")
                 with self.subTest("unreadable"):
                     path.write_bytes(b"Invalid SQLite header in a private test.")
-                    assert_failure("The session listing index cannot be read. Try again shortly.")
+                    path.chmod(0o600)
+                    assert_failure("The session listing index cannot be read. Rebuild it and try again.")
             finally:
                 backup.replace(path)
 

@@ -32,7 +32,7 @@ impl Store {
         )?;
         let generation = cursor.map_or(active, |c| c.generation);
         if generation <= 0 {
-            return Err(INDEX_BUILDING.into());
+            return Err(PublicationPending("Listing metadata is still rebuilding").into());
         }
         if let Some(c) = cursor {
             anyhow::ensure!(

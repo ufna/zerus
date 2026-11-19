@@ -9,7 +9,9 @@ fn wal_budget(dir: &Directory) -> anyhow::Result<()> {
     Ok(())
 }
 fn index_file(dir: &Directory) -> anyhow::Result<File> {
-    checked(dir.read_private_optional("index.sqlite3"))?.ok_or_else(|| INDEX_BUILDING.into())
+    checked(dir.read_private_optional("index.sqlite3"))?.ok_or_else(|| {
+        PublicationPending("The session listing index is still being built. Try again shortly.").into()
+    })
 }
 pub(super) struct Store {
     pub db: Connection,
@@ -146,7 +148,7 @@ impl Store {
         // Leave the empty database to its creator. A SQLite reader can hold
         // a lock which prevents that writer from first switching to WAL.
         if file.metadata()?.len() == 0 {
-            return Err(INDEX_BUILDING.into());
+            return Err(PublicationPending("The session listing index is still being built. Try again shortly.").into());
         }
         let db = Connection::open_with_flags(
             dir.path.join("index.sqlite3"),
@@ -157,28 +159,14 @@ impl Store {
         db.busy_timeout(timeout)?;
         db.execute_batch("BEGIN DEFERRED")?;
         let version: i64 = db.query_row("PRAGMA user_version", [], |r| r.get(0))?;
-        if matches!(version, 0..=2) {
-            return Err(INDEX_BUILDING.into());
+        if version == 0 {
+            return Err(PublicationPending("Listing metadata is still rebuilding").into());
         }
-        anyhow::ensure!(
-            version == 3,
-            "The session listing index uses an unsupported format."
-        );
-        let identity: String = match db.query_row(
-            "SELECT root FROM meta WHERE id=1 AND version=1",
-            [],
-            |row| row.get(0),
-        ) {
-            // An older publisher could write user_version before committing
-            // the schema or root row. The worker can rebuild that cache.
-            Err(rusqlite::Error::QueryReturnedNoRows) => return Err(INDEX_BUILDING.into()),
-            Err(rusqlite::Error::SqliteFailure(_, Some(message)))
-                if message == "no such table: meta" =>
-            {
-                return Err(INDEX_BUILDING.into());
-            }
-            result => result?,
-        };
+        anyhow::ensure!(version == 3, "Display snapshot requires metadata repair");
+        let identity: String =
+            db.query_row("SELECT root FROM meta WHERE id=1 AND version=1", [], |r| {
+                r.get(0)
+            })?;
         anyhow::ensure!(
             identity == serde_json::to_string(&checked(root.object())?)?,
             "Display root/store identity changed"
