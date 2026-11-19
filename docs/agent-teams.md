@@ -51,7 +51,10 @@ Turning it off while a team may still be live asks "Turn Agent Teams off?":
 "Teams on this computer stop being served. Nothing is deleted." With the
 preview off, `hgs team` answers `teams_inactive`, the entry points disappear,
 and a team's tasks on this computer behave as ordinary tasks. A task whose
-team lives on another computer still refuses agents.
+team lives on another computer still refuses agents. The Teams page, Waiting
+for you and the catalog then say that Teams are off, with **Turn on in
+Settings**, which opens Settings > Agent Teams. A computer where Teams are
+unavailable gets no such link.
 
 ## Starting a team
 
@@ -248,7 +251,9 @@ either goes through or ends in one of three ways:
 The lead's session has a **Team** tab. Its bar shows the team's status, its
 active members, open inbox items and open cards, and the team's actions:
 **Pause** or **Resume**, **Stop**, and **Archive** after a stop. Destructive
-actions ask for confirmation first.
+actions ask for confirmation first, and the one-way ones say so: a stopped
+team cannot be started again (**Pause** stops it for a while), and neither
+Archive nor removing a member can be undone.
 
 The bar also opens **Feed**, **Inbox**, **Reports**, **Cards** and **Lead chat**.
 The first four read one page at a time, at most 200 rows. **Next page** keeps
@@ -262,8 +267,13 @@ same way. Reports are the
 report items on the selected inbox page, not an exhaustive report search.
 Only one page is retained, and closing the drawer drops it.
 
-Reports offer **Accept** or **Reject** (return with a reason), open questions
-offer **Answer**, and cards offer the decisions their writer recorded. A
+A report offers **Open task**: Accept and Return are made in the task's
+details, beside its report and verdicts and with the board's own checks. Open
+questions offer **Answer** while the team is running or paused. Every other
+open inbox item says what closes it; no item is dismissed by hand. For example,
+an item about a task closes with the task's next report, reopen or
+settlement, and a sent-back phase's item stays as a record. An ended team
+closes no item. Cards offer the decisions their writer recorded. A
 changed team revision or an unreadable page blocks these actions until a
 fresh read. An uncertain action remains in the existing Check/Dismiss flow;
 opening or refreshing a drawer never repeats it.
@@ -280,7 +290,10 @@ menu open the member's own session, found by the same computer and launch
 binding the lead's Team tab uses; when that session is not on the session list
 the menu says so and nothing opens. A
 member's actions are **Pause**, **Resume**, **Stop** and **Remove**; the lead
-cannot be removed. Removing a member puts its open work back to the lead.
+cannot be removed. Removing a member puts its open work back to the lead and
+cannot be undone. A member that was never started has no session to resume:
+its card says that Zerus starts it when there is room, and **Launch again…**
+opens the team's cards, where its start card's **Retry** starts it again.
 
 A member whose terminal holds input, such as an open question, an unsent
 draft or a dialog waiting for the person, takes no task: it is a fact about
@@ -324,8 +337,8 @@ for another active member of the same role and a reason. **Route** selects a
 role and one of its pipelines for a waiting or pending queue task. Routing
 keeps the dependencies and write paths. Changing the role clears the
 assignment. Both actions use the window's native confirmation. A stage's
-role follows its pipeline. Routing an approved task requires a logged plan
-edit.
+role follows its pipeline. To change an approved phase's tasks, send the phase
+back with corrections once all its tasks are decided; **Open phase** opens it.
 
 **Add task** opens the New task form in the Tasks side panel with this team
 preselected. If a previous draft is still saving, the team choice waits for
@@ -488,12 +501,13 @@ opens the task on the team's board.
 
 A card offers the decisions it accepts. **Integration** and **Work
 acceptance** take **Approve** or **Reject**. **Acknowledge** closes a card and
-changes nothing else.
+changes nothing else. A phase card offers **Open phase** first; its **Hide
+card** closes the reminder only, and the phase keeps waiting in Layers.
 
 | Card | When it appears |
 |---|---|
 | **Integration** | The lead accepted a result, and merging it waits for you because Merge accepted work is off. **Approve**: the service merges it and finishes the task. **Reject**: no new merge is authorized; the task stays in review. A merge already recorded is not undone and opens the card below |
-| **Rejected result is merged** | A result reached the integration branch before its Integration card was rejected. The card and the lead's inbox name the task, commit and branch. Rejection did not undo that merge; only a revert on the integration branch removes it |
+| **Rejected result is merged** | A result reached the integration branch before its Integration card was rejected. The card and the lead's inbox name the task, commit and branch. Rejection did not undo that merge, and Zerus cannot revert it: ask the lead, which has the same item, or revert the merge on the integration branch yourself, then acknowledge the card |
 | **Work acceptance** | Every stage of a pipeline whose acceptance is yours has passed. **Approve**: the task is accepted, and merged where the team integrates. **Reject**: the task goes to the lead |
 | **Member not started** | A member could not be started; the card says why and whether Zerus tries again |
 | **Start not confirmed** | Whether a member started is not known; Zerus checks before it starts anything again |
@@ -680,7 +694,8 @@ to waiting for you with an Integration card.
   this closed-task cleanup.
 - A member whose session starts after the team stopped, or after you removed
   it, is not taken into the team: a **Late session** card names it.
-- **Archive** follows a stop and closes the team's open cards.
+- **Archive** follows a stop and closes the team's open cards. It cannot be
+  undone. The list of teams hides archived teams until **Show archived**.
 
 Zerus never stops a team's agents by itself. The sessions stay, and you end
 them as any other session. Quitting a member's agent by hand is not a stop of

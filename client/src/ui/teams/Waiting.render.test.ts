@@ -181,7 +181,8 @@ it("describes a rejected result that is still merged, with the store's facts as 
   const { host } = setup({ view: { items: [rejected], next: null } });
   const card = host.querySelector(`[data-waiting="${TEAM_A}:6"]`);
   expect(card?.textContent).toContain("Rejected result is merged");
-  expect(card?.textContent).toContain("The rejection did not undo the merge; only a revert on the integration branch removes it.");
+  // zerus-63rru.197: the card says who reverts it, since Zerus cannot.
+  expect(card?.textContent).toContain("The rejection did not undo the merge, and Zerus cannot revert it: ask the lead, which has the same item in its inbox, or revert the merge on the integration branch yourself, then acknowledge this card.");
   expect(card?.textContent).toContain(body);
   expect(card?.textContent).not.toContain("Card: rejected_merge");
   expect(card?.querySelector('[data-decision="acknowledged"]')?.textContent).toBe("Acknowledge");

@@ -9,6 +9,7 @@ import { WaitingList } from "../teams/Waiting";
 import { TeamConfirmDialog } from "../teams/TeamConfirmDialog";
 import { TeamUncertain } from "../teams/TeamTab";
 import { setOpenTeamNode } from "../teams/openNode";
+import { TeamsOffNotice } from "../teams/TeamsOff";
 import { rowIsSession, rowSessionKeys } from "../teams/session-binding";
 import { teamRequests, teamSessions, type RequestRow, type TeamRequest } from "./waiting-requests";
 import "../styles/teams.css";
@@ -84,7 +85,7 @@ export function WaitingScreen() {
         <h1>{tr("Waiting for you")}</h1>
         <span class="dim">{tr("Cards only you can answer, oldest first.")}</span>
       </header>
-      <Show when={teams.available() !== false} fallback={<div class="notice team-notice" role="status" data-waiting-off><Icon name="info" size={16} /><span>{tr("Teams are off on this computer.")}</span></div>}>
+      <Show when={teams.available() !== false} fallback={<div class="notice team-notice" role="status" data-waiting-off><Icon name="info" size={16} /><TeamsOffNotice /></div>}>
         <Show when={notice()}><div class="notice danger team-notice" role="alert"><Icon name="triangle-alert" size={16} /><span>{notice()}</span></div></Show>
         <Show when={readFailure()}>
           {(failure) => <div class="notice danger team-notice" role="alert"><Icon name="triangle-alert" size={16} /><span>{tr("Waiting could not be read: %1", failure().message)}</span></div>}

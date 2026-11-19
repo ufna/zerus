@@ -7,7 +7,7 @@ import { openTask } from "../../store/taskNavigation";
 import { newRequestId, teams, type TeamCall, type TeamFailure, type TeamOutcome, type UnresolvedCall } from "../../store/teams";
 import { rowIdentity, rowIsSession } from "./session-binding";
 import { navigationTeamFor } from "./lead-navigation";
-import { teamCall, type TaskButton } from "./actions";
+import { teamCall, WINDOW_ONLY_MEMBER_ACTIONS, type TaskButton } from "./actions";
 import { createTeamEditors, TeamEditButtons, type EditAction } from "./TeamEditors";
 import { MemberCard } from "./MemberCard";
 import { memberSessions } from "./member-session";
@@ -356,7 +356,7 @@ export function TeamWorkspace(props: {
               <header class="team-section-head"><Icon name="users" size={14} /><h3>{tr("Members")}</h3><span class="count">{props.view.members.length}</span><span class="grow" /><button type="button" class="icon-btn team-members-close" data-team-members-close aria-label={tr("Close")} title={tr("Close")} onClick={dismissPreview}><Icon name="x" size={16} /></button></header>
               <For each={props.view.members}>
                 {(member) => <MemberCard member={member} teamStatus={props.view.bar.status} cards={all()} busy={props.busy} onSelect={select}
-                  session={memberRows().get(member.id)} onAction={(kind, id) => send(kind, { member: id })} />}
+                  session={memberRows().get(member.id)} onAction={(kind, id) => WINDOW_ONLY_MEMBER_ACTIONS.has(kind) ? setDrawer("cards") : send(kind, { member: id })} />}
               </For>
             </section>
         </aside>
