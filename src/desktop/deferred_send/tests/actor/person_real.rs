@@ -286,6 +286,11 @@ impl World {
     /// process, a descendant of that agent with that agent's environment, as
     /// a tool call of the agent runs.
     fn agent(&self, name: &str, script: &str) -> Ran {
+        self.agent_start(name, script);
+        self.agent_end(name, script)
+    }
+    /// Starts `script` inside the agent of `name` without waiting for it.
+    fn agent_start(&self, name: &str, script: &str) {
         let tools = self.root.join("tools").join(key(name));
         std::fs::create_dir_all(&tools).unwrap();
         for file in ["code", "out", "err", "running"] {
@@ -296,6 +301,10 @@ impl World {
         let control = self.root.join("control").join(key(name));
         std::fs::write(control.with_extension("tmp"), "hook stop\n").unwrap();
         std::fs::rename(control.with_extension("tmp"), &control).unwrap();
+    }
+    /// What `script`, started in the agent of `name`, printed and returned.
+    fn agent_end(&self, name: &str, script: &str) -> Ran {
+        let tools = self.root.join("tools").join(key(name));
         wait_for(&format!("{name} to run {script}"), || {
             tools.join("code").exists()
         });
@@ -500,17 +509,19 @@ impl World {
         std::fs::write(state.join("teams/preview"), "on").unwrap();
         let machine = crate::swarm::local_node_id(config).unwrap();
         let mut store = crate::teams::store::Store::open(state).unwrap();
-        let mut create = fixtures::create();
-        if let ops::Operation::Create { home, .. } = &mut create {
-            *home = machine.clone();
+        if store.team(fixtures::TEAM).unwrap().is_none() {
+            let mut create = fixtures::create();
+            if let ops::Operation::Create { home, .. } = &mut create {
+                *home = machine.clone();
+            }
+            fixtures::apply_fixture(
+                &mut store,
+                &fixtures::person(),
+                &fixtures::request(0, create),
+                1234,
+            )
+            .unwrap();
         }
-        fixtures::apply_fixture(
-            &mut store,
-            &fixtures::person(),
-            &fixtures::request(0, create),
-            1234,
-        )
-        .unwrap();
         drop(store);
         let tasks =
             zerus_replica::ProjectStore::open(&state.join("replica"), "example-project").unwrap();
@@ -546,6 +557,34 @@ impl World {
         .unwrap();
         assert!(admitted.queued, "{admitted:?}");
         format!("{PROJECT}/{id}")
+    }
+    /// A live team's task that the person sent to `name`: the queued team
+    /// task, then the person's dispatch recorded on it.
+    fn held_team_task(&self, name: &str) -> String {
+        let reference = self.live_team_task();
+        let record = self.record(name);
+        let machine = crate::swarm::local_node_id(&self.f.config).unwrap();
+        let tasks = zerus_replica::ProjectStore::open(
+            &self.f.config.state.join("replica"),
+            "example-project",
+        )
+        .unwrap();
+        let mut document = tasks.find(reference.rsplit('/').next().unwrap()).unwrap();
+        let holder = zerus_replica::SessionKey {
+            machine,
+            session: name.into(),
+            session_id: crate::teams::caller::identity(&record),
+        };
+        document
+            .record_send(
+                &holder,
+                &uuid::Uuid::new_v4().to_string(),
+                &zerus_replica::Actor::Person,
+                3,
+            )
+            .unwrap();
+        tasks.save(&mut document).unwrap();
+        reference
     }
     /// The history of task `reference`, read from the project store in Rust:
     /// the person's own task commands refuse under the agent this test may
@@ -745,7 +784,7 @@ fn private_case() {
     person(
         &["swarm", "initialize"],
         &format!(
-            r##"{{"projects":[{{"id":"example-project","name":"{PROJECT}","color":"#123456","folders":[],"sessions":[]}}]}}"##
+            r##"{{"projects":[{{"id":"example-project","name":"{PROJECT}","color":"#123456","folders":[],"sessions":[]}},{{"id":"other-project","name":"other","color":"#654321","folders":[],"sessions":[]}}]}}"##
         ),
     );
     let asked = w.launch("asked");
@@ -1179,6 +1218,84 @@ fn person_tasks(w: &mut World, asked: &str, peer: &str) -> usize {
         "{log:?}"
     );
     println!("PERSON_REQUEST_STEP=team-task ok");
+    steps += 1;
+
+    // Review S2-5: a refused hold change opens no project store at all.
+    let other = w.f.config.state.join("replica").join(format!(
+        "{:x}",
+        <sha2::Sha256 as sha2::Digest>::digest(b"other-project")
+    ));
+    let ran = w.agent(peer, "hgs task cutover --project other --hold on --json");
+    refused(&ran, "cutover-refused-before-store");
+    assert!(!other.exists(), "{}", other.display());
+    println!("PERSON_REQUEST_STEP=task-cutover-no-store ok");
+    steps += 1;
+
+    // Review S2-1: another input ends the request after the guard admitted
+    // a live team's rename and before its commit: nothing is written.
+    let ended = w.bound(asked, "please rename the team task once more");
+    let pause = w.root.join("pause-commit");
+    std::fs::create_dir_all(&pause).unwrap();
+    let held = format!(
+        "HGS_TEST_ATTEMPT_PAUSE='{}' HGS_TEST_ATTEMPT_PAUSE_AT=person_commit sh -c \"printf 'Renamed after it ended' | hgs task rename {team_task} --json\"",
+        pause.display()
+    );
+    w.agent_start(asked, &held);
+    wait_for("the rename to reach its commit", || {
+        pause.join("ready").exists()
+    });
+    let target = w.record(asked);
+    let payload = json!({"request_id": uuid::Uuid::new_v4().to_string(), "text": "another agent's input",
+        "expected_run_id": target["run_id"], "expected_conversation_id": target["conversation_id"]});
+    let file = w.root.join("tools").join("before-commit.json");
+    std::fs::write(&file, payload.to_string()).unwrap();
+    let send = format!("hgs send '{asked}' --json < '{}'", file.display());
+    w.agent_start(peer, &send);
+    wait_for("the other input to end the turn", || {
+        w.turn(asked).is_null()
+    });
+    std::fs::write(pause.join("release"), "").unwrap();
+    let ran = w.agent_end(asked, &held);
+    assert_ne!(ran.code, 0, "{}", ran.out);
+    assert!(
+        ran.err.contains("ask the person in your own conversation"),
+        "{}",
+        ran.err
+    );
+    let log = w.log(&team_task);
+    assert!(
+        !log.iter().any(|entry| entry
+            .person_request
+            .as_ref()
+            .is_some_and(|r| r.request_id == ended)),
+        "{log:?}"
+    );
+    let after = w.agent_end(peer, &send);
+    println!("the other input: {}", after.code);
+    w.idle(asked);
+    println!("PERSON_REQUEST_STEP=team-task-request-ends-before-commit ok");
+    steps += 1;
+
+    // Review S2-2: a live team's task held by another session, cancelled at
+    // the request: the cancel keeps the request its guard needed.
+    let held_task = w.held_team_task(peer);
+    let cancel_live = w.bound(asked, "please cancel the team task the peer holds");
+    let ran = w.agent(
+        asked,
+        &format!("hgs task cancel {held_task} --reason 'The person asked' --json"),
+    );
+    assert_eq!(ran.code, 0, "{}", ran.err);
+    let log = w.log(&held_task);
+    assert!(
+        log.iter().any(|entry| entry.kind.contains("cancel")
+            && entry
+                .person_request
+                .as_ref()
+                .is_some_and(|r| r.request_id == cancel_live)),
+        "{log:?}"
+    );
+    w.idle(peer);
+    println!("PERSON_REQUEST_STEP=team-task-cancel-keeps-request ok");
     steps += 1;
 
     // The hold back off, at a new request.

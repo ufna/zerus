@@ -37,10 +37,20 @@ pub(super) fn execute(config: &Config, args: &[String]) -> Result<Value> {
     };
     let mut task = store.find(&r.task).map_err(fail)?;
     if let Some(actor) = super::teams::actor_for_marked_task(config, &machines, args, true, &task)? { who = actor; }
-    {
+    // The person's request a live team's reopen needs (zerus-46l1q), kept
+    // and checked again before its commit.
+    let mut person = {
         let mut meeting = crate::teams::tasks::Meeting::Projects(&store);
-        super::teams::guard(config, &machines, &mut task, "message", args, &mut meeting)?;
-    }
+        super::teams::guard(
+            config,
+            &machines,
+            &mut task,
+            "message",
+            args,
+            &mut meeting,
+            None,
+        )?
+    };
     let mut before = task.view().map_err(fail)?;
     let existing = before
         .log
@@ -160,6 +170,7 @@ pub(super) fn execute(config: &Config, args: &[String]) -> Result<Value> {
                 &who,
                 args,
                 deadline,
+                person.as_ref(),
             )?;
             if let Some(out) = reopened {
                 return Ok(out);
@@ -170,7 +181,15 @@ pub(super) fn execute(config: &Config, args: &[String]) -> Result<Value> {
             store = super::store(config, &r.project.0)?;
             task = store.load(&uuid).map_err(fail)?;
             let mut meeting = crate::teams::tasks::Meeting::Projects(&store);
-            super::teams::guard(config, &machines, &mut task, "message", args, &mut meeting)?;
+            person = super::teams::guard(
+                config,
+                &machines,
+                &mut task,
+                "message",
+                args,
+                &mut meeting,
+                person.as_ref(),
+            )?;
             before = task.view().map_err(fail)?;
         }
     }
@@ -265,6 +284,7 @@ pub(super) fn execute(config: &Config, args: &[String]) -> Result<Value> {
         Err(error) => return Err(fail(error)),
     };
     // The project lock serializes local reservations. A save failure stops before input.
+    super::recheck(person.as_ref())?;
     store.save(&mut task).map_err(fail)?;
     if let Some(to) = to.as_ref().filter(|_| !delivery.run_id.is_empty() && matches!(delivery.state.as_str(), "reserved" | "uncertain")) {
         let request = request.unwrap_or_else(|| {

@@ -27,26 +27,34 @@ pub(super) fn cutover(config: &Config, args: &[String]) -> Result<Value> {
     }
     let who = actor(&machines(config)?.here, args, false)?;
     let (id, name) = project_arg(config, args, &who)?;
-    let store = store(config, &id)?;
-    if let Some(hold) = option(args, "--hold")? {
-        let on = match hold {
-            "on" => true,
-            "off" => false,
-            _ => return Err(fail("--hold takes on or off")),
-        };
-        // The person, or an agent carrying out the person's own request
-        // (zerus-46l1q), recorded with the hold.
-        let request = super::person_request_for(
-            &who,
-            "only a person, or an agent at the person's own request, sets or clears the cutover hold",
-        )?;
-        // Clearing it lets the project's cutover begin: an explicit choice.
-        if !on && !flag(args, "--confirm") {
-            return Err(fail(
-                "clearing the cutover hold lets this project's tasks cut over to execution \
-                 attempts; pass --confirm to clear it",
-            ));
+    // Every refusal of a hold change comes before the writable store opens
+    // (review S2-5): its value, the person's request and its confirmation.
+    let change = match option(args, "--hold")? {
+        None => None,
+        Some(hold) => {
+            let on = match hold {
+                "on" => true,
+                "off" => false,
+                _ => return Err(fail("--hold takes on or off")),
+            };
+            // The person, or an agent carrying out the person's own request
+            // (zerus-46l1q), recorded with the hold.
+            let request = super::person_request_for(
+                &who,
+                "only a person, or an agent at the person's own request, sets or clears the cutover hold",
+            )?;
+            // Clearing it lets the project's cutover begin: an explicit choice.
+            if !on && !flag(args, "--confirm") {
+                return Err(fail(
+                    "clearing the cutover hold lets this project's tasks cut over to execution \
+                     attempts; pass --confirm to clear it",
+                ));
+            }
+            Some((on, request))
         }
+    };
+    let store = store(config, &id)?;
+    if let Some((on, request)) = change {
         let mut doc = store.project().map_err(fail)?;
         super::recheck(request.as_ref())?;
         let reference = request.as_ref().map(|request| request.reference());

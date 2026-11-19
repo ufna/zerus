@@ -60,7 +60,10 @@ pub(super) fn execute(config: &Config, args: &[String]) -> Result<Value> {
             if let Some(person) = &person {
                 reply["person_request"] = person.identity();
             }
-            match store.move_reviewed_copy(uuid, expected) {
+            // Who confirmed it, and at whose request, is written durably
+            // with the move (review S2-3).
+            let reference = person.as_ref().map(|person| person.reference());
+            match store.move_reviewed_copy_as(uuid, expected, &who, reference.as_ref()) {
                 Ok(outcome) => {
                     reply["state"] = json!(outcome.state);
                     reply["backup"] = json!(outcome.backup);

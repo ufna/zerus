@@ -152,12 +152,18 @@ fn a_failure_after_moving_files_is_unknown_and_keeps_the_mark_and_backups() {
     let mark = fs::read(store.managed_path(&uuid)).unwrap();
     let review = store.prepare_copy_review(&uuid).unwrap();
     let outcome = store
-        .move_reviewed_copy_with(&uuid, &review.fingerprint, || {
-            Err(std::io::Error::new(
-                ErrorKind::PermissionDenied,
-                "synthetic mark refusal",
-            ))
-        })
+        .move_reviewed_copy_with(
+            &uuid,
+            &review.fingerprint,
+            &crate::Actor::Person,
+            None,
+            || {
+                Err(std::io::Error::new(
+                    ErrorKind::PermissionDenied,
+                    "synthetic mark refusal",
+                ))
+            },
+        )
         .unwrap();
     assert_eq!(outcome.state, "unknown");
     assert!(outcome.reason.unwrap().contains("synthetic mark refusal"));
@@ -230,4 +236,53 @@ fn confirmed_review_archives_the_exact_cutover_custody() {
             bytes
         );
     }
+}
+
+#[test]
+fn a_confirmed_move_keeps_who_confirmed_it_and_the_persons_request_with_the_files() {
+    let (_root, mut store, uuid) = fixture();
+    fs::write(store.snapshot_path(&uuid), b"damaged").unwrap();
+    let review = store.prepare_copy_review(&uuid).unwrap();
+    let agent = crate::Actor::Agent(crate::SessionKey {
+        machine: "m1".into(),
+        session: "codex/api".into(),
+        session_id: "launch_id:api".into(),
+    });
+    let request = crate::PersonRequestRef {
+        machine: "m1".into(),
+        session: "codex/api".into(),
+        session_id: "launch_id:api".into(),
+        run_id: "run-1".into(),
+        conversation_id: "conversation-1".into(),
+        request_id: "44444444-4444-4444-8444-444444444444".into(),
+        origin: "desktop".into(),
+    };
+    let outcome = store
+        .move_reviewed_copy_as(&uuid, &review.fingerprint, &agent, Some(&request))
+        .unwrap();
+    assert_eq!(outcome.state, "moved");
+    let confirmed: serde_json::Value = serde_json::from_slice(
+        &fs::read(Path::new(&outcome.backup).join(super::CONFIRMED)).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(confirmed["uuid"], uuid.as_str());
+    assert_eq!(confirmed["fingerprint"], review.fingerprint.as_str());
+    assert_eq!(confirmed["actor"], serde_json::to_value(&agent).unwrap());
+    assert_eq!(
+        confirmed["person_request"],
+        serde_json::to_value(&request).unwrap()
+    );
+    // The person's own confirmation is recorded too, without a request.
+    let (_root, mut store, uuid) = fixture();
+    fs::write(store.snapshot_path(&uuid), b"damaged").unwrap();
+    let review = store.prepare_copy_review(&uuid).unwrap();
+    let outcome = store
+        .move_reviewed_copy(&uuid, &review.fingerprint)
+        .unwrap();
+    let confirmed: serde_json::Value = serde_json::from_slice(
+        &fs::read(Path::new(&outcome.backup).join(super::CONFIRMED)).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(confirmed["actor"]["kind"], "person");
+    assert!(confirmed["person_request"].is_null());
 }

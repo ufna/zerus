@@ -64,6 +64,21 @@ impl PersonRequest {
         }
     }
 
+    /// Whether `other` is this same request of the same session and run.
+    pub(crate) fn same(&self, other: &PersonRequest) -> bool {
+        self.request_id == other.request_id
+            && self.run_id == other.run_id
+            && self.conversation_id == other.conversation_id
+            && self.session == other.session
+            && self.machine == other.machine
+    }
+
+    /// Whether this request may stand where an earlier guard of the same
+    /// command admitted `held`: only that same request (review S2-1).
+    pub(crate) fn continues(&self, held: Option<&PersonRequest>) -> bool {
+        held.is_none_or(|held| held.same(self))
+    }
+
     /// Whether the request belongs to the acting session `own`.
     pub(crate) fn is_of(&self, own: &zerus_replica::SessionKey) -> bool {
         self.machine == own.machine
@@ -86,11 +101,7 @@ impl PersonRequest {
     /// the mark and the receipt; a writer calls this under its own lock.
     pub(crate) fn recheck(&self) -> Result<(), String> {
         let again = person_request()?;
-        if again.request_id != self.request_id
-            || again.run_id != self.run_id
-            || again.conversation_id != self.conversation_id
-            || again.session != self.session
-        {
+        if !self.same(&again) {
             return Err(format!(
                 "the person's request ended before this action; {ASK}"
             ));
@@ -160,4 +171,32 @@ fn proven(
         admitted_at: mark.at,
         bound_at,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn request(id: &str, run: &str) -> PersonRequest {
+        PersonRequest {
+            machine: "m1".into(),
+            session: "claude/project/asked".into(),
+            session_id: "launch_id:asked".into(),
+            run_id: run.into(),
+            conversation_id: "conversation-1".into(),
+            request_id: id.into(),
+            origin: "desktop".into(),
+            admitted_at: 1,
+            bound_at: 2,
+        }
+    }
+
+    #[test]
+    fn a_later_guard_admits_only_the_same_request() {
+        let first = request("r1", "run-1");
+        assert!(first.continues(None));
+        assert!(request("r1", "run-1").continues(Some(&first)));
+        assert!(!request("r2", "run-1").continues(Some(&first)));
+        assert!(!request("r1", "run-2").continues(Some(&first)));
+    }
 }

@@ -448,6 +448,7 @@ pub(super) fn send(
     machines: &super::Machines,
     args: &[String],
     deadline: Instant,
+    held: Option<&crate::caller::PersonRequest>,
 ) -> Result<Option<Value>> {
     pause(&frozen.id);
     let detail = std::cell::RefCell::new(String::new());
@@ -462,16 +463,20 @@ pub(super) fn send(
             Ok(Err(Closed { node: None, reason }))
         };
         let mut meeting = crate::teams::tasks::Meeting::Admitted(&mut *admitted);
-        if let Err(error) = super::teams::guard(
+        // Under the final admission, only the same person's request the
+        // command was admitted with (zerus-46l1q, review S2-1).
+        let person = match super::teams::guard(
             config,
             machines,
             task,
             if handoff { "handoff" } else { "send" },
             args,
             &mut meeting,
+            held,
         ) {
-            return refuse("not_sendable", error.message);
-        }
+            Ok(person) => person,
+            Err(error) => return refuse("not_sendable", error.message),
+        };
         let check = if handoff {
             super::handoff_check(task, who)
         } else {
@@ -530,6 +535,10 @@ pub(super) fn send(
         let native = native(to, &frozen.request);
         if let Err(error) = task.reserve_attempt(&frozen.id, origin, to, native, who, now()) {
             return refuse("not_sendable", error.to_string());
+        }
+        // That exact request still holds, under the writer's admission.
+        if let Some(Err(why)) = person.as_ref().map(|person| person.recheck()) {
+            return refuse("not_sendable", why);
         }
         admitted.save(task)?;
         Ok(Ok(()))
@@ -721,6 +730,7 @@ pub(super) fn reopen(
     who: &Actor,
     args: &[String],
     deadline: Instant,
+    held: Option<&crate::caller::PersonRequest>,
 ) -> Result<Option<Value>> {
     pause(id);
     let detail = std::cell::RefCell::new(String::new());
@@ -730,9 +740,11 @@ pub(super) fn reopen(
             Ok(Err(Closed { node: None, reason }))
         };
         let mut meeting = crate::teams::tasks::Meeting::Admitted(&mut *admitted);
-        if let Err(error) = super::teams::guard(config, machines, task, "reopen", args, &mut meeting) {
-            return refuse("not_sendable", error.message);
-        }
+        let person =
+            match super::teams::guard(config, machines, task, "reopen", args, &mut meeting, held) {
+                Ok(person) => person,
+                Err(error) => return refuse("not_sendable", error.message),
+            };
         let view = task.view()?;
         // The target and stage time it was frozen with (zerus-frehz).
         let normalized = |target: &Target| super::dispatch::normalized(target, machines);
@@ -793,6 +805,10 @@ pub(super) fn reopen(
         let origin = zerus_replica::execution::Origin::Reopen;
         if let Err(error) = task.reserve_attempt(id, origin, to, native, who, now()) {
             return refuse("not_sendable", error.to_string());
+        }
+        // That exact request still holds, under the writer's admission.
+        if let Some(Err(why)) = person.as_ref().map(|person| person.recheck()) {
+            return refuse("not_sendable", why);
         }
         // ONE save for both: never the note alone.
         admitted.save(task)?;

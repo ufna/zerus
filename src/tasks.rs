@@ -1376,10 +1376,20 @@ fn change_guarded(
     if let Some(guard) = guard {
         guard.check(&task)?;
     }
-    {
+    // The person's request a live team's task needs (zerus-46l1q): this
+    // exact request is checked again right before every commit below.
+    let mut person = {
         let mut meeting = crate::teams::tasks::Meeting::Projects(&store);
-        teams::guard(config, &machines, &mut task, action, args, &mut meeting)?;
-    }
+        teams::guard(
+            config,
+            &machines,
+            &mut task,
+            action,
+            args,
+            &mut meeting,
+            None,
+        )?
+    };
     if let Some(team) = &team {
         let task_ref = zerus_team_plan::model::TaskRef {
             project: project_id.clone(),
@@ -1467,7 +1477,15 @@ fn change_guarded(
             // A cancel goes through while that computer is out of reach: the task
             // moves to In review here and its session is not told.
             Err(reason) if action == "cancel" => cancel_here(
-                config, &machines, &r.project, &uuid, args, &who, reason, guard,
+                config,
+                &machines,
+                &r.project,
+                &uuid,
+                args,
+                &who,
+                reason,
+                guard,
+                person.as_ref(),
             )?,
             Err(reason) => return Err(refuse(fail(reason), &to)),
         };
@@ -1498,6 +1516,7 @@ fn change_guarded(
                 &machines,
                 args,
                 deadline,
+                person.as_ref(),
             )
             .map_err(|e| refuse(e, &to.session))?;
             match sent {
@@ -1511,7 +1530,15 @@ fn change_guarded(
                     let store = self::store(config, project_id)?;
                     let mut task = store.load(&uuid).map_err(fail)?;
                     let mut meeting = crate::teams::tasks::Meeting::Projects(&store);
-                    teams::guard(config, &machines, &mut task, action, args, &mut meeting)?;
+                    person = teams::guard(
+                        config,
+                        &machines,
+                        &mut task,
+                        action,
+                        args,
+                        &mut meeting,
+                        person.as_ref(),
+                    )?;
                     enrich(&mut task, &machines)?;
                     (store, task)
                 }
@@ -1680,10 +1707,14 @@ fn change_guarded(
                 cancellation::reason(args, guard)?,
                 &who,
                 None,
+                person.as_ref(),
             )?
         }
         _ => return Err(fail(USAGE)),
     }
+    // A debug test may hold the command here: its change made, not saved.
+    attempts::pause_at(task.uuid(), "person_commit");
+    recheck(person.as_ref())?;
     store.save(&mut task).map_err(|e| {
         // The prompt is in the session already: say so, never "refused".
         if matches!(action, "send" | "handoff") {
@@ -1891,11 +1922,12 @@ fn cancel_here(
     who: &Actor,
     reason: String,
     guard: Option<&cancellation::Guard>,
+    held: Option<&crate::caller::PersonRequest>,
 ) -> Result<Value> {
     let store = store(config, &project.0)?;
     let mut task = find(&store, uuid)?;
     if let Some(guard) = guard { guard.check(&task)?; }
-    let extra = cancel(&store, machines, &mut task, &project.1, cancellation::reason(args, guard)?, who, Some(reason))?;
+    let extra = cancel(&store, machines, &mut task, &project.1, cancellation::reason(args, guard)?, who, Some(reason), held)?;
     store.save(&mut task).map_err(fail)?;
     let mut out = json!({"task": view(&task, &project.1, guard.is_none(), machines)?});
     out["cancel_message"] = extra["cancel_message"].clone();
@@ -1963,6 +1995,7 @@ fn dispatch_content(settings: &Settings, view: &zerus_replica::TaskView, project
 
 /// Moves the task to In review and pastes the cancel message; the turn is not
 /// stopped. `undelivered` says why the message cannot reach the session.
+#[allow(clippy::too_many_arguments)]
 fn cancel(
     store: &ProjectStore,
     machines: &Machines,
@@ -1971,6 +2004,7 @@ fn cancel(
     reason: &str,
     who: &Actor,
     undelivered: Option<String>,
+    held: Option<&crate::caller::PersonRequest>,
 ) -> Result<Value> {
     let stored_session = task
         .view()
@@ -1980,8 +2014,9 @@ fn cancel(
     let resolved = machines.resolve(&stored_session);
     let session = resolved.as_ref().unwrap_or(&stored_session);
     // A task sent to the agent itself: only at the person's own request
-    // (zerus-46l1q), which its history records.
-    let person = match who {
+    // (zerus-46l1q), which its history records. A live team's task may
+    // already hold the request its guard needed (`held`).
+    let own = match who {
         Actor::Agent(own) if own == session => person_request_for(
             who,
             &format!(
@@ -1995,8 +2030,13 @@ fn cancel(
     settings
         .check_agent(who, session, false, 0)
         .map_err(fail)?;
-    recheck(person.as_ref())?;
-    task.at_request(person.as_ref().map(|person| person.reference()));
+    // The request this cancel needs is recorded with it and never cleared
+    // by the other rule (review S2-2).
+    let person = own.as_ref().or(held);
+    recheck(person)?;
+    if let Some(person) = person {
+        task.at_request(Some(person.reference()));
+    }
     task.record_cancel(reason, who, now()).map_err(fail)?;
     store.save(task).map_err(fail)?;
     cancel_notice(machines, task, project_name, who, &settings, undelivered)

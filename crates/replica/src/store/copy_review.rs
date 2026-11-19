@@ -12,6 +12,9 @@ pub struct CopyReview {
     pub files: Vec<String>,
 }
 
+/// The record of who confirmed a reviewed move, in its backup folder.
+pub const CONFIRMED: &str = "confirmed.json";
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct CopyReviewOutcome {
     /// moved, or unknown after an operation might have changed the files.
@@ -218,13 +221,29 @@ impl ProjectStore {
     /// Archive every reviewed document/custody file; remove the mark last. A partial
     /// filesystem failure is unknown and must never be automatically replayed.
     pub fn move_reviewed_copy(&mut self, uuid: &str, expected: &str) -> Result<CopyReviewOutcome> {
-        self.move_reviewed_copy_with(uuid, expected, || Ok(()))
+        self.move_reviewed_copy_as(uuid, expected, &crate::Actor::Person, None)
+    }
+
+    /// [`Self::move_reviewed_copy`], confirmed by `actor`, an agent at the
+    /// person's request `request` (zerus-46l1q): who confirmed it is written
+    /// durably into the backup folder before anything moves, and nothing
+    /// moves when that record cannot be written.
+    pub fn move_reviewed_copy_as(
+        &mut self,
+        uuid: &str,
+        expected: &str,
+        actor: &crate::Actor,
+        request: Option<&crate::PersonRequestRef>,
+    ) -> Result<CopyReviewOutcome> {
+        self.move_reviewed_copy_with(uuid, expected, actor, request, || Ok(()))
     }
 
     fn move_reviewed_copy_with(
         &mut self,
         uuid: &str,
         expected: &str,
+        actor: &crate::Actor,
+        request: Option<&crate::PersonRequestRef>,
         before_mark: impl FnOnce() -> std::io::Result<()>,
     ) -> Result<CopyReviewOutcome> {
         let review = self.prepare_copy_review(uuid)?;
@@ -245,6 +264,32 @@ impl ProjectStore {
             builder.mode(0o700);
         }
         builder.create(&backup)?;
+        // Who confirmed this move, kept with it before any file moves.
+        let confirmed = serde_json::json!({"schema": 1, "uuid": uuid, "fingerprint": expected,
+            "at": std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_millis() as i64),
+            "actor": actor, "person_request": request});
+        if let Err(error) = (|| -> std::io::Result<()> {
+            let mut options = fs::OpenOptions::new();
+            options.write(true).create_new(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                options.mode(0o600);
+            }
+            let mut file = options.open(backup.join(CONFIRMED))?;
+            std::io::Write::write_all(&mut file, confirmed.to_string().as_bytes())?;
+            file.sync_all()?;
+            #[cfg(unix)]
+            File::open(&backup)?.sync_all()?;
+            Ok(())
+        })() {
+            let _ = fs::remove_file(backup.join(CONFIRMED));
+            let _ = fs::remove_dir(&backup);
+            return Err(Error::failed(format!(
+                "the confirmation could not be recorded; nothing was moved: {error}"
+            )));
+        }
         let changed = (|| -> std::io::Result<()> {
             for extension in ["loro", "updates", "cutover", "prepare", "proposal"] {
                 if review.files.iter().any(|file| file == extension) {
