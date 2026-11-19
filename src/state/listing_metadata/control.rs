@@ -82,7 +82,7 @@ pub(super) fn status_at(root: &Path) -> Value {
                 .query_row("SELECT ready,generation FROM meta WHERE id=1", [], |r| {
                     Ok((r.get(0)?, r.get(1)?))
                 })?;
-        if ready && generation > 0 {
+        if ready && generation > 0 && store.active_cut()?.is_some_and(|cut| store.covers(&cut)) {
             let (dirs, gap): (String, String) = store.db.query_row(
                 "SELECT dirs,gap FROM generations WHERE generation=?1 AND complete=1",
                 [generation],

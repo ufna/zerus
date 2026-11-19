@@ -46,6 +46,31 @@ pub(crate) struct Query {
     pub page_size: usize,
 }
 
+pub(crate) fn retry(
+    query: Option<&Query>,
+    mut attempt: impl FnMut(Instant) -> anyhow::Result<Value>,
+) -> anyhow::Result<Value> {
+    const BACKOFF: Duration = Duration::from_millis(20);
+    let started = Instant::now();
+    let until = started + Duration::from_secs(10);
+    let retry_until = started + Duration::from_secs(2);
+    loop {
+        match attempt(until) {
+            Err(error)
+                if query.is_some_and(|query| !query.paged)
+                    && Instant::now() + BACKOFF < retry_until
+                    && (error.is::<PublicationPending>() || sqlite_busy(&error)) =>
+            {
+                std::thread::sleep(BACKOFF);
+                if Instant::now() >= retry_until {
+                    return Err(error);
+                }
+            }
+            result => return result,
+        }
+    }
+}
+
 struct Canonical {
     root: Directory,
     dirs: String,
@@ -312,10 +337,10 @@ pub(in crate::state) fn merge(
     ids: &BTreeMap<String, String>,
     archives: bool,
     query: &Query,
-) -> Result<Value> {
+    until: Instant,
+) -> anyhow::Result<Value> {
     let run = || -> anyhow::Result<Value> {
         let root = root();
-        let until = Instant::now() + Duration::from_secs(10);
         let observation = storage::listing_scope::Scope::enter(until);
         control::automatic(&root);
         let indexed = changes::qualified() && enabled(&root);
@@ -446,10 +471,11 @@ pub(in crate::state) fn merge(
                     cursor.as_ref(),
                     if query.paged { query.page_size } else { 128 },
                 )?;
-                anyhow::ensure!(
-                    page.fresh,
-                    "Session listing is building, stale or unavailable; no complete body returned"
-                );
+                if !page.fresh {
+                    return Err(PublicationPending(
+                        "Session listing is building, stale or unavailable; no complete body returned",
+                    ).into());
+                }
                 (page.rows, page.next)
             } else {
                 (std::mem::take(&mut canonical.as_mut().unwrap().rows), None)
@@ -746,14 +772,15 @@ pub(in crate::state) fn merge(
                 );
                 reader.verify_source(&source, &stamp)?;
             }
-            anyhow::ensure!(
-                reader.page_limit(cursor.as_ref(), 1)?.fresh,
-                "Session listing changed before publication; no complete body returned"
-            );
+            if !reader.page_limit(cursor.as_ref(), 1)?.fresh {
+                return Err(PublicationPending(
+                    "Session listing changed before publication; no complete body returned",
+                ).into());
+            }
         } else {
             canonical.as_ref().unwrap().verify()?;
         }
         Ok(value)
     };
-    run().map_err(|error| public_index_error(&error))
+    run()
 }

@@ -340,6 +340,58 @@ fn later_pages_do_not_reuse_a_pinned_ready_bit_after_a_publisher() {
 }
 
 #[test]
+fn a_byte_identical_database_copy_needs_its_own_census() {
+    let root = fixture();
+    let selected = path(root.path());
+    let value = record();
+    write_at(root.path(), &selected, &value, |publication| {
+        storage::atomic_observed(&selected, &value.to_string(), publication)
+    })
+    .unwrap();
+    assert!(repair_to_end(root.path()).complete);
+    let store = Store::open(root.path()).unwrap();
+    store.db.execute_batch("PRAGMA wal_checkpoint(TRUNCATE)").unwrap();
+    drop(store);
+    let cache = root.path().join("listing-metadata");
+    let database = cache.join("index.sqlite3");
+    let copy = cache.join("restored.sqlite3");
+    fs::copy(&database, &copy).unwrap();
+    fs::rename(copy, database).unwrap();
+
+    let page = pages::Reader::open(root.path()).unwrap().page(None).unwrap();
+    assert!(!page.fresh, "the witness followed a replacement database");
+    assert!(repair_to_end(root.path()).complete);
+    let page = pages::Reader::open(root.path()).unwrap().page(None).unwrap();
+    assert!(page.fresh);
+    assert_eq!(page.rows.len(), 1);
+}
+
+#[test]
+fn a_changed_generation_cut_is_not_fresh_even_with_the_same_generation_number() {
+    let root = fixture();
+    let selected = path(root.path());
+    let value = record();
+    write_at(root.path(), &selected, &value, |publication| {
+        storage::atomic_observed(&selected, &value.to_string(), publication)
+    })
+    .unwrap();
+    assert!(repair_to_end(root.path()).complete);
+    let reader = pages::Reader::open(root.path()).unwrap();
+    assert!(reader.page(None).unwrap().fresh);
+    let store = Store::open(root.path()).unwrap();
+    store.db.execute(
+        "UPDATE generations SET high_water=high_water+1
+         WHERE generation=(SELECT generation FROM meta WHERE id=1)",
+        [],
+    ).unwrap();
+    drop(store);
+
+    assert!(!reader.page(None).unwrap().fresh, "a retained reader accepted a different cut");
+    let fresh = pages::Reader::open(root.path()).unwrap();
+    assert!(!fresh.page(None).unwrap().fresh, "a new reader accepted a different cut");
+}
+
+#[test]
 #[cfg(target_os = "linux")]
 fn an_incremental_rename_shadow_removes_its_old_snapshot_row() {
     let root = fixture();

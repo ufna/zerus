@@ -10,7 +10,7 @@ fn wal_budget(dir: &Directory) -> anyhow::Result<()> {
 }
 fn index_file(dir: &Directory) -> anyhow::Result<File> {
     checked(dir.read_private_optional("index.sqlite3"))?.ok_or_else(|| {
-        anyhow::anyhow!("The session listing index is still being built. Try again shortly.")
+        PublicationPending("The session listing index is still being built. Try again shortly.").into()
     })
 }
 pub(super) struct Store {
@@ -72,7 +72,7 @@ impl Store {
         db.busy_timeout(Duration::ZERO)?;
         if new {
             db.execute_batch("PRAGMA synchronous=FULL; PRAGMA max_page_count=131072;")?;
-            db.execute_batch("PRAGMA user_version=3; PRAGMA journal_mode=WAL;
+            db.execute_batch("PRAGMA journal_mode=WAL; BEGIN IMMEDIATE; PRAGMA user_version=3;
               CREATE TABLE meta(id INTEGER PRIMARY KEY CHECK(id=1),version INTEGER NOT NULL,root TEXT NOT NULL,epoch TEXT NOT NULL,writes INTEGER NOT NULL DEFAULT 0,revision INTEGER NOT NULL DEFAULT 0,generation INTEGER NOT NULL DEFAULT 0,serial INTEGER NOT NULL DEFAULT 0,ready INTEGER NOT NULL DEFAULT 0);
               CREATE TABLE sources(source TEXT PRIMARY KEY,seed TEXT,stamp TEXT,revision INTEGER NOT NULL,tombstone INTEGER NOT NULL CHECK(tombstone IN(0,1)),issue TEXT);
               CREATE TABLE intents(id TEXT PRIMARY KEY,source TEXT NOT NULL,seed TEXT,created REAL NOT NULL);
@@ -95,6 +95,7 @@ impl Store {
                     uuid::Uuid::new_v4().to_string()
                 ],
             )?;
+            db.execute_batch("COMMIT")?;
         }
         let version: i64 = db.query_row("PRAGMA user_version", [], |r| r.get(0))?;
         anyhow::ensure!(version != 0, "Incomplete display cache schema");
@@ -144,6 +145,11 @@ impl Store {
         let dir = checked(root.child("listing-metadata"))?;
         wal_budget(&dir)?;
         let file = index_file(&dir)?;
+        // Leave the empty database to its creator. A SQLite reader can hold
+        // a lock which prevents that writer from first switching to WAL.
+        if file.metadata()?.len() == 0 {
+            return Err(PublicationPending("The session listing index is still being built. Try again shortly.").into());
+        }
         let db = Connection::open_with_flags(
             dir.path.join("index.sqlite3"),
             OpenFlags::SQLITE_OPEN_READ_ONLY
@@ -153,6 +159,9 @@ impl Store {
         db.busy_timeout(timeout)?;
         db.execute_batch("BEGIN DEFERRED")?;
         let version: i64 = db.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+        if version == 0 {
+            return Err(PublicationPending("Listing metadata is still rebuilding").into());
+        }
         anyhow::ensure!(version == 3, "Display snapshot requires metadata repair");
         let identity: String =
             db.query_row("SELECT root FROM meta WHERE id=1 AND version=1", [], |r| {
@@ -183,13 +192,16 @@ impl Store {
         }
         checked(self.dir.verify())?;
         let current = index_file(&self.dir)?;
-        let held = crate::platform::FileIdentity::of(&self.file)?;
         let at = crate::platform::FileIdentity::of(&current)?;
         anyhow::ensure!(
-            (held.device, held.inode) == (at.device, at.inode),
+            self.object()? == (at.device, at.inode),
             "Display index namespace changed"
         );
         Ok(())
+    }
+    pub fn object(&self) -> anyhow::Result<(u64, u64)> {
+        let held = crate::platform::FileIdentity::of(&self.file)?;
+        Ok((held.device, held.inode))
     }
     pub fn reserve(&mut self, key: &Key, seed: Option<&str>) -> anyhow::Result<String> {
         self.verify()?;

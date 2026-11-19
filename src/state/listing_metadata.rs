@@ -9,6 +9,7 @@ use std::{
 };
 mod changes;
 pub(super) mod control;
+mod coverage;
 pub(super) mod listing;
 mod model;
 mod publication;
@@ -23,6 +24,26 @@ use model::{Key, Seed};
 pub(super) use publication::Publication;
 pub(super) use repair::background_at;
 use store::Store;
+
+/// A reader can try a new observation while a publication settles.
+#[derive(Debug)]
+struct PublicationPending(&'static str);
+
+impl std::fmt::Display for PublicationPending {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.0)
+    }
+}
+
+impl std::error::Error for PublicationPending {}
+
+fn sqlite_busy(error: &anyhow::Error) -> bool {
+    matches!(
+        error.downcast_ref::<rusqlite::Error>(),
+        Some(rusqlite::Error::SqliteFailure(code, _))
+            if matches!(code.code, rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked)
+    )
+}
 
 // Absent opt-in costs one metadata lookup,
 // with no directory creation, projection, SQLite, lock or coverage write.
@@ -56,16 +77,13 @@ fn checked<T>(value: Result<T>) -> anyhow::Result<T> {
     value.map_err(anyhow::Error::msg)
 }
 
-fn public_index_error(error: &anyhow::Error) -> String {
-    use rusqlite::{Error, ErrorCode};
-    match error.downcast_ref::<Error>() {
-        Some(Error::SqliteFailure(failure, _))
-            if matches!(failure.code, ErrorCode::DatabaseBusy | ErrorCode::DatabaseLocked) =>
-        {
-            "The session listing is busy. Try again shortly.".into()
-        }
-        Some(_) => "The session listing index cannot be read. Rebuild it and try again.".into(),
-        None => error.to_string(),
+pub(crate) fn public_index_error(error: &anyhow::Error) -> String {
+    if sqlite_busy(error) {
+        "The session listing is busy. Try again shortly.".into()
+    } else if error.is::<rusqlite::Error>() {
+        "The session listing index cannot be read. Rebuild it and try again.".into()
+    } else {
+        error.to_string()
     }
 }
 

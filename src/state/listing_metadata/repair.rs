@@ -8,7 +8,7 @@ const STEP_ROWS: usize = 128;
 const CONTROL_DIRS: [&str; 3] = ["renames", "name_routes", "labels"];
 pub(in crate::state) struct Background {
     root: PathBuf,
-    epoch: Option<String>,
+    index: Option<(String, (u64, u64))>,
     iterator: Option<(i64, i64, fs::ReadDir)>,
     changes: Option<changes::Changes>,
     covered: bool,
@@ -352,7 +352,7 @@ impl Background {
         self.iterator = None;
         self.changes = None;
         self.covered = false;
-        self.epoch = None;
+        self.index = None;
     }
     fn hints(
         &mut self,
@@ -388,12 +388,28 @@ impl Background {
             Err(error) => return Err(error),
         };
         store.verify()?;
-        let epoch: String = store
+        // Initialize the separate directory before capturing the root's
+        // membership stamp. Subsequent certificates only change that child.
+        let coverage = store.coverage_directory()?;
+        let mut epoch: String = store
             .db
             .query_row("SELECT epoch FROM meta WHERE id=1", [], |r| r.get(0))?;
-        if self.epoch.as_deref() != Some(epoch.as_str()) {
-            self.iterator = None;
-            self.covered = false;
+        if store.active_cut()?.is_some_and(|cut| !store.covers(&cut)) {
+            // An unverified base must never be cloned or re-certified using
+            // events already consumed by a resident feed. Change the cursor
+            // epoch before any generation number can be reused.
+            epoch = uuid::Uuid::new_v4().to_string();
+            let reset = store.db.unchecked_transaction()?;
+            reset.execute(
+                "UPDATE meta SET epoch=?1,generation=0,ready=0 WHERE id=1",
+                [&epoch],
+            )?;
+            reset.execute("DELETE FROM scan", [])?;
+            reset.commit()?;
+        }
+        let index = (epoch, store.object()?);
+        if self.index.as_ref() != Some(&index) {
+            self.reset_feed();
             self.changes = match changes::Changes::new(&store.root.path) {
                 Ok(changes) => changes,
                 Err(error) => {
@@ -407,7 +423,7 @@ impl Background {
                 // Restart discovery, retaining only version-checked sources.
                 store.db.execute_batch("BEGIN IMMEDIATE; UPDATE meta SET ready=0 WHERE id=1; DELETE FROM scan; COMMIT;")?;
             }
-            self.epoch = Some(epoch);
+            self.index = Some(index);
         }
         // A resident feed can remain idle without copying every snapshot on
         // each pulse. No directory enumeration or canonical body read here.
@@ -720,6 +736,10 @@ impl Background {
                                 "UPDATE meta SET generation=?1,ready=1 WHERE id=1",
                                 [s.generation],
                             )?;
+                            // Under the publisher gate, certify before COMMIT.
+                            // A failed commit leaves a mismatch and forces a
+                            // new census before any reader can return a body.
+                            store.certify(&coverage)?;
                         }
                         store.db.execute("DELETE FROM scan WHERE id=1", [])?;
                         stats.done = true;
@@ -762,7 +782,7 @@ pub(in crate::state) fn background_at(
     if state.as_ref().is_none_or(|work| work.root != canonical) {
         *state = Some(Background {
             root: canonical,
-            epoch: None,
+            index: None,
             iterator: None,
             changes: None,
             covered: false,

@@ -6,6 +6,7 @@ import os
 import sqlite3
 import subprocess
 import sys
+import time
 import unittest
 import uuid
 
@@ -198,6 +199,97 @@ class ArchiveRestoreSource(pause.Harness):
                     assert_failure("The session listing index cannot be read. Rebuild it and try again.")
             finally:
                 backup.replace(path)
+
+    @unittest.skipUnless(sys.platform.startswith("linux"), "indexed listing is qualified on Linux")
+    def test_ordinary_listing_retries_past_the_sqlite_admission_wait(self):
+        self.save_archive()
+        with self.indexed_database() as path, closing(sqlite3.connect(path, isolation_level=None)) as db:
+            db.execute("PRAGMA journal_mode=DELETE")
+            db.execute("BEGIN EXCLUSIVE")
+            command = [str(pause.HGS), "ls", "--local", "--json", "--no-archives"]
+            with subprocess.Popen(command, env=self.env, stdout=subprocess.PIPE,
+                                  stderr=subprocess.PIPE, text=True) as listing:
+                try:
+                    time.sleep(.35)
+                    db.execute("ROLLBACK")
+                    stdout, stderr = listing.communicate(timeout=5)
+                finally:
+                    if listing.poll() is None:
+                        listing.kill()
+            self.assertEqual(listing.returncode, 0, stdout + stderr)
+            self.assertEqual(json.loads(stdout)["sessions"], [])
+
+    @unittest.skipUnless(sys.platform.startswith("linux"), "indexed listing is qualified on Linux")
+    def test_display_rollback_refuses_bodies_and_recovers_the_saved_occupant(self):
+        import fcntl
+
+        name, _, archive = self.save_archive(tag="rollback")
+        self.hgs("listing-index", "enable", "--json")
+
+        def ls(*extra):
+            return subprocess.run([str(pause.HGS), "ls", "--local", "--json", *extra],
+                                  env=self.env, capture_output=True, text=True, timeout=6)
+
+        def listing_with(occupied):
+            result = ls()
+            if result.returncode:
+                self.assertEqual(result.stdout, "")
+                return None
+            page = json.loads(result.stdout)
+            archived = next((row for row in page["sessions"]
+                             if row.get("archive_id") == archive["archive_id"]), None)
+            occupant = any(row["name"] == name and row["state"] != "archived"
+                           for row in page["sessions"])
+            return page if archived and occupant == occupied and (
+                ("restore" in archived["allowed_actions"]) != occupied) else None
+
+        self.wait(lambda: listing_with(False))
+        state = self.root / "state"
+        cache = state / "listing-metadata"
+        database = cache / "index.sqlite3"
+        saved = self.root / "older.sqlite3"
+        folders = ("", "bindings", "dsh/bindings", "opencode/bindings", "sessions",
+                   "dsh/sessions", "opencode/sessions", "renames", "name_routes", "labels")
+        with closing(sqlite3.connect(database)) as current, closing(sqlite3.connect(saved)) as older:
+            current.backup(older)
+            generation, encoded = older.execute(
+                "SELECT generation,dirs FROM generations WHERE generation = "
+                "(SELECT generation FROM meta WHERE id=1) AND complete=1").fetchone()
+        self.assertEqual(len(json.loads(encoded)), len(folders))
+
+        self.assertEqual(self.start(tag="rollback"), name)
+        self.hgs("pause", name)
+        self.assertTrue(self.binding(name))
+        self.wait(lambda: listing_with(True))
+
+        with (cache / "writer.lock").open("rb") as writer:
+            fcntl.flock(writer, fcntl.LOCK_EX)
+            with closing(sqlite3.connect(saved)) as older, closing(sqlite3.connect(database)) as current:
+                older.backup(current)
+            # Model a rollback that also preserves the cache's old directory
+            # mtime observations. The real canonical bindings stay in place.
+            for folder, stamp in zip(folders, json.loads(encoded)):
+                path = state / folder
+                if stamp is None:
+                    self.assertFalse(path.exists(), path)
+                    continue
+                observed = path.stat()
+                self.assertEqual((observed.st_dev, observed.st_ino, observed.st_size),
+                                 (stamp[0], stamp[1], stamp[4]), path)
+                os.utime(path, ns=(observed.st_atime_ns, stamp[2] * 10**9 + stamp[3]))
+
+            self.assertNotEqual(json.loads(self.hgs("listing-index", "status", "--json"))["state"],
+                                "ready", "status certified the rolled-back cut")
+            for extra in ((), ("--no-archives",), ("--no-archives", "--paged")):
+                with self.subTest(args=extra):
+                    result = ls(*extra)
+                    print(f"rollback generation {generation}, {extra}: "
+                          f"exit={result.returncode}, stdout={len(result.stdout)}, {result.stderr.strip()}",
+                          flush=True)
+                    self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+                    self.assertEqual(result.stdout, "")
+                    self.assertIn("stale or unavailable", result.stderr)
+        self.wait(lambda: listing_with(True))
 
     def test_changed_archive_with_same_run_and_conversation_refuses_before_start(self):
         name, _, selected = self.save_archive()

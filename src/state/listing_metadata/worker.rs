@@ -42,9 +42,6 @@ pub(super) fn request(root: &Path) {
         let Some(_launch) = take(root, "launch.lock")? else {
             return Ok(());
         };
-        let Some(probe) = take(root, "worker.lock")? else {
-            return Ok(());
-        };
         let dir = directory(root)?;
         let attempt = checked(dir.read_private_optional("attempt.json"))?;
         if let Some(file) = attempt {
@@ -58,6 +55,11 @@ pub(super) fn request(root: &Path) {
                 }
             }
         }
+        // A recent request has already started a child. Probing the lease
+        // before that child takes it can make the child lose admission.
+        let Some(probe) = take(root, "worker.lock")? else {
+            return Ok(());
+        };
         checked(dir.replace_file("attempt.json", format!("{{\"at\":{}}}\n", now()).as_bytes()))?;
         let root = crate::platform::canonical(root)?;
         let mut command = Command::new(std::env::current_exe()?);
@@ -159,11 +161,14 @@ pub(in crate::state) fn entry() -> Result<i32> {
                     }));
                 }
                 Err(error) => {
-                    gap(&root.path);
-                    status(&root.path, "unavailable", &public_index_error(&error));
+                    let busy = sqlite_busy(&error);
+                    if last_state != "unavailable" || !busy {
+                        gap(&root.path);
+                        status(&root.path, "unavailable", &public_index_error(&error));
+                    }
                     last_state = "unavailable".into();
                     work = None;
-                    thread::sleep(Duration::from_secs(2));
+                    thread::sleep(Duration::from_millis(if busy { 20 } else { 2000 }));
                 }
             }
         }

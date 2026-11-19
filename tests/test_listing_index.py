@@ -228,6 +228,30 @@ class ListingIndex(unittest.TestCase):
         self.assertFalse((self.state/'listing-metadata/index.sqlite3').exists())
         self.assertFalse(json.loads(self.call('listing-index','status','--json').stdout)['enabled'])
 
+    def test_one_ordinary_listing_waits_for_the_cold_publisher(self):
+        directory = self.state / "listing-metadata"
+        directory.mkdir(mode=0o700)
+        lock = directory / "writer.lock"
+        lock.touch(mode=0o600)
+        with lock.open("rb") as gate:
+            fcntl.flock(gate, fcntl.LOCK_EX)
+            with subprocess.Popen([str(HGS), "ls", "--json", "--local", "--no-archives"],
+                                  env=self.env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                  text=True) as command:
+                try:
+                    deadline = time.monotonic() + 3
+                    while not (directory / "attempt.json").exists() and time.monotonic() < deadline:
+                        time.sleep(.005)
+                    self.assertTrue((directory / "attempt.json").is_file())
+                    time.sleep(.15)
+                    fcntl.flock(gate, fcntl.LOCK_UN)
+                    stdout, stderr = command.communicate(timeout=5)
+                finally:
+                    if command.poll() is None:
+                        command.kill()
+        self.assertEqual(command.returncode, 0, stderr)
+        self.assertEqual(json.loads(stdout)["sessions"], [])
+
     def test_resident_worker_keeps_large_incremental_seed_copy_bounded_and_live(self):
         sources=[]
         for n in range(213):
