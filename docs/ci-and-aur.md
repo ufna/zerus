@@ -1476,7 +1476,7 @@ part of the Dev gate or of Nightly: a red run is visible and holds nothing back.
   It then starts a private `hgs desktop serve --background` with the Teams preview
   turned on by the person, and the person creates one team: a lead and one member of
   the agent under test. The service launches both.
-- **The person's native Team actions** (zerus-63rru.182).
+- **The person's native Team actions.**
   - **The refusal, proven first.** The shipped `hgs` refuses a person's `team create`,
     `team stop` and `task add --team` without the window's native confirmation
     (`person_gesture_required`). Each class proves it first: the real `hgs team create`

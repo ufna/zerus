@@ -42,6 +42,7 @@ import re
 import shutil
 import shlex
 import socket
+import stat
 import subprocess
 import tempfile
 import time
@@ -779,6 +780,7 @@ class TeamsFixtureIsolation(unittest.TestCase):
         native.write_text('#!/bin/sh\n')
         native.chmod(0o755)
         patches = [mock.patch.object(fixture, 'REAL_TMUX', str(stand_in)), mock.patch.object(fixture, 'HGS', str(native)),
+                   mock.patch.object(fixture, 'PERSON', str(native)),
                    mock.patch.dict(os.environ, ZERUS_TEAMS_EVIDENCE=str(self.base / 'evidence'))]
         for patch in patches:
             patch.start()
@@ -792,6 +794,15 @@ class TeamsFixtureIsolation(unittest.TestCase):
         server = socket.socket(socket.AF_UNIX)
         self.addCleanup(server.close)
         server.bind(str(self.outside / 'default'))
+
+    def test_preflight_needs_the_person_executable_and_the_root_is_marked(self):
+        self.fx.preflight()
+        self.assertEqual((self.fx.root / fixture.ROOT_FILE).read_text(), f'{fixture.PERSON_MARKER}\n{self.fx.nonce}\n')
+        self.assertEqual(stat.S_IMODE(os.stat(self.fx.root / fixture.ROOT_FILE).st_mode), 0o600)
+        for value in ('', 'relative/hgs-unit-tests', str(self.base / 'missing')):
+            with self.subTest(person=value), mock.patch.object(fixture, 'PERSON', value), \
+                    self.assertRaisesRegex(AssertionError, 'HGS_TEAMS_PERSON_BIN'):
+                self.fx.preflight()
 
     def tmux(self, *argv, **env):
         self.marker.unlink(missing_ok=True)
