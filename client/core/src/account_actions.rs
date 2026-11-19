@@ -286,6 +286,35 @@ impl Binding {
     }
 }
 
+/// The providers whose model lists Teams' member choices read.
+const MODEL_PROVIDERS: [&str; 3] = ["claude", "codex", "kimi"];
+
+/// This computer's accounts of one provider (`account ls --provider P`):
+/// read from the catalog alone, without inspecting an account or asking
+/// OpenCode or another provider's host. An older `hgs` ignores the option
+/// and lists every row, so a caller keeps only `provider`'s rows itself.
+pub fn provider_catalog(hgs: &Path, machine_id: &str, provider: &str) -> Result<Value, String> {
+    if !crate::creation::canonical_uuid(machine_id) || !MODEL_PROVIDERS.contains(&provider) {
+        return Err(CHANGED.into());
+    }
+    let call = Invocation {
+        args: [
+            "--expect-machine",
+            machine_id,
+            "account",
+            "ls",
+            "--provider",
+            provider,
+        ]
+        .map(String::from)
+        .into(),
+        stdin: None,
+        timeout: Duration::from_secs(25),
+        request_id: None,
+    };
+    run_catalog(hgs, &call)
+}
+
 fn run_catalog(hgs: &Path, call: &Invocation) -> Result<Value, String> {
     let exit = crate::run::run_limited(hgs, call, &[], reads::READ_LIMIT)
         .map_err(|_| launch::INVALID_ACCOUNTS.to_owned())?;

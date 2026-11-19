@@ -98,6 +98,12 @@ impl Catalog {
 impl Binding {
     pub fn model_settings(&self, hgs: &Path) -> Result<Catalog, String> {
         self.fresh(hgs)?;
+        self.read_model_settings(hgs)
+    }
+    /// The account's `model-settings` reply alone, for a caller that captured
+    /// this binding from a listing it has just read: the reply's own revision
+    /// still binds it ([`Catalog::parse`]).
+    pub fn read_model_settings(&self, hgs: &Path) -> Result<Catalog, String> {
         let call = self.invocation(&["model-settings", &self.id, "--json"]);
         let exit = crate::run::run_limited(hgs, &call, &[], 4 * 1024 * 1024)
             .map_err(|_| INVALID.to_owned())?;

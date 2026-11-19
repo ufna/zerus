@@ -500,4 +500,57 @@ mod tests {
         );
         assert!(view.loaded, "the organization stays");
     }
+
+    /// New team's project chooser (zerus-efeo3 G8) reads this exact
+    /// projection: one project with one folder on this computer, one with two,
+    /// one with a folder only on another computer, and the catalog's own rows.
+    /// The frontend fixture is this test's output; set
+    /// ZERUS_UPDATE_NEW_TEAM_PROJECTS_FIXTURE=1 to write it again.
+    #[test]
+    fn the_new_team_projects_fixture_is_this_projection() {
+        const HERE: &str = "00000000-0000-4000-8000-0000000000aa";
+        const OTHER: &str = "00000000-0000-4000-8000-0000000000bb";
+        let mut snapshot = fixture("swarm.json");
+        snapshot["machines"] = json!([
+            {"connection": null, "id": HERE, "local": true, "name": "workstation"},
+            {"connection": "studio", "id": OTHER, "local": false, "name": "studio"}
+        ]);
+        let folder = |id: &str, path: &str, machine: &str, machine_id: &str| json!({"id": id, "name": "", "path": path, "machine": machine, "machine_id": machine_id, "machine_name": ""});
+        let organization = &mut snapshot["organization"];
+        organization["project_order"] = json!(["orders", "two", "elsewhere", "ungrouped"]);
+        organization["projects"] = json!([
+            {"id": "ungrouped", "name": "Inbox", "color": "", "accessible": true, "sessions": [], "folders": []},
+            {"id": "orders", "name": "Orders API", "color": "#3fb950", "accessible": true, "sessions": [],
+             "folders": [folder("o1", "/workspace/example", "workstation", HERE), folder("o2", "/srv/orders", "studio", OTHER)]},
+            {"id": "two", "name": "Two checkouts", "color": "", "accessible": true, "sessions": [],
+             "folders": [folder("t1", "/workspace/two-a", "workstation", HERE), folder("t2", "/workspace/two-b", "workstation", HERE)]},
+            {"id": "elsewhere", "name": "Studio only", "color": "", "accessible": true, "sessions": [],
+             "folders": [folder("e1", "/srv/elsewhere", "studio", OTHER)]},
+            {"id": "hidden", "name": "Not shared here", "color": "", "accessible": false, "sessions": [], "folders": []}
+        ]);
+        let mut swarm = SwarmState::default();
+        swarm.finish(Ok(snapshot));
+        let view = swarm.view(&["studio".into()]);
+        let orders = view.projects.iter().find(|p| p.id == "orders").unwrap();
+        assert_eq!(
+            orders
+                .folders
+                .iter()
+                .map(|f| f.machine_id.as_str())
+                .collect::<Vec<_>>(),
+            [HERE, OTHER],
+            "each folder keeps the computer identity the team service matches"
+        );
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../src/ui/teams/fixtures/new-team-projects.json");
+        let written = serde_json::to_string_pretty(&view).unwrap() + "\n";
+        if std::env::var_os("ZERUS_UPDATE_NEW_TEAM_PROJECTS_FIXTURE").is_some() {
+            std::fs::write(&path, &written).unwrap();
+        }
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap_or_default(),
+            written,
+            "regenerate with ZERUS_UPDATE_NEW_TEAM_PROJECTS_FIXTURE=1"
+        );
+    }
 }

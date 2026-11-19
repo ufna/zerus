@@ -35,7 +35,7 @@
   .nt-template-copy { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
   .nt-template-name { font-weight: 600; font-size: var(--fs-sm); }
   .nt-template-summary { padding: 12px; display: flex; flex-direction: column; gap: 14px; }
-  .nt-template-summary .nt-field > b { color: var(--z-color-text-2); font-weight: 600; }
+  .nt-template-summary .nt-field > b, .nt-template-summary .nt-field > .nt-inline > b { color: var(--z-color-text-2); font-weight: 600; }
   .nt-list { display: flex; flex-direction: column; gap: 4px; color: var(--z-color-text-2); list-style: none; }
   .nt-list li { overflow-wrap: anywhere; }
   .nt-caps { display: grid; grid-template-columns: 130px minmax(0, 1fr); gap: 6px 12px; margin: 0; color: var(--z-color-text-2); }

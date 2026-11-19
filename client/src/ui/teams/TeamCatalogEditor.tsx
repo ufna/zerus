@@ -33,7 +33,7 @@ export function TeamCatalogEditor(props: { editor?: CatalogEditorStore }): JSX.E
   const own = () => (editor.working()[tab()] ?? []).some((row) => row.id === chosen()?.id);
   const builtIn = () => (editor.snapshot()?.builtin[tab()] ?? []).some((row) => row.id === chosen()?.id);
   return <section class="cat cat-editor" aria-label={tr("Team catalog")}>
-    <header class="cat-head"><h2>{tr("Team catalog")}</h2><Show when={editor.dirty()}><span class="cat-unsaved">{tr("Unsaved changes")}</span></Show><span class="grow" />
+    <header class="cat-head"><Show when={editor.dirty()}><span class="cat-unsaved">{tr("Unsaved changes")}</span></Show><span class="grow" />
       <button class="btn ghost small" disabled={editor.locked() || !editor.snapshot()} onClick={() => void editor.importFile()}>{tr("Import…")}</button>
       <button class="btn ghost small" disabled={editor.busy() || !editor.snapshot()} onClick={() => void editor.exportFile()}>{tr("Export…")}</button>
       <button class="btn ghost small" disabled={editor.locked()} onClick={() => void editor.revert()}>{tr("Revert")}</button>

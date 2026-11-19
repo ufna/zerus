@@ -447,10 +447,20 @@ one task at a time.
 
 In the **Team** tab, **Add member** chooses a role from this team's pinned
 catalog, an agent, model, effort and account. The account can be named or
-**The freest account**; empty model and effort use that account's defaults.
-Launch effort is available for Claude and Codex; DeepSeek keeps its model in
-its native account. The member gets its own readable session and worktree through the usual launch
-service. Existing members keep their sessions and work.
+**The freest account**; **Account defaults** and **Default effort** use that
+account's defaults. Model and effort are chosen from the account's model list,
+the one **Accounts > Default model and effort** reads; a named account offers
+its own. The launch may pick any account of the agent for **The freest
+account**, so it offers only the models every account of the agent lists; a
+model that only some list is offered with one of those accounts, and choosing
+it names that account. The window reads only that agent's accounts
+(`hgs account ls --provider`) and their local model lists; it never asks
+OpenCode or another provider's host for them. When the launch starts, a model
+or effort that the chosen account does not list refuses the launch with its
+reason on the member's card. Launch effort is available for Claude and Codex;
+DeepSeek keeps its model in its native account. The member gets its own
+readable session and worktree through the usual launch service. Existing
+members keep their sessions and work.
 
 **Rename team** and **Edit goal** change the team's name and goal. Clearing the
 goal is allowed. A rename keeps existing session, folder and branch names.

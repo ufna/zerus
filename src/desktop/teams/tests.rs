@@ -41,6 +41,10 @@ struct FakeEffects {
     #[cfg(unix)]
     older_deepseek_host: bool,
     placement_override: Option<Placement>,
+    /// Each account's `account model-settings` reply; an account without one
+    /// lists the models these fixtures launch with.
+    catalogs: BTreeMap<String, serde_json::Value>,
+    catalog_reads: Vec<String>,
 }
 impl Default for FakeEffects {
     fn default() -> Self {
@@ -67,6 +71,8 @@ impl Default for FakeEffects {
             #[cfg(unix)]
             older_deepseek_host: false,
             placement_override: None,
+            catalogs: BTreeMap::new(),
+            catalog_reads: Vec::new(),
         }
     }
 }
@@ -124,6 +130,13 @@ impl Effects for FakeEffects {
         self.events.push("branch".into());
         self.exists = true;
         Effect::Submitted(())
+    }
+    fn model_catalog(&mut self, agent: &str, account: &str) -> Result<serde_json::Value> {
+        self.catalog_reads.push(account.into());
+        Ok(self.catalogs.get(account).cloned().unwrap_or_else(|| {
+            serde_json::json!({"account_id": account, "provider": agent, "revision": "r1", "effort_supported": true,
+                "models": (["seat-model", "example-model", "model"].map(|id| serde_json::json!({"id": id, "label": id, "effort_options": ["low", "high", "1x"]})))})
+        }))
     }
     fn accounts(&mut self, _: &str) -> Result<Vec<AccountUsage>> {
         self.account_reads += 1;
@@ -821,6 +834,9 @@ impl Effects for LockingEffects {
     }
     fn accounts(&mut self, a: &str) -> Result<Vec<AccountUsage>> {
         self.inner.accounts(a)
+    }
+    fn model_catalog(&mut self, agent: &str, account: &str) -> Result<serde_json::Value> {
+        self.inner.model_catalog(agent, account)
     }
     fn worktree(&mut self, p: &Plan, o: &str) -> Effect<Option<Worktree>> {
         let result = self.inner.worktree(p, o);
