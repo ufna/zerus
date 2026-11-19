@@ -46,13 +46,20 @@ pub(in crate::desktop) struct Runtime {
 #[serde(tag = "op", deny_unknown_fields)]
 enum Query {
     #[serde(rename = "team_person_action_prepare")]
-    Prepare { scope: Scope, plan: wire::Reference },
+    Prepare {
+        scope: Scope,
+        plan: wire::Reference,
+        #[serde(default)]
+        with_labels: bool,
+    },
     #[serde(rename = "team_person_action_result")]
     Result { intent: wire::Intent },
     #[serde(rename = "team_person_task_prepare")]
     TaskPrepare {
         scope: Scope,
         draft: wire::TaskDraft,
+        #[serde(default)]
+        with_labels: bool,
     },
 }
 
@@ -88,10 +95,10 @@ impl Runtime {
     pub fn query(&mut self, value: &Value, queue: Arc<Queue>, seq: u64) -> Result<()> {
         let query: Query = serde_json::from_value(value.clone()).map_err(|_| required())?;
         let plan = match &query {
-            Query::Prepare { scope, plan } if scope == &self.scope => {
+            Query::Prepare { scope, plan, .. } if scope == &self.scope => {
                 Some(self.plans.get(plan).map_err(store::storage)?)
             }
-            Query::TaskPrepare { scope, draft } if scope == &self.scope && draft.valid() => None,
+            Query::TaskPrepare { scope, draft, .. } if scope == &self.scope && draft.valid() => None,
             Query::Result { intent }
                 if intent.valid() && intent.scope.configuration == self.scope.configuration =>
             {
@@ -103,9 +110,9 @@ impl Runtime {
         let scope = self.scope.clone();
         self.start(queue,seq, move || {
             let result = match query {
-                Query::Prepare { .. } => review(&config,&scope,plan.expect("checked native plan")),
+                Query::Prepare {with_labels,..} => review(&config,&scope,plan.expect("checked native plan"),with_labels),
                 Query::Result { intent } => lookup(&config,&scope,&intent),
-                Query::TaskPrepare {draft,..} => super::intake::review(&config,&scope,draft),
+                Query::TaskPrepare {draft,with_labels,..} => super::intake::review(&config,&scope,draft,with_labels),
             };
             result.unwrap_or_else(|_| json!({"ok":false,"code":"team_person_action_evidence_unavailable","message":"The exact native team action evidence is unavailable. Nothing was replayed."}))
         })
@@ -222,7 +229,7 @@ impl Drop for Runtime {
     }
 }
 
-fn review(config: &Config, scope: &Scope, plan: Arc<wire::Plan>) -> Result<Value> {
+fn review(config: &Config, scope: &Scope, plan: Arc<wire::Plan>, with_labels: bool) -> Result<Value> {
     let prepared = Prepared::resolve(config, plan.clone())?;
     let store = Store::person_evidence(&config.state)?;
     let phase_resources = ops::prepare_phase_controls(&store, &prepared.request);
@@ -268,7 +275,11 @@ fn review(config: &Config, scope: &Scope, plan: Arc<wire::Plan>) -> Result<Value
     let wire::Action::Team { change } = &plan.action else {
         return Err(required());
     };
-    let details = review_details(change, true)?;
+    let details = if with_labels {
+        Vec::new()
+    } else {
+        review_details(change, true)?
+    };
     let mut review = wire::Review {
         intent: wire::Intent {
             scope: scope.clone(),
@@ -286,11 +297,14 @@ fn review(config: &Config, scope: &Scope, plan: Arc<wire::Plan>) -> Result<Value
     // Pretty whitespace can expand a valid dependency-rich draft beyond the
     // fixed review envelope. Compact only its display encoding, preserving
     // the complete payload and all the existing byte/part/identity bounds.
-    if !review.valid() {
+    if !with_labels && !review.valid() {
         review.details = review_details(change, false)?;
     }
     if !review.valid() {
         return Err(required());
+    }
+    if !with_labels {
+        return Ok(json!({"ok":true,"review":review}));
     }
     let labels = super::super::confirmation_labels::action(
         tx.as_deref(),

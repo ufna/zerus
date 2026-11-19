@@ -197,7 +197,7 @@ pub(crate) fn run(
     let review = read
         .exchange(
             None,
-            json!({"op":"team_person_prepare","scope":read.scope,"plan":plan}),
+            json!({"op":"team_person_prepare","scope":read.scope,"plan":plan,"with_labels":true}),
             false,
             None,
         )

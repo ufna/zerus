@@ -269,7 +269,12 @@ fn read(
     #[serde(tag = "op", deny_unknown_fields)]
     enum Query {
         #[serde(rename = "team_person_prepare")]
-        Prepare { scope: Scope, plan: wire::Plan },
+        Prepare {
+            scope: Scope,
+            plan: wire::Plan,
+            #[serde(default)]
+            with_labels: bool,
+        },
         #[serde(rename = "team_person_result")]
         Result { intent: wire::Intent },
     }
@@ -280,7 +285,7 @@ fn read(
         let db = store.db.as_ref().context("Teams store missing")?;
         let tx = db.unchecked_transaction()?;
         match query {
-            Query::Prepare { scope, plan } => {
+            Query::Prepare { scope, plan, with_labels } => {
                 ensure!(
                     scope == current && plan.valid(),
                     "native review scope changed"
@@ -294,7 +299,9 @@ fn read(
                         && card.decisions.contains(&plan.decision),
                     "owner card changed"
                 );
-                let labels = super::confirmation_labels::card_labels(&tx, &team, &card, &facts)
+                let labels = with_labels
+                    .then(|| super::confirmation_labels::card_labels(&tx, &team, &card, &facts))
+                    .transpose()
                     .map_err(anyhow::Error::msg)?;
                 let review = wire::Review {
                     intent: wire::Intent {
@@ -306,12 +313,20 @@ fn read(
                     },
                     team_name: team.name,
                     card_kind: card.kind,
-                    card_text: card.text,
-                    card_parameters: card.parameters,
-                    card_notes: card.notes.iter().map(ops::ReportNote::sentence).collect(),
+                    card_text: if with_labels { String::new() } else { card.text },
+                    card_parameters: if with_labels { Vec::new() } else { card.parameters },
+                    card_notes: if with_labels {
+                        Vec::new()
+                    } else {
+                        card.notes.iter().map(ops::ReportNote::sentence).collect()
+                    },
                 };
                 ensure!(review.valid(), "owner review exceeds bounds");
-                Ok(json!({"ok":true,"review":review,"labels":labels}))
+                if let Some(labels) = labels {
+                    Ok(json!({"ok":true,"review":review,"labels":labels}))
+                } else {
+                    Ok(json!({"ok":true,"review":review}))
+                }
             }
             Query::Result { intent } => {
                 ensure!(

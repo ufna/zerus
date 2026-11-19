@@ -175,12 +175,13 @@ fn native_confirmation_uses_the_exact_reviewed_plan_and_facts() {
     stage(&mut runtime, &plan);
     let queue = Arc::new(Queue::default());
     runtime.query(
-        &json!({"op":"team_person_action_prepare","scope":runtime.scope,"plan":plan.reference()}),
+        &json!({"op":"team_person_action_prepare","scope":runtime.scope,"plan":plan.reference(),"with_labels":true}),
         queue.clone(), 1,
     ).unwrap();
     let value = take(&queue)["value"].clone();
     let review: wire::Review = serde_json::from_value(value["review"].clone()).unwrap();
     assert_eq!(review.intent.plan, plan.reference().unwrap());
+    assert!(review.details.is_empty());
     assert_eq!(value["labels"]["facts"], review.intent.facts,
         "native confirmation must use the bound facts from this review");
     let labels = serde_json::from_value(value["labels"].clone()).unwrap();

@@ -376,11 +376,17 @@ fn confirmation_of_a_produced_owner_card_uses_the_same_facts_and_plain_words() {
         confirmed: false,
         action: zerus_client_core::teams::action::TeamAction::Decide { card, decision },
     }).unwrap();
-    let response = query(&config, &desktop,
-        &json!({"op":"team_person_prepare","scope":scope,"plan":plan}));
+    let mut input = json!({"op":"team_person_prepare","scope":scope,"plan":plan});
+    let legacy = query(&config, &desktop, &input);
+    assert_eq!(legacy["review"]["card_text"], "No account available");
+    assert!(legacy.get("labels").is_none());
+    input["with_labels"] = json!(true);
+    let response = query(&config, &desktop, &input);
     let review: wire::Review = serde_json::from_value(response["review"].clone()).unwrap();
     let labels = serde_json::from_value(response["labels"].clone()).unwrap();
     assert_eq!(review.intent.plan, plan);
+    assert_eq!(response["review"]["intent"], legacy["review"]["intent"]);
+    assert!(review.card_text.is_empty());
     assert_eq!(response["labels"]["facts"], review.intent.facts);
     let prompt = zerus_client_core::desktop::team_confirmation::card(&review, &labels).unwrap();
     assert_eq!(prompt.title.english(), "Acknowledge");

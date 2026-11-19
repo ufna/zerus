@@ -76,7 +76,9 @@ fn check_document(plan: &wire::Plan, document: &TaskDoc) -> Result<()> {
 
 /// Read preparation never reserves a UUID, stages a plan or invokes a writer.
 /// New-card preparation does not create a project/task store.
-pub(super) fn review(config: &Config, scope: &Scope, draft: wire::TaskDraft) -> Result<Value> {
+pub(super) fn review(
+    config: &Config, scope: &Scope, draft: wire::TaskDraft, with_labels: bool,
+) -> Result<Value> {
     if !draft.valid() {
         return Err(required());
     }
@@ -145,13 +147,23 @@ pub(super) fn review(config: &Config, scope: &Scope, draft: wire::TaskDraft) -> 
             check_document(&plan, document)?;
             native::prepare(&store, &config.state, &machine, &prepared.request, document)?;
             let view = document.view().map_err(store::storage)?;
-            labels.task = Some(TaskLabel {
-                number: view.id,
-                title: view.title.clone(),
-                stage: false,
-            });
-            (labels.role, labels.pipeline) =
-                super::super::confirmation_labels::placement(&team, role.as_deref(), pipeline.as_deref());
+            if with_labels {
+                // Like the task board, use the first line for legacy tasks
+                // that only have a description. Keep the caption bounded.
+                let title = if view.title.is_empty() {
+                    view.text.lines().next().unwrap_or_default()
+                } else {
+                    &view.title
+                };
+                labels.task = Some(TaskLabel {
+                    number: view.id,
+                    title: title.chars().take(512).collect(),
+                    stage: false,
+                });
+                (labels.role, labels.pipeline) = super::super::confirmation_labels::placement(
+                    &team, role.as_deref(), pipeline.as_deref(),
+                );
+            }
             details.push(("Title".into(), json!(view.title).to_string()));
             details.push((
                 "Stage".into(),
@@ -181,7 +193,11 @@ pub(super) fn review(config: &Config, scope: &Scope, draft: wire::TaskDraft) -> 
     if !review.valid() {
         return Err(required());
     }
-    Ok(json!({"ok":true,"plan":plan,"review":review,"labels":labels}))
+    if with_labels {
+        Ok(json!({"ok":true,"plan":plan,"review":review,"labels":labels}))
+    } else {
+        Ok(json!({"ok":true,"plan":plan,"review":review}))
+    }
 }
 
 struct Custody {

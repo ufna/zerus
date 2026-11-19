@@ -13,7 +13,7 @@ pub(crate) fn intake(
         configuration: "a".repeat(64),
         service_epoch: uuid::Uuid::new_v4().to_string(),
     };
-    let value = intake::review(config, &scope, draft)?;
+    let value = intake::review(config, &scope, draft, false)?;
     let plan: wire::Plan = serde_json::from_value(value["plan"].clone()).map_err(store::storage)?;
     let review: wire::Review =
         serde_json::from_value(value["review"].clone()).map_err(store::storage)?;

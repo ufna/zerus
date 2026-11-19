@@ -143,7 +143,7 @@ pub(crate) fn run_task(
     let bytes = read
         .exchange(
             None,
-            json!({"op":"team_person_task_prepare","scope":read.scope,"draft":draft}),
+            json!({"op":"team_person_task_prepare","scope":read.scope,"draft":draft,"with_labels":true}),
             false,
             None,
         )

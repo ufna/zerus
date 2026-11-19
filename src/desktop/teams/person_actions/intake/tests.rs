@@ -56,7 +56,7 @@ fn prepare_fixture(
     scope: &Scope,
     draft: wire::TaskDraft,
 ) -> (Arc<Prepared>, wire::Intent) {
-    let value = review(config, scope, draft).unwrap();
+    let value = review(config, scope, draft, false).unwrap();
     let plan: wire::Plan = serde_json::from_value(value["plan"].clone()).unwrap();
     let review: wire::Review = serde_json::from_value(value["review"].clone()).unwrap();
     (
@@ -121,7 +121,7 @@ fn native_intake_reviews_show_project_task_and_team_names_from_the_bound_documen
         (new(), "Native original control"),
         (existing(&reference, &revision), "Existing native control"),
     ] {
-        let value = review(&config, &scope, draft).unwrap();
+        let value = review(&config, &scope, draft, true).unwrap();
         let plan = serde_json::from_value(value["plan"].clone()).unwrap();
         let review: wire::Review = serde_json::from_value(value["review"].clone()).unwrap();
         let labels: team_confirmation::Labels =
