@@ -945,6 +945,17 @@ fn new_binding(name: &str, cwd: &Path, launch_id: Option<&str>) -> Value {
         "created":now(),"launch_id":launch_id,"paused":false})
 }
 
+// A launch or explicit restore owns the checkout verified for this run.
+// An archive may carry an earlier nonce even after the checkout was recreated.
+fn capture_worktree(record: &mut Value, cwd: &Path) {
+    if let Some(owner) = worktree_lifecycle::for_folder(cwd) {
+        record["worktree_owner"] = owner;
+        record["launch_dir"] = json!(cwd);
+    } else {
+        record.as_object_mut().unwrap().remove("worktree_owner");
+    }
+}
+
 /// A new session's binding exactly as `launch` builds and saves it, with no
 /// host started or asked: the Teams caller proof's tests take their binding
 /// from this component (zerus-63rru.28).
@@ -1021,6 +1032,7 @@ pub(crate) fn launch(
     let config = crate::config::Config::load().map_err(|e| e.message)?;
     let defaults = crate::accounts::launch_selection(&config, "dsh").map_err(|e| e.message)?;
     let mut record = new_binding(name, &cwd, launch_id);
+    capture_worktree(&mut record, &cwd);
     if let Some(parent) = parent {
         record["parent"] = parent;
     }

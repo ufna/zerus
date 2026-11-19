@@ -93,6 +93,20 @@ it.each([
   expect([...card.querySelectorAll("[data-decision]")].map((button) => button.getAttribute("data-decision"))).toEqual(["acknowledged"]);
 });
 
+it.each([
+  [oldDeepSeekCards.member, "m4", "remove this member and add a replacement"],
+  [oldDeepSeekCards.lead, "lead", "stop this team and create a new one"],
+] as const)("recovers the member and action from a saved card without parameters ($id)", (saved, member, action) => {
+  // Before bounded card parameters, the real writer only stored the diagnostic.
+  const { parameters: _parameters, ...row } = saved;
+  const { host } = setup({ view: { items: [row as WaitingItem], next: null } });
+  expect(host.querySelector("[data-kind-sentence]")?.textContent).toBe(
+    `Member ${member} needs a DeepSeek host with Agent Teams support.`,
+  );
+  expect(host.querySelector(".waiting-text")?.textContent).toContain(action);
+  expect(host.textContent).not.toMatch(/invalid_state|\/work\/example\/\.dsh/);
+});
+
 it("keeps a legacy refusal as written when its member parameter conflicts", () => {
   const row = oldDeepSeekCards.member;
   const mismatched = { ...row, parameters: [["member", "m999"], row.parameters[1]] } as WaitingItem;

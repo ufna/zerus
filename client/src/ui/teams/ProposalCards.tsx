@@ -4,7 +4,7 @@ import { For, Show } from "solid-js";
 import { tr } from "../../i18n";
 import type { DrawerRow } from "../../store/teamDrawers";
 import type { DrawerAction } from "./TeamReports";
-import { PHASE_CARD_HIDE, waitingDecisions, waitingKindLabel, waitingKindSentence, waitingNote } from "./decisions";
+import { PHASE_CARD_HIDE, waitingDecisions, waitingKindLabel, waitingKindSentence, waitingNote, waitingText } from "./decisions";
 import { openPhase } from "../../store/team-phases";
 import { actorLabel, itemState } from "./feed";
 import { setOpenTeamNode } from "./openNode";
@@ -29,7 +29,7 @@ export function ProposalCards(props: { rows: DrawerRow[]; busy: boolean; onActio
       <Show when={row.card}>{(card) => <article class="team-proposal" data-proposal={card().card}>
         <header><b>{waitingKindLabel(card())}</b><span class="dim">{actorLabel(row)}</span><span class="dim">{itemState(card().state)}</span></header>
         <p class="dim">{waitingKindSentence(card())}</p>
-        <CardText text={card().text} team={props.team} onOpenNode={props.onOpenNode} />
+        <CardText text={waitingText(card())} team={props.team} onOpenNode={props.onOpenNode} />
         <Show when={row.text_truncated}><p class="dim">{tr("Only the beginning of this text is shown.")}</p></Show>
         <Show when={(card().notes ?? []).length}><p class="dim">{tr("Service notes")}</p>
           <For each={card().notes}>{(note) => <p class="dim">{waitingNote(note)}</p>}</For>
