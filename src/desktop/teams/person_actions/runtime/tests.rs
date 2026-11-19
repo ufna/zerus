@@ -169,6 +169,31 @@ fn native_v2_review_keeps_every_field_of_a_valid_dependency_heavy_draft() {
 }
 
 #[test]
+fn native_confirmation_uses_the_exact_reviewed_plan_and_facts() {
+    let (_h, mut runtime, prepared, _owner) = sample();
+    let plan = wire::Plan::from_call(&prepared.call().unwrap()).unwrap();
+    stage(&mut runtime, &plan);
+    let queue = Arc::new(Queue::default());
+    runtime.query(
+        &json!({"op":"team_person_action_prepare","scope":runtime.scope,"plan":plan.reference(),"with_labels":true}),
+        queue.clone(), 1,
+    ).unwrap();
+    let value = take(&queue)["value"].clone();
+    let review: wire::Review = serde_json::from_value(value["review"].clone()).unwrap();
+    assert_eq!(review.intent.plan, plan.reference().unwrap());
+    assert!(review.details.is_empty());
+    assert_eq!(value["labels"]["facts"], review.intent.facts,
+        "native confirmation must use the bound facts from this review");
+    let labels = serde_json::from_value(value["labels"].clone()).unwrap();
+    let prompt = zerus_client_core::desktop::team_confirmation::action(&plan, &review, &labels).unwrap();
+    assert_eq!(prompt.title.english(), "Rename team");
+    let sentence = prompt.body[0].english();
+    assert!(sentence.contains(&review.team_name));
+    assert!(sentence.contains("Reviewed native worker name"));
+    assert!(!sentence.contains(&review.intent.plan.team));
+}
+
+#[test]
 fn native_v2_worker_prepares_executes_and_only_reads_original_results() {
     let (h, mut runtime, plan, _owner) = sample();
     stage(&mut runtime, &plan);

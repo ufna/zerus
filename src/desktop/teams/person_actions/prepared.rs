@@ -11,7 +11,13 @@ use crate::{
 use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::{json, Value};
 use std::sync::Arc;
-use zerus_client_core::{desktop::team_person_actions as wire, teams::action::TeamAction};
+use zerus_client_core::{
+    desktop::{
+        team_confirmation::{KeptAssignment, KeptRoute},
+        team_person_actions as wire,
+    },
+    teams::action::TeamAction,
+};
 use zerus_team_plan::{model::Team, problem::code, Problem};
 
 type Result<T> = std::result::Result<T, Problem>;
@@ -23,7 +29,7 @@ pub(super) struct Prepared {
     /// What a window Route keeps from the stored task, for the native review
     /// (zerus-3u5yu): the dependencies and write paths it binds, and the
     /// assignee it keeps (`m1`) or clears (`m1 → none`). Empty otherwise.
-    pub kept: Vec<(&'static str, Value)>,
+    pub kept: Option<KeptRoute>,
 }
 
 pub(super) fn actor() -> ops::Actor {
@@ -73,7 +79,7 @@ impl Prepared {
             return Ok(Self {
                 plan,
                 request,
-                kept: Vec::new(),
+                kept: None,
             });
         };
         let call = plan.call().ok_or_else(required)?;
@@ -86,12 +92,17 @@ impl Prepared {
             TeamAction::Settings { .. } => "change_settings".into(),
             TeamAction::ValidationConfig { .. } => "set_validation_config".into(),
             TeamAction::Decide { .. } => "decide_card".into(),
+            TeamAction::LeaveLeadNote { .. } => {
+                fields.insert("kind".into(), json!(store::person_contact::NOTE));
+                fields.insert("decisions".into(), json!([]));
+                "open_card".into()
+            }
             // Ask is member-only even when a Person could name a node.
             TeamAction::Ask { .. } => return Err(required()),
             _ => change.op().replace('-', "_"),
         };
         fields.insert("op".into(), json!(variant));
-        let mut kept = Vec::new();
+        let mut kept = None;
         if let TeamAction::Route {
             node,
             role,
@@ -128,16 +139,14 @@ impl Prepared {
             if let Some(id) = &bound {
                 fields.insert("assignee".into(), json!(id));
             }
-            kept.push(("deps", json!(task.deps)));
-            kept.push(("writes", json!(task.writes)));
-            if let Some(id) = &task.assignee {
-                let shown = if bound.is_some() {
-                    id.clone()
-                } else {
-                    format!("{id} → none")
-                };
-                kept.push(("assignee", Value::String(shown)));
-            }
+            kept = Some(KeptRoute {
+                deps: task.deps,
+                writes: task.writes,
+                assignment: task.assignee.map(|member| KeptAssignment {
+                    member,
+                    cleared: bound.is_none(),
+                }),
+            });
         }
         if let TeamAction::Create {
             template,
@@ -308,6 +317,12 @@ impl Prepared {
         } else {
             rows::team(db, id)?
         };
+        if let Some(team) = current.as_ref().filter(|_| matches!(&self.plan.action, wire::Action::Team { change }
+            if matches!(change.as_ref(), TeamAction::AskLead { .. } | TeamAction::LeaveLeadNote { .. })))
+        {
+            facts.push(point(db, "members", "team", id, Some(("id", &json!(team.lead))),
+                "data,state,person_stopped,machine,session_id", 65536)?);
+        }
         let digest = wire::digest(&(&self.request, facts)).ok_or_else(required)?;
         Ok((current, digest))
     }

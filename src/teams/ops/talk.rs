@@ -68,6 +68,9 @@ pub(super) fn open_card(ctx: &mut Context<'_>) -> Result<()> {
     else {
         unreachable!()
     };
+    if kind == store::person_contact::NOTE {
+        return person_contact::open_note(ctx, text, *node, decisions.as_deref(), parameters.as_deref());
+    }
     planning::ordinary_card(ctx, *node)?;
     if matches!(kind.as_str(), "integration" | "pipeline_acceptance") {
         return Err(invalid(
@@ -179,7 +182,7 @@ fn write_card(
     reason(kind)?;
     text(kind, 128)?;
     reason(body)?;
-    let listed = if decisions.is_empty() {
+    let listed = if decisions.is_empty() && !store::person_contact::passive(kind) {
         None
     } else {
         Some(encode(&decisions)?)

@@ -29,11 +29,18 @@ export const KNOWN_KINDS = [
 /** The card's kind in words, keyed by the exact kind the store sends. A kind
  * not in the table shows a neutral label with its plain kind, never another
  * kind's text. */
+export function isLeadNotice(kind: string): boolean {
+  return kind === "lead_reply_to_person" || kind === "lead_note_ack";
+}
+
 export function waitingKindLabel(item: Pick<WaitingItem, "kind">): string {
   switch (item.kind) {
     case "phase_review": return tr("Phase review");
     case "phase_acceptance": return tr("Phase acceptance");
     case "note": return tr("Note");
+    case "person_note_to_lead": return tr("Note for the lead");
+    case "lead_reply_to_person": return tr("Lead’s reply");
+    case "lead_note_ack": return tr("Acknowledged by the lead");
     case "integration": return tr("Integration");
     case "pipeline_acceptance": return tr("Work acceptance");
     case "launch_blocked": return tr("Member not started");

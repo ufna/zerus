@@ -374,7 +374,7 @@ mod tests {
         Arc::new(Prepared {
             plan: Arc::new(plan),
             request,
-            kept: Vec::new(),
+            kept: None,
         })
     }
 
@@ -636,7 +636,7 @@ mod tests {
         let prepared = Arc::new(Prepared {
             plan: Arc::new(plan),
             request,
-            kept: Vec::new(),
+            kept: None,
         });
         let intent = wire::Intent {
             scope: Scope {

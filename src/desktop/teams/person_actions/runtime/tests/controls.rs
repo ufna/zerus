@@ -197,7 +197,7 @@ fn native_s5_preparation_rejects_wrong_nested_relative_generation_and_pause() {
     );
     let revision = h.store.team(TEAM).unwrap().unwrap().revision;
     assert_eq!(
-        review(&runtime.config, &runtime.scope, proposed)
+        review(&runtime.config, &runtime.scope, proposed, true)
             .unwrap_err()
             .code,
         code::STALE_REVISION
@@ -219,7 +219,7 @@ fn native_s5_preparation_rejects_wrong_nested_relative_generation_and_pause() {
         },
     );
     assert_eq!(
-        review(&runtime.config, &runtime.scope, proposed)
+        review(&runtime.config, &runtime.scope, proposed, true)
             .unwrap_err()
             .code,
         code::STALE_REVISION
@@ -313,7 +313,7 @@ fn native_s5_real_reservation_after_consent_refuses_cached_todo_and_new_consent(
             acceptance: Acceptance::Person,
         },
     );
-    assert!(review(&runtime.config, &runtime.scope, next).is_err());
+    assert!(review(&runtime.config, &runtime.scope, next, true).is_err());
 }
 
 #[test]
@@ -480,7 +480,7 @@ fn native_s5_correction_binds_base_episode_generation_and_reserved_new_separatel
             reason: "Hold this exact correction publication.".into(),
         },
     );
-    let response = review(&runtime.config, &runtime.scope, expected).unwrap();
+    let response = review(&runtime.config, &runtime.scope, expected, true).unwrap();
     assert_eq!(response["ok"], true);
     let mut wrong = exact;
     let PhaseControlScope::Published {
@@ -499,9 +499,38 @@ fn native_s5_correction_binds_base_episode_generation_and_reserved_new_separatel
         },
     );
     assert_eq!(
-        review(&runtime.config, &runtime.scope, refused)
+        review(&runtime.config, &runtime.scope, refused, true)
             .unwrap_err()
             .code,
         code::STALE_REVISION
     );
+}
+
+#[test]
+fn lead_contact_uses_exactly_the_reviewed_native_body_and_mode() {
+    let (mut h, mut runtime, _, _owner) = sample();
+    h.bind("lead");
+    let intended = plan(
+        &h,
+        TeamAction::LeaveLeadNote { text: "First line\nSecond line".into() },
+    );
+    assert!(wire::required_markers(&intended).contains(&wire::LEAD_CONTACT_MARKER));
+    let review = prepare(&mut runtime, &intended);
+    let response = execute(&mut runtime, &review);
+    assert_eq!(response["reply"]["ok"], true, "{response}");
+    let note = h.store.cards(TEAM, 20, None).unwrap().rows.pop().unwrap();
+    assert_eq!(note.text, "First line\nSecond line");
+    assert!(note.decisions.is_empty());
+    assert_eq!(response["reply"]["item"], note.seq);
+
+    let asked = plan(&h, TeamAction::AskLead { text: "Are we ready?".into() });
+    let review = prepare(&mut runtime, &asked);
+    let mut changed = (*asked).clone();
+    changed.action = wire::Action::Team {
+        change: Box::new(TeamAction::LeaveLeadNote { text: "Are we ready?".into() }),
+    };
+    assert_ne!(changed.reference(), asked.reference());
+    h.run(&person(), ops::Operation::SetGoal { goal: "A newer review".into() }).unwrap();
+    assert_eq!(execute(&mut runtime, &review)["reply"]["ok"], false);
+    assert_eq!(h.store.inbox(TEAM, 20, None).unwrap().rows.len(), 1);
 }

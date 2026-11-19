@@ -80,6 +80,7 @@ pub(crate) const USAGE: &str = r#"usage: hgs [@host] <cmd> [project] [-c [ID]] [
        Desktop Teams Person ABI: desktop-team-person-v1
        Desktop Teams Person actions ABI: desktop-team-person-actions-v2
        Desktop Teams Person placement fields: desktop-team-person-placement-v1
+       Desktop Teams lead contact: desktop-team-lead-contact-v1
        Desktop deferred answer update phase: desktop-deferred-answer-update-phase-v1
        Desktop deferred compact to send ABI: desktop-deferred-compact-to-send-v1
        Desktop deferred session resume ABI: desktop-deferred-session-resume-v1
@@ -554,6 +555,7 @@ fn unix_only_usage(line: &str) -> bool {
         zerus_client_core::desktop::team_person::HELP_MARKER,
         zerus_client_core::desktop::team_person_actions::HELP_MARKER,
         zerus_client_core::desktop::team_person_actions::PLACEMENT_MARKER,
+        zerus_client_core::desktop::team_person_actions::LEAD_CONTACT_MARKER,
         zerus_client_core::desktop::deferred_answer::UPDATE_PHASE_MARKER,
         zerus_client_core::desktop::compact_to_send::HELP_MARKER,
         zerus_client_core::desktop::session_resume::HELP_MARKER,
@@ -4655,6 +4657,10 @@ mod tests {
                 )
                 .replace(
                     "       Desktop Teams Person placement fields: desktop-team-person-placement-v1\n",
+                    ""
+                )
+                .replace(
+                    "       Desktop Teams lead contact: desktop-team-lead-contact-v1\n",
                     ""
                 )
                 .replace(

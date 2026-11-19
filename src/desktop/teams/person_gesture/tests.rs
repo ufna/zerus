@@ -362,6 +362,42 @@ fn review(
 }
 
 #[test]
+fn confirmation_of_a_produced_owner_card_uses_the_same_facts_and_plain_words() {
+    let (h, request) = sample();
+    let (config, desktop, scope) = service(&h);
+    let ops::Operation::DecideCard { card, decision } = request.operation else {
+        unreachable!()
+    };
+    let plan = wire::Plan::from_call(&zerus_client_core::teams::action::TeamCall {
+        request_id: request.request_id,
+        team: request.team,
+        team_name: "Untrusted renderer title".into(),
+        expected_revision: Some(request.expected_revision),
+        confirmed: false,
+        action: zerus_client_core::teams::action::TeamAction::Decide { card, decision },
+    }).unwrap();
+    let mut input = json!({"op":"team_person_prepare","scope":scope,"plan":plan});
+    let legacy = query(&config, &desktop, &input);
+    assert_eq!(legacy["review"]["card_text"], "No account available");
+    assert!(legacy.get("labels").is_none());
+    input["with_labels"] = json!(true);
+    let response = query(&config, &desktop, &input);
+    let review: wire::Review = serde_json::from_value(response["review"].clone()).unwrap();
+    let labels = serde_json::from_value(response["labels"].clone()).unwrap();
+    assert_eq!(review.intent.plan, plan);
+    assert_eq!(response["review"]["intent"], legacy["review"]["intent"]);
+    assert!(review.card_text.is_empty());
+    assert_eq!(response["labels"]["facts"], review.intent.facts);
+    let prompt = zerus_client_core::desktop::team_confirmation::card(&review, &labels).unwrap();
+    assert_eq!(prompt.title.english(), "Acknowledge");
+    let sentence = prompt.body[0].english();
+    assert!(sentence.contains(&review.team_name));
+    assert!(!sentence.contains(&plan.team));
+    assert!(!sentence.contains(&review.card_kind));
+    assert!(!sentence.contains(&plan.decision));
+}
+
+#[test]
 fn service_handler_and_result_reader_preserve_the_exact_original_without_replay() {
     let (h, request) = sample();
     let (config, desktop, scope) = service(&h);

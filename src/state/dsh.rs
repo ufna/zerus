@@ -2652,6 +2652,9 @@ pub(crate) fn dispatch(command: &str, args: &[String]) -> Result<i32> {
                         "Sign in to DeepSeek in the native UI before sending a message".into(),
                     );
                 }
+                // The Teams actor checked idle for this lead. Queue at the
+                // native turn boundary if a new turn started since that read.
+                let mode = if request["only_when_idle"] == true { "queue" } else { "steer" };
                 receipt["digest"] = json!(digest);
                 receipt["attachments"] = attachments::stage_native(&request)?;
                 receipt["text"] = json!(text);
@@ -2669,7 +2672,7 @@ pub(crate) fn dispatch(command: &str, args: &[String]) -> Result<i32> {
                     rpc(
                         &record,
                         "send",
-                        json!({"sessionId":record["conversation_id"],"requestId":request["request_id"],"content":content,"mode":"steer","expectedCompactionId":request["expected_compaction_id"]}),
+                        json!({"sessionId":record["conversation_id"],"requestId":request["request_id"],"content":content,"mode":mode,"expectedCompactionId":request["expected_compaction_id"]}),
                     )?;
                 } else {
                     rpc(

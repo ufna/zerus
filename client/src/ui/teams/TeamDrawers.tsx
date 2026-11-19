@@ -19,10 +19,16 @@ const TeamLeadChat = lazy(() => import("./TeamLeadChat").then((module) => ({ def
 
 export const drawerLabel = (kind: TeamDrawer) => ({ timeline: tr("Timeline"), feed: tr("Feed"), inbox: tr("Inbox"), reports: tr("Reports"), cards: tr("Cards"), chat: tr("Lead chat") })[kind];
 
-export function TeamDrawerButtons(props: { value: TeamDrawer | null; onOpen: (kind: TeamDrawer) => void }) {
+export function TeamDrawerButtons(props: { value: TeamDrawer | null; leadNotices?: number; onOpen: (kind: TeamDrawer) => void }) {
   return <div class="team-drawer-buttons" role="group" aria-label={tr("Team drawers")}>
     <For each={["timeline", "feed", "inbox", "reports", "cards", "chat"] as const}>{(kind) =>
-      <button type="button" class="btn small" aria-expanded={props.value === kind} data-team-drawer={kind} onClick={() => props.onOpen(kind)}>{drawerLabel(kind)}</button>
+      <button type="button" class="btn small" aria-expanded={props.value === kind} data-team-drawer={kind} onClick={() => props.onOpen(kind)}>{drawerLabel(kind)}
+        <Show when={kind === "cards" && (props.leadNotices ?? 0) > 0}>
+          <span class="team-pill" data-team-lead-notices title={tr("Unread updates from the lead")}>
+            {Math.min(props.leadNotices ?? 0, 200)}{(props.leadNotices ?? 0) > 200 ? "+" : ""}
+          </span>
+        </Show>
+      </button>
     }</For>
   </div>;
 }
@@ -50,7 +56,12 @@ function InboxRow(props: { row: DrawerRow; busy: boolean; onAction: DrawerAction
   return <Show when={props.row.kind !== "report"} fallback={<Report row={props.row} busy={props.busy} onAction={props.onAction} />}>
     <article class="team-drawer-row" data-inbox={props.row.seq}>
       <header><span class="team-pill">{inboxKind(props.row.kind)}</span><b>{actorLabel(props.row)}</b><span class="dim">{itemState(props.row.state)}</span></header>
-      <InboxText row={props.row} />
+      <Show when={props.row.kind.startsWith("person_note_link:")} fallback={<InboxText row={props.row} />}>
+        <p>{tr("Read the note in Cards.")}</p>
+      </Show>
+      <Show when={props.row.kind.startsWith("person_question:") && props.row.state === "open"}>
+        <p class="dim">{tr("Waiting for the lead’s reply")}</p>
+      </Show>
       <Show when={props.row.state === "open" && props.row.kind.startsWith("question:")}><div class="team-drawer-actions">
         <TextInput class="field" maxlength={4000} value={answer()} aria-label={tr("Your answer")} disabled={props.busy} onInput={(event) => setAnswer(event.currentTarget.value)} />
         <button type="button" class="btn small" disabled={props.busy || !answer().trim()} data-inbox-answer onClick={() => props.onAction("reply", { item: props.row.seq, text: answer() })}>{tr("Answer")}</button>

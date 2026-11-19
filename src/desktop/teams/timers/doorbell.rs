@@ -44,7 +44,9 @@ pub(super) fn ring(
         conversation: &p.conversation,
     };
     let interval = i64::from(team.settings.timers.inbox_interval_seconds) * 1000;
-    let Some(reserved) = ledger.reserve(&binding, view.newest, view.open, interval, epoch, now)?
+    let Some(reserved) = ledger.reserve(
+        &binding, view.newest, view.open, view.newest_person_message, interval, epoch, now,
+    )?
     else {
         return Ok(None);
     };
@@ -61,6 +63,7 @@ pub(super) fn ring(
         run: p.run.clone(),
         conversation: p.conversation.clone(),
         text: text(view.open, &team.id),
+        only_when_idle: view.newest_person_message > reserved.after,
     };
     let rung = effects.ring(store, &ring);
     ledger.settle(&reserved.id, &rung)?;

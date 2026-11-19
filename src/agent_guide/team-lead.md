@@ -26,6 +26,9 @@ Goals and drafts: hgs guide team-planning.
     {"request_id":"UUID","team":"TEAM","expected_revision":42,"item":3,
      "text":"the answer"}
 
+Owner question: hgs team reply-to-person (item, text).
+Owner note: hgs team cards; hgs team acknowledge-note (card).
+
 Same envelope: route (node, role, pipeline), admit/hold/release (node), cancel (node, reason).
 
 Decisions

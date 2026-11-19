@@ -5,6 +5,7 @@ use super::actor::{self, Caller};
 use super::input::{self, Options};
 use super::{not_found_team, storage};
 use crate::config::Config;
+use crate::teams::ops::Actor;
 use crate::teams::store::{Cursor, Page, Store, TeamRow};
 use serde::Serialize;
 use serde_json::{json, Value};
@@ -207,7 +208,16 @@ pub(super) fn list_teams(
         .into_iter()
         .map(|row| {
             let summary = progress.remove(&row.id).unwrap_or_default();
-            listed_team(&store, row, summary)
+            let notices = match &store.db {
+                Some(db) if matches!(identity.actor, Actor::Person { .. }) =>
+                    crate::teams::store::person_contact::unread(db, &row.id)?,
+                _ => 0,
+            };
+            let mut value = listed_team(&store, row, summary)?;
+            if notices > 0 {
+                value["lead_notices"] = json!(notices);
+            }
+            Ok(value)
         })
         .collect::<Result<Vec<_>, _>>()?;
     global_rows_with_next(&identity, rows, page.next.as_ref())
@@ -416,7 +426,7 @@ fn counts(store: &Store, team: &str) -> Result<Value, Problem> {
         + count(&member_counts, "active")
         + count(&member_counts, "paused")
         + count(&member_counts, "removed");
-    Ok(json!({
+    let mut value = json!({
         "members": {
             "total": total,
             "not_created": count(&member_counts, "not_created"),
@@ -434,7 +444,12 @@ fn counts(store: &Store, team: &str) -> Result<Value, Problem> {
         },
         "inbox": {"open": inbox},
         "cards": {"open": cards},
-    }))
+    });
+    let notices = crate::teams::store::person_contact::unread(db, team)?;
+    if notices > 0 {
+        value["cards"]["lead_notices"] = json!(notices);
+    }
+    Ok(value)
 }
 
 fn empty_counts() -> Value {

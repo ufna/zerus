@@ -12,6 +12,7 @@ import { createTeamEditors, TeamEditButtons, type EditAction } from "./TeamEdito
 import { MemberCard } from "./MemberCard";
 import { memberSessions } from "./member-session";
 import { TeamBar } from "./team-bar";
+import { TeamLeadContact } from "./TeamLeadContact";
 import { TeamSettingsDialog } from "./TeamSettingsDialog";
 import { TaskActions } from "./TeamActions";
 import { TeamConfirmDialog } from "./TeamConfirmDialog";
@@ -217,7 +218,9 @@ export function TeamWorkspace(props: {
     <div ref={workspace} class="team-tab" data-team-tab on:keydown={dismissKey}>
       <TeamBar view={props.view} busy={props.busy} onAction={(kind) => kind === "advance_base" ? setAdvance(true) : send(kind)}
         onSettings={props.onSettingsSave ? () => setSettingsView(props.view) : undefined} settingsBlocked={props.settingsBlocked}
-        drawers={<TeamDrawerButtons value={drawer()} onOpen={(kind) => setDrawer(drawer() === kind ? null : kind)} />} />
+        drawers={<TeamDrawerButtons value={drawer()} leadNotices={props.view.bar.counts.lead_notices} onOpen={(kind) => setDrawer(drawer() === kind ? null : kind)} />} />
+      <TeamLeadContact team={props.view.bar.id} revision={props.view.revision} status={props.view.bar.status}
+        busy={props.busy} onAction={props.onAction} />
       <Show when={settingsView()}><TeamSettingsDialog view={props.view} providerHome={props.providerHome} busy={props.busy || !!props.settingsBlocked}
         onSave={(call) => props.onSettingsSave!(call)} onClose={() => setSettingsView(undefined)} /></Show>
       <Show when={advance()}><TeamAdvanceBase team={props.view.bar.id} busy={props.busy}

@@ -24,6 +24,7 @@ pub(super) fn team_counts(value: &Value) -> TeamCounts {
         },
         inbox: count(&value["inbox"], "open"),
         cards: count(&value["cards"], "open"),
+        lead_notices: count(&value["cards"], "lead_notices"),
     }
 }
 

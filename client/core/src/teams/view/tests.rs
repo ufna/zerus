@@ -67,6 +67,7 @@ fn the_pinned_status_and_queue_project_the_team() {
             },
             inbox: 1,
             cards: 1,
+            lead_notices: 0,
         }
     );
 

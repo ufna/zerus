@@ -56,6 +56,8 @@ struct Request {
     attachments: Vec<Attachment>,
     #[serde(default)]
     expected_compaction_id: String,
+    #[serde(default)]
+    only_when_idle: bool,
 }
 
 fn validate(request: &Request) -> Result<Vec<Vec<u8>>> {
@@ -129,7 +131,7 @@ pub(super) fn validate_launch_prompt(text: &str) -> Result<()> {
     validate(&Request {
         request_id: uuid::Uuid::new_v4().to_string(), text: text.into(),
         expected_run_id: "launch".into(), expected_conversation_id: String::new(),
-        attachments: Vec::new(), expected_compaction_id: String::new(),
+        attachments: Vec::new(), expected_compaction_id: String::new(), only_when_idle: false,
     }).map(|_| ())
 }
 
@@ -184,7 +186,14 @@ fn checked_record_gate(name: &str, request: &Request) -> std::result::Result<Val
         true,
     )?;
     compact_context::check_continuation(&record, &request.expected_compaction_id)?;
+    if request.only_when_idle && (!idle_reminder_ready(&record) || effort::pending_applies(&record)) {
+        return Err(Gate::Other("The agent is not idle; the team reminder was not sent.".into()));
+    }
     Ok(record)
+}
+
+fn idle_reminder_ready(record: &Value) -> bool {
+    record["activity"] == "idle" && record["phase"] == "idle"
 }
 
 pub(super) fn checked_ready(name: &str, run_id: &str, conversation_id: &str) -> Result<Value> {
@@ -2173,7 +2182,7 @@ fn submit_core(
     let text = attachments::terminal_text(request.text.trim(), &paths);
     let mut attachments = Some(attachments);
     let mut pre_send_compaction = Value::Null;
-    let decision = (matches!(origin, Origin::Person) && request.expected_compaction_id.is_empty())
+    let decision = (!request.only_when_idle && matches!(origin, Origin::Person) && request.expected_compaction_id.is_empty())
         .then(|| kimi_expiry::decision(&record)).flatten();
     if let Some(decision) = decision {
         // Reserve the ORIGINAL request and payload before the first compact
@@ -2370,6 +2379,9 @@ fn submit_core(
                 return Err(error.into());
             }
         }
+        if request.only_when_idle && !idle_reminder_ready(&read(name)?) {
+            return Err("The agent began work before the team reminder could be pasted.".into());
+        }
         pasted_at = now();
         terminal.paste(&buffer, pane, backend::Paste::Composer)?;
         deadline = std::time::Instant::now() + settle::WINDOW;
@@ -2419,6 +2431,9 @@ fn submit_core(
             return Err("agent changed after paste".into());
         }
         checked_terminal(&record, false)?;
+        if request.only_when_idle && !idle_reminder_ready(&read(name)?) {
+            return Err("The agent began work before the team reminder could be submitted.".into());
+        }
         terminal.send(pane, &[backend::Key::Named("Enter")])?;
         if !native {
             receipt["status"] = json!("submitted");
@@ -3326,6 +3341,7 @@ mod tests {
             expected_run_id: "run".into(),
             expected_conversation_id: String::new(),
             expected_compaction_id: String::new(),
+            only_when_idle: false,
             attachments: vec![],
         };
         assert!(validate(&r).is_ok());

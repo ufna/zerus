@@ -24,6 +24,7 @@ const NAMES: Readonly<Record<string, () => string>> = {
   start_planning: () => tr("Start planning"), stop: () => tr("Stop"), stop_member: () => tr("Stop member"), submit_draft_phase: () => tr("Submit draft phase"),
   submit_phase_corrections: () => tr("Submit corrections"), swap_member: () => tr("Swap member"),
   undo_phase_correction_rejection: () => tr("Undo correction rejection"), undo_reject_phase: () => tr("Undo phase rejection"),
+  ask_lead: () => tr("Ask the lead…"), leave_lead_note: () => tr("Leave a note"), read_lead_notice: () => tr("Open update"),
   validation_config: () => tr("Tests and Builds"),
 };
 export const actionName = (kind: string): string | undefined => Object.hasOwn(NAMES, kind) ? NAMES[kind]() : undefined;
@@ -35,7 +36,7 @@ export function ActionFailureNotice(props: { failure: TeamFailure; onDismiss: ()
       <Icon name="triangle-alert" size={16} />
       <span class="team-action-failure-text">
         <Show when={name()}>{(shown) => <b data-team-action-failure-action>{shown()}</b>}</Show>
-        <span data-team-action-failure-message>{props.failure.message}</span>
+        <span data-team-action-failure-message>{tr(props.failure.message)}</span>
       </span>
       <button type="button" class="btn small" data-team-action-failure-dismiss onClick={() => props.onDismiss()}>{tr("Dismiss")}</button>
     </div>

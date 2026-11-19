@@ -4,7 +4,7 @@ import { For, Show } from "solid-js";
 import { tr } from "../../i18n";
 import type { DrawerRow } from "../../store/teamDrawers";
 import type { DrawerAction } from "./TeamReports";
-import { waitingDecisions, waitingKindLabel, waitingKindSentence, waitingNote, waitingText } from "./decisions";
+import { isLeadNotice, waitingDecisions, waitingKindLabel, waitingKindSentence, waitingNote, waitingText } from "./decisions";
 import { actorLabel, itemState } from "./feed";
 import { setOpenTeamNode } from "./openNode";
 
@@ -26,9 +26,16 @@ export function ProposalCards(props: { rows: DrawerRow[]; busy: boolean; onActio
   return <div class="team-proposals" role="list" aria-label={tr("Cards")}>
     <For each={props.rows} fallback={<p class="dim">{tr("No cards on this page.")}</p>}>{(row) =>
       <Show when={row.card}>{(card) => <article class="team-proposal" data-proposal={card().card}>
-        <header><b>{waitingKindLabel(card())}</b><span class="dim">{actorLabel(row)}</span><span class="dim">{itemState(card().state)}</span></header>
-        <p class="dim">{waitingKindSentence(card())}</p>
-        <CardText text={waitingText(card())} team={props.team} onOpenNode={props.onOpenNode} />
+        <header><b>{waitingKindLabel(card())}</b><span class="dim">{actorLabel(row)}</span><span class="dim">{card().decision === "acknowledged" && card().kind === "person_note_to_lead" ? tr("Acknowledged by the lead") : itemState(card().state)}</span></header>
+        <Show when={!isLeadNotice(card().kind) && card().kind !== "person_note_to_lead"}><p class="dim">{waitingKindSentence(card())}</p></Show>
+        <Show when={!isLeadNotice(card().kind) || card().state !== "open"} fallback={
+          <button type="button" class="btn small" disabled={props.busy} data-open-lead-notice
+            onClick={() => props.onAction("read_lead_notice", { card: card().card })}>
+            {card().kind === "lead_reply_to_person" ? tr("Open reply") : tr("Open update")}
+          </button>
+        }>
+          <CardText text={waitingText(card())} team={props.team} onOpenNode={props.onOpenNode} />
+        </Show>
         <Show when={row.text_truncated}><p class="dim">{tr("Only the beginning of this text is shown.")}</p></Show>
         <Show when={(card().notes ?? []).length}><p class="dim">{tr("Service notes")}</p>
           <For each={card().notes}>{(note) => <p class="dim">{waitingNote(note)}</p>}</For>

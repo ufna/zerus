@@ -60,6 +60,7 @@ pub struct OpenItem {
 pub struct InboxView {
     pub open: u32,
     pub newest: u64,
+    pub newest_person_message: u64,
     pub oldest: Option<OpenItem>,
 }
 /// A delivered attempt of a live node, with the outcome time when known.
@@ -199,6 +200,7 @@ impl Store {
             Ok(Some(InboxView {
                 open,
                 newest,
+                newest_person_message: super::person_contact::newest(db, team)?,
                 oldest,
             }))
         })

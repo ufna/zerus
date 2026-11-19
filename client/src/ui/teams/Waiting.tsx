@@ -4,7 +4,7 @@ import { Icon } from "../lib/icons";
 import { openPhase } from "../../store/team-phases";
 import { TeamChip } from "./TeamChips";
 import type { WaitingItem, WaitingView } from "../../store/teams";
-import { waitingAge, waitingDecisions, waitingKindIcon, waitingKindLabel, waitingKindSentence, waitingNote, waitingText } from "./decisions";
+import { isLeadNotice, waitingAge, waitingDecisions, waitingKindIcon, waitingKindLabel, waitingKindSentence, waitingNote, waitingText } from "./decisions";
 
 // Waiting for you (the fork's Waiting.tsx, adapted to M1): the open owner
 // cards of every team, oldest first, each with its team, its kind and the
@@ -20,6 +20,7 @@ export function WaitingCard(props: {
   onDecide: (item: WaitingItem, decision: string) => void;
   onOpenTeam: (item: WaitingItem) => void;
   onOpenTask?: (item: WaitingItem) => void;
+  onOpenNotice?: (item: WaitingItem) => void;
 }) {
   return (
     <article class="waiting-card" data-waiting={props.item.id} data-kind={props.item.kind}>
@@ -30,8 +31,13 @@ export function WaitingCard(props: {
         </button>
         <span class="waiting-age dim">{waitingAge(props.item.created_ms, props.now)}</span>
       </div>
-      <p class="waiting-kind-sentence dim" data-kind-sentence>{waitingKindSentence(props.item)}</p>
-      <p class="waiting-text">{waitingText(props.item)}</p>
+      <Show when={!isLeadNotice(props.item.kind)}><p class="waiting-kind-sentence dim" data-kind-sentence>{waitingKindSentence(props.item)}</p></Show>
+      <Show when={!isLeadNotice(props.item.kind)} fallback={
+        <button type="button" class="btn small primary" disabled={props.busy} data-open-lead-reply
+          onClick={() => props.onOpenNotice?.(props.item)}>{tr("Open reply")}</button>
+      }>
+        <p class="waiting-text">{waitingText(props.item)}</p>
+      </Show>
       <Show when={(props.item.notes ?? []).length > 0}>
         <div class="waiting-notes" data-notes>
           <p class="waiting-notes-heading dim">{tr("Service notes")}</p>
@@ -68,6 +74,7 @@ export function WaitingList(props: {
   onDecide: (item: WaitingItem, decision: string) => void;
   onOpenTeam: (item: WaitingItem) => void;
   onOpenTask?: (item: WaitingItem) => void;
+  onOpenNotice?: (item: WaitingItem) => void;
   onPage: (cursor: string) => void;
   onFirst?: () => void;
 }) {
@@ -82,7 +89,7 @@ export function WaitingList(props: {
       }>
         <For each={props.view.items}>
           {(item) => <WaitingCard item={item} teamName={props.teamNames.get(item.team) ?? ""} now={props.now} busy={props.busy}
-            onDecide={props.onDecide} onOpenTeam={props.onOpenTeam} onOpenTask={props.onOpenTask} />}
+            onDecide={props.onDecide} onOpenTeam={props.onOpenTeam} onOpenTask={props.onOpenTask} onOpenNotice={props.onOpenNotice} />}
         </For>
       </Show>
       <Show when={props.view.after || props.view.next}>

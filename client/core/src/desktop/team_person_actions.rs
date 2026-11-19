@@ -5,22 +5,27 @@ use base64::Engine;
 use serde::{Deserialize, Serialize};
 
 pub const HELP_MARKER: &str = "Desktop Teams Person actions ABI: desktop-team-person-actions-v2";
-/// A service that resolves a window Route's kept task fields
-/// (`keep_task_fields`, zerus-3u5yu). An older one refuses that plan; the
-/// window asks for this marker first and says to update the service.
+/// A service that resolves a window Route's kept task fields.
 pub const PLACEMENT_MARKER: &str =
     "Desktop Teams Person placement fields: desktop-team-person-placement-v1";
+/// A service that admits the window's lead contact and notice plans.
+pub const LEAD_CONTACT_MARKER: &str =
+    "Desktop Teams lead contact: desktop-team-lead-contact-v1";
 
 /// The help markers the selected service must advertise for this plan.
 pub fn required_markers(plan: &Plan) -> Vec<&'static str> {
-    let keeps = matches!(&plan.action, Action::Team { change }
-        if matches!(change.as_ref(), TeamAction::Route { keep_task_fields: true, .. }));
-    if keeps {
-        vec![HELP_MARKER, PLACEMENT_MARKER]
-    } else {
-        vec![HELP_MARKER]
+    let mut markers = vec![HELP_MARKER];
+    if matches!(&plan.action, Action::Team { change }
+        if matches!(change.as_ref(), TeamAction::Route { keep_task_fields: true, .. }))
+    {
+        markers.push(PLACEMENT_MARKER);
     }
+    if plan.lead_contact() {
+        markers.push(LEAD_CONTACT_MARKER);
+    }
+    markers
 }
+
 pub const BYTES: usize = 768 << 10;
 pub const PLAN_BYTES: usize = 262_144;
 pub const PIECE_BYTES: usize = 32 << 10;
@@ -59,6 +64,12 @@ fn text(value: &str, limit: usize) -> bool {
 }
 
 impl Plan {
+    fn lead_contact(&self) -> bool {
+        matches!(&self.action, Action::Team { change } if matches!(
+            change.as_ref(),
+            TeamAction::AskLead { .. } | TeamAction::LeaveLeadNote { .. } | TeamAction::ReadLeadNotice { .. }
+        ))
+    }
     pub fn reference(&self) -> Option<Reference> {
         let bytes = serde_json::to_vec(self).ok()?;
         (self.valid() && bytes.len() <= PLAN_BYTES).then(|| Reference {
@@ -625,5 +636,19 @@ mod tests {
         assert_eq!(required_markers(&whole), [HELP_MARKER]);
         assert_eq!(required_markers(&plan()), [HELP_MARKER]);
         assert!(PLACEMENT_MARKER.starts_with("Desktop Teams Person placement"));
+    }
+
+    #[test]
+    fn lead_contact_plans_require_the_additional_service_marker() {
+        for change in [
+            TeamAction::AskLead { text: "Question".into() },
+            TeamAction::LeaveLeadNote { text: "Note".into() },
+            TeamAction::ReadLeadNotice { card: 1 },
+        ] {
+            let mut plan = plan();
+            plan.action = Action::Team { change: Box::new(change) };
+            assert!(plan.valid());
+            assert_eq!(required_markers(&plan), [HELP_MARKER, LEAD_CONTACT_MARKER]);
+        }
     }
 }
