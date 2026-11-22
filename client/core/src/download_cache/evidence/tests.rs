@@ -69,6 +69,26 @@ fn the_first_change_records_the_exact_index_it_replaces() {
     assert!(!String::from_utf8(folder.index()).unwrap().contains(DIR));
 }
 
+#[cfg(unix)]
+#[test]
+fn download_evidence_reopens_and_reports_after_a_part_device_number_change() {
+    let folder = Folder::new();
+    folder.plain("old.txt", b"from qt", 90_000);
+    let before = folder.index();
+    assert_eq!(ON.trim(&folder.0, 0, NOW).error, None);
+    let mut receipt = folder.receipt();
+    receipt.stamp.as_mut().unwrap().change_device_for_test();
+    let (canonical, object, birth) = super::folder(&folder.0).unwrap();
+    let path = slot(&canonical, &object, birth.as_deref()).join("receipt.json");
+    let old = serde_json::to_vec(&receipt).unwrap();
+    fs::write(&path, &old).unwrap();
+
+    assert_eq!(folder.original(), Some(before));
+    assert_eq!(status(&folder.0), Evidence::Captured(Box::new(receipt)));
+    assert_eq!(ON.trim(&folder.0, 0, NOW).error, None);
+    assert_eq!(fs::read(path).unwrap(), old);
+}
+
 #[test]
 fn a_folder_without_an_index_is_recorded_absent() {
     let folder = Folder::new();

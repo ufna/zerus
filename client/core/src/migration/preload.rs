@@ -129,6 +129,18 @@ struct Plan {
     bytes: usize,
     sha256: String,
 }
+impl Plan {
+    fn matches_persisted(&self, current: &Self) -> bool {
+        self.seed == current.seed
+            && self.bytes == current.bytes
+            && self.sha256 == current.sha256
+            && match (&self.source, &current.source) {
+                (Some(saved), Some(actual)) => saved.matches_persisted(actual),
+                (None, None) => true,
+                _ => false,
+            }
+    }
+}
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Receipt {
@@ -276,7 +288,7 @@ impl Capture {
         }
         let (receipt, _) = read_json::<Receipt>(&root.join("receipt.json"))?
             .ok_or(SourceError::SourceUnreadable)?;
-        Snapshot::open(root, receipt, &seed, false)
+        Snapshot::open(root, receipt, &seed, false, None)
     }
     pub fn hook(&self, notify: Arc<dyn Fn() + Send + Sync>) {
         *self.notify.lock().unwrap_or_else(PoisonError::into_inner) = Some(notify);
@@ -380,7 +392,7 @@ impl Capture {
             .capture_id = Some(seed.capture_id.clone());
         let ready = root.join("receipt.json");
         if let Some((receipt, _)) = read_json::<Receipt>(&ready)? {
-            let prepared = Snapshot::open(root, receipt, &seed, true)?;
+            let prepared = Snapshot::open(root, receipt, &seed, true, None)?;
             #[cfg(unix)]
             resolved.recheck().map_err(|_| SourceError::SourceChanged)?;
             return Ok(prepared);
@@ -393,19 +405,20 @@ impl Capture {
             Some((b, s)) => (b, Some(s)),
             None => (Vec::new(), None),
         };
-        let plan = Plan {
+        let current = Plan {
             seed: seed.clone(),
             source: stamp,
             bytes: bytes.len(),
             sha256: sha256(&bytes),
         };
-        if let Some(previous) = previous {
-            if previous != plan {
-                return Err(SourceError::SourceChanged.into());
+        let plan = match previous {
+            Some(previous) if previous.matches_persisted(&current) => previous,
+            Some(_) => return Err(SourceError::SourceChanged.into()),
+            None => {
+                create_json(&plan_path, &current)?;
+                current.clone()
             }
-        } else {
-            create_json(&plan_path, &plan)?;
-        }
+        };
         // A crashed copy never selects a newer version or replaces a partial
         // leaf. A fully written original leaf can be recognized by exact bytes.
         let snapshot = if plan.source.is_some() {
@@ -426,12 +439,12 @@ impl Capture {
         // Reopen the source before releasing its original worker fence. This
         // verifies the source object/stamp/hash, not a normalized projection.
         let check = self.kind.read_source(&source_path).map_err(unreadable)?;
-        if check.as_ref().map(|(_, s)| s) != plan.source.as_ref()
+        if check.as_ref().map(|(_, s)| s) != current.source.as_ref()
             || check
                 .as_ref()
                 .map(|(b, _)| sha256(b))
                 .unwrap_or_else(|| sha256(&[]))
-                != plan.sha256
+                != current.sha256
         {
             return Err(SourceError::SourceChanged.into());
         }
@@ -448,11 +461,14 @@ impl Capture {
                 return Err(SourceError::SourceChanged.into());
             }
         }
-        let receipt = Receipt { plan, snapshot };
+        let receipt = Receipt {
+            plan,
+            snapshot: snapshot.clone(),
+        };
         create_json(&ready, &receipt)?;
         #[cfg(unix)]
         resolved.recheck().map_err(|_| SourceError::SourceChanged)?;
-        Snapshot::open(root, receipt, &seed, true).map_err(Into::into)
+        Snapshot::open(root, receipt, &seed, true, snapshot.as_ref()).map_err(Into::into)
     }
 }
 pub enum Prepared {
@@ -468,6 +484,15 @@ pub struct Reference {
     receipt_identity: Stamp,
 }
 impl Reference {
+    pub(super) fn matches_persisted(&self, current: &Self) -> bool {
+        self.capture_id == current.capture_id
+            && self.source_sha256 == current.source_sha256
+            && self.receipt_sha256 == current.receipt_sha256
+            && self
+                .receipt_identity
+                .matches_persisted(&current.receipt_identity)
+    }
+
     pub fn capture_id(&self) -> &str {
         &self.capture_id
     }
@@ -488,9 +513,16 @@ pub struct Snapshot {
     root: PathBuf,
     receipt: Receipt,
     receipt_stamp: Stamp,
+    snapshot_stamp: Option<Stamp>,
 }
 impl Snapshot {
-    fn open(root: PathBuf, receipt: Receipt, seed: &Seed, decode: bool) -> SourceResult<Prepared> {
+    fn open(
+        root: PathBuf,
+        receipt: Receipt,
+        seed: &Seed,
+        decode: bool,
+        fresh_snapshot: Option<&Stamp>,
+    ) -> SourceResult<Prepared> {
         let kind = Kind::from_boundary(&seed.boundary).ok_or(SourceError::InvalidMetadata)?;
         if !seed.valid(kind.boundary())
             || receipt.plan.seed != *seed
@@ -506,6 +538,7 @@ impl Snapshot {
         // Even an earlier complete-looking receipt may have followed an
         // uncertain final sync. Validate and repeat only durability barriers,
         // never rewrite/adopt files or select a new capture identity.
+        let mut snapshot_stamp = None;
         for (leaf, limit) in [
             ("identity.json", META),
             ("source.json", META),
@@ -517,6 +550,16 @@ impl Snapshot {
             if before != synced {
                 return Err(SourceError::SourceChanged);
             }
+            if leaf == "original.bin" {
+                snapshot_stamp = synced.map(|(_, stamp)| stamp);
+            }
+        }
+        match (&receipt.snapshot, &snapshot_stamp) {
+            (Some(saved), Some(current))
+                if saved.matches_persisted(current)
+                    && fresh_snapshot.is_none_or(|fresh| fresh == current) => {}
+            (None, None) => {}
+            _ => return Err(SourceError::SourceChanged),
         }
         #[cfg(unix)]
         crate::fsx::checkpoint::sync_parent(&root.join("receipt.json")).map_err(unreadable)?;
@@ -525,6 +568,7 @@ impl Snapshot {
             root,
             receipt,
             receipt_stamp,
+            snapshot_stamp,
         };
         let bytes = snapshot.bytes()?;
         if snapshot.receipt.plan.source.is_none() {
@@ -561,7 +605,7 @@ impl Snapshot {
         }
         let source =
             disk::read(&self.root.join("original.bin"), self.kind.limit()).map_err(unreadable)?;
-        let bytes = match (source, &self.receipt.snapshot) {
+        let bytes = match (source, &self.snapshot_stamp) {
             (Some((bytes, stamp)), Some(expected)) if stamp == *expected => bytes,
             (None, None) if self.receipt.plan.source.is_none() => Vec::new(),
             _ => return Err(SourceError::SourceChanged),
@@ -663,6 +707,84 @@ mod tests {
     fn raw() -> Vec<u8> {
         br#"{ "schema":1, "operations":{}, "opaque":"kept byte for byte" }"#.to_vec()
     }
+    #[cfg(unix)]
+    #[test]
+    fn preload_reopens_a_snapshot_from_an_earlier_device_number() {
+        let s = Scratch::new();
+        let original = raw();
+        s.source(&original);
+        let first = s.snapshot();
+        let root = s.0.join("creation-preload-v1");
+        let path = root.join("receipt.json");
+        let mut saved = first.receipt.clone();
+        saved.snapshot.as_mut().unwrap().change_device_for_test();
+        saved.plan.source.as_mut().unwrap().change_device_for_test();
+        let plan = serde_json::to_vec(&saved.plan).unwrap();
+        let receipt = serde_json::to_vec(&saved).unwrap();
+        fs::write(root.join("source.json"), &plan).unwrap();
+        fs::write(&path, &receipt).unwrap();
+
+        let restarted = s.snapshot();
+        assert_eq!(restarted.capture_id(), first.capture_id());
+        assert_eq!(restarted.bytes().unwrap(), original);
+        assert_eq!(fs::read(root.join("source.json")).unwrap(), plan);
+        assert_eq!(fs::read(path).unwrap(), receipt);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn preload_resumes_an_earlier_device_plan_without_rewriting_it() {
+        let s = Scratch::new();
+        let original = raw();
+        s.source(&original);
+        let first = s.snapshot();
+        let root = s.0.join("creation-preload-v1");
+        let source = root.join("source.json");
+        fs::remove_file(root.join("receipt.json")).unwrap();
+        let mut plan = first.receipt.plan.clone();
+        plan.source.as_mut().unwrap().change_device_for_test();
+        let plan_bytes = serde_json::to_vec(&plan).unwrap();
+        fs::write(&source, &plan_bytes).unwrap();
+
+        let resumed = s.snapshot();
+        assert_eq!(resumed.capture_id(), first.capture_id());
+        assert_eq!(resumed.bytes().unwrap(), original);
+        assert_eq!(resumed.receipt.plan, plan);
+        assert_eq!(fs::read(source).unwrap(), plan_bytes);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn preload_refuses_an_original_with_a_changed_size_time_or_link_count() {
+        use std::{fs::FileTimes, time::Duration};
+
+        for change in ["size", "mtime", "hardlink"] {
+            let s = Scratch::new();
+            s.source(&raw());
+            let snapshot = s.snapshot();
+            let root = s.0.join("creation-preload-v1");
+            let path = root.join("original.bin");
+            let file = fs::OpenOptions::new().write(true).open(&path).unwrap();
+            let metadata = file.metadata().unwrap();
+            match change {
+                "size" => {
+                    file.set_len(metadata.len() + 1).unwrap();
+                    file.set_times(FileTimes::new().set_modified(metadata.modified().unwrap()))
+                        .unwrap();
+                }
+                "mtime" => file
+                    .set_times(
+                        FileTimes::new()
+                            .set_modified(metadata.modified().unwrap() - Duration::from_secs(60)),
+                    )
+                    .unwrap(),
+                _ => fs::hard_link(&path, root.join("second-link")).unwrap(),
+            }
+            assert!(snapshot.bytes().is_err(), "{change}");
+            assert!(s.capture().prepare().is_err(), "{change}");
+        }
+    }
+
     /// The shared seed keeps the exact bytes of a plan written before it was
     /// shared, nested inside the plan (zerus-0ht0).
     #[test]

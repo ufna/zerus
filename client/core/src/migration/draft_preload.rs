@@ -856,24 +856,31 @@ fn classify(store: Store, folder: &str, path: &Path, bytes: &[u8]) -> (Class, Ve
 pub struct Snapshot {
     pub index: Index,
     container: Vec<u8>,
+    index_stamp: Stamp,
+    part_stamps: Vec<Stamp>,
 }
 
 impl Snapshot {
     fn open(slot: &Path, seed: &Seed) -> SourceResult<Self> {
         let (receipt, _) = read_json::<Receipt>(&slot.join("receipt.json"))?
             .ok_or(SourceError::InvalidMetadata)?;
+        Self::from_receipt(slot, seed, &receipt)
+    }
+
+    fn from_receipt(slot: &Path, seed: &Seed, receipt: &Receipt) -> SourceResult<Self> {
         if receipt.capture_id != seed.capture_id {
             return Err(SourceError::InvalidMetadata);
         }
         let (bytes, stamp) = disk::read(&slot.join("index.json"), INDEX)
             .map_err(unreadable)?
             .ok_or(SourceError::SourceChanged)?;
-        if stamp != receipt.index || sha256(&bytes) != receipt.index_sha256 {
+        if !receipt.index.matches_persisted(&stamp) || sha256(&bytes) != receipt.index_sha256 {
             return Err(SourceError::SourceChanged);
         }
         let index: Index =
             serde_json::from_slice(&bytes).map_err(|_| SourceError::InvalidMetadata)?;
         let mut container = Vec::new();
+        let mut part_stamps = Vec::new();
         if let Some(first) = &receipt.container {
             let total = usize::try_from(index.container_bytes)
                 .ok()
@@ -888,9 +895,10 @@ impl Snapshot {
                 let (bytes, actual) = disk::read(&slot.join(part(n)), size)
                     .map_err(unreadable)?
                     .ok_or(SourceError::SourceChanged)?;
-                if &actual != stamp || bytes.len() != size {
+                if !stamp.matches_persisted(&actual) || bytes.len() != size {
                     return Err(SourceError::SourceChanged);
                 }
+                part_stamps.push(actual);
                 container.extend_from_slice(&bytes);
             }
         } else if !receipt.more.is_empty() {
@@ -903,7 +911,12 @@ impl Snapshot {
         {
             return Err(SourceError::SourceChanged);
         }
-        Ok(Self { index, container })
+        Ok(Self {
+            index,
+            container,
+            index_stamp: stamp,
+            part_stamps,
+        })
     }
 
     /// The exact original bytes of one entry.
@@ -935,20 +948,18 @@ impl Committed {
 
     /// By bounded stats only, never the container's bytes: the slot still
     /// holds exactly this receipt, its index and container parts still have
-    /// the stamps it records (and no further part), and no failure record.
+    /// their verified in-process stamps (and no further part), and no failure
+    /// record.
     pub fn unchanged(&self) -> bool {
         let Ok(Some((bytes, _))) = disk::read(&self.slot.join("receipt.json"), META) else {
-            return false;
-        };
-        let Ok(receipt) = serde_json::from_slice::<Receipt>(&bytes) else {
             return false;
         };
         let leaf = |name: &str, expected: Option<&Stamp>| {
             disk::stat(&self.slot.join(name)).is_ok_and(|actual| actual.as_ref() == expected)
         };
-        let parts: Vec<&Stamp> = receipt.container.iter().chain(&receipt.more).collect();
+        let parts = &self.snapshot.part_stamps;
         bytes == self.receipt
-            && leaf("index.json", Some(&receipt.index))
+            && leaf("index.json", Some(&self.snapshot.index_stamp))
             && parts
                 .iter()
                 .enumerate()
@@ -978,14 +989,13 @@ impl Capture {
         let (receipt, _) = disk::read(&slot.join("receipt.json"), META)
             .map_err(unreadable)?
             .ok_or(SourceError::SourceUnreadable)?;
-        let index_sha256 = serde_json::from_slice::<Receipt>(&receipt)
-            .map_err(|_| SourceError::InvalidMetadata)?
-            .index_sha256;
-        let snapshot = Snapshot::open(&slot, &seed)?;
+        let parsed: Receipt =
+            serde_json::from_slice(&receipt).map_err(|_| SourceError::InvalidMetadata)?;
+        let snapshot = Snapshot::from_receipt(&slot, &seed, &parsed)?;
         let committed = Committed {
             slot,
             receipt,
-            index_sha256,
+            index_sha256: parsed.index_sha256,
             snapshot,
         };
         // The receipt read first is the one the version was opened with.
