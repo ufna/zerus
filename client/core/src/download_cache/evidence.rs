@@ -161,13 +161,16 @@ impl Original {
 
     /// The original's parts as the receipt describes them, by a private
     /// no-follow stat only (no read, no hash): each part's recorded stamp
-    /// (object, size and modification time) on a single-link owner-only
-    /// file, and no part beyond them; none for an absent index.
+    /// (device, inode, size and modification time) on a single-link
+    /// owner-only file, and no part beyond them; none for an absent index.
     fn leaf_matches(&self, slot: &Path) -> bool {
         let expected: Vec<&Stamp> = self.stamp.iter().chain(&self.more).collect();
         let matches = expected.iter().enumerate().all(|(n, stamp)| {
-            disk::stat(&slot.join(part(n)))
-                .is_ok_and(|actual| actual.is_some_and(|actual| stamp.matches_persisted(&actual)))
+            let path = slot.join(part(n));
+            let actual = disk::stat(&path);
+            #[cfg(all(test, unix))]
+            let actual = actual.map(|actual| tests::simulate_part_device(&path, actual));
+            actual.is_ok_and(|actual| actual.as_ref() == Some(*stamp))
         });
         matches && disk::stat(&slot.join(part(expected.len()))).is_ok_and(|extra| extra.is_none())
     }
@@ -734,7 +737,7 @@ impl Snapshot {
                 for (n, (stamp, size)) in expected.zip(part_sizes(receipt.bytes)).enumerate() {
                     let (data, actual) =
                         disk::read(&slot.join(part(n)), size)?.ok_or_else(refused)?;
-                    if !stamp.matches_persisted(&actual) || data.len() != size {
+                    if &actual != stamp || data.len() != size {
                         return Err(refused());
                     }
                     bytes.extend_from_slice(&data);
