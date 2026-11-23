@@ -57,20 +57,28 @@ impl Queue {
         }
         let held = crate::platform::no_follow(OpenOptions::new().read(true))
             .open(&executable)
-            .map_err(|e| e.to_string())?;
+            .map_err(|_| "Codex executable could not be opened; no message was queued")?;
         let file = crate::platform::FileIdentity::with_metadata(&held)
-            .map_err(|e| e.to_string())?
+            .map_err(|_| "Codex executable metadata is unavailable; no message was queued")?
             .0;
-        let account = PathBuf::from(string(record, "agent_home"));
-        let account = crate::platform::canonical(account).map_err(|e| e.to_string())?;
+        let account = crate::platform::canonical(recorded_agent_home(record))
+            .map_err(|_| "Codex account home is unavailable; no message was queued")?;
+        let sessions = account.join("sessions");
         let transcript = PathBuf::from(string(record, "transcript"));
-        if !transcript.is_absolute() || !transcript.starts_with(account.join("sessions")) {
-            return Err("Codex native task history is unavailable".into());
+        let resolved = crate::platform::canonical(&transcript)
+            .map_err(|_| "Codex native task history path is unavailable; no message was queued")?;
+        if !transcript.starts_with(&sessions) || !resolved.starts_with(&sessions) {
+            return Err(
+                "Codex native task history path does not match the account sessions; no message was queued".into(),
+            );
         }
         let history = crate::platform::no_follow(OpenOptions::new().read(true))
             .open(&transcript)
-            .map_err(|e| e.to_string())?;
-        if !history.metadata().map_err(|e| e.to_string())?.is_file()
+            .map_err(|_| "Codex native task history could not be opened; no message was queued")?;
+        let metadata = history.metadata().map_err(|_| {
+            "Codex native task history metadata is unavailable; no message was queued"
+        })?;
+        if !metadata.is_file()
             || !crate::platform::holds_open(pid, &transcript)
                 .map_err(|_| "Codex native task file ownership is unavailable".to_owned())?
         {
@@ -79,11 +87,12 @@ impl Queue {
         let mut first = Vec::new();
         BufReader::new(history.take((64 << 10) + 1))
             .read_until(b'\n', &mut first)
-            .map_err(|e| e.to_string())?;
+            .map_err(|_| "Codex native task history could not be read; no message was queued")?;
         if first.len() > 64 << 10 || !first.ends_with(b"\n") {
             return Err("Codex history header exceeds its bound".into());
         }
-        let header: Value = serde_json::from_slice(&first).map_err(|e| e.to_string())?;
+        let header: Value = serde_json::from_slice(&first)
+            .map_err(|_| "Codex native task history header is invalid; no message was queued")?;
         if header["type"] != "session_meta" || header["payload"]["id"] != conversation {
             return Err("Codex native task history identity changed".into());
         }

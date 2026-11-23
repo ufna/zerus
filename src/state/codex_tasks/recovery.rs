@@ -139,7 +139,9 @@ pub(in crate::state) fn original_main_receipt(
         {
             return None;
         }
-        let account = crate::platform::canonical(string(record, "agent_home")).ok()?;
+        let sessions = crate::platform::canonical(recorded_agent_home(record))
+            .ok()?
+            .join("sessions");
         let payload = &meta["payload"];
         let created = chrono::DateTime::parse_from_rfc3339(string(payload, "timestamp"))
             .ok()?
@@ -147,8 +149,10 @@ pub(in crate::state) fn original_main_receipt(
             / 1000.0;
         let launched = record["created"].as_f64()?;
         let pending = record["input_pending_at"].as_f64()?;
-        if !path.is_absolute()
-            || !path.starts_with(account.join("sessions"))
+        if !path.starts_with(&sessions)
+            || !crate::platform::canonical(path)
+                .ok()?
+                .starts_with(&sessions)
             || meta["type"] != "session_meta"
             || payload["id"] != parent
             || payload["source"] != "cli"
@@ -224,9 +228,15 @@ pub(in crate::state) fn recover_main(record: &mut Value, event: &Value) -> Resul
         {
             return None;
         }
-        let account = crate::platform::canonical(string(record, "agent_home")).ok()?;
+        let sessions = crate::platform::canonical(recorded_agent_home(record))
+            .ok()?
+            .join("sessions");
         let path = PathBuf::from(string(event, "transcript_path"));
-        if !path.is_absolute() || !path.starts_with(account.join("sessions")) {
+        if !path.starts_with(&sessions)
+            || !crate::platform::canonical(&path)
+                .ok()?
+                .starts_with(&sessions)
+        {
             return None;
         }
         let mut file = crate::platform::no_follow(std::fs::OpenOptions::new().read(true))
@@ -310,7 +320,7 @@ pub(in crate::state) fn recover_main(record: &mut Value, event: &Value) -> Resul
         Err(error) => return Err(error.to_string()),
     }
     let child_record = json!({"external":true,"provider":"codex","conversation_id":child,
-        "transcript":record["transcript"],"agent_home":record["agent_home"],"name":"Native Codex task",
+        "transcript":record["transcript"],"agent_home":recorded_agent_home(record),"name":"Native Codex task",
         "state":"unknown","started":record["created"],"updated":now()});
     record["conversation_id"] = json!(parent);
     record["transcript"] = json!(path);

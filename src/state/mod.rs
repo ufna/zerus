@@ -344,16 +344,22 @@ fn account_binding(record: &Value) -> Value {
     } else {
         string(record, "account_id").to_owned()
     };
-    let agent_home = if string(record, "agent_home").is_empty() {
+    let agent_home = recorded_agent_home(record);
+    json!({"provider":provider,"id":id,"home":agent_home,"run_id":record["run_id"]})
+}
+
+fn recorded_agent_home(record: &Value) -> PathBuf {
+    let provider = string(record, "agent");
+    let configured = string(record, "agent_home");
+    if configured.is_empty() {
         home().join(if provider == "kimi" {
             ".kimi-code".into()
         } else {
             format!(".{provider}")
         })
     } else {
-        PathBuf::from(string(record, "agent_home"))
-    };
-    json!({"provider":provider,"id":id,"home":agent_home,"run_id":record["run_id"]})
+        PathBuf::from(configured)
+    }
 }
 
 pub(super) fn string<'a>(value: &'a Value, key: &str) -> &'a str {
