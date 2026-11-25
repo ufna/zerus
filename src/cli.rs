@@ -250,6 +250,7 @@ pub(crate) const USAGE: &str = r#"usage: hgs [@host] <cmd> [project] [-c [ID]] [
        question-route-person-v1
        question-route-person-v2
        session-parent-v1
+       session-parent-project-v1
        launch-parent-v1
        claimed-parent-v1
        hgs [@host] dirs [--hidden] [path]   directories as JSON (default: home)

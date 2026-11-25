@@ -230,6 +230,7 @@
   .scard.compact .sc-supervised { margin-right: 6px; }
   /* A child shown away from its parent names it. */
   .sc-from { flex: 0 0 auto; margin-right: 6px; height: 16px; max-width: 40%; padding: 0 5px; border-radius: 3px; background: var(--z-list-chip); color: var(--z-list-muted); font-size: 10.5px; line-height: 16px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .scard.compact .sc-from { flex-shrink: 1; min-width: 0; max-width: 48%; margin: 0 0 0 6px; }
   button.sc-from:hover { color: var(--z-list-text); text-decoration: underline; }
   button.sc-from:focus-visible { outline: 1px solid var(--z-color-accent); }
   /* Nested child sessions: 26 px per level, a connector from the parent above. */
@@ -418,6 +419,7 @@
   :root[data-agent-mark="glyph"] .agent-badge:not(.narrow) { background: transparent; padding-left: 18px; }
   :root[data-agent-mark="glyph"] .agent-badge .ab-label { display: none; }
   /* Set parent… (zerus-sa9qn.9): a bounded, scrolling list of the computer's sessions. */
+  .parent-project-choices { display: grid; gap: 4px; margin: 0; padding: 4px 8px 8px; border: 1px solid var(--z-list-tree-line); }
   .parent-choices { display: flex; flex-direction: column; gap: 2px; max-height: 260px; overflow-y: auto; }
   .parent-choices .menu-item.on { background: var(--z-color-card-selected); }
   .warn-text { color: var(--z-list-tone-attention); }

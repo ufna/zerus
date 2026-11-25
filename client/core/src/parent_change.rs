@@ -9,6 +9,7 @@ use serde_json::{json, Value};
 use std::time::Duration;
 
 pub const MARKER: &str = "session-parent-v1";
+const PROJECT_MARKER: &str = "session-parent-project-v1";
 pub const UPDATE: &str = "Update hgs on this session's computer to change parent sessions.";
 const UNCONFIRMED: &str =
     "The parent session change was not confirmed. Refresh and check the session.";
@@ -30,7 +31,35 @@ pub enum ParentChange {
         conversation_id: String,
         run_id: String,
         replace: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        project: Option<ProjectConsent>,
     },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProjectConsent {
+    child_id: String,
+    machine_id: String,
+    child_project: String,
+    parent_project: String,
+    default_project: String,
+    previous: Option<PreviousParent>,
+    choice: ProjectChoice,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+struct PreviousParent {
+    machine: String,
+    session_id: String,
+    run_id: String,
+    conversation_id: String,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum ProjectChoice {
+    Keep,
+    Move,
 }
 
 fn text_ok(value: &str, maximum: usize) -> bool {
@@ -61,6 +90,7 @@ pub fn invocation(target: &Target, change: &ParentChange) -> Result<Invocation, 
             conversation_id,
             run_id,
             replace,
+            project,
         } => {
             if !canonical(session_id)
                 || [name, conversation_id, run_id]
@@ -69,9 +99,14 @@ pub fn invocation(target: &Target, change: &ParentChange) -> Result<Invocation, 
             {
                 return Err("Choose a parent session that has started.".to_owned());
             }
-            json!({"expected_run_id": target.run_id, "expected_conversation_id": target.conversation_id,
+            let mut input = json!({"expected_run_id": target.run_id, "expected_conversation_id": target.conversation_id,
                 "action": "set", "replace": replace, "parent": {"session_id": session_id, "name": name,
-                "conversation_id": conversation_id, "run_id": run_id}})
+                "conversation_id": conversation_id, "run_id": run_id}});
+            if let Some(project) = project {
+                input["project"] =
+                    serde_json::to_value(project).map_err(|error| error.to_string())?;
+            }
+            input
         }
     };
     let mut args = vec![
@@ -90,8 +125,12 @@ pub fn invocation(target: &Target, change: &ParentChange) -> Result<Invocation, 
 
 /// The local `hgs --help` lists the marker on a line of its own.
 pub fn help_confirms(exit: &Exit) -> bool {
+    help_has(exit, MARKER)
+}
+
+fn help_has(exit: &Exit, marker: &str) -> bool {
     matches!(exit, Exit::Code { code: 0, stdout, .. }
-        if stdout.split(|&b| b == b'\n').any(|line| line.trim_ascii() == MARKER.as_bytes()))
+        if stdout.split(|&b| b == b'\n').any(|line| line.trim_ascii() == marker.as_bytes()))
 }
 
 /// The host's confirmed link: `{ok, name, parent, previous}` for this session.
@@ -130,12 +169,55 @@ pub fn change(
     if !probe.as_ref().is_ok_and(help_confirms) {
         return Err(UPDATE.to_owned());
     }
+    if matches!(
+        change,
+        ParentChange::Set {
+            project: Some(_),
+            ..
+        }
+    ) && !probe
+        .as_ref()
+        .is_ok_and(|exit| help_has(exit, PROJECT_MARKER))
+    {
+        return Err(UPDATE.to_owned());
+    }
     let exit = crate::run::run_limited(hgs, &call, &[], REPLY_CAP).unwrap_or_else(|too_large| {
         Exit::Abnormal {
             stderr: too_large.stderr,
         }
     });
-    classify(target, exit)
+    classify_change(target, change, exit)
+}
+
+fn classify_change(target: &Target, change: &ParentChange, exit: Exit) -> Result<Value, String> {
+    let reply = classify(target, exit)?;
+    if let ParentChange::Set {
+        session_id,
+        name,
+        conversation_id,
+        run_id,
+        project: Some(project),
+        ..
+    } = change
+    {
+        let expected = match project.choice {
+            ProjectChoice::Keep => "kept",
+            ProjectChoice::Move => "moved",
+        };
+        let parent = &reply["parent"];
+        if parent["session_id"] != *session_id
+            || parent["name"] != *name
+            || parent["machine"] != project.machine_id
+            || parent["run_id"] != *run_id
+            || parent["conversation_id"] != *conversation_id
+            || (reply["project_status"] != expected
+                && !(project.choice == ProjectChoice::Move
+                    && reply["project_status"] == "uncertain"))
+        {
+            return Err(UNCONFIRMED.to_owned());
+        }
+    }
+    Ok(reply)
 }
 
 #[cfg(test)]
@@ -157,6 +239,7 @@ mod tests {
             conversation_id: "c".into(),
             run_id: "r".into(),
             replace: true,
+            project: None,
         }
     }
     fn stdin(call: &Invocation) -> Value {
@@ -202,6 +285,7 @@ mod tests {
             conversation_id,
             run_id,
             replace,
+            project: None,
         };
         assert!(invocation(&target(""), &bad).is_err());
     }
@@ -231,5 +315,44 @@ mod tests {
         );
         assert!(help_confirms(&reply("usage\n       session-parent-v1\n")));
         assert!(!help_confirms(&reply("usage: session-parent-v10\n")));
+    }
+
+    #[test]
+    fn project_consent_binds_both_project_choices_and_the_result() {
+        let mut input = serde_json::to_value(set()).unwrap();
+        input["project"] = json!({
+            "child_id": "11111111-1111-4111-8111-111111111111",
+            "machine_id": "33333333-3333-4333-8333-333333333333",
+            "child_project": "alpha", "parent_project": "beta", "default_project": "alpha",
+            "previous": null, "choice": "move"
+        });
+        let change: ParentChange = serde_json::from_value(input.clone()).unwrap();
+        let target = target("");
+        let sent = stdin(&invocation(&target, &change).unwrap());
+        assert_eq!(sent["project"], input["project"]);
+        let result = |parent: &Value, status: &str| Exit::Code {
+            code: 0,
+            stdout: serde_json::to_vec(&json!({"ok":true,"name":target.name,
+                "parent":parent,"project_status":status}))
+            .unwrap(),
+            stderr: String::new(),
+        };
+        let mut parent = sent["parent"].clone();
+        parent["machine"] = input["project"]["machine_id"].clone();
+        for status in ["moved", "uncertain"] {
+            assert!(classify_change(&target, &change, result(&parent, status)).is_ok());
+        }
+        for status in ["", "kept", "unknown"] {
+            assert!(classify_change(&target, &change, result(&parent, status)).is_err());
+        }
+        for field in ["session_id", "name", "machine", "run_id", "conversation_id"] {
+            let mut wrong = parent.clone();
+            wrong[field] = json!("stale");
+            assert!(classify_change(&target, &change, result(&wrong, "moved")).is_err());
+        }
+        input["project"]["choice"] = json!("keep");
+        let keep = serde_json::from_value(input).unwrap();
+        assert!(classify_change(&target, &keep, result(&parent, "kept")).is_ok());
+        assert!(classify_change(&target, &keep, result(&parent, "uncertain")).is_err());
     }
 }

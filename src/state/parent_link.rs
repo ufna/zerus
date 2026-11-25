@@ -5,7 +5,7 @@
 //! the live tracked agent that launched or adopted it, proven by native process
 //! ancestry exactly as `hgs self` proves its caller. The child's computer is
 //! the link's only writer. The link is presentation and attention routing
-//! only: by itself it never authorizes an action or moves a session's project.
+//! only: grouping can change only with a separate, verified desktop project choice.
 //! The explicit Kimi Compact-only exception separately proves the caller of
 //! the exact recorded launch parent. Only a new child's initial placement
 //! follows a parent this computer proved (zerus-d5twt).
@@ -462,6 +462,8 @@ struct Request {
     replace: bool,
     #[serde(default)]
     parent: Option<Choice>,
+    #[serde(default)]
+    project: Option<crate::swarm::parent_project::Consent>,
 }
 
 /// The session `id` on this computer: through its index entry, else its ID
@@ -505,9 +507,16 @@ pub(super) fn dispatch(args: &[String]) -> Result<i32> {
         return Err("parent request exceeds limits".into());
     }
     let request: Request = serde_json::from_slice(&bytes).map_err(|_| USAGE.to_owned())?;
+    let reply = apply(name, request)?;
+    println!("{reply}");
+    Ok(0)
+}
+
+fn apply(name: &str, request: Request) -> Result<Value> {
     if !matches!(request.action.as_str(), "read" | "adopt" | "set" | "clear")
         || (request.action == "set" && request.parent.is_none())
         || (!matches!(request.action.as_str(), "set" | "adopt") && request.parent.is_some())
+        || (request.project.is_some() && request.action != "set")
     {
         return Err(USAGE.into());
     }
@@ -519,7 +528,9 @@ pub(super) fn dispatch(args: &[String]) -> Result<i32> {
         None
     };
     let config = crate::config::Config::load().map_err(|e| e.message)?;
-    let machine = if matches!(request.action.as_str(), "adopt" | "set") {
+    let machine = if let Some(project) = &request.project {
+        project.machine_id.clone()
+    } else if matches!(request.action.as_str(), "adopt" | "set") {
         observed_machine(&config).ok_or("This computer's identity cannot be read yet; retry later")?
     } else {
         String::new()
@@ -536,10 +547,13 @@ pub(super) fn dispatch(args: &[String]) -> Result<i32> {
     let _writer = lock(None)?;
     // Parent writers share the state lock for cycle checks, then the native
     // provider's own lock so a metadata change cannot overwrite its updates.
-    let _dsh = if matches!(provider, Some(provider_binding::Provider::DeepSeek)) {
+    let project_parent_provider = request.project.as_ref().and_then(|_| request.parent.as_ref())
+        .and_then(|parent| provider_binding::Provider::named(&parent.name));
+    let providers = [provider, project_parent_provider];
+    let _dsh = if providers.iter().any(|p| matches!(p, Some(provider_binding::Provider::DeepSeek))) {
         Some(lock(Some(&root().join("dsh/bindings.lock")))?)
     } else { None };
-    let _opencode = if matches!(provider, Some(provider_binding::Provider::OpenCode)) {
+    let _opencode = if providers.iter().any(|p| matches!(p, Some(provider_binding::Provider::OpenCode))) {
         Some(opencode::lock_bindings()?)
     } else { None };
     let mut record = match provider {
@@ -558,7 +572,11 @@ pub(super) fn dispatch(args: &[String]) -> Result<i32> {
     if !string(&record, "archive_id").is_empty() || record["state"] == "archived" {
         return Err("Archived sessions keep their parent link; restore the session first".into());
     }
+    if request.project.is_some() && record["rename_shadow"] == true {
+        return Err("The child session changed. Open Set parent again.".into());
+    }
     let previous = listed(&record);
+    let mut project_status = None;
     match request.action.as_str() {
         "read" => {}
         "clear" => {
@@ -590,6 +608,9 @@ pub(super) fn dispatch(args: &[String]) -> Result<i32> {
                     {
                         return Err("The chosen parent changed; refresh and retry".into());
                     }
+                    if request.project.is_some() && (!exact_choice(choice) || string(&parent, "name") != choice.name || parent["rename_shadow"] == true) {
+                        return Err("The chosen parent changed; refresh and retry".into());
+                    }
                     if !string(&parent, "archive_id").is_empty() || parent["state"] == "archived" {
                         return Err("An archived session cannot be a parent".into());
                     }
@@ -618,12 +639,27 @@ pub(super) fn dispatch(args: &[String]) -> Result<i32> {
             }
             let link = link_of(&chosen, &machine, config.host(), source)
                 .ok_or("The parent session has no complete identity yet; retry after it starts")?;
-            record["parent"] = link;
-            save(&mut record)?;
+            let project = request.project.as_ref().map(|project| {
+                project.check_previous(previous.as_ref())?;
+                project.prepare(&config, &record, &chosen)
+            }).transpose().map_err(|error| error.to_string())?;
+            // A repeat of the same verified link needs no new parent write.
+            if project.is_none() || !previous.as_ref().is_some_and(|old| {
+                ["machine", "session_id", "name", "run_id", "conversation_id"]
+                    .iter().all(|key| old[*key] == link[*key])
+            }) {
+                record["parent"] = link;
+                save(&mut record)?;
+            }
+            // Never move after a refused or unconfirmed parent write.
+            project_status = project.map(crate::swarm::parent_project::Pending::finish);
         }
     }
-    println!("{}", json!({"ok": true, "name": name, "parent": listed(&record), "previous": previous}));
-    Ok(0)
+    let mut reply = json!({"ok": true, "name": name, "parent": listed(&record), "previous": previous});
+    if let Some(project_status) = project_status {
+        reply["project_status"] = json!(project_status);
+    }
+    Ok(reply)
 }
 
 /// The session IDs of `record`'s parents on this computer, nearest first,
@@ -775,6 +811,104 @@ mod tests {
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr)
         );
+    }
+
+    #[test]
+    fn desktop_parent_project_choices_persist_under_the_native_writer() {
+        isolated("desktop_parent_project_fixture");
+    }
+
+    #[test]
+    #[ignore = "process-isolated project fixture"]
+    fn desktop_parent_project_fixture() {
+        if std::env::var("ZERUS_CLAIMED_PARENT_FIXTURE").as_deref() != Ok("1") {
+            return;
+        }
+        let config = crate::config::Config::load().unwrap_or_else(|error| panic!("{}", error.message));
+        let machine = crate::swarm::parent_project::tests::projects(&config);
+        let create = |name: &str, id: &str| {
+            let mut record = json!({"version":1, "name": name, "agent": "codex", "state": "stopped",
+                "session_id": id, "run_id": id, "conversation_id": id, "cwd": "/fixture/keep",
+                "worktree": "/fixture/worktree"});
+            write(&mut record).unwrap();
+            record
+        };
+        let child = create("codex/example/child", "11111111-1111-4111-8111-111111111111");
+        let parent = create("codex/example/parent", "22222222-2222-4222-8222-222222222222");
+        let other = create("codex/example/other", "33333333-3333-4333-8333-333333333333");
+        let place = |record: &Value, project: &str| crate::swarm::parent_project::tests::place(&config, record, project);
+        let membership = |record: &Value| crate::swarm::parent_project::tests::membership(&config, record);
+        place(&child, "child-project");
+        place(&parent, "parent-project");
+        place(&other, "child-project");
+        let name = string(&child, "name");
+        let select = |choice: &str| json!({
+            "expected_run_id": child["run_id"], "expected_conversation_id": child["conversation_id"],
+            "action": "set", "replace": false, "parent": {
+                "session_id": parent["session_id"], "name": parent["name"],
+                "run_id": parent["run_id"], "conversation_id": parent["conversation_id"]
+            }, "project": {
+                "child_id": child["session_id"], "machine_id": machine, "choice": choice,
+                "default_project": "child-project", "child_project": "child-project",
+                "parent_project": "parent-project", "previous": null
+            }
+        });
+        let run = |input: Value| apply(name, serde_json::from_value(input).unwrap());
+
+        let original = read_bounded(name, storage::ID_RECORD_BYTES).unwrap();
+        let mut wrong_child = select("move");
+        wrong_child["project"]["child_id"] = other["session_id"].clone();
+        assert!(run(wrong_child).unwrap_err().contains("child session changed"));
+        let mut wrong_parent = select("move");
+        wrong_parent["parent"]["run_id"] = json!("stale");
+        assert!(run(wrong_parent).unwrap_err().contains("chosen parent changed"));
+        place(&parent, "child-project");
+        assert!(run(select("move")).unwrap_err().contains("projects changed"));
+        assert_eq!(read_bounded(name, storage::ID_RECORD_BYTES).unwrap(), original);
+        assert_eq!(membership(&child), "child-project");
+        place(&parent, "parent-project");
+
+        let mut legacy = select("keep");
+        legacy.as_object_mut().unwrap().remove("project");
+        let outcome = run(legacy).unwrap();
+        assert!(outcome.get("project_status").is_none());
+        assert_eq!(membership(&child), "child-project");
+        let clear = || run(json!({"action":"clear", "expected_run_id":child["run_id"],
+            "expected_conversation_id":child["conversation_id"]})).unwrap();
+        clear();
+
+        let kept = run(select("keep")).unwrap();
+        assert_eq!(kept["project_status"], "kept");
+        assert_eq!(kept["parent"]["session_id"], parent["session_id"]);
+        assert_eq!(membership(&child), "child-project");
+        let linked = read_bounded(name, storage::ID_RECORD_BYTES).unwrap();
+        assert!(run(select("move")).unwrap_err().contains("previous parent changed"));
+        assert_eq!(read_bounded(name, storage::ID_RECORD_BYTES).unwrap(), linked);
+
+        let mut move_approved = select("move");
+        move_approved["project"]["previous"] = json!({"machine":machine,
+            "session_id":parent["session_id"], "conversation_id":parent["conversation_id"], "run_id":parent["run_id"]});
+        let outcome = run(move_approved.clone()).unwrap();
+        assert_eq!(outcome["project_status"], "moved");
+        assert_eq!(membership(&child), "parent-project");
+        assert_eq!(membership(&parent), "parent-project");
+        assert_eq!(membership(&other), "child-project");
+        for key in ["cwd", "worktree", "parent"] {
+            assert_eq!(read_bounded(name, storage::ID_RECORD_BYTES).unwrap()[key], linked[key]);
+        }
+        assert!(run(move_approved).unwrap_err().contains("projects changed"));
+
+        // The same writer may publish the ID membership before a failed
+        // compatibility catalog write. Report uncertainty, keep the link,
+        // and refuse the original intent after either side has changed.
+        place(&child, "child-project");
+        clear();
+        let partial = crate::swarm::parent_project::tests::fail_catalog(|| run(select("move"))).unwrap();
+        assert_eq!(partial["project_status"], "uncertain");
+        assert_eq!(partial["parent"]["session_id"], parent["session_id"]);
+        assert_eq!(read_bounded(name, storage::ID_RECORD_BYTES).unwrap()["parent"], partial["parent"]);
+        assert_eq!(membership(&child), "parent-project");
+        assert!(run(select("move")).unwrap_err().contains("previous parent changed"));
     }
 
     fn claim_record(name: &str, conversation: &str, home: &Path) -> Value {

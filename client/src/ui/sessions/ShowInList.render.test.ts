@@ -37,19 +37,23 @@ vi.mock("@tanstack/solid-virtual", async () => {
 });
 
 import { ShowInListButton } from "./ShowInList";
+import { ParentDialogs } from "./ParentDialogs";
+import { parentEntries } from "./session-extra-entries";
+import { setParentDialog } from "../../store/parentLinks";
+import { installUiLanguage, uiLanguage } from "../../i18n";
 import { SessionList } from "./SessionList";
 import { listRows } from "./model";
-import { applyBatch, toSession } from "../../store/catalog";
+import { applyBatch, catalog, toSession } from "../../store/catalog";
 import { applyGrouping, grouping } from "../../store/organization";
 import { applyMachines } from "../../store/machines";
 import { teams } from "../../store/teams";
 import { setTeamCollapsed, teamCollapsed } from "../../store/teamCollapse";
-import { settingsReady } from "../../store/settings";
+import { settingsReady, setSetting } from "../../store/settings";
 import { emptyBatch } from "../../types";
 import { forgetListReveal, listRevealPulse } from "../../store/listReveal";
 import { bindSearchRow, machineFilter, projectFilter, accountFilter, folderFilter, search, selected, selectedKey,
   setPage, setSelectedKey, setSearch, setStateFilter, setMachineFilter, setProjectFilter, setAccountFilter, setFolderFilter,
-  setStripMode, stripMode, setPeek, setSubagentOpen, subagentOpen, stateFilter } from "../../store/ui";
+  setStripMode, stripMode, setPeek, setSubagentOpen, subagentOpen, stateFilter, setCompactRows } from "../../store/ui";
 
 const MACHINE = "00000000-0000-4000-8000-0000000000aa";
 const uuid = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
@@ -70,7 +74,7 @@ let host: HTMLElement, dispose: (() => void) | undefined;
 const flush = async () => { for (let n = 0; n < 30; n++) await Promise.resolve(); };
 function mount() {
   host = document.createElement("div"); document.body.append(host);
-  dispose = render(() => [createComponent(ShowInListButton, {}), createComponent(SessionList, {})], host);
+  dispose = render(() => [createComponent(ShowInListButton, {}), createComponent(SessionList, {}), createComponent(ParentDialogs, {})], host);
 }
 const locate = async () => { host.querySelector<HTMLButtonElement>('[aria-label="Show in session list"]')!.click(); await flush(); };
 const shownRow = (id: string) => [...host.querySelectorAll<HTMLElement>(".vrow")].find((el) => el.dataset.key === id);
@@ -209,4 +213,53 @@ describe("Show in session list", () => {
     expect(host.querySelectorAll(".vrow").length).toBeLessThanOrEqual(6);
     expect(shownRow(key(20_099))).toBeTruthy(); expect(fixture.inspect).not.toHaveBeenCalled();
   }, 20_000);
+});
+
+
+it("names the identified supervisor in a compact child in another project", async () => {
+  const parent = row(1, { name: "codex/locate/renamed-supervisor", title: "Actual supervisor" });
+  const child = row(2, { parent: { name: "codex/locate/earlier-name", machine: MACHINE,
+    session_id: parent.session_id!, run_id: parent.run_id!, conversation_id: parent.conversation_id!, state: "live" } });
+  put([child, parent], "", ["beta", "alpha"]);
+  setCompactRows(key(2), true);
+  try {
+    mount(); await flush();
+    const badge = shownRow(key(2))?.querySelector<HTMLButtonElement>(".scard.compact .sc-from");
+    expect(badge?.textContent).toBe("Actual supervisor");
+    expect(badge?.getAttribute("aria-label")).toBe("Supervised by Actual supervisor");
+    badge!.click(); await flush();
+    expect(selectedKey()).toBe(key(1));
+  } finally { setCompactRows(key(2), false); }
+});
+
+
+it("uses the reviewed Russian labels for supervision and the two project choices", async () => {
+  await setSetting("workspace/language", "ru", { persist: false });
+  installUiLanguage();
+  await vi.dynamicImportSettled(); await flush();
+  expect(uiLanguage()).toBe("ru");
+  const parent = row(1, { title: "Куратор" });
+  const child = row(2, { parent: { name: parent.name, machine: MACHINE,
+    session_id: parent.session_id!, run_id: parent.run_id!, conversation_id: parent.conversation_id!, state: "live" } });
+  put([child, parent], "", ["beta", "alpha"]);
+  setCompactRows(key(2), true);
+  try {
+    mount(); await flush();
+    const badge = shownRow(key(2))?.querySelector(".scard.compact .sc-from");
+    expect(badge?.textContent).toBe("Куратор");
+    expect(badge?.getAttribute("aria-label")).toBe("Под присмотром Куратор");
+    const entry = parentEntries(catalog.rows[key(2)])[0];
+    if (entry && "action" in entry) entry.action?.();
+    const dialog = host.querySelector<HTMLDialogElement>('dialog[aria-labelledby="parent-dlg-title"]')!;
+    [...dialog.querySelectorAll<HTMLButtonElement>('[role="option"]')]
+      .find((button) => button.textContent!.includes(parent.title!))!.click();
+    expect(dialog.textContent).toContain("Оставить в текущем проекте (beta)");
+    expect(dialog.textContent).toContain("Переместить в проект родительского сеанса (alpha)");
+    [...dialog.querySelectorAll<HTMLButtonElement>("button")].find((button) => button.textContent === "Отмена")!.click();
+    expect(dialog.open).toBe(false);
+  } finally {
+    setParentDialog(undefined);
+    setCompactRows(key(2), false);
+    await setSetting("workspace/language", "en", { persist: false });
+  }
 });

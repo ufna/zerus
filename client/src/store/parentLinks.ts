@@ -1,7 +1,8 @@
 import { createSignal } from "solid-js";
-import { setParent, type ParentChange } from "../bridge";
-import { orderedRows } from "./catalog";
+import { setParent, type ParentChange, type ParentProjectConsent } from "../bridge";
+import { catalog, computerFresh, orderedRows } from "./catalog";
 import { machineCards } from "./machines";
+import { grouping, groups, headerOf } from "./organization";
 import { toast } from "./notices";
 import { parentIndex } from "../ui/sessions/model";
 import type { Session } from "../ui/sessions/types";
@@ -52,16 +53,36 @@ export const parentCandidates = (child: Session) => candidatesAmong(child, order
 const target = (s: Session) => ({ computer: s.computer, name: s.name, run_id: s.runId ?? "", conversation_id: s.conversationId ?? "" });
 const short = (name: string) => name.split("/").pop() || name;
 
+export function parentProjects(child: Session, parent: Session) {
+  const machine = machineCards[child.computer]?.machine_id;
+  const from = headerOf(groups[child.key]?.group ?? ""), to = headerOf(groups[parent.key]?.group ?? "");
+  if (!machine || !grouping().loaded || !from || !to || from.id === to.id) return undefined;
+  return { machine, from, to, fallback: grouping().default_project };
+}
+
+function currentInstance(s: Session) {
+  const latest = catalog.rows[s.key];
+  return latest && latest.name === s.name && latest.sessionId === s.sessionId
+    && latest.runId === s.runId && latest.conversationId === s.conversationId && latest.state !== "archived";
+}
+
 async function change(child: Session, request: ParentChange, done: string) {
   if (busy()) return false;
   setBusy(true);
   try {
-    await setParent(target(child), request);
-    toast(tr("Parent session"), done);
+    const reply = await setParent(target(child), request);
+    if (reply.project_status === "uncertain") {
+      toast(tr("Parent session"), tr("The parent was set. Check the session’s project because the move could not be confirmed."), "error", true);
+    } else {
+      toast(tr("Parent session"), done);
+    }
     return true;
   } catch (error) {
-    toast(tr("Parent session"), String(error instanceof Error ? error.message : error), "error", true);
-    return false;
+    const detail = String(error instanceof Error ? error.message : error);
+    toast(tr("Parent session"), detail, "error", true);
+    // The answer may have been lost after the parent or project write.
+    // Require a new dialog and fresh facts before offering another choice.
+    return request.kind === "set" && !!request.project;
   } finally {
     setBusy(false);
   }
@@ -72,8 +93,33 @@ export const detachParent = (child: Session) =>
   change(child, { kind: "clear" }, tr("%1 is no longer a child session.", short(child.title)));
 
 /** Makes `parent` the child's parent after its confirmation; replacing another parent was part of that confirmation. */
-export const chooseParent = (child: Session, parent: Session) =>
-  change(child, {
+export type ParentProjects = NonNullable<ReturnType<typeof parentProjects>>;
+export type ParentProjectChoice = { projects: ParentProjects; choice: ParentProjectConsent["choice"] };
+
+export function chooseParent(child: Session, parent: Session, placement?: ParentProjectChoice) {
+  if (busy()) return false;
+  const now = parentProjects(child, parent);
+  const before = placement?.projects;
+  const moved = before && (now?.from.id !== before.from.id || now?.to.id !== before.to.id
+    || now.fallback !== before.fallback || now.machine !== before.machine);
+  if (!nestable(child, parent) || !currentInstance(child) || !currentInstance(parent) || moved || (now && !placement)) {
+    toast(tr("Parent session"), tr("The sessions or projects changed. Open Set parent again."), "error", true);
+    return true;
+  }
+  if (placement && (!grouping().ready || grouping().busy || !computerFresh(child.computer))) return false;
+
+  const previous = child.parent;
+  const project: ParentProjectConsent | undefined = placement && {
+    choice: placement.choice,
+    machine_id: placement.projects.machine, child_id: child.sessionId ?? "",
+    child_project: placement.projects.from.id, parent_project: placement.projects.to.id, default_project: placement.projects.fallback,
+    previous: previous ? { machine: previous.machine, session_id: previous.session_id ?? "",
+      run_id: previous.run_id ?? "", conversation_id: previous.conversation_id ?? "" } : null,
+  };
+  return change(child, {
     kind: "set", session_id: parent.sessionId ?? "", name: parent.name, conversation_id: parent.conversationId ?? "",
-    run_id: parent.runId ?? "", replace: !!child.parent,
-  }, tr("%1 is now a child of %2.", short(child.title), short(parent.title)));
+    run_id: parent.runId ?? "", replace: !!previous, project,
+  }, placement?.choice === "move"
+    ? tr("%1 is now a child of %2 and belongs to %3.", short(child.title), short(parent.title), placement.projects.to.name)
+    : tr("%1 is now a child of %2.", short(child.title), short(parent.title)));
+}
