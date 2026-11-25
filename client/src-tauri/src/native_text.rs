@@ -166,6 +166,12 @@ mod tests {
         sources.extend(zerus_client_core::text::marked_sources(include_str!(
             "../../core/src/teams/action/input.rs"
         )));
+        sources.extend(zerus_client_core::text::marked_sources(include_str!(
+            "desktop_service/team_person.rs"
+        )));
+        sources.extend(zerus_client_core::text::marked_sources(include_str!(
+            "desktop_service/team_person_actions.rs"
+        )));
         sources.sort_unstable();
         sources.dedup();
         assert!(sources.len() >= 150);

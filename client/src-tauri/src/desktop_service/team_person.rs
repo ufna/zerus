@@ -236,7 +236,9 @@ pub(crate) fn run(
         return failed(
             &call,
             "person_gesture_cancelled",
-            "The owner-card decision was cancelled. Nothing was sent.",
+            &crate::native_text::render(&zerus_client_core::text!(
+                "The owner-card decision was cancelled. Nothing was sent."
+            )),
         );
     };
     // Consent is minted only after acceptance, for the unchanged connection.

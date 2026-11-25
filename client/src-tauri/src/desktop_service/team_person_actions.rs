@@ -317,8 +317,11 @@ fn confirm(
     let prompt = team_confirmation::action(plan, &review, labels)
         .ok_or("Read the exact team action again before confirming.")?;
     let accepted = show_confirmation(app, &window, &prompt);
-    Confirmed::after_dialog(review, accepted)
-        .ok_or_else(|| "The team action was cancelled. Nothing was sent.".into())
+    Confirmed::after_dialog(review, accepted).ok_or_else(|| {
+        crate::native_text::render(&zerus_client_core::text!(
+            "The team action was cancelled. Nothing was sent."
+        ))
+    })
 }
 
 pub(super) fn show_confirmation(
