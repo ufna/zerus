@@ -118,9 +118,9 @@ pub(crate) fn caller_binding_reads() -> usize {
 }
 
 /// This machine's ID for a receipt's attribution. Receipts are written under
-/// the state lock, which is always taken last: the existing catalog is read
-/// without its lock, and only a machine with no catalog yet creates one
-/// (zerus-46l1q, review R3-2).
+/// the state lock. Read the existing catalog without its lock. At first use,
+/// acquire the catalog only if immediately available, so optional attribution
+/// cannot wait on a writer that is itself waiting for the state lock.
 fn machine() -> Option<String> {
     let config = crate::config::Config::load().ok()?;
     if let Some(machine) = crate::swarm::existing_local_node_id(&config) {
@@ -129,7 +129,7 @@ fn machine() -> Option<String> {
     if config.dir.join("swarm/catalog.json").exists() {
         return None;
     }
-    crate::swarm::local_node_id(&config).ok()
+    crate::swarm::try_local_node_id(&config).ok()
 }
 
 /// A verified native target is useful even when an older caller has no source
@@ -537,6 +537,25 @@ mod receipt_tests {
         let endpoint=Endpoint::from_record(&machine,&record).unwrap();
         assert_eq!(value,json!({"schema":1,"node":endpoint.key(),"endpoint":endpoint,"name":record["name"],"run_id":record["run_id"]}));
         assert!(!catalog.exists() && !root().join("graph").exists(),"read-only factory created state");
+        // The optional first receipt must not wait behind a writer that
+        // holds the catalog lock before it publishes its initial catalog.
+        let held = crate::swarm::lock_catalog_for_tests(&config);
+        assert!(!catalog.exists());
+        let (send, receive) = std::sync::mpsc::channel();
+        let candidate = record.clone();
+        let contender = std::thread::spawn(move || {
+            send.send(target_receipt(&candidate)).unwrap();
+        });
+        assert_eq!(
+            receive
+                .recv_timeout(std::time::Duration::from_secs(3))
+                .expect("receipt attribution waited for a busy catalog"),
+            None
+        );
+        contender.join().unwrap();
+        assert!(!catalog.exists());
+        drop(held);
+
         let old=target_receipt(&record).unwrap();
         assert!(catalog.exists(),"ordinary wrapper stopped initializing machine identity");
         let bytes=fs::read(&catalog).unwrap();
