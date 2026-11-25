@@ -113,15 +113,20 @@ fn close_note(store: &Store, card: u64) -> String {
 
 #[test]
 fn a_persistently_unknown_end_gets_one_card_and_one_fault_log() {
-    scan_fixture(false);
+    scan_fixture("unknown");
 }
 
 #[test]
 fn a_readable_observation_closes_the_card_for_an_active_member() {
-    scan_fixture(true);
+    scan_fixture("readable");
 }
 
-fn scan_fixture(recover: bool) {
+#[test]
+fn an_exact_manual_archive_closes_only_its_observation_card() {
+    scan_fixture("manual_archive");
+}
+
+fn scan_fixture(mode: &str) {
     let output = std::process::Command::new(std::env::current_exe().unwrap())
         .args([
             "--exact",
@@ -130,7 +135,7 @@ fn scan_fixture(recover: bool) {
             "--test-threads=1",
             "--nocapture",
         ])
-        .env("TEST_TEAMS_RECOVER", if recover { "yes" } else { "no" })
+        .env("TEST_TEAMS_OBSERVATION", mode)
         .output()
         .unwrap();
     assert!(
@@ -163,14 +168,14 @@ fn unknown_fixture() {
     // This roster uses a fixed machine identity. Give its private CLI
     // config that identity so inspection runs with the original guard.
     crate::swarm::save_test_node_id(&config, &binding.machine).unwrap();
-    test_inspect::save_then_exit(&config, &binding, &name);
+    let mut record = test_inspect::save_then_exit(&config, &binding, &name);
     assert_eq!(
         crate::state::dispatch_test_archive_catalog_worker().unwrap(),
         0
     );
     producer::withhold_saved_record(&name, true).unwrap();
     test_inspect::use_cli_inspection();
-    let machine = binding.machine;
+    let machine = binding.machine.clone();
     let stop = Arc::new(AtomicBool::new(false));
     let mut cards = actor::Runtime::open(&state, &machine).unwrap();
     let mut cursor = Scan::default();
@@ -226,7 +231,8 @@ fn unknown_fixture() {
         !state.join("approval-audit").exists(),
         "unknown did not reserve an original"
     );
-    if std::env::var("TEST_TEAMS_RECOVER").unwrap() == "yes" {
+    let mode = std::env::var("TEST_TEAMS_OBSERVATION").unwrap();
+    if mode == "readable" {
         producer::withhold_saved_record(&name, false).unwrap();
         pass(&mut h.store, &mut cards, &mut cursor, start + 189_000);
         pass(&mut h.store, &mut cards, &mut cursor, start + 193_500);
@@ -249,6 +255,37 @@ fn unknown_fixture() {
             .is_none());
         assert!(!state.join("approval-audit").exists());
         assert_eq!(logs.len(), 1, "{logs:?}");
+        return;
+    }
+    if mode == "manual_archive" {
+        let conversation = uuid::Uuid::new_v4().to_string();
+        producer::confirmed(&mut record, &conversation);
+        record["completion_source"] = serde_json::json!("manual_terminate");
+        record["completion_reason"] = serde_json::json!("user_terminated");
+        let mut drifted = record.clone();
+        drifted["run_id"] = serde_json::json!(uuid::Uuid::new_v4());
+        producer::archive(&drifted).unwrap();
+        assert_eq!(
+            crate::state::dispatch_test_archive_catalog_worker().unwrap(),
+            0
+        );
+        pass(&mut h.store, &mut cards, &mut cursor, start + 189_000);
+        pass(&mut h.store, &mut cards, &mut cursor, start + 193_500);
+        assert_eq!(existing(&h.store)[0].state, "open");
+
+        producer::archive(&record).unwrap();
+        assert_eq!(
+            crate::state::dispatch_test_archive_catalog_worker().unwrap(),
+            0
+        );
+        pass(&mut h.store, &mut cards, &mut cursor, start + 198_000);
+        pass(&mut h.store, &mut cards, &mut cursor, start + 202_500);
+        assert_eq!(existing(&h.store)[0].state, "closed");
+        assert_eq!(
+            close_note(&h.store, first[0].seq),
+            "The exact member run was deliberately archived or terminated."
+        );
+        assert!(!state.join("approval-audit").exists());
         return;
     }
 
