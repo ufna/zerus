@@ -186,6 +186,74 @@ fn a_doorbell_is_submitted_only_by_its_own_receipt() {
 }
 
 #[test]
+fn retained_doorbell_refusal_requires_the_exact_original() {
+    use sha2::{Digest, Sha256};
+    use zerus_client_core::desktop::deferred_send::{RECEIPT_MISMATCH, Refusal};
+
+    let mut f = Fixture::new();
+    let mut ring = f.ring("codex");
+    ring.name = "codex/example/lead".into();
+    let input = serde_json::json!({
+        "request_id": ring.id,
+        "expected_run_id": ring.run,
+        "expected_conversation_id": ring.conversation,
+        "text": ring.text
+    });
+    let digest = format!("{:x}", Sha256::digest(input.to_string().as_bytes()));
+    let reason = "Private composer holds a draft";
+    let record = Refusal::new(
+        &ring.id,
+        &ring.name,
+        &ring.run,
+        &ring.conversation,
+        &digest,
+        reason,
+    )
+    .unwrap()
+    .cli_record()
+    .unwrap();
+    let dir = f.config.state.join("input_receipts");
+    std::fs::create_dir(&dir).unwrap();
+    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let file = dir.join(format!("{}.json", ring.id));
+    let retain = |value: &serde_json::Value| {
+        std::fs::write(&file, value.to_string()).unwrap();
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o600)).unwrap();
+    };
+    f.refuse(1, "unbound stderr");
+    retain(&record);
+    assert_eq!(
+        f.native().ring(&f.h.store, &ring),
+        Rung::Refused(reason.into())
+    );
+    for (key, replacement) in [
+        ("request_id", serde_json::json!(uuid::Uuid::new_v4().to_string())),
+        ("name", serde_json::json!("codex/example/other")),
+        ("run_id", serde_json::json!("other-run")),
+        ("conversation_id", serde_json::json!("other-conversation")),
+        ("digest", serde_json::json!("f".repeat(64))),
+        ("transport", serde_json::json!("codex_queue")),
+        ("status", serde_json::json!("submitted")),
+        ("refusal_schema", serde_json::json!(2)),
+    ] {
+        let mut mutated = record.clone();
+        mutated[key] = replacement;
+        retain(&mutated);
+        assert_eq!(
+            f.native().ring(&f.h.store, &ring),
+            Rung::Uncertain(RECEIPT_MISMATCH.into()),
+            "{key}"
+        );
+    }
+    retain(&record);
+    f.refuse(0, "unbound stderr");
+    assert_eq!(
+        f.native().ring(&f.h.store, &ring),
+        Rung::Uncertain(RECEIPT_MISMATCH.into())
+    );
+}
+
+#[test]
 fn a_person_contact_reminder_carries_the_idle_only_constraint_to_its_original() {
     let mut f = Fixture::new();
     let mut ring = f.ring("claude");

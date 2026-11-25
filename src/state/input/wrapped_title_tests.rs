@@ -67,6 +67,30 @@ fn codex_whole_wrapped_native_title_keeps_the_empty_composer() {
 }
 
 #[test]
+fn codex_can_wrap_the_separator_with_the_title() {
+    let frame =
+        include_str!("../../../tests/fixtures/codex-composer-leading-title-separator-0172.txt");
+    let mut record = record();
+    record["cwd"] = json!(format!("/fixture/{}", "p".repeat(46)));
+    assert_eq!(frame.lines().count(), 24);
+    assert!(codex_wrapped_columns(&record, frame, 2, 19).is_some());
+    assert!(codex_wrapped_empty(&record, frame, 2, 19, 80));
+    assert!(!codex_wrapped_empty(&record, frame, 2, 19, 81));
+    assert!(!codex_wrapped_empty(&record, frame, 3, 19, 80));
+    for changed in [
+        frame.replace("  · \x1b", "  xx \x1b"),
+        frame.replace("Read hgs team curre…", "Extra · unsupported field"),
+        replace_row(frame, 19, "› Keep this draft"),
+        replace_row(frame, 19, "› 1. Approve these changes?"),
+        replace_row(frame, 20, "  Keep this draft continuation"),
+    ] {
+        assert!(!codex_wrapped_empty(&record, &changed, 2, 19, 80));
+    }
+    record["cwd"] = json!(format!("/fixture/{}", "q".repeat(46)));
+    assert!(!codex_wrapped_empty(&record, frame, 2, 19, 80));
+}
+
+#[test]
 fn transcript_hyperlinks_do_not_hide_an_empty_wrapped_composer() {
     // Native tmux styled captures retain OSC-8 link targets in history. Those
     // bytes are not displayed columns and say nothing about the live footer.
