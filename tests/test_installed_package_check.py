@@ -42,21 +42,29 @@ class PrivateProfile(unittest.TestCase):
 
 
 class ListingBootstrap(unittest.TestCase):
-    def test_first_database_and_changed_cut_wait_for_the_complete_body(self):
+    def test_publication_refusals_wait_for_the_complete_body(self):
         rows = [dict(name='sh/project/package-fixture', cwd='/srv/example')]
-        replies = [subprocess.CompletedProcess([], 1, '', 'hgs: Missing private file\n'),
-                   subprocess.CompletedProcess([], 1, '', 'hgs: Session listing changed before publication; no complete body returned\n'),
-                   subprocess.CompletedProcess([], 0, json.dumps(dict(sessions=rows)), '')]
+        messages = (
+            'hgs: Missing private file',
+            'hgs: Session listing is building, stale or unavailable; no complete body returned',
+            'hgs: Session listing changed before publication; no complete body returned',
+            'hgs: The session listing index is still being built. Try again shortly.',
+            'hgs: Listing metadata is still rebuilding',
+            'hgs: The session listing is busy. Try again shortly.',
+        )
+        replies = [subprocess.CompletedProcess([], 1, '', message + '\n') for message in messages]
+        replies.append(subprocess.CompletedProcess([], 0, json.dumps(dict(sessions=rows)), ''))
         with patch.object(PACKAGE.subprocess, 'run', side_effect=replies) as run, \
              patch.object(PACKAGE.time, 'sleep'):
             self.assertEqual(PACKAGE.listed_sessions('/private/hgs', {'HOME': '/private'}), rows)
-        self.assertEqual(run.call_count, 3)
+        self.assertEqual(run.call_count, len(replies))
         self.assertTrue(all(call.args[0] == ['/private/hgs', 'ls', '--local', '--json']
                             for call in run.call_args_list))
 
     def test_unknown_refusal_partial_body_and_different_exit_are_not_retried(self):
         for code, body, error in [(1, '', 'hgs: corrupt record'),
-                                  (1, '{"sessions":', 'hgs: Missing private file'),
+                                  (1, '', 'hgs: The session listing index cannot be read. Rebuild it and try again.'),
+                                  (1, '{"sessions":', 'hgs: The session listing is busy. Try again shortly.'),
                                   (2, '', 'hgs: Missing private file')]:
             with self.subTest(code=code, body=body, error=error), \
                  patch.object(PACKAGE.subprocess, 'run', return_value=subprocess.CompletedProcess([], code, body, error)) as run:
