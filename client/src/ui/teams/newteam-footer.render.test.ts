@@ -40,3 +40,15 @@ it("shows the last refusal", () => {
   const { host } = setup({ error: "refused: no such template" });
   expect(host.querySelector("[data-create-error]")?.textContent).toContain("no such template");
 });
+
+// zerus-26ltc: a long refusal scrolls inside its box (newteam.css; measured in
+// WebKitGTK by scripts/newteam-footer-smoke.py), so the box takes focus and the
+// keyboard can scroll it too. The whole text stays in the footer.
+it("keeps a long refusal whole in a focusable box", () => {
+  const long = Array.from({ length: 36 }, () => "The team store is busy. Nothing was written; try again.").join(" ");
+  const { host } = setup({ error: long });
+  const notice = host.querySelector<HTMLElement>("[data-create-error]")!;
+  expect(notice.tabIndex).toBe(0);
+  expect(notice.textContent).toContain(long);
+  expect([...host.querySelectorAll("button")].map((button) => button.textContent)).toEqual(["Save as template", "Create team", "Cancel"]);
+});
