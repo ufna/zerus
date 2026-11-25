@@ -2,10 +2,12 @@
 //! automatic-tool admission never admits these service kinds.
 use super::*;
 
-#[derive(Clone, Copy)]
-#[derive(PartialEq)]
+#[derive(Clone, Copy, PartialEq)]
 pub(crate) enum TeamKind {
     FolderTrust,
+    /// Codex hook trust Zerus records before a team member's Codex starts
+    /// (zerus-f67qp).
+    HookTrust,
     Resume,
     ResumeBrief,
     LaunchBrief,
@@ -15,6 +17,7 @@ pub(crate) fn begin_team(db: &mut Connection, payload: &Value, kind: TeamKind) -
     let mut payload = payload.clone();
     let category = match kind {
         TeamKind::FolderTrust => "team_folder_trust",
+        TeamKind::HookTrust => "team_hook_trust",
         TeamKind::Resume => "team_resume",
         TeamKind::ResumeBrief => "team_resume_brief",
         TeamKind::LaunchBrief => "team_launch_brief",
@@ -26,13 +29,20 @@ pub(crate) fn begin_team(db: &mut Connection, payload: &Value, kind: TeamKind) -
             };
             answers
         }
+        TeamKind::HookTrust => {
+            let Some(answers) = hook_answers(&payload) else {
+                return Ok(json!({"eligible":false}));
+            };
+            answers
+        }
         TeamKind::Resume | TeamKind::ResumeBrief | TeamKind::LaunchBrief => {
             if payload["question"]["source"] != "team_resume" {
                 return Ok(json!({"eligible":false}));
             }
             if kind != TeamKind::Resume
                 && (payload["question"]["can_answer"] != false
-                    || !payload["question"]["question_id"].as_str()
+                    || !payload["question"]["question_id"]
+                        .as_str()
                         .is_some_and(|id| id.starts_with("brief:")))
             {
                 return Ok(json!({"eligible":false}));
@@ -47,8 +57,44 @@ pub(crate) fn begin_team(db: &mut Connection, payload: &Value, kind: TeamKind) -
         db,
         &payload,
         answers,
-        matches!(kind, TeamKind::FolderTrust | TeamKind::LaunchBrief),
+        matches!(
+            kind,
+            TeamKind::FolderTrust | TeamKind::HookTrust | TeamKind::LaunchBrief
+        ),
     )
+}
+
+/// Codex hook trust Zerus recorded before a team member's Codex started
+/// (zerus-f67qp): no native card is answered, so the question is Zerus's own
+/// record of the exact hook keys and hashes it trusted, and it has no answer.
+fn hook_answers(payload: &Value) -> Option<Value> {
+    let q = &payload["question"];
+    if payload["provider"] != "codex"
+        || q["source"] != "team_hook_trust"
+        || q["can_answer"] != false
+        || !q["question_id"]
+            .as_str()
+            .is_some_and(|id| id.starts_with("hooks:"))
+    {
+        return None;
+    }
+    let hooks = q["hooks"].as_array()?;
+    if hooks.is_empty()
+        || !hooks.iter().all(|hook| {
+            hook.as_object().is_some_and(|o| o.len() == 2)
+                && hook["key"].as_str().is_some_and(|key| !key.is_empty())
+                && hook["hash"]
+                    .as_str()
+                    .is_some_and(|hash| hash.starts_with("sha256:"))
+        })
+    {
+        return None;
+    }
+    let items = q["questions"].as_array()?;
+    if items.len() != 1 || items[0]["id"] != "hooks_trust" {
+        return None;
+    }
+    Some(json!([]))
 }
 
 fn folder_answers(payload: &Value) -> Option<Value> {
@@ -124,6 +170,11 @@ mod tests {
         let q = crate::state::trust_fixture::startup_card("claude");
         let mut p = json!({"host":"machine-1","session":"claude/example/member","provider":"claude","question":q});
         assert_eq!(begin(&mut db, &p).unwrap()["eligible"], false);
+        // The hooks kind admits only Zerus's own hook-trust record (zerus-f67qp).
+        assert_eq!(
+            begin_team(&mut db, &p, TeamKind::HookTrust).unwrap()["eligible"],
+            false
+        );
         let trust = begin_team(&mut db, &p, TeamKind::FolderTrust).unwrap();
         assert_eq!(trust["fresh"], true);
         assert_eq!(
@@ -155,6 +206,34 @@ mod tests {
         assert_eq!(
             begin_team(&mut db, &p, TeamKind::FolderTrust).unwrap()["fresh"],
             false
+        );
+    }
+
+    /// Codex's own hooks-trust card, as its producer writes it at a new run's
+    /// startup and at a resumed one's, is answered by no kind (zerus-f67qp
+    /// delta): Zerus never presses Trust all and continue. The hook kind
+    /// admits only Zerus's own record of trust it wrote before the start
+    /// (`confirm::hook_trust` tests bind that producer).
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn codex_hooks_trust_cards_are_answered_by_no_kind() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut db = open(&dir.path().join("audit")).unwrap();
+        for q in [
+            crate::state::trust_fixture::hooks_trust_prompt(),
+            crate::state::trust_fixture::resumed_hooks_trust_prompt("conversation-1"),
+        ] {
+            let p = payload("codex", &q);
+            assert_eq!(begin(&mut db, &p).unwrap()["eligible"], false);
+            for kind in [TeamKind::FolderTrust, TeamKind::HookTrust] {
+                assert_eq!(begin_team(&mut db, &p, kind).unwrap()["eligible"], false);
+            }
+        }
+        assert!(
+            list(&db, &json!({})).unwrap()["entries"]
+                .as_array()
+                .unwrap()
+                .is_empty()
         );
     }
 
@@ -251,8 +330,7 @@ mod tests {
             let mut q = crate::state::trust_fixture::startup_card("claude");
             q["conversation_id"] = conversation.clone();
             assert_eq!(
-                begin_team(&mut db, &payload("claude", &q), TeamKind::FolderTrust).unwrap()
-                    ["eligible"],
+                begin_team(&mut db, &payload("claude", &q), TeamKind::FolderTrust).unwrap()["eligible"],
                 false,
                 "{conversation}"
             );

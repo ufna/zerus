@@ -184,6 +184,25 @@ impl Ports for World {
             .unwrap();
         Ok(())
     }
+    fn before_start(&mut self, _: &Plan) {}
+    fn hook_listing(&mut self, _: &Plan) -> Result<String> {
+        Ok("Codex asks you to review hooks it lists".into())
+    }
+    fn notes_owed(&mut self, b: &Binding) -> Result<Vec<Note>> {
+        self.ledger.notes_owed(b)
+    }
+    fn note(&mut self, note: &Note) -> Result<()> {
+        self.h
+            .run(
+                &service(),
+                Operation::NoteConfirmation {
+                    member: note.member.clone(),
+                    text: note.text.clone(),
+                },
+            )
+            .unwrap();
+        self.ledger.note_done(&note.key)
+    }
     fn original(
         &mut self,
         row: &Record,

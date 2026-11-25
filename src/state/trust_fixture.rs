@@ -91,6 +91,39 @@ pub(crate) fn hooks_trust_prompt() -> Value {
     .expect("the hooks-trust producer wrote no card")
 }
 
+/// Codex's hooks-trust card the producer writes for `record` at `screen`
+/// (zerus-f67qp): a variant of the committed screen, such as another hook
+/// count or a native error line, is the producer's own card for it.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub(crate) fn hooks_trust_card(record: &Value, screen: &str) -> Option<Value> {
+    codex_hooks_trust::produced(record, screen)
+}
+
+/// The committed hooks-trust screen.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub(crate) const HOOKS_TRUST_SCREEN: &str =
+    include_str!("../../tests/fixtures/codex-hooks-trust.txt");
+
+/// A resumed run's record before its first SessionStart (zerus-f67qp): the
+/// resume reopens the saved `conversation`, which the record names as both
+/// its conversation and the one it expects, with no requested ID.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub(crate) fn resumed_record(agent: &str, conversation: &str) -> Value {
+    let mut record = record(agent);
+    record["startup_kind"] = json!("resume");
+    record["conversation_id"] = json!(conversation);
+    record["expected_id"] = json!(conversation);
+    record
+}
+
+/// Codex's hooks-trust prompt when a member's saved conversation is resumed,
+/// as after an update changed its hook definitions (zerus-f67qp).
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub(crate) fn resumed_hooks_trust_prompt(conversation: &str) -> Value {
+    hooks_trust_card(&resumed_record("codex", conversation), HOOKS_TRUST_SCREEN)
+        .expect("the hooks-trust producer wrote no card for a resumed run")
+}
+
 /// The sandbox setup producer's real startup card; never a team's folder grant.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub(crate) fn sandbox_setup_prompt() -> Value {

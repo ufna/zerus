@@ -101,6 +101,69 @@ impl Native {
         Ok(source)
     }
 }
+impl Native {
+    /// Before a Codex member's first start under the team's trust setting,
+    /// Codex's own trust is recorded for exactly the pending hooks Zerus
+    /// verified, so no review appears for them (zerus-f67qp). Its outcome is
+    /// journaled there and never holds the launch: a hook still pending is
+    /// the person's review.
+    fn pretrust(&self, plan: &Plan, worktree: &Worktree) {
+        let home = match crate::accounts::hook_profile(&self.config, &plan.account) {
+            Ok((agent, home)) if agent == "codex" => Some(home),
+            _ => None,
+        };
+        let outcome = self.pretrust_at(plan, worktree, home);
+        if let Some(outcome) = outcome.filter(|outcome| {
+            !matches!(
+                outcome,
+                super::confirm::hook_trust::Pretrust::Nothing
+                    | super::confirm::hook_trust::Pretrust::Trusted(_)
+                    | super::confirm::hook_trust::Pretrust::Repeated
+            )
+        }) {
+            eprintln!(
+                "hgs: Teams hook trust for member {}: {outcome:?}",
+                plan.member
+            );
+        }
+    }
+    /// The pre-trust for the member's Codex account at `home`, only under the
+    /// team's trust setting; `None` when nothing was tried.
+    fn pretrust_at(
+        &self,
+        plan: &Plan,
+        worktree: &Worktree,
+        home: Option<PathBuf>,
+    ) -> Option<super::confirm::hook_trust::Pretrust> {
+        use super::confirm::hook_trust::{self, Start};
+        let on = crate::teams::store::Store::open(&self.config.state)
+            .ok()
+            .and_then(|store| store.team(&plan.team).ok().flatten())
+            .is_some_and(|team| team.settings.delegations.confirm_trust);
+        let home = home.filter(|_| on)?;
+        let session = if plan.session_name.is_empty() {
+            &plan.member
+        } else {
+            &plan.session_name
+        };
+        Some(hook_trust::before_start(
+            &self.config,
+            &Start {
+                team: &plan.team,
+                member: &plan.member,
+                person: &plan.person,
+                machine: &plan.machine,
+                launch: &plan.launch_id,
+                session,
+                run: &plan.launch_id,
+                conversation: "",
+                folder: &worktree.path,
+                base: &plan.base_commit,
+                home: &home,
+            },
+        ))
+    }
+}
 impl Effects for Native {
     fn hosted_ready(&mut self, plan: &Plan, bound: bool) -> Result<()> {
         if plan.agent != "dsh" { return Ok(()); }
@@ -272,6 +335,9 @@ impl Effects for Native {
             Ok(_) => return Effect::Refused(uncertain("Generated worktree ownership changed")),
             Err(p) if p.code == code::DELIVERY_UNCERTAIN => return Effect::Refused(p),
             Err(p) => return Effect::Deferred(p),
+        }
+        if plan.agent == "codex" {
+            self.pretrust(plan, worktree);
         }
         match child::run(
             &self.config,
