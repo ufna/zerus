@@ -55,14 +55,16 @@ class GitHubDiscovery(unittest.TestCase):
 
     def test_token_prevents_the_recorded_unauthenticated_403_without_changing_selection(self):
         requests, commands = [], []
+        release_url = 'https://api.github.com/repos/MoonshotAI/kimi-code/releases/tags/%40moonshot-ai%2Fkimi-code%402.6.2'
 
         def open_recorded(request, **kwargs):
             requests.append(request)
-            if request.full_url == URL:
+            if request.full_url in (kimi.GITHUB_TAG_REFS, release_url):
                 if request.get_header('Authorization') != 'Bearer ' + CREDENTIAL:
                     row = RECORDED['rate_limited']
                     raise http_error(row['status'], row['headers'].items(), row['reason'])
-                body = json.dumps(RECORDED['release']).encode()
+                body = json.dumps(RECORDED['release'] if request.full_url == release_url else
+                                  [dict(ref='refs/tags/' + RECORDED['release']['tag_name'])]).encode()
             elif request.full_url == kimi.NPM_LATEST:
                 body = json.dumps(dict(name=kimi.PACKAGE, version='2.6.2')).encode()
             else:
@@ -87,8 +89,8 @@ class GitHubDiscovery(unittest.TestCase):
         self.assertEqual(version, '2.6.2')
         self.assertEqual(selection['agreeing_sources'], ['npm', 'github'])
         self.assertEqual([r.full_url for r in requests], [
-            'https://code.kimi.com/kimi-code/latest', kimi.NPM_LATEST, URL])
-        self.assertEqual([r.get_header('Authorization') for r in requests], [None, None, 'Bearer ' + CREDENTIAL])
+            'https://code.kimi.com/kimi-code/latest', kimi.NPM_LATEST, kimi.GITHUB_TAG_REFS, release_url])
+        self.assertEqual([r.get_header('Authorization') for r in requests], [None, None] + ['Bearer ' + CREDENTIAL] * 2)
         handler = build.call_args_list[-1].args[0]
         handler = handler() if isinstance(handler, type) else handler
         with self.assertRaises(ValueError):
