@@ -141,6 +141,32 @@ fn process(pid: u32, identity: &crate::platform::ProcessIdentity) -> anyhow::Res
     };
     Ok(Process { pid, birth })
 }
+
+/// Read the two launch-pinned process states without consulting terminal
+/// presence or interpreting a legacy ps start string as a native birth.
+pub(crate) fn original_process_states(
+    record: &Value,
+) -> Option<(
+    crate::platform::ProcessState,
+    Option<crate::platform::ProcessState>,
+)> {
+    let Ok(Some(pin)) = boot().and_then(|boot| index::pins::Pin::read(record, &boot)) else {
+        return None;
+    };
+    let observe = |process: Process| {
+        let birth = match process.birth {
+            Birth::Linux(ticks) if cfg!(target_os = "linux") => ticks.to_string(),
+            Birth::Mac { seconds, micros } if cfg!(target_os = "macos") => {
+                format!("{seconds}:{micros}")
+            }
+            _ => return None,
+        };
+        i32::try_from(process.pid).ok()?;
+        crate::platform::process_state(process.pid, Some(&birth)).ok()
+    };
+    Some((observe(pin.child)?, observe(pin.supervisor)))
+}
+
 pub(super) fn capture_spawn(record: &mut Value, child: &crate::platform::ProcessIdentity) {
     let result = (|| -> anyhow::Result<index::pins::Pin> {
         let own = std::process::id();
