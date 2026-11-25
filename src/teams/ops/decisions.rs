@@ -65,6 +65,7 @@ pub(super) fn return_task(ctx: &mut Context<'_>) -> Result<()> {
         unreachable!()
     };
     ctx.active()?;
+    provider_stop::no_replay(ctx.db, &ctx.team.id, *node)?;
     let earlier = ctx.supersede(*node)?;
     let mut n = ctx.live_node(*node)?;
     reason(why)?;
@@ -104,6 +105,7 @@ pub(super) fn reassign(ctx: &mut Context<'_>) -> Result<()> {
         unreachable!()
     };
     ctx.active()?;
+    provider_stop::no_replay(ctx.db, &ctx.team.id, *node)?;
     if ctx.node_table(*node)? == "node_archive" {
         let stage = ctx.node(*node)?;
         if stage.kind == NodeKind::Stage {

@@ -163,3 +163,9 @@ describe("a pending decision that can be replaced", () => {
       .toBe("blocked: Nobody holds this task's attempt, so there is nobody to return it to.");
   });
 });
+
+it("keeps Accept and Cancel available while a policy-stopped result stays fenced", () => {
+  const stopped = card({ state: "reported", admitted: true, held: true, holder: "m3", provider_policy_stopped: true });
+  expect(taskButtons(stopped, "running").map((button) => button.id)).toEqual(["accept", "cancel"]);
+  expect(taskButtons({ ...stopped, state: "pending" }, "running").map((button) => button.id)).toEqual(["cancel"]);
+});

@@ -128,6 +128,7 @@ pub(in crate::teams::ops) fn reassign_stopped_stage(
     }) {
         return Err(refused());
     }
+    super::super::provider_stop::no_replay(ctx.db, &ctx.team.id, target.id)?;
     let step = spec(ctx, &target)?
         .stages
         .get(old.stage_index as usize)

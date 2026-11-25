@@ -17,6 +17,13 @@ Producer, after receiving a ticket:
   then finish:  ticket fields + new request_id + result_request_id (that
                 send's request_id) | hgs @WAITER_HOST wait finish --json
 
+Check a missing result from the waiting session on the producer's computer:
+  hgs wait check-provider --json with the wait_id.
+  Use an acknowledged wait with an exact producer run. A verified provider
+  policy refusal records one observation for the parent. The wait stays open
+  for its original result. Preserve prior results and continue independent work.
+  A transient error or an unreadable result cannot prove non-delivery.
+
 Cancel an abandoned wait: hgs wait cancel --json with request_id, wait_id,
 waiter_machine, expected_run_id and expected_conversation_id.
 List open and settled waits: hgs wait list --json with expected_run_id and

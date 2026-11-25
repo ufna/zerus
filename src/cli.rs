@@ -142,7 +142,7 @@ pub(crate) const USAGE: &str = r#"usage: hgs [@host] <cmd> [project] [-c [ID]] [
        hgs [@host] history <session> --json bounded exact public history
        hgs [@host] history-projection <session> --json retired and refreshed history rows
        hgs [@host] graph snapshot --json   bounded saved relationship metadata (partial coverage)
-       hgs [@host] wait begin|ack|finish|cancel|list --json   explicit independent-agent waits (JSON stdin)
+       hgs [@host] wait begin|ack|finish|cancel|list|check-provider --json   explicit independent-agent waits (JSON stdin)
        hgs [@host] terminal <session> --json scoped terminal screen/input
        hgs [@host] AGENT DIRECTORY --new -n TAG -d --launch-id UUID
        hgs [@host] session-action <session> --json scoped native lifecycle action

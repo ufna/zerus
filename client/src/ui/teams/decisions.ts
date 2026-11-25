@@ -75,6 +75,11 @@ export function providerStopNote(note: ServiceNote): string | undefined {
     default: return undefined;
   }
   const [member, agent, task, stage] = parameters;
+  if (note.code === "provider_stop_provider_policy") {
+    return stage
+      ? tr("Member %1 (%2) %3 during stage #%4 for task #%5. The review result is missing. The earlier report is preserved. Keep the refused attempt stopped.", member, agent, reason, stage, task)
+      : tr("Member %1 (%2) %3 while holding task #%4. The task is back with the lead. Keep the refused attempt stopped.", member, agent, reason, task);
+  }
   return stage
     ? tr("Member %1 (%2) %3 during stage #%4 for task #%5. The review returned to the lead. Review the changes or choose the next action.", member, agent, reason, stage, task)
     : tr("Member %1 (%2) %3 while holding task #%4. The task is back with the lead.", member, agent, reason, task);

@@ -63,6 +63,7 @@ pub struct QueueRow {
     pub holder: Option<String>,
     pub pending: Option<String>,
     pub pending_replaceable: bool,
+    pub provider_policy_stopped: bool,
     pub unstaffed: Option<String>,
     /// For a stage, the members who implemented any round of its target, whom
     /// its Reassign refuses (zerus-3u5yu); empty for any other row.

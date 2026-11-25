@@ -91,6 +91,12 @@ export function taskButtons(card: TaskView, teamStatus: string): TaskButton[] {
   const holder = card.holder === undefined ? card.implementer || null : card.holder;
   if (!card.admitted) buttons.push({ id: "admit", text: tr("Admit") });
   if (card.state === "reported") buttons.push({ id: "accept", text: tr("Accept") });
+  if (card.provider_policy_stopped) {
+    buttons.push({ id: "cancel", text: tr("Cancel task"), danger: true, reason: true });
+    return card.pending_decision ? buttons.map((button) => ({
+      ...button, blocked: tr("The task's previous decision has not settled yet."),
+    })) : buttons;
+  }
   if (card.state === "reported" && (holder || card.holder === null)) {
     buttons.push({ id: "return", text: tr("Return"), reason: true,
       ...(holder ? {} : { blocked: tr("Nobody holds this task's attempt, so there is nobody to return it to.") }) });

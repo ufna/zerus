@@ -25,6 +25,16 @@ pub(crate) const CONFIRMATION_CLOSED: &str =
 
 pub(crate) const CHANGED: &str = "team_provider_stop_changed";
 
+pub(super) const POLICY_STOPPED: &str =
+    "The provider blocked this attempt. Keep it stopped.";
+
+pub(super) fn no_replay(db: &Connection, team: &str, node: u32) -> Result<()> {
+    if rows::provider_policy_stopped(db, team, node)? {
+        return Err(invalid(POLICY_STOPPED));
+    }
+    Ok(())
+}
+
 fn changed() -> Problem {
     Problem::new(
         CHANGED,
@@ -199,11 +209,21 @@ fn note(member: &Member, node: &Node, kind: ProviderStopKind) -> ReportNote {
         agent => agent,
     };
     let target = node.stage_of.unwrap_or(node.id);
-    let text = if node.stage_of.is_some() {
-        let stage = node.id;
-        format!("Member {id} ({agent}) {reason} during stage #{stage} for task #{target}. The review returned to the lead. Review the changes or choose the next action.")
-    } else {
-        format!("Member {id} ({agent}) {reason} while holding task #{target}. The task is back with the lead.")
+    let text = match (kind, node.stage_of) {
+        (ProviderStopKind::ProviderPolicy, Some(task)) => {
+            let stage = node.id;
+            format!("Member {id} ({agent}) {reason} during stage #{stage} for task #{task}. The review result is missing. The earlier report is preserved. Keep the refused attempt stopped.")
+        }
+        (ProviderStopKind::ProviderPolicy, None) => {
+            format!("Member {id} ({agent}) {reason} while holding task #{target}. The task is back with the lead. Keep the refused attempt stopped.")
+        }
+        (_, Some(_)) => {
+            let stage = node.id;
+            format!("Member {id} ({agent}) {reason} during stage #{stage} for task #{target}. The review returned to the lead. Review the changes or choose the next action.")
+        }
+        (_, None) => {
+            format!("Member {id} ({agent}) {reason} while holding task #{target}. The task is back with the lead.")
+        }
     };
     let mut parameters = vec![id.clone(), agent.to_owned(), target.to_string()];
     if node.stage_of.is_some() {

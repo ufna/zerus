@@ -113,6 +113,30 @@ acknowledgements cannot reopen completed waits; cancelled waits reject late
 results. Operation UUIDs bind exact payloads and produce transactional idempotent
 receipts. Settlement never sends, resumes or retries a native conversation.
 
+## Check a missing result
+
+The waiting session can check one acknowledged dependency with a producer on
+the same computer:
+
+```sh
+printf '%s\n' '{"wait_id":"33333333-3333-4333-8333-333333333333"}' |
+  hgs wait check-provider --json
+```
+
+Use the wait's original producer run reference. A current native policy
+refusal after acknowledgement records one bounded `producer_refusal`
+observation per wait. Later checks return the original evidence.
+The parent can read it alongside completed work and independent open
+dependencies in `hgs wait list`. Session inspection supplies a bounded
+`missing_results` preview for open waits with those observations.
+
+The refusal identifies a producer event. The wait protocol lacks a binding
+between the assignment and a specific native turn, so the observation leaves
+the wait open. The original guarded receipt can still finish it. The parent
+can cancel an abandoned wait after checking the scope. Keep the refused work
+stopped. A transient error, unreadable evidence or an unknown result grants
+no replay authority. The check never sends input.
+
 ## Retire finished sub-sessions
 
 Reuse an idle sub-session for its own follow-up. Retire a sub-session you
