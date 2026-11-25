@@ -79,7 +79,7 @@ fn no_ledger_read_of_a_pass_grows_with_settled_history() {
         (
             "INTERRUPTED",
             sql::INTERRUPTED,
-            vec![TEAM.to_string().into()],
+            vec![TEAM.to_string().into(), "epoch-1".to_string().into()],
         ),
         (
             "PRUNE",

@@ -72,7 +72,7 @@ fn the_inbox_view_counts_open_items_up_to_its_bound() {
         db(&h).execute("INSERT INTO inbox(team,kind,node,generation,actor,text,state,created_ms) VALUES(?1,'report',?2,1,'{}','Example',?3,?2)",params![TEAM,n,state]).unwrap();
     }
     let view = h.store.inbox_view(TEAM).unwrap().unwrap();
-    assert_eq!((view.open, view.newest), (201, 250));
+    assert_eq!((view.open, view.newest_ordinary), (201, 250));
     assert_eq!(view.oldest.unwrap().node, 1);
 }
 
@@ -88,6 +88,7 @@ fn the_doorbell_admission_reads_the_team_the_binding_and_a_new_item() {
         member: "lead".into(),
         session: session.clone(),
         after,
+        person_range: None,
     };
     assert!(admit_bell(db(&h), &bell(0)).is_err(), "nothing waits");
     h.bind("m1");
@@ -104,6 +105,36 @@ fn the_doorbell_admission_reads_the_team_the_binding_and_a_new_item() {
     assert!(admit_bell(db(&h), &other).is_err(), "another binding");
     h.run(&lead, Operation::Pause).unwrap();
     assert!(admit_bell(db(&h), &bell(0)).is_err(), "paused");
+}
+
+#[test]
+fn a_reserved_contact_needs_an_open_item_in_its_original_range() {
+    use crate::teams::ops::{tests::{apply_fixture, request}, Operation};
+
+    let mut h = Harness::new();
+    let lead = h.bind("lead");
+    let Actor::Session { session, .. } = lead.clone() else {
+        unreachable!()
+    };
+    let question = || Operation::AskLead { text: "Review next?".into() };
+    let sent = h.run(&person(), question()).unwrap().item.unwrap();
+    let mut bell = Bell {
+        team: TEAM.into(),
+        member: "lead".into(),
+        session,
+        after: 0,
+        person_range: Some((0, sent)),
+    };
+    admit_bell(db(&h), &bell).unwrap();
+    h.run(&lead, Operation::ReplyToPerson { item: sent, text: "Yes".into() }).unwrap();
+    let rev = h.store.team(TEAM).unwrap().unwrap().revision;
+    let newer = apply_fixture(&mut h.store, &person(), &request(rev, question()), 31_234)
+        .unwrap().item.unwrap();
+    assert!(admit_bell(db(&h), &bell).is_err(), "a newer contact is outside the reservation");
+    bell.person_range = None;
+    assert!(admit_bell(db(&h), &bell).is_err(), "a contact does not admit an ordinary reminder");
+    bell.person_range = Some((sent, newer));
+    admit_bell(db(&h), &bell).unwrap();
 }
 
 /// Every timer read is a search through an index: no full scan of a table
@@ -125,7 +156,7 @@ fn every_timer_read_searches_an_index() {
         ),
         ("OPEN_EFFECT_NODES", effect_nodes.as_str()),
         ("MEMBER_PAGE", crate::teams::store::pages::MEMBER_PAGE_SQL),
-        ("NEWEST", sql::NEWEST),
+        ("NEWEST_PERSON", super::super::person_contact::NEWEST),
         ("OPEN", sql::OPEN),
         ("OLDEST", sql::OLDEST),
         ("UNREPORTED", sql::UNREPORTED),
@@ -149,7 +180,9 @@ fn every_timer_read_searches_an_index() {
         ("ANSWER_MARKS", super::answers::sql::MARKS),
         ("ANSWER_MARK", super::answers::sql::MARK),
         ("ANSWER_HOLDER", super::answers::sql::HOLDER),
-        ("WAITING", sql::WAITING),
+        ("NEWEST_ORDINARY", crate::teams::store::person_contact::NEWEST_ORDINARY),
+        ("WAITING_ORDINARY", crate::teams::store::person_contact::WAITING_ORDINARY),
+        ("WAITING_PERSON", crate::teams::store::person_contact::WAITING_PERSON),
         ("REVIEWED", super::reviewed::sql::REVIEWED),
         ("ACCEPTED", super::reviewed::sql::ACCEPTED),
         ("OWN", super::reviewed::sql::OWN),

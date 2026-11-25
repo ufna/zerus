@@ -22,7 +22,7 @@ pub(super) fn ring(
     seen: Option<&Presence>,
     now: i64,
 ) -> Result<Option<Rung>> {
-    ledger.interrupted(&team.id)?;
+    ledger.interrupted(&team.id, epoch)?;
     let (Some(p), Some(session)) = (seen.filter(|p| p.idle()), lead.session.as_ref()) else {
         return Ok(None);
     };
@@ -45,9 +45,14 @@ pub(super) fn ring(
     };
     let interval = i64::from(team.settings.timers.inbox_interval_seconds) * 1000;
     let Some(reserved) = ledger.reserve(
-        &binding, view.newest, view.open, view.newest_person_message, interval, epoch, now,
-    )?
-    else {
+        &binding,
+        view.newest_ordinary,
+        view.open,
+        view.newest_person_message,
+        interval,
+        epoch,
+        now,
+    )? else {
         return Ok(None);
     };
     let ring = Ring {
@@ -57,13 +62,14 @@ pub(super) fn ring(
             member: lead.id.clone(),
             session: session.clone(),
             after: reserved.after,
+            person_range: reserved.person_range,
         }),
         agent: lead.agent.clone(),
         name: p.name.clone(),
         run: p.run.clone(),
         conversation: p.conversation.clone(),
         text: text(view.open, &team.id),
-        only_when_idle: view.newest_person_message > reserved.after,
+        only_when_idle: reserved.person_range.is_some(),
     };
     let rung = effects.ring(store, &ring);
     ledger.settle(&reserved.id, &rung)?;

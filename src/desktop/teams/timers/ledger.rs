@@ -22,6 +22,7 @@ const SCHEMA: &str = "CREATE TABLE IF NOT EXISTS timer_doorbells (
   WHERE json_extract(data,'$.late_after_stop')=1
   AND json_extract(data,'$.state') IN ('launch_intent','submitted','launch_unknown');";
 pub(super) mod answers;
+pub(super) mod person;
 /// The ledger state and a bounded detail of a doorbell's outcome.
 fn outcome(rung: &Rung) -> (&'static str, String) {
     let (state, detail) = match rung {
@@ -35,8 +36,8 @@ fn outcome(rung: &Rung) -> (&'static str, String) {
 pub(super) mod sql {
     /// The mark of a binding: what its last doorbell that may have rung counted.
     pub const MARK: &str = "SELECT COALESCE(MAX(mark),0) FROM timer_doorbells WHERE team=?1 AND run=?2 AND conversation=?3 AND state IN ('reserved','submitted','uncertain')";
-    pub const LAST: &str = "SELECT at_ms,run,conversation,mark FROM timer_doorbells WHERE team=?1 ORDER BY at_ms DESC,rowid DESC LIMIT 1";
-    pub const INTERRUPTED: &str = "UPDATE timer_doorbells SET state='uncertain',detail='The service turn ended before its outcome was recorded; never sent again' WHERE team=?1 AND state='reserved'";
+    pub const LAST: &str = "SELECT at_ms FROM timer_doorbells WHERE team=?1 ORDER BY at_ms DESC,rowid DESC LIMIT 1";
+    pub const INTERRUPTED: &str = "UPDATE timer_doorbells SET state='uncertain',detail='The service turn ended before its outcome was recorded; never sent again' WHERE team=?1 AND state='reserved' AND epoch<>?2";
     pub const PRUNE: &str = "DELETE FROM timer_doorbells WHERE rowid IN (SELECT d.rowid FROM timer_doorbells d WHERE d.team=?1 AND d.at_ms<?2 AND d.state<>'reserved' AND (d.run<>?3 OR d.state IN ('refused','not_started') OR d.mark<(SELECT MAX(m.mark) FROM timer_doorbells m WHERE m.team=d.team AND m.run=d.run AND m.conversation=d.conversation AND m.state IN ('reserved','submitted','uncertain'))) LIMIT 64)";
     pub const LATE: &str = "SELECT data FROM originals WHERE (team,member)>(?1,?2) AND json_extract(data,'$.late_after_stop')=1 AND json_extract(data,'$.state') IN ('launch_intent','submitted','launch_unknown') ORDER BY team,member LIMIT ?3";
 }
@@ -52,6 +53,7 @@ pub(super) struct Binding<'a> {
 pub(super) struct Reserved {
     pub id: String,
     pub after: u64,
+    pub person_range: Option<(u64, u64)>,
 }
 
 pub(in crate::desktop::teams) struct Ledger {
@@ -68,14 +70,21 @@ impl Ledger {
             .connection()
             .execute_batch(answers::SCHEMA)
             .map_err(storage)?;
+        launches
+            .connection()
+            .execute_batch(person::SCHEMA)
+            .map_err(storage)?;
         Ok(Self { launches })
     }
     fn db(&self) -> &Connection {
         self.launches.connection()
     }
-    /// Reservations left without an outcome by an earlier turn.
-    pub(super) fn interrupted(&self, team: &str) -> Result<usize> {
-        self.db().execute(sql::INTERRUPTED, [team]).map_err(storage)
+    /// Reservations left by an earlier service. This epoch may still settle
+    /// a concurrent contender's original as a definite non-start.
+    pub(super) fn interrupted(&self, team: &str, epoch: &str) -> Result<usize> {
+        self.db()
+            .execute(sql::INTERRUPTED, params![team, epoch])
+            .map_err(storage)
     }
     /// Reserve a doorbell when an open item is newer than the binding's mark
     /// and the team's interval has passed since its last reservation.
@@ -83,7 +92,7 @@ impl Ledger {
     pub(super) fn reserve(
         &self,
         b: &Binding<'_>,
-        newest: u64,
+        newest_ordinary: u64,
         count: u32,
         person_message: u64,
         interval: i64,
@@ -97,34 +106,55 @@ impl Ledger {
                 r.get(0)
             })
             .map_err(storage)?;
-        let last: Option<(i64, String, String, u64)> = tx
-            .query_row(sql::LAST, [b.team], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+        let (person_mark, person_tried) = if person_message == 0 {
+            (0, 0)
+        } else {
+            person::marks(&tx, b)?
+        };
+        let new_person = person_message > person_mark;
+        if newest_ordinary <= mark && !new_person {
+            return Ok(None);
+        }
+        let last: Option<i64> = tx
+            .query_row(sql::LAST, [b.team], |r| r.get(0))
             .optional()
             .map_err(storage)?;
         // The first attempt for a new Person message can use the next idle
         // turn. A definite refusal returns to the normal rate for that item.
-        let limited = last.is_some_and(|(at, run, conversation, tried)| {
-            let prompt = person_message > mark
-                && (run != b.run || conversation != b.conversation || person_message > tried);
-            !prompt && now < at.saturating_add(interval)
-        });
-        if newest <= mark || limited {
+        let prompt = new_person && person_message > person_tried;
+        if !prompt && last.is_some_and(|at| now < at.saturating_add(interval)) {
             return Ok(None);
         }
         let id = uuid::Uuid::new_v4().to_string();
+        let newest = newest_ordinary.max(person_message);
         tx.execute("INSERT INTO timer_doorbells(id,team,member,machine,session,run,conversation,after,mark,count,at_ms,epoch,state) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,'reserved')",
             params![id, b.team, b.member, b.session.machine, b.session.session_id, b.run, b.conversation, mark, newest, count, now, epoch]).map_err(storage)?;
+        if new_person {
+            person::reserve(&tx, b, &id, person_message)?;
+        }
         tx.commit().map_err(storage)?;
-        Ok(Some(Reserved { id, after: mark }))
+        Ok(Some(Reserved {
+            id,
+            after: mark,
+            person_range: new_person.then_some((person_mark, person_message)),
+        }))
     }
     pub(super) fn settle(&self, id: &str, rung: &Rung) -> Result<()> {
         let (state, detail) = outcome(rung);
-        self.db()
-            .execute(
-                "UPDATE timer_doorbells SET state=?2,detail=?3 WHERE id=?1 AND state='reserved'",
-                params![id, state, detail],
-            )
+        let tx = Transaction::new_unchecked(self.db(), TransactionBehavior::Immediate)
             .map_err(storage)?;
+        // Another service epoch can mark a still-running original interrupted.
+        // Let the original's exact outcome settle a Person reservation even then.
+        let changed = tx.execute(
+            "UPDATE timer_doorbells SET state=?2,detail=?3 WHERE id=?1 AND (
+                state='reserved' OR (state='uncertain' AND EXISTS(
+                    SELECT 1 FROM timer_person_doorbells WHERE id=?1 AND state='reserved')))",
+            params![id, state, detail],
+        ).map_err(storage)?;
+        if changed != 0 {
+            person::settle(&tx, id, rung)?;
+        }
+        tx.commit().map_err(storage)?;
         Ok(())
     }
     /// Forget reservations older than a day that no longer decide a mark.

@@ -17,6 +17,141 @@ fn states(w: &World) -> Vec<String> {
     rows.collect::<rusqlite::Result<Vec<String>>>().unwrap()
 }
 
+fn contacts() -> [Operation; 2] {
+    [
+        Operation::AskLead { text: "Private question".into() },
+        Operation::OpenCard {
+            kind: crate::teams::store::person_contact::NOTE.into(),
+            text: "Private note".into(),
+            node: None,
+            decisions: Some(Vec::new()),
+            parameters: None,
+        },
+    ]
+}
+
+#[test]
+fn person_contacts_do_not_ring_again_after_successive_restores() {
+    for contact in contacts() {
+        for outcome in [Some(Rung::Submitted), Some(Rung::Uncertain("Lost".into())), None] {
+            let mut w = World::new();
+            w.h.bind("lead");
+            w.h.run(&person(), contact.clone()).unwrap();
+            let first = usize::from(outcome.is_some());
+            if let Some(outcome) = outcome {
+                w.effects.rungs.push_back(outcome);
+                w.sessions.idle("lead", "initial-run");
+                w.pass(T0);
+            } else {
+                let lead = w.h.store.member(TEAM, "lead").unwrap().unwrap();
+                let binding = super::super::ledger::Binding {
+                    team: TEAM, member: "lead", session: lead.session.as_ref().unwrap(),
+                    run: "initial-run", conversation: "conversation-lead",
+                };
+                let view = w.h.store.inbox_view(TEAM).unwrap().unwrap();
+                w.ledger.reserve(&binding, view.newest_ordinary, view.open, view.newest_person_message,
+                    120_000, "epoch-1", T0).unwrap().unwrap();
+            }
+            w.restart("restored-service");
+            for (run, at) in [("run-2", T0 + 1), ("run-3", T0 + 120_001), ("run-4", T0 + 25 * 60 * MINUTE)] {
+                w.sessions.idle("lead", run);
+                w.ledger.prune(TEAM, run, at).unwrap();
+                w.pass(at);
+                assert_eq!(w.effects.rang.len(), first, "{run} replayed an open Person contact");
+            }
+            assert_eq!(w.h.store.inbox_view(TEAM).unwrap().unwrap().open, 1);
+        }
+    }
+}
+
+#[test]
+fn same_contact_has_one_reservation_across_concurrent_runs() {
+    use std::sync::Barrier;
+
+    for contact in contacts() {
+        let mut w = World::new();
+        w.h.bind("lead");
+        w.h.run(&person(), contact).unwrap();
+        let lead = w.h.store.member(TEAM, "lead").unwrap().unwrap();
+        let view = w.h.store.inbox_view(TEAM).unwrap().unwrap();
+        let start = Barrier::new(2);
+        let original = std::thread::scope(|scope| {
+            let contenders = ["run-a", "run-b"].map(|run| {
+                let ledger = Ledger::open(w.h.temp.path()).unwrap();
+                let session = lead.session.as_ref().unwrap();
+                let view = &view;
+                let start = &start;
+                scope.spawn(move || {
+                    let binding = super::super::ledger::Binding {
+                        team: TEAM, member: "lead", session, run, conversation: "conversation-lead",
+                    };
+                    start.wait();
+                    ledger.reserve(&binding, view.newest_ordinary, view.open, view.newest_person_message,
+                        120_000, "epoch-1", T0).unwrap()
+                })
+            });
+            let [a, b] = contenders.map(|thread| thread.join().unwrap());
+            assert_ne!(a.is_some(), b.is_some(), "exactly one run may reserve this contact");
+            a.or(b).unwrap()
+        });
+        assert_eq!(states(&w), ["reserved"]);
+
+        let contender = Ledger::open(w.h.temp.path()).unwrap();
+        assert_eq!(contender.interrupted(TEAM, "epoch-2").unwrap(), 1);
+        assert_eq!(states(&w), ["uncertain"]);
+        w.ledger.settle(&original.id, &Rung::NotStarted("Nothing started".into())).unwrap();
+        assert_eq!(states(&w), ["not_started"]);
+        w.restart("epoch-2");
+        w.sessions.idle("lead", "run-c");
+        w.pass(T0 + 119_999);
+        assert!(w.effects.rang.is_empty());
+        w.pass(T0 + 120_000);
+        assert_eq!(w.effects.rang.len(), 1);
+    }
+}
+
+#[test]
+fn restored_run_retries_definite_nonstart_at_the_interval_and_new_contact_rings_promptly() {
+    for contact in contacts() {
+        for refused in [Rung::NotStarted("No offer".into()), Rung::Refused("No input".into())] {
+            let mut w = World::new();
+            w.h.bind("lead");
+            w.h.run(&person(), contact.clone()).unwrap();
+            w.sessions.idle("lead", "initial-run");
+            w.effects.rungs.push_back(refused);
+            w.pass(T0);
+            assert_eq!(w.effects.rang.len(), 1);
+            w.sessions.idle("lead", "restored-run");
+            w.pass(T0 + 119_999);
+            assert_eq!(w.effects.rang.len(), 1, "a failed attempt keeps its cooldown after restore");
+            w.pass(T0 + 120_000);
+            assert_eq!(w.effects.rang.len(), 2);
+            let rev = w.h.store.team(TEAM).unwrap().unwrap().revision;
+            apply_fixture(&mut w.h.store, &person(), &request(rev, contact.clone()), T0 + 120_001).unwrap();
+            w.pass(T0 + 120_002);
+            assert_eq!(w.effects.rang.len(), 3, "a genuinely new contact can ring immediately");
+            assert!(w.effects.rang[2].only_when_idle);
+        }
+    }
+}
+
+#[test]
+fn a_covered_contact_does_not_accelerate_an_ordinary_inbox_reminder_after_restore() {
+    let mut w = World::new();
+    w.reported();
+    w.h.run(&person(), contacts()[0].clone()).unwrap();
+    w.pass(T0);
+    assert_eq!(w.effects.rang.len(), 1);
+    assert!(w.effects.rang[0].only_when_idle);
+
+    w.sessions.idle("lead", "restored-run");
+    w.pass(T0 + 119_999);
+    assert_eq!(w.effects.rang.len(), 1);
+    w.pass(T0 + 120_000);
+    assert_eq!(w.effects.rang.len(), 2);
+    assert!(!w.effects.rang[1].only_when_idle);
+}
+
 #[test]
 fn doorbells_coalesce_within_the_interval_and_name_only_the_count() {
     let mut w = World::new();
@@ -104,7 +239,7 @@ fn a_restart_between_the_reservation_and_the_send_never_sends_it() {
         run: "run-1",
         conversation: "conversation-lead",
     };
-    let newest = w.h.store.inbox_view(TEAM).unwrap().unwrap().newest;
+    let newest = w.h.store.inbox_view(TEAM).unwrap().unwrap().newest_ordinary;
     assert!(w
         .ledger
         .reserve(&binding, newest, 1, 0, 120_000, "epoch-1", T0)
@@ -269,6 +404,8 @@ fn every_ledger_read_searches_an_index() {
     for (name, sql) in [
         ("MARK", sql::MARK),
         ("LAST", sql::LAST),
+        ("PERSON_COVERED", super::super::ledger::person::COVERED),
+        ("PERSON_TRIED", super::super::ledger::person::TRIED),
         ("INTERRUPTED", sql::INTERRUPTED),
         ("PRUNE", sql::PRUNE),
         ("LATE", sql::LATE),

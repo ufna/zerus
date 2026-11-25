@@ -116,6 +116,7 @@ impl Fixture {
                 member: "lead".into(),
                 session,
                 after: 0,
+                person_range: None,
             }),
             agent: agent.into(),
             name: "claude/example/lead".into(),
