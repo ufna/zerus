@@ -41,6 +41,8 @@ export function inboxCloses(row: Pick<DrawerRow, "kind" | "node" | "state">, sta
 }
 
 export function inboxKind(kind: string): string {
+  if (kind.startsWith("person_question:")) return tr("Question for the lead");
+  if (kind.startsWith("person_note_link:")) return tr("Note for the lead");
   switch (kind.split(":")[0]) {
     case "report": return tr("Report");
     case "provider_stop": return tr("Provider stop");
@@ -138,6 +140,11 @@ export function journalSentence(kind: string): string {
     case "record_integration_conflict": return tr("Merge conflict recorded");
     case "ask": return tr("Question asked");
     case "reply": return tr("Question answered");
+    case "ask_lead": return tr("Question sent to the lead");
+    case "reply_to_person": return tr("The lead replied to your question");
+    case "person_left_lead_note": return tr("Note left for the lead");
+    case "acknowledge_lead_note": return tr("The lead acknowledged your note");
+    case "read_lead_notice": return tr("Lead update opened");
     case "open_card": return tr("Card opened");
     case "close_card": return tr("Card closed");
     case "decide_card": return tr("Card decided");

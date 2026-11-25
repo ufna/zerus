@@ -90,11 +90,15 @@ pub fn authority(actor: &Actor, op: &Operation, team: &Team) -> Result<()> {
         | Operation::SetDeps { .. } => person,
         Operation::AddTask { .. } => true,
         Operation::Ask { .. } => member || person,
+        Operation::AskLead { .. } | Operation::ReadLeadNotice { .. } => person,
+        Operation::ReplyToPerson { .. } | Operation::AcknowledgeLeadNote { .. } => lead,
         Operation::Accept { .. } => person || (lead && team.settings.delegations.accept_results),
         Operation::Reply { .. } => person || (lead && team.settings.delegations.answer_members),
         // A card's parameters feed the window's own sentence, so only the
         // service's card writer supplies them; a person or the lead may open a
         // card's words, never its substitution values.
+        Operation::OpenCard { kind, .. } if store::person_contact::passive(kind) =>
+            kind == store::person_contact::NOTE && person,
         Operation::OpenCard { parameters, .. } => match parameters {
             Some(list) if !list.is_empty() => service,
             _ => person || lead || service,

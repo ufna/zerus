@@ -51,6 +51,7 @@ pub(in crate::desktop::teams) struct Ring {
     pub run: String,
     pub conversation: String,
     pub text: String,
+    pub only_when_idle: bool,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(in crate::desktop::teams) enum Rung {

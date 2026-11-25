@@ -109,12 +109,14 @@ impl Fixture {
             unreachable!()
         };
         Ring {
+            only_when_idle: false,
             id: uuid::Uuid::new_v4().to_string(),
             gate: Gate::Lead(Bell {
                 team: TEAM.into(),
                 member: "lead".into(),
                 session,
                 after: 0,
+                person_range: None,
             }),
             agent: agent.into(),
             name: "claude/example/lead".into(),
@@ -149,6 +151,7 @@ impl Fixture {
             unreachable!()
         };
         Ring {
+            only_when_idle: false,
             id: uuid::Uuid::new_v4().to_string(),
             gate: Gate::Answer(AnswerBell {
                 team: TEAM.into(),
@@ -180,6 +183,21 @@ fn a_doorbell_is_submitted_only_by_its_own_receipt() {
     assert_eq!(f.native().ring(&f.h.store, &ring), Rung::Submitted);
     let args = f.args().unwrap();
     assert_eq!(args[2..], ["send", "claude/example/lead", "--json"]);
+}
+
+#[test]
+fn a_person_contact_reminder_carries_the_idle_only_constraint_to_its_original() {
+    let mut f = Fixture::new();
+    let mut ring = f.ring("claude");
+    ring.only_when_idle = true;
+    f.mode("capture");
+    assert!(matches!(f.native().ring(&f.h.store, &ring), Rung::Refused(_)));
+    let raw = std::fs::read(f.h.temp.path().join("stub-stdin")).unwrap();
+    let sent: serde_json::Value = serde_json::from_slice(&raw).unwrap();
+    assert_eq!(sent["only_when_idle"], true);
+    assert_eq!(sent["request_id"], ring.id);
+    assert_eq!(sent["expected_run_id"], ring.run);
+    assert_eq!(sent["expected_conversation_id"], ring.conversation);
 }
 
 #[test]

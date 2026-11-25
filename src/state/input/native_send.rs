@@ -31,6 +31,8 @@ struct Guard<'a> {
     expected_compaction_id: Cow<'a, str>,
     #[serde(default, borrow)]
     attachments: Vec<AttachmentSize<'a>>,
+    #[serde(default)]
+    only_when_idle: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -485,7 +487,7 @@ fn snapshot(name: &str, raw: &[u8]) -> Option<Candidate> {
     let guard: Guard<'_> = serde_json::from_slice(raw).ok()?;
     // This coarse pure gate avoids decoding requests that cannot fit. Exact
     // decoded sizes are checked on the validated Payload before selection.
-    if guard.attachments.len() > PENDING_ATTACHMENTS
+    if guard.only_when_idle || guard.attachments.len() > PENDING_ATTACHMENTS
         || guard.attachments.iter().any(|attachment| {
             attachment.data_base64.len() > PENDING_ATTACHMENT_BYTES.div_ceil(3) * 4
         })
@@ -791,6 +793,32 @@ mod tests {
             assert_eq!(original.matches(teams).count(), 1, "Teams gate projection changed");
             original = original.replacen(teams, main, 1);
         }
+        // Teams inbox reminders skip compaction and recheck idleness before
+        // paste and Enter. Require each exact opt-in change before checking
+        // the original ordinary-send body against its retained seal.
+        for (reminder, ordinary) in [
+            (
+                "    let decision = (!request.only_when_idle && matches!(origin, Origin::Person) && request.expected_compaction_id.is_empty())\n",
+                "    let decision = (matches!(origin, Origin::Person) && request.expected_compaction_id.is_empty())\n",
+            ),
+            (
+                r#"        if request.only_when_idle && !idle_reminder_ready(&read(name)?) {
+            return Err("The agent began work before the team reminder could be pasted.".into());
+        }
+"#,
+                "",
+            ),
+            (
+                r#"        if request.only_when_idle && !idle_reminder_ready(&read(name)?) {
+            return Err("The agent began work before the team reminder could be submitted.".into());
+        }
+"#,
+                "",
+            ),
+        ] {
+            assert_eq!(original.matches(reminder).count(), 1, "{reminder}");
+            original = original.replacen(reminder, ordinary, 1);
+        }
         // wvzyk adds original receipt/text fences and a request-bound native
         // ordering snapshot. Project only those metadata additions away;
         // the original body seal, admission and native keys stay unchanged.
@@ -854,6 +882,7 @@ mod tests {
             expected_run_id: Cow::Borrowed("run"),
             expected_conversation_id: Cow::Borrowed("cid"),
             expected_compaction_id: Cow::Borrowed(""),
+            only_when_idle: false,
             attachments: Vec::new(),
         };
         (record, receipt, guard)

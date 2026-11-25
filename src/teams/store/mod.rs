@@ -28,6 +28,7 @@ mod member_sessions;
 mod native_floor;
 mod native_person;
 pub(in crate::teams) mod non_delivery;
+pub(crate) mod person_contact;
 pub(crate) mod observed_timing;
 pub(crate) mod person_actions;
 pub use decision_state::DecisionState;
@@ -429,6 +430,7 @@ fn schema_extensions(db: &Connection) -> Result<()> {
     rework::validate(db)?;
     phase_controls::extend(db)?;
     read_indexes(db)?;
+    person_contact::extend(db)?;
     timers::extend(db)
 }
 

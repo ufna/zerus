@@ -1,6 +1,7 @@
 //! Exact-thread native queue for a TUI that owns multiple independent tasks.
 //! It never types into whichever task happens to be visible in the terminal.
 use super::*;
+use crate::state::codex_tasks::history::HistoryRoot;
 use std::io::{BufRead, BufReader, Read};
 use std::time::Instant;
 
@@ -9,6 +10,11 @@ pub(super) struct Queue {
     executable: PathBuf,
     held: fs::File,
     file: crate::platform::FileIdentity,
+    account: HistoryRoot,
+    transcript: PathBuf,
+    resolved_transcript: PathBuf,
+    _history: fs::File,
+    history_object: (u64, u64),
     pid: u32,
     process: crate::platform::ProcessIdentity,
     conversation: String,
@@ -57,33 +63,35 @@ impl Queue {
         }
         let held = crate::platform::no_follow(OpenOptions::new().read(true))
             .open(&executable)
-            .map_err(|e| e.to_string())?;
+            .map_err(|_| "Codex executable could not be opened; no message was queued")?;
         let file = crate::platform::FileIdentity::with_metadata(&held)
-            .map_err(|e| e.to_string())?
+            .map_err(|_| "Codex executable metadata is unavailable; no message was queued")?
             .0;
-        let account = PathBuf::from(string(record, "agent_home"));
-        let account = crate::platform::canonical(account).map_err(|e| e.to_string())?;
+        let account = HistoryRoot::open(record)?;
         let transcript = PathBuf::from(string(record, "transcript"));
-        if !transcript.is_absolute() || !transcript.starts_with(account.join("sessions")) {
-            return Err("Codex native task history is unavailable".into());
-        }
-        let history = crate::platform::no_follow(OpenOptions::new().read(true))
+        let resolved_transcript = account.resolve_transcript(&transcript)?;
+        let mut history = crate::platform::no_follow(OpenOptions::new().read(true))
             .open(&transcript)
-            .map_err(|e| e.to_string())?;
-        if !history.metadata().map_err(|e| e.to_string())?.is_file()
-            || !crate::platform::holds_open(pid, &transcript)
+            .map_err(|_| "Codex native task history could not be opened; no message was queued")?;
+        let (identity, metadata) =
+            crate::platform::FileIdentity::with_metadata(&history).map_err(|_| {
+                "Codex native task history metadata is unavailable; no message was queued"
+            })?;
+        if !metadata.is_file()
+            || !crate::platform::holds_open(pid, &resolved_transcript)
                 .map_err(|_| "Codex native task file ownership is unavailable".to_owned())?
         {
             return Err("The original Codex process does not hold this task history".into());
         }
         let mut first = Vec::new();
-        BufReader::new(history.take((64 << 10) + 1))
+        BufReader::new((&mut history).take((64 << 10) + 1))
             .read_until(b'\n', &mut first)
-            .map_err(|e| e.to_string())?;
+            .map_err(|_| "Codex native task history could not be read; no message was queued")?;
         if first.len() > 64 << 10 || !first.ends_with(b"\n") {
             return Err("Codex history header exceeds its bound".into());
         }
-        let header: Value = serde_json::from_slice(&first).map_err(|e| e.to_string())?;
+        let header: Value = serde_json::from_slice(&first)
+            .map_err(|_| "Codex native task history header is invalid; no message was queued")?;
         if header["type"] != "session_meta" || header["payload"]["id"] != conversation {
             return Err("Codex native task history identity changed".into());
         }
@@ -91,13 +99,14 @@ impl Queue {
         if version.is_empty() || version.len() > 32 {
             return Err("Codex native task version is unavailable".into());
         }
+        account.verify()?;
         let mut probe = std::process::Command::new(&executable);
         for (key, _) in
             std::env::vars_os().filter(|(key, _)| key.to_string_lossy().starts_with("HGS_"))
         {
             probe.env_remove(key);
         }
-        probe.env("CODEX_HOME", &account).arg("--version");
+        probe.env("CODEX_HOME", account.path()).arg("--version");
         let (status, stdout, _) =
             crate::platform::run_bounded(&mut probe, [1024, 4096], until, &|| false)
                 .map_err(|_| "Codex queue version is unavailable".to_owned())?;
@@ -107,13 +116,15 @@ impl Queue {
         {
             return Err("The native queue version differs from the running Codex task".into());
         }
+        account.verify()?;
         let mut help = std::process::Command::new(&executable);
         for (key, _) in
             std::env::vars_os().filter(|(key, _)| key.to_string_lossy().starts_with("HGS_"))
         {
             help.env_remove(key);
         }
-        help.env("CODEX_HOME", &account).args(["queue", "--help"]);
+        help.env("CODEX_HOME", account.path())
+            .args(["queue", "--help"]);
         let (status, output, _) =
             crate::platform::run_bounded(&mut help, [16 << 10, 4096], until, &|| false)
                 .map_err(|_| "Codex queue capability is unavailable".to_owned())?;
@@ -139,7 +150,7 @@ impl Queue {
             command.env_remove(key);
         }
         command
-            .env("CODEX_HOME", account)
+            .env("CODEX_HOME", account.path())
             .current_dir(string(record, "cwd"));
         // No --resume: this operation cannot launch a daemon or a new model task.
         command.args(["queue", "--thread", conversation, "--message", text]);
@@ -148,6 +159,11 @@ impl Queue {
             executable,
             held,
             file,
+            account,
+            transcript,
+            resolved_transcript,
+            _history: history,
+            history_object: (identity.device, identity.inode),
             pid,
             process,
             conversation: conversation.into(),
@@ -158,6 +174,13 @@ impl Queue {
     }
 
     fn verify(&self) -> Result<()> {
+        self.account.verify()?;
+        if self.account.resolve_transcript(&self.transcript)? != self.resolved_transcript
+            || crate::platform::file_identity(&self.transcript).map(|id| (id.device, id.inode))
+                != Some(self.history_object)
+        {
+            return Err("Codex native task history changed during queue preparation".into());
+        }
         if crate::platform::process_identity(self.pid).as_ref() != Some(&self.process)
             || crate::platform::file_identity(&self.executable) != Some(self.file)
             || crate::platform::FileIdentity::with_metadata(&self.held)

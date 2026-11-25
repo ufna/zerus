@@ -135,6 +135,7 @@ pub(super) fn stop(ctx: &mut Context<'_>) -> Result<()> {
     // unknown: its row and its task text stay, and the terminal prune stays
     // blocked for that team by the open effect. That is the accepted limit of
     // zerus-63rru.102 round 3, not a retry.
+    person_contact::close_pending(ctx)?;
     rows::settle_decisions(ctx.db, &ctx.team.id, None, &encode(ctx.actor)?, true)?;
     // The stop's own identity: a monotonic sequence recorded on the team,
     // stamped on this stop's cancel decisions (zerus-63rru.52 round 3).
@@ -179,6 +180,7 @@ pub(super) fn archive(ctx: &mut Context<'_>) -> Result<()> {
     if !matches!(ctx.team.status, TeamStatus::Stopped | TeamStatus::Finished) {
         return Err(invalid("Only a stopped or finished team can be archived."));
     }
+    person_contact::close_pending(ctx)?;
     rows::close_cards(ctx.db, &ctx.team.id, None, &encode(ctx.actor)?)?;
     ctx.db
         .execute("DELETE FROM live_tasks WHERE team=?1", [&ctx.team.id])

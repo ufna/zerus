@@ -300,3 +300,148 @@ fn assert_stale_cards(h: &Harness, decided: u64) {
         assert_eq!(card.decided_actor.unwrap()["kind"], "person");
     }
 }
+
+#[test]
+fn person_question_is_persisted_for_the_lead_without_a_task() {
+    let mut h = Harness::new();
+    let lead = h.bind("lead");
+    let member = h.bind("m1");
+    h.settings(|s| s.delegations.answer_members = false);
+    let question: Operation = serde_json::from_value(serde_json::json!({
+        "op": "ask_lead",
+        "text": "Can we start the review?"
+    }))
+    .expect("the window needs a team-wide question operation");
+    let item = h.run(&person(), question).unwrap().item.unwrap();
+    let answer: Operation = serde_json::from_value(serde_json::json!({
+        "op": "reply_to_person",
+        "item": item,
+        "text": "The review can start."
+    }))
+    .expect("the bound lead needs a scoped reply operation");
+    refused(h.run(&member, answer.clone()), code::NOT_ALLOWED);
+    let Actor::Session { session, .. } = &member else {
+        unreachable!()
+    };
+    let wrong_session = Actor::Session {
+        person: "local".into(),
+        team: TEAM.into(),
+        member: "lead".into(),
+        session: session.clone(),
+    };
+    refused(h.run(&wrong_session, answer.clone()), code::NOT_ALLOWED);
+    let mut other = create();
+    if let Operation::Create {
+        integration_branch, ..
+    } = &mut other
+    {
+        integration_branch.push_str("-other");
+    }
+    h.run_for(TEAM_B, &person(), other).unwrap();
+    refused(
+        h.run_for(TEAM_B, &lead, answer.clone()),
+        code::NOT_ALLOWED,
+    );
+    let reply = h.run(&lead, answer).unwrap();
+    let inbox = h.store.inbox(TEAM, 30, None).unwrap();
+    let row = inbox.rows.iter().find(|row| row.seq == item).unwrap();
+    assert_eq!((row.node, row.generation), (0, 0));
+    assert_eq!(row.reply.as_deref(), Some("The review can start."));
+    assert_eq!(row.state, "closed");
+    let waiting = h.store.waiting(20, None).unwrap();
+    let notice = waiting.rows.iter().find(|row| Some(row.card.seq) == reply.item).unwrap();
+    assert_eq!(notice.card.kind, "lead_reply_to_person");
+    assert!(notice.card.decisions.is_empty());
+}
+
+fn contact_at(h: &mut Harness, actor: &Actor, operation: Operation, now: i64) -> Result<Reply> {
+    let revision = h.store.team(TEAM)?.unwrap().revision;
+    apply_fixture(&mut h.store, actor, &request(revision, operation), now)
+}
+
+fn lead_note(text: &str) -> Operation {
+    Operation::OpenCard {
+        kind: store::person_contact::NOTE.into(),
+        text: text.into(),
+        node: None,
+        decisions: Some(vec![]),
+        parameters: None,
+    }
+}
+
+#[test]
+fn the_lead_acknowledges_the_note_and_the_person_opens_its_notice() {
+    let mut h = Harness::new();
+    let lead = h.bind("lead");
+    let member = h.bind("m1");
+    refused(h.run(&lead, lead_note("An impersonated note")), code::NOT_ALLOWED);
+    let note = h.run(&person(), lead_note("Keep the first draft.")).unwrap().item.unwrap();
+    assert!(h.store.waiting(20, None).unwrap().rows.is_empty());
+    let link = h.store.inbox(TEAM, 20, None).unwrap().rows.pop().unwrap();
+    assert_eq!(link.kind, format!("person_note_link:{note}"));
+    assert!(!link.text.contains("Keep the first draft."));
+    refused(h.run(&person(), Operation::DecideCard { card: note, decision: "acknowledged".into() }), code::INVALID_STATE);
+    refused(h.run(&member, Operation::AcknowledgeLeadNote { card: note }), code::NOT_ALLOWED);
+    refused(h.run(&person(), Operation::ReadLeadNotice { card: note }), code::INVALID_STATE);
+
+    let notice = h.run(&lead, Operation::AcknowledgeLeadNote { card: note }).unwrap().item.unwrap();
+    assert!(h.store.waiting(20, None).unwrap().rows.is_empty());
+    let cards = h.store.cards(TEAM, 20, None).unwrap().rows;
+    assert_eq!(cards[0].decision.as_deref(), Some("acknowledged"));
+    assert_eq!(cards[0].decided_actor.as_ref().unwrap()["member"], "lead");
+    assert_eq!(cards[1].kind, store::person_contact::ACK_NOTICE);
+    assert!(cards[1].decisions.is_empty());
+    assert_eq!(h.store.inbox(TEAM, 20, None).unwrap().rows[0].state, "closed");
+    assert_eq!(store::person_contact::unread(h.store.db.as_ref().unwrap(), TEAM).unwrap(), 1);
+    refused(h.run(&lead, Operation::AcknowledgeLeadNote { card: note }), code::INVALID_STATE);
+    refused(h.run(&lead, Operation::ReadLeadNotice { card: notice }), code::NOT_ALLOWED);
+    let mut second = create();
+    if let Operation::Create { integration_branch, .. } = &mut second {
+        integration_branch.push_str("-second");
+    }
+    h.run_for(TEAM_B, &person(), second).unwrap();
+    refused(h.run_for(TEAM_B, &person(), Operation::ReadLeadNotice { card: notice }), code::INVALID_STATE);
+    h.run(&person(), Operation::ReadLeadNotice { card: notice }).unwrap();
+    assert_eq!(store::person_contact::unread(h.store.db.as_ref().unwrap(), TEAM).unwrap(), 0);
+}
+
+#[test]
+fn person_contact_caps_are_durable_and_independent_of_member_questions() {
+    let mut h = Harness::new();
+    let lead = h.bind("lead");
+    h.settings(|s| s.caps.max_open_questions = 1);
+    let member = h.bind("m1");
+    let node = h.add(&person(), 1);
+    h.submit(node, "m1");
+    let member_question = h.run(&member, ask(node, "Member question")).unwrap().item.unwrap();
+    refused(h.run(&member, ask(node, "Second member question")), code::OVER_CAP);
+    let question = || Operation::AskLead { text: "🙂".repeat(1000) };
+    refused(h.run(&lead, question()), code::NOT_ALLOWED);
+    for text in ["   ".into(), "a\u{202e}b".into()] {
+        refused(h.run(&person(), Operation::AskLead { text }), code::INVALID_STATE);
+    }
+    refused(h.run(&person(), Operation::AskLead { text: "x".repeat(1001) }), code::OVER_CAP);
+    let rev = h.store.team(TEAM).unwrap().unwrap().revision;
+    let original = request(rev, question());
+    let first = apply_fixture(&mut h.store, &person(), &original, 1_000).unwrap().item.unwrap();
+    h.store = Store::open(h.temp.path()).unwrap();
+    let replay = apply_fixture(&mut h.store, &person(), &original, 2_000).unwrap();
+    assert_eq!(replay.item, Some(first));
+    assert_eq!(replay.revision, rev + 1);
+    refused(contact_at(&mut h, &person(), lead_note("Too early"), 30_999), code::OVER_CAP);
+    let note = contact_at(&mut h, &person(), lead_note("First note"), 31_000).unwrap().item.unwrap();
+    refused(contact_at(&mut h, &person(), lead_note("Too many notes"), 61_000), code::OVER_CAP);
+    refused(contact_at(&mut h, &person(), question(), 61_000), code::OVER_CAP);
+    refused(h.run(&person(), Operation::Reply { item: first, text: "Wrong command".into() }), code::INVALID_STATE);
+    let notice = contact_at(&mut h, &lead, Operation::ReplyToPerson { item: first, text: "Here is the answer.".into() }, 61_000).unwrap().item.unwrap();
+    assert_eq!(h.store.waiting(20, None).unwrap().rows[0].card.seq, notice);
+    h.run(&person(), Operation::ReadLeadNotice { card: notice }).unwrap();
+    assert!(h.store.waiting(20, None).unwrap().rows.is_empty());
+    assert!(contact_at(&mut h, &person(), question(), 61_000).is_ok());
+    h.run(&person(), Operation::Reply { item: member_question, text: "Answer for the member".into() }).unwrap();
+    h.run(&person(), Operation::Stop).unwrap();
+    assert!(h.store.inbox(TEAM, 20, None).unwrap().rows.iter().all(|row| row.state == "closed"));
+    let note = rows::card(h.store.db.as_ref().unwrap(), TEAM, note).unwrap().unwrap();
+    assert_eq!(note.state, "closed");
+    assert!(note.decision.is_none());
+}

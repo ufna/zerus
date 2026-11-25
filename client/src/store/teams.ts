@@ -29,6 +29,7 @@ export interface TeamSummary {
   member_sessions?: TeamMemberSession[] | null;
   /** Bounded metadata supplied by the same followed list read. */
   progress?: TeamProgress | null;
+  lead_notices?: number;
 }
 export interface TeamList {
   teams: TeamSummary[]; truncated: boolean; next: string | null;
@@ -45,7 +46,7 @@ export interface TeamMember {
 }
 export interface TeamMemberCounts { total: number; not_created: number; active: number; paused: number; removed: number }
 export interface TeamNodeCounts { waiting: number; pending: number; in_progress: number; reported: number; accepted: number; cancelled: number }
-export interface TeamCounts { members: TeamMemberCounts; nodes: TeamNodeCounts; inbox: number; cards: number }
+export interface TeamCounts { members: TeamMemberCounts; nodes: TeamNodeCounts; inbox: number; cards: number; lead_notices?: number }
 export interface TeamStage { holder?: string | null; node: number; index: number; role: string; state: string; assignee: string; implementer: string; kind?: "review" | "test" | "land" | null; target?: number | null; round?: number | null }
 export interface TeamTaskRef { project: string; uuid: string }
 export interface TeamDependency { node: number; kind?: "hard" | "soft" }
@@ -117,6 +118,7 @@ export interface WaitingItem {
   /** The decisions the card takes, in order, as the core read them; absent
    * from an older core: acknowledged alone. */
   decisions?: string[];
+  decision?: string;
   /** The service's statements about a report the card quotes, apart from the
    * member's text; absent from an older core. */
   notes?: ServiceNote[];
@@ -725,6 +727,12 @@ export function createTeams(transport: TeamsTransport = tauriTeams()) {
     return run({ team: card.team, expected_revision, request_id: newRequestId(), action: { kind: "decide", card: card.card, decision } }, source);
   }
 
+  async function readLeadNotice(card: WaitingItem): Promise<TeamOutcome | undefined> {
+    const expected_revision = await revisionOf(card.team);
+    if (expected_revision === undefined) return undefined;
+    return run({ team: card.team, expected_revision, request_id: newRequestId(), action: { kind: "read_lead_notice", card: card.card } }, "waiting");
+  }
+
   // ------------------------------------------------------------ New team
 
   async function openNewTeam() {
@@ -950,7 +958,7 @@ export function createTeams(transport: TeamsTransport = tauriTeams()) {
 
   return {
     list, listPage, firstListPage, listed, listPages, listNext, team, failure, available, off, followed, visible, catalog, catalogError, newTeamOpen, confirmation, unresolved, uncertain, busy, sending, base,
-    waitingView, waitingCount, waitingLater, apply, probe, recheck, hidden, openTeam, closeTeam, tasksChanged, page, openWaiting, pageWaiting, firstWaitingPage, decide, revisionOf,
+    waitingView, waitingCount, waitingLater, apply, probe, recheck, hidden, openTeam, closeTeam, tasksChanged, page, openWaiting, pageWaiting, firstWaitingPage, decide, readLeadNotice, revisionOf,
     teamOfSession, summaryOf, unresolvedOf, failureFor, readFailureFor, preview, openNewTeam, closeNewTeam, reloadCatalog, createIntent, claimCreate, saveTemplate, project, run, runAgain, confirm, cancelConfirmation, check, dismiss, clearFailure,
   };
 }

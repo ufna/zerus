@@ -420,3 +420,111 @@ fn waiting_lists_every_open_owner_card_oldest_first_and_only_for_the_person() {
     let (reply, _) = harness.cli(&Caller::Session(key(M1_SESSION)), "waiting", "");
     assert_eq!(code(&reply), "not_allowed");
 }
+
+#[test]
+fn lead_reply_projects_the_real_waiting_card_and_inbox_row() {
+    use crate::teams::ops::Operation;
+    use serde_json::json;
+    use zerus_client_core::{actions::Exit, teams::{drawers, view}};
+
+    let h = Harness::new();
+    h.create();
+    h.bind("lead", LEAD_SESSION);
+    let item = h.apply(&crate::teams::ops::tests::person(), Operation::AskLead {
+        text: "Can we start the review?".into(),
+    }).item.unwrap();
+
+    let request = json!({
+        "request_id": uid(100),
+        "team": TEAM,
+        "expected_revision": h.revision(),
+        "item": item,
+        "text": "The review can start.",
+    });
+    let (reply, exit) = h.cli(&lead_caller(), "reply-to-person", &request.to_string());
+    assert_eq!(exit, 0, "{reply}");
+
+    let (waiting, exit) = h.cli(&Caller::Person, "waiting", "");
+    assert_eq!(exit, 0, "{waiting}");
+    let waiting = view::waiting(&waiting);
+    assert_eq!(waiting.items.len(), 1);
+    assert_eq!(status(&h, &Caller::Person)["counts"]["cards"]["lead_notices"], 1);
+    let (list, exit) = h.cli(&Caller::Person, "list", "");
+    assert_eq!(exit, 0, "{list}");
+    let list = view::list(&list);
+    assert_eq!(list.teams[0].lead_notices, 1);
+
+    let (inbox, exit) = h.cli(&Caller::Person, &format!("inbox --team {TEAM}"), "");
+    assert_eq!(exit, 0, "{inbox}");
+    let inbox = drawers::decode(&drawers::DrawerRead {
+        team: TEAM.into(), kind: drawers::DrawerKind::Inbox, after: None,
+        recorded_timings: false, timing_seqs: None, timing_next: None,
+    }, Exit::Code {
+        code: 0,
+        stdout: serde_json::to_vec(&inbox).unwrap(),
+        stderr: String::new(),
+    }).unwrap();
+    let mut reply = serde_json::to_value(&waiting.items[0]).unwrap();
+    assert!(waiting.items[0].created_ms > 0);
+    // The CLI reply used the wall clock. Freeze the display timestamp only.
+    reply["created_ms"] = json!(NOW);
+    let card = waiting.items[0].card;
+    let person = crate::teams::ops::tests::person();
+    h.apply(&person, Operation::ReadLeadNotice { card });
+    let (closed, exit) = h.cli(&Caller::Person, "waiting", "");
+    assert_eq!(exit, 0, "{closed}");
+    assert!(view::waiting(&closed).items.is_empty());
+    assert!(status(&h, &Caller::Person)["counts"]["cards"].get("lead_notices").is_none());
+
+    let note = h.request(Operation::OpenCard {
+        kind: crate::teams::store::person_contact::NOTE.into(),
+        text: "Keep the review summary in the document.".into(),
+        node: None,
+        decisions: Some(vec![]),
+        parameters: None,
+    });
+    let note = crate::teams::ops::tests::apply_fixture(&mut h.store(), &person, &note, NOW + 30_000)
+        .unwrap().item.unwrap();
+    let request = json!({
+        "request_id": uid(101),
+        "team": TEAM,
+        "expected_revision": h.revision(),
+        "card": note,
+    });
+    let (acknowledged, exit) = h.cli(&lead_caller(), "acknowledge-note", &request.to_string());
+    assert_eq!(exit, 0, "{acknowledged}");
+    let (still_empty, exit) = h.cli(&Caller::Person, "waiting", "");
+    assert_eq!(exit, 0, "{still_empty}");
+    assert!(view::waiting(&still_empty).items.is_empty());
+    assert_eq!(status(&h, &Caller::Person)["counts"]["cards"]["lead_notices"], 1);
+
+    let read_drawer = |command, kind| {
+        let (response, exit) = h.cli(&Caller::Person, &format!("{command} --team {TEAM}"), "");
+        assert_eq!(exit, 0, "{response}");
+        drawers::decode(&drawers::DrawerRead {
+            team: TEAM.into(), kind, after: None, recorded_timings: false,
+            timing_seqs: None, timing_next: None,
+        }, Exit::Code {
+            code: 0, stdout: serde_json::to_vec(&response).unwrap(), stderr: String::new(),
+        }).unwrap()
+    };
+    let cards = read_drawer("cards", drawers::DrawerKind::Cards);
+    let ack = cards.rows.iter().find(|row| row.kind == "lead_note_ack").unwrap();
+    assert_eq!(ack.seq, acknowledged["item"].as_u64().unwrap());
+    let mut ack = serde_json::to_value(ack).unwrap();
+    ack["at_ms"] = json!(NOW);
+    ack["card"]["created_ms"] = json!(NOW);
+
+    let journal = read_drawer("journal", drawers::DrawerKind::Feed);
+    let notice = journal.rows.iter().find(|row| row.kind == "acknowledge_lead_note").unwrap();
+    let mut notice = serde_json::to_value(notice).unwrap();
+    notice["at_ms"] = json!(NOW);
+    let value = json!({"reply": reply, "inbox": inbox.rows[0], "list": list, "ack": ack, "notice": notice});
+    let generated = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("client/core/src/teams/fixtures/person-lead-contact.json");
+    if std::env::var_os("ZERUS_UPDATE_LEAD_CONTACT_FIXTURE").is_some() {
+        std::fs::write(generated, format!("{}\n", serde_json::to_string_pretty(&value).unwrap())).unwrap();
+    } else {
+        assert_eq!(value, serde_json::from_slice::<Value>(&std::fs::read(generated).unwrap()).unwrap());
+    }
+}

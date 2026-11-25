@@ -1427,7 +1427,10 @@ fn action_kinds() -> Vec<String> {
             | TeamAction::Release { .. }
             | TeamAction::Cancel { .. }
             | TeamAction::Reply { .. }
-            | TeamAction::Ask { .. } => "",
+            | TeamAction::Ask { .. }
+            | TeamAction::AskLead { .. }
+            | TeamAction::LeaveLeadNote { .. }
+            | TeamAction::ReadLeadNotice { .. } => "",
         }
     }
     let member = || "m1".to_owned();
@@ -1634,6 +1637,13 @@ fn action_kinds() -> Vec<String> {
             generation: 1,
             text: "t".into(),
         },
+        TeamAction::AskLead {
+            text: "Question".into(),
+        },
+        TeamAction::LeaveLeadNote {
+            text: "Note".into(),
+        },
+        TeamAction::ReadLeadNotice { card: 1 },
     ];
     let mut kinds: Vec<String> = samples
         .iter()

@@ -239,12 +239,7 @@ pub fn decode(asked: &DrawerRead, exit: Exit) -> Result<DrawerPage, TeamError> {
         let card = if asked.kind == DrawerKind::Cards {
             let mut value = row.clone();
             value["team"] = Value::String(asked.team.clone());
-            Some(
-                view::waiting(&serde_json::json!({"rows": [value]}))
-                    .items
-                    .pop()
-                    .ok_or_else(|| invalid("Invalid owner card."))?,
-            )
+            Some(view::card_item(&value).ok_or_else(|| invalid("Invalid owner card."))?)
         } else {
             None
         };

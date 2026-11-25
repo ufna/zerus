@@ -556,6 +556,19 @@ pub enum Operation {
         item: u64,
         text: String,
     },
+    AskLead {
+        text: String,
+    },
+    ReplyToPerson {
+        item: u64,
+        text: String,
+    },
+    AcknowledgeLeadNote {
+        card: u64,
+    },
+    ReadLeadNotice {
+        card: u64,
+    },
     OpenCard {
         kind: String,
         text: String,

@@ -22,6 +22,7 @@ pub fn list(reply: &Value) -> TeamList {
             lead: name(row, "lead"),
             home: name(row, "home"),
             revision: count(row, "revision"),
+            lead_notices: count(row, "lead_notices"),
             lead_session: lead_session(row),
             member_sessions: member_sessions(row),
             progress: row
@@ -38,10 +39,15 @@ pub fn list(reply: &Value) -> TeamList {
     }
 }
 
-fn waiting_item(row: &Value) -> Option<WaitingItem> {
+pub(in crate::teams) fn card_item(row: &Value) -> Option<WaitingItem> {
     let team = name(row, "team");
     let card = row.get("seq").and_then(Value::as_u64)?;
     Some(WaitingItem {
+        decision: row
+            .get("decision")
+            .and_then(Value::as_str)
+            .filter(|value| *value == "acknowledged" && row["kind"] == "person_note_to_lead")
+            .map(str::to_owned),
         id: format!("{team}:{card}"),
         team,
         card,
@@ -120,12 +126,22 @@ fn forbidden(c: char) -> bool {
         || matches!(c, '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}')
 }
 
-/// The reply's open owner cards, at most [`PAGE`]. The read is contracted to
-/// open cards only, so nothing is filtered here.
+/// The reply's open owner cards, at most [`PAGE`]. A service from before
+/// lead contact can also list the two passive card kinds that belong in Cards.
 pub fn waiting(reply: &Value) -> WaitingView {
     let rows = array(reply, "rows");
     WaitingView {
-        items: rows.iter().take(PAGE).filter_map(waiting_item).collect(),
+        items: rows
+            .iter()
+            .take(PAGE)
+            .filter(|row| {
+                !matches!(
+                    row["kind"].as_str(),
+                    Some("person_note_to_lead" | "lead_note_ack")
+                )
+            })
+            .filter_map(card_item)
+            .collect(),
         next: next_cursor(reply),
         after: None,
     }

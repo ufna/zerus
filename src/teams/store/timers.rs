@@ -59,7 +59,8 @@ pub struct OpenItem {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct InboxView {
     pub open: u32,
-    pub newest: u64,
+    pub newest_ordinary: u64,
+    pub newest_person_message: u64,
     pub oldest: Option<OpenItem>,
 }
 /// A delivered attempt of a live node, with the outcome time when known.
@@ -91,6 +92,8 @@ pub struct Bell {
     pub session: SessionKey,
     /// The mark of the previous doorbell of this binding.
     pub after: u64,
+    /// The exclusive lower and inclusive upper marks of the reserved contact.
+    pub person_range: Option<(u64, u64)>,
 }
 
 /// An archived stage `a` is released when its creation is no longer live,
@@ -138,8 +141,6 @@ fn limit(value: u32) -> Result<u32> {
 
 /// The reads, named so that their query plans are checked by tests.
 pub(crate) mod sql {
-    pub const NEWEST: &str =
-        "SELECT seq FROM inbox WHERE team=?1 AND state='open' ORDER BY seq DESC LIMIT 1";
     pub const OPEN: &str =
         "SELECT count(*) FROM (SELECT 1 FROM inbox WHERE team=?1 AND state='open' LIMIT 201)";
     pub const OLDEST: &str = "SELECT seq,node,generation,created_ms FROM inbox WHERE team=?1 AND state='open' ORDER BY seq LIMIT 1";
@@ -173,8 +174,6 @@ pub(crate) mod sql {
     pub const REFUSALS_NEWEST: &str = "SELECT node,reason,at_ms FROM key_clears INDEXED BY key_refusals_newest WHERE team=?1 AND state='refused' ORDER BY at_ms DESC,node DESC LIMIT ?2";
     /// How many key refusals a team has, counted up to the cap.
     pub const REFUSALS_COUNT: &str = "SELECT COUNT(*) FROM (SELECT 1 FROM key_clears INDEXED BY key_refusals WHERE team=?1 AND state='refused' LIMIT ?2)";
-    pub const WAITING: &str =
-        "SELECT EXISTS(SELECT 1 FROM inbox WHERE team=?1 AND state='open' AND seq>?2)";
 }
 
 impl Store {
@@ -185,10 +184,11 @@ impl Store {
     /// The open lead inbox: newest and oldest item and a count bounded at 201.
     pub fn inbox_view(&self, team: &str) -> Result<Option<InboxView>> {
         self.read(|db| {
-            let newest = db.query_row(sql::NEWEST, [team], |r| r.get(0));
-            let Some(newest) = newest.optional().map_err(storage)? else {
+            let newest_ordinary = super::person_contact::newest_ordinary(db, team)?;
+            let newest_person_message = super::person_contact::newest(db, team)?;
+            if newest_ordinary == 0 && newest_person_message == 0 {
                 return Ok(None);
-            };
+            }
             let open = db
                 .query_row(sql::OPEN, [team], |r| r.get(0))
                 .map_err(storage)?;
@@ -198,7 +198,8 @@ impl Store {
                 .map_err(storage)?;
             Ok(Some(InboxView {
                 open,
-                newest,
+                newest_ordinary,
+                newest_person_message,
                 oldest,
             }))
         })
@@ -421,13 +422,29 @@ pub(crate) fn admit_bell(db: &Connection, bell: &Bell) -> Result<()> {
     {
         return Err(refuse("The lead's binding changed."));
     }
-    let waiting: bool = db
-        .query_row(sql::WAITING, params![team.id, bell.after], |r| r.get(0))
+    let ordinary: bool = db
+        .query_row(
+            super::person_contact::WAITING_ORDINARY,
+            params![team.id, bell.after],
+            |r| r.get(0),
+        )
         .map_err(storage)?;
-    if !waiting {
-        return Err(refuse("No item beyond the last doorbell is open."));
+    if ordinary {
+        return Ok(());
     }
-    Ok(())
+    if let Some((after, through)) = bell.person_range {
+        let person: bool = db
+            .query_row(
+                super::person_contact::WAITING_PERSON,
+                params![team.id, after, through],
+                |r| r.get(0),
+            )
+            .map_err(storage)?;
+        if person {
+            return Ok(());
+        }
+    }
+    Err(refuse("No item beyond the last doorbell is open."))
 }
 fn refuse(text: &str) -> Problem {
     Problem::new(code::INVALID_STATE, text)
