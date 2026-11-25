@@ -15,6 +15,7 @@ import { NewTeamPage } from "./NewTeamPage";
 import { TextInput } from "../lib/TextField";
 import { Dropdown } from "../lib/Dropdown";
 import { Icon } from "../lib/icons";
+import { of, type Style } from "../sessions/path-forms";
 import { pickLocalFolder } from "../../bridge";
 import { loadProjects, projectsPage } from "../../store/projects";
 import type { Project } from "../../types";
@@ -30,13 +31,19 @@ import "../styles/newteam.css";
 /** The command line's code for a create whose template changed since it was shown. */
 export const TEMPLATE_CHANGED = "template_changed";
 
-/** A URL-safe template id from a name. */
-/** One folder path written two ways: surrounding blanks and trailing separators aside. */
-export function samePath(a: string, b: string): boolean {
-  const plain = (path: string) => { const trimmed = path.trim(); return trimmed.replace(/[\\/]+$/, "") || trimmed; };
+/** Ignore only trailing directory separators recognized by the local filesystem. */
+export function samePath(a: string, b: string, style: Style = "posix"): boolean {
+  const trailing = style === "windows" ? /[\\/]+$/ : /\/+$/;
+  const plain = (path: string) => {
+    const trimmed = path.replace(trailing, "");
+    // A Windows drive root is absolute, while a bare drive is relative.
+    if (style === "windows" && /^[A-Za-z]:$/.test(trimmed) && trimmed !== path) return trimmed + "/";
+    return trimmed || path;
+  };
   return plain(a) === plain(b);
 }
 
+/** A URL-safe template id from a name. */
 export function slug(text: string): string {
   return text.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 60) || "team";
 }
@@ -132,6 +139,7 @@ export interface NewTeamProps {
   catalogError?: string;
   busy: boolean;
   machineId: string;
+  pathStyle?: Style;
   /** A catalog project's ID to start from; else the project of `defaultFolder`. */
   defaultProject: string;
   defaultFolder: string;
@@ -171,12 +179,13 @@ export function NewTeam(props: NewTeamProps): JSX.Element {
   const listed = createMemo(() => (props.projects ?? []).filter((candidate) => candidate.accessible));
   const here = (candidate: Project) => candidate.folders.filter((entry) => !!props.machineId && entry.machine_id === props.machineId);
   const chosenProject = () => listed().find((candidate) => candidate.id === project());
+  const sameLocalPath = (a: string, b: string) => samePath(a, b, props.pathStyle);
   /** The catalog projects whose folder on this computer is `path`. */
-  const owners = (path: string) => listed().filter((candidate) => here(candidate).some((entry) => samePath(entry.path, path)));
+  const owners = (path: string) => listed().filter((candidate) => here(candidate).some((entry) => sameLocalPath(entry.path, path)));
   const owner = (path: string) => { const found = owners(path); return found.length === 1 ? found[0] : undefined; };
   // The catalog can arrive after the dialog opens: the selected session's
   // folder names its project once, never over a person's choice.
-  createEffect(on(listed, () => { if (!chosenProject() && !project()) setProject(owner(folder().trim())?.id ?? ""); }));
+  createEffect(on(listed, () => { if (!chosenProject() && !project()) setProject(owner(folder())?.id ?? ""); }));
   const projectFolders = () => {
     const chosen = chosenProject();
     if (!chosen) return "";
@@ -187,15 +196,15 @@ export function NewTeam(props: NewTeamProps): JSX.Element {
   // The team is created from the folder's Git HEAD and placed from the
   // project's folder (#2533 review): the two must be the same folder.
   const unowned = () => {
-    const path = folder().trim();
-    if (!path) return "";
+    const path = folder();
+    if (!path.trim()) return "";
     const found = owners(path).length;
     return found === 0 ? tr("This folder belongs to no project on this computer. Add it on the Projects screen.")
       : found > 1 ? tr("Several projects use this folder; choose the project.") : "";
   };
   const foreignFolder = () => {
     const chosen = chosenProject();
-    return chosen && here(chosen).length === 1 && !samePath(here(chosen)[0].path, folder())
+    return chosen && here(chosen).length === 1 && !sameLocalPath(here(chosen)[0].path, folder())
       ? tr("The folder is not the chosen project's folder on this computer.") : "";
   };
   const [branch, setBranch] = createSignal("");
@@ -222,7 +231,7 @@ export function NewTeam(props: NewTeamProps): JSX.Element {
   const locked = () => props.busy || creating() || sendingCreate() || !!intentCall();
   const checkedFolder = () => {
     const checked = facts();
-    return checked && checked.path === folder().trim() ? checked.facts : undefined;
+    return checked && checked.path === folder() ? checked.facts : undefined;
   };
   const [saving, setSaving] = createSignal(false);
   const [saved, setSaved] = createSignal("");
@@ -274,14 +283,14 @@ export function NewTeam(props: NewTeamProps): JSX.Element {
   const chooseProject = (id: string) => {
     setProject(id);
     const chosen = chosenProject(), folders = chosen ? here(chosen) : [];
-    if (folders.length !== 1 || samePath(folders[0].path, folder())) return;
+    if (folders.length !== 1 || sameLocalPath(folders[0].path, folder())) return;
     setFolder(folders[0].path); setFacts(undefined); void check();
   };
   /** Browse… with the existing folder picker. The chosen folder is checked
    * and decides the project every time: the one project it belongs to here,
    * or none, so Create says why (#2533 review). */
   const browse = async () => {
-    const chosen = await props.onBrowseFolder?.(folder().trim()).catch(() => null);
+    const chosen = await props.onBrowseFolder?.(folder()).catch(() => null);
     if (!chosen) return;
     batch(() => { setFolder(chosen); setFacts(undefined); setProject(owner(chosen)?.id ?? ""); });
     void check();
@@ -289,15 +298,15 @@ export function NewTeam(props: NewTeamProps): JSX.Element {
   // A check belongs to the exact path it asked for: an answer for another path
   // (or an older generation) never writes the facts Create reads.
   const check = async () => {
-    const path = folder().trim();
+    const path = folder();
     const generation = ++checkGeneration;
     setChecking(true); setError("");
     try {
       const answer = await props.onCheckFolder(path);
-      if (generation !== checkGeneration || folder().trim() !== path) return;
+      if (generation !== checkGeneration || folder() !== path) return;
       setFacts({ path, generation, facts: answer });
     } catch (failure) {
-      if (generation !== checkGeneration || folder().trim() !== path) return;
+      if (generation !== checkGeneration || folder() !== path) return;
       setFacts(undefined); setError(String(failure));
     } finally {
       if (generation === checkGeneration) setChecking(false);
@@ -522,6 +531,7 @@ export function NewTeamDialog() {
             catalogError={teams.catalogError()}
             busy={teams.busy()}
             machineId={machineCards[""]?.machine_id ?? ""}
+            pathStyle={of(machineCards[""]?.platform, true, /Win/.test(navigator.platform) ? "windows" : "posix")}
             defaultProject=""
             defaultFolder={selected()?.gitRoot || selected()?.cwdPath || ""}
             projects={projectsPage().projects}

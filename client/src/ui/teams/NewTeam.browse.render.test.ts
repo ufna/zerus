@@ -8,7 +8,7 @@
 import { afterEach, expect, it, vi } from "vitest";
 import { createComponent } from "solid-js";
 import { render } from "solid-js/web";
-import { NewTeam } from "./NewTeam";
+import { NewTeam, samePath } from "./NewTeam";
 import { catalog } from "./fixtures";
 import projects from "./fixtures/new-team-projects.json";
 import type { ProjectsView } from "../../types";
@@ -99,6 +99,62 @@ it("a typed folder that is not the chosen project's folder blocks Create", async
   folder(host).value = "/workspace/example/"; folder(host).dispatchEvent(new Event("input", { bubbles: true }));
   button(host, "Check folder").click(); await flush();
   await vi.waitFor(() => expect(button(host, "Create team").disabled).toBe(false));
+});
+
+it.each(["\\", " "])("Browse keeps the literal POSIX suffix %j when checking a folder", async (suffix) => {
+  const path = "/workspace/example" + suffix;
+  const check = vi.fn(async (value: string) => ({
+    git: true, head: value === path ? OTHER : HEAD, branch: "main", reason: "",
+  }));
+  const { host, created } = setup({ onCheckFolder: check, onBrowseFolder: async () => path });
+  await choose(host, "orders");
+  await browse(host);
+  expect(folder(host).value).toBe(path);
+  expect(check).toHaveBeenLastCalledWith(path);
+  expect(chooser(host).textContent).toContain("Choose a project");
+  expect(blocker(host)).toContain("This folder belongs to no project on this computer.");
+  expect(button(host, "Create team").disabled).toBe(true);
+  button(host, "Create team").click();
+  expect(created).toEqual([]);
+});
+
+it.each(["\\", " "])("a typed POSIX folder with literal suffix %j cannot use another project's ID", async (suffix) => {
+  const path = "/workspace/example" + suffix;
+  const check = vi.fn(async (value: string) => ({
+    git: true, head: value === path ? OTHER : HEAD, branch: "main", reason: "",
+  }));
+  const { host, created } = setup({ onCheckFolder: check });
+  await choose(host, "orders");
+  folder(host).value = path;
+  folder(host).dispatchEvent(new Event("input", { bubbles: true }));
+  button(host, "Check folder").click();
+  await vi.waitFor(() => expect(host.querySelector("[data-folder-ok]")).not.toBeNull());
+  expect(check).toHaveBeenLastCalledWith(path);
+  expect(blocker(host)).toContain("The folder is not the chosen project's folder on this computer.");
+  expect(button(host, "Create team").disabled).toBe(true);
+  button(host, "Create team").click();
+  expect(created).toEqual([]);
+});
+
+it("keeps Windows trailing-separator support without confusing an absolute root and a relative drive", () => {
+  expect(samePath("C:\\work\\repo\\", "C:\\work\\repo", "windows")).toBe(true);
+  expect(samePath("C:\\", "C:/", "windows")).toBe(true);
+  expect(samePath("C:\\", "C:", "windows")).toBe(false);
+});
+
+it.each(["\\", " "])("Browse to a registered POSIX sibling with suffix %j uses its own project and base", async (suffix) => {
+  const path = "/workspace/example" + suffix;
+  const sibling = { ...another, folders: [{ ...another.folders[0], path }] };
+  const { host, created } = setup({
+    projects: [...view.projects, sibling],
+    onBrowseFolder: async () => path,
+  });
+  await choose(host, "orders");
+  await browse(host);
+  expect(chooser(host).textContent).toContain("Second Project");
+  button(host, "Create team").click();
+  await flush();
+  expect(created).toEqual([expect.objectContaining({ project: "other", base_commit: OTHER })]);
 });
 
 it("a late check for the previous project does not replace the current project's facts", async () => {
